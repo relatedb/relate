@@ -10,12 +10,10 @@ import { CliSidebar, type CliEntry } from './components/CliSidebar';
 import { FullScreenBanner } from './components/FullScreenBanner';
 import { Header } from './components/Header';
 import { QueryWorkspace } from './components/QueryWorkspace';
-import { RecipeDialog } from './components/RecipeDialog';
 import { type ViewTab } from './components/ResultsPanel';
 import { SchemaSidebar } from './components/SchemaSidebar';
 import { WelcomeDialog } from './components/WelcomeDialog';
 import { useIsMobile } from './hooks/useIsMobile';
-import { useRecipeSession, type RecipeParams } from './hooks/useRecipeSession';
 
 const SCHEMA_KEYS: (keyof QueryStats)[] = [
   'nodes_created',
@@ -44,27 +42,20 @@ export function App() {
   const [schemaRefreshKey, setSchemaRefreshKey] = useState(0);
   const [resetting, setResetting] = useState(false);
   const [cliHistory, setCliHistory] = useState<CliEntry[]>([]);
-  // A cookbook step's parameters, passed with every query run from the editor
-  // until cleared (never with schema-browser queries or the seed).
-  const [params, setParams] = useState<RecipeParams | null>(null);
 
   // Everything that describes the database's contents goes stale when it is
-  // reset: the Reset button and a recipe load both call this right after the
-  // engine resets, whatever happens next.
+  // reset: the Reset button calls this right after the engine resets,
+  // whatever happens next.
   const afterDatabaseReset = useCallback(() => {
     setCliHistory([]);
     setRun(null);
     setElapsed(null);
     setError(null);
-    setParams(null);
     setQuery('');
     setSchemaRefreshKey((k) => k + 1);
   }, []);
 
-  // Opened from a cookbook step or recipe (#recipe=…, ADR-0130)? Then offer
-  // that recipe instead of the sample data.
-  const recipeSession = useRecipeSession({ afterReset: afterDatabaseReset, onPoisoned: setPoisoned });
-  const [dialog, setDialog] = useState<'recipe' | 'welcome' | null>(recipeSession.link ? 'recipe' : 'welcome');
+  const [dialog, setDialog] = useState<'welcome' | null>('welcome');
   const [seeding, setSeeding] = useState(false);
   const isMobile = useIsMobile();
   const [mobileTab, setMobileTab] = useState<'console' | 'schema' | 'query'>('console');
@@ -145,26 +136,9 @@ export function App() {
     }
   }, [engineReady, running]);
 
-  const loadRecipeSession = recipeSession.load;
-  const loadRecipe = useCallback(async () => {
-    const loaded = await loadRecipeSession();
-    // The replay changed the database, whether or not it finished.
-    setSchemaRefreshKey((k) => k + 1);
-    if (!loaded) return;
-    const { title, replayed, step } = loaded;
-    setCliHistory([
-      { kind: 'output', text: `Loaded ${replayed} step${replayed === 1 ? '' : 's'} of "${title}".` },
-      { kind: 'output', text: '' },
-    ]);
-    setQuery(step?.code ?? '');
-    setParams(step?.params ?? null);
-    setDialog(null);
-  }, [loadRecipeSession]);
-
-  // The welcome dialog, and so the seed, only shows while no step's
-  // parameters are set. The LOAD CSV teaser is echoed into the terminal, then
-  // the equivalent UNWIND seed actually runs; the browser can't execute LOAD
-  // CSV so showing one and running the other is the whole point.
+  // The welcome dialog runs the seed. The LOAD CSV teaser is echoed into the
+  // terminal, then the equivalent UNWIND seed actually runs; the browser can't
+  // execute LOAD CSV so showing one and running the other is the whole point.
   const runSeed = useCallback(async () => {
     setSeeding(true);
     try {
@@ -219,9 +193,9 @@ export function App() {
     if (isMobile) setMobileTab('query');
   };
 
-  const runWithParams = (text: string) => {
+  const runFromEditor = (text: string) => {
     echoInput(text);
-    void runQuery(text, params?.text ?? null);
+    void runQuery(text, null);
   };
 
   // Ghost-text in the editor after a run: the most recent input in history.
@@ -249,8 +223,7 @@ export function App() {
       query={query}
       onQueryChange={setQuery}
       history={editorHistory}
-      onRun={runWithParams}
-      paramsNote={params ? { label: params.label, onClear: () => setParams(null) } : null}
+      onRun={runFromEditor}
       engineReady={engineReady}
       running={running}
       tab={tab}
@@ -268,7 +241,7 @@ export function App() {
       running={running}
       draft={query}
       onDraftChange={setQuery}
-      onSubmit={runWithParams}
+      onSubmit={runFromEditor}
       onSwitchToQuery={() => setMobileTab('query')}
     />
   );
@@ -317,19 +290,6 @@ export function App() {
       </Flex>
 
       {!isMobile && cliSidebar}
-
-      {recipeSession.link && (
-        <RecipeDialog
-          isOpen={dialog === 'recipe'}
-          link={recipeSession.link}
-          state={recipeSession.state}
-          error={recipeSession.error}
-          isRunning={recipeSession.isLoading}
-          canRun={engineReady}
-          onLoad={() => void loadRecipe()}
-          onDismiss={() => setDialog('welcome')}
-        />
-      )}
 
       <WelcomeDialog
         isOpen={dialog === 'welcome'}

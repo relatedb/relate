@@ -41,7 +41,6 @@ default-members = [
     "surfaces/relate-serve",
     "testing/relate-datasets",
     "testing/relate-test-support",
-    "testing/relate-cookbook",
     "testing/relate-query-latency",
     "surfaces/relate-wasm",
     "extensions/relate-wire",
@@ -223,8 +222,8 @@ lto = "fat"
 panic = "abort"
 overflow-checks = false
 
-# ADR-0212: corpus profile for the cookbook recipes and the query-latency
-# suite — release without the opt-level 3 passes: compiles noticeably
+# ADR-0212: corpus profile for the query-latency suite and the corpus
+# gates — release without the opt-level 3 passes: compiles noticeably
 # faster, runs within ~1-5% of release, no debug info.
 [profile.corpus]
 inherits = "release"

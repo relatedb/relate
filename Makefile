@@ -92,35 +92,6 @@ test-go:
 	cd clients/go && go test -count=1 ./...
 	bash scripts/check-go-examples.sh
 
-## cookbook: The whole cookbook gate CI runs: recipes natively, tooling tests, the browser build, the site (ADR-0130)
-cookbook: cookbook-native cookbook-js cookbook-wasm
-
-## cookbook-native: Every recipe reproduces its recorded results natively
-cookbook-native:
-	# ADR-0212: recipe corpus runs in the corpus profile (opt-level 2).
-	cargo test --profile corpus -p relate-cookbook
-
-## cookbook-deps: Install the cookbook tooling's npm packages (once per make run)
-cookbook-deps:
-	cd scripts/cookbook && npm ci
-
-## cookbook-js: The cookbook tooling's unit tests (scripts/cookbook)
-cookbook-js: cookbook-deps
-	cd scripts/cookbook && npm test
-
-## cookbook-wasm: A dev wasm build, then the site build into a temp dir: WASM parity, diagram renderings, links
-cookbook-wasm: cookbook-deps
-	bash scripts/build-wasm.sh --mode dev
-	out=$$(mktemp -d) && node scripts/cookbook/build.mjs --out "$$out/cookbook" && rm -rf "$$out"
-
-## cookbook-update: Re-record each recipe step's table/gram result block and the cookbook index
-cookbook-update:
-	COOKBOOK_UPDATE=1 cargo test -p relate-cookbook
-
-## cookbook-site: Build the cookbook pages into scripts/cookbook/dist to preview them (needs a wasm build)
-cookbook-site: cookbook-deps
-	cd scripts/cookbook && node build.mjs
-
 ## test: Run all Rust tests (excluding the Python crate)
 test:
 	cargo test --jobs 1 \
@@ -165,7 +136,6 @@ CLEAN_PATHS := \
 	examples/wasm-playground/node_modules \
 	clients/java/target \
 	docs/api/bolt/examples/websocket/node_modules \
-	scripts/cookbook/node_modules \
 	surfaces/relate-wasm/pkg
 SONIC_CACHE_VOLUMES := \
 	gosonic-cache-cargo-home \

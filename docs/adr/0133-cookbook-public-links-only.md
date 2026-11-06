@@ -96,3 +96,6 @@ and it does not see the links the build adds.
   cookbook navigation links the repository while it is internal, matching
   the landing page, and the link check (Decision item 2) accepts exactly the
   repository URL. Every other not-yet-public link is unchanged.
+- ADR-0528 moves the cookbook to the relate-web repository: the link policy
+  now lives in relate-web, which keeps its own list of URLs that are not
+  public yet.

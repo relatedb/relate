@@ -108,3 +108,8 @@ redrawing.
   parallel relationships, and overlap checks, split into text, geometry,
   layout, and drawing modules and unit-tested in the cookbook CI job. A force layout also moves when a model changes, so a small edit
   can redraw the whole picture; the drawings are reviewed as images.
+
+## Later references
+
+- ADR-0528 moves the cookbook to the relate-web repository: the diagram
+  renderer moves there and draws in the site's colours.

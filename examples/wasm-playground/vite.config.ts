@@ -1,5 +1,4 @@
-import { fileURLToPath } from 'node:url'
-import { defineConfig, searchForWorkspaceRoot } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
@@ -9,14 +8,6 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    // The cookbook's cell policy (scripts/cookbook/lib/cells.mjs) is imported,
-    // not copied, so the dev server may serve it.
-    fs: {
-      allow: [
-        searchForWorkspaceRoot(process.cwd()),
-        fileURLToPath(new URL('../../scripts/cookbook/lib', import.meta.url)),
-      ],
-    },
   },
   build: {
     sourcemap: false,

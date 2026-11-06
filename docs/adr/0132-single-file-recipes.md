@@ -115,3 +115,5 @@ people read rather than a wire dump.
   the source and stays in the recipe file; the website uses SVG renderings of
   it kept beside the recipes in `docs/cookbook/diagrams/`, so for the website
   a recipe is no longer entirely one file.
+- ADR-0528 moves the cookbook to the relate-web repository: the recipe
+  format this ADR defined continues there, maintained by that repository.

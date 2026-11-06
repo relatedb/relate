@@ -31,7 +31,6 @@ relate-agentbench -> the A/B dispatch job (dispatch-only, LABS-481)
 relate-auth -> exercised through the http/mcp suites that consume it (os-smoke surface smokes)
 relate-bolt -> bolt driver smoke + language-clients lanes
 relate-codec-lab -> none: a measurement harness (store size, checkpoint and load times), never a shipped surface; built by the workspace clippy gate
-relate-cookbook -> corpus lane (native recipe gate)
 relate-datasets -> loadtest lanes (fraud/identity datasets)
 relate-graph-examples -> graph-examples nightly
 relate-http -> os-smoke surface smokes (query_api)

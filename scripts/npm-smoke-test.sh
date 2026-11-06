@@ -135,8 +135,8 @@ pack_platform_pkg() {
 }
 
 # Build the wasm bundle into this run's scratch dir, then pack it (smoke 3
-# producer). A private directory because cookbook-wasm writes the shared
-# surfaces/relate-wasm/pkg at the same time and deletes it mid-build.
+# producer). A private directory, so another job writing the shared
+# surfaces/relate-wasm/pkg at the same time cannot delete it mid-build.
 # Runs inside tgz_for's $(...), so only the tarball path may reach stdout —
 # progress goes to stderr.
 pack_wasm_pkg() {

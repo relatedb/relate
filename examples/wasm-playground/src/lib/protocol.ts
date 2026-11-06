@@ -2,8 +2,7 @@ import type { QueryStats, WireResult } from './wire';
 
 /**
  * A script's run: its last statement's result, the mutation counters summed
- * over every statement (by `renderResult`, as the cookbook records them), and
- * how many statements ran.
+ * over every statement (by `renderResult`), and how many statements ran.
  */
 export interface ScriptRun {
   last: WireResult;

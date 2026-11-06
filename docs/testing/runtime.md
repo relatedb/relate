@@ -142,7 +142,7 @@ build caches ([build-caches.md](build-caches.md)) attack exactly that term.
 | `test` | Full unit/integration suite; the 604-test `relate` crate alone is ~2.5 min wall locally |
 | `feature-bundles` | Two more CLI compile configurations (`agent`, `minimal`) plus no-parquet engine |
 | `stack-release` | Release-profile compile for the stack-depth tests (ADR-0259) |
-| `corpus` | One corpus-profile (optimized) compile feeding TCK + CIP-eval + cookbook + the LDBC SF0.1 answer gate (ADR-0252); execution is seconds, the compile is not |
+| `corpus` | One corpus-profile (optimized) compile feeding TCK + CIP-eval + the LDBC SF0.1 answer gate (ADR-0252); execution is seconds, the compile is not |
 | `python` | pyo3 extension build, wheel packaging, full pytest |
 | `os-smoke` (macOS) | Storage filesystem depth + the full surface smoke set, incl. wheel link, npm, Maven |
 | `swift` (macOS) | Five release-profile `relate-ffi` cross-compiles for the XCFramework, then the Swift package, examples and the iOS app build |
@@ -153,7 +153,7 @@ build caches ([build-caches.md](build-caches.md)) attack exactly that term.
 | `npm-smoke` | npm pack/install/one-query |
 | `loadtest-smoke` | Dev-profile dataset suites at `ci()` scale |
 | `loadtest-baselines` | The pinned ADR-0070 Docker environment; intentionally not host-fast |
-| docs lanes (`doc-examples`, `cookbook-wasm`, `notebook`) | Example builds and the dev-WASM parity check |
+| docs lanes (`doc-examples`, `notebook`) | Example builds |
 
 This table is the dashboard's seed: a lane leaves it when a cache or split
 change brings it under 60 s, and §7's dashboard tracks the shrinking

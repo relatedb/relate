@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The wasm toolchain setup the Sonic npm-smoke and cookbook-wasm stages
-# share (LABS-622): wasm-bindgen (it writes $CARGO_HOME/bin, which is not
+# The wasm toolchain setup for the Sonic npm-smoke stage (LABS-622):
+# wasm-bindgen (it writes $CARGO_HOME/bin, which is not
 # on the image PATH) and binaryen, both onto PATH.
 #
 # Source it — the PATH exports must reach the caller's shell (the

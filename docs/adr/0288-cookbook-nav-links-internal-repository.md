@@ -71,3 +71,8 @@ gets a 404.
 - ADR-0133 Decision item 1 ("no GitHub navigation or footer links") and
   ADR-0130's "the nav's GitHub link render[s] once those URLs are public" no
   longer hold for the navigation.
+
+## Later references
+
+- ADR-0528 moves the cookbook to the relate-web repository: the navigation
+  this ADR covered is now the site's own header.

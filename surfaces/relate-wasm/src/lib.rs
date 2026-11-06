@@ -10,7 +10,8 @@
 //! (`panic = abort` is the wasm target default and `catch_unwind` is a no-op),
 //! which JS observes as a `WebAssembly.RuntimeError`. Hosts classify that with
 //! `isWasmTrap` (`js/trap.js`, shipped with the bundle): the playground
-//! latches a poisoned engine, and the cookbook discards its worker.
+//! latches a poisoned engine, and a host running the engine in a worker
+//! discards that worker.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -169,8 +170,8 @@ fn opfs_name(uri: &str) -> Result<String, JsError> {
 
 /// Render a script's envelopes (JSON strings, as `executeScript` returns
 /// them) as a recording (ADR-0131, ADR-0132): JSON `{kind, text, table,
-/// graph, stats}` from `relate_formatter::recording`, the renderer the
-/// native cookbook harness uses. Throws on an envelope that is not wire JSON.
+/// graph, stats}` from `relate_formatter::recording`. Throws on an envelope
+/// that is not wire JSON.
 #[wasm_bindgen(js_name = renderResult)]
 pub fn render_result(envelopes: Vec<String>) -> Result<String, JsError> {
     let values = envelopes

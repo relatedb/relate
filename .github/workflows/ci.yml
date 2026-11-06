@@ -91,17 +91,13 @@ jobs:
 
   # A docs-only change (ADR, README, guide, planning note) does not need the
   # build/test/loadtest suite. The code jobs below are gated on this; the
-  # docs-validating jobs (link-check, doc-examples, cookbook-wasm, notebook)
-  # always run, so a bad docs edit is still caught. Cookbook recipes are
-  # tests (ADR-0130): `docs/cookbook/*` edits set the `cookbook` output so
-  # the merged `corpus` job (ADR-0252) still runs the native recipe gate on
-  # a recipe-only change.
+  # docs-validating jobs (link-check, doc-examples, notebook) always run,
+  # so a bad docs edit is still caught.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.detect.outputs.code }}
-      cookbook: ${{ steps.detect.outputs.cookbook }}
       full_ci: ${{ steps.full.outputs.full }}
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
@@ -139,7 +135,6 @@ jobs:
           # Manual runs always take the full suite.
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "cookbook=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
@@ -158,7 +153,6 @@ jobs:
           echo "changed files:"; echo "${files:-<none>}"
 
           code=false
-          cookbook=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
@@ -172,10 +166,6 @@ jobs:
               docs/api/swift/examples/*) code=true ;;
               # The Go API examples run in the sonic `clients` stage.
               docs/api/go/examples/*) code=true ;;
-              # Cookbook recipes are tests (ADR-0130): a recipe-only edit
-              # must still run the native recipe gate (the merged corpus
-              # job, ADR-0252) even though it is not a code change.
-              docs/cookbook/*) cookbook=true ;;
               docs/*|.plans/*) ;;
               # The image and everything the smoke suite exercises. The
               # docker image smoke itself is nightly
@@ -197,7 +187,6 @@ jobs:
           done <<< "$files"
 
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "cookbook=$cookbook" >> "$GITHUB_OUTPUT"
       - name: Disk headroom (telemetry)
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
@@ -896,30 +885,6 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
-  # ADR-0130: every cookbook recipe is a test. The native half runs in
-  # `corpus`. This job is the browser half: JS unit tests, a dev wasm
-  # bundle, and the site build. Drafts skip it; link-check stays on.
-  cookbook-wasm:
-    name: Cookbook recipes (browser build and site)
-    needs: [changes, sonic-init]
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/gosonic
-        with:
-          stage: cookbook-wasm
-          # Plain per-job key, same as before Sonic: wasm32, no mold, no sccache.
-          rust-cache: "true"
-          sccache: "false"
-          mold: "false"
-          cache-target: cookbook-wasm
-
-      - name: Disk headroom (telemetry)
-        if: always() && runner.os == 'Linux'
-        run: scripts/report-disk.sh
-
   notebook:
     name: Notebook execution (getting started)
     needs: [changes, sonic-init]
@@ -943,14 +908,12 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
-  # ADR-0252: cookbook-native and the LDBC SF0.1 answer gate. Sonic runs
-  # both commands whenever this job starts, including a cookbook-only
-  # change. A cookbook edit on a draft still runs; a code change on a draft
-  # waits for ready-for-review.
+  # ADR-0252: the LDBC SF0.1 answer gate. A code change on a draft waits
+  # for ready-for-review.
   corpus:
-    name: Corpus (cookbook native, LDBC SF0.1 answers)
+    name: Corpus (LDBC SF0.1 answers)
     needs: [changes, sonic-init]
-    if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true' || needs.changes.outputs.cookbook == 'true'
+    if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     # LABS-310 runner pilot (docs/testing/runtime.md): the compile-dominated
     # corpus job is the one lane piloted on the 4-core runner; every other
     # free-tier lane is unchanged. Success bar is a 2x wall drop.
@@ -1107,8 +1070,7 @@ jobs:
         run: scripts/report-disk.sh
 
   # wasm32 compile gate (ADR-0084, ADR-0085). The full browser lane runs
-  # 6-hourly in background-cadences.yml; cookbook WASM parity stays in
-  # cookbook-wasm.
+  # 6-hourly in background-cadences.yml.
   wasm:
     name: WASM (relate-wasm)
     needs: [changes, sonic-init]

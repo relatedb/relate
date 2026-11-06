@@ -159,3 +159,8 @@ included, when steps run in order).
 - ADR-0130 Decision item 6 and its "Render the graph view with NVL"
   alternative are replaced by this ADR (a **Later references** note is
   added there).
+
+## Later references
+
+- ADR-0528 moves the cookbook to the relate-web repository: the graph view
+  moves there with the pages.

@@ -11,7 +11,6 @@ release's assets and pokes relate-web to pull them.
 |---|---|
 | [`api/`](api/) | Per-surface API contracts (spec + description + examples): rust, c, cli, python, javascript, java, go, swift, bolt, http, mcp, wasm, extensions |
 | [`guides/`](guides/) | Task guides: vector similarity, geospatial, CSV import, output formats, backup/restore, the schema folder |
-| [`cookbook/`](cookbook/) | Tested recipes with runnable Cypher cells, published as the website cookbook (ADR-0130) |
 | [`reference/`](reference/) | Deep references: Cypher syntax, functions, ontology procedures, CLI flags, storage formats, dot-commands, client libraries, Bolt, C ABI |
 | [`adr/`](adr/) | Architecture Decision Records (immutable, numbered) |
 | [`design/`](design/) | Design studies and research: the extension-system tiering, the loader-plugin study, memory optimization, Swift platforms, token budgets, the embedded driver-provider spikes (LABS-447), the kernel-composition direction, the [kernel coverage inventory](design/kernel-coverage-inventory.md) |

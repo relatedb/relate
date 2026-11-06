@@ -73,7 +73,7 @@ esac
 
 CRATE_DIR="$REPO/surfaces/relate-wasm"
 # BUILD_WASM_OUT_DIR lets a caller keep its bundle off the shared pkg/
-# directory. cookbook-wasm and npm-smoke both run this script, and one
+# directory. When two jobs run this script against the same checkout, one
 # `rm -rf` of that directory removes the other's package.json.
 OUT_DIR="${BUILD_WASM_OUT_DIR:-$CRATE_DIR/pkg}"
 OUT_NAME="relate"

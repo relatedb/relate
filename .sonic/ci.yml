@@ -78,7 +78,6 @@ suites:
     - python
     - link-check
     - doc-examples
-    - cookbook-wasm
     - notebook
     - corpus
     - bolt
@@ -270,7 +269,7 @@ stages:
         esac
         curl -fsSL -o /tmp/lychee.tar.gz "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.18.1/lychee-${lychee_arch}-unknown-linux-gnu.tar.gz"
         tar -xzf /tmp/lychee.tar.gz -C /usr/local/bin
-        lychee --config lychee.toml --no-progress --root-dir "$(pwd)/docs" README.md docs/guides docs/reference docs/cookbook
+        lychee --config lychee.toml --no-progress --root-dir "$(pwd)/docs" README.md docs/guides docs/reference
 
   doc-examples:
     runner: sonic-rust
@@ -286,24 +285,6 @@ stages:
     commands:
       - cargo build --release -p relate-cli
       - bash scripts/check-doc-examples.sh
-
-  cookbook-wasm:
-    runner: sonic-polyglot
-    # The toolchain setup below is sourced — its exports must reach this
-    # shell, so the stage pins bash like the other multi-line stages.
-    shell: bash
-    before: *before-polyglot
-    environment:
-      <<: *cargo-env
-      CARGO_TARGET_DIR: /cargo-target/cookbook-wasm
-    volumes: *cargo-cache
-    commands:
-      # The shared wasm toolchain setup (LABS-622): wasm-bindgen +
-      # binaryen onto PATH. Sourced so the exports reach this shell;
-      # anchored once, aliased by npm-smoke (LABS-631).
-      - &wasm-toolchain source scripts/install-wasm-toolchain.sh
-      - make cookbook-js
-      - make cookbook-wasm
 
   notebook:
     runner: sonic-polyglot
@@ -328,9 +309,9 @@ stages:
 
   # Opt-level 2 compile of the engine. It shares the cargo home volume
   # and the workspace mount with the other cargo stages. Under --jobs 4 it
-  # died while cookbook-wasm and notebook were still compiling, and bolt
-  # started into the freed slot a second later. Wait for those two, and
-  # hold the cargo stages listed after this one.
+  # died while notebook was still compiling, and bolt started into the
+  # freed slot a second later. Wait for it, and hold the cargo stages
+  # listed after this one.
   corpus:
     runner: sonic-rust
     before: *before-rust
@@ -339,7 +320,6 @@ stages:
       CARGO_TARGET_DIR: /cargo-target/corpus
     volumes: *cargo-cache
     commands:
-      - make cookbook-native
       - RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test graph_benchmark_ldbc
 
   bolt:
@@ -442,7 +422,9 @@ stages:
       RELATE_LIB: /cargo-target/npm-smoke/debug/librelate_ffi.so
     volumes: *cargo-cache
     commands:
-      - *wasm-toolchain
+      # The shared wasm toolchain setup (LABS-622): wasm-bindgen +
+      # binaryen onto PATH. Sourced so the exports reach this shell.
+      - source scripts/install-wasm-toolchain.sh
       - cargo build -p relate-ffi
       - bash scripts/npm-smoke-test.sh
 

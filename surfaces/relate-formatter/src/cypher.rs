@@ -61,8 +61,8 @@ impl Formatter {
 /// Render a [`CypherValue`] as a parseable Cypher literal.
 ///
 /// This is the **one** canonical literal used by every surface that renders
-/// engine values as re-parseable Cypher (`.mode cypher` in the CLI). The
-/// cookbook's recordings ([`recording`]) render wire JSON instead, keeping
+/// engine values as re-parseable Cypher (`.mode cypher` in the CLI).
+/// Recordings ([`recording`]) render wire JSON instead, keeping
 /// numbers as the wire spells them, with the same identifier and string
 /// escaping ([`cypher_identifier`], [`quoted_literal`]). It fixes the
 /// historical bugs of the two duplicate copies it replaces:

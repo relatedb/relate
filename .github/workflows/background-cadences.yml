@@ -317,7 +317,7 @@ jobs:
   # The full wasm lane, moved off the continuous path (ADR-0251 §6): the
   # headless-Firefox browser smokes, the release-wasm bundle (ADR-0100)
   # and the documented API examples. The continuous slice in ci.yml keeps
-  # the wasm32 cargo checks plus the cookbook WASM parity job.
+  # the wasm32 cargo checks.
   wasm-full:
     name: WASM full (browser smokes + release bundle)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 */6 * * *'

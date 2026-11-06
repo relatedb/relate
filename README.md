@@ -349,9 +349,8 @@ loudly about it — for encrypted Bolt, front it with a TLS-terminating proxy.
 | **Surfaces** | Rust crate, Python + Arrow IPC, JS/Java/Go/Swift over the typed C ABI, Bolt, HTTP, MCP, WASM. |
 
 Task guides — vector similarity, geospatial, CSV import, backup/restore,
-storage — live in [`docs/guides/`](docs/guides/), and tested recipes for most
-of the above in [`docs/cookbook/`](docs/cookbook/) — each one a runnable,
-CI-checked document.
+storage — live in [`docs/guides/`](docs/guides/); tested, runnable recipes for
+most of the above are in the [cookbook](https://relatedb.ai/cookbook/).
 
 ## CLI reference
 
@@ -514,9 +513,6 @@ make test                     # the same, via make
 
 # Lint — the CI gate
 make lint                     # cargo fmt --all --check + clippy -D warnings
-
-# Cookbook recipes (docs/cookbook/ run as tests)
-make cookbook
 
 # WASM bundle
 make build-wasm

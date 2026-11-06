@@ -4,7 +4,7 @@
 # TCK corpus gate (LABS-310 round 4: the gate tests are self-contained, so
 # per-process scheduling preserves the 3892/3893 accounting — verified
 # locally 55/55, docs/testing/runtime.md) run under `cargo nextest run`.
-# The other corpus steps (CIP-eval, cookbook, query-latency) and the
+# The other corpus steps (CIP-eval, query-latency) and the
 # doctests (cargo test --doc) stay on stock cargo test: single-binary
 # suites with nothing for nextest to schedule, resp. invisible to it.
 

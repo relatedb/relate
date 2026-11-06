@@ -40,8 +40,8 @@ export function __start(): void;
 /**
  * Render a script's envelopes (JSON strings, as `executeScript` returns
  * them) as a recording (ADR-0131, ADR-0132): JSON `{kind, text, table,
- * graph, stats}` from `relate_formatter::recording`, the renderer the
- * native cookbook harness uses. Throws on an envelope that is not wire JSON.
+ * graph, stats}` from `relate_formatter::recording`. Throws on an envelope
+ * that is not wire JSON.
  */
 export function renderResult(envelopes: string[]): string;
 

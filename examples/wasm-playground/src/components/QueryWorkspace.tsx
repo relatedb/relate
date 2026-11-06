@@ -1,4 +1,4 @@
-import { Flex, TextButton, Typography } from '@neo4j-ndl/react';
+import { Flex } from '@neo4j-ndl/react';
 
 import type { ScriptRun } from '../lib/engine';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -16,8 +16,6 @@ interface Props {
   run: ScriptRun | null;
   error: string | null;
   elapsed: number | null;
-  /** Parameters from a loaded cookbook step, sent with every query. */
-  paramsNote: { label: string; onClear: () => void } | null;
   lastRun: string | null;
   history: string[];
 }
@@ -33,7 +31,6 @@ export function QueryWorkspace({
   run,
   error,
   elapsed,
-  paramsNote,
   lastRun,
   history,
 }: Props) {
@@ -51,21 +48,6 @@ export function QueryWorkspace({
         height: mobile ? '100%' : undefined,
       }}
     >
-      {paramsNote && (
-        <Flex
-          flexDirection="row"
-          alignItems="center"
-          gap="8"
-          className="n-shrink-0 n-px-4 n-py-2 n-rounded-lg n-border n-border-neutral-border-weak n-bg-neutral-bg-weak"
-        >
-          <Typography variant="body-small" className="n-flex-1">
-            Queries run from the editor use the parameters from <code>{paramsNote.label}</code>.
-          </Typography>
-          <TextButton size="small" onClick={paramsNote.onClear}>
-            Clear
-          </TextButton>
-        </Flex>
-      )}
       <QueryPanel
         query={query}
         onQueryChange={onQueryChange}

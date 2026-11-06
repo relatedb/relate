@@ -8,8 +8,10 @@ Implementation notes for ADR-0252, the same style of record as
 > **Historical record (2026-11-05).** The `corpus` job's `relate-tck` and
 > `relate-cip-eval` steps retired with the in-repo language harness
 > (ADR-0520); the corpora and their reporting live in the spec harness
-> (ADR-0482). The one-compile merge described here still applies to the job's
-> remaining gates (cookbook, query-latency).
+> (ADR-0482). The `cookbook-native` step and the `cookbook` change-detection
+> output retired when the cookbook moved to the relate-web repository
+> (ADR-0528). The one-compile merge described here still applies to the job's
+> remaining gate (query-latency).
 
 ## Problem
 

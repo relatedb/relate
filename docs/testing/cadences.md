@@ -26,7 +26,7 @@ merge.
 | Loadtest / large fixtures | `loadtest-smoke`: dataset suites at `ci()` scale (0.05), comparator + install.sh harness tests | `large-fixtures`: full-scale (scale=1.0) fraud + identity fixtures (`RELATE_FULL_DATA=1`, release profile) | nightly 03:30 UTC |
 | LDBC query latency (ADR-0243/ADR-0244) | `corpus` job step: SF0.1 answer gate (`RELATE_QUERY_LATENCY=1`, answers only, no latency judgement) | `ldbc-sf01`: all 30 queries, `--min-time 5`, p50/mean/p99 report uploaded as an artifact | nightly 03:30 UTC |
 | Docker image smoke (ADR-0128) | — (the smoke itself moved fully off the merge path, LABS-310; the `relate-bolt` job keeps the driver smokes, which run against the crate's in-process `serve(&Args)` listener, ADR-0368. The `jepsen` lane does build the stock image per ready PR — see below) | `docker-smoke`: full in-container `make docker` musl build + `docker_smoke.py` | nightly 03:30 UTC |
-| wasm | `wasm` job: the two wasm32 `cargo check`s; plus the `cookbook-wasm` parity slice | `wasm-full`: headless-Firefox browser smokes, release-wasm bundle (ADR-0100), API examples | 6-hourly (:17) |
+| wasm | `wasm` job: the two wasm32 `cargo check`s | `wasm-full`: headless-Firefox browser smokes, release-wasm bundle (ADR-0100), API examples | 6-hourly (:17) |
 | Multi-OS sweep | `os-smoke` (macOS), `os-filesystem` + `os-surface` (Windows): the OS-dependent delta — storage filesystem depth + one-query surface smokes | `os-sweep` (macOS + Windows): storage depth plus the **complete** surface harness suites (MCP stdio, Bolt, HTTP, CLI e2e bundles) | 6-hourly (:17) |
 | Proptest elevated counts | `test` job: storage property suites at the default 256 cases | `proptest-nightly.yml`: 10000 in-memory / 1024 recovery cases (ADR-0268) | nightly 03:00 UTC |
 | Graph examples | (docs lanes) | `graph-examples-nightly.yml` | nightly |
@@ -88,8 +88,7 @@ constraint. Where the cadence split lands each lane:
   `cargo check`s against the shared cache; `loadtest-smoke` is a dev-profile
   test run at 5% fixture scale.
 - **Cannot meet it, and why:** the `corpus` job pays one optimized
-  (corpus-profile) compile of the engine plus the cookbook and query-latency
-  suites — the compile alone exceeds 60 s on a cold cache, and the LDBC SF0.1
+  (corpus-profile) compile of the engine plus the query-latency suite — the compile alone exceeds 60 s on a cold cache, and the LDBC SF0.1
   answer gate adds a 19 MB data load on cold runners. The compile is the
   shared-cost design of ADR-0252 (one build, several gates), not slack.
   `os-smoke`/`os-filesystem`/

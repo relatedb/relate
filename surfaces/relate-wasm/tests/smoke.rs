@@ -89,7 +89,7 @@ fn execute_script_runs_each_statement() {
 /// Two layers, pinned separately: the wire envelope
 /// (`RelateDb::execute`) always carries the `notifications` array —
 /// empty on a plain run, the EXPLAIN plan-time list otherwise — and the
-/// recording renderer (`renderResult`, the cookbook's
+/// recording renderer (`renderResult`,
 /// `relate_formatter::recording`) reads only the envelope's
 /// `columns`/`rows`. An EXPLAIN envelope has neither since ADR-0359 (the
 /// plan rides `QueryResult.plan`), so it renders the `(no rows)` text with
