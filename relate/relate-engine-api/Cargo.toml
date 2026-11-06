@@ -1,0 +1,18 @@
+[package]
+name = "relate-engine-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Shared contracts for swappable query and write engines"
+license.workspace = true
+
+[dependencies]
+relate-catalog = { workspace = true }
+relate-core = { workspace = true }
+relate-error = { workspace = true }
+relate-model = { workspace = true }
+relate-names = { workspace = true }
+relate-parser = { workspace = true }
+relate-planner = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
