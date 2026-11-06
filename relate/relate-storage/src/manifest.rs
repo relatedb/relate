@@ -109,30 +109,6 @@ pub(crate) fn reject_foreign_engine(manifest: &Manifest) -> relate_core::Result<
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_old_manifest_reads_as_the_historical_engines() {
-        let manifest: Manifest =
-            serde_json::from_str(r#"{"format_version":3,"next_node_id":0,"next_rel_id":0}"#)
-                .unwrap();
-        assert!(reject_foreign_engine(&manifest).is_ok());
-        assert_eq!(manifest.query_engine, MEMORY_QUERY_ENGINE);
-        assert_eq!(manifest.write_engine, LOCAL_WRITE_ENGINE);
-    }
-
-    #[test]
-    fn a_different_engine_id_is_refused() {
-        let manifest: Manifest = serde_json::from_str(
-            r#"{"format_version":3,"next_node_id":0,"next_rel_id":0,"query_engine":"paged","write_engine":"local"}"#,
-        )
-        .unwrap();
-        assert!(reject_foreign_engine(&manifest).is_err());
-    }
-}
-
 pub(crate) fn deserialize_checkpoint_theater<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<relate_engine_api::CheckpointTheater>, D::Error>
@@ -160,4 +136,28 @@ where
         return Err(D::Error::custom("manifest path selector must be nonempty"));
     }
     Ok(Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_old_manifest_reads_as_the_historical_engines() {
+        let manifest: Manifest =
+            serde_json::from_str(r#"{"format_version":3,"next_node_id":0,"next_rel_id":0}"#)
+                .unwrap();
+        assert!(reject_foreign_engine(&manifest).is_ok());
+        assert_eq!(manifest.query_engine, MEMORY_QUERY_ENGINE);
+        assert_eq!(manifest.write_engine, LOCAL_WRITE_ENGINE);
+    }
+
+    #[test]
+    fn a_different_engine_id_is_refused() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"format_version":3,"next_node_id":0,"next_rel_id":0,"query_engine":"paged","write_engine":"local"}"#,
+        )
+        .unwrap();
+        assert!(reject_foreign_engine(&manifest).is_err());
+    }
 }
