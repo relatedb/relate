@@ -7,9 +7,10 @@ name: Background cadences
 # - nightly (03:30 UTC): the LDBC graph-benchmark SF0.1 latency suite
 #   (ADR-0243/ADR-0244) with a latency judgement, the full-scale
 #   (scale=1.0) fraud/identity dataset fixtures (RELATE_FULL_DATA=1),
-#   and the docker image build + smoke (ADR-0128) — the full in-container
-#   `make docker` musl build is a from-scratch guarantee (~18 min cold),
-#   and from-scratch guarantees belong on a cadence, not the merge path.
+#   the full memory-controls calibration (three repeats), and the docker
+#   image build + smoke (ADR-0128) — the full in-container `make docker`
+#   musl build is a from-scratch guarantee (~18 min cold), and
+#   from-scratch guarantees belong on a cadence, not the merge path.
 # - 6-hourly: the full wasm lane (headless-Firefox browser smokes, the
 #   release-wasm bundle and the API examples) and the full multi-OS sweep
 #   (macOS + Windows storage depth and the complete surface harness
@@ -86,6 +87,70 @@ jobs:
         with:
           name: ldbc-sf01-report
           path: target/query-latency/report-graph-benchmark-ldbc-sf0.1.json
+          if-no-files-found: warn
+
+  # Full memory-controls profile: three calibration repeats. The PR lane
+  # runs one repeat. This job writes the step summary and does not comment
+  # on a pull request.
+  memory-controls-full:
+    name: Memory controls full calibration
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 3 * * *'
+    runs-on: ${{ vars.LOADTEST_RUNNER }}
+    permissions:
+      actions: read
+      contents: read
+    env:
+      BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
+      CI_COMPARE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check out gosonic
+        uses: actions/checkout@v7
+        with:
+          repository: triha74/gosonic
+          ref: 5ef8494f0d805c31a667fc099e95561c153c26a8
+          path: gosonic-src
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.23.5"
+
+      - name: Install gosonic
+        working-directory: gosonic-src
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          CGO_ENABLED=0 go build -o "$HOME/.local/bin/gosonic" .
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run the full memory-controls stage
+        run: gosonic ci run memory-controls-full
+
+      - name: Write the memory-controls summary
+        if: always()
+        run: |
+          if [ -f target/memory-controls.md ]; then
+            cat target/memory-controls.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the full memory-controls report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: memory-controls-full-report
+          path: |
+            target/memory-controls.json
+            target/memory-controls-verdict.json
+            target/memory-controls.md
           if-no-files-found: warn
 
   # The docker image build + smoke (ADR-0128), moved off the merge path

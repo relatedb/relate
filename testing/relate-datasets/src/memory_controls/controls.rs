@@ -4,7 +4,7 @@
 //!
 //! The family's shared harness — its run inputs and report, the serve-child
 //! lifecycle, the retry connect, the case finisher and the probe dispatch —
-//! is [`crate::processing_harness`]; this module is only the cases the memory
+//! is [`crate::memory_controls::harness`]; this module is only the cases the memory
 //! probe adds on top of it.
 
 use std::io::{Read, Write};
@@ -14,10 +14,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::bolt::Session;
-use crate::processing_graph;
-use crate::processing_harness::{
+use crate::memory_controls::harness::{
     connect_addr, finish, CaseReport, Config, Sample, ServeLimits, Server,
 };
+use crate::processing_graph;
 
 const REPEATS: usize = 3;
 const HOLD_MS: u64 = 400;
@@ -83,7 +83,7 @@ pub(crate) fn case_connections(cfg: &Config) -> Result<CaseReport, String> {
         idles.push(server.sample()?.rss);
     }
     finish(
-        "connections",
+        "connection-cap",
         &server,
         baseline,
         cold,
@@ -97,7 +97,15 @@ pub(crate) fn case_connections(cfg: &Config) -> Result<CaseReport, String> {
 
 pub(crate) fn case_unlimited(cfg: &Config) -> Result<CaseReport, String> {
     let store = cfg.store.join("unlimited");
-    let server = Server::start(&cfg.serve_bin, &store, ServeLimits::default())?;
+    let server = Server::start(
+        &cfg.serve_bin,
+        &store,
+        ServeLimits {
+            // Pass 0 through. An absent flag is the server default of 128.
+            max_connections: Some(0),
+            ..ServeLimits::default()
+        },
+    )?;
     let (baseline, cold, logical) = load_ledger(&server, cfg.controls.ledger(), true, u64::MAX)?;
     let mut idles = Vec::new();
     for _ in 0..2 {

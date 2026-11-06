@@ -16,8 +16,10 @@ use rand::SeedableRng;
 use serde::Serialize;
 
 use crate::bolt::Session;
+use crate::memory_controls::harness::{
+    self, connect_addr, CaseReport, Config, ServeLimits, Server,
+};
 use crate::processing_graph::{self, Ledger};
-use crate::processing_harness::{self, connect_addr, CaseReport, Config, ServeLimits, Server};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -106,6 +108,7 @@ impl Controls {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkloadReport {
+    pub scenario: crate::memory_controls::harness::ScenarioText,
     pub case: CaseReport,
     pub index_mode: IndexMode,
     pub reads_succeeded: u64,
@@ -260,7 +263,7 @@ fn one(cfg: &Config, indexes: bool) -> Result<WorkloadReport, String> {
     let (tally, refused) = run_workers(server.bolt(), &cfg.controls, ops)?;
     thread::sleep(Duration::from_millis(50));
     let idle = server.sample()?.rss;
-    let case = processing_harness::finish(
+    let case = harness::finish(
         &format!("workload-{label}"),
         &server,
         baseline,
@@ -271,7 +274,8 @@ fn one(cfg: &Config, indexes: bool) -> Result<WorkloadReport, String> {
         vec![idle],
         "configured workload",
     )?;
-    Ok(WorkloadReport {
+    let mut report = WorkloadReport {
+        scenario: crate::memory_controls::harness::ScenarioText::empty(),
         case,
         index_mode: if indexes {
             IndexMode::Indexed
@@ -286,12 +290,16 @@ fn one(cfg: &Config, indexes: bool) -> Result<WorkloadReport, String> {
         writes_failed: tally.writes_failed,
         connections_refused: refused,
         active_query_refusals: tally.active_query_refusals,
-    })
+    };
+    super::scenario::fill_workload(cfg, &mut report);
+    Ok(report)
 }
 
 fn server_limits(controls: &Controls) -> ServeLimits {
     ServeLimits {
-        max_connections: positive(controls.max_connections),
+        // Pass 0 through. It is `--max-connections 0`, the explicit unlimited
+        // spelling. An absent flag is the server default of 128 (ADR-0451).
+        max_connections: Some(controls.max_connections),
         concurrent_logical_workspace_limit: positive(controls.concurrent_logical_workspace_limit),
         ..ServeLimits::default()
     }

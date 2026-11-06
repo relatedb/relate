@@ -46,14 +46,15 @@
 #   COMPARISON_OUT        document path (default $REPORTS_DIR/loadtest-comparison.md)
 #   REPORTS_DIR           document directory (default <repo>/target)
 #
-# usage: update-pr-comment.sh [<pr-number>] [--doc PATH]
+# usage: update-pr-comment.sh [<pr-number>] [--doc PATH] [--marker MARKER] [--title TITLE]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARKER='<!-- relate:loadtest-baselines -->'
+TITLE='Loadtest baselines comparison'
 BOT_LOGIN='github-actions[bot]'
 
 usage() {
-  echo "usage: update-pr-comment.sh [<pr-number>] [--doc PATH]" >&2
+  echo "usage: update-pr-comment.sh [<pr-number>] [--doc PATH] [--marker MARKER] [--title TITLE]" >&2
   exit 2
 }
 
@@ -70,6 +71,24 @@ while [[ $# -gt 0 ]]; do
       ;;
     --doc=*)
       doc_arg="${1#--doc=}"
+      shift
+      ;;
+    --marker)
+      [[ $# -ge 2 ]] || usage
+      MARKER="$2"
+      shift 2
+      ;;
+    --marker=*)
+      MARKER="${1#--marker=}"
+      shift
+      ;;
+    --title)
+      [[ $# -ge 2 ]] || usage
+      TITLE="$2"
+      shift 2
+      ;;
+    --title=*)
+      TITLE="${1#--title=}"
       shift
       ;;
     -*) # unknown flags are usage errors, never silent no-ops
@@ -134,7 +153,17 @@ status_line() {
   line="$(grep -m1 '^\*\*Status:\*\*' "$1" || true)"
   case "$line" in
     '**Status:** ok')
-      printf '%s\n' "> **Note:** loadtest comparison completed with no failing rows."
+      if [[ "$TITLE" == "Memory controls and workspace memory calibration" ]]; then
+        printf '%s\n' "> **Note:** All memory controls and workspace memory calibrations held."
+      else
+        printf '%s\n' "> **Note:** loadtest comparison completed with no failing rows."
+      fi
+      ;;
+    '**Status:** no-baseline')
+      printf '%s\n' "> **Warning:** no memory-controls envelope is frozen yet."
+      ;;
+    '**Status:** regression'|'**Status:** improvement'|'**Status:** mixed'|'**Status:** incompatible')
+      printf '%s\n' "> **Warning:** memory controls reported ${line#**Status:** }."
       ;;
     *)
       printf '%s\n' "> **Warning:** loadtest comparison reported problems — see the flagged pairs below."
@@ -171,7 +200,7 @@ fi
 
 {
   printf '%s\n\n' "$MARKER"
-  printf '%s\n\n' "**Loadtest baselines comparison**"
+  printf '%s\n\n' "**${TITLE}**"
   printf '%s\n' "$status"
   printf '\n'
   if [[ -n "$run_url" ]]; then

@@ -342,15 +342,23 @@ The small pin uses degree 8: 1,000 nodes and 8,000 relationships,
 to the logical target. At 32 MiB that is 5,010 nodes and 100,200
 relationships, 6,697 bytes per node.
 
-## Processing memory loadtest
+## Memory controls and workspace memory calibration
 
-`make processing-memory-loadtest` pushes the ADR-0333 controls in the
-same ADR-0070 container as the shape suite (`MEMORY_SHAPE_MEMORY`,
-default 2 GB). `Dockerfile.baseline`, with the lane's bin list, builds
-`relate` and `processing-memory-loadtest`. Every case launches
-`relate serve` (ADR-0368). `BASELINE_ENV=host` is a debug escape.
-Do not freeze a host RSS number. The container report is the one that
-can later be baselined.
+`make memory-controls-test` verifies the memory controls and calibrates
+workspace memory in the same ADR-0070 container as the shape suite
+(`MEMORY_SHAPE_MEMORY`, default 2 GB). `Dockerfile.baseline`, with the
+lane's bin list, builds `relate` and `memory-controls`. Every case
+launches `relate serve` (ADR-0368). `BASELINE_ENV=host` is a debug
+escape. Do not freeze a host RSS number. The container report is the
+one the gate compares. `make processing-memory-loadtest` is the previous
+name: it prints a rename notice and runs this target.
+
+A **memory control verification** checks that a limit holds. The cases
+are `connection-cap`, `unlimited-connections`,
+`concurrent-logical-workspace-limit`, and the configured `workload`.
+**Workspace memory calibration** is the case
+`workspace-memory-calibration`. It measures RSS per live logical
+workspace byte for each family.
 
 The suite records cold and peak RSS. It does not apply a byte ceiling.
 Idle `VmRSS` after later repeats must stay within 8 MiB of the first
@@ -358,8 +366,10 @@ idle sample. The child must stay alive. Stderr must not contain a
 panic, stack overflow, or abort. The report also records cgroup
 `memory.peak` when that file is present.
 
-Each case prints Operating RSS over Graph Logical, Graph RSS, and
-Processing Memory. Graph Logical is the cold graph's admission meter.
+Each case prints Given, When, Then, and Outcome: the setup, the action,
+the expected result, and what the run observed. It then prints Operating
+RSS over Graph Logical, Graph RSS, and Processing Memory. Graph Logical
+is the cold graph's admission meter.
 Graph RSS is Baseline plus Floor: the cold empty process, sampled
 before the graph is loaded, plus the RSS added by that graph.
 Operating RSS remains Graph RSS plus Processing Memory.
@@ -375,7 +385,7 @@ currency, balance, status, opened, region, risk, and note. Organisations
 are linked by `PARENT_OF`. Each account has two transfers to the next
 level.
 
-The configured workload is separate from the probes. It loads that
+The configured workload is separate from the control verifications. It loads that
 ledger with the limits off, restarts the same store with the requested
 limits, samples Graph RSS, runs `WARMUP_OPS` uncounted, then `WORKERS`
 Bolt clients share `OPS` operations. `READ_WRITE_RATIO` is `reads:writes`
@@ -385,46 +395,54 @@ not a multiple of 100 is scaled so the counts sum to `OPS`).
 `both`. `READ_QUERY` is `mix` (the six-way read rotation), `deep-paths`,
 or `size-sort`. The last two replace every read with that one statement.
 `--max-connections` and `--concurrent-logical-workspace-limit` pass through to
-the server. `0` leaves `--max-connections` off. A positive
+the server. `0` is passed as `--max-connections 0`, the explicit unlimited
+spelling (ADR-0451). An absent flag is the server default of 128. A positive
 logical-workspace capacity turns admission on (ADR-0452). The value is logical bytes:
 a former token capacity `N` is `N × 4096`. A `concurrent-logical-workspace-limit`
 refusal counts as limited. Any other query error fails the run.
 
 ```text
-make processing-memory-loadtest \
+make memory-controls-test \
   GRAPH_SCALE=10 \
   WORKERS=16 \
   READ_WRITE_RATIO=80:20 \
-  MAX_CONNECTIONS=20 \
-  CONCURRENT_PEAK_TOKEN_LIMIT=32768
+  MAX_CONNECTIONS=0 \
+  CONCURRENT_LOGICAL_WORKSPACE_LIMIT=55829120
 ```
 
-`CONCURRENT_PEAK_TOKEN_LIMIT` is the Makefile knob. `32768` is logical
+`CONCURRENT_LOGICAL_WORKSPACE_LIMIT` is the Makefile knob. `32768` is logical
 bytes (a former token capacity of 8).
 
-Defaults are scale 1, 4 workers, 80:20, every limit off, 40 operations,
-8 warmup operations, seed 1, and both index modes. The invariant probes
-below keep their own caps and do not inherit those limits.
+Defaults are scale 10, 16 workers, 80:20, `--max-connections 0`,
+a concurrent logical workspace of 55829120 bytes, 40 operations,
+8 warmup operations, seed 1, and both index modes. `WORKERS`, `OPS`, and
+`WORKLOAD_SEED` are target-specific, so the fraud and identity lanes keep
+their own values. The control verifications below keep their own caps and
+do not inherit the workload limits. `CASE` runs one case.
+`SKIP_CONTROLS=1` runs the workload only. `PROBE` and `SKIP_PROBES` still
+select the same way; `connections` means `connection-cap` and
+`peak-token-rss` means `workspace-memory-calibration`.
 
 The bounded read is an id lookup and an 8-row page. The bounded write
 marks one account and creates a review. The size stretch sorts every
 account. The cost stretch walks the organisation spine and up to 4
 transfer hops.
 
-- Connections. `relate serve` with a small `--max-connections`
+- Connection cap (`CASE=connection-cap`). `relate serve` with `--max-connections 2`
   hosts Bolt and HTTP on one cap. The Bolt session writes a review and
   the HTTP query reads one account. The next Bolt connection is closed,
   and the log names `bolt: --max-connections <N> reached`. A later
-  connection works after one closes. A separate case omits the flag and
-  shows connection 129 is still accepted, then reads and writes on one
-  of those sessions. That case checks idle residue and a live child; it
-  does not invent a session allowance for a cap that is off.
-- Concurrent peak. `--concurrent-logical-workspace-limit` is 4096 logical
-  bytes (one quantum; the old token capacity `1`). One session
-  holds `RETURN 1`. The overlapping write returns
+  connection works after one closes. A separate case passes
+  `--max-connections 0` and shows connection 129 is still accepted, then
+  reads and writes on one of those sessions. That case checks idle residue
+  and a live child; it does not invent a session allowance for a cap that
+  is off.
+- Concurrent logical workspace (`CASE=concurrent-logical-workspace-limit`).
+  The pool is sized for one statement, its cached plan, and one later
+  statement. One session holds `RETURN 1`. The overlapping write returns
   `concurrent-logical-workspace-limit`, then the same session writes the review
-  and reads the account.
-- Logical-workspace RSS calibration (`PROBE=peak-token-rss`). Each observation starts a fresh server,
+  and reads the account. The running query stays in place.
+- Workspace memory calibration (`CASE=workspace-memory-calibration`). Each observation starts a fresh server,
   loads and warms its graph, runs `RETURN 1` on the sessions that will
   execute the measured query, and samples parked RSS and cgroup memory.
   The same sessions then hold one named workspace family after its live
@@ -435,15 +453,53 @@ transfer hops.
   raw VmRSS and cgroup deltas, live held logical bytes, RSS bytes per logical byte, and
   linear fits by family. The cgroup ratio is the relevant physical
   boundary for a container; VmRSS isolates the server process.
-  `PROBE=peak-token-rss` runs this matrix on its own.
+  `CASE=workspace-memory-calibration` runs this matrix on its own.
+
+`MEMORY_CONTROLS_PROFILE=pr` sets one repeat of every family, 25
+observations. That is the pull-request lane. `MEMORY_CONTROLS_PROFILE=full`
+sets three repeats, 75 observations. That is the nightly cadence and the
+baseline freeze. A command-line `CALIBRATION_REPEATS` still wins.
 
 The comparable run is the ADR-0070 Docker environment:
 
 ```bash
-make processing-memory-loadtest PROBE=peak-token-rss \
-  CALIBRATION_REPEATS=3 CALIBRATION_HOLD_MS=2500 \
-  MEMORY_SHAPE_MEMORY=4g
+make memory-controls-test MEMORY_CONTROLS_PROFILE=full \
+  CALIBRATION_HOLD_MS=2500
 ```
+
+A bare `make memory-controls-test` runs the full matrix after the control
+verifications: 5 families, 5 shapes, and 3 repeats, which is 75
+observations. Each observation starts a fresh server, loads its graph, and
+holds for `CALIBRATION_HOLD_MS`, so the matrix takes tens of minutes. It
+prints one progress line per observation on stderr, with the elapsed time.
+To skip it, use `SKIP_CONTROLS=1` (workload only) or pick another `CASE`.
+To shrink it, use `CALIBRATION_FAMILY=sort` or `MEMORY_CONTROLS_PROFILE=pr`.
+
+### The gate
+
+`make compare-memory-controls` reads `target/memory-controls.json` against
+`baselines/memory-controls.json` and writes `target/memory-controls.md`
+and `target/memory-controls-verdict.json`. The document opens with
+`**Status:**`.
+
+- `ok` — every check held.
+- `regression` — a behavioural expectation failed, or a lower-is-better
+  metric rose above the envelope max by both the band and the floor.
+- `improvement` — a lower-is-better metric fell below the envelope min by
+  both the band and the floor. Behaviour has no improvement verdict.
+- `mixed` — the run has both a regression and an improvement.
+- `incompatible` — the environment class or the knobs do not match the
+  envelope. With `CI_COMPARE=1` that fails the job. A local run skips the
+  numeric bands and still judges behaviour.
+- `no-baseline` — the envelope is not frozen yet. The comment warns, and
+  the job stays green.
+
+RSS uses a 15% band and a 1 MiB floor. Calibration ratios and slopes use
+a 20% band. Workload limited counts use a band of 0 and a floor of 2, so
+fewer refusals is an improvement. An improvement asks for an
+investigation: confirm it is real, then re-freeze with
+`create-loadtest-baselines` (`make baseline-memory-controls` inside that
+workflow). `make memory-controls-gate` runs the suite and then compares.
 
 `CALIBRATION_REPEATS` controls repeats per matrix point.
 `CALIBRATION_HOLD_MS` controls how long every query remains paused while

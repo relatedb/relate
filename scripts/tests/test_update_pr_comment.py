@@ -607,6 +607,58 @@ class StatusLineTests(UpdatePrCommentTestBase):
         self.assertNotIn("**Warning:**", body)
 
 
+class MemoryControlsCommentTests(UpdatePrCommentTestBase):
+    """--marker and --title keep the loadtest defaults and add the
+    memory-controls status tokens."""
+
+    def test_marker_and_title_and_improvement_status(self) -> None:
+        marker = "<!-- relate:memory-controls -->"
+        document = """# Memory controls and workspace memory calibration
+
+**Status:** improvement
+
+## connection-cap — graph_rss_bytes
+
+**Verdict:** improvement
+"""
+        body = self.posted_body(
+            "42",
+            "--doc",
+            str(self.doc),
+            "--marker",
+            marker,
+            "--title",
+            "Memory controls and workspace memory calibration",
+            document=document,
+        )
+        self.assertTrue(body.startswith(marker + "\n"), body)
+        self.assertIn("**Memory controls and workspace memory calibration**", body)
+        self.assertIn("> **Warning:** memory controls reported improvement.", body)
+        self.assertNotIn(MARKER, body)
+
+    def test_memory_ok_uses_the_held_note(self) -> None:
+        document = """# Memory controls and workspace memory calibration
+
+**Status:** ok
+
+All memory controls and workspace memory calibrations held.
+"""
+        body = self.posted_body(
+            "42",
+            "--doc",
+            str(self.doc),
+            "--marker",
+            "<!-- relate:memory-controls -->",
+            "--title",
+            "Memory controls and workspace memory calibration",
+            document=document,
+        )
+        self.assertIn(
+            "> **Note:** All memory controls and workspace memory calibrations held.",
+            body,
+        )
+
+
 class HeaderTests(UpdatePrCommentTestBase):
     """Run URL and commit SHA lines in the comment header."""
 

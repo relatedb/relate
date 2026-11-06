@@ -8,12 +8,14 @@
 
 use std::fs;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::bolt::Session;
-use crate::processing_harness::{self, connect_addr, CaseReport, Config, ServeLimits, Server};
+use crate::memory_controls::harness::{
+    self, connect_addr, CaseReport, Config, ServeLimits, Server,
+};
 
 const BATCH: i64 = 500;
 const PAYLOAD_BYTES: usize = 256;
@@ -114,14 +116,37 @@ pub(crate) fn case_peak_token_rss(
     }
     let mut observations = Vec::new();
     let mut display_case = None;
-    for family in FAMILIES.iter().copied().filter(|family| {
-        cfg.calibration_family
-            .as_deref()
-            .is_none_or(|only| only == *family)
-    }) {
+    let families = FAMILIES
+        .iter()
+        .copied()
+        .filter(|family| {
+            cfg.calibration_family
+                .as_deref()
+                .is_none_or(|only| only == *family)
+        })
+        .collect::<Vec<_>>();
+    let total = families.len() * SHAPES.len() * cfg.calibration_repeats as usize;
+    let started = Instant::now();
+    eprintln!(
+        "workspace memory calibration: {total} observations ({} families, {} shapes, {} repeats). Each starts a fresh server and holds for {} ms.",
+        families.len(),
+        SHAPES.len(),
+        cfg.calibration_repeats,
+        cfg.calibration_hold_ms
+    );
+    for family in families {
         for &(target, holders) in SHAPES {
             for repetition in 0..cfg.calibration_repeats {
                 let index = observations.len();
+                // Progress on stderr: the report on stdout stays clean, and a
+                // long matrix shows it is moving.
+                eprintln!(
+                    "  [{}/{total}] {family}  {target} quanta x {holders} holder(s)  repeat {}/{}  elapsed {}s",
+                    index + 1,
+                    repetition + 1,
+                    cfg.calibration_repeats,
+                    started.elapsed().as_secs()
+                );
                 let (observation, case) =
                     run_observation(cfg, family, target, holders, repetition, index == 0)?;
                 if case.is_some() {
@@ -278,8 +303,8 @@ fn run_observation(
     };
     let idle = server.sample()?.rss;
     let case = if make_case {
-        let mut case = processing_harness::finish(
-            "logical-byte-rss-calibration",
+        let mut case = harness::finish(
+            "workspace-memory-calibration",
             &server,
             baseline,
             cold,
