@@ -49,7 +49,9 @@ impl Deref for LiveWrite {
 }
 
 /// The only engine pair the suites run. A second pair adds a row here and a
-/// variant above.
+/// variant above. Runners in the cookbook, the spec harness, and the
+/// memory-controls child name this same pair.
+#[allow(dead_code)]
 pub(crate) const ENGINE_PAIR: (&str, &str) = (
     relate_engine_api::MEMORY_QUERY_ENGINE,
     relate_engine_api::LOCAL_WRITE_ENGINE,
