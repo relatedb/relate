@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::version::Subsystem;
+#[cfg(parquet_codec)]
 use relate_executor::Graph;
 
 #[cfg(parquet_codec)]

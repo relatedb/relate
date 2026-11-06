@@ -12,7 +12,6 @@ use std::cell::Cell;
 
 use relate_names::SmallName;
 
-use super::super::*;
 use super::*;
 use crate::stats::{ContainsCount, PatternStats};
 
