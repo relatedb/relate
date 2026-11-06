@@ -249,6 +249,8 @@ pub(crate) fn checkpoint_at_with_bytes(
             constraints: graph.named_constraints(),
             theater: Some(theater),
             ontology_path,
+            query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
+            write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
         };
         // Unchanged (including legacy fixed-name) parts are published again.
         // Recheck every proposed reference after writing, not just new leaves.
@@ -518,6 +520,7 @@ pub(crate) fn read_manifest(
     // against the content the manifest carries (ADR-0120 §8), and handed to
     // the caller with the manifest.
     let marker = crate::version::manifest::gate(m.format_version, m.ontology_path.is_some())?;
+    crate::manifest::reject_foreign_engine(&m)?;
     if let Some(path) = &m.ontology_path {
         if !is_ontology_object_name(path) {
             return Err(Error::storage(format!(

@@ -7,6 +7,7 @@ mod clone;
 mod commit;
 mod commit_timing;
 mod connection;
+mod engines;
 mod explain;
 mod follow;
 mod gate;

@@ -14,6 +14,7 @@ use relate_executor::RedoOp;
 use relate_storage::{StoreTarget, Wal};
 
 use crate::checkpoint::{self, rotate_for_mode, schedule_checkpoint, try_begin_checkpoint};
+use crate::engines::{self, LiveQuery, LiveWrite};
 use crate::commit::{CommitTimingBuf, GroupCommit};
 #[cfg(test)]
 use crate::follow;
@@ -25,46 +26,48 @@ use crate::{cdc, ontology, token_budget, DurabilityMode, Error, Result, ThreadSt
 /// precondition, made structural at the call sites that need it).
 pub(crate) type ReadGuard<'a> = RwLockReadGuard<'a, ()>;
 
-/// `Graph` behind a cell so a follower can replace it while holding the
-/// exclusive publication lock (ADR-0137). Reads use [`std::ops::Deref`].
+/// The query engine behind a cell so a follower can replace it while
+/// holding the exclusive publication lock (ADR-0137). Reads use
+/// [`std::ops::Deref`] to the engine, which itself derefs to the graph.
 ///
 /// `deref` is only used under `read_guard` or a snapshot pin taken while
-/// that guard was held. A pin outlives `read_guard`, and the `&Graph` from
+/// that guard was held. A pin outlives `read_guard`, and the reference from
 /// `deref` may outlive the guard for as long as the pin keeps this cell
 /// from being replaced.
-pub(crate) struct GraphCell(std::cell::UnsafeCell<Graph>);
+pub(crate) struct GraphCell(std::cell::UnsafeCell<LiveQuery>);
 
 impl GraphCell {
     pub(crate) fn new(graph: Graph) -> Self {
-        Self(std::cell::UnsafeCell::new(graph))
+        Self(std::cell::UnsafeCell::new(engines::in_memory(graph)))
     }
 
-    /// Replace the live graph. Caller holds the exclusive publication lock
+    /// Replace the live engine. Caller holds the exclusive publication lock
     /// and `snapshot_pinned()` is false: the write lock alone is not
     /// enough, because a pin outlives `read_guard`.
     fn replace(&self, graph: Graph) {
         // SAFETY: the exclusive publication lock is held and
         // `snapshot_pinned()` is false, so no `read_guard`, live pin, or
         // `apply_redo` can observe this write.
-        unsafe { *self.0.get() = graph };
+        unsafe { *self.0.get() = engines::in_memory(graph) };
     }
 }
 
 impl std::ops::Deref for GraphCell {
-    type Target = Graph;
+    type Target = LiveQuery;
 
-    fn deref(&self) -> &Graph {
+    fn deref(&self) -> &LiveQuery {
         // SAFETY: callers use `deref` only under `read_guard` or a live
         // snapshot pin. `replace` waits until `snapshot_pinned()` is false
         // and holds the publication write lock, which excludes both, so
-        // this reference stays on the installed graph.
+        // this reference stays on the installed engine.
         unsafe { &*self.0.get() }
     }
 }
 
-// SAFETY: `Graph` is Sync. The cell is written only by `replace`, which
-// requires the exclusive publication lock and `snapshot_pinned() == false`.
-// That excludes every `deref` under `read_guard` or a live pin.
+// SAFETY: the engine is Sync (it holds a `Graph`, which is Sync). The cell
+// is written only by `replace`, which requires the exclusive publication
+// lock and `snapshot_pinned() == false`. That excludes every `deref` under
+// `read_guard` or a live pin.
 unsafe impl Sync for GraphCell {}
 
 /// The follower's health: clean, a transient failure that may be retried and
@@ -216,7 +219,7 @@ pub(crate) struct Shared {
     /// never replaced, so reading it needs no publication read guard — and
     /// the recovery reload, which `read_guard`'s health check would refuse,
     /// can still reach the bundle.
-    pub(crate) system: Graph,
+    pub(crate) system: LiveQuery,
     /// The resolved open-time knobs.
     pub(crate) resolved: OpenResolved,
     /// The live writable/follower fact (ADR-0440). Starts at
@@ -244,7 +247,7 @@ pub(crate) struct Shared {
     pub(crate) writer_lease: Mutex<Option<WriterLease>>,
     pub(crate) store: StoreTarget,
     pub(crate) persist_on_drop: AtomicBool,
-    pub(crate) wal: Mutex<Wal>,
+    pub(crate) wal: LiveWrite,
     /// Serializes commit/replica application and poison publication with reads.
     pub(crate) publication: RwLock<()>,
     pub(crate) poisoned: AtomicBool,
@@ -397,7 +400,7 @@ impl Shared {
         wal: Wal,
         open: SharedOpenState,
     ) -> Result<Self> {
-        let mut system = Graph::default();
+        let mut system = engines::in_memory(Graph::default());
         system.set_namespace(Namespace::System);
         system.share_services_from(&graph);
         let writable = !open.resolved.read_only;
@@ -405,6 +408,7 @@ impl Shared {
         let safe_ts = graph.commit_ts();
         let next_txn_id = AtomicU64::new(graph.commit_ts().saturating_add(1));
         let (next_node_id, next_rel_id) = loaded_graph_counters(&graph)?;
+        let wal = engines::local_write(store.clone(), wal);
         Ok(Self {
             graph: GraphCell::new(graph),
             system,
@@ -416,7 +420,7 @@ impl Shared {
             writer_lease: Mutex::new(None),
             store,
             persist_on_drop: AtomicBool::new(writable),
-            wal: Mutex::new(wal),
+            wal,
             publication: RwLock::new(()),
             poisoned: AtomicBool::new(false),
             safe_lsn: AtomicU64::new(safe_lsn),

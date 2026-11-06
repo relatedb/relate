@@ -8,6 +8,13 @@ sccache setup that makes the §5 shared rust-cache keys restorable. The enforcem
 point is `scripts/check-os-matrix.py` (runs in the Lint job); this document
 records the decisions behind the lane shapes.
 
+## Engine pair
+
+Every lane that opens a store runs one engine pair: the in-memory query
+engine and the local write engine. A second pair adds a row to the facade's
+`ENGINE_PAIR` list and a variant on the engine enums; the lanes stay the
+same until that pair exists.
+
 ## Lane map after the dedup
 
 | Job | Runner | Content |

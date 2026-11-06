@@ -26,6 +26,8 @@ relate-error = { workspace = true, optional = true }
 # the enforced one.
 relate-executor = { workspace = true, optional = true }
 relate-core = { workspace = true }
+relate-engine-api = { workspace = true }
+relate-write-local = { workspace = true }
 relate-load = { workspace = true, optional = true }
 # The recursive VFS traversal (`vfs_walk`) the store suites share: pulls
 # only the storage crate's `Vfs` trait, no engine features.
@@ -47,6 +49,9 @@ tempfile = { workspace = true }
 # The platform samplers in `sampling` (`getrusage`, `task_info`).
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+relate-storage = { workspace = true }
 
 [features]
 bolt = ["dep:relate-bolt"]

@@ -202,7 +202,7 @@ fn checkpoint_pinned(shared: &Shared, trigger: Trigger, lsn: u64, pin_ts: u64) -
         // document.
         checkpoint_at(
             &shared.store,
-            &shared.graph,
+            &**shared.graph,
             lsn,
             snapshot_ts,
             shared.ontology.get().as_deref(),

@@ -42,12 +42,16 @@ pub trait QueryEngine: GraphExport + GraphImport {
     /// type so the facade does not depend on a per-row trait.
     type Output;
 
-    fn commit_ts(&self) -> u64;
     fn gc_versions(&self);
     fn snapshot_pinned(&self) -> bool;
     fn apply_redo(&self, ops: Vec<RedoOp>, commit_ts: u64) -> Result<()>;
     fn validate_redo_group(&self, records: &[(&[RedoOp], u64)]) -> Result<()>;
-    fn pattern_stats(&self) -> &dyn PatternStats;
+    /// Planner cost input for one statement. Estimates that read `params`
+    /// must not outlive this borrow.
+    fn pattern_stats<'a>(
+        &'a self,
+        params: &'a BTreeMap<String, Value>,
+    ) -> Box<dyn PatternStats + 'a>;
     fn execute_read(&self, request: ReadRequest<'_>) -> Result<Self::Output>;
     fn execute_write(&self, request: WriteRequest<'_, Self::Scratch>) -> Result<Self::Output>;
     fn take_redo(&self, scratch: &mut Self::Scratch) -> Vec<RedoOp>;

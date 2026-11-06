@@ -658,7 +658,7 @@ impl Connection {
             // ADR-0137); the pin then keeps the cell alive for `target`'s
             // later use. The (admin, namespace) dispatch decision is made
             // exactly once, here.
-            let target: &Graph;
+            let target;
             // The ontology document the statement reads (ADR-0121 §3,
             // ADR-0227): store-level state captured together with the graph
             // pin under the read guard, so an auto-commit statement sees a
@@ -781,7 +781,11 @@ impl Connection {
     /// guessing a graph. The `neo4j` arm derefs the GraphCell, so call
     /// only with a read guard held or a live pin (ADR-0137). (The
     /// auto-commit read path selects its target inline in `dispatch`.)
-    fn dispatch_target(&self, admin: bool, namespace: Namespace) -> Result<&Graph> {
+    fn dispatch_target(
+        &self,
+        admin: bool,
+        namespace: Namespace,
+    ) -> Result<&crate::engines::LiveQuery> {
         match (admin, namespace) {
             (true, _) | (false, Namespace::Neo4j) => Ok(&self.inner.graph),
             (false, Namespace::System) => Ok(&self.inner.system),

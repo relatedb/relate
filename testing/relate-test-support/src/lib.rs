@@ -5,6 +5,7 @@
 //! graph-examples) consume it as a regular dependency because they are
 //! themselves test tooling. Nothing here ships in a released artifact.
 
+pub mod recording_engine;
 #[cfg(feature = "bolt")]
 pub mod bolt;
 #[cfg(feature = "durability")]

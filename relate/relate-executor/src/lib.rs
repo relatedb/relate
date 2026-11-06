@@ -35,6 +35,7 @@ mod pattern_walk;
 // resolves the variable and installs it, and the kernel rungs read it
 // back through `Graph::pattern_engine`.
 mod pattern_engine;
+mod query_engine;
 // Private module with a root re-export only (one public path): internal
 // callers use `crate::procedure_gate::…`, external consumers use the root
 // re-export below.
@@ -95,6 +96,7 @@ pub use graph::{
     CheckpointTheater, ContainsCount, DatabaseEntry, Graph, Procedure, QueryStats, SchemaSnapshot,
     SnapshotPin,
 };
+pub use query_engine::InMemoryQueryEngine;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): the re-export (and the
 // modules themselves) compile only under that feature.

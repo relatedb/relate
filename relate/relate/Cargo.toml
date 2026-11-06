@@ -28,9 +28,11 @@ relate-error = { workspace = true }
 relate-ir = { workspace = true }
 relate-front = { workspace = true }
 relate-planner = { workspace = true }
+relate-engine-api = { workspace = true }
 relate-executor = { workspace = true }
 relate-ontology = { workspace = true }
 relate-storage = { workspace = true }
+relate-write-local = { workspace = true }
 relate-catalog = { workspace = true }
 # Script execution (`run_script_wire`) splits with the canonical scanner.
 relate-splitter = { workspace = true }

@@ -190,12 +190,14 @@ relate/                          the engine
   relate-ir                      Planner IR (not the query front-end)
   relate-front                   lowers parser AST → planner IR (ADR-0046)
   relate-planner                 bind + logical plan
-  relate-executor                physical execution + in-memory graph
+  relate-engine-api              traits shared by query and write engines
+  relate-executor                in-memory query engine (execution + graph layout)
+  relate-write-local             local write engine (log, checkpoint, follow)
   relate-ontology                ontology document model, validation,
                                  serialization (ADR-0227); ontology→graph-type
                                  converter (ADR-0226; document→system_ontologies
                                  mapping not shipped, ADR-0229)
-  relate-storage                 VFS + WAL + snapshot codecs + checkpoint
+  relate-storage                 VFS, log format, and snapshot codecs the write engines use
   relate-markdown                markdown vault grammar (ADR-0406): frontmatter
                                  parse/emit, wikilinks, sanitization
   relate-splitter                shared statement splitting / input completeness

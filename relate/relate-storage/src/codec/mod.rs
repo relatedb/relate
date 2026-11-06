@@ -22,6 +22,18 @@ pub(crate) struct Envelope {
     pub(crate) checkpoint_lsn: u64,
     #[serde(default)]
     pub(crate) commit_ts: u64,
+    #[serde(default = "default_query_engine")]
+    pub(crate) query_engine: String,
+    #[serde(default = "default_write_engine")]
+    pub(crate) write_engine: String,
+}
+
+fn default_query_engine() -> String {
+    relate_engine_api::MEMORY_QUERY_ENGINE.to_owned()
+}
+
+fn default_write_engine() -> String {
+    relate_engine_api::LOCAL_WRITE_ENGINE.to_owned()
 }
 
 /// Parquet resolved from disk or requested in a build without the codec
@@ -130,6 +142,15 @@ pub(crate) fn read_envelope(target: &StoreTarget) -> Result<Option<Envelope>> {
     // instead of each re-spelling the branch.
     if env.codec == SnapshotCodecKind::Markdown {
         return Err(root_envelope_names_markdown());
+    }
+    if relate_engine_api::EngineIds::parse(&env.query_engine, &env.write_engine).is_none() {
+        return Err(Error::storage(format!(
+            "store was written by query engine {} and write engine {}, not {} and {}",
+            env.query_engine,
+            env.write_engine,
+            relate_engine_api::MEMORY_QUERY_ENGINE,
+            relate_engine_api::LOCAL_WRITE_ENGINE
+        )));
     }
     Ok(Some(env))
 }

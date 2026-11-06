@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use relate_core::{Error, Result};
 use relate_executor::{
-    execute, ExecRequest, Graph, QueryResult as ExecResult, RedoOp, SchemaSnapshot, WriteScratch,
+    ExecRequest, QueryResult as ExecResult, RedoOp, SchemaSnapshot, WriteScratch,
 };
 use relate_planner::LogicalPlan;
 
@@ -55,7 +55,7 @@ pub(super) struct PreparedRedo {
 /// from it, and the schema snapshot taken under the read guard.
 pub(super) struct TxnRun<'a> {
     pub(super) txn: &'a OpenTxn,
-    pub(super) target: &'a Graph,
+    pub(super) target: &'a crate::engines::LiveQuery,
     pub(super) schema: &'a SchemaSnapshot,
 
     /// The statement's PROFILE sink (ADR-0344 phase 2) — the same fact
@@ -219,7 +219,7 @@ impl Connection {
                 .with_schema(run.schema)
                 .with_cancel(Some(token))
                 .with_ontology_document(txn.ontology_document.as_deref());
-            execute(
+            run.target.execute(
                 &view,
                 &ExecRequest {
                     plan: logical,

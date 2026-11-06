@@ -1981,6 +1981,7 @@ dependencies = [
  "indexmap",
  "relate-catalog",
  "relate-core",
+ "relate-engine-api",
  "relate-error",
  "relate-executor",
  "relate-front",
@@ -1993,6 +1994,7 @@ dependencies = [
  "relate-splitter",
  "relate-storage",
  "relate-test-support",
+ "relate-write-local",
  "serde",
  "serde_json",
  "tempfile",
@@ -2498,10 +2500,12 @@ dependencies = [
  "relate",
  "relate-bolt",
  "relate-core",
+ "relate-engine-api",
  "relate-error",
  "relate-executor",
  "relate-load",
  "relate-storage",
+ "relate-write-local",
  "serde_json",
  "sha2",
  "tempfile",
@@ -2531,6 +2535,15 @@ version = "0.16.1"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "relate-write-local"
+version = "0.16.1"
+dependencies = [
+ "relate-core",
+ "relate-engine-api",
+ "relate-storage",
 ]
 
 [[package]]

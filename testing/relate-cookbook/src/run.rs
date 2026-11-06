@@ -48,8 +48,20 @@ pub fn run_recipe(recipe: &Recipe) -> Result<RecipeRun, String> {
     relate_test_support::run_with_big_stack(move || run_on_this_thread(&recipe))
 }
 
+/// The one engine pair these recipes run. A second pair adds an arm in
+/// [`open_for_pair`].
+const ENGINE_PAIR: (&str, &str) = ("in-memory", "local");
+
+fn open_for_pair(pair: (&str, &str)) -> Result<Database, String> {
+    if pair == ("in-memory", "local") {
+        Database::open(":memory:").map_err(|e| format!("open :memory:: {e}"))
+    } else {
+        Err(format!("no runner for engine pair {pair:?}"))
+    }
+}
+
 fn run_on_this_thread(recipe: &Recipe) -> Result<RecipeRun, String> {
-    let db = Database::open(":memory:").map_err(|e| format!("open :memory:: {e}"))?;
+    let db = open_for_pair(ENGINE_PAIR)?;
     let mut conn = db.connect().map_err(|e| format!("connect: {e}"))?;
     let mut cells = Vec::new();
     for cell in &recipe.cells {

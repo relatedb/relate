@@ -33,6 +33,7 @@ default-members = [
     "relate/relate-ontology",
     "relate/relate-markdown",
     "relate/relate-storage",
+    "relate/relate-write-local",
     "relate/relate",
     "surfaces/relate-bolt",
     "surfaces/relate-auth",
@@ -78,6 +79,7 @@ relate-engine-api = { path = "relate/relate-engine-api" }
 relate-executor = { path = "relate/relate-executor" }
 relate-ontology = { path = "relate/relate-ontology" }
 relate-storage = { path = "relate/relate-storage", default-features = false }
+relate-write-local = { path = "relate/relate-write-local" }
 relate = { path = "relate/relate", default-features = false }
 relate-load = { path = "surfaces/relate-load" }
 relate-auth = { path = "surfaces/relate-auth" }

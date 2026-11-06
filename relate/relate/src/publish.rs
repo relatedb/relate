@@ -160,7 +160,7 @@ pub(crate) fn publish_cut(source: &Database, dest: &relate_storage::StoreTarget)
     // document; the destination checkpoint publishes it in `dest`'s codec.
     checkpoint_at(
         dest,
-        &source.inner.graph,
+        &**source.inner.graph,
         lsn,
         snapshot_ts,
         source.inner.ontology.get().as_deref(),

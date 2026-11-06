@@ -144,6 +144,11 @@ jobs:
           harness/.venv/bin/python -c "import relate; print('engine under test:', relate.__file__)"
 
       - name: Run the spec-harness suite (~32k scenarios)
+        env:
+          # One engine pair today. A second pair repeats this step with the
+          # other ids; the harness opens the in-memory engine and the local
+          # write engine unless a later build selects otherwise.
+          RELATE_ENGINE_PAIR: in-memory,local
         run: |
           cd harness
           start=$SECONDS

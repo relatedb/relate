@@ -4,8 +4,18 @@
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
+use relate_engine_api::{EngineIds, LOCAL_WRITE_ENGINE, MEMORY_QUERY_ENGINE};
+
 use crate::snapshot;
 use crate::SnapshotCodecKind;
+
+fn default_query_engine() -> String {
+    MEMORY_QUERY_ENGINE.to_owned()
+}
+
+fn default_write_engine() -> String {
+    LOCAL_WRITE_ENGINE.to_owned()
+}
 
 /// Checkpoint metadata. A v4 manifest may select one immutable
 /// `ontology/<128-bit-hex>.json` object holding the store's ontology
@@ -78,6 +88,50 @@ pub struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub ontology_path: Option<String>,
+    /// Query engine that wrote this checkpoint. Absent on stores written
+    /// before engines were named, which open as the in-memory engine.
+    #[serde(default = "default_query_engine")]
+    pub query_engine: String,
+    /// Write engine that wrote this checkpoint. Absent means the local engine.
+    #[serde(default = "default_write_engine")]
+    pub write_engine: String,
+}
+
+/// Refuse a manifest whose engine ids are not the engines this process
+/// opens. A missing id has already defaulted to the historical pair.
+pub(crate) fn reject_foreign_engine(manifest: &Manifest) -> relate_core::Result<()> {
+    if EngineIds::parse(&manifest.query_engine, &manifest.write_engine).is_none() {
+        return Err(relate_core::Error::storage(format!(
+            "store was written by query engine {} and write engine {}, not {} and {}",
+            manifest.query_engine, manifest.write_engine, MEMORY_QUERY_ENGINE, LOCAL_WRITE_ENGINE
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_old_manifest_reads_as_the_historical_engines() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"format_version":3,"next_node_id":0,"next_rel_id":0}"#,
+        )
+        .unwrap();
+        assert!(reject_foreign_engine(&manifest).is_ok());
+        assert_eq!(manifest.query_engine, MEMORY_QUERY_ENGINE);
+        assert_eq!(manifest.write_engine, LOCAL_WRITE_ENGINE);
+    }
+
+    #[test]
+    fn a_different_engine_id_is_refused() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"format_version":3,"next_node_id":0,"next_rel_id":0,"query_engine":"paged","write_engine":"local"}"#,
+        )
+        .unwrap();
+        assert!(reject_foreign_engine(&manifest).is_err());
+    }
 }
 
 pub(crate) fn deserialize_checkpoint_theater<'de, D>(

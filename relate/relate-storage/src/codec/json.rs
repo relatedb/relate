@@ -91,6 +91,8 @@ pub fn dump(
         codec: SnapshotCodecKind::Json,
         checkpoint_lsn,
         commit_ts: snapshot_ts,
+        query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
+        write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
     };
     let env_bytes =
         serde_json::to_vec_pretty(&envelope).map_err(|e| Error::storage(e.to_string()))?;

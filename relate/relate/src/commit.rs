@@ -8,7 +8,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use web_time::Instant;
 
 use relate_executor::{
-    execute, result_rows_bytes, ConstraintAdmission, ExecGraph, ExecRequest, Graph,
+    result_rows_bytes, ConstraintAdmission, ExecGraph, ExecRequest, Graph,
     QueryResult as ExecResult, RedoOp, SlotPosition, SnapshotPin, WriteScratch,
 };
 use relate_storage::{Wal, WalRecord};
@@ -262,7 +262,7 @@ fn commit_optimistic(
                 request.batch_commit = sink
                     .as_ref()
                     .map(|s| s as &dyn relate_executor::BatchCommit);
-                let result = execute(view, &request)?;
+                let result = shared.graph.execute(view, &request)?;
                 Ok((result, elapsed_nanos(t_exec)))
             },
         )?;
@@ -714,14 +714,6 @@ pub(crate) fn commit_preflighted(
     publication: Publication<'_>,
     measure: bool,
 ) -> Result<Committed> {
-    let mut proofs = Vec::with_capacity(accepted.len());
-    for (i, a) in accepted.iter().enumerate() {
-        let lsn = wal
-            .lsn
-            .checked_add(i as u64 + 1)
-            .ok_or_else(|| Error::storage("WAL LSN overflow"))?;
-        proofs.push(wal.preflight_record(lsn, a.commit_ts, &a.ops)?);
-    }
     shared.graph.validate_redo_group_applicability(
         accepted.iter().map(|a| (a.ops.as_slice(), a.commit_ts)),
     )?;
@@ -738,11 +730,21 @@ pub(crate) fn commit_preflighted(
     // Each proof owns its encoded payload, so its element can be borrowed
     // mutably and the write cost recorded directly in this single append
     // loop, avoiding a parallel per-record vector and a second pass.
-    for (a, proof) in accepted.iter_mut().zip(proofs) {
-        match wal.append_preflighted(proof) {
-            Ok(written) => a.encode_write_ns = written.encode_write_ns,
+    let appended = {
+        let records: Vec<relate_write_local::AssignedRecord<'_>> = accepted
+            .iter()
+            .map(|a| relate_write_local::AssignedRecord {
+                commit_ts: a.commit_ts,
+                ops: a.ops.as_slice(),
+            })
+            .collect();
+        match relate_write_local::append_assigned(&mut wal, &records) {
+            Ok(appended) => appended,
             Err(cause) => return Err(shared.poison(&cause)),
         }
+    };
+    for (a, written) in accepted.iter_mut().zip(appended) {
+        a.encode_write_ns = written.encode_write_ns;
     }
     #[cfg(test)]
     if shared.fail_after_append.swap(false, Ordering::SeqCst) {

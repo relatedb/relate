@@ -174,6 +174,8 @@ fn load_rejects_max_manifest_timestamp_before_replay() {
                 codec: SnapshotCodecKind::Json,
                 checkpoint_lsn: 0,
                 commit_ts: ts,
+                query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
+                write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
             };
             put_object(
                 &target,
