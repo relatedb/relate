@@ -401,3 +401,6 @@ mod tests {
         }
     }
 }
+
+// CI probe (temporary branch): exercises the PR-triggered lanes on the
+// new repository. Deleted with the ci-probe/pr-lanes branch.
