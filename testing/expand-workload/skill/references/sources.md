@@ -22,7 +22,7 @@ foreign fixture shapes tests the fixtures, not the dataset. Literal-only and
 truth-table scenarios test the parser, not the data; they never enter a workload.
 
 The corpus is not vendored in this repo any more: the shelf is the spec-harness
-checkout (`neo4j-labs/cypherlite-cypher-test-harness`) — `features/tck/` in the
+checkout (`relatedb/relate-cypher-compat-private`) — `features/tck/` in the
 openCypher TCK layout (`clauses/`, `expressions/`, `useCases/`), the engine's own
 extension corpus at `features/relate-tck/`, and the CIP evaluation suite at
 `features/cip-eval/CIP-*/` with its CIP documents in `cip-docs-md/`. Any checkout

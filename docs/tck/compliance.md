@@ -2,7 +2,7 @@
 
 The openCypher TCK is still the language contract (ADR-0056), but it is no
 longer measured inside this repository. The **spec harness**
-(`neo4j-labs/cypherlite-cypher-test-harness`, ADR-0482) runs Neo4j's Cypher
+(`relatedb/relate-cypher-compat-private`, ADR-0482) runs Neo4j's Cypher
 spec suites — the openCypher TCK synced from Neo4j's compatibility-spec-suite
 among them — against the engine through the Python binding: the wheel built
 from the PR's commit is the engine under test. The `spec-harness` lane

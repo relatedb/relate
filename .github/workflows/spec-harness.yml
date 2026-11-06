@@ -66,13 +66,17 @@ jobs:
       # the lane correct should a default-token path ever exist. Ref is
       # main — the numbers are current, the sha lands in the report.
       # ADR-0517 §3: the external home is acquired outside this repo. The
-      # harness repository still lives under its pre-rename name until the
-      # relatedb cutover moves it; this checkout flips to
-      # relatedb/relate-cypher-test-harness at that cutover.
-      - name: Check out the spec harness (neo4j-labs/cypherlite-cypher-test-harness)
+      # 2026-11-05 relatedb cutover moved the harness to
+      # relatedb/relate-cypher-compat-private (not the
+      # relate-cypher-test-harness name this flip was first written
+      # against); the pre-cutover home under neo4j-labs is frozen at its
+      # last push, so a lane still pointed there reports a stale coverage
+      # world. HARNESS_READ_TOKEN must carry Contents: Read on the new
+      # home or the cross-repo checkout fails (ADR-0482 §5).
+      - name: Check out the spec harness (relatedb/relate-cypher-compat-private)
         uses: actions/checkout@v7
         with:
-          repository: neo4j-labs/cypherlite-cypher-test-harness
+          repository: relatedb/relate-cypher-compat-private
           path: harness
           ref: main
           token: ${{ secrets.HARNESS_READ_TOKEN || github.token }}
