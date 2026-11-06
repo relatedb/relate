@@ -96,3 +96,9 @@ Measured impact on `cypherlite_bg.wasm` (this branch):
   job time increases by roughly that amount.
 - ADR-0084's build-entry clause still holds — one shared entry point,
   called by both `make build-wasm` and the playground.
+
+## Later references
+
+- ADR-0530 moves the playground to the relate-web repository: its
+  `build:wasm` scripts and the Pages deploy's bundle build are removed.
+  The two modes and the single entry point are unchanged.

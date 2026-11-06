@@ -80,3 +80,7 @@ durability already barriers each acknowledged commit (ADR-0077).
   failure, and a real OPFS reopen in a worker.
 
 ## Later references
+
+- ADR-0530 moves the playground to the relate-web repository; the
+  playground clause now describes that app, which still opens the default
+  in-memory database in a worker.

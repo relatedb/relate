@@ -206,12 +206,12 @@ is fastest, and we deliberately do NOT switch. Three reasons:
 - `npm-smoke` must stay npm, full stop — its contract is that the
   published `@relate/relate*` tarballs install with the package
   manager users actually get (`npm pack` / `npm install`).
-- The other Node usages (`clients/javascript` in `relate-clients`,
-  `examples/wasm-playground` for the site build) only need deps installed
-  and would work under pnpm — but each directory ships a committed
-  `package-lock.json`. pnpm needs a regenerated `pnpm-lock.yaml`, and the
-  lockfile is a dev-workflow fact: local contributors run npm in those
-  dirs today, and the JS client's published artifact is npm-shaped.
+- The other Node usage (`clients/javascript` in `relate-clients`) only
+  needs deps installed and would work under pnpm — but it ships a
+  committed `package-lock.json`. pnpm needs a regenerated
+  `pnpm-lock.yaml`, and the lockfile is a dev-workflow fact: local
+  contributors run npm there today, and the JS client's published
+  artifact is npm-shaped.
   Switching CI alone would fork the lock truth between CI and local dev.
 - The absolute win is small: those installs are tens of seconds, not the
   compile-dominated minutes this document exists to kill.

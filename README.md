@@ -189,8 +189,7 @@ const result = JSON.parse(db.execute("RETURN 1 AS n", null));
 ```
 
 Durable browser storage via OPFS: `await RelateDb.open("opfs://graph")` —
-runs in a dedicated worker only. Spec: [`docs/api/wasm/`](docs/api/wasm/);
-a Vite + React consumer: [`examples/wasm-playground/`](examples/wasm-playground/).
+runs in a dedicated worker only. Spec: [`docs/api/wasm/`](docs/api/wasm/).
 
 ### Rust
 

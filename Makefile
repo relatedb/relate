@@ -133,7 +133,6 @@ CLEAN_PATHS := \
 	target \
 	surfaces/relate-python/.venv \
 	clients/javascript/node_modules \
-	examples/wasm-playground/node_modules \
 	clients/java/target \
 	docs/api/bolt/examples/websocket/node_modules \
 	surfaces/relate-wasm/pkg
