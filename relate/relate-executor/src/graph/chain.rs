@@ -61,7 +61,9 @@ pub(super) enum Chain<Live> {
 
 /// A node's inline slot costs the birth timestamp on top of the row: the
 /// spilled variant lives in the row's vector-capacity niche. A relationship
-/// row has no free niche, so its slot also carries the variant tag.
+/// row has no free niche, so its slot also carries the variant tag. On
+/// 32-bit targets the row is not 8-byte aligned and the slot pads.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(
     std::mem::size_of::<Chain<crate::store::LiveNode>>()
         == std::mem::size_of::<u64>() + std::mem::size_of::<crate::store::LiveNode>()
