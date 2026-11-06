@@ -35,7 +35,7 @@ fn cl_bundle_roundtrips_with_json_codec() {
     let uri = path.to_str().unwrap();
     let target = crate::parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Json)).unwrap();
     assert_eq!(target.snapshot_codec(), SnapshotCodecKind::Json);
-    let (graph, mut wal) = crate::open_store(&target).unwrap();
+    let (graph, mut wal) = crate::open_store::<relate_executor::Graph>(&target).unwrap();
     let create = |id: i64, label: &str| RedoOp::CreateNode {
         id,
         labels: Arc::new(vec![label.into()]),
@@ -54,7 +54,7 @@ fn cl_bundle_roundtrips_with_json_codec() {
     let target = crate::parse_uri(uri).unwrap();
     assert_eq!(target.snapshot_codec(), SnapshotCodecKind::Json);
     assert!(snapshot::object_exists(&target, json::GRAPH_JSON).unwrap());
-    let (loaded, reopened) = crate::open_store(&target).unwrap();
+    let (loaded, reopened) = crate::open_store::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(reopened.lsn, 2);
     assert_eq!(loaded.live_node_count(), 2);
     assert_eq!(loaded.node(0).unwrap().labels.as_slice(), ["Checkpointed"]);

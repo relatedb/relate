@@ -18,6 +18,8 @@ use count_state::{CountDelta, CountStats};
 // for the recognizer in `exec` — the window itself lives on `Graph`.
 pub(crate) use count_state::CountProbe;
 
+mod engine_api;
+
 mod adjacency;
 mod apply_redo;
 mod conflict;
@@ -137,7 +139,7 @@ impl Graph {
 }
 
 pub use theater::{CheckpointTheater, DatabaseEntry, SchemaSnapshot};
-pub(crate) use theater::{DatabasesCatalog, ShowSchema};
+pub(crate) use theater::{apply_show_overlay, DatabasesCatalog, ShowSchema};
 
 /// `Atomic*::fetch_update` was renamed to `try_update` in Rust 1.95 and
 /// deprecated in 1.99. MSRV is 1.88, where `try_update` does not exist, so
@@ -1183,7 +1185,10 @@ impl Graph {
     /// The committed SHOW metadata at this instant: the store-level
     /// databases table plus this graph's theater, under the theater lock.
     pub(crate) fn capture_show_schema(&self) -> ShowSchema {
-        ShowSchema::capture(self.databases(), &self.theater.lock().unwrap())
+        ShowSchema::capture(
+            self.databases().snapshot(),
+            &self.theater.lock().unwrap(),
+        )
     }
 
     pub fn named_constraints(&self) -> Vec<ConstraintDef> {

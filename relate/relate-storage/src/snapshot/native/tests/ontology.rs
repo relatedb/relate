@@ -27,7 +27,7 @@ fn checkpoint(store: &StoreTarget, graph: &Graph, lsn: u64, ontology: Option<&st
 }
 
 fn load_ontology(store: &StoreTarget) -> Option<String> {
-    load_with_checkpoint_lsn(store).unwrap().ontology
+    load_with_checkpoint_lsn::<relate_executor::Graph>(store).unwrap().ontology
 }
 
 fn ontology_objects(store: &StoreTarget) -> Vec<String> {
@@ -60,7 +60,7 @@ fn checkpoint_with_ontology_publishes_the_object_before_a_v4_manifest() {
         ontology,
         marker,
         ..
-    } = load_with_checkpoint_lsn(&store).unwrap();
+    } = load_with_checkpoint_lsn::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(ontology.as_deref(), Some(DOCUMENT));
     assert_eq!(marker, crate::version::SnapshotMarker::Current);
     assert_eq!(graph_state(&loaded), graph_state(&graph));
@@ -178,7 +178,7 @@ fn manifest_with_invalid_ontology_path_fails_open() {
         let mut forged = base.clone();
         forged.ontology_path = Some(bad.to_owned());
         put_manifest(&store, &forged);
-        let err = open_store(&store).err().expect("invalid path must fail");
+        let err = open_store::<relate_executor::Graph>(&store).err().expect("invalid path must fail");
         assert!(
             err.to_string().contains("invalid manifest ontology path"),
             "{bad}: {err}"
@@ -195,7 +195,7 @@ fn manifest_selecting_a_missing_ontology_object_fails_open() {
     let missing = format!("{ONTOLOGY_DIR}/{}.json", "00".repeat(16));
     forged.ontology_path = Some(missing.clone());
     put_manifest(&store, &forged);
-    let err = open_store(&store).err().expect("missing object must fail");
+    let err = open_store::<relate_executor::Graph>(&store).err().expect("missing object must fail");
     assert!(err.to_string().contains("missing ontology/"), "{err}");
 }
 
@@ -228,7 +228,7 @@ fn crash_between_ontology_object_and_manifest_publish_is_swept_on_open() {
         // waits for a proven maintenance path). The memory leg has no
         // native root, so it asserts the sweep on every platform — it is
         // the Windows coverage for the crash-window semantics.
-        let (opened, _wal) = open_store(&store).unwrap();
+        let (opened, _wal) = open_store::<relate_executor::Graph>(&store).unwrap();
         assert_eq!(graph_state(&opened), graph_state(&graph));
         assert_eq!(
             get_object(&store, MANIFEST_JSON).unwrap(),

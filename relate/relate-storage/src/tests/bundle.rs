@@ -90,7 +90,7 @@ fn bundle_checkpoint_with_wal_on_same_vfs() {
     drop(wal);
     drop(target);
     let target = parse_uri(uri).unwrap();
-    let (loaded, reopened) = open_store(&target).unwrap();
+    let (loaded, reopened) = open_store::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(reopened.lsn, 2);
     assert_eq!(loaded.live_node_count(), 2);
     assert_eq!(

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use relate_core::Result;
-use relate_executor::CheckpointTheater;
+use relate_engine_api::CheckpointTheater;
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]

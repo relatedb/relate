@@ -351,7 +351,7 @@ fn checkpointed_store(store: &StoreTarget) -> Graph {
 /// The one refusal assertion every drift test makes: the open fails
 /// with the authored error naming the drifted file and the repair.
 fn refuses_open_naming(store: &StoreTarget, file: &str) {
-    let Err(error) = open_store(store) else {
+    let Err(error) = open_store::<relate_executor::Graph>(store) else {
         panic!("a drifted {file} opened the store")
     };
     let text = error.to_string();
@@ -384,7 +384,7 @@ fn untouched_checkpointed_store_opens_clean() {
     let dir = tempfile::tempdir().unwrap();
     for store in stores_under_test(dir.path()) {
         let graph = checkpointed_store(&store);
-        let (opened, wal) = open_store(&store).unwrap();
+        let (opened, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
         assert_eq!(
             opened.graph_type_spec().unwrap(),
             graph.graph_type_spec().unwrap(),
@@ -393,7 +393,7 @@ fn untouched_checkpointed_store_opens_clean() {
         assert_eq!(opened.named_indexes().len(), 2);
         assert_eq!(opened.named_constraints().len(), 1);
         drop((opened, wal));
-        let (readonly, wal) = open_store_readonly(&store).unwrap();
+        let (readonly, wal) = open_store_readonly::<relate_executor::Graph>(&store).unwrap();
         assert_eq!(readonly.named_constraints().len(), 1);
         drop((readonly, wal));
     }
@@ -414,7 +414,7 @@ fn hand_edited_graph_type_mirror_refuses_the_open() {
     std::fs::write(root.join(GRAPH_TYPE_FILE), b"(:Page => {url :: INTEGER})").unwrap();
 
     refuses_open_naming(&store, "graph-type.cypher");
-    let Err(error) = open_store_readonly(&store) else {
+    let Err(error) = open_store_readonly::<relate_executor::Graph>(&store) else {
         panic!("a drifted graph-type.cypher opened the store read-only")
     };
     assert!(error.to_string().contains("graph-type.cypher"), "{error}");
@@ -422,7 +422,7 @@ fn hand_edited_graph_type_mirror_refuses_the_open() {
     // The repair: the folder's absence is a pre-ADR-0481 store, the open
     // proceeds, and the next checkpoint regenerates the mirror.
     std::fs::remove_dir_all(root.join(crate::schema_files::SCHEMA_DIR)).unwrap();
-    let (opened, wal) = open_store(&store).unwrap();
+    let (opened, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(
         opened.graph_type_spec().unwrap(),
         graph.graph_type_spec().unwrap()
@@ -433,7 +433,7 @@ fn hand_edited_graph_type_mirror_refuses_the_open() {
         snapshot::get_object(&store, GRAPH_TYPE_FILE).unwrap(),
         graph.graph_type_spec().unwrap().unwrap().as_bytes()
     );
-    open_store(&store).unwrap();
+    open_store::<relate_executor::Graph>(&store).unwrap();
 }
 
 /// ADR-0481 §4, the markdown-vault leg: the guard the classic codecs'
@@ -461,7 +461,7 @@ fn markdown_vault_guard_refuses_a_hand_edited_mirror_and_repairs_by_deletion() {
     std::fs::write(root.join(GRAPH_TYPE_FILE), b"(:Page => {url :: INTEGER})").unwrap();
     refuses_open_naming(&store, "graph-type.cypher");
     std::fs::write(root.join(GRAPH_TYPE_FILE), canonical.as_bytes()).unwrap();
-    drop(open_store(&store).unwrap());
+    drop(open_store::<relate_executor::Graph>(&store).unwrap());
 
     // A hand-edited schema.cypher refuses both opens naming the file's
     // path, with every durable byte the checkpoint wrote untouched.
@@ -471,7 +471,7 @@ fn markdown_vault_guard_refuses_a_hand_edited_mirror_and_repairs_by_deletion() {
     )
     .unwrap();
     refuses_open_naming(&store, SCHEMA_DDL_FILE);
-    let Err(error) = open_store_readonly(&store) else {
+    let Err(error) = open_store_readonly::<relate_executor::Graph>(&store) else {
         panic!("a drifted schema.cypher opened the vault read-only")
     };
     assert!(error.to_string().contains(SCHEMA_DDL_FILE), "{error}");
@@ -480,7 +480,7 @@ fn markdown_vault_guard_refuses_a_hand_edited_mirror_and_repairs_by_deletion() {
     // the open proceeds, and the next checkpoint regenerates the mirror
     // beside the sidecar.
     std::fs::remove_dir_all(root.join(crate::schema_files::SCHEMA_DIR)).unwrap();
-    let (opened, wal) = open_store(&store).unwrap();
+    let (opened, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(
         opened.graph_type_spec().unwrap(),
         graph.graph_type_spec().unwrap(),
@@ -493,7 +493,7 @@ fn markdown_vault_guard_refuses_a_hand_edited_mirror_and_repairs_by_deletion() {
         snapshot::get_object(&store, SCHEMA_DDL_FILE).unwrap(),
         PINNED_DDL.as_bytes()
     );
-    open_store(&store).unwrap();
+    open_store::<relate_executor::Graph>(&store).unwrap();
 }
 
 /// ADR-0481 §4 acceptance 2: a store whose whole `.cypherlite/schema/`
@@ -507,7 +507,7 @@ fn absent_schema_folder_opens_an_older_store() {
         // The documented repair, through the VFS's own operation — one
         // call yields the same absence on every backend.
         store.vfs.remove_dir_all(SCHEMA_DIR).unwrap();
-        let (opened, wal) = open_store(&store).unwrap();
+        let (opened, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
         assert_eq!(
             opened.graph_type_spec().unwrap(),
             graph.graph_type_spec().unwrap()
@@ -562,7 +562,7 @@ fn drifted_mirror_files_refuse_the_open_naming_the_file() {
     store.vfs.remove_file(&stray).unwrap();
 
     // Every drift removed, the untouched mirror opens clean again.
-    let (opened, wal) = open_store(&store).unwrap();
+    let (opened, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
     drop((opened, wal));
 }
 
@@ -581,7 +581,7 @@ fn oversized_mirror_file_refuses_the_open_through_the_bounded_read() {
         checkpointed_store(&store);
         crate::vfs::atomic_write(&*store.vfs, GRAPH_TYPE_FILE, &oversized).unwrap();
 
-        for open in [open_store(&store), open_store_readonly(&store)] {
+        for open in [open_store::<relate_executor::Graph>(&store), open_store_readonly::<relate_executor::Graph>(&store)] {
             let Err(error) = open else {
                 panic!("an oversized graph-type.cypher opened the store")
             };
@@ -603,7 +603,7 @@ fn control_character_mirror_entry_name_is_escaped_in_the_drift_error() {
     let planted = format!("{SCHEMA_DIR}/esc\u{1b}[31mfake\nerror.txt");
     snapshot::put_object(&store, &planted, b"stray").unwrap();
 
-    let Err(error) = open_store(&store) else {
+    let Err(error) = open_store::<relate_executor::Graph>(&store) else {
         panic!("a control-character mirror entry opened the store")
     };
     let text = error.to_string();
@@ -642,7 +642,7 @@ fn control_character_mirror_entry_on_disk_is_escaped_in_the_drift_error() {
     )
     .unwrap();
 
-    let Err(error) = open_store(&store) else {
+    let Err(error) = open_store::<relate_executor::Graph>(&store) else {
         panic!("an on-disk control-character mirror entry opened the store")
     };
     assert_planted_entry_name_escaped(&error.to_string());
@@ -675,13 +675,13 @@ fn wal_pending_schema_changes_are_not_mirror_drift() {
     wal.sync().unwrap();
     drop(wal);
 
-    let (loaded, wal) = open_store(&store).unwrap();
+    let (loaded, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(loaded.named_constraints().len(), 2);
     checkpoint_with_lsn(&store, &loaded, wal.lsn, Some(ONTOLOGY_JSON)).unwrap();
     drop((loaded, wal));
     let ddl = String::from_utf8(snapshot::get_object(&store, SCHEMA_DDL_FILE).unwrap()).unwrap();
     assert!(ddl.contains("late_rule"), "{ddl}");
-    let (reopened, wal) = open_store(&store).unwrap();
+    let (reopened, wal) = open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(reopened.named_constraints().len(), 2);
     drop((reopened, wal));
 }

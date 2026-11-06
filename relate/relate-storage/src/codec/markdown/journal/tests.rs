@@ -74,7 +74,7 @@ fn journal_recovery_rolls_back_a_partial_checkpoint() {
     );
     assert!(!vfs.exists(JOURNAL_DIR).unwrap());
     // The old manifest still governs: a plain open replays nothing.
-    let (graph, _wal) = crate::open_store(&store).unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(signature(&graph).0.len(), 3);
 }
 

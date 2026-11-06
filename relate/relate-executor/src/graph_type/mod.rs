@@ -54,26 +54,24 @@ pub enum GraphTypeScope {
 }
 
 mod alter;
-mod canon;
 mod canonicalize;
-mod default_value;
+mod default_eval;
 mod derive;
 mod inherit;
-mod model;
 mod name;
 mod storage_constraint;
 mod validate;
 
 pub(crate) use alter::*;
-pub(crate) use canon::{canon_allows, canon_intersection};
 pub(crate) use canonicalize::*;
-pub use default_value::DefaultValue;
-pub(crate) use default_value::{
-    canonical_default_clause, eval_lowered_default, lowered_default, DEFAULT_ON_COMMIT_SEPARATOR,
-};
+pub(crate) use default_eval::{eval_lowered_default, lowered_default};
 pub(crate) use derive::*;
 pub(crate) use inherit::*;
-pub use model::*;
+pub use relate_engine_api::graph_type::{
+    canon_allows, canon_intersection, canonical_default_clause, DefaultValue, GraphTypeSpec,
+    DEFAULT_ON_COMMIT_SEPARATOR,
+};
+pub use relate_engine_api::graph_type::OptionValueModel;
 pub(crate) use storage_constraint::{
     render_storage_constraint, standalone_verb, storage_constraint_rank, StorageConstraintStyle,
 };

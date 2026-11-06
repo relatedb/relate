@@ -6,7 +6,7 @@ use std::sync::Arc;
 use web_time::Instant;
 
 use relate_core::{CapacityKind, Error, Result};
-use relate_executor::RedoOp;
+use relate_engine_api::RedoOp;
 use serde::{Deserialize, Serialize};
 
 use crate::vfs::{BoundedSink, MemoryVfs, Refusal, Vfs, VfsFile, VfsOpen};
@@ -198,7 +198,7 @@ impl Wal {
     /// batch. Invalid IDs return `Error::Storage`; no WAL or graph state is changed.
     ///
     /// ```
-    /// use relate_executor::RedoOp;
+    /// use relate_engine_api::RedoOp;
     /// use relate_storage::Wal;
     /// let ops = [RedoOp::CreateNode {
     ///     id: -1, labels: Default::default(), properties: Default::default(),

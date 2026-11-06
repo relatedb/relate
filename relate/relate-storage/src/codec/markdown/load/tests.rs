@@ -62,13 +62,13 @@ fn a_root_level_wal_label_directory_is_user_content_not_the_direct_wal_slot() {
         Some(SnapshotCodecKind::Markdown),
     )
     .unwrap();
-    let (graph, _wal) = crate::open_store(&store).unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let x = node_by_name(&graph, "x");
     assert_eq!(x.properties.get("name"), Some(&string("x")));
     // The engine re-writes the layout it just loaded: the round-trip
     // keeps the label directory and reopens over it.
     crate::checkpoint(&store, &graph, None).unwrap();
-    let (reloaded, _wal) = crate::open_store(&store).unwrap();
+    let (reloaded, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(
         node_by_name(&reloaded, "x").properties.get("name"),
         Some(&string("x"))
@@ -82,7 +82,7 @@ fn bootstrap_loads_an_external_vault() {
     let uri = dir.path().to_str().unwrap();
     let store =
         crate::parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
-    let (graph, _wal) = crate::open_store(&store).unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
 
     // 4 authored nodes + the root README under :Vault + the stub for
     // the unresolved [[Place/Nowhere]] (ADR-0406 §2, §4).
@@ -138,7 +138,7 @@ fn a_label_directory_folding_to_the_reserved_root_label_is_refused() {
             Some(SnapshotCodecKind::Markdown),
         )
         .unwrap();
-        let err = match crate::open_store(&store) {
+        let err = match crate::open_store::<relate_executor::Graph>(&store) {
             Err(err) => err,
             Ok(_) => panic!("label directory '{dir_name}' must collide with the root label"),
         };
@@ -169,7 +169,7 @@ fn a_sidecar_rel_id_at_or_above_the_recorded_next_id_is_refused() {
         *id = seed;
     }
     write_manifest(&*store.vfs(), &manifest).unwrap();
-    let err = crate::open_store(&store)
+    let err = crate::open_store::<relate_executor::Graph>(&store)
         .err()
         .expect("a sidecar rel id at the recorded next id must not load");
     assert!(err.to_string().contains("sidecar relationship id"), "{err}");
@@ -189,7 +189,7 @@ fn bootstrap_rejects_undeclared_map_links() {
     let uri = dir.path().to_str().unwrap();
     let store =
         crate::parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
-    let err = crate::open_store(&store)
+    let err = crate::open_store::<relate_executor::Graph>(&store)
         .err()
         .expect("undeclared map links must fail");
     assert!(
@@ -213,7 +213,7 @@ fn external_edits_land_with_an_empty_wal() {
         .replace("age: 36", "age: 37");
     std::fs::write(&ada_path, edited).unwrap();
 
-    let (graph, _wal) = crate::open_store(&store).unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let ada = node_by_name(&graph, "Ada");
     assert_eq!(
         ada.properties.get("age"),
@@ -247,7 +247,7 @@ fn symlinked_vault_entry_is_refused_before_read_or_write() {
         Some(SnapshotCodecKind::Markdown),
     )
     .unwrap();
-    let err = match crate::open_store(&store) {
+    let err = match crate::open_store::<relate_executor::Graph>(&store) {
         Err(e) => e,
         Ok(_) => panic!("a symlinked vault entry must fail closed at open"),
     };
@@ -281,7 +281,7 @@ fn a_case_only_duplicate_key_loads_the_first_spelling_and_folds_the_loser() {
         b"---\ntype: Person\nname: ada\n---\n\nThe loser is deleted at checkpoint.\n",
     )
     .unwrap();
-    let (graph, _) = crate::open_store(&store).unwrap();
+    let (graph, _) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     // One node — the first spelling in path order; the later row's
     // content is dropped, with the fold recorded as the warning.
     let (nodes, _) = signature(&graph);
@@ -336,7 +336,7 @@ fn set_semantics_dedupes_identical_relationships() {
     let store =
         crate::parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
     crate::checkpoint(&store, &graph, None).unwrap();
-    let (loaded, _wal) = crate::open_store(&store).unwrap();
+    let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let (_, rels) = signature(&loaded);
     assert_eq!(rels.len(), 1, "exact duplicates collapse: {rels:?}");
 }

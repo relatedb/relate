@@ -569,7 +569,7 @@ pub(super) fn graph_state(graph: &Graph) -> GraphState {
 
 /// Reopen `store`, which must reopen as `graph`; returns the reopened graph.
 pub(super) fn assert_reopens_as(store: &StoreTarget, graph: &Graph) -> Graph {
-    let (reopened, _) = open_store(store).unwrap();
+    let (reopened, _) = open_store::<relate_executor::Graph>(store).unwrap();
     assert_eq!(graph_state(&reopened), graph_state(graph));
     reopened
 }
@@ -577,7 +577,7 @@ pub(super) fn assert_reopens_as(store: &StoreTarget, graph: &Graph) -> Graph {
 /// Opening `store` must fail with a storage error that names manifest part
 /// `path` and says `expected`.
 pub(super) fn assert_fails_open(store: &StoreTarget, path: &str, expected: &str) {
-    let err = open_store(store)
+    let err = open_store::<relate_executor::Graph>(store)
         .err()
         .expect("a part that breaks the shard rules must fail open");
     assert!(matches!(err, Error::Storage(_)), "{err}");

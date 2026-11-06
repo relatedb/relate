@@ -9,20 +9,19 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use relate_core::{Error, Result};
-use relate_executor::Graph;
-
 use crate::snapshot::Kind;
 
 use super::{file_ceiling, with_shard_writer, Loader, Origin};
 
 /// Load `bytes` with `loader` as a manifest part spanning every persisted id.
-pub(super) fn load_part(loader: Loader, graph: &Graph, bytes: &[u8]) -> Result<()> {
+pub(super) fn load_part(loader: Loader, graph: &dyn relate_engine_api::GraphImport, bytes: &[u8]) -> Result<()> {
     loader(graph, bytes.to_vec(), Origin::Part(0..i64::MAX))
 }
 
 /// Finish an open write and return the commit timestamp. The redo is moved
 /// once, so callers do not clone it.
-pub(super) fn commit_ops(g: &Graph) -> u64 {
+#[cfg(test)]
+pub(super) fn commit_ops(g: &relate_executor::Graph) -> u64 {
     let ops = g.take_redo();
     let ts = g.pending_commit_ts();
     g.abort_write();

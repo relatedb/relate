@@ -7,7 +7,7 @@ fn sharded_checkpoint_roundtrips() {
     checkpoint_with_lsn(&store, &g, wal.lsn, None).unwrap();
     let cut = wal.rotate().unwrap();
     wal.recycle(cut).unwrap();
-    let loaded = load_with_wal(&store, &wal).unwrap();
+    let loaded = load_with_wal::<relate_executor::Graph>(&store, &wal).unwrap();
     assert_eq!(loaded.live_node_count(), 1);
     let m = snapshot::native::read_manifest_for_test(&store)
         .unwrap()

@@ -8,6 +8,7 @@ use super::*;
 #[cfg(test)]
 use std::ops::Range;
 
+#[cfg(test)]
 use relate_executor::Graph;
 
 use crate::codec::parquet::{load_nodes, load_rels, Loader, Origin, MAX_FILE};
@@ -49,7 +50,7 @@ impl Kind {
     }
 
     /// Ids changed since the last checkpoint, sorted.
-    fn dirty_ids(self, graph: &Graph) -> Vec<i64> {
+    fn dirty_ids(self, graph: &dyn relate_engine_api::GraphImport) -> Vec<i64> {
         let mut ids: Vec<i64> = match self {
             Self::Node => graph.dirty_node_ids(),
             Self::Rel => graph.dirty_rel_ids(),
@@ -60,7 +61,7 @@ impl Kind {
         ids
     }
 
-    fn all_ids(self, graph: &Graph, ts: u64) -> Vec<i64> {
+    fn all_ids(self, graph: &dyn relate_engine_api::GraphImport, ts: u64) -> Vec<i64> {
         match self {
             Self::Node => graph.all_node_ids_at(ts),
             Self::Rel => graph.all_rel_ids_at(ts),
@@ -152,7 +153,7 @@ fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
 /// Resolve the configured shard byte budget and snapshot.
 pub fn checkpoint_at(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
     snapshot_ts: u64,
     ontology: Option<&str>,
@@ -168,7 +169,7 @@ pub fn checkpoint_at(
 }
 pub(crate) fn checkpoint_at_with_bytes(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
     snapshot_ts: u64,
     target_bytes: u64,
@@ -319,14 +320,16 @@ fn retire_superseded(
 }
 #[cfg(test)]
 pub fn load(target: &StoreTarget) -> Result<Graph> {
-    Ok(load_with_checkpoint_lsn(target)?.graph)
+    Ok(load_with_checkpoint_lsn::<Graph>(target)?.graph)
 }
 
 /// Load the snapshot and the checkpoint LSN from the one manifest read,
 /// reporting the decoded manifest version marker (ADR-0127 Decision 2) and
 /// the ontology document the manifest selects (ADR-0120 §5; `None` when
 /// the store holds none). The LSN is 0 when no manifest exists yet.
-pub(crate) fn load_with_checkpoint_lsn(target: &StoreTarget) -> Result<LoadedSnapshot> {
+pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
+    target: &StoreTarget,
+) -> Result<LoadedSnapshot<G>> {
     // read_manifest rejects an unsupported format_version and classifies the
     // marker at its gate before anything else inspects the manifest
     // (ADR-0114 Decision 2, ADR-0127 Decision 2).
@@ -354,7 +357,7 @@ pub(crate) fn load_with_checkpoint_lsn(target: &StoreTarget) -> Result<LoadedSna
 /// [`Origin::Monolith`] says why the monolith is not. A failure names the
 /// object that failed.
 /// All per-kind projections derive from `kind` itself.
-fn load_kind(target: &StoreTarget, graph: &Graph, manifest: &Manifest, kind: Kind) -> Result<()> {
+fn load_kind(target: &StoreTarget, graph: &dyn relate_engine_api::GraphImport, manifest: &Manifest, kind: Kind) -> Result<()> {
     let load = kind.loader();
     if manifest.format_version <= 2 && kind.parts(manifest).is_empty() {
         let name = kind.legacy_names()[0];
@@ -372,11 +375,11 @@ fn load_kind(target: &StoreTarget, graph: &Graph, manifest: &Manifest, kind: Kin
     Ok(())
 }
 
-fn load_manifest_body(
+fn load_manifest_body<G: relate_engine_api::SnapshotGraph>(
     target: &StoreTarget,
     manifest: &Manifest,
-) -> Result<(Graph, Option<String>)> {
-    let graph = Graph::default();
+) -> Result<(G, Option<String>)> {
+    let graph = G::default();
     graph.set_next_node_id(manifest.next_node_id);
     graph.set_next_rel_id(manifest.next_rel_id);
     graph.set_commit_ts(manifest.commit_ts);
@@ -609,7 +612,7 @@ fn validate_shard_name(target: &StoreTarget, name: ShardName) -> Result<()> {
 /// except the varying id window.
 struct ShardWrite<'a> {
     target: &'a StoreTarget,
-    graph: &'a Graph,
+    graph: &'a dyn relate_engine_api::GraphImport,
     ts: u64,
     kind: Kind,
     target_bytes: u64,

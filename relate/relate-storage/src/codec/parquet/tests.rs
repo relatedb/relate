@@ -159,7 +159,7 @@ fn max_id_shards_fail_checkpoint_recovery_before_graph_install() {
             &serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        let err = crate::open_store(&target).err().unwrap();
+        let err = crate::open_store::<relate_executor::Graph>(&target).err().unwrap();
         assert!(matches!(err, Error::Storage(_)), "{err}");
         // The part's range rule meets the row before the persisted-id check.
         let expected = format!(

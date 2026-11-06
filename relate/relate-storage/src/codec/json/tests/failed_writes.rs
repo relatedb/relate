@@ -170,7 +170,7 @@ fn assert_invalid_write_does_not_publish(store: &StoreTarget, reopened: &StoreTa
         crate::snapshot::get_object(store, "manifest.json").unwrap(),
         manifest_before
     );
-    let (loaded, _wal) = crate::open_store(reopened).unwrap();
+    let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(reopened).unwrap();
     assert_eq!(
         loaded.node(1).unwrap().properties,
         baseline.node(1).unwrap().properties
@@ -375,7 +375,7 @@ fn assert_temporal_write_guard(store: &StoreTarget, reopened: &StoreTarget) {
                     *manifest_before,
                     "{name}"
                 );
-                let (loaded, _wal) = crate::open_store(reopened).unwrap();
+                let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(reopened).unwrap();
                 for id in [1, 2] {
                     assert_eq!(
                         loaded.node(id).unwrap().properties,
@@ -504,7 +504,7 @@ fn assert_local_datetime_range_checkpoint(store: &StoreTarget, reopened: &StoreT
                     crate::snapshot::get_object(store, "manifest.json").unwrap(),
                     *manifest_before
                 );
-                let (loaded, _wal) = crate::open_store(reopened).unwrap();
+                let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(reopened).unwrap();
                 assert_eq!(
                     loaded.node(1).unwrap().properties,
                     baseline.node(1).unwrap().properties

@@ -176,7 +176,7 @@ fn body_properties_are_recorded_in_the_sidecar_and_survive_reopen_without_config
     drop(store);
 
     let fresh = body_store(dir.path(), None);
-    let (loaded, _) = crate::open_store(&fresh).unwrap();
+    let (loaded, _) = crate::open_store::<relate_executor::Graph>(&fresh).unwrap();
     let ada = node_by_name(&loaded, "Ada");
     assert_eq!(
         ada.properties.get("summary"),
@@ -225,7 +225,7 @@ fn an_explicit_body_property_config_replaces_the_recorded_one() {
         dir.path(),
         Some(MarkdownBodyProperties::parse("summary").unwrap()),
     );
-    let (loaded, _) = crate::open_store(&replacement).unwrap();
+    let (loaded, _) = crate::open_store::<relate_executor::Graph>(&replacement).unwrap();
     let ada = node_by_name(&loaded, "Ada");
     // The whole body is the single configured property's text now.
     assert_eq!(

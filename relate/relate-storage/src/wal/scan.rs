@@ -2,7 +2,7 @@
 use std::io::SeekFrom;
 
 use relate_core::{Error, Result};
-use relate_executor::RedoOp;
+use relate_engine_api::RedoOp;
 
 use crate::vfs::{atomic_write_stream, virt_join, Vfs, VfsFile, VfsOpen};
 

@@ -134,7 +134,7 @@ fn run_case(backend: &str) {
         "{backend} Wal::open retained decoded frames: {opened:?}"
     );
 
-    let (graph, loaded) = measure(|| load_with_wal(&store, &wal).unwrap());
+    let (graph, loaded) = measure(|| load_with_wal::<relate_executor::Graph>(&store, &wal).unwrap());
     assert_eq!(graph.live_node_count(), FRAMES);
     assert_eq!(graph.commit_ts(), FRAMES as u64);
     assert!(graph.node((FRAMES - 1) as i64).is_some());

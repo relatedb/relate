@@ -2157,6 +2157,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "relate-engine-api"
+version = "0.16.1"
+dependencies = [
+ "relate-catalog",
+ "relate-core",
+ "relate-error",
+ "relate-model",
+ "relate-names",
+ "relate-parser",
+ "relate-planner",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "relate-error"
 version = "0.16.1"
 dependencies = [
@@ -2176,6 +2191,7 @@ dependencies = [
  "regex",
  "relate-catalog",
  "relate-core",
+ "relate-engine-api",
  "relate-error",
  "relate-front",
  "relate-ir",
@@ -2458,6 +2474,7 @@ dependencies = [
  "proptest-state-machine",
  "relate-catalog",
  "relate-core",
+ "relate-engine-api",
  "relate-executor",
  "relate-markdown",
  "relate-model",

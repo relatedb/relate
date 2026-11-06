@@ -42,7 +42,7 @@ fn assert_failed_open_preserves_wal(target: &StoreTarget, message: &str) {
         "test store must have an active WAL segment"
     );
     for _ in 0..2 {
-        let err = open_store(target).err().expect("gated open must fail");
+        let err = open_store::<relate_executor::Graph>(target).err().expect("gated open must fail");
         assert!(matches!(err, Error::Storage(_)), "{err}");
         assert!(err.to_string().contains(message), "{err}");
         assert_eq!(
@@ -167,7 +167,7 @@ fn unsupported_snapshot_without_wal_never_creates_wal_dir() {
         codec: SnapshotCodecKind::Json,
         codec_config: None,
     };
-    let err = open_store(&target).err().expect("gated open must fail");
+    let err = open_store::<relate_executor::Graph>(&target).err().expect("gated open must fail");
     assert!(matches!(err, Error::Storage(_)), "{err}");
     assert!(
         err.to_string()
@@ -181,19 +181,19 @@ fn unsupported_snapshot_without_wal_never_creates_wal_dir() {
 #[test]
 fn fresh_stores_open_and_write_wal_magic() {
     let memory = memory_store();
-    open_store(&memory).unwrap();
+    open_store::<relate_executor::Graph>(&memory).unwrap();
     let segment = vfs::read_to_vec(&*memory.vfs, "wal/00000001.log").unwrap();
     assert!(segment.starts_with(MAGIC), ":memory: segment magic");
 
     let dir = tempfile::tempdir().unwrap();
     let native = parse_uri(dir.path().join("db").to_str().unwrap()).unwrap();
-    open_store(&native).unwrap();
+    open_store::<relate_executor::Graph>(&native).unwrap();
     let segment = std::fs::read(dir.path().join("db/wal/00000001.log")).unwrap();
     assert!(segment.starts_with(MAGIC), "native segment magic");
 
     let bundle_path = dir.path().join("fresh.rl");
     let bundle = parse_uri(bundle_path.to_str().unwrap()).unwrap();
-    open_store(&bundle).unwrap();
+    open_store::<relate_executor::Graph>(&bundle).unwrap();
     let segment = vfs::read_to_vec(&*bundle.vfs, "wal/00000001.log").unwrap();
     assert!(segment.starts_with(MAGIC), "bundle segment magic");
 }

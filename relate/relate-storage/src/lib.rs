@@ -22,8 +22,6 @@ pub use native_ownership::{take_writer_lease, WriterLease};
 #[doc(hidden)]
 pub use native_ownership::{LOCK_MARKER, ROOT_ROLE, WAL_ROLE, WRITER_LEASE};
 use relate_core::{Error, Result};
-use relate_executor::Graph;
-
 pub use codec::markdown::recorded_body_properties;
 pub use codec::markdown::MarkdownBodyProperties;
 pub use codec::SnapshotCodecKind;
@@ -770,13 +768,13 @@ fn reset_filesystem_uri(uri: &str, wal_override: Option<&Path>) -> Result<()> {
     reset_native_with(path, wal_override, |_| Ok(()))
 }
 
-pub fn checkpoint(target: &StoreTarget, graph: &Graph, ontology: Option<&str>) -> Result<()> {
+pub fn checkpoint(target: &StoreTarget, graph: &dyn relate_engine_api::GraphImport, ontology: Option<&str>) -> Result<()> {
     checkpoint_at(target, graph, 0, graph.commit_ts(), ontology)
 }
 
 pub fn checkpoint_with_lsn(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
     ontology: Option<&str>,
 ) -> Result<()> {
@@ -792,7 +790,7 @@ pub fn checkpoint_with_lsn(
 /// both codecs at the previous format.
 pub fn checkpoint_at(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
     snapshot_ts: u64,
     ontology: Option<&str>,

@@ -227,7 +227,7 @@ impl Graph {
                     let (previous, derived) = {
                         let mut theater = self.theater.lock().unwrap();
                         let previous = theater.derived_constraints.clone();
-                        theater.set_current_graph_type(&body)?;
+                        super::theater::set_current_graph_type(&mut theater, &body)?;
                         (previous, theater.derived_constraints.clone())
                     };
                     // A record written before a generated-name or derivation

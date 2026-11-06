@@ -6,7 +6,7 @@
 //! on wasm32 and are optional elsewhere (ADR-0105).
 
 use relate_core::{Error, Result};
-use relate_executor::Graph;
+use relate_engine_api::SnapshotGraph;
 use serde::{Deserialize, Serialize};
 
 use crate::vfs::{atomic_write, read_to_vec, VfsOpen};
@@ -58,8 +58,8 @@ pub(crate) fn is_ontology_object_name(name: &str) -> bool {
 /// (`None` when the store holds none), the version marker the codec
 /// loader classified, and the open-time action the load deferred. Both
 /// codecs and the no-parquet stub return it.
-pub(crate) struct LoadedSnapshot {
-    pub(crate) graph: Graph,
+pub(crate) struct LoadedSnapshot<G: SnapshotGraph> {
+    pub(crate) graph: G,
     pub(crate) checkpoint_lsn: u64,
     pub(crate) ontology: Option<String>,
     pub(crate) marker: crate::version::SnapshotMarker,
@@ -71,7 +71,7 @@ pub(crate) struct LoadedSnapshot {
     pub(crate) deferred: Option<DeferredOpenAction>,
 }
 
-impl LoadedSnapshot {
+impl<G: SnapshotGraph> LoadedSnapshot<G> {
     /// The empty-store load every codec's no-snapshot path returns (no
     /// manifest / no `graph.json` object): a default graph, no ontology
     /// document, a current marker, and the checkpoint LSN the caller's one
@@ -79,7 +79,7 @@ impl LoadedSnapshot {
     /// yet).
     pub(crate) fn empty(checkpoint_lsn: u64) -> Self {
         Self {
-            graph: Graph::default(),
+            graph: G::default(),
             checkpoint_lsn,
             ontology: None,
             marker: crate::version::SnapshotMarker::Current,
@@ -119,7 +119,7 @@ impl DeferredOpenAction {
 /// every codec's load applies: a snapshot that loaded rows but
 /// recorded no commit timestamp gets 1, so the first in-session write
 /// timestamps above the snapshot it replays.
-pub(crate) fn ensure_commit_ts(graph: &Graph, loaded: usize) {
+pub(crate) fn ensure_commit_ts(graph: &dyn relate_engine_api::GraphImport, loaded: usize) {
     if graph.commit_ts() == 0 && loaded > 0 {
         graph.set_commit_ts(1);
     }
@@ -495,7 +495,7 @@ mod unavailable {
 
     pub fn checkpoint_at(
         _: &StoreTarget,
-        _: &Graph,
+        _: &dyn relate_engine_api::GraphImport,
         _: u64,
         _: u64,
         _: Option<&str>,
@@ -503,7 +503,7 @@ mod unavailable {
         Err(parquet_unavailable())
     }
 
-    pub fn load_with_checkpoint_lsn(_: &StoreTarget) -> Result<LoadedSnapshot> {
+    pub fn load_with_checkpoint_lsn<G: SnapshotGraph>(_: &StoreTarget) -> Result<LoadedSnapshot<G>> {
         Err(parquet_unavailable())
     }
 

@@ -28,6 +28,7 @@ default-members = [
     "relate/relate-ir",
     "relate/relate-front",
     "relate/relate-planner",
+    "relate/relate-engine-api",
     "relate/relate-executor",
     "relate/relate-ontology",
     "relate/relate-markdown",
@@ -73,6 +74,7 @@ relate-catalog = { path = "relate/relate-catalog" }
 relate-ir = { path = "relate/relate-ir" }
 relate-front = { path = "relate/relate-front" }
 relate-planner = { path = "relate/relate-planner" }
+relate-engine-api = { path = "relate/relate-engine-api" }
 relate-executor = { path = "relate/relate-executor" }
 relate-ontology = { path = "relate/relate-ontology" }
 relate-storage = { path = "relate/relate-storage", default-features = false }

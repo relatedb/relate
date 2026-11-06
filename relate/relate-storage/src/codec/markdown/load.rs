@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use relate_core::{Error, Node, Result, Value};
-use relate_executor::Graph;
 use relate_markdown as md;
 use serde_json::Value as Json;
 
@@ -345,7 +344,7 @@ fn canonicalize_by_fold(parsed: Vec<ParsedFile>, learned: &mut LearnedSchema) ->
 /// filename, properties decoded through the store's value encoding.
 /// Returns how many nodes loaded (the commit-timestamp floor's input).
 fn load_nodes(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     parsed: &[ParsedFile],
     keys: &BTreeMap<String, String>,
     ids_by_key: &BTreeMap<String, i64>,
@@ -412,7 +411,7 @@ fn load_nodes(
 /// bootstrap sidecar's map is empty, so a sidecar-less store has
 /// nothing to restore).
 fn restore_embeddings(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     manifest: &VaultManifest,
     ids_by_key: &BTreeMap<String, i64>,
     value_encoding: u64,
@@ -546,7 +545,9 @@ fn record_expectation(
     })
 }
 
-pub(crate) fn load_with_checkpoint_lsn(target: &StoreTarget) -> Result<LoadedSnapshot> {
+pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
+    target: &StoreTarget,
+) -> Result<LoadedSnapshot<G>> {
     journal::recover(target)?;
     let sidecar = read_manifest(target)?;
     // The sidecar is resolved exactly once, here: every phase below
@@ -596,7 +597,7 @@ pub(crate) fn load_with_checkpoint_lsn(target: &StoreTarget) -> Result<LoadedSna
     let (parsed, keys) = parse_and_canonicalize_files(&files, &frontmatter, &mut learned, &bodies)?;
 
     let mut ids = restore_ids(&parsed, manifest)?;
-    let graph = Graph::default();
+    let graph = G::default();
     let loaded = load_nodes(&graph, &parsed, &keys, &ids.ids_by_key, value_encoding)?;
     let rel_ids = manifest.rel_ids.clone();
     let next_rel_id = manifest.next_rel_id.max(1);

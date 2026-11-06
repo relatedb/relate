@@ -31,7 +31,7 @@ fn assert_json_snapshot_roundtrip(store: &StoreTarget, reopened: &StoreTarget) {
         "duration"
     );
 
-    let (loaded, _wal) = crate::open_store(reopened).unwrap();
+    let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(reopened).unwrap();
     for id in [1, 2] {
         assert_eq!(
             loaded.node(id).unwrap().properties,
@@ -73,7 +73,7 @@ fn snapshot(property: serde_json::Value, encoding: Option<u64>) -> GraphData {
 #[test]
 fn snapshot_header_selects_legacy_or_escaped_map_decoding() {
     let bytes = serde_json::json!({"__type":"map","value":{"x":1}});
-    let legacy = graph_from_data(snapshot(bytes.clone(), None), 1, None)
+    let legacy = graph_from_data::<relate_executor::Graph>(snapshot(bytes.clone(), None), 1, None)
         .unwrap()
         .0;
     let node = legacy.node_at(1, 1).unwrap();
@@ -86,7 +86,7 @@ fn snapshot_header_selects_legacy_or_escaped_map_decoding() {
         Value::Map(std::collections::BTreeMap::from([("x".into(), Value::Int(1))]).into())
     );
 
-    let v2 = graph_from_data(snapshot(bytes, Some(2)), 2, None)
+    let v2 = graph_from_data::<relate_executor::Graph>(snapshot(bytes, Some(2)), 2, None)
         .unwrap()
         .0;
     let node = v2.node_at(1, 1).unwrap();
@@ -106,7 +106,7 @@ fn snapshot_header_selects_legacy_or_escaped_map_decoding() {
 #[test]
 fn snapshot_rejects_malformed_nested_tags_and_unknown_versions() {
     let bad = serde_json::json!({"nested":[{"__type":"point","srid":7203,"x":1}]});
-    let err = graph_from_data(snapshot(bad.clone(), None), 1, None)
+    let err = graph_from_data::<relate_executor::Graph>(snapshot(bad.clone(), None), 1, None)
         .err()
         .unwrap()
         .to_string();
@@ -114,7 +114,7 @@ fn snapshot_rejects_malformed_nested_tags_and_unknown_versions() {
         err.contains("node 1: invalid graph property $.p.nested[0].y"),
         "{err}"
     );
-    assert!(graph_from_data(snapshot(bad, Some(2)), 2, None).is_err());
+    assert!(graph_from_data::<relate_executor::Graph>(snapshot(bad, Some(2)), 2, None).is_err());
     // The registry classification is the one value_encoding gate; an
     // unknown marker is unreadable and the load fails naming it.
     assert_eq!(
@@ -128,7 +128,7 @@ fn snapshot_rejects_malformed_nested_tags_and_unknown_versions() {
         br#"{"value_encoding":4,"nodes":[],"relationships":[],"next_node_id":0,"next_rel_id":0}"#,
     )
     .unwrap();
-    let err = load_with_checkpoint_lsn(&store).err().unwrap().to_string();
+    let err = load_with_checkpoint_lsn::<relate_executor::Graph>(&store).err().unwrap().to_string();
     assert!(err.contains("unsupported graph value encoding: 4"), "{err}");
     let mut invalid_header =
         serde_json::json!({"nodes":[],"relationships":[],"next_node_id":1,"next_rel_id":1});
@@ -162,7 +162,7 @@ fn ontology_document_roundtrips_inline_at_value_encoding_3() {
         ontology,
         marker,
         ..
-    } = load_with_checkpoint_lsn(&store).unwrap();
+    } = load_with_checkpoint_lsn::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(ontology.as_deref(), Some(ONTOLOGY_DOC));
     assert_eq!(marker, crate::version::SnapshotMarker::Current);
     assert_eq!(loaded.live_node_count(), graph.live_node_count());
@@ -176,7 +176,7 @@ fn ontology_document_roundtrips_inline_at_value_encoding_3() {
     assert!(data.get("ontology").is_none());
     let LoadedSnapshot {
         ontology, marker, ..
-    } = load_with_checkpoint_lsn(&bare).unwrap();
+    } = load_with_checkpoint_lsn::<relate_executor::Graph>(&bare).unwrap();
     assert_eq!(ontology, None);
     assert_eq!(marker, crate::version::SnapshotMarker::Current);
 }
@@ -229,7 +229,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         report.migrations(),
         &[(crate::version::Subsystem::ValueEncoding, 2)]
     );
-    let ontology = load_with_checkpoint_lsn(&target).unwrap().ontology;
+    let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target).unwrap().ontology;
     assert_eq!(ontology.as_deref(), Some(ONTOLOGY_DOC));
     let raw = crate::snapshot::get_object(&target, GRAPH_JSON).unwrap();
     let data: serde_json::Value = serde_json::from_slice(&raw).unwrap();
@@ -256,7 +256,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         report.migrations(),
         &[(crate::version::Subsystem::ValueEncoding, 3)]
     );
-    let ontology = load_with_checkpoint_lsn(&target).unwrap().ontology;
+    let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target).unwrap().ontology;
     assert_eq!(ontology, None);
     let raw = crate::snapshot::get_object(&target, GRAPH_JSON).unwrap();
     let data: serde_json::Value = serde_json::from_slice(&raw).unwrap();

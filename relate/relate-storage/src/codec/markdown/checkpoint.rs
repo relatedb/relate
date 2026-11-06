@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use relate_core::{Error, Node, Relationship, Result, Value};
-use relate_executor::{CheckpointTheater, Graph, IndexKindSpec};
+use relate_engine_api::{CheckpointTheater, IndexKindSpec};
 use relate_markdown as md;
 use serde_json::Value as Json;
 
@@ -472,7 +472,7 @@ fn render_node_files(
 
 pub(crate) fn checkpoint_at(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
     snapshot_ts: u64,
     ontology: Option<&str>,
@@ -606,7 +606,7 @@ pub(crate) fn checkpoint_at(
 /// checkpoint pipeline.
 fn apply_checkpoint(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     vfs: &dyn Vfs,
     planned: &BTreeMap<String, Vec<u8>>,
     rendered_views: &[(String, String)],

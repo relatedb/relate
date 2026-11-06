@@ -176,7 +176,7 @@ fn assert_markdown_roundtrip(store: &StoreTarget) {
     assert!(vfs.exists("log.md").unwrap());
     assert!(vfs.exists("Person/index.md").unwrap());
 
-    let (loaded, _wal) = crate::open_store(store).unwrap();
+    let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(store).unwrap();
     assert_eq!(signature(&loaded), signature(&graph));
     assert_eq!(loaded.commit_ts(), 7);
     // Temporal and list properties survive the tagged-encoding detour
@@ -200,7 +200,7 @@ fn assert_markdown_roundtrip(store: &StoreTarget) {
         read_to_vec(&*vfs, "index.md").unwrap(),
         read_to_vec(&*vfs, "log.md").unwrap(),
     );
-    let second = crate::open_store(store).unwrap().0;
+    let second = crate::open_store::<relate_executor::Graph>(store).unwrap().0;
     crate::checkpoint(store, &second, None).unwrap();
     let after: BTreeMap<String, Vec<u8>> = walk_vault(&*vfs)
         .unwrap()
@@ -279,7 +279,7 @@ fn a_case_only_key_rename_survives_checkpoint() {
         Some(SnapshotCodecKind::Markdown),
     )
     .unwrap();
-    let (graph, _wal) = crate::open_store(&store).unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let node = node_by_name(&graph, "ada");
     graph
         .load_checkpoint_node(Node {
@@ -294,7 +294,7 @@ fn a_case_only_key_rename_survives_checkpoint() {
     let bytes = read_to_vec(&*store.vfs(), "Person/Ada.md").unwrap();
     let text = String::from_utf8(bytes).unwrap();
     assert!(text.contains("name: Ada"), "{text}");
-    let (reloaded, _wal) = crate::open_store(&store).unwrap();
+    let (reloaded, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let ada = node_by_name(&reloaded, "Ada");
     assert_eq!(ada.properties.get("name"), Some(&string("Ada")));
 }
@@ -436,7 +436,7 @@ fn an_open_engine_write_survives_its_own_checkpoint_and_reopen() {
     let store =
         crate::parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
     crate::checkpoint(&store, &person_graph(), None).unwrap();
-    let (graph, _wal) = crate::open_store(&store).unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     // A node added in-session (id above the loaded range).
     graph
         .load_checkpoint_node(Node {
@@ -448,7 +448,7 @@ fn an_open_engine_write_survives_its_own_checkpoint_and_reopen() {
     graph.set_next_node_id(10);
     crate::checkpoint_with_lsn(&store, &graph, 1, None).unwrap();
     assert!(store.vfs().exists("Person/Mary.md").unwrap());
-    let (reloaded, _wal) = crate::open_store(&store).unwrap();
+    let (reloaded, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let (nodes, _) = signature(&reloaded);
     assert!(nodes.contains_key("Person/Mary"));
 }
@@ -531,7 +531,7 @@ fn type_and_labels_properties_round_trip_through_demotion() {
     let text = String::from_utf8(text).unwrap();
     assert!(text.contains("type: Book\ntype_property: novel\nlabels_property: meta\n"));
     assert!(text.contains("labels:\n  - Read\n"));
-    let (loaded, _wal) = crate::open_store(&store).unwrap();
+    let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let node = loaded.node_at(1, u64::MAX).unwrap();
     assert_eq!(
         node.properties.get("type").and_then(Value::as_string),
@@ -598,7 +598,7 @@ fn node_and_relationship_ids_are_stable_across_checkpoints() {
     let store = crate::memory_store_with_codec(SnapshotCodecKind::Markdown).unwrap();
     crate::checkpoint(&store, &person_graph(), None).unwrap();
     let first = read_manifest(&store).unwrap().unwrap();
-    let (reloaded, _) = crate::open_store(&store).unwrap();
+    let (reloaded, _) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     crate::checkpoint(&store, &reloaded, None).unwrap();
     let second = read_manifest(&store).unwrap().unwrap();
     assert_eq!(

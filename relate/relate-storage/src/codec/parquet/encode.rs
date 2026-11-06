@@ -17,8 +17,6 @@ use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use relate_core::{Error, Node, Relationship, Result};
-use relate_executor::Graph;
-
 use crate::snapshot::Kind;
 #[cfg(test)]
 use crate::vfs::CappedSink;
@@ -255,7 +253,7 @@ impl<W: Write + Send + OutputLimit> ShardWriter<W> {
 /// preflighted.
 pub(crate) fn encode_rows<W: Write + Send + OutputLimit>(
     writer: &mut ShardWriter<W>,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     ts: u64,
     kind: Kind,
     ids: &[i64],

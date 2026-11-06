@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{Error, Node, Relationship, Result, Value};
-use relate_executor::Graph;
 use relate_markdown as md;
 
 use super::super::super::convert::props_from_cypher_json;
@@ -107,7 +106,7 @@ fn primary_label_map(parsed: &[ParsedFile]) -> BTreeMap<String, String> {
 /// stub right here — a real node with the link's label and key value,
 /// ready to be filled in (Obsidian's click-to-create).
 fn resolve_full_target(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     keys: &BTreeMap<String, String>,
     ids: &mut IdAssignment,
     primary_of: &BTreeMap<String, String>,
@@ -188,7 +187,7 @@ fn resolve_short_target(ids: &IdAssignment, path: &str, name: &str) -> Result<(S
 /// the rel side's assignment state — the assigned identity map and
 /// the allocator's final next-free value.
 pub(super) fn resolve_links_and_stubs(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     parsed: &[ParsedFile],
     keys: &BTreeMap<String, String>,
     ids: &mut IdAssignment,

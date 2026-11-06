@@ -44,7 +44,7 @@ fn failed_checkpoint_keeps_old_parts(
             }
         }
     }
-    let restored = load_with_wal(&target, &wal).unwrap();
+    let restored = load_with_wal::<relate_executor::Graph>(&target, &wal).unwrap();
     assert_eq!(
         restored.node(0).unwrap().properties["x"],
         relate_core::Value::Int(7)
@@ -55,7 +55,7 @@ fn failed_checkpoint_keeps_old_parts(
     );
     drop((target, wal));
     let reopened = reopen();
-    let (restored, wal) = open_store(&reopened).unwrap();
+    let (restored, wal) = open_store::<relate_executor::Graph>(&reopened).unwrap();
     assert_eq!(
         restored.node(0).unwrap().properties["x"],
         relate_core::Value::Int(7)
@@ -112,7 +112,7 @@ fn manifest_sync_ambiguity_retains_visible_parts_and_wal_for(
         get_object(&store, &old.node_parts[0].path).unwrap(),
         old_bytes
     );
-    let restored = load_with_wal(&store, &wal).unwrap();
+    let restored = load_with_wal::<relate_executor::Graph>(&store, &wal).unwrap();
     assert_eq!(graph_state(&load(&store).unwrap()), new_state);
     assert_eq!(graph_state(&restored), new_state);
     assert_eq!(
@@ -124,12 +124,12 @@ fn manifest_sync_ambiguity_retains_visible_parts_and_wal_for(
     assert_eq!(graph_state(&old_graph), old_state);
     assert!(!old_graph.node(0).unwrap().properties.contains_key("x"));
     assert_eq!(
-        graph_state(&load_with_wal(&store, &wal).unwrap()),
+        graph_state(&load_with_wal::<relate_executor::Graph>(&store, &wal).unwrap()),
         new_state
     );
     drop((injected, store, wal));
     let reopened = reopen();
-    let (recovered, _) = open_store(&reopened).unwrap();
+    let (recovered, _) = open_store::<relate_executor::Graph>(&reopened).unwrap();
     assert_eq!(graph_state(&recovered), new_state);
 }
 
@@ -221,7 +221,7 @@ fn empty_v3_ignores_retained_monoliths(
     wal.recycle(cut).unwrap();
     drop((target, wal));
     let reopened = reopen();
-    let (restored, _) = open_store(&reopened).unwrap();
+    let (restored, _) = open_store::<relate_executor::Graph>(&reopened).unwrap();
     assert_eq!(restored.live_node_count(), 0);
     assert!(restored.rel_at(0, ts).is_none());
     assert!(object_exists(&reopened, "nodes.parquet").unwrap());
@@ -259,7 +259,7 @@ fn crash_orphans_swept_only_after_validated_reopen_on_all_vfs() {
         drop((target, wal));
         let reopened = parse_uri(uri).unwrap();
         assert!(object_exists(&reopened, orphan).unwrap());
-        let (restored, _) = open_store(&reopened).unwrap();
+        let (restored, _) = open_store::<relate_executor::Graph>(&reopened).unwrap();
         assert_eq!(restored.live_node_count(), 2);
         assert!(object_exists(&reopened, &live).unwrap());
         if !deferred_retire(&reopened) {
@@ -276,10 +276,10 @@ fn crash_orphans_swept_only_after_validated_reopen_on_all_vfs() {
     put_object(&memory, orphan, b"crashed attempt").unwrap();
     let valid = get_object(&memory, MANIFEST_JSON).unwrap();
     put_object(&memory, MANIFEST_JSON, b"invalid manifest").unwrap();
-    assert!(load_with_wal(&memory, &wal).is_err());
+    assert!(load_with_wal::<relate_executor::Graph>(&memory, &wal).is_err());
     assert!(object_exists(&memory, orphan).unwrap());
     put_object(&memory, MANIFEST_JSON, &valid).unwrap();
     drop(wal);
-    assert_eq!(open_store(&memory).unwrap().0.live_node_count(), 2);
+    assert_eq!(open_store::<relate_executor::Graph>(&memory).unwrap().0.live_node_count(), 2);
     assert!(!object_exists(&memory, orphan).unwrap());
 }

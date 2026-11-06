@@ -42,11 +42,11 @@ fn public_vaults_load_checkpoint_and_recheckpoint_stably() {
         copy_dir(&dir, &vault);
         let uri = vault.to_str().unwrap();
         let store = parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
-        let (graph, _wal) = open_store(&store).unwrap();
+        let (graph, _wal) = open_store::<relate_executor::Graph>(&store).unwrap();
         let nodes = graph.all_node_ids_at(u64::MAX).len();
         assert!(nodes > 0, "{}: no nodes loaded", dir.display());
         checkpoint(&store, &graph, None).unwrap();
-        let (reloaded, _wal) = open_store(&store).unwrap();
+        let (reloaded, _wal) = open_store::<relate_executor::Graph>(&store).unwrap();
         assert_eq!(
             reloaded.all_node_ids_at(u64::MAX).len(),
             nodes,

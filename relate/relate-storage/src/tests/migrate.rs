@@ -158,7 +158,7 @@ fn corrupt_legacy_store_error_names_the_detected_version() {
     )
     .unwrap();
 
-    let err = open_store(&target).err().expect("corrupt store must fail");
+    let err = open_store::<relate_executor::Graph>(&target).err().expect("corrupt store must fail");
     assert!(matches!(err, Error::Storage(_)), "{err}");
     // The failure names the monolith object, then the detected version.
     assert_eq!(
@@ -247,7 +247,7 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
         // so a real crash here leaves them intact).
         let (wv, prefix) = target.wal_vfs();
         let wal = Wal::open(wv, prefix, 0).unwrap();
-        let graph = load_with_wal(&target, &wal).unwrap();
+        let graph = load_with_wal::<relate_executor::Graph>(&target, &wal).unwrap();
         assert_eq!(graph.live_node_count(), 2);
         checkpoint_with_lsn(&target, &graph, wal.lsn, None).unwrap();
         snapshot::put_object(&target, "nodes.parquet", &old_nodes).unwrap();
@@ -309,7 +309,7 @@ fn corrupt_legacy_json_store_error_names_the_detected_version() {
     let target =
         parse_uri_with_options(uri.to_str().unwrap(), None, Some(SnapshotCodecKind::Json)).unwrap();
 
-    let err = open_store(&target).err().expect("corrupt store must fail");
+    let err = open_store::<relate_executor::Graph>(&target).err().expect("corrupt store must fail");
     assert!(matches!(err, Error::Storage(_)), "{err}");
     assert!(
         err.to_string().contains("value_encoding 1"),

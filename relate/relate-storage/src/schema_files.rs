@@ -24,7 +24,6 @@
 //!   `createStatement` renderers' whole-catalog form.
 
 use relate_core::{Error, Result};
-use relate_executor::Graph;
 use relate_ontology::{detect_format, DocumentFormat};
 
 use crate::StoreTarget;
@@ -174,7 +173,10 @@ impl<'a> ExpectedMirror<'a> {
 /// its one format detector names (ADR-0227 §3), and the catalog DDL —
 /// the SHOW createStatement renderings, one semicolon-terminated
 /// statement per line.
-fn expected_mirror<'a>(graph: &'a Graph, ontology: Option<&'a str>) -> Result<ExpectedMirror<'a>> {
+fn expected_mirror<'a>(
+    graph: &'a dyn relate_engine_api::GraphImport,
+    ontology: Option<&'a str>,
+) -> Result<ExpectedMirror<'a>> {
     let ontology = ontology.map(|document| {
         let file = match detect_format(document.as_bytes()) {
             DocumentFormat::Json => MirrorFile::OntologyJson,
@@ -183,7 +185,7 @@ fn expected_mirror<'a>(graph: &'a Graph, ontology: Option<&'a str>) -> Result<Ex
         OntologyMirror { file, document }
     });
     let mut ddl = String::new();
-    for statement in relate_executor::catalog_create_statements(graph) {
+    for statement in graph.catalog_ddl() {
         ddl.push_str(&statement);
         ddl.push_str(";\n");
     }
@@ -203,7 +205,7 @@ fn expected_mirror<'a>(graph: &'a Graph, ontology: Option<&'a str>) -> Result<Ex
 /// after every checkpoint.
 fn write_checkpoint_schema_files(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     ontology: Option<&str>,
 ) -> Result<()> {
     let mirror = expected_mirror(graph, ontology)?;
@@ -228,7 +230,7 @@ fn write_checkpoint_schema_files(
 /// the journal is cleared, the ordering its crash window records.
 pub(crate) fn finish_checkpoint(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     ontology: Option<&str>,
 ) -> Result<()> {
     write_checkpoint_schema_files(target, graph, ontology)?;
@@ -250,7 +252,7 @@ pub(crate) fn finish_checkpoint(
 /// one repaired by deleting the mirror) and never refuses the open.
 pub(crate) fn verify_open_schema_files(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     ontology: Option<&str>,
 ) -> Result<()> {
     if !target

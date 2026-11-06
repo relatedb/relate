@@ -5,7 +5,7 @@
 
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::{Error, Result};
-use relate_executor::{CheckpointTheater, Graph};
+use relate_engine_api::CheckpointTheater;
 use relate_model::{ConstraintType, EntityKind};
 use serde::{Deserialize, Serialize};
 
@@ -159,7 +159,7 @@ pub(crate) struct CatalogWire {
 /// crossings. Returns the typed model records of the rows that name an
 /// enforced label, for the theater cross-check.
 fn install_constraint_rows(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     rows: Vec<JsonConstraint>,
 ) -> Result<Vec<relate_model::Constraint>> {
     let mut legacy_enforced = Vec::new();
@@ -215,7 +215,7 @@ fn ensure_constraint_rows_match_theater(
 /// every codec's load path (install constraints and indexes, then the
 /// theater or the legacy pre-theater markers).
 pub(crate) fn restore(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     wire: CatalogWire,
     theater: Option<CheckpointTheater>,
 ) -> Result<()> {

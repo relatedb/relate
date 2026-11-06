@@ -105,7 +105,7 @@ impl<'a> ExecGraph<'a> {
             .map(|schema| schema.show.clone())
             .unwrap_or_else(|| self.base.capture_show_schema());
         if let Some(scratch) = self.scratch {
-            show.apply_overlay(scratch.borrow().redo.catalog_ops())?;
+            crate::graph::apply_show_overlay(&mut show, scratch.borrow().redo.catalog_ops())?;
         }
         Ok(show)
     }

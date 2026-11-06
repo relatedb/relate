@@ -38,7 +38,7 @@ fn mixed_fixed_name_v3_and_generation_paths_reopen_and_sweep_only_orphans() {
     put_manifest(&store, &mixed);
     let orphan = "nodes/123-456-0123456789abcdef0123456789abcdef.parquet";
     put_object(&store, orphan, b"orphan").unwrap();
-    let restored = load_with_wal(&store, &wal).unwrap();
+    let restored = load_with_wal::<relate_executor::Graph>(&store, &wal).unwrap();
     assert_eq!(restored.live_node_count(), 2);
     assert_eq!(
         restored.node(300_000).unwrap().properties["x"],
@@ -119,7 +119,7 @@ fn invalid_manifest_paths_fail_before_read_retirement_or_wal_recycle_and_keep_lo
         ));
     }
     put_manifest(&target, &original);
-    assert_eq!(load_with_wal(&target, &wal).unwrap().live_node_count(), 2);
+    assert_eq!(load_with_wal::<relate_executor::Graph>(&target, &wal).unwrap().live_node_count(), 2);
     drop((target, wal));
     // With the lease released, the role bytes are readable directly and prove
     // the markers were neither recycled nor rewritten.
@@ -132,7 +132,7 @@ fn invalid_manifest_paths_fail_before_read_retirement_or_wal_recycle_and_keep_lo
         crate::WAL_ROLE
     );
     assert_eq!(
-        open_store(&parse_uri(uri.to_str().unwrap()).unwrap())
+        open_store::<relate_executor::Graph>(&parse_uri(uri.to_str().unwrap()).unwrap())
             .unwrap()
             .0
             .live_node_count(),
@@ -269,7 +269,7 @@ fn native_writer_refuses_unreferenced_shard_directory_alias_and_replays_wal() {
         std::fs::remove_file(uri.join(kind)).unwrap();
         drop((target, wal));
         let reopened = parse_uri(uri.to_str().unwrap()).unwrap();
-        let (restored, replayed_wal) = open_store(&reopened).unwrap();
+        let (restored, replayed_wal) = open_store::<relate_executor::Graph>(&reopened).unwrap();
         assert_eq!(graph_state(&restored), expected);
         assert_eq!(replayed_wal.lsn, lsn);
         assert!(replayed_wal.lsn > manifest(&reopened).checkpoint_lsn);
@@ -321,7 +321,7 @@ fn native_writer_rechecks_unchanged_legacy_shard_before_manifest_publication() {
     std::fs::rename(&outside, uri.join("nodes")).unwrap();
     drop((injected, target, wal));
     let reopened = parse_uri(uri.to_str().unwrap()).unwrap();
-    assert_eq!(graph_state(&open_store(&reopened).unwrap().0), expected);
+    assert_eq!(graph_state(&open_store::<relate_executor::Graph>(&reopened).unwrap().0), expected);
 }
 
 #[test]
@@ -445,7 +445,7 @@ fn orphan_sweep_does_not_follow_shard_symlink() {
     std::fs::write(&sentinel, b"untouched").unwrap();
     let symlink_path = uri.join("nodes/123-456-0123456789abcdef0123456789abcdef.parquet");
     symlink(&sentinel, &symlink_path).unwrap();
-    load_with_wal(&target, &wal).unwrap();
+    load_with_wal::<relate_executor::Graph>(&target, &wal).unwrap();
     sweep_orphans(&target).unwrap();
     assert!(std::fs::symlink_metadata(&symlink_path)
         .unwrap()

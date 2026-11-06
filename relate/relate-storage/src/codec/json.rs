@@ -1,7 +1,9 @@
 //! Relate GraphData snapshot (`graph.json` full rewrite). ADR-0050.
 
 use relate_core::{Error, Node, Relationship, Result};
-use relate_executor::{CheckpointTheater, Graph};
+use relate_engine_api::CheckpointTheater;
+#[cfg(test)]
+use relate_executor::Graph;
 use serde::{Deserialize, Serialize};
 
 use super::catalog::{self, CatalogWire, JsonConstraint, JsonIndex};
@@ -71,7 +73,7 @@ struct JsonRelationship {
 
 pub fn dump(
     target: &StoreTarget,
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
     snapshot_ts: u64,
     ontology: Option<&str>,
@@ -100,7 +102,7 @@ pub fn dump(
 }
 
 fn dump_to_vec(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     snapshot_ts: u64,
     theater: CheckpointTheater,
     ontology: Option<&str>,
@@ -110,7 +112,7 @@ fn dump_to_vec(
 }
 
 fn graph_to_data(
-    graph: &Graph,
+    graph: &dyn relate_engine_api::GraphImport,
     snapshot_ts: u64,
     theater: CheckpointTheater,
     ontology: Option<&str>,
@@ -166,7 +168,7 @@ fn graph_to_data(
 
 #[cfg(test)]
 pub fn load(target: &StoreTarget) -> Result<Graph> {
-    Ok(load_with_checkpoint_lsn(target)?.graph)
+    Ok(load_with_checkpoint_lsn::<Graph>(target)?.graph)
 }
 
 /// Load the snapshot and the checkpoint LSN from the one envelope read,
@@ -174,7 +176,9 @@ pub fn load(target: &StoreTarget) -> Result<Graph> {
 /// the inline ontology document (ADR-0120 §6; `None` when the store holds
 /// none). `graph.json` is read exactly once. The LSN is 0 when no manifest
 /// exists yet.
-pub(crate) fn load_with_checkpoint_lsn(target: &StoreTarget) -> Result<LoadedSnapshot> {
+pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
+    target: &StoreTarget,
+) -> Result<LoadedSnapshot<G>> {
     use crate::version::{value_encoding, SnapshotMarker, Subsystem};
     let (envelope_commit_ts, checkpoint_lsn) = envelope_meta(target)?;
     if !object_exists(target, GRAPH_JSON)? {
@@ -207,7 +211,7 @@ pub(crate) fn load_with_checkpoint_lsn(target: &StoreTarget) -> Result<LoadedSna
     let (encoding, marker) = value_encoding::gate(data.value_encoding, has_ontology)?;
     // A legacy-store failure names the version where the loader knows it
     // (ADR-0127 Decision 4); a current store keeps its error verbatim.
-    let (graph, ontology) = graph_from_data(data, encoding, envelope_commit_ts)
+    let (graph, ontology) = graph_from_data::<G>(data, encoding, envelope_commit_ts)
         .map_err(|error| crate::version::annotate_legacy_failure(error, marker))?;
     Ok(LoadedSnapshot {
         graph,
@@ -252,11 +256,11 @@ fn envelope_meta(target: &StoreTarget) -> Result<(Option<u64>, u64)> {
 /// Decode into the in-memory graph, returning the inline ontology document
 /// with it (ADR-0120 §6). `value_encoding` is the marker the caller
 /// already classified and normalized (absent → 1) via the registry.
-fn graph_from_data(
+fn graph_from_data<G: relate_engine_api::SnapshotGraph>(
     data: GraphData,
     value_encoding: u64,
     envelope_commit_ts: Option<u64>,
-) -> Result<(Graph, Option<String>)> {
+) -> Result<(G, Option<String>)> {
     let ontology = data.ontology;
     if data.read_only {
         return Err(Error::storage("read-only snapshot not supported"));
@@ -272,7 +276,7 @@ fn graph_from_data(
         relate_core::validate_persisted_id(r.start_node, "JSON snapshot relationship start")?;
         relate_core::validate_persisted_id(r.end_node, "JSON snapshot relationship end")?;
     }
-    let graph = Graph::default();
+    let graph = G::default();
     graph.set_next_node_id(data.next_node_id);
     graph.set_next_rel_id(data.next_rel_id);
     let mut loaded = 0usize;

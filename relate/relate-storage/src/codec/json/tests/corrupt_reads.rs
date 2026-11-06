@@ -20,7 +20,7 @@ fn assert_corrupt_snapshots_fail_open(store: &StoreTarget, reopened: &StoreTarge
             baseline["relationships"][0]["properties"]["payload"] = legacy_rel;
             let bytes = serde_json::to_vec(&baseline).unwrap();
             put_object(store, GRAPH_JSON, &bytes).unwrap();
-            let (loaded, _wal) = crate::open_store(reopened).unwrap();
+            let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(reopened).unwrap();
             let Value::Map(map) = &loaded.node(2).unwrap().properties["payload"] else {
                 panic!("legacy map tag must remain ordinary data")
             };
@@ -77,7 +77,7 @@ fn assert_corrupt_snapshots_fail_open(store: &StoreTarget, reopened: &StoreTarge
             let corrupt_bytes = serde_json::to_vec(&corrupted).unwrap();
             put_object(store, GRAPH_JSON, &corrupt_bytes).unwrap();
             for _ in 0..2 {
-                let err = crate::open_store(reopened).err().expect("corrupt snapshot must fail open");
+                let err = crate::open_store::<relate_executor::Graph>(reopened).err().expect("corrupt snapshot must fail open");
                 assert!(matches!(err, Error::Storage(_)), "{err}");
                 assert!(err.to_string().contains(expected), "{err}");
             }
@@ -123,7 +123,7 @@ fn assert_geometry_snapshots_fail_open(store: &StoreTarget, reopened: &StoreTarg
         }
         let baseline_bytes = serde_json::to_vec(&baseline).unwrap();
         put_object(store, GRAPH_JSON, &baseline_bytes).unwrap();
-        let (loaded, _wal) = crate::open_store(reopened).unwrap();
+        let (loaded, _wal) = crate::open_store::<relate_executor::Graph>(reopened).unwrap();
         assert_eq!(
             loaded.node(1).unwrap().properties,
             graph.node(1).unwrap().properties,
@@ -192,7 +192,7 @@ fn assert_geometry_snapshots_fail_open(store: &StoreTarget, reopened: &StoreTarg
             let bytes = serde_json::to_vec(&with_geometry).unwrap();
             put_object(store, GRAPH_JSON, &bytes).unwrap();
             for _ in 0..2 {
-                let err = crate::open_store(reopened)
+                let err = crate::open_store::<relate_executor::Graph>(reopened)
                     .err()
                     .expect("valid Geometry must fail the whole graph load");
                 assert!(matches!(err, Error::Storage(_)), "{err}");

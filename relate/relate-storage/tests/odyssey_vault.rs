@@ -24,7 +24,7 @@ fn odyssey_vault_loads_checkpoints_and_reloads_stably() {
 
     let uri = vault.to_str().unwrap();
     let store = parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
-    let (graph, _wal) = relate_storage::open_store(&store).unwrap();
+    let (graph, _wal) = relate_storage::open_store::<relate_executor::Graph>(&store).unwrap();
 
     // 20 concept files + the root README, all loaded as nodes.
     let node_count = graph.all_node_ids_at(u64::MAX).len();
@@ -38,7 +38,7 @@ fn odyssey_vault_loads_checkpoints_and_reloads_stably() {
     relate_storage::checkpoint(&store, &graph, None).unwrap();
     let manifest = SnapshotCodecKind::Markdown.checkpoint_image();
     assert!(store.vfs().exists(manifest).unwrap());
-    let (reloaded, _wal) = relate_storage::open_store(&store).unwrap();
+    let (reloaded, _wal) = relate_storage::open_store::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(
         reloaded.all_node_ids_at(u64::MAX).len(),
         node_count,
@@ -64,7 +64,7 @@ fn odyssey_vault_roundtrip_on_memory_vfs_matches_native() {
     let memory = memory_store_with_codec(SnapshotCodecKind::Markdown).unwrap();
     let vfs = memory.vfs();
     copy_dir_into_vfs(&fixture_dir(), &*vfs);
-    let (memory_graph, _) = relate_storage::open_store(&memory).unwrap();
+    let (memory_graph, _) = relate_storage::open_store::<relate_executor::Graph>(&memory).unwrap();
     assert_eq!(
         memory_graph.all_node_ids_at(u64::MAX).len(),
         native.nodes,
@@ -89,7 +89,7 @@ fn native_odyssey_counts() -> OdysseyCounts {
         Some(SnapshotCodecKind::Markdown),
     )
     .unwrap();
-    let (graph, _) = relate_storage::open_store(&store).unwrap();
+    let (graph, _) = relate_storage::open_store::<relate_executor::Graph>(&store).unwrap();
     OdysseyCounts {
         nodes: graph.all_node_ids_at(u64::MAX).len(),
         rels: graph.all_rel_ids_at(u64::MAX).len(),
@@ -125,7 +125,7 @@ fn odyssey_vault_with_body_properties_reads_and_writes_sections() {
         Some(CodecOpenConfig::MarkdownBodies(config)),
     )
     .unwrap();
-    let (graph, _wal) = relate_storage::open_store(&store).unwrap();
+    let (graph, _wal) = relate_storage::open_store::<relate_executor::Graph>(&store).unwrap();
 
     // Read: the dual-marker note — both markers stripped, each property
     // owning exactly its own section's text.
@@ -208,7 +208,7 @@ fn odyssey_vault_with_body_properties_reads_and_writes_sections() {
     drop(_wal);
     drop(store);
     let reopened = parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Markdown)).unwrap();
-    let (reloaded, _wal) = relate_storage::open_store(&reopened).unwrap();
+    let (reloaded, _wal) = relate_storage::open_store::<relate_executor::Graph>(&reopened).unwrap();
     let odysseus = node_by(&reloaded, "name", "Odysseus");
     assert_eq!(
         prop(&odysseus, "summary"),

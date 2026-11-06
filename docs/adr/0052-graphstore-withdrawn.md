@@ -65,3 +65,5 @@ with the three documented skips.
   - **Delete the `cypherlite-storage` crate outright** — rejected: the new
     WAL + Parquet-checkpoint storage stack needs a home; only the old
     implementation was gutted, and the crate name was kept.
+- [ADR-0526](0526-query-engine-seam.md) is not a second product runtime.
+  The language front end stays shared and one engine implements it.

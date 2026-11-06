@@ -68,7 +68,7 @@ pub struct Manifest {
     /// earlier manifests; the historical empty theater is used then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "deserialize_checkpoint_theater")]
-    pub theater: Option<relate_executor::CheckpointTheater>,
+    pub theater: Option<relate_engine_api::CheckpointTheater>,
     /// The store's ontology document object, an immutable
     /// `ontology/<128-bit-hex>.json` (ADR-0120 §5). Written only at
     /// `format_version` 4; absent means the store holds no ontology.
@@ -82,13 +82,13 @@ pub struct Manifest {
 
 pub(crate) fn deserialize_checkpoint_theater<'de, D>(
     deserializer: D,
-) -> std::result::Result<Option<relate_executor::CheckpointTheater>, D::Error>
+) -> std::result::Result<Option<relate_engine_api::CheckpointTheater>, D::Error>
 where
     D: Deserializer<'de>,
 {
     // An omitted field is a legacy snapshot. Explicit null is damaged schema,
     // not permission to silently discard checkpointed enforcement.
-    relate_executor::CheckpointTheater::deserialize(deserializer).map(Some)
+    relate_engine_api::CheckpointTheater::deserialize(deserializer).map(Some)
 }
 
 /// The one selector-field decoder (ADR-0120 §5): serde's `Option<String>`

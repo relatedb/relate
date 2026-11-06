@@ -119,7 +119,7 @@ fn for_each_vfs(check: impl Fn(&StoreTarget)) {
 /// magic header. That is the crash-cut boundary the fsync-prefix property
 /// truncates to.
 fn append_sequence(store: &StoreTarget, seq: &[RedoOp]) -> (Wal, Vec<u64>) {
-    let (_graph, mut wal) = open_store(store).expect("open store");
+    let (_graph, mut wal) = open_store::<relate_executor::Graph>(store).expect("open store");
     let (vfs, path) = wal_file_parts(store);
     let mut boundaries = vec![vfs.metadata(&path).expect("stat WAL").len];
     for (i, op) in seq.iter().enumerate() {
@@ -135,7 +135,7 @@ fn append_sequence(store: &StoreTarget, seq: &[RedoOp]) -> (Wal, Vec<u64>) {
 /// across all three recovery checks, so it lives here; each check keeps only its
 /// setup.
 fn assert_recovers_to(store: &StoreTarget, expected: &Graph, context: &str) {
-    let (recovered, _wal) = open_store(store).expect("reopen store");
+    let (recovered, _wal) = open_store::<relate_executor::Graph>(store).expect("reopen store");
     assert_eq!(
         proptest_support::state_json(&recovered),
         proptest_support::state_json(expected),

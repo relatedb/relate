@@ -18,6 +18,7 @@ research = []
 [dependencies]
 # The PROFILE clock must read on wasm32 too, not trap (std Instant panics).
 web-time = { workspace = true }
+relate-engine-api = { workspace = true }
 relate-error = { workspace = true }
 relate-model = { workspace = true }
 relate-parser = { workspace = true }

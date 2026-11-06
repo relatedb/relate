@@ -4,81 +4,19 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use relate_catalog::{Catalog, ConstraintDef, IndexDef};
-use relate_core::{Error, Namespace, Result, Value};
-use serde::{Deserialize, Serialize};
+use relate_catalog::Catalog;
+#[cfg(test)]
+use relate_catalog::ConstraintDef;
+use relate_core::{Error, Namespace, Result};
 
 use crate::redo::{self, RedoOp};
 
 use super::{matching_enforced_label, requires_enforced_label, Graph};
 
-/// The five committed per-graph SHOW-metadata maps that make up a checkpoint
-/// theater. Composed by the live graph state (a plain `TheaterData`), the
-/// serialized checkpoint image (`CheckpointTheater`'s flattened `data`) and
-/// the read-admission snapshot (`ShowSchema`'s `data`). The databases table
-/// is NOT here: it is store-level ([`DatabasesCatalog`], ADR-0276).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct TheaterData {
-    pub index_details: BTreeMap<String, redo::IndexDetailSpec>,
-    pub index_options: BTreeMap<String, BTreeMap<String, Value>>,
-    pub graph_types: BTreeMap<String, crate::graph_type::GraphTypeSpec>,
-    pub current_graph_type: crate::graph_type::GraphTypeSpec,
-    pub derived_constraints: BTreeMap<String, relate_model::Constraint>,
-}
+pub use relate_engine_api::{
+    map_put_database, CheckpointTheater, DatabaseEntry, SchemaSnapshot, ShowSchema, TheaterData,
+};
 
-/// One namespace's entry in the store-level databases catalog (ADR-0116
-/// §8, ADR-0276): the settings `SHOW DATABASES` reports and `ALTER
-/// DATABASE ... SET DEFAULT LANGUAGE` rewrites. Serde keeps the
-/// historical two-element array shape (`[language, composite]`) so
-/// existing checkpoint images keep loading.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "(u32, bool)", into = "(u32, bool)")]
-pub struct DatabaseEntry {
-    /// Default Cypher language version for the namespace (`5` or `25`).
-    pub default_language: u32,
-    /// Whether the namespace is a composite database.
-    pub composite: bool,
-}
-
-impl From<(u32, bool)> for DatabaseEntry {
-    fn from((default_language, composite): (u32, bool)) -> Self {
-        Self {
-            default_language,
-            composite,
-        }
-    }
-}
-
-impl From<DatabaseEntry> for (u32, bool) {
-    fn from(entry: DatabaseEntry) -> Self {
-        (entry.default_language, entry.composite)
-    }
-}
-
-/// ADR-0116 §8: record a namespace's default language in `map`. The redo
-/// name is the serde/replay boundary: it matches the fixed namespaces
-/// case-insensitively and is stored under the typed key; entries for any
-/// other name (written by earlier `CREATE DATABASE` calls or an older
-/// binary) are dropped here.
-fn map_put_database(
-    map: &mut BTreeMap<Namespace, DatabaseEntry>,
-    name: &str,
-    language: u32,
-    composite: bool,
-) {
-    if let Some(ns) = Namespace::parse(name) {
-        map.insert(
-            ns,
-            DatabaseEntry {
-                default_language: language,
-                composite,
-            },
-        );
-    }
-}
-
-/// Store-level databases catalog (ADR-0276; keeps the ADR-0116 §8
 /// invariants): the three fixed
 /// namespaces' settings (default language, composite flag) live in ONE
 /// table shared by every namespace graph of the store through the
@@ -162,153 +100,65 @@ impl Default for DatabasesCatalog {
     }
 }
 
-/// Typed committed SHOW metadata stored with a checkpoint's named catalog.
-/// Missing images in older snapshots use the historical empty theater.
-#[doc(hidden)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointTheater {
-    /// Store-level databases table at the checkpoint cut (ADR-0276; ADR-0116
-    /// §8 invariants).
-    /// Declared first so the serialized key order matches the historical
-    /// flattened layout, where `databases` led `TheaterData`.
-    pub databases: BTreeMap<String, DatabaseEntry>,
-    #[serde(flatten)]
-    data: TheaterData,
-    /// Exact catalog definitions imported without known label enforcement.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    legacy_unknown_constraints: BTreeMap<String, ConstraintDef>,
-}
 
-impl CheckpointTheater {
-    /// Enforced label of a named constraint, if present.
-    #[doc(hidden)]
-    pub fn enforced_label(&self, name: &str) -> Option<&str> {
-        self.data
-            .derived_constraints
-            .get(name)
-            .and_then(|constraint| constraint.enforced_label.as_deref())
-    }
-
-    /// Catalog detail of a named index, if present.
-    #[doc(hidden)]
-    pub fn index_detail(&self, name: &str) -> Option<&redo::IndexDetailSpec> {
-        self.data.index_details.get(name)
-    }
-}
-
-/// Catalog facts captured alongside an entity pin at read admission. The
-/// caller serializes capture with commit publication; execution needs no
-/// publication lock and never consults newer named schema.
-pub struct SchemaSnapshot {
-    pub(crate) indexes: Vec<IndexDef>,
-    pub(crate) constraints: Vec<ConstraintDef>,
-    pub(crate) show: ShowSchema,
-}
-
-/// The read-admission SHOW metadata: the store-level databases table plus
-/// the graph's committed theater maps, captured at one admission point.
-/// Composes [`TheaterData`] the way [`CheckpointTheater`] does, so the five
-/// maps and the "set graph type ⇒ re-derive constraints" invariant
-/// ([`TheaterData::set_current_graph_type`]) exist once. `apply_overlay`
-/// replays the statement's speculative catalog redo on this private copy;
-/// committed state changes only through `Graph::apply_redo`.
-#[derive(Debug, Clone)]
-pub(crate) struct ShowSchema {
-    pub databases: BTreeMap<Namespace, DatabaseEntry>,
-    pub data: TheaterData,
-}
-
-impl ShowSchema {
-    /// Capture the committed SHOW metadata at one admission point: the
-    /// store-level databases table plus this graph's theater maps.
-    pub(crate) fn capture(databases: &DatabasesCatalog, theater: &TheaterData) -> Self {
-        Self {
-            databases: databases.snapshot(),
-            data: theater.clone(),
-        }
-    }
-
-    /// Apply speculative catalog operations to this private admitted copy.
-    /// The committed state is changed only by `Graph::apply_redo` at
-    /// publication. Returns the decode error for a corrupt op exactly as the
-    /// committed interpreter does, so the speculative and committed paths
-    /// agree.
-    pub(crate) fn apply_overlay<'o>(
-        &mut self,
-        ops: impl IntoIterator<Item = &'o RedoOp>,
-    ) -> Result<()> {
-        for op in ops {
-            match op {
-                RedoOp::CatalogIndexDetail {
-                    name,
-                    detail,
-                    options,
-                } => {
-                    // Decode before mutating, matching `Graph::apply_redo`.
-                    // DDL produced these options with `props_json`; a corrupt
-                    // external redo is an error, never a silently dropped entry.
-                    let options = redo::props_from_json(options)?;
-                    self.data.index_details.insert(name.clone(), detail.clone());
-                    self.data.index_options.insert(name.clone(), options);
-                }
-                RedoOp::DropIndex { name } => {
-                    self.data.index_details.remove(name);
-                    self.data.index_options.remove(name);
-                }
-                RedoOp::PutDatabase {
-                    name,
-                    language,
-                    composite,
-                } => {
-                    map_put_database(&mut self.databases, name, *language, *composite);
-                }
-                RedoOp::DropDatabase { .. } => {
-                    // ADR-0116 §1/§8: the fixed namespaces cannot be
-                    // dropped, and the `Namespace`-keyed table can only
-                    // ever hold them, so a legacy `DROP DATABASE` redo is
-                    // a no-op.
-                }
-                RedoOp::PutGraphType { name, body } => {
-                    self.data.graph_types.insert(name.clone(), body.clone());
-                }
-                RedoOp::SetCurrentGraphType { body } => {
-                    self.data.set_current_graph_type(body)?;
-                }
-                RedoOp::CatalogDerivedConstraint { constraint } => {
-                    self.data
-                        .derived_constraints
-                        .insert(constraint.name.clone(), constraint.clone());
-                }
-                RedoOp::DropConstraint { name } => {
-                    self.data.derived_constraints.remove(name);
-                }
-                _ => {}
+/// Apply speculative catalog operations to this private admitted copy.
+pub(crate) fn apply_show_overlay<'o>(
+    show: &mut ShowSchema,
+    ops: impl IntoIterator<Item = &'o RedoOp>,
+) -> Result<()> {
+    for op in ops {
+        match op {
+            RedoOp::CatalogIndexDetail {
+                name,
+                detail,
+                options,
+            } => {
+                let options = redo::props_from_json(options)?;
+                show.data.index_details.insert(name.clone(), detail.clone());
+                show.data.index_options.insert(name.clone(), options);
             }
+            RedoOp::DropIndex { name } => {
+                show.data.index_details.remove(name);
+                show.data.index_options.remove(name);
+            }
+            RedoOp::PutDatabase {
+                name,
+                language,
+                composite,
+            } => {
+                map_put_database(&mut show.databases, name, *language, *composite);
+            }
+            RedoOp::DropDatabase { .. } => {}
+            RedoOp::PutGraphType { name, body } => {
+                show.data.graph_types.insert(name.clone(), body.clone());
+            }
+            RedoOp::SetCurrentGraphType { body } => {
+                set_current_graph_type(&mut show.data, body)?;
+            }
+            RedoOp::CatalogDerivedConstraint { constraint } => {
+                show.data
+                    .derived_constraints
+                    .insert(constraint.name.clone(), constraint.clone());
+            }
+            RedoOp::DropConstraint { name } => {
+                show.data.derived_constraints.remove(name);
+            }
+            _ => {}
         }
-        Ok(())
     }
+    Ok(())
 }
 
-impl TheaterData {
-    /// Install `spec` as the current graph type and re-derive its constraint
-    /// index in one step. The single "set graph type => re-derive constraints"
-    /// path shared by committed replay and snapshot restore. Total over
-    /// persisted bytes: a deserialized spec never ran the body validator,
-    /// so a poisoned default value is the typed storage-corruption error
-    /// (`persisted_derive_error`), never a panic.
-    pub(crate) fn set_current_graph_type(
-        &mut self,
-        spec: &crate::graph_type::GraphTypeSpec,
-    ) -> Result<()> {
-        // Derive first, install second: a failed derivation leaves the
-        // theater untouched (never the poisoned spec with its stale
-        // constraint index) -- the caller's error path sees the old state.
-        let derived = crate::graph_type::derived_constraints_map(&spec.to_body())
-            .map_err(crate::graph_type::persisted_derive_error)?;
-        self.current_graph_type = spec.clone();
-        self.derived_constraints = derived;
-        Ok(())
-    }
+/// Install `spec` as the current graph type and re-derive its constraint index.
+pub(crate) fn set_current_graph_type(
+    data: &mut TheaterData,
+    spec: &crate::graph_type::GraphTypeSpec,
+) -> Result<()> {
+    let derived = crate::graph_type::derived_constraints_map(&spec.to_body())
+        .map_err(crate::graph_type::persisted_derive_error)?;
+    data.current_graph_type = spec.clone();
+    data.derived_constraints = derived;
+    Ok(())
 }
 
 impl Graph {
@@ -394,7 +244,7 @@ impl Graph {
         let spec = crate::graph_type::GraphTypeSpec::from_body(&body)
             .map_err(crate::graph_type::persisted_validation_error)?;
         let mut theater = self.theater.lock().unwrap();
-        theater.set_current_graph_type(&spec)?;
+        set_current_graph_type(&mut theater, &spec)?;
         Ok(())
     }
 
@@ -660,7 +510,7 @@ mod tests {
     }
 
     fn admitted_show() -> ShowSchema {
-        ShowSchema::capture(&DatabasesCatalog::default(), &TheaterData::default())
+        ShowSchema::capture(DatabasesCatalog::default().snapshot(), &TheaterData::default())
     }
 
     #[test]
@@ -673,7 +523,7 @@ mod tests {
         }];
         // A decode failure is an error, never a silently dropped index entry
         // (matching `Graph::apply_redo`).
-        assert!(show.apply_overlay(&ops).is_err());
+        assert!(apply_show_overlay(&mut show, &ops).is_err());
         assert!(show.data.index_details.is_empty());
         assert!(show.data.index_options.is_empty());
     }
@@ -686,7 +536,7 @@ mod tests {
             detail: range_index_detail(),
             options: serde_json::json!({}),
         }];
-        show.apply_overlay(&ops).unwrap();
+        apply_show_overlay(&mut show, &ops).unwrap();
         assert!(show.data.index_details.contains_key("idx"));
         assert!(show.data.index_options.contains_key("idx"));
     }
@@ -725,7 +575,7 @@ mod tests {
             },
         ];
         let mut show = admitted_show();
-        show.apply_overlay(&ops).unwrap();
+        apply_show_overlay(&mut show, &ops).unwrap();
         let names: Vec<Namespace> = show.databases.keys().copied().collect();
         assert_eq!(names, Namespace::ALL);
         assert_eq!(
