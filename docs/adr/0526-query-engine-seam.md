@@ -1,6 +1,7 @@
 # ADR-0526: Query engine seam
 
 Status: Proposed
+Claim: 29fa3907d6121880c5e1073f08b90c0f4cad32ac
 
 ## Context
 

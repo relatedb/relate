@@ -1,6 +1,7 @@
 # ADR-0527: Write engine seam
 
 Status: Proposed
+Claim: 5025a4cf9637dd08d17b136df08c846fbdc7ac75
 
 ## Context
 
