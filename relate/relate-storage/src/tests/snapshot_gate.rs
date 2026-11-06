@@ -5,6 +5,7 @@
 //! untouched, however often the open is retried.
 
 use super::*;
+use relate_executor::Graph;
 
 fn node(id: i64) -> relate_executor::RedoOp {
     relate_executor::RedoOp::CreateNode {

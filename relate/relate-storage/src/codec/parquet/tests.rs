@@ -1,6 +1,7 @@
 use super::envelope::{compact_integer, page_header, Compact};
 use super::fixtures::{commit_ops, load_part, write_bare_table, write_rel_table, write_table};
 use super::*;
+use relate_executor::Graph;
 use arrow::array::{RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use bytes::Bytes;

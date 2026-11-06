@@ -157,7 +157,7 @@ fn ontology_document_roundtrips_inline_at_value_encoding_3() {
     assert!(envelope.get("ontology").is_none());
     assert_eq!(envelope["codec"], "json");
 
-    let LoadedSnapshot {
+    let LoadedSnapshot::<relate_executor::Graph> {
         graph: loaded,
         ontology,
         marker,
@@ -174,7 +174,7 @@ fn ontology_document_roundtrips_inline_at_value_encoding_3() {
     let data: serde_json::Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(data["value_encoding"], 2);
     assert!(data.get("ontology").is_none());
-    let LoadedSnapshot {
+    let LoadedSnapshot::<relate_executor::Graph> {
         ontology, marker, ..
     } = load_with_checkpoint_lsn::<relate_executor::Graph>(&bare).unwrap();
     assert_eq!(ontology, None);
@@ -212,7 +212,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
     // A durable-form edit without its mirror is drift the guard refuses
     // (ADR-0481 §4), naming the mirror file the content outgrew — the
     // refusal fires before the migration could normalize anything.
-    let Err(refused) = crate::open_store_with_report(&target) else {
+    let Err(refused) = crate::open_store_with_report::<relate_executor::Graph>(&target) else {
         panic!("an ontology the mirror does not carry opened the store")
     };
     assert!(refused.to_string().contains("ontology.json"), "{refused}");
@@ -224,7 +224,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         ONTOLOGY_DOC.as_bytes(),
     )
     .unwrap();
-    let (_, _, _, report) = crate::open_store_with_report(&target).unwrap();
+    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
         report.migrations(),
         &[(crate::version::Subsystem::ValueEncoding, 2)]
@@ -251,7 +251,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         .vfs()
         .remove_file(crate::schema_files::ONTOLOGY_JSON_FILE)
         .unwrap();
-    let (_, _, _, report) = crate::open_store_with_report(&target).unwrap();
+    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
         report.migrations(),
         &[(crate::version::Subsystem::ValueEncoding, 3)]

@@ -22,7 +22,7 @@ fn rl_suffix_opens_bundle_not_directory() {
     assert!(path.is_file());
     assert!(!dir.path().join("wal").exists());
     let target = parse_uri(uri).unwrap();
-    let loaded = load(&target).unwrap();
+    let loaded = load::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(loaded.live_node_count(), 1);
     drop(target);
     reset_uri(uri, None).unwrap();
@@ -48,7 +48,7 @@ fn legacy_cl_suffix_opens_bundle_not_directory() {
     assert!(path.is_file());
     assert!(!dir.path().join("wal").exists());
     let target = parse_uri(uri).unwrap();
-    let loaded = load(&target).unwrap();
+    let loaded = load::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(loaded.live_node_count(), 1);
     drop(target);
     reset_uri(uri, None).unwrap();

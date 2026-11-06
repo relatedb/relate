@@ -9,7 +9,7 @@
 //! pre-ADR store that opens unchanged.
 
 use super::*;
-use relate_executor::{IndexDetailSpec, IndexKindSpec, RedoOp};
+use relate_executor::{Graph, IndexDetailSpec, IndexKindSpec, RedoOp};
 
 /// The store's committed schema state one checkpoint persists: a graph
 /// type on its own label, two named indexes with their typed details,

@@ -123,8 +123,12 @@ fn opened_store_has_the_adjacency_of_the_graph_that_wrote_it() {
         drop(wal);
 
         let expected = adjacency(&writer);
-        for open in [open_store, open_store_readonly] {
-            let (opened, _) = open(&store).unwrap();
+        for readonly in [false, true] {
+            let (opened, _) = if readonly {
+                open_store_readonly::<Graph>(&store).unwrap()
+            } else {
+                open_store::<Graph>(&store).unwrap()
+            };
             assert_eq!(opened.commit_ts(), writer.commit_ts(), "{codec:?}");
             assert_eq!(adjacency(&opened), expected, "{codec:?}");
             // A delete leaves its hops stored, so a snapshot older than it

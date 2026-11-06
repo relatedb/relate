@@ -1,5 +1,6 @@
 use super::*;
 use relate_catalog::ConstraintDef;
+use relate_executor::Graph;
 use std::sync::Arc;
 
 mod bundle;
@@ -224,7 +225,7 @@ fn direct_graph_incomplete_label_constraint_fails_before_checkpoint_writes() {
                 "{codec:?}: the failed checkpoint rewrote {path}"
             );
         }
-        assert!(load(&store).unwrap().named_constraints().is_empty());
+        assert!(load::<relate_executor::Graph>(&store).unwrap().named_constraints().is_empty());
     }
 }
 
@@ -391,7 +392,7 @@ fn typed_checkpoint_rejects_forged_legacy_unknown_markers_in_both_codecs() {
             crate::snapshot::put_object(&store, image, &serde_json::to_vec(&forged).unwrap())
                 .unwrap();
             assert!(
-                matches!(load(&store), Err(Error::Storage(_))),
+                matches!(load::<relate_executor::Graph>(&store), Err(Error::Storage(_))),
                 "{codec:?}: {name}"
             );
         }
@@ -649,7 +650,7 @@ fn json_codec_mixed_types_match_relate_graphdata() {
     let props = &v["nodes"][0]["properties"];
     assert_eq!(props["n"], 7);
     assert_eq!(props["pt"]["__type"], "point");
-    let loaded = load(&store).unwrap();
+    let loaded = load::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(
         loaded.node(0).unwrap().properties["n"],
         relate_core::Value::Int(7)

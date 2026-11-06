@@ -285,6 +285,6 @@ fn failed_reset_after_fresh_root_keeps_old_wal_isolated_and_recoverable() {
     std::fs::rename(&old_wal, &wal).unwrap();
     std::fs::remove_file(root.join(RESET_INCOMPLETE)).unwrap();
     let recovered = parse_uri_with_wal(root.to_str().unwrap(), Some(wal.clone())).unwrap();
-    assert_eq!(load(&recovered).unwrap().live_node_count(), 1);
+    assert_eq!(load::<relate_executor::Graph>(&recovered).unwrap().live_node_count(), 1);
     assert_eq!(std::fs::read(wal.join("old")).unwrap(), b"old");
 }

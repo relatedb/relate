@@ -142,11 +142,11 @@ fn late_numeric_collections_preflight_before_encoding_and_split_reopen() {
         for (ids, encode) in [
             (
                 &nodes,
-                nodes_parquet_ids as fn(&Graph, u64, &[i64]) -> Result<Vec<u8>>,
+                nodes_parquet_ids as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
             ),
             (
                 &rels,
-                rels_parquet_ids as fn(&Graph, u64, &[i64]) -> Result<Vec<u8>>,
+                rels_parquet_ids as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
             ),
         ] {
             let err = encode(&graph, ts, ids).unwrap_err();

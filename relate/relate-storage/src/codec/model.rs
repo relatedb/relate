@@ -128,7 +128,7 @@ mod tests {
 
         let json = memory_store_with_codec(SnapshotCodecKind::Json).unwrap();
         checkpoint(&json, &graph, None).unwrap();
-        let from_json = load(&json).unwrap();
+        let from_json = load::<relate_executor::Graph>(&json).unwrap();
 
         #[cfg(parquet_codec)]
         let from_parquet = {

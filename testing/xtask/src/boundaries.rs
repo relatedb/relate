@@ -16,6 +16,13 @@ const WIRE_KIT_DIR: &str = "extensions/relate-wire";
 /// all — is an R7 refusal: a child linking it is exactly the direction the
 /// group exists to prevent. `relate-core` is the one engine reach today
 /// (the temporal parser the git child uses).
+/// Write-engine crates own durability. They talk to a query engine only
+/// through `relate-engine-api` (GraphExport / GraphImport), so a normal or
+/// build edge onto a query-engine crate is an R8 refusal.
+const WRITE_ENGINE_DIRS: &[&str] = &["relate/relate-storage", "relate/relate-write-local"];
+/// Query-engine crates own execution and the live graph layout.
+const QUERY_ENGINE_DIRS: &[&str] = &["relate/relate-executor"];
+
 const LEAF_ENGINE_DIRS: &[&str] = &[
     "relate/relate-core",
     "relate/relate-model",
@@ -80,6 +87,12 @@ pub enum Rule {
     /// and never the testing group beyond test-support dev deps.
     R7,
     R5,
+    /// A write-engine crate (the storage toolkit and a local or future
+    /// clustering write engine) must not take a normal or build dependency
+    /// on a query-engine crate. The shared contracts live in
+    /// `relate-engine-api`. A dev dependency is allowed so the toolkit's
+    /// tests can build the in-memory graph.
+    R8,
 }
 
 impl fmt::Display for Rule {
@@ -90,6 +103,7 @@ impl fmt::Display for Rule {
             Rule::R3 => "R3",
             Rule::R7 => "R7",
             Rule::R5 => "R5",
+            Rule::R8 => "R8",
         })
     }
 }
@@ -289,6 +303,17 @@ pub fn check(packages: &[Package]) -> Report {
                         rule,
                     });
                 }
+                if WRITE_ENGINE_DIRS.contains(&package.dir.as_str())
+                    && QUERY_ENGINE_DIRS.contains(&target.dir.as_str())
+                    && matches!(dep.kind, DepKind::Normal | DepKind::Build)
+                {
+                    violations.push(Violation::Edge {
+                        from: package.name.clone(),
+                        to: target.name.clone(),
+                        kind: dep.kind,
+                        rule: Rule::R8,
+                    });
+                }
             }
         }
     }
@@ -364,6 +389,24 @@ mod tests {
             &[("testing/relate-test-support", DepKind::Build)],
         ));
         assert_eq!(v, ["relate-storage -> relate-test-support (build): R1"]);
+    }
+
+    #[test]
+    fn write_engine_normal_dep_on_query_engine_is_rejected() {
+        let v = violations(pkg(
+            "relate/relate-storage",
+            &[("relate/relate-executor", DepKind::Normal)],
+        ));
+        assert_eq!(v, ["relate-storage -> relate-executor (normal): R8"]);
+    }
+
+    #[test]
+    fn write_engine_dev_dep_on_query_engine_is_allowed() {
+        let v = violations(pkg(
+            "relate/relate-storage",
+            &[("relate/relate-executor", DepKind::Dev)],
+        ));
+        assert!(v.is_empty(), "{v:?}");
     }
 
     #[test]

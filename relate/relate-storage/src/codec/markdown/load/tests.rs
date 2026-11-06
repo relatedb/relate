@@ -7,6 +7,7 @@ use super::*;
 use crate::codec::SnapshotCodecKind;
 use crate::vfs::atomic_write;
 use relate_core::Relationship;
+use relate_executor::Graph;
 
 fn write_external_vault(root: &std::path::Path) {
     let person = root.join("Person");

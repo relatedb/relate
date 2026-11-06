@@ -1,4 +1,5 @@
 use super::*;
+use relate_executor::Graph;
 
 #[test]
 fn sharded_checkpoint_roundtrips() {
@@ -58,7 +59,7 @@ fn dirty_window_skips_unchanged_shard() {
     snapshot::native::checkpoint_at_with_bytes(&store, &g, wal.lsn, ts, 1, None).unwrap();
     let high_bytes2 = snapshot::get_object(&store, &high.path).unwrap();
     assert_eq!(high_bytes, high_bytes2);
-    let loaded = load(&store).unwrap();
+    let loaded = load::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(
         loaded.node(0).unwrap().properties["x"],
         relate_core::Value::Int(1)
@@ -104,7 +105,7 @@ fn fat_rows_split_a_window() {
         "expected a split, got {} parts",
         m.node_parts.len()
     );
-    let loaded = load(&store).unwrap();
+    let loaded = load::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(loaded.live_node_count(), 12);
 }
 

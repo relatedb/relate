@@ -7,7 +7,7 @@ use web_time::Instant;
 
 use relate_core::{CapacityKind, Error, Result};
 use relate_engine_api::RedoOp;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::vfs::{BoundedSink, MemoryVfs, Refusal, Vfs, VfsFile, VfsOpen};
 
@@ -21,12 +21,7 @@ pub(crate) use crate::version::wal::ONTOLOGY_MAGIC;
 pub const CHECKPOINT_BYTES: u64 = 64 * 1024 * 1024;
 pub const CHECKPOINT_COMMITS: u64 = 10_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalRecord {
-    pub lsn: u64,
-    pub commit_ts: u64,
-    pub ops: Vec<RedoOp>,
-}
+pub use relate_engine_api::CommitRecord as WalRecord;
 
 #[derive(Serialize)]
 struct WalRecordRef<'a> {
