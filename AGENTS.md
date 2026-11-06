@@ -37,6 +37,21 @@ stylistic or trivially reversible edits.
   `Status:`, before `## Context`, naming mint's claim commit. CI check
   `adr-numbers` requires it (ADR-0301); unminted conflicting numbers fail
 
+#### Writing guidance
+
+An ADR records architecture and principles — the why and the shape of the
+decision — not the implementation. Keep out:
+
+- Code snippets, pseudo-code, and config dumps — name the surface or
+  mechanism instead of quoting it
+- File:line inventories of what changed — the diff is the record of that
+- Step-by-step history of how the change was built or reviewed
+
+Line budget, checkable with `wc -l docs/adr/NNNN-*.md`: target **≤ 80
+lines**, hard ceiling **150 lines**. Over the ceiling, cut detail —
+long alternative analyses, restated context, implementation asides —
+never split one decision into two ADRs to fit the budget.
+
 ### 2. Client-facing documentation
 
 Every public surface ships docs under `docs/api/<surface>/`: `spec.md`
