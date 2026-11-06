@@ -1,8 +1,7 @@
-# ADR-0525: Memory controls gate
+# ADR-0526: Memory controls gate
 
 Status: Proposed
-
-Claim: 9bf01ee6002dcbe9558a8e7280fa82e1fa5344a5
+Claim: 29fa3907d6121880c5e1073f08b90c0f4cad32ac
 
 ## Context
 
