@@ -4,7 +4,9 @@
 - **Date**: 2026-09-04
 - **Deciders**: MemoryDB maintainers
 - **Later references**: amended by ADR-0202 (the floor keeps retained
-  versions, vector capacity, adjacency containers, and interned names)
+  versions, vector capacity, adjacency containers, and interned names);
+  ADR-0529 (a never-updated row is inline, with no `xmax`; a delete's
+  tombstone spill does not refuse admission)
 
 ## Context
 

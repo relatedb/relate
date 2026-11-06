@@ -2,6 +2,7 @@ use super::*;
 use relate_names::SmallName;
 
 mod adjacency;
+mod chain;
 mod pattern_stats;
 mod restore;
 mod services;
@@ -2172,9 +2173,8 @@ fn floor_reserves_node_ring_edge_and_dense_node() {
     assert_eq!(g.used_bytes(), g.accounted_bytes());
 
     let node = g.nodes.get(&hub).unwrap();
-    assert_eq!(node.len(), 1);
-    assert_eq!(node.capacity(), crate::memory::reserved_len(1));
-    let live = &node.last().unwrap().live;
+    assert!(node.is_inline());
+    let live = node.last().live;
     assert_eq!(live.labels.len(), 1);
     assert_eq!(live.labels.capacity(), crate::memory::reserved_len(1));
     assert_eq!(live.props.len(), 1);

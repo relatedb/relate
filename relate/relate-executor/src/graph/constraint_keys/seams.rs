@@ -182,7 +182,7 @@ impl Graph {
         let Some(live) = live_version(&vers) else {
             return;
         };
-        self.constraint_keys_node(id, Some(&live.live), None);
+        self.constraint_keys_node(id, Some(live.live), None);
     }
 
     /// The relationship twin of [`Graph::constraint_keys_delete_node`].
@@ -193,7 +193,7 @@ impl Graph {
         let Some(live) = live_version(&vers) else {
             return;
         };
-        self.constraint_keys_rel(id, Some(&live.live), None);
+        self.constraint_keys_rel(id, Some(live.live), None);
     }
 
     fn live_node_snapshot(&self, id: NodeId) -> Option<LiveNode> {

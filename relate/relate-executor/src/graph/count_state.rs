@@ -380,7 +380,7 @@ impl Graph {
         // the bump paths ride — never a snapshot-ts probe beside it.
         let mut stats = CountStats::default();
         for entry in self.nodes.iter() {
-            let Some(v) = super::live_version(entry.value().as_slice()) else {
+            let Some(v) = super::live_version(entry.value()) else {
                 continue;
             };
             // Charge discarded — see the doc's rebuild note.

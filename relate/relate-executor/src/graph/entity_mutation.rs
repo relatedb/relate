@@ -59,21 +59,17 @@ impl Graph {
             scope.touches_node(&live.labels, live.props.iter().map(|(kid, _)| kid))
         });
         self.finish_node_edit(edit, id, Some(&live));
-        {
-            let mut vers = self.nodes.entry(id).or_default();
-            vers.push(NodeVer {
-                xmin,
-                xmax: 0,
-                live,
-            });
-            crate::memory::fit_reserved(&mut vers);
-        }
+        let before_shape = self.node_chain_shape(id);
+        install(&self.nodes, id, xmin, live);
         self.index_add(id);
         self.mark_node_dirty(id);
         // ADR-0063: lazy string postings — just dirty-mark built pairs, and
         // only after the version is installed (apply-before-dirty ordering).
         self.string_dirty_mark_node(id);
-        self.charge(charge as i64 + crate::memory::node_chain_bytes(1) as i64);
+        self.charge(
+            charge as i64 + crate::memory::node_chain_bytes(before_shape.after_install()) as i64
+                - crate::memory::node_chain_bytes(before_shape) as i64,
+        );
         Ok(())
     }
 
@@ -150,20 +146,17 @@ impl Graph {
         let key_ids = live.payload.key_ids(&self.interner);
         let edit = self.tracked_rel_edit(id, |scope| scope.touches_rel(live.type_id, &key_ids));
         self.finish_rel_edit(edit, id, Some(&live));
-        {
-            let mut vers = self.rels.entry(id).or_default();
-            vers.push(RelVer {
-                xmin,
-                xmax: 0,
-                live,
-            });
-            crate::memory::fit_reserved(&mut vers);
-        }
+        let before_shape = self.rel_chain_shape(id);
+        install(&self.rels, id, xmin, live);
         self.mark_rel_dirty(id);
         // ADR-0185: lazy relationship postings — dirty-mark built pairs, and
         // only after the version is installed (apply-before-dirty ordering).
         self.rel_index_add(id);
-        self.charge(charge as i64 + crate::memory::rel_chain_bytes(1) as i64 + adj);
+        self.charge(
+            charge as i64 + crate::memory::rel_chain_bytes(before_shape.after_install()) as i64
+                - crate::memory::rel_chain_bytes(before_shape) as i64
+                + adj,
+        );
         Ok(())
     }
 
@@ -175,14 +168,11 @@ impl Graph {
         // The write-back follows a successful `cow_node`, so the version
         // chain exists by construction; a missing one is a broken invariant,
         // never a silent discard of the edit.
-        let mut vers = self
+        *self
             .nodes
             .get_mut(&id)
-            .expect("put_node follows a successful cow_node");
-        let last = vers
-            .last_mut()
-            .expect("a node version chain is never empty");
-        last.live = live;
+            .expect("put_node follows a successful cow_node")
+            .tail_live_mut() = live;
     }
 
     pub(in crate::graph) fn cow_rel(&self, id: RelId) -> Option<LiveRel> {
@@ -193,14 +183,11 @@ impl Graph {
         // The write-back follows a successful `cow_rel`, so the version chain
         // exists by construction; a missing one is a broken invariant, never
         // a silent discard of the edit.
-        let mut vers = self
+        *self
             .rels
             .get_mut(&id)
-            .expect("put_rel follows a successful cow_rel");
-        let last = vers
-            .last_mut()
-            .expect("a relationship version chain is never empty");
-        last.live = live;
+            .expect("put_rel follows a successful cow_rel")
+            .tail_live_mut() = live;
     }
 
     pub fn set_property_node(&self, id: NodeId, key: &str, value: Value) {
@@ -209,7 +196,7 @@ impl Graph {
             // No live entity: there is nothing to edit or to hand off.
             return;
         }
-        let before_len = self.node_chain_len(id);
+        let before_shape = self.node_chain_shape(id);
         // ADR-0439: capture the before-image only when a uniqueness
         // constraint reads this key; a SET of an unconstrained property
         // cannot change any tuple, so it skips the map entirely. The map's
@@ -238,7 +225,7 @@ impl Graph {
         // version carries; a removal leaves stale postings, which the
         // residual re-verification filters.
         self.index_add(id);
-        self.charge_node_after_edit(id, before.as_ref(), before_len);
+        self.charge_node_after_edit(id, before.as_ref(), before_shape);
     }
 
     pub fn set_property_rel(&self, id: RelId, key: &str, value: Value) {
@@ -247,7 +234,7 @@ impl Graph {
             return;
         }
         let before_bytes = self.visible_rel_account(id);
-        let before_len = self.rel_chain_len(id);
+        let before_shape = self.rel_chain_shape(id);
         let keys = self.tracked_rel_key_edit(id, key);
         let mut r = self
             .cow_rel(id)
@@ -280,7 +267,7 @@ impl Graph {
         self.bump_stats(|s| s.properties_set += props_set);
         self.push_redo(op);
         self.mark_rel_dirty(id);
-        self.charge_rel_after_edit(id, before_bytes, before_len);
+        self.charge_rel_after_edit(id, before_bytes, before_shape);
     }
 
     pub fn merge_properties_node(&self, id: NodeId, map: &BTreeMap<String, Value>) {
@@ -291,7 +278,7 @@ impl Graph {
         if before.is_none() || map.is_empty() {
             return;
         }
-        let before_len = self.node_chain_len(id);
+        let before_shape = self.node_chain_shape(id);
         let keys = self.tracked_node_edit(id, |scope| {
             map.keys().any(|key| {
                 self.interner
@@ -325,7 +312,7 @@ impl Graph {
         }
         self.mark_node_dirty(id);
         self.index_add(id);
-        self.charge_node_after_edit(id, before.as_ref(), before_len);
+        self.charge_node_after_edit(id, before.as_ref(), before_shape);
     }
 
     /// Tombstone timestamp for a delete: the write ts while in a write,
@@ -345,11 +332,11 @@ impl Graph {
         // the tombstone (entity guard first, map lock last).
         self.constraint_keys_delete_rel(id);
         let mut found = false;
+        let before_shape = self.rel_chain_shape(id);
         if let Some(mut vers) = self.rels.get_mut(&id) {
-            if let Some(v) = vers.iter_mut().rev().find(|v| v.xmax == 0) {
-                let type_id = v.live.type_id;
-                let (start, end) = (v.live.start, v.live.end);
-                v.xmax = ts;
+            if let Some(live) = vers.tombstone(ts) {
+                let type_id = live.type_id;
+                let (start, end) = (live.start, live.end);
                 // LABS-370: the pair counts are exact (the counting
                 // operator answers from them), so a delete leaves its
                 // (start-label, type, end-label) triples — the mirror of
@@ -359,6 +346,10 @@ impl Graph {
             }
         }
         if found {
+            self.charge(
+                crate::memory::rel_chain_bytes(before_shape.after_delete()) as i64
+                    - crate::memory::rel_chain_bytes(before_shape) as i64,
+            );
             self.bump_stats(|s| s.relationships_deleted += 1);
             self.push_redo(RedoOp::delete_rel(id));
             self.mark_rel_dirty(id);
@@ -380,23 +371,45 @@ impl Graph {
         self.constraint_keys_delete_node(id);
         let ts = self.tombstone_ts();
         let mut found = false;
+        let before_shape = self.node_chain_shape(id);
         if let Some(mut vers) = self.nodes.get_mut(&id) {
-            if let Some(v) = vers.iter_mut().rev().find(|v| v.xmax == 0) {
-                v.xmax = ts;
+            if let Some(live) = vers.tombstone(ts) {
                 // LABS-370 (v1 follow-up) / LABS-851: the exact label
                 // counts and the total node count follow every delete —
                 // the label index keeps the tombstoned id until GC, the
                 // count state does not. The node-liveness seam's one
                 // call.
-                self.bump_node_population_stats(&v.live.labels, CountDelta::Remove);
+                self.bump_node_population_stats(&live.labels, CountDelta::Remove);
                 found = true;
             }
         }
         if found {
+            self.charge(
+                crate::memory::node_chain_bytes(before_shape.after_delete()) as i64
+                    - crate::memory::node_chain_bytes(before_shape) as i64,
+            );
             self.bump_stats(|s| s.nodes_deleted += 1);
             self.push_redo(RedoOp::delete_node(id));
             self.mark_node_dirty(id);
         }
         Ok(())
+    }
+}
+
+/// Install `live` as `id`'s newest version: a fresh id gets an inline slot;
+/// an id that already has versions (a replayed re-create) keeps them.
+fn install<I, Live>(map: &CoreMap<I, Chain<Live>>, id: I, xmin: u64, live: Live)
+where
+    I: Eq + std::hash::Hash,
+{
+    match map.entry(id) {
+        dashmap::mapref::entry::Entry::Occupied(mut slot) => slot.get_mut().push(Ver {
+            xmin,
+            xmax: 0,
+            live,
+        }),
+        dashmap::mapref::entry::Entry::Vacant(slot) => {
+            slot.insert(Chain::inline(xmin, live));
+        }
     }
 }

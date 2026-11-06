@@ -6,6 +6,7 @@ use relate_catalog::{Catalog, ConstraintDef, IndexDef};
 use relate_core::{Namespace, Node, NodeId, RelId, Relationship, Result, Value};
 
 use crate::group_key::GroupKey;
+use crate::memory::ChainShape;
 use crate::pull_identity::PullIdentityIndex;
 use crate::redo::{self, PullKind, RedoOp};
 use crate::store::{Interner, LiveNode, LiveRel, RelTypes, TypedAdj};
@@ -20,6 +21,7 @@ pub(crate) use count_state::CountProbe;
 
 mod adjacency;
 mod apply_redo;
+mod chain;
 mod conflict;
 pub(crate) mod constraint_keys;
 mod count_state;
@@ -79,8 +81,8 @@ pub(crate) type CoreMap<K, V> = dashmap::DashMap<K, V, crate::hash_seed::FxBuild
 /// The visible version at `ts` — the one walk every `*_at` read takes
 /// over a version chain (LABS-337's extraction of the previously
 /// five-times-spelled rev-find).
-fn visible_version<Live>(vers: &[Ver<Live>], ts: u64) -> Option<&Ver<Live>> {
-    vers.iter().rev().find(|v| visible(v.xmin, v.xmax, ts))
+fn visible_version<Live>(vers: &Chain<Live>, ts: u64) -> Option<VerRef<'_, Live>> {
+    vers.visible_at(ts)
 }
 
 /// The LIVE version — the last `xmax == 0` one, not a ts-probe: the
@@ -90,8 +92,8 @@ fn visible_version<Live>(vers: &[Ver<Live>], ts: u64) -> Option<&Ver<Live>> {
 /// `xmax == 0` convention is the one every live-version reader in the graph
 /// module uses (`live_label_ids`, the rebuild's live-rel scan, and the
 /// constraint_keys family's snapshots and backfills).
-fn live_version<Live>(vers: &[Ver<Live>]) -> Option<&Ver<Live>> {
-    vers.iter().rev().find(|v| v.xmax == 0)
+fn live_version<Live>(vers: &Chain<Live>) -> Option<VerRef<'_, Live>> {
+    vers.live()
 }
 
 /// The wholesale rebuild folds' shared label cache: one live-label
@@ -131,7 +133,7 @@ impl Graph {
     pub(in crate::graph) fn live_label_ids(&self, node: NodeId) -> Vec<u32> {
         self.nodes
             .get(&node)
-            .and_then(|vers| live_version(vers.as_slice()).map(|v| v.live.labels.clone()))
+            .and_then(|vers| vers.live().map(|v| v.live.labels.clone()))
             .unwrap_or_default()
     }
 }
@@ -218,22 +220,10 @@ pub struct Procedure {
     pub rows: Vec<BTreeMap<String, Value>>,
 }
 
+use chain::{Chain, Ver, VerRef};
+
 /// The one MVCC version-chain record: node and rel chains share the shape
 /// (and, via [`cow`], the copy-on-write policy) through the aliases below.
-#[derive(Debug, Clone)]
-struct Ver<Live> {
-    xmin: u64,
-    xmax: u64,
-    live: Live,
-}
-
-impl<Live> Ver<Live> {
-    /// A version is collectable once its tombstone is at or before `horizon`.
-    fn dead_at(&self, horizon: u64) -> bool {
-        self.xmax != 0 && self.xmax <= horizon
-    }
-}
-
 type NodeVer = Ver<LiveNode>;
 type RelVer = Ver<LiveRel>;
 
@@ -245,35 +235,23 @@ pub(crate) fn rel_version_stride() -> u64 {
     std::mem::size_of::<RelVer>() as u64
 }
 
-/// Copy-on-write over a version chain: a tombstoned latest version is
-/// gone; a version born in this write is reused; otherwise tombstone the
-/// latest version and push its clone as this write's version.
-fn cow<I, Live: Clone>(
-    write_ts: &AtomicU64,
-    map: &CoreMap<I, Vec<Ver<Live>>>,
-    id: I,
-) -> Option<Live>
+/// The in-map size of an inline node slot: the row and its birth timestamp.
+pub(crate) fn node_inline_slot() -> u64 {
+    std::mem::size_of::<Chain<LiveNode>>() as u64
+}
+
+/// The in-map size of an inline relationship slot.
+pub(crate) fn rel_inline_slot() -> u64 {
+    std::mem::size_of::<Chain<LiveRel>>() as u64
+}
+
+/// Copy-on-write over `id`'s slot ([`Chain::cow`]) at the write timestamp.
+fn cow<I, Live: Clone>(write_ts: &AtomicU64, map: &CoreMap<I, Chain<Live>>, id: I) -> Option<Live>
 where
     I: Eq + std::hash::Hash,
 {
     let ts = write_ts.load(Ordering::Acquire);
-    let mut vers = map.get_mut(&id)?;
-    let last = vers.last_mut()?;
-    if last.xmax != 0 {
-        return None;
-    }
-    if last.xmin == ts {
-        return Some(last.live.clone());
-    }
-    let live = last.live.clone();
-    last.xmax = ts;
-    vers.push(Ver {
-        xmin: ts,
-        xmax: 0,
-        live: live.clone(),
-    });
-    crate::memory::fit_reserved(&mut vers);
-    Some(live)
+    map.get_mut(&id)?.cow(ts)
 }
 
 #[derive(Debug)]
@@ -300,8 +278,8 @@ pub struct Graph {
     write_ts: AtomicU64,
     in_write: AtomicBool,
     record_redo: AtomicBool,
-    nodes: CoreMap<NodeId, Vec<NodeVer>>,
-    rels: CoreMap<RelId, Vec<RelVer>>,
+    nodes: CoreMap<NodeId, Chain<LiveNode>>,
+    rels: CoreMap<RelId, Chain<LiveRel>>,
     out_adj: CoreMap<NodeId, TypedAdj>,
     in_adj: CoreMap<NodeId, TypedAdj>,
     /// LABS-851 (the structure round): the counting operator's count
@@ -540,10 +518,10 @@ impl Graph {
         let mut n = 0u64;
         for entry in self.nodes.iter() {
             let vers = entry.value();
-            n = n.saturating_add(crate::memory::node_chain_bytes(vers.len()));
+            n = n.saturating_add(crate::memory::node_chain_bytes(vers.shape()));
             for v in vers.iter() {
                 n = n.saturating_add(crate::memory::live_node_account_live(
-                    &v.live,
+                    v.live,
                     &self.interner,
                     &charge,
                 ));
@@ -551,9 +529,9 @@ impl Graph {
         }
         for entry in self.rels.iter() {
             let vers = entry.value();
-            n = n.saturating_add(crate::memory::rel_chain_bytes(vers.len()));
+            n = n.saturating_add(crate::memory::rel_chain_bytes(vers.shape()));
             for v in vers.iter() {
-                n = n.saturating_add(crate::memory::live_rel_account_live(&v.live));
+                n = n.saturating_add(crate::memory::live_rel_account_live(v.live));
             }
         }
         for entry in self.out_adj.iter() {
@@ -591,6 +569,7 @@ impl Graph {
     /// new version.
     pub fn estimate_redo_delta(&self, ops: &[RedoOp]) -> i64 {
         self.estimate_redo_delta_with_constraint_growth(ops, None)
+            .total
     }
 
     /// [`Graph::estimate_redo_delta`] with the constraint-key entry-growth
@@ -602,16 +581,19 @@ impl Graph {
         &self,
         ops: &[RedoOp],
         constraint_growth: Option<i64>,
-    ) -> i64 {
+    ) -> crate::memory::RedoDelta {
         let before = self.index_charge();
         let after = self.charge_after_ops(ops);
-        let mut delta = crate::memory::estimate_redo_delta(
+        let crate::memory::RedoDelta {
+            total: mut delta,
+            tombstone_spill,
+        } = crate::memory::estimate_redo_delta(
             &self.interner,
             ops,
             |id| self.node(id),
             |id| self.rel_form(id),
-            |id| self.nodes.get(&id).map(|v| v.len()).unwrap_or(0),
-            |id| self.rels.get(&id).map(|v| v.len()).unwrap_or(0),
+            |id| self.node_chain_shape(id),
+            |id| self.rel_chain_shape(id),
             &after,
         );
         delta += self.estimate_adj_delta(ops);
@@ -638,7 +620,10 @@ impl Graph {
                 }
             }
         }
-        delta
+        crate::memory::RedoDelta {
+            total: delta,
+            tombstone_spill,
+        }
     }
 
     fn estimate_adj_delta(&self, ops: &[RedoOp]) -> i64 {
@@ -758,38 +743,45 @@ impl Graph {
         self.charge(a as i64 - b as i64);
     }
 
-    fn charge_rel_after_edit(&self, id: RelId, before_bytes: u64, before_len: usize) {
-        let after_len = self.rel_chain_len(id);
+    fn charge_rel_after_edit(&self, id: RelId, before_bytes: u64, before_shape: ChainShape) {
+        let after_shape = self.rel_chain_shape(id);
         let after_bytes = self.visible_rel_account(id);
-        if after_len > before_len {
-            let growth = crate::memory::rel_chain_bytes(after_len) as i64
-                - crate::memory::rel_chain_bytes(before_len) as i64;
+        if after_shape != before_shape {
+            let growth = crate::memory::rel_chain_bytes(after_shape) as i64
+                - crate::memory::rel_chain_bytes(before_shape) as i64;
             self.charge(after_bytes as i64 + growth);
         } else {
             self.charge(after_bytes as i64 - before_bytes as i64);
         }
     }
 
+    #[cfg(test)]
     fn node_chain_len(&self, id: NodeId) -> usize {
-        self.nodes.get(&id).map(|v| v.len()).unwrap_or(0)
+        self.nodes.get(&id).map_or(0, |v| v.len())
     }
 
-    fn rel_chain_len(&self, id: RelId) -> usize {
-        self.rels.get(&id).map(|v| v.len()).unwrap_or(0)
+    fn node_chain_shape(&self, id: NodeId) -> ChainShape {
+        self.nodes
+            .get(&id)
+            .map_or(ChainShape::Absent, |v| v.shape())
+    }
+
+    fn rel_chain_shape(&self, id: RelId) -> ChainShape {
+        self.rels.get(&id).map_or(ChainShape::Absent, |v| v.shape())
     }
 
     /// Copy-on-write keeps the previous version. An in-place edit replaces it.
-    fn charge_node_after_edit(&self, id: NodeId, before: Option<&Node>, before_len: usize) {
+    fn charge_node_after_edit(&self, id: NodeId, before: Option<&Node>, before_shape: ChainShape) {
         let after = self.node(id);
-        let after_len = self.node_chain_len(id);
-        if after_len > before_len {
+        let after_shape = self.node_chain_shape(id);
+        if after_shape != before_shape {
             let charge = self.index_charge();
             let added = after
                 .as_ref()
                 .map(|n| crate::memory::live_node_account(n, &charge))
                 .unwrap_or(0);
-            let growth = crate::memory::node_chain_bytes(after_len) as i64
-                - crate::memory::node_chain_bytes(before_len) as i64;
+            let growth = crate::memory::node_chain_bytes(after_shape) as i64
+                - crate::memory::node_chain_bytes(before_shape) as i64;
             self.charge(added as i64 + growth);
         } else {
             self.charge_node_swap(before, after.as_ref());
@@ -943,22 +935,8 @@ impl Graph {
 
     pub fn abort_write(&self) {
         let ts = self.write_ts.load(Ordering::Acquire);
-        for mut vers in self.nodes.iter_mut() {
-            vers.retain(|v| v.xmin != ts);
-            for v in vers.iter_mut() {
-                if v.xmax == ts {
-                    v.xmax = 0;
-                }
-            }
-        }
-        for mut vers in self.rels.iter_mut() {
-            vers.retain(|v| v.xmin != ts);
-            for v in vers.iter_mut() {
-                if v.xmax == ts {
-                    v.xmax = 0;
-                }
-            }
-        }
+        self.nodes.retain(|_, vers| vers.abort(ts));
+        self.rels.retain(|_, vers| vers.abort(ts));
         self.in_write.store(false, Ordering::Release);
         self.pending_redo.lock().unwrap().clear();
         self.rebuild_adj();
@@ -970,9 +948,9 @@ impl Graph {
     }
 
     pub fn node_at(&self, id: NodeId, ts: u64) -> Option<Node> {
-        self.nodes.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).map(|v| v.live.to_node(id, &self.interner))
-        })
+        self.nodes
+            .get(&id)
+            .and_then(|vers| visible_version(&vers, ts).map(|v| v.live.to_node(id, &self.interner)))
     }
 
     /// Label-only view of a node — no property-map materialization (ADR-0033).
@@ -980,21 +958,21 @@ impl Graph {
     /// property map per node (the profile-hot `CompactProps::to_map` path).
     pub fn node_labels_at(&self, id: NodeId, ts: u64) -> Option<Vec<String>> {
         self.nodes.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).map(|v| v.live.label_strings(&self.interner))
+            visible_version(&vers, ts).map(|v| v.live.label_strings(&self.interner))
         })
     }
 
     pub fn rel_at(&self, id: RelId, ts: u64) -> Option<Relationship> {
-        self.rels.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).map(|v| v.live.to_rel(id, &self.interner))
-        })
+        self.rels
+            .get(&id)
+            .and_then(|vers| visible_version(&vers, ts).map(|v| v.live.to_rel(id, &self.interner)))
     }
 
     /// Endpoints only — expand / BFS must not materialize property maps (ADR-0033).
     pub fn rel_ends_at(&self, id: RelId, ts: u64) -> Option<(NodeId, NodeId)> {
-        self.rels.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).map(|v| (v.live.start, v.live.end))
-        })
+        self.rels
+            .get(&id)
+            .and_then(|vers| visible_version(&vers, ts).map(|v| (v.live.start, v.live.end)))
     }
 
     /// The rel's LIVE identity — its endpoints and type (round 3,
@@ -1008,32 +986,31 @@ impl Graph {
     /// not the endpoints alone.
     fn rel_live_identity(&self, id: RelId) -> Option<(NodeId, NodeId, u32)> {
         self.rels.get(&id).and_then(|vers| {
-            live_version(vers.as_slice()).map(|v| (v.live.start, v.live.end, v.live.type_id))
+            live_version(&vers).map(|v| (v.live.start, v.live.end, v.live.type_id))
         })
     }
 
     pub fn node_stub_at(&self, id: NodeId, ts: u64) -> Option<Node> {
-        self.nodes.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).map(|v| v.live.stub(id, &self.interner))
-        })
+        self.nodes
+            .get(&id)
+            .and_then(|vers| visible_version(&vers, ts).map(|v| v.live.stub(id, &self.interner)))
     }
 
     pub fn rel_stub_at(&self, id: RelId, ts: u64) -> Option<Relationship> {
         self.rels
             .get(&id)
-            .and_then(|vers| visible_version(vers.as_slice(), ts).map(|v| v.live.stub(id)))
+            .and_then(|vers| visible_version(&vers, ts).map(|v| v.live.stub(id)))
     }
 
     pub fn node_prop_at(&self, id: NodeId, ts: u64, key: &str) -> Option<Value> {
         self.nodes.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).and_then(|v| v.live.prop(&self.interner, key))
+            visible_version(&vers, ts).and_then(|v| v.live.prop(&self.interner, key))
         })
     }
 
     pub fn rel_prop_at(&self, id: RelId, ts: u64, key: &str) -> Option<Value> {
         self.rels.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts)
-                .and_then(|v| v.live.payload.get(&self.interner, key))
+            visible_version(&vers, ts).and_then(|v| v.live.payload.get(&self.interner, key))
         })
     }
 
@@ -1041,9 +1018,7 @@ impl Graph {
         self.nodes
             .get(&id)
             .and_then(|vers| {
-                vers.iter()
-                    .rev()
-                    .find(|v| visible(v.xmin, v.xmax, ts))
+                vers.visible_at(ts)
                     .map(|v| v.live.props.keys_as_strings(&self.interner))
             })
             .unwrap_or_default()
@@ -1053,9 +1028,7 @@ impl Graph {
         self.rels
             .get(&id)
             .and_then(|vers| {
-                vers.iter()
-                    .rev()
-                    .find(|v| visible(v.xmin, v.xmax, ts))
+                vers.visible_at(ts)
                     .map(|v| v.live.payload.keys(&self.interner))
             })
             .unwrap_or_default()
@@ -1064,7 +1037,7 @@ impl Graph {
     pub(crate) fn rel_visible_at(&self, id: RelId, ts: u64) -> bool {
         self.rels
             .get(&id)
-            .is_some_and(|vers| visible_version(vers.as_slice(), ts).is_some())
+            .is_some_and(|vers| visible_version(&vers, ts).is_some())
     }
 
     pub fn node(&self, id: NodeId) -> Option<Node> {
@@ -1082,10 +1055,8 @@ impl Graph {
         self.rels
             .get(&id)
             .and_then(|vers| {
-                vers.iter()
-                    .rev()
-                    .find(|v| visible(v.xmin, v.xmax, ts))
-                    .map(|v| crate::memory::live_rel_account_live(&v.live))
+                vers.visible_at(ts)
+                    .map(|v| crate::memory::live_rel_account_live(v.live))
             })
             .unwrap_or(0)
     }
@@ -1093,9 +1064,7 @@ impl Graph {
     fn rel_form(&self, id: RelId) -> Option<crate::store::PayloadForm> {
         let ts = self.read_ts();
         self.rels.get(&id).and_then(|vers| {
-            vers.iter()
-                .rev()
-                .find(|v| visible(v.xmin, v.xmax, ts))
+            vers.visible_at(ts)
                 .map(|v| v.live.payload.form(&self.interner))
         })
     }
@@ -1378,7 +1347,7 @@ impl Graph {
     pub(crate) fn node_visible_at(&self, id: NodeId, ts: u64) -> bool {
         self.nodes
             .get(&id)
-            .is_some_and(|vers| visible_version(vers.as_slice(), ts).is_some())
+            .is_some_and(|vers| visible_version(&vers, ts).is_some())
     }
 }
 

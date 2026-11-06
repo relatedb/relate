@@ -150,9 +150,7 @@ impl Graph {
         let Some(vers) = self.rels.get(&id) else {
             return;
         };
-        let Some(v) = vers.last() else {
-            return;
-        };
+        let v = vers.last();
         let type_id = v.live.type_id;
         let mut kids = Vec::new();
         v.live

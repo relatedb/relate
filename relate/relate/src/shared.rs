@@ -594,17 +594,21 @@ impl Shared {
         if limit == 0 {
             return Ok(reserved);
         }
-        let delta = self
+        let estimate = self
             .graph
             .estimate_redo_delta_with_constraint_growth(ops, constraint_growth);
+        let delta = estimate.total;
         // A net-freeing batch (`delta <= 0`, e.g. a DROP INDEX that
         // re-accounts retained versions at a smaller charge) admits nothing:
         // the cast below is only sound for a positive delta.
         if delta <= 0 {
             return Ok(reserved);
         }
+        // A delete's tombstone spill never refuses a batch (ADR-0529):
+        // checkpoint GC returns it, and a delete at the cap must commit.
+        let refusable = delta - estimate.tombstone_spill;
         let used = self.total_used_bytes().saturating_add(reserved);
-        if used.saturating_add(delta as u64) > limit {
+        if refusable > 0 && used.saturating_add(refusable as u64) > limit {
             return Err(Error::capacity(used, limit));
         }
         Ok(reserved.saturating_add(delta as u64))

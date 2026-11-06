@@ -22,16 +22,18 @@ use relate_datasets::shapes::{
 // LABS-370 v1 follow-up: every pin with a node population is +124 per
 // distinct node label — the exact label-count map's LABEL_COUNT_ENTRY_BYTES
 // entries (Flat/Ring/DenseRing one label, Fanout two).
+// ADR-0529: a never-updated node or relationship is an inline slot, not a
+// one-version list — 32 bytes less per node, 24 less per relationship.
 const BASE: u64 = 258;
-const RING: u64 = 721_108;
-const FANOUT: u64 = 640_934;
-const FLAT: u64 = 276_620;
-const DENSE_RING: u64 = 2_714_118;
+const RING: u64 = 665_108;
+const FANOUT: u64 = 585_030;
+const FLAT: u64 = 244_620;
+const DENSE_RING: u64 = 2_490_118;
 /// Flat, one attribute, one range index on `id`. `1,000 × 62` on top of [`FLAT`].
-const FLAT_RANGE: u64 = 338_620;
+const FLAT_RANGE: u64 = 306_620;
 /// Flat, one attribute, plus one text, one point, and one range index.
 /// The text term is 14 width-3 postings on `abcdefghijklmnop` (ADR-0207).
-const FLAT_INDEXED: u64 = 742_754;
+const FLAT_INDEXED: u64 = 710_754;
 
 fn apply(
     db: &Database,

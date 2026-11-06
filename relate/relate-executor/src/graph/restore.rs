@@ -6,28 +6,26 @@ use super::*;
 /// Every checkpoint row is restored as a version born at ts 1.
 const RESTORED_XMIN: u64 = 1;
 
-/// Install a checkpoint row as `id`'s only version. Before any write a
-/// chain holds at most an earlier row for the same id — overlapping legacy
-/// parts (ADR-0183) can hold an id twice — and the later row replaces it
-/// rather than stacking a second live version a delete would leave visible.
-fn restore<I, Live>(map: &CoreMap<I, Vec<Ver<Live>>>, id: I, live: Live) -> Result<()>
+/// Install a checkpoint row as `id`'s only version, inline. Before any
+/// write a slot holds at most an earlier row for the same id — overlapping
+/// legacy parts (ADR-0183) can hold an id twice — and the later row replaces
+/// it rather than stacking a second live version a delete would leave visible.
+fn restore<I, Live>(map: &CoreMap<I, Chain<Live>>, id: I, live: Live) -> Result<()>
 where
     I: Eq + std::hash::Hash,
 {
-    let ver = Ver {
-        xmin: RESTORED_XMIN,
-        xmax: 0,
-        live,
-    };
-    let mut vers = map.entry(id).or_default();
-    match vers.as_mut_slice() {
-        [] => vers.push(ver),
-        [prev] => *prev = ver,
-        _ => {
-            return Err(relate_core::Error::storage(
-                "checkpoint restore into a graph with committed writes",
-            ))
+    match map.entry(id) {
+        dashmap::mapref::entry::Entry::Vacant(slot) => {
+            slot.insert(Chain::inline(RESTORED_XMIN, live));
         }
+        dashmap::mapref::entry::Entry::Occupied(mut slot) => match slot.get_mut() {
+            prev @ Chain::Inline { .. } => *prev = Chain::inline(RESTORED_XMIN, live),
+            Chain::Spilled(_) => {
+                return Err(relate_core::Error::storage(
+                    "checkpoint restore into a graph with committed writes",
+                ))
+            }
+        },
     }
     Ok(())
 }
@@ -35,7 +33,7 @@ where
 /// Checkpoint payload of `id`'s version visible at `ts`, measured by
 /// `bytes`; `None` when no version is visible.
 fn visible_checkpoint_bytes<I, Live>(
-    map: &CoreMap<I, Vec<Ver<Live>>>,
+    map: &CoreMap<I, Chain<Live>>,
     id: I,
     ts: u64,
     bytes: impl FnOnce(&Live) -> Result<u64>,
@@ -46,11 +44,7 @@ where
     let Some(vers) = map.get(&id) else {
         return Ok(None);
     };
-    vers.iter()
-        .rev()
-        .find(|v| visible(v.xmin, v.xmax, ts))
-        .map(|v| bytes(&v.live))
-        .transpose()
+    vers.visible_at(ts).map(|v| bytes(v.live)).transpose()
 }
 
 impl Graph {

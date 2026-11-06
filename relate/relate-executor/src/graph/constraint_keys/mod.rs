@@ -588,7 +588,7 @@ impl Graph {
                 let Some(live) = super::live_version(entry.value()) else {
                     continue;
                 };
-                if let Some(tuple) = spec.live_rel_tuple(&self.interner, &live.live) {
+                if let Some(tuple) = spec.live_rel_tuple(&self.interner, live.live) {
                     holders
                         .entry(tuple)
                         .or_default()
@@ -609,7 +609,7 @@ impl Graph {
                 let Some(live) = super::live_version(&vers) else {
                     continue;
                 };
-                if let Some(tuple) = spec.live_node_tuple(&live.live) {
+                if let Some(tuple) = spec.live_node_tuple(live.live) {
                     holders.entry(tuple).or_default().push(EntityId::Node(id));
                 }
             }
