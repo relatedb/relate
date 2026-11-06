@@ -14,7 +14,7 @@ in sync with releases).
 | [`cookbook/`](cookbook/) | Tested recipes with runnable Cypher cells, published as the website cookbook (ADR-0130) |
 | [`reference/`](reference/) | Deep references: Cypher syntax, functions, ontology procedures, CLI flags, storage formats, dot-commands, client libraries, Bolt, C ABI |
 | [`adr/`](adr/) | Architecture Decision Records (immutable, numbered) |
-| [`design/`](design/) | Design studies and research: the extension-system tiering, the loader-plugin study, memory optimization, Swift platforms, token budgets, the embedded driver-provider spikes (LABS-447) |
+| [`design/`](design/) | Design studies and research: the extension-system tiering, the loader-plugin study, memory optimization, swappable query and write engines, Swift platforms, token budgets, the embedded driver-provider spikes (LABS-447) |
 | [`tck/`](tck/) | the retired in-repo TCK pin's history; language coverage lives in the spec harness (ADR-0482, ADR-0520) |
 | [`testing/`](testing/) | Test notes. [Memory pins and Bolt RSS](testing/memory-testing.md) |
 | [`datasets.md`](datasets.md) | Dataset / load-test binary flag tables (agent contract) |
