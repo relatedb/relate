@@ -99,11 +99,10 @@ pub struct Manifest {
 
 /// Refuse a manifest whose engine ids are not the engines this process
 /// opens. A missing id has already defaulted to the historical pair.
-pub(crate) fn reject_foreign_engine(manifest: &Manifest) -> relate_core::Result<()> {
-    if EngineIds::parse(&manifest.query_engine, &manifest.write_engine).is_none() {
+pub(crate) fn reject_foreign_engine(query: &str, write: &str) -> relate_core::Result<()> {
+    if EngineIds::parse(query, write).is_none() {
         return Err(relate_core::Error::storage(format!(
-            "store was written by query engine {} and write engine {}, not {} and {}",
-            manifest.query_engine, manifest.write_engine, MEMORY_QUERY_ENGINE, LOCAL_WRITE_ENGINE
+            "store was written by query engine {query} and write engine {write}, not {MEMORY_QUERY_ENGINE} and {LOCAL_WRITE_ENGINE}"
         )));
     }
     Ok(())
@@ -147,7 +146,7 @@ mod tests {
         let manifest: Manifest =
             serde_json::from_str(r#"{"format_version":3,"next_node_id":0,"next_rel_id":0}"#)
                 .unwrap();
-        assert!(reject_foreign_engine(&manifest).is_ok());
+        assert!(reject_foreign_engine(&manifest.query_engine, &manifest.write_engine).is_ok());
         assert_eq!(manifest.query_engine, MEMORY_QUERY_ENGINE);
         assert_eq!(manifest.write_engine, LOCAL_WRITE_ENGINE);
     }
@@ -158,6 +157,6 @@ mod tests {
             r#"{"format_version":3,"next_node_id":0,"next_rel_id":0,"query_engine":"paged","write_engine":"local"}"#,
         )
         .unwrap();
-        assert!(reject_foreign_engine(&manifest).is_err());
+        assert!(reject_foreign_engine(&manifest.query_engine, &manifest.write_engine).is_err());
     }
 }

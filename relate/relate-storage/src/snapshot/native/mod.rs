@@ -525,7 +525,7 @@ pub(crate) fn read_manifest(
     // against the content the manifest carries (ADR-0120 §8), and handed to
     // the caller with the manifest.
     let marker = crate::version::manifest::gate(m.format_version, m.ontology_path.is_some())?;
-    crate::manifest::reject_foreign_engine(&m)?;
+    crate::manifest::reject_foreign_engine(&m.query_engine, &m.write_engine)?;
     if let Some(path) = &m.ontology_path {
         if !is_ontology_object_name(path) {
             return Err(Error::storage(format!(

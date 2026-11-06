@@ -143,15 +143,7 @@ pub(crate) fn read_envelope(target: &StoreTarget) -> Result<Option<Envelope>> {
     if env.codec == SnapshotCodecKind::Markdown {
         return Err(root_envelope_names_markdown());
     }
-    if relate_engine_api::EngineIds::parse(&env.query_engine, &env.write_engine).is_none() {
-        return Err(Error::storage(format!(
-            "store was written by query engine {} and write engine {}, not {} and {}",
-            env.query_engine,
-            env.write_engine,
-            relate_engine_api::MEMORY_QUERY_ENGINE,
-            relate_engine_api::LOCAL_WRITE_ENGINE
-        )));
-    }
+    crate::manifest::reject_foreign_engine(&env.query_engine, &env.write_engine)?;
     Ok(Some(env))
 }
 
