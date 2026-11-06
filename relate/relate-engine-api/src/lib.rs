@@ -19,7 +19,7 @@ pub use catalog_image::{
 };
 pub use commit::CommitRecord;
 pub use engines::{
-    EngineIds, LOCAL_WRITE_ENGINE, MEMORY_QUERY_ENGINE, QueryEngineId, WriteEngineId,
+    EngineIds, QueryEngineId, WriteEngineId, LOCAL_WRITE_ENGINE, MEMORY_QUERY_ENGINE,
 };
 pub use export::{GraphExport, GraphImport, SnapshotGraph};
 pub use graph_type::{canonical_default_clause, DefaultValue, GraphTypeSpec};

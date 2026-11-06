@@ -82,7 +82,10 @@ impl QueryEngine for InMemoryQueryEngine {
         &'a self,
         params: &'a std::collections::BTreeMap<String, relate_core::Value>,
     ) -> Box<dyn PatternStats + 'a> {
-        Box::new(crate::exec::graph_stats::GraphStats::new(&self.graph, params))
+        Box::new(crate::exec::graph_stats::GraphStats::new(
+            &self.graph,
+            params,
+        ))
     }
 
     fn execute_read(&self, request: ReadRequest<'_>) -> Result<QueryResult> {
@@ -196,7 +199,10 @@ impl GraphImport for InMemoryQueryEngine {
     fn install_named_constraint(&self, constraint: relate_catalog::ConstraintDef) -> Result<()> {
         Graph::install_named_constraint(&self.graph, constraint)
     }
-    fn restore_checkpoint_theater(&self, theater: relate_engine_api::CheckpointTheater) -> Result<()> {
+    fn restore_checkpoint_theater(
+        &self,
+        theater: relate_engine_api::CheckpointTheater,
+    ) -> Result<()> {
         Graph::restore_checkpoint_theater(&self.graph, theater)
     }
     fn mark_legacy_unenforced(&self) {

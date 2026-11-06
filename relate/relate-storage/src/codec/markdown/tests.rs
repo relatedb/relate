@@ -200,7 +200,9 @@ fn assert_markdown_roundtrip(store: &StoreTarget) {
         read_to_vec(&*vfs, "index.md").unwrap(),
         read_to_vec(&*vfs, "log.md").unwrap(),
     );
-    let second = crate::open_store::<relate_executor::Graph>(store).unwrap().0;
+    let second = crate::open_store::<relate_executor::Graph>(store)
+        .unwrap()
+        .0;
     crate::checkpoint(store, &second, None).unwrap();
     let after: BTreeMap<String, Vec<u8>> = walk_vault(&*vfs)
         .unwrap()

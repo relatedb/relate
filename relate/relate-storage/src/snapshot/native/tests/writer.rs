@@ -142,11 +142,13 @@ fn late_numeric_collections_preflight_before_encoding_and_split_reopen() {
         for (ids, encode) in [
             (
                 &nodes,
-                nodes_parquet_ids as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
+                nodes_parquet_ids
+                    as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
             ),
             (
                 &rels,
-                rels_parquet_ids as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
+                rels_parquet_ids
+                    as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
             ),
         ] {
             let err = encode(&graph, ts, ids).unwrap_err();
@@ -189,7 +191,13 @@ fn shard_row_groups_stay_within_cap() {
         assert!(rows > 0);
         assert!(rows <= ROW_GROUP_CAP as i64);
     }
-    assert_eq!(open_store::<relate_executor::Graph>(&store).unwrap().0.live_node_count(), 130);
+    assert_eq!(
+        open_store::<relate_executor::Graph>(&store)
+            .unwrap()
+            .0
+            .live_node_count(),
+        130
+    );
 }
 
 #[test]
@@ -218,7 +226,12 @@ fn single_row_over_target_reopens_and_hard_page_or_row_failure_keeps_wal() {
             assert_eq!(get_object(&store, MANIFEST_JSON).unwrap(), old);
             assert_eq!(wal.lsn, lsn);
             assert_eq!(
-                open_store::<relate_executor::Graph>(&store).unwrap().0.node(0).unwrap().properties["big"],
+                open_store::<relate_executor::Graph>(&store)
+                    .unwrap()
+                    .0
+                    .node(0)
+                    .unwrap()
+                    .properties["big"],
                 relate_core::Value::String("x".repeat(payload_len).into())
             );
         });

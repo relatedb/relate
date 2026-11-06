@@ -19,7 +19,10 @@ pub(crate) struct SnapshotContents {
 
 impl SnapshotContents {
     /// Every node and relationship visible at `snapshot_ts`, plus catalog fields. Node order follows `all_node_ids_at`.
-    pub(crate) fn from_graph(graph: &dyn relate_engine_api::GraphImport, snapshot_ts: u64) -> Result<Self> {
+    pub(crate) fn from_graph(
+        graph: &dyn relate_engine_api::GraphImport,
+        snapshot_ts: u64,
+    ) -> Result<Self> {
         Ok(Self {
             nodes: Self::nodes_in(graph, snapshot_ts, &graph.all_node_ids_at(snapshot_ts))?,
             relationships: Self::rels_in(graph, snapshot_ts, &graph.all_rel_ids_at(snapshot_ts))?,
@@ -33,7 +36,11 @@ impl SnapshotContents {
 
     /// Nodes for a Parquet id window. Missing ids are skipped, matching the
     /// previous direct `node_at` loop.
-    pub(crate) fn nodes_in(graph: &dyn relate_engine_api::GraphImport, snapshot_ts: u64, ids: &[i64]) -> Result<Vec<Node>> {
+    pub(crate) fn nodes_in(
+        graph: &dyn relate_engine_api::GraphImport,
+        snapshot_ts: u64,
+        ids: &[i64],
+    ) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
         for id in ids {
             let Some(n) = graph.node_at(*id, snapshot_ts) else {
@@ -106,7 +113,9 @@ mod tests {
         graph
     }
 
-    fn signature(graph: &dyn relate_engine_api::GraphImport) -> Vec<(i64, Vec<String>, i64, i64, String)> {
+    fn signature(
+        graph: &dyn relate_engine_api::GraphImport,
+    ) -> Vec<(i64, Vec<String>, i64, i64, String)> {
         let mut rows = Vec::new();
         for id in graph.all_node_ids_at(graph.commit_ts()) {
             let n = graph.node_at(id, graph.commit_ts()).unwrap();

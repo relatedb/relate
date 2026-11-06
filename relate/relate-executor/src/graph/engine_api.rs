@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 
 use relate_catalog::{ConstraintDef, IndexDef};
-use relate_core::{Node, NodeId, Relationship, RelId, Result};
-use relate_model::Constraint;
+use relate_core::{Node, NodeId, RelId, Relationship, Result};
 use relate_engine_api::{CheckpointTheater, GraphExport, GraphImport, RedoOp};
+use relate_model::Constraint;
 
 use super::Graph;
 

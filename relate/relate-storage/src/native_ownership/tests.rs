@@ -817,7 +817,12 @@ fn failed_reset_staging_restores_intact_root_and_external_wal() {
     assert_eq!(std::fs::read(root.join("old")).unwrap(), b"root");
     assert_eq!(std::fs::read(wal.join("old")).unwrap(), b"wal");
     let recovered = parse_uri_with_wal(root.to_str().unwrap(), Some(wal)).unwrap();
-    assert_eq!(load::<relate_executor::Graph>(&recovered).unwrap().live_node_count(), 1);
+    assert_eq!(
+        load::<relate_executor::Graph>(&recovered)
+            .unwrap()
+            .live_node_count(),
+        1
+    );
 }
 
 #[test]
@@ -864,12 +869,22 @@ fn failed_reset_does_not_replace_fresh_owner_and_retains_recoverable_tombstone()
         .to_string()
         .contains(&tombstone_canonical.display().to_string()));
     let recovered = parse_uri(tombstone.to_str().unwrap()).unwrap();
-    assert_eq!(load::<relate_executor::Graph>(&recovered).unwrap().live_node_count(), 1);
+    assert_eq!(
+        load::<relate_executor::Graph>(&recovered)
+            .unwrap()
+            .live_node_count(),
+        1
+    );
     drop(recovered);
     reset_uri(root.to_str().unwrap(), None).unwrap();
     std::fs::rename(&tombstone, &root).unwrap();
     let restored = parse_uri(root.to_str().unwrap()).unwrap();
-    assert_eq!(load::<relate_executor::Graph>(&restored).unwrap().live_node_count(), 1);
+    assert_eq!(
+        load::<relate_executor::Graph>(&restored)
+            .unwrap()
+            .live_node_count(),
+        1
+    );
 }
 
 #[cfg(unix)]

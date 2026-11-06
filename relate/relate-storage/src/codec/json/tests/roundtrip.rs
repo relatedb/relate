@@ -128,7 +128,10 @@ fn snapshot_rejects_malformed_nested_tags_and_unknown_versions() {
         br#"{"value_encoding":4,"nodes":[],"relationships":[],"next_node_id":0,"next_rel_id":0}"#,
     )
     .unwrap();
-    let err = load_with_checkpoint_lsn::<relate_executor::Graph>(&store).err().unwrap().to_string();
+    let err = load_with_checkpoint_lsn::<relate_executor::Graph>(&store)
+        .err()
+        .unwrap()
+        .to_string();
     assert!(err.contains("unsupported graph value encoding: 4"), "{err}");
     let mut invalid_header =
         serde_json::json!({"nodes":[],"relationships":[],"next_node_id":1,"next_rel_id":1});
@@ -224,12 +227,15 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         ONTOLOGY_DOC.as_bytes(),
     )
     .unwrap();
-    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
+    let (_, _, _, report) =
+        crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
         report.migrations(),
         &[(crate::version::Subsystem::ValueEncoding, 2)]
     );
-    let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target).unwrap().ontology;
+    let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target)
+        .unwrap()
+        .ontology;
     assert_eq!(ontology.as_deref(), Some(ONTOLOGY_DOC));
     let raw = crate::snapshot::get_object(&target, GRAPH_JSON).unwrap();
     let data: serde_json::Value = serde_json::from_slice(&raw).unwrap();
@@ -251,12 +257,15 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         .vfs()
         .remove_file(crate::schema_files::ONTOLOGY_JSON_FILE)
         .unwrap();
-    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
+    let (_, _, _, report) =
+        crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
         report.migrations(),
         &[(crate::version::Subsystem::ValueEncoding, 3)]
     );
-    let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target).unwrap().ontology;
+    let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target)
+        .unwrap()
+        .ontology;
     assert_eq!(ontology, None);
     let raw = crate::snapshot::get_object(&target, GRAPH_JSON).unwrap();
     let data: serde_json::Value = serde_json::from_slice(&raw).unwrap();

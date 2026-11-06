@@ -222,18 +222,31 @@ impl Decoded {
 /// Preflighting entry point kept for tests that assert a direct encode
 /// rejects a decoded-envelope overage before allocating.
 #[cfg(test)]
-pub(crate) fn nodes_parquet_ids(graph: &dyn relate_engine_api::GraphImport, ts: u64, keys: &[i64]) -> Result<Vec<u8>> {
+pub(crate) fn nodes_parquet_ids(
+    graph: &dyn relate_engine_api::GraphImport,
+    ts: u64,
+    keys: &[i64],
+) -> Result<Vec<u8>> {
     encode_ids(graph, ts, keys, Kind::Node)
 }
 
 /// Relationship sibling of [`nodes_parquet_ids`], kept for direct-encode tests.
 #[cfg(test)]
-pub(crate) fn rels_parquet_ids(graph: &dyn relate_engine_api::GraphImport, ts: u64, rids: &[i64]) -> Result<Vec<u8>> {
+pub(crate) fn rels_parquet_ids(
+    graph: &dyn relate_engine_api::GraphImport,
+    ts: u64,
+    rids: &[i64],
+) -> Result<Vec<u8>> {
     encode_ids(graph, ts, rids, Kind::Rel)
 }
 
 #[cfg(test)]
-fn encode_ids(graph: &dyn relate_engine_api::GraphImport, ts: u64, ids: &[i64], kind: Kind) -> Result<Vec<u8>> {
+fn encode_ids(
+    graph: &dyn relate_engine_api::GraphImport,
+    ts: u64,
+    ids: &[i64],
+    kind: Kind,
+) -> Result<Vec<u8>> {
     decoded_preflight(graph, ts, ids, kind)?;
     let (bytes, _) = with_shard_writer(kind, file_ceiling(), |writer| {
         encode_rows(writer, graph, ts, kind, ids)
@@ -320,7 +333,11 @@ impl<'a> Properties<'a> {
     }
 }
 
-pub(crate) fn load_nodes(graph: &dyn relate_engine_api::GraphImport, bytes: Vec<u8>, origin: Origin) -> Result<()> {
+pub(crate) fn load_nodes(
+    graph: &dyn relate_engine_api::GraphImport,
+    bytes: Vec<u8>,
+    origin: Origin,
+) -> Result<()> {
     load_batches(bytes, Kind::Node, origin, |batch, ids, decoded| {
         if batch.num_columns() != 3 {
             return Err(Error::storage("node shard: expected 3 columns"));
@@ -374,7 +391,11 @@ pub(crate) fn load_nodes(graph: &dyn relate_engine_api::GraphImport, bytes: Vec<
     })
 }
 
-pub(crate) fn load_rels(graph: &dyn relate_engine_api::GraphImport, bytes: Vec<u8>, origin: Origin) -> Result<()> {
+pub(crate) fn load_rels(
+    graph: &dyn relate_engine_api::GraphImport,
+    bytes: Vec<u8>,
+    origin: Origin,
+) -> Result<()> {
     load_batches(bytes, Kind::Rel, origin, |batch, ids, decoded| {
         if batch.num_columns() != 5 {
             return Err(Error::storage("relationship shard: expected 5 columns"));

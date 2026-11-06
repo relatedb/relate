@@ -359,7 +359,12 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
 /// [`Origin::Monolith`] says why the monolith is not. A failure names the
 /// object that failed.
 /// All per-kind projections derive from `kind` itself.
-fn load_kind(target: &StoreTarget, graph: &dyn relate_engine_api::GraphImport, manifest: &Manifest, kind: Kind) -> Result<()> {
+fn load_kind(
+    target: &StoreTarget,
+    graph: &dyn relate_engine_api::GraphImport,
+    manifest: &Manifest,
+    kind: Kind,
+) -> Result<()> {
     let load = kind.loader();
     if manifest.format_version <= 2 && kind.parts(manifest).is_empty() {
         let name = kind.legacy_names()[0];

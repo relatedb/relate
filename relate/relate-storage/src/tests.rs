@@ -227,7 +227,10 @@ fn direct_graph_incomplete_label_constraint_fails_before_checkpoint_writes() {
                 "{codec:?}: the failed checkpoint rewrote {path}"
             );
         }
-        assert!(load::<relate_executor::Graph>(&store).unwrap().named_constraints().is_empty());
+        assert!(load::<relate_executor::Graph>(&store)
+            .unwrap()
+            .named_constraints()
+            .is_empty());
     }
 }
 
@@ -394,7 +397,10 @@ fn typed_checkpoint_rejects_forged_legacy_unknown_markers_in_both_codecs() {
             crate::snapshot::put_object(&store, image, &serde_json::to_vec(&forged).unwrap())
                 .unwrap();
             assert!(
-                matches!(load::<relate_executor::Graph>(&store), Err(Error::Storage(_))),
+                matches!(
+                    load::<relate_executor::Graph>(&store),
+                    Err(Error::Storage(_))
+                ),
                 "{codec:?}: {name}"
             );
         }
@@ -559,7 +565,10 @@ fn streaming_recovery_trims_corrupt_active_tail_and_fails_without_publishing_int
         ));
         assert_eq!(vfs::read_to_vec(&*vfs, path).unwrap(), before);
         drop(wal);
-        assert!(matches!(open_store::<relate_executor::Graph>(&store), Err(Error::Storage(_))));
+        assert!(matches!(
+            open_store::<relate_executor::Graph>(&store),
+            Err(Error::Storage(_))
+        ));
         assert_eq!(vfs::read_to_vec(&*vfs, path).unwrap(), before);
     }
 }

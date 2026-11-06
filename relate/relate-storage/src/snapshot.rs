@@ -503,7 +503,9 @@ mod unavailable {
         Err(parquet_unavailable())
     }
 
-    pub fn load_with_checkpoint_lsn<G: SnapshotGraph>(_: &StoreTarget) -> Result<LoadedSnapshot<G>> {
+    pub fn load_with_checkpoint_lsn<G: SnapshotGraph>(
+        _: &StoreTarget,
+    ) -> Result<LoadedSnapshot<G>> {
         Err(parquet_unavailable())
     }
 

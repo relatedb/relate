@@ -43,7 +43,9 @@ fn assert_failed_open_preserves_wal(target: &StoreTarget, message: &str) {
         "test store must have an active WAL segment"
     );
     for _ in 0..2 {
-        let err = open_store::<relate_executor::Graph>(target).err().expect("gated open must fail");
+        let err = open_store::<relate_executor::Graph>(target)
+            .err()
+            .expect("gated open must fail");
         assert!(matches!(err, Error::Storage(_)), "{err}");
         assert!(err.to_string().contains(message), "{err}");
         assert_eq!(
@@ -168,7 +170,9 @@ fn unsupported_snapshot_without_wal_never_creates_wal_dir() {
         codec: SnapshotCodecKind::Json,
         codec_config: None,
     };
-    let err = open_store::<relate_executor::Graph>(&target).err().expect("gated open must fail");
+    let err = open_store::<relate_executor::Graph>(&target)
+        .err()
+        .expect("gated open must fail");
     assert!(matches!(err, Error::Storage(_)), "{err}");
     assert!(
         err.to_string()

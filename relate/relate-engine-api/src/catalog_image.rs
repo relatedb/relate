@@ -75,7 +75,6 @@ pub fn map_put_database(
     }
 }
 
-
 /// Typed committed SHOW metadata stored with a checkpoint's named catalog.
 /// Missing images in older snapshots use the historical empty theater.
 #[doc(hidden)]
@@ -134,14 +133,10 @@ pub struct ShowSchema {
 impl ShowSchema {
     /// Capture the committed SHOW metadata at one admission point: the
     /// store-level databases table plus this graph's theater maps.
-    pub fn capture(
-        databases: BTreeMap<Namespace, DatabaseEntry>,
-        theater: &TheaterData,
-    ) -> Self {
+    pub fn capture(databases: BTreeMap<Namespace, DatabaseEntry>, theater: &TheaterData) -> Self {
         Self {
             databases,
             data: theater.clone(),
         }
     }
 }
-

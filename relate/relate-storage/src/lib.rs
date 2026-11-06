@@ -14,6 +14,12 @@ mod wal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub use codec::markdown::recorded_body_properties;
+pub use codec::markdown::MarkdownBodyProperties;
+pub use codec::SnapshotCodecKind;
+#[cfg(not(target_arch = "wasm32"))]
+pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
+pub use manifest::Manifest;
 #[cfg(not(target_arch = "wasm32"))]
 use native_ownership::reset_native_with;
 #[cfg(not(target_arch = "wasm32"))]
@@ -21,14 +27,8 @@ pub use native_ownership::{take_writer_lease, WriterLease};
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub use native_ownership::{LOCK_MARKER, ROOT_ROLE, WAL_ROLE, WRITER_LEASE};
-use relate_core::{Error, Result};
-pub use codec::markdown::recorded_body_properties;
-pub use codec::markdown::MarkdownBodyProperties;
-pub use codec::SnapshotCodecKind;
-#[cfg(not(target_arch = "wasm32"))]
-pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
-pub use manifest::Manifest;
 pub use relate_core::{cypher_to_value, value_to_cypher};
+use relate_core::{Error, Result};
 // Used by the crate's migration tests; open_store serves production.
 #[cfg(test)]
 pub(crate) use open::open_store_with_report;
@@ -768,7 +768,11 @@ fn reset_filesystem_uri(uri: &str, wal_override: Option<&Path>) -> Result<()> {
     reset_native_with(path, wal_override, |_| Ok(()))
 }
 
-pub fn checkpoint(target: &StoreTarget, graph: &dyn relate_engine_api::GraphImport, ontology: Option<&str>) -> Result<()> {
+pub fn checkpoint(
+    target: &StoreTarget,
+    graph: &dyn relate_engine_api::GraphImport,
+    ontology: Option<&str>,
+) -> Result<()> {
     checkpoint_at(target, graph, 0, graph.commit_ts(), ontology)
 }
 

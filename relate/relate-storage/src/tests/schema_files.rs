@@ -581,7 +581,10 @@ fn oversized_mirror_file_refuses_the_open_through_the_bounded_read() {
         checkpointed_store(&store);
         crate::vfs::atomic_write(&*store.vfs, GRAPH_TYPE_FILE, &oversized).unwrap();
 
-        for open in [open_store::<relate_executor::Graph>(&store), open_store_readonly::<relate_executor::Graph>(&store)] {
+        for open in [
+            open_store::<relate_executor::Graph>(&store),
+            open_store_readonly::<relate_executor::Graph>(&store),
+        ] {
             let Err(error) = open else {
                 panic!("an oversized graph-type.cypher opened the store")
             };

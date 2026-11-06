@@ -67,11 +67,11 @@ pub(crate) use canonicalize::*;
 pub(crate) use default_eval::{eval_lowered_default, lowered_default};
 pub(crate) use derive::*;
 pub(crate) use inherit::*;
+pub use relate_engine_api::graph_type::OptionValueModel;
 pub use relate_engine_api::graph_type::{
     canon_allows, canon_intersection, canonical_default_clause, DefaultValue, GraphTypeSpec,
     DEFAULT_ON_COMMIT_SEPARATOR,
 };
-pub use relate_engine_api::graph_type::OptionValueModel;
 pub(crate) use storage_constraint::{
     render_storage_constraint, standalone_verb, storage_constraint_rank, StorageConstraintStyle,
 };

@@ -119,7 +119,12 @@ fn invalid_manifest_paths_fail_before_read_retirement_or_wal_recycle_and_keep_lo
         ));
     }
     put_manifest(&target, &original);
-    assert_eq!(load_with_wal::<relate_executor::Graph>(&target, &wal).unwrap().live_node_count(), 2);
+    assert_eq!(
+        load_with_wal::<relate_executor::Graph>(&target, &wal)
+            .unwrap()
+            .live_node_count(),
+        2
+    );
     drop((target, wal));
     // With the lease released, the role bytes are readable directly and prove
     // the markers were neither recycled nor rewritten.
@@ -321,7 +326,10 @@ fn native_writer_rechecks_unchanged_legacy_shard_before_manifest_publication() {
     std::fs::rename(&outside, uri.join("nodes")).unwrap();
     drop((injected, target, wal));
     let reopened = parse_uri(uri.to_str().unwrap()).unwrap();
-    assert_eq!(graph_state(&open_store::<relate_executor::Graph>(&reopened).unwrap().0), expected);
+    assert_eq!(
+        graph_state(&open_store::<relate_executor::Graph>(&reopened).unwrap().0),
+        expected
+    );
 }
 
 #[test]

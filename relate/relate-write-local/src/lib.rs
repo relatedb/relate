@@ -26,7 +26,10 @@ pub struct AppendedRecord {
 
 /// Preflight and append records the caller already timestamped. Does not
 /// `sync`. The caller holds the log lock and decides the durability barrier.
-pub fn append_assigned(wal: &mut Wal, records: &[AssignedRecord<'_>]) -> Result<Vec<AppendedRecord>> {
+pub fn append_assigned(
+    wal: &mut Wal,
+    records: &[AssignedRecord<'_>],
+) -> Result<Vec<AppendedRecord>> {
     let base = wal.lsn;
     let mut proofs = Vec::with_capacity(records.len());
     for (index, record) in records.iter().enumerate() {

@@ -320,7 +320,11 @@ pub fn load_with_wal<G: SnapshotGraph>(target: &StoreTarget, wal: &Wal) -> Resul
     Ok(graph)
 }
 
-fn replay_after(graph: &dyn relate_engine_api::GraphImport, wal: &Wal, checkpoint_lsn: u64) -> Result<()> {
+fn replay_after(
+    graph: &dyn relate_engine_api::GraphImport,
+    wal: &Wal,
+    checkpoint_lsn: u64,
+) -> Result<()> {
     replay_after_ontology(graph, wal, checkpoint_lsn, None).map(|_| ())
 }
 

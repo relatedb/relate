@@ -14,8 +14,8 @@ use relate_executor::RedoOp;
 use relate_storage::{StoreTarget, Wal};
 
 use crate::checkpoint::{self, rotate_for_mode, schedule_checkpoint, try_begin_checkpoint};
-use crate::engines::{self, LiveQuery, LiveWrite};
 use crate::commit::{CommitTimingBuf, GroupCommit};
+use crate::engines::{self, LiveQuery, LiveWrite};
 #[cfg(test)]
 use crate::follow;
 use crate::plan_cache;

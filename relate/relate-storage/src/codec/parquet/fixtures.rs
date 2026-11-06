@@ -4,17 +4,21 @@
 
 use std::sync::Arc;
 
+use crate::snapshot::Kind;
 use arrow::array::{ArrayRef, Int64Array, Int64Builder, ListBuilder, StringArray, StringBuilder};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use relate_core::{Error, Result};
-use crate::snapshot::Kind;
 
 use super::{file_ceiling, with_shard_writer, Loader, Origin};
 
 /// Load `bytes` with `loader` as a manifest part spanning every persisted id.
-pub(super) fn load_part(loader: Loader, graph: &dyn relate_engine_api::GraphImport, bytes: &[u8]) -> Result<()> {
+pub(super) fn load_part(
+    loader: Loader,
+    graph: &dyn relate_engine_api::GraphImport,
+    bytes: &[u8],
+) -> Result<()> {
     loader(graph, bytes.to_vec(), Origin::Part(0..i64::MAX))
 }
 

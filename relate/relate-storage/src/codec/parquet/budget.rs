@@ -30,7 +30,12 @@ impl Kind {
     /// the fixed Int64 columns plus the executor's variable payload (labels
     /// or type name, and tagged property JSON). Only [`DecodedBudget`]
     /// measures rows.
-    fn checkpoint_bytes(self, graph: &dyn relate_engine_api::GraphImport, id: i64, ts: u64) -> Result<Option<u64>> {
+    fn checkpoint_bytes(
+        self,
+        graph: &dyn relate_engine_api::GraphImport,
+        id: i64,
+        ts: u64,
+    ) -> Result<Option<u64>> {
         let variable = match self {
             Self::Node => graph.node_checkpoint_bytes(id, ts)?,
             Self::Rel => graph.rel_checkpoint_bytes(id, ts)?,
@@ -153,7 +158,12 @@ impl<'g> DecodedBudget<'g> {
 /// Decoded bytes of the live rows of `ids`, which must fit the ADR-0086
 /// decoded envelope together.
 #[cfg(test)]
-pub(crate) fn decoded_preflight(graph: &dyn relate_engine_api::GraphImport, ts: u64, ids: &[i64], kind: Kind) -> Result<u64> {
+pub(crate) fn decoded_preflight(
+    graph: &dyn relate_engine_api::GraphImport,
+    ts: u64,
+    ids: &[i64],
+    kind: Kind,
+) -> Result<u64> {
     let mut budget = DecodedBudget::new(graph, ts, kind, u64::MAX);
     if !budget.cut(ids)?.is_empty() {
         return Err(invalid("actual decoded bytes"));

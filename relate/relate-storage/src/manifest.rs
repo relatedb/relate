@@ -115,10 +115,9 @@ mod tests {
 
     #[test]
     fn an_old_manifest_reads_as_the_historical_engines() {
-        let manifest: Manifest = serde_json::from_str(
-            r#"{"format_version":3,"next_node_id":0,"next_rel_id":0}"#,
-        )
-        .unwrap();
+        let manifest: Manifest =
+            serde_json::from_str(r#"{"format_version":3,"next_node_id":0,"next_rel_id":0}"#)
+                .unwrap();
         assert!(reject_foreign_engine(&manifest).is_ok());
         assert_eq!(manifest.query_engine, MEMORY_QUERY_ENGINE);
         assert_eq!(manifest.write_engine, LOCAL_WRITE_ENGINE);

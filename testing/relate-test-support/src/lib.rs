@@ -5,7 +5,6 @@
 //! graph-examples) consume it as a regular dependency because they are
 //! themselves test tooling. Nothing here ships in a released artifact.
 
-pub mod recording_engine;
 #[cfg(feature = "bolt")]
 pub mod bolt;
 #[cfg(feature = "durability")]
@@ -19,6 +18,7 @@ pub mod git;
 pub mod loopback;
 #[cfg(feature = "nested_eval")]
 pub mod nested_eval;
+pub mod recording_engine;
 pub mod rng;
 pub mod sampling;
 pub mod temporal;

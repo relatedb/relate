@@ -100,7 +100,6 @@ impl Default for DatabasesCatalog {
     }
 }
 
-
 /// Apply speculative catalog operations to this private admitted copy.
 pub(crate) fn apply_show_overlay<'o>(
     show: &mut ShowSchema,
@@ -510,7 +509,10 @@ mod tests {
     }
 
     fn admitted_show() -> ShowSchema {
-        ShowSchema::capture(DatabasesCatalog::default().snapshot(), &TheaterData::default())
+        ShowSchema::capture(
+            DatabasesCatalog::default().snapshot(),
+            &TheaterData::default(),
+        )
     }
 
     #[test]

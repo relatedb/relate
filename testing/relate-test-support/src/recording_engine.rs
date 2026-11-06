@@ -5,9 +5,7 @@
 use std::sync::Mutex;
 
 use relate_core::Result;
-use relate_engine_api::{
-    CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine,
-};
+use relate_engine_api::{CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine};
 
 /// Records the groups, checkpoints, polls, and reloads it forwards.
 pub struct RecordingWriteEngine<E> {
@@ -49,7 +47,10 @@ impl<E> RecordingWriteEngine<E> {
 impl<E: WriteEngine> WriteEngine for RecordingWriteEngine<E> {
     fn commit(&self, groups: &[CommitGroup]) -> Result<Vec<CommittedSlot>> {
         let slots = self.inner.commit(groups)?;
-        self.commits.lock().expect("recording lock").push(slots.clone());
+        self.commits
+            .lock()
+            .expect("recording lock")
+            .push(slots.clone());
         Ok(slots)
     }
 
@@ -94,7 +95,13 @@ mod tests {
                 commit_ts: 1,
             }])
             .unwrap();
-        assert_eq!(slots, vec![relate_engine_api::CommittedSlot { lsn: 1, commit_ts: 1 }]);
+        assert_eq!(
+            slots,
+            vec![relate_engine_api::CommittedSlot {
+                lsn: 1,
+                commit_ts: 1
+            }]
+        );
         assert_eq!(engine.commits().len(), 1);
         // The writer log refuses a follow poll. The trait still observed it.
         assert!(engine.poll_follow(0).is_err());

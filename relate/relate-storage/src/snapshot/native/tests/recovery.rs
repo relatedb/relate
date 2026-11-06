@@ -280,6 +280,12 @@ fn crash_orphans_swept_only_after_validated_reopen_on_all_vfs() {
     assert!(object_exists(&memory, orphan).unwrap());
     put_object(&memory, MANIFEST_JSON, &valid).unwrap();
     drop(wal);
-    assert_eq!(open_store::<relate_executor::Graph>(&memory).unwrap().0.live_node_count(), 2);
+    assert_eq!(
+        open_store::<relate_executor::Graph>(&memory)
+            .unwrap()
+            .0
+            .live_node_count(),
+        2
+    );
     assert!(!object_exists(&memory, orphan).unwrap());
 }

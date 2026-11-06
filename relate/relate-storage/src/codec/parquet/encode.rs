@@ -7,6 +7,10 @@
 use std::io::Write;
 use std::sync::Arc;
 
+use crate::snapshot::Kind;
+#[cfg(test)]
+use crate::vfs::CappedSink;
+use crate::vfs::{CappedVfsWriter, VfsFile};
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -17,10 +21,6 @@ use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use relate_core::{Error, Node, Relationship, Result};
-use crate::snapshot::Kind;
-#[cfg(test)]
-use crate::vfs::CappedSink;
-use crate::vfs::{CappedVfsWriter, VfsFile};
 
 #[cfg(test)]
 use super::{preflight, MAX_FILE};
