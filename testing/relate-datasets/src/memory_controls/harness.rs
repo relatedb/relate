@@ -18,7 +18,7 @@ use relate_test_support::sampling::process_status;
 use serde::Serialize;
 
 use crate::bolt::Session;
-use crate::serve_child::{free_port, serve_command, ServeChild, READY_DEADLINE};
+use crate::serve_child::{free_ports, serve_command, ServeChild, READY_DEADLINE};
 
 /// The cases `--case` names, in run order: the memory control verifications, the
 /// logical-byte calibration, then the configured workload (which also runs by
@@ -277,12 +277,9 @@ impl Server {
     }
 
     fn launch(bin: &Path, store: &Path, limits: ServeLimits) -> Result<Self, String> {
-        let bolt_port = free_port()?;
-        let http_port = if limits.http {
-            Some(free_port()?)
-        } else {
-            None
-        };
+        let ports = free_ports(if limits.http { 2 } else { 1 })?;
+        let bolt_port = ports[0];
+        let http_port = ports.get(1).copied();
         let mut cmd = serve_command(bin, store, bolt_port);
         if let Some(port) = http_port {
             cmd.arg("--http").arg(port.to_string());
