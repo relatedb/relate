@@ -310,17 +310,9 @@ def added_lines(
     line is one new-file line, counting from the hunk's ``+<start>``.
     """
     if pre_image is None:
-        result = checked_git(
-            PROGRAM,
-            f"git diff for {path!r} failed",
-            "diff",
-            "--no-renames",
-            "--unified=0",
-            "--text",
-            f"{base}...HEAD",
-            "--",
-            f":(literal){path}",
-        )
+        # Each arm supplies only its ref pair; the one diff call below
+        # carries the flags, so the two arms cannot drift apart.
+        revisions = (f"{base}...HEAD", "--", f":(literal){path}")
     else:
         old = checked_git(
             PROGRAM,
@@ -334,16 +326,16 @@ def added_lines(
             "rev-parse",
             f"HEAD:{path}",
         ).stdout.strip()
-        result = checked_git(
-            PROGRAM,
-            f"git diff for {path!r} failed",
-            "diff",
-            "--no-renames",
-            "--unified=0",
-            "--text",
-            old,
-            new,
-        )
+        revisions = (old, new)
+    result = checked_git(
+        PROGRAM,
+        f"git diff for {path!r} failed",
+        "diff",
+        "--no-renames",
+        "--unified=0",
+        "--text",
+        *revisions,
+    )
     lines = result.stdout.split("\n")
     if lines and lines[-1] == "":
         # split's artifact after the output's final newline — not a diff

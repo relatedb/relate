@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,57 +29,67 @@ POM = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def run(*args, pom_text=POM):
+def invoke(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run pom.py with exactly these argv words (no temp pom involved)."""
+    return subprocess.run(
+        [sys.executable, str(POM_PY), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def run(
+    verb: str, *args: str, pom_text: str = POM
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run ``<verb> <pom> [<args>...]`` on a temp pom.
+
+    The path is spliced in after the verb, the shape pom.py's own usage
+    spells; returns the completed process and the post-run file text.
+    """
     with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False) as fh:
         fh.write(pom_text)
         path = fh.name
     try:
-        return subprocess.run(
-            ["python3", str(POM_PY), *args, path],
-            capture_output=True,
-            text=True,
-        )
+        return invoke(verb, path, *args), Path(path).read_text()
     finally:
         Path(path).unlink()
 
 
 class GetTests(unittest.TestCase):
     def test_get_prints_the_project_version(self) -> None:
-        self.assertEqual(run("get").stdout.strip(), "0.1.0")
+        result, _ = run("get")
+        self.assertEqual(result.stdout.strip(), "0.1.0")
 
     def test_get_fails_loudly_without_a_project_version(self) -> None:
-        result = run("get", pom_text="<project><name>x</name></project>\n")
+        result, _ = run("get", pom_text="<project><name>x</name></project>\n")
         self.assertEqual(result.returncode, 1)
         self.assertIn("no project <version>", result.stderr)
 
     def test_get_fails_loudly_on_malformed_xml(self) -> None:
-        result = run("get", pom_text="not xml at all\n")
+        result, _ = run("get", pom_text="not xml at all\n")
         self.assertEqual(result.returncode, 1)
         self.assertIn("not well-formed", result.stderr)
 
 
 class SetTests(unittest.TestCase):
     def test_set_rewrites_exactly_the_project_version_line(self) -> None:
-        with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False) as fh:
-            fh.write(POM)
-            path = fh.name
-        try:
-            result = subprocess.run(
-                ["python3", str(POM_PY), "set", path, "0.16.2"],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            lines = Path(path).read_text().split("\n")
-        finally:
-            Path(path).unlink()
+        result, text = run("set", "0.16.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
         expected = POM.replace(
             "  <version>0.1.0</version>", "  <version>0.16.2</version>"
-        ).split("\n")
-        self.assertEqual(lines, expected)  # comments and the dep version intact
+        )
+        # Comments and the dependency's own <version> survive intact.
+        self.assertEqual(text, expected)
 
     def test_set_without_a_version_argument_is_a_usage_error(self) -> None:
-        result = run("set", pom_text="<project><name>x</name></project>\n")
+        result, _ = run("set", pom_text="<project><name>x</name></project>\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("usage:", result.stderr)
+
+
+class UsageTests(unittest.TestCase):
+    def test_no_arguments_prints_usage(self) -> None:
+        result = invoke()
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage:", result.stderr)
 

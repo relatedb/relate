@@ -50,6 +50,12 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# The pom's project <version> accessor — namespace-agnostic, direct
+# children of <project> only; `get` exits 1 when the entry is absent, and
+# `set` rewrites only that one line. The step-1 sweep and the step-4
+# read-back both call it, so read and write share one parser.
+pom_py="$repo_root/scripts/lib/pom.py"
+
 # toml_section_version and toml_lock_package_version (shared TOML readers)
 # back the consistency self-check.
 # shellcheck source=lib/toml.sh
@@ -113,14 +119,6 @@ npm_manifest_version() {
   sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$1"
 }
 
-# Print the pom's project <version> — the structural accessor
-# scripts/lib/pom.py owns (namespace-agnostic, direct children of
-# <project> only, exit 1 when the entry is absent). The step-1 sweep
-# writes through the same script, so read and write share one parser.
-pom_project_version() {
-  python3 "$repo_root/scripts/lib/pom.py" get "$1"
-}
-
 # Restore every touched path, remove the sweep's sidecar files, and exit 1.
 # When this runs is the failure policy's one statement (section 0); this
 # function only disarms the traps first so its own exit cannot re-trigger.
@@ -170,9 +168,9 @@ for f in "${js_platform_pkgs[@]}"; do
 done
 
 # Maven: the project's own <version> only, through the same structural
-# accessor the step-4 read-back uses — dependency and plugin versions are
+# accessor the step-4 read-back calls — dependency and plugin versions are
 # never touched.
-python3 "$repo_root/scripts/lib/pom.py" set "$java_pom" "$next"
+python3 "$pom_py" set "$java_pom" "$next"
 
 # Regenerate the npm lockfile from the bumped manifest instead of sed'ing it:
 # the lockfile's root-entry "version" sits at a different indent than the
@@ -279,7 +277,7 @@ fi
 
 # Maven: read back through the same accessor; a non-zero status means the
 # entry is missing or the pom is malformed — distinct from a wrong value.
-if check_pom="$(pom_project_version "$java_pom")"; then
+if check_pom="$(python3 "$pom_py" get "$java_pom")"; then
   [[ "$check_pom" == "$next" ]] || {
     echo "release-bump: $java_pom project version is '$check_pom', expected '$next'" >&2
     fail=1
