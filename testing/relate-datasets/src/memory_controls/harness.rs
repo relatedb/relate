@@ -59,11 +59,11 @@ pub struct Config {
     /// Run one named case. `None` runs the control verifications, the
     /// calibration, and the workload.
     pub case: Option<String>,
-    /// Repetitions for every peak-token calibration shape.
+    /// Repetitions for every workspace-memory calibration shape.
     pub calibration_repeats: u32,
     /// Milliseconds each calibration query remains paused at its live peak.
     pub calibration_hold_ms: u64,
-    /// Optional workspace family filter for peak-token calibration.
+    /// Optional workspace family filter for workspace-memory calibration.
     pub calibration_family: Option<String>,
 }
 
@@ -194,7 +194,7 @@ pub fn run(
         finish_case(crate::memory_controls::controls::case_active_queries(cfg))?;
     }
     let workspace_memory_calibration = if selected(cfg, "workspace-memory-calibration") {
-        let (case, calibration) = crate::memory_controls::calibration::case_peak_token_rss(cfg)?;
+        let (case, calibration) = crate::memory_controls::calibration::case_workspace_memory(cfg)?;
         finish_case(Ok(case))?;
         Some(calibration)
     } else {
@@ -209,7 +209,7 @@ pub fn run(
         }
     };
     let report = Report {
-        schema_version: 3,
+        schema_version: 4,
         name: "memory-controls".into(),
         started_at: started,
         finished_at: stamp(),
@@ -253,9 +253,9 @@ pub(crate) struct ServeLimits {
     /// Sleep inside a charged sort, while the retained rows are alive.
     pub(crate) peak_hold_ms: Option<u64>,
     /// Pause only after this many logical bytes are reserved.
-    /// Passed through `RELATE_PEAK_HOLD_TOKENS`, which the engine
-    /// compares with the reserved logical-byte hold.
-    pub(crate) peak_hold_tokens: Option<u64>,
+    /// Passed through `RELATE_PEAK_HOLD_LOGICAL_BYTES`. The engine
+    /// compares it with the reserved logical-byte hold.
+    pub(crate) peak_hold_logical_bytes: Option<u64>,
     /// Pause only for this workspace family.
     pub(crate) peak_hold_family: Option<&'static str>,
 }
@@ -300,8 +300,8 @@ impl Server {
         if let Some(ms) = limits.peak_hold_ms {
             cmd.env("RELATE_PEAK_HOLD_MS", ms.to_string());
         }
-        if let Some(tokens) = limits.peak_hold_tokens {
-            cmd.env("RELATE_PEAK_HOLD_TOKENS", tokens.to_string());
+        if let Some(bytes) = limits.peak_hold_logical_bytes {
+            cmd.env("RELATE_PEAK_HOLD_LOGICAL_BYTES", bytes.to_string());
         }
         if let Some(family) = limits.peak_hold_family {
             cmd.env("RELATE_PEAK_HOLD_FAMILY", family);

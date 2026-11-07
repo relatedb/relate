@@ -23,7 +23,7 @@ const REPEATS: usize = 3;
 const HOLD_MS: u64 = 400;
 /// Long enough for a second Bolt handshake to land while the holder still
 /// owns the one quantum of logical bytes. A short hold races the handshake.
-const TOKEN_HOLD_MS: u64 = 2_000;
+const OVERLAP_HOLD_MS: u64 = 2_000;
 
 pub(crate) fn case_connections(cfg: &Config) -> Result<CaseReport, String> {
     let store = cfg.store.join("connections");
@@ -154,7 +154,7 @@ pub(crate) fn case_active_queries(cfg: &Config) -> Result<CaseReport, String> {
     let limits = ServeLimits {
         max_connections: Some(4),
         concurrent_logical_workspace_limit: Some(pool_for_one_quantum()),
-        hold_ms: Some(TOKEN_HOLD_MS),
+        hold_ms: Some(OVERLAP_HOLD_MS),
         ..ServeLimits::default()
     };
     // The ledger load retains far more than one quantum. Load with

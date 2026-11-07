@@ -188,7 +188,7 @@ including idle ones, stay under `--max-connections`. Processing RSS for
 executing queries is bounded only when admission is on; the host
 then sizes that term from `concurrent_logical_workspace_limit` (logical
 bytes) and its own RSS-per-logical-byte calibration. The processing-memory
-loadtest measures that relationship in the `peak-token-rss` probe: VmRSS
+loadtest measures that relationship in workspace-memory calibration: VmRSS
 and cgroup memory while concurrent sort, expand, aggregation, distinct, or
 create workspace holds a live reservation, minus those same sessions after
 a trivial query, divided by the live logical workspace bytes held. Size

@@ -88,6 +88,7 @@ suites:
     - loadtest-smoke
     - query-latency
     - memory-controls
+    - memory-shape
 
 stages:
   lint:
@@ -547,6 +548,22 @@ stages:
       - *baseline-docker-setup
       - make memory-controls-test MEMORY_CONTROLS_PROFILE=full
       - make compare-memory-controls
+
+  # Fixed graph shapes, then the min/max envelope. One run is the whole
+  # matrix; the freeze repeats it.
+  memory-shape:
+    runner: sonic-rust
+    docker_socket: true
+    before: *before-rust
+    environment:
+      <<: [ *baseline-env-forwarding, *cargo-env ]
+      CARGO_TARGET_DIR: /cargo-target/memory-shape
+      CI_COMPARE: CI_COMPARE
+    volumes: *cargo-cache
+    commands:
+      - *baseline-docker-setup
+      - make memory-shape-loadtest
+      - make compare-memory-shape
 
   # `make clean` as root. Stage outputs are root-owned, and the cargo
   # caches are Docker volumes. Run this on its own, after the other stages

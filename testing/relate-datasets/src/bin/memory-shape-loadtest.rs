@@ -24,8 +24,8 @@ struct Args {
     /// Report JSON path
     #[arg(long, default_value = "target/memory-shape-loadtest.json")]
     out: PathBuf,
-    /// Memory limit for each filled shape, in MB (1024×1024 bytes). Loading
-    /// stops when the database reports that limit.
+    /// Logical ceiling for each filled shape, in MB (1024×1024 bytes). The
+    /// load stops at a fixed count. Reaching this ceiling first fails the run.
     #[arg(long, default_value_t = DEFAULT_LOGICAL_TARGET_BYTES / (1024 * 1024))]
     logical_mb: u64,
     /// Integer properties on every node. The first is `id`.

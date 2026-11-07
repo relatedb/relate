@@ -2,7 +2,7 @@
 //!
 //! Every observation starts a fresh server, loads and warms its graph, parks
 //! the same sessions with `RETURN 1`, then holds a named workspace family at
-//! a configured live-token threshold. The report keeps both child VmRSS and
+//! a configured logical-byte threshold. The report keeps both child VmRSS and
 //! whole-cgroup deltas. Raw observations are authoritative; summaries only
 //! describe the measured environment.
 
@@ -19,11 +19,22 @@ use crate::memory_controls::harness::{
 
 const BATCH: i64 = 500;
 const PAYLOAD_BYTES: usize = 256;
-const TOKEN_BYTES: u64 = 4096;
+/// The charge quantum. Shapes are multiples of it so a hold threshold lines
+/// up with a reserved logical-byte total. The report records the bytes.
+const QUANTUM_BYTES: u64 = 4096;
 const FAMILIES: &[&str] = &["sort", "expand", "aggregation", "distinct", "create"];
-/// Per-query targets. The final two points keep total target tokens at 4096
-/// while changing query count.
-const SHAPES: &[(u64, usize)] = &[(256, 1), (1024, 1), (4096, 1), (2048, 2), (1024, 4)];
+/// Logical bytes per query, then holder count. The last three keep the same
+/// 16,777,216-byte total and change the query count.
+const SHAPES: &[(u64, usize)] = &[
+    (1_048_576, 1),
+    (4_194_304, 1),
+    (16_777_216, 1),
+    (8_388_608, 2),
+    (4_194_304, 4),
+];
+/// The equal-total subset of [`SHAPES`]: one, two, and four holders.
+const EQUAL_TOTAL: &[(u64, usize)] = &[(16_777_216, 1), (8_388_608, 2), (4_194_304, 4)];
+const EQUAL_TOTAL_LOGICAL_BYTES: f64 = 16_777_216.0;
 /// A read can intern a few strings into the logical meter. Growth past
 /// this is graph data landing in the RSS delta.
 const LOGICAL_READ_SLACK: u64 = 4 * 1024;
@@ -31,10 +42,12 @@ const LOGICAL_READ_SLACK: u64 = 4 * 1024;
 #[derive(Debug, Clone, Serialize)]
 pub struct PeakCalibrationObservation {
     pub family: String,
-    pub target_tokens_per_query: u64,
+    /// Logical bytes the shape asked the hold to reach.
+    pub target_logical_bytes: u64,
     pub holders: usize,
     pub repetition: u32,
-    pub held_tokens: u64,
+    /// Logical bytes reserved while the hold was sampled, summed over holders.
+    pub held_logical_bytes: u64,
     pub parked_rss_bytes: u64,
     pub held_rss_bytes: u64,
     pub rss_delta_bytes: u64,
@@ -63,12 +76,12 @@ pub struct PeakCalibrationSummary {
     pub max_rss_to_logical_ratio: f64,
     pub rss_repeat_spread: f64,
     pub rss_equal_total_concurrency_spread: f64,
-    /// Slope over the one-holder shapes only: RSS per logical token byte
-    /// with no concurrency term mixed in.
+    /// Slope over the one-holder shapes only: RSS per logical byte with no
+    /// concurrency term mixed in.
     pub rss_single_holder_slope: f64,
     pub rss_single_holder_r_squared: f64,
     /// Fitted RSS bytes each extra concurrent query adds at a constant
-    /// total token target. `None` for `overall`, which mixes families.
+    /// total of logical bytes. `None` for `overall`, which mixes families.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rss_per_holder_bytes: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,7 +116,7 @@ pub struct PeakCalibrationReport {
     pub conservative_cgroup_ratio: Option<f64>,
 }
 
-pub(crate) fn case_peak_token_rss(
+pub(crate) fn case_workspace_memory(
     cfg: &Config,
 ) -> Result<(CaseReport, PeakCalibrationReport), String> {
     if let Some(family) = cfg.calibration_family.as_deref() {
@@ -141,8 +154,9 @@ pub(crate) fn case_peak_token_rss(
                 // Progress on stderr: the report on stdout stays clean, and a
                 // long matrix shows it is moving.
                 eprintln!(
-                    "  [{}/{total}] {family}  {target} quanta x {holders} holder(s)  repeat {}/{}  elapsed {}s",
+                    "  [{}/{total}] {family}  {} x {holders} holder(s)  repeat {}/{}  elapsed {}s",
                     index + 1,
+                    crate::memory_controls::format_mem(target),
                     repetition + 1,
                     cfg.calibration_repeats,
                     started.elapsed().as_secs()
@@ -193,7 +207,7 @@ fn run_observation(
     make_case: bool,
 ) -> Result<(PeakCalibrationObservation, Option<CaseReport>), String> {
     let store = cfg.store.join(format!(
-        "peak-token-rss-{family}-t{target}-h{holders}-r{repetition}"
+        "workspace-memory-{family}-b{target}-h{holders}-r{repetition}"
     ));
     let server = Server::start(
         &cfg.serve_bin,
@@ -202,7 +216,7 @@ fn run_observation(
             concurrent_logical_workspace_limit: Some(u64::MAX),
             peak_hold_ms: Some(cfg.calibration_hold_ms),
             // The engine compares this threshold to reserved logical bytes.
-            peak_hold_tokens: Some(target.saturating_mul(TOKEN_BYTES)),
+            peak_hold_logical_bytes: Some(target),
             peak_hold_family: Some(family),
             ..ServeLimits::default()
         },
@@ -262,7 +276,7 @@ fn run_observation(
     }
     if holds.iter().any(|hold| {
         hold.family != family
-            || hold.held < target.saturating_mul(TOKEN_BYTES)
+            || hold.held < target
             || hold.peak_bytes == 0
     }) {
         return Err(format!(
@@ -270,13 +284,12 @@ fn run_observation(
             server.log_text()
         ));
     }
-    // `held` in the engine log is already logical bytes.
-    let peak_logical_bytes_held: u64 = holds.iter().map(|hold| hold.held).sum();
-    let held_tokens = peak_logical_bytes_held / TOKEN_BYTES;
+    // `held` in the engine log is logical bytes.
+    let held_logical_bytes: u64 = holds.iter().map(|hold| hold.held).sum();
     let retained = held_rss.saturating_sub(parked);
-    if peak_logical_bytes_held == 0 || retained == 0 {
+    if held_logical_bytes == 0 || retained == 0 {
         return Err(format!(
-            "logical-byte RSS calibration saw family={family} logical_bytes={peak_logical_bytes_held} retained={retained} parked={parked} held={held_rss}\n{}",
+            "logical-byte RSS calibration saw family={family} logical_bytes={held_logical_bytes} retained={retained} parked={parked} held={held_rss}\n{}",
             server.log_text()
         ));
     }
@@ -285,21 +298,21 @@ fn run_observation(
         .map(|(held, parked)| held.saturating_sub(parked));
     let observation = PeakCalibrationObservation {
         family: family.to_string(),
-        target_tokens_per_query: target,
+        target_logical_bytes: target,
         holders,
         repetition,
-        held_tokens,
+        held_logical_bytes,
         parked_rss_bytes: parked,
         held_rss_bytes: held_rss,
         rss_delta_bytes: retained,
-        rss_bytes_per_logical_byte: retained / peak_logical_bytes_held,
-        rss_to_logical_ratio: retained as f64 / peak_logical_bytes_held as f64,
+        rss_bytes_per_logical_byte: retained / held_logical_bytes,
+        rss_to_logical_ratio: retained as f64 / held_logical_bytes as f64,
         parked_cgroup_bytes: parked_cgroup,
         held_cgroup_bytes: held_cgroup,
         cgroup_delta_bytes: cgroup_delta,
-        cgroup_bytes_per_logical_byte: cgroup_delta.map(|delta| delta / peak_logical_bytes_held),
+        cgroup_bytes_per_logical_byte: cgroup_delta.map(|delta| delta / held_logical_bytes),
         cgroup_to_logical_ratio: cgroup_delta
-            .map(|delta| delta as f64 / peak_logical_bytes_held as f64),
+            .map(|delta| delta as f64 / held_logical_bytes as f64),
     };
     let idle = server.sample()?.rss;
     let case = if make_case {
@@ -314,9 +327,9 @@ fn run_observation(
             vec![idle],
             "cross-family logical-byte-to-RSS calibration matrix",
         )?;
-        case.peak_logical_bytes_held = Some(peak_logical_bytes_held);
+        case.peak_logical_bytes_held = Some(held_logical_bytes);
         case.retained_rss_bytes = Some(retained);
-        case.rss_bytes_per_logical_byte = Some(retained / peak_logical_bytes_held);
+        case.rss_bytes_per_logical_byte = Some(retained / held_logical_bytes);
         Some(case)
     } else {
         None
@@ -327,14 +340,14 @@ fn run_observation(
 fn load_scenario(
     session: &mut Session,
     family: &str,
-    target_tokens: u64,
+    target_logical_bytes: u64,
 ) -> Result<String, String> {
+    let quanta = target_logical_bytes / QUANTUM_BYTES;
     match family {
         "sort" | "aggregation" | "distinct" => {
-            // The measured token count remains authoritative. Eight rows per
-            // target token gives every family enough retained workspace to
-            // reach the configured threshold without making tiny probes.
-            let rows = i64::try_from(target_tokens.saturating_mul(16))
+            // Sixteen rows per quantum gives every family enough retained
+            // workspace to reach the logical-byte threshold.
+            let rows = i64::try_from(quanta.saturating_mul(16))
                 .map_err(|_| "calibration row count overflow".to_string())?
                 .max(1_000);
             load_rows(session, rows)?;
@@ -351,14 +364,14 @@ fn load_scenario(
             .to_string())
         }
         "expand" => {
-            let rows = i64::try_from(target_tokens.saturating_mul(64))
+            let rows = i64::try_from(quanta.saturating_mul(64))
                 .map_err(|_| "expand row count overflow".to_string())?
                 .max(2_000);
             load_expand(session, rows)?;
             Ok("MATCH (:CalRoot)-[:CAL_EDGE]->(n:CalLeaf) RETURN n.id AS leaf".into())
         }
         "create" => {
-            let rows = target_tokens.saturating_mul(32).max(2_000);
+            let rows = quanta.saturating_mul(32).max(2_000);
             let rows = i64::try_from(rows).map_err(|_| "create row count overflow".to_string())?;
             // Stream graph-owned seed rows. A giant `UNWIND range(...)`
             // materializes input that is not create scratch and would make
@@ -433,7 +446,7 @@ fn summarize_family(
         .iter()
         .map(|row| {
             (
-                row.held_tokens.saturating_mul(TOKEN_BYTES) as f64,
+                row.held_logical_bytes as f64,
                 row.rss_delta_bytes as f64,
             )
         })
@@ -443,7 +456,7 @@ fn summarize_family(
         .filter_map(|row| {
             row.cgroup_delta_bytes.map(|delta| {
                 (
-                    row.held_tokens.saturating_mul(TOKEN_BYTES) as f64,
+                    row.held_logical_bytes as f64,
                     delta as f64,
                 )
             })
@@ -459,8 +472,11 @@ fn summarize_family(
         .copied()
         .filter(|row| row.holders == 1)
         .collect::<Vec<_>>();
-    let rss_single = linear_fit(&token_points(&single, |row| Some(row.rss_delta_bytes)));
-    let cgroup_single_points = token_points(&single, |row| row.cgroup_delta_bytes);
+    let rss_single = linear_fit(&logical_byte_points(
+        &single,
+        |row| Some(row.rss_delta_bytes),
+    ));
+    let cgroup_single_points = logical_byte_points(&single, |row| row.cgroup_delta_bytes);
     let cgroup_single =
         (!cgroup_single_points.is_empty()).then(|| linear_fit(&cgroup_single_points));
     let per_family = family != "overall";
@@ -506,36 +522,28 @@ fn summarize_family(
     }
 }
 
-fn token_points(
+fn logical_byte_points(
     rows: &[&PeakCalibrationObservation],
     delta: impl Fn(&PeakCalibrationObservation) -> Option<u64>,
 ) -> Vec<(f64, f64)> {
     rows.iter()
-        .filter_map(|row| {
-            delta(row).map(|bytes| {
-                (
-                    row.held_tokens.saturating_mul(TOKEN_BYTES) as f64,
-                    bytes as f64,
-                )
-            })
-        })
+        .filter_map(|row| delta(row).map(|bytes| (row.held_logical_bytes as f64, bytes as f64)))
         .collect()
 }
 
 /// Bytes per extra holder from the equal-total shapes. Each delta is
-/// rescaled to the 4096-token target first, so a one-token difference in
-/// held tokens is not read as holder cost.
+/// rescaled to 16,777,216 logical bytes first, so a few bytes of hold
+/// noise are not read as holder cost.
 fn per_holder_bytes(
     rows: &[&PeakCalibrationObservation],
     delta: impl Fn(&PeakCalibrationObservation) -> Option<u64>,
 ) -> Option<f64> {
-    const EQUAL_TOTAL: &[(u64, usize)] = &[(4096, 1), (2048, 2), (1024, 4)];
     let points = rows
         .iter()
-        .filter(|row| EQUAL_TOTAL.contains(&(row.target_tokens_per_query, row.holders)))
+        .filter(|row| EQUAL_TOTAL.contains(&(row.target_logical_bytes, row.holders)))
         .filter_map(|row| {
             let bytes = delta(row)? as f64;
-            let scale = 4096.0 / row.held_tokens.max(1) as f64;
+            let scale = EQUAL_TOTAL_LOGICAL_BYTES / row.held_logical_bytes.max(1) as f64;
             Some((row.holders as f64, bytes * scale))
         })
         .collect::<Vec<_>>();
@@ -564,7 +572,7 @@ fn repeat_spread(
                 .iter()
                 .filter(|row| {
                     row.family == *family
-                        && row.target_tokens_per_query == target
+                        && row.target_logical_bytes == target
                         && row.holders == holders
                 })
                 .filter_map(|row| value(row))
@@ -585,14 +593,14 @@ fn equal_total_spread(
 ) -> Option<f64> {
     let mut largest = None::<f64>;
     for family in FAMILIES {
-        let means = [(4096, 1), (2048, 2), (1024, 4)]
+        let means = EQUAL_TOTAL
             .iter()
             .filter_map(|&(target, holders)| {
                 let values = rows
                     .iter()
                     .filter(|row| {
                         row.family == *family
-                            && row.target_tokens_per_query == target
+                            && row.target_logical_bytes == target
                             && row.holders == holders
                     })
                     .filter_map(|row| value(row))
@@ -682,11 +690,11 @@ mod tests {
     #[test]
     fn peak_hold_line_carries_the_reservation() {
         let hold = parse_peak_hold(
-            "peak hold: family=expand peak_logical_bytes=2236416 held=546 peak_bytes=2239488",
+            "peak hold: family=expand peak_logical_bytes=2236416 held=2236416 peak_bytes=2239488",
         )
         .expect("hold");
         assert_eq!(hold.family, "expand");
-        assert_eq!(hold.held, 546);
+        assert_eq!(hold.held, 2_236_416);
         assert_eq!(hold.peak_bytes, 2_239_488);
         assert!(parse_peak_hold("logical-bytes 12").is_none());
     }
@@ -702,15 +710,15 @@ mod tests {
     fn observation(target: u64, holders: usize, held: u64, rss: u64) -> PeakCalibrationObservation {
         PeakCalibrationObservation {
             family: "create".into(),
-            target_tokens_per_query: target,
+            target_logical_bytes: target,
             holders,
             repetition: 0,
-            held_tokens: held,
+            held_logical_bytes: held,
             parked_rss_bytes: 0,
             held_rss_bytes: rss,
             rss_delta_bytes: rss,
-            rss_bytes_per_logical_byte: rss / held.saturating_mul(TOKEN_BYTES).max(1),
-            rss_to_logical_ratio: rss as f64 / (held * TOKEN_BYTES) as f64,
+            rss_bytes_per_logical_byte: rss / held.max(1),
+            rss_to_logical_ratio: rss as f64 / held.max(1) as f64,
             parked_cgroup_bytes: None,
             held_cgroup_bytes: None,
             cgroup_delta_bytes: None,
@@ -721,14 +729,14 @@ mod tests {
 
     #[test]
     fn summary_separates_single_query_slope_from_holder_cost() {
-        let per_token = 2 * TOKEN_BYTES;
+        let bytes = |quanta: u64| quanta * QUANTUM_BYTES;
         let holder = 1_000_000;
         let rows = vec![
-            observation(256, 1, 256, 256 * per_token),
-            observation(1024, 1, 1024, 1024 * per_token),
-            observation(4096, 1, 4096, 4096 * per_token),
-            observation(2048, 2, 4096, 4096 * per_token + holder),
-            observation(1024, 4, 4096, 4096 * per_token + 3 * holder),
+            observation(bytes(256), 1, bytes(256), bytes(256) * 2),
+            observation(bytes(1024), 1, bytes(1024), bytes(1024) * 2),
+            observation(bytes(4096), 1, bytes(4096), bytes(4096) * 2),
+            observation(bytes(2048), 2, bytes(4096), bytes(4096) * 2 + holder),
+            observation(bytes(1024), 4, bytes(4096), bytes(4096) * 2 + 3 * holder),
         ];
         let summary = summarize_family("create", &rows);
         assert!((summary.rss_single_holder_slope - 2.0).abs() < 1e-9);
@@ -745,10 +753,10 @@ mod tests {
     fn observation_serializes_raw_process_and_cgroup_samples() {
         let observation = PeakCalibrationObservation {
             family: "sort".into(),
-            target_tokens_per_query: 10,
+            target_logical_bytes: 40_960,
             holders: 2,
             repetition: 0,
-            held_tokens: 22,
+            held_logical_bytes: 90_112,
             parked_rss_bytes: 100,
             held_rss_bytes: 200,
             rss_delta_bytes: 100,
@@ -762,7 +770,8 @@ mod tests {
         };
         let json = serde_json::to_value(observation).expect("serialize");
         assert_eq!(json["family"], "sort");
-        assert_eq!(json["held_tokens"], 22);
+        assert_eq!(json["held_logical_bytes"], 90_112);
+        assert!(json.get("held_tokens").is_none());
         assert_eq!(json["cgroup_delta_bytes"], 200);
     }
 }

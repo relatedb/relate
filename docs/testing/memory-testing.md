@@ -91,7 +91,7 @@ Graph size and indexes. These five are the inputs to the generator. The pin file
 
 | Variable | Default | What it adds | Limit |
 |---|---|---|---|
-| `LOGICAL_MB` | `32` | Memory limit for each filled shape, passed to the database as `logical_graph_size_limit` (logical bytes). One MB is 1024×1024 bytes. Loading continues until the database returns `capacity exceeded`. | `0` is rejected. The rejected batch is not committed, so measured `logical_bytes` sits at most one batch under the limit. `base` stays empty and does not hit the limit. |
+| `LOGICAL_MB` | `32` | Logical ceiling for each filled shape, passed to the database as `logical_graph_size_limit` (logical bytes). One MB is 1024×1024 bytes. The load stops at the fixed counts. Reaching this ceiling first fails the run. | `0` is rejected. `base` stays empty and does not hit the ceiling. |
 | `ATTRIBUTES` | `1` | Integer properties on every node: `id`, then `a1`, `a2`, …. Each integer is 12 payload bytes, and the property vectors reserve the next power of two. | At least 1. More attributes cost more per node, so fewer nodes fit under the limit. |
 | `TEXT_INDEXES` | `0` | String properties `s0`, `s1`, …, each with its own `TEXT` index. The value is `abcdefghijklmnop`. | On top of `ATTRIBUTES`. Fanout creates the index for `:Hub` and `:Leaf`. |
 | `POINT_INDEXES` | `0` | Point properties `loc0`, `loc1`, …, each with its own `POINT` index. The value is `point({srid: 7203, x: 1.0, y: 2.0})`. | On top of `ATTRIBUTES`. Fanout creates the index for `:Hub` and `:Leaf`. |
@@ -207,14 +207,13 @@ freeze a host report.
 For each large shape the binary:
 
 1. Opens an in-process database at `$URI_MEMORY_SHAPE/<shape>` with
-   `logical_graph_size_limit` set to `LOGICAL_MB` and writes batches until the
-   database returns `capacity exceeded`. The rejected batch is not
-   committed. It then checkpoints, drops the database, and sums every
-   file in that directory. That sum is reported as disk and is not
-   gated. The WAL is included.
+   `logical_graph_size_limit` set to `LOGICAL_MB` and writes batches until
+   the fixed count below. Reaching the ceiling first fails the run. It
+   then checkpoints, drops the database, and sums every file in that
+   directory, including the WAL. That sum is disk.
 2. The bolt case spawns `relate serve --bolt` with `--auth none`
    and `--logical-graph-size-limit` set to the same byte count, and
-   runs the same batches until the same limit (ADR-0368, ADR-0390).
+   loads the same counts (ADR-0368, ADR-0390).
    (Historically the standalone `relate-bolt` binary took `--uri`
    and `--memory-limit`. Before ADR-0390, `relate serve` had no
    graph-size flag and this case failed loudly.)
@@ -223,21 +222,41 @@ For each large shape the binary:
    samples. The test process is not the sample.
 
 The matrix, in report order, is `base`, `flat`, `fanout`, `ring`, and
-`dense ring`. The same index counts apply to every filled shape, and
-`base` still has no index DDL. `base` RSS is the empty server and is
-subtracted from the others. The gated value is
-`(rss − base) / logical_bytes`. `base` itself has no ratio. The report
-config records `attributes`, `text_indexes`, `point_indexes`, and
-`range_indexes`. Each row's `index` field is `none`, or a token such
-as `text2+point1+range1` (zero counts omitted, text then point then
-range). Compare treats that token as part of the shape key, so a run
-with different index counts does not match a freeze taken at `none`.
+`dense ring`. The loadtest stops at:
 
-Logical bytes must match the frozen file exactly. The RSS ratio may be
-up to `LOADTEST_MAX_RSS_RATIO` (default 15%) above the frozen ratio.
-The freeze keeps the highest ratio per shape across `BASELINE_RUNS`.
-An environment-class mismatch still checks logical bytes. The ratio
-check is skipped on a local mismatch and fails in GitHub Actions.
+| Shape | Nodes | Relationships |
+|---|---:|---:|
+| flat | 120,000 | 0 |
+| fanout | 52,016 | 52,000 |
+| ring | 46,000 | 46,000 |
+| dense ring | 5,000 | 100,000 |
+
+`base` stays empty. Its RSS is the empty server and is subtracted from
+the others. The ratio is attributed RSS divided by logical bytes. The
+report stores Given / When / Then / Outcome with each shape and prints
+sizes as MB, or GB once a value reaches 1024 MB.
+
+The gate is [ADR-0539](../adr/0539-memory-shape-gate.md).
+`make compare-memory-shape` reads `target/memory-shape-loadtest.json`
+against `baselines/memory-shape.json` and writes `target/memory-shape.md`
+and `target/memory-shape-verdict.json`. Each shape section states
+**Baseline** (the frozen min and max), **Validated** (this run), and
+**Report** (the measured sizes and ratio against those boundaries).
+`make baseline-memory-shape` runs the loadtest `BASELINE_RUNS` times
+inside `create-loadtest-baselines`. Until that file is frozen, compare
+reports `no-baseline` and exits 0.
+
+Counts that miss the table are a regression. Logical bytes, disk, and
+attributed RSS are lower-is-better, with a 15% band and a 1 MB floor.
+The ratio is lower-is-better, with a 5% band. A regression has to clear
+the top by both the band and the floor. An improvement clears the bottom
+the same way and fails until the envelope is re-frozen. An
+environment-class or knob mismatch is `incompatible`: a local run skips
+the numeric bands, and `CI_COMPARE=1` fails the job. The index counts
+are knobs, so a run with indexes does not match a freeze taken at zero.
+
+`baselines/memory-shape-loadtest.json` remains the worst-of-N file from
+`make baseline-loadtests`. It is not this gate.
 
 At 32 MiB and one attribute, with no indexes, the closed-form census the
 unit tests pin is:
@@ -249,11 +268,9 @@ unit tests pin is:
 | ring | 46,603 | 46,603 |
 | dense ring | 5,010 | 100,200 |
 
-That census is the pin for the formula. The loadtest does not stop at
-those counts. It keeps writing 2,000-row batches until the live meter
-rejects the next one, so the reported logical size is at most one batch
-under `LOGICAL_MB` and the node count is however many fit. `Large` in
-the unit tests still picks the node count whose closed form is nearest
+That census is the pin for the formula. The RSS loadtest stops at the
+fixed counts stated above this census.
+`Large` in the unit tests still picks the node count whose closed form is nearest
 the requested logical size. Ring, flat, and dense ring use
 `(target + per/2) / per`.
 Fanout searches the leaf count because a hub's adjacency vector reserves
@@ -494,8 +511,10 @@ and `target/memory-controls-verdict.json`. The document opens with
 - `no-baseline` — the envelope is not frozen yet. The comment warns, and
   the job stays green.
 
-RSS uses a 15% band and a 1 MiB floor. Calibration ratios and slopes use
-a 20% band. Workload limited counts use a band of 0 and a floor of 2, so
+RSS uses a 15% band and a 1 MiB floor. Each family is gated on its RSS
+ratio and its cgroup ratio. The frozen min and max are the boundaries,
+and a reading may sit 5% outside them. Slopes stay in the run report and
+are not gated. Workload limited counts use a band of 0 and a floor of 2, so
 fewer refusals is an improvement. An improvement asks for an
 investigation: confirm it is real, then re-freeze with
 `create-loadtest-baselines` (`make baseline-memory-controls` inside that
@@ -526,22 +545,15 @@ raw ratio, not an automatic production-constant update. Inspect slopes,
 intercepts, R², repeat spread, and equal-total concurrency points before
 deciding whether one multiplier is adequate.
 
-Each family row prints three numbers that answer different questions:
+The run prints one outcome line per family: the retained memory of the
+observation that set the ratio, in MB or GB, and the ratio itself. The
+compare document states the frozen boundaries, the 5% slack, then that
+measured size and ratio. The ratio is retained memory divided by the
+live logical bytes of that observation. The envelope stores the min and
+max of each family's largest RSS ratio and largest cgroup ratio.
 
-- `1q slope` fits only the one-holder shapes. It is RSS per logical
-  workspace byte with no concurrency term.
-- `per holder` fits the equal-total shapes (16,777,216×1, 8,388,608×2,
-  4,194,304×4 logical bytes; the old token shapes 4096×1, 2048×2, and
-  1024×4) against holder count. It is the RSS each extra concurrent query
-  adds at the same total logical-byte target. Each delta is first rescaled
-  to 16,777,216 logical bytes. The `overall` row leaves it blank because it
-  mixes families.
-- `max` is the largest raw observed ratio across every shape.
-
-`all slope` is the old fit across every shape. It mixes workspace scaling
-with holder cost, so a family with a large per-holder cost reports an
-all-shape slope above its single-query slope. The JSON summary carries
-the same fields for RSS and cgroup. A large family ratio can
+The JSON summary still records the linear fits, including the per-holder
+slope. Those fits are not gated. A large family ratio can
 also identify resident executor input or transaction state that peak
 logical bytes do not account for; do not hide that gap by treating the ratio as
 allocator overhead without inspecting the plan. Create charges the fitted

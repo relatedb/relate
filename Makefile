@@ -256,6 +256,28 @@ compare-memory-controls:
 ## memory-controls-gate: Run the suite, then compare
 memory-controls-gate: memory-controls-test compare-memory-controls
 
+## baseline-memory-shape: Freeze the memory-shape envelope (Docker only)
+baseline-memory-shape:
+	@if [ "$(BASELINE_ENV)" != docker ]; then \
+		echo "baseline-memory-shape: BASELINE_ENV must be docker (ADR-0070); host runs are not freezeable"; \
+		exit 1; \
+	fi
+	mkdir -p $(BASELINES)
+	rm -f $(CURDIR)/target/memory-shape-envelope-run*.json
+	@set -e; i=1; while [ $$i -le $(BASELINE_RUNS) ]; do \
+		echo "baseline-memory-shape: round $$i/$(BASELINE_RUNS)"; \
+		$(MAKE) memory-shape-loadtest OUT_MEMORY_SHAPE=target/memory-shape-envelope-run$$i.json; \
+		i=$$((i + 1)); \
+	done
+	$(PYTHON) $(CURDIR)/scripts/freeze-memory-shape.py --out $(BASELINES)/memory-shape.json $(CURDIR)/target/memory-shape-envelope-run*.json
+
+## compare-memory-shape: Judge target/memory-shape-loadtest.json against the envelope
+compare-memory-shape:
+	$(PYTHON) $(CURDIR)/scripts/compare-memory-shape.py --baseline $(BASELINES)/memory-shape.json --report $(OUT_MEMORY_SHAPE)
+
+## memory-shape-gate: Run the suite, then compare
+memory-shape-gate: memory-shape-loadtest compare-memory-shape
+
 ## compare-loadtests: Compare current in-tree reports to baselines/fraud-loadtest.json
 compare-loadtests:
 	@test -f $(BASELINES)/fraud-loadtest.json

@@ -174,10 +174,6 @@
   },
   "calibration": {
     "sort": {
-      "rss_single_holder_slope": {
-        "min": 0.8389700577200577,
-        "max": 0.8696112914862915
-      },
       "max_rss_to_logical_ratio": {
         "min": 1.2152974504249292,
         "max": 1.3371104815864023
@@ -185,17 +181,9 @@
       "max_cgroup_to_logical_ratio": {
         "min": 0.950319375443577,
         "max": 0.9915014164305949
-      },
-      "rss_per_holder_bytes": {
-        "min": -143817.38027568487,
-        "max": 48850.91368242739
       }
     },
     "expand": {
-      "rss_single_holder_slope": {
-        "min": 0.9444966583124478,
-        "max": 0.9588685254803676
-      },
       "max_rss_to_logical_ratio": {
         "min": 0.9917898193760263,
         "max": 1.0246305418719213
@@ -203,17 +191,9 @@
       "max_cgroup_to_logical_ratio": {
         "min": 0.9601233299075026,
         "max": 1.0361247947454844
-      },
-      "rss_per_holder_bytes": {
-        "min": -103884.37941027057,
-        "max": 214428.88712303134
       }
     },
     "aggregation": {
-      "rss_single_holder_slope": {
-        "min": 1.0664141414141415,
-        "max": 1.071626984126984
-      },
       "max_rss_to_logical_ratio": {
         "min": 1.2925170068027212,
         "max": 1.469387755102041
@@ -221,17 +201,9 @@
       "max_cgroup_to_logical_ratio": {
         "min": 1.1440942646223737,
         "max": 1.2290249433106577
-      },
-      "rss_per_holder_bytes": {
-        "min": 362155.9731743365,
-        "max": 396304.93011228536
       }
     },
     "distinct": {
-      "rss_single_holder_slope": {
-        "min": 0.9939935064935065,
-        "max": 1.0058802308802308
-      },
       "max_rss_to_logical_ratio": {
         "min": 1.251700680272109,
         "max": 1.3696145124716552
@@ -239,17 +211,9 @@
       "max_cgroup_to_logical_ratio": {
         "min": 1.142816581487791,
         "max": 1.1531800113571835
-      },
-      "rss_per_holder_bytes": {
-        "min": 664950.5383559606,
-        "max": 766206.3438421892
       }
     },
     "create": {
-      "rss_single_holder_slope": {
-        "min": 1.1579551091269842,
-        "max": 1.1888020833333333
-      },
       "max_rss_to_logical_ratio": {
         "min": 1.5680933852140078,
         "max": 1.6731517509727627
@@ -257,10 +221,6 @@
       "max_cgroup_to_logical_ratio": {
         "min": 1.2473170731707317,
         "max": 1.4941634241245136
-      },
-      "rss_per_holder_bytes": {
-        "min": 194370.19186515777,
-        "max": 358477.56474174495
       }
     }
   }

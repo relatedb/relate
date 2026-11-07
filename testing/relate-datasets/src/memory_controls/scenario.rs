@@ -2,6 +2,7 @@
 //! it so the comparator and the pull-request comment can quote the same words
 //! the run printed.
 
+use super::format_mem;
 use super::harness::{CaseReport, Config, ScenarioText};
 use super::workload::{IndexMode, ReadQuery, WorkloadReport};
 
@@ -65,7 +66,10 @@ fn for_case(cfg: &Config, case: &CaseReport) -> ScenarioText {
                 case.rss_bytes_per_logical_byte,
             ) {
                 (Some(logical), Some(retained), Some(per)) => format!(
-                    "the displayed observation held {logical} logical bytes and retained {retained} RSS bytes ({per} RSS bytes per logical byte)."
+                    "the displayed observation held {} and retained {} ({} RSS bytes per logical byte).",
+                    format_mem(logical),
+                    format_mem(retained),
+                    per,
                 ),
                 _ => case.failure.clone(),
             };
@@ -74,7 +78,13 @@ fn for_case(cfg: &Config, case: &CaseReport) -> ScenarioText {
                     "a fresh server per observation, admission on, a hold of {} ms, and {} repeats. Families: {families}.",
                     cfg.calibration_hold_ms, cfg.calibration_repeats
                 ),
-                when: "each observation parks its sessions on RETURN 1, then holds one workspace family at the target reservation. The shapes are one holder at 256, 1024, and 4096 quanta, then the same 4096-quantum total across two and four holders.".into(),
+                when: format!(
+                    "each observation parks its sessions on RETURN 1, then holds one workspace family at the target reservation. The shapes are one holder at {}, {}, and {}, then the same {} across two and four holders.",
+                    format_mem(1_048_576),
+                    format_mem(4_194_304),
+                    format_mem(16_777_216),
+                    format_mem(16_777_216),
+                ),
                 then: "each observation records VmRSS and cgroup deltas against the live held logical bytes. The child stays alive.".into(),
                 outcome,
             }
@@ -99,8 +109,8 @@ fn for_workload(cfg: &Config, report: &WorkloadReport) -> ScenarioText {
         "admission off".to_string()
     } else {
         format!(
-            "--concurrent-logical-workspace-limit {} logical bytes",
-            controls.concurrent_logical_workspace_limit
+            "--concurrent-logical-workspace-limit {}",
+            format_mem(controls.concurrent_logical_workspace_limit)
         )
     };
     let index = match report.index_mode {

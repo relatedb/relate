@@ -22,7 +22,8 @@ and a nightly run can.
    limit holds: `connection-cap`, `unlimited-connections`,
    `concurrent-logical-workspace-limit`, and the configured workload.
    Workspace memory calibration is the case
-   `workspace-memory-calibration`. The report is schema 3 and stores the
+   `workspace-memory-calibration`. The report is schema 4. Each
+   observation records logical bytes. The report stores the
    Given / When / Then text with each case.
 
 2. `baselines/memory-controls.json` is a min/max envelope, schema 1,
@@ -34,7 +35,10 @@ and a nightly run can.
    for behaviour. Numeric checks are lower-is-better. A regression is
    above `max * (1 + band)` and above `max + floor`. An improvement is
    below `min * (1 - band)` and below `min - floor`. RSS uses 15% and
-   1 MiB. Calibration ratios and slopes use 20%. Workload limited counts
+   1 MiB. Each family is gated on its RSS ratio and its cgroup ratio.
+   The frozen min and max are the boundaries. A reading may sit 5%
+   outside them. Slopes stay in the run report and are not gated.
+   Workload limited counts
    use a band of 0 and a floor of 2, so fewer refusals is an improvement.
    An improvement fails the job. The comment asks for an investigation
    and, when the improvement is real, a re-freeze.

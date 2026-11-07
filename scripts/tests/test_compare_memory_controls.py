@@ -121,7 +121,7 @@ def report(**overrides):
         "the displayed observation held 1 logical bytes and retained 1 RSS bytes (1 RSS bytes per logical byte).",
     )
     body = {
-        "schema_version": 3,
+        "schema_version": 4,
         "name": "memory-controls",
         "environment": dict(ENV),
         "controls": dict(KNOBS),
@@ -205,6 +205,8 @@ class CompareMemoryControlsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.payload["status"], "regression")
         self.assertIn("**Given:**", result.document)
+        self.assertIn("38.15 MB", result.document)
+        self.assertIn("9.54 MB", result.document)
 
     def test_improvement(self):
         _, payload = self.freeze([report(), report()])
@@ -259,6 +261,35 @@ class CompareMemoryControlsTests(unittest.TestCase):
         self.assertTrue(
             any(row["name"] == "concurrent-logical-workspace-limit" and row["verdict"] == "regression" for row in result.payload["checks"])
         )
+
+    def test_ratio_regression_states_bounds_and_measured_size(self):
+        _, payload = self.freeze([report(), report()])
+        current = report()
+        current["workspace_memory_calibration"]["summaries"][0]["max_rss_to_logical_ratio"] = 3.2
+        current["workspace_memory_calibration"]["observations"] = [
+            {
+                "family": "sort",
+                "rss_delta_bytes": 16_000_000,
+                "rss_to_logical_ratio": 3.2,
+                "cgroup_delta_bytes": 12_000_000,
+                "cgroup_to_logical_ratio": 3.0,
+            }
+        ]
+        result = self.run_compare(payload, current)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.payload["status"], "regression")
+        self.assertIn("Expected RSS ratio 3.000x–3.000x.", result.document)
+        self.assertIn("A reading may sit 5% outside that range.", result.document)
+        self.assertIn("Measured 15.26 MB, ratio 3.200x.", result.document)
+        self.assertNotIn("rss_per_holder", result.document)
+
+    def test_a_slope_outside_the_envelope_is_not_a_regression(self):
+        _, payload = self.freeze([report(), report()])
+        payload["calibration"]["sort"]["rss_per_holder_bytes"] = {"min": -1, "max": 1}
+        result = self.run_compare(payload, report())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.payload["status"], "ok")
+        self.assertIn("Expected RSS ratio 3.000x–3.000x.", result.document)
 
     def test_freeze_refuses_a_drifting_limit(self):
         drifted = report()

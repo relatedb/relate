@@ -79,6 +79,9 @@ jobs:
       - name: Memory-controls envelope freeze
         run: make baseline-memory-controls
 
+      - name: Memory-shape envelope freeze
+        run: make baseline-memory-shape
+
       - name: Upload frozen baselines
         uses: actions/upload-artifact@v7
         with:
@@ -90,6 +93,7 @@ jobs:
             baselines/memory-shape-loadtest.json
             baselines/query-latency-sf0.1.json
             baselines/memory-controls.json
+            baselines/memory-shape.json
           if-no-files-found: error
 
       - name: Open PR with envelopes
@@ -111,7 +115,8 @@ jobs:
             baselines/fraud-checkpoint.json \
             baselines/memory-shape-loadtest.json \
             baselines/query-latency-sf0.1.json \
-            baselines/memory-controls.json
+            baselines/memory-controls.json \
+            baselines/memory-shape.json
           if git diff --cached --quiet; then
             echo "No envelope changes; skipping PR."
             exit 0
@@ -129,7 +134,7 @@ jobs:
             --title "Re-freeze loadtest baselines (CI envelope)" \
             --body "$(cat <<EOF
           ## Summary
-          - CI-owned worst-of-N loadtest envelopes from \`create-loadtest-baselines\` (run ${GITHUB_RUN_ID}), including the memory-controls min/max envelope.
+          - CI-owned worst-of-N loadtest envelopes from \`create-loadtest-baselines\` (run ${GITHUB_RUN_ID}), including the memory-controls and memory-shape min/max envelopes.
           - Runner class \`github-actions:${RUNNER_LABEL}\`; does not push to \`${GITHUB_REF_NAME}\` directly.
 
           ## Test plan

@@ -72,16 +72,8 @@ struct Args {
     calibration_family: Option<String>,
 }
 
-/// 1024-based, matching the memory-shape loadtest. GB once the value
-/// reaches 1024 MB.
 fn format_mem(bytes: u64) -> String {
-    const MB: f64 = 1024.0 * 1024.0;
-    let mb = bytes as f64 / MB;
-    if mb >= 1024.0 {
-        format!("{:.2} GB", mb / 1024.0)
-    } else {
-        format!("{mb:.2} MB")
-    }
+    relate_datasets::memory_controls::format_mem(bytes)
 }
 
 /// Split prose into one sentence per entry, keeping each full stop.
@@ -137,7 +129,7 @@ fn print_rss(case: &CaseReport) {
         case.retained_rss_bytes,
         case.rss_bytes_per_logical_byte,
     ) {
-        line("Peak logical bytes held", &logical_bytes.to_string());
+        line("Peak logical bytes held", &format_mem(logical_bytes));
         line("Retained RSS", &format_mem(retained));
         line("RSS bytes per logical byte", &format!("{per} B"));
     }
@@ -150,12 +142,29 @@ fn print_case(case: &CaseReport) {
     print_rss(case);
 }
 
-/// Signed MB per extra concurrent query, or `-` when not measured.
-fn format_holder(bytes: Option<f64>) -> String {
-    match bytes {
-        Some(bytes) => format!("{:+.2} MB", bytes / (1024.0 * 1024.0)),
-        None => "-".into(),
-    }
+/// The observation whose ratio is the one the family gate stores.
+fn peak_ratio<'a>(
+    observations: &'a [relate_datasets::memory_controls::calibration::PeakCalibrationObservation],
+    family: &str,
+    cgroup: bool,
+) -> Option<&'a relate_datasets::memory_controls::calibration::PeakCalibrationObservation> {
+    observations
+        .iter()
+        .filter(|row| family == "overall" || row.family == family)
+        .filter(|row| !cgroup || row.cgroup_to_logical_ratio.is_some())
+        .max_by(|left, right| {
+            let left_ratio = if cgroup {
+                left.cgroup_to_logical_ratio.unwrap_or(0.0)
+            } else {
+                left.rss_to_logical_ratio
+            };
+            let right_ratio = if cgroup {
+                right.cgroup_to_logical_ratio.unwrap_or(0.0)
+            } else {
+                right.rss_to_logical_ratio
+            };
+            left_ratio.total_cmp(&right_ratio)
+        })
 }
 
 fn line(label: &str, value: &str) {
@@ -273,7 +282,7 @@ fn main() {
         if controls.concurrent_logical_workspace_limit == 0 {
             "unlimited".to_string()
         } else {
-            controls.concurrent_logical_workspace_limit.to_string()
+            format_mem(controls.concurrent_logical_workspace_limit)
         },
     );
     println!();
@@ -286,43 +295,28 @@ fn main() {
         Ok(report) => {
             if let Some(calibration) = &report.workspace_memory_calibration {
                 println!("workspace memory calibration");
-                let mut outcome =
-                    format!("Outcome  {} observations.", calibration.observations.len());
-                if let Some(ratio) = calibration.conservative_cgroup_ratio {
-                    outcome.push_str(&format!(" Conservative cgroup ratio {ratio:.3}x."));
-                }
-                println!("{outcome}");
-                println!(
-                    "  {:<12} {:>9} {:>6} {:>11} {:>8} {:>9} {:>11} {:>8} {:>9}",
-                    "family",
-                    "1q slope",
-                    "r²",
-                    "per holder",
-                    "max",
-                    "all slope",
-                    "cg holder",
-                    "cg max",
-                    "cg 1q"
-                );
+                println!("Outcome  {} observations.", calibration.observations.len());
                 for summary in &calibration.summaries {
-                    println!(
-                        "  {:<12} {:>9.3} {:>6.3} {:>11} {:>7.3}x {:>9.3} {:>11} {:>8} {:>9}",
-                        summary.family,
-                        summary.rss_single_holder_slope,
-                        summary.rss_single_holder_r_squared,
-                        format_holder(summary.rss_per_holder_bytes),
-                        summary.max_rss_to_logical_ratio,
-                        summary.rss_slope,
-                        format_holder(summary.cgroup_per_holder_bytes),
-                        summary
-                            .max_cgroup_to_logical_ratio
-                            .map(|ratio| format!("{ratio:.3}x"))
-                            .unwrap_or_else(|| "-".into()),
-                        summary
-                            .cgroup_single_holder_slope
-                            .map(|slope| format!("{slope:.3}"))
-                            .unwrap_or_else(|| "-".into()),
+                    let rss = peak_ratio(&calibration.observations, &summary.family, false);
+                    let retained = rss
+                        .map(|row| format_mem(row.rss_delta_bytes))
+                        .unwrap_or_else(|| "-".into());
+                    let mut outcome = format!(
+                        "  {} retained {retained}, ratio {:.3}x.",
+                        summary.family, summary.max_rss_to_logical_ratio
                     );
+                    if let Some(row) = peak_ratio(&calibration.observations, &summary.family, true)
+                    {
+                        if let (Some(bytes), Some(ratio)) =
+                            (row.cgroup_delta_bytes, row.cgroup_to_logical_ratio)
+                        {
+                            outcome.push_str(&format!(
+                                " Cgroup retained {}, ratio {ratio:.3}x.",
+                                format_mem(bytes)
+                            ));
+                        }
+                    }
+                    println!("{outcome}");
                 }
             }
             if let Some(peak) = report.cgroup_memory_peak_bytes {

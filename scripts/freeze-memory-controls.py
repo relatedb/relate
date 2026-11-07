@@ -4,7 +4,8 @@
 Each round is one full-profile run. Behaviour has to be identical across
 rounds: the connection cap's success token, connection 129's acceptance,
 the workspace-limit refusal including its limit number, and zero workload
-connection refusals. Numeric metrics keep the min and max seen. The
+connection refusals. Numeric metrics keep the min and max seen. Each
+calibration family keeps its RSS ratio and its cgroup ratio. The
 compare script applies its bands on top of that range.
 
 The envelope is schema 1. A report that is missing its environment class,
@@ -38,10 +39,8 @@ WORKLOAD_COUNTS = (
     "writes_limited",
 )
 CALIBRATION_METRICS = (
-    "rss_single_holder_slope",
     "max_rss_to_logical_ratio",
     "max_cgroup_to_logical_ratio",
-    "rss_per_holder_bytes",
 )
 KNOB_FIELDS = (
     "graph_scale",
@@ -104,8 +103,8 @@ def knobs_of(report: dict) -> dict:
 def check(reports: list[tuple[Path, dict]]) -> list[str]:
     problems: list[str] = []
     first_path, first = reports[0]
-    if first.get("schema_version") != 3 or first.get("name") != "memory-controls":
-        problems.append(f"{first_path}: expected memory-controls schema 3")
+    if first.get("schema_version") != 4 or first.get("name") != "memory-controls":
+        problems.append(f"{first_path}: expected memory-controls schema 4")
     if not isinstance(first.get("environment"), dict):
         problems.append(f"{first_path}: missing environment")
     knobs = knobs_of(first)
