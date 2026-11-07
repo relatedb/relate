@@ -357,9 +357,15 @@ pub fn spawn_single_response_bytes_capturing(
         let Some(stream) = accept_one(&listener) else {
             return Vec::new();
         };
-        serve_connection(&stream, status_line, "application/octet-stream", &body)
-            .map(|served| vec![served.head])
-            .unwrap_or_default()
+        serve_connection(
+            &stream,
+            status_line,
+            "application/octet-stream",
+            &body,
+            None,
+        )
+        .map(|served| vec![served.head])
+        .unwrap_or_default()
     });
     (CapturingFixture { thread }, port)
 }
@@ -385,14 +391,20 @@ pub fn spawn_capture_server(
             while !stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        if let Some(served) = serve_connection(
+                        let bodies = &bodies;
+                        let _ = serve_connection(
                             &stream,
                             status_line,
                             JSON_CONTENT_TYPE,
                             body.as_bytes(),
-                        ) {
-                            bodies.lock().expect("bodies").push(served.body);
-                        }
+                            // Record before the response bytes go out.
+                            // `push` samples the sink the moment the client
+                            // finishes, and the record used to happen after
+                            // the write, so the last request was missing.
+                            Some(&|served| {
+                                bodies.lock().expect("bodies").push(served.body.clone());
+                            }),
+                        );
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
@@ -496,8 +508,14 @@ struct ServedRequest {
 /// mid-request, so a test that never connects cannot hang the server thread.
 fn serve_one(listener: &TcpListener, status_line: &str, body: &str) -> Option<String> {
     let stream = accept_one(listener)?;
-    serve_connection(&stream, status_line, JSON_CONTENT_TYPE, body.as_bytes())
-        .map(|served| served.head)
+    serve_connection(
+        &stream,
+        status_line,
+        JSON_CONTENT_TYPE,
+        body.as_bytes(),
+        None,
+    )
+    .map(|served| served.head)
 }
 
 /// [`serve_one`]'s whole-request twin: the captured `(head, body)` pair, for
@@ -508,8 +526,14 @@ fn serve_one_full(
     body: &str,
 ) -> Option<(String, String)> {
     let stream = accept_one(listener)?;
-    serve_connection(&stream, status_line, JSON_CONTENT_TYPE, body.as_bytes())
-        .map(|served| (served.head, served.body))
+    serve_connection(
+        &stream,
+        status_line,
+        JSON_CONTENT_TYPE,
+        body.as_bytes(),
+        None,
+    )
+    .map(|served| (served.head, served.body))
 }
 
 /// Serve one already-accepted connection: force the socket back to blocking
@@ -529,6 +553,7 @@ fn serve_connection(
     status_line: &str,
     content_type: &str,
     body: &[u8],
+    before_write: Option<&dyn Fn(&ServedRequest)>,
 ) -> Option<ServedRequest> {
     stream
         .set_nonblocking(false)
@@ -540,6 +565,9 @@ fn serve_connection(
         .set_write_timeout(Some(Duration::from_secs(10)))
         .expect("set write timeout");
     let served = read_request(stream)?;
+    if let Some(before_write) = before_write {
+        before_write(&served);
+    }
     let head = format!(
         "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len(),
