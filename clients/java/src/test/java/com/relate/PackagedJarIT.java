@@ -7,8 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -34,8 +32,21 @@ public class PackagedJarIT {
     private static final String SKILL = ".agents/skills/relate/SKILL.md";
     private static final Path BUILD_DIR = Paths.get(requiredProperty("relate.it.buildDir"));
     private static final String FINAL_NAME = requiredProperty("relate.it.finalName");
+    private static final NativesMode MODE =
+            NativesMode.parse(requiredProperty("relate.it.nativesMode"));
+
     /** "staged" (all five natives, release) or "host" (the build host's only). */
-    private static final String MODE = requiredProperty("relate.it.nativesMode");
+    private enum NativesMode {
+        STAGED, HOST;
+
+        static NativesMode parse(String value) {
+            return switch (value) {
+                case "staged" -> STAGED;
+                case "host" -> HOST;
+                default -> throw new IllegalStateException("relate.it.nativesMode is " + value);
+            };
+        }
+    }
 
     @TempDir
     Path tmp;
@@ -51,26 +62,25 @@ public class PackagedJarIT {
     /** The platforms whose natives this build bundles. */
     private static List<NativePlatform> bundledPlatforms() {
         return switch (MODE) {
-            case "staged" -> List.of(NativePlatform.values());
-            case "host" -> List.of(NativePlatform.current());
-            default -> throw new IllegalStateException("relate.it.nativesMode is " + MODE);
+            case STAGED -> List.of(NativePlatform.values());
+            case HOST -> List.of(NativePlatform.current());
         };
     }
 
+    /** The jar's entry names, in archive order — the one listing helper both call sites share. */
+    private static List<String> entryNames(ZipFile zip) {
+        return zip.stream().map(ZipEntry::getName).collect(Collectors.toList());
+    }
+
     private static List<String> entries(Path jar) throws IOException {
-        List<String> names = new ArrayList<>();
         try (ZipFile zip = new ZipFile(jar.toFile())) {
-            Enumeration<? extends ZipEntry> e = zip.entries();
-            while (e.hasMoreElements()) {
-                names.add(e.nextElement().getName());
-            }
+            return entryNames(zip);
         }
-        return names;
     }
 
     private static List<String> nativeEntries(List<String> entries) {
         return entries.stream()
-                .filter(n -> n.startsWith("native/") && !n.endsWith("/"))
+                .filter(n -> n.startsWith(NativePlatform.RESOURCE_DIR) && !n.endsWith("/"))
                 .sorted()
                 .collect(Collectors.toList());
     }
@@ -150,14 +160,12 @@ public class PackagedJarIT {
         Path stripped = tmp.resolve("stripped.jar");
         try (ZipFile in = new ZipFile(fatJar().toFile());
              ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(stripped))) {
-            Enumeration<? extends ZipEntry> e = in.entries();
-            while (e.hasMoreElements()) {
-                ZipEntry entry = e.nextElement();
-                if (entry.getName().startsWith("native/")) {
+            for (String name : entryNames(in)) {
+                if (name.startsWith(NativePlatform.RESOURCE_DIR)) {
                     continue;
                 }
-                out.putNextEntry(new ZipEntry(entry.getName()));
-                try (InputStream data = in.getInputStream(entry)) {
+                out.putNextEntry(new ZipEntry(name));
+                try (InputStream data = in.getInputStream(in.getEntry(name))) {
                     data.transferTo(out);
                 }
                 out.closeEntry();

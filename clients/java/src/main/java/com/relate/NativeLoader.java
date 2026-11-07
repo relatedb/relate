@@ -39,6 +39,13 @@ final class NativeLoader {
     /** Hex characters of the content digest that name a cache directory. */
     private static final int DIGEST_PREFIX = 16;
 
+    /**
+     * The JVM's in-band "unknown" spelling for {@code user.home}: a sandboxed
+     * or headless JVM reports the literal {@code "?"} rather than leaving the
+     * property unset. Treated as absent — never as a directory named {@code "?"}.
+     */
+    private static final String UNKNOWN_USER_HOME = "?";
+
     private NativeLoader() {
     }
 
@@ -139,7 +146,7 @@ final class NativeLoader {
     }
 
     private static Path home(String userHome) {
-        if (nonEmpty(userHome) == null || userHome.equals("?")) {
+        if (nonEmpty(userHome) == null || UNKNOWN_USER_HOME.equals(userHome)) {
             throw new RelateException("relate: user.home is unknown, so the native-library"
                     + " cache has no home. " + cacheHint());
         }
