@@ -292,6 +292,36 @@ jobs:
             \( -name "librelate_ffi.*" -o -name "relate_ffi.*" \) \
             ! -name "*.d" ! -name "*.rlib" \
             -exec cp {} ffi-package/ \;
+          # Linux legs: trim the ELF artifacts at packaging. The cdylib loses
+          # its symbol table (`strip --strip-unneeded`) — the one piece
+          # `strip = "debuginfo"` (the macOS-safe level) keeps. The staticlib
+          # loses each member's embedded thin-LTO bitcode (.llvmbc, ~104 MB
+          # across the archive) — dead weight, since no external consumer
+          # LTO-links the .a; plain ld/cc never reads it and the symbol
+          # tables stay. Cross binutils for the arm64 ELF (installed with
+          # the cross gcc above); never a Mach-O/PE image (the
+          # llvm-objcopy __LINKEDIT misalignment).
+          if [[ "${{ matrix.target }}" == *unknown-linux-gnu ]]; then
+            PREFIX=""
+            if [[ "${{ matrix.target }}" == aarch64-unknown-linux-gnu ]]; then
+              PREFIX=aarch64-linux-gnu-
+            fi
+            if [[ -f ffi-package/librelate_ffi.so ]]; then
+              "${PREFIX}strip" --strip-unneeded ffi-package/librelate_ffi.so
+            fi
+            if [[ -f ffi-package/librelate_ffi.a ]]; then
+              mkdir -p ffi-package/a-members
+              ( cd ffi-package/a-members \
+                && ar x ../librelate_ffi.a \
+                && for m in *; do
+                  "${PREFIX}objcopy" --remove-section .llvmbc \
+                    --remove-section .llvm_addrsig "$m"
+                 done \
+                && rm ../librelate_ffi.a \
+                && "${PREFIX}ar" rcs ../librelate_ffi.a * )
+              rm -rf ffi-package/a-members
+            fi
+          fi
           tar czf relate-ffi-${{ matrix.target }}.tar.gz -C ffi-package .
 
       - uses: actions/upload-artifact@v4

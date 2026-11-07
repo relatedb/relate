@@ -290,10 +290,11 @@ with `--snapshot-format json`, which every build reads and writes.
 `target/release/relate` from `cargo build --release -p relate-cli`.
 Measured on Darwin arm64 (macOS, Rust 1.88.0) with the workspace
 `[profile.release]` recipe (`opt-level = 3`, `lto = "thin"`,
-`codegen-units = 1`, `strip = "symbols"` — PR #679; the size recipe trims
-every released native artifact). LABS-876 since reverted `strip` to `"none"`
-(stripped Mach-O dylibs fail to load on macOS 26+), so current release
-binaries carry their symbol table and run larger than this table:
+`codegen-units = 1`, `strip = "debuginfo"`). The table's bytes were
+measured under `strip = "symbols"`, which additionally drops the symbol
+table; current binaries keep it (symbol-level stripping broke macOS dylibs
+until the toolchain carries the LLVM 23 fix) and run slightly larger than
+this table:
 
 | Features | Normal crates | Release binary (bytes) |
 | --- | --- | --- |
