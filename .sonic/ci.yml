@@ -318,9 +318,13 @@ stages:
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/corpus
+      # Set here, not as a command prefix: a stage with a single command
+      # and no `shell:` is exec'd directly, so `VAR=1 cargo …` would be
+      # run as a program named `VAR=1`.
+      RELATE_QUERY_LATENCY: "1"
     volumes: *cargo-cache
     commands:
-      - RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test graph_benchmark_ldbc
+      - cargo test --profile corpus -p relate-query-latency --test graph_benchmark_ldbc
 
   bolt:
     runner: sonic-polyglot

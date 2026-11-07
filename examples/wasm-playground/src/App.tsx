@@ -55,7 +55,7 @@ export function App() {
     setSchemaRefreshKey((k) => k + 1);
   }, []);
 
-  const [dialog, setDialog] = useState<'welcome' | null>('welcome');
+  const [welcomeOpen, setWelcomeOpen] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const isMobile = useIsMobile();
   const [mobileTab, setMobileTab] = useState<'console' | 'schema' | 'query'>('console');
@@ -146,7 +146,7 @@ export function App() {
       if (!(await runQuery(SEED_SCRIPT, SEED_PARAMS))) return;
       echoInput(PREVIEW_QUERY);
       if (!(await runQuery(PREVIEW_QUERY, null))) return;
-      setDialog(null);
+      setWelcomeOpen(false);
     } finally {
       setSeeding(false);
     }
@@ -187,15 +187,14 @@ export function App() {
     );
   }
 
-  const runFromSchema = (q: string) => {
-    echoInput(q);
-    void runQuery(q, null);
-    if (isMobile) setMobileTab('query');
-  };
-
   const runFromEditor = (text: string) => {
     echoInput(text);
     void runQuery(text, null);
+  };
+
+  const runFromSchema = (q: string) => {
+    runFromEditor(q);
+    if (isMobile) setMobileTab('query');
   };
 
   // Ghost-text in the editor after a run: the most recent input in history.
@@ -292,7 +291,7 @@ export function App() {
       {!isMobile && cliSidebar}
 
       <WelcomeDialog
-        isOpen={dialog === 'welcome'}
+        isOpen={welcomeOpen}
         seedScript={SEED_DISPLAY_SCRIPT}
         onRunSeed={() => void runSeed()}
         isRunning={seeding}
