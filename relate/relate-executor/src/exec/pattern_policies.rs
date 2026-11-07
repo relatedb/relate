@@ -51,7 +51,7 @@ use crate::pattern_walk::UsedRels;
 use crate::row::Row;
 
 use super::match_cap::MatchCap;
-use super::project::{finish_match_row, SinkProjection};
+use super::sink::{finish_match_row, SinkProjection};
 
 /// The names a quantified group's inner elements bind: the variables of
 /// its inner node and rel elements plus the nested groups' subpath

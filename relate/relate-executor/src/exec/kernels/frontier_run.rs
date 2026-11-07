@@ -41,8 +41,8 @@ use crate::row::Row;
 
 use super::super::graph_stats::GraphStats;
 use super::super::pattern_policies::{reduce_row, MatchReduce};
-use super::super::project::SinkProjection;
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
+use super::super::sink::SinkProjection;
 use super::super::{record_frontier_decline, record_walk_start};
 use super::frontier::{self, FrontierRun, RunOutcome, WalkBudget};
 use super::frontier_emit::{capped_rows, CappedRun};

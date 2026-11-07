@@ -31,12 +31,13 @@ use super::exists_probe::try_fold_boolean_count;
 use super::foreach::exec_foreach;
 use super::match_clause::{run_match_operator_ladder, MatchOperator};
 use super::procedures::{exec_call, CallSpec};
-use super::project::{project_rows, return_result, sinkable_projection, ProjectSpec, RowSource};
+use super::project::{project_rows, return_result, ProjectSpec, RowSource};
 use super::pushdown::{
     live_from, match_limit_cap, trim_rows, try_fold_one_hop_aggs, try_fold_path_aggs, FoldedReturn,
 };
 use super::scope::{carry_scope_bindings, star_scope_names};
 use super::search::search_match_clause;
+use super::sink::sinkable_projection;
 use super::QueryResult;
 
 /// Read/write mode for the unified clause dispatcher. Both clause loops —

@@ -24,9 +24,9 @@ use super::hub_join::try_hub_join;
 use super::kernels;
 use super::one_path::{match_one_path, PathFilters};
 use super::pattern_policies::{MatchReduce, MatchTail};
-use super::project::{finish_match_row, SinkProjection};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
+use super::sink::{finish_match_row, SinkProjection};
 
 /// Which operator took one `MATCH` clause down the ladder — the
 /// dispatcher's PROFILE `batched` fact (ADR-0468) reports the batch
