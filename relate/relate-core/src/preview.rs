@@ -103,12 +103,6 @@ preview_feature_registry! {
         "ontology"
     ),
     (
-        GqlFor,
-        "CIP-250 (GQ10): the GQL `FOR <variable> IN <expression>` clause, the UNWIND-successor \
-         spelling normalized to the existing UNWIND infrastructure.",
-        "gql-for"
-    ),
-    (
         ObfuscatedLiterals,
         "The Neo4j obfuscated literal `******`: parsed to a dummy `false` \
          for semantic analysis, never executed. Gates at the lexer, the one point the two \

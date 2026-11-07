@@ -389,11 +389,11 @@ UNWIND [1, 2, 3] AS x
 RETURN x;
 ```
 
-#### FOR (preview)
+#### FOR
 
 The GQL-compliant successor spelling of UNWIND, with the binding variable
-*before* the expression (CIP-250, GQ10, behind the
-`RELATE_PREVIEW=gql-for` preview gate, ADR-0371):
+*before* the expression (CIP-250, GQ10; graduated from the `gql-for`
+preview gate after live verification against Neo4j 2026.09 and 2026.10.1):
 
 ```cypher
 FOR x IN [1, 2, 3]
@@ -411,8 +411,6 @@ Rules:
 - the clause is normalized onto the existing `UNWIND` machinery: the
   query plan shows the same `Unwind` operator, and no new plan operator
   exists
-- while the gate is off, a `FOR x IN ...` clause fails with
-  `preview feature 'gql-for' is not enabled: set RELATE_PREVIEW=gql-for`
 - the binding variable follows the same scoping rules as the `UNWIND`
   alias (any keyword spelling works unquoted, ADR-0191)
 - malformed shapes are parse errors: a missing `IN`, a missing binding
