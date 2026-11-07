@@ -18,6 +18,8 @@ pub mod git;
 pub mod loopback;
 #[cfg(feature = "nested_eval")]
 pub mod nested_eval;
+#[cfg(feature = "pokec")]
+pub mod pokec;
 pub mod rng;
 pub mod sampling;
 pub mod temporal;
