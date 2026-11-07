@@ -442,3 +442,109 @@ fn later_relationship_quantifier_forces_exhaustive_shortest_path() {
         "a quantifier over a later relationship variable forces the exhaustive evaluation"
     );
 }
+
+/// A `CALL { … }` inside an `EXISTS`/`COUNT`/`COLLECT` expression body
+/// is checked against the names that body binds before it. Live Neo4j
+/// 2026.10.1 raises 03N60 for all three shapes (the `COLLECT`/`COUNT`
+/// controller-command acceptance suites); the detectors used to stop at
+/// the clause tree and never see them.
+#[test]
+fn subquery_shadowing_sees_a_call_inside_an_expression_subquery() {
+    let collect = relate_front::parse_and_lower(
+        "MATCH (person:Person) \
+         WITH COLLECT { \
+           MATCH (person)-[:FRIEND]->(friend:Person) \
+           CALL (person) { \
+             MATCH (person)-[:FRIEND]->(friend:Person) \
+             RETURN friend.name AS name \
+             UNION ALL \
+             MATCH (person)-[:FRIEND]->(otherPerson:Person) \
+             RETURN otherPerson.name AS name \
+           } \
+           RETURN DISTINCT friend.name AS friendNames \
+         } AS foo RETURN foo",
+    )
+    .unwrap();
+    assert_eq!(
+        subquery_shadowing_count(&collect),
+        1,
+        "the CALL re-binds the COLLECT body's `friend` without importing it"
+    );
+
+    let count = relate_front::parse_and_lower(
+        "MATCH (person:Person) \
+         WITH COUNT { \
+           MATCH (person)-[:FOLLOWS]->(friend:Person) \
+           CALL (person) { \
+             MATCH (person)-[:FOLLOWS]->(friend:Person) \
+             RETURN friend.name AS name \
+           } \
+           RETURN friend AS notHumans \
+         } AS foo RETURN foo",
+    )
+    .unwrap();
+    assert_eq!(subquery_shadowing_count(&count), 1);
+
+    let exists = relate_front::parse_and_lower(
+        "MATCH (person:Person) \
+         WHERE EXISTS { \
+           MATCH (person)-[:FRIEND]->(friend:Person) \
+           CALL (person) { \
+             MATCH (person)-[:FRIEND]->(friend:Person) \
+             RETURN friend AS f \
+           } \
+         } RETURN person",
+    )
+    .unwrap();
+    assert_eq!(subquery_shadowing_count(&exists), 1);
+}
+
+/// An expression body's leading `WITH` binds a name the nested CALL then
+/// shadows (ProjectedPathsAcceptance `Path Expression descoped in COLLECT
+/// in CALL`, both `WITH p0 AS p0` examples).
+#[test]
+fn subquery_shadowing_sees_a_with_inside_a_collect_expression() {
+    for with in ["WITH p0 AS p0", "WITH p0 AS p0, 1 AS x"] {
+        let query = relate_front::parse_and_lower(&format!(
+            "MATCH p0 = (n7)-[]->() RETURN COLLECT {{ {with} \
+             CALL () {{ MATCH p0 = (n7)-[]->() RETURN length(p0) AS a }} \
+             RETURN a }} AS x"
+        ))
+        .unwrap();
+        assert_eq!(
+            subquery_shadowing_count(&query),
+            1,
+            "the CALL re-binds the COLLECT body's `p0` ({with})"
+        );
+    }
+}
+
+/// The expression body's shadow test starts from an empty frame: a name
+/// bound only outside the expression subquery is not in its "outer
+/// query", so the nested CALL rebinding it raises nothing (live Neo4j
+/// 2026.10.1). Importing the body's own name silences the shadow too.
+#[test]
+fn subquery_shadowing_in_an_expression_body_starts_from_an_empty_frame() {
+    let outside_only = relate_front::parse_and_lower(
+        "MATCH (x:X) RETURN COLLECT { \
+           CALL () { MATCH (x)-[]->(y) RETURN y AS z } RETURN z } AS c",
+    )
+    .unwrap();
+    assert_eq!(
+        subquery_shadowing_count(&outside_only),
+        0,
+        "a name bound outside the expression subquery is not its outer scope"
+    );
+
+    let imported = relate_front::parse_and_lower(
+        "MATCH (friend:Person) RETURN COLLECT { \
+           MATCH (friend)-[:FRIEND]->(other:Person) \
+           CALL (friend) { MATCH (friend)-[]->(x) RETURN x AS y } RETURN y } AS c",
+    )
+    .unwrap();
+    assert_eq!(
+        subquery_shadowing_count(&imported),
+        0,
+        "an imported body name is not shadowed"
+    );
+}

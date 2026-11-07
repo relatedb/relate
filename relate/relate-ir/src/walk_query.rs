@@ -278,10 +278,14 @@ pub(crate) fn walk_expr<'a>(
     on_expr: &mut impl FnMut(&'a Expr, ExprRole),
 ) {
     on_expr(expr, role);
+    // An expression-subquery body is walked as a nested query instead of
+    // the generic child descent — the one accessor decides which
+    // expressions open one (a new variant extends it, not every walk).
+    if let Some(query) = expr.subquery_body() {
+        walk_query_at(query, true, on_clause, on_expr);
+        return;
+    }
     match expr {
-        Expr::ExistsSubquery { query }
-        | Expr::CountSubquery { query }
-        | Expr::CollectSubquery { query } => walk_query_at(query, true, on_clause, on_expr),
         Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
             walk_pattern(path, role, on_clause, on_expr);
         }

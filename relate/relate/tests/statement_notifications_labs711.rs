@@ -170,6 +170,63 @@ fn subquery_variable_shadowing_fires() {
     );
 }
 
+/// A `CALL { … }` inside an `EXISTS`/`COUNT`/`COLLECT` expression body is
+/// checked against that body's own scope. The expression body opens its
+/// scope with an empty frame, so the CALL shadows only names the body binds
+/// before it — a name bound outside the expression subquery is not its
+/// `outer` (live Neo4j 2026.10.1; the acceptance suites for `COLLECT`/
+/// `COUNT` with `CALL` assert `03N60` here).
+#[test]
+fn subquery_variable_shadowing_fires_inside_expression_subqueries() {
+    let mut conn = connection();
+    let collect = conn
+        .query(
+            "EXPLAIN MATCH (person:Person) \
+             WITH COLLECT { \
+               MATCH (person)-[:FRIEND]->(friend:Person) \
+               CALL (person) { \
+                 MATCH (person)-[:FRIEND]->(friend:Person) \
+                 RETURN friend.name AS name \
+               } \
+               RETURN DISTINCT friend.name AS friendNames \
+             } AS foo RETURN foo",
+        )
+        .unwrap();
+    assert_eq!(
+        count_of(&collect, NotificationKind::SubqueryVariableShadowing),
+        1
+    );
+
+    let count = conn
+        .query(
+            "EXPLAIN MATCH (person:Person) \
+             WITH COUNT { \
+               MATCH (person)-[:FOLLOWS]->(friend:Person) \
+               CALL (person) { \
+                 MATCH (person)-[:FOLLOWS]->(friend:Person) \
+                 RETURN friend.name AS name \
+               } \
+               RETURN friend AS notHumans \
+             } AS foo RETURN foo",
+        )
+        .unwrap();
+    assert_eq!(
+        count_of(&count, NotificationKind::SubqueryVariableShadowing),
+        1
+    );
+
+    let outside_only = conn
+        .query(
+            "EXPLAIN MATCH (x:X) RETURN COLLECT { \
+               CALL () { MATCH (x)-[]->(y) RETURN y AS z } RETURN z } AS c",
+        )
+        .unwrap();
+    assert_eq!(
+        count_of(&outside_only, NotificationKind::SubqueryVariableShadowing),
+        0
+    );
+}
+
 /// LABS-711: a `SEARCH` index identifier sharing a name with a variable in
 /// scope is taken literally and raises `03N63`.
 #[test]

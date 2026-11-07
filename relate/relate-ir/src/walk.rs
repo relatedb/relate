@@ -438,15 +438,13 @@ impl Expr {
     /// and the `scope_bearing_variants_match_children_skip_set` test keeps
     /// the two aligned.
     pub fn is_scope_bearing(&self) -> bool {
+        // The subquery half derives from the one accessor
+        // ([`subquery_body`](Expr::subquery_body)) instead of re-listing
+        // its variants here, so the two vocabularies cannot drift.
         matches!(
             self,
-            Expr::PatternPred { .. }
-                | Expr::PatternComp { .. }
-                | Expr::ShortestPath { .. }
-                | Expr::ExistsSubquery { .. }
-                | Expr::CountSubquery { .. }
-                | Expr::CollectSubquery { .. }
-        )
+            Expr::PatternPred { .. } | Expr::PatternComp { .. } | Expr::ShortestPath { .. }
+        ) || self.subquery_body().is_some()
     }
 
     /// Whether the variant binds its own identifiers (a comprehension's or
@@ -715,6 +713,13 @@ pub fn references_any(expr: &Expr, names: &HashSet<String>) -> bool {
 /// items count as reads).
 pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
     fn go(expr: &Expr, bound: &mut Vec<SmallName>, out: &mut HashSet<String>) {
+        // A subquery body contributes every name it mentions (the
+        // documented over-approximation) instead of the generic child
+        // descent — the one accessor decides which expressions open one.
+        if let Some(query) = expr.subquery_body() {
+            exists_outer_vars(query, out);
+            return;
+        }
         match expr {
             Expr::Variable(v) => {
                 if !bound.iter().any(|b| b == v) {
@@ -738,9 +743,6 @@ pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
                 }
                 go(projection, bound, out);
             }
-            Expr::ExistsSubquery { query }
-            | Expr::CountSubquery { query }
-            | Expr::CollectSubquery { query } => exists_outer_vars(query, out),
             Expr::MapProjection { items, .. } => {
                 for name in map_projection_shorthand_names(items) {
                     out.insert(name.to_string());

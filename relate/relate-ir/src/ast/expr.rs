@@ -258,6 +258,21 @@ impl Expr {
                 | Expr::Parameter(_)
         )
     }
+
+    /// The subquery body this expression opens, if it is an
+    /// expression-subquery variant (`EXISTS`/`COUNT`/`COLLECT`), else
+    /// `None` — the one published answer to "which expressions open a
+    /// subquery body", beside [`seek_value`](Self::seek_value), so a
+    /// future variant extends this accessor instead of being hunted down
+    /// in every consumer's match.
+    pub fn subquery_body(&self) -> Option<&Query> {
+        match self {
+            Expr::ExistsSubquery { query }
+            | Expr::CountSubquery { query }
+            | Expr::CollectSubquery { query } => Some(query),
+            _ => None,
+        }
+    }
 }
 
 /// The binary-operator vocabulary's shared facts, beside the operators they

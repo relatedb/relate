@@ -334,9 +334,15 @@ pub(super) fn observe_projection(
 /// clause. Imported names — a scope clause's or a scope-less body's legacy
 /// leading `WITH` — are not shadowing.
 ///
-/// Clauses nested in expression subqueries (`EXISTS`/`COUNT`/`COLLECT`) are
-/// not part of this recursion: those queries live in expressions, not in the
-/// clause tree.
+/// An expression subquery (`EXISTS`/`COUNT`/`COLLECT`) lives in an
+/// expression, not in the clause tree, so the recursion above does not reach
+/// it. Its body still opens a scope of its own: a `CALL { … }` inside it is
+/// checked against the names the body binds before it, with an **empty**
+/// starting frame — a name bound only outside the expression subquery is not
+/// part of that body's "outer query" (verified against Neo4j 2026.10.1: the
+/// same `CALL` shape shadowing an enclosing-statement name raises nothing).
+/// Every such body is therefore analysed with a fresh frame, wherever it
+/// sits, including inside another expression subquery's body.
 pub(super) fn observe_subquery_scopes(notifications: &mut Vec<Notification>, parts: &[&[Clause]]) {
     // The per-subquery work scales with the statement-wide name set (a
     // wildcard import clones it): declined past the shared budget, like the
@@ -344,6 +350,7 @@ pub(super) fn observe_subquery_scopes(notifications: &mut Vec<Notification>, par
     // index-specification name, not per scope.
     let mut declared: BTreeSet<String> = BTreeSet::new();
     let mut subqueries = 0u64;
+    let mut expression_bodies: Vec<&Query> = Vec::new();
     for part in parts {
         relate_ir::walk_clauses(
             part,
@@ -353,14 +360,25 @@ pub(super) fn observe_subquery_scopes(notifications: &mut Vec<Notification>, par
                 }
                 declared.extend(introduced_names(clause));
             },
-            &mut |_| {},
+            &mut |expr| {
+                if let Some(query) = expr.subquery_body() {
+                    expression_bodies.push(query);
+                }
+            },
         );
     }
+    subqueries += expression_bodies.len() as u64;
     let subquery_scan = within_work_budget(subqueries.saturating_mul(declared.len() as u64));
     // A UNION arm and a `NEXT` stage are independent statements: each is its
     // own clause list, so neither sees the other's names.
     for part in parts {
         observe_scope_frame(notifications, part, &Scope::new(), subquery_scan);
+    }
+    // `observe_query_frames` descends into clause-level bodies only, so each
+    // expression body is analysed exactly once here; a body nested in
+    // another expression body is its own entry in the list.
+    for query in expression_bodies {
+        observe_query_frames(notifications, query, &Scope::new(), subquery_scan);
     }
 }
 
