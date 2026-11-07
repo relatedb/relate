@@ -67,6 +67,59 @@ pub(crate) enum ClauseClass {
     Schema,
 }
 
+/// Whether the clause is pure routing: a `USE` positions the statement's
+/// graph and produces nothing — every composition rule that counts a
+/// part's substantive clauses (the DDL-standalone rule, the terminal
+/// check) drops it, and the `USE` placement rule counts only it.
+pub(crate) fn clause_is_routing(clause: &relate_ir::Clause) -> bool {
+    matches!(clause, relate_ir::Clause::Use { .. })
+}
+
+/// The grammar-ending DDL family: the commands whose own grammar ends at
+/// its `OPTIONS`/EOF, so no continuation may follow them. Membership is
+/// decided here, explicitly — not through `clause_class`, which is the
+/// *access* classification and puts `ALTER DATABASE` in `Write`:
+///
+/// - every `ClauseClass::Schema` clause, whichever AST carries it (the
+///   rich `Catalog` DDL commands and the compact `CreateIndex`/
+///   `DropIndex`);
+/// - `ALTER DATABASE` (and its `AlterCurrentGraphType` kin already land
+///   in `Schema`), a database-alteration command whose grammar ends the
+///   same way — live 2026.10.1 rejects `ALTER DATABASE … FINISH`, `…
+///   WITH …` and `… RETURN …` as parse errors (probed 2026-11-08).
+///
+/// The compact `ShowIndexes` spelling is explicitly **not** a member: it
+/// is `ClauseClass::Read` and projects rows, so the SHOW family composes.
+/// The SHOW commands that *are* database-administration queries
+/// (`SHOW DATABASES` et al., ADR-0116) compose too — including
+/// `YIELD … RETURN` and UNION arms — so they are not members either. The
+/// standalone rule ([`crate::validate`]) reads this one answer instead of
+/// assembling the family at its use site.
+pub(crate) fn clause_is_ddl_command(clause: &relate_ir::Clause) -> bool {
+    use relate_ir::Clause as Ir;
+    clause_class(clause) == ClauseClass::Schema
+        || matches!(
+            clause,
+            Ir::Catalog(command) if matches!(
+                command.as_ref(),
+                relate_parser::Clause::AlterDatabase(_)
+            )
+        )
+}
+
+/// The family that cannot appear in a `UNION` arm. Two members by two
+/// reasons: the DDL family (grammar-ending — see
+/// [`clause_is_ddl_command`]), and the compact `ShowIndexes` spelling,
+/// which is `Read` and row-projecting yet still cannot join a UNION —
+/// the pre-composability spelling's own limit, retained from the rule
+/// this predicate replaced. The rich SHOW commands compose, including in
+/// UNION arms (`SHOW DATABASES … UNION …` is legal, pinned in
+/// `namespaces`); their per-command UNION limits are not this rule's.
+pub(crate) fn clause_cannot_join_union(clause: &relate_ir::Clause) -> bool {
+    use relate_ir::Clause as Ir;
+    clause_is_ddl_command(clause) || matches!(clause, Ir::ShowIndexes)
+}
+
 /// Classify one parser catalog command — the `Ir::Catalog` arm of
 /// [`clause_class`], and so the one home for that arm's table: the published
 /// [`clause_mutates_store`] reads this classification rather than a second

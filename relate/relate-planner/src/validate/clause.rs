@@ -427,8 +427,6 @@ pub(super) fn check_return_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     imports: &crate::agg::Imports,
-    clause_index: usize,
-    part: &SingleQuery,
     clause: &Clause,
 ) -> Result<()> {
     let Clause::Return {
@@ -443,11 +441,6 @@ pub(super) fn check_return_clause(
     else {
         unreachable!("clause arm");
     };
-    if clause_index + 1 != part.clauses.len() {
-        return Err(Error::syntax(
-            "InvalidClauseComposition: RETURN must terminate its query",
-        ));
-    }
     if items.len() == 1 && matches!(items[0].expr, Expr::Star) && env.is_empty() {
         return Err(Error::syntax(
             "NoVariablesInScope: RETURN * requires variables in scope",
@@ -528,33 +521,6 @@ pub(super) fn check_unwind_clause(
     };
     check_expr(env, is_write_procedure, expression)?;
     env.insert_name(alias.clone(), Binding::Value);
-
-    Ok(())
-}
-
-pub(super) fn check_finish_clause(
-    _env: &mut Env,
-    _is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause_index: usize,
-    part: &SingleQuery,
-    clause: &Clause,
-) -> Result<()> {
-    let Clause::Finish = clause else {
-        unreachable!("clause arm");
-    };
-    if part.clauses[..clause_index]
-        .iter()
-        .any(|clause| matches!(clause, Clause::Catalog(_)))
-    {
-        return Err(Error::syntax(
-            "InvalidClauseComposition: FINISH is not allowed after SHOW",
-        ));
-    }
-    if clause_index + 1 != part.clauses.len() {
-        return Err(Error::syntax(
-            "InvalidClauseComposition: FINISH must terminate its query",
-        ));
-    }
 
     Ok(())
 }
@@ -675,7 +641,7 @@ pub(super) fn check_use_clause(
     // body slip a later `USE` past this check.
     let all_use_before = part.clauses[..clause_index]
         .iter()
-        .all(|clause| matches!(clause, Clause::Use { .. }));
+        .all(crate::clause_kind::clause_is_routing);
     let after_importing_with =
         clause_index == 1 && matches!(part.clauses.first(), Some(Clause::With { .. }));
     if !all_use_before && !after_importing_with {

@@ -1,8 +1,9 @@
-//! Two composition rules this crate owns are pinned here. The
+//! The composition rules this crate owns are pinned here. The
 //! `CALL … IN TRANSACTIONS` rule reads the one per-clause write answer
-//! ([`crate::clause_mutates_store`]) — catalog writes included: a catalog
-//! change persists while moving no ADR-0309 counter, and it is still a write
-//! to every rule that rejects a write. The `USE` rule is positional, not
+//! ([`crate::clause_mutates_store`]) — the schema DDL commands are
+//! writes in the classification (a catalog change persists while moving
+//! no ADR-0309 counter); in practice they die earlier, at the standalone
+//! rule pinned below, so the write-before pin rides a plain write. The `USE` rule is positional, not
 //! write-dependent (a `USE` after any preceding clause is misplaced). The
 //! third write-predicate consumer, the expression-subquery rejection in
 //! `expr_check`, is pinned end to end in the facade's
@@ -56,16 +57,53 @@ fn use_after_a_preceding_clause_is_rejected() {
     );
 }
 
-/// A catalog write cannot precede `CALL { … } IN TRANSACTIONS`; the rule asks
-/// "did a write run before the batched subquery?", and a catalog write did.
+/// A write cannot precede `CALL { … } IN TRANSACTIONS`; the rule asks
+/// "did a write run before the batched subquery?" and rides a plain
+/// write head — the catalog DDL heads that once served here die earlier,
+/// at the standalone rule below.
 #[test]
-fn catalog_write_before_call_in_transactions_is_rejected() {
+fn write_before_call_in_transactions_is_rejected() {
+    // A plain write head reaches the rule. The catalog DDL heads that
+    // once served here die earlier now, at the standalone rule below, so
+    // this pin rides a plain `CREATE`; no catalog command reaches the
+    // rule — the DDL family is standalone and the row-producing commands
+    // (`TERMINATE TRANSACTIONS`, the SHOWs) are `ClauseClass::Read`, not
+    // writes.
     let error = rejection(
-        "ALTER CURRENT GRAPH TYPE SET GRAPH TYPE SOGraph \
-         CALL { CREATE (n:Boxed) } IN TRANSACTIONS OF 1 ROWS",
+        "CREATE (n:Boxed) \
+         CALL { CREATE (m:Other) } IN TRANSACTIONS OF 1 ROWS",
     );
     assert!(
         error.contains("WriteBeforeCallInTransactions"),
         "unexpected error: {error}"
     );
+}
+
+/// A grammar-ending DDL command is standalone whichever AST carries it
+/// (`clause_kind::clause_is_ddl_command`'s family — schema DDL plus
+/// `ALTER DATABASE`): its grammar ends at its own `OPTIONS`/EOF, so every
+/// continuation is rejected — `WITH`, `RETURN` and `FINISH` alike (live
+/// 2026.10.1, probed 2026-11-08; the front end's own scope check owns the
+/// `SET` form). The SHOW commands project rows and compose freely; their
+/// acceptance is pinned in `relate/relate/tests/ddl_result_shape.rs`.
+/// `ALTER DATABASE` is a family member by grammar (live rejects every
+/// continuation) but cannot serve as this pin's head: the front end's
+/// own administration gate answers first with its unsupported-command
+/// rejection, so the planner rule is its backstop.
+#[test]
+fn a_grammar_ending_ddl_command_is_standalone() {
+    for cypher in [
+        "CREATE CONSTRAINT c FOR (n:L) REQUIRE n.p IS UNIQUE WITH 1 AS x",
+        "CREATE CONSTRAINT c FOR (n:L) REQUIRE n.p IS UNIQUE RETURN 1",
+        "CREATE CONSTRAINT c FOR (n:L) REQUIRE n.p IS UNIQUE FINISH",
+        "CREATE INDEX i FOR (n:L) ON (n.p) WITH 1 AS x",
+    ] {
+        let err = rejection(cypher);
+        assert!(
+            err.contains(
+                "InvalidClauseComposition: schema and database-alteration commands must be standalone clauses"
+            ),
+            "{cypher}: {err}"
+        );
+    }
 }

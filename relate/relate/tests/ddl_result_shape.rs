@@ -164,6 +164,33 @@ fn show_constraints_still_projects_its_rows() {
     );
 }
 
+/// CIP-140: `FINISH` discards the rows of a row-producing catalog command
+/// and leaves the omitted (zero rows, zero columns) shape — on the user
+/// database and on `system` alike (live Neo4j 2026.10 accepts every shape
+/// here and returns no rows).
+#[test]
+fn show_finish_discards_the_catalog_rows() {
+    let mut conn = connection();
+    conn.query("CREATE CONSTRAINT c_finish FOR (n:Drug) REQUIRE n.name IS UNIQUE")
+        .unwrap();
+
+    for statement in [
+        "SHOW PROCEDURES YIELD name AS procedure FINISH",
+        "SHOW INDEXES YIELD name ORDER BY name FINISH",
+        "SHOW FUNCTIONS YIELD name AS function FINISH",
+        "SHOW INDEXES YIELD name AS index FINISH",
+        "SHOW CONSTRAINTS YIELD name AS constraint FINISH",
+        "SHOW SETTINGS YIELD name AS setting FINISH",
+        "SHOW CURRENT GRAPH TYPE YIELD specification AS spec FINISH",
+        "USE system SHOW PROCEDURES YIELD name AS procedure FINISH",
+        "USE system SHOW FUNCTIONS YIELD name AS function FINISH",
+        "USE system SHOW SETTINGS YIELD name AS setting FINISH",
+        "USE system SHOW HOME DATABASE YIELD name AS database FINISH",
+    ] {
+        assert_omitted(&mut conn, statement, BTreeMap::new());
+    }
+}
+
 /// A schema/admin DDL stage seeds the next `NEXT` stage with one unit row,
 /// exactly like a data write does (ADR-0287): the chained `MATCH` sees the
 /// graph. Covers both DDL lowering paths — the catalog path (constraint,

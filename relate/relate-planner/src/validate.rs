@@ -7,13 +7,6 @@ use relate_ir::{Clause, Expr, Query, SingleQuery};
 use crate::binding::Env;
 use crate::expr_check::check_expr;
 
-pub(crate) fn is_schema_clause(c: &Clause) -> bool {
-    matches!(
-        c,
-        Clause::CreateIndex { .. } | Clause::DropIndex { .. } | Clause::ShowIndexes
-    )
-}
-
 mod clause;
 mod in_transactions;
 mod subquery;
@@ -98,12 +91,45 @@ pub(crate) fn validate_part_with_env(
     if part.clauses.is_empty() {
         return Err(Error::semantic("empty query part"));
     }
-    if part.clauses.iter().any(is_schema_clause) && part.clauses.len() != 1 {
+    // A grammar-ending DDL command is standalone whichever AST carries
+    // it (the family is `clause_kind::clause_is_ddl_command`'s — schema
+    // DDL plus `ALTER DATABASE`): every continuation (`WITH`, `SET`,
+    // `RETURN`, `FINISH`) is a syntax error on live 2026.10.1 (probed
+    // 2026-11-08). `USE` is routing, not a continuation (ADR-0116: an
+    // administration command runs from any namespace), so it never
+    // counts against the command's standaloneness.
+    let substantive = part
+        .clauses
+        .iter()
+        .filter(|c| !crate::clause_kind::clause_is_routing(c))
+        .count();
+    if part
+        .clauses
+        .iter()
+        .any(crate::clause_kind::clause_is_ddl_command)
+        && substantive != 1
+    {
         return Err(Error::syntax(
-            "InvalidClauseComposition: CREATE/DROP/SHOW INDEX must be a standalone clause",
+            "InvalidClauseComposition: schema and database-alteration commands must be standalone clauses",
         ));
     }
     for (clause_index, c) in part.clauses.iter().enumerate() {
+        // The terminal clauses are part-level composition facts, not
+        // per-clause checks: a `RETURN` or `FINISH` must be its part's
+        // last *substantive* clause — trailing routing `USE`s do not
+        // count (the `USE` placement rule owns rejecting one there),
+        // and anything else following is rejected here, once, for both
+        // spellings.
+        if matches!(c, Clause::Return { .. } | Clause::Finish)
+            && part.clauses[clause_index + 1..]
+                .iter()
+                .any(|c| !crate::clause_kind::clause_is_routing(c))
+        {
+            return Err(Error::syntax(format!(
+                "InvalidClauseComposition: {} must terminate its query",
+                crate::clause_kind::ir_clause_keyword(c)
+            )));
+        }
         match c {
             Clause::Catalog(_) => check_catalog_clause(&mut env, is_write_procedure, c)?,
             Clause::Match { .. } => {
@@ -120,19 +146,15 @@ pub(crate) fn validate_part_with_env(
             Clause::Set { .. } => check_set_clause(&mut env, is_write_procedure, c)?,
             Clause::Remove { .. } => check_remove_clause(&mut env, is_write_procedure, c)?,
             Clause::With { .. } => check_with_clause(&mut env, is_write_procedure, &imports, c)?,
-            Clause::Return { .. } => check_return_clause(
-                &mut env,
-                is_write_procedure,
-                &imports,
-                clause_index,
-                part,
-                c,
-            )?,
+            Clause::Return { .. } => {
+                check_return_clause(&mut env, is_write_procedure, &imports, c)?
+            }
             Clause::Unwind { .. } => check_unwind_clause(&mut env, is_write_procedure, c)?,
             Clause::CreateIndex { .. } | Clause::DropIndex { .. } | Clause::ShowIndexes => {}
-            Clause::Finish => {
-                check_finish_clause(&mut env, is_write_procedure, clause_index, part, c)?
-            }
+            // `FINISH` owns no per-clause rule: its terminality is the
+            // part-level check above, and what may precede it is the
+            // DDL-standalone rule's answer.
+            Clause::Finish => {}
             Clause::LoadCsv { .. } => check_load_csv_clause(&mut env, is_write_procedure, c)?,
             Clause::CallSubquery { .. } => {
                 check_call_subquery_clause(&mut env, is_write_procedure, clause_index, part, c)?
@@ -181,14 +203,16 @@ pub(crate) fn validate_stage_with_env(
     }
     if !query.union_all.is_empty() {
         check_union_joiners(&query.union_all)?;
-        if query
+        if let Some(offender) = query
             .parts
             .iter()
-            .any(|p| p.clauses.iter().any(is_schema_clause))
+            .flat_map(|p| p.clauses.iter())
+            .find(|c| crate::clause_kind::clause_cannot_join_union(c))
         {
-            return Err(Error::syntax(
-                "InvalidClauseComposition: CREATE/DROP/SHOW INDEX cannot be used with UNION",
-            ));
+            return Err(Error::syntax(format!(
+                "InvalidClauseComposition: {} cannot be used with UNION",
+                crate::clause_kind::ir_clause_keyword(offender)
+            )));
         }
     }
     for part in &query.parts {
