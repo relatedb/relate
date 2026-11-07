@@ -98,6 +98,18 @@ impl Extreme {
             Extreme::Max => "coll.max()",
         }
     }
+
+    /// Whether the `coll.*` spelling of this extreme poisons on a null
+    /// element (live Neo4j 2026.10.1, probed 2026-11-07: `coll.max`
+    /// returns null when ANY element is null, `coll.min` skips nulls) —
+    /// a coll-surface fact only; the `min()`/`max()` aggregates keep the
+    /// fold's null-skipping for both spellings.
+    pub(super) fn coll_null_poison(self) -> bool {
+        match self {
+            Extreme::Min => false,
+            Extreme::Max => true,
+        }
+    }
 }
 
 /// The one extreme fold shared by the `min()`/`max()` aggregates (through
@@ -110,9 +122,10 @@ impl Extreme {
 /// caller's ordering policy — the aggregates and the `coll.*` functions
 /// both pass the one openCypher order rank, `Value::order_by_cmp`. Nulls are
 /// skipped,
-/// and the empty extreme is null — the fold owns its empty-sample result
-/// exactly as the sibling collection folds do, so no caller spells the
-/// domain rule again.
+/// and the empty extreme is null. One caller spells a further domain rule
+/// on top: the `coll.*` layer poisons max on any null element
+/// ([`Extreme::coll_null_poison`]) — a live-Neo4j divergence from the
+/// aggregates this fold must not absorb.
 pub(crate) fn fold_extreme(
     vals: impl IntoIterator<Item = Value>,
     extreme: Extreme,

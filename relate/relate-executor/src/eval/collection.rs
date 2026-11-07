@@ -154,10 +154,18 @@ pub(crate) fn collection_remove(vals: Vec<Value>) -> Result<Value> {
 /// ORDER BY rank (MAP < NODE < RELATIONSHIP < LIST < … < STRING < BOOLEAN <
 /// NUMBER). A mixed list therefore keeps Neo4j's answer: the minimum of
 /// `[7, 2, [2], 2, 5, 'a']` is the list `[2]`, not the number `2`.
+///
+/// The two spellings differ on null elements — [`Extreme::coll_null_poison`]
+/// owns that per-variant fact — so the coll surface checks before the
+/// shared fold, which stays null-skipping because the `max()`/`min()`
+/// aggregates keep Cypher's null-ignoring semantics.
 pub(crate) fn collection_extreme(value: Value, extreme: Extreme) -> Result<Value> {
     let Some(items) = list_arg(value, extreme.op())? else {
         return Ok(Value::Null);
     };
+    if extreme.coll_null_poison() && items.iter().any(Value::is_null) {
+        return Ok(Value::Null);
+    }
     Ok(fold_extreme(
         items.iter().cloned(),
         extreme,
