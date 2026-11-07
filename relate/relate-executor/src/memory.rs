@@ -113,31 +113,45 @@ impl ChainShape {
     }
 }
 
-/// One dashmap slot plus either the inline slot (the row and its birth
-/// timestamp, `inline` bytes) or the version-list header and its reserved
-/// buffer of `stride`-byte versions.
-pub fn chain_bytes(shape: ChainShape, stride: u64, inline: u64) -> u64 {
+/// Reserved bytes of a dense id span, or `None` when the power-of-two
+/// reservation does not fit in `u64`. That id cannot have a slot array
+/// (ADR-0532) and lives in the store's side map instead.
+pub fn dense_span_bytes(span: usize, slot: u64) -> Option<u64> {
+    if span == 0 {
+        return Some(0);
+    }
+    let reserved = span.checked_next_power_of_two()?;
+    (reserved as u64).checked_mul(slot)
+}
+
+/// Reserved bytes of an id-indexed slot array (ADR-0532). The row itself
+/// sits in the slot; this is the vector, holes included. A span that does
+/// not fit charges nothing here — the caller charges a side-map entry.
+pub fn id_vec_bytes(span: usize, slot: u64) -> u64 {
+    dense_span_bytes(span, slot).unwrap_or(0)
+}
+
+/// One side-map entry for an id whose slot array does not fit: the
+/// hash-map overhead plus the value. The value's spilled heap is separate.
+pub fn overflow_entry_bytes(value: u64) -> u64 {
+    OVERHEAD_MAP_ENTRY + value
+}
+
+/// Heap of a spilled version chain. An inline row lives in the id slot, so
+/// it adds nothing here, and the spilled vector's header does too.
+pub fn chain_bytes(shape: ChainShape, stride: u64) -> u64 {
     match shape {
-        ChainShape::Absent | ChainShape::Spilled(0) => 0,
-        ChainShape::Inline => OVERHEAD_MAP_ENTRY + inline,
-        ChainShape::Spilled(n) => OVERHEAD_MAP_ENTRY + VEC_HEADER + vec_heap(n, stride),
+        ChainShape::Spilled(n) if n > 0 => vec_heap(n, stride),
+        _ => 0,
     }
 }
 
 pub fn node_chain_bytes(shape: ChainShape) -> u64 {
-    chain_bytes(
-        shape,
-        crate::graph::node_version_stride(),
-        crate::graph::node_inline_slot(),
-    )
+    chain_bytes(shape, crate::graph::node_version_stride())
 }
 
 pub fn rel_chain_bytes(shape: ChainShape) -> u64 {
-    chain_bytes(
-        shape,
-        crate::graph::rel_version_stride(),
-        crate::graph::rel_inline_slot(),
-    )
+    chain_bytes(shape, crate::graph::rel_version_stride())
 }
 
 /// `to_id` slot, `to_str` slot, and one `Arc<str>` allocation. A second
@@ -160,17 +174,15 @@ pub fn label_vec_cache_bytes(label_count: usize, string_bytes: u64) -> u64 {
         + string_bytes
 }
 
-/// One adjacency map entry: the chunk vector plus each hop buffer.
-/// Inner hop-vector headers sit inside `size_of<(u32, Vec<AdjHop>)>`.
+/// Heap of one node's adjacency chunks and hop buffers. The chunk-vector
+/// header is the id slot (ADR-0532), so it is not charged again here.
 pub fn adjacency_bytes(chunk_hops: &[usize]) -> u64 {
     if chunk_hops.is_empty() {
         return 0;
     }
     let chunk_stride = size_of::<(u32, Vec<crate::store::AdjHop>)>() as u64;
     let hop_stride = size_of::<crate::store::AdjHop>() as u64;
-    OVERHEAD_MAP_ENTRY
-        + VEC_HEADER
-        + vec_heap(chunk_hops.len(), chunk_stride)
+    vec_heap(chunk_hops.len(), chunk_stride)
         + chunk_hops
             .iter()
             .map(|n| vec_heap(*n, hop_stride))
@@ -407,15 +419,51 @@ struct Shapes<F> {
     committed: F,
     batch: HashMap<i64, ChainShape>,
     bytes: fn(ChainShape) -> u64,
+    span: usize,
+    slot: u64,
+    /// `size_of` of the stored value, for an id that cannot join the vector.
+    value: u64,
 }
 
 impl<F: Fn(i64) -> ChainShape> Shapes<F> {
-    fn new(committed: F, bytes: fn(ChainShape) -> u64) -> Self {
+    fn new(committed: F, bytes: fn(ChainShape) -> u64, span: usize, slot: u64, value: u64) -> Self {
         Self {
             committed,
             batch: HashMap::new(),
             bytes,
+            span,
+            slot,
+            value,
         }
+    }
+
+    fn shape_of(&self, id: i64) -> ChainShape {
+        self.batch
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| (self.committed)(id))
+    }
+
+    /// Bytes the slot array gains when `id` extends it. An id whose array
+    /// does not fit adds one side-map entry instead, and only while the id
+    /// has no slot yet.
+    fn note_span(&mut self, id: i64) -> i64 {
+        let Some(idx) = usize::try_from(id).ok() else {
+            return 0;
+        };
+        let need = idx.saturating_add(1);
+        if need <= self.span {
+            return 0;
+        }
+        let Some(after) = dense_span_bytes(need, self.slot) else {
+            if !matches!(self.shape_of(id), ChainShape::Absent) {
+                return 0;
+            }
+            return overflow_entry_bytes(self.value) as i64;
+        };
+        let before = id_vec_bytes(self.span, self.slot);
+        self.span = need;
+        after as i64 - before as i64
     }
 
     /// Move `id`'s slot by `step`; the slot bytes it adds.
@@ -468,6 +516,7 @@ pub struct RedoDelta {
 /// also reported as [`RedoDelta::tombstone_spill`]. A set on a committed
 /// node copies the version and adds the new record; a set on a node this
 /// batch already created or edited edits that record in place.
+#[allow(clippy::too_many_arguments)]
 pub fn estimate_redo_delta(
     interner: &Interner,
     ops: &[RedoOp],
@@ -475,12 +524,26 @@ pub fn estimate_redo_delta(
     lookup_rel: impl Fn(RelId) -> Option<PayloadForm>,
     node_shape: impl Fn(NodeId) -> ChainShape,
     rel_shape: impl Fn(RelId) -> ChainShape,
+    node_span: usize,
+    rel_span: usize,
     charge: &IndexCharge,
 ) -> RedoDelta {
     let mut nodes: HashMap<NodeId, Option<Node>> = HashMap::new();
     let mut rels: HashMap<RelId, Option<PayloadForm>> = HashMap::new();
-    let mut node_shapes = Shapes::new(node_shape, node_chain_bytes);
-    let mut rel_shapes = Shapes::new(rel_shape, rel_chain_bytes);
+    let mut node_shapes = Shapes::new(
+        node_shape,
+        node_chain_bytes,
+        node_span,
+        crate::graph::node_slot(),
+        crate::graph::node_value(),
+    );
+    let mut rel_shapes = Shapes::new(
+        rel_shape,
+        rel_chain_bytes,
+        rel_span,
+        crate::graph::rel_slot(),
+        crate::graph::rel_value(),
+    );
     let mut delta = 0i64;
     let mut tombstone_spill = 0i64;
 
@@ -510,6 +573,7 @@ pub fn estimate_redo_delta(
                     properties: properties.clone(),
                 };
                 delta += live_node_account(&n, charge) as i64
+                    + node_shapes.note_span(*id)
                     + node_shapes.step(*id, ChainShape::after_install);
                 nodes.insert(*id, Some(n));
             }
@@ -522,6 +586,7 @@ pub fn estimate_redo_delta(
             } => {
                 let form = PayloadForm::from_map(interner, (**properties).clone().into());
                 delta += payload_form_account(&form) as i64
+                    + rel_shapes.note_span(*id)
                     + rel_shapes.step(*id, ChainShape::after_install);
                 rels.insert(*id, Some(form));
             }

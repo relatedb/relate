@@ -1,6 +1,7 @@
 //! Adjacency access (ADR-0031/ADR-0033 typed chunks): degree, neighbor
 //! iteration, and snapshot-visible traversal — split out of `mod.rs`.
 use super::hop_counts;
+use super::id_vec::IdVec;
 use super::*;
 
 fn flatten_adj(by_type: Option<&TypedAdj>) -> Vec<RelId> {
@@ -11,7 +12,7 @@ fn flatten_adj(by_type: Option<&TypedAdj>) -> Vec<RelId> {
 }
 
 pub(super) fn adj_insert(
-    map: &CoreMap<NodeId, TypedAdj>,
+    map: &IdVec<TypedAdj>,
     node: NodeId,
     type_id: u32,
     id: RelId,
@@ -21,7 +22,7 @@ pub(super) fn adj_insert(
 }
 
 pub(super) fn adj_reposition(
-    map: &CoreMap<NodeId, TypedAdj>,
+    map: &IdVec<TypedAdj>,
     node: NodeId,
     type_id: u32,
     id: RelId,
@@ -49,7 +50,7 @@ impl Graph {
         let Some(ids) = types.ids() else {
             return self.adj_len(id, dir);
         };
-        let len = |m: &CoreMap<NodeId, TypedAdj>| {
+        let len = |m: &IdVec<TypedAdj>| {
             let Some(adj) = m.get(&id) else {
                 return 0;
             };
@@ -94,7 +95,7 @@ impl Graph {
     /// an approximate degree for choosing which side of an existence
     /// probe to walk (LABS-193).
     pub fn adj_len(&self, id: NodeId, dir: relate_ir::Direction) -> usize {
-        let len = |m: &CoreMap<NodeId, TypedAdj>| {
+        let len = |m: &IdVec<TypedAdj>| {
             m.get(&id)
                 .map(|a| a.chunks.iter().map(|(_, v)| v.len()).sum())
                 .unwrap_or(0)
@@ -171,7 +172,7 @@ impl Graph {
 
     fn for_each_typed<E>(
         &self,
-        map: &CoreMap<NodeId, TypedAdj>,
+        map: &IdVec<TypedAdj>,
         id: NodeId,
         ts: u64,
         types: &RelTypes,

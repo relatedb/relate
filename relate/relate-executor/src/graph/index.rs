@@ -593,7 +593,7 @@ impl Graph {
                 // map per node (the profile-hot `to_map` path, ADR-0033),
                 // and the visible version's probe stays inside the one
                 // `nodes` guard it borrows.
-                self.nodes.get(*id).is_some_and(|vers| {
+                self.nodes.get(id).is_some_and(|vers| {
                     visible_version(&vers, ts).is_some_and(|ver| {
                         ver.live.props.get(kid).is_some_and(|value| {
                             value.as_string().is_some_and(|s| s.contains(needle))

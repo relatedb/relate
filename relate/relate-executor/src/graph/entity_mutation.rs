@@ -6,6 +6,7 @@
 //! (ids, pins, charging, catalog reads); the seams that install a version,
 //! maintain the indexes/adjacency/counts, and push redo live here.
 
+use super::id_vec::IdVec;
 use super::*;
 
 impl Graph {
@@ -60,6 +61,7 @@ impl Graph {
         });
         self.finish_node_edit(edit, id, Some(&live));
         let before_shape = self.node_chain_shape(id);
+        let before_array = self.nodes.array_bytes();
         install(&self.nodes, id, xmin, live);
         self.index_add(id);
         self.mark_node_dirty(id);
@@ -67,8 +69,10 @@ impl Graph {
         // only after the version is installed (apply-before-dirty ordering).
         self.string_dirty_mark_node(id);
         self.charge(
-            charge as i64 + crate::memory::node_chain_bytes(before_shape.after_install()) as i64
-                - crate::memory::node_chain_bytes(before_shape) as i64,
+            charge as i64 + crate::memory::node_chain_bytes(self.node_chain_shape(id)) as i64
+                - crate::memory::node_chain_bytes(before_shape) as i64
+                + self.nodes.array_bytes() as i64
+                - before_array as i64,
         );
         Ok(())
     }
@@ -130,6 +134,7 @@ impl Graph {
         let ts = live.payload.ts(&self.interner);
         let out_before = adj_floor(&self.out_adj, start);
         let in_before = adj_floor(&self.in_adj, end);
+        let adj_arrays = self.out_adj.array_bytes() + self.in_adj.array_bytes();
         let degree_before = self.out_chunk_len(start, live.type_id);
         adj_insert(&self.out_adj, start, live.type_id, id, ts);
         adj_insert(&self.in_adj, end, live.type_id, id, ts);
@@ -137,7 +142,9 @@ impl Graph {
         self.bump_rel_stats(start, live.type_id, end, CountDelta::Add);
         let adj = adj_floor(&self.out_adj, start) as i64 - out_before as i64
             + adj_floor(&self.in_adj, end) as i64
-            - in_before as i64;
+            - in_before as i64
+            + (self.out_adj.array_bytes() + self.in_adj.array_bytes()) as i64
+            - adj_arrays as i64;
         // ADR-0439: a created relationship introduces its constrained
         // tuple(s); relationship constraints have no backing-index postings.
         // The map's scope decides whether the relationship can change one.
@@ -147,14 +154,17 @@ impl Graph {
         let edit = self.tracked_rel_edit(id, |scope| scope.touches_rel(live.type_id, &key_ids));
         self.finish_rel_edit(edit, id, Some(&live));
         let before_shape = self.rel_chain_shape(id);
+        let before_array = self.rels.array_bytes();
         install(&self.rels, id, xmin, live);
         self.mark_rel_dirty(id);
         // ADR-0185: lazy relationship postings — dirty-mark built pairs, and
         // only after the version is installed (apply-before-dirty ordering).
         self.rel_index_add(id);
         self.charge(
-            charge as i64 + crate::memory::rel_chain_bytes(before_shape.after_install()) as i64
+            charge as i64 + crate::memory::rel_chain_bytes(self.rel_chain_shape(id)) as i64
                 - crate::memory::rel_chain_bytes(before_shape) as i64
+                + self.rels.array_bytes() as i64
+                - before_array as i64
                 + adj,
         );
         Ok(())
@@ -398,17 +408,14 @@ impl Graph {
 
 /// Install `live` as `id`'s newest version: a fresh id gets an inline slot;
 /// an id that already has versions (a replayed re-create) keeps them.
-fn install<I, Live>(map: &CoreMap<I, Chain<Live>>, id: I, xmin: u64, live: Live)
-where
-    I: Eq + std::hash::Hash,
-{
+fn install<Live>(map: &IdVec<Chain<Live>>, id: i64, xmin: u64, live: Live) {
     match map.entry(id) {
-        dashmap::mapref::entry::Entry::Occupied(mut slot) => slot.get_mut().push(Ver {
+        super::id_vec::Entry::Occupied(mut slot) => slot.get_mut().push(Ver {
             xmin,
             xmax: 0,
             live,
         }),
-        dashmap::mapref::entry::Entry::Vacant(slot) => {
+        super::id_vec::Entry::Vacant(mut slot) => {
             slot.insert(Chain::inline(xmin, live));
         }
     }

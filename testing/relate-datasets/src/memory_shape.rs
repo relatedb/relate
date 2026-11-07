@@ -649,10 +649,12 @@ mod tests {
 
     #[test]
     fn ring_fill_closes_when_the_next_batch_does_not_fit() {
-        // One closed ring of 2,000 nodes is 720 bytes each. The next node
-        // batch is another 276 bytes each, so 1.6 MiB fits the closed ring
-        // and refuses that batch.
-        let limit = 1_600_000;
+        // One closed ring of 2,000 nodes. The next node batch has to miss,
+        // and the ring has to be closed when it does. A relationship batch
+        // can miss while another node batch still fits, which leaves the
+        // ring open; 1.25 MB sits under that second node batch and over
+        // the closed ring.
+        let limit = 1_250_000;
         let live = Mutex::new(Live::default());
         let dir = tempfile::tempdir().unwrap();
         let (used, _, nodes, rels) = probe_store(

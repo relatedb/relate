@@ -203,15 +203,13 @@ fn gc_folds_a_lone_live_version_and_drops_a_collected_tombstone() {
 
 #[test]
 fn inline_slot_charges_no_version_list_or_xmax() {
-    use crate::memory::{node_chain_bytes, ChainShape, OVERHEAD_MAP_ENTRY, VEC_HEADER};
-    let row = std::mem::size_of::<LiveNode>() as u64;
+    use crate::memory::{node_chain_bytes, ChainShape};
+    // The row lives in the id slot. A spilled chain adds its version
+    // buffer, and nothing else, on the heap.
+    assert_eq!(node_chain_bytes(ChainShape::Inline), 0);
     assert_eq!(
-        node_chain_bytes(ChainShape::Inline),
-        OVERHEAD_MAP_ENTRY + 8 + row
-    );
-    assert_eq!(
-        node_chain_bytes(ChainShape::Spilled(1)) - node_chain_bytes(ChainShape::Inline),
-        VEC_HEADER + 8
+        node_chain_bytes(ChainShape::Spilled(1)),
+        crate::graph::node_version_stride()
     );
 }
 

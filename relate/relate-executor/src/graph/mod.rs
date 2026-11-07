@@ -31,6 +31,7 @@ mod degree_stats_estimate;
 mod degree_stats_incident;
 mod derived_migration;
 mod entity_mutation;
+mod id_vec;
 mod index;
 mod index_lookup;
 mod index_postings;
@@ -221,6 +222,7 @@ pub struct Procedure {
 }
 
 use chain::{Chain, Ver, VerRef};
+use id_vec::IdVec;
 
 /// The one MVCC version-chain record: node and rel chains share the shape
 /// (and, via [`cow`], the copy-on-write policy) through the aliases below.
@@ -236,20 +238,34 @@ pub(crate) fn rel_version_stride() -> u64 {
 }
 
 /// The in-map size of an inline node slot: the row and its birth timestamp.
-pub(crate) fn node_inline_slot() -> u64 {
+/// One id slot, including the discriminant. The floor charges the vector
+/// of these, not a hash-map entry (ADR-0532).
+pub(crate) fn node_slot() -> u64 {
+    std::mem::size_of::<Option<Chain<LiveNode>>>() as u64
+}
+
+pub(crate) fn rel_slot() -> u64 {
+    std::mem::size_of::<Option<Chain<LiveRel>>>() as u64
+}
+
+pub(crate) fn adj_slot() -> u64 {
+    std::mem::size_of::<Option<crate::store::TypedAdj>>() as u64
+}
+
+pub(crate) fn node_value() -> u64 {
     std::mem::size_of::<Chain<LiveNode>>() as u64
 }
 
-/// The in-map size of an inline relationship slot.
-pub(crate) fn rel_inline_slot() -> u64 {
+pub(crate) fn rel_value() -> u64 {
     std::mem::size_of::<Chain<LiveRel>>() as u64
 }
 
+fn adj_value() -> u64 {
+    std::mem::size_of::<crate::store::TypedAdj>() as u64
+}
+
 /// Copy-on-write over `id`'s slot ([`Chain::cow`]) at the write timestamp.
-fn cow<I, Live: Clone>(write_ts: &AtomicU64, map: &CoreMap<I, Chain<Live>>, id: I) -> Option<Live>
-where
-    I: Eq + std::hash::Hash,
-{
+fn cow<Live: Clone>(write_ts: &AtomicU64, map: &IdVec<Chain<Live>>, id: i64) -> Option<Live> {
     let ts = write_ts.load(Ordering::Acquire);
     map.get_mut(&id)?.cow(ts)
 }
@@ -278,10 +294,10 @@ pub struct Graph {
     write_ts: AtomicU64,
     in_write: AtomicBool,
     record_redo: AtomicBool,
-    nodes: CoreMap<NodeId, Chain<LiveNode>>,
-    rels: CoreMap<RelId, Chain<LiveRel>>,
-    out_adj: CoreMap<NodeId, TypedAdj>,
-    in_adj: CoreMap<NodeId, TypedAdj>,
+    nodes: IdVec<Chain<LiveNode>>,
+    rels: IdVec<Chain<LiveRel>>,
+    out_adj: IdVec<TypedAdj>,
+    in_adj: IdVec<TypedAdj>,
     /// LABS-851 (the structure round): the counting operator's count
     /// state — per-type rel counts, (start-label, type, end-label) pair
     /// counts, per-label live node counts, and the total live node
@@ -360,10 +376,10 @@ impl Default for Graph {
             write_ts: AtomicU64::new(0),
             in_write: AtomicBool::new(false),
             record_redo: AtomicBool::new(true),
-            nodes: CoreMap::default(),
-            rels: CoreMap::default(),
-            out_adj: CoreMap::default(),
-            in_adj: CoreMap::default(),
+            nodes: IdVec::default(),
+            rels: IdVec::default(),
+            out_adj: IdVec::default(),
+            in_adj: IdVec::default(),
             count_stats: Mutex::new(CountStats::default()),
             degree_histograms: Mutex::new(HashMap::new()),
             constraint_keys: Mutex::new(ConstraintKeyIndex::default()),
@@ -516,6 +532,7 @@ impl Graph {
     fn structure_bytes(&self) -> u64 {
         let charge = self.index_charge();
         let mut n = 0u64;
+        n = n.saturating_add(self.nodes.array_bytes());
         for entry in self.nodes.iter() {
             let vers = entry.value();
             n = n.saturating_add(crate::memory::node_chain_bytes(vers.shape()));
@@ -527,6 +544,7 @@ impl Graph {
                 ));
             }
         }
+        n = n.saturating_add(self.rels.array_bytes());
         for entry in self.rels.iter() {
             let vers = entry.value();
             n = n.saturating_add(crate::memory::rel_chain_bytes(vers.shape()));
@@ -534,6 +552,8 @@ impl Graph {
                 n = n.saturating_add(crate::memory::live_rel_account_live(v.live));
             }
         }
+        n = n.saturating_add(self.out_adj.array_bytes());
+        n = n.saturating_add(self.in_adj.array_bytes());
         for entry in self.out_adj.iter() {
             n = n.saturating_add(entry.value().floor_bytes());
         }
@@ -594,6 +614,8 @@ impl Graph {
             |id| self.rel_form(id),
             |id| self.node_chain_shape(id),
             |id| self.rel_chain_shape(id),
+            self.nodes.span(),
+            self.rels.span(),
             &after,
         );
         delta += self.estimate_adj_delta(ops);
@@ -631,6 +653,12 @@ impl Graph {
         let mut inn: HashMap<NodeId, Vec<(u32, usize)>> = HashMap::new();
         let mut fresh_ids = FreshIds::new();
         let mut delta = 0i64;
+        let slot = adj_slot();
+        let overflow = crate::memory::overflow_entry_bytes(adj_value());
+        let mut out_span = self.out_adj.span();
+        let mut in_span = self.in_adj.span();
+        let mut out_side = HashSet::new();
+        let mut in_side = HashSet::new();
         for op in ops {
             let RedoOp::CreateRel {
                 start,
@@ -642,6 +670,12 @@ impl Graph {
                 continue;
             };
             let type_id = fresh_ids.resolve(self, rel_type);
+            if !self.out_adj.contains_key(start) {
+                delta += span_growth(&mut out_span, *start, slot, overflow, &mut out_side);
+            }
+            if !self.in_adj.contains_key(end) {
+                delta += span_growth(&mut in_span, *end, slot, overflow, &mut in_side);
+            }
             delta += bump_adj(&mut out, *start, type_id, || {
                 hop_counts(&self.out_adj, *start)
             });
@@ -1249,7 +1283,7 @@ pub(crate) fn spec_has_property_defaults(spec: &crate::graph_type::GraphTypeSpec
         .any(|e| e.properties.iter().any(|p| p.default_value.is_some()))
 }
 
-fn hop_counts(map: &CoreMap<NodeId, TypedAdj>, node: NodeId) -> Vec<(u32, usize)> {
+fn hop_counts(map: &IdVec<TypedAdj>, node: NodeId) -> Vec<(u32, usize)> {
     map.get(&node)
         .map(|adj| adj.chunks.iter().map(|(t, v)| (*t, v.len())).collect())
         .unwrap_or_default()
@@ -1292,7 +1326,31 @@ impl FreshIds {
     }
 }
 
-fn adj_floor(map: &CoreMap<NodeId, TypedAdj>, node: NodeId) -> u64 {
+/// Bytes the slot array gains when `id` extends `span`. An id whose array
+/// does not fit adds one side-map entry, once per id in this batch.
+fn span_growth(
+    span: &mut usize,
+    id: NodeId,
+    slot: u64,
+    overflow: u64,
+    side: &mut HashSet<NodeId>,
+) -> i64 {
+    let Some(idx) = usize::try_from(id).ok() else {
+        return 0;
+    };
+    let need = idx.saturating_add(1);
+    if need <= *span {
+        return 0;
+    }
+    let Some(after) = crate::memory::dense_span_bytes(need, slot) else {
+        return if side.insert(id) { overflow as i64 } else { 0 };
+    };
+    let before = crate::memory::id_vec_bytes(*span, slot);
+    *span = need;
+    after as i64 - before as i64
+}
+
+fn adj_floor(map: &IdVec<TypedAdj>, node: NodeId) -> u64 {
     map.get(&node).map(|adj| adj.floor_bytes()).unwrap_or(0)
 }
 
@@ -1321,8 +1379,8 @@ impl Graph {
     pub fn all_rel_ids_at(&self, ts: u64) -> Vec<RelId> {
         let mut ids: Vec<_> = self
             .rels
-            .iter()
-            .map(|e| *e.key())
+            .keys()
+            .into_iter()
             .filter(|id| self.rel_visible_at(*id, ts))
             .collect();
         ids.sort();
@@ -1336,8 +1394,8 @@ impl Graph {
     pub fn all_node_ids_at(&self, ts: u64) -> Vec<NodeId> {
         let mut ids: Vec<_> = self
             .nodes
-            .iter()
-            .map(|e| *e.key())
+            .keys()
+            .into_iter()
             .filter(|id| self.node_visible_at(*id, ts))
             .collect();
         ids.sort();

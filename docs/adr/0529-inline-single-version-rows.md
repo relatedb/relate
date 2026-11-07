@@ -2,6 +2,7 @@
 
 Status: Proposed
 Claim: 54a63c6c690668d0f3afb2ef59fad79450bba7c1
+Later references: ADR-0532 (the dense id store this record deferred)
 
 ## Context
 

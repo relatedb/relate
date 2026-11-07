@@ -1,6 +1,7 @@
 //! Checkpoint-facing graph API: restoring checkpoint rows into a graph
 //! being loaded, and the payload sizes and dirty ids a checkpoint reads.
 
+use super::id_vec::IdVec;
 use super::*;
 
 /// Every checkpoint row is restored as a version born at ts 1.
@@ -10,15 +11,12 @@ const RESTORED_XMIN: u64 = 1;
 /// write a slot holds at most an earlier row for the same id — overlapping
 /// legacy parts (ADR-0183) can hold an id twice — and the later row replaces
 /// it rather than stacking a second live version a delete would leave visible.
-fn restore<I, Live>(map: &CoreMap<I, Chain<Live>>, id: I, live: Live) -> Result<()>
-where
-    I: Eq + std::hash::Hash,
-{
+fn restore<Live>(map: &IdVec<Chain<Live>>, id: i64, live: Live) -> Result<()> {
     match map.entry(id) {
-        dashmap::mapref::entry::Entry::Vacant(slot) => {
+        super::id_vec::Entry::Vacant(mut slot) => {
             slot.insert(Chain::inline(RESTORED_XMIN, live));
         }
-        dashmap::mapref::entry::Entry::Occupied(mut slot) => match slot.get_mut() {
+        super::id_vec::Entry::Occupied(mut slot) => match slot.get_mut() {
             prev @ Chain::Inline { .. } => *prev = Chain::inline(RESTORED_XMIN, live),
             Chain::Spilled(_) => {
                 return Err(relate_core::Error::storage(
@@ -32,15 +30,12 @@ where
 
 /// Checkpoint payload of `id`'s version visible at `ts`, measured by
 /// `bytes`; `None` when no version is visible.
-fn visible_checkpoint_bytes<I, Live>(
-    map: &CoreMap<I, Chain<Live>>,
-    id: I,
+fn visible_checkpoint_bytes<Live>(
+    map: &IdVec<Chain<Live>>,
+    id: i64,
     ts: u64,
     bytes: impl FnOnce(&Live) -> Result<u64>,
-) -> Result<Option<u64>>
-where
-    I: Eq + std::hash::Hash,
-{
+) -> Result<Option<u64>> {
     let Some(vers) = map.get(&id) else {
         return Ok(None);
     };

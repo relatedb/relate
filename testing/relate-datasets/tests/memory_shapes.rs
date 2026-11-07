@@ -24,16 +24,22 @@ use relate_datasets::shapes::{
 // entries (Flat/Ring/DenseRing one label, Fanout two).
 // ADR-0529: a never-updated node or relationship is an inline slot, not a
 // one-version list — 32 bytes less per node, 24 less per relationship.
+// ADR-0532: those slots sit in an id vector. The hash-map slot is gone and
+// the array reserves the next power of two, so flat (1,000 nodes, no
+// relationships) drops another 22,080. Relationship shapes also drop the
+// relationship and adjacency map slots.
 const BASE: u64 = 258;
-const RING: u64 = 665_108;
-const FANOUT: u64 = 585_030;
-const FLAT: u64 = 244_620;
-const DENSE_RING: u64 = 2_490_118;
+const RING: u64 = 575_636;
+const FANOUT: u64 = 519_750;
+const FLAT: u64 = 222_540;
+const DENSE_RING: u64 = 2_256_838;
 /// Flat, one attribute, one range index on `id`. `1,000 × 62` on top of [`FLAT`].
-const FLAT_RANGE: u64 = 306_620;
+const FLAT_RANGE: u64 = 284_540;
 /// Flat, one attribute, plus one text, one point, and one range index.
 /// The text term is 14 width-3 postings on `abcdefghijklmnop` (ADR-0207).
-const FLAT_INDEXED: u64 = 710_754;
+/// The index term is unchanged by the id vector, so this is the previous
+/// pin minus flat's 22,080.
+const FLAT_INDEXED: u64 = 688_674;
 
 fn apply(
     db: &Database,
