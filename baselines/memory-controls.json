@@ -1,5 +1,267 @@
 {
   "schema_version": 1,
   "name": "memory-controls",
-  "frozen": false
+  "frozen": true,
+  "rounds": 5,
+  "environment": {
+    "class": "relate-loadtest-baseline/v1",
+    "arch": "x86_64",
+    "os": "linux",
+    "build_image": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
+    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "cpus": 2,
+    "cpu_period_us": 10000,
+    "cpu_quota_us": 20000,
+    "memory": "2g",
+    "ops": 40,
+    "warmup": 8,
+    "workers": 16,
+    "runner": "github-actions:linux-4-core-x86"
+  },
+  "knobs": {
+    "graph_scale": 10,
+    "workers": 16,
+    "read_parts": 80,
+    "write_parts": 20,
+    "max_connections": 0,
+    "concurrent_logical_workspace_limit": 55829120,
+    "ops": 40,
+    "warmup_ops": 8,
+    "seed": 1,
+    "index_mode": "both",
+    "read_query": "mix"
+  },
+  "behaviour": {
+    "connection-cap": {
+      "failure": "accept-then-close"
+    },
+    "unlimited-connections": {
+      "failure": "connection 129 accepted"
+    },
+    "concurrent-logical-workspace-limit": {
+      "failure_contains": "concurrent-logical-workspace-limit",
+      "limit": 14043
+    },
+    "workload": {
+      "connections_refused": 0
+    }
+  },
+  "cases": {
+    "connection-cap": {
+      "graph_rss_bytes": {
+        "min": 51691520,
+        "max": 52142080
+      },
+      "processing_rss_min_bytes": {
+        "min": 32768,
+        "max": 442368
+      },
+      "processing_rss_max_bytes": {
+        "min": 32768,
+        "max": 442368
+      },
+      "session_cost_bytes": {
+        "min": 0,
+        "max": 163840
+      }
+    },
+    "unlimited-connections": {
+      "graph_rss_bytes": {
+        "min": 50212864,
+        "max": 52031488
+      },
+      "processing_rss_min_bytes": {
+        "min": 7413760,
+        "max": 7565312
+      },
+      "processing_rss_max_bytes": {
+        "min": 10813440,
+        "max": 11038720
+      },
+      "session_cost_bytes": {
+        "min": 0,
+        "max": 0
+      }
+    },
+    "concurrent-logical-workspace-limit": {
+      "graph_rss_bytes": {
+        "min": 18108416,
+        "max": 18444288
+      },
+      "processing_rss_min_bytes": {
+        "min": 4468736,
+        "max": 4857856
+      },
+      "processing_rss_max_bytes": {
+        "min": 4603904,
+        "max": 5046272
+      },
+      "session_cost_bytes": {
+        "min": 233472,
+        "max": 266240
+      }
+    }
+  },
+  "workloads": {
+    "workload-indexed": {
+      "graph_rss_bytes": {
+        "min": 18223104,
+        "max": 18395136
+      },
+      "processing_rss_min_bytes": {
+        "min": 14233600,
+        "max": 30035968
+      },
+      "processing_rss_max_bytes": {
+        "min": 126898176,
+        "max": 144666624
+      },
+      "session_cost_bytes": {
+        "min": 3317760,
+        "max": 3555328
+      },
+      "reads_succeeded": {
+        "min": 32,
+        "max": 32
+      },
+      "writes_succeeded": {
+        "min": 8,
+        "max": 8
+      },
+      "reads_limited": {
+        "min": 0,
+        "max": 0
+      },
+      "writes_limited": {
+        "min": 0,
+        "max": 0
+      }
+    },
+    "workload-scan": {
+      "graph_rss_bytes": {
+        "min": 17461248,
+        "max": 17997824
+      },
+      "processing_rss_min_bytes": {
+        "min": 18567168,
+        "max": 30474240
+      },
+      "processing_rss_max_bytes": {
+        "min": 131166208,
+        "max": 143208448
+      },
+      "session_cost_bytes": {
+        "min": 3325952,
+        "max": 3571712
+      },
+      "reads_succeeded": {
+        "min": 32,
+        "max": 32
+      },
+      "writes_succeeded": {
+        "min": 8,
+        "max": 8
+      },
+      "reads_limited": {
+        "min": 0,
+        "max": 0
+      },
+      "writes_limited": {
+        "min": 0,
+        "max": 0
+      }
+    }
+  },
+  "calibration": {
+    "sort": {
+      "rss_single_holder_slope": {
+        "min": 0.8389700577200577,
+        "max": 0.8696112914862915
+      },
+      "max_rss_to_logical_ratio": {
+        "min": 1.2152974504249292,
+        "max": 1.3371104815864023
+      },
+      "max_cgroup_to_logical_ratio": {
+        "min": 0.950319375443577,
+        "max": 0.9915014164305949
+      },
+      "rss_per_holder_bytes": {
+        "min": -143817.38027568487,
+        "max": 48850.91368242739
+      }
+    },
+    "expand": {
+      "rss_single_holder_slope": {
+        "min": 0.9444966583124478,
+        "max": 0.9588685254803676
+      },
+      "max_rss_to_logical_ratio": {
+        "min": 0.9917898193760263,
+        "max": 1.0246305418719213
+      },
+      "max_cgroup_to_logical_ratio": {
+        "min": 0.9601233299075026,
+        "max": 1.0361247947454844
+      },
+      "rss_per_holder_bytes": {
+        "min": -103884.37941027057,
+        "max": 214428.88712303134
+      }
+    },
+    "aggregation": {
+      "rss_single_holder_slope": {
+        "min": 1.0664141414141415,
+        "max": 1.071626984126984
+      },
+      "max_rss_to_logical_ratio": {
+        "min": 1.2925170068027212,
+        "max": 1.469387755102041
+      },
+      "max_cgroup_to_logical_ratio": {
+        "min": 1.1440942646223737,
+        "max": 1.2290249433106577
+      },
+      "rss_per_holder_bytes": {
+        "min": 362155.9731743365,
+        "max": 396304.93011228536
+      }
+    },
+    "distinct": {
+      "rss_single_holder_slope": {
+        "min": 0.9939935064935065,
+        "max": 1.0058802308802308
+      },
+      "max_rss_to_logical_ratio": {
+        "min": 1.251700680272109,
+        "max": 1.3696145124716552
+      },
+      "max_cgroup_to_logical_ratio": {
+        "min": 1.142816581487791,
+        "max": 1.1531800113571835
+      },
+      "rss_per_holder_bytes": {
+        "min": 664950.5383559606,
+        "max": 766206.3438421892
+      }
+    },
+    "create": {
+      "rss_single_holder_slope": {
+        "min": 1.1579551091269842,
+        "max": 1.1888020833333333
+      },
+      "max_rss_to_logical_ratio": {
+        "min": 1.5680933852140078,
+        "max": 1.6731517509727627
+      },
+      "max_cgroup_to_logical_ratio": {
+        "min": 1.2473170731707317,
+        "max": 1.4941634241245136
+      },
+      "rss_per_holder_bytes": {
+        "min": 194370.19186515777,
+        "max": 358477.56474174495
+      }
+    }
+  }
 }
