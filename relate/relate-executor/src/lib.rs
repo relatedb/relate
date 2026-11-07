@@ -131,7 +131,7 @@ pub use procedure_registry::{
 };
 pub use redo::{
     legacy_property_encoding, props_from_json, split_legacy_property_encoding, IndexDetailSpec,
-    IndexKindSpec, OntologyOp, PullKind, RedoOp, MAX_ONTOLOGY_SPEC_BYTES,
+    IndexFacts, IndexKindSpec, OntologyOp, PullKind, RedoOp, MAX_ONTOLOGY_SPEC_BYTES,
 };
 #[doc(hidden)]
 pub use workspace::result_rows_bytes;

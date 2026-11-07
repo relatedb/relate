@@ -130,6 +130,16 @@ pub fn plan(result: &relate::QueryResult) -> &relate::PlanNode {
     result.plan_root().expect("EXPLAIN/PROFILE stamps the plan")
 }
 
+/// The notification kinds of one result, in list order — the shared
+/// helper of the notification test files.
+pub fn kinds(result: &relate::QueryResult) -> Vec<relate_model::wire::NotificationKind> {
+    result
+        .notifications()
+        .iter()
+        .map(relate::Notification::kind)
+        .collect()
+}
+
 /// Whether the result carries a notification of `kind` — the typed predicate
 /// the notification test files share. The vocabulary is a typed enum
 /// (ADR-0363), so tests discriminate by kind rather than by wire code.

@@ -12,7 +12,8 @@ use relate_model::{ConstraintType, EnforcedLabelSite, EntityKind};
 
 use crate::overlay::ExecGraph;
 
-use crate::exec::catalog::{backing_constraint_by_name, constraint_binding, string_list};
+use crate::exec::catalog::{constraint_binding, string_list};
+use crate::redo::backing_constraint_by_name;
 use crate::redo::IndexFacts;
 
 /// The `type` cell of a GRAPH COUNTS constraint entry: Neo4j's space-style

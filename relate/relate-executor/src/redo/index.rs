@@ -323,6 +323,38 @@ impl IndexFacts {
     }
 }
 
+/// Resolve every named index's [`IndexFacts`] with the detail and
+/// backing-constraint joins done once, in the caller's order, for the
+/// statement-scoped index readers; the SHOW row resolves its own rows
+/// through the same [`backing_constraint_by_name`] join this shares.
+pub(crate) fn resolve_index_facts(
+    indexes: &[relate_catalog::IndexDef],
+    details: &std::collections::BTreeMap<String, IndexDetailSpec>,
+    constraints: &[relate_catalog::ConstraintDef],
+) -> Vec<IndexFacts> {
+    indexes
+        .iter()
+        .map(|index| {
+            let detail = details.get(&index.name);
+            let backing = backing_constraint_by_name(&index.name, constraints);
+            IndexFacts::resolve(index, detail, backing)
+        })
+        .collect()
+}
+
+/// The index-backed constraint of the given name, when one exists — the
+/// one owner-constraint join every index reader resolves through (moved
+/// from `exec::catalog` beside `IndexFacts`, its every consumer: the
+/// SHOW row, the graph-counts row, and [`resolve_index_facts`]).
+pub(crate) fn backing_constraint_by_name<'a>(
+    name: &str,
+    constraints: &'a [relate_catalog::ConstraintDef],
+) -> Option<&'a relate_catalog::ConstraintDef> {
+    constraints
+        .iter()
+        .find(|def| def.name == name && def.is_index_backed())
+}
+
 /// Typed payload of [`RedoOp::CatalogIndexDetail`]: the catalog facts of
 /// a `CREATE INDEX`, captured once at DDL-execution time from the parsed
 /// clause. `apply_redo` stores it verbatim -- it never formats a CREATE

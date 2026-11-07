@@ -6,18 +6,9 @@
 
 mod common;
 
-use common::{connection, has_notification, run, two_label_store};
+use common::{connection, has_notification, kinds, run, two_label_store};
 use relate::Database;
 use relate_model::wire::NotificationKind;
-
-/// The notification kinds of one result, in list order.
-fn kinds(result: &relate::QueryResult) -> Vec<NotificationKind> {
-    result
-        .notifications()
-        .iter()
-        .map(relate::Notification::kind)
-        .collect()
-}
 
 /// Acceptance 1/ADR-0363 decision 5: an absent label warns; the first
 /// write that creates it clears the warning immediately.
