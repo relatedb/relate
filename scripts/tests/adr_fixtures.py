@@ -62,11 +62,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+from child_env import child_env
+
 ROOT = Path(__file__).resolve().parents[2]
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adr_lib import COUNTER_BRANCH, claim_subject
+
+# The per-invocation git variables a surrounding git hook leaks into the
+# suite: the script under test must see the repo the caller's shell would
+# resolve, never the hook's own. Distinct vocabulary from the reporting
+# pair the other suites scrub (child_env.REPORTING_ENV).
+GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_QUARANTINE_PATH")
 
 GIT_ENV = {
     **os.environ,
@@ -123,20 +131,18 @@ def run_script(
     """Run one scripts/ file under test as a subprocess in cwd.
 
     Runs with the current interpreter and the test process's environment
-    minus the per-invocation git variables (GIT_DIR, GIT_WORK_TREE,
-    GIT_INDEX_FILE, GIT_QUARANTINE_PATH) a surrounding git hook would leak,
-    so the script sees the environment a caller's shell would give it.
+    minus the per-invocation git variables a surrounding git hook would
+    leak (GIT_SCRUB), so the script sees the environment a caller's shell
+    would give it. The scrub policy is child_env's, the one home shared
+    with the reporting-env suites.
     """
-    env = os.environ.copy()
-    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_QUARANTINE_PATH"):
-        env.pop(key, None)
     return subprocess.run(
         [sys.executable, str(script), *args],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
-        env=env,
+        env=child_env(GIT_SCRUB),
     )
 
 

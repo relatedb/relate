@@ -5,21 +5,22 @@ traffic-light bands, the markdown rendering, the step-summary append, and
 the exit codes — 0 for any coverage number (reporting, not gating), 1 only
 for a summary the contract does not recognize.
 
-The subprocess helper scrubs `GITHUB_STEP_SUMMARY`/`GITHUB_ACTIONS` the
-way the sibling suites do (test_compare_baselines.py): the script under
-test appends to `$GITHUB_STEP_SUMMARY` whenever it is set, and this suite
-runs inside a CI step where the runner sets it — an unscrubbed env would
-write fabricated coverage rows into the job's real step summary.
+The subprocess helper scrubs the Actions reporting pair the way the
+sibling suites do (scripts/tests/child_env.py, the one home of the
+policy): the script under test appends to `$GITHUB_STEP_SUMMARY` whenever
+it is set, and this suite runs inside a CI step where the runner sets it —
+an unscrubbed env would write fabricated coverage rows into the job's real
+step summary.
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from child_env import REPORTING_ENV, child_env
 from script_loader import ROOT, load
 
 coverage_script = load(
@@ -27,10 +28,6 @@ coverage_script = load(
 )
 
 SCRIPT = ROOT / "scripts" / "spec-harness-coverage.py"
-
-# The env pair the subprocess helper scrubs: the step-summary target the
-# script appends to, and the Actions marker that travels with it.
-SCRUBBED_ENV_VARS = ("GITHUB_STEP_SUMMARY", "GITHUB_ACTIONS")
 
 # The real patched-harness summary against engine main 49985dbe
 # (2026-11-02): categories sum to exactly the genuine-failure count.
@@ -294,13 +291,10 @@ class ExitCodes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "summary.json"
             path.write_text(json.dumps(data))
-            scrubbed = os.environ.copy()
-            for key in SCRUBBED_ENV_VARS:
-                scrubbed.pop(key, None)
-            scrubbed.update(env or {})
             return subprocess.run(
                 [sys.executable, str(SCRIPT), str(path), *extra_args],
-                capture_output=True, text=True, env=scrubbed,
+                capture_output=True, text=True,
+                env=child_env(REPORTING_ENV, env),
             )
 
     def test_below_100_reports_the_light_without_failing(self):

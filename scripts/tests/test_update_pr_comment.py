@@ -31,7 +31,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from loadtest_fixtures import report
+from child_env import REPORTING_ENV, child_env
+from loadtest_fixtures import aggregator_env, report
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,13 +61,14 @@ BASE_ENV = {
 }
 
 # Never inherit runner/dev-machine GitHub state: the updater must be
-# deterministic under the test's own environment.
+# deterministic under the test's own environment. The shared reporting
+# pair comes from child_env (the one home of the scrub policy); the rest
+# is this suite's own vocabulary — the updater's inputs and the gh state.
 POPPED = (
+    *REPORTING_ENV,
     "PR_NUMBER",
     "COMPARISON_OUT",
     "REPORTS_DIR",
-    "GITHUB_STEP_SUMMARY",
-    "GITHUB_ACTIONS",
     "GITHUB_API_URL",
     "GITHUB_TOKEN",
     "GH_HOST",
@@ -252,22 +254,22 @@ class UpdatePrCommentTestBase(unittest.TestCase):
     def run_script(
         self,
         *args: str,
-        extra_env: dict[str, str] | None = None,
-        unset: tuple[str, ...] = (),
+        extra_env: dict[str, str | None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        for key in POPPED:
-            env.pop(key, None)
-        env.update(BASE_ENV)
-        for key in unset:
-            env.pop(key, None)
-        env["GH_STUB_STATE"] = str(self.state)
         # gh (the stub shim) always sits first on the child PATH; the one
         # test that needs a gh-less PATH overrides it via extra_env, which
-        # lands after this line and therefore wins.
-        env["PATH"] = f"{self.stubbin}{os.pathsep}{self.bin}"
-        if extra_env:
-            env.update(extra_env)
+        # lands last and therefore wins. A per-case absence is an extra_env
+        # entry with a None value — child_env's one removal convention, so
+        # extra_env's values are nullable.
+        env = child_env(
+            POPPED,
+            {
+                **BASE_ENV,
+                "GH_STUB_STATE": str(self.state),
+                "PATH": f"{self.stubbin}{os.pathsep}{self.bin}",
+                **(extra_env or {}),
+            },
+        )
         return subprocess.run(
             [BASH, str(SCRIPT), *args],
             text=True,
@@ -280,14 +282,13 @@ class UpdatePrCommentTestBase(unittest.TestCase):
         self,
         *args: str,
         document: str | None = None,
-        extra_env: dict[str, str] | None = None,
-        unset: tuple[str, ...] = (),
+        extra_env: dict[str, str | None] | None = None,
     ) -> str:
         """Run the updater against a marker-comment-less PR (so it POSTs
         rather than PATCHes) and return the one POSTed comment body."""
         if document is not None:
             self.doc.write_text(document)
-        result = self.run_script(*args, extra_env=extra_env, unset=unset)
+        result = self.run_script(*args, extra_env=extra_env)
         self.assertEqual(result.returncode, 0, result.stderr)
         posts = self.writes("POST")
         self.assertEqual(len(posts), 1)
@@ -477,7 +478,10 @@ class BestEffortTests(UpdatePrCommentTestBase):
     def test_missing_repository_env_exits_zero(self) -> None:
         self.doc.write_text(CLEAN_DOC)
         result = self.run_script(
-            "42", "--doc", str(self.doc), unset=("GITHUB_REPOSITORY",)
+            "42",
+            "--doc",
+            str(self.doc),
+            extra_env={"GITHUB_REPOSITORY": None},
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("GITHUB_REPOSITORY is not set", result.stderr)
@@ -673,7 +677,11 @@ class HeaderTests(UpdatePrCommentTestBase):
             "--doc",
             str(self.doc),
             document=CLEAN_DOC,
-            unset=("GITHUB_SERVER_URL", "GITHUB_RUN_ID", "GITHUB_SHA"),
+            extra_env={
+                "GITHUB_SERVER_URL": None,
+                "GITHUB_RUN_ID": None,
+                "GITHUB_SHA": None,
+            },
         )
         self.assertNotIn("**Run:**", body)
         self.assertNotIn("**Commit:**", body)
@@ -740,18 +748,12 @@ class RoundTripTests(UpdatePrCommentTestBase):
     def render_document(self) -> Path:
         """Run the real `compare-baselines.sh --render-only` over the
         fixture tree; return the document it wrote."""
-        env = os.environ.copy()
-        env.pop("GITHUB_STEP_SUMMARY", None)
-        env.pop("GITHUB_ACTIONS", None)
-        env["BASELINES"] = str(self.baselines)
-        env["REPORTS_DIR"] = str(self.reports)
-        env["PYTHON"] = sys.executable
         result = subprocess.run(
             [BASH, str(AGGREGATOR), "--render-only"],
             text=True,
             capture_output=True,
             check=False,
-            env=env,
+            env=aggregator_env(self.baselines, self.reports),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         doc = self.reports / "loadtest-comparison.md"
