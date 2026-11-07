@@ -497,8 +497,12 @@ fn nested_test_overrides_restore_the_outer_value() {
 
 #[test]
 fn page_envelope_rows_fill_max_pages_at_the_row_group_cap() {
-    assert_eq!(Kind::Node.page_envelope_rows(), 699_008);
-    assert_eq!(Kind::Rel.page_envelope_rows(), 419_392);
+    // The legacy fixed schema, and the wide worst case (ADR-0534):
+    // reserved leaves + the column cap.
+    assert_eq!(Kind::Node.page_envelope_rows(false), 699_008);
+    assert_eq!(Kind::Rel.page_envelope_rows(false), 419_392);
+    assert_eq!(Kind::Node.page_envelope_rows(true), 59_904);
+    assert_eq!(Kind::Rel.page_envelope_rows(true), 56_640);
 }
 
 #[test]

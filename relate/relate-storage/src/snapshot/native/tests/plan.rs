@@ -1,7 +1,9 @@
 //! Planning rewrite units over slots (ADR-0183 Decision 2): kept files that
 //! hold more rows or bytes together than one file can stay apart, so the
-//! halves of a file halved on an envelope miss are not merged again, and a
-//! seed wider than `MAX_WINDOW` ids is cut at the page envelope rows.
+//! halves of a file halved on an envelope miss are not merged again. Both
+//! encodings cut a seed at the kind's page-envelope row cap — the wide cap
+//! the smaller, its many leaf columns making rows a binding bound
+//! (ADR-0534 — the writer test over a real graph covers that cut).
 
 use super::super::coalesce::{plan_units, Step};
 use super::super::layout::Slot;
@@ -24,20 +26,20 @@ enum Planned {
 }
 
 /// Plan `slots` over `all_ids` around `dirty` for `kind` at `target`
-/// bytes. The graph is empty, so no id costs decoded bytes: only the width,
-/// the manifest and, for a wide seed, its live ids decide.
-fn plan(kind: Kind, target: u64, slots: &[Slot], all_ids: &[i64], dirty: &[i64]) -> Vec<Planned> {
+/// bytes under `encoding` (ADR-0534). The graph is empty, so no id costs
+/// decoded bytes: only the width, the manifest and the row cap decide.
+fn plan(
+    kind: Kind,
+    target: u64,
+    encoding: Encoding,
+    slots: &[Slot],
+    all_ids: &[i64],
+    dirty: &[i64],
+) -> Vec<Planned> {
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let ctx = ShardWrite {
-        target: &store,
-        graph: &graph,
-        ts: 1,
-        kind,
-        target_bytes: target,
-        owned: &mut owned,
-    };
+    let ctx = ShardWrite::new(&store, &graph, 1, kind, target, encoding, &mut owned);
     let steps = plan_units(&ctx, slots, all_ids, dirty).unwrap();
     steps
         .into_iter()
@@ -73,46 +75,67 @@ fn kept_files_over_one_file_together_stay_apart() {
         }
     };
     let target = 10_000;
+    // Both encodings (ADR-0534): the wide row cap is the legacy one
+    // shrunk by the column cap's leaf count.
+    for encoding in [Encoding::Legacy, Encoding::Wide] {
+        for kind in [Kind::Node, Kind::Rel] {
+            // Two halves of the kind's page-envelope rows fill it — the
+            // cap read from the kind itself, never restated; one row more
+            // passes it.
+            let cap = kind.page_envelope_rows(encoding.wide()) as u64;
+            for (rows, joins) in [(cap / 2, true), (cap / 2 + 1, false)] {
+                for dirty in [0, mid] {
+                    let planned = plan(
+                        kind,
+                        target,
+                        encoding,
+                        &pair(rows, 5_000),
+                        &[0, mid],
+                        &[dirty],
+                    );
+                    let expected = if joins { merged() } else { apart(dirty) };
+                    assert_eq!(planned, expected, "{kind:?} {encoding:?} {rows} rows");
+                }
+            }
+        }
+    }
     for dirty in [0, mid] {
-        for (kind, rows, bytes, joins) in [
-            // Two halves of the node page envelope's 699,008 rows fill it;
-            // one row more passes it.
-            (Kind::Node, 349_504, 5_000, true),
-            (Kind::Node, 349_505, 5_000, false),
-            // The relationship page envelope holds 419,392 rows.
-            (Kind::Rel, 209_696, 5_000, true),
-            (Kind::Rel, 209_697, 5_000, false),
-            // The files' bytes together fill the target, or pass it.
-            (Kind::Node, 1, target / 2, true),
-            (Kind::Node, 1, target / 2 + 1, false),
-        ] {
-            let planned = plan(kind, target, &pair(rows, bytes), &[0, mid], &[dirty]);
+        // The files' bytes together fill the target, or pass it.
+        for (bytes, joins) in [(target / 2, true), (target / 2 + 1, false)] {
+            let planned = plan(
+                Kind::Node,
+                target,
+                Encoding::Legacy,
+                &pair(1, bytes),
+                &[0, mid],
+                &[dirty],
+            );
             let expected = if joins { merged() } else { apart(dirty) };
-            assert_eq!(planned, expected, "{kind:?} {rows} rows {bytes} bytes");
+            assert_eq!(planned, expected, "{bytes} bytes");
         }
     }
 }
 
 #[test]
-fn wide_seed_is_cut_at_the_page_envelope_rows() {
+fn invisible_ids_cost_nothing_and_width_alone_cuts_nothing() {
+    // The graph is empty, so no id costs decoded bytes: a seed of any
+    // width is one file, legacy or wide (ADR-0534). Only bytes or the
+    // row cap cut, and both need visible rows.
     let ids: Vec<i64> = (0..1_500_000).collect();
-    let wide = [Slot::Window(0..3_000_000)];
-    let node_files = vec![(0, 699_008), (699_008, 1_398_016), (1_398_016, 3_000_000)];
-    let planned = plan(Kind::Node, MAX_FILE, &wide, &ids, &[]);
-    assert_eq!(planned, [Planned::Unit(0..1, node_files)]);
-    let rel_files = vec![
-        (0, 419_392),
-        (419_392, 838_784),
-        (838_784, 1_258_176),
-        (1_258_176, 3_000_000),
-    ];
-    let planned = plan(Kind::Rel, MAX_FILE, &wide, &ids, &[]);
-    assert_eq!(planned, [Planned::Unit(0..1, rel_files)]);
-
-    // A seed of at most MAX_WINDOW ids is cut by bytes alone; a file of
-    // more rows than the page envelope is halved when written.
+    let wide_slot = [Slot::Window(0..3_000_000)];
+    for encoding in [Encoding::Legacy, Encoding::Wide] {
+        let planned = plan(Kind::Node, MAX_FILE, encoding, &wide_slot, &ids, &[]);
+        assert_eq!(planned, [Planned::Unit(0..1, vec![(0, 3_000_000)])]);
+    }
     let narrow = [Slot::Window(0..MAX_WINDOW)];
-    let planned = plan(Kind::Node, MAX_FILE, &narrow, &ids[..1_000_000], &[]);
+    let planned = plan(
+        Kind::Node,
+        MAX_FILE,
+        Encoding::Legacy,
+        &narrow,
+        &ids[..1_000],
+        &[],
+    );
     assert_eq!(planned, [Planned::Unit(0..1, vec![(0, MAX_WINDOW)])]);
 }
 

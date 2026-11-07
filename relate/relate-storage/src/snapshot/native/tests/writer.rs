@@ -169,6 +169,39 @@ fn late_numeric_collections_preflight_before_encoding_and_split_reopen() {
 }
 
 #[test]
+fn a_seed_over_the_page_envelope_rows_is_cut_into_full_files() {
+    // ADR-0534: a wide part's leaf columns make rows the binding bound of
+    // the ADR-0086 page envelope, so a seed of more live rows than one
+    // file holds is cut into full files of that many rows by planning —
+    // never written over the envelope and halved.
+    let store = wide_memory_store();
+    let graph = Graph::default();
+    stage_nodes(&graph, 120_000, 24);
+    let ts = apply_commit(&graph);
+    checkpoint_at(&store, &graph, 0, ts, MAX_FILE).unwrap();
+    let parts = manifest(&store).node_parts;
+    let cap = Kind::Node.page_envelope_rows(true);
+    assert_eq!(parts.len(), 120_000usize.div_ceil(cap), "{parts:?}");
+    assert!(
+        parts[..parts.len() - 1]
+            .iter()
+            .all(|p| p.rows == cap as u64),
+        "{parts:?}"
+    );
+    assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 120_000);
+    let end = parts[parts.len() - 1].id_hi;
+    assert_eq!(
+        ranges(&parts),
+        [
+            (0, cap as i64),
+            (cap as i64, 2 * cap as i64),
+            (2 * cap as i64, end)
+        ]
+    );
+    assert_reopens_as(&store, &graph);
+}
+
+#[test]
 fn shard_row_groups_stay_within_cap() {
     use crate::codec::parquet::ROW_GROUP_CAP;
     let store = memory_store();

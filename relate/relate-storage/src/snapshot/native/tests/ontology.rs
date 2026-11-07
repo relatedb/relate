@@ -4,8 +4,10 @@
 //! (exclusive create, sync, durable name before the manifest; the
 //! superseded object retired only after the new manifest publishes) and
 //! writes `format_version` 4; a checkpoint without one stays at 3. Readers
-//! accept 1..=4, and a crash between the object write and the manifest
-//! publish leaves an orphan the next open sweeps.
+//! accept 1..=6 — the wide 5/6 of ADR-0534 included, a store there
+//! staying wide — while the tests below checkpoint legacy, the default
+//! encoding. A crash between the object write and the manifest publish
+//! leaves an orphan the next open sweeps.
 
 use super::super::super::*;
 use super::super::*;

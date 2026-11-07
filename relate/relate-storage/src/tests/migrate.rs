@@ -10,16 +10,7 @@ use crate::version::Subsystem;
 
 #[cfg(parquet_codec)]
 fn commit_node(graph: &Graph, wal: &mut Wal, label: &str) -> u64 {
-    graph.begin_write().unwrap();
-    graph
-        .create_node(vec![label.into()], Default::default())
-        .unwrap();
-    let ops = graph.take_redo();
-    let ts = graph.pending_commit_ts();
-    graph.abort_write();
-    wal.append_commit(ts, &ops).unwrap();
-    graph.apply_redo(ops, ts).unwrap();
-    ts
+    commit_nodes(graph, wal, [(vec![label.into()], Default::default())])
 }
 
 /// A synthetic v1/v2-manifest store (the `snapshot::native::tests`
@@ -54,11 +45,6 @@ fn legacy_monolith_store(target: &StoreTarget, version: u32) {
     .unwrap();
     commit_node(&graph, &mut wal, "B");
     assert_eq!(wal.lsn, 2);
-}
-
-#[cfg(parquet_codec)]
-fn on_disk_manifest(target: &StoreTarget) -> Manifest {
-    serde_json::from_slice(&snapshot::get_object(target, "manifest.json").unwrap()).unwrap()
 }
 
 /// Migrate-on-open matrix over Native and Bundle targets (the crash

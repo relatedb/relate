@@ -15,6 +15,8 @@ mod exclusive_create;
 mod migrate;
 #[cfg(not(target_arch = "wasm32"))]
 mod reset;
+#[cfg(all(parquet_codec, not(target_arch = "wasm32")))]
+mod wide;
 
 #[test]
 fn storage_context_names_the_object_of_storage_and_io_messages_only() {
@@ -111,6 +113,41 @@ pub(crate) fn person_ada() -> (Graph, Wal) {
     wal.append_commit(ts, &ops).unwrap();
     g.apply_redo(ops.clone(), ts).unwrap();
     (g, wal)
+}
+
+/// The commit tail every synthetic-store builder shares: create `nodes`
+/// (labels and properties), commit once, replay — the one spelling of
+/// the begin/take_redo/append_commit/apply_redo protocol.
+#[cfg(parquet_codec)]
+pub(crate) fn commit_nodes(
+    graph: &Graph,
+    wal: &mut Wal,
+    nodes: impl IntoIterator<
+        Item = (
+            Vec<String>,
+            std::collections::BTreeMap<String, relate_core::Value>,
+        ),
+    >,
+) -> u64 {
+    graph.begin_write().unwrap();
+    for (labels, props) in nodes {
+        graph.create_node(labels, props).unwrap();
+    }
+    let ops = graph.take_redo();
+    let ts = graph.pending_commit_ts();
+    graph.abort_write();
+    wal.append_commit(ts, &ops).unwrap();
+    graph.apply_redo(ops, ts).unwrap();
+    ts
+}
+
+/// The manifest of an on-disk store, as the crate's one manifest reader
+/// decodes it.
+#[cfg(parquet_codec)]
+pub(crate) fn on_disk_manifest(target: &StoreTarget) -> Manifest {
+    snapshot::native::read_manifest_for_test(target)
+        .unwrap()
+        .unwrap()
 }
 
 /// The codecs whose checkpoint image is a root-level store object —

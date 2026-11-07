@@ -8,7 +8,7 @@ use super::*;
 #[cfg(test)]
 use std::ops::Range;
 
-use relate_executor::Graph;
+use relate_executor::{CheckpointTheater, Graph};
 
 use crate::codec::parquet::{load_nodes, load_rels, Loader, Origin, MAX_FILE};
 // Test modules reach the preflighting wrappers through `use super::*`.
@@ -187,6 +187,13 @@ pub(crate) fn checkpoint_at_with_bytes(
     // Validate against the named catalog before creating *any* shard.
     let theater = graph.checkpoint_theater_for_write()?;
     let prev = read_manifest(target)?.map(|(m, _)| m);
+    // ADR-0534, the one encoding decision: what the previous manifest
+    // records folded with this open's opt-in.
+    let encoding = Encoding::of(
+        prev.as_ref()
+            .map(|m| crate::version::manifest::writes_wide(m.format_version)),
+        target.wide_columns(),
+    );
     // A kind with no previous parts is not checked by read_manifest. Reject
     // even an unused alias before a new leaf can be created through it.
     for kind in Kind::ALL {
@@ -195,86 +202,26 @@ pub(crate) fn checkpoint_at_with_bytes(
         }
     }
     let mut owned = Vec::new();
-    let prepared = (|| {
-        let (node_parts, retired_nodes) = {
-            let mut ctx = ShardWrite {
-                target,
-                graph,
-                ts: snapshot_ts,
-                kind: Kind::Node,
-                target_bytes,
-                owned: &mut owned,
-            };
-            rewrite_kind(&mut ctx, prev.as_ref())?
-        };
-        let (rel_parts, retired_rels) = {
-            let mut ctx = ShardWrite {
-                target,
-                graph,
-                ts: snapshot_ts,
-                kind: Kind::Rel,
-                target_bytes,
-                owned: &mut owned,
-            };
-            rewrite_kind(&mut ctx, prev.as_ref())?
-        };
-        let bytes_per_node = ewma_density(
-            prev.as_ref().map(|m| m.bytes_per_node).unwrap_or(0.0),
-            &node_parts,
-        )?;
-        let bytes_per_rel = ewma_density(
-            prev.as_ref().map(|m| m.bytes_per_rel).unwrap_or(0.0),
-            &rel_parts,
-        )?;
-        // The ontology object publishes before the manifest that selects it
-        // (ADR-0120 §5, the ADR-0092/ADR-0089 rules): exclusive create,
-        // sync, durable name — and `owned` collects it for the crash and
-        // failure cleanup paths.
-        let ontology_path = ontology
-            .map(|document| ontology::publish_ontology(target, prev.as_ref(), document, &mut owned))
-            .transpose()?;
-        let manifest = Manifest {
-            format_version: crate::version::manifest::version_for_write(ontology_path.is_some()),
-            next_node_id: graph.next_node_id(),
-            next_rel_id: graph.next_rel_id(),
-            checkpoint_lsn,
-            commit_ts: snapshot_ts,
-            node_parts,
-            rel_parts,
-            bytes_per_node,
-            bytes_per_rel,
-            codec: SnapshotCodecKind::Parquet,
-            indexes: graph.named_indexes(),
-            constraints: graph.named_constraints(),
-            theater: Some(theater),
-            ontology_path,
-        };
-        // Unchanged (including legacy fixed-name) parts are published again.
-        // Recheck every proposed reference after writing, not just new leaves.
-        for kind in Kind::ALL {
-            for part in kind.parts(&manifest) {
-                validate_part(target, kind, part)?;
-            }
-        }
-        let bytes = encode_manifest(&manifest)?;
-        Ok::<_, Error>((manifest, bytes, retired_nodes, retired_rels))
-    })();
+    let mut ctx = ShardWrite::new(
+        target,
+        graph,
+        snapshot_ts,
+        Kind::Node,
+        target_bytes,
+        encoding,
+        &mut owned,
+    );
     // The publish phase is known statically: a prepare failure cleans up as
     // not-publishing, a publish failure as publishing.
-    let (manifest, bytes, retired_nodes, retired_rels) = match prepared {
-        Ok(result) => result,
-        Err(error) => return Err(cleanup_unreferenced(target, &owned, false, error)),
-    };
-    if let Err(error) = put_object(target, MANIFEST_JSON, &bytes) {
+    let prepared =
+        match prepare_manifest(&mut ctx, checkpoint_lsn, theater, prev.as_ref(), ontology) {
+            Ok(result) => result,
+            Err(error) => return Err(cleanup_unreferenced(target, &owned, false, error)),
+        };
+    if let Err(error) = put_object(target, MANIFEST_JSON, &prepared.bytes) {
         return Err(cleanup_unreferenced(target, &owned, true, error));
     }
-    retire_superseded(
-        target,
-        prev.as_ref(),
-        &manifest,
-        retired_nodes,
-        retired_rels,
-    );
+    retire_superseded(target, prev.as_ref(), &prepared.manifest, prepared.retired);
     // The shared checkpoint tail (ADR-0481 §4/§5): the mirror publishes
     // after the manifest it reflects, then the dirty tracking clears.
     crate::schema_files::finish_checkpoint(target, graph, ontology)?;
@@ -290,14 +237,13 @@ fn retire_superseded(
     target: &StoreTarget,
     prev: Option<&Manifest>,
     manifest: &Manifest,
-    retired_nodes: Vec<String>,
-    retired_rels: Vec<String>,
+    retired_parts: Vec<String>,
 ) {
     if cfg!(windows) && target.native_root.is_some() {
         return;
     }
     let mut retired: Vec<String> = Vec::new();
-    for p in retired_nodes.into_iter().chain(retired_rels) {
+    for p in retired_parts {
         if !referenced(manifest, &p) {
             retired.push(p);
         }
@@ -604,6 +550,46 @@ fn validate_shard_name(target: &StoreTarget, name: ShardName) -> Result<()> {
     Ok(())
 }
 
+/// The store's part encoding for one checkpoint (ADR-0534): what the
+/// previous manifest records folded with this open's opt-in — one
+/// three-state fact, never two bools that could disagree.
+#[derive(Clone, Copy, Debug)]
+enum Encoding {
+    /// The one-time legacy→wide transition: every part re-encodes wide
+    /// this checkpoint, every live id dirty.
+    Transition,
+    /// Wide parts, no one-time re-encode.
+    Wide,
+    /// The legacy tagged-JSON property column.
+    Legacy,
+}
+
+impl Encoding {
+    /// The one derivation (ADR-0534): what the previous manifest recorded
+    /// — `None` for a fresh store — folded with this open's opt-in.
+    fn of(previous: Option<bool>, opted_in: bool) -> Self {
+        match (previous, opted_in) {
+            // A wide manifest keeps the store wide whatever the flags.
+            (Some(true), _) => Encoding::Wide,
+            // An opted-in legacy store re-encodes every part once; a
+            // fresh one starts wide with nothing to re-encode.
+            (Some(false), true) => Encoding::Transition,
+            (None, true) => Encoding::Wide,
+            (_, false) => Encoding::Legacy,
+        }
+    }
+
+    /// Whether this checkpoint writes wide parts.
+    fn wide(self) -> bool {
+        !matches!(self, Encoding::Legacy)
+    }
+
+    /// Whether every live id re-encodes — the one-time transition.
+    fn reencodes_all(self) -> bool {
+        matches!(self, Encoding::Transition)
+    }
+}
+
 /// The invariant bundle threaded through the shard-write recursion
 /// (`rewrite_kind` → `coalesce::rewrite` → `publish_part`): everything
 /// except the varying id window.
@@ -613,17 +599,128 @@ struct ShardWrite<'a> {
     ts: u64,
     kind: Kind,
     target_bytes: u64,
+    /// The part encoding this checkpoint writes (ADR-0534) — the
+    /// store's recorded or opted-in encoding, the one-time
+    /// legacy→wide transition included.
+    encoding: Encoding,
     owned: &'a mut Vec<String>,
 }
 
+impl<'a> ShardWrite<'a> {
+    /// The one construction — both kinds' rewrites and the test literals,
+    /// so a field is added once.
+    fn new(
+        target: &'a StoreTarget,
+        graph: &'a Graph,
+        ts: u64,
+        kind: Kind,
+        target_bytes: u64,
+        encoding: Encoding,
+        owned: &'a mut Vec<String>,
+    ) -> Self {
+        Self {
+            target,
+            graph,
+            ts,
+            kind,
+            target_bytes,
+            encoding,
+            owned,
+        }
+    }
+}
+
+/// One prepared checkpoint generation (ADR-0183): the manifest, its
+/// encoded bytes, and the part paths its rewrites retired.
+struct Prepared {
+    manifest: Manifest,
+    bytes: Vec<u8>,
+    retired: Vec<String>,
+}
+
+/// Prepare one checkpoint generation (ADR-0183, ADR-0534): rewrite both
+/// kinds' parts under the store's encoding, publish the ontology object
+/// the manifest selects, and assemble and revalidate the manifest —
+/// everything before the manifest object itself is put. Runs with
+/// `ctx`'s kind set per rewrite pass; a failure here cleans up as
+/// not-publishing.
+fn prepare_manifest(
+    ctx: &mut ShardWrite<'_>,
+    checkpoint_lsn: u64,
+    theater: CheckpointTheater,
+    prev: Option<&Manifest>,
+    ontology: Option<&str>,
+) -> Result<Prepared> {
+    ctx.kind = Kind::Node;
+    let (node_parts, retired_nodes) = rewrite_kind(ctx, prev)?;
+    ctx.kind = Kind::Rel;
+    let (rel_parts, retired_rels) = rewrite_kind(ctx, prev)?;
+    let bytes_per_node = ewma_density(
+        prev.map(|m| Kind::Node.bytes_per_row(m)).unwrap_or(0.0),
+        &node_parts,
+    )?;
+    let bytes_per_rel = ewma_density(
+        prev.map(|m| Kind::Rel.bytes_per_row(m)).unwrap_or(0.0),
+        &rel_parts,
+    )?;
+    // The ontology object publishes before the manifest that selects it
+    // (ADR-0120 §5, the ADR-0092/ADR-0089 rules): exclusive create,
+    // sync, durable name — and `owned` collects it for the crash and
+    // failure cleanup paths.
+    let ontology_path = ontology
+        .map(|document| ontology::publish_ontology(ctx.target, prev, document, ctx.owned))
+        .transpose()?;
+    let manifest = Manifest {
+        format_version: crate::version::manifest::version_for_write(
+            ontology_path.is_some(),
+            ctx.encoding.wide(),
+        ),
+        next_node_id: ctx.graph.next_node_id(),
+        next_rel_id: ctx.graph.next_rel_id(),
+        checkpoint_lsn,
+        commit_ts: ctx.ts,
+        node_parts,
+        rel_parts,
+        bytes_per_node,
+        bytes_per_rel,
+        codec: SnapshotCodecKind::Parquet,
+        indexes: ctx.graph.named_indexes(),
+        constraints: ctx.graph.named_constraints(),
+        theater: Some(theater),
+        ontology_path,
+    };
+    // Unchanged (including legacy fixed-name) parts are published again.
+    // Recheck every proposed reference after writing, not just new leaves.
+    for kind in Kind::ALL {
+        for part in kind.parts(&manifest) {
+            validate_part(ctx.target, kind, part)?;
+        }
+    }
+    let bytes = encode_manifest(&manifest)?;
+    Ok(Prepared {
+        manifest,
+        bytes,
+        retired: retired_nodes.into_iter().chain(retired_rels).collect(),
+    })
+}
+
+/// Rewrite one kind's parts, every live id joining the dirty set when
+/// the store's encoding is the one-time legacy→wide transition
+/// (ADR-0534) — extends, never replaces, so a part whose rows were all
+/// deleted stays touched and retires instead of republishing them.
 fn rewrite_kind(
     ctx: &mut ShardWrite<'_>,
     prev: Option<&Manifest>,
 ) -> Result<(Vec<ShardPart>, Vec<String>)> {
     let parts = prev.map(|m| ctx.kind.parts(m).to_vec()).unwrap_or_default();
-    let dirty = ctx.kind.dirty_ids(ctx.graph);
-    let bytes_per_row = prev.map(|m| ctx.kind.bytes_per_row(m)).unwrap_or(0.0);
     let all_ids = ctx.kind.all_ids(ctx.graph, ctx.ts);
+    let mut dirty = ctx.kind.dirty_ids(ctx.graph);
+    if ctx.encoding.reencodes_all() {
+        dirty.extend(all_ids.iter().copied());
+        dirty.sort_unstable();
+        dirty.dedup();
+    }
+    let bytes_per_row = prev.map(|m| ctx.kind.bytes_per_row(m)).unwrap_or(0.0);
     let w = window_width(ctx.target_bytes, bytes_per_row);
     // ADR-0183: heal, cover, plan and write id ranges as coalesced units,
     // not per previous part.
@@ -638,22 +735,36 @@ fn rewrite_kind(
 fn reserve_owned_object(
     vfs: &dyn Vfs,
     dir: &str,
-    mut make_name: impl FnMut() -> Result<String>,
+    make_name: impl FnMut() -> Result<String>,
     bytes: &[u8],
     owned: &mut Vec<String>,
     what: &str,
 ) -> Result<String> {
+    let (path, mut file) = reserve_exclusive(vfs, make_name, owned, what)?;
+    let result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    result?;
+    vfs.sync_dir(dir)?;
+    Ok(path)
+}
+
+/// The exclusive-reservation policy every generated immutable object
+/// runs: pick a fresh name, create it without overwriting, record it in
+/// `owned` for cleanup — up to eight collisions, then a refusal. The
+/// caller owns directory preparation and what it writes through the
+/// handle.
+fn reserve_exclusive(
+    vfs: &dyn Vfs,
+    mut make_name: impl FnMut() -> Result<String>,
+    owned: &mut Vec<String>,
+    what: &str,
+) -> Result<(String, Box<dyn crate::vfs::VfsFile>)> {
     for _ in 0..8 {
         let path = make_name()?;
-        let Some(mut file) = vfs.open_exclusive(&path)? else {
-            continue;
-        };
-        owned.push(path.clone());
-        let result = file.write_all(bytes).and_then(|()| file.sync_all());
-        drop(file);
-        result?;
-        vfs.sync_dir(dir)?;
-        return Ok(path);
+        if let Some(file) = vfs.open_exclusive(&path)? {
+            owned.push(path.clone());
+            return Ok((path, file));
+        }
     }
     Err(Error::storage(format!(
         "could not reserve a unique {what} path"

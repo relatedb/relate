@@ -50,7 +50,9 @@ pub(crate) fn write_codec_manifest(
     ontology: Option<&str>,
 ) -> Result<()> {
     let manifest = CodecManifest {
-        format_version: crate::version::manifest::version_for_write(ontology.is_some()),
+        // An experimental codec never writes wide parts: ADR-0534's
+        // encoding belongs to the Parquet codec's parts.
+        format_version: crate::version::manifest::version_for_write(ontology.is_some(), false),
         envelope: Envelope {
             codec,
             checkpoint_lsn,

@@ -136,41 +136,73 @@ fn bundle_store_rejects_undecodable_wal_record() {
     assert_undecodable_record_fails_closed(&uri);
 }
 
-#[test]
-fn json_value_encoding_gate_precedes_wal_recovery() {
+/// The version-gate-before-recovery shape both codecs share: seed a
+/// store, plant a torn WAL tail, rewrite the snapshot image's version
+/// marker, and prove the open fails at the gate with the WAL untouched.
+/// The codec, its checkpoint image and its marker field are the one
+/// typed gate fact — never hand-spelled parameters that could disagree.
+fn gate_precedes_wal_recovery(gate: VersionGate, version: u64, message: &str) {
+    let codec = gate.codec();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().join("db");
-    seed_store(&uri, SnapshotCodecKind::Json);
+    seed_store(&uri, codec);
 
     let vfs = store_vfs(&uri);
     let segment = active_segment(&*vfs);
     append_to_segment(&*vfs, &segment, TORN_TAIL);
     drop(vfs);
 
-    edit_store_json(&uri, "graph.json", |graph| {
-        graph["value_encoding"] = serde_json::Value::from(4);
+    edit_store_json(&uri, codec.checkpoint_image(), |image| {
+        image[gate.field()] = serde_json::Value::from(version);
     });
 
-    assert_open_fails_closed(&uri, &segment, &["unsupported graph value encoding: 4"]);
+    assert_open_fails_closed(&uri, &segment, &[message]);
+}
+
+/// The version gate a codec's checkpoint image carries — the one place
+/// this suite spells the codec-to-marker-field mapping.
+#[derive(Clone, Copy)]
+enum VersionGate {
+    JsonValueEncoding,
+    #[cfg(feature = "parquet")]
+    ParquetFormatVersion,
+}
+
+impl VersionGate {
+    fn codec(self) -> SnapshotCodecKind {
+        match self {
+            Self::JsonValueEncoding => SnapshotCodecKind::Json,
+            #[cfg(feature = "parquet")]
+            Self::ParquetFormatVersion => SnapshotCodecKind::Parquet,
+        }
+    }
+
+    fn field(self) -> &'static str {
+        match self {
+            Self::JsonValueEncoding => "value_encoding",
+            #[cfg(feature = "parquet")]
+            Self::ParquetFormatVersion => "format_version",
+        }
+    }
+}
+
+#[test]
+fn json_value_encoding_gate_precedes_wal_recovery() {
+    gate_precedes_wal_recovery(
+        VersionGate::JsonValueEncoding,
+        4,
+        "unsupported graph value encoding: 4",
+    );
 }
 
 #[cfg(feature = "parquet")]
 #[test]
 fn parquet_format_version_gate_precedes_wal_recovery() {
-    let dir = tempfile::tempdir().unwrap();
-    let uri = dir.path().join("db");
-    seed_store(&uri, SnapshotCodecKind::Parquet);
-
-    let vfs = store_vfs(&uri);
-    let segment = active_segment(&*vfs);
-    append_to_segment(&*vfs, &segment, TORN_TAIL);
-    drop(vfs);
-
-    edit_store_json(&uri, "manifest.json", |manifest| {
-        manifest["format_version"] = serde_json::Value::from(5);
-    });
-
-    assert_open_fails_closed(&uri, &segment, &["unsupported snapshot version 5"]);
+    gate_precedes_wal_recovery(
+        VersionGate::ParquetFormatVersion,
+        7,
+        "unsupported snapshot version 7",
+    );
 }
 
 /// The ADR-0481 schema mirror's ontology file. A current-format writer

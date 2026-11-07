@@ -13,6 +13,8 @@ use relate_core::{Error, Result};
 
 use crate::snapshot::Kind;
 
+use super::wide::{self, ColumnType};
+
 /// The rules every shard writer since v0.4.0 keeps: the shard schema of
 /// its kind, non-null ids strictly ascending through the file, so no id
 /// repeats, and every id inside the `[id_lo, id_hi)` the file's manifest
@@ -24,6 +26,10 @@ pub(super) struct ShardRules {
     range: Range<i64>,
     /// The last id of the batches checked so far.
     last: Option<i64>,
+    /// The part's promoted columns (ADR-0534), read from the file's own
+    /// schema — empty for the fixed shape, which is the wide schema with
+    /// no promoted columns.
+    columns: Vec<(String, ColumnType)>,
 }
 
 fn broken(what: &str) -> Error {
@@ -42,16 +48,27 @@ pub(super) fn id_column(batch: &RecordBatch) -> Option<Int64Array> {
 
 impl ShardRules {
     /// Check the schema of the file `builder` is about to read, whose
-    /// manifest part declares `range`.
+    /// manifest part declares `range`: it must be a valid wide schema of
+    /// its kind — the fixed shape being the wide schema with no promoted
+    /// columns (ADR-0534) — or the file is not a part of this kind at all.
     pub(super) fn open<T: ChunkReader>(
         builder: &ParquetRecordBatchReaderBuilder<T>,
         kind: Kind,
         range: Range<i64>,
     ) -> Result<Self> {
-        if builder.schema().fields() != kind.schema().fields() {
-            return Err(broken("schema differs from the shard schema"));
-        }
-        Ok(Self { range, last: None })
+        let columns = wide::recover_columns(kind, builder.schema())
+            .ok_or_else(|| broken("schema differs from the shard schema"))?;
+        Ok(Self {
+            range,
+            last: None,
+            columns,
+        })
+    }
+
+    /// The part's promoted columns (ADR-0534), in file order: a wide
+    /// part's own, empty for the fixed shape.
+    pub(super) fn columns(&self) -> &[(String, ColumnType)] {
+        &self.columns
     }
 
     /// Check the ids of the file's next batch, across batches too, and
@@ -85,7 +102,7 @@ impl ShardRules {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{load_part, write_bare_table, write_int_label_table};
-    use super::super::{load_nodes, with_shard_writer, Origin, ShardCursor, MAX_FILE};
+    use super::super::{load_nodes, with_wide_shard_writer, Origin, ShardCursor, MAX_FILE};
     use super::*;
     use relate_executor::Graph;
     use std::sync::Arc;
@@ -94,7 +111,7 @@ mod tests {
     /// a checkpoint copies from a part declaring `range`.
     fn copy(bytes: Vec<u8>, range: Range<i64>, ids: &[i64]) -> Result<()> {
         let cursor = ShardCursor::open_bytes("nodes/p.parquet", bytes, Kind::Node, range)?;
-        with_shard_writer(Kind::Node, MAX_FILE, |writer| cursor.take(ids, writer))
+        with_wide_shard_writer(Kind::Node, &[], MAX_FILE, |writer| cursor.take(ids, writer))
             .map(drop)
             .map_err(Error::from)
     }
@@ -163,6 +180,7 @@ mod tests {
         let mut rules = ShardRules {
             range: 0..10,
             last: None,
+            columns: Vec::new(),
         };
         let batch = |ids: Vec<i64>| {
             let ids: Arc<dyn Array> = Arc::new(Int64Array::from(ids));
