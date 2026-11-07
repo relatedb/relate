@@ -4,11 +4,11 @@ Thanks for using Relate — and for wanting to make it better.
 
 ## Issues only — no pull requests
 
-Relate does **not** accept pull requests. All development and review happens
-with the maintainers; this repository is the public home of the source, the
-docs, and the releases. An opened pull request will be closed with a pointer
-back to this file — not because the work is unwelcome, but because the team
-cannot give external code the review bandwidth it deserves.
+Relate does **not** accept pull requests from outside the maintainer team;
+this repository is the public home of the source, the docs, and the releases. 
+Pull requests are turned off for accounts without write access — not because 
+the work is unwelcome, but because the team cannot give external code the review 
+bandwidth it deserves.
 
 What we **do** accept, and read carefully, are
 [issues](https://github.com/relatedb/relate/issues):
@@ -35,6 +35,20 @@ Lead with the use case, not the solution: what you're trying to accomplish,
 what you tried, and where it fell short. Coverage is broad — check the
 [cookbook](docs/cookbook/) and the [references](docs/reference/) first; the
 answer may already exist.
+
+## Using AI tools
+
+You're welcome to use AI tools for bug reports or feature requests.
+If you do:
+
+- **Disclose it.** Add one line to the issue or comment.
+- **Own it.** Read and check everything you post, including the
+  reproduction. You are responsible for your post and not the AI tool.
+- **Keep a human in the loop.** Issues or comments created by an agent
+  without a person who hit the problem and read the output may be closed
+  without warning. Please don't point autonomous agents at this repository.
+
+Repeated undisclosed or unreviewed AI submissions may lead to being blocked.
 
 ## Where to read before filing
 
