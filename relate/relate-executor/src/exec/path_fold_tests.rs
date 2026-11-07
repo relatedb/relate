@@ -447,6 +447,89 @@ fn path_fold_agrees_with_the_general_path_across_a_detach_delete() {
     assert_eq!(general.rows, folded.rows);
 }
 
+/// A node variable repeated within one hop (`(x)-[:R]->(x)`) binds one
+/// slot, so only a self-loop matches — the walker's mid-walk binding
+/// semantics, which the fold's slot classification must agree with. The
+/// graph holds a plain pair plus one real self-loop.
+fn repeated_variable_graph() -> Graph {
+    build(&[&["X"], &["X"], &["X"]], &[(0, 1, "R"), (2, 2, "R")]).graph
+}
+
+/// The repeated node variable through the streaming count seats: the fold
+/// and the general path answer the same one self-loop.
+#[test]
+fn path_fold_counts_a_repeated_node_variable_as_a_self_loop() {
+    let g = repeated_variable_graph();
+    let _ = take_path_fold_bindings();
+    let star = exec_cypher(&g, "MATCH (x:X)-[:R]->(x:X) RETURN count(*) AS n");
+    assert_eq!(star.rows, vec![vec![Value::Int(1)]]);
+    assert!(
+        take_path_fold_bindings() > 0,
+        "the star count takes the fold"
+    );
+    let whole = exec_cypher(&g, "MATCH (x:X)-[:R]->(x:X) RETURN count(x) AS n");
+    assert_eq!(whole.rows, vec![vec![Value::Int(1)]]);
+    assert!(
+        take_path_fold_bindings() > 0,
+        "the whole count takes the fold"
+    );
+    // `sum` declines the path fold and lands on the one-hop fold, which
+    // never had the hole — its start bind rides the scratch row its end
+    // check classifies against.
+    let summed = exec_cypher(&g, "MATCH (x:X)-[:R]->(x:X) RETURN sum(x.id) AS s");
+    assert_eq!(summed.rows, vec![vec![Value::Int(2)]]);
+    // The general path (the walker) answers the same: a value projection
+    // reads the bound row, not an aggregate.
+    let value = exec_cypher(&g, "MATCH (x:X)-[:R]->(x:X) RETURN x.id AS id");
+    assert_eq!(value.rows, vec![vec![Value::Int(2)]]);
+    let collected = exec_cypher(&g, "MATCH (x:X)-[:R]->(x:X) RETURN collect(x.id) AS ids");
+    assert_eq!(
+        collected.rows,
+        vec![vec![Value::List(vec![Value::Int(2)].into())]]
+    );
+}
+
+/// The pre-bound form of the repeated variable: a row-bound `x` accepts
+/// only itself, so the plain pair binds nothing and the self-loop binds
+/// once — the fold's row classification, unchanged.
+#[test]
+fn path_fold_repeated_node_variable_stays_self_loop_when_prebound() {
+    let g = repeated_variable_graph();
+    let _ = take_path_fold_bindings();
+    let pair = exec_cypher(
+        &g,
+        "MATCH (x:X {id: 0}) MATCH (x)-[:R]->(x) RETURN count(*) AS n",
+    );
+    assert_eq!(pair.rows, vec![vec![Value::Int(0)]]);
+    let _ = take_path_fold_bindings();
+    let self_loop = exec_cypher(
+        &g,
+        "MATCH (x:X {id: 2}) MATCH (x)-[:R]->(x) RETURN count(*) AS n",
+    );
+    assert_eq!(self_loop.rows, vec![vec![Value::Int(1)]]);
+    assert!(
+        take_path_fold_bindings() > 0,
+        "the prebound count takes the fold"
+    );
+}
+
+/// The EXISTS form keeps answering through the existence probe: false for
+/// the plain pair, true for the self-loop.
+#[test]
+fn exists_probe_repeated_node_variable_needs_a_self_loop() {
+    let g = repeated_variable_graph();
+    let pair = exec_cypher(
+        &g,
+        "MATCH (x:X {id: 0}) RETURN EXISTS { (x:X)-[:R]->(x:X) } AS e",
+    );
+    assert_eq!(pair.rows, vec![vec![Value::Bool(false)]]);
+    let self_loop = exec_cypher(
+        &g,
+        "MATCH (x:X {id: 2}) RETURN EXISTS { (x:X)-[:R]->(x:X) } AS e",
+    );
+    assert_eq!(self_loop.rows, vec![vec![Value::Bool(true)]]);
+}
+
 /// The ADR-0485 two-hop graph: five (user, mid, item) bindings, one item
 /// reachable through two mids, one item with no `score`.
 fn two_hop_score_graph() -> Graph {

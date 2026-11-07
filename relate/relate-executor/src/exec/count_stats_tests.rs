@@ -374,13 +374,11 @@ fn count_only_declines_same_variable_self_loop_shapes() {
     g.create_rel(a, a2, "SELF".into(), BTreeMap::new()).unwrap();
     g.commit_write();
     declines_the_shortcircuit(&g, "MATCH (a:A)-[:SELF]->(a:A) RETURN count(*) AS n");
-    // The scan's answer today: the compact walker does not enforce
-    // variable identity on a repeated name, so it counts both rels (2) —
-    // the pair count (A,SELF,A) agrees today. The decline stays
-    // regardless: the day the walker enforces identity (the openCypher
-    // semantics — only the true self-loop), the scan answers 1 while
-    // the pair count still answers 2, and the short-circuit must not be
-    // the path that answers the wrong one.
+    // The scan's answer: the same-variable shape counts only the true
+    // self-loop (the walker's mid-walk binding on the repeated name), so
+    // the scan answers 1 while the pair count (A,SELF,A) — which counts
+    // the distinct-endpoint rel too — still answers 2. The decline is
+    // what keeps that divergence out of the answer.
     let r = exec_cypher(&g, "MATCH (a:A)-[:SELF]->(a:A) RETURN count(*) AS n");
-    assert_eq!(r.rows[0][0], Value::Int(2));
+    assert_eq!(r.rows[0][0], Value::Int(1));
 }
