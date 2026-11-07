@@ -233,29 +233,6 @@ pub(crate) fn statement_uses_hybrid_search(stmt: &Statement) -> Result<bool, Eng
     })
 }
 
-/// Whether the statement's AST spells a CIP-250 `FOR <variable> IN
-/// <expression>` clause anywhere (at any subquery depth) -- the predicate
-/// the ADR-0371 `gql-for` preview gate checks before anything of the
-/// statement validates or lowers. The parser normalizes the spelling into
-/// a plain UNWIND clause carrying `for_syntax: true` (CIP-250's own
-/// normalization rule: identical validation, planning, and execution), so
-/// the detector is the one consumer of the flag -- nothing downstream
-/// needs to know the spelling existed. A walk error propagates: the gate
-/// never answers "no" over a tree it could not walk.
-///
-/// A `FOR` inside a FOREACH body is invalid in every dialect (42I01,
-/// `validate_foreach_body`), so the FOREACH rule — not the preview gate —
-/// must report it (SemanticErrorPart2 "A FOR inside a FOREACH body is
-/// rejected"). The tree walk presents a FOREACH body as its own statement
-/// node ([`StmtRef::Body`]), so only a *non-body* statement node's clauses
-/// arm the gate.
-pub(crate) fn statement_uses_gql_for(stmt: &Statement) -> Result<bool, EngineError> {
-    statement_any_clause_node(stmt, |node, clause| {
-        !matches!(node, StmtRef::Body(_))
-            && matches!(clause, Clause::Unwind(unwind) if unwind.for_syntax)
-    })
-}
-
 /// Whether the statement's AST uses one of the four Cypher 25 chronological
 /// comparison operators anywhere (at any subquery depth) -- the predicate
 /// the ADR-0371 `chronological-comparisons` preview gate checks before

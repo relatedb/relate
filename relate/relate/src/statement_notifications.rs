@@ -73,13 +73,14 @@
 //! variable shadowing, `SEARCH` identifier shadowing, and the
 //! `shortestPath` unbounded/exhaustive cases.
 
+mod dynamic_property;
 mod shape;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use relate_executor::{
     builtin_function_deprecation, builtin_procedure_deprecation, DeprecatedBy, DeprecationForm,
-    ExecGraph,
+    ExecGraph, IndexFacts,
 };
 use relate_ir::{
     expr_vars, walk_pattern_payloads, Clause, Expr, ExprRole, LabelExpr, MapProjectionItem,
@@ -124,7 +125,7 @@ pub(crate) fn statement_notifications(
     // expression roles first so the one `Facts` accumulator is borrowed by
     // a single fold below (no duplicated traversal, no interior mutability
     // just to split the two callback borrows).
-    let mut clauses = Vec::new();
+    let mut part_clauses: Vec<Vec<(&relate_ir::Clause, bool)>> = Vec::new();
     let mut exprs = Vec::new();
     let mut parts = Vec::new();
     // A clause is nested when it sits inside a `CALL { … }` body, a `WHEN`
@@ -133,18 +134,43 @@ pub(crate) fn statement_notifications(
     // change cannot silently reclassify clauses. The operator-scoped
     // cartesian warning already covers the top-level `MATCH`, so only the
     // nested ones need the statement-scoped detector.
+    //
+    // The clauses are collected per plan part (the statement, or one
+    // `UNION` arm / `NEXT` stage): a part is one scope boundary at which
+    // the 03N95 accumulator flushes; a nested body is the other — every
+    // nested clause observes into a fresh accumulator (an approximation
+    // that errs by not merging two `MATCH` clauses of one nested body,
+    // never by merging two scopes; the walk reports nesting, not body
+    // identity, and importing a body-identity walk is deferred).
     relate_planner::walk_plan_parts(plan, &mut |part| {
         parts.push(part);
+        let mut group = Vec::new();
         relate_ir::walk_clauses_with_roles(
             part,
-            &mut |clause, nested| clauses.push((clause, nested)),
+            &mut |clause, nested| group.push((clause, nested)),
             &mut |expr, role| exprs.push((expr, role)),
         );
+        part_clauses.push(group);
     });
     let mut facts = Facts::default();
     shape::observe_subquery_scopes(&mut facts.notifications, &parts);
-    for (clause, nested) in clauses {
-        facts.observe_clause(clause, view, nested, params)?;
+    // One typed-index snapshot per statement (catalog state is
+    // statement-scoped, not part- or clause-scoped): every part's fire
+    // reads the same slice.
+    let indexes = view.index_facts()?;
+    for group in part_clauses {
+        let mut previous_nested = false;
+        for (clause, nested) in group {
+            // A scope boundary: entering or leaving a nested body, or
+            // moving between two nested clauses (which the walk cannot
+            // tell apart as same or different bodies).
+            if nested != previous_nested || nested {
+                facts.flush_dynamic(&indexes);
+            }
+            previous_nested = nested;
+            facts.observe_clause(clause, view, nested, params)?;
+        }
+        facts.flush_dynamic(&indexes);
     }
     for (expr, role) in exprs {
         facts.observe_expr(expr, role);
@@ -184,6 +210,9 @@ struct Facts {
     /// The deprecation notifications, already formed; [`merge`] orders and
     /// deduplicates them.
     notifications: Vec<Notification>,
+    /// The 03N95 detector's statement-wide accumulator: every `MATCH`
+    /// clause observes into it, and `finish` fires it once.
+    dynamic: dynamic_property::DynamicPropertyFacts,
 }
 
 impl Facts {
@@ -220,6 +249,7 @@ impl Facts {
                     where_clause.as_ref(),
                     nested,
                 );
+                self.dynamic.observe_match(patterns, where_clause.as_ref());
             }
             Clause::With {
                 distinct,
@@ -395,6 +425,14 @@ impl Facts {
         collect_pattern_property_keys(rel.properties.as_ref(), &mut self.property_keys);
     }
 
+    /// Fire and reset the 03N95 accumulator — at a scope boundary (a plan
+    /// part or a nested body) or the statement's end, whichever comes
+    /// first.
+    fn flush_dynamic(&mut self, indexes: &[IndexFacts]) {
+        self.dynamic.fire(&mut self.notifications, indexes);
+        self.dynamic = dynamic_property::DynamicPropertyFacts::default();
+    }
+
     /// Turn the accumulated names into notifications: only names the view
     /// does not know, plus the already-formed deprecations. The three
     /// catalog-resolved classes are one table, so each class names its
@@ -459,13 +497,26 @@ impl CatalogName {
 
 /// The static names of a label/type slot: the label expression when the
 /// rewrite produced one, else the flat list. One precedence rule for node
-/// labels and relationship types.
-fn resolve_names(expr: Option<&LabelExpr>, names: &[SmallName], out: &mut BTreeSet<String>) {
+/// labels and relationship types, parameterized over the leaf collector —
+/// the mention set (`collect_label_names`) for the unknown-name detectors,
+/// the positive-evidence set for the 03N95 detector.
+fn resolve_names_with(
+    expr: Option<&LabelExpr>,
+    names: &[SmallName],
+    out: &mut BTreeSet<String>,
+    collect: fn(&LabelExpr, &mut BTreeSet<String>),
+) {
     // Text render: the fact sets are the String catalog-comparison domain.
     match expr {
-        Some(expr) => collect_label_names(expr, out),
+        Some(expr) => collect(expr, out),
         None => out.extend(names.iter().map(|name| name.to_string())),
     }
+}
+
+/// The mention-set spelling of [`resolve_names_with`] — the unknown-name
+/// detectors' form.
+fn resolve_names(expr: Option<&LabelExpr>, names: &[SmallName], out: &mut BTreeSet<String>) {
+    resolve_names_with(expr, names, out, collect_label_names);
 }
 
 /// The instance remedy for a catalog replacement: an identifier/call is

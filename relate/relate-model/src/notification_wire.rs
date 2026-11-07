@@ -120,6 +120,9 @@ pub enum NotificationKind {
     CreateSelfReference,
     /// A variable declared in a subquery that shadows an outer variable.
     SubqueryVariableShadowing,
+    /// A dynamic property-key predicate on a variable whose label (or
+    /// relationship type) carries an index no static predicate can serve.
+    DynamicProperty,
     /// A relationship type expression no single type can satisfy.
     UnsatisfiableRelationshipTypeExpression,
     /// A relationship variable repeated across pattern elements.
@@ -343,6 +346,17 @@ const SUBQUERY_VARIABLE_SHADOWING_ROW: NotificationRow = NotificationRow {
     plan_warning: false,
 };
 
+const DYNAMIC_PROPERTY_ROW: NotificationRow = NotificationRow {
+    code: "Neo.ClientNotification.Statement.DynamicProperty",
+    gql_status: "03N95",
+    severity: NotificationSeverity::Information,
+    category: NotificationCategory::Performance,
+    title: "Queries using dynamic properties will use neither index seeks nor \
+            index scans for those properties",
+    remedy: "Use a static property so index lookups stay possible.",
+    plan_warning: false,
+};
+
 const UNSATISFIABLE_RELATIONSHIP_TYPE_EXPRESSION_ROW: NotificationRow = NotificationRow {
     code: "Neo.ClientNotification.Statement.UnsatisfiableRelationshipTypeExpression",
     gql_status: "01N61",
@@ -442,6 +456,7 @@ impl NotificationKind {
             NotificationKind::ComplexSubclauseReference => &COMPLEX_SUBCLAUSE_REFERENCE_ROW,
             NotificationKind::CreateSelfReference => &CREATE_SELF_REFERENCE_ROW,
             NotificationKind::SubqueryVariableShadowing => &SUBQUERY_VARIABLE_SHADOWING_ROW,
+            NotificationKind::DynamicProperty => &DYNAMIC_PROPERTY_ROW,
             NotificationKind::UnsatisfiableRelationshipTypeExpression => {
                 &UNSATISFIABLE_RELATIONSHIP_TYPE_EXPRESSION_ROW
             }

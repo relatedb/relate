@@ -1260,6 +1260,73 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
+  # Memory control verifications and one calibration repeat. The Sonic
+  # stage exits non-zero on a regression or an improvement; the upload,
+  # the step summary, and the PR comment still run.
+  memory-controls:
+    name: Memory controls
+    needs: [changes, sonic-init]
+    if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ${{ vars.LOADTEST_RUNNER }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
+      CI_COMPARE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/gosonic
+        with:
+          stage: memory-controls
+          rust-cache: "true"
+          sccache: "false"
+          mold: "false"
+          cache-target: memory-controls
+
+      - name: Upload memory-controls report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: memory-controls-report
+          path: |
+            target/memory-controls.json
+            target/memory-controls-verdict.json
+            target/memory-controls.md
+          if-no-files-found: warn
+
+      - name: Write the memory-controls summary
+        if: always()
+        run: |
+          if [ -f target/memory-controls.md ]; then
+            cat target/memory-controls.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Post memory-controls comment on the PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/update-pr-comment.sh "${{ github.event.number }}" \
+            --marker '<!-- relate:memory-controls -->' \
+            --title 'Memory controls and workspace memory calibration' \
+            --doc target/memory-controls.md
+
+      - name: Disk headroom (telemetry)
+        if: always() && runner.os == 'Linux'
+        run: scripts/report-disk.sh
+
   # Draft-path sanity for the Jepsen lane (LABS-650): the full harness run
   # in `jepsen` below is full-CI-gated, so a draft editing testing/jepsen
   # would otherwise carry no signal at all until ready-for-review. The

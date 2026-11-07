@@ -1075,9 +1075,9 @@ pub struct StandaloneOrderByClause {
 /// [`UnwindClause::for_syntax`] recording the source spelling -- so every
 /// downstream consumer (validation, lowering, planning, execution) treats
 /// the two spellings identically, exactly as the CIP requires (no new
-/// operators). The flag is what the ADR-0371 `gql-for` preview gate
-/// detects and what a canonical rendering restores (`FOR x IN e`, never
-/// `UNWIND e AS x`).
+/// operators). The flag is the parse-spelling record the FOREACH-body
+/// renderer reads (`FOR`, not `UNWIND`, in the 42I01 text) — the one
+/// consumer that must distinguish the spellings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnwindClause {
     pub expr: Expr,

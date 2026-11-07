@@ -189,7 +189,6 @@ pub fn parse_and_lower_statement_with_policy_and_params(
             relate_core::PreviewFeature::LocalCallables => {
                 local_callables::statement_uses_local_callables(&stmt)
             }
-            relate_core::PreviewFeature::GqlFor => validate::statement_uses_gql_for(&stmt),
             relate_core::PreviewFeature::Float16CoordinateTypes => {
                 validate::statement_uses_float16_coordinate_types(&stmt)
             }
@@ -402,36 +401,17 @@ mod tests {
             .any(|clause| matches!(clause, relate_ir::Clause::Unwind { .. })));
     }
 
-    /// The CIP-250 showcase query, shared by the two preview-gate tests.
+    /// The CIP-250 showcase query: the graduated `FOR` clause is default
+    /// dialect, so it lowers with no preview opt-in.
     const GQL_FOR_QUERY: &str = "FOR x IN [1, 2, 3] RETURN x";
 
     #[test]
-    fn gql_for_gate_fails_closed_without_the_opt_in() {
-        // ADR-0371: a FOR-clause query behind a preview set that does not
-        // include `gql-for` fails with the authored error, before anything
-        // of it validates or lowers. The equivalent UNWIND spelling stays
-        // ungated dialect floor.
-        let error = match parse_and_lower_statement_with_preview(
+    fn gql_for_lowers_onto_unwind_without_a_gate() {
+        let lowered = parse_and_lower_statement_with_preview(
             GQL_FOR_QUERY,
             relate_core::PreviewFeatures::none(),
-        ) {
-            Ok(_) => panic!("a gated query unexpectedly lowered without the opt-in"),
-            Err(error) => error.to_string(),
-        };
-        assert!(
-            error.contains(
-                "preview feature 'gql-for' is not enabled: \
-                 set RELATE_PREVIEW=gql-for"
-            ),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn gql_for_gate_admits_the_opt_in() {
-        let enabled = relate_core::PreviewFeatures::parse("gql-for").unwrap();
-        let lowered = parse_and_lower_statement_with_preview(GQL_FOR_QUERY, enabled)
-            .expect("the gated entry lowers a FOR clause under the opt-in");
+        )
+        .expect("the graduated FOR clause lowers without any opt-in");
         assert!(!lowered.explain && !lowered.profile);
         // CIP-250: the FOR clause lowers onto the existing UNWIND
         // operator -- no new IR clause shape.

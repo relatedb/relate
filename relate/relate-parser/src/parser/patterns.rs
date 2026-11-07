@@ -641,33 +641,11 @@ impl<'a> Parser<'a> {
 
         if self.peek_type() == TokenType::WHERE {
             self.next_token();
-            let where_expr = self.parse_expression()?;
-            self.check_element_pattern_predicate_type(&where_expr)?;
-            node.where_expr = Some(where_expr);
+            node.where_expr = Some(self.parse_expression()?);
         }
 
         self.expect(TokenType::RightParen)?;
         Ok(node)
-    }
-
-    /// A node/relationship pattern's inline `WHERE` predicate (CIP-17/18)
-    /// must be Boolean-typed. A bare map literal (`{...}`) is statically
-    /// known to be a `MAP`, never a `BOOLEAN`, regardless of what the
-    /// pattern matches at runtime -- Neo4j's semantic-analysis phase
-    /// rejects this before execution even runs (CIP-190 `where-variable`
-    /// scenario [1]: `MATCH (where {}) RETURN 1` errors even against an
-    /// empty graph, where the predicate would otherwise never be
-    /// evaluated). Only the statically-known-non-Boolean literal case is
-    /// checked here; anything that could resolve to a boolean at runtime
-    /// (a variable, property access, function call, ...) is left to the
-    /// normal runtime type check.
-    pub(super) fn check_element_pattern_predicate_type(&self, expr: &Expr) -> ParseResult<()> {
-        if let Expr::Map(_) = expr {
-            return Err(
-                self.error("TypeError: Type mismatch: expected Boolean but was Map".to_string())
-            );
-        }
-        Ok(())
     }
 
     /// Parses the legacy bracket-syntax variable-length hop bounds
@@ -797,9 +775,7 @@ impl<'a> Parser<'a> {
             // with it).
             if self.peek_type() == TokenType::WHERE {
                 self.next_token();
-                let where_expr = self.parse_expression()?;
-                self.check_element_pattern_predicate_type(&where_expr)?;
-                rel.where_expr = Some(where_expr);
+                rel.where_expr = Some(self.parse_expression()?);
             }
 
             if legacy_pipe_colon

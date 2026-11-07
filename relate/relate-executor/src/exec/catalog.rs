@@ -118,19 +118,6 @@ pub(crate) fn space_constraint_names(kind: relate_model::ConstraintType) -> Spac
     }
 }
 
-/// The index-backed constraint of the same name — the `owningConstraint`
-/// join `SHOW INDEXES`' row, the ADR-0481 DDL mirror and the GRAPH COUNTS
-/// entry producer all read, so the name-plus-index-backed predicate is
-/// spelled once.
-pub(crate) fn backing_constraint_by_name<'a>(
-    name: &str,
-    constraints: &'a [relate_catalog::ConstraintDef],
-) -> Option<&'a relate_catalog::ConstraintDef> {
-    constraints
-        .iter()
-        .find(|def| def.name == name && def.is_index_backed())
-}
-
 pub(crate) fn imported_catalog(
     rows: Vec<indexmap::IndexMap<String, relate_model::CypherValue>>,
 ) -> Vec<Row> {

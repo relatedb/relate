@@ -24,10 +24,14 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
         NotificationKind::ComplexSubclauseReference,
         NotificationKind::CreateSelfReference,
         NotificationKind::SubqueryVariableShadowing,
+        NotificationKind::DynamicProperty,
         NotificationKind::UnsatisfiableRelationshipTypeExpression,
         NotificationKind::RepeatedRelationshipVariable,
         NotificationKind::SearchIdentifierShadowingVariable,
         NotificationKind::ExhaustiveShortestPath,
+        NotificationKind::SchemaIndexOrConstraintAlreadyExists,
+        NotificationKind::SchemaIndexOrConstraintDoesNotExist,
+        NotificationKind::SchemaVectorIndexDimensionsNotSpecified,
     ]
     .into_iter()
     .map(|kind| {
@@ -197,6 +201,15 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
                 "Import the outer variable with `CALL (name) { … }`, or rename the inner one.",
             ),
             (
+                "Neo.ClientNotification.Statement.DynamicProperty",
+                "03N95",
+                "INFORMATION",
+                "PERFORMANCE",
+                "Queries using dynamic properties will use neither index seeks nor \
+                 index scans for those properties",
+                "Use a static property so index lookups stay possible.",
+            ),
+            (
                 "Neo.ClientNotification.Statement.UnsatisfiableRelationshipTypeExpression",
                 "01N61",
                 "WARNING",
@@ -228,6 +241,30 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
                 "PERFORMANCE",
                 "Exhaustive shortest path",
                 "Separate the existential predicate from the `MATCH` with `WITH` where possible.",
+            ),
+            (
+                "Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists",
+                "00NA0",
+                "INFORMATION",
+                "SCHEMA",
+                "Index or constraint already exists",
+                "Drop the existing index or constraint first, or use a different name or schema.",
+            ),
+            (
+                "Neo.ClientNotification.Schema.IndexOrConstraintDoesNotExist",
+                "00NA1",
+                "INFORMATION",
+                "SCHEMA",
+                "Index or constraint does not exist",
+                "Check the name; `IF EXISTS` makes a missing index or constraint a no-op.",
+            ),
+            (
+                "Neo.ClientNotification.Schema.VectorIndexDimensionsNotSpecified",
+                "00NA2",
+                "INFORMATION",
+                "SCHEMA",
+                "Vector index dimensions not specified",
+                "Set `vector.dimensions` in `OPTIONS { indexConfig: { … } }` when creating the index.",
             ),
         ]
     );

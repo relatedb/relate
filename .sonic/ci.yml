@@ -87,6 +87,7 @@ suites:
     - npm-smoke
     - loadtest-smoke
     - query-latency
+    - memory-controls
 
 stages:
   lint:
@@ -516,6 +517,36 @@ stages:
       - *baseline-docker-setup
       - make query-latency
       - make compare-query-latency
+
+  # Memory control verifications plus one repeat of the workspace memory
+  # calibration. The full three-repeat matrix is memory-controls-full.
+  memory-controls:
+    runner: sonic-rust
+    docker_socket: true
+    before: *before-rust
+    environment:
+      <<: [ *baseline-env-forwarding, *cargo-env ]
+      CARGO_TARGET_DIR: /cargo-target/memory-controls
+      CI_COMPARE: CI_COMPARE
+    volumes: *cargo-cache
+    commands:
+      - *baseline-docker-setup
+      - make memory-controls-test MEMORY_CONTROLS_PROFILE=pr
+      - make compare-memory-controls
+
+  memory-controls-full:
+    runner: sonic-rust
+    docker_socket: true
+    before: *before-rust
+    environment:
+      <<: [ *baseline-env-forwarding, *cargo-env ]
+      CARGO_TARGET_DIR: /cargo-target/memory-controls-full
+      CI_COMPARE: CI_COMPARE
+    volumes: *cargo-cache
+    commands:
+      - *baseline-docker-setup
+      - make memory-controls-test MEMORY_CONTROLS_PROFILE=full
+      - make compare-memory-controls
 
   # `make clean` as root. Stage outputs are root-owned, and the cargo
   # caches are Docker volumes. Run this on its own, after the other stages

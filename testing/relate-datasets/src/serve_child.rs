@@ -21,12 +21,32 @@ use relate_test_support::harness_child_env;
 
 /// A free loopback port, handed to the spawned `relate serve` child
 /// (LABS-424): the server binds the exact port the readiness wait and the
-/// sessions then connect to.
+/// sessions then connect to. A child that binds more than one port uses
+/// [`free_ports`], which keeps the sockets until every port is known.
 pub(crate) fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    drop(listener);
-    Ok(port)
+    free_ports(1)?
+        .pop()
+        .ok_or_else(|| "port reservation was empty".to_string())
+}
+
+/// Reserve `count` distinct loopback ports for one serve child.
+///
+/// Every listener stays bound until all `count` ports are known. Probing
+/// one port at a time lets Linux hand the just-released port out again, so
+/// `--http` and `--bolt` can name the same address. Serve binds HTTP
+/// first and then fails the Bolt bind with "address already in use".
+pub(crate) fn free_ports(count: usize) -> Result<Vec<u16>, String> {
+    let mut listeners = Vec::with_capacity(count);
+    for _ in 0..count {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        listeners.push(listener);
+    }
+    let mut ports = Vec::with_capacity(count);
+    for listener in &listeners {
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        ports.push(port);
+    }
+    Ok(ports)
 }
 
 /// The base serve argv every harness child starts from, with the shared
@@ -243,6 +263,16 @@ fn wait_for_addr(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two ports reserved together stay distinct. Reserved one after
+    /// another, Linux can reissue the port the first probe just released.
+    #[test]
+    fn free_ports_stay_distinct() {
+        for _ in 0..32 {
+            let ports = free_ports(2).expect("two ports");
+            assert_ne!(ports[0], ports[1], "both probes got {}", ports[0]);
+        }
+    }
 
     /// The base argv is pinned once: every harness serve child starts from
     /// exactly this shape, with the bolt port in argv form.

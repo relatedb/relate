@@ -590,6 +590,47 @@ mod tests {
         );
     }
 
+    /// `coll.max` poisons on any null element while `coll.min` skips
+    /// nulls — live Neo4j 2026.10.1, probed 2026-11-07; the plain
+    /// `max()`/`min()` aggregates keep the null-skipping fold.
+    #[test]
+    fn coll_max_poisons_on_null_while_coll_min_skips() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        let with_null = Value::List(
+            vec![
+                Value::String("hello".into()),
+                Value::Int(1),
+                Value::Bool(true),
+                Value::Null,
+            ]
+            .into(),
+        );
+        assert_eq!(
+            bi_coll_max(&graph, "coll.max", vec![with_null.clone()]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            bi_coll_min(&graph, "coll.min", vec![with_null]).unwrap(),
+            Value::String("hello".into())
+        );
+        // A null among numbers poisons max the same way, and a null input
+        // list is null for both.
+        let nums = Value::List(vec![Value::Int(1), Value::Null, Value::Int(2)].into());
+        assert_eq!(
+            bi_coll_max(&graph, "coll.max", vec![nums.clone()]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            bi_coll_min(&graph, "coll.min", vec![nums]).unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            bi_coll_max(&graph, "coll.max", vec![Value::Null]).unwrap(),
+            Value::Null
+        );
+    }
+
     #[test]
     fn isempty_reads_list_map_and_string_emptiness() {
         let g = Graph::default();

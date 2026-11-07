@@ -75,3 +75,8 @@ vfs_walk = ["dep:relate-storage"]
 # sha256, the verified download and the lock-and-stamp ensure the
 # query-latency data-set fetches use.
 fetch = ["dep:fs4", "dep:sha2", "dep:ureq"]
+# The deterministic synthetic pokec-shaped store (`pokec`): the
+# in-memory fixture the integration, small-perf and validation suites
+# open. Pulls the facade (the population path is the public API, under
+# test wherever a suite opens the fixture).
+pokec = ["dep:relate"]

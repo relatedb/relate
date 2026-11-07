@@ -3,7 +3,7 @@
 # build the lane's binaries with Dockerfile.baseline, create the cgroup-capped
 # container with the lane's bind mounts, follow the detached run's log, copy
 # its report out and stamp the ADR-0071 environment class on it. The lane
-# scripts (memory-shape-docker.sh, processing-memory-docker.sh)
+# scripts (memory-shape-docker.sh, memory-controls-docker.sh)
 # own only their names, their own flags and the
 # binaries they measure.
 #

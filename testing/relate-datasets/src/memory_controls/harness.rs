@@ -3,9 +3,9 @@
 //! finisher, and the one [`run`] that dispatches the family's probes.
 //!
 //! The cases themselves keep their own files — the processing-memory
-//! invariants ([`crate::processing_memory`]), the logical-byte calibration
-//! ([`crate::processing_peak`]) and the configured workload
-//! ([`crate::processing_workload`]) — and import this harness rather than any
+//! invariants ([`crate::memory_controls::controls`]), the logical-byte calibration
+//! ([`crate::memory_controls::calibration`]) and the configured workload
+//! ([`crate::memory_controls::workload`]) — and import this harness rather than any
 //! one case module, so no case module is another's home.
 
 use std::fs;
@@ -18,30 +18,29 @@ use relate_test_support::sampling::process_status;
 use serde::Serialize;
 
 use crate::bolt::Session;
-use crate::serve_child::{free_port, serve_command, ServeChild, READY_DEADLINE};
+use crate::serve_child::{free_ports, serve_command, ServeChild, READY_DEADLINE};
 
-/// The probes `--probe` names, in run order: the memory invariants, the
+/// The cases `--case` names, in run order: the memory control verifications, the
 /// logical-byte calibration, then the configured workload (which also runs by
 /// default when no probe is named).
-const PROBE_NAMES: &[&str] = &[
-    "connections",
+const CASE_NAMES: &[&str] = &[
+    "connection-cap",
     "unlimited-connections",
     "concurrent-logical-workspace-limit",
-    "peak-token-rss",
+    "workspace-memory-calibration",
     "workload",
 ];
 
-/// Whether a probe runs under this configuration: the one named probe, the
-/// workload by default, or every other probe unless `--skip-probes` asked for
-/// the workload alone.
+/// Whether a case runs: the one named case, the workload by default, or every
+/// other case unless `--skip-controls` asked for the workload alone.
 fn selected(cfg: &Config, name: &str) -> bool {
-    if let Some(probe) = cfg.probe.as_deref() {
-        return probe == name;
+    if let Some(case) = cfg.case.as_deref() {
+        return case == name;
     }
     if name == "workload" {
         return true;
     }
-    !cfg.skip_probes
+    !cfg.skip_controls
 }
 
 /// A case's idle residue budget: RSS above the first idle sample that much
@@ -54,11 +53,12 @@ pub struct Config {
     pub serve_bin: PathBuf,
     pub store: PathBuf,
     pub out: PathBuf,
-    pub controls: crate::processing_workload::Controls,
+    pub controls: crate::memory_controls::workload::Controls,
     /// When set, record only the configured workload.
-    pub skip_probes: bool,
-    /// Run one named case. `None` runs the probes and the workload.
-    pub probe: Option<String>,
+    pub skip_controls: bool,
+    /// Run one named case. `None` runs the control verifications, the
+    /// calibration, and the workload.
+    pub case: Option<String>,
     /// Repetitions for every peak-token calibration shape.
     pub calibration_repeats: u32,
     /// Milliseconds each calibration query remains paused at its live peak.
@@ -75,19 +75,43 @@ pub struct Report {
     pub name: String,
     pub started_at: String,
     pub finished_at: String,
-    pub controls: crate::processing_workload::Controls,
+    pub controls: crate::memory_controls::workload::Controls,
     pub cases: Vec<CaseReport>,
-    pub workloads: Vec<crate::processing_workload::WorkloadReport>,
+    pub workloads: Vec<crate::memory_controls::workload::WorkloadReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peak_token_calibration: Option<crate::processing_peak::PeakCalibrationReport>,
+    pub workspace_memory_calibration:
+        Option<crate::memory_controls::calibration::PeakCalibrationReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cgroup_memory_peak_bytes: Option<u64>,
+}
+
+/// The Given / When / Then text stored on a case.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScenarioText {
+    pub given: String,
+    pub when: String,
+    pub then: String,
+    pub outcome: String,
+}
+
+impl ScenarioText {
+    pub fn empty() -> Self {
+        Self {
+            given: String::new(),
+            when: String::new(),
+            then: String::new(),
+            outcome: String::new(),
+        }
+    }
 }
 
 /// One case's measured decomposition.
 #[derive(Debug, Clone, Serialize)]
 pub struct CaseReport {
+    /// `control` or `calibration`.
+    pub kind: String,
     pub name: String,
+    pub scenario: ScenarioText,
     pub baseline_rss_bytes: u64,
     pub cold_rss_bytes: u64,
     pub cold_hwm_bytes: u64,
@@ -118,7 +142,7 @@ pub fn default_store() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    PathBuf::from(format!("/tmp/processing-memory-loadtest-{run}"))
+    PathBuf::from(format!("/tmp/memory-controls-{run}"))
 }
 
 /// Run the cases this configuration selects and write the report, handing
@@ -127,12 +151,11 @@ pub fn default_store() -> PathBuf {
 pub fn run(
     cfg: &Config,
     mut on_case: impl FnMut(&CaseReport),
-    on_workload: impl FnMut(&crate::processing_workload::WorkloadReport),
+    on_workload: impl FnMut(&crate::memory_controls::workload::WorkloadReport),
 ) -> Result<Report, String> {
     if process_status(std::process::id()).is_none() {
         return Err(
-            "processing-memory RSS sampling needs Linux /proc/<pid>/status (VmRSS and VmHWM)"
-                .into(),
+            "memory-controls RSS sampling needs Linux /proc/<pid>/status (VmRSS and VmHWM)".into(),
         );
     }
     for (label, path) in [("relate", &cfg.serve_bin)] {
@@ -147,52 +170,53 @@ pub fn run(
     let started = stamp();
     let mut cases = Vec::new();
     let mut finish_case = |case: Result<CaseReport, String>| -> Result<(), String> {
-        let case = case?;
+        let mut case = case?;
+        super::scenario::fill_case(cfg, &mut case);
         on_case(&case);
         cases.push(case);
         Ok(())
     };
-    if let Some(probe) = cfg.probe.as_deref() {
-        if !PROBE_NAMES.contains(&probe) {
+    if let Some(case) = cfg.case.as_deref() {
+        if !CASE_NAMES.contains(&case) {
             return Err(format!(
-                "unknown probe {probe:?}; expected one of {}",
-                PROBE_NAMES.join(", ")
+                "unknown case {case:?}; expected one of {}",
+                CASE_NAMES.join(", ")
             ));
         }
     }
-    if selected(cfg, "connections") {
-        finish_case(crate::processing_memory::case_connections(cfg))?;
+    if selected(cfg, "connection-cap") {
+        finish_case(crate::memory_controls::controls::case_connections(cfg))?;
     }
     if selected(cfg, "unlimited-connections") {
-        finish_case(crate::processing_memory::case_unlimited(cfg))?;
+        finish_case(crate::memory_controls::controls::case_unlimited(cfg))?;
     }
     if selected(cfg, "concurrent-logical-workspace-limit") {
-        finish_case(crate::processing_memory::case_active_queries(cfg))?;
+        finish_case(crate::memory_controls::controls::case_active_queries(cfg))?;
     }
-    let peak_token_calibration = if selected(cfg, "peak-token-rss") {
-        let (case, calibration) = crate::processing_peak::case_peak_token_rss(cfg)?;
+    let workspace_memory_calibration = if selected(cfg, "workspace-memory-calibration") {
+        let (case, calibration) = crate::memory_controls::calibration::case_peak_token_rss(cfg)?;
         finish_case(Ok(case))?;
         Some(calibration)
     } else {
         None
     };
     let outcome = if selected(cfg, "workload") {
-        crate::processing_workload::run(cfg, on_workload)?
+        crate::memory_controls::workload::run(cfg, on_workload)?
     } else {
-        crate::processing_workload::WorkloadOutcome {
+        crate::memory_controls::workload::WorkloadOutcome {
             reports: Vec::new(),
             gate_error: None,
         }
     };
     let report = Report {
-        schema_version: 2,
-        name: "processing-memory-loadtest".into(),
+        schema_version: 3,
+        name: "memory-controls".into(),
         started_at: started,
         finished_at: stamp(),
         controls: cfg.controls.clone(),
         cases,
         workloads: outcome.reports,
-        peak_token_calibration,
+        workspace_memory_calibration,
         cgroup_memory_peak_bytes: cgroup_memory_peak(),
     };
     crate::report::write_report(&cfg.out, &report)?;
@@ -219,6 +243,8 @@ pub(crate) struct Server {
 /// The serve flags a case starts its child with.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ServeLimits {
+    /// `None` omits `--max-connections`, which is the server default of 128
+    /// (ADR-0451). `Some(0)` is the explicit unlimited spelling.
     pub(crate) max_connections: Option<u64>,
     pub(crate) concurrent_logical_workspace_limit: Option<u64>,
     /// Also bind the HTTP Query API. The connection cap is shared with Bolt.
@@ -251,12 +277,9 @@ impl Server {
     }
 
     fn launch(bin: &Path, store: &Path, limits: ServeLimits) -> Result<Self, String> {
-        let bolt_port = free_port()?;
-        let http_port = if limits.http {
-            Some(free_port()?)
-        } else {
-            None
-        };
+        let ports = free_ports(if limits.http { 2 } else { 1 })?;
+        let bolt_port = ports[0];
+        let http_port = ports.get(1).copied();
         let mut cmd = serve_command(bin, store, bolt_port);
         if let Some(port) = http_port {
             cmd.arg("--http").arg(port.to_string());
@@ -391,7 +414,9 @@ pub(crate) fn finish(
     }
     let levels = decompose(baseline.rss, cold.rss, peak.hwm, &idle_rss_bytes);
     Ok(CaseReport {
+        kind: String::new(),
         name: name.into(),
+        scenario: ScenarioText::empty(),
         baseline_rss_bytes: baseline.rss,
         cold_rss_bytes: cold.rss,
         cold_hwm_bytes: cold.hwm,

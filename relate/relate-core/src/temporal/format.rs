@@ -18,16 +18,39 @@ pub(super) fn fraction_width(width: usize) -> Result<usize> {
     if (1..=9).contains(&width) {
         Ok(width)
     } else {
-        Err(Error::syntax("InvalidPatternCharacter"))
+        Err(invalid_pattern_character())
     }
 }
 
+/// The one CIP-223 unsupported-pattern-character error: a letter outside
+/// the alphabet, or one the target temporal kind has no field for, is the
+/// same SyntaxError — never a per-field type error.
+fn invalid_pattern_character() -> Error {
+    Error::syntax("InvalidPatternCharacter")
+}
+
+/// The same rejection naming the letter — the one detail-carrying sibling
+/// of [`invalid_pattern_character`], so the token has two spellings for
+/// exactly this distinction and no other.
+fn invalid_pattern_symbol(c: char) -> Error {
+    Error::syntax(format!(
+        "InvalidPatternCharacter: unsupported temporal format symbol '{c}'"
+    ))
+}
+
+/// A pattern letter's field on the target temporal kind, or the one
+/// unsupported-character error when the kind has no such field.
+fn supported_field<T>(field: Option<T>) -> Result<T> {
+    field.ok_or_else(invalid_pattern_character)
+}
+
 /// Storage-independent subset of the CIP-223/Java temporal pattern surface.
-/// Unsupported alphabetic pattern symbols are rejected instead of emitted
-/// literally, so callers get a deterministic Cypher type error.
+/// Unsupported alphabetic pattern symbols are rejected with the one
+/// SyntaxError the CIP-223 character matrix documents
+/// (`InvalidPatternCharacter`) instead of being emitted literally.
 pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
     if pattern.chars().any(|c| matches!(c, '#' | '{' | '}')) {
-        return Err(Error::syntax("InvalidPatternCharacter"));
+        return Err(invalid_pattern_character());
     }
     let (date, time, offset, zone) = match value {
         Temporal::Date(d) => (Some(*d), None, None, None),
@@ -89,7 +112,7 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
         }
         if c == 'p' {
             let Some(&next) = chars.get(i + len) else {
-                return Err(Error::ty("InvalidPatternCharacter"));
+                return Err(invalid_pattern_character());
             };
             let mut next_len = 1;
             while chars.get(i + len + next_len) == Some(&next) {
@@ -102,7 +125,7 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
         }
         let piece = match c {
             'y' | 'u' | 'Y' => {
-                let d = date.ok_or_else(|| Error::ty("date field unavailable"))?;
+                let d = supported_field(date)?;
                 let y = if c == 'Y' {
                     d.iso_week().year()
                 } else if c == 'y' && d.year() <= 0 {
@@ -119,12 +142,8 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                 }
             }
             'M' | 'L' => {
-                let month = date
-                    .ok_or_else(|| Error::ty("date field unavailable"))?
-                    .month();
-                if len > 5 {
-                    return Err(Error::syntax("InvalidPatternCharacter"));
-                } else if len >= 3 {
+                let month = supported_field(date)?.month();
+                if len >= 3 {
                     let full = [
                         "January",
                         "February",
@@ -139,22 +158,19 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                         "November",
                         "December",
                     ][month as usize - 1];
+                    // The match's `_` arm is the single width rejection.
                     match len {
                         3 => full.chars().take(3).collect(),
                         4 => full.to_string(),
                         5 => full.chars().next().unwrap().to_string(),
-                        _ => return Err(Error::syntax("InvalidPatternCharacter")),
+                        _ => return Err(invalid_pattern_character()),
                     }
                 } else {
                     format!("{month:0len$}")
                 }
             }
             'q' | 'Q' => {
-                let q = (date
-                    .ok_or_else(|| Error::ty("date field unavailable"))?
-                    .month0()
-                    / 3)
-                    + 1;
+                let q = (supported_field(date)?.month0() / 3) + 1;
                 match len {
                     1 => q.to_string(),
                     2 => format!("{q:02}"),
@@ -166,27 +182,18 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                         _ => "4th quarter".into(),
                     },
                     5 => q.to_string(),
-                    _ => return Err(Error::syntax("InvalidPatternCharacter")),
+                    _ => return Err(invalid_pattern_character()),
                 }
             }
-            'd' => format!(
-                "{:0len$}",
+            'd' => {
                 if len > 2 {
-                    return Err(Error::syntax("InvalidPatternCharacter"));
-                } else {
-                    date.ok_or_else(|| Error::ty("date field unavailable"))?
-                        .day()
+                    return Err(invalid_pattern_character());
                 }
-            ),
-            'D' => format!(
-                "{:0len$}",
-                date.ok_or_else(|| Error::ty("date field unavailable"))?
-                    .ordinal()
-            ),
+                format!("{:0len$}", supported_field(date)?.day())
+            }
+            'D' => format!("{:0len$}", supported_field(date)?.ordinal()),
             'E' => {
-                let weekday = date
-                    .ok_or_else(|| Error::ty("date field unavailable"))?
-                    .weekday();
+                let weekday = supported_field(date)?.weekday();
                 let name = match weekday {
                     Weekday::Mon => "Monday",
                     Weekday::Tue => "Tuesday",
@@ -202,83 +209,41 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                     name.chars().take(3).collect()
                 }
             }
-            'e' | 'c' => (date
-                .ok_or_else(|| Error::ty("date field unavailable"))?
-                .weekday()
-                .num_days_from_sunday()
-                + 1)
-            .to_string(),
-            'w' => date
-                .ok_or_else(|| Error::ty("date field unavailable"))?
-                .iso_week()
-                .week()
-                .to_string(),
+            'e' | 'c' => (supported_field(date)?.weekday().num_days_from_sunday() + 1).to_string(),
+            'w' => supported_field(date)?.iso_week().week().to_string(),
             'W' => {
-                let date = date.ok_or_else(|| Error::ty("date field unavailable"))?;
+                let date = supported_field(date)?;
                 let first = date.with_day(1).unwrap().weekday().num_days_from_sunday();
                 ((date.day() + first - 1) / 7 + 1).to_string()
             }
-            'F' => (date
-                .ok_or_else(|| Error::ty("date field unavailable"))?
-                .day0()
-                / 7
-                + 1)
-            .to_string(),
-            'g' => (date
-                .ok_or_else(|| Error::ty("date field unavailable"))?
-                .num_days_from_ce()
-                - 678_576)
-                .to_string(),
+            'F' => (supported_field(date)?.day0() / 7 + 1).to_string(),
+            'g' => (supported_field(date)?.num_days_from_ce() - 678_576).to_string(),
             'G' => {
-                if date
-                    .ok_or_else(|| Error::ty("date field unavailable"))?
-                    .year()
-                    <= 0
-                {
+                if supported_field(date)?.year() <= 0 {
                     "BC".into()
                 } else {
                     "AD".into()
                 }
             }
-            'H' => format!(
-                "{:0len$}",
-                time.ok_or_else(|| Error::ty("time field unavailable"))?
-                    .hour()
-            ),
+            'H' => format!("{:0len$}", supported_field(time)?.hour()),
             'k' => {
-                let h = time
-                    .ok_or_else(|| Error::ty("time field unavailable"))?
-                    .hour();
+                let h = supported_field(time)?.hour();
                 format!("{:0len$}", if h == 0 { 24 } else { h })
             }
             'h' => {
-                let h = time
-                    .ok_or_else(|| Error::ty("time field unavailable"))?
-                    .hour()
-                    % 12;
+                let h = supported_field(time)?.hour() % 12;
                 format!("{:0len$}", if h == 0 { 12 } else { h })
             }
-            'K' => format!(
-                "{:0len$}",
-                time.ok_or_else(|| Error::ty("time field unavailable"))?
-                    .hour()
-                    % 12
-            ),
+            'K' => format!("{:0len$}", supported_field(time)?.hour() % 12),
             'a' => {
-                if time
-                    .ok_or_else(|| Error::ty("time field unavailable"))?
-                    .hour()
-                    < 12
-                {
+                if supported_field(time)?.hour() < 12 {
                     "AM".into()
                 } else {
                     "PM".into()
                 }
             }
             'B' => {
-                let hour = time
-                    .ok_or_else(|| Error::ty("time field unavailable"))?
-                    .hour();
+                let hour = supported_field(time)?.hour();
                 match hour {
                     0..=5 => "at night",
                     6..=11 => "in the morning",
@@ -287,46 +252,29 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                 }
                 .into()
             }
-            'm' => format!(
-                "{:0len$}",
-                time.ok_or_else(|| Error::ty("time field unavailable"))?
-                    .minute()
-            ),
-            's' => format!(
-                "{:0len$}",
-                time.ok_or_else(|| Error::ty("time field unavailable"))?
-                    .second()
-            ),
+            'm' => format!("{:0len$}", supported_field(time)?.minute()),
+            's' => format!("{:0len$}", supported_field(time)?.second()),
             'S' => {
-                let nanos = time
-                    .ok_or_else(|| Error::ty("time field unavailable"))?
-                    .nanosecond();
+                let nanos = supported_field(time)?.nanosecond();
                 let width = fraction_width(len)?;
                 format!("{nanos:09}").chars().take(width).collect()
             }
-            'n' => time
-                .ok_or_else(|| Error::ty("time field unavailable"))?
-                .nanosecond()
-                .to_string(),
-            'N' => {
-                time_to_nanos(time.ok_or_else(|| Error::ty("time field unavailable"))?).to_string()
-            }
-            'A' => (time_to_nanos(time.ok_or_else(|| Error::ty("time field unavailable"))?)
-                / 1_000_000)
-                .to_string(),
+            'n' => supported_field(time)?.nanosecond().to_string(),
+            'N' => time_to_nanos(supported_field(time)?).to_string(),
+            'A' => (time_to_nanos(supported_field(time)?) / 1_000_000).to_string(),
             'Z' => {
-                let offset = offset.ok_or_else(|| Error::ty("offset field unavailable"))?;
+                let offset = supported_field(offset)?;
                 match len {
                     1..=3 => format_offset(offset).replace(':', ""),
                     4 if offset == 0 => "GMT".into(),
                     4 => format!("GMT{}", format_offset(offset)),
                     5 if offset == 0 => "Z".into(),
                     5 => format_offset(offset),
-                    _ => return Err(Error::syntax("InvalidPatternCharacter")),
+                    _ => return Err(invalid_pattern_character()),
                 }
             }
             'X' | 'x' => {
-                let offset = offset.ok_or_else(|| Error::ty("offset field unavailable"))?;
+                let offset = supported_field(offset)?;
                 if offset == 0 && c == 'X' {
                     "Z".into()
                 } else {
@@ -342,12 +290,12 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                         }
                         2 | 4 => compact,
                         3 | 5 => raw,
-                        _ => return Err(Error::syntax("InvalidPatternCharacter")),
+                        _ => return Err(invalid_pattern_character()),
                     }
                 }
             }
             'O' => {
-                let offset = offset.ok_or_else(|| Error::ty("offset field unavailable"))?;
+                let offset = supported_field(offset)?;
                 match (len, offset) {
                     (1 | 4, 0) => "GMT".into(),
                     (1, _) if offset % 3600 == 0 => {
@@ -355,13 +303,13 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                     }
                     (1, _) => format!("GMT{}", format_offset(offset)),
                     (4, _) => format!("GMT{}", format_offset(offset)),
-                    _ => return Err(Error::syntax("InvalidPatternCharacter")),
+                    _ => return Err(invalid_pattern_character()),
                 }
             }
             'z' | 'v' => {
-                let zone = zone.ok_or_else(|| Error::syntax("InvalidPatternCharacter"))?;
+                let zone = supported_field(zone)?;
                 if (c == 'z' && len > 4) || (c == 'v' && !matches!(len, 1 | 4)) {
-                    return Err(Error::syntax("InvalidPatternCharacter"));
+                    return Err(invalid_pattern_character());
                 }
                 match (zone, c, len) {
                     ("Europe/Paris", 'z', 4) => "Central European Summer Time".into(),
@@ -371,20 +319,21 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
                     _ => zone.into(),
                 }
             }
-            'V' if len == 2 && date.is_some() => zone
-                .map(str::to_string)
-                .unwrap_or_else(|| format_offset(offset.unwrap_or(0))),
+            // `V` (zone id) needs an actual zone: a zoned time or local
+            // datetime has no zone, so per the matrix it is an unsupported
+            // pattern character there — not an offset fallback.
+            'V' if len == 2 => supported_field(zone)?.to_string(),
             _ => {
-                return Err(Error::ty(format!(
-                    "unsupported temporal format symbol '{c}'"
-                )))
+                return Err(invalid_pattern_symbol(c));
             }
         };
         out.push_str(&piece);
         i += len;
     }
     if quoted {
-        return Err(Error::ty("unterminated quote in temporal format"));
+        // The duration pattern engine spells this the same way with the
+        // syntax class; one class for one escape failure in both engines.
+        return Err(Error::syntax("unterminated quote in temporal format"));
     }
     Ok(out)
 }

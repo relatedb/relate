@@ -234,6 +234,28 @@ baseline-loadtests:
 	cp $(CURDIR)/target/fraud-checkpoint-envelope-run$(BASELINE_RUNS).json $(CURDIR)/target/fraud-checkpoint.json
 	cp $(CURDIR)/target/memory-shape-loadtest-envelope-run$(BASELINE_RUNS).json $(CURDIR)/target/memory-shape-loadtest.json
 
+## baseline-memory-controls: Freeze the memory-controls envelope (Docker only, full profile)
+baseline-memory-controls:
+	@if [ "$(BASELINE_ENV)" != docker ]; then \
+		echo "baseline-memory-controls: BASELINE_ENV must be docker (ADR-0070); host runs are not freezeable"; \
+		exit 1; \
+	fi
+	mkdir -p $(BASELINES)
+	rm -f $(CURDIR)/target/memory-controls-envelope-run*.json
+	@set -e; i=1; while [ $$i -le $(BASELINE_RUNS) ]; do \
+		echo "baseline-memory-controls: round $$i/$(BASELINE_RUNS)"; \
+		$(MAKE) memory-controls-test MEMORY_CONTROLS_PROFILE=full OUT_MEMORY_CONTROLS=target/memory-controls-envelope-run$$i.json; \
+		i=$$((i + 1)); \
+	done
+	$(PYTHON) $(CURDIR)/scripts/freeze-memory-controls.py --out $(BASELINES)/memory-controls.json $(CURDIR)/target/memory-controls-envelope-run*.json
+
+## compare-memory-controls: Judge target/memory-controls.json against the envelope
+compare-memory-controls:
+	$(PYTHON) $(CURDIR)/scripts/compare-memory-controls.py --baseline $(BASELINES)/memory-controls.json --report $(OUT_MEMORY_CONTROLS)
+
+## memory-controls-gate: Run the suite, then compare
+memory-controls-gate: memory-controls-test compare-memory-controls
+
 ## compare-loadtests: Compare current in-tree reports to baselines/fraud-loadtest.json
 compare-loadtests:
 	@test -f $(BASELINES)/fraud-loadtest.json
@@ -404,23 +426,44 @@ else
 	$(error BASELINE_ENV must be docker or host (got '$(BASELINE_ENV)'))
 endif
 
-OUT_PROCESSING_MEMORY ?= target/processing-memory-loadtest.json
-PROCESSING_MEMORY_RUN ?= $(shell date +%Y%m%dT%H%M%S)
-URI_PROCESSING_MEMORY ?= /tmp/processing-memory-loadtest-$(PROCESSING_MEMORY_RUN)
-GRAPH_SCALE ?= 1
-WORKERS ?= 4
+OUT_MEMORY_CONTROLS ?= target/memory-controls.json
+MEMORY_CONTROLS_RUN ?= $(shell date +%Y%m%dT%H%M%S)
+URI_MEMORY_CONTROLS ?= /tmp/memory-controls-$(MEMORY_CONTROLS_RUN)
+GRAPH_SCALE ?= 10
 READ_WRITE_RATIO ?= 80:20
 MAX_CONNECTIONS ?= 0
-CONCURRENT_LOGICAL_WORKSPACE_LIMIT ?= 0
-OPS ?= 40
+CONCURRENT_LOGICAL_WORKSPACE_LIMIT ?= 55829120
 WARMUP_OPS ?= 8
-WORKLOAD_SEED ?= 1
 INDEX_MODE ?= both
+# WORKERS, OPS, and WORKLOAD_SEED are the fraud and identity knobs, set
+# earlier in this file. A later ?= cannot replace them, and a later = would
+# change those lanes. These apply only while this target's recipe runs, and
+# a value on the make command line still wins.
+memory-controls-test: WORKERS = 16
+memory-controls-test: OPS = 40
+memory-controls-test: WORKLOAD_SEED = 1
 READ_QUERY ?= mix
 CALIBRATION_REPEATS ?= 3
 CALIBRATION_HOLD_MS ?= 2500
 CALIBRATION_FAMILY ?=
-PROCESSING_MEMORY_ARGS = \
+# pr is one repeat of every family (25 observations). full is the three-repeat
+# matrix (75 observations) used by the cadence and the baseline freeze.
+ifeq ($(MEMORY_CONTROLS_PROFILE),pr)
+CALIBRATION_REPEATS = 1
+endif
+ifeq ($(MEMORY_CONTROLS_PROFILE),full)
+CALIBRATION_REPEATS = 3
+endif
+# CASE selects one case. PROBE and SKIP_PROBES remain as the previous names.
+CASE ?= $(PROBE)
+SKIP_CONTROLS ?= $(SKIP_PROBES)
+ifeq ($(CASE),connections)
+CASE := connection-cap
+endif
+ifeq ($(CASE),peak-token-rss)
+CASE := workspace-memory-calibration
+endif
+MEMORY_CONTROLS_ARGS = \
 	--graph-scale $(GRAPH_SCALE) \
 	--workers $(WORKERS) \
 	--read-write-ratio $(READ_WRITE_RATIO) \
@@ -433,30 +476,35 @@ PROCESSING_MEMORY_ARGS = \
 	--read-query $(READ_QUERY) \
 	--calibration-repeats $(CALIBRATION_REPEATS) \
 	--calibration-hold-ms $(CALIBRATION_HOLD_MS)
-ifeq ($(SKIP_PROBES),1)
-PROCESSING_MEMORY_ARGS += --skip-probes
+ifeq ($(SKIP_CONTROLS),1)
+MEMORY_CONTROLS_ARGS += --skip-controls
 endif
-ifneq ($(PROBE),)
-PROCESSING_MEMORY_ARGS += --probe $(PROBE)
+ifneq ($(CASE),)
+MEMORY_CONTROLS_ARGS += --case $(CASE)
 endif
 ifneq ($(CALIBRATION_FAMILY),)
-PROCESSING_MEMORY_ARGS += --calibration-family $(CALIBRATION_FAMILY)
+MEMORY_CONTROLS_ARGS += --calibration-family $(CALIBRATION_FAMILY)
 endif
 
-## processing-memory-loadtest: RSS, RSS growth, and typed limit failures (ADR-0333, ADR-0070)
+## memory-controls-test: memory control verifications and workspace memory calibration (ADR-0070)
 ##   Every case runs `relate serve`. The standalone relate-bolt binary
 ##   is retired (LABS-381, ADR-0368).
-processing-memory-loadtest:
+memory-controls-test:
 ifeq ($(BASELINE_ENV),host)
 	cargo build $(CARGO_PROFILE) -p relate-cli --bin relate
-	cargo build $(CARGO_PROFILE) -p relate-datasets --bin processing-memory-loadtest
-	cargo run -p relate-datasets $(CARGO_PROFILE) --bin processing-memory-loadtest -- --out $(OUT_PROCESSING_MEMORY) --uri $(URI_PROCESSING_MEMORY) $(PROCESSING_MEMORY_ARGS)
+	cargo build $(CARGO_PROFILE) -p relate-datasets --bin memory-controls
+	cargo run -p relate-datasets $(CARGO_PROFILE) --bin memory-controls -- --out $(OUT_MEMORY_CONTROLS) --uri $(URI_MEMORY_CONTROLS) $(MEMORY_CONTROLS_ARGS)
 else ifeq ($(BASELINE_ENV),docker)
-	@echo "processing-memory  container $(MEMORY_SHAPE_MEMORY)  scale $(GRAPH_SCALE)  workers $(WORKERS)  ratio $(READ_WRITE_RATIO)  index $(INDEX_MODE)  connections $(MAX_CONNECTIONS)  workspace $(CONCURRENT_LOGICAL_WORKSPACE_LIMIT)  uri $(URI_PROCESSING_MEMORY)"
-	BASELINE_MEMORY=$(MEMORY_SHAPE_MEMORY) HOST_OUT=$(OUT_PROCESSING_MEMORY) PROCESSING_MEMORY_URI=$(URI_PROCESSING_MEMORY) bash $(CURDIR)/scripts/processing-memory-docker.sh $(PROCESSING_MEMORY_ARGS)
+	@echo "memory-controls  container $(MEMORY_SHAPE_MEMORY)  scale $(GRAPH_SCALE)  workers $(WORKERS)  ratio $(READ_WRITE_RATIO)  index $(INDEX_MODE)  connections $(MAX_CONNECTIONS)  workspace $(CONCURRENT_LOGICAL_WORKSPACE_LIMIT)  uri $(URI_MEMORY_CONTROLS)  profile $(MEMORY_CONTROLS_PROFILE)"
+	BASELINE_MEMORY=$(MEMORY_SHAPE_MEMORY) HOST_OUT=$(OUT_MEMORY_CONTROLS) MEMORY_CONTROLS_URI=$(URI_MEMORY_CONTROLS) bash $(CURDIR)/scripts/memory-controls-docker.sh $(MEMORY_CONTROLS_ARGS)
 else
 	$(error BASELINE_ENV must be docker or host (got '$(BASELINE_ENV)'))
 endif
+
+## processing-memory-loadtest: previous name of memory-controls-test
+processing-memory-loadtest:
+	@echo "processing-memory-loadtest was renamed to memory-controls-test"
+	$(MAKE) memory-controls-test
 
 # query-latency-profile knobs (ADR-0244): the query id is required.
 SF ?= 0.1
@@ -528,6 +576,7 @@ test-compare-loadtest:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_verdict.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_freeze_baseline_envelope.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_query_latency_gate.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_controls.py
 
 ## test-adr-scripts: Unit-test the ADR number mint and the PR conflict
 ##   checker (scripts/adr_mint.py, scripts/check_adr_numbers.py)

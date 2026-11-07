@@ -498,9 +498,18 @@ fn check_expr_ctx(
                     "InvalidArgumentType: a node pattern is not a valid predicate",
                 ));
             }
+            // The same expression checks a pattern comprehension's path gets
+            // (the arm above): a pattern expression's element predicates are
+            // Boolean-typed like every other WHERE-bearing pattern position
+            // (CIP-190 `(where {…})` in a clause WHERE is this arm).
+            check_path_exprs(env, is_write_procedure, path)?;
         }
         Expr::ShortestPath { path, .. } => {
             check_pattern_pred_vars(env, is_write_procedure, path)?;
+            // Same rule as the pattern-expression arm above: a
+            // `shortestPath()` pattern's element predicates are
+            // Boolean-typed like every other WHERE-bearing pattern position.
+            check_path_exprs(env, is_write_procedure, path)?;
         }
         Expr::PatternComp {
             path,

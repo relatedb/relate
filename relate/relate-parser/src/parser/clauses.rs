@@ -1530,9 +1530,9 @@ impl<'a> Parser<'a> {
     /// UNWIND parse produces (`for_syntax: true`), so the clause validates,
     /// lowers, plans and executes identically to UNWIND -- the CIP's own
     /// "no new logical plan operators" rule. UNWIND is not deprecated; the
-    /// two spellings coexist. The ADR-0371 `gql-for` preview gate (the
-    /// front-end's statement admission) fails this spelling closed unless
-    /// enabled.
+    /// two spellings coexist. Default dialect since its graduation from
+    /// the `gql-for` preview row (verified unlocked in live Neo4j 2026.09
+    /// and 2026.10.1).
     pub(super) fn parse_for_clause(&mut self) -> ParseResult<Clause> {
         self.next_token(); // consume FOR
                            // The binding variable is a symbolic name, so any keyword spelling
