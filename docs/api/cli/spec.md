@@ -665,8 +665,16 @@ relate extension list --available
 `telemetry on|off` persists the `telemetry` key in
 `<config>/relate/config.json` (`$XDG_CONFIG_HOME/relate/` when
 `$XDG_CONFIG_HOME` is set, non-empty and absolute — a relative or empty
-value is treated as unset — otherwise `~/.config/relate/`) and prints a
-confirmation with the config path; `telemetry status` prints
+value is treated as unset, as for the Windows bases — otherwise
+`~/.config/relate/`, otherwise `%APPDATA%\relate\`, finally
+`%USERPROFILE%\.config\relate\` — the Windows bases ADR-0545 §6 adds)
+and prints a confirmation with the config path. `telemetry off` is one
+ordered transition: the run disarms its own telemetry pipeline before
+persisting, so it neither transmits nor records anything of its own,
+and it removes any pending spooled events (see
+[Usage metrics](#usage-metrics)) — turning telemetry off means no
+further transmissions, the pending ones included. `telemetry status`
+prints
 `<enabled|disabled> (<layer>)` where the layer that decided the effective
 state is `default`, `config file`, `RELATE_TELEMETRY`, or
 `DO_NOT_TRACK`. Exit codes: 0 on success, 1 when no config directory
@@ -1913,7 +1921,6 @@ See the [executable help example](examples/help.md).
 | `RELATE_AUTH` | `serve` | Basic-auth credential (`user:password`, or `none`) for every served network surface; `--auth` overrides it, and with neither set a token is generated and persisted (ADR-0232 §1). A present-but-malformed value is a loud startup error |
 | `RELATE_MIXPANEL_ENDPOINT` | usage metrics | Override the Mixpanel `/track` POST URL (dev/test); `https://` required for any host, `http://` allowed only for loopback hosts (`localhost`, `127.0.0.1`, `::1`); a rejected value disables telemetry for the run with one stderr warning (ADR-0263) |
 | `RELATE_MIXPANEL_TOKEN` | usage metrics | Override the compiled-in Mixpanel project token (dev/test) |
-| `RELATE_TELEMETRY_FLUSH_MS` | usage metrics | The exit flush's wait budget in milliseconds (default `250`); `0` = fire-and-forget — the final batch is left to a detached worker (ADR-0079 §5); unset or unparsable values keep the default |
 | `RELATE_BULK_BATCH_THRESHOLD` | query engine | Estimated touched-entity count at which an eligible global bulk write (`MATCH (n) DETACH DELETE n`, cross-product `CREATE`, global `SET`/`REMOVE`) switches to batched commits; default `10000` (ADR-0209). Unset defaults; a set value that does not parse as a positive integer fails `Database::open` with a semantic error (same contract as `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`); read once at open |
 | `RELATE_BULK_BATCH_BUDGET` | query engine | Estimated touched-entity budget per batch commit of an eligible global bulk write; default `25000` (ADR-0209). Unset defaults; a set value that does not parse as a positive integer fails `Database::open` with a semantic error (same contract as `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`); read once at open |
 | `RELATE_PREVIEW` | query engine | Global opt-in for preview Cypher features (ADR-0371): a comma-separated list of kebab-case feature names, whitespace tolerated, read once at open. Unset or empty enables nothing. An unknown name fails `Database::open` (exit 1) with `Error: …: invalid RELATE_PREVIEW value: unknown preview feature '<name>' (known features: …)` naming the known names — fail-closed, never silently ignored. Fourteen features are gated live: `hybrid-search` (CIP-278 hybrid search `COMBINE`, ADR-0379), `local-callables` (CIP-231 `DEFINE PROCEDURE`/`DEFINE FUNCTION`, ADR-0382), `ontology` (the `db.ontology.*` procedure family, ADR-0378), the CIP graph-type trio — `graph-type-opt-props` (CIP-283 optional properties `prop :: ANY`), `graph-type-default-values` (CIP-262 `DEFAULT ON COMMIT <value expression>`) and `graph-type-implied-labels` (CIP-266 implied labels, inheritance) — `obfuscated-literals` (the Neo4j `******` dummy literal, gated at the lexer so the disabled form is the parser's own syntax error — ADR-0454), `mixed-label-syntax` (Neo4j's mixed-label-syntax allowance: colon-conjunction, GQL label symbols and `IS` may mix across one clause's label expressions — ADR-0456), `float16-coordinate-types` (CIP-280 FLOAT16/BFLOAT16 vector coordinate types in `VECTOR<…>` type expressions and the `vector()` constructor — ADR-0464), `chronological-comparisons` (Cypher 25's four chronological operators — `IS [NOT] BEFORE`, `AFTER`, `SAME INSTANT`, `SAME REPRESENTATION` — ADR-0467) and `complex-search-patterns` (widening a SEARCH MATCH statement's pattern shape — ADR-0467), `coll-zip` (CIP-274's `coll.zip`, ADR-0497), `coll-has` (CIP-286's `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf`, ADR-0497), `gql-stddev-aliases` (CIP-245's `stddev_samp`/`stddev_pop` spellings, ADR-0497). The name gates are one of the four gate-location exceptions ADR-0497 records: they gate *name admission*, not syntax, so a gated name invoked while disabled fails with the registry's ordinary unknown-function rejection (`UnknownFunction: <name>`, 42N48) exactly like any unknown name — never the authored `preview feature …` error, which would advertise a name the catalogue must not list. While a name gate is off its names are also absent from `SHOW FUNCTIONS`. With `ontology` off, every `db.ontology.*` call fails with the authored `semantic error: SemanticError: preview feature 'ontology' is not enabled: set RELATE_PREVIEW=ontology`, and `SHOW PROCEDURES` omits the four rows; with it on, the four rows are listed with unchanged signatures and modes and every call runs. Enabling it on a served store — `relate serve` with Bolt, HTTP or MCP — exposes the four procedures, including the store-level writers `db.ontology.set` and `db.ontology.drop`, to every connected client: the gate is the server process's environment, read once at open, not a per-caller check. A gated feature invoked while disabled fails with `Error: …: preview feature '<name>' is not enabled: set RELATE_PREVIEW=<name>` |
@@ -2192,13 +2199,27 @@ machine identifier — none is ever read.
 structurally excluded: the event-builder types have no fields for them, so
 capturing them is a compile error, not a policy violation (ADR-0079 §4).
 
-**Delivery.** Events go onto a bounded channel drained by a background
-thread with a 2-second HTTP timeout; the exit flush waits at most 250 ms
-(`RELATE_TELEMETRY_FLUSH_MS` overrides, `0` = fire-and-forget for
-loop-shaped callers) and drops a final request still in flight past the
-budget, so no exit is ever perceptibly slowed (ADR-0079 §5). All
-telemetry errors are swallowed — nothing on stdout or stderr, exit codes
-unaffected.
+**Delivery.** A run's exit writes its pending events to a local spool
+file under `<config>/relate/` — one fresh JSONL file per run, mode 0600
+on unix, never touching a file that already existed — and that is the
+whole exit cost: no network wait, ever (ADR-0079 §5, ADR-0545). The
+next enabled run's background drain thread (started at that run's
+first recorded event) claims the spool files (spooled files and any
+claims a killed drain left behind; regular files only, never symbolic
+links — a planted link is neither claimed, read, nor followed) and
+POSTs them in batches of at most 50 with a 2-second HTTP timeout — at
+most 8 files per sweep, the rest waiting for the next run — deleting
+each claim only after every batch is confirmed; an undelivered claim
+waits for the next enabled run, and a claim whose content cannot be
+read is removed on the spot — attempt-once, like a corrupt line — so
+undeliverable content never starves a sweep. Each file is bounded by the run's in-memory backlog cap,
+and the spool holds at most 64 pending files — past that a sweep drops
+the excess. Delivery is at-least-once — the sink dedups on
+`$insert_id`, making it effectively-once — and event `time` is stamped
+at emit, so late delivery does not skew time-based reports. A run with
+no resolvable config directory records nothing — the same degraded
+mode as its ephemeral install ID. All telemetry errors are swallowed —
+nothing on stdout or stderr, exit codes unaffected.
 
 **Opt-out.** Telemetry defaults to ON. First match wins (ADR-0079 §6):
 
@@ -2213,6 +2234,10 @@ opt-out, regardless of whether stdin is a terminal (the notice is claimed once
 and is suppressed entirely when telemetry is opted out). A `notice_shown` flag
 in `state.json` suppresses repeats.
 
-`state.json` and `config.json` are written under `<config>/relate/` via
-unique `create_new` staging files that are renamed into place, and both are mode
-**0600** on unix — the install UUID and the opt-out choice are private.
+`state.json`, `config.json`, and the per-run spool files
+(`telemetry-spool-<uuid>.jsonl`, `telemetry-claim-<uuid>.jsonl`) are
+written under `<config>/relate/` — the state and config files via unique
+`create_new` staging files renamed into place, the spool by a direct
+0600-creating append — and all of them are mode **0600** on unix: the
+install UUID, the opt-out choice, and the spooled event envelopes are
+private.

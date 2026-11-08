@@ -18,7 +18,7 @@ use support::extensions::{
 use support::{run_cli, tempdir, CliRunOptions as Opts};
 
 #[cfg(all(unix, feature = "telemetry"))]
-use support::{MockMixpanel, EVENT_TIMEOUT};
+use support::MockMixpanel;
 
 /// A fixture manifest: `name`, every flag kind, and a positional —
 /// the fixture the help-page and usage-error tests install.
@@ -276,28 +276,40 @@ fn test_run_reports_command_run_action_extension_and_never_the_name() {
     let cwd = tempdir();
     let db = cwd.path().join("graph");
     let db_path = db.to_str().expect("the store path is UTF-8");
-    let (status, _, stderr) = run_cli(
-        Opts::new(&["run", "greet", "-d", db_path])
-            .with_envs(&[("XDG_CONFIG_HOME", xdg.as_str())])
-            .in_dir(cwd.path())
-            .with_endpoint(&mock.url()),
-    );
-    assert_eq!(status.code(), Some(0), "{stderr}");
-    assert!(
-        mock.wait_for_events(EVENT_TIMEOUT, |events| {
+    // The COMMAND event spools at the greet run's exit (ADR-0545 §1);
+    // short enabled follow-ups against the same config root deliver it
+    // (ADR-0545 §2) — a plain query run, whose engine work gives its
+    // drain thread the window, and which avoids re-running the extension
+    // child for delivery.
+    let events = mock.deliver_spooled(
+        || {
+            let (status, _, stderr) = run_cli(
+                Opts::new(&["run", "greet", "-d", db_path])
+                    .with_envs(&[("XDG_CONFIG_HOME", xdg.as_str())])
+                    .in_dir(cwd.path())
+                    .with_endpoint(&mock.url()),
+            );
+            assert_eq!(status.code(), Some(0), "{stderr}");
+        },
+        support::FollowupRun {
+            args: &[support::DELIVERY_WORK_QUERY],
+            envs: &[("XDG_CONFIG_HOME", xdg.as_str())],
+            home: None,
+            cwd: Some(cwd.path()),
+        },
+        |events| {
             events.iter().any(|e| {
                 e["event"] == "RELATE-CLI_COMMAND"
                     && e["properties"]["command"] == "run"
                     && e["properties"]["action"] == "extension"
                     && e["properties"]["success"] == true
             })
-        }),
-        "expected COMMAND command=run action=extension success=true, got: {:?}",
-        mock.events()
+        },
     );
     // The anonymity rule, walked not claimed: the user-chosen name (and
     // the store path) appear nowhere in any event's serialized body.
-    let events = mock.events();
+    // The delivery follow-ups' own STARTUP/QUERY events are memory-mode
+    // oneshots, so they carry neither.
     assert!(!events.is_empty());
     for event in &events {
         let body = event.to_string();

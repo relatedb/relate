@@ -3,17 +3,21 @@
 //!
 //! Executes the actual `relate` binary against a fake `$HOME` (tempdir)
 //! so the XDG config dir (`$HOME/.config/relate/`) is isolated; the
-//! support harness also points the Mixpanel endpoint at a refused address
-//! so enabled telemetry flushes fail fast and offline. The harness sets
+//! support harness points the Mixpanel endpoint at a refused address so
+//! an enabled run's drain thread stays offline, and sets
 //! `RELATE_TELEMETRY=off` unless a test calls
-//! [`with_telemetry`](support::CliRunOptions::with_telemetry) or points at
-//! the mock sink: a refused port stalls process exit on Windows.
+//! [`with_default_telemetry`](support::CliRunOptions::with_default_telemetry)
+//! or points at the mock sink.
 //!
-//! The second half of this file runs the binary against a mock Mixpanel
-//! sink ([`MockMixpanel`]): a tiny HTTP server on 127.0.0.1 that captures
+//! Delivery is the spool model (ADR-0545): a run's exit appends its
+//! events to a local spool file — never a network wait — and the next
+//! enabled run's drain thread claims and POSTs them. The second half of
+//! this file runs the binary against a mock Mixpanel sink
+//! ([`MockMixpanel`]): a tiny HTTP server on 127.0.0.1 that captures
 //! `/track` request bodies so the tests can assert the exact events and
-//! property keys the real binary emits (ADR-0079 §4), and that every
-//! opt-out layer sends nothing at all (ADR-0079 §6).
+//! property keys the real binary emits (ADR-0079 §4), that every opt-out
+//! layer sends nothing at all (ADR-0079 §6), and that spooled events
+//! reach the sink through a follow-up run (ADR-0545 §2).
 
 #![cfg(feature = "telemetry")]
 
@@ -23,7 +27,9 @@ use std::process::ExitStatus;
 
 mod support;
 
-use support::{run_cli, tempdir, CliRunOptions as Opts, MockMixpanel, EVENT_TIMEOUT};
+use support::{
+    run_cli, spool_files_in, tempdir, CliRunOptions as Opts, MockMixpanel, SPOOL_FILE_PREFIX,
+};
 
 /// The one-time first-run notice text (must match main.rs's `FIRST_RUN_NOTICE`).
 const NOTICE_FRAGMENT: &str = "relate collects anonymous usage metrics";
@@ -308,37 +314,52 @@ fn expected_keys(event_specific: &[&str]) -> BTreeSet<String> {
         .collect()
 }
 
-/// Run a oneshot query and wait until the mock holds an event named `name`;
-/// return the captured events.
+/// Run a oneshot (asserting it), then deliver its spooled events through
+/// follow-up runs until `pred` holds — the shared delivery loop is
+/// [`MockMixpanel::deliver_spooled`]. The run under test is the asserted
+/// oneshot; the follow-ups run a work query instead, because a
+/// follow-up's whole job is to stay alive long enough for its drain
+/// thread to POST, and engine work buys that window even on a saturated
+/// runner.
+fn oneshots_until_delivered(
+    mock: &MockMixpanel,
+    home: &Path,
+    pred: impl Fn(&[serde_json::Value]) -> bool,
+) -> Vec<serde_json::Value> {
+    let run_under_test = || {
+        let (status, stdout, stderr) = run_oneshot_against_mock(mock, home);
+        assert!(status.success(), "oneshot exited non-zero: {stderr}");
+        assert!(stdout.contains('1'), "expected query output, got: {stdout}");
+    };
+    let followup = support::FollowupRun {
+        args: &[support::DELIVERY_WORK_QUERY],
+        envs: &[],
+        home: Some(home),
+        cwd: None,
+    };
+    mock.deliver_spooled(run_under_test, followup, pred)
+}
+
+/// Run a oneshot and deliver its spooled events through follow-up runs
+/// until the mock holds an event named `name`; return the captured
+/// events.
 fn run_and_collect(mock: &MockMixpanel, name: &str) -> Vec<serde_json::Value> {
     let home = tempdir();
-    let (status, stdout, stderr) = run_oneshot_against_mock(mock, home.path());
-    assert!(status.success(), "oneshot exited non-zero: {stderr}");
-    assert!(stdout.contains('1'), "expected query output, got: {stdout}");
-    assert!(
-        mock.wait_for_events(EVENT_TIMEOUT, |events| events
-            .iter()
-            .any(|e| e["event"] == name)),
-        "mock never received {name}; captured: {:?}",
-        mock.events()
-    );
-    mock.events()
+    oneshots_until_delivered(mock, home.path(), |events| {
+        events.iter().any(|e| e["event"] == name)
+    })
 }
 
 #[test]
 fn test_mock_sink_receives_startup_and_query_events() {
+    // Both events of the first run arrive together through a follow-up
+    // run's drain (ADR-0545 §2), not during the run that emitted them.
     let mock = MockMixpanel::start();
     let home = tempdir();
-    let (status, _, stderr) = run_oneshot_against_mock(&mock, home.path());
-    assert!(status.success(), "oneshot exited non-zero: {stderr}");
-    assert!(
-        mock.wait_for_events(EVENT_TIMEOUT, |events| {
-            events.iter().any(|e| e["event"] == "RELATE-CLI_STARTUP")
-                && events.iter().any(|e| e["event"] == "RELATE-CLI_QUERY")
-        }),
-        "expected STARTUP and QUERY events, got: {:?}",
-        mock.events()
-    );
+    oneshots_until_delivered(&mock, home.path(), |events| {
+        events.iter().any(|e| e["event"] == "RELATE-CLI_STARTUP")
+            && events.iter().any(|e| e["event"] == "RELATE-CLI_QUERY")
+    });
 }
 
 #[test]
@@ -385,14 +406,11 @@ fn test_command_event_reaches_mock_with_documented_keys() {
             .with_endpoint(&mock.url()),
     );
     assert!(status.success(), "telemetry on exited non-zero: {stderr}");
-    assert!(
-        mock.wait_for_events(EVENT_TIMEOUT, |events| events
-            .iter()
-            .any(|e| e["event"] == "RELATE-CLI_COMMAND")),
-        "mock never received COMMAND; captured: {:?}",
-        mock.events()
-    );
-    let events = mock.events();
+    // The COMMAND event spools at that run's exit; a follow-up enabled
+    // run's drain delivers it (ADR-0545 §2).
+    let events = oneshots_until_delivered(&mock, home.path(), |events| {
+        events.iter().any(|e| e["event"] == "RELATE-CLI_COMMAND")
+    });
     let command = events
         .iter()
         .find(|e| e["event"] == "RELATE-CLI_COMMAND")
@@ -434,7 +452,8 @@ fn test_telemetry_off_persists_config_and_silences_later_runs() {
     let mock = MockMixpanel::start();
     let home = tempdir();
     // `telemetry off` writes telemetry:false to config.json in the fake HOME
-    // (this run itself flushes to the harness's refused address, not the mock).
+    // (this run itself is telemetry-off through the harness default, so it
+    // emits nothing).
     let (status, _, stderr) = run_cli(Opts::new(&["telemetry", "off"]).in_home(home.path()));
     assert!(status.success(), "off failed: {stderr}");
     assert_eq!(
@@ -550,10 +569,25 @@ fn test_telemetry_state_and_config_files_are_private() {
             .with_default_telemetry(),
     );
     assert!(status.success(), "state-writing run failed: {stderr}");
+    // The same run's exit append wrote its spool file (ADR-0545 §1);
+    // assert its privacy BEFORE the `telemetry off` run below, which
+    // legitimately clears it (ADR-0545 §5).
+    let dir = home.path().join(".config").join("relate");
+    let spool = spool_files_in(&dir);
+    assert_eq!(
+        spool.len(),
+        1,
+        "the enabled run must have spooled: {spool:?}"
+    );
+    let mode = std::fs::metadata(&spool[0])
+        .expect("spool file")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "the spool must be owner-only, got {mode:o}");
     let (status, _, stderr) = run_cli(Opts::new(&["telemetry", "off"]).in_home(home.path()));
     assert!(status.success(), "telemetry off failed: {stderr}");
 
-    let dir = home.path().join(".config").join("relate");
     for name in ["state.json", "config.json"] {
         let path = dir.join(name);
         let mode = std::fs::metadata(&path)
@@ -574,6 +608,12 @@ fn test_telemetry_state_and_config_files_are_private() {
 fn test_stdout_and_exit_code_identical_with_telemetry_disabled() {
     let mock = MockMixpanel::start();
     let home_on = tempdir();
+    // Sanity first: the enabled run's spooled events really do reach the
+    // mock through a follow-up run (ADR-0545 §2), so the comparison below
+    // is not vacuous.
+    let delivered = oneshots_until_delivered(&mock, home_on.path(), |events| !events.is_empty());
+    assert!(!delivered.is_empty(), "the enabled run sent no events");
+
     let (status_on, stdout_on, stderr_on) = run_oneshot_against_mock(&mock, home_on.path());
     assert!(status_on.success(), "enabled run failed: {stderr_on}");
 
@@ -591,10 +631,60 @@ fn test_stdout_and_exit_code_identical_with_telemetry_disabled() {
         stdout_on, stdout_off,
         "stdout must be identical with and without telemetry"
     );
-    // Sanity: the enabled run really did phone home, so the comparison is
-    // not vacuous.
-    assert!(
-        mock.wait_for_events(EVENT_TIMEOUT, |events| !events.is_empty()),
-        "the telemetry-enabled run sent no events"
+}
+
+// --- the spool against the opt-out layers (ADR-0545 §5) ---
+
+#[test]
+fn test_an_opted_out_run_neither_drains_nor_clears_the_spool() {
+    let mock = MockMixpanel::start();
+    let home = tempdir();
+    // Seed a spool file exactly as an earlier enabled run's exit append
+    // would have left it, named from the one pinned prefix.
+    let cfg = home.path().join(".config").join("relate");
+    std::fs::create_dir_all(&cfg).expect("create config dir");
+    let seeded = format!("{SPOOL_FILE_PREFIX}seeded.jsonl");
+    std::fs::write(cfg.join(&seeded), "{\"event\":\"SEEDED\"}\n").expect("seed spool");
+    // An opted-out run touches nothing: no drain, no clear — the spool
+    // waits for a later enabled run.
+    let (status, stdout, stderr) = run_cli(
+        Opts::new(&["RETURN 1"])
+            .in_home(home.path())
+            .with_endpoint(&mock.url())
+            .with_envs(&[("DO_NOT_TRACK", "1")]),
     );
+    assert!(status.success(), "opted-out run failed: {stderr}");
+    assert!(stdout.contains('1'), "expected query output, got: {stdout}");
+    mock.assert_quiet("an opted-out run");
+    assert!(
+        cfg.join(&seeded).exists(),
+        "an opted-out run must leave the spool untouched"
+    );
+}
+
+#[test]
+fn test_telemetry_off_clears_a_seeded_spool_and_records_nothing_of_its_own() {
+    // The ordered transition (ADR-0545 §5), end to end on a run that
+    // STARTS enabled (with_default_telemetry, no forced off): the off
+    // command disarms the pipeline before persisting, so the run that
+    // turns telemetry off transmits nothing (the drain never starts),
+    // clears the pending seed, and leaves no spool file of its own.
+    let mock = MockMixpanel::start();
+    let home = tempdir();
+    let cfg = home.path().join(".config").join("relate");
+    std::fs::create_dir_all(&cfg).expect("create config dir");
+    let seeded = format!("{SPOOL_FILE_PREFIX}seeded.jsonl");
+    std::fs::write(cfg.join(&seeded), "{\"event\":\"SEEDED\"}\n").expect("seed spool");
+    let (status, _, stderr) = run_cli(
+        Opts::new(&["telemetry", "off"])
+            .in_home(home.path())
+            .with_endpoint(&mock.url()),
+    );
+    assert!(status.success(), "telemetry off failed: {stderr}");
+    assert_eq!(config_telemetry(home.path()), Some(false));
+    assert!(
+        support::pending_telemetry_files_in(&cfg).is_empty(),
+        "off must clear the seed and write no new spool file of its own"
+    );
+    mock.assert_quiet("the run that turns telemetry off");
 }

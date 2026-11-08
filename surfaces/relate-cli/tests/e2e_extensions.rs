@@ -456,7 +456,7 @@ fn test_install_refuses_when_no_config_dir_resolves() {
     // config-dir rule): with `$HOME` gone too, no base resolves and the
     // install refuses with its authored text — never an extensions dir
     // resolved against the current working directory (the drive-by
-    // guard, ADR-0429 §6). The harness scrubs XDG by default; the
+    // guard, ADR-0429 §6). The harness scrubs every config-dir base by default; the
     // explicit relative set wins over the scrub, and HOME is removed.
     let world = World::new();
     let source = world.source_package("greet", "1.2.3");
@@ -469,7 +469,7 @@ fn test_install_refuses_when_no_config_dir_resolves() {
     assert!(stdout.is_empty(), "{stdout}");
     assert_eq!(
         stderr.trim(),
-        "Error: extension install: no config directory resolves: set XDG_CONFIG_HOME or HOME"
+        "Error: extension install: no config directory resolves: set $XDG_CONFIG_HOME, $HOME, $APPDATA, or $USERPROFILE"
     );
     assert!(!world.extensions_dir().join("greet").exists());
 }

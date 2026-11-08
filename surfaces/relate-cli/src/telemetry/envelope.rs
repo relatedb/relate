@@ -16,6 +16,16 @@ use super::Event;
 /// CLI version, single-sourced from the crate's `Cargo.toml`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Serialize one already-built envelope as a JSON line — the pipeline's
+/// one serializer seam, always the swallowed form (ADR-0079 §5: no
+/// telemetry failure may panic or print; an envelope that cannot
+/// serialize is dropped, like an overflowed one). The batch form of the
+/// same policy lives at its single call site (`post_batch`), not behind
+/// a second pass-through wrapper.
+pub(crate) fn spool_line(event: &Value) -> Option<String> {
+    serde_json::to_string(event).ok()
+}
+
 /// A random UUID v4 (8-4-4-4-12 lowercase hex) built from the workspace
 /// `rand` crate (ADR-0079 §2 — deliberately no `uuid` dependency).
 pub(crate) fn uuid_v4() -> String {

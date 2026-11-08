@@ -16,7 +16,9 @@ impl Telemetry {
         false
     }
 
-    pub fn emit(&self, _event: Event) {}
+    /// The no-op twin of the live handle's `emit`: `&mut self`, matching
+    /// the live receiver so call sites are identical in every bundle.
+    pub fn emit(&mut self, _event: Event) {}
 
     pub fn flush(&mut self) {}
 }

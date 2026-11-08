@@ -472,7 +472,10 @@ fn installed_rows() -> Result<Vec<String>, String> {
 /// resolving is the same environment failure the install verbs answer.
 fn trust_rows() -> Result<Vec<String>, String> {
     let Some(config_dir) = crate::config_dir::config_dir() else {
-        return Err("no config directory resolves: set XDG_CONFIG_HOME or HOME".to_string());
+        return Err(format!(
+            "no config directory resolves: {}",
+            crate::config_dir::NO_BASE_HINT
+        ));
     };
     let store = TrustStore::load(&trust_path(&config_dir)).map_err(|e| e.to_string())?;
     Ok(store
@@ -559,7 +562,10 @@ fn remove(name: &str, forget_pin: bool) -> Result<(), String> {
     // reinstall is still compared against it).
     let forget = if forget_pin {
         let Some(config_dir) = crate::config_dir::config_dir() else {
-            return Err("no config directory resolves: set XDG_CONFIG_HOME or HOME".to_string());
+            return Err(format!(
+                "no config directory resolves: {}",
+                crate::config_dir::NO_BASE_HINT
+            ));
         };
         let mut store = TrustStore::load(&trust_path(&config_dir)).map_err(|e| e.to_string())?;
         let cleared = store.remove(name).is_some();
