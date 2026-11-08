@@ -94,8 +94,10 @@ else
   # Wipe the staged sources before extracting: tar only adds and overwrites,
   # so a file deleted or renamed upstream would linger and break the build
   # (e.g. a stale `redo.rs` beside a newer `redo/mod.rs`). `target` survives
-  # as the cargo cache.
-  tar -C "${ROOT}" --exclude target --exclude .git -cf - . \
+  # as the cargo cache. `node_modules` is rewritten by cookbook-wasm and
+  # npm-smoke while this snapshot is packed, and tar exits when a file
+  # changes under it.
+  tar -C "${ROOT}" --exclude target --exclude .git --exclude node_modules -cf - . \
     | docker run --rm -i \
       -v "${VOLUME_NAME}:/work" \
       -w /work \

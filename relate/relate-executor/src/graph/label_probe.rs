@@ -313,19 +313,17 @@ impl Graph {
         let Some(type_id) = self.rel_type_id(rel_type) else {
             return Vec::new();
         };
-        let mut ids: Vec<_> = self
-            .rels
-            .iter()
-            .filter(|entry| {
-                entry
-                    .value()
-                    .iter()
-                    .rev()
-                    .find(|v| visible(v.xmin, v.xmax, ts))
-                    .is_some_and(|v| v.live.type_id == type_id)
-            })
-            .map(|entry| *entry.key())
-            .collect();
+        let mut ids = Vec::new();
+        self.rels.for_each(|id, vers| {
+            let matches = vers
+                .iter()
+                .rev()
+                .find(|v| visible(v.xmin, v.xmax, ts))
+                .is_some_and(|v| v.live.type_id == type_id);
+            if matches {
+                ids.push(id);
+            }
+        });
         ids.sort_unstable();
         ids
     }

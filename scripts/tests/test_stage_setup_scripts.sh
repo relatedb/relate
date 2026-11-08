@@ -105,9 +105,9 @@ for spec in \
   '.sonic/ci.yml:make test-scripts:1' \
   '.sonic/ci.yml:install-wasm-toolchain.sh:1' \
   '.sonic/ci.yml:baseline-docker-setup.sh:1' \
-  '.sonic/ci.yml:\*baseline-docker-setup:3' \
+  '.sonic/ci.yml:\*baseline-docker-setup:4' \
   '.sonic/ci.yml:GITHUB_WORKSPACE:1' \
-  '.sonic/ci.yml:\*baseline-env-forwarding:3' \
+  '.sonic/ci.yml:\*baseline-env-forwarding:4' \
   '.sonic/ci.yml:^ *LD_LIBRARY_PATH:0' \
   '.sonic/ci.yml:source scripts/ffi-lib.sh:1' \
   '.sonic/ci.yml:bash /workspace/scripts:0' \

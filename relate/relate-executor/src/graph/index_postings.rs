@@ -178,7 +178,7 @@ impl Graph {
     /// node for the `*` bucket.
     fn pair_candidate_ids(&self, lid: u32) -> Vec<NodeId> {
         if lid == self.indexes.star_label_id {
-            return self.nodes.iter().map(|e| *e.key()).collect();
+            return self.nodes.keys();
         }
         self.indexes
             .label_index

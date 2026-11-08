@@ -379,13 +379,13 @@ impl Graph {
         // convention through the whole fold: `live_version`, the seam
         // the bump paths ride — never a snapshot-ts probe beside it.
         let mut stats = CountStats::default();
-        for entry in self.nodes.iter() {
-            let Some(v) = super::live_version(entry.value()) else {
-                continue;
+        self.nodes.for_each(|_id, vers| {
+            let Some(v) = super::live_version(vers) else {
+                return;
             };
             // Charge discarded — see the doc's rebuild note.
             let _ = Self::fold_node_stats(&mut stats, &v.live.labels, CountDelta::Add);
-        }
+        });
         // The rel side rides `rebuild_adj`'s projection of the live
         // rels (both paired rebuild sites materialize the rows once);
         // charges discarded — see the doc's rebuild note.

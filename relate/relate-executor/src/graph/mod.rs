@@ -533,8 +533,7 @@ impl Graph {
         let charge = self.index_charge();
         let mut n = 0u64;
         n = n.saturating_add(self.nodes.array_bytes());
-        for entry in self.nodes.iter() {
-            let vers = entry.value();
+        self.nodes.for_each(|_id, vers| {
             n = n.saturating_add(crate::memory::node_chain_bytes(vers.shape()));
             for v in vers.iter() {
                 n = n.saturating_add(crate::memory::live_node_account_live(
@@ -543,23 +542,20 @@ impl Graph {
                     &charge,
                 ));
             }
-        }
+        });
         n = n.saturating_add(self.rels.array_bytes());
-        for entry in self.rels.iter() {
-            let vers = entry.value();
+        self.rels.for_each(|_id, vers| {
             n = n.saturating_add(crate::memory::rel_chain_bytes(vers.shape()));
             for v in vers.iter() {
                 n = n.saturating_add(crate::memory::live_rel_account_live(v.live));
             }
-        }
+        });
         n = n.saturating_add(self.out_adj.array_bytes());
         n = n.saturating_add(self.in_adj.array_bytes());
-        for entry in self.out_adj.iter() {
-            n = n.saturating_add(entry.value().floor_bytes());
-        }
-        for entry in self.in_adj.iter() {
-            n = n.saturating_add(entry.value().floor_bytes());
-        }
+        self.out_adj
+            .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
+        self.in_adj
+            .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
         // LABS-351 / LABS-370: the degree histograms and the count
         // bundle's charged maps are retained structure — the recount
         // oracle must include them or the incremental entry charges
@@ -633,14 +629,13 @@ impl Graph {
             None => self.estimate_constraint_key_entry_growth(ops),
         };
         if before.as_ref() != &after {
-            for entry in self.nodes.iter() {
-                let id = *entry.key();
-                for v in entry.value().iter() {
+            self.nodes.for_each(|id, vers| {
+                for v in vers.iter() {
                     let n = v.live.to_node(id, &self.interner);
                     delta += crate::memory::live_node_account(&n, &after) as i64
                         - crate::memory::live_node_account(&n, &before) as i64;
                 }
-            }
+            });
         }
         crate::memory::RedoDelta {
             total: delta,

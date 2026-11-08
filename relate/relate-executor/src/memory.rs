@@ -113,6 +113,11 @@ impl ChainShape {
     }
 }
 
+/// Largest dense reservation a store will allocate. A bigger id is a
+/// side-map entry, so one persisted id cannot reserve gigabytes before
+/// admission runs (ADR-0086, ADR-0532).
+pub const DENSE_SPAN_CAP_BYTES: u64 = 1 << 30;
+
 /// Reserved bytes of a dense id span, or `None` when the power-of-two
 /// reservation does not fit in `u64`. That id cannot have a slot array
 /// (ADR-0532) and lives in the store's side map instead.

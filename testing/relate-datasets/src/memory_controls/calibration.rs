@@ -274,11 +274,10 @@ fn run_observation(
             server.log_text()
         ));
     }
-    if holds.iter().any(|hold| {
-        hold.family != family
-            || hold.held < target
-            || hold.peak_bytes == 0
-    }) {
+    if holds
+        .iter()
+        .any(|hold| hold.family != family || hold.held < target || hold.peak_bytes == 0)
+    {
         return Err(format!(
             "{family} did not reach its peak reservation target\n{}",
             server.log_text()
@@ -311,8 +310,7 @@ fn run_observation(
         held_cgroup_bytes: held_cgroup,
         cgroup_delta_bytes: cgroup_delta,
         cgroup_bytes_per_logical_byte: cgroup_delta.map(|delta| delta / held_logical_bytes),
-        cgroup_to_logical_ratio: cgroup_delta
-            .map(|delta| delta as f64 / held_logical_bytes as f64),
+        cgroup_to_logical_ratio: cgroup_delta.map(|delta| delta as f64 / held_logical_bytes as f64),
     };
     let idle = server.sample()?.rss;
     let case = if make_case {
@@ -444,22 +442,13 @@ fn summarize_family(
         .collect::<Vec<_>>();
     let rss_points = rows
         .iter()
-        .map(|row| {
-            (
-                row.held_logical_bytes as f64,
-                row.rss_delta_bytes as f64,
-            )
-        })
+        .map(|row| (row.held_logical_bytes as f64, row.rss_delta_bytes as f64))
         .collect::<Vec<_>>();
     let cgroup_points = rows
         .iter()
         .filter_map(|row| {
-            row.cgroup_delta_bytes.map(|delta| {
-                (
-                    row.held_logical_bytes as f64,
-                    delta as f64,
-                )
-            })
+            row.cgroup_delta_bytes
+                .map(|delta| (row.held_logical_bytes as f64, delta as f64))
         })
         .collect::<Vec<_>>();
     let (rss_slope, rss_intercept, rss_r_squared) = linear_fit(&rss_points);
@@ -472,10 +461,9 @@ fn summarize_family(
         .copied()
         .filter(|row| row.holders == 1)
         .collect::<Vec<_>>();
-    let rss_single = linear_fit(&logical_byte_points(
-        &single,
-        |row| Some(row.rss_delta_bytes),
-    ));
+    let rss_single = linear_fit(&logical_byte_points(&single, |row| {
+        Some(row.rss_delta_bytes)
+    }));
     let cgroup_single_points = logical_byte_points(&single, |row| row.cgroup_delta_bytes);
     let cgroup_single =
         (!cgroup_single_points.is_empty()).then(|| linear_fit(&cgroup_single_points));

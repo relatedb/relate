@@ -21,9 +21,10 @@ use crate::processing_graph;
 
 const REPEATS: usize = 3;
 const HOLD_MS: u64 = 400;
-/// Long enough for a second Bolt handshake to land while the holder still
-/// owns the one quantum of logical bytes. A short hold races the handshake.
-const OVERLAP_HOLD_MS: u64 = 2_000;
+/// The holder keeps its reservation for this long so the review write
+/// arrives while that reservation is still charged, including when the
+/// rest of the suite is compiling on the same machine.
+const OVERLAP_HOLD_MS: u64 = 15_000;
 
 pub(crate) fn case_connections(cfg: &Config) -> Result<CaseReport, String> {
     let store = cfg.store.join("connections");
@@ -136,10 +137,10 @@ pub(crate) fn case_unlimited(cfg: &Config) -> Result<CaseReport, String> {
     )
 }
 
-/// Smallest pool whose admission ceiling holds three quanta: one running
-/// statement, its cached plan, and one later statement. Two of those at
-/// once still overflow the ceiling.
-fn pool_for_one_quantum() -> u64 {
+/// Smallest pool whose admission ceiling holds three quanta: the held
+/// statement, its cached plan, and the review write. The write alone
+/// still fits once the holder releases its statement reservation.
+fn pool_for_the_overlap() -> u64 {
     let quantum = relate_core::tokens::CHARGE_QUANTUM_BYTES;
     let need = 3 * quantum;
     let mut capacity = need;
@@ -153,12 +154,12 @@ pub(crate) fn case_active_queries(cfg: &Config) -> Result<CaseReport, String> {
     let store = cfg.store.join("active");
     let limits = ServeLimits {
         max_connections: Some(4),
-        concurrent_logical_workspace_limit: Some(pool_for_one_quantum()),
+        concurrent_logical_workspace_limit: Some(pool_for_the_overlap()),
         hold_ms: Some(OVERLAP_HOLD_MS),
         ..ServeLimits::default()
     };
-    // The ledger load retains far more than one quantum. Load with
-    // admission off, then reopen under the one-quantum cap the overlap probes.
+    // The ledger load retains far more than the overlap pool. Load with
+    // admission off, then reopen under the pool the overlap probes.
     let logical = {
         let server = Server::start(&cfg.serve_bin, &store, ServeLimits::default())?;
         let mut session = connect_addr(server.bolt())?;
@@ -177,12 +178,20 @@ pub(crate) fn case_active_queries(cfg: &Config) -> Result<CaseReport, String> {
     let mut idles = Vec::new();
     let mut failure = String::new();
     for _ in 0..REPEATS {
+        // Each repeat waits for its own hold line. A count of one matches
+        // the previous repeat's line and lets the write run with the pool
+        // already free.
+        let seen = server.log_text().matches("query admit hold:").count();
         let addr = server.bolt().to_string();
         let holder = thread::spawn(move || {
             let mut session = connect_addr(&addr)?;
             session.run("RETURN 1")
         });
-        server.expect_log("query admit hold:")?;
+        server.expect_log_count_within(
+            "query admit hold:",
+            seen + 1,
+            Duration::from_millis(OVERLAP_HOLD_MS),
+        )?;
         let mut rejected = connect_addr(server.bolt())?;
         let err = match rejected.run(processing_graph::record_review()) {
             Ok(()) => {

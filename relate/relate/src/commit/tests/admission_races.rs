@@ -103,7 +103,10 @@ fn uniqueness_text(name: &str) -> String {
 #[test]
 fn auto_commit_duplicate_creates_admit_exactly_one() {
     use std::sync::Barrier;
-    const ATTEMPTS: usize = 16;
+    // A loaded machine can run one submission to completion before the
+    // other thread is scheduled. Sixteen tries all serialized under a
+    // ten-wide suite; a wider loop still returns on the first real overlap.
+    const ATTEMPTS: usize = 128;
     for _ in 0..ATTEMPTS {
         let db = Arc::new(Database::open(":memory:").unwrap());
         db.connect()

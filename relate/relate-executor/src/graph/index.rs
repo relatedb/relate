@@ -175,15 +175,15 @@ impl Graph {
     pub(super) fn rebuild_adj(&self) {
         #[cfg(test)]
         ADJ_BUILDS.with(|n| n.set(n.get() + 1));
-        let mut rows: Vec<_> = self
-            .rels
-            .iter()
-            .filter_map(|e| {
-                let live = live_version(e.value())?.live;
-                let ts = live.payload.ts(&self.interner);
-                Some((*e.key(), live.start, live.type_id, live.end, ts))
-            })
-            .collect();
+        let mut rows = Vec::new();
+        self.rels.for_each(|id, vers| {
+            let Some(ver) = live_version(vers) else {
+                return;
+            };
+            let live = &ver.live;
+            let ts = live.payload.ts(&self.interner);
+            rows.push((id, live.start, live.type_id, live.end, ts));
+        });
         rows.sort_unstable_by_key(|&(id, ..)| id);
         self.out_adj.clear();
         self.in_adj.clear();
@@ -241,11 +241,11 @@ impl Graph {
 
     pub fn gc_versions(&self) {
         let horizon = self.gc_horizon();
-        let nids: Vec<NodeId> = self.nodes.iter().map(|e| *e.key()).collect();
+        let nids: Vec<NodeId> = self.nodes.keys();
         for id in nids {
             self.gc_node_chain(id, horizon);
         }
-        let rids: Vec<RelId> = self.rels.iter().map(|e| *e.key()).collect();
+        let rids: Vec<RelId> = self.rels.keys();
         for id in rids {
             self.gc_rel_chain(id, horizon);
         }

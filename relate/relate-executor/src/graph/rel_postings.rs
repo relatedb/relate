@@ -92,7 +92,7 @@ impl Graph {
         self.with_pair(
             &self.indexes.rel_prop_pairs,
             (type_id, kid),
-            |g: &Graph| g.rels.iter().map(|e| *e.key()).collect(),
+            |g: &Graph| g.rels.keys(),
             |g: &Graph, id: i64, f: &mut dyn FnMut(&Value)| {
                 g.for_each_rel_pair_value(id, type_id, key, f)
             },

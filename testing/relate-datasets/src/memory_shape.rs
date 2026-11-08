@@ -838,8 +838,16 @@ mod tests {
         let live = Mutex::new(Live::default());
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("flat");
-        let (used, disk, nodes, rels) =
-            probe_store(GraphShape::Flat, 1, IndexCounts::NONE, limit, &store, &live, false).unwrap();
+        let (used, disk, nodes, rels) = probe_store(
+            GraphShape::Flat,
+            1,
+            IndexCounts::NONE,
+            limit,
+            &store,
+            &live,
+            false,
+        )
+        .unwrap();
         assert!(
             used <= limit,
             "committed {used} bytes above the {limit} limit"

@@ -129,34 +129,24 @@ fn redo_preflight_rejects_zero_and_nonforward_timestamps_without_a_prefix() {
         )])),
     };
     let versions = |g: &Graph| {
-        let nodes: BTreeMap<_, _> = g
-            .nodes
-            .iter()
-            .map(|entry| {
-                let id = *entry.key();
-                (
-                    id,
-                    entry
-                        .iter()
-                        .map(|v| (v.xmin, v.xmax, v.live.to_node(id, &g.interner)))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect();
-        let rels: BTreeMap<_, _> = g
-            .rels
-            .iter()
-            .map(|entry| {
-                let id = *entry.key();
-                (
-                    id,
-                    entry
-                        .iter()
-                        .map(|v| (v.xmin, v.xmax, v.live.to_rel(id, &g.interner)))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect();
+        let mut nodes = BTreeMap::new();
+        g.nodes.for_each(|id, vers| {
+            nodes.insert(
+                id,
+                vers.iter()
+                    .map(|v| (v.xmin, v.xmax, v.live.to_node(id, &g.interner)))
+                    .collect::<Vec<_>>(),
+            );
+        });
+        let mut rels = BTreeMap::new();
+        g.rels.for_each(|id, vers| {
+            rels.insert(
+                id,
+                vers.iter()
+                    .map(|v| (v.xmin, v.xmax, v.live.to_rel(id, &g.interner)))
+                    .collect::<Vec<_>>(),
+            );
+        });
         (nodes, rels)
     };
     // Reproductions: (published ts, next node ID, proposed ts).
@@ -200,11 +190,10 @@ fn redo_preflight_rejects_zero_and_nonforward_timestamps_without_a_prefix() {
         // Compare every version, including invisible ones and the xmax of
         // existing IDs; visible rows and map sizes alone miss both.
         assert_eq!(versions(&g), before_versions);
-        assert!(g
-            .nodes
-            .iter()
-            .all(|entry| entry.iter().all(|v| v.xmin != 0)));
-        assert!(g.rels.iter().all(|entry| entry.iter().all(|v| v.xmin != 0)));
+        g.nodes
+            .for_each(|_, vers| assert!(vers.iter().all(|v| v.xmin != 0)));
+        g.rels
+            .for_each(|_, vers| assert!(vers.iter().all(|v| v.xmin != 0)));
         assert!(!g.in_write.load(Ordering::Acquire));
     }
 }
