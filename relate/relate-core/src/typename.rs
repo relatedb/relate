@@ -73,15 +73,7 @@ pub fn bare_type_name(value: &Value) -> String {
     value_type_name(value).replace(NOT_NULL_SUFFIX, "")
 }
 
-/// The one spelling of the wrong-type sentence the 22N01 argument errors
-/// and the SEARCH validators share. The expected set is the caller's own
-/// signature; the actual type name is the caller's vocabulary
-/// ([`value_type_name`], or a SEARCH source-kind display name).
-pub fn expected_type_detail(expected: &str, actual: &str) -> String {
-    format!("Expected the value to be of type {expected}, but was of type {actual}")
-}
-
-/// The value-bearing form of [`expected_type_detail`] (22N01): the offending
+/// The value-bearing form of [`crate::expected_type_detail`] (22N01): the offending
 /// value renders as its Cypher literal, except the null literal, which Neo4j
 /// spells `NULL` in this sentence, and the actual type is
 /// [`bare_type_name`]'s. The one spelling for a write's bound node position
