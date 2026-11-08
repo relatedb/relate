@@ -80,7 +80,7 @@ impl Connection {
     /// data safety taking precedence over the one lost wait shape (the
     /// no-worker inline flush is the pre-fast-path behavior, and the
     /// flush is not the input-proportional recursion ADR-0259 provisions
-    /// the worker against).
+    /// the worker against). The degraded path logs one line to stderr.
     ///
     /// ```
     /// use std::time::Duration;
@@ -125,7 +125,15 @@ impl Connection {
                 Ok(slot) => slot
                     .run_with_heartbeat(|| self.flush_commit(redo), Some(heartbeat))?
                     .map(Some),
-                Err(_) => self.flush_commit(redo).map(Some),
+                Err(err) => {
+                    // Observable degradation: the inline flush is untimed
+                    // and unticked, so leave a line to correlate with a
+                    // client timing out during the commit.
+                    eprintln!(
+                        "relate: commit worker unavailable, flushing inline without heartbeat: {err}"
+                    );
+                    self.flush_commit(redo).map(Some)
+                }
             }
         }
     }

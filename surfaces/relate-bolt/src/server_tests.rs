@@ -477,3 +477,16 @@ fn workspace_limit_flag_rejects_zero_and_parses_a_size() {
         Some(2 * 1024 * 1024)
     );
 }
+
+/// The recording fixture separates a deliberate close from a genuine
+/// session error: a non-Bolt preamble is closed cleanly (the session ends with no error).
+#[test]
+fn recorded_fixture_ends_without_an_error_on_a_clean_close() {
+    use std::io::Write;
+    let db = Arc::new(Database::open(":memory:").unwrap());
+    let (addr, handle) = crate::testutil::spawn_handler_recorded(db, ConnConfig::default());
+    let mut client = connect(addr);
+    client.write_all(&[0xFF; 20]).unwrap();
+    // The server logs and closes; the join is the deterministic wait.
+    assert_eq!(handle.join().unwrap(), None);
+}

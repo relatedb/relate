@@ -25,6 +25,21 @@ pub fn spawn_handler(
     db: std::sync::Arc<relate::Database>,
     config: crate::protocol::ConnConfig,
 ) -> std::net::SocketAddr {
+    spawn_handler_recorded(db, config).0
+}
+
+/// [`spawn_handler`], also returning the fixture thread's handle: joining
+/// it yields `Some(error text)` when `serve_conn` returned an error and
+/// `None` after a clean session, so a test can tell a genuine server-side
+/// error from a deliberate close, deterministically. Nothing is logged
+/// (many tests abort connections on purpose).
+pub fn spawn_handler_recorded(
+    db: std::sync::Arc<relate::Database>,
+    config: crate::protocol::ConnConfig,
+) -> (
+    std::net::SocketAddr,
+    std::thread::JoinHandle<Option<String>>,
+) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = config;
@@ -35,7 +50,7 @@ pub fn spawn_handler(
     // does (ADR-0504).
     config.caller_thread_carries_worker_stack =
         crate::server::CONNECTION_STACK_BYTES == relate::QUERY_WORKER_STACK_BYTES;
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .stack_size(crate::server::CONNECTION_STACK_BYTES)
         .spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -44,10 +59,12 @@ pub fn spawn_handler(
                 plaintext_allowed: true,
                 websocket: None,
             };
-            let _ = crate::transport::serve_conn(stream, &t, db, config);
+            crate::transport::serve_conn(stream, &t, db, config)
+                .err()
+                .map(|e| e.to_string())
         })
         .expect("spawn the fixture's connection thread");
-    addr
+    (addr, handle)
 }
 
 /// Assert the server closes the connection (EOF) within the read guard.
