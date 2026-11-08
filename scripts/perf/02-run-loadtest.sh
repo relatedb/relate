@@ -36,7 +36,7 @@ report_ok=0
 if perf report -i "$data" --stdio --no-children | sed -n '1,60p' > "$lt.report" && [[ -s "$lt.report" ]]; then
   report_ok=1
 else
-  echo "(perf report skipped: it produced no output for $lt.report; see error above)"
+  perf_skip "perf report" "it produced no output for $lt.report; see error above"
 fi
 # Folded stacks need inferno; without it the flamegraph step is skipped
 # loudly rather than half-done.
@@ -50,18 +50,18 @@ if command -v inferno-collapse-perf >/dev/null 2>&1; then
   if perf script -i "$data" | inferno-collapse-perf > "$lt.folded" && [[ -s "$lt.folded" ]]; then
     folded_ok=1
   else
-    echo "(folded stacks skipped: perf script | inferno-collapse-perf produced no $lt.folded; see error above)"
+    perf_skip "folded stacks" "perf script | inferno-collapse-perf produced no $lt.folded; see error above"
   fi
 else
-  echo "(folded stacks skipped: install inferno for $lt.folded)"
+  perf_skip "folded stacks" "install inferno for $lt.folded"
 fi
 
 echo
 echo "wrote:"
-echo "  $data            (perf record data)"
-echo "  $lt.out             (loadtest stdout)"
-(( report_ok )) && echo "  $lt.report  (top functions)"
-(( folded_ok )) && echo "  $lt.folded  (folded stacks for a flamegraph)"
+perf_announce "$data" "perf record data"
+perf_announce "$lt.out" "loadtest stdout"
+(( report_ok )) && perf_announce "$lt.report" "top functions"
+(( folded_ok )) && perf_announce "$lt.folded" "folded stacks for a flamegraph"
 echo
 echo "Throughput:"
 grep -m1 "throughput" "$lt.out" || echo "(no throughput line in $lt.out)"
