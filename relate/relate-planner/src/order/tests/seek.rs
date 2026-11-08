@@ -152,21 +152,26 @@ fn the_range_window_ranks_between_equality_and_contains() {
         )],
         ..Stub::EMPTY
     };
-    let endpoint = |cypher: &str| estimate_of(cypher, &stats);
     // Equality above: a point read is the degenerate tightest window.
     assert_eq!(
-        endpoint("MATCH (n:N {id: '7'}) WHERE n.x < 10 AND n.w CONTAINS 'needle' RETURN n"),
+        estimate_of(
+            "MATCH (n:N {id: '7'}) WHERE n.x < 10 AND n.w CONTAINS 'needle' RETURN n",
+            &stats
+        ),
         Estimate::Measured(2)
     );
     // The window above CONTAINS: an exact seekable count outranks a
     // sampled extrapolation carrying a scan floor.
     assert_eq!(
-        endpoint("MATCH (n:N) WHERE n.x < 10 AND n.w CONTAINS 'needle' RETURN n"),
+        estimate_of(
+            "MATCH (n:N) WHERE n.x < 10 AND n.w CONTAINS 'needle' RETURN n",
+            &stats
+        ),
         Estimate::Measured(5)
     );
     // Without the window the sampled compound is the level (the control).
     assert_eq!(
-        endpoint("MATCH (n:N) WHERE n.w CONTAINS 'needle' RETURN n"),
+        estimate_of("MATCH (n:N) WHERE n.w CONTAINS 'needle' RETURN n", &stats),
         Estimate::SampleScan {
             rows: 1,
             scan: 1_000
@@ -310,7 +315,9 @@ fn the_crossover_gates_the_range_level() {
 #[test]
 fn the_crossover_gates_multi_label_nodes_against_the_smallest_label() {
     // The one fact the cases vary: the window.
-    fn endpoint(ranges: &'static [(&'static str, &'static str, BinaryOp, i64, u64)]) -> Estimate {
+    fn multi_label_estimate(
+        ranges: &'static [(&'static str, &'static str, BinaryOp, i64, u64)],
+    ) -> Estimate {
         let stats = Stub {
             labels: &[("A", 100_000), ("B", 4_000)],
             ranges,
@@ -322,12 +329,12 @@ fn the_crossover_gates_multi_label_nodes_against_the_smallest_label() {
     // above a quarter — the level declines and the label rows price
     // the element (not the pick's own 100,000-row A, not the window).
     assert_eq!(
-        endpoint(&[("A", "x", BinaryOp::Lt, 10, 1_500)]),
+        multi_label_estimate(&[("A", "x", BinaryOp::Lt, 10, 1_500)]),
         Estimate::Measured(4_000)
     );
     // A window of 900 still seeks: 900 × 4 < 4,000.
     assert_eq!(
-        endpoint(&[("A", "x", BinaryOp::Lt, 10, 900)]),
+        multi_label_estimate(&[("A", "x", BinaryOp::Lt, 10, 900)]),
         Estimate::Measured(900)
     );
 }
