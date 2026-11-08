@@ -32,7 +32,11 @@ general code `42000` for every other caller-facing class); a nested
 payload carries its own documented code, resolved by the same canonical
 scan the bindings use. The per-class code constants
 (`relate_error::SYNTAX_ERROR_CODE`, …) are the classification's own
-data, re-exported from the defining crate.
+data, defined and exported by `relate_error` (the `relate` facade
+re-exports only `error_info`, `ErrorInfo` and `ErrorStage`); the
+GQLSTATUS values HTTP's envelope restates are likewise public there
+(`relate_error::GQLSTATUS_GENERAL`, `GQLSTATUS_SYNTAX`,
+`GQLSTATUS_DATABASE_NOT_FOUND`).
 
 | Variant | Contract |
 | --- | --- |

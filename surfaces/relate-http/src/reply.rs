@@ -11,6 +11,7 @@ use relate::{
     client_message, error_info, log_internal_original, query_stats_to_wire, Error, ErrorStage,
     QueryResult,
 };
+use relate_error::{GQLSTATUS_GENERAL, GQLSTATUS_SYNTAX};
 use relate_model::wire::{self, WireStatsSnapshot};
 
 use crate::http::{is_versioned_query_family, APPLICATION_JSON, VND_NEO4J_QUERY};
@@ -70,19 +71,10 @@ impl Reply {
 /// code).
 pub(crate) const UNAUTHORIZED_CODE: &str = "42NFF";
 
-/// The GQL general code for an error with no class-specific code (400/404/
-/// 405/406 arms, the READ-guard refusal): one constant, consulted at every
-/// site.
-pub(crate) const GENERAL_CODE: &str = "42000";
-
-/// The engine's DatabaseNotFound code; the router's "unknown path" 404 is
-/// the same class.
-pub(crate) const DATABASE_NOT_FOUND_CODE: &str = "42N00";
-
 /// The 400 envelope for a body that does not parse: one mapping both
 /// routers (the auto-commit route and the tx routes) consult.
 pub(crate) fn invalid_request_body(e: serde_json::Error) -> Reply {
-    error_envelope(400, "42N06", &format!("invalid request body: {e}"))
+    error_envelope(400, GQLSTATUS_SYNTAX, &format!("invalid request body: {e}"))
 }
 
 /// The error-envelope reply for a transport-level rejection (the browser
@@ -93,7 +85,7 @@ pub(crate) fn error_reply(status: u16, message: &str) -> Reply {
     let code = if status == 401 {
         UNAUTHORIZED_CODE
     } else {
-        GENERAL_CODE
+        GQLSTATUS_GENERAL
     };
     error_envelope(status, code, message)
 }
@@ -123,7 +115,7 @@ fn error_envelope_with(
 /// every request-decode rejection rides — the dialect resolver, the
 /// parameter fold and the tx READ guard alike.
 pub(crate) fn bad_request(message: &str) -> Reply {
-    error_envelope(400, GENERAL_CODE, message)
+    error_envelope(400, GQLSTATUS_GENERAL, message)
 }
 
 /// The client message for an engine error at this boundary, with the
@@ -176,7 +168,7 @@ pub(crate) fn run_on(
     // this route's.
     // A class-less request-side decode rejection (not ParameterMissing,
     // which the engine reports for an unbound $name): the route's
-    // GENERAL_CODE per the stated one-constant policy.
+    // GQLSTATUS_GENERAL per the stated one-constant policy.
     let params =
         request_params(dialect, parameters.as_ref()).map_err(|message| bad_request(&message))?;
     match conn.query_with_params(statement, params) {
@@ -308,7 +300,7 @@ pub(crate) fn negotiated_media_type(accept: Option<&str>) -> Option<ResponseMedi
 pub(crate) fn not_acceptable() -> Reply {
     error_envelope(
         406,
-        GENERAL_CODE,
+        GQLSTATUS_GENERAL,
         &format!("not acceptable: this server responds {APPLICATION_JSON} or {VND_NEO4J_QUERY}"),
     )
 }

@@ -2515,6 +2515,7 @@ dependencies = [
  "indexmap",
  "relate",
  "relate-auth",
+ "relate-error",
  "relate-formatter",
  "relate-model",
  "relate-serve",
