@@ -24,8 +24,12 @@ pub mod plan_rung;
 #[cfg(feature = "pokec")]
 pub mod pokec;
 pub mod rng;
+
 pub mod sampling;
 pub mod temporal;
+/// Shared [`Value`] fixtures: the one constructor per value kind the
+/// engine's test suites repeat.
+pub mod values;
 #[cfg(feature = "vfs_walk")]
 pub mod vfs_walk;
 

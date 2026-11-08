@@ -68,8 +68,8 @@ pub(crate) struct GramIndex {
     /// from these arcs.
     by_node: HashMap<NodeId, Vec<Arc<str>>>,
     pub(super) dirty: HashSet<NodeId>,
-    /// True until [`GramIndex::seal`]. Bulk insert appends; after seal,
-    /// each edit binary-searches a sorted list.
+    /// True until the pair's seal ([`DrainState::seal`]). Bulk insert
+    /// appends; after seal, each edit binary-searches a sorted list.
     bulk: bool,
 }
 
@@ -85,14 +85,6 @@ impl Default for GramIndex {
 }
 
 impl GramIndex {
-    /// Sort every posting list and leave incremental mode. Idempotent.
-    pub(super) fn seal(&mut self) {
-        self.bulk = false;
-        for list in self.grams.values_mut() {
-            list.ensure_sorted();
-        }
-    }
-
     fn insert_id(&mut self, gram: u64, id: NodeId) {
         let list = self.grams.entry(gram).or_default();
         if self.bulk {
@@ -110,6 +102,12 @@ impl DrainState for GramIndex {
     fn dirty_mut(&mut self) -> &mut HashSet<NodeId> {
         &mut self.dirty
     }
+    fn seal(&mut self) {
+        self.bulk = false;
+        for list in self.grams.values_mut() {
+            list.ensure_sorted();
+        }
+    }
     fn insert(&mut self, id: NodeId, value: &Value) {
         if let Value::String(s) = value {
             gram_insert(self, s, id);
@@ -124,7 +122,6 @@ pub(super) fn gram_remove_node(st: &mut GramIndex, id: NodeId) {
     let Some(sources) = st.by_node.remove(&id) else {
         return;
     };
-    st.seal();
     let mut keys = Vec::new();
     for source in &sources {
         keys.extend(trigrams(source));
@@ -212,9 +209,9 @@ pub(super) fn query_grams(needle: &str) -> Option<Vec<u64>> {
 }
 
 /// Intersect the posting lists of `grams`, probing from the shortest list.
-/// A missing gram matches nothing. Seals the index first.
-pub(super) fn intersect_grams(st: &mut GramIndex, grams: &[u64]) -> HashSet<NodeId> {
-    st.seal();
+/// A missing gram matches nothing. Published pairs are always sealed
+/// ([`DrainState::seal`] runs before publish), so the lists are sorted.
+pub(super) fn intersect_grams(st: &GramIndex, grams: &[u64]) -> HashSet<NodeId> {
     let mut lists: Vec<&[NodeId]> = Vec::with_capacity(grams.len());
     for gram in grams {
         match st.grams.get(gram) {

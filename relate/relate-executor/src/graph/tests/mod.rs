@@ -4,8 +4,10 @@ use relate_names::SmallName;
 mod adjacency;
 mod chain;
 mod pattern_stats;
+mod point;
 mod restore;
 mod services;
+mod spatial_profile;
 
 #[test]
 fn schema_capture_never_waits_for_theater_while_holding_catalog() {
@@ -1067,102 +1069,6 @@ fn range_seek_scans_when_a_datetime_does_not_fit_the_order_key() {
             g.commit_ts(),
         )
         .is_none());
-}
-
-#[test]
-fn point_index_answers_bbox() {
-    let g = Graph::default();
-    g.begin_write().unwrap();
-    let inside = g
-        .create_node(
-            vec!["P".into()],
-            BTreeMap::from([(
-                "loc".into(),
-                Value::Point(relate_core::PointValue {
-                    srid: 7203,
-                    x: 1.0,
-                    y: 1.0,
-                    z: None,
-                }),
-            )]),
-        )
-        .unwrap();
-    g.create_node(
-        vec!["P".into()],
-        BTreeMap::from([(
-            "loc".into(),
-            Value::Point(relate_core::PointValue {
-                srid: 7203,
-                x: 10.0,
-                y: 10.0,
-                z: None,
-            }),
-        )]),
-    )
-    .unwrap();
-    g.commit_write();
-    let seek = SpatialSeek::BBox {
-        lo: Value::Point(relate_core::PointValue {
-            srid: 7203,
-            x: 0.0,
-            y: 0.0,
-            z: None,
-        }),
-        hi: Value::Point(relate_core::PointValue {
-            srid: 7203,
-            x: 2.0,
-            y: 2.0,
-            z: None,
-        }),
-    };
-    assert!(g
-        .lookup_spatial_seek(&["P".into()], "loc", &seek, g.commit_ts())
-        .is_none());
-    g.materialize_point_index("P", "loc");
-    let ids = g
-        .lookup_spatial_seek(&["P".into()], "loc", &seek, g.commit_ts())
-        .unwrap();
-    assert_eq!(ids, vec![inside]);
-    let ids = g
-        .lookup_spatial_seek(
-            &["P".into()],
-            "loc",
-            &SpatialSeek::Distance {
-                origin: Value::Point(relate_core::PointValue {
-                    srid: 7203,
-                    x: 0.0,
-                    y: 0.0,
-                    z: None,
-                }),
-                max: 2.0,
-                inclusive: true,
-            },
-            g.commit_ts(),
-        )
-        .unwrap();
-    assert_eq!(ids, vec![inside]);
-    let ids = g
-        .lookup_spatial_seek(
-            &["P".into()],
-            "loc",
-            &SpatialSeek::BBox {
-                lo: Value::Point(relate_core::PointValue {
-                    srid: 7203,
-                    x: -1.0e12,
-                    y: -1.0e12,
-                    z: None,
-                }),
-                hi: Value::Point(relate_core::PointValue {
-                    srid: 7203,
-                    x: 1.0e12,
-                    y: 1.0e12,
-                    z: None,
-                }),
-            },
-            g.commit_ts(),
-        )
-        .unwrap();
-    assert_eq!(ids.len(), 2);
 }
 
 #[test]

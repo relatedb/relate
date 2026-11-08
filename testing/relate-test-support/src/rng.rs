@@ -20,4 +20,10 @@ impl Rng {
     pub fn below(&mut self, n: u64) -> u64 {
         self.next_u64() % n.max(1)
     }
+
+    /// A draw from the unit interval `[0, 1)`, advancing the stream by one
+    /// word: 53 bits of mantissa, so the step is the f64 resolution.
+    pub fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
 }

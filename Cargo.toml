@@ -179,6 +179,9 @@ rand = "0.9"
 crc32fast = "1"
 dashmap = "6"
 rustc-hash = "2"
+# R*-tree POINT index backend (ADR-0549): pure Rust, three new transitive
+# packages (heapless, hash32, stable_deref_trait), MSRV 1.63.
+rstar = "0.12"
 # Advisory file locks: relate-storage's bundle locks and the
 # query-latency per-dataset ensure lock (single pin for both consumers).
 fs4 = "=0.8.4"

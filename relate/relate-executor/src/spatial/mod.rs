@@ -481,8 +481,10 @@ fn pythagoras<const N: usize>(a: &[f64; N], b: &[f64; N]) -> f64 {
     max * scaled_sum.sqrt()
 }
 
-/// Neo4j's haversine earth radius in meters (LABS-256).
-const EARTH_RADIUS_METERS: f64 = 6_378_140.0;
+/// Neo4j's haversine earth radius in meters (LABS-256). The distance
+/// seek's envelope geometry consumes the same constant — one fact, never
+/// re-derived.
+pub(crate) const EARTH_RADIUS_METERS: f64 = 6_378_140.0;
 
 /// Great-circle central angle in radians over two `[longitude, latitude]`
 /// pairs in degrees, ignoring any height.
@@ -552,17 +554,28 @@ fn within(v: f64, min: f64, max: f64) -> bool {
     min <= v && v <= max
 }
 
+/// The bbox longitude axis's wrap decision — the one owner of the
+/// residual predicate's wrap arm and the seek envelope builder's split
+/// (the proptest oracle holds the two against each other): an inverted
+/// longitude wraps for the geographic family and admits nothing
+/// otherwise.
+pub(crate) fn bbox_longitude_wraps(srid: i32, lo_x: f64, hi_x: f64) -> bool {
+    relate_model::point::is_geographic(srid) && lo_x > hi_x
+}
+
 /// Inclusive containment in the three-axis box `[x, y, height]`: `p` lies
-/// between `lo` and `hi` on every axis. For geographic points an inverted
-/// longitude axis (`lo[0] > hi[0]`) wraps across ±180 instead of denoting an
-/// empty range; an inverted latitude stays empty, so the conjunction below
-/// rejects every point. A 2D group's height axis is 0 on all three points,
-/// which leaves it unconstrained.
-fn bbox_contains(p: &[f64; 3], lo: &[f64; 3], hi: &[f64; 3], family: Family) -> bool {
-    let first = match family {
+/// between `lo` and `hi` on every axis. The longitude axis rides the one
+/// wrap decision ([`bbox_longitude_wraps`]): a wrapping box covers the
+/// ±180 band instead of the inverted range; a non-wrapping (or
+/// non-geographic) box is the plain interval, which an inverted axis
+/// empties. A 2D group's height axis is 0 on all three points, which
+/// leaves it unconstrained.
+fn bbox_contains(p: &[f64; 3], lo: &[f64; 3], hi: &[f64; 3], srid: i32) -> bool {
+    let first = if bbox_longitude_wraps(srid, lo[0], hi[0]) {
         // Wrap: [lo[0], 180] ∪ [-180, hi[0]].
-        Family::Geographic if lo[0] > hi[0] => p[0] >= lo[0] || p[0] <= hi[0],
-        Family::Geographic | Family::Cartesian => within(p[0], lo[0], hi[0]),
+        p[0] >= lo[0] || p[0] <= hi[0]
+    } else {
+        within(p[0], lo[0], hi[0])
     };
     first && within(p[1], lo[1], hi[1]) && within(p[2], lo[2], hi[2])
 }
@@ -575,11 +588,13 @@ pub(crate) fn point_within_bbox(vals: &[Value]) -> Result<Value> {
         (Some(Value::Point(p)), Some(Value::Point(lo)), Some(Value::Point(hi))) => {
             match decode_family(p, &[lo, hi])? {
                 None => Ok(Value::Null),
-                Some(family) => Ok(Value::Bool(bbox_contains(
+                // The family decode proves one CRS across the three
+                // points; the wrap decision rides the same srid.
+                Some(_) => Ok(Value::Bool(bbox_contains(
                     &xyz(p),
                     &xyz(lo),
                     &xyz(hi),
-                    family,
+                    p.srid,
                 ))),
             }
         }

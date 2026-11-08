@@ -38,6 +38,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
 rustc-hash = { workspace = true }
+# ADR-0549: the POINT index's R*-tree backend.
+rstar = { workspace = true }
 
 [dev-dependencies]
 relate-test-support = { workspace = true, features = ["nested_eval"] }

@@ -20,6 +20,10 @@ pub(super) use order::RangeIndex;
 pub(crate) use order::{RangeSeek, SpatialSeek};
 pub(crate) use point::spatial_holds;
 pub(super) use point::PointIndex;
+/// Profile-only: the bench harness drives the point backend directly
+/// (the R-tree vs. grid comparison of record lives there).
+#[cfg(test)]
+pub(super) use point::{point_insert, spatial_ids};
 pub(crate) use text::trigram_count;
 pub(super) use text::GramIndex;
 
@@ -33,6 +37,10 @@ pub(super) trait DrainState: Default {
     fn insert(&mut self, id: NodeId, value: &Value);
     /// Drop every posting of `id`.
     fn remove_node(&mut self, id: NodeId);
+    /// Finalize a full local build (create, reopen rebuild) before the
+    /// pair is published: a seek never observes an unsealed pair. The
+    /// default is nothing to do.
+    fn seal(&mut self) {}
 }
 
 impl Graph {
@@ -172,19 +180,18 @@ impl Graph {
         pairs: &CoreMap<(u32, u32), St>,
         label: &str,
         property: &str,
-    ) -> (u32, u32) {
+    ) {
         let (lid, kid) = self.intern_pair(label, property);
         let mut st = St::default();
         self.for_each_pair_value(lid, kid, |id, value| st.insert(id, value));
+        // Sealed before publish: a concurrent seek either sees the fully
+        // built pair or none of it.
+        st.seal();
         pairs.insert((lid, kid), st);
-        (lid, kid)
     }
 
     pub(super) fn materialize_text_index(&self, label: &str, property: &str) {
-        let pair = self.materialize_pair(&self.indexes.gram_pairs, label, property);
-        if let Some(mut st) = self.indexes.gram_pairs.get_mut(&pair) {
-            st.seal();
-        }
+        self.materialize_pair(&self.indexes.gram_pairs, label, property);
     }
 
     pub(super) fn materialize_range_index(&self, label: &str, property: &str) {
@@ -253,8 +260,8 @@ impl Graph {
         let mut acc: Option<HashSet<NodeId>> = None;
         for lid in lids {
             self.drain_pair(pairs, lid, kid);
-            let mut st = pairs.get_mut(&(lid, kid))?;
-            let next = text::intersect_grams(&mut st, &grams);
+            let st = pairs.get(&(lid, kid))?;
+            let next = text::intersect_grams(&st, &grams);
             drop(st);
             intersect_acc(&mut acc, next);
         }
@@ -610,15 +617,5 @@ mod tests {
         // A pattern label the interner never saw is carried by no node.
         let ghost = vec!["N".to_string(), "Ghost".to_string()];
         assert_eq!(g.lookup_range_seek(&ghost, "x", &seek, after), Some(vec![]));
-    }
-
-    #[test]
-    fn cells_in_scans_occupied_cells_when_the_rectangle_is_huge() {
-        let mut st = PointIndex::default();
-        point::point_insert(&mut st, 1, 7203, 1.0, 1.0);
-        let ids = point::cells_in(&st, -1.0e12, -1.0e12, 1.0e12, 1.0e12);
-        assert!(ids.contains(&1));
-        let ids = point::cells_in(&st, 1.0e308, 1.0e308, -1.0e308, -1.0e308);
-        assert!(ids.is_empty());
     }
 }
