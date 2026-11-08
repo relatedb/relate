@@ -750,6 +750,48 @@ action's name (ADR-0429 §9, ADR-0079's anonymity rule). Builds without the
 `telemetry` feature (the `agent` and `minimal` bundles) record and send
 nothing.
 
+## The `ideas` package
+
+A first-party, `hidden` command-kind package (crate `extensions/relate-ideas`):
+a small linked idea store inside the host's store. It parses and runs like any
+extension but appears in no `run` listing and no did-you-mean. The child links
+no `Database` and no surface; every verb is `read_cypher` / `batch_cypher`
+through the wire kit, and the summary goes out through `report_output`.
+
+```bash
+relate extension install ideas --from extensions/relate-ideas/package
+relate run ideas -d ideas.rl --command seed
+```
+
+Flags (the manifest's table; `commit` is `per-batch`):
+
+| Flag / positional | Kind | Default | Meaning |
+| --- | --- | --- | --- |
+| `--command` | string | `list` | The verb: `add`, `link`, `related`, `list`, `show`, `seed` |
+| `idea` (positional) | string | absent | The idea title: the new title for `add`, the source for `link`, the subject of `related` / `show` |
+| `--tag` | repeatable | none | `add`: tags to attach (at most 8; lowercase `a-z 0-9 - _`, at most 32 characters). `list`: filter by one tag |
+| `--to` | string | empty | `link`: the target idea (required for `link`) |
+| `--as` | string | `RELATED_TO` | `link`: the link type, one of `RELATED_TO`, `INSPIRED_BY`, `COMPLEMENTS`, `VARIANT_OF`, `SAME_DATA` (case-insensitive; `-` or space read as `_`) |
+| `-d`, `--database` | host flag | `:memory:` | The store; see [Host execution](#host-execution) |
+
+Verbs:
+
+| Verb | Contract |
+| --- | --- |
+| `add <title> [--tag t]...` | Creates `(:Idea {name})` and `(:Tag)` / `[:TAGGED]` edges in one atomic batch. Titles are trimmed, 1-120 characters, no control characters, unique case-insensitively; adding an existing title only adds tags |
+| `link <a> --to <b> [--as T]` | `MERGE`s `(a)-[:T]->(b)`; both ideas must exist (case-insensitive lookup), no self-links; idempotent |
+| `related <idea>` | One line per link, `-> TYPE other` outgoing and `<- TYPE other` incoming |
+| `show <idea>` | Summary, category, tags and links |
+| `list [--tag t]` | Titles with categories, ordered by title, at most 200 rows |
+| `seed` | One atomic batch of `MERGE`s loading the embedded seed set (34 ideas, 46 links: title, one-line summary, category and the links between them). Re-running refreshes and never duplicates |
+
+Output: the first line is the report's summary; row lines ride the report's
+`starters`, which the host prints one per line, indented, through its
+sanitizer (no ANSI or control characters reach the terminal). A user mistake
+(unknown idea, bad tag, off-vocabulary link type, unknown verb) fails the run
+with the message on stderr and exit 1. The seed's idea nodes carry
+`source: 'seed'`; user-added ones `source: 'user'`.
+
 ## Examples
 
 [authoring.md](authoring.md) — the author guide: the `init → edit → check →
@@ -777,6 +819,11 @@ the end-to-end suite
 [`surfaces/relate-cli/tests/e2e_run.rs`](../../../surfaces/relate-cli/tests/e2e_run.rs),
 which runs the same fixture child through the real binary in CI (the
 wire-driven tests are unix-gated, like the host and protocol suites).
+
+[examples/ideas.md](examples/ideas.md) — the `ideas` package end to end. Its
+runnable form is the crate's unit suite
+(`cargo test -p relate-ideas`: the verbs through a recording host, the seed
+asset's parse, the manifest's agreement with the child).
 
 [examples/mcp-mount.md](examples/mcp-mount.md) — the MCP stdio mount's
 line protocol: the envelope, the `initialize` handshake and its

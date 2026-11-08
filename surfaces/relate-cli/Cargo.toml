@@ -53,12 +53,14 @@ ssh-key = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 rustyline = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+# Hidden REPL dot commands and Archie (ADR-0543), linked only by `eggs`.
+relate-eggs = { workspace = true, optional = true }
 
 # Feature bundles (ADR-0104). Every feature only adds capability; the
 # `full` bundle is the default and matches the release binary.
 [features]
 default = ["full"]
-full = ["repl", "pull", "push", "skill", "upgrade", "telemetry", "fetch-params", "remote-database", "parquet", "info", "http", "mcp", "bolt", "agent-context", "extensions", "extension-install"]
+full = ["repl", "pull", "push", "skill", "upgrade", "telemetry", "fetch-params", "remote-database", "parquet", "info", "http", "mcp", "bolt", "agent-context", "extensions", "extension-install", "eggs"]
 agent = ["skill", "pull", "push", "fetch-params", "remote-database", "info", "agent-context", "extensions", "extension-install"]
 minimal = []
 repl = ["dep:rustyline"]
@@ -125,6 +127,10 @@ bolt = ["surface", "dep:relate-bolt", "parquet"]
 # `relate agent-context [COMMAND]` agent discovery readout (ADR-0242).
 # `full` + `agent`.
 agent-context = []
+# Hidden client-side REPL dot commands and the Archie banner and prompt
+# glyph (the `relate-eggs` crate). `full` only — never `agent`, `minimal`,
+# or bare `serve`. Without it the hook compiles to inert stubs.
+eggs = ["dep:relate-eggs"]
 # The extension system (ADR-0429 §8): command-kind extensions mounted as
 # `relate run <name>` — the MCP mount, the registry and the host. The
 # mount runs the product MCP server's one tool implementation

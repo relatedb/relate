@@ -14,6 +14,21 @@ pub const PRIMARY_PROMPT: &str = "cypher> ";
 /// Continuation prompt while `input_is_complete` is false.
 pub const CONTINUATION_PROMPT: &str = "   ...> ";
 
+/// Primary prompt glyph of the opt-in Archie style (U+2229).
+const ARCHIE_PROMPT: &str = "\u{2229} ";
+
+/// Which prompts the REPL shows. `Archie` is the opt-in glyph prompt of the
+/// `eggs` feature; the continuation prompt stays plain in both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptStyle {
+    Classic,
+    /// `tint` is an SGR parameter string for the glyph, `None` for no colour.
+    #[cfg_attr(not(feature = "eggs"), allow(dead_code))]
+    Archie {
+        tint: Option<String>,
+    },
+}
+
 /// Outcome of feeding one editor / stdin event into the pending buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplStep {
@@ -25,12 +40,17 @@ pub enum ReplStep {
     Exit { pending: Option<String> },
 }
 
-/// Prompt shown for the current pending buffer.
-pub fn repl_prompt(pending: &str) -> &'static str {
-    if pending.trim().is_empty() {
-        PRIMARY_PROMPT
-    } else {
+/// Prompt shown for the current pending buffer. The text is always plain:
+/// colour is applied at render time (see `editor::PromptHelper`), because
+/// rustyline measures the width of the string it is given.
+pub fn repl_prompt(pending: &str, style: &PromptStyle) -> &'static str {
+    if !pending.trim().is_empty() {
         CONTINUATION_PROMPT
+    } else {
+        match style {
+            PromptStyle::Classic => PRIMARY_PROMPT,
+            PromptStyle::Archie { .. } => ARCHIE_PROMPT,
+        }
     }
 }
 
@@ -80,41 +100,87 @@ pub fn history_entry(submitted: &str) -> Option<&str> {
 /// (including a non-empty pending buffer at EOF). Returns the process exit
 /// code: 0 on clean EOF, 1 if the editor fails after it has already started.
 /// Without the `repl` feature this is the plain-stdin loop.
-pub fn run_interactive<F>(mut exec: F) -> i32
+pub fn run_interactive<F>(style: &PromptStyle, mut exec: F) -> i32
 where
     F: FnMut(&str),
 {
     #[cfg(feature = "repl")]
-    match editor::run(&mut exec) {
+    match editor::run(style, &mut exec) {
         Ok(code) => return code,
         Err(e) => crate::print_error(format!(
             "warning: line editor unavailable ({e}); falling back to plain stdin"
         )),
     }
-    run_plain_interactive(&mut exec)
+    run_plain_interactive(style, &mut exec)
 }
 
 /// The rustyline line editor (ADR-0073), compiled only with `repl`.
 #[cfg(feature = "repl")]
 mod editor {
+    use std::borrow::Cow;
+
+    use rustyline::completion::Completer;
     use rustyline::error::ReadlineError;
-    use rustyline::{Config, DefaultEditor};
+    use rustyline::highlight::Highlighter;
+    use rustyline::hint::Hinter;
+    use rustyline::history::FileHistory;
+    use rustyline::validate::Validator;
+    use rustyline::{Config, Editor, Helper};
 
-    use super::{apply_interrupt, apply_line, finish_eof, history_entry, repl_prompt, ReplStep};
+    use super::{
+        apply_interrupt, apply_line, finish_eof, history_entry, repl_prompt, PromptStyle, ReplStep,
+        ARCHIE_PROMPT,
+    };
 
-    pub(super) fn new_editor() -> rustyline::Result<DefaultEditor> {
-        let config = Config::builder().auto_add_history(false).build();
-        DefaultEditor::with_config(config)
+    /// Colours the Archie glyph. rustyline sizes the prompt from the raw
+    /// string passed to `readline` and only then asks the highlighter for
+    /// the displayed form (`highlight_prompt`, rustyline 14), so the SGR
+    /// escapes are added here, never in the prompt string, and cannot skew
+    /// cursor columns.
+    pub(super) struct PromptHelper {
+        tint: Option<String>,
     }
 
-    pub(super) fn run<F>(exec: &mut F) -> rustyline::Result<i32>
+    impl Highlighter for PromptHelper {
+        fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+            &'s self,
+            prompt: &'p str,
+            _default: bool,
+        ) -> Cow<'b, str> {
+            match (&self.tint, prompt == ARCHIE_PROMPT) {
+                (Some(tint), true) => Cow::Owned(format!("\x1b[{tint}m\u{2229}\x1b[0m ")),
+                _ => Cow::Borrowed(prompt),
+            }
+        }
+    }
+    impl Completer for PromptHelper {
+        type Candidate = String;
+    }
+    impl Hinter for PromptHelper {
+        type Hint = String;
+    }
+    impl Validator for PromptHelper {}
+    impl Helper for PromptHelper {}
+
+    pub(super) fn new_editor(
+        style: &PromptStyle,
+    ) -> rustyline::Result<Editor<PromptHelper, FileHistory>> {
+        let config = Config::builder().auto_add_history(false).build();
+        let mut editor = Editor::with_config(config)?;
+        if let PromptStyle::Archie { tint } = style {
+            editor.set_helper(Some(PromptHelper { tint: tint.clone() }));
+        }
+        Ok(editor)
+    }
+
+    pub(super) fn run<F>(style: &PromptStyle, exec: &mut F) -> rustyline::Result<i32>
     where
         F: FnMut(&str),
     {
-        let mut editor = new_editor()?;
+        let mut editor = new_editor(style)?;
         let mut buf = String::new();
         loop {
-            match editor.readline(repl_prompt(&buf)) {
+            match editor.readline(repl_prompt(&buf, style)) {
                 Ok(line) => match apply_line(&mut buf, &line) {
                     ReplStep::Continue => {}
                     ReplStep::Submit(input) => {
@@ -140,13 +206,30 @@ mod editor {
     mod tests {
         #[test]
         fn editor_constructs_without_a_tty() {
-            let _editor = super::new_editor()
+            let _editor = super::new_editor(&super::PromptStyle::Classic)
                 .expect("rustyline Editor::with_config should not require a TTY");
+        }
+
+        #[test]
+        fn archie_prompt_is_tinted_at_render_time_only() {
+            use rustyline::highlight::Highlighter;
+            let tinted = super::PromptHelper {
+                tint: Some("38;2;1;2;3".into()),
+            };
+            let shown = tinted.highlight_prompt(super::ARCHIE_PROMPT, true);
+            assert_eq!(shown, "\x1b[38;2;1;2;3m\u{2229}\x1b[0m ");
+            // The continuation prompt is never touched.
+            assert_eq!(tinted.highlight_prompt("   ...> ", false), "   ...> ");
+            let untinted = super::PromptHelper { tint: None };
+            assert_eq!(
+                untinted.highlight_prompt(super::ARCHIE_PROMPT, true),
+                super::ARCHIE_PROMPT
+            );
         }
     }
 }
 
-fn run_plain_interactive<F>(exec: &mut F) -> i32
+fn run_plain_interactive<F>(style: &PromptStyle, exec: &mut F) -> i32
 where
     F: FnMut(&str),
 {
@@ -154,7 +237,7 @@ where
     let mut stdout = io::stdout();
     let mut buf = String::new();
     loop {
-        print!("{}", repl_prompt(&buf));
+        print!("{}", repl_prompt(&buf, style));
         let _ = stdout.flush();
         let mut line = String::new();
         if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
@@ -184,13 +267,23 @@ mod tests {
 
     #[test]
     fn prompt_is_primary_when_buffer_is_blank() {
-        assert_eq!(repl_prompt(""), PRIMARY_PROMPT);
-        assert_eq!(repl_prompt("   \n"), PRIMARY_PROMPT);
+        assert_eq!(repl_prompt("", &PromptStyle::Classic), PRIMARY_PROMPT);
+        assert_eq!(repl_prompt("   \n", &PromptStyle::Classic), PRIMARY_PROMPT);
+    }
+
+    #[test]
+    fn archie_style_changes_only_the_primary_prompt() {
+        let archie = PromptStyle::Archie { tint: None };
+        assert_eq!(repl_prompt("", &archie), "\u{2229} ");
+        assert_eq!(repl_prompt("MATCH (n)\n", &archie), CONTINUATION_PROMPT);
     }
 
     #[test]
     fn prompt_is_continuation_while_cypher_is_open() {
-        assert_eq!(repl_prompt("MATCH (n)\n"), CONTINUATION_PROMPT);
+        assert_eq!(
+            repl_prompt("MATCH (n)\n", &PromptStyle::Classic),
+            CONTINUATION_PROMPT
+        );
     }
 
     #[test]
@@ -238,7 +331,7 @@ mod tests {
         let mut buf = String::from("MATCH (n)\n");
         assert_eq!(apply_interrupt(&mut buf), ReplStep::Continue);
         assert!(buf.is_empty());
-        assert_eq!(repl_prompt(&buf), PRIMARY_PROMPT);
+        assert_eq!(repl_prompt(&buf, &PromptStyle::Classic), PRIMARY_PROMPT);
     }
 
     #[test]

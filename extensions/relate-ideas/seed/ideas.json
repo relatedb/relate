@@ -1,0 +1,406 @@
+{
+ "ideas": [
+  {
+   "name": "GDS Round-Trip",
+   "summary": "Graph Data Science as a graph transformer: project a subgraph in, run an algorithm, write the results (PageRank, communities, embeddings) back as graph structure.",
+   "category": "Science & Graph Analytics"
+  },
+  {
+   "name": "The Judgment Ledger",
+   "summary": "Every model call stored as an edge on the data it judged: provenance, drift and escalation as queries, e.g. which facts rest only on low-confidence calls?",
+   "category": "Agent Tooling & Memory"
+  },
+  {
+   "name": "Wikipedia Wedge",
+   "summary": "Any article's link neighborhood as a graph file; \"what does the article on entropy connect to that information theory doesn't?\"",
+   "category": "Reference & Research Data"
+  },
+  {
+   "name": "Animated Graph Timelapse",
+   "summary": "A temporal graph played over time; the rise and fall of a community, a market, or a pandemic, one WAL frame at a time.",
+   "category": "Visualization & Rendering"
+  },
+  {
+   "name": "Diff View for Graphs",
+   "summary": "Two checkpoints of the same store, visualized as a diff: added/removed/changed nodes and edges. The merge-conflict view for data.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Event Stream to Temporal Graph",
+   "summary": "Append-only logs (logs, clicks, packets) into a WAL-backed graph; replay any window and query it as it was.",
+   "category": "Import, ETL & Data Sources"
+  },
+  {
+   "name": "Direct-Manipulation Graph Editor",
+   "summary": "Drag nodes, draw relationships, edit properties in-place; every gesture is a Cypher write under the hood. Undo = query log replay.",
+   "category": "Visualization & Rendering"
+  },
+  {
+   "name": "Every Character Network Ever",
+   "summary": "Any book, script or show turned into a character graph, as a template notebook exercise.",
+   "category": "Education & Learning"
+  },
+  {
+   "name": "Graph Clipboard",
+   "summary": "COPY a subgraph as a file, PASTE it into another instance; the smallest useful data-sharing protocol in existence.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Graph-Native Agent Memory",
+   "summary": "A memory that is only a graph: episodes, entities, facts as nodes with timestamps; temporal queries (\"what did we agree on before X?\") are one hop, not RAG guesswork.",
+   "category": "Agent Tooling & Memory"
+  },
+  {
+   "name": "InstantCypher",
+   "summary": "Natural-language questions compiled to deterministic, inspectable Cypher rather than free-text answers.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "OpenStreetMap Wedge",
+   "summary": "OSM PBF extract → nodes/ways/relations; a city's walkable graph in one file, isochrones and shortest paths in milliseconds.",
+   "category": "Reference & Research Data"
+  },
+  {
+   "name": "The Emergent Interaction Graph",
+   "summary": "Temporal knowledge graphs inferred from communication streams and sensor logs: the graph nobody drew, emerging from the interactions.",
+   "category": "Social & Community Networks"
+  },
+  {
+   "name": "The Intentional Graph Workbench",
+   "summary": "One internal graph representation with projectional views and editors for every shape it can take: table, diagram, canvas, tree, timeline.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Wiki-as-a-File",
+   "summary": "Export a wiki (or its dump) to a single .cl file; a community ships its whole knowledge base as one attachment.",
+   "category": "Knowledge Management & Notes"
+  },
+  {
+   "name": "Agent Trace Warehouse",
+   "summary": "Spans, tool calls, prompts and costs as a temporal graph; \"which retrieval step poisoned this answer?\" is a path along the run.",
+   "category": "Agent Tooling & Memory"
+  },
+  {
+   "name": "Code Graph",
+   "summary": "Parse a repo (tree-sitter) into functions/calls/imports; ask \"what breaks if I delete this function?\" — reachability in Cypher, on your disk.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Cypher on Cypher",
+   "summary": "Run a query over another query's result: a stored, re-parameterizable projection, the dataflow shell for Cypher.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "GraphGists, Reborn",
+   "summary": "The classic: fenced Cypher in a markdown file renders data + visualization in the browser. Cookbooks, but for community stories.",
+   "category": "Content & Publishing"
+  },
+  {
+   "name": "Query Plans as Graphs",
+   "summary": "Every EXPLAIN tree collected into one meta-graph; search plans like code, diff them between versions, mine them for smells.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Spreadsheets are Graphs",
+   "summary": "A workbook's formulas, references and sheets as a graph: dependencies, smell detection, and what breaks if I change this cell.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Table Editor to Graph",
+   "summary": "Edit rows in a grid while the graph view updates live: the same store, two projections, no import step.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Tools as Graphs",
+   "summary": "A large MCP toolset as a graph: typed data dependencies between tools plus call-sequence edges mined from real agent traces.",
+   "category": "Agent Tooling & Memory"
+  },
+  {
+   "name": "CSV → Graph, Instantly",
+   "summary": "Drop a CSV, pick key columns, relationships materialize; the pull-style pipeline for any tabular source on the web.",
+   "category": "Import, ETL & Data Sources"
+  },
+  {
+   "name": "Disaster Response Router",
+   "summary": "An OSM extract + road-closure edges on a phone; works without cell towers because the graph is local.",
+   "category": "Infrastructure & Operations"
+  },
+  {
+   "name": "Graph School",
+   "summary": "A browser-based playground where students load canonical graphs (Karate Club, Les Misérables, C. Elegans) and write their first Cypher against them.",
+   "category": "Education & Learning"
+  },
+  {
+   "name": "NetworkX Runtime",
+   "summary": "nx.compose(relate_graph(\"file.cl\")); your nx algorithms, a Cypher backend. (And GDS-style procedures the other direction.)",
+   "category": "Science & Graph Analytics"
+  },
+  {
+   "name": "Smart-Home State Graph",
+   "summary": "HomeAssistant/MQTT events into a temporal property graph; \"who turned the lights on at 3am and what triggered it\" is a path query.",
+   "category": "Infrastructure & Operations"
+  },
+  {
+   "name": "Software Design X-Rays",
+   "summary": "Churn from git history times complexity per file on a temporal graph; hotspots are one query, the trend line is a time-window replay.",
+   "category": "Tooling & Developer UX"
+  },
+  {
+   "name": "Static Sites from Dynamic Graphs",
+   "summary": "Generate a Hugo/Astro site from graph queries; the graph is the CMS, the pages are views, and a rebuild is a query.",
+   "category": "Content & Publishing"
+  },
+  {
+   "name": "Team Wiki from a Shared File",
+   "summary": "Friends editing a shared graph file on a NAS or in a git repo; conflicts merge because files are the unit.",
+   "category": "Knowledge Management & Notes"
+  },
+  {
+   "name": "The Codex, Reborn — an Atlas of History",
+   "summary": "Events, locations and people extracted from annotated historical sources into a browsable atlas of history.",
+   "category": "Reference & Research Data"
+  },
+  {
+   "name": "The Graph-Walking Agent Cursor",
+   "summary": "next_hop(node, goal) as the agent tool instead of run_query: the agent walks real edges, one typed choice at a time, never inventing Cypher.",
+   "category": "Agent Tooling & Memory"
+  },
+  {
+   "name": "Wikipedia in Your Pocket",
+   "summary": "Offline (sub)graph keeps for mobile: download your article neighborhood before a flight, query it on the plane; the C ABI → mobile wrappers make the phone a first-class graph host.",
+   "category": "Reference & Research Data"
+  }
+ ],
+ "links": [
+  {
+   "from": "GDS Round-Trip",
+   "to": "Cypher on Cypher",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Judgment Ledger",
+   "to": "Agent Trace Warehouse",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Judgment Ledger",
+   "to": "InstantCypher",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Judgment Ledger",
+   "to": "The Graph-Walking Agent Cursor",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Wikipedia Wedge",
+   "to": "Wiki-as-a-File",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "Wikipedia Wedge",
+   "to": "Wikipedia in Your Pocket",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Animated Graph Timelapse",
+   "to": "Diff View for Graphs",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Diff View for Graphs",
+   "to": "Animated Graph Timelapse",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "Diff View for Graphs",
+   "to": "Direct-Manipulation Graph Editor",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Event Stream to Temporal Graph",
+   "to": "Animated Graph Timelapse",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Event Stream to Temporal Graph",
+   "to": "Smart-Home State Graph",
+   "kind": "SAME_DATA"
+  },
+  {
+   "from": "Direct-Manipulation Graph Editor",
+   "to": "Diff View for Graphs",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "InstantCypher",
+   "to": "The Judgment Ledger",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Emergent Interaction Graph",
+   "to": "Agent Trace Warehouse",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Emergent Interaction Graph",
+   "to": "Event Stream to Temporal Graph",
+   "kind": "INSPIRED_BY"
+  },
+  {
+   "from": "The Emergent Interaction Graph",
+   "to": "Software Design X-Rays",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Intentional Graph Workbench",
+   "to": "Direct-Manipulation Graph Editor",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Intentional Graph Workbench",
+   "to": "Spreadsheets are Graphs",
+   "kind": "INSPIRED_BY"
+  },
+  {
+   "from": "The Intentional Graph Workbench",
+   "to": "Table Editor to Graph",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Wiki-as-a-File",
+   "to": "Wikipedia in Your Pocket",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Wiki-as-a-File",
+   "to": "Wikipedia Wedge",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "Cypher on Cypher",
+   "to": "GDS Round-Trip",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "Query Plans as Graphs",
+   "to": "Code Graph",
+   "kind": "INSPIRED_BY"
+  },
+  {
+   "from": "Query Plans as Graphs",
+   "to": "Diff View for Graphs",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Spreadsheets are Graphs",
+   "to": "CSV → Graph, Instantly",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Spreadsheets are Graphs",
+   "to": "Table Editor to Graph",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Spreadsheets are Graphs",
+   "to": "The Intentional Graph Workbench",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Table Editor to Graph",
+   "to": "Direct-Manipulation Graph Editor",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Table Editor to Graph",
+   "to": "Spreadsheets are Graphs",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Table Editor to Graph",
+   "to": "The Intentional Graph Workbench",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Tools as Graphs",
+   "to": "Agent Trace Warehouse",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Tools as Graphs",
+   "to": "The Graph-Walking Agent Cursor",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "CSV → Graph, Instantly",
+   "to": "Spreadsheets are Graphs",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "CSV → Graph, Instantly",
+   "to": "Table Editor to Graph",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Disaster Response Router",
+   "to": "OpenStreetMap Wedge",
+   "kind": "INSPIRED_BY"
+  },
+  {
+   "from": "NetworkX Runtime",
+   "to": "GDS Round-Trip",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Smart-Home State Graph",
+   "to": "Event Stream to Temporal Graph",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "Smart-Home State Graph",
+   "to": "Graph-Native Agent Memory",
+   "kind": "INSPIRED_BY"
+  },
+  {
+   "from": "Software Design X-Rays",
+   "to": "Code Graph",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Static Sites from Dynamic Graphs",
+   "to": "Code Graph",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Team Wiki from a Shared File",
+   "to": "Wiki-as-a-File",
+   "kind": "VARIANT_OF"
+  },
+  {
+   "from": "The Graph-Walking Agent Cursor",
+   "to": "InstantCypher",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Graph-Walking Agent Cursor",
+   "to": "The Judgment Ledger",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "The Graph-Walking Agent Cursor",
+   "to": "Tools as Graphs",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Wikipedia in Your Pocket",
+   "to": "Wiki-as-a-File",
+   "kind": "COMPLEMENTS"
+  },
+  {
+   "from": "Wikipedia in Your Pocket",
+   "to": "Wikipedia Wedge",
+   "kind": "SAME_DATA"
+  }
+ ]
+}

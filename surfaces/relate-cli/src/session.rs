@@ -21,6 +21,7 @@ use relate_formatter::{Formatter, Mode};
 use relate_model::CypherValue;
 use relate_splitter::split_statements;
 
+use crate::eggs;
 use crate::exec_query::{self, RenderOpts};
 use crate::VERSION;
 use crate::{errors, exit_flushed, print_error, repl, telemetry, zero_effect};
@@ -96,8 +97,12 @@ fn exit_closed(exec: &mut Exec<'_>, code: i32) -> ! {
 /// (ADR-0279): print the banner, then run the prompt loop. Returns the REPL
 /// exit code; the caller owns the final checkpoint and the process exit.
 fn run_repl(exec: &mut Exec<'_>) -> i32 {
-    println!("Relate {VERSION}. End statements with ;  (.quit to exit)");
-    repl::run_interactive(|input| {
+    let banner = format!("Relate {VERSION}. End statements with ;  (.quit to exit)");
+    let human = exec.query_ctx.is_human_repl();
+    if !eggs::print_banner(human, &banner) {
+        println!("{banner}");
+    }
+    repl::run_interactive(&eggs::prompt_style(human), |input| {
         exec_relate_input(exec, input);
     })
 }
@@ -196,6 +201,16 @@ pub(crate) struct RunOpts<'a> {
 pub(crate) struct QueryContext {
     pub(crate) source: telemetry::QuerySource,
     pub(crate) storage: telemetry::StorageKind,
+    /// The resolved agent mode (ADR-0407), `true` when on.
+    pub(crate) agent_mode: bool,
+}
+
+impl QueryContext {
+    /// The interactive REPL with a human at it: the one fact the hidden
+    /// client-side commands gate on (never agent mode).
+    fn is_human_repl(&self) -> bool {
+        self.source == telemetry::QuerySource::Repl && !self.agent_mode
+    }
 }
 
 /// Shared context for executing statements: engine handles, formatting, and
@@ -249,6 +264,11 @@ impl Exec<'_> {
             query_ctx: QueryContext {
                 source: telemetry::QuerySource::Repl,
                 storage,
+                // The extension host has no agent-mode flag of its own; the
+                // env ladder decides, and an invalid value fails closed
+                // (agent mode) rather than guessing a human.
+                agent_mode: crate::agent_mode::effective_agent_mode_from_env(None, true)
+                    .map_or(true, |m| m.is_on()),
             },
             txn_ledger: StatementEffect::None,
         }
@@ -418,6 +438,14 @@ fn exec_relate_stmt(exec: &mut Exec<'_>, stmt: &str, at: Option<errors::Position
         ".checkpoint" => report(exec.db.checkpoint()),
         ".info" => exec.info(),
         other if other.starts_with('.') => {
+            if let Some(code) = eggs::try_dispatch(
+                stmt,
+                exec.db,
+                &mut exec.conn,
+                exec.query_ctx.is_human_repl(),
+            ) {
+                return code;
+            }
             print_error(format_args!("Error: unknown command {other}"));
             1
         }

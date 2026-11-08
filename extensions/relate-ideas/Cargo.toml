@@ -1,0 +1,28 @@
+[package]
+name = "relate-ideas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A small linked idea store as a first-party extension crate (ADR-0431
+# §11): a command-kind child the `relate run` host drives over MCP stdio.
+# The host owns the store; every verb is a few `read_cypher` /
+# `batch_cypher` calls through the wire kit, and the child links no
+# `Database` and no surface (R7). The lib is the verbs, the validators
+# and the embedded seed set — testable without a host; the bin is the
+# child.
+#
+# `package/extension.json` is the package the `--from` install stages.
+# It is `hidden`: it runs and parses but appears in no listing.
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+relate-wire = { workspace = true }
+
+[lib]
+name = "relate_ideas"
+
+[[bin]]
+name = "ideas"
+path = "src/main.rs"

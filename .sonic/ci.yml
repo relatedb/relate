@@ -160,6 +160,7 @@ stages:
             relate-error
             relate-formatter
             relate-arrow
+            relate-eggs
             relate-splitter
             relate-core
             relate-catalog
@@ -171,6 +172,7 @@ stages:
             relate-fs-to-graph
             relate-git-to-graph
             relate-dungeon
+            relate-ideas
             relate-ontology
             relate-markdown
             relate-test-support

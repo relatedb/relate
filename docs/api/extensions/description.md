@@ -63,3 +63,8 @@ beside them — and the `lab` surface they rode retired outright (ADR-0431
 MUD-style keep where every verb — move, look, take, give, ask — is one
 Cypher statement against the store the host owns, the map an explored
 window the child renders from the rooms the player has entered.
+
+A fourth, `ideas`, is a small linked idea store: add ideas with tags, link
+them with a closed vocabulary of relationship types, walk the links, and
+load a bundled seed set of product ideas to start from. It is a `hidden`
+package, so it is installed by name and absent from listings.

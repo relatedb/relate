@@ -1,0 +1,12 @@
+[package]
+name = "relate-eggs"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+description = "Hidden REPL dot commands and the Archie banner and prompt glyph for the relate CLI (ADR-0543)"
+
+[dependencies]
+relate = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

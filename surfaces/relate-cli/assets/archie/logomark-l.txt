@@ -1,0 +1,14 @@
+# Archie logomark (logomark-l, 12x10). One character per pixel, one line per row.
+# Lines starting with '#' are comments. Rows must be rectangular; do not strip
+# trailing spaces. Legend (one table: src/eggs/sprite.rs TONES):
+#   ' ' or '.'  empty      h  highlight      m  mid      s  shadow
+   hhhhhh   
+  hmmmmmms  
+ hmmmssmmms 
+ hmms  hmms 
+ hms    hms 
+ hms    hms 
+ hms    hms 
+hmms    hmms
+hmms    hmms
+hsss    hsss
