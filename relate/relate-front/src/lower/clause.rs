@@ -17,6 +17,10 @@ pub(super) fn lower_clause(c: &cl::Clause) -> Result<mdb::Clause> {
                 patterns
             },
             where_clause: m.where_expr.as_ref().map(lower_expr).transpose()?,
+            // Carried for the plan-time hint notifications (ADR-0363); the
+            // planner steers nothing by them.
+            using_index: m.using_index.clone(),
+            using_join: m.using_join.clone(),
             search: lower_boxed(m.search.as_ref(), lower_search_clause)?,
         },
         cl::Clause::Create(cr) => mdb::Clause::Create {

@@ -291,6 +291,8 @@ fn run_clauses_mode(
                 patterns,
                 where_clause,
                 search,
+                using_index: _,
+                using_join: _,
             } => {
                 if let Some(search) = search {
                     rows = search_match_clause(

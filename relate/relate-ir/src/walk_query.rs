@@ -636,6 +636,8 @@ mod tests {
             match_mode: MatchMode::DifferentRelationships,
             patterns: vec![pattern],
             where_clause: None,
+            using_index: Vec::new(),
+            using_join: Vec::new(),
             search: None,
         }]);
         assert_eq!(
@@ -679,6 +681,8 @@ mod tests {
             match_mode: MatchMode::DifferentRelationships,
             patterns: vec![pattern],
             where_clause: None,
+            using_index: Vec::new(),
+            using_join: Vec::new(),
             search: None,
         }]);
         assert_eq!(seen_use_graphs(&top), vec!["node_label".to_string()]);

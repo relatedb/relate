@@ -13,7 +13,9 @@
 
 mod common;
 
-use common::{connection, find_node, has_notification, params, plan, two_label_store};
+use common::{
+    connection, find_node, has_notification, notifications_of_kind, params, plan, two_label_store,
+};
 use relate::Database;
 use relate_model::wire::NotificationKind;
 
@@ -321,13 +323,8 @@ fn explain_unbounded_variable_length_pattern_names_the_expand_operator() {
     let explained = conn
         .query("EXPLAIN MATCH (a:A)-[:R*]->(b) RETURN b")
         .unwrap();
-    let unbounded: Vec<&relate::Notification> = explained
-        .notifications()
-        .iter()
-        .filter(|notification| {
-            notification.kind() == NotificationKind::UnboundedVariableLengthPattern
-        })
-        .collect();
+    let unbounded =
+        notifications_of_kind(&explained, NotificationKind::UnboundedVariableLengthPattern);
     assert_eq!(
         unbounded.len(),
         1,
@@ -376,11 +373,7 @@ fn explain_missing_index_remedy_is_runnable_and_silences_after_creation() {
     let statement = "EXPLAIN MATCH (n:Person) WHERE n.name = $x RETURN n";
     let params = params(&[("x", relate::Value::String("ada".into()))]);
     let explained = conn.query_with_params(statement, params.clone()).unwrap();
-    let missing: Vec<&relate::Notification> = explained
-        .notifications()
-        .iter()
-        .filter(|notification| notification.kind() == NotificationKind::MissingIndex)
-        .collect();
+    let missing = notifications_of_kind(&explained, NotificationKind::MissingIndex);
     assert_eq!(
         missing.len(),
         1,
@@ -429,11 +422,7 @@ fn explain_missing_index_remedy_quotes_keyword_property_and_is_runnable() {
         .unwrap();
     let statement = "EXPLAIN MATCH (n:Person) WHERE n.order = 1 RETURN n";
     let explained = conn.query(statement).unwrap();
-    let missing: Vec<&relate::Notification> = explained
-        .notifications()
-        .iter()
-        .filter(|notification| notification.kind() == NotificationKind::MissingIndex)
-        .collect();
+    let missing = notifications_of_kind(&explained, NotificationKind::MissingIndex);
     assert_eq!(
         missing.len(),
         1,

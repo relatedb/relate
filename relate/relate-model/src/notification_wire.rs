@@ -57,6 +57,8 @@ pub enum NotificationCategory {
     Deprecation,
     /// A schema DDL note (`SCHEMA`): the informational 00NA0-00NA2 family.
     Schema,
+    /// An unfulfilled planner hint (`HINT`): the 01N31/01N30 family.
+    Hint,
 }
 
 impl NotificationCategory {
@@ -67,6 +69,7 @@ impl NotificationCategory {
             NotificationCategory::Unrecognized => "UNRECOGNIZED",
             NotificationCategory::Deprecation => "DEPRECATION",
             NotificationCategory::Schema => "SCHEMA",
+            NotificationCategory::Hint => "HINT",
         }
     }
 }
@@ -139,6 +142,10 @@ pub enum NotificationKind {
     SchemaIndexOrConstraintDoesNotExist,
     /// A `CREATE VECTOR INDEX` that omitted `vector.dimensions` (`00NA2`).
     SchemaVectorIndexDimensionsNotSpecified,
+    /// A `USING INDEX` hint no catalog index can serve (`01N31`).
+    HintedIndexNotFound,
+    /// A `USING JOIN ON` hint the planner could not fulfil (`01N30`).
+    JoinHintUnfulfillable,
 }
 
 /// One row of the notification vocabulary (ADR-0363 decision 1). The
@@ -155,6 +162,13 @@ struct NotificationRow {
     /// (ADR-0363 decision 8) — the one membership fact `is_plan_warning`
     /// reads.
     plan_warning: bool,
+    /// Whether two notifications of this kind with the same description
+    /// are two occurrences that must both be reported (ADR-0363
+    /// decision 6) — the one membership fact `dedups_identical` reads.
+    /// Neo4j reports one notification per occurrence (a deprecated call,
+    /// a clause-shaped deprecation, a per-hint diagnostic), so those kinds
+    /// set it; a name-based diagnostic collapses and does not.
+    occurrence_scoped: bool,
 }
 
 // The one notification vocabulary (ADR-0363 decision 1): every kind's code,
@@ -171,6 +185,7 @@ const CARTESIAN_PRODUCT_ROW: NotificationRow = NotificationRow {
     remedy: "Give the patterns a join anchor: reuse a node variable across them, or add a \
              pattern that relates their endpoints; otherwise run them as separate queries.",
     plan_warning: true,
+    occurrence_scoped: true,
 };
 
 const UNBOUNDED_VARIABLE_LENGTH_PATTERN_ROW: NotificationRow = NotificationRow {
@@ -182,6 +197,7 @@ const UNBOUNDED_VARIABLE_LENGTH_PATTERN_ROW: NotificationRow = NotificationRow {
     remedy: "Bound the expansion (`[:R*1..5]`) where arbitrary length is not required, or add \
              a selective endpoint/label predicate and a `LIMIT`.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const ALL_NODES_SCAN_ROW: NotificationRow = NotificationRow {
@@ -193,6 +209,7 @@ const ALL_NODES_SCAN_ROW: NotificationRow = NotificationRow {
     remedy: "Name the label the scan intends (`MATCH (n:<Label>)`); on the index's label the \
              scan becomes an index-backed lookup.",
     plan_warning: true,
+    occurrence_scoped: false,
 };
 
 const MISSING_INDEX_ROW: NotificationRow = NotificationRow {
@@ -205,6 +222,7 @@ const MISSING_INDEX_ROW: NotificationRow = NotificationRow {
              runnable statement, with the name derived deterministically from label and \
              property.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const EAGER_AGGREGATION_ROW: NotificationRow = NotificationRow {
@@ -217,6 +235,7 @@ const EAGER_AGGREGATION_ROW: NotificationRow = NotificationRow {
              predicate or a `LIMIT` before it; profile again to confirm the buffered input \
              shrank.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const ESTIMATION_MISS_ROW: NotificationRow = NotificationRow {
@@ -229,6 +248,7 @@ const ESTIMATION_MISS_ROW: NotificationRow = NotificationRow {
              selective predicate at the scan, or reorder the join); the estimate is a planner \
              assumption, not a runtime fact.",
     plan_warning: true,
+    occurrence_scoped: false,
 };
 
 const UNKNOWN_LABEL_WARNING_ROW: NotificationRow = NotificationRow {
@@ -240,6 +260,7 @@ const UNKNOWN_LABEL_WARNING_ROW: NotificationRow = NotificationRow {
     remedy: "Check the spelling; the label exists after the first write that creates it, and \
              no index or constraint uses the unknown name.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const UNKNOWN_RELATIONSHIP_TYPE_WARNING_ROW: NotificationRow = NotificationRow {
@@ -250,6 +271,7 @@ const UNKNOWN_RELATIONSHIP_TYPE_WARNING_ROW: NotificationRow = NotificationRow {
     title: "Unknown relationship type",
     remedy: "Check the spelling; the type exists after the first write that creates it.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const UNKNOWN_PROPERTY_KEY_WARNING_ROW: NotificationRow = NotificationRow {
@@ -260,6 +282,7 @@ const UNKNOWN_PROPERTY_KEY_WARNING_ROW: NotificationRow = NotificationRow {
     title: "Unknown property key",
     remedy: "Check the spelling; the key exists after the first write that sets it.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const DEPRECATED_FUNCTION_ROW: NotificationRow = NotificationRow {
@@ -270,6 +293,7 @@ const DEPRECATED_FUNCTION_ROW: NotificationRow = NotificationRow {
     title: "Deprecated function",
     remedy: "Replace the call with the catalog's `deprecated_by` (`id(n)` → `elementId(n)`).",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const DEPRECATED_PROCEDURE_ROW: NotificationRow = NotificationRow {
@@ -281,6 +305,7 @@ const DEPRECATED_PROCEDURE_ROW: NotificationRow = NotificationRow {
     remedy: "Use the registry's `deprecated_by` replacement instead; the replacement is the \
              remedy.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const CALL_SUBQUERY_WITHOUT_SCOPE_ROW: NotificationRow = NotificationRow {
@@ -292,6 +317,7 @@ const CALL_SUBQUERY_WITHOUT_SCOPE_ROW: NotificationRow = NotificationRow {
     remedy: "Add the scope clause the body imports: `CALL (n) { … }`, or `CALL () { … }` when \
              it imports nothing.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const MERGE_SELF_REFERENCE_ROW: NotificationRow = NotificationRow {
@@ -303,6 +329,7 @@ const MERGE_SELF_REFERENCE_ROW: NotificationRow = NotificationRow {
     remedy: "Compute the property into a separate variable before the MERGE, or set it \
              with ON CREATE SET after the merge.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const AMBIGUOUS_SUBCLAUSE_REFERENCE_ROW: NotificationRow = NotificationRow {
@@ -313,6 +340,7 @@ const AMBIGUOUS_SUBCLAUSE_REFERENCE_ROW: NotificationRow = NotificationRow {
     title: "Deprecated ambiguous subclause reference",
     remedy: "Reference the projection item by an alias, or use the `GROUP BY` clause.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const COMPLEX_SUBCLAUSE_REFERENCE_ROW: NotificationRow = NotificationRow {
@@ -323,6 +351,7 @@ const COMPLEX_SUBCLAUSE_REFERENCE_ROW: NotificationRow = NotificationRow {
     title: "Deprecated complex subclause reference",
     remedy: "Reference the projection item expression by an alias.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const CREATE_SELF_REFERENCE_ROW: NotificationRow = NotificationRow {
@@ -334,6 +363,7 @@ const CREATE_SELF_REFERENCE_ROW: NotificationRow = NotificationRow {
     remedy: "Create the entity in a separate `CREATE` clause before referencing it, or set \
              the property afterwards.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const SUBQUERY_VARIABLE_SHADOWING_ROW: NotificationRow = NotificationRow {
@@ -344,6 +374,7 @@ const SUBQUERY_VARIABLE_SHADOWING_ROW: NotificationRow = NotificationRow {
     title: "Subquery variable shadowing",
     remedy: "Import the outer variable with `CALL (name) { … }`, or rename the inner one.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const DYNAMIC_PROPERTY_ROW: NotificationRow = NotificationRow {
@@ -355,6 +386,30 @@ const DYNAMIC_PROPERTY_ROW: NotificationRow = NotificationRow {
             index scans for those properties",
     remedy: "Use a static property so index lookups stay possible.",
     plan_warning: false,
+    occurrence_scoped: false,
+};
+
+const HINTED_INDEX_NOT_FOUND_ROW: NotificationRow = NotificationRow {
+    code: "Neo.ClientNotification.Schema.HintedIndexNotFound",
+    gql_status: "01N31",
+    severity: NotificationSeverity::Warning,
+    category: NotificationCategory::Hint,
+    title: "The request (directly or indirectly) referred to an index that \
+            does not exist.",
+    remedy: "Create the index, or drop the hint.",
+    plan_warning: false,
+    occurrence_scoped: true,
+};
+
+const JOIN_HINT_UNFULFILLABLE_ROW: NotificationRow = NotificationRow {
+    code: "Neo.ClientNotification.Statement.JoinHintUnfulfillableWarning",
+    gql_status: "01N30",
+    severity: NotificationSeverity::Warning,
+    category: NotificationCategory::Hint,
+    title: "The database was unable to plan a hinted join.",
+    remedy: "Try a different join key or restructure the query.",
+    plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const UNSATISFIABLE_RELATIONSHIP_TYPE_EXPRESSION_ROW: NotificationRow = NotificationRow {
@@ -365,6 +420,7 @@ const UNSATISFIABLE_RELATIONSHIP_TYPE_EXPRESSION_ROW: NotificationRow = Notifica
     title: "Unsatisfiable relationship type expression",
     remedy: "Request one type or a disjunction of types; a relationship has exactly one type.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const REPEATED_RELATIONSHIP_VARIABLE_ROW: NotificationRow = NotificationRow {
@@ -376,6 +432,7 @@ const REPEATED_RELATIONSHIP_VARIABLE_ROW: NotificationRow = NotificationRow {
     remedy: "Use a distinct variable per relationship position; a relationship cannot be \
              traversed twice in one pattern.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const SEARCH_IDENTIFIER_SHADOWING_VARIABLE_ROW: NotificationRow = NotificationRow {
@@ -386,6 +443,7 @@ const SEARCH_IDENTIFIER_SHADOWING_VARIABLE_ROW: NotificationRow = NotificationRo
     title: "Identifier shadowing variable",
     remedy: "Rename the index or the variable; the index name is taken literally.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const EXHAUSTIVE_SHORTEST_PATH_ROW: NotificationRow = NotificationRow {
@@ -396,6 +454,7 @@ const EXHAUSTIVE_SHORTEST_PATH_ROW: NotificationRow = NotificationRow {
     title: "Exhaustive shortest path",
     remedy: "Separate the existential predicate from the `MATCH` with `WITH` where possible.",
     plan_warning: false,
+    occurrence_scoped: true,
 };
 
 const INDEX_OR_CONSTRAINT_ALREADY_EXISTS_ROW: NotificationRow = NotificationRow {
@@ -406,6 +465,7 @@ const INDEX_OR_CONSTRAINT_ALREADY_EXISTS_ROW: NotificationRow = NotificationRow 
     title: "Index or constraint already exists",
     remedy: "Drop the existing index or constraint first, or use a different name or schema.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const INDEX_OR_CONSTRAINT_DOES_NOT_EXIST_ROW: NotificationRow = NotificationRow {
@@ -416,6 +476,7 @@ const INDEX_OR_CONSTRAINT_DOES_NOT_EXIST_ROW: NotificationRow = NotificationRow 
     title: "Index or constraint does not exist",
     remedy: "Check the name; `IF EXISTS` makes a missing index or constraint a no-op.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 const VECTOR_INDEX_DIMENSIONS_NOT_SPECIFIED_ROW: NotificationRow = NotificationRow {
@@ -426,6 +487,7 @@ const VECTOR_INDEX_DIMENSIONS_NOT_SPECIFIED_ROW: NotificationRow = NotificationR
     title: "Vector index dimensions not specified",
     remedy: "Set `vector.dimensions` in `OPTIONS { indexConfig: { … } }` when creating the index.",
     plan_warning: false,
+    occurrence_scoped: false,
 };
 
 impl NotificationKind {
@@ -474,6 +536,8 @@ impl NotificationKind {
             NotificationKind::SchemaVectorIndexDimensionsNotSpecified => {
                 &VECTOR_INDEX_DIMENSIONS_NOT_SPECIFIED_ROW
             }
+            NotificationKind::HintedIndexNotFound => &HINTED_INDEX_NOT_FOUND_ROW,
+            NotificationKind::JoinHintUnfulfillable => &JOIN_HINT_UNFULFILLABLE_ROW,
         }
     }
 
@@ -484,23 +548,7 @@ impl NotificationKind {
     /// deprecation, a per-pattern performance hint — keeps its duplicates,
     /// because Neo4j reports one notification per occurrence.
     pub fn dedups_identical(self) -> bool {
-        !matches!(
-            self,
-            NotificationKind::CartesianProduct
-                | NotificationKind::UnboundedVariableLengthPattern
-                | NotificationKind::DeprecatedFunction
-                | NotificationKind::DeprecatedProcedure
-                | NotificationKind::CallSubqueryWithoutScope
-                | NotificationKind::MergeSelfReference
-                | NotificationKind::AmbiguousSubclauseReference
-                | NotificationKind::ComplexSubclauseReference
-                | NotificationKind::CreateSelfReference
-                | NotificationKind::SubqueryVariableShadowing
-                | NotificationKind::UnsatisfiableRelationshipTypeExpression
-                | NotificationKind::RepeatedRelationshipVariable
-                | NotificationKind::SearchIdentifierShadowingVariable
-                | NotificationKind::ExhaustiveShortestPath
-        )
+        !self.row().occurrence_scoped
     }
 
     /// Whether the plan table already renders this kind (ADR-0363

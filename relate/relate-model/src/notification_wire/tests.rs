@@ -1,12 +1,18 @@
 use super::*;
 use serde_json::json;
 
-/// Every kind, in table order, paired with the ADR-0363 table row it
-/// must reproduce: code, GQLSTATUS, severity, category, title, remedy.
-/// A drift in any cell fails here.
+/// Every kind, in table order, paired with the ADR-0363 table row it must
+/// reproduce: code, GQLSTATUS, severity, category, title, remedy. A drift
+/// in any cell fails here. Each row is read through the kind's own public
+/// accessors, so the pin exercises `row()`'s variant→row mapping — a
+/// mis-indexed or duplicated arm fails it.
 #[test]
 fn vocabulary_matches_the_adr_table_row_for_row() {
-    let rows: Vec<(&str, &str, &str, &str, &str, &str)> = [
+    // The one enumeration this pin walks. `row()`'s exhaustive match
+    // forces every new variant to claim a row; this list forces that row
+    // to carry an authored expectation below (a kind missing here also
+    // misses its expectation, so the lengths differ and the pin fails).
+    const ALL_KINDS: [NotificationKind; 27] = [
         NotificationKind::CartesianProduct,
         NotificationKind::UnboundedVariableLengthPattern,
         NotificationKind::AllNodesScan,
@@ -32,19 +38,22 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
         NotificationKind::SchemaIndexOrConstraintAlreadyExists,
         NotificationKind::SchemaIndexOrConstraintDoesNotExist,
         NotificationKind::SchemaVectorIndexDimensionsNotSpecified,
-    ]
-    .into_iter()
-    .map(|kind| {
-        (
-            kind.code(),
-            kind.gql_status(),
-            kind.severity().as_str(),
-            kind.category().as_str(),
-            kind.title(),
-            kind.remedy(),
-        )
-    })
-    .collect();
+        NotificationKind::HintedIndexNotFound,
+        NotificationKind::JoinHintUnfulfillable,
+    ];
+    let rows: Vec<(&str, &str, &str, &str, &str, &str)> = ALL_KINDS
+        .iter()
+        .map(|kind| {
+            (
+                kind.code(),
+                kind.gql_status(),
+                kind.severity().as_str(),
+                kind.category().as_str(),
+                kind.title(),
+                kind.remedy(),
+            )
+        })
+        .collect();
     assert_eq!(
         rows,
         vec![
@@ -265,6 +274,22 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
                 "SCHEMA",
                 "Vector index dimensions not specified",
                 "Set `vector.dimensions` in `OPTIONS { indexConfig: { … } }` when creating the index.",
+            ),
+            (
+                "Neo.ClientNotification.Schema.HintedIndexNotFound",
+                "01N31",
+                "WARNING",
+                "HINT",
+                "The request (directly or indirectly) referred to an index that does not exist.",
+                "Create the index, or drop the hint.",
+            ),
+            (
+                "Neo.ClientNotification.Statement.JoinHintUnfulfillableWarning",
+                "01N30",
+                "WARNING",
+                "HINT",
+                "The database was unable to plan a hinted join.",
+                "Try a different join key or restructure the query.",
             ),
         ]
     );

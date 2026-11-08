@@ -572,6 +572,8 @@ mod tests {
                     match_mode: MatchMode::DifferentRelationships,
                     patterns: vec![compact(vec![node(Some("n"), &["Person"])], Vec::new())],
                     where_clause: None,
+                    using_index: Vec::new(),
+                    using_join: Vec::new(),
                     search: None,
                 },
                 Clause::Return {

@@ -1413,7 +1413,7 @@ variable-length pattern, a missing range index, a label/relationship
 type/property key the catalog does not know, a deprecated function or
 procedure, a scope-less `CALL { … }`. Each entry carries a stable `code`, a
 GQLSTATUS (`gql_status`), a severity (`INFORMATION` or `WARNING`), a
-category (`PERFORMANCE`, `UNRECOGNIZED` or `DEPRECATION`), a title, the
+category (`PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT`), a title, the
 instance `description` (the diagnosis) and a runnable `remedy` (the
 action). A plain run derives no list.
 

@@ -296,7 +296,7 @@ them during marshalling):
   entry is a plain object with `code`,
   `gql_status` (the GQLSTATUS value, e.g. `"03N90"`), `severity`
   (`"INFORMATION"` or `"WARNING"`), `category` (`"PERFORMANCE"`,
-  `"UNRECOGNIZED"` or `"DEPRECATION"`), `title`, `description` (the
+  `"UNRECOGNIZED"`, `"DEPRECATION"`, `"SCHEMA"` or `"HINT"`), `title`, `description` (the
   diagnosis) and `remedy` (the action that resolves it), plus `operator_id`
   (the raising plan operator's id) on operator-scoped kinds. There is no
   `position` key. For example an `EXPLAIN MATCH (a:Person), (b:City) RETURN

@@ -64,6 +64,8 @@ pub(crate) fn try_fold_walk_count(
         patterns,
         where_clause,
         search: None,
+        using_index: _,
+        using_join: _,
     }) = clauses.first()
     else {
         return Ok(None);

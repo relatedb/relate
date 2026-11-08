@@ -210,6 +210,8 @@ fn plain_match(clause: &Clause) -> Option<PlainMatch<'_>> {
         patterns,
         where_clause,
         search,
+        using_index: _,
+        using_join: _,
     } = clause
     else {
         return None;

@@ -1452,7 +1452,7 @@ re-exported at the crate root; `NotificationKind`, `NotificationSeverity` and
   `title() -> &'static str`, `severity() -> NotificationSeverity` and
   `category() -> NotificationCategory` (both with `as_str()` giving the wire
   spelling, `INFORMATION`/`WARNING` and `PERFORMANCE`/`UNRECOGNIZED`/
-  `DEPRECATION`), and `remedy() -> &'static str` (the kind's canonical
+  `DEPRECATION`/`SCHEMA`/`HINT`), and `remedy() -> &'static str` (the kind's canonical
   remedy).
 - `description() -> &str` — the instance detail (the unknown name, the index
   text, the warning message).

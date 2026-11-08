@@ -85,7 +85,7 @@ export interface Notification {
   /** The GQLSTATUS value, e.g. "03N90". */
   gql_status: string;
   severity: "INFORMATION" | "WARNING";
-  category: "PERFORMANCE" | "UNRECOGNIZED" | "DEPRECATION";
+  category: "PERFORMANCE" | "UNRECOGNIZED" | "DEPRECATION" | "SCHEMA" | "HINT";
   /** The short human-readable kind name, e.g. "Cartesian product". */
   title: string;
   /** The diagnosis: what the statement does and which part raises it. */
