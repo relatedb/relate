@@ -30,6 +30,7 @@ EXEMPTED="
 relate-agentbench -> the A/B dispatch job (dispatch-only, LABS-481)
 relate-auth -> exercised through the http/mcp suites that consume it (os-smoke surface smokes)
 relate-bolt -> bolt driver smoke + language-clients lanes
+relate-codec-lab -> no CI lane (hand-run snapshot-codec measurement harness, ADR-0537; ships no tests)
 relate-cookbook -> corpus lane (native recipe gate)
 relate-datasets -> loadtest lanes (fraud/identity datasets)
 relate-graph-examples -> graph-examples nightly

@@ -286,6 +286,34 @@ impl<T> IdVec<T> {
         }
     }
 
+    /// Drop the value when `pred` holds, checked under the same write lock
+    /// as the removal: a writer that refilled the slot between an earlier
+    /// edit and this call is seen by `pred`, and the value stays. Removal
+    /// follows [`Self::remove`] (a dense slot stays as a hole).
+    pub(super) fn remove_if(&self, id: &i64, pred: impl FnOnce(&T) -> bool) -> Option<T> {
+        let idx = index(*id)?;
+        let mut store = self.slots.write().expect("id store lock");
+        match occupied(&store.dense, &store.overflow, *id, idx) {
+            Some(Loc::Dense(idx)) => {
+                let value = store.dense[idx].as_ref().expect("the slot is occupied");
+                if pred(value) {
+                    store.dense[idx].take()
+                } else {
+                    None
+                }
+            }
+            Some(Loc::Overflow(id)) => {
+                let value = store.overflow.get(&id).expect("the side entry is present");
+                if pred(value) {
+                    store.overflow.remove(&id)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    }
+
     pub(super) fn retain(&self, mut f: impl FnMut(&i64, &mut T) -> bool) {
         let mut store = self.slots.write().expect("id store lock");
         for (idx, slot) in store.dense.iter_mut().enumerate() {
@@ -463,6 +491,25 @@ mod tests {
         assert!(ids.slots.read().unwrap().dense[1].is_none());
         assert_eq!(ids.remove(&1), Some("replaced"));
         assert!(ids.get(&1).is_none());
+    }
+
+    #[test]
+    fn remove_if_drops_only_when_the_predicate_holds() {
+        let ids = IdVec::new();
+        ids.insert(1, 7u64);
+        assert_eq!(ids.remove_if(&1, |v| *v == 0), None, "predicate false");
+        assert_eq!(*ids.get(&1).unwrap(), 7, "the value stays");
+        assert_eq!(ids.remove_if(&9, |_| true), None, "an absent id");
+        assert_eq!(ids.remove_if(&1, |v| *v == 7), Some(7));
+        assert!(ids.get(&1).is_none());
+        assert_eq!(ids.span(), 2, "a dense slot stays as a hole");
+
+        let high = i64::MAX - 1;
+        ids.insert(high, 5u64);
+        assert_eq!(ids.remove_if(&high, |v| *v == 0), None);
+        assert_eq!(*ids.get(&high).unwrap(), 5);
+        assert_eq!(ids.remove_if(&high, |v| *v == 5), Some(5));
+        assert!(ids.get(&high).is_none(), "the side entry goes too");
     }
 
     #[test]

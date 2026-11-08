@@ -33,18 +33,15 @@ pub(super) fn adj_reposition(
 
 /// Remove one hop from `node`'s `type_id` chunk (LABS-1116: the GC prunes
 /// the hops of chains it removed, so adjacency never references a rel the
-/// version map no longer holds).
-/// Remove one hop from `node`'s `type_id` chunk (LABS-1116: the GC prunes
-/// the hops of chains it removed, so adjacency never references a rel the
 /// version map no longer holds). A node left with no chunks leaves no
 /// adjacency entry behind — `remove_if` re-checks emptiness under the
-/// shard lock, so a racing insert that recreated a chunk wins and the
-/// entry stays.
-pub(super) fn adj_remove(map: &CoreMap<NodeId, TypedAdj>, node: NodeId, type_id: u32, id: RelId) {
+/// store's write lock, so a racing insert that recreated a chunk wins and
+/// the entry stays.
+pub(super) fn adj_remove(map: &IdVec<TypedAdj>, node: NodeId, type_id: u32, id: RelId) {
     if let Some(mut adj) = map.get_mut(&node) {
         adj.remove(type_id, id);
     }
-    map.remove_if(&node, |_, adj| adj.chunks.is_empty());
+    map.remove_if(&node, |adj| adj.chunks.is_empty());
 }
 
 impl Graph {

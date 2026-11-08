@@ -21,7 +21,7 @@ pub(super) fn with_node<R>(
 ) -> Option<R> {
     let vers = graph.nodes.get(&node)?;
     let live = live_version(&vers)?;
-    Some(f(&live.live))
+    Some(f(live.live))
 }
 
 /// The other endpoint of a live `hop` from `node` in direction `dir`,

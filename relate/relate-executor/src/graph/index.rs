@@ -298,13 +298,11 @@ impl Graph {
         // adjacency hops when the chain empties. The `any(dead_at)` guard
         // above proves the chain non-empty, and every version of one rel
         // id shares its endpoints (`cow` clones the previous version's
-        // endpoints; no operation moves a rel) — so a `None` here is a
-        // broken invariant that must fail loud, not silently skip the
-        // prune (F-1-11).
-        let (start, end, type_id) = vers
-            .last()
-            .map(|v| (v.live.start, v.live.end, v.live.type_id))
-            .expect("a chain with a dead version is non-empty");
+        // endpoints; no operation moves a rel) — and `Chain::last` fails
+        // loud on an empty chain, a broken invariant that must not
+        // silently skip the prune (F-1-11).
+        let newest = vers.last();
+        let (start, end, type_id) = (newest.live.start, newest.live.end, newest.live.type_id);
         let dead: Vec<LiveRel> = if prune {
             vers.iter()
                 .filter(|v| v.dead_at(horizon))
