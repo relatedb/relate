@@ -1,0 +1,17 @@
+{
+  "kind": "command",
+  "name": "ideas",
+  "version": "0.1.0",
+  "protocol": "2025-06-18",
+  "flags": [
+    {"kind": "string", "name": "command", "default": "list"},
+    {"kind": "repeatable", "name": "tag", "default": []},
+    {"kind": "string", "name": "to", "default": ""},
+    {"kind": "string", "name": "as", "default": "RELATED_TO"}
+  ],
+  "positional": {"name": "idea"},
+  "requires-fresh-store": false,
+  "commit": "per-batch",
+  "executable": "ideas",
+  "hidden": true
+}

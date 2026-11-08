@@ -2534,6 +2534,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "relate-ideas"
+version = "0.16.1"
+dependencies = [
+ "relate-wire",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "relate-ir"
 version = "0.16.1"
 dependencies = [

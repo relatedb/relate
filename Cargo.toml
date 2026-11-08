@@ -48,6 +48,7 @@ default-members = [
     "extensions/relate-fs-to-graph",
     "extensions/relate-git-to-graph",
     "extensions/relate-dungeon",
+    "extensions/relate-ideas",
 ]
 
 [workspace.package]
@@ -96,6 +97,7 @@ relate-query-latency = { path = "testing/relate-query-latency" }
 relate-wire = { path = "extensions/relate-wire" }
 relate-fs-to-graph = { path = "extensions/relate-fs-to-graph" }
 relate-dungeon = { path = "extensions/relate-dungeon" }
+relate-ideas = { path = "extensions/relate-ideas" }
 relate-git-to-graph = { path = "extensions/relate-git-to-graph" }
 
 # Property-testing harness (ADR-0268): dev-only, never compiled into the
