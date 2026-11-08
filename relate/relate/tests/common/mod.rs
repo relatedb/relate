@@ -292,6 +292,15 @@ pub fn strings(values: &[&str]) -> relate::Value {
     list(values.iter().map(|value| string(value)).collect())
 }
 
+/// The first cell of a one-row query, as the STRING it must be — the
+/// one toString-extraction helper the temporal integration tests share.
+pub fn text(conn: &mut relate::Connection, query: &str) -> String {
+    match scalar_one(conn, query) {
+        relate::Value::String(value) => value.to_string(),
+        other => panic!("{query}: expected a STRING, got {other:?}"),
+    }
+}
+
 /// Runs `query`, which must succeed.
 pub fn run(connection: &mut relate::Connection, query: &str) -> relate::QueryResult {
     connection

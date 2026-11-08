@@ -26,15 +26,17 @@ pub(super) const NANOS_PER_MICRO: i128 = 1_000;
 pub(super) const SECONDS_PER_MINUTE: i128 = NANOS_PER_MINUTE / NANOS_PER_SECOND;
 pub(super) const SECONDS_PER_HOUR: i128 = NANOS_PER_HOUR / NANOS_PER_SECOND;
 
-/// Neo4j's average month length in days, the factor the trunc/fract cascade
-/// turns a fractional month into days with (`TemporalUtil.AVG_DAYS_PER_MONTH`).
-pub(super) const AVG_DAYS_PER_MONTH: f64 = 365.2425 / 12.0;
+/// Neo4j's average month length in nanoseconds, the constant its
+/// `DurationValue.approximate` fold turns a fractional month into
+/// nanoseconds with (`2.629746E15d`) — [`AVG_SECONDS_PER_MONTH`] in
+/// nanoseconds, a relation a test pins.
+pub(super) const AVG_NANOS_PER_MONTH: f64 = AVG_SECONDS_PER_MONTH as f64 * NANOS_PER_SECOND as f64;
 
 /// Neo4j's average month length in seconds, the factor its duration overflow
 /// guard multiplies the month field by (`DurationValue.assertNoOverflow` via
-/// `TemporalUtil.AVG_SECONDS_PER_MONTH`). Declared once — [`AVG_DAYS_PER_MONTH`]
-/// in seconds, a relation a test pins — so the cascade and the guard cannot
-/// drift apart.
+/// `TemporalUtil.AVG_SECONDS_PER_MONTH`). Declared once — [`AVG_NANOS_PER_MONTH`]
+/// is its nanosecond image, a relation a test pins — so the fold and the
+/// guard cannot drift apart.
 pub(super) const AVG_SECONDS_PER_MONTH: i128 = 2_629_746;
 
 /// The largest `seconds` magnitude a duration accepts. The sub-day part is a
@@ -202,15 +204,12 @@ impl DurationField {
 mod tests {
     use super::*;
 
-    /// The seconds factor is the day factor in seconds: the cascade's month
-    /// length and the overflow guard's month factor are one fact.
+    /// The nanosecond factor is the seconds factor in nanoseconds: the fold's
+    /// month length and the overflow guard's month factor are one fact.
     #[test]
-    fn average_month_seconds_matches_the_day_factor() {
-        assert_eq!(
-            AVG_SECONDS_PER_MONTH,
-            (AVG_DAYS_PER_MONTH * 86_400.0) as i128
-        );
+    fn average_month_nanos_matches_the_second_factor() {
         assert_eq!(AVG_SECONDS_PER_MONTH, 3_652_425 * 86_400 / (10_000 * 12));
+        assert_eq!(AVG_NANOS_PER_MONTH, 2.629_746e15);
     }
 
     /// The map-key spelling is a bijection over the vocabulary in declaration

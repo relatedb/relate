@@ -12,16 +12,7 @@ mod common;
 
 use relate::Value;
 
-use common::{connection, err_text, scalar_one};
-
-/// `toString(expr)` — the value's text form, the one rendering every
-/// temporal assertion below reads.
-fn text(c: &mut relate::Connection, expr: &str) -> String {
-    match scalar_one(c, &format!("RETURN toString({expr}) AS x")) {
-        Value::String(s) => s.to_string(),
-        other => panic!("{expr}: expected a STRING, got {other:?}"),
-    }
-}
+use common::{connection, err_text, scalar_one, text};
 
 /// B3: the lowercase epoch spelling is the same field as the camelCase one —
 /// it selects the epoch form and takes part in the exclusion. (Neo4j agrees:
@@ -31,17 +22,17 @@ fn text(c: &mut relate::Connection, expr: &str) -> String {
 fn epoch_field_spellings_are_case_insensitive() {
     let mut c = connection();
     assert_eq!(
-        text(&mut c, "datetime({epochseconds: 1})"),
+        text(&mut c, "RETURN toString(datetime({epochseconds: 1})) AS x"),
         "1970-01-01T00:00:01Z"
     );
     assert_eq!(
-        text(&mut c, "datetime({epochmillis: 2000})"),
+        text(
+            &mut c,
+            "RETURN toString(datetime({epochmillis: 2000})) AS x"
+        ),
         "1970-01-01T00:00:02Z"
     );
-    let err = err_text(
-        c.query("RETURN datetime({epochSeconds: 1, epochmillis: 2}) AS x")
-            .map(|_| ()),
-    );
+    let err = err_text(c.query("RETURN datetime({epochSeconds: 1, epochmillis: 2}) AS x"));
     assert!(
         err.contains("epochSeconds cannot be selected together with epochMillis"),
         "{err}"
@@ -65,7 +56,7 @@ fn a_non_temporal_source_field_is_rejected() {
             "Cannot get the time of: 42",
         ),
     ] {
-        let err = err_text(c.query(query).map(|_| ()));
+        let err = err_text(c.query(query));
         assert!(err.contains(expected), "{query}: {err}");
     }
 }
@@ -77,11 +68,17 @@ fn a_non_temporal_source_field_is_rejected() {
 fn a_null_form_field_does_not_select_the_form() {
     let mut c = connection();
     assert_eq!(
-        text(&mut c, "date({date: date('2021-01-01'), week: null})"),
+        text(
+            &mut c,
+            "RETURN toString(date({date: date('2021-01-01'), week: null})) AS x"
+        ),
         "2021-01-01"
     );
     assert_eq!(
-        text(&mut c, "date({date: date('2021-01-01'), week: 5})"),
+        text(
+            &mut c,
+            "RETURN toString(date({date: date('2021-01-01'), week: 5})) AS x"
+        ),
         "2020-01-31"
     );
 }
@@ -93,11 +90,14 @@ fn a_null_form_field_does_not_select_the_form() {
 fn the_selected_epoch_field_is_the_one_read() {
     let mut c = connection();
     assert_eq!(
-        text(&mut c, "datetime({epochMillis: null, epochSeconds: 5})"),
+        text(
+            &mut c,
+            "RETURN toString(datetime({epochMillis: null, epochSeconds: 5})) AS x"
+        ),
         "1970-01-01T00:00:05Z"
     );
     assert_eq!(
-        text(&mut c, "datetime({epochseconds: 5})"),
+        text(&mut c, "RETURN toString(datetime({epochseconds: 5})) AS x"),
         "1970-01-01T00:00:05Z"
     );
 }
@@ -139,13 +139,16 @@ fn the_timezone_accessor_renders_a_zero_offset_as_z() {
 fn a_short_zone_name_resolves_on_every_map_form() {
     let mut c = connection();
     assert_eq!(
-        text(&mut c, "time({hour: 12, timezone: 'CET'})"),
+        text(
+            &mut c,
+            "RETURN toString(time({hour: 12, timezone: 'CET'})) AS x"
+        ),
         "12:00:00+01:00"
     );
     assert_eq!(
         text(
             &mut c,
-            "datetime({year: 2020, month: 1, day: 1, timezone: 'CET'})"
+            "RETURN toString(datetime({year: 2020, month: 1, day: 1, timezone: 'CET'})) AS x"
         ),
         "2020-01-01T00:00:00+01:00"
     );
@@ -169,14 +172,12 @@ fn a_civil_datetime_source_supplies_its_time_but_not_a_date() {
     assert_eq!(
         text(
             &mut c,
-            "localtime({time: localdatetime('4294967397-01-01T12:30')})"
+            "RETURN toString(localtime({time: localdatetime('4294967397-01-01T12:30')})) AS x"
         ),
         "12:30:00"
     );
-    let err = err_text(
-        c.query("RETURN date({date: localdatetime('4294967397-01-01T12:30')}) AS x")
-            .map(|_| ()),
-    );
+    let err =
+        err_text(c.query("RETURN date({date: localdatetime('4294967397-01-01T12:30')}) AS x"));
     assert!(err.contains("Cannot get the date of: +4294967397"), "{err}");
 }
 
@@ -191,7 +192,7 @@ fn a_null_epoch_field_leaves_the_component_form() {
     assert_eq!(
         text(
             &mut c,
-            "datetime({epochMillis: null, year: 2020, month: 1, day: 1})"
+            "RETURN toString(datetime({epochMillis: null, year: 2020, month: 1, day: 1})) AS x"
         ),
         "2020-01-01T00:00:00Z"
     );
@@ -203,11 +204,14 @@ fn a_null_epoch_field_leaves_the_component_form() {
 #[test]
 fn localtime_rejects_an_offset_with_its_own_parse_error() {
     let mut c = connection();
-    let err = err_text(c.query("RETURN localtime('12:00+01:00') AS x").map(|_| ()));
+    let err = err_text(c.query("RETURN localtime('12:00+01:00') AS x"));
     assert!(err.contains("cannot parse time"), "{err}");
     assert!(!err.contains("unknown temporal kind"), "{err}");
     // The offset-carrying `time` literal still parses.
-    assert_eq!(text(&mut c, "time('12:00+01:00')"), "12:00:00+01:00");
+    assert_eq!(
+        text(&mut c, "RETURN toString(time('12:00+01:00')) AS x"),
+        "12:00:00+01:00"
+    );
 }
 
 /// RB5: a user-controlled offset field can saturate the signed total to
@@ -216,10 +220,7 @@ fn localtime_rejects_an_offset_with_its_own_parse_error() {
 #[test]
 fn an_extreme_offset_is_a_typed_rejection_not_a_panic() {
     let mut c = connection();
-    let err = err_text(
-        c.query("RETURN datetime('2020-01-01T00:00-9223372036854775807:01') AS x")
-            .map(|_| ()),
-    );
+    let err = err_text(c.query("RETURN datetime('2020-01-01T00:00-9223372036854775807:01') AS x"));
     assert!(err.contains("invalid timezone offset"), "{err}");
 }
 
@@ -232,13 +233,16 @@ fn an_extreme_offset_is_a_typed_rejection_not_a_panic() {
 fn epoch_component_fields_override_the_instant() {
     let mut c = connection();
     assert_eq!(
-        text(&mut c, "datetime({epochSeconds: 0, year: 2020})"),
+        text(
+            &mut c,
+            "RETURN toString(datetime({epochSeconds: 0, year: 2020})) AS x"
+        ),
         "2020-01-01T00:00:00Z"
     );
     assert_eq!(
         text(
             &mut c,
-            "datetime({epochMillis: 0, minute: 5, timezone: '+02:00'})"
+            "RETURN toString(datetime({epochMillis: 0, minute: 5, timezone: '+02:00'})) AS x"
         ),
         "1970-01-01T02:05:00+02:00"
     );
@@ -252,7 +256,10 @@ fn epoch_component_fields_override_the_instant() {
 fn a_zero_offset_has_one_spelling() {
     let mut c = connection();
     assert_eq!(
-        text(&mut c, "datetime('2020-01-01T00:00[Europe/London]')"),
+        text(
+            &mut c,
+            "RETURN toString(datetime('2020-01-01T00:00[Europe/London]')) AS x"
+        ),
         "2020-01-01T00:00:00Z[Europe/London]"
     );
     assert_eq!(
@@ -303,9 +310,12 @@ fn a_second_leading_sign_in_an_offset_is_a_typed_rejection() {
     assert_eq!(
         text(
             &mut c,
-            "datetime({year: 2020, month: 1, day: 1, timezone: '-01:00'})"
+            "RETURN toString(datetime({year: 2020, month: 1, day: 1, timezone: '-01:00'})) AS x"
         ),
         "2020-01-01T00:00:00-01:00"
     );
-    assert_eq!(text(&mut c, "time('12:00:00-01:00')"), "12:00:00-01:00");
+    assert_eq!(
+        text(&mut c, "RETURN toString(time('12:00:00-01:00')) AS x"),
+        "12:00:00-01:00"
+    );
 }

@@ -729,6 +729,13 @@ pub(super) fn f64_to_i128_range(v: f64) -> Result<i128, Error> {
     }
 }
 
+/// f64 → i64 with a range error — Neo4j's `DurationValue.safeDoubleToLong`
+/// seam: the stored month and day fields are `i64`, so an out-of-range
+/// fraction fold is a typed range error, never a saturating cast.
+pub(super) fn f64_to_i64_range(v: f64) -> Result<i64, Error> {
+    i64::try_from(f64_to_i128_range(v)?).map_err(|_| range_err())
+}
+
 fn weekday_from_i(i: i64) -> Weekday {
     // `i.rem_euclid(7)` is total (unlike `(i - 1).rem_euclid(7)`, which
     // overflows at i64::MIN) and selects the same weekday for every input:
@@ -748,7 +755,7 @@ fn weekday_from_i(i: i64) -> Weekday {
 /// average-month/overflow facts — lives in [`field`]; these names are the
 /// facade the sibling modules read through `super::`.
 use field::{
-    DurationField, AVG_DAYS_PER_MONTH, AVG_SECONDS_PER_MONTH, DAYS_PER_WEEK, MAX_DURATION_SECONDS,
+    DurationField, AVG_NANOS_PER_MONTH, AVG_SECONDS_PER_MONTH, DAYS_PER_WEEK, MAX_DURATION_SECONDS,
     MONTHS_PER_QUARTER, MONTHS_PER_YEAR, NANOS_PER_DAY, NANOS_PER_HOUR, NANOS_PER_MICRO,
     NANOS_PER_MILLI, NANOS_PER_MINUTE, NANOS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE,
 };

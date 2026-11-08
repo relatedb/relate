@@ -109,13 +109,11 @@ fn negate_fields(months: i64, days: i64, nanos: i128) -> Result<(i64, i64, i128)
     ))
 }
 
-/// The checked negation of a duration, through the one assembly seam:
-/// negating a value at the inclusive bound can step one past it
-/// (`-duration({seconds: 9223372036854775807, nanoseconds: 1000000001})`
-/// floors one second further in `duration_checked`'s `div_euclid`), so the
-/// negation is Neo4j's interval-field overflow, not a duration past the
-/// bound. The unary-minus arm routes through here.
-pub fn negate_duration(t: &Temporal) -> Result<Temporal> {
+/// The one duration-extraction boundary: the `(months, days, nanos)`
+/// triple of a duration operand, with the family's single type error
+/// ("expected duration") — negate/add/sub/scale all route through here,
+/// so a fifth duration operation cannot grow a second spelling.
+fn duration_fields(t: &Temporal) -> Result<(i64, i64, i128)> {
     let Temporal::Duration {
         months,
         days,
@@ -124,61 +122,72 @@ pub fn negate_duration(t: &Temporal) -> Result<Temporal> {
     else {
         return Err(Error::ty("expected duration"));
     };
-    let (months, days, nanos) = negate_fields(*months, *days, *nanos)?;
+    Ok((*months, *days, *nanos))
+}
+
+/// The checked negation of a duration, through the one assembly seam:
+/// negating a value at the inclusive bound can step one past it
+/// (`-duration({seconds: 9223372036854775807, nanoseconds: 1000000001})`
+/// floors one second further in `duration_checked`'s `div_euclid`), so the
+/// negation is Neo4j's interval-field overflow, not a duration past the
+/// bound. The unary-minus arm routes through here.
+pub fn negate_duration(t: &Temporal) -> Result<Temporal> {
+    let (months, days, nanos) = duration_fields(t)?;
+    let (months, days, nanos) = negate_fields(months, days, nanos)?;
     // Exact arithmetic: the strict stored-model bound applies (negating
     // `i64::MIN` seconds reaches the unrepresentable `2^63`).
     Temporal::duration_checked_exact(months, days, nanos)
 }
 
+/// Apply a duration's three fields to a civil datetime — the
+/// months→days→nanos tail the `LocalDateTime` arm runs directly and the
+/// zoned `DateTime` arm runs between its offset shifts, so the two arms
+/// cannot drift apart in order or checking.
+fn add_months_days_nanos(
+    dt: NaiveDateTime,
+    months: i64,
+    days: i64,
+    nanos: i128,
+) -> Result<NaiveDateTime> {
+    let dt = add_months(dt, months)?;
+    let dt = checked_add_dur(dt, ChronoDur::try_days(days))?;
+    let nanos64 = i64::try_from(nanos).map_err(|_| range_err())?;
+    checked_add_dur(dt, Some(ChronoDur::nanoseconds(nanos64)))
+}
+
 pub fn add_duration(t: &Temporal, d: &Temporal) -> Result<Temporal> {
-    let Temporal::Duration {
-        months,
-        days,
-        nanos,
-    } = d
-    else {
-        return Err(Error::ty("expected duration"));
-    };
+    let (months, days, nanos) = duration_fields(d)?;
     match t {
         Temporal::Duration {
             months: m,
             days: da,
             nanos: n,
         } => {
-            let months = m.checked_add(*months).ok_or_else(range_err)?;
-            let days = da.checked_add(*days).ok_or_else(range_err)?;
-            let nanos = n.checked_add(*nanos).ok_or_else(range_err)?;
+            let months = m.checked_add(months).ok_or_else(range_err)?;
+            let days = da.checked_add(days).ok_or_else(range_err)?;
+            let nanos = n.checked_add(nanos).ok_or_else(range_err)?;
             // The one assembly seam applies the representability bound, so a
             // sum past it is the same overflow the constructors report. The
             // sum is exact, so the strict stored-model bound applies too.
             Temporal::duration_checked_exact(months, days, nanos)
         }
         Temporal::Date(date) => {
-            // Fractional months/hours overflow into days; include that in date arithmetic.
-            // Truncate toward zero so a negative time component smaller than one day
-            // does not steal an extra calendar day. The i128 day count may exceed i64
-            // for extreme durations; error honestly instead of wrapping through `as`.
-            let extra_days = i64::try_from(*nanos / NANOS_PER_DAY).map_err(|_| range_err())?;
+            // A date has no time of day, so the sub-day nanosecond tail is
+            // dropped, not added: truncating toward zero keeps a negative
+            // component smaller than one day from stealing an extra calendar
+            // day. The i128 day count may exceed i64 for extreme durations;
+            // error honestly instead of wrapping through `as`.
+            let extra_days = i64::try_from(nanos / NANOS_PER_DAY).map_err(|_| range_err())?;
             let days_total = days.checked_add(extra_days).ok_or_else(range_err)?;
-            let base = add_months(date.and_time(NaiveTime::MIN), *months)?;
-            let dt = checked_add_dur(base, ChronoDur::try_days(days_total))?;
+            let dt = add_months_days_nanos(date.and_time(NaiveTime::MIN), months, days_total, 0)?;
             Ok(Temporal::Date(dt.date()))
         }
-        Temporal::LocalDateTime(dt) => {
-            let base = add_months(*dt, *months)?;
-            let base = checked_add_dur(base, ChronoDur::try_days(*days))?;
-            let nanos64 = i64::try_from(*nanos).map_err(|_| range_err())?;
-            Ok(Temporal::LocalDateTime(checked_add_dur(
-                base,
-                Some(ChronoDur::nanoseconds(nanos64)),
-            )?))
-        }
+        Temporal::LocalDateTime(dt) => Ok(Temporal::LocalDateTime(add_months_days_nanos(
+            *dt, months, days, nanos,
+        )?)),
         Temporal::DateTime { utc, offset, zone } => {
             let local = add_offset(*utc, *offset)?;
-            let local = add_months(local, *months)?;
-            let local = checked_add_dur(local, ChronoDur::try_days(*days))?;
-            let nanos64 = i64::try_from(*nanos).map_err(|_| range_err())?;
-            let local = checked_add_dur(local, Some(ChronoDur::nanoseconds(nanos64)))?;
+            let local = add_months_days_nanos(local, months, days, nanos)?;
             let utc = sub_offset(local, *offset)?;
             Ok(Temporal::DateTime {
                 utc,
@@ -186,9 +195,9 @@ pub fn add_duration(t: &Temporal, d: &Temporal) -> Result<Temporal> {
                 zone: zone.clone(),
             })
         }
-        Temporal::LocalTime(tm) => Ok(Temporal::LocalTime(shift_time_of_day(*tm, *nanos))),
+        Temporal::LocalTime(tm) => Ok(Temporal::LocalTime(shift_time_of_day(*tm, nanos))),
         Temporal::Time { time, offset } => Ok(Temporal::Time {
-            time: shift_time_of_day(*time, *nanos),
+            time: shift_time_of_day(*time, nanos),
             offset: *offset,
         }),
         Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } => {
@@ -198,15 +207,10 @@ pub fn add_duration(t: &Temporal, d: &Temporal) -> Result<Temporal> {
 }
 
 pub fn sub_duration(t: &Temporal, d: &Temporal) -> Result<Temporal> {
-    let Temporal::Duration {
-        months,
-        days,
-        nanos,
-    } = d
-    else {
-        return Err(Error::ty("expected duration"));
+    let (months, days, nanos) = {
+        let (m, d, n) = duration_fields(d)?;
+        negate_fields(m, d, n)?
     };
-    let (months, days, nanos) = negate_fields(*months, *days, *nanos)?;
     add_duration(
         t,
         &Temporal::Duration {
@@ -219,26 +223,17 @@ pub fn sub_duration(t: &Temporal, d: &Temporal) -> Result<Temporal> {
 
 /// Scale a duration by a number (openCypher `duration * n` / `duration / n`).
 pub fn scale_duration(t: &Temporal, factor: f64) -> Result<Temporal> {
-    let Temporal::Duration {
-        months,
-        days,
-        nanos,
-    } = t
-    else {
-        return Err(Error::ty("scale duration"));
-    };
+    let (months, days, nanos) = duration_fields(t)?;
     if !factor.is_finite() {
         return Err(Error::ty("duration scale factor"));
     }
-    // The scaled tiers go through the one carry cascade
-    // ([`DurationTiers`]), not a second hand-rolled months→days→nanos
-    // cascade. The final nanosecond fold truncates rather than rounds —
-    // scaling's factors are lossy `f64` products and the pinned
-    // CIP-223/CIP-228 answers depend on the truncation.
+    // The scaled tiers go through the one fold ([`DurationTiers::finish`]),
+    // not a second hand-rolled months→days→nanos cascade — the same
+    // approximate chain Neo4j's float `mul`/`div` uses.
     let mut tiers = DurationTiers::default();
-    tiers.months.add_float(*months as f64 * factor)?;
-    tiers.days.add_float(*days as f64 * factor)?;
-    tiers.nanos.add_float(*nanos as f64 * factor)?;
-    let (months, days, nanos) = tiers.finish_trunc()?;
+    tiers.months.add_float(months as f64 * factor)?;
+    tiers.days.add_float(days as f64 * factor)?;
+    tiers.nanos.add_float(nanos as f64 * factor)?;
+    let (months, days, nanos) = tiers.finish()?;
     Temporal::duration_checked(months, days, nanos)
 }

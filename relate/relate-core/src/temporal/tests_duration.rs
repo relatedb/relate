@@ -60,12 +60,51 @@ fn parse_fractional_and_datetime_style_duration() {
 #[test]
 fn duration_fractional_months_accumulate_before_the_carry() {
     let split = parse_duration_iso("P1.2M").unwrap();
-    assert_eq!(split.iso_string(), "P1M6DT2H5M49.2S");
+    // The 1ns shortfall is Neo4j's own `long` cast of the month fraction
+    // (live 2026.10.1 answers the same `.199999999S`).
+    assert_eq!(split.iso_string(), "P1M6DT2H5M49.199999999S");
     assert!(parse_duration_iso("P0.6M0.6M").is_err());
     assert!(parse_duration_iso("P1.5Y1M").is_err());
     assert!(parse_duration_iso("P1Y1M1DT1.5H1M").is_err());
     assert!(parse_duration_iso("P1Y1M1DT1H1.5M1S").is_err());
     assert!(parse_duration_iso("P1Y1M1DT1H1.5M").is_ok());
+}
+
+/// The nanosecond tier truncates its sub-nanosecond remainder, as Neo4j's
+/// `(long)` cast does; rounding answered one nanosecond high
+/// (`P10M24DT8H23M16.800000002S` for `P0.9Y`; live Neo4j 2026.10.1 answers
+/// `…001S`) and turned a sub-nanosecond map field into a whole nanosecond.
+/// The canonical `duration_map` helper plus its iso text — no second
+/// map constructor (the closure delegates to the one this file's other
+/// map tests use).
+fn map_text(entries: &[(&str, Value)]) -> String {
+    duration_map(entries).unwrap().iso_string()
+}
+
+#[test]
+fn duration_fraction_truncates_at_the_nanosecond_tier() {
+    for (spelling, expected) in [
+        ("P0.9Y", "P10M24DT8H23M16.800000001S"),
+        ("P0.3Y", "P3M18DT6H17M27.599999998S"),
+        ("P0.9M", "P27DT9H26M11.399999999S"),
+        ("P-0.9Y", "P-10M-24DT-8H-23M-16.800000001S"),
+    ] {
+        assert_eq!(
+            parse_duration_iso(spelling).unwrap().iso_string(),
+            expected,
+            "{spelling}"
+        );
+    }
+    assert_eq!(
+        map_text(&[("nanoseconds", Value::Float(1.9))]),
+        "PT0.000000001S"
+    );
+    assert_eq!(map_text(&[("microseconds", Value::Float(0.0005))]), "PT0S");
+    assert_eq!(map_text(&[("seconds", Value::Float(1.0000000005))]), "PT1S");
+    assert_eq!(
+        map_text(&[("months", Value::Float(0.9))]),
+        "P27DT9H26M11.399999999S"
+    );
 }
 
 /// LABS-712: a duration map field that is present but not a number is an
@@ -253,9 +292,7 @@ fn duration_map(entries: &[(&str, Value)]) -> crate::Result<Temporal> {
 #[test]
 fn duration_map_ignores_nulls_and_requires_a_unit() {
     assert_eq!(
-        duration_map(&[("days", Value::Int(14)), ("hours", Value::Null)])
-            .unwrap()
-            .iso_string(),
+        map_text(&[("days", Value::Int(14)), ("hours", Value::Null)]),
         "P14D"
     );
     assert!(duration_map(&[]).is_err());
@@ -320,7 +357,7 @@ fn duration_map_overflow_matches_neo4j_lanes() {
             "PT0S",
         ),
     ] {
-        assert_eq!(duration_map(&entries).unwrap().iso_string(), expected);
+        assert_eq!(map_text(&entries), expected);
     }
 }
 

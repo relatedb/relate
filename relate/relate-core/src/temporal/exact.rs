@@ -1,15 +1,20 @@
-//! The exact duration-component arithmetic shared by the ISO numeral parser
-//! ([`super::duration`]) and the map constructor ([`super::construct`]): a
-//! checked `i128` integer sum plus an `f64` fractional remainder that
-//! carries down the month → day → nanosecond tiers.
+//! The duration-component arithmetic shared by the ISO numeral parser
+//! ([`super::duration`]), the map constructor ([`super::construct`]), the
+//! duration-pattern parser ([`super::duration_pattern`]) and duration
+//! scaling ([`super::arith`]): a checked `i128` integer sum plus an `f64`
+//! fractional remainder, folded into the stored triple by
+//! [`DurationTiers::finish`] (Neo4j's `DurationValue.approximate` chain).
 //!
-//! The integer sum keeps components above 2^53 exact; the remainder collects
-//! only fractions, so the lossy part of the arithmetic stays below the
-//! duration's nanosecond resolution.
+//! The integer sum keeps components above 2^53 exact; the fold's `long`
+//! casts truncate, dropping a sub-nanosecond remainder instead of rounding
+//! it.
 
 use crate::{Error, Result, Value};
 
-use super::{f64_to_i128_range, range_err, AVG_DAYS_PER_MONTH, NANOS_PER_DAY};
+use super::{
+    f64_to_i128_range, f64_to_i64_range, range_err, AVG_NANOS_PER_MONTH, NANOS_PER_DAY,
+    NANOS_PER_SECOND,
+};
 
 /// One duration field's number, keeping an integer exact: `as_number`
 /// promotes an `Int` to `f64` (losing every digit above 2^53), which
@@ -51,8 +56,8 @@ pub(super) fn exact_number(key: &str, value: &Value) -> Result<ExactNumber> {
 }
 
 /// A duration-component accumulator: an exact integer sum plus an `f64`
-/// fractional remainder. [`Self::carry_fraction`] moves whole units down to
-/// the next (finer) tier, mirroring the constructor's trunc/fract cascade.
+/// fractional remainder. [`DurationTiers::finish`] folds the tiers into the
+/// stored triple.
 #[derive(Default)]
 pub(super) struct ExactAccumulator {
     whole: i128,
@@ -103,30 +108,6 @@ impl ExactAccumulator {
     pub(super) fn whole_i64(&self) -> Result<i64> {
         i64::try_from(self.whole).map_err(|_| range_err())
     }
-
-    /// Move any whole units the accumulated fractions added up to into
-    /// [`Self::whole`], returning what is left (in `(-1, 1)`).
-    pub(super) fn carry_fraction(&mut self) -> Result<f64> {
-        let carried = self.frac.trunc();
-        add_exact_nanos(&mut self.whole, f64_to_i128_range(carried)?)?;
-        self.frac -= carried;
-        Ok(self.frac)
-    }
-
-    /// The total rounded to whole units — the nanosecond tier's final value.
-    pub(super) fn rounded(&self) -> Result<i128> {
-        self.whole
-            .checked_add(f64_to_i128_range(self.frac.round())?)
-            .ok_or_else(range_err)
-    }
-
-    /// The total truncated to whole units — the nanosecond tier's final
-    /// value where the caller must not round up (duration scaling).
-    pub(super) fn truncated(&self) -> Result<i128> {
-        self.whole
-            .checked_add(f64_to_i128_range(self.frac.trunc())?)
-            .ok_or_else(range_err)
-    }
 }
 
 /// Checked addition into an `i128` component accumulator.
@@ -135,14 +116,11 @@ pub(super) fn add_exact_nanos(dst: &mut i128, delta: i128) -> Result<()> {
     Ok(())
 }
 
-/// The three tiers a duration accumulates into, plus the one carry/fract
-/// cascade: a fractional month becomes days, a fractional day becomes
-/// nanoseconds, then each tier folds to its stored width (`i64` months and
-/// days, `i128` nanos). The ISO numeral parser
-/// ([`super::duration`]), the map constructor ([`super::construct`]), and
-/// duration scaling ([`super::arith`]) share it, so the cascade exists once;
-/// [`Self::finish`] rounds the final nanosecond fold, [`Self::finish_trunc`]
-/// truncates it for scaling.
+/// The three tiers a duration accumulates into. The ISO numeral parser
+/// ([`super::duration`]), the map constructor ([`super::construct`]), the
+/// duration-pattern parser ([`super::duration_pattern`]) and duration
+/// scaling ([`super::arith`]) share one fold, [`Self::finish`], so the stored
+/// triple is assembled one way.
 #[derive(Default)]
 pub(super) struct DurationTiers {
     pub(super) months: ExactAccumulator,
@@ -151,34 +129,43 @@ pub(super) struct DurationTiers {
 }
 
 impl DurationTiers {
-    /// The trunc/fract cascade down the tiers, then the stored triple, with
-    /// the nanosecond tier rounded.
+    /// The stored `(months, days, nanos)` triple, through Neo4j's
+    /// `DurationValue.approximate` fold: the month fraction becomes
+    /// nanoseconds and joins the day tier, the day fraction joins the
+    /// nanosecond tier, and every tier is cast to `long` — truncated toward
+    /// zero, never rounded. Pure-integer components take the exact lane
+    /// (Neo4j's all-integral split), so counts above 2^53 keep every digit
+    /// while a sub-nanosecond remainder is dropped
+    /// (`duration({nanoseconds: 1.9})` is `PT0.000000001S`).
     pub(super) fn finish(self) -> Result<(i64, i64, i128)> {
-        let (months, days, nanos) = self.cascade()?;
-        Ok((months, days, nanos.rounded()?))
-    }
-
-    /// The same carry cascade with the nanosecond tier truncated instead of
-    /// rounded. Duration scaling is the one caller: its factors are lossy
-    /// `f64` products and the hand-rolled cascade it replaces truncated the
-    /// final nanosecond sum (the pinned CIP-223/CIP-228 answers depend on
-    /// that fold), so the difference is deliberate — the assembly is still
-    /// this one cascade.
-    pub(super) fn finish_trunc(self) -> Result<(i64, i64, i128)> {
-        let (months, days, nanos) = self.cascade()?;
-        Ok((months, days, nanos.truncated()?))
-    }
-
-    /// The shared trunc/fract cascade: month fraction → days, day fraction
-    /// → nanoseconds, and the month/day tiers folded to their stored `i64`
-    /// width. The nanosecond accumulator is returned for the caller's final
-    /// fold ([`ExactAccumulator::rounded`] or [`ExactAccumulator::truncated`]).
-    fn cascade(mut self) -> Result<(i64, i64, ExactAccumulator)> {
-        self.days
-            .add_float(self.months.carry_fraction()? * AVG_DAYS_PER_MONTH)?;
-        self.nanos
-            .add_float(self.days.carry_fraction()? * NANOS_PER_DAY as f64)?;
-        Ok((self.months.whole_i64()?, self.days.whole_i64()?, self.nanos))
+        let fractional = self.months.frac != 0.0 || self.days.frac != 0.0 || self.nanos.frac != 0.0;
+        if !fractional {
+            return Ok((
+                self.months.whole_i64()?,
+                self.days.whole_i64()?,
+                self.nanos.whole,
+            ));
+        }
+        let months = self.months.whole as f64 + self.months.frac;
+        let months_whole = months.trunc();
+        let month_nanos = AVG_NANOS_PER_MONTH * (months - months_whole);
+        let days = self.days.whole as f64 + self.days.frac + month_nanos / NANOS_PER_DAY as f64;
+        let days_whole = days.trunc();
+        let day_nanos = NANOS_PER_DAY as f64 * (days - days_whole);
+        let seconds = day_nanos / NANOS_PER_SECOND as f64;
+        let seconds_whole = seconds.trunc();
+        let second_nanos = NANOS_PER_SECOND as f64 * (seconds - seconds_whole);
+        let nanos = self.nanos.whole as f64 + self.nanos.frac + second_nanos;
+        let nanos_whole = f64_to_i128_range(nanos.trunc())?;
+        let total_nanos = f64_to_i128_range(seconds_whole)?
+            .checked_mul(NANOS_PER_SECOND)
+            .and_then(|total| total.checked_add(nanos_whole))
+            .ok_or_else(range_err)?;
+        Ok((
+            f64_to_i64_range(months_whole)?,
+            f64_to_i64_range(days_whole)?,
+            total_nanos,
+        ))
     }
 }
 
@@ -186,29 +173,37 @@ impl DurationTiers {
 mod tests {
     use super::*;
 
+    /// The month fraction becomes days, the day fraction becomes
+    /// nanoseconds, and each tier truncates: `duration({months: 1.5})` is
+    /// `P1M15DT5H14M33S` (live Neo4j 2026.10.1).
     #[test]
-    fn float_components_split_and_carry_down_tiers() {
-        let mut days = ExactAccumulator::default();
-        days.add(ExactNumber::Float(1.5), 1).unwrap();
-        assert_eq!(days.whole_i64().unwrap(), 1);
-        let mut nanos = ExactAccumulator::default();
-        nanos
-            .add_float(days.carry_fraction().unwrap() * super::super::NANOS_PER_DAY as f64)
-            .unwrap();
-        assert_eq!(nanos.rounded().unwrap(), 43_200_000_000_000);
+    fn float_components_fold_down_tiers() {
+        let mut tiers = DurationTiers::default();
+        tiers.months.add(ExactNumber::Float(1.5), 1).unwrap();
+        let (months, days, nanos) = tiers.finish().unwrap();
+        assert_eq!((months, days), (1, 15));
+        assert_eq!(nanos, (5 * 3600 + 14 * 60 + 33) * 1_000_000_000);
+    }
+
+    /// The sub-nanosecond remainder is dropped, as Neo4j's `(long)` cast
+    /// does — rounding it would answer `PT0.000000002S` for
+    /// `duration({nanoseconds: 1.9})`.
+    #[test]
+    fn nanosecond_fold_truncates_like_neo4j_long_cast() {
+        let mut tiers = DurationTiers::default();
+        tiers.nanos.add_float(1.9).unwrap();
+        assert_eq!(tiers.finish().unwrap().2, 1);
     }
 
     #[test]
     fn exact_integers_above_f64_precision_survive() {
-        let mut nanos = ExactAccumulator::default();
-        nanos
-            .add(
-                ExactNumber::Int(i128::from(i64::MAX)),
-                super::super::NANOS_PER_SECOND,
-            )
+        let mut tiers = DurationTiers::default();
+        tiers
+            .nanos
+            .add(ExactNumber::Int(i128::from(i64::MAX)), NANOS_PER_SECOND)
             .unwrap();
         assert_eq!(
-            nanos.rounded().unwrap(),
+            tiers.finish().unwrap().2,
             i128::from(i64::MAX) * 1_000_000_000
         );
     }
