@@ -203,6 +203,14 @@ impl Row {
         &self.values
     }
 
+    /// Capacity of the value buffer. The sink reserves exactly the column
+    /// count; a test pins that so a size-hint-less collect cannot grow it
+    /// back to the four-slot minimum.
+    #[cfg(test)]
+    pub(crate) fn values_capacity(&self) -> usize {
+        self.values.capacity()
+    }
+
     /// Identity of the shared schema allocation. Rows from one clause
     /// compare equal here, so a workspace walk charges that schema once.
     pub(crate) fn schema_ptr(&self) -> *const () {
