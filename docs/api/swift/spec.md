@@ -190,7 +190,8 @@ handle and open a new one.
 - A panic inside the engine poisons the handle (C ABI contract): later calls
   throw `.engine` with stage `internal`; release it and open a new one.
 - `transaction(_:)` commits when the body returns and rolls back, then
-  rethrows the body's error, when it throws. `commit()` returns the
+  rethrows the body's error, when it throws; a throwing `commit()` inside it
+  likewise rolls back and rethrows the commit's error. `commit()` returns the
   transaction's bookmark, or `nil` when the transaction committed nothing; a
   `retryable` conflict can surface on a statement's error result
   (auto-commit) or on `commit()` — a retry loop must check both.

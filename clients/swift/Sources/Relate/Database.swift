@@ -162,20 +162,23 @@ public final class Connection {
     }
 
     /// Runs `body` in an explicit transaction: commits when it returns,
-    /// rolls back and rethrows when it throws.
+    /// rolls back and rethrows when it throws — and likewise when the commit
+    /// itself throws.
     @discardableResult
     public func transaction<T>(_ body: (Connection) throws -> T) throws -> T {
         try begin()
         let value: T
         do {
             value = try body(self)
+            try commit()
         } catch {
-            // The body's error is the one worth surfacing; a rollback
-            // failure after it would only mask the cause.
+            // The first error (the body's, or the commit's) is the one worth
+            // surfacing; a rollback failure after it would only mask the
+            // cause, and a throwing commit must not leave the connection
+            // inside the failed transaction (LABS-957).
             try? rollback()
             throw error
         }
-        try commit()
         return value
     }
 }

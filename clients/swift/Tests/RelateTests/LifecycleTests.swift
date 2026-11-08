@@ -58,4 +58,25 @@ import Testing
         }
         #expect(counts == Array(repeating: 1, count: 8))
     }
+
+    @Test func aThrowingCommitInsideTransactionLeavesNoOpenTransaction() throws {
+        // LABS-957 (F-1-8): when commit() throws, transaction(_:) must roll
+        // back so the connection is not left inside the failed transaction.
+        let db = try Database.inMemory()
+        let winner = try db.connect()
+        try winner.query("CREATE CONSTRAINT p_id FOR (n:P) REQUIRE n.id IS UNIQUE")
+        let loser = try db.connect()
+        try winner.begin()
+        let error = try #require(throws: RelateError.self) {
+            try loser.transaction { tx in
+                try winner.query("CREATE (:P {id: 77})")
+                try tx.query("CREATE (:P {id: 77})")
+                _ = try winner.commit()
+            }
+        }
+        #expect(try #require(error.engineError).retryable)
+        // A fresh transaction begins: nothing is left open by the failure.
+        try loser.begin()
+        try loser.rollback()
+    }
 }
