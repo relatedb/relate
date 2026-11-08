@@ -18,7 +18,7 @@ relate-splitter = { workspace = true }
 # The workspace's one `hex` rendering and the shared pinned fetch kit
 # (data-set sha256 checks, the verified download, the lock-and-stamp
 # ensure) — the same kit ADR-0243 pins for every fetched data set.
-relate-test-support = { workspace = true, features = ["fetch"] }
+relate-test-support = { workspace = true, features = ["fetch", "pokec"] }
 clap = { workspace = true }
 csv = "1"
 # Pure-Rust zstd decoder and tar reader for the LDBC archives (ADR-0243).
@@ -60,6 +60,14 @@ path = "src/bin/query-latency.rs"
 [[bin]]
 name = "plan_bench"
 path = "src/bin/plan_bench.rs"
+
+# Pokec-shaped expansion profiling harness (LABS-1116): the
+# traverse-bench query groups over the synthetic pokec fixture, one
+# self-terminating process a sampling profiler records. Dev tool, not
+# CI-gated.
+[[bin]]
+name = "pokec_profile"
+path = "src/bin/pokec_profile.rs"
 
 # Research-only gap-measurement harness (ADR-0476): compiled only under
 # `--features research`.

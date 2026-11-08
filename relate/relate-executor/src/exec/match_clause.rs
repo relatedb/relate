@@ -10,14 +10,13 @@
 //! binder ([`super::named_path::bind_named_path`]) lives beside its one
 //! caller in `named_path`, so this driver's reads stay strictly downward.
 
-use std::collections::HashSet;
-
-use relate_core::{RelId, Result};
+use relate_core::Result;
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
 use crate::ctx::ExecCtx;
 use crate::eval::candidate_passes;
 use crate::row::{Row, RowRung};
+use crate::UsedSet;
 
 use super::batch::try_scan_filter_batch;
 use super::hub_join::try_hub_join;
@@ -279,7 +278,7 @@ pub(crate) fn match_paths(
     // for a join that cannot engage.
     let hub_join = patterns.len() == 2;
     let base = hub_join.then(|| row.clone());
-    let mut current = vec![(row, HashSet::<RelId>::new())];
+    let mut current = vec![(row, UsedSet::default())];
     let account = relate_core::tokens::workspace_accounting();
     let mut batch = relate_core::tokens::WorkspaceCharge::retain_with(|| {
         crate::workspace::binding_bytes(&current)
@@ -334,8 +333,11 @@ pub(crate) fn match_paths(
         // The shortest-path function's used-set restore is pattern-level,
         // like the tail (F-1-11): only patterns before the last restore
         // the entering row's set, so the predicate is decided once per
-        // pattern and the common case clones nothing per row.
-        let keep_used = p.is_shortest_path_function && !last_pat;
+        // pattern and the common case clones nothing per row. The carry
+        // half reads the tail (F-1-14) — the one spelling of the
+        // carry-or-drop decision ([`MatchTail::store_row`]'s), never a
+        // second `!last_pat` encoding that must stay hand-in-sync with it.
+        let keep_used = p.is_shortest_path_function && matches!(tail, MatchTail::Carry);
         // LABS-801: the pattern's rel-type filters resolve once per
         // pattern, here at the pattern tier beside the tail — never per
         // row of the loop below.
@@ -348,7 +350,7 @@ pub(crate) fn match_paths(
             let prior_used = keep_used.then(|| used.clone());
             let seed_used =
                 if match_mode == MatchMode::RepeatableElements || p.is_shortest_path_function {
-                    HashSet::new()
+                    UsedSet::default()
                 } else {
                     used
                 };

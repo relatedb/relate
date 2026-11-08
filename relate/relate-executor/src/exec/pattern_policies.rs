@@ -39,6 +39,7 @@
 //! terminal `bind_eval_path` among the consumers), so its home is the
 //! crate's lowest shared tier, not this exec-level one.
 
+use crate::UsedSet;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{NodeId, RelId, Result, Value};
@@ -47,7 +48,6 @@ use relate_names::SmallName;
 
 use crate::eval::{candidate_passes, expr_vars};
 use crate::overlay::ExecGraph;
-use crate::pattern_walk::UsedRels;
 use crate::row::Row;
 
 use super::match_cap::MatchCap;
@@ -405,7 +405,7 @@ pub(crate) struct MatchReduce<'a> {
 /// (the relationship-uniqueness carrier). The one name for this shape,
 /// shared by the walk's sinks, the hub join's side bindings, and the
 /// shortest-route matcher (LABS-348: it had three private spellings).
-pub(crate) type Matched = Vec<(Row, HashSet<RelId>)>;
+pub(crate) type Matched = Vec<(Row, UsedSet)>;
 
 /// The reduce tail as one state model — the reduce bundle
 /// ([`MatchReduce`], the checks and projection `reduce_row` runs) and the
@@ -451,21 +451,16 @@ impl MatchTail<'_> {
     /// consumer routes through (whole row sets too: `apply_reduce`'s
     /// arms): a carry tail keeps the set, built lazily so the drop arm
     /// never pays for it; a finish tail drops it and the closure never
-    /// runs, storing the shared empty carry (`UsedRels::empty_set`,
-    /// LABS-822) instead. The halves that differ stay with their arms:
+    /// runs, storing the empty carry (`UsedSet::default()`, LABS-822)
+    /// instead. The halves that differ stay with their arms:
     /// the classic collector meters workspace bytes around this store,
     /// the GPM arm sets the walk's halt cell after it.
-    pub(crate) fn store_row(
-        &self,
-        row: Row,
-        set: impl FnOnce() -> HashSet<RelId>,
-        out: &mut Matched,
-    ) {
+    pub(crate) fn store_row(&self, row: Row, set: impl FnOnce() -> UsedSet, out: &mut Matched) {
         out.push((
             row,
             match self {
                 MatchTail::Carry => set(),
-                MatchTail::Finish { .. } => UsedRels::empty_set(),
+                MatchTail::Finish { .. } => UsedSet::default(),
             },
         ));
     }
@@ -571,9 +566,9 @@ mod tests {
     #[test]
     fn store_row_carries_a_carry_tails_set() {
         let mut out: Matched = Vec::new();
-        MatchTail::Carry.store_row(Row::new(), || HashSet::from([1, 2]), &mut out);
+        MatchTail::Carry.store_row(Row::new(), || UsedSet::from_iter([1, 2]), &mut out);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1, HashSet::from([1, 2]));
+        assert_eq!(out[0].1, UsedSet::from_iter([1, 2]));
     }
 
     #[test]
@@ -581,11 +576,11 @@ mod tests {
         // LABS-822: a finish tail drops whatever the producer would
         // carry — the closure never runs and the stored set is the
         // shared empty carry. (That representation is the
-        // implementation's own cost story, in `UsedRels::empty_set`.)
+        // implementation's own cost story, in `UsedSet::default()`.)
         let mut out: Matched = Vec::new();
         MatchTail::Finish { reduce: None }.store_row(
             Row::new(),
-            || HashSet::from([1, 2]),
+            || UsedSet::from_iter([1, 2]),
             &mut out,
         );
         assert_eq!(out.len(), 1);

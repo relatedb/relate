@@ -13,10 +13,11 @@
 //! vocabularies, threaded as two arguments (`match_one_path`,
 //! `match_gpm_path`).
 
+use crate::UsedSet;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
-use relate_core::{RelId, Result, Value};
+use relate_core::{Result, Value};
 use relate_ir::PathPattern;
 
 use crate::eval::inline_predicates_ok;
@@ -81,10 +82,10 @@ impl BindingSink for CollectSink<'_, '_, '_, '_> {
         // its carried used-set (lazily: the drop arm never materializes
         // one, and a rejected row, returned above, never builds a set
         // at all). Both arms convert through the carrier's one
-        // process-wide hasher (LABS-822, `UsedRels::to_set` /
-        // `UsedRels::empty_set`): no offered row pays a fresh
-        // `RandomState` — the thread-local RNG seed read a per-row
-        // set construction once paid.
+        // spelling (LABS-822, `UsedRels::to_set`; the fixed-hasher
+        // `UsedSet::default` since LABS-1116): no offered row pays a
+        // fresh `RandomState` — the thread-local RNG seed read a
+        // per-row set construction once paid.
         self.tail.store_row(stored, || used.to_set(), self.out);
         Ok(())
     }
@@ -107,7 +108,7 @@ impl BindingSink for CollectSink<'_, '_, '_, '_> {
 /// with them, so a reference-taking contract would force a clone per
 /// offered row.
 pub(crate) struct PathProbe<'a> {
-    pred: &'a dyn Fn(Row, HashSet<RelId>) -> Result<bool>,
+    pred: &'a dyn Fn(Row, UsedSet) -> Result<bool>,
     /// The verdict cell — outward by design: the mounting arm hands the
     /// walk this same cell (the one reader spelling of the halt), and
     /// the caller reads it for the verdict. The probe's other state is
@@ -125,7 +126,7 @@ impl<'a> PathProbe<'a> {
     /// is set here, at its single construction site
     /// (`exists_probe::seek`'s probe dispatch), and nowhere else.
     pub(crate) fn new(
-        pred: &'a dyn Fn(Row, HashSet<RelId>) -> Result<bool>,
+        pred: &'a dyn Fn(Row, UsedSet) -> Result<bool>,
         halt: &'a Cell<bool>,
         pattern: &'a PathPattern,
     ) -> Self {
@@ -144,7 +145,7 @@ impl<'a> PathProbe<'a> {
     /// classic sink shape (the [`BindingSink`] impl on the shared
     /// reference) is the core itself, the walk's own spelling of the
     /// same verdict.
-    fn accept_core(&self, row: Row, used: HashSet<RelId>) -> Result<bool> {
+    fn accept_core(&self, row: Row, used: UsedSet) -> Result<bool> {
         let accepted = (self.pred)(row, used)?;
         if accepted {
             self.halt.set(true);
@@ -164,7 +165,7 @@ impl<'a> PathProbe<'a> {
         &self,
         graph: &ExecGraph<'_>,
         row: Row,
-        used: HashSet<RelId>,
+        used: UsedSet,
         residual: &Residual<'_>,
         params: &BTreeMap<String, Value>,
         cypher_version: Option<u32>,
@@ -282,10 +283,11 @@ impl BindingSink for PathSink<'_, '_, '_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use relate_core::RelId;
 
     /// A batch of offers through one collector — the shape a walk's
     /// completed rows arrive in: many offers, one sink.
-    fn offered_sets(tail: MatchTail<'_>, batches: &[&[RelId]]) -> Vec<HashSet<RelId>> {
+    fn offered_sets(tail: MatchTail<'_>, batches: &[&[RelId]]) -> Vec<UsedSet> {
         let base = crate::graph::Graph::default();
         let graph = ExecGraph::read(&base);
         let mut out: Matched = Vec::new();
@@ -307,9 +309,9 @@ mod tests {
         // stored set, and an empty walk stores an empty set.
         let sets = offered_sets(MatchTail::Carry, &[&[1, 2], &[3], &[]]);
         assert_eq!(sets.len(), 3);
-        assert_eq!(sets[0], HashSet::from([1, 2]));
-        assert_eq!(sets[1], HashSet::from([3]));
-        assert_eq!(sets[2], HashSet::new());
+        assert_eq!(sets[0], UsedSet::from_iter([1, 2]));
+        assert_eq!(sets[1], UsedSet::from_iter([3]));
+        assert_eq!(sets[2], UsedSet::default());
     }
 
     #[test]
@@ -317,7 +319,7 @@ mod tests {
         // LABS-822: a finish tail's offers arrive with their used-sets
         // dropped — the offered rels are not carried. (The
         // shared-empty representation those drops read is the
-        // implementation's own cost story, in `UsedRels::empty_set`.)
+        // implementation's own cost story, in `UsedSet::default`.)
         let sets = offered_sets(MatchTail::Finish { reduce: None }, &[&[1, 2], &[3]]);
         assert_eq!(sets.len(), 2);
         assert!(sets.iter().all(|used| used.is_empty()));

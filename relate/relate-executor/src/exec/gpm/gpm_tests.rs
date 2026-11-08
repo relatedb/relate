@@ -7,7 +7,7 @@ use std::sync::Arc;
 fn selector_state(start: NodeId, end: NodeId, length: usize) -> GpmState {
     GpmState {
         row: Row::new(),
-        used: HashSet::new(),
+        used: UsedSet::default(),
         current: end,
         nodes: vec![start, end],
         rels: (0..length).map(|index| index as RelId).collect(),

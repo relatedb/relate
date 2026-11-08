@@ -1,6 +1,6 @@
 use relate_ir::BinaryOp;
 
-use super::adjacency::adj_insert;
+use super::adjacency::{adj_insert, adj_remove};
 use super::*;
 
 /// Lazily materialized equality postings for one `(class, key)` pair
@@ -298,6 +298,17 @@ impl Graph {
         if !vers.iter().any(|v| v.dead_at(horizon)) {
             return;
         }
+        // LABS-1116: the chain's endpoints and type, needed to prune its
+        // adjacency hops when the chain empties. The `any(dead_at)` guard
+        // above proves the chain non-empty, and every version of one rel
+        // id shares its endpoints (`cow` clones the previous version's
+        // endpoints; no operation moves a rel) — so a `None` here is a
+        // broken invariant that must fail loud, not silently skip the
+        // prune (F-1-11).
+        let (start, end, type_id) = vers
+            .last()
+            .map(|v| (v.live.start, v.live.end, v.live.type_id))
+            .expect("a chain with a dead version is non-empty");
         let dead: Vec<LiveRel> = if prune {
             vers.iter()
                 .filter(|v| v.dead_at(horizon))
@@ -319,6 +330,13 @@ impl Graph {
         drop(vers);
         if empty {
             self.rels.remove(&id);
+            // LABS-1116: prune the orphaned hops — without this, a chain
+            // the GC collected leaves its hops in adjacency forever, and
+            // every later scan pays a `rels` map miss per ghost hop (the
+            // per-hop visibility probe stays the authority; this only
+            // stops offering it a rel it cannot resolve).
+            adj_remove(&self.out_adj, start, type_id, id);
+            adj_remove(&self.in_adj, end, type_id, id);
         }
         // Prune after the `rels` guard is released — the pair guard is never
         // taken while a `rels` guard is held. When `prune` is false both

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use relate_core::{Error, NodeId, RelId, Result, Value};
-use relate_ir::{Clause, Expr, NodePattern, PathPattern, Projection, RelPattern};
+use relate_ir::{Clause, Direction, Expr, NodePattern, PathPattern, Projection, RelPattern};
 
 use crate::eval::{binary, eval};
 use crate::group_key::GroupKey;
@@ -157,16 +157,11 @@ fn collect_neighbors(
     origin: NodeId,
     rel: &RelPattern,
     types: &RelTypes,
-    reverse: bool,
+    dir: Direction,
     skip_rel: Option<RelId>,
     out: &mut Vec<(RelId, NodeId)>,
 ) -> Result<()> {
     out.clear();
-    let dir = if reverse {
-        rel.direction.flip()
-    } else {
-        rel.direction
-    };
     let graph = env.graph;
     graph.try_for_each_neighbor_resolved(origin, dir, types, |rid| {
         graph.cancel_tick()?;
@@ -314,6 +309,37 @@ enum HopOrientation<'a> {
     },
 }
 
+impl HopOrientation<'_> {
+    /// The hop's traversal direction (F-1-6): the orientation's own
+    /// forward/reversed decision, spelled once here — the walk's call
+    /// sites never hold a loose `reverse: bool` beside the enum.
+    fn traverse_dir(&self, rel: &RelPattern) -> Direction {
+        match self {
+            Self::Forward { .. } => rel.direction,
+            Self::Reversed { .. } => rel.direction.flip(),
+        }
+    }
+
+    /// The emitted hop's endpoint roles: reversed, the anchor is the
+    /// hop's end — the orientation names the roles once, so the emit
+    /// never re-derives them from a bool.
+    fn roles(&self, anchor_id: NodeId, other_id: NodeId) -> (NodeId, NodeId) {
+        match self {
+            Self::Forward { .. } => (anchor_id, other_id),
+            Self::Reversed { .. } => (other_id, anchor_id),
+        }
+    }
+
+    /// The target side's row-bound filter: a free target filters nothing
+    /// (`None` spelled, not projected) — the Forward variant's fact.
+    fn bound_target(&self) -> Option<NodeId> {
+        match self {
+            Self::Forward { bound_target, .. } => *bound_target,
+            Self::Reversed { .. } => None,
+        }
+    }
+}
+
 /// The one oriented hop expansion: each accepted anchor node's
 /// relationships (collected forward, or reversed when the anchor is the
 /// path's end), each neighbor accepted on the target side and emitted as a
@@ -327,13 +353,13 @@ fn walk_hop(
     anchors: impl IntoIterator<Item = NodeId>,
     orientation: HopOrientation<'_>,
 ) -> Result<Vec<HopEnd>> {
-    let (anchor, reverse, target, bound_target) = match orientation {
-        HopOrientation::Forward {
-            anchor,
-            target,
-            bound_target,
-        } => (anchor, false, target, bound_target),
-        HopOrientation::Reversed { anchor, target } => (anchor, true, target, None),
+    // The two sides, read off the orientation without a positional
+    // re-tuple (F-1-6): the direction, roles, and target filter are the
+    // enum's own methods below, so the orientation stays the one decided
+    // form the whole walk reads.
+    let (anchor, target) = match &orientation {
+        HopOrientation::Forward { anchor, target, .. } => (anchor, target),
+        HopOrientation::Reversed { anchor, target } => (anchor, target),
     };
     // A step whose two endpoints share a slot is one repeated variable
     // (`(x)-[:R]->(x)`, `plan.rs`'s shared-slot table): the second
@@ -342,6 +368,9 @@ fn walk_hop(
     // anonymous or single-occurrence endpoint never shares a slot, so the
     // common counting walk pays one integer comparison per step.
     let self_loop = anchor.slot == target.slot;
+    // The traversal direction, resolved once from the orientation — every
+    // anchor's neighbor traversal reads it below.
+    let dir = orientation.traverse_dir(rel.pattern);
     let mut hops = Vec::new();
     // One neighbor buffer reused across the anchors: the previous
     // per-anchor `collect_neighbors` Vec was a dealloc hot spot on q19
@@ -360,7 +389,9 @@ fn walk_hop(
         // the anchor's id and admits exactly the self-loop — the same
         // vocabulary a row-bound target resolves through.
         let target_binding = resolve_bound(
-            bound_target.or_else(|| self_loop.then_some(anchor_id)),
+            orientation
+                .bound_target()
+                .or_else(|| self_loop.then_some(anchor_id)),
             target.node,
             env.row,
         );
@@ -374,7 +405,7 @@ fn walk_hop(
                 anchor_id,
                 rel.pattern,
                 rel.types,
-                reverse,
+                dir,
                 rel.skip,
                 &mut found,
             )
@@ -383,11 +414,7 @@ fn walk_hop(
             if accept_slot(env, target.node, target.slot, target_binding, other_id)? {
                 // The orientation names the roles once: reversed, the
                 // anchor is the hop's end.
-                let (start, end) = if reverse {
-                    (other_id, anchor_id)
-                } else {
-                    (anchor_id, other_id)
-                };
+                let (start, end) = orientation.roles(anchor_id, other_id);
                 hops.push(HopEnd {
                     start,
                     end,

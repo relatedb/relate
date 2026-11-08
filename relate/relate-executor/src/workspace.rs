@@ -17,6 +17,8 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use relate_core::{str_logical_bytes, Node, NodeId, RelId, Relationship, Value};
 
+use crate::UsedSet;
+
 use crate::group_key::GroupKey;
 use crate::memory::{reserved_len, OVERHEAD_MAP_ENTRY, VEC_HEADER};
 use crate::row::Row;
@@ -196,23 +198,28 @@ fn rel_heap(rel: &Relationship) -> u64 {
     bytes
 }
 
-fn row_contents(row: &Row, schemas: &mut HashSet<usize>) -> u64 {
+/// The row's accounted contents, and whether this call was the set's
+/// first sight of the row's schema — the one derivation of schema
+/// freshness (F-1-19): the meter's rollback flag and its byte charge
+/// come from the same `insert`, so they cannot disagree.
+fn row_contents(row: &Row, schemas: &mut HashSet<usize>) -> (u64, bool) {
     let mut bytes = 0;
-    if schemas.insert(row.schema_ptr() as usize) {
+    let fresh_schema = schemas.insert(row.schema_ptr() as usize);
+    if fresh_schema {
         bytes += row.schema_bytes();
     }
     bytes += buffer_bytes(row.values().len(), size_of::<Value>() as u64);
     for value in row.values() {
         bytes += owned_heap(value);
     }
-    bytes
+    (bytes, fresh_schema)
 }
 
 fn rows_accounted<'a>(len: usize, rows: impl Iterator<Item = &'a Row>) -> u64 {
     let mut bytes = buffer_bytes(len, size_of::<Row>() as u64);
     let mut schemas = HashSet::new();
     for row in rows {
-        bytes += row_contents(row, &mut schemas);
+        bytes += row_contents(row, &mut schemas).0;
     }
     bytes
 }
@@ -433,13 +440,21 @@ pub(crate) fn sort_key_columns<'a>(keys: impl IntoIterator<Item = &'a [Value]>) 
     bytes
 }
 
+/// One bound row's slot in an expand batch: the row plus its used-edge
+/// set. The one spelling of the layout both the batch accounting
+/// ([`binding_bytes`]) and the incremental meter ([`BindingMeter::push`])
+/// charge — they must move together with the pair's types (LABS-1116).
+fn binding_stride() -> u64 {
+    size_of::<(Row, UsedSet)>() as u64
+}
+
 /// One expand batch: the pair vector, the rows, and each used-edge set.
-pub(crate) fn binding_bytes(rows: &[(Row, HashSet<RelId>)]) -> u64 {
-    let stride = (size_of::<Row>() + size_of::<HashSet<RelId>>()) as u64;
+pub(crate) fn binding_bytes(rows: &[(Row, UsedSet)]) -> u64 {
+    let stride = binding_stride();
     let mut bytes = buffer_bytes(rows.len(), stride);
     let mut schemas = HashSet::new();
     for (row, used) in rows {
-        bytes += row_contents(row, &mut schemas);
+        bytes += row_contents(row, &mut schemas).0;
         bytes += buffer_bytes(used.len(), size_of::<RelId>() as u64);
     }
     bytes
@@ -588,15 +603,15 @@ impl BindingMeter {
             schema: None,
         };
         let ptr = row.schema_ptr() as usize;
-        let fresh = !self.schemas.contains(&ptr);
-        let stride = (size_of::<Row>() + size_of::<HashSet<RelId>>()) as u64;
+        let stride = binding_stride();
         let old = self.len;
         self.len += 1;
         self.bytes += buffer_growth(old, self.len, stride);
-        self.bytes += row_contents(row, &mut self.schemas);
+        let (contents, fresh_schema) = row_contents(row, &mut self.schemas);
+        self.bytes += contents;
         self.bytes += buffer_bytes(used_len, size_of::<RelId>() as u64);
         BindingMark {
-            schema: fresh.then_some(ptr),
+            schema: fresh_schema.then_some(ptr),
             ..mark
         }
     }

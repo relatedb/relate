@@ -28,7 +28,8 @@
 //! - **the zero-length endpoint** — the empty path's row, group lists
 //!   and all, byte-equal to the DFS's.
 
-use std::collections::{BTreeMap, HashSet};
+use crate::UsedSet;
+use std::collections::BTreeMap;
 
 use relate_core::{NodeId, RelId, Value};
 
@@ -60,7 +61,7 @@ fn capped(
     seed: NodeId,
     pool: Pool,
     want: usize,
-) -> (Vec<(Row, HashSet<RelId>)>, FrontierRun) {
+) -> (Vec<(Row, UsedSet)>, FrontierRun) {
     match capped_answer(graph, cypher, seed, pool, want) {
         CappedRun::Served { matched, run } => (matched, run),
         CappedRun::Declined { facts, reason } => {
@@ -128,7 +129,7 @@ fn engine(graph: &Graph, cypher: &str, names: &[&str]) -> Vec<Vec<Value>> {
 }
 
 /// The emission's rows as the same shape: the named bindings, in order.
-fn emitted(rows: &[(Row, HashSet<RelId>)], names: &[&str]) -> Vec<Vec<Value>> {
+fn emitted(rows: &[(Row, UsedSet)], names: &[&str]) -> Vec<Vec<Value>> {
     rows.iter()
         .map(|(row, _)| {
             names

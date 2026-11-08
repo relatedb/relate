@@ -210,6 +210,14 @@ pub(crate) fn node_ok(
                 Value::Node(n) if n.id == id && graph.is_deleted_node(id) => Some(Arc::clone(n)),
                 _ => None,
             });
+    // The tombstone-vs-store fork, decided once per candidate (F-1-8):
+    // every read below — label, label list, bare visibility, property —
+    // goes through the view's one spelling of it, never four inline
+    // matches each deciding visibility differently.
+    let view = match snapshot.as_deref() {
+        Some(node) => ReadView::Tombstone(node),
+        None => ReadView::Store,
+    };
     // One visibility read per path, and label checks without
     // materializing the label list (LABS-347, stellar F-1-17/F-1-36).
     match &np.label_expr {
@@ -223,21 +231,7 @@ pub(crate) fn node_ok(
         // builds `And([])`), so the guard needs no labels cross-check —
         // the same single criterion `label_index_seekable` uses.
         Some(expr) if expr.is_static_conjunction() => {
-            let labels_ok = match &snapshot {
-                Some(node) => np
-                    .labels
-                    .iter()
-                    .all(|want| node.labels.iter().any(|have| want == have.as_str())),
-                // `node_has_label` answers `None` for an invisible node —
-                // which fails the check exactly like an absent label.
-                None => np.labels.iter().all(|l| {
-                    matches!(
-                        l.with_str(|text| graph.node_has_label(id, text)),
-                        Some(true)
-                    )
-                }),
-            };
-            if !labels_ok {
+            if !np.labels.iter().all(|want| view.has_label(graph, id, want)) {
                 return Ok(false);
             }
         }
@@ -245,12 +239,8 @@ pub(crate) fn node_ok(
         // strings; `node_labels` returning None is this path's
         // visibility read (invisible nodes have no labels).
         Some(expr) => {
-            let labels = match &snapshot {
-                Some(node) => (*node.labels).clone(),
-                None => match graph.node_labels(id) {
-                    Some(labels) => labels,
-                    None => return Ok(false),
-                },
+            let Some(labels) = view.labels(graph, id) else {
+                return Ok(false);
             };
             if !label_expr_matches(graph, row, params, expr, &labels, false, cypher_version)? {
                 return Ok(false);
@@ -258,7 +248,7 @@ pub(crate) fn node_ok(
         }
         // No label expression at all: bare visibility.
         None => {
-            if snapshot.is_none() && !graph.node_exists(id) {
+            if !view.visible(graph, id) {
                 return Ok(false);
             }
         }
@@ -270,10 +260,7 @@ pub(crate) fn node_ok(
             // lookup per (candidate, key) — the same count any wrapper
             // of it pays — and the scratch (uncommitted) map it reads is
             // string-keyed by construction.
-            let have = match &snapshot {
-                Some(node) => node.properties.get(&k).cloned(),
-                None => graph.node_prop(id, &k),
-            };
+            let have = view.prop(graph, id, &k);
             match have {
                 Some(have) if have.eq_non_null(&v) => {}
                 _ => return Ok(false),
@@ -281,4 +268,60 @@ pub(crate) fn node_ok(
         }
     }
     Ok(true)
+}
+
+/// The candidate's one read view (F-1-8): the row's tombstone for a
+/// deleted-but-bound node, or the store for every live candidate. The
+/// fork `node_ok` once re-decided at four reads — label, label list,
+/// bare visibility, property — each spelling visibility differently; it
+/// is spelled once here, as this type's reads.
+#[derive(Clone, Copy)]
+enum ReadView<'a> {
+    Tombstone(&'a Node),
+    Store,
+}
+
+impl ReadView<'_> {
+    /// One label check: the tombstone's own string list, or the
+    /// interning check — whose `None` (an invisible node) fails the
+    /// check exactly like an absent label.
+    fn has_label(&self, graph: &ExecGraph<'_>, id: NodeId, want: &SmallName) -> bool {
+        match self {
+            Self::Tombstone(node) => node.labels.iter().any(|have| want == have.as_str()),
+            Self::Store => {
+                matches!(
+                    want.with_str(|text| graph.node_has_label(id, text)),
+                    Some(true)
+                )
+            }
+        }
+    }
+
+    /// The whole label list a dynamic expression matches against: the
+    /// tombstone's own, or the store's — whose `None` (an invisible
+    /// node) the caller reads as "matches nothing".
+    fn labels(&self, graph: &ExecGraph<'_>, id: NodeId) -> Option<Vec<String>> {
+        match self {
+            Self::Tombstone(node) => Some((*node.labels).clone()),
+            Self::Store => graph.node_labels(id),
+        }
+    }
+
+    /// Bare visibility: a bound tombstone stays addressable; a store
+    /// candidate must exist.
+    fn visible(&self, graph: &ExecGraph<'_>, id: NodeId) -> bool {
+        match self {
+            Self::Tombstone(_) => true,
+            Self::Store => graph.node_exists(id),
+        }
+    }
+
+    /// One property read: the tombstone's own map, or the store's
+    /// string-keyed read.
+    fn prop(&self, graph: &ExecGraph<'_>, id: NodeId, key: &str) -> Option<Value> {
+        match self {
+            Self::Tombstone(node) => node.properties.get(key).cloned(),
+            Self::Store => graph.node_prop(id, key),
+        }
+    }
 }

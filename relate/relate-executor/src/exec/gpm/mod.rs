@@ -1,6 +1,7 @@
 //! Graph pattern matching engine: quantified path patterns, inline
 //! predicates, path modes, and selectors.
 
+use crate::UsedSet;
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 
@@ -64,7 +65,7 @@ use super::pattern_policies::{
 #[derive(Clone)]
 pub(crate) struct GpmState {
     pub row: Row,
-    pub used: HashSet<RelId>,
+    pub used: UsedSet,
     pub current: NodeId,
     pub nodes: Vec<NodeId>,
     pub rels: Vec<RelId>,
@@ -394,7 +395,7 @@ pub(crate) fn match_gpm_path(
     path: &PathPattern,
     rel_filters: &GpmFilters,
     row: Row,
-    used: HashSet<RelId>,
+    used: UsedSet,
     match_mode: MatchMode,
     tail: MatchTail<'_>,
     where_clause: &Residual<'_>,
@@ -706,7 +707,7 @@ fn gpm_start_nodes(
     graph: &ExecGraph<'_>,
     node: &NodePattern,
     row: Row,
-    used: HashSet<RelId>,
+    used: UsedSet,
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
     residual: &Residual<'_>,

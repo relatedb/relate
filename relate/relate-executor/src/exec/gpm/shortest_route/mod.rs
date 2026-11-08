@@ -9,9 +9,10 @@
 //! come from [`crate::shortest`] (ADR-0189). Rows are bound the way the GPM
 //! walker binds them; `MATCH ... WHERE` still filters them afterwards.
 
+use crate::UsedSet;
 use std::collections::HashSet;
 
-use relate_core::{RelId, Result};
+use relate_core::Result;
 use relate_ir::{Expr, MatchMode, PathPattern};
 
 use crate::ctx::ExecCtx;
@@ -126,7 +127,7 @@ pub(super) fn match_shortest_route(
     path: &PathPattern,
     filters: &GpmFilters,
     row: &Row,
-    used: &HashSet<RelId>,
+    used: &UsedSet,
     match_mode: MatchMode,
     residual: &Residual<'_>,
 ) -> Result<Option<Matched>> {
