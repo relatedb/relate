@@ -1,8 +1,8 @@
 # Relate JS Playground
 
 Browser playground for running Relate in-process via WebAssembly, with
-Neo4j NVL for graph visualization. Published at
-`/playground/` by `.github/workflows/deploy-pages.yml`.
+Neo4j NVL for graph visualization. Publishing moved to the relate-web
+repository with the rest of the website (ADR-0546).
 
 ## Stack
 

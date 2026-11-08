@@ -4,6 +4,9 @@
 - **Date**: 2026-09-29
 - **Deciders**: CypherLite maintainers (agreed in conversation)
 
+Later references: ADR-0546 supersedes this ADR in full — update-website.yml
+is removed; the website lives in the relate-web repository.
+
 ## Context
 
 ADR-0265 established that `release: [published]` is a dead trigger in this

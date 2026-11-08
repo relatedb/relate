@@ -177,7 +177,7 @@ printf '[build-wasm] done: %s (%s MB, mode=%s)\n' "$BG" "$MB" "$MODE"
 # Mirror the playground-facing files into the SPA's src tree so its
 # Vite build (which does not know about pkg/) picks up a fresh bundle. The
 # copy lives here instead of in the playground's npm scripts so all
-# callers of this script (make build-wasm, deploy-pages.yml, npm) stay in
+# callers of this script (make build-wasm, npm) stay in
 # sync.
 PLAYGROUND_WASM_DIR="$REPO/examples/wasm-playground/src/wasm"
 if [[ -z "${BUILD_WASM_OUT_DIR:-}" && -d "$REPO/examples/wasm-playground" ]]; then

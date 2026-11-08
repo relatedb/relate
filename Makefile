@@ -591,10 +591,15 @@ test-bolt-compat-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_bolt_compat_probe.py
 
 ## test-release-scripts: Unit-test the release sweep's version-token rule
-##   (scripts/version_tokens.py) that scripts/release-bump.sh runs
+##   (scripts/version_tokens.py) and the CHANGELOG rotation
+##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
+##   and the bump script end to end (first-release and steady-state paths)
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
+	sh $(CURDIR)/scripts/tests/test_release_bump.sh
+	sh $(CURDIR)/scripts/tests/test_toml_sh.sh
 
 ## test-install-sh: Offline stub-curl harness for distribution/install.sh
 test-install-sh:

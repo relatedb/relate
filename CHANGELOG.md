@@ -12,3 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 First release of Relate — the embedded, in-memory property graph engine
 with an openCypher query contract, WAL + snapshot durability, and Bolt
 serving. See the README for the full surface list.
+
+[Unreleased]: https://github.com/relatedb/relate
+
+[Unreleased]: https://github.com/relatedb/relate

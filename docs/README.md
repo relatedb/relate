@@ -1,9 +1,9 @@
 # Relate documentation
 
-Plain markdown, no site generator. The public website is a static page on the
-[`gh-pages`](https://github.com/relatedb/relate/tree/gh-pages) branch
-(see `gh-pages/MAINTAINING.md` for its contract; `update-website.yml` keeps it
-in sync with releases).
+Plain markdown, no site generator. The public website lives in the separate
+[relate-web](https://github.com/relatedb/relate-web) repository (ADR-0546);
+the release pipeline attaches `releases.json` and `install.sh` to each
+release's assets and pokes relate-web to pull them.
 
 ## Layout
 

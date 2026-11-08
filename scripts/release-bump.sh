@@ -56,8 +56,9 @@ cd "$repo_root"
 # read-back both call it, so read and write share one parser.
 pom_py="$repo_root/scripts/lib/pom.py"
 
-# toml_section_version and toml_lock_package_version (shared TOML readers)
-# back the consistency self-check.
+# toml_section_version, toml_section_set_version and
+# toml_lock_package_version (the shared TOML vocabulary) back the sweep and
+# the consistency self-check.
 # shellcheck source=lib/toml.sh
 source "$repo_root/scripts/lib/toml.sh"
 
@@ -94,16 +95,6 @@ touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_po
 # The rollback flag; when the EXIT trap restores is the failure policy's one
 # statement (section 0).
 ok=0
-
-# Rewrite the `version = "..."` line inside one exact TOML section header.
-toml_section_set_version() {
-  awk -v section="$2" -v v="$3" '
-    /^\[/ { in_sec = ($0 == section) }
-    in_sec && /^version = "/ { sub(/"[^"]*"/, "\"" v "\"") }
-    { print }
-  ' "$1" > "$1.tmp"
-  mv "$1.tmp" "$1"
-}
 
 # sed -i that works with both GNU and BSD sed (-i.bak is accepted by both).
 sedi() {
@@ -151,7 +142,7 @@ trap 'restore_touched "interrupted"' INT TERM HUP
 
 toml_section_set_version "$cargo_toml" "[workspace.package]" "$next"
 toml_section_set_version "$pyproject" "[project]" "$next"
-sedi "$pyinit" "s/return \"[^\"]*\"/return \"$next\"/g"
+sedi "$pyinit" "s/return \"[0-9][^\"]*\"/return \"$next\"/g"
 # Prose and examples that quote the Relate version — the sweep's own
 # membership rule sits at the docs_version_files definition above.
 python3 scripts/version_tokens.py rewrite --to "$next" "${docs_version_files[@]}"
@@ -187,54 +178,13 @@ cargo metadata --format-version 1 > /dev/null
 
 # --- 3. CHANGELOG rotation ----------------------------------------------------
 
-if grep -q "^## \[$next\]" "$changelog"; then
-  echo "release-bump: CHANGELOG already has ## [$next]; skipping rotation"
-else
-  prev="$(sed -n 's|^\[Unreleased\]: .*compare/v\([^ ]*\)\.\.\.HEAD.*$|\1|p' "$changelog")"
-  if [[ -z "$prev" ]]; then
-    echo "release-bump: cannot derive previous version from the [Unreleased] link ref" >&2
-    exit 1
-  fi
-  today="$(date +%F)"
-  awk -v v="$next" -v today="$today" -v prev="$prev" '
-    BEGIN { rotated = 0; linked = 0; prevprefix = "[" prev "]:"; base = "" }
-    /^## \[Unreleased\]$/ && !rotated {
-      print
-      print ""
-      print "## [" v "] — " today
-      rotated = 1
-      next
-    }
-    /^\[Unreleased\]: / {
-      url = $0; sub(/^\[Unreleased\]: /, "", url)
-      base = url; sub(/compare\/.*$/, "", base)
-      print "[Unreleased]: " base "compare/v" v "...HEAD"
-      next
-    }
-    substr($0, 1, length(prevprefix)) == prevprefix && !linked {
-      if (base == "") {
-        print "release-bump: no [Unreleased] link ref before [" prev "]" > "/dev/stderr"
-        exit 1
-      }
-      print "[" v "]: " base "compare/v" prev "...v" v
-      linked = 1
-      print
-      next
-    }
-    { print }
-    END {
-      if (!rotated) {
-        print "release-bump: no ## [Unreleased] heading found" > "/dev/stderr"
-        exit 1
-      }
-      if (!linked) {
-        print "release-bump: no [" prev "] link ref found" > "/dev/stderr"
-        exit 1
-      }
-    }
-  ' "$changelog" > "$changelog.tmp"
-  mv "$changelog.tmp" "$changelog"
-fi
+# The whole rotation policy — the [Unreleased] ref's shape (compare link =
+# steady state, plain repository URL = first release), the heading grammar,
+# the idempotence decision, the link-ref rewrites — lives in
+# scripts/changelog_rotate.py, the one implementation, unit-tested directly.
+# Already-rotated is the module's own skip notice on stdout, exit 0.
+python3 scripts/changelog_rotate.py "$changelog" \
+  --version "$next" --date "$(date +%F)"
 
 # --- 4. Consistency self-check (after editing) --------------------------------
 
@@ -244,7 +194,6 @@ fail=0
 
 check_cargo="$(toml_section_version "$cargo_toml" "[workspace.package]")"
 check_pyproject="$(toml_section_version "$pyproject" "[project]")"
-check_init_count="$(grep -c "return \"$next\"" "$pyinit" || true)"
 
 [[ "$check_cargo" == "$next" ]] || {
   echo "release-bump: Cargo.toml [workspace.package] version is '$check_cargo', expected '$next'" >&2
@@ -254,14 +203,19 @@ check_init_count="$(grep -c "return \"$next\"" "$pyinit" || true)"
   echo "release-bump: pyproject.toml [project] version is '$check_pyproject', expected '$next'" >&2
   fail=1
 }
-[[ "$check_init_count" == "2" ]] || {
-  echo "release-bump: expected 2 fallback literals return \"$next\" in __init__.py, found $check_init_count" >&2
-  fail=1
-}
+# The fallback-literal grammar has one spelling — `return "<digit...>"` —
+# shared by the step-1 sweep and this stale check, so they cannot disagree
+# about what a fallback literal is. The invariant is "no stale fallback
+# literal survives the sweep" — the count of literals is __init__.py's own
+# fact, never mirrored here.
 if grep -E 'return "[0-9]' "$pyinit" | grep -v "return \"$next\"" > /dev/null; then
   echo "release-bump: __init__.py still has a stale fallback version literal" >&2
   fail=1
 fi
+grep -q "return \"$next\"" "$pyinit" || {
+  echo "release-bump: __init__.py carries no fallback literal return \"$next\"" >&2
+  fail=1
+}
 # toml_lock_package_version exits non-zero when the relate package is absent
 # from the lockfile; failure is a real exit status, so the check branches on
 # it rather than comparing an empty read against the expected version.

@@ -411,10 +411,11 @@ jobs:
   # Chained explicitly (ADR-0265: a `release: published` event fired by
   # action-gh-release's GITHUB_TOKEN never triggers downstream workflows)
   # — the index is regenerated and re-signed from the complete asset
-  # list. `secrets: inherit` carries RELEASE_SIGNING_PRIVATE_KEY through
-  # to the signing step.
+  # list, attached to the extension release's own assets, and relate-web
+  # is poked to pull it (ADR-0546). `secrets: inherit` carries
+  # RELEASE_SIGNING_PRIVATE_KEY through to the signing step.
   publish-extensions-json:
-    name: Publish extensions.json to gh-pages
+    name: Publish extensions.json + notify relate-web
     needs: [resolve, create-release]
     permissions:
       contents: write
@@ -422,16 +423,3 @@ jobs:
     with:
       tag: ${{ needs.resolve.outputs.tag }}
     secrets: inherit
-
-  # Pages deploys are paused (2026-11-05, maintainer direction):
-  # deploy-pages.yml runs on manual dispatch only, so this release no
-  # longer deploys the website — ADR-0330's chain is suspended, not
-  # replaced. extensions.json still lands on gh-pages from the publisher
-  # above and goes live only on a manual deploy-pages.yml dispatch.
-  # Un-pause by restoring the job exactly as ADR-0330 wrote it — needs
-  # [create-release, publish-extensions-json], if
-  # ${{ !cancelled() && needs.create-release.result == 'success' }},
-  # permissions contents: read / pages: write / id-token: write, uses
-  # ./.github/workflows/deploy-pages.yml — together with the
-  # workflow_call trigger in deploy-pages.yml and the release.yml
-  # caller.
