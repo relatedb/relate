@@ -117,6 +117,12 @@ impl<'a> OrderKeys<'a> {
         self.plan.is_empty()
     }
 
+    /// Every key expression a [`park_order_keys`] closure can be handed —
+    /// the discovery pass reads the aggregate calls out of exactly these.
+    pub(crate) fn exprs(&self) -> impl Iterator<Item = &'a Expr> + '_ {
+        self.plan.iter().map(|planned| &planned.key.expr)
+    }
+
     fn iter(&self) -> impl Iterator<Item = &relate_ir::OrderItem> {
         self.plan.iter().map(|planned| planned.key)
     }

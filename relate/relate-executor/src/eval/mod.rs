@@ -39,8 +39,10 @@ mod tests;
 mod typematch;
 mod vector;
 
-pub(crate) use aggregate::{fold_aggregate, rewrite_horizontal_aggregates, FoldInput, SumAcc};
-pub(crate) use fold::{fold_extreme, fold_quantifier, membership, Extreme};
+pub(crate) use aggregate::{
+    fold_aggregate, rewrite_horizontal_aggregates, FoldInput, StreamFold, SumAcc,
+};
+pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, membership, Extreme};
 pub(crate) use items::into_items;
 pub(crate) use labels::{
     dynamic_label_names, dynamic_property_key, label_expr_matches, resolve_write_labels,

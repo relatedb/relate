@@ -7,7 +7,7 @@ use relate_core::temporal::{self, Temporal};
 use relate_core::{Error, Result, Value};
 use relate_ir::AggregateKind;
 
-use crate::eval::{fold_extreme, Extreme};
+use crate::eval::{extreme_offer, Extreme};
 
 /// ADR-0205: the one sum()/avg() accumulator shared by the grouped path
 /// and the horizontal rewrite (both through [`fold_aggregate`]) and the
@@ -58,18 +58,6 @@ impl SumAcc {
         Self {
             state: SumState::Empty,
         }
-    }
-
-    /// Fold a whole operand list through the strict offer — the one
-    /// application loop for every sum()/avg() caller (the grouped path and
-    /// the horizontal rewrite alike), so a change to the offer contract
-    /// lands once.
-    fn fold(vals: &[Value], name: &str) -> Result<Self> {
-        let mut acc = Self::new();
-        for v in vals {
-            acc.offer(v, name)?;
-        }
-        Ok(acc)
     }
 
     /// Offer one value with the strict sum()/avg() contract: nulls skipped,
@@ -312,81 +300,178 @@ impl FoldInput {
 /// the variant that owns it.
 pub(crate) fn fold_aggregate(input: FoldInput, name: &str, vals: Vec<Value>) -> Result<Value> {
     match input {
-        FoldInput::Many(kind) => match kind {
-            AggregateKind::Count => Ok(Value::Int(
-                vals.iter().filter(|value| !value.is_null()).count() as i64,
-            )),
-            // ADR-0462: collect() is a dynamic container construction — a
-            // chained `WITH collect(a) AS a` adds one level per clause — so it
-            // goes through the checked seam like every other constructor.
-            AggregateKind::Collect => {
-                Value::checked_list(vals.into_iter().filter(|value| !value.is_null()).collect())
+        FoldInput::Many(kind) => match StreamFold::for_kind(kind) {
+            // Every non-retaining kind is its streaming accumulator driven
+            // over the list — the grouped path folds through the same
+            // accumulator row by row, so the two cannot drift.
+            Some(mut fold) => {
+                for value in vals {
+                    fold.offer(value, name)?;
+                }
+                fold.finish()
             }
-            AggregateKind::Sum => Ok(SumAcc::fold(&vals, name)?.finish_sum()),
-            // ADR-0205: durations average via the accumulated duration scaled
-            // by 1/n; mixing numbers and durations is a type error. Non-numeric
-            // non-duration values are a type error too — the same strict fold
-            // as sum(), so a skipped value can never silently change the
-            // divisor.
-            AggregateKind::Avg => SumAcc::fold(&vals, name)?.finish_avg(),
-            AggregateKind::Min => Ok(fold_extreme(vals, Extreme::Min, Value::order_by_cmp)),
-            AggregateKind::Max => Ok(fold_extreme(vals, Extreme::Max, Value::order_by_cmp)),
-            AggregateKind::StDev => Ok(fold_stdev(numeric_operands(&vals, name)?)),
-            AggregateKind::StDevP => Ok(fold_stdevp(numeric_operands(&vals, name)?)),
-            // Percentile kinds are built only as their paired variants (from
-            // the call's `PercentilePair` arity class); reaching this arm is
-            // a contract violation, reported typed rather than panicking.
-            AggregateKind::PercentileCont | AggregateKind::PercentileDisc => Err(Error::internal(
-                format!("{name}() percentile kind reached the fold without its percentile"),
-            )),
+            None => match kind {
+                // ADR-0462: collect() is a dynamic container construction — a
+                // chained `WITH collect(a) AS a` adds one level per clause — so it
+                // goes through the checked seam like every other constructor.
+                AggregateKind::Collect => {
+                    Value::checked_list(vals.into_iter().filter(|value| !value.is_null()).collect())
+                }
+                // Percentile kinds are built only as their paired variants (from
+                // the call's `PercentilePair` arity class); reaching this arm is
+                // a contract violation, reported typed rather than panicking.
+                AggregateKind::PercentileCont | AggregateKind::PercentileDisc => {
+                    Err(Error::internal(format!(
+                        "{name}() percentile kind reached the fold without its percentile"
+                    )))
+                }
+                AggregateKind::Count
+                | AggregateKind::Sum
+                | AggregateKind::Avg
+                | AggregateKind::Min
+                | AggregateKind::Max
+                | AggregateKind::StDev
+                | AggregateKind::StDevP => Err(Error::internal(format!(
+                    "{name}() is a streaming kind with no streaming accumulator"
+                ))),
+            },
         },
         FoldInput::PercentileCont(p) => Ok(fold_percentile_cont(numeric_operands(&vals, name)?, p)),
         FoldInput::PercentileDisc(p) => Ok(fold_percentile_disc(numeric_operands(&vals, name)?, p)),
     }
 }
 
-/// The Welford kernel both deviations share: `None` for an empty sample
-/// (`[]`, `[null]`), otherwise the sum of squared deviations from the mean.
-/// Welford's online mean/M2 update, not `sum((x - mean)^2)`: squaring
-/// values near `f64::MAX` overflows to +Inf and a naive sum reports Inf
-/// where Cypher reports NaN (and where a `[MAX, MAX]` sample must stay
-/// 0.0). Welford keeps the mean bounded by the inputs' magnitude, and for
-/// a `[MAX, -MAX]` sample its M2 goes negative infinite, so the caller's
-/// final `sqrt` yields the NaN.
-fn welford_m2(nums: &[f64]) -> Option<f64> {
-    let (&first, rest) = nums.split_first()?;
-    let mut mean = first;
-    let mut m2 = 0.0;
-    for (i, &x) in rest.iter().enumerate() {
-        let delta = x - mean;
-        mean += delta / (i + 2) as f64;
-        m2 += delta * (x - mean);
-    }
-    Some(m2)
+/// One aggregate call's streaming accumulator: the constant-size state a
+/// non-retaining aggregate keeps per group instead of its operand values —
+/// a counter for `count`, the numeric/duration accumulator for `sum` and
+/// `avg`, the best value for `min`/`max`, Welford's `(n, mean, M2)` for the
+/// two deviations. Nulls are skipped by every kind. `collect` and the
+/// percentiles genuinely retain their operands and have no accumulator
+/// ([`StreamFold::for_kind`] is `None`), as does any DISTINCT call (its
+/// seen-set is the caller's to hold).
+#[derive(Clone)]
+pub(crate) enum StreamFold {
+    Count(i64),
+    Sum(SumAcc),
+    Avg(SumAcc),
+    Extreme {
+        extreme: Extreme,
+        best: Option<Value>,
+    },
+    Deviation {
+        population: bool,
+        n: usize,
+        mean: f64,
+        m2: f64,
+    },
 }
 
-/// `stDev` over the non-null numeric operand values: the sample deviation,
-/// divisor `n - 1`. ADR-0205: no numeric value at all is null — the empty
-/// sample has no deviation to report. A single value is 0.0: its spread is
-/// zero, and the zero divisor must not turn the 0/0 into NaN.
-fn fold_stdev(nums: Vec<f64>) -> Value {
-    let Some(m2) = welford_m2(&nums) else {
-        return Value::Null;
-    };
-    if nums.len() == 1 {
-        return Value::Float(0.0);
+impl StreamFold {
+    /// The accumulator for `kind`, or `None` for a kind that retains its
+    /// operands. The match is exhaustive: a new kind must choose.
+    pub(crate) fn for_kind(kind: AggregateKind) -> Option<Self> {
+        match kind {
+            AggregateKind::Count => Some(Self::Count(0)),
+            AggregateKind::Sum => Some(Self::Sum(SumAcc::new())),
+            AggregateKind::Avg => Some(Self::Avg(SumAcc::new())),
+            AggregateKind::Min => Some(Self::extreme(Extreme::Min)),
+            AggregateKind::Max => Some(Self::extreme(Extreme::Max)),
+            AggregateKind::StDev => Some(Self::deviation(false)),
+            AggregateKind::StDevP => Some(Self::deviation(true)),
+            AggregateKind::Collect
+            | AggregateKind::PercentileCont
+            | AggregateKind::PercentileDisc => None,
+        }
     }
-    Value::Float((m2 / (nums.len() - 1) as f64).sqrt())
-}
 
-/// `stDevP` over the non-null numeric operand values: the population
-/// deviation, divisor `n`. The Welford kernel already reports `None` for the
-/// empty sample, so no separate null arm is needed.
-fn fold_stdevp(nums: Vec<f64>) -> Value {
-    let Some(m2) = welford_m2(&nums) else {
-        return Value::Null;
-    };
-    Value::Float((m2 / nums.len() as f64).sqrt())
+    fn extreme(extreme: Extreme) -> Self {
+        Self::Extreme {
+            extreme,
+            best: None,
+        }
+    }
+
+    fn deviation(population: bool) -> Self {
+        Self::Deviation {
+            population,
+            n: 0,
+            mean: 0.0,
+            m2: 0.0,
+        }
+    }
+
+    /// The one operand value a `min`/`max` keeps — the only value any
+    /// streaming kind retains, so the caller can charge its payload.
+    pub(crate) fn held_value(&self) -> Option<&Value> {
+        match self {
+            Self::Extreme { best, .. } => best.as_ref(),
+            Self::Count(_) | Self::Sum(_) | Self::Avg(_) | Self::Deviation { .. } => None,
+        }
+    }
+
+    /// Fold one operand value in. `name` labels the wrong-type message of
+    /// the number-only kinds; the error is raised at the offending value.
+    pub(crate) fn offer(&mut self, value: Value, name: &str) -> Result<()> {
+        match self {
+            Self::Count(n) => {
+                if !value.is_null() {
+                    *n += 1;
+                }
+            }
+            Self::Sum(acc) | Self::Avg(acc) => acc.offer(&value, name)?,
+            Self::Extreme { extreme, best } => {
+                extreme_offer(best, *extreme, value, Value::order_by_cmp);
+            }
+            Self::Deviation { n, mean, m2, .. } => {
+                if value.is_null() {
+                    return Ok(());
+                }
+                let x = value.as_number().ok_or_else(|| needs_numbers(name))?;
+                *n += 1;
+                if *n == 1 {
+                    *mean = x;
+                    *m2 = 0.0;
+                } else {
+                    // Welford's online update, not `sum((x - mean)^2)`:
+                    // squaring values near `f64::MAX` overflows to +Inf and a
+                    // naive sum reports Inf where Cypher reports NaN (and
+                    // where a `[MAX, MAX]` sample must stay 0.0). Welford keeps
+                    // the mean bounded by the inputs' magnitude, and for a
+                    // `[MAX, -MAX]` sample its M2 goes negative infinite, so
+                    // the final `sqrt` yields the NaN.
+                    let delta = x - *mean;
+                    *mean += delta / *n as f64;
+                    *m2 += delta * (x - *mean);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The group's result. Empty-group semantics per kind: `count` and
+    /// `sum` are 0, `avg`/`min`/`max`/the deviations are null; a single
+    /// sample's `stDev` is 0.0 (its zero divisor must not turn 0/0 into
+    /// NaN), ADR-0205.
+    pub(crate) fn finish(self) -> Result<Value> {
+        match self {
+            Self::Count(n) => Ok(Value::Int(n)),
+            Self::Sum(acc) => Ok(acc.finish_sum()),
+            Self::Avg(acc) => acc.finish_avg(),
+            Self::Extreme { best, .. } => Ok(best.unwrap_or(Value::Null)),
+            Self::Deviation { n: 0, .. } => Ok(Value::Null),
+            Self::Deviation {
+                population: false,
+                n: 1,
+                ..
+            } => Ok(Value::Float(0.0)),
+            Self::Deviation {
+                population, n, m2, ..
+            } => {
+                let divisor = if population { n } else { n - 1 };
+                Ok(Value::Float((m2 / divisor as f64).sqrt()))
+            }
+        }
+    }
 }
 
 /// The prelude both percentile folds share: the ascending sort of the

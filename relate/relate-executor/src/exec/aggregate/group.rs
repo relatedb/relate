@@ -20,6 +20,7 @@ use crate::row::Row;
 use super::super::order::{park_order_keys, OrderKeys};
 use super::super::scope::{has_star_item, is_internal_column, is_star_item, visible_keys};
 use super::eval::{agg_eval, AggScope};
+use super::stream::{AggSites, GroupAccs};
 
 /// The projection's per-group subclause state, bundled to keep
 /// [`aggregate_ex`] under the argument-count lint.
@@ -42,6 +43,15 @@ pub(crate) struct GroupSubclauses<'a> {
     /// naming an import (`sum(y) + tax` with no rows left) reads the
     /// import's value instead of null. `None` at every other scope.
     pub import_scope: Option<&'a Row>,
+}
+
+/// One group's state: its first row — the seed every non-aggregate leaf
+/// reads — and its aggregate accumulators. Never the group's rows.
+struct GroupState<'e> {
+    /// `None` only for the keyless group seeded before any row arrives (the
+    /// ADR-0453 phantom group of an empty input).
+    seed: Option<Row>,
+    accs: GroupAccs<'e>,
 }
 
 /// CIP-236: `group_by` carries explicit grouping keys when a GROUP BY
@@ -89,7 +99,20 @@ pub(crate) fn aggregate_ex(
     // of the row's carried variables and projects them through to the
     // output row alongside the aggregate aliases.
     let star = has_star_item(items);
-    let mut groups: IndexMap<Vec<GroupKey>, Vec<Row>> = IndexMap::new();
+    // The aggregate calls the projection evaluates — items, ORDER BY keys,
+    // HAVING — found once, so every group streams its input through
+    // constant-size accumulators instead of retaining its rows.
+    let sites = AggSites::discover(
+        graph,
+        items
+            .iter()
+            .filter(|p| !is_star_item(p) && is_agg_expr(&p.expr))
+            .map(|p| &p.expr),
+        order.exprs().chain(having),
+        params,
+        cypher_version,
+    )?;
+    let mut groups: IndexMap<Vec<GroupKey>, GroupState<'_>> = IndexMap::new();
     let mut groups_charge = relate_core::tokens::WorkspaceCharge::empty();
     let account = relate_core::tokens::workspace_accounting();
     let mut meter = crate::workspace::GroupMapMeter::default();
@@ -105,23 +128,26 @@ pub(crate) fn aggregate_ex(
         None => relate_core::tokens::WorkspaceCharge::empty(),
     };
     // ADR-0463 (LABS-781): the group map is one retaining container. Each
-    // landed row's payload and buffers grow a running total enforced at the
-    // per-value cap — the same per-element protocol the comprehension,
-    // `collect`, and non-aggregating projection containers follow — so a
-    // large pattern scan feeding one group refuses at ~the cap while the
-    // rows land, not after the whole group exists and the fold's whole-size
-    // slot pre-charge reports it (the 6 GB refusal at a 256 MiB cap).
+    // landed group — its key, its seed row and its accumulators — grows a
+    // running total enforced at the per-value cap, so a high-cardinality
+    // key set refuses at ~the cap while the groups land. A row that joins
+    // an existing group adds nothing: the group keeps constant-size
+    // accumulators, never its rows, so the state is independent of how many
+    // rows feed a group. (A retaining aggregate — `collect`, a percentile, a
+    // DISTINCT call — charges its operands to its own container.)
     let mut group_retained = graph.retain_bytes(0)?;
     // A keyless aggregation (implicit grouping over an all-aggregate
     // projection, `GROUP BY ()`, an explicit empty `ALL`) has exactly one
     // group whose key is the empty set: seed it here, through the same
     // charge-and-meter sequence a row-loop landing pays, and every input
-    // row lands in it as an occupied push — the empty input keeps the
-    // seed as its phantom group (the ADR-0453 import scope's stand-in)
-    // and no post-loop insertion is needed.
+    // row lands in it — the empty input keeps the seed as its phantom group
+    // (the ADR-0453 import scope's stand-in) and no post-loop insertion is
+    // needed.
     if keyless {
         group_retained.add_group_entry(graph, 0, &[], 0)?;
-        groups.insert(Vec::new(), Vec::new());
+        let accs = sites.open_group();
+        group_retained.add_bytes(graph, accs.footprint())?;
+        groups.insert(Vec::new(), GroupState { seed: None, accs });
         if account {
             meter.add_empty_group();
             charge_group_map(&mut groups_charge, &meter)?;
@@ -148,19 +174,28 @@ pub(crate) fn aggregate_ex(
         let map_slots = groups.len();
         match groups.entry(key) {
             Entry::Occupied(mut entry) => {
-                if account {
-                    meter.add_row(entry.index(), &row);
+                let index = entry.index();
+                let state = entry.get_mut();
+                // Only the keyless group's first row lands as a seed; it is
+                // charged while it still solely owns its payload, ahead of
+                // the offer's clones. Every other row is spent once the
+                // accumulators have it — dropped before the settle, so what
+                // a site kept from it is solely the group's and is charged
+                // in full.
+                let lands_as_seed = state.seed.is_none();
+                if lands_as_seed {
+                    if account {
+                        meter.add_row(index, &row);
+                    }
+                    group_retained.add_row(graph, row.values())?;
                 }
-                // The row's payload, value buffer, and slot in its group's
-                // row vector — the one `add_row` landing charge, ahead of
-                // the landing, so a refusal never leaves the row retained.
-                // It must run here, inside the arm: an occupied entry has
-                // already dropped the probe key, whose `Arc` clone shared
-                // this row's key payload — charged before the probe
-                // existed, `owned_heap` would see the share and skip the
-                // payload of every duplicate-key row.
-                group_retained.add_row(graph, row.values())?;
-                entry.get_mut().push(row);
+                state.accs.offer(graph, &row, params, cypher_version)?;
+                if lands_as_seed {
+                    state.seed = Some(row);
+                } else {
+                    drop(row);
+                }
+                state.accs.settle(graph, &mut group_retained)?;
             }
             Entry::Vacant(entry) => {
                 if account {
@@ -176,13 +211,22 @@ pub(crate) fn aggregate_ex(
                     graph,
                     crate::workspace::group_entry_insert_delta(map_slots, entry.key()),
                 )?;
-                // The same `add_row` landing charge. The retained key
-                // keeps its `Arc` clone of the row's key payload alive,
-                // so the row's own payload adds nothing here and the key
-                // charge above counted it once — the exact figure the
-                // meter's `add_group` computes for the same landing.
+                // The seed row's landing charge. The retained key keeps its
+                // `Arc` clone of the row's key payload alive, so the row's
+                // own payload adds nothing here and the key charge above
+                // counted it once — the exact figure the meter's
+                // `add_group` computes for the same landing.
                 group_retained.add_row(graph, row.values())?;
-                entry.insert(vec![row]);
+                let mut accs = sites.open_group();
+                group_retained.add_bytes(graph, accs.footprint())?;
+                accs.offer(graph, &row, params, cypher_version)?;
+                // The row stays as the seed and holds its share of what the
+                // sites kept; that payload was charged once with the seed.
+                accs.settle(graph, &mut group_retained)?;
+                entry.insert(GroupState {
+                    seed: Some(row),
+                    accs,
+                });
             }
         }
         if account {
@@ -196,17 +240,16 @@ pub(crate) fn aggregate_ex(
     // the landing, in its final shape (seed bindings, projected
     // values, aggregate results, parked order keys).
     let mut out_retained = graph.retain_bytes(0)?;
-    for (_, group) in groups {
+    for (_, state) in groups {
         // The group's own first row is the seed every non-aggregate leaf
         // reads; the phantom keyless group over an emptied input has none,
         // so an importing subquery's scope row stands in (ADR-0453) — the
         // imports are per-row constants, present even when the body's rows
         // are gone.
-        let mut n = group
-            .first()
-            .cloned()
-            .or_else(|| import_scope.cloned())
-            .unwrap_or_default();
+        let GroupState { seed, accs } = state;
+        let seed_row = seed.as_ref().or(import_scope);
+        let mut n = seed_row.cloned().unwrap_or_default();
+        let folded = accs.finish(graph, seed.as_ref(), params, cypher_version);
         if star {
             // The variables `*` carries are already in the first-row seed;
             // keep the internal `__*` names out of the projected row, the
@@ -221,12 +264,12 @@ pub(crate) fn aggregate_ex(
             let val = if is_agg_expr(&p.expr) {
                 agg_eval(
                     graph,
-                    AggScope::of_group_with_import(&group, import_scope),
+                    AggScope::of_group(&folded, seed_row),
                     &p.expr,
                     params,
                     cypher_version,
                 )?
-            } else if let Some(row) = group.first().or(import_scope) {
+            } else if let Some(row) = seed_row {
                 eval(graph, row, &p.expr, params, cypher_version)?
             } else {
                 Value::Null
@@ -235,14 +278,15 @@ pub(crate) fn aggregate_ex(
         }
         // Park the `ORDER BY` keys beside the projected columns, through the
         // same decision and writer every other projection path uses. A key
-        // reads `n`, the projected row, so an aggregate call in it folds this
-        // group and the deprecated implicit-grouping shapes still answer from
-        // their item; a key that cannot be evaluated orders as null rather
-        // than failing the statement — the documented `ORDER BY` policy.
+        // reads `n`, the projected row, so an aggregate call in it reads this
+        // group's resolved value and the deprecated implicit-grouping shapes
+        // still answer from their item; a key that cannot be evaluated
+        // orders as null rather than failing the statement — the documented
+        // `ORDER BY` policy.
         park_order_keys(order, &mut n, |expr, scope| {
             agg_eval(
                 graph,
-                AggScope::of_row(&group, scope),
+                AggScope::of_row(&folded, scope),
                 expr,
                 params,
                 cypher_version,
@@ -254,7 +298,7 @@ pub(crate) fn aggregate_ex(
         if let Some(predicate) = having {
             let keeps = agg_eval(
                 graph,
-                AggScope::of_row(&group, &n),
+                AggScope::of_row(&folded, &n),
                 predicate,
                 params,
                 cypher_version,
@@ -263,6 +307,10 @@ pub(crate) fn aggregate_ex(
                 continue;
             }
         }
+        // The resolved aggregate values are shared with `n` until the folded
+        // group lets go; drop it so the output row's landing charge sees
+        // the payloads it solely owns.
+        drop(folded);
         out_retained.add_row(graph, n.values())?;
         out.push(n);
     }

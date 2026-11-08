@@ -1,48 +1,86 @@
-//! The recursive aggregate-expression evaluator: aggregate calls fold the
-//! group, every non-aggregate leaf reads the seed row, and the transparent
+//! The recursive aggregate-expression evaluator: aggregate calls read their
+//! group's resolved accumulators, every non-aggregate leaf reads the seed row, and the transparent
 //! combinators (map, list, comprehension, CASE, binary, …) recurse through
 //! the same scope.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{AggregateArity, AggregateKind, Expr, MapProjectionItem};
+use relate_ir::{Expr, MapProjectionItem};
 use relate_names::SmallName;
 
-use crate::eval::{eval, fold_aggregate, FoldInput};
+use crate::eval::eval;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-/// The two scopes one aggregation evaluation reads, bundled so they travel
-/// together through the recursion: `group` is what an aggregate call folds,
-/// `seed` the row a non-aggregate leaf is asked about.
+use super::stream::FoldedGroup;
+
+/// Where an aggregate call's value comes from: the group's resolved
+/// accumulators, or — in the discovery pass that finds the call sites the
+/// accumulators are built for — nowhere (the call is recorded and reads as
+/// null).
 #[derive(Clone, Copy)]
-pub(crate) struct AggScope<'a> {
-    group: &'a [Row],
+enum AggSource<'a, 'e> {
+    Folded(&'a FoldedGroup<'e>),
+    Discover(&'a RefCell<Vec<&'e Expr>>),
+}
+
+/// The two scopes one aggregation evaluation reads, bundled so they travel
+/// together through the recursion: the source of every aggregate call's
+/// value, and the `seed` row a non-aggregate leaf is asked about.
+#[derive(Clone, Copy)]
+pub(crate) struct AggScope<'a, 'e> {
+    source: AggSource<'a, 'e>,
     seed: Option<&'a Row>,
 }
 
-impl<'a> AggScope<'a> {
-    /// A projection item's scope: its expression runs over the group and
-    /// asks about the group's first row. ADR-0453: an importing subquery's
-    /// scope row is the empty-group fallback — the phantom keyless group
-    /// keeps reading the imports (per-row constants) when the body's rows
-    /// are gone; `None` at every other scope.
-    pub(crate) fn of_group_with_import(group: &'a [Row], import: Option<&'a Row>) -> Self {
+impl<'a, 'e> AggScope<'a, 'e> {
+    /// A projection item's scope: aggregate calls read the group's resolved
+    /// values, non-aggregate leaves ask about `seed` — the group's first
+    /// row, or (ADR-0453) an importing subquery's scope row for the phantom
+    /// keyless group, whose imports are per-row constants present even
+    /// when the body's rows are gone; `None` for an empty group elsewhere.
+    pub(crate) fn of_group(folded: &'a FoldedGroup<'e>, seed: Option<&'a Row>) -> Self {
         Self {
-            group,
-            seed: group.first().or(import),
+            source: AggSource::Folded(folded),
+            seed,
         }
     }
 
-    /// An `ORDER BY` key's scope: aggregate calls still fold the group, but
-    /// every non-aggregate leaf asks about `row` — the projected output row,
-    /// whose names the projection's aliases shadow.
-    pub(crate) fn of_row(group: &'a [Row], row: &'a Row) -> Self {
+    /// An `ORDER BY` key's scope: aggregate calls still read the group, but
+    /// every non-aggregate leaf asks about `row` — the projected output
+    /// row, whose names the projection's aliases shadow.
+    pub(crate) fn of_row(folded: &'a FoldedGroup<'e>, row: &'a Row) -> Self {
         Self {
-            group,
+            source: AggSource::Folded(folded),
             seed: Some(row),
         }
+    }
+
+    /// The discovery pass: aggregate calls are recorded into `found`.
+    pub(super) fn discovering(found: &'a RefCell<Vec<&'e Expr>>) -> Self {
+        Self {
+            source: AggSource::Discover(found),
+            seed: None,
+        }
+    }
+
+    /// The value of the aggregate call at `call`, or its recording.
+    fn aggregate_call(&self, call: &'e Expr) -> Result<Value> {
+        match self.source {
+            AggSource::Folded(folded) => folded.value(call),
+            AggSource::Discover(found) => {
+                found.borrow_mut().push(call);
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// Whether this is the discovery pass, whose combinators stop after
+    /// their children are walked.
+    fn is_discovery(&self) -> bool {
+        matches!(self.source, AggSource::Discover(_))
     }
 }
 
@@ -57,22 +95,24 @@ fn bind_child<'e>(children: &mut Vec<(String, &'e Expr)>, name: String, child: &
     Expr::Variable(SmallName::from_name(&name))
 }
 
-/// Evaluate `expr` in `scope`. Aggregate calls fold the group's rows; every
-/// non-aggregate leaf evaluates against the seed row. No seed means an empty
-/// group: there is no row to ask, so a non-aggregate leaf is null.
-pub(crate) fn agg_eval(
+/// Evaluate `expr` in `scope`. An aggregate call reads the value its
+/// group's accumulator resolved to (the group's rows were streamed through
+/// the accumulators, never retained); every non-aggregate leaf evaluates
+/// against the seed row. No seed means an empty group: there is no row to
+/// ask, so a non-aggregate leaf is null.
+pub(crate) fn agg_eval<'e>(
     graph: &ExecGraph<'_>,
-    scope: AggScope<'_>,
-    expr: &Expr,
+    scope: AggScope<'_, 'e>,
+    expr: &'e Expr,
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let AggScope { group, seed } = scope;
+    let seed = scope.seed;
     match expr {
-        Expr::CountStar => Ok(Value::Int(group.len() as i64)),
+        Expr::CountStar => scope.aggregate_call(expr),
         Expr::Function {
             name,
-            distinct,
+            distinct: _,
             args,
         } => {
             // The canonical aggregate classification lives in
@@ -83,19 +123,10 @@ pub(crate) fn agg_eval(
             // aggregate-call policy below reads the same table, not a second
             // spelling of it. A non-aggregate function keeps the transparent
             // scalar wrapper.
-            let Some(kind) = name.with_str(relate_ir::classify_aggregate) else {
+            if name.with_str(relate_ir::classify_aggregate).is_none() {
                 return agg_eval_function(graph, scope, name, args, params, cypher_version);
-            };
-            fold_aggregate_call(
-                graph,
-                group,
-                kind,
-                name,
-                *distinct,
-                args,
-                params,
-                cypher_version,
-            )
+            }
+            scope.aggregate_call(expr)
         }
         Expr::Map(es) => {
             let mut m = BTreeMap::new();
@@ -282,113 +313,15 @@ pub(crate) fn agg_eval(
     }
 }
 
-/// One aggregate call's policy, held apart from [`agg_eval`]'s Expr-variant
-/// dispatch: the kind's arity contract, the percentile's second argument,
-/// the retained-container row loop, the distinct dedup, and then the shared
-/// per-kind fold ([`fold_aggregate`]).
-#[allow(clippy::too_many_arguments)]
-fn fold_aggregate_call(
-    graph: &ExecGraph<'_>,
-    group: &[Row],
-    kind: AggregateKind,
-    name: &SmallName,
-    distinct: bool,
-    args: &[Expr],
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Value> {
-    // LABS-276 / ADR-0225/0217: every aggregate's arity contract comes from
-    // the kind's row in the single `relate-ir` contracts table, checked
-    // before the row loop so an empty group cannot slip a bad call through
-    // and the loop's `args[0]` index cannot panic. The contract class owns
-    // the error shape: the single-input class matches the front's
-    // `check_aggregate_arity` (the shared `SINGLE_INPUT_AGGREGATES` table);
-    // `count` is guarded here too — a backtick-escaped `` `count`() ``
-    // bypasses both the parser's keyword path and front validation — and the
-    // percentiles keep their own two-argument message, now exact: over-arity
-    // calls raise the same error instead of silently dropping args[2..].
-    let arity = kind.arity();
-    if args.len() != arity.required() {
-        let rejection = name.with_str(|text| arity.rejection(text, args.len()));
-        return Err(match arity {
-            AggregateArity::SingleInput => Error::syntax(rejection),
-            AggregateArity::PercentilePair => Error::ty(rejection),
-        });
-    }
-    // The arity class decides whether the call has a percentile:
-    // `PercentilePair` evaluates it and asks `FoldInput::percentile` — the
-    // one exhaustive pairing beside the vocabulary — for the paired input;
-    // every single-input kind builds `Many`. The pairing is carried by the
-    // input variant, so `fold_aggregate` never re-derives it.
-    // The percentile argument depends only on the group's first row, so it is
-    // evaluated and validated here, before the retain guard and the per-row
-    // loop: a malformed percentile fails before any per-row work.
-    let input = match arity {
-        AggregateArity::SingleInput => FoldInput::Many(kind),
-        AggregateArity::PercentilePair => {
-            // An empty group has no percentile to report and no row to ask
-            // about: the fold below yields null. The scope's own seed policy
-            // (`AggScope::of_group_with_import`: `group.first().or(import)`)
-            // never fabricates a row, so neither does this evaluation.
-            let Some(first) = group.first() else {
-                return Ok(Value::Null);
-            };
-            // Arity (two arguments) is checked ahead of the row loop, above;
-            // the percentile itself must be a number in [0, 1] — one
-            // rejection site covers both failure modes, so the message
-            // cannot drift between them.
-            let p = eval(graph, first, &args[1], params, cypher_version)?;
-            let Some(p) = p.as_number().filter(|p| (0.0..=1.0).contains(p)) else {
-                return Err(Error::ty("NumberOutOfRange: percentile"));
-            };
-            name.with_str(|text| FoldInput::percentile(kind, p, text))?
-        }
-    };
-    // The `vals` vector is one retaining container for every aggregate (not
-    // just `collect`), and the guard's construction owns both the slot-buffer
-    // charge and the running retained total — charging the buffer here as
-    // well would double-count the figure and run the cap check twice. The
-    // values' own payloads were charged by the expression that built them;
-    // `collect` additionally retains them in the result.
-    //
-    // LABS-802 / ADR-0499: the exact `owned_heap` charge stays for every
-    // fold — a transient fold's vals hold the payloads until the fold
-    // completes, and a constructed payload nested one level deep
-    // (`count([$p + $p])`, each element under the per-allocation cap)
-    // escapes any fixed-width estimate, so the cumulative bound must be
-    // the exact walk (the security round's finding). The per-row overhead
-    // the profile measured — 46.5% of a plain count — was the walk's
-    // non-inlined recursive call chain, not its semantics: the chain is
-    // now `#[inline]` (`owned_heap` and its helpers, the core string and
-    // byte formulas), so a shared payload costs one `Arc` count read, a
-    // flat payload inline arithmetic, and the deep walk is paid only by a
-    // row whose own operand construction was that deep — proportional, at
-    // the construction site, never re-walked per row for moved values.
-    let mut retained = graph.retain_slots(group.len())?;
-    let mut vals = Vec::new();
-    for row in group {
-        graph.cancel_tick()?;
-        let value = eval(graph, row, &args[0], params, cypher_version)?;
-        retained.add_owned(graph, &value)?;
-        vals.push(value);
-    }
-    if distinct {
-        // First-seen emission under the one `dedup_first_seen` policy, whose
-        // set charge is internal; the surviving values stay retained here.
-        vals = crate::distinct_set::dedup_first_seen(vals)?;
-    }
-    name.with_str(|text| fold_aggregate(input, text, vals))
-}
-
 /// Shared shape of the transparent-combinator arms: recursively `agg_eval`
 /// each child, bind the results under their synthetic `__agg_*` names in a
 /// row seeded from the scope's seed row (cloned, or default when there is
 /// none), and delegate the `rebuild`'d combinator — which references those
 /// names via `Expr::Variable` — to scalar `eval`.
-fn agg_eval_combinator<S: AsRef<str>>(
+fn agg_eval_combinator<'e, S: AsRef<str>>(
     graph: &ExecGraph<'_>,
-    scope: AggScope<'_>,
-    children: &[(S, &Expr)],
+    scope: AggScope<'_, 'e>,
+    children: &[(S, &'e Expr)],
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
     rebuild: impl FnOnce() -> Expr,
@@ -400,16 +333,21 @@ fn agg_eval_combinator<S: AsRef<str>>(
             agg_eval(graph, scope, child, params, cypher_version)?,
         );
     }
+    if scope.is_discovery() {
+        // The children are walked and recorded; the wrapper runs over the
+        // folded values only once a group has them.
+        return Ok(Value::Null);
+    }
     eval(graph, &row, &rebuild(), params, cypher_version)
 }
 
 /// Non-aggregate function wrapper over aggregate arguments: bind each
 /// argument under `__agg_arg{i}` and re-run the call as scalar `eval`.
-fn agg_eval_function(
+fn agg_eval_function<'e>(
     graph: &ExecGraph<'_>,
-    scope: AggScope<'_>,
+    scope: AggScope<'_, 'e>,
     name: &SmallName,
-    args: &[Expr],
+    args: &'e [Expr],
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
 ) -> Result<Value> {
@@ -435,7 +373,7 @@ fn agg_eval_function(
 /// scalar `eval_case` picks the arm.
 fn agg_eval_case<'e>(
     graph: &ExecGraph<'_>,
-    scope: AggScope<'_>,
+    scope: AggScope<'_, 'e>,
     when_then: &'e [(Expr, Expr)],
     else_expr: &'e Option<Box<Expr>>,
     params: &BTreeMap<String, Value>,
@@ -470,11 +408,11 @@ fn agg_eval_case<'e>(
 /// fold the group like any other aggregation sub-expression; the target and
 /// the shorthand items stay seed-relative. Rebuilt over synthetic names, the
 /// same shape the other transparent combinators use.
-fn agg_eval_map_projection(
+fn agg_eval_map_projection<'e>(
     graph: &ExecGraph<'_>,
-    scope: AggScope<'_>,
-    target: &Expr,
-    items: &[MapProjectionItem],
+    scope: AggScope<'_, 'e>,
+    target: &'e Expr,
+    items: &'e [MapProjectionItem],
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
 ) -> Result<Value> {

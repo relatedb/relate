@@ -2,88 +2,94 @@
 //! ADR-0499's flattened exact charge, and LABS-781's group-population
 //! running total) — extracted from `aggregate_tests.rs` so that file
 //! keeps the fold-semantics tests and the charge tests grow in their own
-//! module. The fold tests drive `fold_aggregate_call`'s charge protocol:
-//! the slot buffer for every kind, and the exact `owned_heap` running
-//! total — for `collect`, whose result retains the vals, and for the
-//! transient folds alike, whose vals hold the payloads until the fold
-//! completes (the security round's nested-constructed shape must keep
-//! refusing). The LABS-781 pins drive the group map's own population:
-//! the container the fold's groups retain while they fill.
+//! module. The fold tests drive the streaming accumulators' charge
+//! protocol: a non-retaining aggregate (`count`, `sum`, `avg`, `min`,
+//! `max`, `stDev`, `stDevP`) keeps constant-size state and is charged
+//! nothing per row, while `collect`, the percentiles and DISTINCT calls
+//! retain their operands and charge the exact `owned_heap` running total
+//! (the security round's nested-constructed shape must keep refusing
+//! there). The LABS-781 pins drive the group map's own population: the
+//! container holding one seed row and one accumulator set per group.
 
 use std::collections::BTreeMap;
 
-use super::aggregate::{agg_eval, AggScope};
 use super::test_support::{
-    agg_fn, agg_fn_over, assert_crossing_element, assert_crossing_row, assert_expression_cap,
-    group_with_vals, group_with_xs, try_exec_cypher,
+    agg_eval_rows, agg_fn, agg_fn_over, assert_crossing_element, assert_crossing_row,
+    assert_expression_cap, group_with_vals, group_with_xs, try_exec_cypher,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use relate_core::Value;
-use relate_ir::{Expr, SINGLE_INPUT_AGGREGATES};
+use relate_ir::{classify_aggregate, Expr, SINGLE_INPUT_AGGREGATES};
 
-/// ADR-0463 round 3: the per-group `vals` vector is one allocation of
-/// `group.len()` slots for *every* aggregate — the loop derives the kind
-/// list from the canonical `SINGLE_INPUT_AGGREGATES` table (plus `count`,
-/// whose keyword path the table omits by contract), so a kind added to
-/// the vocabulary is covered here by construction. A large single group
-/// must hit the typed per-allocation refusal, instead of growing the
-/// vector into the allocator's lap.
+use crate::eval::StreamFold;
+
+/// A non-retaining aggregate keeps constant-size state: the group's row
+/// count never reaches the expression budget. Every kind in the canonical
+/// `SINGLE_INPUT_AGGREGATES` table (plus `count`, whose keyword path the
+/// table omits by contract) is classified by whether it has a streaming
+/// accumulator — so a kind added to the vocabulary is covered by
+/// construction — and a 100,000-row group passes a 1 KiB cap for every
+/// streaming kind while every retaining kind refuses with the typed
+/// per-allocation error, instead of growing its operand buffer into the
+/// allocator's lap.
 #[test]
-fn aggregate_vals_buffer_is_charged_for_each_aggregate_kind() {
-    let cap = 64;
+fn only_retaining_aggregates_charge_per_row() {
+    let cap = 1_024;
     let mut g = Graph::default();
     g.configure_expression_memory_limit(Some(cap));
     let graph = ExecGraph::read(&g);
-    let group = group_with_xs(&(0..100).collect::<Vec<_>>());
+    let group = group_with_xs(&(0..100_000).collect::<Vec<_>>());
     let names = ["count"]
         .into_iter()
         .chain(SINGLE_INPUT_AGGREGATES.iter().copied());
     for name in names {
-        let error = agg_eval(
-            &graph,
-            AggScope::of_group_with_import(&group, None),
-            &agg_fn(name),
-            &BTreeMap::new(),
-            None,
-        )
-        .unwrap_err();
-        assert_expression_cap(&error, cap);
+        let kind = classify_aggregate(name).expect("the table names aggregate kinds");
+        let result = agg_eval_rows(&graph, &group, &agg_fn(name), &BTreeMap::new(), None);
+        if StreamFold::for_kind(kind).is_some() {
+            result.unwrap_or_else(|error| panic!("{name} streams, yet refused: {error}"));
+        } else {
+            assert_expression_cap(&result.unwrap_err(), cap);
+        }
     }
 }
 
-/// ADR-0463 round 6: the vals container's slot buffer is charged exactly
-/// once — by `retain_slots`'s construction — not again by a standalone
-/// `charge_value_buffer`. Integer payloads add nothing, so the recorded
-/// figure is exactly the buffer of `group.len()` slots.
+/// A DISTINCT call needs its seen-set, so it retains even where the plain
+/// call streams — except `min`/`max`, whose extreme ignores duplicates.
 #[test]
-fn aggregate_vals_buffer_is_charged_exactly_once() {
-    let g = Graph::default();
+fn distinct_aggregates_retain_except_min_and_max() {
+    let cap = 1_024;
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(cap));
     let graph = ExecGraph::read(&g);
-    let group = group_with_xs(&(0..10).collect::<Vec<_>>());
-    agg_eval(
-        &graph,
-        AggScope::of_group_with_import(&group, None),
-        &agg_fn("sum"),
-        &BTreeMap::new(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        graph.expression_built_bytes(),
-        crate::workspace::value_buffer_bytes(group.len())
-    );
+    let group = group_with_xs(&(0..100_000).collect::<Vec<_>>());
+    let distinct = |name: &str| Expr::Function {
+        name: name.into(),
+        distinct: true,
+        args: vec![Expr::Variable("x".into())],
+    };
+    for name in ["count", "sum", "avg", "stDev"] {
+        let error =
+            agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new(), None).unwrap_err();
+        assert_expression_cap(&error, cap);
+    }
+    for name in ["min", "max"] {
+        agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new(), None)
+            .unwrap_or_else(|error| panic!("{name}(DISTINCT) streams, yet refused: {error}"));
+    }
 }
 
-/// LABS-802 / ADR-0499: the transient folds keep the exact cumulative
-/// charge. A payload the row still shares (a bare variable read — the
-/// common `count(n)` shape) adds nothing and a tight cap passes; the
-/// moment the operand *constructs* its value per row, the exact walk
-/// descends into it and the same cap refuses — even one nesting level
-/// deep (`[x + pad]`, the security round's `count([$p + $p])` class that
-/// any fixed-width estimate misses) and through `collect` alike.
+/// LABS-802 / ADR-0499: a retaining fold keeps the exact cumulative charge.
+/// A payload the row still shares (a bare variable read — the common
+/// `collect(n)` shape) adds nothing and a tight cap passes; the moment the
+/// operand *constructs* its value per row, the exact walk descends into it
+/// and the same cap refuses — even one nesting level deep (`[x + pad]`, the
+/// security round's `collect([$p + $p])` class that any fixed-width
+/// estimate misses). A streaming `count` over the same constructions
+/// retains none of them — each value is dropped as the row is spent, and
+/// the per-allocation cap still bounds any one construction.
 #[test]
-fn transient_folds_keep_the_exact_cumulative_charge() {
+fn retaining_folds_keep_the_exact_cumulative_charge() {
     let pad = "p".repeat(200);
     let shared = group_with_vals(
         &(0..100)
@@ -104,25 +110,18 @@ fn transient_folds_keep_the_exact_cumulative_charge() {
     let graph = ExecGraph::read(&g);
     // The shared operand passes: the row still holds the payload, so the
     // exact walk is one `Arc` count read per row — the O(1) common case.
-    let count = agg_eval(
-        &graph,
-        AggScope::of_group_with_import(&shared, None),
-        &agg_fn("count"),
-        &BTreeMap::new(),
-        None,
-    )
-    .expect("a shared operand charges nothing per row");
-    assert_eq!(count, Value::Int(100));
-    // Every constructed-operand fold over the group refuses through the
-    // exact running total — the transient `count` (whose walk descends
-    // into the list's element, where a fixed-width figure would see only
-    // the list's own slot buffer) and the retaining `collect` alike.
-    let constructed_refuses = |name: &str| {
+    let collected = agg_eval_rows(&graph, &shared, &agg_fn("collect"), &BTreeMap::new(), None)
+        .expect("a shared operand charges nothing per row");
+    assert!(matches!(collected, Value::List(items) if items.len() == 100));
+    // The retaining `collect` over constructed operands refuses through
+    // the exact running total, whose walk descends into the list's element
+    // where a fixed-width figure would see only the list's own slot buffer.
+    let constructed_over = |name: &str| {
         // `[x + pad]`: one fresh list per row whose element is a
         // constructed ~217-byte string.
-        let error = agg_eval(
+        agg_eval_rows(
             &graph,
-            AggScope::of_group_with_import(&constructed, None),
+            &constructed,
             &agg_fn_over(
                 name,
                 Expr::List(vec![Expr::Binary {
@@ -134,47 +133,110 @@ fn transient_folds_keep_the_exact_cumulative_charge() {
             &BTreeMap::new(),
             None,
         )
-        .unwrap_err();
-        assert_expression_cap(&error, cap);
     };
-    constructed_refuses("count");
-    constructed_refuses("collect");
+    assert_expression_cap(&constructed_over("collect").unwrap_err(), cap);
+    // The streaming count keeps nothing of them and completes under the
+    // same cap.
+    assert_eq!(constructed_over("count").unwrap(), Value::Int(100));
 }
 
-/// LABS-802 / ADR-0499, end to end: the repro family keeps its exact
-/// bounds while the flattened charge chain takes the per-row overhead off
-/// the profile. A count over small per-row constructions completes (the
-/// long-streaming bulk-load shape); the same count over ~2 KB
-/// constructions — and the security round's one-level-nested form —
-/// refuses through the vals container's exact running total.
+/// LABS-802 / ADR-0499, end to end: the retaining fold keeps its exact
+/// bounds while a streaming fold over the same operands holds nothing. A
+/// count over per-row constructions — small or ~2 KB, flat or nested one
+/// level deep — completes under a 60 KB cap (it keeps one counter, and the
+/// per-allocation cap bounds any one construction); `collect` over the same
+/// constructions refuses through its container's exact running total, the
+/// nested form included.
 #[test]
-fn a_transient_fold_over_constructed_operands_stays_exact() {
+fn a_retaining_fold_over_constructed_operands_stays_exact() {
     let pad = "p".repeat(2_000);
     let cap = 60_000;
     let mut g = Graph::default();
     g.configure_expression_memory_limit(Some(cap));
-    // Small per-row constructions accumulate far under the cap: completes.
-    let counted = try_exec_cypher(
-        &g,
-        "UNWIND range(1, 100) AS i RETURN count(toString(i)) AS c",
-    )
-    .expect("small per-row constructions stay under the cap");
-    assert_eq!(counted.rows[0][0], Value::Int(100));
-    // The ~2 KB per-row constructions refuse — flat, and nested one level
-    // deep in a constructed container (the exact walk descends where a
-    // fixed-width figure would see only the container's slot buffer).
+    let counted = |query: String| {
+        let result =
+            try_exec_cypher(&g, &query).expect("a streaming count retains no per-row construction");
+        assert_eq!(result.rows[0][0], Value::Int(100));
+    };
+    counted("UNWIND range(1, 100) AS i RETURN count(toString(i)) AS c".to_string());
+    counted(format!(
+        "UNWIND range(1, 100) AS i RETURN count(toString(i) + '{pad}') AS c"
+    ));
+    counted(format!(
+        "UNWIND range(1, 100) AS i RETURN count([toString(i) + '{pad}']) AS c"
+    ));
+    // The ~2 KB per-row constructions refuse in the retaining `collect` —
+    // flat, and nested one level deep in a constructed container (the exact
+    // walk descends where a fixed-width figure would see only the
+    // container's slot buffer).
     let refuses = |query: String, why: &str| {
         let error = try_exec_cypher(&g, &query).err().expect(why);
         assert_expression_cap(&error, cap);
     };
     refuses(
-        format!("UNWIND range(1, 100) AS i RETURN count(toString(i) + '{pad}') AS c"),
-        "the transient fold's running total must bound the payloads",
+        format!("UNWIND range(1, 100) AS i RETURN size(collect(toString(i) + '{pad}')) AS c"),
+        "the retaining fold's running total must bound the payloads",
     );
     refuses(
-        format!("UNWIND range(1, 100) AS i RETURN count([toString(i) + '{pad}']) AS c"),
+        format!("UNWIND range(1, 100) AS i RETURN size(collect([toString(i) + '{pad}'])) AS c"),
         "a nested constructed payload must not escape the exact walk",
     );
+}
+
+/// What a streaming `min`/`max` keeps — one operand value per group — is
+/// charged: two hundred groups each holding a ~2 KB constructed extreme
+/// cross a 100 KB cap while the groups land, where the uncharged payloads
+/// let a statement retain many multiples of the cap.
+#[test]
+fn a_held_extreme_is_charged_to_the_running_total() {
+    let pad = "p".repeat(2_000);
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(100_000));
+    let query =
+        format!("UNWIND range(1, 400) AS i RETURN i % 200 AS g, min(toString(i) + '{pad}') AS m");
+    let error = try_exec_cypher(&g, &query)
+        .err()
+        .expect("the held extremes' payloads must cross the cap");
+    assert_expression_cap(&error, 100_000);
+}
+
+/// The retained operands of every group are alive together, so they share
+/// one running total: a hundred groups each collecting a second ~2 KB value
+/// (the first rides its group's seed row, already charged) cross a cap that
+/// no single group's container approaches. A per-group total would pass it,
+/// and a value cloned from the spent input row would escape the charge.
+#[test]
+fn retained_operands_across_groups_share_one_running_total() {
+    let pad = "p".repeat(2_000);
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(250_000));
+    let query = format!(
+        "UNWIND range(1, 200) AS i WITH i % 100 AS g, toString(i) + '{pad}' AS k \
+         RETURN g, collect(k) AS c"
+    );
+    let error = try_exec_cypher(&g, &query)
+        .err()
+        .expect("the groups' retained operands must cross the shared cap");
+    assert_expression_cap(&error, 250_000);
+}
+
+/// The reported repro class, end to end: a grouped aggregate over a
+/// generated stream holds no per-row state, so a count over a million
+/// duplicate-key rows completes under a cap far below the rows' own size
+/// (the groups' state — one seed row and one counter each — is what the
+/// cap meters), where retaining every row refused at the default cap.
+#[test]
+fn a_streamed_grouped_count_holds_no_per_row_state() {
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(100 * 1024 * 1024));
+    let result = try_exec_cypher(
+        &g,
+        "UNWIND range(1, 1000000) AS i RETURN i % 4 AS k, count(*) AS c, sum(i) AS s, \
+         avg(i) AS a, min(i) AS lo, max(i) AS hi ORDER BY k",
+    )
+    .expect("four groups of constant-size accumulators fit a 100 MiB cap");
+    assert_eq!(result.rows.len(), 4);
+    assert_eq!(result.rows[0][1], Value::Int(250_000));
 }
 
 /// LABS-781's repro shape: one `:A` root, `m_ids` `:M` middles on `E`
@@ -304,29 +366,23 @@ fn a_grouped_aggregation_is_capped_by_its_keys_running_total() {
     assert_crossing_element(used, cap, one_landing);
 }
 
-/// LABS-781 (rust-review round): the row charge runs inside the entry
-/// arms because the probe `GroupKey`'s `Arc` clone shares the row's key
-/// payload — a duplicate-key row landing in an occupied group must be
-/// charged in full (the probe is dropped by then), never skipped as a
-/// shared payload. One million rows over one thousand duplicate keys,
-/// each row solely owning its ~190-byte string: every producer stays
-/// under the default cap, and the group's running total — the duplicate
-/// rows' payloads plus buffers — crosses it mid-population.
+/// LABS-781 (rust-review round), restated for streaming aggregation: a
+/// duplicate-key row joining an occupied group is spent once the group's
+/// accumulators have it — nothing about it is retained, however many
+/// duplicate rows arrive. One million rows over one thousand duplicate
+/// keys, each solely owning its ~190-byte string (190 MB of payload the
+/// old group map held and refused at the default cap), now complete: the
+/// group map holds one seed row per distinct key.
 #[test]
-fn an_aggregating_group_of_duplicate_key_rows_is_capped_by_its_running_total() {
+fn an_aggregating_group_of_duplicate_key_rows_retains_no_row() {
     let pad = "p".repeat(170);
     let query = format!(
         "UNWIND [x IN range(1, 1000000) | toString(x % 1000) + '{pad}'] AS k RETURN k, count(*) AS c"
     );
-    let error = try_exec_cypher(&Graph::default(), &query)
-        .err()
-        .expect("the duplicate-key rows' payloads must cross the cap");
-    let cap = crate::memory::EXPRESSION_BUDGET_BYTES;
-    let used = assert_expression_cap(&error, cap);
-    // One landed row: its ~190-byte key payload plus its buffers.
-    let one_landing =
-        relate_core::str_logical_bytes(&pad) + crate::workspace::retained_rows_bytes(1, 2);
-    assert_crossing_element(used, cap, one_landing);
+    let result = try_exec_cypher(&Graph::default(), &query)
+        .expect("duplicate-key rows are spent by the counter, never retained");
+    assert_eq!(result.rows.len(), 1000);
+    assert!(result.rows.iter().all(|row| row[1] == Value::Int(1000)));
 }
 
 /// LABS-781 (security round): the streaming aggregate folds build the

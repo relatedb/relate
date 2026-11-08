@@ -175,6 +175,7 @@ impl<'a> ExecGraph<'a> {
 /// `collect`/comprehension/UNWIND container holds every element until it
 /// drops, so its total is exact and is the enforced quantity; the guard owns
 /// the running sum and the check, so no site hand-spells the protocol.
+#[derive(Clone)]
 pub(crate) struct RetainedTotal {
     total: u64,
 }

@@ -132,13 +132,29 @@ pub(crate) fn fold_extreme(
     cmp: impl Fn(&Value, &Value) -> Ordering,
 ) -> Value {
     let mut best: Option<Value> = None;
-    for value in vals.into_iter().filter(|value| !value.is_null()) {
-        if best
-            .as_ref()
-            .is_none_or(|current| extreme.picks(cmp(&value, current)))
-        {
-            best = Some(value);
-        }
+    for value in vals {
+        extreme_offer(&mut best, extreme, value, &cmp);
     }
     best.unwrap_or(Value::Null)
+}
+
+/// The one extreme-offer step: skip a null, otherwise displace `best` only
+/// on a strict comparison — [`fold_extreme`]'s policy, spelled once so the
+/// batch fold and the streaming `min()`/`max()` accumulator
+/// ([`crate::eval::StreamFold`]) cannot drift.
+pub(crate) fn extreme_offer(
+    best: &mut Option<Value>,
+    extreme: Extreme,
+    value: Value,
+    cmp: impl Fn(&Value, &Value) -> Ordering,
+) {
+    if value.is_null() {
+        return;
+    }
+    if best
+        .as_ref()
+        .is_none_or(|current| extreme.picks(cmp(&value, current)))
+    {
+        *best = Some(value);
+    }
 }

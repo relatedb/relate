@@ -1,7 +1,10 @@
 //! Aggregate fixtures: aggregate-call builders, row groups, and charge-cap assertions.
+use std::collections::BTreeMap;
+
 use relate_core::Value;
 use relate_ir::Expr;
 
+use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 /// A one-argument aggregate call over a caller-chosen operand — the
@@ -14,6 +17,34 @@ pub(crate) fn agg_fn_over(name: &str, arg: Expr) -> Expr {
         distinct: false,
         args: vec![arg],
     }
+}
+
+/// Evaluate `expr` over `group` through the production path: discover the
+/// aggregate calls, stream every row through the group's accumulators, and
+/// read the resolved values back — the one entry the aggregate tests drive.
+pub(crate) fn agg_eval_rows(
+    graph: &ExecGraph<'_>,
+    group: &[Row],
+    expr: &Expr,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+) -> relate_core::Result<Value> {
+    use crate::exec::aggregate::{agg_eval, AggScope, AggSites};
+    let sites = AggSites::discover(graph, [expr], [], params, cypher_version)?;
+    let mut accs = sites.open_group();
+    let mut total = graph.retain_bytes(0)?;
+    for row in group {
+        accs.offer(graph, row, params, cypher_version)?;
+        accs.settle(graph, &mut total)?;
+    }
+    let folded = accs.finish(graph, group.first(), params, cypher_version);
+    agg_eval(
+        graph,
+        AggScope::of_group(&folded, group.first()),
+        expr,
+        params,
+        cypher_version,
+    )
 }
 
 /// [`agg_fn_over`] over the shared `x` column.

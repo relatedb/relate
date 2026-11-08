@@ -9,5 +9,5 @@
 mod accumulator;
 mod horizontal;
 
-pub(crate) use accumulator::{fold_aggregate, FoldInput, SumAcc};
+pub(crate) use accumulator::{fold_aggregate, FoldInput, StreamFold, SumAcc};
 pub(crate) use horizontal::rewrite_horizontal_aggregates;

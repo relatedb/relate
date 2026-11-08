@@ -1,8 +1,10 @@
 //! SumAcc / agg_eval tests (F-1-19: the test module outgrew the
 //! implementation file).
 
-use super::aggregate::{agg_eval, desugar_star_keys, AggScope};
-use super::test_support::{agg_fn, duration, group_with_vals, group_with_xs, percentile_fn};
+use super::aggregate::desugar_star_keys;
+use super::test_support::{
+    agg_eval_rows, agg_fn, duration, group_with_vals, group_with_xs, percentile_fn,
+};
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -17,13 +19,7 @@ use std::collections::BTreeMap;
 fn run_result(group: &[Row], expr: &Expr) -> relate_core::Result<Value> {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
-    agg_eval(
-        &graph,
-        AggScope::of_group_with_import(group, None),
-        expr,
-        &BTreeMap::new(),
-        None,
-    )
+    agg_eval_rows(&graph, group, expr, &BTreeMap::new(), None)
 }
 
 fn run(group: &[Row], expr: &Expr) -> Value {
@@ -594,4 +590,37 @@ fn case_not_taken_arm_still_belongs_to_the_projection() {
         run(&group, &expr),
         Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)].into())
     );
+}
+
+/// An aggregate that only an `ORDER BY` key reads keeps the documented
+/// policy: a fold error there is a null sort key, never a statement
+/// failure — even though the call now folds in the input row loop.
+#[test]
+fn an_order_by_only_aggregate_that_fails_to_fold_sorts_as_null() {
+    let result = super::test_support::try_exec_cypher(
+        &Graph::default(),
+        "UNWIND ['a', 'b'] AS x RETURN count(*) AS c ORDER BY sum(x)",
+    )
+    .expect("a failing key aggregate is a null sort key");
+    assert_eq!(result.rows, vec![vec![Value::Int(2)]]);
+}
+
+/// The same for HAVING: a group whose aggregating predicate cannot be
+/// evaluated is dropped, the statement still succeeds; an item's own fold
+/// error still fails it.
+#[test]
+fn a_having_only_aggregate_that_fails_to_fold_drops_the_group() {
+    let result = super::test_support::try_exec_cypher(
+        &Graph::default(),
+        "UNWIND ['a', 'b'] AS x WITH count(*) AS c WHERE sum(x) > 0 RETURN c",
+    )
+    .expect("a failing HAVING aggregate drops the group");
+    assert!(result.rows.is_empty());
+    let error = super::test_support::try_exec_cypher(
+        &Graph::default(),
+        "UNWIND ['a', 'b'] AS x RETURN sum(x) AS s",
+    )
+    .err()
+    .expect("an item's fold error fails the statement");
+    assert!(error.to_string().contains("needs numbers"), "{error}");
 }
