@@ -269,8 +269,8 @@ fn neo4j_space_constraint_type_name(kind: ConstraintType) -> &'static str {
 mod tests {
     use super::super::super::test_helpers::{rows, rows_with_args, string};
     use super::*;
-    use crate::exec::test_support::map;
     use crate::graph::Graph;
+    use crate::test_support::map;
 
     /// A null `options` map selects nothing at all — zero rows rather than
     /// the whole stored schema. The rule lives in the builtin's own row

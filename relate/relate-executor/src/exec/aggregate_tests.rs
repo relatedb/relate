@@ -2,10 +2,11 @@
 //! implementation file).
 
 use super::aggregate::{agg_eval, desugar_star_keys, AggScope};
-use super::test_support::{agg_fn, duration, group_with_vals, group_with_xs, ints, percentile_fn};
+use super::test_support::{agg_fn, duration, group_with_vals, group_with_xs, percentile_fn};
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
+use crate::test_support::ints;
 use relate_core::Value;
 use relate_ir::Expr;
 use std::borrow::Cow;

@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use super::aggregate::{agg_eval, AggScope};
 use super::test_support::{
     agg_fn, agg_fn_over, assert_crossing_element, assert_crossing_row, assert_expression_cap,
-    group_with_vals, group_with_xs,
+    group_with_vals, group_with_xs, try_exec_cypher,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
@@ -30,7 +30,7 @@ use relate_ir::{Expr, SINGLE_INPUT_AGGREGATES};
 /// must hit the typed per-allocation refusal, instead of growing the
 /// vector into the allocator's lap.
 #[test]
-fn aggregate_vals_buffer_is_charged_for_non_collect_aggregates() {
+fn aggregate_vals_buffer_is_charged_for_each_aggregate_kind() {
     let cap = 64;
     let mut g = Graph::default();
     g.configure_expression_memory_limit(Some(cap));
@@ -154,7 +154,7 @@ fn a_transient_fold_over_constructed_operands_stays_exact() {
     let mut g = Graph::default();
     g.configure_expression_memory_limit(Some(cap));
     // Small per-row constructions accumulate far under the cap: completes.
-    let counted = crate::exec::test_support::try_exec_cypher(
+    let counted = try_exec_cypher(
         &g,
         "UNWIND range(1, 100) AS i RETURN count(toString(i)) AS c",
     )
@@ -164,9 +164,7 @@ fn a_transient_fold_over_constructed_operands_stays_exact() {
     // deep in a constructed container (the exact walk descends where a
     // fixed-width figure would see only the container's slot buffer).
     let refuses = |query: String, why: &str| {
-        let error = crate::exec::test_support::try_exec_cypher(&g, &query)
-            .err()
-            .expect(why);
+        let error = try_exec_cypher(&g, &query).err().expect(why);
         assert_expression_cap(&error, cap);
     };
     refuses(
@@ -216,7 +214,7 @@ fn an_aggregating_group_is_capped_by_its_running_total() {
     let cap = 64_000;
     let mut g = two_hop_fan(4_000, 12);
     g.configure_expression_memory_limit(Some(cap));
-    let error = crate::exec::test_support::try_exec_cypher(&g, TWO_HOP_COLLECT)
+    let error = try_exec_cypher(&g, TWO_HOP_COLLECT)
         .err()
         .expect("a group over the cap must be refused while it populates");
     let used = assert_expression_cap(&error, cap);
@@ -256,7 +254,7 @@ fn an_aggregating_group_populated_by_a_large_pattern_scan_refuses_near_the_defau
         }
     }
     let g = builder.done();
-    let error = crate::exec::test_support::try_exec_cypher(
+    let error = try_exec_cypher(
         &g,
         "MATCH (a:A)-[:E]->(m1:M1)-[:E]->(m2:M2)-[:E]->(b:B) RETURN size(collect(b)) AS c",
     )
@@ -284,7 +282,7 @@ fn a_grouped_aggregation_is_capped_by_its_keys_running_total() {
     g.configure_expression_memory_limit(Some(cap));
     let query =
         format!("UNWIND range(1, 200) AS i RETURN toString(i) + '{pad}' AS k, count(*) AS c");
-    let error = crate::exec::test_support::try_exec_cypher(&g, &query)
+    let error = try_exec_cypher(&g, &query)
         .err()
         .expect("the retained keys must cross the cap");
     let used = assert_expression_cap(&error, cap);
@@ -320,7 +318,7 @@ fn an_aggregating_group_of_duplicate_key_rows_is_capped_by_its_running_total() {
     let query = format!(
         "UNWIND [x IN range(1, 1000000) | toString(x % 1000) + '{pad}'] AS k RETURN k, count(*) AS c"
     );
-    let error = crate::exec::test_support::try_exec_cypher(&Graph::default(), &query)
+    let error = try_exec_cypher(&Graph::default(), &query)
         .err()
         .expect("the duplicate-key rows' payloads must cross the cap");
     let cap = crate::memory::EXPRESSION_BUDGET_BYTES;
@@ -346,7 +344,7 @@ fn a_streaming_fold_group_table_is_capped_by_its_running_total() {
     let pad = "p".repeat(600);
     let query =
         format!("MATCH (a:A)-[:E]->(b:B) RETURN toString(b.k) + '{pad}' AS k, count(*) AS c");
-    let error = crate::exec::test_support::try_exec_cypher(&g, &query)
+    let error = try_exec_cypher(&g, &query)
         .err()
         .expect("the fold's group-table landings must cross the cap");
     let used = assert_expression_cap(&error, cap);
@@ -390,7 +388,7 @@ fn a_one_hop_fold_served_grouped_count_is_capped_by_its_keys_running_total() {
     let mut g = builder.done();
     g.configure_expression_memory_limit(Some(cap));
     let query = format!("MATCH (a:A)-[:E]->(b:B) RETURN a.name + '{pad}' AS k, count(*) AS c");
-    let error = crate::exec::test_support::try_exec_cypher(&g, &query)
+    let error = try_exec_cypher(&g, &query)
         .err()
         .expect("the fold-served group's retained keys must cross the cap");
     let used = assert_expression_cap(&error, cap);
@@ -432,7 +430,7 @@ fn a_fold_served_distinct_count_is_capped_by_its_running_total() {
     let mut g = builder.done();
     g.configure_expression_memory_limit(Some(cap));
     let query = format!("MATCH (a:A)-[:E]->(b:B) RETURN count(DISTINCT a.name + '{pad}') AS c");
-    let error = crate::exec::test_support::try_exec_cypher(&g, &query)
+    let error = try_exec_cypher(&g, &query)
         .err()
         .expect("the distinct set's retained payloads must cross the cap");
     let used = assert_expression_cap(&error, cap);
@@ -472,7 +470,7 @@ fn a_path_fold_served_grouped_count_is_capped_by_its_keys_running_total() {
     let mut g = builder.done();
     g.configure_expression_memory_limit(Some(cap));
     let query = "MATCH (a:A)-[:E]->(:M)-[:E]->(b:B) RETURN a.name AS k, count(*) AS c";
-    let error = crate::exec::test_support::try_exec_cypher(&g, query)
+    let error = try_exec_cypher(&g, query)
         .err()
         .expect("the path fold's retained keys must cross the cap");
     let used = assert_expression_cap(&error, cap);
@@ -501,7 +499,7 @@ fn an_aggregating_projection_result_is_capped_by_its_running_total() {
         "UNWIND range(1, 1000000) AS i RETURN i % 500000 AS k, count(*) AS c \
          ORDER BY toString(k) + '{pad}'"
     );
-    let error = crate::exec::test_support::try_exec_cypher(&Graph::default(), &query)
+    let error = try_exec_cypher(&Graph::default(), &query)
         .err()
         .expect("the aggregating projection's output rows must cross the cap");
     let cap = crate::memory::EXPRESSION_BUDGET_BYTES;
@@ -525,12 +523,9 @@ fn a_match_populated_container_is_capped_by_its_running_total() {
     let cap = 64_000;
     let mut g = two_hop_fan(4_000, 12);
     g.configure_expression_memory_limit(Some(cap));
-    let error = crate::exec::test_support::try_exec_cypher(
-        &g,
-        "MATCH (a:A)-[:E]->(m:M)-[:E]->(b:B) RETURN b",
-    )
-    .err()
-    .expect("the match-populated container must be refused at the cap");
+    let error = try_exec_cypher(&g, "MATCH (a:A)-[:E]->(m:M)-[:E]->(b:B) RETURN b")
+        .err()
+        .expect("the match-populated container must be refused at the cap");
     let used = assert_expression_cap(&error, cap);
     // One landed row: a generous 16-binding row figure bounds this
     // shape's narrow rows.
@@ -543,11 +538,8 @@ fn a_match_populated_container_is_capped_by_its_running_total() {
 fn a_match_populated_container_under_the_cap_completes() {
     let mut g = two_hop_fan(4_000, 12);
     g.configure_expression_memory_limit(Some(20_000_000));
-    let result = crate::exec::test_support::try_exec_cypher(
-        &g,
-        "MATCH (a:A)-[:E]->(m:M)-[:E]->(b:B) RETURN b",
-    )
-    .expect("a match-populated container under the cap completes");
+    let result = try_exec_cypher(&g, "MATCH (a:A)-[:E]->(m:M)-[:E]->(b:B) RETURN b")
+        .expect("a match-populated container under the cap completes");
     assert_eq!(result.rows.len(), 48_000);
 }
 
@@ -558,8 +550,7 @@ fn a_match_populated_container_under_the_cap_completes() {
 fn an_aggregating_group_under_the_cap_completes() {
     let mut g = two_hop_fan(4_000, 12);
     g.configure_expression_memory_limit(Some(20_000_000));
-    let result = crate::exec::test_support::try_exec_cypher(&g, TWO_HOP_COLLECT)
-        .expect("a group under the cap completes");
+    let result = try_exec_cypher(&g, TWO_HOP_COLLECT).expect("a group under the cap completes");
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0][0], Value::Int(48_000));
 }

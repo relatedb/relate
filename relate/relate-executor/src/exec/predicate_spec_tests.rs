@@ -10,10 +10,10 @@ use relate_core::Value;
 
 use super::predicate_spec::{take_spec_gates, with_spec_disabled};
 use super::test_support::{
-    config_with_floor, error_of, exec_cypher, exec_write_uncommitted, try_exec_cypher,
-    try_exec_cypher_params,
+    error_of, exec_cypher, exec_write_uncommitted, try_exec_cypher, try_exec_cypher_params,
 };
 use crate::graph::Graph;
+use crate::test_support::config_with_floor;
 
 /// One generated node: its label class, and the `n`/`s`/`b` properties
 /// (ints, free strings, and date-shaped strings — padded ISO, compact,

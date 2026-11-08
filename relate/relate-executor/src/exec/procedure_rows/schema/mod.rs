@@ -147,8 +147,8 @@ fn category_rows(
 mod tests {
     use super::super::test_helpers::{rows, string};
     use super::*;
-    use crate::exec::test_support::map;
     use crate::graph::Graph;
+    use crate::test_support::map;
 
     #[test]
     fn node_mixed_type_property_yields_multiple_property_types() {

@@ -11,7 +11,8 @@ use relate_core::Value;
 use crate::graph::Graph;
 use crate::shortest::test_support::{counting_expands, min_hops_counterexample, TernaryTree};
 
-use super::test_support::{exec_cypher, ints, Builder};
+use super::test_support::{exec_cypher, Builder};
+use crate::test_support::ints;
 
 /// The single value of a one-row, one-column result, and the expansions
 /// it took.

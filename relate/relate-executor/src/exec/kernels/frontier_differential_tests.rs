@@ -18,11 +18,10 @@ use proptest::prelude::*;
 use relate_core::{NodeId, Value};
 
 use super::super::take_frontier_counters;
-use crate::exec::test_support::{
-    build, config_with_floor, exec_cypher, patterns, same_rows, Builder, Built,
-};
+use crate::exec::test_support::{build, exec_cypher, patterns, same_rows, Builder, Built};
 use crate::graph::Graph;
 use crate::pattern_engine::PatternEngine;
+use crate::test_support::config_with_floor;
 use crate::QueryResult;
 
 use super::frontier_rider_tests::{differential, differential_declined, ring_graph, seed_id};

@@ -55,12 +55,12 @@ use super::frontier::arms;
 use super::nfa::{compile, Pool};
 use super::rearival::{RearivalRule, RuleBuffers, Verdict};
 use crate::exec::test_support::{
-    build, column, config_with_floor, endpoint_nodes, exec_cypher, node_id, patterns,
-    served_frontier_run, Built,
+    build, column, endpoint_nodes, exec_cypher, node_id, patterns, served_frontier_run, Built,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
+use crate::test_support::config_with_floor;
 
 /// The engine's distinct-endpoint answer for `body` (the pattern text
 /// with its seed anchor): the DFS walker's default pool, deduplicated —

@@ -21,7 +21,7 @@ use relate_core::{
 use crate::row::{Row, RowNames};
 
 use super::chunk::{typed_kind, typed_slot, Chunk, Column, ColumnData, NullBitmap, CHUNK_ROWS};
-use super::test_support::config_with_floor;
+use crate::test_support::config_with_floor;
 
 fn rows_from(names: &[&str], cells: &[Vec<Value>]) -> Vec<Row> {
     let names: Vec<String> = names.iter().map(|name| (*name).to_string()).collect();

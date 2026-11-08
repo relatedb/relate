@@ -1,6 +1,7 @@
 use super::*;
-use crate::exec::test_support::{build, column, exec_cypher, int_cell, ints, path_value, Builder};
+use crate::exec::test_support::{build, column, exec_cypher, int_cell, path_value, Builder};
 use crate::graph::Graph;
+use crate::test_support::ints;
 use relate_ir::{PathCount, PathMode, PathSelector};
 use std::sync::Arc;
 

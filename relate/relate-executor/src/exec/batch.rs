@@ -518,8 +518,8 @@ mod tests {
     use proptest::collection::vec;
     use proptest::prelude::*;
 
-    use super::super::test_support::config_with_floor;
     use super::*;
+    use crate::test_support::config_with_floor;
 
     /// The comparison vocabulary the zone can decide (LABS-645): the six
     /// operators over the typed kinds.

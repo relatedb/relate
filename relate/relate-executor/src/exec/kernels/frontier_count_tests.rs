@@ -8,8 +8,9 @@
 use proptest::prelude::*;
 use relate_core::Value;
 
-use crate::exec::test_support::{build, config_with_floor, exec_cypher, Built};
+use crate::exec::test_support::{build, exec_cypher, Built};
 use crate::graph::Graph;
+use crate::test_support::config_with_floor;
 
 use super::super::take_frontier_counters;
 use super::rearival_tests::{multigraph, multigraph_case, pattern_body};

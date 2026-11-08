@@ -3,8 +3,9 @@
 
 use relate_core::Value::{self, Bool, Int, Null};
 
-use crate::exec::test_support::{build, ints};
+use crate::exec::test_support::build;
 use crate::graph::Graph;
+use crate::test_support::ints;
 
 use super::fixtures::{gpm, on_route, plain, run, shortcut, sorted, Counts};
 use super::with_forced_gpm;

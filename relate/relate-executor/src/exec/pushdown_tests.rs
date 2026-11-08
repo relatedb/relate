@@ -1,10 +1,9 @@
 use super::agg_fold::StreamAgg;
-use super::test_support::{duration, exec_cypher, hub_out, hub_ts_out};
+use super::test_support::{agg_fn, duration, exec_cypher, hub_out, hub_ts_out};
 use super::*;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use relate_core::NodeId;
-use relate_ir::Expr;
 use std::collections::HashSet;
 
 fn two_hop_graph() -> Graph {
@@ -795,14 +794,6 @@ fn set_string_moves_contains_postings() {
 
 // ---- StreamAgg (one-hop fold accumulator) ----
 
-fn sum_expr() -> Expr {
-    Expr::Function {
-        name: "sum".into(),
-        distinct: false,
-        args: vec![Expr::Variable("x".into())],
-    }
-}
-
 fn row_with(v: Value) -> Row {
     let mut row = Row::new();
     row.insert("x".into(), v);
@@ -812,7 +803,7 @@ fn row_with(v: Value) -> Row {
 fn run_sum(vals: &[Value]) -> Value {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
-    let expr = sum_expr();
+    let expr = agg_fn("sum");
     let (mut agg, operand) = StreamAgg::new(&expr).unwrap();
     for v in vals {
         agg.offer(
@@ -851,7 +842,7 @@ fn folded_sum_accepts_durations_and_rejects_mixing() {
     );
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
-    let expr = sum_expr();
+    let expr = agg_fn("sum");
     let (mut agg, operand) = StreamAgg::new(&expr).unwrap();
     agg.offer(
         &graph,
