@@ -144,4 +144,26 @@ public class ErrorsTest {
                 () -> conn.query("RETURN 1"));
         assertEquals("connection is closed", e.getMessage());
     }
+
+    @Test
+    void resultMetadataVocabulariesRefuseUnknownValues() {
+        for (String qt : new String[] {"r", "w", "rw", "s"}) {
+            assertEquals(qt, ResultReader.decodeQueryType(qt));
+        }
+        for (String ns : new String[] {"neo4j", "system", "system_ontologies"}) {
+            assertEquals(ns, ResultReader.decodeNamespace(ns));
+        }
+        for (String bad : new String[] {"", "R", "x", null}) {
+            RelateException e = assertThrows(RelateException.class,
+                    () -> ResultReader.decodeQueryType(bad));
+            assertTrue(e.getMessage().startsWith("ABI contract violated: query type"),
+                    e.getMessage());
+        }
+        for (String bad : new String[] {"", "Neo4j", "other", null}) {
+            RelateException e = assertThrows(RelateException.class,
+                    () -> ResultReader.decodeNamespace(bad));
+            assertTrue(e.getMessage().startsWith("ABI contract violated: namespace"),
+                    e.getMessage());
+        }
+    }
 }

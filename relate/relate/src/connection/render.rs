@@ -7,6 +7,7 @@
 //! drives.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 use web_time::Instant;
 
 use super::admission::Admission;
@@ -42,11 +43,20 @@ impl Connection {
         let view = self.notification_view(&_read, admission)?;
         let stats = crate::stats::GraphPatternStats::new(&self.inner.graph, params);
         let timing = || {
+            // LABS-1120: the EXPLAIN path carves nothing out of its
+            // execute-equivalent stage — the render IS the result
+            // generation (the tree, the notifications and the header all
+            // build inside it) — so the result-generation sub-window is
+            // the true zero, and the fine parse sub-split and the
+            // plan-cache outcome ride from the admission like every
+            // other path's.
             TimingStamp::stamped(
                 admission.started,
-                execute_started,
-                admission.parse,
-                admission.plan,
+                crate::phase_timing::DispatchWindows {
+                    execute: execute_started.elapsed(),
+                    result_generation: Duration::ZERO,
+                },
+                admission.timing,
             )
         };
         explain::explain_result(

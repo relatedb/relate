@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 
 use web_time::Instant;
 
@@ -25,7 +24,7 @@ use super::cache::{CacheHit, CacheUse, InsertSeed, Lookup, PlanMemory};
 use super::Connection;
 use crate::gate::ResultStamp;
 use crate::plan_bytes::plan_bytes;
-use crate::plan_cache::MAX_CACHED_STATEMENT_BYTES;
+use crate::plan_cache::{HitPayload, MAX_CACHED_STATEMENT_BYTES};
 use crate::{Error, Result, Value};
 
 /// What [`Connection::admit_statement`] resolves: the parsed preamble
@@ -66,13 +65,12 @@ pub(super) struct Admission {
     /// consumer derefs through it.
     pub(super) logical: Arc<LogicalPlan>,
     pub(super) stamp: ResultStamp,
-    /// The PARSE stage's measured duration (LABS-832) — the front-end
-    /// parse and lowering, measured always-on here at admission.
-    pub(super) parse: Duration,
-    /// The PLAN stage's measured duration (LABS-832) — binding, logical
-    /// planning and the admission classification, measured always-on here
-    /// at admission.
-    pub(super) plan: Duration,
+    /// The admission's measured timing facts (LABS-832 + LABS-1120) as the
+    /// one carrier — the PARSE / PLAN durations, the fine sub-split and
+    /// the plan-cache outcome — never loose same-typed fields beside it,
+    /// so the facts cannot drift between shapes on the way to the
+    /// stamping tail.
+    pub(super) timing: crate::phase_timing::AdmissionTiming,
     /// ADR-0503: the hit path's already-merged effective parameter map —
     /// the caller's own plus the extracted `$__AUTO_*__` values, merged
     /// once where the gates ran under it, so every consumer after
@@ -135,66 +133,98 @@ impl Connection {
         // ADR-0503: the lookup decides only the uncached tail's seed —
         // every variant named, so a variant added later fails to compile
         // here instead of silently falling into a catch-all. A hit stages
-        // its admission directly and returns it — the entry's handles
-        // ride out of the lookup, so an eviction after it cannot fail the
-        // hit (the Arcs keep the plan valid; freshness is the generation
-        // check under the guard) — with the already-merged effective map
-        // (the caller merges nothing). A miss seeds the insert; a skip
-        // enters the tail with no seed. One tail call serves them alike.
+        // its admission directly in [`Self::admit_hit`] and returns it; a
+        // miss seeds the insert; a skip enters the tail with no seed. One
+        // tail call serves the last two alike.
         let preamble = AdmitPreamble { started, timing_on };
-        let seed = match self.cache_lookup(cypher, params, cache, preview) {
+        let tail = match self.cache_lookup(cypher, params, cache, preview) {
             Lookup::Hit(hit) => {
-                let parse = parse_started.elapsed();
-                // LABS-832: the PLAN phase — the generation check, a
-                // possible replan from the carried AST, and the admission
-                // gates.
-                let plan_started = Instant::now();
-                let CacheHit {
-                    plan,
-                    stamp,
-                    effective,
-                } = self.admit_from_cache(cypher, hit.handles, &hit.values, params)?;
-                // A shared plan was compiled for one literal value. A later
-                // statement on the same template can be a float SKIP, a
-                // non-boolean operand, or a float slice bound. Those fail
-                // on the statement as written; the cached plan is left in
-                // place and this run takes the original compile.
-                let policy = StatementPolicy {
-                    safe_mode: self.inner.resolved.safe_mode,
-                    max_traversal_depth: self.inner.resolved.max_traversal_depth,
-                };
-                let literal_rejected = parse_and_lower_statement_with_policy_and_params(
-                    cypher, preview, policy, params,
-                )
-                .is_err()
-                    || plan_has_bound_float_integer_site(&plan, &effective);
-                if literal_rejected {
-                    return self.admit_uncached(
-                        cypher,
-                        params,
-                        preview,
-                        None,
-                        parse_started,
-                        preamble,
-                    );
-                }
-                return Ok(stage_admission(
-                    preamble,
-                    PreambleMode::Execute,
-                    plan,
-                    stamp,
-                    StageDurations {
-                        parse,
-                        plan: plan_started.elapsed(),
-                    },
-                    Some(effective),
-                    PlanMemory::Cached,
-                ));
+                return self.admit_hit(cypher, params, hit, preview, parse_started, preamble)
             }
-            Lookup::Miss(seed) => Some(seed),
-            Lookup::Skip => None,
+            Lookup::Miss(seed) => UncachedTail::SeededMiss(seed),
+            Lookup::Skip => UncachedTail::Bypassed,
         };
-        self.admit_uncached(cypher, params, preview, seed, parse_started, preamble)
+        self.admit_uncached(cypher, params, preview, tail, parse_started, preamble)
+    }
+
+    /// The cache-hit admission path (ADR-0503 stage 3): the entry's
+    /// handles ride out of the lookup, so an eviction after it cannot
+    /// fail the hit (the Arcs keep the plan valid; freshness is the
+    /// generation check under the guard), and the caller receives the
+    /// already-merged effective map (it merges nothing). The lookup was
+    /// the whole PARSE window, so the fine sub-split stamps the true
+    /// zero and the outcome explains it; the literal-shape
+    /// re-verification below runs inside the PLAN window — armed before
+    /// it, closed after — so its cost stays measured in the coarse
+    /// `plan` duration, never hidden from the envelope.
+    fn admit_hit(
+        &self,
+        cypher: &str,
+        params: &BTreeMap<String, Value>,
+        hit: HitPayload,
+        preview: relate_core::PreviewFeatures,
+        parse_started: Instant,
+        preamble: AdmitPreamble,
+    ) -> Result<Admission> {
+        let parse = parse_started.elapsed();
+        // LABS-832: the PLAN phase — the generation check, a possible
+        // replan from the carried AST, the literal-shape re-verification,
+        // and the admission gates.
+        let plan_started = Instant::now();
+        let CacheHit {
+            plan,
+            stamp,
+            effective,
+            outcome,
+        } = self.admit_from_cache(cypher, hit.handles, hit.stage, &hit.values, params)?;
+        // A shared plan was compiled for one literal value. A later
+        // statement on the same template can be a float SKIP, a
+        // non-boolean operand, or a float slice bound. Those fail
+        // on the statement as written; the cached plan is left in
+        // place and this run takes the original compile.
+        let policy = StatementPolicy {
+            safe_mode: self.inner.resolved.safe_mode,
+            max_traversal_depth: self.inner.resolved.max_traversal_depth,
+        };
+        let literal_rejected =
+            parse_and_lower_statement_with_policy_and_params(cypher, preview, policy, params)
+                .is_err()
+                || plan_has_bound_float_integer_site(&plan, &effective);
+        if literal_rejected {
+            // LABS-1120: the hit was rejected for literal-shape
+            // safety — the statement runs an original compile, so
+            // no cached plan served it: the outcome reports the
+            // miss that the run was. (The rejection itself never
+            // reaches a result: a statement whose literals fail
+            // the shape rules fails its own original compile too,
+            // and an admission failure carries no result header.)
+            return self.admit_uncached(
+                cypher,
+                params,
+                preview,
+                UncachedTail::RejectedHit,
+                parse_started,
+                preamble,
+            );
+        }
+        Ok(stage_admission(
+            preamble,
+            PreambleMode::Execute,
+            plan,
+            stamp,
+            crate::phase_timing::AdmissionTiming {
+                parse,
+                plan: plan_started.elapsed(),
+                // LABS-1120: the hit path's PARSE window was the lookup
+                // alone, so the fine sub-split is the true zero and the
+                // outcome explains it — the literal-shape re-verification
+                // above rides the coarse PLAN window instead.
+                stages: relate_front::ParseStages::ZERO,
+                plan_cache: outcome,
+            },
+            Some(effective),
+            PlanMemory::Cached,
+        ))
     }
 
     /// The uncached admission tail (ADR-0259's parse-and-plan stages, with
@@ -209,10 +239,12 @@ impl Connection {
         cypher: &str,
         params: &BTreeMap<String, Value>,
         preview: relate_core::PreviewFeatures,
-        seed: Option<InsertSeed>,
+        tail: UncachedTail,
         parse_started: Instant,
         preamble: AdmitPreamble,
     ) -> Result<Admission> {
+        let cache = tail.outcome();
+        let seed = tail.seed();
         // LABS-610: the traversal-depth admission limit resolved at open
         // rides the parse so a hop bound above it is a typed syntax error
         // here, before the walker runs. LABS-680 (ADR-0477): the resolved
@@ -238,9 +270,11 @@ impl Connection {
                     PreambleMode::from_parsed(compiled.explain, compiled.profile),
                     Arc::clone(&compiled.logical),
                     compiled.stamp,
-                    StageDurations {
+                    crate::phase_timing::AdmissionTiming {
                         parse: compiled.parse,
                         plan: compiled.plan,
+                        stages: compiled.stages,
+                        plan_cache: cache,
                     },
                     Some(compiled.effective),
                     PlanMemory::Cacheable(compiled.pending),
@@ -270,7 +304,12 @@ impl Connection {
             mode,
             logical,
             stamp,
-            StageDurations { parse, plan },
+            crate::phase_timing::AdmissionTiming {
+                parse,
+                plan,
+                stages: parsed.stages,
+                plan_cache: cache,
+            },
             None,
             PlanMemory::Statement(bytes),
         ))
@@ -286,6 +325,44 @@ impl Connection {
 struct AdmitPreamble {
     started: Instant,
     timing_on: bool,
+}
+
+/// The cache lookup's resolution for the uncached tail (LABS-1120),
+/// modelled as exactly the reachable states — never a nullable pair, in
+/// which a seed beside a non-`Miss` outcome would compile but cannot
+/// occur: only a seed-bearing miss carries a seed; a hit rejected for
+/// literal-shape safety and a bypass both compile the original text with
+/// no insert.
+enum UncachedTail {
+    /// A seed-bearing miss (ADR-0503 stage 2): the tail compiles the
+    /// rewritten statement, and when eligible that plan runs and inserts.
+    SeededMiss(InsertSeed),
+    /// A hit rejected for literal-shape safety: the original text
+    /// compiles, nothing inserts — no cached plan served, so the outcome
+    /// is `miss`.
+    RejectedHit,
+    /// The cache was not consulted (the plan-tree bypass, a caller
+    /// parameter map carrying the reserved prefix, a non-cacheable
+    /// statement): the original text compiles, nothing inserts.
+    Bypassed,
+}
+
+impl UncachedTail {
+    /// The insert seed, present only on the seeded-miss arm.
+    fn seed(self) -> Option<InsertSeed> {
+        match self {
+            Self::SeededMiss(seed) => Some(seed),
+            Self::RejectedHit | Self::Bypassed => None,
+        }
+    }
+
+    /// The plan-cache outcome the tail stamps.
+    fn outcome(&self) -> crate::PlanCacheOutcome {
+        match self {
+            Self::SeededMiss(_) | Self::RejectedHit => crate::PlanCacheOutcome::Miss,
+            Self::Bypassed => crate::PlanCacheOutcome::Bypassed,
+        }
+    }
 }
 
 /// The statement preamble. The parser rejects a second `EXPLAIN` or
@@ -319,14 +396,6 @@ impl PreambleMode {
     }
 }
 
-/// The admission's measured stage durations (LABS-832) — PARSE and
-/// PLAN, two adjacent same-typed values bundled so a swapped pair cannot
-/// compile, the same carrier convention as `AdmitPreamble` (found in review).
-struct StageDurations {
-    parse: Duration,
-    plan: Duration,
-}
-
 /// The one `Admission` construction (ADR-0503): both admission paths —
 /// the cache hit and the uncached tail — end here, so the bundle's
 /// invariants (the admin fact derived once from the plan, ADR-0116 §2)
@@ -336,7 +405,7 @@ fn stage_admission(
     mode: PreambleMode,
     logical: Arc<LogicalPlan>,
     stamp: ResultStamp,
-    durations: StageDurations,
+    timing: crate::phase_timing::AdmissionTiming,
     effective: Option<BTreeMap<String, Value>>,
     memory: PlanMemory,
 ) -> Admission {
@@ -347,8 +416,7 @@ fn stage_admission(
         admin: is_database_admin_command(&logical),
         logical,
         stamp,
-        parse: durations.parse,
-        plan: durations.plan,
+        timing,
         effective,
         memory,
     }

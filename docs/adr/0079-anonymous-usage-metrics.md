@@ -159,3 +159,7 @@ path, and governed by a layered opt-out that defaults to on.
   is no longer used verbatim "as-is". It must be `https://` for any host, or
   `http://` only for loopback (`localhost`, `127.0.0.1`, `::1`); a rejected
   override disables telemetry for the run and prints one stderr warning.
+- ADR-0545 replaces §5's delivery shape: the exit flush no longer waits on
+  the network — pending events spool locally and the next enabled run
+  delivers them. It also extends §3's config-directory resolution to
+  Windows, which never resolved there.

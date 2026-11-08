@@ -10,8 +10,11 @@ mod output_vars;
 pub mod show_columns;
 pub mod validate;
 
+use std::time::Duration;
+
 use relate_core::{Error, Result};
 use relate_ir::Query;
+use web_time::Instant;
 
 pub use lower::{lower_expr, lower_statement, lower_statement_with_limits, lower_type_expr};
 pub use validate::{is_known_function, KNOWN_FUNCTIONS};
@@ -33,6 +36,46 @@ pub struct LoweredStatement {
     pub query: Query,
     pub explain: bool,
     pub profile: bool,
+    /// The PARSE stage's fine sub-split (LABS-1120), stamped always-on by
+    /// the entry that lowered the statement. Zero on every field only when
+    /// nothing ran there — there is no second spelling of the windows.
+    pub stages: ParseStages,
+}
+
+/// The PARSE stage's always-on fine sub-split (LABS-1120): three sub-windows
+/// of the admission's PARSE duration, so their sum never exceeds it. The
+/// boundaries are the ones the front actually has — two requested splits are
+/// not cheaply obtainable and stay fused, each for an architectural reason:
+/// the **lexer and the parser** are fused at `Parser::new`, the parser's one
+/// tokenizing site (pre-tokenizing externally to time the lexer alone would
+/// run the tokenizer twice — a real per-statement tax); and **validation and
+/// lowering** are fused because the validation battery runs inside the
+/// lowering walk, so a per-pass split would restructure `lower`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseStages {
+    /// Lexing plus the AST build: the parse call's own window, closed at
+    /// the call in every entry — ONE meaning (the preview-gate walk that
+    /// follows the parse in the gated entry is not part of it; it stays in
+    /// the coarse PARSE window alone, an inter-stage gap like the engine's
+    /// post-EXPLAIN gates).
+    pub lex_parse: Duration,
+    /// The rewrite pass — the ADR-0382 CIP-231 `DEFINE`-block resolver,
+    /// with the ADR-0257 nesting-depth guard that precedes it.
+    pub rewrite: Duration,
+    /// Validation and lowering (fused): the lowering battery's window,
+    /// `validate_nesting_depth`'s semantics included in the battery.
+    pub lower: Duration,
+}
+
+impl ParseStages {
+    /// The zero split: no sub-window ran. The plan-cache hit path's value —
+    /// nothing was parsed (the hit's outcome explains why), so the fine
+    /// windows are true zeros, never unstamped placeholders.
+    pub const ZERO: ParseStages = ParseStages {
+        lex_parse: Duration::ZERO,
+        rewrite: Duration::ZERO,
+        lower: Duration::ZERO,
+    };
 }
 
 /// Maps a `relate-parser` failure to a front-end error.
@@ -75,19 +118,35 @@ pub fn parse_and_lower(src: &str) -> Result<Query> {
 /// remains, keeping the statement's own `EXPLAIN`/`PROFILE` flags.
 /// `params` are the statement's bound parameters, which the dynamic-operand
 /// admission rule treats as compile-time constants (LABS-709).
+/// `lex_parse` is the caller's already-closed parse window (tokenize plus
+/// the AST build — the one meaning, measured at the parse call in every
+/// entry, never re-closed here), so the PARSE stage's fine sub-split
+/// (LABS-1120, [`ParseStages`]) is stamped at the boundaries this tail
+/// owns.
 fn resolve_and_lower(
     mut stmt: relate_parser::Statement,
+    lex_parse: Duration,
     options: validate::ValidateOptions,
     policy: StatementPolicy,
     params: &std::collections::BTreeMap<String, relate_core::Value>,
 ) -> Result<LoweredStatement> {
+    let rewrite_started = Instant::now();
     crate::validate::validate_nesting_depth(&stmt)
         .map_err(|error| Error::syntax(error.to_string()))?;
     local_callables::resolve(&mut stmt)?;
+    let rewrite = rewrite_started.elapsed();
+    let lower_started = Instant::now();
+    let query = lower::lower_statement_with_options_and_policy(&stmt, options, policy, params)?;
+    let lower = lower_started.elapsed();
     Ok(LoweredStatement {
         explain: stmt.explain,
         profile: stmt.profile,
-        query: lower::lower_statement_with_options_and_policy(&stmt, options, policy, params)?,
+        query,
+        stages: ParseStages {
+            lex_parse,
+            rewrite,
+            lower,
+        },
     })
 }
 
@@ -96,9 +155,15 @@ fn resolve_and_lower(
 pub fn parse_and_lower_statement(src: &str) -> Result<LoweredStatement> {
     // ADR-0257: enforce the query-size limit before parsing. The parser
     // enforces the same cap; this check keeps the error on the front-end
-    // path even if a caller reaches lowering another way.
+    // path even if a caller reaches lowering another way. LABS-1120: the
+    // lex_parse sub-window is the parse call's own window, closed at the
+    // call — the one meaning every entry stamps.
+    let parse_started = Instant::now();
+    let stmt = parse_sized(src)?;
+    let lex_parse = parse_started.elapsed();
     resolve_and_lower(
-        parse_sized(src)?,
+        stmt,
+        lex_parse,
         validate::ValidateOptions::default(),
         StatementPolicy::default(),
         &std::collections::BTreeMap::new(),
@@ -169,11 +234,17 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     // literal checks (boolean operands, SKIP/LIMIT, variable types) read
     // them for this parse only.
     let _auto = relate_core::AutoLiteralGuard::install(params);
+    // LABS-1120: the lex_parse sub-window is the parse call's own window,
+    // closed at the call — before the preview-gate walk below, which stays
+    // in the coarse PARSE window alone (an inter-stage gap, like the
+    // engine's post-EXPLAIN gates).
+    let parse_started = Instant::now();
     // The `mixed-label-syntax` gate widens what the parser accepts (the
     // floor's CIP-40/CIP-14 mixing rejections lift), so it threads into
     // the parse itself as `ParseOptions` -- unlike the AST-detector gates
     // below, there is no floor AST to detect the construct in.
     let stmt = parse_sized_with_options(src, parse_options(preview))?;
+    let lex_parse = parse_started.elapsed();
     // The one gate loop, derived from the registry itself: every row's
     // detector is consulted here, so a detector-less registry row is a
     // compile error. The graph-type trio's AST walk runs once, before the
@@ -230,7 +301,13 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     // The constructs that only materialize against stored graph-type state
     // fail closed in the executor's graph-type layer with the same authored
     // error.
-    resolve_and_lower(stmt, validate::ValidateOptions { preview }, policy, params)
+    resolve_and_lower(
+        stmt,
+        lex_parse,
+        validate::ValidateOptions { preview },
+        policy,
+        params,
+    )
 }
 
 /// The shared size-capped parse of [`parse_and_lower_statement`] and
@@ -399,6 +476,75 @@ mod tests {
             .clauses
             .iter()
             .any(|clause| matches!(clause, relate_ir::Clause::Unwind { .. })));
+    }
+
+    /// Invariant (LABS-1120): `lex_parse` has ONE meaning — the parse
+    /// call's own window — so the two stamping entries (the plain entry
+    /// and the engine's gated entry) must measure the same work under the
+    /// name. Pinned by comparing both entries' `lex_parse` on the same
+    /// statement: the gated entry additionally runs the preview-detector
+    /// walk after its parse, so if either entry ever again closes the
+    /// window late (swallowing that walk, which the local-callables
+    /// statement makes real work), the ratio diverges past the bound.
+    #[test]
+    fn both_entries_lex_parse_measure_the_same_span() {
+        for src in [
+            "MATCH (n:Person) WHERE n.name = 'a' RETURN n.name",
+            LOCAL_CALLABLES_QUERY,
+        ] {
+            let enabled = relate_core::PreviewFeatures::parse("local-callables").unwrap();
+            // Min of three per entry: the first call through a cold path
+            // pays warmup the second entry does not, and min-of-same-work
+            // is the stable estimator of the span itself.
+            let min_lex_parse = |gated: bool| {
+                (0..3)
+                    .map(|_| {
+                        let lowered = if gated {
+                            parse_and_lower_statement_with_preview(src, enabled)
+                        } else {
+                            parse_and_lower_statement(src)
+                        };
+                        lowered
+                            .expect("the sample statement lowers")
+                            .stages
+                            .lex_parse
+                            .as_nanos()
+                    })
+                    .min()
+                    .expect("three samples")
+            };
+            let (plain_ns, gated_ns) = (min_lex_parse(false), min_lex_parse(true));
+            let ratio = plain_ns.max(gated_ns) as f64 / plain_ns.min(gated_ns).max(1) as f64;
+            assert!(
+                ratio <= 3.0,
+                "{src}: the entries' lex_parse windows diverged ({plain_ns} ns vs                  {gated_ns} ns, ratio {ratio}) — they no longer measure the same span"
+            );
+        }
+    }
+
+    /// Invariant (LABS-1120): the PARSE stage's fine sub-split partitions
+    /// the entry's own measured window — `lex_parse + rewrite + lower`
+    /// never exceeds the whole entry call's duration, and each sub-window
+    /// is non-negative. Pinned over a plain statement and a local-callables
+    /// statement so the rewrite window is exercised with real work in it.
+    #[test]
+    fn parse_stages_partition_the_entry_window() {
+        let samples = [
+            "MATCH (n:Person) WHERE n.name = 'a' RETURN n.name",
+            LOCAL_CALLABLES_QUERY,
+        ];
+        for src in samples {
+            let enabled = relate_core::PreviewFeatures::parse("local-callables").unwrap();
+            let started = Instant::now();
+            let lowered = parse_and_lower_statement_with_preview(src, enabled)
+                .expect("the sample statement lowers");
+            let whole = started.elapsed();
+            let sum = lowered.stages.lex_parse + lowered.stages.rewrite + lowered.stages.lower;
+            assert!(
+                sum <= whole,
+                "{src}: stages {sum:?} exceed the entry window {whole:?}"
+            );
+        }
     }
 
     /// The CIP-250 showcase query: the graduated `FOR` clause is default

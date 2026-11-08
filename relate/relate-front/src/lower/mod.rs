@@ -241,10 +241,11 @@ fn lower_group_by(
             for k in keys {
                 out.push(match k {
                     // Alias reference: resolve to the aliased item's
-                    // expression (Rule 4.2).
+                    // expression (Rule 4.2) — through the one shared alias
+                    // predicate (`crate::validate::is_aliased`).
                     cl::Expr::Variable(name) => items
                         .iter()
-                        .find(|i| i.alias.as_ref() == Some(name))
+                        .find(|i| crate::validate::is_aliased(i, name))
                         .map(|i| lower_expr(&i.expr))
                         .transpose()?
                         .unwrap_or_else(|| mdb::Expr::Variable(name.clone())),
@@ -252,22 +253,22 @@ fn lower_group_by(
                     // (`a.p AS a` + `GROUP BY a.p`) resolves the base to the
                     // aliased expression, so the key is `(a.p).p`
                     // (GroupByAcceptance [46]: evaluated, not rejected).
+                    // One scan: the first item aliased `base`, kept when it
+                    // self-shadows.
                     cl::Expr::Property(property) => match &property.expr {
-                        cl::Expr::Variable(base)
-                            if items
-                                .iter()
-                                .find(|i| i.alias.as_ref() == Some(base))
-                                .is_some_and(|i| {
-                                    crate::validate::alias_shadows_its_own_base(base, &i.expr)
-                                }) =>
-                        {
+                        cl::Expr::Variable(base) => {
                             let aliased = items
                                 .iter()
-                                .find(|i| i.alias.as_ref() == Some(base))
-                                .expect("the alias was just found");
-                            mdb::Expr::Property {
-                                expr: Box::new(lower_expr(&aliased.expr)?),
-                                key: property.property.clone(),
+                                .find(|i| crate::validate::is_aliased(i, base))
+                                .filter(|i| {
+                                    crate::validate::alias_shadows_its_own_base(base, &i.expr)
+                                });
+                            match aliased {
+                                Some(item) => mdb::Expr::Property {
+                                    expr: Box::new(lower_expr(&item.expr)?),
+                                    key: property.property.clone(),
+                                },
+                                None => lower_expr(k)?,
                             }
                         }
                         _ => lower_expr(k)?,

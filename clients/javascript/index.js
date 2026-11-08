@@ -4,7 +4,14 @@ const koffi = require("koffi");
 const fs = require("fs");
 const { ResultGraph, collectGraphEntities } = require("./graph");
 const createValueCodec = require("./values");
-const { RelateError, abiViolation, clientRefusalError, errorFromJson } = require("./errors");
+const {
+  RelateError,
+  abiViolation,
+  clientRefusalError,
+  errorFromJson,
+  decodeQueryType,
+  decodeNamespace,
+} = require("./errors");
 const path = require("path");
 
 // Platform support, keyed by `${process.platform}-${process.arch}`; a key
@@ -203,8 +210,8 @@ function putterRefusal(errOut) {
 /// return copies during marshalling) lives in the caller (readResult), so
 /// no call site can reorder it away.
 function materialize(result) {
-  const queryType = result_query_type(result);
-  const namespace = result_namespace(result);
+  const queryType = decodeQueryType(result_query_type(result));
+  const namespace = decodeNamespace(result_namespace(result));
   const stats = JSON.parse(result_stats(result));
   // The always-present notification list (ADR-0363): `[]` on a plain run,
   // the engine-native objects on EXPLAIN and PROFILE.

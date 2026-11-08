@@ -56,21 +56,45 @@ pub fn parse_action(rest: &[String]) -> Result<TelemetryAction, ParseError> {
 
 /// Run `relate telemetry on|off|status`. Returns the process exit code
 /// (0 on success, 1 when no config dir resolves or the write fails); the
-/// caller (main) owns `std::process::exit`. `state` is the effective state
-/// already resolved by `Telemetry::new`, so `status` reports the same
-/// precedence (env layers override the config file).
-pub fn run(action: TelemetryAction, state: EffectiveState) -> i32 {
-    run_inner(action, state, crate::config_dir::config_dir().as_deref())
+/// caller (main) owns `std::process::exit`. The effective state comes
+/// from `telemetry` itself — the same handle `Telemetry::new` resolved —
+/// so `status` reports the same precedence (env layers override the
+/// config file) with no second copy of the answer to drift.
+pub fn run(action: TelemetryAction, telemetry: &mut crate::telemetry::Telemetry) -> i32 {
+    run_inner(
+        action,
+        telemetry,
+        crate::config_dir::config_dir().as_deref(),
+    )
 }
 
-fn run_inner(action: TelemetryAction, state: EffectiveState, dir: Option<&Path>) -> i32 {
+fn run_inner(
+    action: TelemetryAction,
+    telemetry: &mut crate::telemetry::Telemetry,
+    dir: Option<&Path>,
+) -> i32 {
     match action {
         TelemetryAction::Status => {
-            println!("{}", status_line(state));
+            println!("{}", status_line(telemetry.effective_state()));
             0
         }
         TelemetryAction::On => persist(dir, true),
-        TelemetryAction::Off => persist(dir, false),
+        TelemetryAction::Off => {
+            // One ordered transition (ADR-0545 §5): disarm the run's
+            // pipeline first — the drain starts at the first recorded
+            // event and this command records none from here on, so no
+            // delivery is ever started and the exit writes no spool
+            // file of its own — then persist the off, then clear the
+            // pending spool. `persist` owns the unresolved-dir error,
+            // and its success implies the dir resolved.
+            telemetry.disarm();
+            let code = persist(dir, false);
+            if code == 0 {
+                let dir = dir.expect("persist returns 0 only with a resolved dir");
+                crate::telemetry::spool::clear(dir);
+            }
+            code
+        }
     }
 }
 
@@ -78,7 +102,8 @@ fn run_inner(action: TelemetryAction, state: EffectiveState, dir: Option<&Path>)
 fn persist(dir: Option<&Path>, enabled: bool) -> i32 {
     let Some(dir) = dir else {
         eprintln!(
-            "Error: telemetry: cannot resolve a config directory (set $HOME or $XDG_CONFIG_HOME)"
+            "Error: telemetry: cannot resolve a config directory ({})",
+            crate::config_dir::NO_BASE_HINT
         );
         return 1;
     };
@@ -118,6 +143,16 @@ mod tests {
 
     fn state(enabled: bool, layer: Layer) -> EffectiveState {
         EffectiveState { enabled, layer }
+    }
+
+    /// A handle carrying exactly the effective state its test asserts —
+    /// the state is the reportable answer, so a disabled pipeline with an
+    /// enabled state is a legitimate (and pinned) shape. The `off` arm's
+    /// disarm is a no-op against it, exactly as against a run that never
+    /// armed a pipeline; the live-path ordering (disarm before persist
+    /// and clear) is pinned end-to-end by e2e_telemetry's off test.
+    fn handle_as(enabled: bool, layer: Layer) -> crate::telemetry::Telemetry {
+        crate::telemetry::Telemetry::disabled(state(enabled, layer))
     }
 
     // --- parse_action grammar ---
@@ -195,15 +230,54 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         assert_eq!(
-            run_inner(TelemetryAction::Off, state(true, Layer::Default), Some(dir)),
+            run_inner(
+                TelemetryAction::Off,
+                &mut handle_as(true, Layer::Default),
+                Some(dir)
+            ),
             0
         );
         assert_eq!(config::load_config_telemetry(dir), Some(false));
         assert_eq!(
-            run_inner(TelemetryAction::On, state(true, Layer::Default), Some(dir)),
+            run_inner(
+                TelemetryAction::On,
+                &mut handle_as(true, Layer::Default),
+                Some(dir)
+            ),
             0
         );
         assert_eq!(config::load_config_telemetry(dir), Some(true));
+    }
+
+    #[test]
+    fn off_clears_the_spool_but_on_leaves_it() {
+        // ADR-0545 §5: `off` means no further transmissions — pending
+        // spooled events are cleared together with the persisted key;
+        // `on` persists the key only.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // The seed name derives from the one prefix fact, so a rename
+        // cannot leave this test seeding a file the sweep would ignore.
+        let seed = format!("{}seed.jsonl", crate::telemetry::spool::SPOOL_PREFIX);
+        std::fs::write(dir.join(&seed), "{\"event\":\"e\"}\n").unwrap();
+        assert_eq!(
+            run_inner(
+                TelemetryAction::On,
+                &mut handle_as(true, Layer::Default),
+                Some(dir)
+            ),
+            0
+        );
+        assert!(dir.join(&seed).exists(), "on must not clear the spool");
+        assert_eq!(
+            run_inner(
+                TelemetryAction::Off,
+                &mut handle_as(true, Layer::Default),
+                Some(dir)
+            ),
+            0
+        );
+        assert!(!dir.join(&seed).exists(), "off clears the spool");
     }
 
     #[test]
@@ -211,7 +285,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         assert_eq!(
-            run_inner(TelemetryAction::Status, state(false, Layer::Env), Some(dir)),
+            run_inner(
+                TelemetryAction::Status,
+                &mut handle_as(false, Layer::Env),
+                Some(dir)
+            ),
             0
         );
         assert_eq!(config::load_config_telemetry(dir), None);
@@ -221,16 +299,28 @@ mod tests {
     #[test]
     fn on_off_without_config_dir_is_exit_1() {
         assert_eq!(
-            run_inner(TelemetryAction::On, state(true, Layer::Default), None),
+            run_inner(
+                TelemetryAction::On,
+                &mut handle_as(true, Layer::Default),
+                None
+            ),
             1
         );
         assert_eq!(
-            run_inner(TelemetryAction::Off, state(true, Layer::Default), None),
+            run_inner(
+                TelemetryAction::Off,
+                &mut handle_as(true, Layer::Default),
+                None
+            ),
             1
         );
         // Status never needs the config dir.
         assert_eq!(
-            run_inner(TelemetryAction::Status, state(true, Layer::Default), None),
+            run_inner(
+                TelemetryAction::Status,
+                &mut handle_as(true, Layer::Default),
+                None
+            ),
             0
         );
     }

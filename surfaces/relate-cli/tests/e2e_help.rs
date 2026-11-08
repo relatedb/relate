@@ -11,7 +11,7 @@ use support::{
 };
 
 #[cfg(feature = "telemetry")]
-use support::{MockMixpanel, EVENT_TIMEOUT};
+use support::MockMixpanel;
 
 // --- top-level help ---
 
@@ -825,24 +825,33 @@ fn test_usage_errors_are_scoped_to_their_command() {
 fn test_command_help_emits_the_help_events_and_no_command_event() {
     let mock = MockMixpanel::start();
     let home = tempdir();
-    let (status, stdout, stderr) = run_cli(
-        Opts::new(&["clone", "--help"])
-            .in_home(home.path())
-            .with_endpoint(&mock.url()),
-    );
-    assert!(status.success(), "clone --help failed: {stderr}");
-    assert!(stdout.starts_with("Usage: relate clone"), "{stdout}");
-    assert!(
-        mock.wait_for_events(EVENT_TIMEOUT, |events| {
+    // The help run spools its events at exit (ADR-0545 §1); the shared
+    // delivery loop drains them through follow-up runs (ADR-0545 §2) —
+    // plain query runs, because a ~10 ms help run's own drain loses the
+    // exit race and leaves the claim for a run that lives long enough.
+    let events = mock.deliver_spooled(
+        || {
+            let (status, stdout, stderr) = run_cli(
+                Opts::new(&["clone", "--help"])
+                    .in_home(home.path())
+                    .with_endpoint(&mock.url()),
+            );
+            assert!(status.success(), "clone --help failed: {stderr}");
+            assert!(stdout.starts_with("Usage: relate clone"), "{stdout}");
+        },
+        support::FollowupRun {
+            args: &[support::DELIVERY_WORK_QUERY],
+            envs: &[],
+            home: Some(home.path()),
+            cwd: None,
+        },
+        |events| {
             events
                 .iter()
                 .any(|e| e["event"] == "RELATE-CLI_STARTUP" && e["properties"]["kind"] == "help")
                 && events.iter().any(|e| e["event"] == "RELATE-CLI_HELP")
-        }),
-        "expected STARTUP kind=help and HELP events, got: {:?}",
-        mock.events()
+        },
     );
-    let events = mock.events();
     assert!(
         !events.iter().any(|e| e["event"] == "RELATE-CLI_COMMAND"),
         "per-command help must not emit COMMAND: {events:?}"

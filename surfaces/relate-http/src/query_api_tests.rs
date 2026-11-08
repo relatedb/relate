@@ -322,9 +322,17 @@ fn a_below_threshold_envelope_writes_data_first_and_streams_the_same_bytes() {
             && position(r#""notifications":"#) < position(r#""bookmarks":"#),
         "the tail keeps its insertion order: {text}"
     );
+    // LABS-1120: the timing block follows the Neo4j members — bookmarks,
+    // then the keyed `timings` object, then the `planCache` outcome
+    // closing the envelope.
     assert!(
-        text.ends_with(r#""bookmarks":[]}"#),
-        "bookmarks close the envelope: {text}"
+        text.ends_with(r#""planCache":"miss"}"#),
+        "the plan-cache outcome closes the envelope: {text}"
+    );
+    assert!(
+        position(r#""bookmarks":"#) < position(r#""timings":"#)
+            && position(r#""timings":"#) < position(r#""planCache":"#),
+        "the timing block trails the Neo4j members in wire order: {text}"
     );
     // Below the threshold the reply is one-shot, from exactly these bytes…
     let one_shot = match crate::stream::count_json(&reply.body).expect("the envelope serializes") {

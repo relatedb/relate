@@ -299,6 +299,7 @@ mod tests {
             "OPTIONAL MATCH (a) RETURN *",
             // No RETURN: no returned columns, still a read.
             "MATCH (a) OPTIONAL MATCH (a)-[:R]->(b) FINISH",
+            "OPTIONAL MATCH (n) FINISH",
             // Every nesting position the fold walks.
             "MATCH (a) RETURN a AS x UNION MATCH (b) OPTIONAL MATCH (b)-[:R]->(c) RETURN b AS x",
             "MATCH (a) RETURN a NEXT MATCH (b) OPTIONAL MATCH (b)-[:R]->(c) RETURN b, c",

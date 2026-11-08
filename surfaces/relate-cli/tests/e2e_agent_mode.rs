@@ -26,19 +26,29 @@ fn test_the_agent_override_ladder() {
     // --no-agent-mode beats detection: no cap, no record, no announcement.
     let (status, stdout, stderr) = run(&["--no-agent-mode"], &[("CLAUDECODE", "1")]);
     assert!(status.success(), "{stderr}");
-    assert_eq!(stdout.lines().count(), 250, "stdout: {stdout}");
+    // LABS-1120: the machine stream closes with the timing terminal line
+    // (250 rows + 1), so an agent reads where the time went in-band.
+    assert_eq!(stdout.lines().count(), 251, "stdout: {stdout}");
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|l| l.contains("\"timings\"")),
+        "the timings line closes the stream: {stdout}"
+    );
     assert!(!stderr.contains("truncated"), "stderr: {stderr}");
     assert!(!stderr.contains("agent mode on"), "stderr: {stderr}");
 
     // RELATE_AGENT_MODE=0 is the same explicit off.
     let (_, stdout, stderr) = run(&[], &[("RELATE_AGENT_MODE", "0"), ("CLAUDECODE", "1")]);
-    assert_eq!(stdout.lines().count(), 250, "stdout: {stdout}");
+    assert_eq!(stdout.lines().count(), 251, "stdout: {stdout}");
     assert!(!stderr.contains("agent mode on"), "stderr: {stderr}");
 
     // --agent-mode without any harness: the explicit act is unconditional.
     let (status, stdout, stderr) = run(&["--agent-mode"], &[]);
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout.lines().count(), 101, "stdout: {stdout}");
+    // 100 capped rows + the rowCap record + the timings line.
+    assert_eq!(stdout.lines().count(), 102, "stdout: {stdout}");
     assert!(
         stderr.contains("relate agent mode on: --agent-mode (--no-agent-mode to turn off)"),
         "stderr: {stderr}"
@@ -46,13 +56,13 @@ fn test_the_agent_override_ladder() {
 
     // RELATE_AGENT_MODE=1 announces itself too — detection never does.
     let (_, stdout, stderr) = run(&[], &[("RELATE_AGENT_MODE", "1")]);
-    assert_eq!(stdout.lines().count(), 101, "stdout: {stdout}");
+    assert_eq!(stdout.lines().count(), 102, "stdout: {stdout}");
     assert!(
         stderr.contains("relate agent mode on: RELATE_AGENT_MODE=1"),
         "stderr: {stderr}"
     );
     let (_, stdout, stderr) = run(&[], &[("CLAUDECODE", "1")]);
-    assert_eq!(stdout.lines().count(), 101, "stdout: {stdout}");
+    assert_eq!(stdout.lines().count(), 102, "stdout: {stdout}");
     assert!(!stderr.contains("agent mode on"), "stderr: {stderr}");
 
     // An invalid value exits 2 with the usage error, like MAX_ROWS.
@@ -71,7 +81,7 @@ fn test_the_agent_override_ladder() {
 fn test_the_generic_agent_markers_detect() {
     for name in ["AI_AGENT", "AGENT"] {
         let (_, stdout, stderr) = run(&[], &[(name, "claude-code")]);
-        assert_eq!(stdout.lines().count(), 101, "{name}");
+        assert_eq!(stdout.lines().count(), 102, "{name}");
         assert!(
             !stderr.contains("agent mode on"),
             "detection stays silent: {name}"
@@ -92,7 +102,11 @@ fn test_agent_piped_runs_default_to_toon() {
     assert!(status.success(), "{stderr}");
     assert!(stdout.starts_with("rows[100]{i}:"), "stdout: {stdout}");
     assert!(stdout.contains("\nrowCap:\n"), "stdout: {stdout}");
-    assert_eq!(stdout.lines().count(), 103, "stdout: {stdout}");
+    // LABS-1120: the timing block's three terminal entries (timings:, its
+    // inline object, planCache:, its token) ride after the rowCap record.
+    assert!(stdout.contains("\ntimings:\n"), "stdout: {stdout}");
+    assert!(stdout.contains("\nplanCache:\n"), "stdout: {stdout}");
+    assert_eq!(stdout.lines().count(), 107, "stdout: {stdout}");
 
     // The explicit env act resolves the same default.
     let (_, stdout, _) = run_cli(Opts::new(&[QUERY]).with_envs(&[("RELATE_AGENT_MODE", "1")]));

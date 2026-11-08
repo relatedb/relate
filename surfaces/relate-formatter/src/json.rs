@@ -43,6 +43,16 @@ impl Formatter {
         if let Some(cap) = meta.row_cap {
             riders.insert(RowCap::WIRE_KEY.to_string(), cap.to_wire_json(rows.len()));
         }
+        // LABS-1120: the timing rider — present whenever the caller
+        // passed a result behind the render, so the machine modes'
+        // consumers read where the time went without the human `Time:`
+        // line. The members come from the one helper every JSON-family
+        // mode shares.
+        if let Some(timings) = meta.timings {
+            for (key, value) in timing_members(&timings) {
+                riders.insert(key.to_string(), value);
+            }
+        }
         let output = match meta.plan {
             // The EXPLAIN arm — read off the view's typed classification,
             // never re-derived from the result's shape — renders the
@@ -101,6 +111,16 @@ impl Formatter {
                 }),
             )?;
         }
+        // LABS-1120: the timing block as the stream's final keyed line —
+        // the same members every JSON-family mode carries, keyed so the
+        // line can never be confused with a data row.
+        if let Some(timings) = meta.timings {
+            let mut line = serde_json::Map::new();
+            for (key, value) in timing_members(&timings) {
+                line.insert(key.to_string(), value);
+            }
+            write_json_line(w, &serde_json::Value::Object(line))?;
+        }
         Ok(())
     }
 
@@ -154,11 +174,35 @@ impl Formatter {
             wire::notification_keys::NOTIFICATIONS.to_string(),
             wire::notifications_to_wire_json(meta.notifications()),
         );
+        // LABS-1120: the statement's timing block — the same members
+        // every JSON-family mode carries: the machine consumer's answer
+        // to "where did the time go, and did the plan cache serve it".
+        if let Some(timings) = meta.timings {
+            for (key, value) in timing_members(&timings) {
+                envelope.insert(key.to_string(), value);
+            }
+        }
         let json = serde_json::to_string(&serde_json::Value::Object(envelope))
             .map_err(io::Error::other)?;
         writeln!(w, "{json}")?;
         Ok(())
     }
+}
+
+/// The LABS-1120 timing rider's two members: one keyed `timings` object
+/// (the model's one builder — the same nested form the HTTP v2 envelope
+/// carries) with the `planCache` outcome beside it. One spelling for every
+/// JSON-family emit site — `json`'s rider, `jsonl`'s terminal line,
+/// `envelope`'s keys — so the pair cannot drift between the modes (found
+/// in review). Toon renders the same two facts in its own entry form, the
+/// per-mode rendering rule `rowCap` also follows.
+fn timing_members(
+    timings: &relate_model::wire::TimingStampMs,
+) -> [(&'static str, serde_json::Value); 2] {
+    [
+        ("timings", timings.to_timings_json()),
+        ("planCache", serde_json::json!(timings.plan_cache)),
+    ]
 }
 
 /// The machine-native plan object's keys (ADR-0345): the structured tree

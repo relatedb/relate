@@ -186,7 +186,15 @@ fn test_format_alias_and_toon_mode() {
 
     let (status, stdout, stderr) = run_cli(Opts::new(&["--toon", "RETURN 42 AS answer;"]));
     assert!(status.success(), "--toon failed: {stderr}");
-    assert_eq!(stdout, "rows[1]{answer}:\n  42\n");
+    // LABS-1120: the terminal timings/planCache entries follow the rows.
+    assert!(
+        stdout.starts_with("rows[1]{answer}:\n  42\n"),
+        "the rows block leads the toon document: {stdout}"
+    );
+    assert!(
+        stdout.contains("\nplanCache:\n"),
+        "the outcome entry: {stdout}"
+    );
 
     let (status, stdout, stderr) = run_cli(Opts::new(&[
         "--format",
@@ -194,7 +202,14 @@ fn test_format_alias_and_toon_mode() {
         "RETURN 1 AS a, 'x,y' AS b;",
     ]));
     assert!(status.success(), "--format toon failed: {stderr}");
-    assert_eq!(stdout, "rows[1]{a,b}:\n  1,\"x,y\"\n");
+    assert!(
+        stdout.starts_with("rows[1]{a,b}:\n  1,\"x,y\"\n"),
+        "the rows block leads the toon document: {stdout}"
+    );
+    assert!(
+        stdout.contains("\nplanCache:\n"),
+        "the outcome entry: {stdout}"
+    );
 }
 
 #[test]
@@ -204,17 +219,25 @@ fn test_piped_json_is_compact_and_pretty_restores_indentation() {
     // the indented form.
     let (status, stdout, stderr) = run_cli(Opts::new(&["--json", "RETURN 42 AS answer;"]));
     assert!(status.success(), "--json failed: {stderr}");
-    assert_eq!(stdout, "[{\"answer\":42}]\n");
+    // LABS-1120: the rows ride under `data` beside the timing rider, one
+    // compact line (ADR-0240 unchanged).
+    assert_eq!(stdout.lines().count(), 1, "one compact line: {stdout}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["data"], serde_json::json!([{"answer": 42}]));
+    assert!(
+        v["timings"]["parse_ms"].is_number(),
+        "the timing rider: {stdout}"
+    );
 
     let (status, stdout, stderr) =
         run_cli(Opts::new(&["--json", "--pretty", "RETURN 42 AS answer;"]));
     assert!(status.success(), "--json --pretty failed: {stderr}");
     assert!(
-        stdout.lines().count() > 1 && stdout.contains("\n  {\n"),
+        stdout.lines().count() > 1 && stdout.contains("\n    {\n"),
         "expected indented JSON with --pretty, got: {stdout}"
     );
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed[0]["answer"], 42);
+    assert_eq!(parsed["data"][0]["answer"], 42);
 }
 
 #[test]

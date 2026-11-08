@@ -195,6 +195,20 @@ pub(crate) fn ending(
     metadata.push(entry("parsing_time", seconds(result.parse_ms())));
     metadata.push(entry("planning_time", seconds(result.plan_ms())));
     metadata.push(entry("plan_execution_time", seconds(result.execute_ms())));
+    // LABS-1120: the fine sub-split rides the same family (Float seconds,
+    // sub-window names of the three above) plus the plan-cache outcome —
+    // the fact that explains a hit's near-zero `parsing_time`.
+    metadata.push(entry("lex_parse_time", seconds(result.lex_parse_ms())));
+    metadata.push(entry("rewrite_time", seconds(result.rewrite_ms())));
+    metadata.push(entry("lower_time", seconds(result.lower_ms())));
+    metadata.push(entry(
+        "result_generation_time",
+        seconds(result.result_generation_ms()),
+    ));
+    metadata.push(entry(
+        "plan_cache",
+        Pack::String(result.plan_cache().as_str().into()),
+    ));
     metadata.push(entry(
         "db",
         Pack::String(result.header.namespace.to_string()),

@@ -10,7 +10,9 @@
 //! bundle (LABS-872) stages into the system temp dir instead of beside a
 //! target, so it shares only the name recipe ([`staging_name`]) — the
 //! writers below are the write-atomicity half, compiled when one of their
-//! two writers is.
+//! two writers is. The telemetry spool's per-run files (ADR-0545 §1) are
+//! written directly rather than staged, so they share the creation step
+//! ([`create_exclusive`]) with the staging loop below.
 //!
 //! The module compiles with the `staging` marker feature (the three
 //! staging features list it), so the shared name/create step carries no
@@ -55,10 +57,28 @@ pub(crate) fn staging_name(prefix: &str, suffix: &str) -> String {
     format!(".{prefix}.tmp-{}-{seq}-{nanos}{suffix}", std::process::id())
 }
 
+/// Open `path` for writing, created exclusively with `mode` applied at
+/// creation on unix: the one creation step behind every CLI-created
+/// private file — the staging kit's collision loop below and the
+/// telemetry spool's per-run files (ADR-0545 §1). A path that already
+/// exists is refused, never truncated; `mode` is ignored where
+/// permission bits do not apply.
+pub(crate) fn create_exclusive(path: &Path, mode: u32) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    options.open(path)
+}
+
 /// Create one exclusive staging file in `dir` under [`staging_name`]: the
-/// shared creation step of every staged file — `create_new` (an existing
-/// path is never truncated or reused), `mode` applied at creation on unix
-/// (ignored where permission bits do not apply), and a bounded retry on a
+/// shared creation step of every staged file — [`create_exclusive`] plus
+/// a bounded retry on a
 /// name collision that surfaces the last collision rather than inventing an
 /// error. The caller owns what follows: a write and a rename
 /// ([`write_atomic`]) or a write and an open (the remote `--database`
@@ -72,16 +92,7 @@ pub(crate) fn create_staging_file(
     let mut collision = None;
     for _ in 0..STAGING_ATTEMPTS {
         let path = dir.join(staging_name(prefix, suffix));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(mode);
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        match options.open(&path) {
+        match create_exclusive(&path, mode) {
             Ok(file) => return Ok((path, file)),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => collision = Some(e),
             Err(e) => return Err(e),

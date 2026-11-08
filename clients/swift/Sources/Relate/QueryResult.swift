@@ -14,7 +14,7 @@ public struct QueryResult: Sendable {
     public let bookmark: String?
     public let queryType: QueryType
     /// The resolved namespace (ADR-0117): the `USE` target, else the session's.
-    public let namespace: String
+    public let namespace: Namespace
     public let stats: QueryStats
     /// Always present: empty on a plain run, populated by EXPLAIN / PROFILE.
     public let notifications: [Notification]
@@ -55,6 +55,14 @@ public enum QueryType: String, Sendable, Hashable {
     case write = "w"
     case readWrite = "rw"
     case schema = "s"
+}
+
+/// The statement's resolved namespace (ADR-0117): one of the three fixed
+/// databases. Any other value is an ABI contract violation at decode.
+public enum Namespace: String, Sendable, Hashable {
+    case neo4j
+    case system
+    case systemOntologies = "system_ontologies"
 }
 
 /// The statement's mutation counters (ADR-0216).

@@ -2464,6 +2464,7 @@ dependencies = [
  "relate-names",
  "relate-parser",
  "relate-test-support",
+ "web-time",
 ]
 
 [[package]]

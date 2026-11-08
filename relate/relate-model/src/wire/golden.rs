@@ -14,12 +14,20 @@ pub const FIXTURE_ELAPSED_MS: f64 = 0.5;
 /// the expected envelope is deterministic. The total is the shared
 /// [`FIXTURE_ELAPSED_MS`] (re-sourced, never re-typed); the phases are
 /// binary fractions that sum to exactly it — the fixture's own example of
-/// the ADR-0491 rule that the split partitions the total's window.
+/// the ADR-0491 rule that the split partitions the total's window — and
+/// the LABS-1120 fine sub-windows partition their phases the same way
+/// (`lex_parse` + `rewrite` + `lower` = `parse`;
+/// `result_generation` < `execute`).
 pub const FIXTURE_TIMING_STAMP: TimingStampMs = TimingStampMs {
     elapsed_ms: FIXTURE_ELAPSED_MS,
     parse_ms: 0.25,
     plan_ms: 0.1875,
     execute_ms: 0.0625,
+    lex_parse_ms: 0.125,
+    rewrite_ms: 0.0625,
+    lower_ms: 0.0625,
+    result_generation_ms: 0.03125,
+    plan_cache: "miss",
 };
 
 /// A single named value fixture: a `CypherValue` and its expected canonical
@@ -362,6 +370,28 @@ pub fn golden_row() -> (Vec<String>, IndexMap<String, CypherValue>, Value) {
         "execute_ms".into(),
         Value::from(FIXTURE_TIMING_STAMP.execute_ms),
     );
+    // LABS-1120: the fine sub-split and the plan-cache outcome, from the
+    // same fixed stamp.
+    envelope.insert(
+        "lex_parse_ms".into(),
+        Value::from(FIXTURE_TIMING_STAMP.lex_parse_ms),
+    );
+    envelope.insert(
+        "rewrite_ms".into(),
+        Value::from(FIXTURE_TIMING_STAMP.rewrite_ms),
+    );
+    envelope.insert(
+        "lower_ms".into(),
+        Value::from(FIXTURE_TIMING_STAMP.lower_ms),
+    );
+    envelope.insert(
+        "result_generation_ms".into(),
+        Value::from(FIXTURE_TIMING_STAMP.result_generation_ms),
+    );
+    envelope.insert(
+        "plan_cache".into(),
+        Value::from(FIXTURE_TIMING_STAMP.plan_cache),
+    );
     // LABS-418: the structured plan document is always present, `null` on a
     // plain run.
     envelope.insert("plan".into(), Value::Null);
@@ -420,6 +450,11 @@ pub fn envelope_write_only() -> (
         "parse_ms": FIXTURE_TIMING_STAMP.parse_ms,
         "plan_ms": FIXTURE_TIMING_STAMP.plan_ms,
         "execute_ms": FIXTURE_TIMING_STAMP.execute_ms,
+        "lex_parse_ms": FIXTURE_TIMING_STAMP.lex_parse_ms,
+        "rewrite_ms": FIXTURE_TIMING_STAMP.rewrite_ms,
+        "lower_ms": FIXTURE_TIMING_STAMP.lower_ms,
+        "result_generation_ms": FIXTURE_TIMING_STAMP.result_generation_ms,
+        "plan_cache": FIXTURE_TIMING_STAMP.plan_cache,
         // LABS-418: always present, null on a plain run.
         "plan": null,
         "error": null

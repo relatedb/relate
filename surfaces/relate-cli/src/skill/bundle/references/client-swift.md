@@ -25,7 +25,7 @@ let conn = try db.connect()                      // connect(namespace: "system")
 let r = try conn.query("MATCH (n:Person {name: $name}) RETURN n", ["name": "Ada"])
 r.columns; r.rows; r.records                     // [String], [[CypherValue]], [[String: CypherValue]]
 r.queryType      // .read | .write | .readWrite | .schema   (ADR-0162)
-r.namespace      // resolved namespace (ADR-0117)
+r.namespace      // .neo4j | .system | .systemOntologies, resolved (ADR-0117)
 r.stats          // QueryStats, the 11 counters
 r.notifications  // [] on a plain run; EXPLAIN / PROFILE populate it
 r.plan           // PlanDocument? (relate.plan/v1)
@@ -46,6 +46,8 @@ day: 2))`, `.point(.init(srid: 4326, x: -105.0, y: 40.0, z: nil))`).
 
 ## Gotchas
 
+- **`queryType` / `namespace` are closed enums** — a value outside the
+  vocabulary throws `RelateError.decoding` (`ABI contract violated: ...`).
 - A result map key containing an interior NUL is refused with an error (the C ABI looks keys up NUL-terminated); string values keep their NULs.
 - **`Connection` is not `Sendable`** — the compiler stops you sharing one
   across actors. Own it inside one actor; `Database` is shareable, open one

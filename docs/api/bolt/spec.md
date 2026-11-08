@@ -1169,7 +1169,15 @@ follows:
   `plan_execution_time` (each a PackStream **Float** holding **seconds**,
   beside `t_last` — the statement's always-on PARSE / PLAN / EXECUTE split
   of the time `t_first` reports, so the three sum to at most that total;
-  ADR-0491) and `db` (the namespace it ran in). It adds `stats` when any
+  ADR-0491), the fine sub-split of the same family (LABS-1120) —
+  `lex_parse_time` / `rewrite_time` / `lower_time` (sub-windows of
+  `parsing_time`; zero on a plan-cache hit, which `plan_cache` explains)
+  and `result_generation_time` (a sub-window of `plan_execution_time`;
+  zero on `EXPLAIN`, whose render is itself its result generation), each
+  Float seconds — the plan-cache outcome `plan_cache` (a String:
+  `miss` / `hit-raw-fastpath` / `hit-template` /
+  `replan-generation-mismatch` / `bypassed`) and `db` (the namespace it
+  ran in). It adds `stats` when any
   counter is non-zero, `bookmark` after an auto-commit statement that
   committed a write ([Bookmarks](#bookmarks-adr-0310)), the query `notifications` when the
   statement has any ([Notifications](#notifications-adr-0363)), and the
@@ -1179,6 +1187,8 @@ follows:
   contract (`fields`, `columnTypes`, `t_first`, `qid`) is unchanged. A read
   ended by DISCARD answers `{type: "r", t_first: <ms>, t_last: 0,
   parsing_time: <secs>, planning_time: <secs>, plan_execution_time: <secs>,
+  lex_parse_time: <secs>, rewrite_time: <secs>, lower_time: <secs>,
+  result_generation_time: <secs>, plan_cache: "<outcome>",
   db: "neo4j"}` — the `t_*` keys stay integer milliseconds and the phase
   keys Float seconds, never mixed units.
 - **`stats`** holds Neo4j's kebab-case counters, only the non-zero ones:

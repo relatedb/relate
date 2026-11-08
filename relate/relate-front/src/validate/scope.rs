@@ -19,8 +19,9 @@ use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{
-    CallSubqueryClause, Clause, Expr, LiteralValue, PatternElement, PatternPath, ReturnItem,
-    Statement, YieldMode,
+    CallProcedureClause, CallSubqueryClause, Clause, CreateClause, Expr, ForeachClause,
+    LiteralValue, MatchClause, MergeClause, PatternElement, PatternPath, ReturnItem, Statement,
+    UnwindClause, WithClause, YieldMode,
 };
 
 use super::self_reference::validate_create_self_reference;
@@ -115,170 +116,19 @@ fn validate_variable_types_in_clauses(
 ) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
-            Clause::Match(mc) => {
-                // Collect all variable usages in this MATCH clause
-                validate_match_patterns(&mc.pattern, var_types)?;
-                // Track bound variables from MATCH
-                bind_pattern_vars(&mc.pattern, bound_vars);
-                if let Some(sv) = search_score_var(mc) {
-                    bound_vars.insert(sv.clone());
-                }
-            }
-            Clause::With(wc) => {
-                // WITH resets the scope. Variables projected through WITH get their
-                // types from the expression. If the expression is a literal (not a
-                // variable reference), the resulting variable is Scalar.
-                // Pre-sized (ADR-0505 §4): a `*` passes every existing
-                // typed variable through and each other item contributes
-                // at most one alias, so this is an upper bound.
-                let mut new_types: IdentHashMap<SmallName, VarType> =
-                    IdentHashMap::with_capacity_and_hasher(
-                        var_types.len() + wc.items.len(),
-                        IdentBuildHasher,
-                    );
-                for item in &wc.items {
-                    if item.all {
-                        // WITH * passes through all existing variables with their types
-                        for (k, v) in var_types.iter() {
-                            new_types.insert(k.clone(), *v);
-                        }
-                        continue;
-                    }
-                    let Some(alias) = effective_name(item) else {
-                        continue;
-                    };
-
-                    // Determine the type of the projected expression
-                    match &item.expr {
-                        Expr::Variable(v) => {
-                            // Pass through the existing type
-                            if let Some(t) = var_types.get(v) {
-                                new_types.insert(alias, *t);
-                            }
-                            // If unknown, don't constrain it
-                        }
-                        // Null literal doesn't constrain the variable type (null is compatible with any type)
-                        Expr::Literal(LiteralValue::Null) => {}
-                        // Known scalar types: literals, list literals, map literals
-                        // These definitely can't be nodes or relationships
-                        Expr::Literal(_) | Expr::List(_) | Expr::Map(_) => {
-                            new_types.insert(alias, VarType::Scalar);
-                        }
-                        // The literal a plan-cache placeholder replaced.
-                        // Null still constrains nothing.
-                        Expr::Parameter(name) => {
-                            if matches!(
-                                relate_core::auto_literal(name),
-                                Some(value) if !value.is_null()
-                            ) {
-                                new_types.insert(alias, VarType::Scalar);
-                            }
-                        }
-                        // For function calls and other complex expressions,
-                        // we can't determine the type at compile time
-                        // (e.g., coalesce(b, c) could return a node)
-                        _ => {}
-                    }
-                }
-                *var_types = new_types;
-                // The bound-name set comes from the canonical WITH/RETURN
-                // projection rule — the same skeleton every other scope
-                // walk uses (a `*` passes the incoming names through, an
-                // item contributes its effective name) — so the name set
-                // and the type map built above can never disagree on what
-                // the clause projected.
-                *bound_vars = projected_names(&wc.items, bound_vars);
-            }
-            Clause::Unwind(uw) => {
-                // A binding clause introduces a NEW variable: re-using an
-                // in-scope name is 42N59 ("variable already defined"), not a
-                // silent shadow (`WITH 1 AS x UNWIND [1] AS x`,
-                // AggregationAcceptance "Should not duplicate errors"). Only
-                // a name a FOREACH body may shadow is exempt.
-                if bound_vars.contains(&uw.alias) && !shadowable.contains(&uw.alias) {
-                    return Err(uw.alias.with_str(EngineError::duplicate_variable));
-                }
-                bound_vars.insert(uw.alias.clone());
-            }
+            Clause::Match(mc) => apply_match(mc, var_types, bound_vars)?,
+            Clause::With(wc) => apply_with(wc, var_types, bound_vars),
+            Clause::Unwind(uw) => apply_unwind(uw, bound_vars, shadowable)?,
             Clause::LoadCSV(lc) => {
                 bound_vars.insert(lc.alias.clone());
             }
-            Clause::Create(cc) => {
-                // Check for VariableAlreadyBound: if a variable used in CREATE
-                // for a node is already bound (from MATCH/previous CREATE), error
-                validate_create_bindings(&cc.pattern, bound_vars, shadowable)?;
-                // CIP-156: `$any()` is a MATCH-only disjunction quantifier;
-                // a dynamic label/type expression can't reference a
-                // variable this very CREATE clause creates.
-                validate_dynamic_label_no_any(&cc.pattern)?;
-                validate_dynamic_label_scope(&cc.pattern, bound_vars)?;
-                // 42I58 (Cypher 25): the property values may not read an
-                // entity this clause creates. This pass knows the exact
-                // enclosing bindings -- and reaches `FOREACH` bodies with
-                // them -- so a bare element variable the enclosing scope
-                // already binds is a reference, not a declaration. The rule
-                // owns its own Cypher-5 gate.
-                validate_create_self_reference(
-                    std::slice::from_ref(clause),
-                    bound_vars,
-                    cypher_version,
-                )?;
-                // Track new variables created by CREATE
-                bind_pattern_vars(&cc.pattern, bound_vars);
-            }
-            Clause::Merge(mc) => {
-                // Check for VariableAlreadyBound in MERGE: node/rel variables that
-                // are already bound should not be redefined
-                validate_merge_bindings(&mc.pattern, bound_vars, shadowable)?;
-                // CIP-156: same rules as CREATE (see above).
-                let merge_pattern = std::slice::from_ref(&mc.pattern);
-                validate_dynamic_label_no_any(merge_pattern)?;
-                validate_dynamic_label_scope(merge_pattern, bound_vars)?;
-                // Track new variables from MERGE
-                bind_pattern_vars(merge_pattern, bound_vars);
-            }
-            Clause::CallProcedure(cp) => {
-                // Check for YIELD * in in-query context (not standalone)
-                // In-query = there are other clauses besides this CALL
-                let is_in_query = clauses.len() > 1;
-                if cp.yields.mode() == YieldMode::Star && is_in_query {
-                    return Err(EngineError::semantic(
-                        ErrorKind::UnexpectedSyntax,
-                        "YIELD * is not allowed in in-query CALL".to_string(),
-                    ));
-                }
-
-                // The effective variable names (alias takes precedence) come
-                // from the one YieldList model, decoded once.
-                let effective_names: Vec<SmallName> = cp.yields.effective_names().collect();
-
-                // YIELD variables shadow already-bound names, and a
-                // duplicate alias is a collision too — one policy, shared
-                // with the SHOW family (`check_yield_names_not_bound`).
-                check_yield_names_not_bound(effective_names, bound_vars)?;
-            }
-            Clause::CallSubquery(csq) => {
-                validate_legacy_import_collision(csq, bound_vars)?;
-
-                // Bind the names the subquery exports through the canonical
-                // lenient derivation (the same one the expression validator's
-                // CALL arm and the SEARCH scope walk use).
-                let exports = crate::call_scope::call_subquery_exports(csq, bound_vars);
-                bound_vars.extend(exports);
-
-                // CIP-30 syntax [7]: `REPORT STATUS AS <var>` must bind a
-                // NEW variable name -- one not already in scope when the
-                // CALL clause is reached.
-                if let Some(cit) = &csq.in_transactions {
-                    if let Some(var) = &cit.report_status {
-                        declare_new_name(var, |name| bound_vars.contains(name), |_| false, false)?;
-                        bound_vars.insert(var.clone());
-                    }
-                }
-            }
+            Clause::Create(cc) => apply_create(clause, cc, bound_vars, shadowable, cypher_version)?,
+            Clause::Merge(mc) => apply_merge(mc, bound_vars, shadowable)?,
+            Clause::CallProcedure(cp) => apply_call_procedure(cp, clauses, bound_vars)?,
+            Clause::CallSubquery(csq) => apply_call_subquery(csq, bound_vars)?,
             // A SHOW/TERMINATE clause's output columns are new bindings,
             // exactly like a `CALL proc() YIELD ...`'s (see the
-            // `Clause::CallProcedure` arm above, which this mirrors): a
+            // `apply_call_procedure` policy, which this mirrors): a
             // name that's already bound by an earlier clause in this same
             // statement (CIP-242 errors.feature [5]/[6]: a preceding
             // `MATCH`'s pattern variable colliding with a plain or
@@ -288,35 +138,253 @@ fn validate_variable_types_in_clauses(
                 check_yield_names_not_bound(catalog_output_names(c), bound_vars)?;
             }
             // A FOREACH body shares the enclosing scope (it is not an
-            // isolated subquery): validate the body clauses against the
-            // enclosing bindings plus the loop variable. Bindings the body
-            // creates do not escape (FOREACH exports nothing), so the body
-            // is walked with a cloned state.
-            Clause::Foreach(f) => {
-                let mut body_types = var_types.clone();
-                let mut body_bound = bound_vars.clone();
-                body_bound.insert(f.variable.clone());
-                // The body is a fresh scope: its own declarations (the loop
-                // variable and whatever the body creates) are non-shadowable,
-                // but every enclosing name is. The loop variable is declared
-                // in the body's own scope even when an enclosing scope bound
-                // the same name (`MATCH p = (n) FOREACH (n IN … | CREATE (n))`
-                // is `VariableAlreadyBound`), so it is excluded.
-                let mut body_shadowable = body_bound.clone();
-                body_shadowable.remove(&f.variable);
-                validate_variable_types_in_clauses(
-                    &f.clauses,
-                    &mut body_types,
-                    &mut body_bound,
-                    &body_shadowable,
-                    cypher_version,
-                )?;
-            }
+            // isolated subquery): the body policy recurses with a cloned
+            // state (see `apply_foreach`).
+            Clause::Foreach(f) => apply_foreach(f, var_types, bound_vars, cypher_version)?,
             _ => {}
         }
     }
 
     Ok(())
+}
+
+/// The MATCH policy: every variable usage in the clause's patterns is
+/// type-checked, then the pattern's names (and a SEARCH score variable)
+/// become bound.
+fn apply_match(
+    mc: &MatchClause,
+    var_types: &mut IdentHashMap<SmallName, VarType>,
+    bound_vars: &mut IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    validate_match_patterns(&mc.pattern, var_types)?;
+    bind_pattern_vars(&mc.pattern, bound_vars);
+    if let Some(sv) = search_score_var(mc) {
+        bound_vars.insert(sv.clone());
+    }
+    Ok(())
+}
+
+/// The WITH policy: the projection resets the scope. Variables projected
+/// through WITH get their types from the expression. If the expression is
+/// a literal (not a variable reference), the resulting variable is
+/// Scalar; a variable reference passes its type through; anything else
+/// constrains nothing.
+fn apply_with(
+    wc: &WithClause,
+    var_types: &mut IdentHashMap<SmallName, VarType>,
+    bound_vars: &mut IdentHashSet<SmallName>,
+) {
+    // Pre-sized (ADR-0505 §4): a `*` passes every existing
+    // typed variable through and each other item contributes
+    // at most one alias, so this is an upper bound.
+    let mut new_types: IdentHashMap<SmallName, VarType> =
+        IdentHashMap::with_capacity_and_hasher(var_types.len() + wc.items.len(), IdentBuildHasher);
+    for item in &wc.items {
+        if item.all {
+            // WITH * passes through all existing variables with their types
+            for (k, v) in var_types.iter() {
+                new_types.insert(k.clone(), *v);
+            }
+            continue;
+        }
+        let Some(alias) = effective_name(item) else {
+            continue;
+        };
+
+        // Determine the type of the projected expression
+        match &item.expr {
+            Expr::Variable(v) => {
+                // Pass through the existing type
+                if let Some(t) = var_types.get(v) {
+                    new_types.insert(alias, *t);
+                }
+                // If unknown, don't constrain it
+            }
+            // Null literal doesn't constrain the variable type (null is compatible with any type)
+            Expr::Literal(LiteralValue::Null) => {}
+            // Known scalar types: literals, list literals, map literals
+            // These definitely can't be nodes or relationships
+            Expr::Literal(_) | Expr::List(_) | Expr::Map(_) => {
+                new_types.insert(alias, VarType::Scalar);
+            }
+            // The literal a plan-cache placeholder replaced.
+            // Null still constrains nothing.
+            Expr::Parameter(name) => {
+                if matches!(
+                    relate_core::auto_literal(name),
+                    Some(value) if !value.is_null()
+                ) {
+                    new_types.insert(alias, VarType::Scalar);
+                }
+            }
+            // For function calls and other complex expressions,
+            // we can't determine the type at compile time
+            // (e.g., coalesce(b, c) could return a node)
+            _ => {}
+        }
+    }
+    *var_types = new_types;
+    // The bound-name set comes from the canonical WITH/RETURN
+    // projection rule — the same skeleton every other scope
+    // walk uses (a `*` passes the incoming names through, an
+    // item contributes its effective name) — so the name set
+    // and the type map built above can never disagree on what
+    // the clause projected.
+    *bound_vars = projected_names(&wc.items, bound_vars);
+}
+
+/// The UNWIND policy: a binding clause introduces a NEW variable.
+fn apply_unwind(
+    uw: &UnwindClause,
+    bound_vars: &mut IdentHashSet<SmallName>,
+    shadowable: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    // A binding clause introduces a NEW variable: re-using an
+    // in-scope name is 42N59 ("variable already defined"), not a
+    // silent shadow (`WITH 1 AS x UNWIND [1] AS x`,
+    // AggregationAcceptance "Should not duplicate errors"). Only
+    // a name a FOREACH body may shadow is exempt.
+    if bound_vars.contains(&uw.alias) && !shadowable.contains(&uw.alias) {
+        return Err(uw.alias.with_str(EngineError::duplicate_variable));
+    }
+    bound_vars.insert(uw.alias.clone());
+    Ok(())
+}
+
+/// The CREATE policy: the binding, dynamic-label and 42I58 self-reference
+/// gates, then the pattern's names become bound. `clause` re-arms the
+/// one-clause slice the self-reference battery takes (its API is
+/// clause-list-shaped for the conservative tier's whole-list spans).
+fn apply_create(
+    clause: &Clause,
+    cc: &CreateClause,
+    bound_vars: &mut IdentHashSet<SmallName>,
+    shadowable: &IdentHashSet<SmallName>,
+    cypher_version: Option<u32>,
+) -> Result<(), EngineError> {
+    // Check for VariableAlreadyBound: if a variable used in CREATE
+    // for a node is already bound (from MATCH/previous CREATE), error
+    validate_create_bindings(&cc.pattern, bound_vars, shadowable)?;
+    // CIP-156: `$any()` is a MATCH-only disjunction quantifier;
+    // a dynamic label/type expression can't reference a
+    // variable this very CREATE clause creates.
+    validate_dynamic_label_no_any(&cc.pattern)?;
+    validate_dynamic_label_scope(&cc.pattern, bound_vars)?;
+    // 42I58 (Cypher 25): the property values may not read an
+    // entity this clause creates. This pass knows the exact
+    // enclosing bindings -- and reaches `FOREACH` bodies with
+    // them -- so a bare element variable the enclosing scope
+    // already binds is a reference, not a declaration. The rule
+    // owns its own Cypher-5 gate.
+    validate_create_self_reference(std::slice::from_ref(clause), bound_vars, cypher_version)?;
+    // Track new variables created by CREATE
+    bind_pattern_vars(&cc.pattern, bound_vars);
+    Ok(())
+}
+
+/// The MERGE policy: the same binding and dynamic-label gates as CREATE
+/// (see `apply_create`), then the pattern's names become bound.
+fn apply_merge(
+    mc: &MergeClause,
+    bound_vars: &mut IdentHashSet<SmallName>,
+    shadowable: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    // Check for VariableAlreadyBound in MERGE: node/rel variables that
+    // are already bound should not be redefined
+    validate_merge_bindings(&mc.pattern, bound_vars, shadowable)?;
+    // CIP-156: same rules as CREATE (see above).
+    let merge_pattern = std::slice::from_ref(&mc.pattern);
+    validate_dynamic_label_no_any(merge_pattern)?;
+    validate_dynamic_label_scope(merge_pattern, bound_vars)?;
+    // Track new variables from MERGE
+    bind_pattern_vars(merge_pattern, bound_vars);
+    Ok(())
+}
+
+/// The CALL-procedure policy: `YIELD *` is in-query-context only, and the
+/// yielded names (alias-resolved, decoded once) follow the one
+/// yield-binding policy.
+fn apply_call_procedure(
+    cp: &CallProcedureClause,
+    clauses: &[Clause],
+    bound_vars: &mut IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    // Check for YIELD * in in-query context (not standalone)
+    // In-query = there are other clauses besides this CALL
+    let is_in_query = clauses.len() > 1;
+    if cp.yields.mode() == YieldMode::Star && is_in_query {
+        return Err(EngineError::semantic(
+            ErrorKind::UnexpectedSyntax,
+            "YIELD * is not allowed in in-query CALL".to_string(),
+        ));
+    }
+
+    // The effective variable names (alias takes precedence) come
+    // from the one YieldList model, decoded once.
+    let effective_names: Vec<SmallName> = cp.yields.effective_names().collect();
+
+    // YIELD variables shadow already-bound names, and a
+    // duplicate alias is a collision too — one policy, shared
+    // with the SHOW family (`check_yield_names_not_bound`).
+    check_yield_names_not_bound(effective_names, bound_vars)
+}
+
+/// The CALL-subquery policy: the legacy-importing collision check, then
+/// the subquery's exported names (canonical lenient derivation) and an
+/// `IN TRANSACTIONS … REPORT STATUS` variable become bound.
+fn apply_call_subquery(
+    csq: &CallSubqueryClause,
+    bound_vars: &mut IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    validate_legacy_import_collision(csq, bound_vars)?;
+
+    // Bind the names the subquery exports through the canonical
+    // lenient derivation (the same one the expression validator's
+    // CALL arm and the SEARCH scope walk use).
+    let exports = crate::call_scope::call_subquery_exports(csq, bound_vars);
+    bound_vars.extend(exports);
+
+    // CIP-30 syntax [7]: `REPORT STATUS AS <var>` must bind a
+    // NEW variable name -- one not already in scope when the
+    // CALL clause is reached.
+    if let Some(cit) = &csq.in_transactions {
+        if let Some(var) = &cit.report_status {
+            declare_new_name(var, |name| bound_vars.contains(name), |_| false, false)?;
+            bound_vars.insert(var.clone());
+        }
+    }
+    Ok(())
+}
+
+/// The FOREACH policy: the body shares the enclosing scope (it is not an
+/// isolated subquery), so the body clauses are validated against the
+/// enclosing bindings plus the loop variable. Bindings the body creates
+/// do not escape (FOREACH exports nothing), so the body is walked with a
+/// cloned state.
+fn apply_foreach(
+    f: &ForeachClause,
+    var_types: &mut IdentHashMap<SmallName, VarType>,
+    bound_vars: &mut IdentHashSet<SmallName>,
+    cypher_version: Option<u32>,
+) -> Result<(), EngineError> {
+    let mut body_types = var_types.clone();
+    let mut body_bound = bound_vars.clone();
+    body_bound.insert(f.variable.clone());
+    // The body is a fresh scope: its own declarations (the loop
+    // variable and whatever the body creates) are non-shadowable,
+    // but every enclosing name is. The loop variable is declared
+    // in the body's own scope even when an enclosing scope bound
+    // the same name (`MATCH p = (n) FOREACH (n IN … | CREATE (n))`
+    // is `VariableAlreadyBound`), so it is excluded.
+    let mut body_shadowable = body_bound.clone();
+    body_shadowable.remove(&f.variable);
+    validate_variable_types_in_clauses(
+        &f.clauses,
+        &mut body_types,
+        &mut body_bound,
+        &body_shadowable,
+        cypher_version,
+    )
 }
 
 /// The one yield-binding policy of `validate_variable_types`, shared by a
@@ -357,80 +425,130 @@ fn validate_match_patterns(
     patterns: &[PatternPath],
     var_types: &mut IdentHashMap<SmallName, VarType>,
 ) -> Result<(), EngineError> {
-    // First, collect all new variable usages from this MATCH before committing
-    // (variable_name, type, is_variable_length_rel)
-    let mut new_usages: Vec<(SmallName, VarType, bool)> = Vec::new();
+    let usages = collect_pattern_usages(patterns)?;
+    check_usage_conflicts(&usages, var_types)?;
+    // Commit all new types.
+    for usage in usages {
+        var_types.insert(usage.name, usage.var_type);
+    }
+    Ok(())
+}
 
+/// One variable usage a MATCH pattern introduces: the name, the type its
+/// pattern position gives it, and whether a variable-length relationship
+/// bound it (the scalar→varlen rebinding exception
+/// [`check_usage_conflicts`] honors).
+struct PatternUsage {
+    name: SmallName,
+    var_type: VarType,
+    is_varlen: bool,
+}
+
+/// Phase one: every variable usage this MATCH introduces, collected before
+/// any type is committed — in binding order, a path's element variables
+/// (nodes/relationships) before the path variable that names the whole
+/// pattern, and a quantified path's inner elements as group variables
+/// (CIP-28; the group-specific reuse rules are enforced on the lowered IR
+/// by the planner's quantified-path binding, `GroupVariableReuse` in
+/// `relate-planner`). A nested quantified path is the typed
+/// `NestedQuantification` error here (the parser rejects it — CIP-28 Rule
+/// 4 — but a hand-built AST can still reach this validator, LABS-70).
+fn collect_pattern_usages(patterns: &[PatternPath]) -> Result<Vec<PatternUsage>, EngineError> {
+    let mut usages = Vec::new();
     for path in patterns {
-        // Order matters for the reuse-keyed error kind below: a path's element
-        // variables (nodes/relationships) are considered bound BEFORE the path
-        // variable that names the whole pattern. So in `p = (p)-[]-()` the node
-        // `p` is the original binding and the path variable `p` is the reuse
-        // (VariableAlreadyBound), while in `p = ()-[]-(), (p)` the path variable
-        // is the original and the later node `(p)` is the reuse
-        // (VariableTypeConflict) — matching clauses/match/Match1 scenario 10 and
-        // Match6 scenario 23. Hence the path-variable push is deferred to after
-        // this path's elements.
+        // Order matters for the reuse-keyed error kind in
+        // `check_usage_conflicts`: a path's element variables are
+        // considered bound BEFORE the path variable that names the whole
+        // pattern. So in `p = (p)-[]-()` the node `p` is the original
+        // binding and the path variable `p` is the reuse
+        // (VariableAlreadyBound), while in `p = ()-[]-(), (p)` the path
+        // variable is the original and the later node `(p)` is the reuse
+        // (VariableTypeConflict) — matching clauses/match/Match1 scenario
+        // 10 and Match6 scenario 23. Hence the path-variable push is
+        // deferred to after this path's elements.
         for elem in &path.elements {
-            match elem {
-                PatternElement::Node(np) => {
-                    if let Some(var) = &np.variable {
-                        new_usages.push((var.clone(), VarType::Node, false));
-                    }
-                }
-                PatternElement::Relationship(rp) => {
-                    if let Some(var) = &rp.variable {
-                        let is_varlen = rp.min_hops.is_some() || rp.max_hops.is_some();
-                        new_usages.push((var.clone(), VarType::Relationship, is_varlen));
-                    }
-                }
-                PatternElement::Quantified(qpp) => {
-                    // A quantified path pattern's own named operand elements
-                    // become "group variables" (CIP-28); basic node/
-                    // relationship type tracking still applies to each. The
-                    // group-specific reuse rules (a group variable name
-                    // cannot be reused anywhere else at all) are enforced on
-                    // the lowered IR by the planner's quantified-path binding
-                    // (`GroupVariableReuse` in `relate-planner`).
-                    for inner in &qpp.elements {
-                        match inner {
-                            PatternElement::Node(np) => {
-                                if let Some(var) = &np.variable {
-                                    new_usages.push((var.clone(), VarType::Node, false));
-                                }
-                            }
-                            PatternElement::Relationship(rp) => {
-                                if let Some(var) = &rp.variable {
-                                    new_usages.push((var.clone(), VarType::Relationship, false));
-                                }
-                            }
-                            PatternElement::Quantified(_) => {
-                                // The parser rejects nested QPPs (CIP-28
-                                // Rule 4), but a hand-built AST can still
-                                // reach this validator — return a typed
-                                // error, never abort (LABS-70).
-                                return Err(EngineError::semantic(
-                                    ErrorKind::SyntaxError,
-                                    "NestedQuantification: quantified path patterns cannot be nested"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
+            collect_element_usages(elem, false, &mut usages)?;
         }
 
         // Path variable binds after its elements (see the ordering note above).
         // A named parenthesized subpath binds the same path value, so it is a
         // path usage too.
         for name in path.path_names() {
-            new_usages.push((name.clone(), VarType::Path, false));
+            usages.push(PatternUsage {
+                name: name.clone(),
+                var_type: VarType::Path,
+                is_varlen: false,
+            });
         }
     }
+    Ok(usages)
+}
 
-    // Now check all usages for conflicts
-    for (i, (var, new_type, is_varlen)) in new_usages.iter().enumerate() {
+/// The usages one pattern element contributes — the
+/// element-to-`(name, type, varlen)` mapping written once for the
+/// top-level walk and a quantified path's inner walk alike: a `qpp_inner`
+/// relationship is a group variable (CIP-28), never varlen, and a
+/// quantified path nested inside another is the typed rejection above.
+fn collect_element_usages(
+    elem: &PatternElement,
+    qpp_inner: bool,
+    usages: &mut Vec<PatternUsage>,
+) -> Result<(), EngineError> {
+    match elem {
+        PatternElement::Node(np) => {
+            if let Some(var) = &np.variable {
+                usages.push(PatternUsage {
+                    name: var.clone(),
+                    var_type: VarType::Node,
+                    is_varlen: false,
+                });
+            }
+            Ok(())
+        }
+        PatternElement::Relationship(rp) => {
+            if let Some(var) = &rp.variable {
+                let is_varlen = !qpp_inner && (rp.min_hops.is_some() || rp.max_hops.is_some());
+                usages.push(PatternUsage {
+                    name: var.clone(),
+                    var_type: VarType::Relationship,
+                    is_varlen,
+                });
+            }
+            Ok(())
+        }
+        PatternElement::Quantified(_) if qpp_inner => {
+            // The parser rejects nested QPPs (CIP-28 Rule 4), but a
+            // hand-built AST can still reach this validator — return a
+            // typed error, never abort (LABS-70).
+            Err(EngineError::semantic(
+                ErrorKind::SyntaxError,
+                "NestedQuantification: quantified path patterns cannot be nested".to_string(),
+            ))
+        }
+        PatternElement::Quantified(qpp) => {
+            for inner in &qpp.elements {
+                collect_element_usages(inner, true, usages)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Phases two and three over the collected usages: the cross-clause check
+/// against types earlier clauses established, then the within-MATCH check
+/// against earlier usages of the same list — the current usage is the
+/// later one (the reuse), so its type keys the error kind in both
+/// ([`reuse_error_kind`]).
+fn check_usage_conflicts(
+    usages: &[PatternUsage],
+    var_types: &IdentHashMap<SmallName, VarType>,
+) -> Result<(), EngineError> {
+    for (i, usage) in usages.iter().enumerate() {
+        let PatternUsage {
+            name: var,
+            var_type: new_type,
+            is_varlen,
+        } = usage;
         // Check against already-established types from previous clauses
         if let Some(existing_type) = var_types.get(var) {
             if *existing_type != *new_type {
@@ -460,8 +578,8 @@ fn validate_match_patterns(
         // current usage is the later one (the reuse), so its type keys the
         // error kind — reused as a path is VariableAlreadyBound (Match6 23/24),
         // reused as a node/relationship is VariableTypeConflict (Match1 10).
-        for (other_var, other_type, _) in &new_usages[..i] {
-            if other_var == var && *other_type != *new_type {
+        for other in &usages[..i] {
+            if other.name == *var && other.var_type != *new_type {
                 let kind = reuse_error_kind(*new_type);
                 return Err(EngineError::semantic(
                     kind,
@@ -469,18 +587,12 @@ fn validate_match_patterns(
                         "variable '{}' is used as both a {} and a {} in the same pattern",
                         var,
                         new_type.name(),
-                        other_type.name(),
+                        other.var_type.name(),
                     ),
                 ));
             }
         }
     }
-
-    // Commit all new types.
-    for (var, new_type, _) in new_usages {
-        var_types.insert(var.clone(), new_type);
-    }
-
     Ok(())
 }
 

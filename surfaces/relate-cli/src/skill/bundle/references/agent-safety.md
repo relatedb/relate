@@ -55,6 +55,12 @@ transaction. `--read-only` is the fence for that.
   detected (stderr says so; every machine mode also carries the cut
   in-band — a terminal `{"rowCap":{...}}` record in `--jsonl` and a
   `"rowCap"` object in `--mode envelope` — so a capped result never reads
+  as complete. Every machine mode also closes each statement's stream with
+  its `"timings"` object (the phase split and the fine sub-split, in
+  milliseconds) and the `"planCache"` outcome (`miss` / `hit-raw-fastpath`
+  / `hit-template` / `replan-generation-mismatch` / `bypassed`) — read
+  them to see where a slow statement spends its time and whether the plan
+  cache served it
   as complete). Raise it
   with `--max-rows N`, lift it with `--max-rows 0`, or set
   `RELATE_MAX_ROWS`. The cap follows agent mode (ADR-0407's ladder):

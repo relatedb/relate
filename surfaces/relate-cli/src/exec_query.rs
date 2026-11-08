@@ -209,6 +209,12 @@ fn exec_relate_query_to(
                     column_types: &r.header.column_types,
                     row_cap: cut,
                     plan,
+                    // LABS-1120: the statement's timing block — the one
+                    // projection every envelope-building surface calls —
+                    // so the machine modes carry the phase split, the
+                    // fine sub-split and the plan-cache outcome beside the
+                    // rows, no `.timer` flag needed.
+                    timings: Some(relate::timing_stamp_ms(&r)),
                 },
             ) {
                 write_error(diagnostics, e);
@@ -474,13 +480,21 @@ mod render_failure_tests {
             Some("{\"n\":1}"),
             "the result row goes to the output writer: {out:?}"
         );
+        // LABS-1120: the machine stream closes with the timing terminal
+        // line before the human `.timer` line.
         assert!(
             lines
                 .get(1)
+                .is_some_and(|line| line.contains("\"timings\"") && line.contains("\"planCache\"")),
+            "the timing block closes the machine stream on the same writer: {out:?}"
+        );
+        assert!(
+            lines
+                .get(2)
                 .is_some_and(|line| line.starts_with("Time: ") && line.ends_with(")")),
             "the timer line follows it on the same writer: {out:?}"
         );
-        assert_eq!(lines.len(), 2, "the single statement printed two lines");
+        assert_eq!(lines.len(), 3, "the single statement printed three lines");
         assert!(
             diagnostics.is_empty(),
             "a clean run reports nothing on the diagnostic writer"

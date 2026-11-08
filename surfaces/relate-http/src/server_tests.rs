@@ -623,9 +623,13 @@ fn gzip_roundtrips_to_the_exact_identity_envelope() {
         compressed.len() < identity_body.len(),
         "the gzip body must shrink the envelope"
     );
+    // LABS-1120: the timing members carry per-request numbers, so the
+    // byte-for-byte roundtrip holds for the deterministic prefix — the
+    // tail from `"timings"` on is cut from both sides (the one helper,
+    // `streaming::strip_timing_tail`).
     assert_eq!(
-        gunzip(compressed),
-        identity_body,
+        streaming::strip_timing_tail(&gunzip(compressed)),
+        streaming::strip_timing_tail(identity_body),
         "the gzip payload inflates to the exact identity envelope"
     );
 }

@@ -11,7 +11,7 @@ mod mock_mixpanel;
 
 #[cfg(feature = "telemetry")]
 #[allow(unused_imports)] // Each test binary uses a subset of the mock harness.
-pub use mock_mixpanel::{MockMixpanel, EVENT_TIMEOUT, QUIET_GRACE};
+pub use mock_mixpanel::{FollowupRun, MockMixpanel, DELIVERY_WAIT, QUIET_GRACE};
 
 /// The `serve` e2e harness (spawn/wait/SIGINT on one spawned server, plus
 /// the pinned credential pair): shared by `e2e_serve.rs` and
@@ -91,13 +91,19 @@ pub use ambient_scrub::AGENT_ENV_VARS;
 
 use ambient_scrub::scrub_ambient;
 
-/// The telemetry axes the host must not leak into a child: the config-dir
-/// override, the two opt-out controls, and the endpoint override.
+/// The telemetry axes the host must not leak into a child: every
+/// config-dir base (the XDG override and the two Windows bases a real
+/// Windows runner sets ambiently — without the scrub, a test that pins
+/// the no-base refusal by removing `$HOME` would resolve the
+/// developer's actual profile instead) plus the two opt-out controls
+/// and the endpoint override.
 /// [`run_cli`] removes them through [`CliRunOptions::default`];
 /// [`pty_command`] removes them from the driver process whose environment the
 /// PTY child inherits. One list, so the two spawn paths cannot disagree.
-const TELEMETRY_AXES: [&str; 4] = [
+const TELEMETRY_AXES: [&str; 6] = [
     "XDG_CONFIG_HOME",
+    "APPDATA",
+    "USERPROFILE",
     "DO_NOT_TRACK",
     "RELATE_TELEMETRY",
     "RELATE_MIXPANEL_ENDPOINT",
@@ -129,10 +135,13 @@ const TELEMETRY_AXES: [&str; 4] = [
 /// sets it through [`CliRunOptions::with_envs`], which applies after this
 /// removal.
 ///
-/// Telemetry is off. A refused Mixpanel port does not fail the connect
-/// immediately on Windows, and every enabled run waits out that connect in
-/// `Telemetry::flush` before it can exit. [`run_cli`] clears this again and
-/// leaves telemetry at its product default only for tests that need it.
+/// Telemetry is off. [`run_cli`] clears this again and leaves telemetry
+/// at its product default only for tests that need it: the cold-start
+/// guard and the mock-sink suite, both of which pin the endpoint
+/// themselves. With the spool model (ADR-0545) an enabled run never
+/// waits on the network at exit, but it still writes spool files and
+/// still spawns a drain — the forced-off default keeps every other
+/// test's fake `$HOME` free of both and the drain offline.
 pub fn cli_command() -> Command {
     let mut cmd = Command::new(binary_path());
     scrub_ambient(&mut cmd);
@@ -146,7 +155,7 @@ pub fn cli_command() -> Command {
 /// copies the driver process's `os.environ` into the child. The ambient scrub
 /// therefore has to run on this command, before that copy: [`scrub_ambient`]
 /// removes the agent markers, the row cap and the preview opt-in, and
-/// [`TELEMETRY_AXES`] the four telemetry axes. [`assert_pty_driver_ok`]
+/// [`TELEMETRY_AXES`] the six config-dir and telemetry axes. [`assert_pty_driver_ok`]
 /// documents the PTY-only setup (scratch `HOME`, forced terminal, sinkholed
 /// endpoint) the driver applies to the child, which no `cli_command` child
 /// needs.
@@ -243,7 +252,7 @@ pub struct CliRunOptions<'a> {
     /// The child's telemetry environment, as one ordered (key, value)
     /// list — later entries win. Pre-populated with the harness defaults
     /// (`RELATE_TELEMETRY=off`, a refused `RELATE_MIXPANEL_
-    /// ENDPOINT` so an enabled flush fails fast and offline); the
+    /// ENDPOINT` so an enabled run's drain stays offline); the
     /// telemetry suite overwrites the endpoint and drops the off default
     /// through the builders below. This is the model: no parallel
     /// endpoint/telemetry knobs whose application order is load-bearing.
@@ -304,8 +313,8 @@ impl<'a> CliRunOptions<'a> {
 
     /// Point the Mixpanel endpoint elsewhere (e.g. a local mock sink) and
     /// drop the `RELATE_TELEMETRY=off` default: a sink is only useful
-    /// when events are sent, and it accepts the connection, so the exit
-    /// flush does not wait on a refused port.
+    /// when events are sent, and the spool roundtrip's follow-up runs
+    /// drain into it (ADR-0545 §2).
     pub fn with_endpoint(mut self, endpoint: &'a str) -> Self {
         self.env.retain(|(k, _)| *k != "RELATE_MIXPANEL_ENDPOINT");
         self.env.push(("RELATE_MIXPANEL_ENDPOINT", endpoint));
@@ -424,6 +433,68 @@ pub fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
+/// The telemetry spool's file-name prefix, pinned for the e2e suites —
+/// the e2e twin of the CLI's own fact (`SPOOL_PREFIX` in
+/// `src/telemetry/spool.rs`; e2e binaries cannot reach the bin's private
+/// items). Every e2e spelling of a spool file name — scans and seeds —
+/// derives from this one constant, like the other pinned strings here.
+#[allow(dead_code)]
+pub const SPOOL_FILE_PREFIX: &str = "telemetry-spool-";
+
+/// The claim file-name prefix, the e2e twin of `CLAIM_PREFIX` — a
+/// sweep's in-flight rename target. The pending-file scan below counts
+/// both, so a drain that has claimed (renamed) files mid-test can never
+/// make the spool look falsely empty.
+#[allow(dead_code)]
+pub const CLAIM_FILE_PREFIX: &str = "telemetry-claim-";
+
+/// The delivery follow-ups' work query (ADR-0545 §2): a follow-up's
+/// whole job is to stay alive long enough for its drain thread to POST,
+/// and engine work buys that window even on a saturated runner where a
+/// `RETURN 1` run may live only milliseconds. The one spelling of the
+/// query, shared by every suite's follow-up closure — the env wiring
+/// around it stays per-suite.
+#[allow(dead_code)]
+pub const DELIVERY_WORK_QUERY: &str = "UNWIND range(1, 100000) AS i RETURN count(i) AS c";
+
+/// The `telemetry-spool-*.jsonl` files currently under `dir` — the one
+/// spool-scan helper for the e2e suites, so the scan shape cannot drift
+/// between them.
+#[allow(dead_code)]
+pub fn spool_files_in(dir: &Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(SPOOL_FILE_PREFIX))
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// The pending telemetry files currently under `dir` — spool files and
+/// claims alike, the sweep's whole vocabulary: a drain renames spool
+/// files to claim names while it delivers, so a scan that counts only
+/// one prefix can race the drain and report a falsely empty spool.
+#[allow(dead_code)]
+pub fn pending_telemetry_files_in(dir: &Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.starts_with(SPOOL_FILE_PREFIX) || name.starts_with(CLAIM_FILE_PREFIX)
+            })
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
 /// How many nodes the store at `db` holds, read through the CLI's JSONL
 /// count: the one helper for the suites that check a report against the
 /// state it claims (ADR-0199's `committed`, ADR-0402's "changed nothing"). It
@@ -494,6 +565,22 @@ pub fn staged_path(stderr: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(staged)
 }
 
+/// LABS-1120: the per-statement timing terminal line of a `--jsonl`
+/// stream is metadata, never a data row — the one typed discriminator
+/// every JSONL-reading helper and e2e comparison uses: the terminal line
+/// is an object carrying exactly the timing rider's two keys (`timings`
+/// and `planCache`, the formatter's one rider builder), so a data row
+/// that happens to carry a `timings` column stays a row.
+#[allow(dead_code)]
+pub fn timing_terminal_line(line: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(serde_json::Value::Object(map)) => {
+            map.len() == 2 && map.contains_key("timings") && map.contains_key("planCache")
+        }
+        _ => false,
+    }
+}
+
 /// Run one follow-up query against a persisted database with `--jsonl` and
 /// return every row, parsed. `params` are the `--param name=value` arguments
 /// the query takes; pass `&[]` for a query without parameters.
@@ -520,6 +607,9 @@ pub fn query_rows(
     stdout
         .lines()
         .filter(|line| !line.trim().is_empty())
+        // LABS-1120: the stream's timing terminal line is metadata, not a
+        // data row — the helper's contract is the rows.
+        .filter(|line| !timing_terminal_line(line))
         .map(|line| {
             serde_json::from_str(line).unwrap_or_else(|error| panic!("bad JSON {line:?}: {error}"))
         })
@@ -671,4 +761,30 @@ pub fn commands_section_words(stdout: &str) -> Vec<&str> {
         .skip(1)
         .map(|line| line.split_whitespace().next().expect("command word"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timing_terminal_line;
+
+    /// LABS-1120: the typed discriminator — a data row whose column is
+    /// literally named `timings` is a row, never the terminal line (the
+    /// raw-substring filter this replaced dropped it), and only the
+    /// rider's exact two-key object is the terminal line.
+    #[test]
+    fn a_data_row_with_a_timings_column_stays_a_row() {
+        assert!(
+            !timing_terminal_line(r#"{"timings": 1}"#),
+            "a single `timings` column is a data row"
+        );
+        assert!(
+            !timing_terminal_line(r#"{"timings": 1, "a": 2}"#),
+            "a `timings` column beside another is a data row"
+        );
+        assert!(
+            timing_terminal_line(r#"{"timings":{"elapsed_ms":0.5},"planCache":"miss"}"#),
+            "the rider's exact two-key object is the terminal line"
+        );
+        assert!(!timing_terminal_line(r#"{"a": 1}"#), "a plain row is a row");
+    }
 }

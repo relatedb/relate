@@ -482,7 +482,7 @@ fn grouping_key_exprs<'a>(
             .map(|k| match k {
                 Expr::Variable(name) => items
                     .iter()
-                    .find(|i| i.alias.as_ref() == Some(name))
+                    .find(|i| is_aliased(i, name))
                     .map(|i| &i.expr)
                     .unwrap_or(k),
                 _ => k,
@@ -496,6 +496,16 @@ fn grouping_key_exprs<'a>(
 /// extension of the WITH ORDER BY check both derive from.
 fn non_aggregating(items: &[ReturnItem]) -> impl Iterator<Item = &ReturnItem> {
     items.iter().filter(|i| !contains_aggregation(&i.expr))
+}
+
+/// The one alias-matching predicate the grouping-key resolutions share —
+/// [`grouping_key_exprs`] here and `lower::lower_group_by` (the third
+/// spelling this replaces): whether `item` is explicitly aliased `name`.
+/// [`projection_item_expr`] below is the wider name→expression rule (it
+/// also resolves a bare-variable item's own name) and spells that extra
+/// condition once, on top of this predicate.
+pub(crate) fn is_aliased(item: &ReturnItem, name: &SmallName) -> bool {
+    item.alias.as_ref() == Some(name)
 }
 
 /// GBN1.5: the one grouping-element shape that resolves *through* a
@@ -573,7 +583,7 @@ fn projection_item_expr<'a>(items: &'a [ReturnItem], name: &SmallName) -> Option
     items
         .iter()
         .find(|item| {
-            item.alias.as_ref() == Some(name)
+            is_aliased(item, name)
                 || (item.alias.is_none() && matches!(&item.expr, Expr::Variable(v) if v == name))
         })
         .map(|item| &item.expr)

@@ -81,7 +81,7 @@ mod static_types;
 mod structure;
 mod writes;
 
-pub(crate) use self::aggregation::alias_shadows_its_own_base;
+pub(crate) use self::aggregation::{alias_shadows_its_own_base, is_aliased};
 pub use self::aggregation::{
     validate_aggregation_semantics, validate_clause_slots, validate_expression_slots,
     validate_order_by_aggregation,
@@ -184,19 +184,11 @@ pub(crate) fn statement_any_clause_node(
     stmt: &Statement,
     pred: impl Fn(StmtRef<'_>, &Clause) -> bool,
 ) -> Result<bool, EngineError> {
-    let found = std::cell::Cell::new(false);
-    walk_statement_tree(
+    statement_any_hit(
         stmt,
-        &mut |node| {
-            if !found.get() {
-                found.set(node.clauses().iter().any(|clause| pred(node, clause)));
-            }
-            Ok(())
-        },
-        &mut |_| Ok(()),
-        &mut |_| Ok(()),
-    )?;
-    Ok(found.get())
+        |node| node.clauses().iter().any(|clause| pred(node, clause)),
+        |_| false,
+    )
 }
 
 /// Whether any expression of `stmt` — at any nesting depth — satisfies
@@ -205,13 +197,35 @@ pub(crate) fn statement_any_expr(
     stmt: &Statement,
     pred: impl Fn(&Expr) -> bool,
 ) -> Result<bool, EngineError> {
+    statement_any_hit(stmt, |_| false, pred)
+}
+
+/// The one early-exit existence scaffold the two halves above ride: walks
+/// the statement tree and reports whether either probe fired — the
+/// visited-flag mechanics (first hit wins; nothing walks past it) spelled
+/// once instead of copied per half.
+fn statement_any_hit(
+    stmt: &Statement,
+    on_statement: impl Fn(StmtRef<'_>) -> bool,
+    on_expr: impl Fn(&Expr) -> bool,
+) -> Result<bool, EngineError> {
     let found = std::cell::Cell::new(false);
-    walk_statement_tree(stmt, &mut |_| Ok(()), &mut |_| Ok(()), &mut |expr| {
-        if !found.get() {
-            found.set(pred(expr));
-        }
-        Ok(())
-    })?;
+    walk_statement_tree(
+        stmt,
+        &mut |node| {
+            if !found.get() {
+                found.set(on_statement(node));
+            }
+            Ok(())
+        },
+        &mut |_| Ok(()),
+        &mut |expr| {
+            if !found.get() {
+                found.set(on_expr(expr));
+            }
+            Ok(())
+        },
+    )?;
     Ok(found.get())
 }
 

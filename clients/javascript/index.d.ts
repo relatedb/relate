@@ -15,6 +15,9 @@
 /** The plan-time statement classification (ADR-0162 wire code). */
 export type QueryType = "r" | "w" | "rw" | "s";
 
+/** A statement's resolved namespace (ADR-0117): one of the three fixed databases. */
+export type Namespace = "neo4j" | "system" | "system_ontologies";
+
 /**
  * A Cypher INTEGER (int64) as a JS value — the lossless representation
  * policy (LABS-901): a `number` when the value is exactly representable
@@ -272,7 +275,7 @@ export function float(value: number): CypherFloat;
 export class ResultSummary {
   readonly counters: Stats;
   /** The statement's resolved namespace: "neo4j", "system" or "system_ontologies". */
-  readonly namespace: string;
+  readonly namespace: Namespace;
   /** The plan-time classification. */
   readonly queryType: QueryType;
   /** Engine-reported wall-clock milliseconds for the statement (ADR-0221): parse, plan and run. */
@@ -333,7 +336,7 @@ export class Result {
   /** The 11 mutation counters. */
   readonly stats: Stats;
   readonly queryType: QueryType;
-  readonly namespace: string;
+  readonly namespace: Namespace;
   /** The statement's auto-commit bookmark, or `null` (see ResultSummary). */
   readonly bookmark: string | null;
   /**

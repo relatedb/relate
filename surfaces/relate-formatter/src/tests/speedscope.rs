@@ -229,6 +229,7 @@ fn speedscope_error(plan: Option<&PlanFixture>) -> String {
             column_types: &[],
             row_cap: None,
             plan: plan.map(|fixture| notified_view(&fixture.value, &[], &[], fixture.profiled)),
+            timings: None,
         },
     ) {
         Err(e) => e.to_string(),

@@ -73,12 +73,15 @@ pub(super) struct InsertSeed {
 }
 
 /// What a cache hit resolved to (stage 3's outcome): the shared plan,
-/// its stamp, and the already-built effective parameter map — the caller
-/// merges nothing, clones nothing.
+/// its stamp, the already-built effective parameter map — the caller
+/// merges nothing, clones nothing — and the hit's plan-cache outcome
+/// (LABS-1120): which stage served, and whether the generation check
+/// re-planned.
 pub(super) struct CacheHit {
     pub(super) plan: Arc<LogicalPlan>,
     pub(super) stamp: ResultStamp,
     pub(super) effective: BTreeMap<String, Value>,
+    pub(super) outcome: crate::PlanCacheOutcome,
 }
 
 /// How the plan about to run is charged against the workspace pool.
@@ -147,6 +150,7 @@ impl Connection {
                     Some(handles) => Lookup::Hit(HitPayload {
                         handles,
                         values: Arc::new(values),
+                        stage: crate::PlanCacheOutcome::HitTemplate,
                     }),
                     None => Lookup::Miss(InsertSeed {
                         template: normalized.template,
@@ -173,6 +177,7 @@ impl Connection {
         &self,
         cypher: &str,
         handles: EntryHandles,
+        stage: crate::PlanCacheOutcome,
         values: &[(String, Value)],
         params: &BTreeMap<String, Value>,
     ) -> Result<CacheHit> {
@@ -189,6 +194,11 @@ impl Connection {
             mut plan,
             generation,
         } = handles;
+        // LABS-1120: the outcome starts as the lookup's hit flavor (the
+        // payload's own typed value) and is overwritten only by the
+        // generation check below — the two facts that made this hit what
+        // it is, derived once, here.
+        let mut outcome = stage;
         if generation != current {
             // The store committed since this plan was compiled: the
             // carried AST re-plans against fresh stats, and the entry
@@ -201,6 +211,7 @@ impl Connection {
                 current,
             );
             plan = replanned;
+            outcome = crate::PlanCacheOutcome::ReplanGenerationMismatch;
         }
         // Remember this text and its values: the next identical text
         // resolves through stage 1 without the normalizer pass. The
@@ -215,6 +226,7 @@ impl Connection {
             plan,
             stamp,
             effective,
+            outcome,
         })
     }
 
@@ -263,6 +275,7 @@ impl Connection {
             stamp,
             parse,
             plan: plan_dur,
+            stages: parsed.stages,
             effective,
             pending: PendingCache {
                 template,
@@ -314,6 +327,9 @@ pub(super) struct ParameterizedCompile {
     pub(super) stamp: ResultStamp,
     pub(super) parse: Duration,
     pub(super) plan: Duration,
+    /// The rewritten statement's PARSE fine sub-split (LABS-1120) — the
+    /// compile's own parse, riding like the coarse durations do.
+    pub(super) stages: relate_front::ParseStages,
     pub(super) effective: BTreeMap<String, Value>,
     pub(super) pending: PendingCache,
 }
