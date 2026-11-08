@@ -404,7 +404,14 @@ pub unsafe extern "C" fn relate_params_put_string(
 ) -> relate_status {
     unsafe {
         put(p, name, error_json, |_| {
+            // A NULL buffer with no bytes is the canonical C spelling of the
+            // empty STRING — a marshalling layer may hand a
+            // zero-length buffer over as NULL. Bytes to read at NULL stays
+            // the refusal; an explicit null is `relate_params_put_null`.
             if v.is_null() {
+                if len == 0 {
+                    return value(CypherValue::Str(String::new()));
+                }
                 return Err("null string value".to_string());
             }
             pre_copy_bound(len, "string parameter")?;
