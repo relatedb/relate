@@ -85,3 +85,12 @@ fn test_text_eggs_on_a_terminal() {
     );
     support::assert_pty_driver_ok("pty_eggs_text.py", &[binary, fortunes]);
 }
+
+/// `.explain-art` on a PTY: the flame under truecolor and NO_COLOR, and a
+/// typed refusal (nothing executed) for a write.
+#[cfg(all(feature = "eggs", unix))]
+#[test]
+fn test_explain_art_draws_a_flame_and_refuses_writes_on_a_terminal() {
+    let binary = env!("CARGO_BIN_EXE_relate");
+    support::assert_pty_driver_ok("pty_eggs_explain_art.py", &[binary]);
+}

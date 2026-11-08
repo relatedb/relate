@@ -2384,6 +2384,7 @@ dependencies = [
 name = "relate-eggs"
 version = "0.16.1"
 dependencies = [
+ "libc",
  "relate",
  "tempfile",
 ]

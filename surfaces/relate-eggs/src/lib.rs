@@ -20,6 +20,7 @@
 
 pub mod canvas;
 mod cowsay;
+mod explain_art;
 mod fortune;
 mod graph;
 mod layout;
@@ -72,6 +73,9 @@ pub enum Refusal {
     Usage(&'static str),
     /// Writing to the terminal failed.
     Io(String),
+    /// The egg declined the request, or the engine failed it; carries the
+    /// sentence to show.
+    Declined(String),
 }
 
 impl std::fmt::Display for Refusal {
@@ -79,7 +83,7 @@ impl std::fmt::Display for Refusal {
         match self {
             Refusal::NotUtf8 => write!(f, "this terminal locale is not UTF-8"),
             Refusal::Usage(u) => write!(f, "{u}"),
-            Refusal::Io(e) => write!(f, "{e}"),
+            Refusal::Io(e) | Refusal::Declined(e) => write!(f, "{e}"),
         }
     }
 }
@@ -103,6 +107,7 @@ pub type Entry = (&'static str, Handler);
 /// module beside this file.
 pub const EGGS: &[Entry] = &[
     (".cowsay", cowsay::run),
+    (".explain-art", explain_art::run),
     (".fortune", fortune::run),
     (".graph", graph::run),
     (".lolwut", lolwut::run),

@@ -8,5 +8,8 @@ description = "Hidden REPL dot commands and the Archie banner and prompt glyph f
 [dependencies]
 relate = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
