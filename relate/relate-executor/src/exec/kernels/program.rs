@@ -59,6 +59,19 @@ pub(crate) struct NodeTarget<'a> {
     pub(crate) prog: Prog,
 }
 
+impl NodeTarget<'_> {
+    /// Whether the node admits every node: no label, dynamic label
+    /// expression, property map, inline element `WHERE`, or compiled
+    /// predicate.
+    pub(crate) fn unfiltered(&self) -> bool {
+        self.pattern.labels.is_empty()
+            && self.pattern.label_expr.is_none()
+            && self.pattern.properties.is_none()
+            && self.pattern.where_clause.is_none()
+            && matches!(self.prog, Prog::Bare)
+    }
+}
+
 /// The interned form of a pattern's static label conjunction, resolved
 /// once per stage ([`NodePred::prepare`]): one interner lookup per label,
 /// never per candidate (ADR-0473 — the per-candidate string interning was

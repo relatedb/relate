@@ -45,8 +45,7 @@ use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
 use super::frontier::arms;
 use super::frontier_match::{boundary, boundary_vars, compile_frontier, Consumer};
 use super::frontier_run::{seeds, single_quantified};
-use super::nfa::{FrontierNfa, Pool};
-use super::program::Prog;
+use super::nfa::FrontierNfa;
 
 /// The fold entry, tried first among the `MATCH` folds: `clauses` starts
 /// at the `MATCH` and its `RETURN` follows. `Ok(None)` keeps every other
@@ -95,13 +94,9 @@ pub(crate) fn try_fold_walk_count(
     ) else {
         return Ok(None);
     };
-    let target = contract.target.pattern;
-    let target_unfiltered = target.labels.is_empty()
-        && target.label_expr.is_none()
-        && target.properties.is_none()
-        && target.where_clause.is_none()
-        && matches!(contract.target.prog, Prog::Bare);
-    if contract.pool != Pool::Walk || !target_unfiltered || !deterministic(&contract.nfa) {
+    // The compile layer already declines every non-WALK pool for this
+    // consumer, so only the target filter and determinism are checked.
+    if !contract.target.unfiltered() || !deterministic(&contract.nfa) {
         return Ok(None);
     }
     let ctx = ExecCtx::new(graph, params, cypher_version);
