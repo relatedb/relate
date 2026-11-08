@@ -234,6 +234,30 @@ pub(crate) fn agg_eval(
             };
             agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
         }
+        // Aggregation-transparent single-wrapper positions (LABS-744): every
+        // child folds the group and the wrapper runs over the folded values.
+        // Driven off the canonical child walk (`children` / `map_children`,
+        // which agree on order), so these positions carry no per-variant
+        // field list of their own. The front leaves them open (its
+        // `agg_enter_child` vocabulary is narrower); this is the executor's
+        // classification.
+        Expr::Unary { .. }
+        | Expr::Property { .. }
+        | Expr::IsType { .. }
+        | Expr::IsNormalized { .. }
+        | Expr::ChronoCompare { .. } => {
+            let kids = expr.children();
+            let names: Vec<String> = (0..kids.len()).map(|i| format!("__agg_c{i}")).collect();
+            let children: Vec<(&String, &Expr)> = names.iter().zip(kids).collect();
+            let mut next = 0;
+            let rebuilt = expr.map_children(&mut |_| {
+                let var = Expr::Variable(SmallName::from_name(&names[next]));
+                next += 1;
+                Ok::<_, std::convert::Infallible>(var)
+            });
+            let Ok(rebuilt) = rebuilt;
+            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
+        }
         Expr::Subscript { expr, index } => {
             let mut children = Vec::new();
             let rebuilt = Expr::Subscript {

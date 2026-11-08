@@ -31,6 +31,14 @@ enum NativePlatform {
      */
     static final String OVERRIDE_ENV = "RELATE_LIB";
 
+    /**
+     * The classpath resource directory every bundled native sits under — the
+     * prefix of {@link #resourcePath()}, equal to the jar layout's {@code native}
+     * target path. The one owner of the prefix, so the descriptor and the
+     * jar-layout tests consult it instead of re-spelling {@code "native/"}.
+     */
+    static final String RESOURCE_DIR = "native/";
+
     private final Os os;
     private final Arch arch;
     private final String classifier;
@@ -63,7 +71,7 @@ enum NativePlatform {
 
     /** The classpath resource path of this platform's bundled library. */
     String resourcePath() {
-        return "native/" + key() + "/" + libraryFileName();
+        return RESOURCE_DIR + key() + "/" + libraryFileName();
     }
 
     /** The platform of the running JVM. */

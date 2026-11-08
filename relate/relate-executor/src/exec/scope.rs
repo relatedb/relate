@@ -303,6 +303,21 @@ pub(crate) fn projection_collides_with_internal_names(items: &[Projection]) -> b
         .any(|(index, item)| is_internal_column(&item.output_name(index)))
 }
 
+/// Whether two items resolve to the same output column name.
+///
+/// The front-end's `ColumnNameConflict` check compares parser-level names
+/// (verbatim source text), while [`Projection::output_name`] canonicalizes —
+/// so `n.name` and `` n.`name` `` pass that check yet resolve alike. A path
+/// that writes items over one row by name would collapse them; the match sink
+/// declines such a projection and leaves it to the ordinary projection.
+pub(crate) fn projection_repeats_output_name(items: &[Projection]) -> bool {
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .enumerate()
+        .any(|(index, item)| !seen.insert(item.output_name(index)))
+}
+
 /// The result columns of a `RETURN`/`WITH` item list: the names its `*`
 /// item expands, followed by every non-star item's output name. `star` is
 /// called only when the list has a `*` item, so each caller picks the

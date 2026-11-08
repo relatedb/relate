@@ -1,47 +1,24 @@
 name: Publish releases.json
 
-# Publishes the static release-discovery document consumed by
-# `relate upgrade` / `update` (ADR-0250): the website-root file
-# https://relatedb.ai/releases.json, committed to the
-# root of the `gh-pages` branch. That branch is the website —
-# deploy-pages.yml copies its tree verbatim — and releases.json is
-# pipeline-owned there, like install.sh and wasm/ (gh-pages/MAINTAINING.md);
-# a hand edit is overwritten by the next release. The file is written by
-# this workflow only.
+# Backfill for ADR-0250's release-discovery document, post-gh-pages
+# (ADR-0546): regenerates releases.json from the live release list and
+# attaches it to the latest stable core release's assets (together with
+# install.sh), then pokes relate-web with a repository_dispatch — the same
+# handoff release.yml's publish-releases-json job performs after a release.
+# The website lives in the separate relate-web repository and pulls these
+# files from the release assets; this repo never commits into it.
 #
-# Trigger:
-#   - `workflow_call` — chained from release.yml's `publish-releases-json`
-#     job, which runs after `release-notes` (the agent-written narrative
-#     notes are already prepended to the release body, so releases.json
-#     carries them) and after `create-release` (the asset list is complete).
-#     Chained explicitly because release.yml publishes via
-#     softprops/action-gh-release with the default GITHUB_TOKEN, and GitHub
-#     suppresses downstream workflow runs for GITHUB_TOKEN-triggered events
-#     (ADR-0265) — a `release: published` trigger here would never fire.
-#   - `workflow_dispatch` — manual run: a BACKFILL that regenerates the
-#     document from the existing releases without cutting one (ADR-0250 §6).
-#     Until the first publisher run the file does not exist and `upgrade`
-#     fails with the missing-file error; backfilling the current latest
-#     release with this dispatch clears that transition state.
-#
-# The commit lands on gh-pages and deploy-pages.yml (unchanged — ADR-0250 §1
-# says the tree is copied verbatim) publishes it on its next run, the same
-# path install.sh takes. Pages deploys are paused (2026-11-05, maintainer
-# direction; deploy-pages.yml runs on manual dispatch only): neither a
-# release nor a manual backfill deploys the site anymore, so a commit here
-# goes live only on a manual deploy-pages.yml dispatch.
+# Trigger: workflow_dispatch only (manual backfill). The release pipeline
+# carries its own inline publish-releases-json job; this workflow exists
+# for the transitions the pipeline cannot reach — a release published
+# outside the pipeline, or a relate-web that came into existence after the
+# latest release ran with the poke skipped.
 #
 # The document is a full snapshot recomputed from the live release list on
-# every run (ADR-0250 §6), so a backfill needs no inputs and a re-run for
-# the same tag is idempotent apart from `generated_at`.
+# every run (ADR-0250 §6), so a re-run is idempotent apart from
+# `generated_at`.
+
 on:
-  workflow_call:
-    inputs:
-      tag:
-        description: "Release tag this publish belongs to (commit-message audit trail only; empty on a manual backfill)"
-        required: false
-        type: string
-        default: ""
   workflow_dispatch:
 
 permissions:
@@ -51,77 +28,78 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Serialize publishes: a release run and a manual backfill would both
-    # rewrite releases.json, a conflict push-gh-pages.sh refuses to resolve.
-    # The other gh-pages writers touch other files; the push rebases onto
-    # them. Job-level (not workflow-level) so it holds for both entry paths —
-    # the `workflow_call` chain from release.yml and a manual dispatch.
+    # Shared with release.yml's inline job: both rewrite the same release
+    # asset, a conflict neither resolves.
     concurrency:
       group: publish-releases-json
       cancel-in-progress: false
-
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --only-upgrade -y ca-certificates
           sudo update-ca-certificates --fresh
-          # Post-condition (remediation assurance): the compromised root
-          # must be absent from the rebuilt store -- an on-path attacker
-          # replaying validly-signed metadata could otherwise make the
-          # upgrade a silent no-op behind a green check. A fixed runner
-          # image satisfies this too, so it never false-fails the lane.
           if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
             echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
             exit 1
           fi
-          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      # The generator reads the live release list and writes the whole
-      # document; `main` carries the current script (a backfill dispatch runs
-      # from main as well), and only the script directory is needed — the
-      # sparse-checkout shape of release.yml's install.sh sync job.
-      - name: Checkout main (generator)
-        uses: actions/checkout@v4
+      # The generator from `main` (a backfill runs from main), plus
+      # distribution for install.sh.
+      - uses: actions/checkout@v4
         with:
           ref: main
           sparse-checkout: |
             .github/scripts
+            distribution
 
-      - name: Checkout gh-pages into subdirectory
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: gh-pages
-          fetch-depth: 1
-
-      # Same gh-pages checkout + guarded commit + push-gh-pages.sh shape as
-      # release.yml's install.sh sync job (ADR-0068): the generator writes
-      # straight into the gh-pages checkout, then the commit step below
-      # publishes only that file.
       - name: Generate releases.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: .github/scripts/publish-releases-json.sh gh-pages/releases.json
+        run: .github/scripts/publish-releases-json.sh "$RUNNER_TEMP/releases.json"
 
-      - name: Commit and push releases.json to gh-pages
+      # The document belongs to the newest stable core release (vX.Y.Z —
+      # the ADR-0250 stable shape; extension-channel releases never carry
+      # the core document).
+      - name: Attach releases.json and install.sh to the latest stable release
         env:
-          PUBLISH_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cd gh-pages
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add releases.json
-          if git diff --cached --quiet; then
-            echo "releases.json unchanged; nothing to publish."
+          tag="$(gh release list --limit 100 \
+            --json tagName,isDraft,isPrerelease,publishedAt \
+            -q '[.[] | select((.isDraft|not) and (.isPrerelease|not) and (.tagName|test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] | sort_by(.publishedAt) | reverse | .[0].tagName')"
+          if [ -z "$tag" ]; then
+            echo "::error::no stable core release exists to attach releases.json to"
+            exit 1
+          fi
+          gh release upload "$tag" \
+            "$RUNNER_TEMP/releases.json" distribution/install.sh --clobber
+          echo "attached releases.json and install.sh to $tag"
+
+      # Same poke contract as release.yml: 404 is a stated skip until
+      # relate-web exists; any other non-204 fails the run.
+      - name: Poke relate-web (repository_dispatch)
+        env:
+          DISPATCH_TOKEN: ${{ secrets.RELATE_WEB_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::notice::RELATE_WEB_DISPATCH_TOKEN is not set — skipping the relate-web poke."
             exit 0
           fi
-          if [ -n "${PUBLISH_TAG}" ]; then
-            subject="chore(website): publish releases.json for ${PUBLISH_TAG}"
-          else
-            subject="chore(website): publish releases.json"
-          fi
-          git commit -m "${subject}"
-          ../.github/scripts/push-gh-pages.sh .
+          tag="$(gh release list --limit 100 \
+            --json tagName,isDraft,isPrerelease,publishedAt \
+            -q '[.[] | select((.isDraft|not) and (.isPrerelease|not) and (.tagName|test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] | sort_by(.publishedAt) | reverse | .[0].tagName')"
+          status="$(curl -sS -o "$RUNNER_TEMP/dispatch-body" -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/relatedb/relate-web/dispatches \
+            -d "{\"event_type\":\"relate-release\",\"client_payload\":{\"kind\":\"cli\",\"tag\":\"$tag\"}}")"
+          case "$status" in
+            204) echo "relate-web notified: kind=cli tag=$tag" ;;
+            404) echo "::notice::relatedb/relate-web is not reachable (not created yet, or the token cannot see it) — skipping the poke." ;;
+            *) echo "::error::repository_dispatch to relatedb/relate-web failed with HTTP $status"; cat "$RUNNER_TEMP/dispatch-body"; exit 1 ;;
+          esac

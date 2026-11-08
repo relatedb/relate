@@ -57,9 +57,16 @@ impl<'a> ExecGraph<'a> {
         }
     }
 
-    /// Whether live node `id` carries `label`, compared in place: no label
-    /// list is cloned. `None` when the node is not live.
-    pub(crate) fn node_has_label(&self, id: NodeId, label: &str) -> Option<bool> {
+    /// The one label-check pipeline both entry points run (F-1-13): the
+    /// overlay arm — a scratch-deleted node is not live, a scratch node
+    /// copy answers by string (a write overlay carries label strings,
+    /// which the id comparison cannot serve) — then the base tail with
+    /// the caller's resolved `lid` (`None`: a label the interner never
+    /// saw, so no base node can carry it, but the check still answers
+    /// visibility — `Some(false)` for a visible node, `None` for an
+    /// invisible one, the distinction the per-candidate callers' reads
+    /// rely on).
+    fn label_answer(&self, id: NodeId, label: &str, lid: Option<u32>) -> Option<bool> {
         if let Some(cell) = self.scratch {
             let s = cell.borrow();
             if s.batch.deleted_nodes.contains(&id) {
@@ -69,26 +76,29 @@ impl<'a> ExecGraph<'a> {
                 return Some(n.labels.iter().any(|l| l == label));
             }
         }
-        self.base.node_has_label_at(id, self.snapshot_ts(), label)
+        match lid {
+            Some(lid) => self.base.node_has_label_id_at(id, self.snapshot_ts(), lid),
+            None => self
+                .base
+                .node_visible_at(id, self.snapshot_ts())
+                .then_some(false),
+        }
+    }
+
+    /// Whether live node `id` carries `label`, compared in place: no label
+    /// list is cloned. `None` when the node is not live. The interner
+    /// lookup is the per-statement memo (LABS-1116): one string-keyed
+    /// probe per distinct label per statement, not one per candidate.
+    pub(crate) fn node_has_label(&self, id: NodeId, label: &str) -> Option<bool> {
+        self.label_answer(id, label, self.memo_label_id(label))
     }
 
     /// Whether live node `id` carries the interned label `lid` — the id
     /// twin of [`Self::node_has_label`], for callers that intern their
     /// labels once per stage instead of per candidate (ADR-0473's
-    /// prepared programs). The string stays beside the id for the scratch
-    /// arm: a write overlay's node copy carries label strings, which the
-    /// id comparison cannot serve.
+    /// prepared programs).
     pub(crate) fn node_has_label_id(&self, id: NodeId, lid: u32, label: &str) -> Option<bool> {
-        if let Some(cell) = self.scratch {
-            let s = cell.borrow();
-            if s.batch.deleted_nodes.contains(&id) {
-                return None;
-            }
-            if let Some(n) = s.batch.nodes.get(&id) {
-                return Some(n.labels.iter().any(|l| l == label));
-            }
-        }
-        self.base.node_has_label_id_at(id, self.snapshot_ts(), lid)
+        self.label_answer(id, label, Some(lid))
     }
 
     /// Every live node carrying `label`, ascending: the snapshot's carriers

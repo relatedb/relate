@@ -268,6 +268,21 @@ impl Error {
         Self::InvalidArgumentType(detail.into())
     }
 
+    /// A wrong-typed argument whose detail is the shared 22N01 sentence
+    /// ([`expected_type_detail`]) — the one constructor of that family, so
+    /// callers stop hand-spelling it.
+    pub fn invalid_argument_type_expected(expected: &str, actual: &str) -> Self {
+        Self::invalid_argument_type(expected_type_detail(expected, actual))
+    }
+
+    /// A value outside an argument's domain, with the detail text after the
+    /// pinned `InvalidArgumentValue:` token — the typed counterpart of the
+    /// legacy `Type("InvalidArgumentValue: <detail>")` string, composing
+    /// the token once.
+    pub fn invalid_argument_value(detail: impl Into<String>) -> Self {
+        Self::ty(kind_prefixed(ErrorKind::InvalidArgumentValue, detail))
+    }
+
     /// A boolean-requiring context that received a non-boolean, with the
     /// detail text `<ctx> requires a boolean` — the one constructor of the
     /// ADR-0511 boolean family, so the wording cannot drift between the
@@ -520,6 +535,14 @@ const TYPE_ERROR_PREFIX: &str = "type error";
 /// rejection and the backstop cannot drift apart.
 pub const FUNCTION_REQUIRES_ONE_ARGUMENT: &str =
     "InvalidNumberOfArguments: function requires one argument";
+
+/// The one spelling of the wrong-type sentence the 22N01 argument errors
+/// and the SEARCH validators share. The expected set is the caller's own
+/// signature; the actual type name is the caller's vocabulary
+/// ([`crate::value_type_name`], or a SEARCH source-kind display name).
+pub fn expected_type_detail(expected: &str, actual: &str) -> String {
+    format!("Expected the value to be of type {expected}, but was of type {actual}")
+}
 
 /// [`Error::Type`]'s Display: the shared Type-class prefix and the detail.
 fn type_error_display(detail: &str) -> String {

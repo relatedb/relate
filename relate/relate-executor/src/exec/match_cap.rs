@@ -12,7 +12,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::order::skip_limit_count;
-use super::project::SinkProjection;
+use super::sink::SinkProjection;
 
 /// Stop MATCH once `RETURN/WITH DISTINCT … LIMIT n` has enough distinct keys.
 /// OpenCypher does not specify which rows `LIMIT` keeps without `ORDER BY`.

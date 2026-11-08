@@ -8,16 +8,13 @@
 
 mod common;
 
-use common::connection;
+use common::{connection, notifications_of_kind};
 use relate_model::wire::NotificationKind;
 
-/// The count of one kind in a result's notification list.
+/// The count of one kind in a result's notification list — the shared
+/// filter's length.
 fn count_of(result: &relate::QueryResult, kind: NotificationKind) -> usize {
-    result
-        .notifications()
-        .iter()
-        .filter(|notification| notification.kind() == kind)
-        .count()
+    notifications_of_kind(result, kind).len()
 }
 
 /// LABS-711: a projection `ORDER BY` expression referencing a variable the

@@ -2,6 +2,7 @@
 //! resolved once, picks the searches; each (start, end) partition binds
 //! its selected trails the way the GPM walker does.
 
+use crate::UsedSet;
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell};
 use std::collections::HashSet;
@@ -398,7 +399,7 @@ impl<'a> Route<'a> {
             srow,
             filter,
             trail: Vec::new(),
-            used: HashSet::new(),
+            used: UsedSet::default(),
         };
         for length in self.shape.min..=max {
             self.ctx.graph.cancel_tick()?;
@@ -500,7 +501,7 @@ struct TrailWalk<'r, 'p, 'a> {
     srow: &'r Row,
     filter: &'r PathFilter<'p>,
     trail: Vec<RelId>,
-    used: HashSet<RelId>,
+    used: UsedSet,
 }
 
 impl TrailWalk<'_, '_, '_> {

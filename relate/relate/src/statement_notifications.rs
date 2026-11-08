@@ -71,9 +71,12 @@
 //! complex references), the `CREATE` self-reference, repeated relationship
 //! variables, unsatisfiable relationship type expressions, subquery
 //! variable shadowing, `SEARCH` identifier shadowing, and the
-//! `shortestPath` unbounded/exhaustive cases.
+//! `shortestPath` unbounded/exhaustive cases. The `USING INDEX` /
+//! `USING JOIN ON` hint detectors report each hint no plan can serve
+//! (`01N31`/`01N30`), one row per hint.
 
 mod dynamic_property;
+mod hints;
 mod shape;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -168,7 +171,7 @@ pub(crate) fn statement_notifications(
                 facts.flush_dynamic(&indexes);
             }
             previous_nested = nested;
-            facts.observe_clause(clause, view, nested, params)?;
+            facts.observe_clause(clause, view, nested, params, &indexes)?;
         }
         facts.flush_dynamic(&indexes);
     }
@@ -188,15 +191,17 @@ fn statement_order_key(notification: &Notification) -> (u8, &'static str, &str) 
     )
 }
 
-/// `UNRECOGNIZED` before `DEPRECATION` before `SCHEMA`. Performance kinds
-/// are operator-scoped and never reach this list; ranking them last keeps
-/// the order total and deterministic if a future classification does.
+/// `UNRECOGNIZED` before `DEPRECATION` before `SCHEMA` before `HINT`.
+/// Performance kinds are operator-scoped and never reach this list;
+/// ranking them last keeps the order total and deterministic if a future
+/// classification does.
 fn category_rank(category: NotificationCategory) -> u8 {
     match category {
         NotificationCategory::Unrecognized => 0,
         NotificationCategory::Deprecation => 1,
         NotificationCategory::Schema => 2,
-        NotificationCategory::Performance => 3,
+        NotificationCategory::Hint => 3,
+        NotificationCategory::Performance => 4,
     }
 }
 
@@ -226,6 +231,7 @@ impl Facts {
         view: &ExecGraph<'_>,
         nested: bool,
         params: &BTreeMap<String, relate_core::Value>,
+        indexes: &[IndexFacts],
     ) -> relate_core::Result<()> {
         // Schema DDL notes (`00NA0`-`00NA2`) read the same catalog facts
         // their execution gates read; the executor's one entry dispatches
@@ -238,6 +244,8 @@ impl Facts {
             Clause::Match {
                 patterns,
                 where_clause,
+                using_index,
+                using_join,
                 ..
             } => {
                 for pattern in patterns {
@@ -250,6 +258,10 @@ impl Facts {
                     nested,
                 );
                 self.dynamic.observe_match(patterns, where_clause.as_ref());
+                // The hint kinds have no scope boundary to accumulate
+                // across (each hint is its own clause's own fact), so
+                // they fire here against the statement's index snapshot.
+                hints::observe(&mut self.notifications, using_index, using_join, indexes);
             }
             Clause::With {
                 distinct,

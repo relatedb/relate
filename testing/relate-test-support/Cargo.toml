@@ -75,6 +75,11 @@ vfs_walk = ["dep:relate-storage"]
 # sha256, the verified download and the lock-and-stamp ensure the
 # query-latency data-set fetches use.
 fetch = ["dep:fs4", "dep:sha2", "dep:ureq"]
+# The graph-content helpers (`graph`): the exact-text signature the
+# cross-codec fidelity gates assert on, plus the property-map fixture
+# builder. Pulls the executor's Graph (the in-memory model the signature
+# walks).
+graph = ["dep:relate-executor"]
 # The deterministic synthetic pokec-shaped store (`pokec`): the
 # in-memory fixture the integration, small-perf and validation suites
 # open. Pulls the facade (the population path is the public API, under

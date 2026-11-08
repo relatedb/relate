@@ -2,6 +2,11 @@
 
 Status: Accepted
 
+Later references: ADR-0546 supersedes this ADR's publisher contract
+(commits to a local `gh-pages` branch) — releases.json now rides the
+release's assets and relate-web pulls it. The schema, the canonical URLs,
+and the window rule are unchanged.
+
 ## Context
 
 `cypherlite upgrade` (and its `update` alias) discovers the latest release

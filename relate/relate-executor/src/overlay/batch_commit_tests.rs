@@ -2,7 +2,7 @@
 //! ops to the sink and rebases the scratch, and a failed batch restores
 //! the pre-batch scratch.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::ExecGraph;
@@ -11,27 +11,31 @@ use crate::graph::Graph;
 use crate::redo::RedoOp;
 use relate_core::Result;
 
+/// The overlay seam's one `BatchCommit` test double (F-1-27): applies the
+/// batch's redo ops to the base graph at the next commit ts and counts
+/// its calls. Shared by this module's batch tests and the label-memo
+/// pollution test (`label_memo_tests`), which reads only the apply half
+/// — one double, never a stripped second copy.
+pub(crate) struct ApplySink<'a> {
+    pub(crate) graph: &'a Graph,
+    pub(crate) calls: AtomicUsize,
+}
+
+impl crate::ctx::BatchCommit for ApplySink<'_> {
+    fn commit_batch(&self, ops: Vec<RedoOp>, _snapshot_ts: u64) -> Result<u64> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let commit_ts = self.graph.commit_ts() + 1;
+        self.graph.apply_redo(ops, commit_ts)?;
+        Ok(commit_ts)
+    }
+}
+
 /// ADR-0210: `ExecGraph::commit_batch` hands the batch's redo ops to the
 /// sink, rebases the scratch onto the new commit timestamp, and preserves
 /// the accumulated statement stats; a call with no new ops is a no-op
 /// (the sink is not called again).
 #[test]
 fn commit_batch_applies_ops_and_rebases_scratch() {
-    use std::sync::atomic::AtomicUsize;
-
-    struct ApplySink<'a> {
-        graph: &'a Graph,
-        calls: AtomicUsize,
-    }
-    impl crate::ctx::BatchCommit for ApplySink<'_> {
-        fn commit_batch(&self, ops: Vec<RedoOp>, _snapshot_ts: u64) -> Result<u64> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            let commit_ts = self.graph.commit_ts() + 1;
-            self.graph.apply_redo(ops, commit_ts)?;
-            Ok(commit_ts)
-        }
-    }
-
     let g = Graph::default();
     let scratch = write_scratch(&g);
     exec_write(&g, &scratch, "CREATE (:Person {name: 'Ada'})").unwrap();

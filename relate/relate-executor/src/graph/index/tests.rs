@@ -206,3 +206,37 @@ fn schema_presence_reads_never_false_positive_an_absent_name() {
     assert!(g.has_property_key("merge_key"));
     assert!(!g.has_property_key("never_written"));
 }
+
+/// LABS-1116: a chain the GC collected leaves no hops behind — adjacency
+/// stops offering a rel whose version map entry is gone, instead of
+/// paying a `rels` map miss per ghost hop on every later scan. Asserted
+/// through the UNFILTERED adjacency (`degree_out`/`degree_in`): the
+/// visibility-filtered walks would pass on the pre-fix tree too, because
+/// the per-hop probe already hides a hop whose version is gone.
+#[test]
+fn gc_prunes_the_adjacency_hops_of_collected_chains() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(vec!["A".into()], BTreeMap::new()).unwrap();
+    let b = g.create_node(vec!["A".into()], BTreeMap::new()).unwrap();
+    let rid = g.create_rel(a, b, "R".into(), BTreeMap::new()).unwrap();
+    g.commit_write();
+    g.begin_write().unwrap();
+    g.delete_rel(rid);
+    g.commit_write();
+    // The tombstoned chain is collectable at the unpinned horizon; the
+    // hops go with it.
+    g.gc_versions();
+    assert!(!g.rel_exists(rid));
+    assert!(
+        g.degree_out(a).is_empty(),
+        "the collected rel's out-hop must leave the unfiltered adjacency"
+    );
+    assert!(
+        g.degree_in(b).is_empty(),
+        "the collected rel's in-hop must leave the unfiltered adjacency"
+    );
+    // The empty-chunk contract (F-1-23): the removed last hop drops its
+    // chunk, so the chunk enumeration reports no phantom.
+    assert!(g.out_chunks(a).is_empty());
+}

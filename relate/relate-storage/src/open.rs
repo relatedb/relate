@@ -10,17 +10,21 @@ use crate::snapshot::{self, LoadedSnapshot};
 use crate::wal::Wal;
 use crate::{codec, version, SnapshotCodecKind, StoreTarget};
 
-/// The codec vocabulary's one behavioral surface on the open path: which
-/// loader reads the snapshot, what the codec does at the open tail — the
-/// dirty-WAL guard plus the load's deferred open-time action — and
-/// whether it sweeps orphaned store objects after open. One fn table per
-/// codec ([`codec_ops`]), so a codec's open behavior is spelled once
-/// instead of one arm bolted onto every dispatch the open walk passes;
-/// a fourth codec lands in that table alone.
-struct CodecOpenOps {
-    load: fn(&StoreTarget) -> Result<LoadedSnapshot>,
-    finish_open: fn(&StoreTarget, u64, u64, Option<snapshot::DeferredOpenAction>) -> Result<()>,
-    sweep_after_open: fn(&StoreTarget) -> Result<()>,
+/// The codec vocabulary's one behavioral surface: which loader reads the
+/// snapshot, what the codec does at the open tail — the dirty-WAL guard
+/// plus the load's deferred open-time action — whether it sweeps orphaned
+/// store objects after open, how it writes a checkpoint, and how it sizes
+/// its snapshot objects. One fn table per codec ([`codec_ops`]), so a
+/// codec's behavior is spelled once instead of one arm bolted onto every
+/// dispatch the open walk, the write path and the sizing path pass; a
+/// new codec lands in that table alone.
+pub(crate) struct CodecOps {
+    pub(crate) load: fn(&StoreTarget) -> Result<LoadedSnapshot>,
+    pub(crate) finish_open:
+        fn(&StoreTarget, u64, u64, Option<snapshot::DeferredOpenAction>) -> Result<()>,
+    pub(crate) sweep_after_open: fn(&StoreTarget) -> Result<()>,
+    pub(crate) dump: fn(&StoreTarget, &Graph, u64, u64, Option<&str>) -> Result<()>,
+    pub(crate) snapshot_data_bytes: fn(&StoreTarget) -> Result<u64>,
 }
 
 /// The classic codecs' open-tail default: no dirty-WAL window (their
@@ -42,26 +46,48 @@ fn nothing_to_sweep(_target: &StoreTarget) -> Result<()> {
     Ok(())
 }
 
-/// The one codec → open-ops mapping: Parquet overrides the sweep (it
-/// retires objects its newest manifest orphaned, ADR-0089), markdown
-/// overrides the open tail (the dirty-WAL guard and the deferred
-/// re-baseline, ADR-0406 §5), and every codec names its own loader.
-fn codec_ops(codec: SnapshotCodecKind) -> CodecOpenOps {
+/// The one codec → ops mapping: Parquet overrides the sweep (it retires
+/// objects its newest manifest orphaned, ADR-0089), markdown overrides the
+/// open tail (the dirty-WAL guard and the deferred re-baseline, ADR-0406
+/// §5), and every codec names its own loader, writer and sizer — an
+/// uncompiled codec's stub module fails closed, so the table needs no cfg
+/// arms.
+pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
     match codec {
-        SnapshotCodecKind::Parquet => CodecOpenOps {
+        SnapshotCodecKind::Parquet => CodecOps {
             load: snapshot::load_with_checkpoint_lsn,
             finish_open: admit_every_replay,
             sweep_after_open: snapshot::sweep_orphans,
+            dump: snapshot::checkpoint_at,
+            snapshot_data_bytes: snapshot::snapshot_data_bytes,
         },
-        SnapshotCodecKind::Json => CodecOpenOps {
+        SnapshotCodecKind::Json => CodecOps {
             load: codec::json::load_with_checkpoint_lsn,
             finish_open: admit_every_replay,
             sweep_after_open: nothing_to_sweep,
+            dump: codec::json::dump,
+            snapshot_data_bytes: codec::json::snapshot_data_bytes,
         },
-        SnapshotCodecKind::Markdown => CodecOpenOps {
+        SnapshotCodecKind::Markdown => CodecOps {
             load: codec::markdown::load_with_checkpoint_lsn,
             finish_open: codec::markdown::finish_open,
             sweep_after_open: nothing_to_sweep,
+            dump: codec::markdown::checkpoint_at,
+            snapshot_data_bytes: codec::markdown::snapshot_data_bytes,
+        },
+        SnapshotCodecKind::Rkyv => CodecOps {
+            load: codec::rkyv::load_with_checkpoint_lsn,
+            finish_open: admit_every_replay,
+            sweep_after_open: nothing_to_sweep,
+            dump: codec::rkyv::dump,
+            snapshot_data_bytes: codec::rkyv::snapshot_data_bytes,
+        },
+        SnapshotCodecKind::Fjall => CodecOps {
+            load: codec::fjall::load_with_checkpoint_lsn,
+            finish_open: admit_every_replay,
+            sweep_after_open: nothing_to_sweep,
+            dump: codec::fjall::dump,
+            snapshot_data_bytes: codec::fjall::snapshot_data_bytes,
         },
     }
 }

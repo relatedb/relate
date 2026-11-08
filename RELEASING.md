@@ -19,7 +19,8 @@ Or from the browser: **Actions → Release → Run workflow → choose `bump`**
 
 The version is derived from the existing `v*` git tags plus the chosen bump,
 not from the workspace version. The first ever run (no `v*` tags yet)
-produces `v0.4.0` regardless of the bump choice.
+produces `v0.1.0` regardless of the bump choice — the first release cut
+from this repository; the cypherlite-era tags never came across.
 
 ## What the run does, in order
 
@@ -48,15 +49,20 @@ produces `v0.4.0` regardless of the bump choice.
    (see [Signing key](#signing-key), [ADR-0115](docs/adr/0115-sshsig-release-signing.md)).
 6. **GitHub release** — the release is created for the tag with all artifacts,
    `SHA256SUMS`, `SHA256SUMS.sig`, and generated release notes.
-7. **Website release files** — `update-website.yml` syncs the site, and the
-   `publish-releases-json` job rewrites
-   `https://relatedb.ai/releases.json` — the
-   release-discovery document `relate upgrade` / `update` reads — from
-   the live release list, after the release notes have been prepended to the
-   release body ([ADR-0250](docs/adr/0250-releases-json-update-discovery.md)).
-   A manual run of the **Publish releases.json** workflow regenerates it
-   without cutting a release; use that to backfill after a release published
-   outside this pipeline (e.g. a hand-cut `gh release create`).
+7. **Release discovery files** — the `publish-releases-json` job regenerates
+   `releases.json` — the release-discovery document `relate upgrade` /
+   `update` reads
+   ([ADR-0250](docs/adr/0250-releases-json-update-discovery.md)) — from the
+   live release list after the release notes have been prepended to the
+   release body, attaches it and `install.sh` to the release's assets, and
+   pokes the `relate-web` repository with a `repository_dispatch`
+   (`{kind: cli, tag}`) to pull and serve them at
+   `https://relatedb.ai/...` ([ADR-0546](docs/adr/0546-release-discovery-via-relate-web.md)).
+   The poke skips with a notice while `relate-web` is not ready (no
+   `RELATE_WEB_DISPATCH_TOKEN` secret, or the repository does not answer);
+   a manual run of the **Publish releases.json** workflow re-attaches the
+   files and re-fires the poke — use that to backfill after a release
+   published outside this pipeline (e.g. a hand-cut `gh release create`).
 8. **Self-update smoke** — the `self-update-smoke` job runs
    [`.github/scripts/self-update-smoke.sh`](.github/scripts/self-update-smoke.sh):
    it downloads the previous stable release's `relate-linux-amd64`
@@ -65,17 +71,15 @@ produces `v0.4.0` regardless of the bump choice.
    `relate upgrade` on that isolated copy, and asserts the
    upgraded copy reports the new version — the live self-update path a real
    user rides (`releases.json`, release asset, upgrade), proven end to end.
-   It runs after the `deploy-pages` job — the website deploy is a job of
-   its own, not one of these numbered steps: nothing is served until it
-   deploys gh-pages
-   ([ADR-0330](docs/adr/0330-release-chains-pages-deploy.md)) — because
-   the inner upgrade reads the live `releases.json`, which must already
-   list the new version as latest. Two cases skip with a stated reason
-   and exit 0 instead of failing: no previous stable release (the
-   expected release is the first stable release ever), and a previous
-   release older than the `v0.12.6` floor (the first release carrying
-   the API-fallback route), which cannot self-update while the repository
-   is internal ([ADR-0358](docs/adr/0358-upgrade-download-route.md)).
+   The inner upgrade reads the live `releases.json`, which the relate-web
+   deploy must already serve with the new version as latest; while the
+   site lags the release list the smoke skips with a stated reason
+   (the live-site currency gate). Two more cases skip the same way: no
+   previous stable release (the expected release is the first stable
+   release ever), and a previous release older than the `v0.12.6` floor
+   (the first release carrying the API-fallback route), which cannot
+   self-update while the repository is internal
+   ([ADR-0358](docs/adr/0358-upgrade-download-route.md)).
 
 PyPI publishing is intentionally not wired up yet — the Python wheels and
 sdist ship as GitHub release assets only.
@@ -104,7 +108,9 @@ gh workflow run release-extensions.yml -f package=fs-to-graph
 Each dispatch builds the package for the four channel platforms, signs and
 notarizes the darwin executables, packs the tarballs, tags
 `relate-extensions-<name>-<X.Y.Z>`, cuts the release, then chains the
-signed-index publish and the website deploy — see
+signed-index publish — the signed `extensions.json` pair rides the
+extension release's assets and relate-web is poked to pull it
+([ADR-0546](docs/adr/0546-release-discovery-via-relate-web.md)) — see
 [the channel and its publisher](docs/api/extensions/spec.md#the-channel-and-its-publisher).
 
 **A CLI release that ships extension-system or importer changes must
@@ -182,8 +188,9 @@ signs can be trusted.
 1. Generate the new keypair and update the secret (first-time setup, steps 1–3).
 2. Update the pinned public key in all three places on `main`:
    `distribution/release-signing-key.pub`, `upgrade_cmd.rs`, and `install.sh`.
-3. Cut a release. It signs `SHA256SUMS` with the new key, and its `docs` job
-   publishes the updated `install.sh` to gh-pages; until that release runs the
+3. Cut a release. It signs `SHA256SUMS` with the new key, and its
+   `publish-releases-json` job attaches the updated `install.sh` to the
+   release's assets for relate-web to serve; until that release runs the
    published installer still carries the old key.
 4. A binary installed before the rotation pins the old key, so its
    `relate upgrade` fails closed against a new-key signature — reinstall via

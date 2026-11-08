@@ -9,7 +9,7 @@
 //! (not three review-coordinated layers).
 
 use super::notification_wire::NotificationKind;
-use super::plan_wire::plan_keys;
+use super::plan_keys;
 
 /// The typed warnings vocabulary's wire name, by variant — the one
 /// spelling the engine's detection serializes into the wire form and

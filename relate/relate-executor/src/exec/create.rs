@@ -87,19 +87,11 @@ pub(crate) fn resolve_create_patterns(
                     cypher_version,
                 )?));
             }
-            if let Some(labels) = &node.label_expr {
-                let labels =
-                    resolve_creation_labels(graph, row, params, Some(labels), cypher_version)?;
-                // The resolved (String, interner-facing) label list enters
-                // the IR pattern's name fields here, classified once.
-                let labels: Vec<_> = labels
-                    .iter()
-                    .map(|label| SmallName::from_name(label.as_str()))
-                    .collect();
-                node.labels = labels.clone();
-                node.label_expr = Some(LabelExpr::And(
-                    labels.into_iter().map(LabelExpr::Label).collect(),
-                ));
+            if let Some((labels, label_expr)) =
+                resolve_element_names(graph, row, params, node.label_expr.as_ref(), cypher_version)?
+            {
+                node.labels = labels;
+                node.label_expr = Some(label_expr);
             }
         }
         for rel in &mut path.rels {
@@ -112,21 +104,42 @@ pub(crate) fn resolve_create_patterns(
                     cypher_version,
                 )?));
             }
-            if let Some(types) = &rel.type_expr {
-                let types =
-                    resolve_creation_labels(graph, row, params, Some(types), cypher_version)?;
-                let types: Vec<_> = types
-                    .iter()
-                    .map(|ty| SmallName::from_name(ty.as_str()))
-                    .collect();
-                rel.types = types.clone();
-                rel.type_expr = Some(LabelExpr::And(
-                    types.into_iter().map(LabelExpr::Label).collect(),
-                ));
+            if let Some((types, type_expr)) =
+                resolve_element_names(graph, row, params, rel.type_expr.as_ref(), cypher_version)?
+            {
+                rel.types = types;
+                rel.type_expr = Some(type_expr);
             }
         }
     }
     Ok(patterns)
+}
+
+/// The CREATE element's one name-vocabulary resolve-and-rebuild (F-1-9):
+/// resolve a node's label (or a rel's type) expression once into the
+/// interner-facing names, returning the classified name list plus the
+/// rebuilt static conjunction — the block the node and rel loops of
+/// [`resolve_create_patterns`] each spelled inline. `None` leaves an
+/// element without an expression untouched.
+fn resolve_element_names(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    expr: Option<&LabelExpr>,
+    cypher_version: Option<u32>,
+) -> Result<Option<(Vec<SmallName>, LabelExpr)>> {
+    let Some(expr) = expr else {
+        return Ok(None);
+    };
+    let names = resolve_creation_labels(graph, row, params, Some(expr), cypher_version)?;
+    // The resolved (String, interner-facing) label list enters the IR
+    // pattern's name fields here, classified once.
+    let names: Vec<_> = names
+        .iter()
+        .map(|name| SmallName::from_name(name.as_str()))
+        .collect();
+    let rebuilt = LabelExpr::And(names.iter().cloned().map(LabelExpr::Label).collect());
+    Ok(Some((names, rebuilt)))
 }
 
 pub(crate) fn patterns_have_graph_sensitive_expr(patterns: &[PathPattern]) -> bool {

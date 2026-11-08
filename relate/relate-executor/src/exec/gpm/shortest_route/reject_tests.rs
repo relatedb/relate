@@ -2,7 +2,8 @@
 //! enumerate-then-select: the guard rejects them, the route neither runs
 //! nor expands, and the rows are those of the GPM route.
 
-use std::collections::{BTreeMap, HashSet};
+use crate::UsedSet;
+use std::collections::BTreeMap;
 
 use relate_core::Value;
 use relate_front::parse_and_lower;
@@ -39,7 +40,7 @@ fn guard_accepts(cypher: &str) -> bool {
     let g = Graph::default();
     let view = crate::overlay::ExecGraph::read(&g);
     let filters = GpmFilters::resolve(&view, &path);
-    route_shape(&path, &filters, mode, &HashSet::new(), &Row::new()).is_some()
+    route_shape(&path, &filters, mode, &UsedSet::default(), &Row::new()).is_some()
 }
 
 /// `q` is rejected by the guard, neither runs nor expands on the route, and
@@ -158,8 +159,8 @@ fn non_empty_used_set_or_bound_variables_reject() {
     let g = Graph::default();
     let view = crate::overlay::ExecGraph::read(&g);
     let filters = GpmFilters::resolve(&view, &path);
-    assert!(route_shape(&path, &filters, mode, &HashSet::new(), &Row::new()).is_some());
-    assert!(route_shape(&path, &filters, mode, &HashSet::from([7]), &Row::new()).is_none());
+    assert!(route_shape(&path, &filters, mode, &UsedSet::default(), &Row::new()).is_some());
+    assert!(route_shape(&path, &filters, mode, &UsedSet::from_iter([7]), &Row::new()).is_none());
     assert!(!guard_accepts(
         "MATCH p = SHORTEST GROUP (a)-[r*]->(b) RETURN p"
     ));
@@ -173,7 +174,7 @@ fn non_empty_used_set_or_bound_variables_reject() {
     ] {
         let row = Row::from([(var.to_string(), value)]);
         assert!(
-            route_shape(&path, &filters, mode, &HashSet::new(), &row).is_none(),
+            route_shape(&path, &filters, mode, &UsedSet::default(), &row).is_none(),
             "{var}"
         );
     }

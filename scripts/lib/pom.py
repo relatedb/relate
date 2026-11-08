@@ -20,6 +20,8 @@ style, and every other byte of the file survive untouched — ElementTree
 serialization would drop the pom's comments.
 """
 
+from __future__ import annotations
+
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -29,7 +31,7 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _project_version_element(root) -> object:
+def _project_version_element(root: ET.Element) -> ET.Element | None:
     if _local(root.tag) != "project":
         raise SystemExit(f"pom.py: root element is <{ _local(root.tag) }>, not <project>")
     for child in root:
@@ -40,9 +42,12 @@ def _project_version_element(root) -> object:
 
 def main(argv):
     usage = "usage: pom.py get <pom> | pom.py set <pom> <version>"
+    # Read the verb behind an arity guard so the one usage check below can
+    # test it without indexing past the end of argv.
+    verb = argv[1] if len(argv) > 1 else None
     if not (
-        (argv[1] == "get" and len(argv) == 3)
-        or (argv[1] == "set" and len(argv) == 4)
+        (verb == "get" and len(argv) == 3)
+        or (verb == "set" and len(argv) == 4)
     ):
         raise SystemExit(usage)
     pom = argv[2]
@@ -57,7 +62,7 @@ def main(argv):
         return 1
     old = element.text.strip()
 
-    if argv[1] == "get":
+    if verb == "get":
         print(old)
         return 0
 

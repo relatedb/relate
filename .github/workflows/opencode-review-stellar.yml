@@ -42,6 +42,13 @@ jobs:
       prompt_header: opencode-review-stellar.md
       job_name: stellar
       pipeline: scripted
+      # 25 over the default 15: the squash-and-force-push workflow (one
+      # amended commit per fix round) makes the ledger's last_head a
+      # non-ancestor of every new head, so each round falls back to
+      # file-level scope with the full resolution-check backlog — a
+      # 15-minute cap times the model out before findings.json lands
+      # (observed on PR #44, three consecutive forced-fail timeouts).
+      review_timeout_minutes: 25
     secrets:
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
       # Model overrides (ADR-0302) forwarded to the reusable workflow.

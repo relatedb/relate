@@ -32,7 +32,7 @@ r.plan           // PlanDocument? (relate.plan/v1)
 r.bookmark       // String?, the auto-commit write's bookmark (ADR-0502)
 r.elapsedMs      // engine time; r.parseMs / r.planMs / r.executeMs — its
                 // phase split (ADR-0491), sum never exceeding the total
-try conn.transaction { tx in try tx.query("CREATE (:A)") }  // rollback on throw
+try conn.transaction { tx in try tx.query("CREATE (:A)") }  // rollback on throw (body or commit)
 try db.checkpoint()
 ```
 

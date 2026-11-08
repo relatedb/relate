@@ -10,35 +10,38 @@
 //! binder ([`super::named_path::bind_named_path`]) lives beside its one
 //! caller in `named_path`, so this driver's reads stay strictly downward.
 
-use std::collections::HashSet;
-
-use relate_core::{RelId, Result};
+use relate_core::Result;
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
-use crate::ctx::ExecCtx;
+use crate::ctx::{ExecCtx, KernelRung};
 use crate::eval::candidate_passes;
 use crate::row::{Row, RowRung};
+use crate::UsedSet;
 
 use super::batch::try_scan_filter_batch;
 use super::hub_join::try_hub_join;
 use super::kernels;
 use super::one_path::{match_one_path, PathFilters};
 use super::pattern_policies::{MatchReduce, MatchTail};
-use super::project::{finish_match_row, SinkProjection};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
+use super::sink::{finish_match_row, SinkProjection};
 
-/// Which operator took one `MATCH` clause down the ladder — the
-/// dispatcher's PROFILE `batched` fact (ADR-0468) reports the batch
-/// chain; the kernel and the row loop report unbatched.
+/// Which operator took one `MATCH` clause down the ladder — the one
+/// operator-state vocabulary (LABS-1117). The two facts the dispatcher
+/// records project from this single value: [`MatchOperator::BatchChain`]
+/// is the ADR-0468 `batched` fact, and [`MatchOperator::Rung`] carries
+/// the clause's `KernelRung` (the walker included). The ladder returns
+/// it, so a nested evaluation cannot contribute or overwrite one.
+#[derive(Clone, Copy)]
 pub(crate) enum MatchOperator {
     /// ADR-0468 (LABS-359): the batch scan/filter/project chain over
     /// `Chunk`.
     BatchChain,
-    /// ADR-0473 (LABS-644): a contracted traversal kernel.
-    Kernel,
-    /// This module's per-row `match_clause` — every decline's home.
-    Walker,
+    /// The traversal rung that served the clause: a contracted kernel
+    /// (ADR-0473), the frontier rung (ADR-0478), or the per-row walker
+    /// (every decline's home).
+    Rung(KernelRung),
 }
 
 /// Run one `MATCH` clause the folds declined down the operator ladder:
@@ -88,7 +91,7 @@ pub(crate) fn run_match_operator_ladder(
         suffix,
         projection,
     )? {
-        return Ok((rows, MatchOperator::Kernel));
+        return Ok((rows, MatchOperator::Rung(KernelRung::FrontierNfa)));
     }
     // The one cap classification both rungs below read: the plain cap's
     // want, `Some` only for a plain cap. The gate admits the clause on
@@ -122,9 +125,11 @@ pub(crate) fn run_match_operator_ladder(
     if let Some(rows) = batched {
         return Ok((rows, MatchOperator::BatchChain));
     }
-    if let Some(rows) = kernaled {
-        return Ok((rows, MatchOperator::Kernel));
+    if let Some((rows, rung)) = kernaled {
+        return Ok((rows, MatchOperator::Rung(rung)));
     }
+    // Every rung above declined: the walker is this clause's rung, and
+    // the ladder's return value carries it (LABS-1117).
     Ok((
         match_clause(
             ctx,
@@ -136,7 +141,7 @@ pub(crate) fn run_match_operator_ladder(
             cap.as_mut(),
             projection,
         )?,
-        MatchOperator::Walker,
+        MatchOperator::Rung(KernelRung::Walker),
     ))
 }
 
@@ -279,7 +284,7 @@ pub(crate) fn match_paths(
     // for a join that cannot engage.
     let hub_join = patterns.len() == 2;
     let base = hub_join.then(|| row.clone());
-    let mut current = vec![(row, HashSet::<RelId>::new())];
+    let mut current = vec![(row, UsedSet::default())];
     let account = relate_core::tokens::workspace_accounting();
     let mut batch = relate_core::tokens::WorkspaceCharge::retain_with(|| {
         crate::workspace::binding_bytes(&current)
@@ -334,8 +339,11 @@ pub(crate) fn match_paths(
         // The shortest-path function's used-set restore is pattern-level,
         // like the tail (F-1-11): only patterns before the last restore
         // the entering row's set, so the predicate is decided once per
-        // pattern and the common case clones nothing per row.
-        let keep_used = p.is_shortest_path_function && !last_pat;
+        // pattern and the common case clones nothing per row. The carry
+        // half reads the tail (F-1-14) — the one spelling of the
+        // carry-or-drop decision ([`MatchTail::store_row`]'s), never a
+        // second `!last_pat` encoding that must stay hand-in-sync with it.
+        let keep_used = p.is_shortest_path_function && matches!(tail, MatchTail::Carry);
         // LABS-801: the pattern's rel-type filters resolve once per
         // pattern, here at the pattern tier beside the tail — never per
         // row of the loop below.
@@ -348,7 +356,7 @@ pub(crate) fn match_paths(
             let prior_used = keep_used.then(|| used.clone());
             let seed_used =
                 if match_mode == MatchMode::RepeatableElements || p.is_shortest_path_function {
-                    HashSet::new()
+                    UsedSet::default()
                 } else {
                     used
                 };

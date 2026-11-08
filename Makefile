@@ -32,12 +32,8 @@ help:
 	@echo ""
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /'
 	@echo ""
-	@echo "In-tree gates"
-	@echo "  make baseline         freeze Relate surface + loadtest summaries"
-	@echo "  make gate             lint, tests, fraud-loadtest compare"
-	@echo "  make fraud-loadtest / identity-loadtest / fraud-checkpoint / memory-shape-loadtest / processing-memory-loadtest"
+	@echo "In-tree loadtests default to Docker 2 vCPU / 2 GB (ADR-0070):"
 	@echo "  make memory-shape-loadtest LOGICAL_MB=32 MEMORY_SHAPE_MEMORY=2g ATTRIBUTES=1 TEXT_INDEXES=0 POINT_INDEXES=0 RANGE_INDEXES=0"
-	@echo "  (in-tree loadtests default to Docker 2 vCPU / 2 GB — ADR-0070)"
 
 ## build: Build the relate binary (release)
 build:
@@ -199,13 +195,11 @@ baseline: baseline-relate baseline-loadtests
 
 ## baseline-relate: Run Relate main surface tests (test, python, doc-examples)
 baseline-relate:
-	mkdir -p $(BASELINES)
 	$(MAKE) test
 	$(MAKE) install-python
 	$(MAKE) test-python
 	$(MAKE) build
 	RELATE_BIN=$(CURDIR)/target/release/relate bash $(CURDIR)/scripts/check-doc-examples.sh
-	$(PYTHON) -c "import json,pathlib; p=pathlib.Path('$(BASELINES)/relate-surface.json'); p.write_text(json.dumps({'source':'$(CURDIR)','jobs':['test','test-python','check-doc-examples'],'ci_only':['notebook'],'status':'ok'}, indent=2)+'\n')"
 
 ## baseline-loadtests: Freeze fraud, identity, checkpoint, memory-shape, query-latency (Docker env; ADR-0070, ADR-0245)
 baseline-loadtests:
@@ -296,10 +290,6 @@ render-loadtest-comparison:
 gate:
 	$(MAKE) lint
 	$(MAKE) test
-	cargo test \
-		-p relate-core -p relate-catalog -p relate-error \
-		-p relate-ir -p relate-front -p relate-planner \
-		-p relate-executor -p relate-storage -p relate
 	$(MAKE) test-compare-loadtest
 	@if [ -f $(BASELINES)/fraud-loadtest.json ]; then $(MAKE) compare-loadtests; else echo "gate: loadtest baselines missing; run make baseline-loadtests"; exit 1; fi
 	@if [ -f $(CURDIR)/target/query-latency/report-graph-benchmark-ldbc-sf$(SF).json ]; then $(MAKE) compare-query-latency; else echo "gate: query-latency report missing (make query-latency); the envelope skip is compare-query-latency's own"; fi
@@ -614,10 +604,22 @@ test-bolt-compat-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_bolt_compat_probe.py
 
 ## test-release-scripts: Unit-test the release sweep's version-token rule
-##   (scripts/version_tokens.py) that scripts/release-bump.sh runs
+##   (scripts/version_tokens.py) and the CHANGELOG rotation
+##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
+##   and the bump script end to end (first-release and steady-state paths)
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
+	sh $(CURDIR)/scripts/tests/test_release_bump.sh
+	sh $(CURDIR)/scripts/tests/test_toml_sh.sh
+
+## test-front-bench-scripts: Unit-test the front-bench statement corpus
+##   builder (scripts/front_bench_corpus.py): the Gherkin walk's container
+##   sink, the doc-string dedent (textwrap.dedent parity), the semicolon
+##   splitter, the keyword filter, and the one dedupe pass
+test-front-bench-scripts:
+	$(PYTHON) $(CURDIR)/scripts/tests/test_front_bench_corpus.py
 
 ## test-install-sh: Offline stub-curl harness for distribution/install.sh
 test-install-sh:
@@ -657,7 +659,8 @@ test-stamp-swift-package:
 ##   runs a scripts/tests suite hangs off this list)
 test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
-	test-release-scripts test-stamp-swift-package test-makefile-targets
+	test-release-scripts test-front-bench-scripts test-stamp-swift-package \
+	test-makefile-targets
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 

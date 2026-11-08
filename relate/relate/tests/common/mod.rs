@@ -140,6 +140,21 @@ pub fn kinds(result: &relate::QueryResult) -> Vec<relate_model::wire::Notificati
         .collect()
 }
 
+/// The result's notifications of `kind`, in list order — the one
+/// filter-by-kind spelling the notification test files share (Relate may
+/// warn more than Neo4j, so tests assert on their target kind, never on
+/// the whole list).
+pub fn notifications_of_kind(
+    result: &relate::QueryResult,
+    kind: relate_model::wire::NotificationKind,
+) -> Vec<&relate::Notification> {
+    result
+        .notifications()
+        .iter()
+        .filter(|notification| notification.kind() == kind)
+        .collect()
+}
+
 /// Whether the result carries a notification of `kind` — the typed predicate
 /// the notification test files share. The vocabulary is a typed enum
 /// (ADR-0363), so tests discriminate by kind rather than by wire code.
@@ -147,10 +162,7 @@ pub fn has_notification(
     result: &relate::QueryResult,
     kind: relate_model::wire::NotificationKind,
 ) -> bool {
-    result
-        .notifications()
-        .iter()
-        .any(|notification| notification.kind() == kind)
+    !notifications_of_kind(result, kind).is_empty()
 }
 
 /// The first node with the given operator name, pre-order — the shared
@@ -599,6 +611,20 @@ pub fn assert_checkpoint_format(
                 "ontology",
                 expected,
                 "the sidecar manifest carries no ontology field",
+            );
+        }
+        // The experimental codecs' image is the plain codec manifest: the
+        // format marker (classifying against the manifest's own ontology
+        // flag, ADR-0120 §8) plus the checkpoint theater. The ontology
+        // document rides the codec payload, so the image never carries it.
+        relate_storage::SnapshotCodecKind::Rkyv | relate_storage::SnapshotCodecKind::Fjall => {
+            assert_eq!(image["format_version"], if held { 4 } else { 3 });
+            assert_eq!(image["has_ontology"], held);
+            assert_ontology(
+                &image,
+                "ontology",
+                ExpectedOntology::Absent,
+                "the experimental codec manifest carries no ontology document",
             );
         }
     }

@@ -146,6 +146,14 @@ impl PlanNode {
                 Value::Int(wire::metric_i64(peak.peak_logical_bytes as u128)),
             );
         }
+        // LABS-1117: the store's static pattern-engine rung on a MATCH
+        // operator — the one engagement fact EXPLAIN can state.
+        if let Some(engine) = self.pattern_engine {
+            args.insert(
+                plan_keys::PATTERN_ENGINE.to_string(),
+                Value::String(engine.as_str().into()),
+            );
+        }
         // PROFILE metrics (ADR-0344 phase 2 + metric fields): present
         // only on PROFILE trees, emitted together — through the one
         // emission helper every metrics feature extends.
@@ -199,6 +207,19 @@ impl PlanNode {
                 plan_keys::START_REASON.to_string(),
                 Value::String(start.reason.as_str().into()),
             );
+        }
+        // LABS-1117: which rung served the clause's MATCH walk — the
+        // chain, the hub-star, the frontier-NFA rung, or the per-row
+        // walker. Emitted only when a rung served the clause, with the
+        // metric set; the chain's hop count rides beside it.
+        if let Some(kernel) = metrics.kernel {
+            args.insert(
+                plan_keys::KERNEL_RUNG.to_string(),
+                Value::String(kernel.as_str().into()),
+            );
+            if let relate_executor::KernelRung::Chain { hops } = kernel {
+                put_metric(args, plan_keys::KERNEL_HOPS, hops as u128);
+            }
         }
         // ADR-0468 (LABS-359): the batch scan/filter/project chain ran
         // this clause — emitted only when true, never a `false` beside
@@ -488,15 +509,17 @@ mod tests {
         );
     }
 
-    /// The two decline spellings stay in step: every run-time decline the
+    /// The vocabulary spellings stay in step: every run-time decline the
     /// PROFILE record can carry (`FrontierRunDecline::as_str`) is exactly
     /// the wire's vocabulary (`plan_keys::DECLINE_REASONS`), in order —
-    /// and the start reasons the same way (`StartReason::as_str` against
-    /// `plan_keys::REASONS`). A renamed or added variant fails here, not
-    /// at a PROFILE consumer's decode.
+    /// the start reasons the same way (`StartReason::as_str` against
+    /// `plan_keys::REASONS`), and the traversal rungs (`KernelRung::as_str`
+    /// against `plan_keys::KERNEL_RUNGS`, itself derived from the typed
+    /// `KernelRungWire`). A renamed or added variant fails here, not at a
+    /// PROFILE consumer's decode.
     #[test]
     fn decline_and_start_reason_names_match_the_wire_tables() {
-        use relate_executor::{FrontierRunDecline, StartReason};
+        use relate_executor::{FrontierRunDecline, KernelRung, StartReason};
         // Exhaustive matches tie the iterated lists below to the enums:
         // a new variant fails to compile here until it is listed.
         let _ = |reason: FrontierRunDecline| match reason {
@@ -507,6 +530,12 @@ mod tests {
             | StartReason::Cheapest
             | StartReason::SeekAnchored
             | StartReason::IndexZero => (),
+        };
+        let _ = |rung: KernelRung| match rung {
+            KernelRung::Chain { .. }
+            | KernelRung::HubStar
+            | KernelRung::FrontierNfa
+            | KernelRung::Walker => (),
         };
         let declines: Vec<&str> = FrontierRunDecline::ALL
             .iter()
@@ -523,5 +552,15 @@ mod tests {
         .map(|reason| reason.as_str())
         .collect();
         assert_eq!(starts, plan_keys::REASONS);
+        let rungs: Vec<&str> = [
+            KernelRung::Chain { hops: 3 },
+            KernelRung::HubStar,
+            KernelRung::FrontierNfa,
+            KernelRung::Walker,
+        ]
+        .iter()
+        .map(|rung| rung.as_str())
+        .collect();
+        assert_eq!(rungs, plan_keys::KERNEL_RUNGS);
     }
 }

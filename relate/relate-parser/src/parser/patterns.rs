@@ -1,5 +1,15 @@
 use super::*;
 
+/// The property spec and element `WHERE` read after a node or relationship
+/// element's variable and label/type spec.
+#[derive(Default)]
+struct ElementTail {
+    properties: Vec<(SmallName, Expr)>,
+    has_properties: bool,
+    properties_param: Option<Expr>,
+    where_expr: Option<Expr>,
+}
+
 impl<'a> Parser<'a> {
     // ---- Pattern parsing ----
 
@@ -597,6 +607,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses the tail shared by node and relationship elements: an optional
+    /// property spec -- a `{...}` map literal, or a bare `$param` (the
+    /// whole-map shorthand) -- followed by an optional element `WHERE`.
+    fn parse_element_property_and_where(&mut self) -> ParseResult<ElementTail> {
+        let mut tail = ElementTail::default();
+        if self.peek_type() == TokenType::LeftBrace {
+            tail.has_properties = true;
+            let pairs = self.parse_map_literal()?;
+            tail.properties = pairs.into_iter().map(|p| (p.key, p.value)).collect();
+        } else if self.peek_type() == TokenType::Parameter {
+            tail.has_properties = true;
+            let tok = self.next_token();
+            tail.properties_param = Some(Expr::Parameter(tok.literal.into_owned()));
+        }
+        if self.peek_type() == TokenType::WHERE {
+            self.next_token();
+            tail.where_expr = Some(self.parse_expression()?);
+        }
+        Ok(tail)
+    }
+
     pub(super) fn parse_node_pattern(&mut self) -> ParseResult<NodePattern> {
         self.expect(TokenType::LeftParen)?;
         let mut node = NodePattern {
@@ -625,24 +656,13 @@ impl<'a> Parser<'a> {
             node.label_expr = Some(self.parse_label_spec(false)?.expr);
         }
 
-        // Property spec comes before the element-pattern WHERE in the
-        // grammar: `(var:LE {props} WHERE ...)` (CIP-17). A bare parameter
-        // reference here (`(n:Label $props)`) is the whole-map shorthand
-        // rather than a `{...}` literal.
-        if self.peek_type() == TokenType::LeftBrace {
-            node.has_properties = true;
-            let pairs = self.parse_map_literal()?;
-            node.properties = pairs.into_iter().map(|p| (p.key, p.value)).collect();
-        } else if self.peek_type() == TokenType::Parameter {
-            node.has_properties = true;
-            let tok = self.next_token();
-            node.properties_param = Some(Expr::Parameter(tok.literal.into_owned()));
-        }
-
-        if self.peek_type() == TokenType::WHERE {
-            self.next_token();
-            node.where_expr = Some(self.parse_expression()?);
-        }
+        // Property spec, then the element-pattern WHERE: `(var:LE {props} WHERE ...)`
+        // (CIP-17).
+        let tail = self.parse_element_property_and_where()?;
+        node.has_properties = tail.has_properties;
+        node.properties = tail.properties;
+        node.properties_param = tail.properties_param;
+        node.where_expr = tail.where_expr;
 
         self.expect(TokenType::RightParen)?;
         Ok(node)
@@ -751,32 +771,19 @@ impl<'a> Parser<'a> {
                 // rejection and is retired with it).
             }
 
-            // Properties. A bare parameter reference here (`[r:TYPE $props]`)
-            // is the whole-map shorthand rather than a `{...}` literal.
-            if self.peek_type() == TokenType::LeftBrace {
-                rel.has_properties = true;
-                let pairs = self.parse_map_literal()?;
-                rel.properties = pairs.into_iter().map(|p| (p.key, p.value)).collect();
-            } else if self.peek_type() == TokenType::Parameter {
-                rel.has_properties = true;
-                let tok = self.next_token();
-                rel.properties_param = Some(Expr::Parameter(tok.literal.into_owned()));
-            }
-
-            // The element-pattern WHERE comes after the property spec in the
-            // grammar: `[r:LE {props} WHERE ...]` (CIP-18). It is accepted
-            // on the legacy bracket-syntax variable-length form
-            // (`[r*1..5 WHERE ...]`) too: that is the same AST the GPM
-            // postfix form `-[r WHERE ...]->{1,5}` normalizes to, so the
-            // old bracket-only rejection was a syntax-gap (Neo4j
-            // GpmSyntaxMixingAcceptance "Var-length relationship with
-            // inline predicate - OK"; the CIP-40 quantifier-mixing [14]
-            // DEVIATION row captured the older rejection and is retired
-            // with it).
-            if self.peek_type() == TokenType::WHERE {
-                self.next_token();
-                rel.where_expr = Some(self.parse_expression()?);
-            }
+            // Property spec, then the element-pattern WHERE (CIP-18); the WHERE is
+            // accepted on the legacy bracket-syntax variable-length form
+            // (`[r*1..5 WHERE ...]`) too: that is the same AST the GPM postfix
+            // form `-[r WHERE ...]->{1,5}` normalizes to, so the old
+            // bracket-only rejection was a syntax-gap (Neo4j
+            // GpmSyntaxMixingAcceptance "Var-length relationship with inline
+            // predicate - OK"; the CIP-40 quantifier-mixing [14] DEVIATION row
+            // captured the older rejection and is retired with it).
+            let tail = self.parse_element_property_and_where()?;
+            rel.has_properties = tail.has_properties;
+            rel.properties = tail.properties;
+            rel.properties_param = tail.properties_param;
+            rel.where_expr = tail.where_expr;
 
             if legacy_pipe_colon
                 && (rel.variable.is_some() || rel.has_properties || rel.min_hops.is_some())

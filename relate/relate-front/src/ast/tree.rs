@@ -8,7 +8,7 @@
 
 use relate_core::DynamicNameToken;
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, Expr, LocalDefinitionBody, PatternElement, Statement};
+use relate_parser::{Clause, Expr, LocalDefinitionBody, PatternElement, Statement, StructuralEdge};
 
 use super::stmt_ref::StmtRef;
 
@@ -606,169 +606,35 @@ fn walk_expr_at(
         return Err(nesting_depth_error());
     }
     (walk.expr)(expr)?;
-    match expr {
-        Expr::Literal(_)
-        | Expr::Variable(_)
-        | Expr::Parameter(_)
-        | Expr::OptionValuePlaceholder
-        | Expr::CountStar
-        | Expr::Star => {}
-        // CIP-261: interpolation embeds are full expressions; CIP-272: a
-        // map comprehension's source/key/value are walked like any other
-        // comprehension's children.
-        Expr::StringInterp(parts) => {
-            for part in parts {
-                if let relate_parser::InterpPart::Interp(e) = part {
-                    walk_expr_child(expr, e, depths.deeper_expr(), walk)?;
-                }
+    // The structural descents the expression children cannot express come
+    // from the parser's one edge table (`Expr::structural_edges`), so a new
+    // pattern- or subquery-bearing variant cannot be dropped here. Patterns
+    // and subquery statements are entered before the expression children, a
+    // label expression after them (the historical order).
+    let edges = expr.structural_edges();
+    let enter = walk.descend == SubqueryDescent::Enter;
+    for edge in &edges {
+        match edge {
+            StructuralEdge::Pattern(pattern) if enter => {
+                walk_path_exprs_tree(pattern, depths.deeper_expr(), walk)?;
             }
-        }
-        Expr::MapComprehension(mc) => {
-            walk_expr_child(expr, &mc.source_expr, depths.deeper_expr(), walk)?;
-            if let Some(w) = &mc.where_expr {
-                walk_expr_child(expr, w, depths.deeper_expr(), walk)?;
-            }
-            walk_expr_child(expr, &mc.key_expr, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &mc.value_expr, depths.deeper_expr(), walk)?;
-        }
-        Expr::ShortestPath(s) => {
-            if walk.descend == SubqueryDescent::Enter {
-                walk_path_exprs_tree(&s.pattern, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::PatternPredicate(p) => {
-            if walk.descend == SubqueryDescent::Enter {
-                walk_path_exprs_tree(&p.pattern, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::ExistsSubquery(s) => {
             // Expression-embedded subquery: lowering lowers the body from
-            // inside `lower_expr`'s recursion, so the body's expressions
-            // sit one past this node's depth on the same native stack —
-            // carry the count across the statement boundary instead of
-            // resetting.
-            enter_substatement(walk, StmtRef::Real(&s.statement), depths.deeper_subquery())?;
-        }
-        Expr::CountSubquery(s) => {
-            enter_substatement(walk, StmtRef::Real(&s.statement), depths.deeper_subquery())?;
-        }
-        Expr::CollectSubquery(s) => {
-            enter_substatement(walk, StmtRef::Real(&s.statement), depths.deeper_subquery())?;
-        }
-        Expr::List(items) => {
-            for e in items {
-                walk_expr_child(expr, e, depths.deeper_expr(), walk)?;
+            // inside `lower_expr`'s recursion, so the body's expressions sit
+            // one past this node's depth on the same native stack — carry
+            // the count across the statement boundary instead of resetting.
+            StructuralEdge::Subquery(statement) => {
+                enter_substatement(walk, StmtRef::Real(statement), depths.deeper_subquery())?;
             }
+            StructuralEdge::Pattern(_) | StructuralEdge::Label(_) => {}
         }
-        Expr::Map(pairs) => {
-            for p in pairs {
-                walk_expr_child(expr, &p.value, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::Property(p) => {
-            walk_expr_child(expr, &p.expr, depths.deeper_expr(), walk)?;
-            if let Some(k) = &p.key_expr {
-                walk_expr_child(expr, k, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::FunctionCall(fc) => {
-            for a in &fc.args {
-                walk_expr_child(expr, a, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::Binary(b) => {
-            walk_expr_child(expr, &b.left, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &b.right, depths.deeper_expr(), walk)?;
-        }
-        Expr::Unary(u) => walk_expr_child(expr, &u.expr, depths.deeper_expr(), walk)?,
-        Expr::Comparison(c) => {
-            walk_expr_child(expr, &c.left, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &c.right, depths.deeper_expr(), walk)?;
-        }
-        Expr::In(ie) => {
-            walk_expr_child(expr, &ie.expr, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &ie.list, depths.deeper_expr(), walk)?;
-        }
-        Expr::IsNull(x) => walk_expr_child(expr, &x.expr, depths.deeper_expr(), walk)?,
-        Expr::IsType(x) => walk_expr_child(expr, &x.expr, depths.deeper_expr(), walk)?,
-        Expr::IsNormalized(x) => walk_expr_child(expr, &x.expr, depths.deeper_expr(), walk)?,
-        Expr::ChronologicalCompare(cc) => {
-            walk_expr_child(expr, &cc.left, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &cc.right, depths.deeper_expr(), walk)?;
-        }
-        Expr::StringMatch(sm) => {
-            walk_expr_child(expr, &sm.left, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &sm.right, depths.deeper_expr(), walk)?;
-        }
-        Expr::Case(c) => {
-            for w in &c.whens {
-                walk_expr_child(expr, &w.condition, depths.deeper_expr(), walk)?;
-                walk_expr_child(expr, &w.result, depths.deeper_expr(), walk)?;
-            }
-            if let Some(e) = &c.else_expr {
-                walk_expr_child(expr, e, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::ListComprehension(lc) => {
-            walk_expr_child(expr, &lc.list_expr, depths.deeper_expr(), walk)?;
-            if let Some(w) = &lc.where_expr {
-                walk_expr_child(expr, w, depths.deeper_expr(), walk)?;
-            }
-            if let Some(m) = &lc.map_expr {
-                walk_expr_child(expr, m, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::PatternComprehension(pc) => {
-            if walk.descend == SubqueryDescent::Enter {
-                walk_path_exprs_tree(&pc.pattern, depths.deeper_expr(), walk)?;
-            }
-            if let Some(w) = &pc.where_expr {
-                walk_expr_child(expr, w, depths.deeper_expr(), walk)?;
-            }
-            walk_expr_child(expr, &pc.map_expr, depths.deeper_expr(), walk)?;
-        }
-        Expr::Reduce(r) => {
-            walk_expr_child(expr, &r.init_expr, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &r.list_expr, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &r.expression, depths.deeper_expr(), walk)?;
-        }
-        Expr::AllReduce(r) => {
-            walk_expr_child(expr, &r.init_expr, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &r.list_expr, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &r.expression, depths.deeper_expr(), walk)?;
-            walk_expr_child(expr, &r.predicate, depths.deeper_expr(), walk)?;
-        }
-        Expr::Subscript(s) => {
-            walk_expr_child(expr, &s.expr, depths.deeper_expr(), walk)?;
-            if let Some(i) = &s.index {
-                walk_expr_child(expr, i, depths.deeper_expr(), walk)?;
-            }
-            if let Some(f) = &s.from {
-                walk_expr_child(expr, f, depths.deeper_expr(), walk)?;
-            }
-            if let Some(t) = &s.to {
-                walk_expr_child(expr, t, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::Quantifier(q) => {
-            walk_expr_child(expr, &q.list, depths.deeper_expr(), walk)?;
-            if let Some(p) = &q.predicate {
-                walk_expr_child(expr, p, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::HasLabel(hl) => {
-            walk_expr_child(expr, &hl.expr, depths.deeper_expr(), walk)?;
-            if walk.descend == SubqueryDescent::Enter {
-                walk_label_expr_tree(&hl.label_expr, depths.deeper_expr(), walk)?;
-            }
-        }
-        Expr::Paren(inner) => walk_expr_child(expr, inner, depths.deeper_expr(), walk)?,
-        Expr::MapProjection(mp) => {
-            walk_expr_child(expr, &mp.expr, depths.deeper_expr(), walk)?;
-            for item in &mp.items {
-                if let relate_parser::MapProjectionItem::KeyValue(_, v) = item {
-                    walk_expr_child(expr, v, depths.deeper_expr(), walk)?;
-                }
+    }
+    for child in expr.children() {
+        walk_expr_child(expr, child, depths.deeper_expr(), walk)?;
+    }
+    for edge in &edges {
+        if let StructuralEdge::Label(label) = edge {
+            if enter {
+                walk_label_expr_tree(label, depths.deeper_expr(), walk)?;
             }
         }
     }

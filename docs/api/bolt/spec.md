@@ -155,7 +155,10 @@ estimate phase filled it — a float, Neo4j's form — and on PROFILE trees the
 metrics set `Rows` + `TimeNs` + `DbHits` + `MemoryBytes` +
 `ExpressionBuiltBytes`, always together;
 when admission produced a receipt the same args also carry `PeakLogicalBytes`
-(ADR-0501)),
+(ADR-0501); on a `MATCH` operator `PatternEngine` names the store's
+`RELATE_PATTERN_ENGINE` mode, and a PROFILE tree's served `MATCH` clause
+also carries `KernelRung` — `chain` (with `KernelHops`), `hub-star`,
+`frontier-nfa`, or `walker` — the ADR-0538 traversal-rung fact),
 `identifiers` (list of strings, possibly empty), `children` (list of child
 dicts, absent when the operator has none), and `warnings` (list of warning
 names — `EstimationMiss`, `CartesianProduct`, `AllNodesScan` — on warned
@@ -213,7 +216,7 @@ unchanged. Each entry is a map with exactly five keys, in this order:
 | `title` | the canonical human title |
 | `description` | the diagnosis with the remedy appended as ` (remedy: <remedy>)` |
 | `severity` | `INFORMATION` or `WARNING` |
-| `category` | `PERFORMANCE`, `UNRECOGNIZED` or `DEPRECATION` |
+| `category` | `PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT` |
 
 There is no `position` key — the front-end retains no source spans — and no
 separate `remedy` key: the action is folded into `description`, the same

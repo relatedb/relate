@@ -85,6 +85,7 @@ pub(crate) mod rel_seek;
 pub(crate) mod rider;
 pub(crate) mod scope;
 pub(crate) mod search;
+pub(crate) mod sink;
 pub(crate) mod subquery_eval;
 pub(crate) mod union;
 pub(crate) mod unwind;

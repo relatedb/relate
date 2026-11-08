@@ -2,10 +2,11 @@
 //! node accessor and the plan contract the presentation and the engine's
 //! warning construction read (ADR-0400 — the table layout itself lives
 //! with its one consumer in the formatter) — one spelling so no surface
-//! can drift from the wire form it reads. The typed warning vocabulary
-//! itself lives in its own module beside this one (LABS-461:
-//! `plan_warning.rs`), parsed here by the node accessor.
+//! can drift from the wire form it reads. The key vocabulary lives in its
+//! own module (`plan_keys.rs`), and the typed warning vocabulary beside it
+//! (LABS-461: `plan_warning.rs`), parsed here by the node accessor.
 
+use super::plan_keys;
 use super::plan_warning::PlanWarning;
 use crate::CypherValue;
 
@@ -17,6 +18,63 @@ use crate::CypherValue;
 /// presentation of the plan table (the engine renderer and the surfaces'
 /// table layout) so "column not produced" renders identically everywhere.
 pub const PLAN_UNAVAILABLE: &str = "-";
+
+/// The traversal rung a PROFILE node reports (LABS-1117), typed from the
+/// wire vocabulary: the chain carries its hop count, so a chain without
+/// one — the half-state the parser rejects — is unrepresentable. [`Self::as_str`]
+/// is the vocabulary's one spelling; `plan_keys::KERNEL_RUNGS` is derived
+/// from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelRungWire {
+    /// The unrolled fixed-k chain kernel, `hops` hops.
+    Chain { hops: i64 },
+    /// The hub-star candidate-intersection kernel.
+    HubStar,
+    /// The frontier-NFA rung over the BFS.
+    FrontierNfa,
+    /// The per-row walker — every gate's decline.
+    Walker,
+}
+
+impl KernelRungWire {
+    /// The chain rung's wire name — a name, never a variant value, so no
+    /// hop count is fabricated to reach it.
+    pub const CHAIN: &'static str = "chain";
+    /// The hub-star rung's wire name.
+    pub const HUB_STAR: &'static str = "hub-star";
+    /// The frontier-NFA rung's wire name.
+    pub const FRONTIER_NFA: &'static str = "frontier-nfa";
+    /// The per-row walker's wire name.
+    pub const WALKER: &'static str = "walker";
+    /// Every rung name, in vocabulary order — the wire table's one
+    /// spelling. `plan_keys::KERNEL_RUNGS` is this list; the executor's
+    /// `KernelRung::as_str` reads the same constants.
+    pub const NAMES: [&'static str; 4] = [
+        Self::CHAIN,
+        Self::HUB_STAR,
+        Self::FRONTIER_NFA,
+        Self::WALKER,
+    ];
+
+    /// The rung's wire name (`const` so the table derives from this match
+    /// instead of repeating it).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            KernelRungWire::Chain { .. } => Self::CHAIN,
+            KernelRungWire::HubStar => Self::HUB_STAR,
+            KernelRungWire::FrontierNfa => Self::FRONTIER_NFA,
+            KernelRungWire::Walker => Self::WALKER,
+        }
+    }
+
+    /// The chain rung's hop count — `None` for every other rung.
+    pub const fn hops(self) -> Option<i64> {
+        match self {
+            KernelRungWire::Chain { hops } => Some(hops),
+            KernelRungWire::HubStar | KernelRungWire::FrontierNfa | KernelRungWire::Walker => None,
+        }
+    }
+}
 
 // The typed warning vocabulary lives in its own module beside this one
 // (LABS-461: one warning type — the enum, its estimate policy, and its
@@ -44,6 +102,12 @@ pub struct PlanMetricsWire {
     pub phases: PlanPhasesWire,
     /// The walk's chosen start, when the clause walked one (LABS-369).
     pub start: Option<PlanStartWire>,
+    /// Which rung served the clause's `MATCH` walk (LABS-1117), typed: the
+    /// chain carries its hop count, so the half-state the wire rejects (a
+    /// chain rung without one) is unrepresentable here. `None` when the
+    /// producer emitted no key (a non-`MATCH` clause, a folded or `SEARCH`
+    /// `MATCH`, or a batch-chain `MATCH`).
+    pub kernel: Option<KernelRungWire>,
     /// Whether the clause ran ADR-0468's batch scan/filter/project chain
     /// (LABS-359) — `false` on the wire means absent, the producer emits
     /// the key only when true.
@@ -200,137 +264,6 @@ impl PlanNodeWire<'_> {
     }
 }
 
-/// Key names of the plan wire form — the vocabulary `PlanNode::to_value`
-/// produces and every consumer reads, single-sourced here so drift between
-/// producer and consumer is a compile error, not a silent mismatch.
-pub mod plan_keys {
-    pub const OPERATOR_TYPE: &str = "operatorType";
-    pub const ARGS: &str = "args";
-    pub const IDENTIFIERS: &str = "identifiers";
-    pub const CHILDREN: &str = "children";
-    pub const ID: &str = "Id";
-    pub const DETAILS: &str = "Details";
-    pub const ESTIMATED_ROWS: &str = "EstimatedRows";
-    /// PROFILE metrics (ADR-0344 phase 2).
-    pub const ROWS: &str = "Rows";
-    pub const TIME_NS: &str = "TimeNs";
-    /// PROFILE metric fields (ADR-0344 metric fields).
-    pub const DB_HITS: &str = "DbHits";
-    pub const MEMORY_BYTES: &str = "MemoryBytes";
-    /// The expression allocation bytes a profiled clause charged against the
-    /// ADR-0463 statement budget, emitted with the metric block.
-    pub const EXPRESSION_BUILT_BYTES: &str = "ExpressionBuiltBytes";
-    /// The store-read mix behind `DbHits` (LABS-369): the kinds the one
-    /// total blends — relationship hops, neighbor walks, node-store reads.
-    pub const HOPS: &str = "Hops";
-    pub const NEIGHBOR_WALKS: &str = "NeighborWalks";
-    pub const NODE_READS: &str = "NodeReads";
-    /// The phase times the read kinds' store work spent (LABS-448): the
-    /// seek (candidate resolution and admission — the `Nodes` kind's
-    /// work) and the walk (relationship traversal — the `Rels`/`Degree`
-    /// kinds' work), inclusive of a multi-element pattern's nested
-    /// phases. Emitted together with the metric block and the kinds.
-    pub const SEEK_TIME_NS: &str = "SeekTimeNs";
-    /// See [`SEEK_TIME_NS`].
-    pub const WALK_TIME_NS: &str = "WalkTimeNs";
-    /// The walk's chosen start (LABS-369): the pattern element index, its
-    /// direction, and the reason class (`bound-pivot`, `cheapest`,
-    /// `seek-anchored`, `index-0`) — the fact an opaque `Expand` hid.
-    pub const START_ELEMENT: &str = "StartElement";
-    pub const START_BACKWARD: &str = "StartBackward";
-    pub const START_REASON: &str = "StartReason";
-    /// Whether the clause ran ADR-0468's batch scan/filter/project chain
-    /// over `Chunk` (LABS-359) — emitted only when true (like the start
-    /// trio's presence-only-when-walked), with the metric set.
-    pub const BATCHED: &str = "Batched";
-    /// The batch filter's zone skips (LABS-645): conjunct-batch
-    /// evaluations the chunk's derived min/max zone metadata provably
-    /// replaced with the correct empty survivor set — emitted only when
-    /// nonzero (a count's presence-only shape), with the metric set.
-    pub const ZONE_SKIPS: &str = "ZoneSkips";
-    /// The frontier family's run counters (ADR-0478): the BFS's edge
-    /// visits, completed levels, and accepted endpoints — emitted only
-    /// when the family ran the clause (`levels > 0`), the three together
-    /// (a half-present trio is a wire-contract break), with the metric
-    /// set.
-    pub const FRONTIER_EDGES: &str = "FrontierEdges";
-    pub const FRONTIER_LEVELS: &str = "FrontierLevels";
-    pub const FRONTIER_ENDPOINTS: &str = "FrontierEndpoints";
-    /// The frontier-NFA rung's own PROFILE facts (ADR-0478 §3, ADR-0516),
-    /// riding the frontier trio's presence-only-when-engaged group: the
-    /// (node, state) cells the runs created, the re-arrival rule memo's
-    /// hits and misses, the admission asks by verdict
-    /// (representative-proof / search-proven / search-disproven /
-    /// declined-exhausted), and the budget fraction the rule's work
-    /// spent — the seven integers and the one float emitted together
-    /// with the trio, a half-present set a wire-contract break.
-    pub const FRONTIER_CELLS: &str = "FrontierCells";
-    pub const FRONTIER_MEMO_HITS: &str = "FrontierMemoHits";
-    pub const FRONTIER_MEMO_MISSES: &str = "FrontierMemoMisses";
-    pub const FRONTIER_REPRESENTATIVE_PROOFS: &str = "FrontierRepresentativeProofs";
-    pub const FRONTIER_SEARCH_PROVEN: &str = "FrontierSearchProven";
-    pub const FRONTIER_SEARCH_DISPROVEN: &str = "FrontierSearchDisproven";
-    pub const FRONTIER_DECLINED_EXHAUSTED: &str = "FrontierDeclinedExhausted";
-    pub const FRONTIER_BUDGET_FRACTION: &str = "FrontierBudgetFraction";
-    /// The frontier rung's run-time decline (ADR-0516), one of the
-    /// `DECLINE_REASONS` vocabulary — emitted only when the rung engaged,
-    /// ran, and fell through, with the metric set.
-    pub const FRONTIER_DECLINE_REASON: &str = "FrontierDeclineReason";
-    /// The run-time decline vocabulary (ADR-0516), the executor's
-    /// `FrontierRunDecline::as_str` names — single-sourced here so a
-    /// renamed decline fails loudly at the wire boundary, like the
-    /// start reasons. Only the run-time declines the PROFILE record
-    /// carries: the compile-time gates decide before a walk and never
-    /// render.
-    pub const DECLINE_REASONS: [&str; 2] = ["rearrival-budget", "table-budget"];
-    /// The start-reason vocabulary (LABS-369), the executor's
-    /// `StartReason::as_str` names — single-sourced here so a renamed
-    /// reason fails loudly at the wire boundary, like the warning names.
-    pub const REASONS: [&str; 4] = ["bound-pivot", "cheapest", "seek-anchored", "index-0"];
-    /// The typed warnings the node carries (typed node warnings): a list
-    /// of warning maps from the [`PlanWarning`](crate::wire::PlanWarning)
-    /// vocabulary, present only when the node carries one. Each map
-    /// carries the warning's name and, when the warning has a payload
-    /// (the `AllNodesScan` warning's suggested index), that payload —
-    /// one spelling for the producer and every consumer.
-    pub const WARNINGS: &str = "warnings";
-    /// The warning map's name field (typed node warnings).
-    pub const WARNING_NAME: &str = "name";
-    /// The warning map's payload field (typed node warnings): the
-    /// `AllNodesScan` warning's suggested property index text.
-    pub const WARNING_INDEX: &str = "index";
-    /// The Neo4j-facing root args (ADR-0357): the plan's rendered text —
-    /// Neo4j's plan root carries it and tooling (Browser's Code tab,
-    /// strict clients) renders from it. The engine's own args stay as
-    /// they are; the one decoration lives on `PlanNode` (the
-    /// `relate` crate's `to_neo4j_value`, this vocabulary's only
-    /// writer) and each surface calls it at its boundary.
-    pub const STRING_REPRESENTATION: &str = "string-representation";
-    /// The planner and runtime identity args (ADR-0357): `planner` names
-    /// the planner, `planner-impl`/`planner-version` its implementation
-    /// and version; `runtime`/`runtime-impl`/`runtime-version` the same
-    /// for the runtime; `version` is the Cypher language version — Neo4j's
-    /// plan root carries all of them and tooling (cypher-shell's summary
-    /// block, Browser's footer) reads them.
-    pub const PLANNER_IMPL: &str = "planner-impl";
-    /// See [`PLANNER_IMPL`].
-    pub const PLANNER: &str = "planner";
-    /// See [`PLANNER_IMPL`].
-    pub const PLANNER_VERSION: &str = "planner-version";
-    /// See [`PLANNER_IMPL`].
-    pub const RUNTIME: &str = "runtime";
-    /// See [`PLANNER_IMPL`].
-    pub const RUNTIME_IMPL: &str = "runtime-impl";
-    /// See [`PLANNER_IMPL`].
-    pub const RUNTIME_VERSION: &str = "runtime-version";
-    /// See [`PLANNER_IMPL`]: the Cypher language version the plan ran
-    /// under.
-    pub const VERSION: &str = "version";
-    /// See [`PLANNER_IMPL`]: Neo4j's `Memory` arg — the root mirrors this
-    /// engine's row-materialization bytes under it (ADR-0357).
-    pub const MEMORY: &str = "Memory";
-}
-
 /// The `planner-impl` value every surface sends (ADR-0357): this engine's
 /// own planner, named honestly — never Neo4j's `IDP`/`COST`, which would
 /// claim a planner this engine does not run.
@@ -463,6 +396,66 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
             ),
         }
     };
+    // Which rung served the clause's MATCH walk (LABS-1117): the typed
+    // name, validated against the one vocabulary like the start reasons —
+    // present only on a PROFILE node, and only when a rung served it. The
+    // chain's hop count is its own arg, and the typed value makes the
+    // half-state (a chain rung without it) unrepresentable past this
+    // parse: a chain without hops, hops beside another rung, or hops
+    // alone are all kept loud.
+    let kernel = match (has_metrics, args.get(plan_keys::KERNEL_RUNG)) {
+        (_, None) => {
+            if optional_int(args, plan_keys::KERNEL_HOPS).is_some() {
+                panic!(
+                    "plan wire {} rides only the {} key (LABS-1117)",
+                    plan_keys::KERNEL_HOPS,
+                    plan_keys::KERNEL_RUNG
+                );
+            }
+            None
+        }
+        (true, Some(CypherValue::Str(name))) => {
+            // The three payload-free rungs each reject a stray hop count;
+            // the chain builds its `Chain { hops }` once from the arg.
+            let payload_free = |rung: KernelRungWire| {
+                if let Some(hops) = optional_int(args, plan_keys::KERNEL_HOPS) {
+                    panic!(
+                        "plan wire {} rides only the {} rung (LABS-1117), \
+                         got rung={} hops={hops:?}",
+                        plan_keys::KERNEL_HOPS,
+                        KernelRungWire::CHAIN,
+                        rung.as_str()
+                    );
+                }
+                Some(rung)
+            };
+            match name.as_str() {
+                KernelRungWire::CHAIN => match optional_int(args, plan_keys::KERNEL_HOPS) {
+                    Some(hops) if hops >= 0 => Some(KernelRungWire::Chain { hops }),
+                    other => panic!(
+                        "plan wire {} is a non-negative integer when {} is {} \
+                         (LABS-1117), got {other:?}",
+                        plan_keys::KERNEL_HOPS,
+                        plan_keys::KERNEL_RUNG,
+                        KernelRungWire::CHAIN
+                    ),
+                },
+                KernelRungWire::HUB_STAR => payload_free(KernelRungWire::HubStar),
+                KernelRungWire::FRONTIER_NFA => payload_free(KernelRungWire::FrontierNfa),
+                KernelRungWire::WALKER => payload_free(KernelRungWire::Walker),
+                other => panic!(
+                    "plan wire {} is one of {:?} (LABS-1117), got {other:?}",
+                    plan_keys::KERNEL_RUNG,
+                    plan_keys::KERNEL_RUNGS
+                ),
+            }
+        }
+        (has_metrics, other) => panic!(
+            "plan wire {} is a string when present, only on a PROFILE \
+             node (LABS-1117), got metrics={has_metrics} value={other:?}",
+            plan_keys::KERNEL_RUNG
+        ),
+    };
     // Whether the clause ran ADR-0468's batch scan/filter/project chain
     // (LABS-359): the producer emits the key only when true (never a
     // `false` beside the absent fact), and only on a PROFILE node.
@@ -570,6 +563,7 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
         reads,
         phases,
         start,
+        kernel,
         batched,
         zone_skips,
         frontier,
@@ -850,6 +844,28 @@ fn optional_fraction(args: &crate::IndexMap<String, CypherValue>, key: &str) -> 
 mod tests {
     use super::*;
     use crate::wire::plan_test_fixtures::{plan_seek_wire_node, plan_wire_node};
+
+    /// LABS-1117: a chain rung without its hop count is the same
+    /// half-state the start trio rejects — the strict parse fails loudly
+    /// instead of accepting a rung the contract says carries its count.
+    #[test]
+    #[should_panic(
+        expected = "plan wire KernelHops is a non-negative integer when KernelRung is chain"
+    )]
+    fn a_chain_rung_without_its_hop_count_fails_the_parse() {
+        let mut node = plan_wire_node("Match", 0, Some(1), vec![]);
+        let CypherValue::Map(entries) = &mut node else {
+            unreachable!("the fixture builds a map")
+        };
+        let Some(CypherValue::Map(args)) = entries.get_mut(plan_keys::ARGS) else {
+            unreachable!("the fixture builds an args map")
+        };
+        args.insert(
+            plan_keys::KERNEL_RUNG.to_string(),
+            CypherValue::Str("chain".into()),
+        );
+        let _ = plan_node_wire(&node);
+    }
 
     /// The one subtree-total pass (cumulative vs self): a node's own time
     /// plus every descendant's — the leaf equals its own time, the root

@@ -295,9 +295,12 @@ fn run_golden(store: &GoldenStore) {
         // No golden fixture can exist for a codec that postdates it: the
         // markdown codec (ADR-0406) is new, so the versioned store
         // fixtures only ever enumerate Parquet and JSON.
-        SnapshotCodecKind::Markdown => unreachable!(
-            "no versioned markdown golden store can exist; fixtures are Parquet/JSON only"
-        ),
+        SnapshotCodecKind::Markdown | SnapshotCodecKind::Rkyv | SnapshotCodecKind::Fjall => {
+            unreachable!(
+                "no versioned golden store can exist for a codec that postdates the fixtures; \
+             fixtures are Parquet/JSON only"
+            )
+        }
     };
     // And no `ontology/` document objects in the store (the prefix family
     // exists only when a v4 manifest published one, ADR-0120 §5). The

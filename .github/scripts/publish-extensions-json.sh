@@ -37,6 +37,10 @@ export LC_ALL=C.UTF-8
 #     tarball `<name>-<X.Y.Z>-<os>-<arch>.tar.gz` with
 #     os/arch in the channel's platform scope (darwin/linux,
 #     amd64/arm64 — ADR-0068); any other asset name aborts.
+#     The one exemption is the channel's own output: the signed
+#     index pair extensions.json + extensions.json.sig rides the
+#     extension release as assets (ADR-0546) and is skipped, never
+#     indexed.
 #   - the tarball is the ADR-0431 §2 artifact; its extension.json
 #     must name the same name/version the tag carries, and its
 #     protocol string (the MCP revision, ADR-0447) becomes the index
@@ -158,6 +162,12 @@ while IFS= read -r tag; do
   manifest_protocol=""
   while IFS= read -r asset; do
     [ -n "$asset" ] || continue
+    # The channel's own index files ride the extension release as assets
+    # (ADR-0546): they are this publisher's output, not a platform
+    # tarball, so they are skipped — never indexed, never an abort.
+    if [ "$asset" = "extensions.json" ] || [ "$asset" = "extensions.json.sig" ]; then
+      continue
+    fi
     if [[ ! "$asset" =~ ${ASSET_RX} ]]; then
       echo "::error::asset '${asset}' on release '${tag}' does not follow the channel convention <name>-<X.Y.Z>-<os>-<arch>.tar.gz; refusing to publish extensions.json"
       exit 1

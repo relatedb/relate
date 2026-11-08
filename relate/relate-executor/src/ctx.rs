@@ -436,6 +436,40 @@ impl StartReason {
     }
 }
 
+/// Which rung served one `MATCH` clause (LABS-1117): the fact EXPLAIN
+/// could not show, because the rungs are runtime choices inside an
+/// operator, not plan nodes. The ladder records it per clause; the
+/// PROFILE record carries it. [`Walker`](Self::Walker) is the per-row
+/// walker, the rung every decline's home — the batch scan/filter chain
+/// is its own fact (`ClauseMetricsRecord::batched`), never a rung here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelRung {
+    /// The unrolled fixed-k chain kernel, `hops` hops (ADR-0473).
+    Chain { hops: usize },
+    /// The hub-star candidate-intersection kernel (ADR-0473).
+    HubStar,
+    /// The frontier-NFA rung over the BFS (ADR-0478).
+    FrontierNfa,
+    /// The per-row walker — every gate's decline.
+    Walker,
+}
+
+impl KernelRung {
+    /// The rung's stable wire name (the `StartReason::as_str` pattern).
+    /// The names live in the wire vocabulary (`KernelRungWire`'s
+    /// constants), so the executor and every surface spell them once; the
+    /// variant↔name mapping is pinned by `relate`'s
+    /// `decline_and_start_reason_names_match_the_wire_tables`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KernelRung::Chain { .. } => relate_model::wire::KernelRungWire::CHAIN,
+            KernelRung::HubStar => relate_model::wire::KernelRungWire::HUB_STAR,
+            KernelRung::FrontierNfa => relate_model::wire::KernelRungWire::FRONTIER_NFA,
+            KernelRung::Walker => relate_model::wire::KernelRungWire::WALKER,
+        }
+    }
+}
+
 /// The frontier rung's run-time declines (ADR-0516): the reasons a rung
 /// that engaged and ran still falls through, typed so the PROFILE record
 /// names the one that kept the DFS. The compile-time gates' own
@@ -527,6 +561,16 @@ pub struct ClauseMetricsRecord {
     /// How the walk chose its start, when the clause ran a `MATCH` walk
     /// (LABS-369) — `None` for clauses that walk nothing.
     pub start: Option<WalkStart>,
+    /// Which rung served the clause's `MATCH` walk (LABS-1117): the
+    /// chain kernel, the hub-star kernel, the frontier-NFA rung, or the
+    /// per-row walker — the operator the clause's `MATCH` ladder (or, for
+    /// a `SEARCH` `MATCH`, its direct walker call) returned. `None`
+    /// exactly when no `MATCH` operator ran: a non-`MATCH` clause; a
+    /// `MATCH` a fold answered (`try_match_folds`, a boolean or walk
+    /// count); a `MATCH` inside a nested evaluation (its own loop); and a
+    /// `MATCH` the ADR-0468 batch chain answered — that operator is
+    /// [`Self::batched`]'s own fact, never a traversal rung.
+    pub kernel: Option<KernelRung>,
     /// Whether the clause ran ADR-0468's batch scan/filter/project chain
     /// over `Chunk` (LABS-359) — the PROFILE-visible fact that a
     /// scan-shaped `MATCH` interior executed as batch operators. `false`

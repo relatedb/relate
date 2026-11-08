@@ -384,7 +384,7 @@ same keys the JSON handle API's result envelope uses under `notifications`:
 | `getCode()` | `code` | the kind's code, e.g. `Neo.ClientNotification.Statement.CartesianProduct` |
 | `getGqlStatus()` | `gql_status` | the GQLSTATUS value, e.g. `03N90` |
 | `getSeverity()` | `severity` | `INFORMATION` or `WARNING` |
-| `getCategory()` | `category` | `PERFORMANCE`, `UNRECOGNIZED` or `DEPRECATION` |
+| `getCategory()` | `category` | `PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT` |
 | `getTitle()` | `title` | the kind's short title, e.g. `Cartesian product` |
 | `getDescription()` | `description` | the instance diagnosis (unknown name, index text, …) |
 | `getRemedy()` | `remedy` | the action that clears the diagnostic |

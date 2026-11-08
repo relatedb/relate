@@ -41,8 +41,8 @@ use crate::row::Row;
 
 use super::super::graph_stats::GraphStats;
 use super::super::pattern_policies::{reduce_row, MatchReduce};
-use super::super::project::SinkProjection;
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
+use super::super::sink::SinkProjection;
 use super::super::{record_frontier_decline, record_walk_start};
 use super::frontier::{self, FrontierRun, RunOutcome, WalkBudget};
 use super::frontier_emit::{capped_rows, CappedRun};
@@ -203,8 +203,9 @@ pub(crate) fn try_frontier_rows(
             unreachable!("the Exists and WalkCount declines above already returned")
         }
     }
-    // The engagement the test counter reads (the exists entry's own arm
-    // counts its engagement at its caller, `kernels/mod.rs`).
+    // The test counter's engagement tick (the production rung is the
+    // ladder's own return value now, LABS-1117; the exists entry's own
+    // arm counts at its caller, `kernels/mod.rs`).
     #[cfg(test)]
     super::kernel_engaged();
     Row::share_schemas(&mut out);
@@ -442,7 +443,8 @@ pub(super) fn seeds(
 /// neighbor walk, the same read kind the chain kernel's traversals
 /// tick, batched once per run. The facts are the outcome's own
 /// ([`RunOutcome::facts`]), either arm: a declined run still walked.
-fn record_run(facts: FrontierCounters) {
+/// Shared with the walk-count arm (`frontier_count`), its other caller.
+pub(super) fn record_run(facts: FrontierCounters) {
     super::super::count_neighbor_walks(facts.edge_visits);
     super::super::count_frontier(facts);
 }

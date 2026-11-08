@@ -383,7 +383,7 @@ fn parse_filesystem_uri(
         };
         let vfs: Arc<dyn Vfs> = Arc::new(bundle);
         let mut target = on_vfs(vfs, SnapshotCodecKind::Parquet);
-        target.codec = codec::resolve_codec(&target, requested)?;
+        target.codec = codec::resolve_codec(&target, requested, mode)?;
         // No native lease behind a bundle; the installer's own refusal
         // covers a mismatched configuration (a created-exclusive bundle
         // is removed by the publish path's cleanup).
@@ -447,7 +447,7 @@ fn parse_filesystem_uri(
         codec: SnapshotCodecKind::Parquet,
         codec_config: None,
     };
-    target.codec = codec::resolve_codec(&target, requested)?;
+    target.codec = codec::resolve_codec(&target, requested, mode)?;
     install_config(target, config)
 }
 
@@ -797,17 +797,15 @@ pub fn checkpoint_at(
     snapshot_ts: u64,
     ontology: Option<&str>,
 ) -> Result<()> {
-    match target.codec {
-        SnapshotCodecKind::Parquet => {
-            snapshot::checkpoint_at(target, graph, checkpoint_lsn, snapshot_ts, ontology)
-        }
-        SnapshotCodecKind::Json => {
-            codec::json::dump(target, graph, checkpoint_lsn, snapshot_ts, ontology)
-        }
-        SnapshotCodecKind::Markdown => {
-            codec::markdown::checkpoint_at(target, graph, checkpoint_lsn, snapshot_ts, ontology)
-        }
-    }
+    // The codec vocabulary's one behavioral surface (see `open::codec_ops`):
+    // a codec's writer is one table entry, not an arm here.
+    (crate::open::codec_ops(target.codec).dump)(
+        target,
+        graph,
+        checkpoint_lsn,
+        snapshot_ts,
+        ontology,
+    )
 }
 
 /// Create an empty WAL positioned at `checkpoint_lsn` (ADR-0156).
@@ -821,11 +819,9 @@ pub fn init_empty_wal(target: &StoreTarget, checkpoint_lsn: u64) -> Result<()> {
 }
 
 pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
-    match target.codec {
-        SnapshotCodecKind::Parquet => snapshot::snapshot_data_bytes(target),
-        SnapshotCodecKind::Json => codec::json::snapshot_data_bytes(target),
-        SnapshotCodecKind::Markdown => codec::markdown::snapshot_data_bytes(target),
-    }
+    // The codec vocabulary's one behavioral surface (see `open::codec_ops`):
+    // a codec's sizer is one table entry, not an arm here.
+    (crate::open::codec_ops(target.codec).snapshot_data_bytes)(target)
 }
 
 /// Published checkpoint LSN, or 0 when the store has no manifest yet.

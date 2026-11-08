@@ -772,6 +772,7 @@ mod tests {
                 match_mode: MatchMode::DifferentRelationships,
                 using_scan: Vec::new(),
                 using_index: Vec::new(),
+                using_join: Vec::new(),
                 pattern: vec![PatternPath {
                     variable: None,
                     subpath_variable: None,

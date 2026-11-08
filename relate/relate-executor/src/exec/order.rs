@@ -16,7 +16,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::scope::is_star_item;
-use super::scope::{projection_names, projects_name, result_column};
+use super::scope::{projection_names, projects_name, result_column, ProjectionFields};
 
 /// Whether an `ORDER BY` key must read the projected row even when its
 /// expression is verbatim a projection item.
@@ -49,56 +49,97 @@ fn parked_prefix(items: &[Projection]) -> String {
     prefix
 }
 
-/// One projection's `ORDER BY` keys bundled with the projection items they
-/// resolve against, their alias-scope decisions and the parked column each
-/// key is written under. Every projection path parks its keys at projection
-/// time through [`park_order_keys`], so the one sort entry point reads them
-/// back instead of re-evaluating anything.
+/// One projection's `ORDER BY` keys, each with its resolved scope decision
+/// and the parked column it is written under. Every projection path parks its
+/// keys at projection time through [`park_order_keys`], so the one sort entry
+/// point reads them back instead of re-evaluating anything.
 pub(crate) struct OrderKeys<'a> {
-    keys: &'a [relate_ir::OrderItem],
-    items: &'a [Projection],
-    alias_scoped: Vec<bool>,
-    parked_prefix: String,
+    plan: Vec<KeyPlan<'a>>,
+}
+
+/// One key's row-independent plan: the key itself, the projected column it
+/// may answer from, and the parked column its value is written under — one
+/// entry per key, never index-aligned companions.
+struct KeyPlan<'a> {
+    key: &'a relate_ir::OrderItem,
+    /// The projected column a verbatim, non-alias-scoped key answers from;
+    /// `None` means the key is evaluated. Resolved once here, never per row.
+    verbatim: Option<String>,
+    parked: String,
 }
 
 impl<'a> OrderKeys<'a> {
-    /// The per-key scope depends only on the key expressions and the items,
-    /// never on a row, so every path takes the decision once here.
+    /// Every key's plan, verbatim resolution included — for callers that
+    /// evaluate keys against a projected row. The per-key scope depends only
+    /// on the key expressions and the items, never on a row, so the decision
+    /// is taken once here.
     pub(crate) fn new(
         keys: &'a [relate_ir::OrderItem],
         items: &'a [Projection],
         explicit_grouping: bool,
     ) -> Self {
+        let mut this = Self::parked_only(keys, items);
+        for (index, key) in keys.iter().enumerate() {
+            if !order_key_alias_scoped(&key.expr, items, explicit_grouping) {
+                this.plan[index].verbatim = verbatim_column(items, &key.expr);
+            }
+        }
+        this
+    }
+
+    /// Parked names only, no verbatim table: the folded-aggregate path
+    /// resolves each key's value statically (an aggregate item's expression
+    /// cannot be re-evaluated on the folded row), so it must never consult
+    /// the per-row resolver.
+    pub(crate) fn parked_only(
+        keys: impl IntoIterator<Item = &'a relate_ir::OrderItem>,
+        items: &'a [Projection],
+    ) -> Self {
+        let parked_prefix = parked_prefix(items);
         Self {
-            keys,
-            items,
-            alias_scoped: keys
-                .iter()
-                .map(|item| order_key_alias_scoped(&item.expr, items, explicit_grouping))
+            plan: keys
+                .into_iter()
+                .enumerate()
+                .map(|(index, key)| KeyPlan {
+                    key,
+                    verbatim: None,
+                    parked: format!("{parked_prefix}{index}"),
+                })
                 .collect(),
-            parked_prefix: parked_prefix(items),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.keys.len()
+        self.plan.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.plan.is_empty()
     }
 
-    fn iter(&self) -> impl Iterator<Item = &'a relate_ir::OrderItem> {
-        self.keys.iter()
-    }
-
-    fn is_alias_scoped(&self, index: usize) -> bool {
-        self.alias_scoped[index]
+    fn iter(&self) -> impl Iterator<Item = &relate_ir::OrderItem> {
+        self.plan.iter().map(|planned| planned.key)
     }
 
     /// The parked column of key `index`.
-    pub(crate) fn name(&self, index: usize) -> String {
-        format!("{}{index}", self.parked_prefix)
+    pub(crate) fn name(&self, index: usize) -> &str {
+        &self.plan[index].parked
+    }
+
+    /// Key `index`'s value against `scope`: the verbatim item's column, or
+    /// the evaluated expression. The one key policy [`park_order_keys`] and
+    /// [`parked_values`] share. A verbatim key's column is a projection
+    /// output the scope row carries by contract, so a miss is a bug, not a
+    /// reason to sort on a re-evaluated value; an expression that cannot be
+    /// evaluated is a null sort key, not a statement failure.
+    fn value<F>(&self, index: usize, scope: &Row, key_value: &F) -> Value
+    where
+        F: Fn(&Expr, &Row) -> Result<Value>,
+    {
+        if let Some(name) = &self.plan[index].verbatim {
+            return result_column(scope, name).clone();
+        }
+        key_value(&self.plan[index].key.expr, scope).unwrap_or(Value::Null)
     }
 }
 
@@ -114,23 +155,38 @@ impl<'a> OrderKeys<'a> {
 /// `a.p AS k` keeps the incoming `a.p`, while `ORDER BY n + 2` beside
 /// `n.num AS n` reads the projected `n`, as the TCK pins).
 ///
-/// `key_value` evaluates one key against the projected row. A key that
-/// cannot be evaluated is a null sort key, not a statement failure.
+/// `key_value` evaluates one key against the projected row; a key it cannot
+/// evaluate becomes a null sort key ([`OrderKeys::value`]).
 pub(crate) fn park_order_keys(
     keys: &OrderKeys<'_>,
     projected: &mut Row,
-    key_value: impl Fn(&Expr, &Row) -> Value,
+    key_value: impl Fn(&Expr, &Row) -> Result<Value>,
 ) {
-    let mut parked = Vec::with_capacity(keys.len());
-    for (index, item) in keys.iter().enumerate() {
-        let value = match verbatim_item(keys.items, &item.expr, projected) {
-            Some(value) if !keys.is_alias_scoped(index) => value,
-            _ => key_value(&item.expr, projected),
-        };
-        parked.push(value);
-    }
+    let parked = parked_values(keys, projected, key_value);
+    park_values(keys, projected, parked);
+}
+
+/// Every key's parked value against `scope`, computed together and returned
+/// in key order — the value half of [`park_order_keys`], for a caller that
+/// builds the result row's values directly instead of parking onto a scratch
+/// row. Evaluating all keys before any is written keeps a later key from
+/// reading a parked column an earlier one wrote.
+pub(crate) fn parked_values(
+    keys: &OrderKeys<'_>,
+    scope: &Row,
+    key_value: impl Fn(&Expr, &Row) -> Result<Value>,
+) -> Vec<Value> {
+    (0..keys.len())
+        .map(|index| keys.value(index, scope, &key_value))
+        .collect()
+}
+
+/// Write each key's resolved value under its parked column — the one write
+/// half of [`park_order_keys`], shared with the folded-aggregate path that
+/// resolves its values statically.
+pub(crate) fn park_values(keys: &OrderKeys<'_>, row: &mut Row, parked: Vec<Value>) {
     for (index, value) in parked.into_iter().enumerate() {
-        projected.insert(keys.name(index), value);
+        row.insert(keys.name(index).to_string(), value);
     }
 }
 
@@ -139,19 +195,17 @@ pub(crate) fn park_order_keys(
 pub(crate) fn unpark_order_keys(keys: &OrderKeys<'_>, rows: &mut [Row]) {
     for row in rows {
         for index in 0..keys.len() {
-            row.shift_remove(&keys.name(index));
+            row.shift_remove(keys.name(index));
         }
     }
 }
 
-/// The projected item whose expression is exactly `expr`, if any — the
-/// documented verbatim resolution for a non-alias-scoped key.
-fn verbatim_item(items: &[Projection], expr: &Expr, row: &Row) -> Option<Value> {
+/// The projected column a key whose expression is exactly `expr` answers
+/// from, if any — the documented verbatim resolution for a non-alias-scoped
+/// key.
+fn verbatim_column(items: &[Projection], expr: &Expr) -> Option<String> {
     items.iter().enumerate().find_map(|(index, item)| {
-        if is_star_item(item) || item.expr != *expr {
-            return None;
-        }
-        row.get(&item.output_name(index)).cloned()
+        (!is_star_item(item) && item.expr == *expr).then(|| item.output_name(index))
     })
 }
 
@@ -223,7 +277,7 @@ pub(crate) fn apply_yield_page_stages(
                 let keys = OrderKeys::new(&order, &[], false);
                 for row in output.iter_mut() {
                     park_order_keys(&keys, row, |expr, scope| {
-                        eval(graph, scope, expr, params, cypher_version).unwrap_or(Value::Null)
+                        eval(graph, scope, expr, params, cypher_version)
                     });
                 }
                 sort_rows_by_parked_keys(&keys, output, None)?;
@@ -278,7 +332,7 @@ fn hold_sort_keys<'a>(
 /// parks them by contract ([`result_column`] asserts it).
 fn parked_keys(keys: &OrderKeys<'_>, row: &Row) -> Vec<Value> {
     (0..keys.len())
-        .map(|index| result_column(row, &keys.name(index)).clone())
+        .map(|index| result_column(row, keys.name(index)).clone())
         .collect()
 }
 
@@ -346,6 +400,48 @@ fn take_parked_top_k(keys: &OrderKeys<'_>, rows: Vec<Row>, keep: usize) -> Resul
     drop(keys_charge);
     drop(rows_charge);
     Ok(keyed.into_iter().map(|(_, _, row)| row).collect())
+}
+
+/// The paging stage: drop the first `skip_n` rows, keep at most `limit_n`.
+/// The DISTINCT stage's row-buffer charge is re-measured by the caller
+/// against the shrunken buffer — paging itself owns no workspace state.
+pub(crate) fn page(mut rows: Vec<Row>, skip_n: usize, limit_n: Option<usize>) -> Vec<Row> {
+    drop(rows.drain(..skip_n.min(rows.len())));
+    if let Some(n) = limit_n {
+        rows.truncate(n);
+    }
+    rows
+}
+
+/// Resolve the SKIP/LIMIT bounds against the empty row. Every paging site —
+/// the eager pre-projection stop, the post-merge stage, and the aggregate
+/// fold — resolves through this one spelling, each at its own evaluation
+/// position, so CIP-27's error ordering is unchanged.
+pub(crate) fn resolve_page_bounds(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    skip: Option<&Expr>,
+    limit: Option<&Expr>,
+) -> Result<(usize, Option<usize>)> {
+    let bound = |exprs: Option<&Expr>| -> Result<Option<usize>> {
+        exprs
+            .map(|expr| skip_limit_count(&eval(graph, &Row::new(), expr, params, cypher_version)?))
+            .transpose()
+    };
+    Ok((bound(skip)?.unwrap_or(0), bound(limit)?))
+}
+
+/// Whether a projection takes the eager pre-projection page: `SKIP`/`LIMIT`
+/// with no `ORDER BY`, `DISTINCT`, or filter. The ordinary projection and the
+/// match sink consult this one rule — the sink only after it has already
+/// declined the aggregating and grouping shapes (which keep the ordinary
+/// projection anyway).
+pub(crate) fn pages_eagerly(fields: &ProjectionFields<'_>) -> bool {
+    !fields.distinct
+        && fields.order.is_empty()
+        && fields.where_clause.is_none()
+        && (fields.skip.is_some() || fields.limit.is_some())
 }
 
 pub(crate) fn skip_limit_count(v: &Value) -> Result<usize> {

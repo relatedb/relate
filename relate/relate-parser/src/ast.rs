@@ -688,7 +688,10 @@ pub struct MatchClause {
     /// mere plan preference here: an indexed equality seek and a label
     /// scan genuinely answer differently for a zoned-datetime DST overlap
     /// (the index keys on instant plus zone, `=` on the wall clock), so
-    /// the hint must reach the executor. Other hints remain discarded.
+    /// the hint must reach the executor — the one hint family that does;
+    /// `USING INDEX` stops at the front-end fulfillability check and
+    /// `USING JOIN ON` at the plan-time notification, per the two
+    /// fields below.
     pub using_scan: Vec<ScanHint>,
     /// CIP-79 `USING INDEX [SEEK] <var>:<Label>(<prop>[, …])` hints. The
     /// planner is not cost-based so they steer nothing, but the front end
@@ -697,6 +700,12 @@ pub struct MatchClause {
     /// (SemanticErrorPart2 "An index hint … is rejected"), which needs the
     /// hint preserved here.
     pub using_index: Vec<IndexHint>,
+    /// CIP-79 `USING JOIN ON <var>[, <var>…]` hints. The planner is not
+    /// cost-based so a join hint steers nothing — every one is
+    /// unfulfillable, which the `01N30` plan-time notification reports
+    /// (ADR-0363); retaining the hint here is what lets the IR carry it
+    /// to that detector.
+    pub using_join: Vec<JoinHint>,
     pub where_expr: Option<Expr>,
     /// CIP-224 `<search clause>`: `SEARCH <binding var ref> IN (VECTOR
     /// INDEX <index name> FOR <expr> LIMIT <expr>) [SCORE AS <var>]`, a
@@ -723,6 +732,26 @@ pub struct IndexHint {
     pub variable: SmallName,
     pub label: SmallName,
     pub properties: Vec<SmallName>,
+}
+
+impl IndexHint {
+    /// The hinted property list as one text — `name`, `name, surname` —
+    /// the one spelling both the front end's unfulfillable-hint error
+    /// (42N76) and the plan-time `01N31` description render.
+    pub fn properties_text(&self) -> String {
+        self.properties
+            .iter()
+            .map(|property| property.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// One `USING JOIN ON <variable>[, <variable>…]` hint: the join key
+/// identifiers, in written order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinHint {
+    pub variables: Vec<SmallName>,
 }
 
 /// CIP-224 `<search clause>`: the `SEARCH ... IN (<source specification
@@ -1985,6 +2014,9 @@ pub enum Direction {
 }
 
 // -- Expression nodes --
+
+mod expr_children;
+pub use expr_children::{StructuralEdge, StructuralEdgeMut};
 
 /// One segment of a CIP-261 interpolated string literal.
 #[derive(Debug, Clone, PartialEq)]

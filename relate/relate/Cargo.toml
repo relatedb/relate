@@ -10,6 +10,9 @@ license.workspace = true
 default = ["parquet"]
 # Parquet snapshot codec (ADR-0105).
 parquet = ["relate-storage/parquet"]
+# EXPERIMENTAL codecs (ADR-0105's additive-feature rule); default off.
+rkyv-codec = ["relate-storage/rkyv-codec"]
+fjall-codec = ["relate-storage/fjall-codec"]
 # Research-only speed-of-light kernels: forwards the executor's
 # quarantine feature (ADR-0476). Non-default: the `sol` re-export and
 # `Database::sol_graph` compile only under it. The `qpp` re-export

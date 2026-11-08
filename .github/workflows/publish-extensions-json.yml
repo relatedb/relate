@@ -2,20 +2,22 @@ name: Publish extensions.json
 
 # Publishes the signed extension channel index consumed by
 # `relate extension install` (the default source) and
-# `extension list --available` (ADR-0431 §1): the website-root pair
-# https://relatedb.ai/extensions.json +
-# extensions.json.sig, committed to the root of the `gh-pages` branch
-# beside releases.json — pipeline-owned there (gh-pages/MAINTAINING.md);
-# a hand edit is overwritten by the next publish. Both files are written
-# by this workflow only.
+# `extension list --available` (ADR-0431 §1): the pair extensions.json +
+# extensions.json.sig, post-gh-pages (ADR-0546) attached to the extension
+# release's own assets. The website lives in the separate relate-web
+# repository; its publish workflow pulls the pair from there and serves
+# them at the canonical https://relatedb.ai/extensions.json URL — the
+# assets are the transport, never the canonical URL. Both files are
+# written by this workflow only.
 #
 # The document is a full snapshot of the channel's package releases
 # (tags `relate-extensions-<name>-<X.Y.Z>` and their per-platform
 # tarballs), regenerated and re-signed on every run — the ADR-0250 §6
 # publisher contract carried over — and it is SIGNED: the one release
 # signing key (ADR-0115, the same key that signs SHA256SUMS) under the
-# `relate-release` SSHSIG namespace. An unsigned index is not a
-# publishable artifact; the script refuses without the key.
+# `relate-release` SSHSIG namespace. Signing stays in this repository:
+# the key lives only here, never in relate-web. An unsigned index is not
+# a publishable artifact; the script refuses without the key.
 #
 # Trigger:
 #   - `workflow_call` — chained from release-extensions.yml's
@@ -27,16 +29,7 @@ name: Publish extensions.json
 #     `release: published` trigger here would never fire.
 #   - `workflow_dispatch` — manual run: a BACKFILL that regenerates the
 #     index from the existing releases without cutting one (the
-#     publish-releases-json backfill shape). A backfill needs a
-#     deploy-pages.yml dispatch too — gh-pages is the site's source, not
-#     the live site (ADR-0330).
-#
-# The commit lands on gh-pages and deploy-pages.yml publishes it on its
-# next run, the same path releases.json and install.sh take. Pages
-# deploys are paused (2026-11-05, maintainer direction; deploy-pages.yml
-# runs on manual dispatch only): neither a release nor a backfill
-# deploys the site anymore, so a commit here goes live only on a manual
-# deploy-pages.yml dispatch.
+#     publish-releases-json backfill shape) and re-pokes relate-web.
 #
 # Idempotent apart from `generated_at`: the document is recomputed from
 # the live release list, so a re-run for the same releases is safe.
@@ -45,7 +38,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Release tag this publish belongs to (commit-message audit trail only; empty on a manual backfill)"
+        description: "Extension release tag this publish belongs to (the assets land there; empty on a manual backfill = newest extension release)"
         required: false
         type: string
         default: ""
@@ -58,10 +51,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Serialize publishes: two runs would both rewrite the index, a
-    # conflict push-gh-pages.sh refuses to resolve. The other gh-pages
-    # writers touch other files; the push rebases onto them. Job-level
-    # (not workflow-level) so it holds for both entry paths.
+    # Serialize publishes: two runs would both rewrite the same release
+    # assets, a conflict neither resolves. Job-level (not workflow-level)
+    # so it holds for both entry paths.
     concurrency:
       group: publish-extensions-json
       cancel-in-progress: false
@@ -85,8 +77,7 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       # The generator reads the live release list; `main` carries the
       # current script (a backfill dispatch runs from main as well), and
-      # only the script directory is needed — the sparse-checkout shape
-      # of publish-releases-json.yml.
+      # only the script directory is needed.
       - name: Checkout main (generator)
         uses: actions/checkout@v4
         with:
@@ -94,44 +85,67 @@ jobs:
           sparse-checkout: |
             .github/scripts
 
-      - name: Checkout gh-pages into subdirectory
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: gh-pages
-          fetch-depth: 1
-
-      # Same gh-pages checkout + guarded commit + push-gh-pages.sh shape
-      # as publish-releases-json.yml: the generator writes straight into
-      # the gh-pages checkout, then the commit step below publishes only
-      # those two files. RELEASE_SIGNING_PRIVATE_KEY rides the inherited
-      # secrets (release-extensions.yml calls with `secrets: inherit`) —
-      # the script writes it to a 0600 temp file and removes it, the
+      # RELEASE_SIGNING_PRIVATE_KEY rides the inherited secrets
+      # (release-extensions.yml calls with `secrets: inherit`) — the
+      # script writes it to a 0600 temp file and removes it, the
       # create-release SHA256SUMS signing shape.
       - name: Generate and sign extensions.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
-        run: .github/scripts/publish-extensions-json.sh gh-pages/extensions.json gh-pages/extensions.json.sig
+        run: .github/scripts/publish-extensions-json.sh "$RUNNER_TEMP/extensions.json" "$RUNNER_TEMP/extensions.json.sig"
 
-      - name: Commit and push extensions.json to gh-pages
+      # Resolve the release the pair lands on: the caller's tag, or the
+      # newest extension release on a manual backfill.
+      - name: Resolve target release
+        id: target
         env:
-          PUBLISH_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          cd gh-pages
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add extensions.json extensions.json.sig
-          if git diff --cached --quiet; then
-            echo "extensions.json unchanged; nothing to publish."
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            tag="$(gh release list --limit 100 \
+              --json tagName,isDraft,isPrerelease,publishedAt \
+              -q '[.[] | select((.isDraft|not) and (.isPrerelease|not) and (.tagName|test("^relate-extensions-")))] | sort_by(.publishedAt) | reverse | .[0].tagName')"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error::no extension release exists to attach extensions.json to"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Attach the signed index to the extension release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.target.outputs.tag }}" \
+            "$RUNNER_TEMP/extensions.json" "$RUNNER_TEMP/extensions.json.sig" --clobber
+
+      # Same poke contract as release.yml's publish-releases-json job
+      # (ADR-0546), with kind=extension: 404 is a stated skip until
+      # relate-web exists; any other non-204 fails the run.
+      - name: Poke relate-web (repository_dispatch)
+        env:
+          DISPATCH_TOKEN: ${{ secrets.RELATE_WEB_DISPATCH_TOKEN }}
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::notice::RELATE_WEB_DISPATCH_TOKEN is not set — skipping the relate-web poke."
             exit 0
           fi
-          if [ -n "${PUBLISH_TAG}" ]; then
-            subject="chore(website): publish extensions.json for ${PUBLISH_TAG}"
-          else
-            subject="chore(website): publish extensions.json"
-          fi
-          git commit -m "${subject}"
-          ../.github/scripts/push-gh-pages.sh .
+          status="$(curl -sS -o "$RUNNER_TEMP/dispatch-body" -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/relatedb/relate-web/dispatches \
+            -d "{\"event_type\":\"relate-release\",\"client_payload\":{\"kind\":\"extension\",\"tag\":\"$RELEASE_TAG\"}}")"
+          case "$status" in
+            204) echo "relate-web notified: kind=extension tag=$RELEASE_TAG" ;;
+            404) echo "::notice::relatedb/relate-web is not reachable (not created yet, or the token cannot see it) — skipping the poke." ;;
+            *) echo "::error::repository_dispatch to relatedb/relate-web failed with HTTP $status"; cat "$RUNNER_TEMP/dispatch-body"; exit 1 ;;
+          esac

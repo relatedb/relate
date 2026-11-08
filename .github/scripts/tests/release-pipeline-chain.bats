@@ -6,11 +6,10 @@
 # inline and uploads slack-payload.json as the release-notes-slack-payload
 # artifact — and release.yml's final `slack-announce` job downloads that
 # artifact and posts it, but only after the whole tail (publish-releases-json,
-# the self-update canary) is green. Pages deploys are paused (2026-11-05,
-# maintainer direction): the deploy-pages job is suspended from the release
-# tail — the site no longer redeploys with a release — so the announcement's
-# tail is the release-list writer plus the canary; restoring the deploy
-# (deploy-pages.yml's pause note) restores it to the tail too.
+# the self-update canary) is green. The website lives in the separate
+# relate-web repository (ADR-0546): the tail's release-list leg is
+# publish-releases-json, which attaches releases.json to the release
+# assets and pokes relate-web to pull them — no gh-pages, no deploy job.
 # release-notes.yml's inline Post-to-Slack step
 # stays gated on `publish && slack`, so only a standalone publishing run
 # (`slack` defaults to true) ever posts inline. Two shared invariants span
@@ -148,19 +147,19 @@ validate_payload_lines() {
 # ---------------------------------------------------------------------------
 
 @test "slack-announce needs publish-releases-json (the announcement waits for the release-list writer)" {
-  # The deploy-pages job is suspended with the Pages-deploy pause, so
-  # the tail's gh-pages leg is publish-releases-json: the announcement
-  # must not post before the release list is written.
+  # The tail's release-list leg is publish-releases-json (releases.json
+  # rides the release assets, relate-web pulls them — ADR-0546): the
+  # announcement must not post before the release list is written.
   needs_line="$(slack_announce_needs_line)"
   echo "needs line: ${needs_line}"
   [ -n "${needs_line}" ]
   grep -qF "publish-releases-json" <<< "${needs_line}"
 }
 
-@test "slack-announce no longer needs deploy-pages (Pages deploys are paused)" {
-  # The lock on the pause itself: the suspended job must stay out of
-  # the announce chain until the deploy is restored — a revert that
-  # brings deploy-pages back must also bring it back here.
+@test "slack-announce does not need a deploy job (the site is relate-web's)" {
+  # The lock on the ADR-0546 shape: no Pages deploy belongs to this
+  # repository's release tail — relate-web deploys itself on the
+  # repository_dispatch poke.
   needs_line="$(slack_announce_needs_line)"
   echo "needs line: ${needs_line}"
   [ -n "${needs_line}" ]

@@ -1413,7 +1413,7 @@ variable-length pattern, a missing range index, a label/relationship
 type/property key the catalog does not know, a deprecated function or
 procedure, a scope-less `CALL { … }`. Each entry carries a stable `code`, a
 GQLSTATUS (`gql_status`), a severity (`INFORMATION` or `WARNING`), a
-category (`PERFORMANCE`, `UNRECOGNIZED` or `DEPRECATION`), a title, the
+category (`PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT`), a title, the
 instance `description` (the diagnosis) and a runnable `remedy` (the
 action). A plain run derives no list.
 
@@ -1516,6 +1516,24 @@ declined. `SeekTimeNs`/
 candidate resolution (`NodeReads`) and the relationship traversal
 (`Hops`/`NeighborWalks`) each spent, inclusive of a multi-element
 pattern's nested phases — zero for a clause that does no pattern work.
+
+`KernelRung` (LABS-1117) names the traversal rung that actually served
+a `MATCH` clause: `chain` (the unrolled fixed-k kernel), `hub-star`
+(the hub candidate intersection), `frontier-nfa` (the frontier-NFA
+rung), or `walker` (the per-row walker, every gate's decline). The
+chain rung emits `KernelHops` beside it; no other rung carries a hop
+count, and a non-`MATCH` clause, a `MATCH` a fold answered, or a `MATCH`
+the batch scan/filter chain answered (`Batched`) emits no `KernelRung`; a
+`SEARCH` `MATCH` emits `walker` (it walks the pattern per row). On every
+`MATCH`
+operator, EXPLAIN and PROFILE alike also emit `PatternEngine` — the
+store's `RELATE_PATTERN_ENGINE` mode (`auto`, `nfa`, or `walk`), the
+one static rung fact the plan can state: the rungs themselves are
+runtime choices inside an operator, so EXPLAIN names the mode that
+governs the gates and PROFILE's `KernelRung` names the executed rung.
+The plan table's `Details` cell marks the executed rung
+`[kernel chain hops=3]`, `[kernel hub-star]`, `[kernel frontier-nfa]`,
+or `[kernel walker]`.
 
 The deprecated `_profile_plan`/`_profile_time`/`_profile_rows`/
 `_profile_mutations` columns are **removed** (ADR-0345's sanctioned

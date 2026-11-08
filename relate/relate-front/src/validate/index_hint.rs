@@ -63,12 +63,7 @@ fn unfulfillable_hint(hint: &IndexHint) -> EngineError {
             "unfulfillable hints: the hint(s) USING INDEX {}:{}({}) cannot be fulfilled",
             hint.variable,
             hint.label,
-            // Error-path rendering: names resolve through Display.
-            hint.properties
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            hint.properties_text()
         ),
     )
 }

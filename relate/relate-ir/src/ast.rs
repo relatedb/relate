@@ -214,6 +214,14 @@ pub enum Clause {
         match_mode: MatchMode,
         patterns: Vec<PathPattern>,
         where_clause: Option<Expr>,
+        /// CIP-79 `USING INDEX [SEEK]` hints, carried for the plan-time
+        /// notification that reports a hint no catalog index can serve
+        /// (`01N31`, ADR-0363); the planner itself steers nothing by them.
+        using_index: Vec<relate_parser::IndexHint>,
+        /// CIP-79 `USING JOIN ON` hints, carried for the same purpose: the
+        /// planner never fulfils one, so the `01N30` notification reports
+        /// each.
+        using_join: Vec<relate_parser::JoinHint>,
         /// CIP-224/CIP-240 vector index search attached to this MATCH.
         search: Option<Box<SearchClause>>,
     },

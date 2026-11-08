@@ -27,7 +27,9 @@ not do yet is [`docs/limitations.md`](docs/limitations.md).
 **CLI (macOS & Linux):**
 
 ```bash
-curl -sSfL https://relatedb.ai/install.sh | bash
+# While the repository is private, the installer authenticates release
+# downloads with a GitHub token (the `gh` CLI provides one):
+curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash
 ```
 
 Downloads the release binary for your platform (macOS and Linux, amd64 and
@@ -43,8 +45,9 @@ Linux, macOS, and Windows are on the
 installed binary self-updates:
 
 ```bash
-relate upgrade          # download, verify, and replace (alias: update)
-relate upgrade --check  # report current vs latest; changes nothing
+# While the repository is private, self-update authenticates the same way:
+GITHUB_TOKEN=$(gh auth token) relate upgrade          # download, verify, and replace (alias: update)
+GITHUB_TOKEN=$(gh auth token) relate upgrade --check  # report current vs latest; changes nothing
 ```
 
 **Python:**

@@ -323,4 +323,8 @@ impl PatternStats for StatsMemo<'_> {
     fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
         self.inner.degree_tail(label, rel_type)
     }
+
+    fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
+        self.inner.any_degree_tail(rel_type)
+    }
 }

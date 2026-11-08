@@ -34,6 +34,7 @@ fn facts() -> PlanRow {
                     walk_ns: 2,
                 },
                 start: None,
+                kernel: None,
                 batched: false,
                 zone_skips: 0,
                 frontier: Default::default(),

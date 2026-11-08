@@ -191,29 +191,47 @@ fn bundle_reopen(codec: SnapshotCodecKind) -> Box<dyn Fn() -> Database> {
 /// Run [`matrix_cell`] under every snapshot codec compiled into this
 /// build (Parquet needs the `parquet` feature, so a parquet-less build
 /// runs the JSON leg only); `open` builds the store's reopen closure for
-/// the codec.
-fn run_matrix(open: impl Fn(SnapshotCodecKind) -> Box<dyn Fn() -> Database>) {
-    for &codec in SnapshotCodecKind::compiled() {
+/// the codec. The one loop body, over whichever codec set the store kind
+/// can host.
+fn run_matrix_each(
+    open: impl Fn(SnapshotCodecKind) -> Box<dyn Fn() -> Database>,
+    codecs: impl Iterator<Item = SnapshotCodecKind>,
+) {
+    for codec in codecs {
         matrix_cell(&open(codec));
     }
 }
 
+/// Every compiled codec this build has.
+fn run_matrix(open: impl Fn(SnapshotCodecKind) -> Box<dyn Fn() -> Database>) {
+    run_matrix_each(open, SnapshotCodecKind::compiled().iter().copied());
+}
+
+/// [`run_matrix`] for store kinds a codec cannot host: the LSM keyspace
+/// codec needs a real directory of its own, so the memory-VFS and bundle
+/// matrices exclude it by the typed capability, not by its name.
+fn run_matrix_stores_without_a_native_root(
+    open: impl Fn(SnapshotCodecKind) -> Box<dyn Fn() -> Database>,
+) {
+    run_matrix_each(open, SnapshotCodecKind::compiled_for_memory_stores());
+}
+
 #[test]
-fn native_directory_procedure_matrix_both_codecs() {
+fn native_directory_procedure_matrix_compiled_codecs() {
     common::preview_ontology();
     run_matrix(native_dir_reopen);
 }
 
 #[test]
-fn memory_vfs_procedure_matrix_both_codecs() {
+fn memory_vfs_procedure_matrix_compiled_codecs() {
     common::preview_ontology();
-    run_matrix(memory_vfs_reopen);
+    run_matrix_stores_without_a_native_root(memory_vfs_reopen);
 }
 
 #[test]
-fn bundle_procedure_matrix_both_codecs() {
+fn bundle_procedure_matrix_compiled_codecs() {
     common::preview_ontology();
-    run_matrix(bundle_reopen);
+    run_matrix_stores_without_a_native_root(bundle_reopen);
 }
 
 /// ADR-0120 §4/§8 through the procedure path: the first `db.ontology.set`

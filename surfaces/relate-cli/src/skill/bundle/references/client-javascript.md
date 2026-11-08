@@ -129,7 +129,7 @@ shared (acyclic) reference binds at each place it appears.
   `EXPLAIN` and `PROFILE` (`PROFILE` adds the `EstimationMiss` kind). Each
   entry carries `code`,
   `gql_status`, `severity` (`"INFORMATION"` / `"WARNING"`), `category`
-  (`"PERFORMANCE"` / `"UNRECOGNIZED"` / `"DEPRECATION"`), `title`,
+  (`"PERFORMANCE"` / `"UNRECOGNIZED"` / `"DEPRECATION"` / `"SCHEMA"` / `"HINT"`), `title`,
   `description` (the diagnosis) and `remedy` (the action to take), plus
   `operator_id` on operator-scoped kinds. There is no `position` key —
   render the remedy rather than jumping to source.

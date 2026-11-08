@@ -5,7 +5,7 @@ use relate_core::Error;
 
 use crate::map_message;
 
-#[cfg(parquet_codec)]
+#[cfg(manifest_codec)]
 use super::manifest;
 use super::{value_encoding, SnapshotMarker};
 
@@ -17,7 +17,7 @@ use super::{value_encoding, SnapshotMarker};
 /// sole constructor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Subsystem {
-    #[cfg(parquet_codec)]
+    #[cfg(manifest_codec)]
     Manifest,
     ValueEncoding,
 }
@@ -26,7 +26,7 @@ impl Subsystem {
     /// The version this binary writes for the subsystem.
     fn current(&self) -> u64 {
         match self {
-            #[cfg(parquet_codec)]
+            #[cfg(manifest_codec)]
             Subsystem::Manifest => u64::from(manifest::CURRENT_VERSION),
             Subsystem::ValueEncoding => value_encoding::CURRENT_VERSION,
         }
@@ -36,7 +36,7 @@ impl Subsystem {
 impl std::fmt::Display for Subsystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            #[cfg(parquet_codec)]
+            #[cfg(manifest_codec)]
             Subsystem::Manifest => "manifest",
             Subsystem::ValueEncoding => "value_encoding",
         })
@@ -102,7 +102,7 @@ pub(crate) fn annotate_legacy_failure(error: Error, marker: SnapshotMarker) -> E
         return error;
     };
     match subsystem {
-        #[cfg(parquet_codec)]
+        #[cfg(manifest_codec)]
         Subsystem::Manifest => with_version_context(
             error,
             format_args!("store snapshot is at manifest version {version}"),

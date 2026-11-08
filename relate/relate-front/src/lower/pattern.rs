@@ -1,5 +1,6 @@
 use super::expr::*;
 use super::*;
+use relate_names::SmallName;
 
 pub(super) fn lower_paths(paths: &[cl::PatternPath]) -> Result<Vec<mdb::PathPattern>> {
     paths.iter().map(lower_path).collect()
@@ -191,27 +192,38 @@ pub(super) fn lower_path_selector(selector: &cl::PathSelector) -> mdb::PathSelec
     }
 }
 
+/// The written-property fact of a node or relationship element, lowered one
+/// way for both: a `$param` is the whole map, a written `{...}` (even an
+/// empty `{}`) is a map, and nothing written is `None` (unconstrained).
+fn lower_element_properties(
+    parameter: Option<&cl::Expr>,
+    has_properties: bool,
+    properties: &[(SmallName, cl::Expr)],
+) -> Result<Option<mdb::Expr>> {
+    if let Some(parameter) = parameter {
+        return Ok(Some(lower_expr(parameter)?));
+    }
+    if !has_properties {
+        return Ok(None);
+    }
+    let pairs = properties
+        .iter()
+        .map(|(k, v)| {
+            // Map-bridge feed: IR map keys are value-domain keys
+            // (runtime `Value::Map`), rendered once here.
+            Ok((k.to_string(), lower_expr(v)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(mdb::Expr::Map(pairs)))
+}
+
 pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {
     let labels = match &n.label_expr {
         None => Vec::new(),
         Some(le) => le.as_label_list().unwrap_or_default(),
     };
-    let properties = if let Some(parameter) = &n.properties_param {
-        Some(lower_expr(parameter)?)
-    } else if n.has_properties {
-        Some(mdb::Expr::Map(
-            n.properties
-                .iter()
-                .map(|(k, v)| {
-                    // Map-bridge feed: IR map keys are value-domain keys
-                    // (runtime `Value::Map`), rendered once here.
-                    Ok((k.to_string(), lower_expr(v)?))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))
-    } else {
-        None
-    };
+    let properties =
+        lower_element_properties(n.properties_param.as_ref(), n.has_properties, &n.properties)?;
     Ok(mdb::NodePattern {
         variable: n.variable.clone(),
         labels,
@@ -223,37 +235,13 @@ pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {
 }
 
 pub(super) fn lower_rel(r: &cl::RelPattern) -> Result<mdb::RelPattern> {
-    let types = match &r.type_expr {
-        None => Vec::new(),
-        Some(cl::LabelExpr::Label(t)) => vec![t.clone()],
-        Some(cl::LabelExpr::Or(items)) => items
-            .iter()
-            .map_while(|i| match i {
-                cl::LabelExpr::Label(t) => Some(t.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .filter(|_| items.iter().all(|i| matches!(i, cl::LabelExpr::Label(_))))
-            .collect(),
-        Some(_) => Vec::new(),
-    };
-    let properties = if let Some(parameter) = &r.properties_param {
-        Some(lower_expr(parameter)?)
-    } else if !r.properties.is_empty() {
-        Some(mdb::Expr::Map(
-            r.properties
-                .iter()
-                .map(|(k, v)| {
-                    // Map-bridge feed: IR map keys are value-domain keys
-                    // (runtime `Value::Map`), rendered once here.
-                    Ok((k.to_string(), lower_expr(v)?))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))
-    } else {
-        None
-    };
+    let types = r
+        .type_expr
+        .as_ref()
+        .and_then(cl::LabelExpr::as_ddl_list)
+        .unwrap_or_default();
+    let properties =
+        lower_element_properties(r.properties_param.as_ref(), r.has_properties, &r.properties)?;
     let var_length = r.min_hops.is_some() || r.max_hops.is_some();
     let max_hops = if var_length { r.max_hops } else { Some(1) };
     Ok(mdb::RelPattern {
@@ -279,3 +267,17 @@ pub(super) fn lower_rel(r: &cl::RelPattern) -> Result<mdb::RelPattern> {
 /// lowered `PatternElement` shape is asserted exactly.
 #[cfg(test)]
 mod pathdb_tests;
+
+#[cfg(test)]
+mod element_property_tests {
+    use super::*;
+
+    #[test]
+    fn written_empty_map_lowers_the_same_for_nodes_and_relationships() {
+        let node = lower_element_properties(None, true, &[]).unwrap();
+        assert!(matches!(&node, Some(mdb::Expr::Map(m)) if m.is_empty()));
+        assert!(lower_element_properties(None, false, &[])
+            .unwrap()
+            .is_none());
+    }
+}

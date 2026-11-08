@@ -350,3 +350,22 @@ fn typed_detail_single_sources_the_class_tokens() {
     assert_eq!(Error::ty("anything").typed_detail(), None);
     assert_eq!(Error::syntax("anything").typed_detail_text(), None);
 }
+
+#[test]
+fn invalid_argument_value_composes_the_pinned_token_once() {
+    let e = Error::invalid_argument_value("size() on paths");
+    assert!(matches!(&e, Error::Type(d) if d == "InvalidArgumentValue: size() on paths"));
+    assert_eq!(
+        e.to_string(),
+        Error::ty("InvalidArgumentValue: size() on paths").to_string()
+    );
+}
+
+#[test]
+fn invalid_argument_type_expected_spells_the_shared_sentence() {
+    let e = Error::invalid_argument_type_expected("LIST<ANY>", "INTEGER NOT NULL");
+    assert_eq!(
+        e,
+        Error::invalid_argument_type(expected_type_detail("LIST<ANY>", "INTEGER NOT NULL"))
+    );
+}

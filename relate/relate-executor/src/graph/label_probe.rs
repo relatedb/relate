@@ -262,25 +262,16 @@ impl Graph {
             .unwrap_or(false)
     }
 
-    /// Whether `id`'s version visible at `ts` carries `label`, compared by
-    /// interned id: no label string is built. `None` when no version is
-    /// visible.
-    pub(crate) fn node_has_label_at(&self, id: NodeId, ts: u64, label: &str) -> Option<bool> {
-        let lid = self.label_id(label);
-        self.with_visible_node(id, ts, |live| lid.is_some_and(|lid| live.has_label(lid)))
-    }
-
     /// The label's interned id, when anything in the store ever carried
     /// it — the one interning lookup a caller that checks the label per
-    /// candidate makes (ADR-0473's prepared programs), instead of one per
-    /// candidate like [`Self::node_has_label_at`].
+    /// candidate makes (ADR-0473's prepared programs, the per-statement
+    /// memo of LABS-1116), instead of one per candidate.
     pub(crate) fn interned_label_id(&self, label: &str) -> Option<u32> {
         self.label_id(label)
     }
 
     /// Whether `id`'s version visible at `ts` carries the interned label
-    /// `lid` — [`Self::node_has_label_at`] with the interning already
-    /// paid. `None` when no version is visible.
+    /// `lid`. `None` when no version is visible.
     pub(crate) fn node_has_label_id_at(&self, id: NodeId, ts: u64, lid: u32) -> Option<bool> {
         self.with_visible_node(id, ts, |live| live.has_label(lid))
     }
