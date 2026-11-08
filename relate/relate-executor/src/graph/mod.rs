@@ -1321,8 +1321,9 @@ impl FreshIds {
     }
 }
 
-/// Bytes the slot array gains when `id` extends `span`. An id whose array
-/// does not fit adds one side-map entry, once per id in this batch.
+/// Bytes the slot array gains when `id` extends `span`. An id the store
+/// will not place in the array adds one side-map entry, once per id in
+/// this batch.
 fn span_growth(
     span: &mut usize,
     id: NodeId,
@@ -1337,7 +1338,7 @@ fn span_growth(
     if need <= *span {
         return 0;
     }
-    let Some(after) = crate::memory::dense_span_bytes(need, slot) else {
+    let Some(after) = crate::memory::reservable_span_bytes(need, slot) else {
         return if side.insert(id) { overflow as i64 } else { 0 };
     };
     let before = crate::memory::id_vec_bytes(*span, slot);

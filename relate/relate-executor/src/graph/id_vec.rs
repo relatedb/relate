@@ -4,7 +4,7 @@
 //!
 //! An id whose reserved slot array does not fit is one side-map entry. That
 //! is the allocator's last id, and any id whose reservation would pass
-//! [`DENSE_SPAN_CAP_BYTES`]. Ordinary monotonic ids never reach it.
+//! [`crate::memory::DENSE_SPAN_CAP_BYTES`]. Ordinary monotonic ids never reach it.
 //!
 //! Do not call back into the same store while one of its guards is alive,
 //! including from [`IdVec::for_each`]: the lock is not re-entrant.
@@ -14,9 +14,7 @@ use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::memory::{
-    dense_span_bytes, fit_reserved, id_vec_bytes, overflow_entry_bytes, DENSE_SPAN_CAP_BYTES,
-};
+use crate::memory::{fit_reserved, id_vec_bytes, overflow_entry_bytes, reservable_span_bytes};
 
 /// `None` is a hole: a deleted id, or an id below the highest one stored.
 #[derive(Debug)]
@@ -183,9 +181,8 @@ fn try_grow<T>(dense: &mut Vec<Option<T>>, idx: usize) -> bool {
         return false;
     }
     let slot = size_of::<Option<T>>() as u64;
-    match dense_span_bytes(new_len, slot) {
-        Some(bytes) if bytes <= DENSE_SPAN_CAP_BYTES => {}
-        _ => return false,
+    if reservable_span_bytes(new_len, slot).is_none() {
+        return false;
     }
     if dense.try_reserve(new_len - dense.len()).is_err() {
         return false;

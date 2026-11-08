@@ -129,6 +129,17 @@ pub fn dense_span_bytes(span: usize, slot: u64) -> Option<u64> {
     (reserved as u64).checked_mul(slot)
 }
 
+/// Dense reservation a store will allocate for `span`. `None` when the
+/// power-of-two product overflows `u64` or exceeds
+/// [`DENSE_SPAN_CAP_BYTES`]: that id is a side-map entry, the same gate
+/// the store uses when it grows.
+pub fn reservable_span_bytes(span: usize, slot: u64) -> Option<u64> {
+    match dense_span_bytes(span, slot) {
+        Some(bytes) if bytes <= DENSE_SPAN_CAP_BYTES => Some(bytes),
+        _ => None,
+    }
+}
+
 /// Reserved bytes of an id-indexed slot array (ADR-0532). The row itself
 /// sits in the slot; this is the vector, holes included. A span that does
 /// not fit charges nothing here — the caller charges a side-map entry.
@@ -449,9 +460,9 @@ impl<F: Fn(i64) -> ChainShape> Shapes<F> {
             .unwrap_or_else(|| (self.committed)(id))
     }
 
-    /// Bytes the slot array gains when `id` extends it. An id whose array
-    /// does not fit adds one side-map entry instead, and only while the id
-    /// has no slot yet.
+    /// Bytes the slot array gains when `id` extends it. An id the store
+    /// will not place in the array adds one side-map entry instead, and
+    /// only while the id has no slot yet.
     fn note_span(&mut self, id: i64) -> i64 {
         let Some(idx) = usize::try_from(id).ok() else {
             return 0;
@@ -460,7 +471,7 @@ impl<F: Fn(i64) -> ChainShape> Shapes<F> {
         if need <= self.span {
             return 0;
         }
-        let Some(after) = dense_span_bytes(need, self.slot) else {
+        let Some(after) = reservable_span_bytes(need, self.slot) else {
             if !matches!(self.shape_of(id), ChainShape::Absent) {
                 return 0;
             }

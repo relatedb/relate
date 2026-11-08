@@ -257,6 +257,27 @@ fn estimate_matches_the_charge_across_shapes() {
     step(vec![RedoOp::delete_node(0)], false);
     // Create and delete in one batch.
     step(vec![create(6), RedoOp::delete_node(6)], true);
+    // An id past the dense cap is a side-map entry on the node store, the
+    // relationship store, and both adjacency lists. The estimate charges
+    // that entry, not the slot array the store refuses to allocate.
+    let slot = crate::graph::node_slot()
+        .min(crate::graph::rel_slot())
+        .min(crate::graph::adj_slot());
+    let mut wide = 1i64;
+    loop {
+        let need = usize::try_from(wide).unwrap().saturating_add(1);
+        match crate::memory::dense_span_bytes(need, slot) {
+            Some(bytes) if bytes <= crate::memory::DENSE_SPAN_CAP_BYTES => {
+                wide = wide.saturating_mul(2);
+            }
+            _ => break,
+        }
+    }
+    step(vec![create(wide)], false);
+    step(
+        vec![RedoOp::create_rel(wide, 3, wide, "R".into(), props(1))],
+        false,
+    );
     // Collection returns the spill.
     let before = g.used_bytes();
     g.gc_versions();
