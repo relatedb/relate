@@ -13,13 +13,24 @@ fn test_envelope_mode_prints_columns_rows_and_truncated() {
         "RETURN 1 AS a, [1,2] AS l",
     ]));
     assert!(status.success(), "{stderr}");
-    assert_eq!(
-        stdout,
-        concat!(
-            "{\"columnTypes\":[\"INTEGER\",\"LIST\"],\"columns\":[\"a\",\"l\"],",
-            "\"notifications\":[],\"rows\":[{\"a\":1,\"l\":[1,2]}],\"truncated\":false}\n"
-        )
+    // LABS-1120: the envelope carries the timing block beside the rows —
+    // one keyed `timings` object plus the `planCache` outcome — with
+    // per-run numbers, so the shape is asserted structurally.
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["columns"], serde_json::json!(["a", "l"]));
+    assert_eq!(v["columnTypes"], serde_json::json!(["INTEGER", "LIST"]));
+    assert_eq!(v["rows"], serde_json::json!([{"a": 1, "l": [1, 2]}]));
+    assert_eq!(v["truncated"], serde_json::json!(false));
+    assert_eq!(v["notifications"], serde_json::json!([]));
+    assert!(
+        v["timings"]["parse_ms"].is_number(),
+        "the timings object: {stdout}"
     );
+    assert!(
+        v["timings"]["lex_parse_ms"].is_number(),
+        "the fine split rides: {stdout}"
+    );
+    assert_eq!(v["planCache"], serde_json::json!("miss"));
 }
 
 #[test]
@@ -30,10 +41,16 @@ fn test_envelope_mode_keeps_columns_for_an_empty_result() {
         "MATCH (n:Nope) RETURN n.p AS p",
     ]));
     assert!(status.success(), "{stderr}");
-    assert_eq!(
-        stdout,
-        "{\"columnTypes\":[\"ANY\"],\"columns\":[\"p\"],\"notifications\":[],\"rows\":[],\"truncated\":false}\n"
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["columns"], serde_json::json!(["p"]));
+    assert_eq!(v["columnTypes"], serde_json::json!(["ANY"]));
+    assert_eq!(v["rows"], serde_json::json!([]));
+    assert_eq!(v["truncated"], serde_json::json!(false));
+    assert!(
+        v["timings"]["elapsed_ms"].is_number(),
+        "the timings object: {stdout}"
     );
+    assert_eq!(v["planCache"], serde_json::json!("miss"));
 }
 
 #[test]
@@ -62,11 +79,23 @@ fn test_envelope_mode_failure_carries_the_error_envelope() {
 
 #[test]
 fn test_json_and_jsonl_modes_are_unchanged_by_the_envelope_mode() {
-    // Piped stdout renders compact JSON (ADR-0240).
+    // Piped stdout renders compact JSON (ADR-0240). LABS-1120: a result
+    // with its timing block rides the wrapper in `json` (`data` beside
+    // the riders) and the terminal timing line in `jsonl`.
     let (_, json, _) = run_cli(Opts::new(&["--json", "RETURN 1 AS a"]));
-    assert_eq!(json, "[{\"a\":1}]\n");
+    let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    assert_eq!(v["data"], serde_json::json!([{"a": 1}]));
+    assert!(
+        v["timings"]["parse_ms"].is_number(),
+        "the timing rider: {json}"
+    );
     let (_, jsonl, _) = run_cli(Opts::new(&["--jsonl", "RETURN 1 AS a"]));
-    assert_eq!(jsonl, "{\"a\":1}\n");
+    let lines: Vec<&str> = jsonl.lines().collect();
+    assert_eq!(lines[0], "{\"a\":1}");
+    assert!(
+        lines[1].contains("\"timings\"") && lines[1].contains("\"planCache\""),
+        "the timing line closes the stream: {jsonl}"
+    );
 }
 
 #[test]

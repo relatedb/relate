@@ -110,6 +110,26 @@ runner changes show up as `INCOMPATIBLE` — re-freeze via that workflow.
 A matched-class miss is a performance fail (code or residual GHA noise),
 not a reason to add `baselines/ci/` or widen bands.
 
+## Memory controls envelope
+
+`baselines/memory-controls.json` is schema 1. Until a freeze lands,
+`frozen` is false and `make compare-memory-controls` reports
+`no-baseline` (a warning, exit 0). `make baseline-memory-controls` runs
+`BASELINE_RUNS` rounds of `MEMORY_CONTROLS_PROFILE=full` in the ADR-0070
+container and folds each numeric metric into a min/max range.
+`create-loadtest-baselines` runs that target and opens the pull request;
+it does not push to the default branch.
+
+A regression is a behavioural miss, or a lower-is-better metric above
+the range by both its band and its floor. An improvement is the same
+metric below the range. An envelope miss warns and the job stays green
+(ADR-0544) until a new envelope is taken. A behavioural miss still
+fails. Confirm a real move, then dispatch
+`create-loadtest-baselines` again so the envelope moves to the new
+numbers. The pull-request lane runs one
+calibration repeat. The freeze and the nightly cadence run three.
+Repeat count is not part of the class match.
+
 ## Notes
 
 Knobs for the pre-merge loadtests match the archived predecessor's `Makefile` defaults (the

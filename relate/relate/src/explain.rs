@@ -112,13 +112,14 @@ pub(crate) fn explain_result(
     // construction for a non-executed result names that effect itself, so no
     // construction site spells the placeholder. The timing stamp is taken
     // here — after the render (LABS-832) — so the EXECUTE arm covers the
-    // plan render it is documented to cover.
+    // plan render it is documented to cover; `ResultHeader::new` takes it
+    // lazily and invokes it at the header's construction.
     Ok(QueryResult::not_executed(ResultHeader::new(
         Vec::new(),
         &[],
         query_type,
         namespace,
-        timing(),
+        timing,
     ))
     .with_plan(tree.root, notifications))
 }

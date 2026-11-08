@@ -122,13 +122,10 @@ pub(crate) fn person_ada() -> (Graph, Wal) {
 /// safety of its own (ADR-0406 §5), so a test that asserts on the
 /// JSON/Parquet root-object layout directly covers these two only.
 fn root_layout_codecs() -> impl Iterator<Item = SnapshotCodecKind> {
-    // The typed layout fact decides (engine_dir): the codecs whose
-    // engine state lives at the store root, never a variant-name
-    // comparison a future sidecar codec would silently drift past.
-    SnapshotCodecKind::compiled()
-        .iter()
-        .copied()
-        .filter(|codec| codec.engine_dir().is_none())
+    // The typed layout facts decide (engine_dir, needs_native_root) —
+    // never a variant-name comparison a future sidecar codec would
+    // silently drift past.
+    SnapshotCodecKind::compiled_with_root_layout()
 }
 
 #[test]
@@ -149,7 +146,7 @@ fn snapshot_is_wal_applied_state() {
 #[test]
 fn legacy_wal_label_constraint_replays_with_typed_marker_after_recycle() {
     use relate_executor::RedoOp;
-    for &codec in SnapshotCodecKind::compiled() {
+    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
         let store = memory_store_with_codec(codec).unwrap();
         let (vfs, prefix) = store.wal_vfs();
         let mut wal = Wal::open(vfs, prefix, 0).unwrap();
@@ -202,6 +199,15 @@ fn direct_graph_incomplete_label_constraint_fails_before_checkpoint_writes() {
             SnapshotCodecKind::Markdown => {
                 unreachable!("root_layout_codecs yields only codecs without an engine sidecar")
             }
+            // Unconditional arms like Parquet's: the loop yields only
+            // compiled codecs, so an uncompiled codec's arm is never
+            // taken.
+            SnapshotCodecKind::Rkyv => {
+                vec![crate::snapshot::MANIFEST_JSON, crate::codec::GRAPH_RKYV]
+            }
+            // Unreachable in this loop (the set excludes native-root
+            // codecs); the arm keeps the match exhaustive.
+            SnapshotCodecKind::Fjall => vec![crate::snapshot::MANIFEST_JSON],
         };
         let old: Vec<(&str, Vec<u8>)> = covered
             .iter()
@@ -337,9 +343,9 @@ fn legacy_omission_never_masks_a_new_incomplete_definition() {
 }
 
 #[test]
-fn typed_checkpoint_rejects_forged_legacy_unknown_markers_in_both_codecs() {
+fn typed_checkpoint_rejects_forged_legacy_unknown_markers_in_compiled_codecs() {
     use relate_executor::RedoOp;
-    for &codec in SnapshotCodecKind::compiled() {
+    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
         let store = memory_store_with_codec(codec).unwrap();
         let graph = Graph::default();
         graph

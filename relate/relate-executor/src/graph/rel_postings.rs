@@ -92,7 +92,7 @@ impl Graph {
         self.with_pair(
             &self.indexes.rel_prop_pairs,
             (type_id, kid),
-            |g: &Graph| g.rels.iter().map(|e| *e.key()).collect(),
+            |g: &Graph| g.rels.keys(),
             |g: &Graph, id: i64, f: &mut dyn FnMut(&Value)| {
                 g.for_each_rel_pair_value(id, type_id, key, f)
             },
@@ -150,9 +150,7 @@ impl Graph {
         let Some(vers) = self.rels.get(&id) else {
             return;
         };
-        let Some(v) = vers.last() else {
-            return;
-        };
+        let v = vers.last();
         let type_id = v.live.type_id;
         let mut kids = Vec::new();
         v.live

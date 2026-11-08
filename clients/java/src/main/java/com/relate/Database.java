@@ -23,21 +23,19 @@ public class Database implements AutoCloseable {
     }
 
     public static Database open(String uri) {
-        return open(uri, false);
+        PointerByReference out = new PointerByReference();
+        PointerByReference err = new PointerByReference();
+        NativeLib.check(NativeLib.lib().relate_database_open(uri, out, err),
+                "relate_database_open", err);
+        return new Database(out.getValue());
     }
 
     /** Load once and refuse writes and checkpoints (ADR-0136). A missing store is not created. */
     public static Database openReadOnly(String uri) {
-        return open(uri, true);
-    }
-
-    private static Database open(String uri, boolean readOnly) {
         PointerByReference out = new PointerByReference();
         PointerByReference err = new PointerByReference();
-        NativeLib.check(readOnly
-                ? NativeLib.lib().relate_database_open_read_only(uri, out, err)
-                : NativeLib.lib().relate_database_open(uri, out, err),
-                "relate_database_open", err);
+        NativeLib.check(NativeLib.lib().relate_database_open_read_only(uri, out, err),
+                "relate_database_open_read_only", err);
         return new Database(out.getValue());
     }
 
@@ -131,15 +129,16 @@ public class Database implements AutoCloseable {
          */
         public synchronized Result query(String cypher, Map<String, ?> params) {
             ensureOpen();
+            NativeLib.CLib lib = NativeLib.lib();
             Pointer root = params == null ? null : Params.build(params);
             PointerByReference out = new PointerByReference();
             PointerByReference err = new PointerByReference();
             try {
-                NativeLib.check(NativeLib.lib().relate_query_params(handle, cypher, root,
+                NativeLib.check(lib.relate_query_params(handle, cypher, root,
                         out, err), "relate_query_params", err);
             } finally {
                 if (root != null) {
-                    NativeLib.lib().relate_params_free(root);
+                    lib.relate_params_free(root);
                 }
             }
             return ResultReader.read(out.getValue());

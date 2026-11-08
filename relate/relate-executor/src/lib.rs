@@ -52,6 +52,16 @@ mod redo;
 // engines included, imports downward from `crate::row`, the one public
 // path per item.
 mod row;
+// The relationship-uniqueness set in its boundary form (LABS-1116, the
+// set-type migration LABS-822 deferred): the type threaded through every
+// used-set signature — `Matched`, the walk-entry and probe-predicate
+// parameters, the GPM state carry. Hoisted to the crate root beside
+// `row` (LABS-668's precedent): the workspace meter and both walk
+// engines import downward from here, no module importing up. FxHash, not
+// SipHash — the keys are engine-generated ids, the `CoreMap` rule
+// (ADR-0355 / LABS-337); SipHashing the used-set per hop was ~17% of a
+// pokec expansion profile.
+pub(crate) type UsedSet = rustc_hash::FxHashSet<relate_core::RelId>;
 mod shortest;
 mod show_catalog;
 mod spatial;
@@ -76,7 +86,7 @@ mod vector_similarity;
 pub use catalog_meta::{DeprecatedBy, DeprecationForm};
 pub use csv::CsvPolicy;
 pub use ctx::{
-    BatchCommit, ClauseMetricsRecord, FrontierCounters, FrontierRunDecline, PhaseTimes,
+    BatchCommit, ClauseMetricsRecord, FrontierCounters, FrontierRunDecline, KernelRung, PhaseTimes,
     PlanMetricsSink, StartReason, StoreReads, WalkStart,
 };
 pub use effect::StatementEffect;
@@ -133,7 +143,7 @@ pub use procedure_registry::{
 };
 pub use redo::{
     legacy_property_encoding, props_from_json, split_legacy_property_encoding, IndexDetailSpec,
-    IndexKindSpec, OntologyOp, PullKind, RedoOp, MAX_ONTOLOGY_SPEC_BYTES,
+    IndexFacts, IndexKindSpec, OntologyOp, PullKind, RedoOp, MAX_ONTOLOGY_SPEC_BYTES,
 };
 #[doc(hidden)]
 pub use workspace::result_rows_bytes;

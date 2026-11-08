@@ -465,7 +465,7 @@ impl Graph {
             .into_iter()
             .filter(|id| {
                 self.nodes.get(id).is_some_and(|vers| {
-                    visible_version(vers.as_slice(), ts).is_some_and(|ver| {
+                    visible_version(&vers, ts).is_some_and(|ver| {
                         ver.live.has_labels(&lids) && ver.live.props.get(kid).is_some_and(&pred)
                     })
                 })

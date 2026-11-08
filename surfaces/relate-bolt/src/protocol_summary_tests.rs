@@ -20,6 +20,16 @@ use crate::version::BoltVersion;
 /// The ADR-0491 phase keys, in their wire order beside `t_last`.
 const PHASE_KEYS: [&str; 3] = ["parsing_time", "planning_time", "plan_execution_time"];
 
+/// LABS-1120: the fine sub-split keys (sub-windows of the coarse three,
+/// the same Float-seconds family) — never part of the coarse sum
+/// invariant, which counts each window once.
+const FINE_PHASE_KEYS: [&str; 4] = [
+    "lex_parse_time",
+    "rewrite_time",
+    "lower_time",
+    "result_generation_time",
+];
+
 /// One ending SUCCESS phase key's Float seconds, loud on any other shape
 /// (the ADR-0491 contract keys are doubles — an Int under them is a
 /// unit mix, not a value to coalesce).
@@ -148,6 +158,11 @@ fn the_ending_success_of_a_read_carries_type_t_first_t_last_and_db() {
                 "parsing_time",
                 "planning_time",
                 "plan_execution_time",
+                "lex_parse_time",
+                "rewrite_time",
+                "lower_time",
+                "result_generation_time",
+                "plan_cache",
                 "db"
             ]
         );
@@ -171,7 +186,7 @@ fn the_ending_success_carries_the_phase_split_and_run_success_does_not() {
     let mut client = connected_client();
     for message in [Message::Pull, Message::Discard] {
         let (run, ending) = run_to_end(&mut client, "UNWIND range(1, 100) AS x RETURN x", message);
-        for key in PHASE_KEYS {
+        for key in PHASE_KEYS.iter().chain(FINE_PHASE_KEYS.iter()) {
             assert!(run.get(key).is_none(), "RUN SUCCESS has no {key}: {run:?}");
             let seconds = phase_seconds(&ending, key);
             assert!(seconds >= 0.0 && seconds.is_finite(), "{key}: {seconds}");
@@ -208,6 +223,10 @@ fn the_ending_summary_renders_the_engine_phase_split_in_seconds() {
     .unwrap();
     let mut expected_keys = vec!["type", "t_first", "t_last"];
     expected_keys.extend(PHASE_KEYS);
+    // LABS-1120: the fine sub-split and the plan-cache outcome, between
+    // the coarse split and `db`.
+    expected_keys.extend(FINE_PHASE_KEYS);
+    expected_keys.push("plan_cache");
     expected_keys.push("db");
     assert_eq!(keys(&metadata), expected_keys);
     let ending = Pack::Map(metadata);

@@ -7,6 +7,10 @@
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::{Node, Relationship, Result};
 
+use super::catalog::{self, CatalogWire};
+use relate_core::Error;
+use relate_engine_api::{CheckpointTheater, SnapshotGraph};
+
 pub(crate) struct SnapshotContents {
     pub nodes: Vec<Node>,
     pub relationships: Vec<Relationship>,
@@ -18,11 +22,25 @@ pub(crate) struct SnapshotContents {
 }
 
 impl SnapshotContents {
-    /// Every node and relationship visible at `snapshot_ts`, plus catalog fields. Node order follows `all_node_ids_at`.
+    /// Every node and relationship visible at `snapshot_ts`, plus catalog
+    /// fields. Node order follows `all_node_ids_at`. The dump
+    /// preconditions — a usable snapshot timestamp and non-negative
+    /// next ids — are refused here, the funnel every writer that builds
+    /// its contents through this constructor passes through (the JSON and
+    /// experimental codecs). The Parquet and markdown writers keep their
+    /// own dump paths and their own copies of the guard (see
+    /// `snapshot::native`); unifying those onto one shared check is a
+    /// follow-up, not this change.
     pub(crate) fn from_graph(
         graph: &dyn relate_engine_api::GraphImport,
         snapshot_ts: u64,
     ) -> Result<Self> {
+        if snapshot_ts == u64::MAX {
+            return Err(Error::storage("snapshot timestamp exhausted"));
+        }
+        if graph.next_node_id() < 0 || graph.next_rel_id() < 0 {
+            return Err(Error::storage("snapshot has unsupported next ID"));
+        }
         Ok(Self {
             nodes: Self::nodes_in(graph, snapshot_ts, &graph.all_node_ids_at(snapshot_ts))?,
             relationships: Self::rels_in(graph, snapshot_ts, &graph.all_rel_ids_at(snapshot_ts))?,
@@ -68,6 +86,56 @@ impl SnapshotContents {
             rels.push(r);
         }
         Ok(rels)
+    }
+}
+
+/// The decoded rows of a snapshot — the read side of the contents split.
+/// The write side ([`SnapshotContents`]) also carries the catalog it read
+/// from the graph; the read side takes the catalog as its decoded wire,
+/// so a decoder never fabricates catalog fields it does not have.
+pub(crate) struct SnapshotRows {
+    pub(crate) nodes: Vec<Node>,
+    pub(crate) relationships: Vec<Relationship>,
+    pub(crate) next_node_id: i64,
+    pub(crate) next_rel_id: i64,
+}
+
+impl SnapshotRows {
+    /// Rebuild the in-memory graph from these rows — the load tail every
+    /// codec that decodes into rows shares: id validation, next-id
+    /// seeding, the checkpoint rows, the commit-timestamp floor, then the
+    /// catalog restore. Takes `self` and moves the rows out: no caller
+    /// needs them afterwards, and a shared tail must not add a clone per
+    /// row to the load path.
+    pub(crate) fn into_graph<G: SnapshotGraph>(
+        mut self,
+        wire: CatalogWire,
+        envelope_commit_ts: Option<u64>,
+        theater: Option<CheckpointTheater>,
+    ) -> Result<G> {
+        if self.next_node_id < 0 || self.next_rel_id < 0 {
+            return Err(Error::storage("snapshot has unsupported next ID"));
+        }
+        // Row ids are not re-validated here: the loaders below install
+        // each row through `load_checkpoint_node`/`load_checkpoint_rel`,
+        // which validate the identical ids (one pass per row type, not
+        // two).
+        let graph = G::default();
+        graph.set_next_node_id(self.next_node_id);
+        graph.set_next_rel_id(self.next_rel_id);
+        let rows = self.nodes.len() + self.relationships.len();
+        for n in self.nodes.drain(..) {
+            graph.load_checkpoint_node(n)?;
+        }
+        for r in self.relationships.drain(..) {
+            graph.load_checkpoint_rel(r)?;
+        }
+        if let Some(ts) = envelope_commit_ts {
+            graph.set_commit_ts(ts);
+        }
+        crate::snapshot::ensure_commit_ts(&graph, rows);
+        catalog::restore(&graph, wire, theater)?;
+        Ok(graph)
     }
 }
 

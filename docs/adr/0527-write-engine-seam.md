@@ -32,7 +32,7 @@ codecs, and the log record format stay a toolkit a write engine may
 use. No alternate write engine is added.
 
 The store manifest records the write engine identity beside the query
-engine identity (ADR-0526). A store written before this change opens as
+engine identity (ADR-0548). A store written before this change opens as
 the local engine. Opening a store whose recorded identity is not the
 engine being opened fails. The identities are optional manifest fields;
 redo records and snapshot payloads keep their encoding.

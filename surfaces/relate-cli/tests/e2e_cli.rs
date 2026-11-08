@@ -17,10 +17,16 @@ fn test_single_query() {
     // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
     let (status, stdout, stderr) = run_cli(Opts::new(&["RETURN 42 AS answer;"]));
     assert!(status.success(), "single query failed: {stderr}");
+    // LABS-1120: the JSONL stream closes with the timing terminal line,
+    // so the row line and the timing block are both present.
+    let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
-        stdout.trim(),
-        r#"{"answer":42}"#,
+        lines[0], r#"{"answer":42}"#,
         "piped one-shot should default to JSONL: {stdout}"
+    );
+    assert!(
+        lines[1].contains("\"timings\"") && lines[1].contains("\"planCache\""),
+        "the timing block closes the stream: {stdout}"
     );
 }
 
@@ -102,10 +108,14 @@ fn test_single_query_arithmetic() {
     // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
     let (status, stdout, stderr) = run_cli(Opts::new(&["RETURN 1 + 1 AS sum;"]));
     assert!(status.success(), "arithmetic query failed: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
-        stdout.trim(),
-        r#"{"sum":2}"#,
+        lines[0], r#"{"sum":2}"#,
         "piped one-shot should default to JSONL: {stdout}"
+    );
+    assert!(
+        lines[1].contains("\"timings\""),
+        "the timing block closes the stream: {stdout}"
     );
 }
 
@@ -115,10 +125,14 @@ fn test_single_query_arithmetic() {
 fn test_piped_default_is_jsonl() {
     let (status, stdout, stderr) = run_cli(Opts::new(&["-c", "RETURN 1 AS n"]));
     assert!(status.success(), "piped query failed: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
-        stdout.trim(),
-        r#"{"n":1}"#,
+        lines[0], r#"{"n":1}"#,
         "piped stdout must default to JSONL: {stdout}"
+    );
+    assert!(
+        lines[1].contains("\"timings\""),
+        "the timing block closes the stream: {stdout}"
     );
 }
 
@@ -232,12 +246,13 @@ fn test_single_query_jsonl() {
     let (status, stdout, stderr) = run_cli(Opts::new(&["-jsonl", "UNWIND [1, 2] AS n RETURN n;"]));
     assert!(status.success(), "jsonl query failed: {stderr}");
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    // LABS-1120: the two data rows plus the timing terminal line.
     assert_eq!(
         lines.len(),
-        2,
-        "expected one JSON object per line, got: {stdout}"
+        3,
+        "expected one JSON object per line plus the timing line, got: {stdout}"
     );
-    for line in lines {
+    for line in &lines {
         let obj: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("invalid JSON line ({e}): {line}"));
         assert!(
@@ -245,6 +260,10 @@ fn test_single_query_jsonl() {
             "expected a JSON object per line, got: {line}"
         );
     }
+    assert!(
+        lines[2].contains("\"timings\""),
+        "the last line is the timing block: {stdout}"
+    );
 }
 
 #[test]
@@ -527,8 +546,20 @@ fn test_current_graph_type_persists_and_renders_after_reopen() {
     let (status, stdout_after_two_reopens, stderr) =
         run_cli(Opts::new(&["--database", db, show_query]));
     assert!(status.success(), "show current graph type failed: {stderr}");
+    // LABS-1120: the timing terminal line carries per-run numbers, so the
+    // canonical-body comparison reads the data rows alone (the one typed
+    // discriminator, `support::timing_terminal_line` — a filter, not a
+    // take_while, so a multi-statement stream's later statements keep
+    // their data rows).
+    fn data_lines(stdout: &str) -> Vec<&str> {
+        stdout
+            .lines()
+            .filter(|line| !support::timing_terminal_line(line))
+            .collect()
+    }
     assert_eq!(
-        stdout_after_one_reopen, stdout_after_two_reopens,
+        data_lines(&stdout_after_one_reopen),
+        data_lines(&stdout_after_two_reopens),
         "SHOW CURRENT GRAPH TYPE must render the same canonical body across repeated reopens"
     );
 }
@@ -638,14 +669,19 @@ fn test_default_in_memory() {
 fn test_json_array_format() {
     let (status, stdout, stderr) = run_cli(Opts::new(&["-json", "RETURN 1 AS a, 2 AS b;"]));
     assert!(status.success(), "json format failed: {stderr}");
-    // The Rust CLI prints a pretty JSON array of row objects; the whole
-    // stdout should parse as JSON (no stats line for a pure RETURN).
+    // LABS-1120: a run with its result behind it wraps the rows as
+    // `{"data": [...], "timings": {...}, "planCache": ...}` — the
+    // PROFILE wrapper's shape — so the rows ride under `data`.
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"));
-    let arr = parsed.as_array().expect("expected JSON array");
+    let arr = parsed["data"].as_array().expect("expected the data array");
     assert_eq!(arr.len(), 1, "expected 1 row, got: {stdout}");
     assert_eq!(arr[0]["a"], serde_json::json!(1));
     assert_eq!(arr[0]["b"], serde_json::json!(2));
+    assert!(
+        parsed["timings"]["parse_ms"].is_number(),
+        "the timing rider: {stdout}"
+    );
 }
 
 // --- Schema DDL result shape (LABS-184) ---
@@ -660,8 +696,10 @@ fn test_create_constraint_json_mode_prints_empty_array() {
     assert!(status.success(), "constraint DDL failed: {stderr}");
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"));
+    // LABS-1120: the empty result rides under `data` beside the timing
+    // rider — the omitted result is still the empty array.
     assert_eq!(
-        parsed,
+        parsed["data"],
         serde_json::json!([]),
         "schema DDL must print an empty JSON array, got: {stdout}"
     );
@@ -787,7 +825,7 @@ fn test_temporal_date_json_mode_no_embedded_quotes() {
     assert!(status.success(), "json date query failed: {stderr}");
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"));
-    let arr = parsed.as_array().expect("expected JSON array");
+    let arr = parsed["data"].as_array().expect("expected the data array");
     assert_eq!(arr.len(), 1, "expected 1 row, got: {stdout}");
     // Exact string equality: any embedded quoting fails this assert.
     assert_eq!(

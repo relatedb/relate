@@ -292,6 +292,36 @@ jobs:
             \( -name "librelate_ffi.*" -o -name "relate_ffi.*" \) \
             ! -name "*.d" ! -name "*.rlib" \
             -exec cp {} ffi-package/ \;
+          # Linux legs: trim the ELF artifacts at packaging. The cdylib loses
+          # its symbol table (`strip --strip-unneeded`) — the one piece
+          # `strip = "debuginfo"` (the macOS-safe level) keeps. The staticlib
+          # loses each member's embedded thin-LTO bitcode (.llvmbc, ~104 MB
+          # across the archive) — dead weight, since no external consumer
+          # LTO-links the .a; plain ld/cc never reads it and the symbol
+          # tables stay. Cross binutils for the arm64 ELF (installed with
+          # the cross gcc above); never a Mach-O/PE image (the
+          # llvm-objcopy __LINKEDIT misalignment).
+          if [[ "${{ matrix.target }}" == *unknown-linux-gnu ]]; then
+            PREFIX=""
+            if [[ "${{ matrix.target }}" == aarch64-unknown-linux-gnu ]]; then
+              PREFIX=aarch64-linux-gnu-
+            fi
+            if [[ -f ffi-package/librelate_ffi.so ]]; then
+              "${PREFIX}strip" --strip-unneeded ffi-package/librelate_ffi.so
+            fi
+            if [[ -f ffi-package/librelate_ffi.a ]]; then
+              mkdir -p ffi-package/a-members
+              ( cd ffi-package/a-members \
+                && ar x ../librelate_ffi.a \
+                && for m in *; do
+                  "${PREFIX}objcopy" --remove-section .llvmbc \
+                    --remove-section .llvm_addrsig "$m"
+                 done \
+                && rm ../librelate_ffi.a \
+                && "${PREFIX}ar" rcs ../librelate_ffi.a * )
+              rm -rf ffi-package/a-members
+            fi
+          fi
           tar czf relate-ffi-${{ matrix.target }}.tar.gz -C ffi-package .
 
       - uses: actions/upload-artifact@v4
@@ -987,110 +1017,92 @@ jobs:
     # Reusable workflows receive no secrets unless asked (the v0.9.2 run
     # failed fast on the empty FIREWORKS_API_KEY check).
     secrets: inherit
-  # ADR-0129: chain the website update explicitly — the release: published
-  # event fired by action-gh-release (GITHUB_TOKEN) never triggers downstream
-  # workflows (ADR-0265); update-website.yml's release trigger was dead.
-  update-website:
-    name: Update website from the release
-    needs: [version, create-release]
-    permissions:
-      contents: write
-    uses: ./.github/workflows/update-website.yml
-    secrets: inherit
+  # ADR-0129's update-website chain is gone: the website lives in the
+  # separate relate-web repository (ADR-0546), which pulls what it needs —
+  # this repo never pushes content into it. The only handoff is the
+  # repository_dispatch poke in the publish-releases-json job below.
 
-  docs:
-    name: Sync installer to gh-pages
-    needs: [version, tag]
+  # ADR-0250's release-discovery document, post-gh-pages: releases.json is
+  # generated from the live release list and attached to this release's
+  # assets together with install.sh (the documented install entry point);
+  # relate-web's publish workflow pulls both from there — the assets are
+  # the transport, https://relatedb.ai/... stays the canonical URL the CLI
+  # pins. Gated on `release-notes` so the narrative notes are already
+  # prepended to the release body when the generator copies it, and on
+  # `create-release` so the asset list is complete. The repository_dispatch
+  # poke is best-effort while relate-web is stood up: without the
+  # RELATE_WEB_DISPATCH_TOKEN secret, or before the repository exists, it
+  # logs a skip and the release stays green.
+  publish-releases-json:
+    name: Publish releases.json + notify relate-web
+    needs: [version, create-release, release-notes]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Shared with the manual backfill (publish-releases-json.yml): both
+    # rewrite the same release asset, a conflict neither resolves.
+    concurrency:
+      group: publish-releases-json
+      cancel-in-progress: false
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --only-upgrade -y ca-certificates
           sudo update-ca-certificates --fresh
-          # Post-condition (remediation assurance): the compromised root
-          # must be absent from the rebuilt store -- an on-path attacker
-          # replaying validly-signed metadata could otherwise make the
-          # upgrade a silent no-op behind a green check. A fixed runner
-          # image satisfies this too, so it never false-fails the lane.
           if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
             echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
             exit 1
           fi
-          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      # The website lives on gh-pages as static files (no build step) and is
-      # kept in sync with releases by update-website.yml. This job owns
-      # install.sh — the documented install entry point; the
-      # publish-releases-json job below owns releases.json. Those jobs push
-      # to gh-pages concurrently with this one, so the push goes through
-      # push-gh-pages.sh, which rebases onto a concurrent writer and retries.
-      - name: Checkout release tag (installer)
-        uses: actions/checkout@v4
+      # The generator at the versioned commit (the release publishes with
+      # the script it shipped with); distribution carries install.sh.
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.tag }}
+          ref: ${{ needs.version.outputs.sha }}
           sparse-checkout: |
-            distribution
             .github/scripts
+            distribution
 
-      - name: Checkout gh-pages
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: gh-pages
-          fetch-depth: 1
-
-      - name: Publish install.sh to gh-pages
+      - name: Generate releases.json
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/publish-releases-json.sh "$RUNNER_TEMP/releases.json"
+
+      - name: Attach releases.json and install.sh to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ needs.version.outputs.tag }}" \
+            "$RUNNER_TEMP/releases.json" distribution/install.sh --clobber
+
+      # One poke per release (ADR-0546): relate-web's publish workflow
+      # pulls releases.json, install.sh and the release assets it needs;
+      # this repo never commits into it. 404 = the repository does not
+      # exist yet (or the token cannot see it) — a stated skip, not a
+      # failure, until relate-web is stood up.
+      - name: Poke relate-web (repository_dispatch)
+        env:
+          DISPATCH_TOKEN: ${{ secrets.RELATE_WEB_DISPATCH_TOKEN }}
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          cd gh-pages
-          cp ../distribution/install.sh ./install.sh
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add install.sh
-          if git diff --cached --quiet; then
-            echo "install.sh unchanged for ${RELEASE_TAG}; nothing to publish."
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::notice::RELATE_WEB_DISPATCH_TOKEN is not set — skipping the relate-web poke; run the Publish releases.json workflow once relate-web is ready."
             exit 0
           fi
-          git commit -m "chore(website): publish install.sh for ${RELEASE_TAG}"
-          ../.github/scripts/push-gh-pages.sh .
-
-  # ADR-0250: publish releases.json, the release-discovery document
-  # `relate upgrade` / `update` reads from the website (the second
-  # pipeline-owned file the release pipeline writes to gh-pages, after
-  # install.sh). Chained as a reusable workflow — a `release: published`
-  # trigger would never fire for a GITHUB_TOKEN-published release (ADR-0265)
-  # — and gated on `release-notes` so the narrative notes are already
-  # prepended to the release body when the generator copies it: that ordering
-  # is what makes the published notes the ones releases.json carries.
-  # `create-release` is in `needs` so the asset list is complete.
-  publish-releases-json:
-    name: Publish releases.json to gh-pages
-    needs: [version, create-release, release-notes]
-    permissions:
-      contents: write
-    uses: ./.github/workflows/publish-releases-json.yml
-    with:
-      tag: ${{ needs.version.outputs.tag }}
-    secrets: inherit
-
-  # Pages deploys are paused (2026-11-05, maintainer direction):
-  # deploy-pages.yml runs on manual dispatch only, so this release no
-  # longer deploys the website — ADR-0330's chain is suspended, not
-  # replaced. The gh-pages writers above still run: releases.json,
-  # install.sh and the website page still land on the branch, and go
-  # live only on a manual deploy-pages.yml dispatch. Un-pause by
-  # restoring the job exactly as ADR-0330 wrote it — needs
-  # [create-release, docs, update-website, publish-releases-json], if
-  # ${{ !cancelled() && needs.create-release.result == 'success' }},
-  # permissions contents: read / pages: write / id-token: write, uses
-  # ./.github/workflows/deploy-pages.yml — together with the
-  # workflow_call trigger in deploy-pages.yml and the
-  # release-extensions.yml caller.
+          status="$(curl -sS -o "$RUNNER_TEMP/dispatch-body" -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/relatedb/relate-web/dispatches \
+            -d "{\"event_type\":\"relate-release\",\"client_payload\":{\"kind\":\"cli\",\"tag\":\"$RELEASE_TAG\"}}")"
+          case "$status" in
+            204) echo "relate-web notified: kind=cli tag=$RELEASE_TAG" ;;
+            404) echo "::notice::relatedb/relate-web is not reachable (not created yet, or the token cannot see it) — skipping the poke." ;;
+            *) echo "::error::repository_dispatch to relatedb/relate-web failed with HTTP $status"; cat "$RUNNER_TEMP/dispatch-body"; exit 1 ;;
+          esac
 
   # Canary the user-facing self-update path (ADR-0358): download the
   # previous stable release's linux-amd64 binary, run `relate upgrade`
@@ -1158,18 +1170,17 @@ jobs:
 
   # ADR-0465: the Slack announcement is the release pipeline's final step.
   # The release-notes run generates the payload early — publish-releases-json
-  # and the live site need the prepended notes (ADR-0250, ADR-0330) — but
+  # and the live site need the prepended notes (ADR-0250) — but
   # posts nothing inline (slack: false): it uploads the payload as the
   # release-notes-slack-payload artifact, and this job posts it only after
   # the whole tail, publish-releases-json and the self-update canary
   # (ADR-0358) included, is green — the payload's message is
-  # `relate upgrade`, and the canary is what proves that path. Pages
-  # deploys are paused (2026-11-05, maintainer direction): deploy-pages
-  # is no longer in the tail, so the announcement can outrun the live
-  # site — releases.json is on gh-pages, but `relate upgrade` picks the
-  # new version up only after the next manual deploy-pages.yml dispatch,
-  # and the canary skips (self-update-smoke.sh's currency gate) while
-  # the site lags. It re-uses the one Slack-leg policy
+  # `relate upgrade`, and the canary is what proves that path. The website
+  # lives in relate-web (ADR-0546): the announcement can outrun the live
+  # site — releases.json rides the release assets, but `relate upgrade`
+  # picks the new version up only after relate-web's publish workflow
+  # serves it, and the canary skips (self-update-smoke.sh's currency gate)
+  # while the site lags. It re-uses the one Slack-leg policy
   # script (ADR-0125 amendment 2) unchanged: graceful skip when
   # SLACK_WEBHOOK_URL is unset, fail-closed payload validation, and the
   # API-key exfiltration scan. The `release-notes-v<tag>` concurrency group —

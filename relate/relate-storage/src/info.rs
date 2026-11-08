@@ -148,7 +148,7 @@ fn native_info(path: &Path) -> Result<StoreInfo> {
             path.display()
         )));
     }
-    let total_bytes = dir_bytes(path)?;
+    let total_bytes = crate::snapshot::dir_bytes(path)?;
     let target = StoreTarget::from_vfs(Arc::new(NativeVfs::new(path)));
     collect(&target, StoreLayout::NativeDir, total_bytes)
 }
@@ -211,11 +211,15 @@ fn read_snapshot(target: &StoreTarget) -> Result<StoreSnapshot> {
         return Ok(StoreSnapshot::None);
     };
     match envelope.codec {
-        SnapshotCodecKind::Json => Ok(StoreSnapshot::Envelope {
-            codec: envelope.codec,
-            checkpoint_lsn: envelope.checkpoint_lsn,
-            commit_ts: envelope.commit_ts,
-        }),
+        // The plain-wire-envelope codecs: JSON and the experimental
+        // codecs (no codec-specific manifest body).
+        SnapshotCodecKind::Json | SnapshotCodecKind::Rkyv | SnapshotCodecKind::Fjall => {
+            Ok(StoreSnapshot::Envelope {
+                codec: envelope.codec,
+                checkpoint_lsn: envelope.checkpoint_lsn,
+                commit_ts: envelope.commit_ts,
+            })
+        }
         // A root envelope naming markdown is normally refused inside
         // `read_envelope` itself (the markdown manifest home is the
         // `.cypherlite/` sidecar, ADR-0406 §3); the arm stays as the
@@ -241,28 +245,7 @@ fn parquet_snapshot(target: &StoreTarget) -> Result<StoreSnapshot> {
 /// like open does (ADR-0105).
 #[cfg(not(parquet_codec))]
 fn parquet_snapshot(_: &StoreTarget) -> Result<StoreSnapshot> {
-    Err(codec::parquet_unavailable())
-}
-
-/// Recursive directory byte sum. Symlinks and special entries are neither
-/// followed nor counted.
-fn dir_bytes(root: &Path) -> Result<u64> {
-    let mut total = 0u64;
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
-            let meta = std::fs::symlink_metadata(&path)?;
-            if meta.is_dir() {
-                pending.push(path);
-            } else if meta.is_file() {
-                total = total
-                    .checked_add(meta.len())
-                    .ok_or_else(|| Error::storage("store size overflow"))?;
-            }
-        }
-    }
-    Ok(total)
+    Err(codec::codec_unavailable(SnapshotCodecKind::Parquet))
 }
 
 #[cfg(test)]

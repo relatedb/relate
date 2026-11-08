@@ -22,4 +22,21 @@ PROFILE, and prints each statement's elapsed beside its three phases; it
 also shows `relate::timing_stamp_ms(&QueryResult)` — the one
 projection bundling the total and its split into the
 `relate_model::wire::TimingStampMs` the canonical envelope builder
-takes, the same four numbers through the same single conversion.
+takes, the same numbers through the same single conversion.
+
+LABS-1120 extends the same vocabulary one level finer, always-on and per
+statement like the coarse split: `QueryResult::lex_parse_ms()` /
+`rewrite_ms()` / `lower_ms()` partition `parse_ms()` (lexing plus the AST
+build; the CIP-231 resolver pass; validation-and-lowering — the lexer and
+the parser are fused at the parser's one tokenizing constructor, and the
+validation battery runs inside the lowering walk, so those two pairs are
+one window each, never two), and `QueryResult::result_generation_ms()`
+sits inside `execute_ms()` (the buffered executor result's conversion into
+the `QueryResult`; `0.0` on `EXPLAIN`, whose render is itself its result
+generation). Beside them, `QueryResult::plan_cache()` reports which
+plan-cache stage (ADR-0503) served the statement — `miss` /
+`hit-raw-fastpath` / `hit-template` / `replan-generation-mismatch` /
+`bypassed` — the fact that explains a hit's near-zero `parse_ms()` and its
+zero fine parse sub-windows. The example pins all of these invariants and
+observes a miss turn into a raw fast-path hit; its output prints each
+statement's fine split and plan-cache outcome beside the coarse three.

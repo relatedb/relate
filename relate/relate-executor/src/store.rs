@@ -641,7 +641,7 @@ pub(crate) struct TypedAdj {
 impl TypedAdj {
     pub(crate) fn insert(&mut self, type_id: u32, rid: RelId, ts: Option<i64>) {
         let hop = AdjHop { ts, id: rid };
-        if let Some((_, v)) = self.chunks.iter_mut().find(|(t, _)| *t == type_id) {
+        if let Some(v) = self.chunk_mut(type_id) {
             insert_hop(v, hop);
         } else {
             let mut hops = vec![hop];
@@ -657,13 +657,33 @@ impl TypedAdj {
     }
 
     pub(crate) fn reposition(&mut self, type_id: u32, rid: RelId, ts: Option<i64>) {
-        if let Some((_, v)) = self.chunks.iter_mut().find(|(t, _)| *t == type_id) {
-            if let Some(i) = v.iter().position(|h| h.id == rid) {
-                v.remove(i);
-            }
+        // The remove-then-reinsert through the two hop policies: a chunk
+        // the removal emptied is recreated by the insert below, so the
+        // hop lands in a freshly ordered chunk either way.
+        self.remove(type_id, rid);
+        if let Some(v) = self.chunk_mut(type_id) {
             insert_hop(v, AdjHop { ts, id: rid });
         } else {
             self.insert(type_id, rid, ts);
+        }
+    }
+
+    /// Remove `rid`'s hop from `type_id`'s chunk, keeping the chunk's
+    /// order, and drop the chunk when the hop was its last — no phantom
+    /// empty chunks for `out_chunks` / `hop_counts` to report (F-1-23).
+    /// The GC's pruning arm (LABS-1116): a chain the version map no
+    /// longer holds must leave adjacency too, or every later scan pays a
+    /// `rels` map miss on the ghost hop. A missing hop is a no-op (the
+    /// removal is idempotent by construction).
+    pub(crate) fn remove(&mut self, type_id: u32, rid: RelId) {
+        if let Some(ci) = self.chunks.iter().position(|(t, _)| *t == type_id) {
+            let v = &mut self.chunks[ci].1;
+            if let Some(i) = v.iter().position(|h| h.id == rid) {
+                v.remove(i);
+                if v.is_empty() {
+                    self.chunks.remove(ci);
+                }
+            }
         }
     }
 
@@ -680,6 +700,15 @@ impl TypedAdj {
             .find(|(t, _)| *t == type_id)
             .map(|(_, v)| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// The mut twin of [`Self::chunk`] — the one find-chunk spelling the
+    /// in-place hop policies (`insert`, `reposition`) route through.
+    fn chunk_mut(&mut self, type_id: u32) -> Option<&mut Vec<AdjHop>> {
+        self.chunks
+            .iter_mut()
+            .find(|(t, _)| *t == type_id)
+            .map(|(_, v)| v)
     }
 }
 

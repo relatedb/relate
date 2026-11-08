@@ -402,7 +402,7 @@ pub fn current_receipt(outcome: TokenOutcome) -> Option<ExecutionReceipt> {
 }
 
 /// Test hook for the processing-memory load test. Unset in production.
-/// After a named workspace family reaches RELATE_PEAK_HOLD_TOKENS,
+/// After a named workspace family reaches RELATE_PEAK_HOLD_LOGICAL_BYTES,
 /// the process logs its live reservation and sleeps so a sampler can read
 /// RSS while that reservation and its owning structure are alive.
 /// `peak_bytes` is the high-water mark. `held` follows the workspace
@@ -415,7 +415,7 @@ pub fn peak_hold(family: &'static str) {
     if peak_hold_family().is_some_and(|configured| configured != family) {
         return;
     }
-    let target = peak_hold_tokens();
+    let target = peak_hold_logical_bytes();
     let Some(snapshot) = with_ledger(|ledger| ledger.claim_peak_hold(target)) else {
         return;
     };
@@ -445,10 +445,10 @@ fn peak_hold_ms() -> u64 {
     })
 }
 
-fn peak_hold_tokens() -> u64 {
-    static TOKENS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *TOKENS.get_or_init(|| {
-        std::env::var("RELATE_PEAK_HOLD_TOKENS")
+fn peak_hold_logical_bytes() -> u64 {
+    static BYTES: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *BYTES.get_or_init(|| {
+        std::env::var("RELATE_PEAK_HOLD_LOGICAL_BYTES")
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
             .unwrap_or(1)

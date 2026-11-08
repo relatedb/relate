@@ -211,6 +211,7 @@ fn table_routes_the_plan_and_its_block_to_the_diagnostic_writer() {
                     &notifications,
                     plan.profiled,
                 )),
+                timings: None,
             },
         )
         .unwrap();
@@ -267,6 +268,7 @@ fn non_table_modes_never_touch_the_diagnostic_writer() {
                     column_types: &column_types,
                     row_cap: None,
                     plan: None,
+                    timings: None,
                 },
             )
             .unwrap();

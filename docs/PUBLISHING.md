@@ -1,8 +1,8 @@
 # Publishing checklist (USER-ACTION-REQUIRED)
 
 > **This is an operational runbook, not an automated step.** Every item below is a
-> deliberate, user-driven action (making a repository public, pushing tags,
-> enabling Pages, uploading release assets). Nothing here should be automated by a
+> deliberate, user-driven action (creating secrets, pushing tags,
+> standing up the website repository, uploading release assets). Nothing here should be automated by a
 > tool or agent. Work top to bottom — later steps assume earlier ones succeeded.
 
 The repository ships with the machinery for a checksum-verified, fail-closed
@@ -11,16 +11,18 @@ The WASM and Swift surfaces were withdrawn in ADR-0065; WASM returned as npm
 packages (ADR-0084) and Swift as a SwiftPM package whose static XCFramework the
 release attaches (ADR-0433). The docs site no longer has an interactive
 playground. What remains is operational: point
-everything at the public `relatedb/relate` repository and turn it on.
+everything at the `relatedb/relate` repository (private for now) and turn it on.
 
 ## 0. Preconditions
 
 - [ ] `main` is green: `make lint` and `make test` pass; the spec-harness lane (ADR-0482) reports language coverage on the release PR — reporting-only, never a gate.
-- [ ] The repository's existing `v*` tags came across with the transfer — the
-  release workflow computes the next version from them plus the chosen bump
-  (ADR-0067; see `RELEASING.md`). Verify with `git tag --list 'v*'`.
+- [ ] The cypherlite-era `v*` tags did **not** come across with the move —
+  the release workflow seeds the first tag at `v0.1.0`
+  (ADR-0067; see `RELEASING.md`). Verify with
+  `git ls-remote origin 'refs/tags/v*'` (empty), and never push the old
+  tags: they would poison the next-version computation.
 
-## 1. Make the repository public at `relatedb/relate`
+## 1. The repository stays private (for now)
 
 The release workflow is **fail-closed to `relatedb/relate`**: the
 `release-owner` job (`.github/workflows/release.yml`) refuses to publish
@@ -28,13 +30,17 @@ official artifacts from any other repository
 (`github.repository != 'relatedb/relate'`). So the canonical home
 **must** be `relatedb/relate`.
 
-- [ ] Ensure the repository lives at `github.com/relatedb/relate` (transfer
-  it there if it is currently under a personal account).
-- [ ] Make it **public**.
+- [ ] Ensure the repository lives at `github.com/relatedb/relate`.
+- [ ] While the repository is **private**, release-asset downloads need a
+  GitHub token: the install one-liner and `relate upgrade` are run as
+  `curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash`
+  and `GITHUB_TOKEN=$(gh auth token) relate upgrade` (the README shows
+  both). Making the repository public later removes that requirement with
+  no pipeline change.
 - [ ] Confirm the `origin` remote used for pushing tags points at
   `relatedb/relate` (a fork's tags cannot publish official artifacts).
 
-## 2. Cut the first public release
+## 2. Cut the first release
 
 - [ ] Dispatch the Release workflow (manual dispatch only — it computes the
   version from the existing `v*` tags, builds, tags, and publishes; there are
@@ -51,12 +57,11 @@ artifact landed on that first release:
   install section links to), with its first line
   `# relate-release-version: vX.Y.Z` naming the release tag (ADR-0457).
 - [ ] `SHA256SUMS.sig` over those exact bytes (ADR-0115).
-- [ ] Python wheels (and sdist).
-- [ ] PyPI: after trusted publishing is configured for environment `pypi`, the
-  `pypi` job uploads wheels as **`relate-db`**. Register that project
-  (not `relate`, which is already taken) and enable trusted publishing
-  for `relatedb/relate` before the first tag. The job is fail-closed
-  until that environment exists.
+- [ ] Python wheels (and sdist). PyPI publishing is intentionally not wired
+  up — the wheels ship as GitHub release assets only. When that changes:
+  register the **`relate-db`** project (not `relate`, which is already
+  taken), add a `pypi` job with trusted publishing for `relatedb/relate`,
+  and remove this note.
 - [ ] npm (ADR-0278): the `@relate` npm scope exists and the releaser has
   publish rights.
 - [ ] Licensing: the project's licensing decision is resolved and the
@@ -94,34 +99,39 @@ the FFI archives, the npm tarballs, and the Swift XCFramework zip. The
 XCFramework is not code-signed yet (no Apple Developer identity in the release
 secrets; ADR-0433).
 
-## 4. Enable GitHub Pages
+## 4. The website lives in relate-web
 
-The homepage is a static page on the `gh-pages` branch — there is no
-build step for it. The release workflow publishes `distribution/install.sh` and
-`releases.json` (ADR-0250) to the gh-pages root; `update-website.yml` keeps the
-page content in sync with each release. Those jobs run concurrently, so each
-pushes through `.github/scripts/push-gh-pages.sh`, which rebases onto the
-others' commits. `.github/workflows/deploy-pages.yml` assembles the live site
-from that branch plus the playground (built from `main`) and the cookbook
-(built from `docs/cookbook/` at the latest release tag, ADR-0130), and
-deploys it with `actions/deploy-pages`. The release run calls it after every
-gh-pages write (ADR-0330); a commit to `gh-pages` is not live until it runs.
+There is no `gh-pages` branch in this repository and no Pages deploy here
+(ADR-0546). The homepage, the cookbook pages, and the WASM playground are
+published by the [`relatedb/relate-web`](https://github.com/relatedb/relate-web)
+repository, which pulls what it needs from this repository's releases.
 
-- [ ] Enable GitHub Pages for `relatedb/relate` (source: **GitHub
-  Actions**, so `deploy-pages.yml` publishes).
-- [ ] Point `https://relatedb.ai/` at the site (a custom domain on the
-  Pages deployment today; the separate `relatedb/relate-web` repository
-  per ADR-0517 §3 once that handoff lands) and confirm the site loads
-  at `https://relatedb.ai/`.
+- [ ] Stand up `relatedb/relate-web` with its publish workflow
+  (trigger: `repository_dispatch` with `event_type: relate-release`,
+  payload `{kind: cli|extension, tag}`; it pulls `releases.json`,
+  `install.sh`, and the signed `extensions.json` pair from the named
+  release's assets and assembles its Pages artifact from build outputs).
+- [ ] Create the `RELATE_WEB_DISPATCH_TOKEN` repository secret here (a
+  token with `contents:write` on `relate-web`) so the release pipeline's
+  poke stops skipping.
+- [ ] Point `https://relatedb.ai/` at the relate-web Pages deployment and
+  confirm the site loads.
 - [ ] Confirm the install script is served at
-  `https://relatedb.ai/install.sh`.
+  `https://relatedb.ai/install.sh` and `releases.json` at
+  `https://relatedb.ai/releases.json` (the document `relate upgrade`
+  reads).
+- [ ] Until relate-web is live, a manual run of the **Publish
+  releases.json** workflow here re-attaches the files to the latest
+  release and re-fires the poke.
 
 ## 5. Confirm the absolute URLs resolve
 
 Several `README.md` and docs links use the public absolute forms
 (`https://relatedb.ai/...` and
-`https://github.com/relatedb/relate/releases/...`). These resolve **only
-after** the repo is public (steps 1–3) and Pages is live (step 4). Spot-check:
+`https://github.com/relatedb/relate/releases/...`). The
+`github.com/relatedb/relate/...` links resolve only once the repository is
+public; the `relatedb.ai/...` links resolve once relate-web serves them
+(step 4). Spot-check:
 
 - [ ] The README install-table download links (`.../releases/latest/download/...`).
 - [ ] The `SHA256SUMS` link and the checksum-verification flow in the README.
@@ -137,10 +147,10 @@ after** the repo is public (steps 1–3) and Pages is live (step 4). Spot-check:
   without the not-yet-public host exclusion) and confirm every target
   resolves.
 - [ ] Turn on the cookbook's GitHub links (ADR-0133): delete the not-yet-public
-  entries from `lychee.toml`'s `exclude` list on `main` (the Pages deploy
-  hands `main`'s list to the cookbook build, so no release is needed),
-  redeploy Pages, and confirm the cookbook pages' source and companion links
-  resolve. (The navigation's GitHub link is already on, ADR-0288.)
+  entries from `lychee.toml`'s `exclude` list on `main` once the repository
+  is public, and confirm the cookbook pages' source and companion links
+  resolve on the relate-web build. (The navigation's GitHub link is already
+  on, ADR-0288.)
 
-Once every box is checked, the first public release is fully published:
+Once every box is checked, the first release is fully published:
 binaries and checksums downloadable, and the documentation site live.

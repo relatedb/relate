@@ -122,14 +122,15 @@ shared (acyclic) reference binds at each place it appears.
   classification (`"r"`/`"w"`/`"rw"`/`"s"`; EXPLAIN reports the wrapped
   statement's type without executing it) and `namespace` is the
   statement's *resolved* namespace — the `USE` target when the statement
-  carries one, else the session namespace (ADR-0285).
+  carries one, else the session namespace (ADR-0285). A value outside
+  either vocabulary throws `ABI contract violated: ...` (as in Go).
 - **Query notifications (ADR-0363)** — `result.notifications` and
   `result.consume().notifications` are always an array: `[]` on a plain
   run (derivation is opt-in with the plan tree), the plan-time list on
   `EXPLAIN` and `PROFILE` (`PROFILE` adds the `EstimationMiss` kind). Each
   entry carries `code`,
   `gql_status`, `severity` (`"INFORMATION"` / `"WARNING"`), `category`
-  (`"PERFORMANCE"` / `"UNRECOGNIZED"` / `"DEPRECATION"`), `title`,
+  (`"PERFORMANCE"` / `"UNRECOGNIZED"` / `"DEPRECATION"` / `"SCHEMA"` / `"HINT"`), `title`,
   `description` (the diagnosis) and `remedy` (the action to take), plus
   `operator_id` on operator-scoped kinds. There is no `position` key —
   render the remedy rather than jumping to source.

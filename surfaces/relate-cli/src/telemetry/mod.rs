@@ -26,6 +26,8 @@ mod handle;
 mod noop;
 #[cfg(feature = "telemetry")]
 mod optout;
+#[cfg(feature = "telemetry")]
+pub(crate) mod spool;
 
 pub use event::{Event, OutputMode, QuerySource, StartupKind, StorageKind};
 #[cfg(feature = "telemetry")]

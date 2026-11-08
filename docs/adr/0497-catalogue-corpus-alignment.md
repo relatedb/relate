@@ -968,3 +968,10 @@ reference's; only the display case differed.
   note. No code, test or doc-reference change rides with it; the cutover nodes
   land the registry, gate, catalogue, procedure and documentation changes the
   sections above specify.
+
+## Later references
+
+- ADR-0542 records a fifth admission class, engine-only, callable, unlisted:
+  a name outside the corpus that works in every build but has no `SHOW
+  FUNCTIONS` row. It is a recorded exception to the four rules in §2, not an
+  amendment of them.

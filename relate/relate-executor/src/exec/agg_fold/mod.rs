@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Expr, OrderItem, PathPattern, Projection};
 
-use crate::eval::{eval, expr_vars, is_agg_expr};
+use crate::eval::{expr_vars, is_agg_expr};
 use crate::group_key::GroupKey;
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::Row;
@@ -38,9 +38,10 @@ impl CachedKey {
 }
 
 use super::order::{
-    folded_order_items, skip_limit_count, sort_rows_by_parked_keys, unpark_order_keys, OrderKeys,
+    folded_order_items, page, park_values, resolve_page_bounds, sort_rows_by_parked_keys,
+    unpark_order_keys, OrderKeys,
 };
-use super::scope::{has_star_item, projection_collides_with_internal_names};
+use super::scope::{has_star_item, projection_collides_with_internal_names, result_column};
 use super::QueryResult;
 
 pub(crate) fn fold_hop_vars(path: &PathPattern) -> HashSet<String> {
@@ -115,11 +116,17 @@ pub(super) fn fold_return<'a>(
     if !items.iter().any(|item| is_agg_expr(&item.expr)) {
         return None;
     }
-    let order_sources = folded_order_items(order, items)?;
+    let order = order
+        .iter()
+        .zip(folded_order_items(order, items)?)
+        .map(|(key, index)| FoldOrderKey {
+            key,
+            source: items[index].output_name(index),
+        })
+        .collect();
     Some(FoldOutput {
         items,
         order,
-        order_sources,
         skip: skip.as_ref(),
         limit: limit.as_ref(),
         params,
@@ -133,15 +140,22 @@ pub(super) fn fold_return<'a>(
 /// transcription twin.
 pub(super) struct FoldOutput<'a> {
     items: &'a [Projection],
-    order: &'a [OrderItem],
-    /// Per `ORDER BY` key: the item index its folded value is read from
-    /// (`folded_order_items`) — owned so the output outlives the
-    /// [`FoldReturn`] it was computed for.
-    order_sources: Vec<usize>,
+    /// Per `ORDER BY` key: the key and the output column its folded value
+    /// was written to (`folded_order_items`), resolved once here — one entry
+    /// per key, owned so the output outlives the [`FoldedReturn`] it was
+    /// computed for.
+    order: Vec<FoldOrderKey<'a>>,
     skip: Option<&'a Expr>,
     limit: Option<&'a Expr>,
     params: &'a BTreeMap<String, Value>,
     cypher_version: Option<u32>,
+}
+
+/// One `ORDER BY` key's folded source: the key and the column its folded
+/// value was written to.
+struct FoldOrderKey<'a> {
+    key: &'a OrderItem,
+    source: String,
 }
 
 pub(super) fn finish_folded_rows(
@@ -149,61 +163,35 @@ pub(super) fn finish_folded_rows(
     output: &FoldOutput<'_>,
     mut out: Vec<Row>,
 ) -> Result<FoldedReturn> {
-    let empty = Row::new();
-    let skip_n = match output.skip {
-        Some(expr) => skip_limit_count(&eval(
-            graph,
-            &empty,
-            expr,
-            output.params,
-            output.cypher_version,
-        )?)?,
-        None => 0,
-    };
-    let limit_n = match output.limit {
-        Some(expr) => Some(skip_limit_count(&eval(
-            graph,
-            &empty,
-            expr,
-            output.params,
-            output.cypher_version,
-        )?)?),
-        None => None,
-    };
+    let (skip_n, limit_n) = resolve_page_bounds(
+        graph,
+        output.params,
+        output.cypher_version,
+        output.skip,
+        output.limit,
+    )?;
     if !output.order.is_empty() {
         // The folded row is the only row the fold kept: each key parks the
         // value of the item `folded_order_items` resolved for it, and the
         // shared sort entry point orders the rows by those parked columns.
-        let keys = OrderKeys::new(output.order, output.items, false);
+        let keys =
+            OrderKeys::parked_only(output.order.iter().map(|folded| folded.key), output.items);
         for row in out.iter_mut() {
             let parked: Vec<Value> = output
-                .order_sources
+                .order
                 .iter()
-                .map(|&index| {
-                    let name = output.items[index].output_name(index);
-                    row.get(&name)
-                        .cloned()
-                        .expect("the folded row carries every resolved ORDER BY item")
-                })
+                .map(|folded| result_column(row, &folded.source).clone())
                 .collect();
-            for (index, value) in parked.into_iter().enumerate() {
-                row.insert(keys.name(index), value);
-            }
+            park_values(&keys, row, parked);
         }
         sort_rows_by_parked_keys(&keys, &mut out, None)?;
         unpark_order_keys(&keys, &mut out);
     }
-    if skip_n > 0 {
-        if skip_n >= out.len() {
-            out.clear();
-        } else {
-            out = out.split_off(skip_n);
-        }
-    }
-    if let Some(n) = limit_n {
-        out.truncate(n);
-    }
-    Ok(folded_return(graph, out, output.items))
+    Ok(folded_return(
+        graph,
+        page(out, skip_n, limit_n),
+        output.items,
+    ))
 }
 
 /// One projection item's rank within its half — the one classification

@@ -340,11 +340,14 @@ native result is alive (`relate_result_query_type` /
   columns), `"rw"` (a write with returned columns) or `"s"` (schema), the
   split per ADR-0332. `EXPLAIN` and `PROFILE` report the wrapped statement's
   type without executing it, so `EXPLAIN CREATE (n)` returns `"w"` and
-  creates nothing.
+  creates nothing. Any other value from the ABI is a contract violation: a
+  `RelateException` reading `ABI contract violated: query type ...`.
 - `Result.getNamespace()` — the statement's *resolved* namespace: exactly
   `"neo4j"`, `"system"` or `"system_ontologies"`. This is the `USE` target
   when the statement carries a `USE` clause, otherwise the session
-  namespace; it never reflects a session-namespace change by itself.
+  namespace; it never reflects a session-namespace change by itself. A value
+  outside the three is a `RelateException` reading
+  `ABI contract violated: namespace ...`.
 
 See `examples/ResultMetadata.java`.
 
@@ -384,7 +387,7 @@ same keys the JSON handle API's result envelope uses under `notifications`:
 | `getCode()` | `code` | the kind's code, e.g. `Neo.ClientNotification.Statement.CartesianProduct` |
 | `getGqlStatus()` | `gql_status` | the GQLSTATUS value, e.g. `03N90` |
 | `getSeverity()` | `severity` | `INFORMATION` or `WARNING` |
-| `getCategory()` | `category` | `PERFORMANCE`, `UNRECOGNIZED` or `DEPRECATION` |
+| `getCategory()` | `category` | `PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT` |
 | `getTitle()` | `title` | the kind's short title, e.g. `Cartesian product` |
 | `getDescription()` | `description` | the instance diagnosis (unknown name, index text, …) |
 | `getRemedy()` | `remedy` | the action that clears the diagnostic |

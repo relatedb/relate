@@ -98,8 +98,8 @@ pub use relate_error::{
     INTERNAL_MESSAGE,
 };
 pub use relate_executor::{
-    FrontierCounters, FrontierRunDecline, PhaseTimes, Procedure, PullKind, QueryStats, StartReason,
-    StatementEffect, StoreReads, WalkStart,
+    FrontierCounters, FrontierRunDecline, KernelRung, PatternEngine, PhaseTimes, Procedure,
+    PullKind, QueryStats, StartReason, StatementEffect, StoreReads, WalkStart,
 };
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): this re-export and the
@@ -140,6 +140,9 @@ pub use relate_model::wire::{
     Notification, NotificationCategory, NotificationKind, NotificationSeverity,
 };
 pub use relate_planner::QueryType;
+// LABS-1120: the plan-cache outcome rides the result header — the one
+// public path for the type (its home module is crate-private).
+pub use plan_cache::PlanCacheOutcome;
 pub use result::{QueryResult, ResultHeader};
 #[cfg(test)]
 pub(crate) use shared::ReadPause;

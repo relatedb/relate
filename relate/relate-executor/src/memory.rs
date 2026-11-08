@@ -77,21 +77,97 @@ pub(crate) fn fit_reserved<T>(v: &mut Vec<T>) {
     *v = fitted;
 }
 
-/// One dashmap slot plus the version-list header and its reserved buffer.
-pub fn chain_bytes(versions: usize, stride: u64) -> u64 {
-    if versions == 0 {
-        0
-    } else {
-        OVERHEAD_MAP_ENTRY + VEC_HEADER + vec_heap(versions, stride)
+/// The shape of one id's version slot (ADR-0529).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainShape {
+    Absent,
+    /// The live row and its birth timestamp, no version list.
+    Inline,
+    /// A version list of this many versions.
+    Spilled(usize),
+}
+
+impl ChainShape {
+    /// The shape after a copy-on-write that keeps the previous version.
+    pub fn after_cow(self) -> Self {
+        match self {
+            Self::Absent | Self::Inline => Self::Spilled(2),
+            Self::Spilled(n) => Self::Spilled(n + 1),
+        }
+    }
+
+    /// The shape after a create installs a version on this id.
+    pub fn after_install(self) -> Self {
+        match self {
+            Self::Absent => Self::Inline,
+            other => other.after_cow(),
+        }
+    }
+
+    /// The shape after a delete tombstones the live version.
+    pub fn after_delete(self) -> Self {
+        match self {
+            Self::Inline => Self::Spilled(1),
+            other => other,
+        }
     }
 }
 
-pub fn node_chain_bytes(versions: usize) -> u64 {
-    chain_bytes(versions, crate::graph::node_version_stride())
+/// Largest dense reservation a store will allocate. A bigger id is a
+/// side-map entry, so one persisted id cannot reserve gigabytes before
+/// admission runs (ADR-0086, ADR-0532).
+pub const DENSE_SPAN_CAP_BYTES: u64 = 1 << 30;
+
+/// Reserved bytes of a dense id span, or `None` when the power-of-two
+/// reservation does not fit in `u64`. That id cannot have a slot array
+/// (ADR-0532) and lives in the store's side map instead.
+pub fn dense_span_bytes(span: usize, slot: u64) -> Option<u64> {
+    if span == 0 {
+        return Some(0);
+    }
+    let reserved = span.checked_next_power_of_two()?;
+    (reserved as u64).checked_mul(slot)
 }
 
-pub fn rel_chain_bytes(versions: usize) -> u64 {
-    chain_bytes(versions, crate::graph::rel_version_stride())
+/// Dense reservation a store will allocate for `span`. `None` when the
+/// power-of-two product overflows `u64` or exceeds
+/// [`DENSE_SPAN_CAP_BYTES`]: that id is a side-map entry, the same gate
+/// the store uses when it grows.
+pub fn reservable_span_bytes(span: usize, slot: u64) -> Option<u64> {
+    match dense_span_bytes(span, slot) {
+        Some(bytes) if bytes <= DENSE_SPAN_CAP_BYTES => Some(bytes),
+        _ => None,
+    }
+}
+
+/// Reserved bytes of an id-indexed slot array (ADR-0532). The row itself
+/// sits in the slot; this is the vector, holes included. A span that does
+/// not fit charges nothing here — the caller charges a side-map entry.
+pub fn id_vec_bytes(span: usize, slot: u64) -> u64 {
+    dense_span_bytes(span, slot).unwrap_or(0)
+}
+
+/// One side-map entry for an id whose slot array does not fit: the
+/// hash-map overhead plus the value. The value's spilled heap is separate.
+pub fn overflow_entry_bytes(value: u64) -> u64 {
+    OVERHEAD_MAP_ENTRY + value
+}
+
+/// Heap of a spilled version chain. An inline row lives in the id slot, so
+/// it adds nothing here, and the spilled vector's header does too.
+pub fn chain_bytes(shape: ChainShape, stride: u64) -> u64 {
+    match shape {
+        ChainShape::Spilled(n) if n > 0 => vec_heap(n, stride),
+        _ => 0,
+    }
+}
+
+pub fn node_chain_bytes(shape: ChainShape) -> u64 {
+    chain_bytes(shape, crate::graph::node_version_stride())
+}
+
+pub fn rel_chain_bytes(shape: ChainShape) -> u64 {
+    chain_bytes(shape, crate::graph::rel_version_stride())
 }
 
 /// `to_id` slot, `to_str` slot, and one `Arc<str>` allocation. A second
@@ -114,17 +190,15 @@ pub fn label_vec_cache_bytes(label_count: usize, string_bytes: u64) -> u64 {
         + string_bytes
 }
 
-/// One adjacency map entry: the chunk vector plus each hop buffer.
-/// Inner hop-vector headers sit inside `size_of<(u32, Vec<AdjHop>)>`.
+/// Heap of one node's adjacency chunks and hop buffers. The chunk-vector
+/// header is the id slot (ADR-0532), so it is not charged again here.
 pub fn adjacency_bytes(chunk_hops: &[usize]) -> u64 {
     if chunk_hops.is_empty() {
         return 0;
     }
     let chunk_stride = size_of::<(u32, Vec<crate::store::AdjHop>)>() as u64;
     let hop_stride = size_of::<crate::store::AdjHop>() as u64;
-    OVERHEAD_MAP_ENTRY
-        + VEC_HEADER
-        + vec_heap(chunk_hops.len(), chunk_stride)
+    vec_heap(chunk_hops.len(), chunk_stride)
         + chunk_hops
             .iter()
             .map(|n| vec_heap(*n, hop_stride))
@@ -355,21 +429,95 @@ fn node_account(
     cost
 }
 
+/// Each id's slot shape as the batch moves it: the committed shape until
+/// an op of the batch changes it.
+struct Shapes<F> {
+    committed: F,
+    batch: HashMap<i64, ChainShape>,
+    bytes: fn(ChainShape) -> u64,
+    span: usize,
+    slot: u64,
+    /// `size_of` of the stored value, for an id that cannot join the vector.
+    value: u64,
+}
+
+impl<F: Fn(i64) -> ChainShape> Shapes<F> {
+    fn new(committed: F, bytes: fn(ChainShape) -> u64, span: usize, slot: u64, value: u64) -> Self {
+        Self {
+            committed,
+            batch: HashMap::new(),
+            bytes,
+            span,
+            slot,
+            value,
+        }
+    }
+
+    fn shape_of(&self, id: i64) -> ChainShape {
+        self.batch
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| (self.committed)(id))
+    }
+
+    /// Bytes the slot array gains when `id` extends it. An id the store
+    /// will not place in the array adds one side-map entry instead, and
+    /// only while the id has no slot yet.
+    fn note_span(&mut self, id: i64) -> i64 {
+        let Some(idx) = usize::try_from(id).ok() else {
+            return 0;
+        };
+        let need = idx.saturating_add(1);
+        if need <= self.span {
+            return 0;
+        }
+        let Some(after) = reservable_span_bytes(need, self.slot) else {
+            if !matches!(self.shape_of(id), ChainShape::Absent) {
+                return 0;
+            }
+            return overflow_entry_bytes(self.value) as i64;
+        };
+        let before = id_vec_bytes(self.span, self.slot);
+        self.span = need;
+        after as i64 - before as i64
+    }
+
+    /// Move `id`'s slot by `step`; the slot bytes it adds.
+    fn step(&mut self, id: i64, step: impl FnOnce(ChainShape) -> ChainShape) -> i64 {
+        let before = self
+            .batch
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| (self.committed)(id));
+        let after = step(before);
+        self.batch.insert(id, after);
+        (self.bytes)(after) as i64 - (self.bytes)(before) as i64
+    }
+}
+
 /// In-place edits replace the record. The first edit of a committed record
-/// copies it: the old version stays, and the chain grows by one.
-fn version_edit(
+/// copies it: the old version stays, and the slot spills or grows by one.
+fn version_edit<F: Fn(i64) -> ChainShape>(
     in_batch: bool,
     before: u64,
     after: u64,
-    committed_len: usize,
-    chain: impl Fn(usize) -> u64,
+    shapes: &mut Shapes<F>,
+    id: i64,
 ) -> i64 {
     if in_batch {
         after as i64 - before as i64
     } else {
-        let len = committed_len.max(1);
-        after as i64 + chain(len + 1) as i64 - chain(len) as i64
+        after as i64 + shapes.step(id, ChainShape::after_cow)
     }
+}
+
+/// A redo batch's live-size delta, with the part a delete's tombstone
+/// spill contributes (ADR-0529): GC returns those bytes, so admission does
+/// not refuse a batch for them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RedoDelta {
+    pub total: i64,
+    pub tombstone_spill: i64,
 }
 
 /// Sequential live-size delta of `ops` against `lookup` (committed graph).
@@ -379,21 +527,41 @@ fn version_edit(
 /// charge, [`Graph::estimate_redo_delta`](crate::graph::Graph::estimate_redo_delta)
 /// re-accounts the committed live set from the old charge to the new one;
 /// together the two are exact for created, modified, deleted, and untouched
-/// nodes alike. A delete keeps the version until GC, so its delta is zero.
-/// A set on a committed node copies the version and adds the new record;
-/// a set on a node this batch already created edits that record in place.
+/// nodes alike. A delete keeps the version until GC: it adds nothing,
+/// except the spill of an inline row into a one-version chain, which is
+/// also reported as [`RedoDelta::tombstone_spill`]. A set on a committed
+/// node copies the version and adds the new record; a set on a node this
+/// batch already created or edited edits that record in place.
+#[allow(clippy::too_many_arguments)]
 pub fn estimate_redo_delta(
     interner: &Interner,
     ops: &[RedoOp],
     lookup_node: impl Fn(NodeId) -> Option<Node>,
     lookup_rel: impl Fn(RelId) -> Option<PayloadForm>,
-    node_versions: impl Fn(NodeId) -> usize,
-    rel_versions: impl Fn(RelId) -> usize,
+    node_shape: impl Fn(NodeId) -> ChainShape,
+    rel_shape: impl Fn(RelId) -> ChainShape,
+    node_span: usize,
+    rel_span: usize,
     charge: &IndexCharge,
-) -> i64 {
+) -> RedoDelta {
     let mut nodes: HashMap<NodeId, Option<Node>> = HashMap::new();
     let mut rels: HashMap<RelId, Option<PayloadForm>> = HashMap::new();
+    let mut node_shapes = Shapes::new(
+        node_shape,
+        node_chain_bytes,
+        node_span,
+        crate::graph::node_slot(),
+        crate::graph::node_value(),
+    );
+    let mut rel_shapes = Shapes::new(
+        rel_shape,
+        rel_chain_bytes,
+        rel_span,
+        crate::graph::rel_slot(),
+        crate::graph::rel_value(),
+    );
     let mut delta = 0i64;
+    let mut tombstone_spill = 0i64;
 
     let get_node = |nodes: &HashMap<NodeId, Option<Node>>, id: NodeId| -> Option<Node> {
         if let Some(v) = nodes.get(&id) {
@@ -420,7 +588,9 @@ pub fn estimate_redo_delta(
                     labels: labels.clone(),
                     properties: properties.clone(),
                 };
-                delta += live_node_account(&n, charge) as i64 + node_chain_bytes(1) as i64;
+                delta += live_node_account(&n, charge) as i64
+                    + node_shapes.note_span(*id)
+                    + node_shapes.step(*id, ChainShape::after_install);
                 nodes.insert(*id, Some(n));
             }
             RedoOp::CreateRel {
@@ -431,16 +601,26 @@ pub fn estimate_redo_delta(
                 properties,
             } => {
                 let form = PayloadForm::from_map(interner, (**properties).clone().into());
-                delta += payload_form_account(&form) as i64 + rel_chain_bytes(1) as i64;
+                delta += payload_form_account(&form) as i64
+                    + rel_shapes.note_span(*id)
+                    + rel_shapes.step(*id, ChainShape::after_install);
                 rels.insert(*id, Some(form));
             }
             RedoOp::DeleteNode { id } => {
                 // Retained until GC. Mark it so a later op in this batch
                 // does not edit the dropped record.
-                nodes.insert(*id, None);
+                if !matches!(nodes.insert(*id, None), Some(None)) {
+                    let spill = node_shapes.step(*id, ChainShape::after_delete);
+                    delta += spill;
+                    tombstone_spill += spill;
+                }
             }
             RedoOp::DeleteRel { id } => {
-                rels.insert(*id, None);
+                if !matches!(rels.insert(*id, None), Some(None)) {
+                    let spill = rel_shapes.step(*id, ChainShape::after_delete);
+                    delta += spill;
+                    tombstone_spill += spill;
+                }
             }
             RedoOp::SetNodeProp { id, key, value } => {
                 let in_batch = nodes.contains_key(id);
@@ -451,13 +631,7 @@ pub fn estimate_redo_delta(
                 let before = live_node_account(&n, charge);
                 Arc::make_mut(&mut n.properties).insert(key.clone(), value.clone());
                 let after = live_node_account(&n, charge);
-                delta += version_edit(
-                    in_batch,
-                    before,
-                    after,
-                    node_versions(*id),
-                    node_chain_bytes,
-                );
+                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
                 nodes.insert(*id, Some(n));
             }
             RedoOp::RemoveNodeProp { id, key } => {
@@ -469,13 +643,7 @@ pub fn estimate_redo_delta(
                 let before = live_node_account(&n, charge);
                 Arc::make_mut(&mut n.properties).remove(key);
                 let after = live_node_account(&n, charge);
-                delta += version_edit(
-                    in_batch,
-                    before,
-                    after,
-                    node_versions(*id),
-                    node_chain_bytes,
-                );
+                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
                 nodes.insert(*id, Some(n));
             }
             RedoOp::SetRelProp { id, key, value } => {
@@ -487,7 +655,7 @@ pub fn estimate_redo_delta(
                 let before = payload_form_account(&form);
                 form.set(interner, key, value.clone());
                 let after = payload_form_account(&form);
-                delta += version_edit(in_batch, before, after, rel_versions(*id), rel_chain_bytes);
+                delta += version_edit(in_batch, before, after, &mut rel_shapes, *id);
                 rels.insert(*id, Some(form));
             }
             RedoOp::RemoveRelProp { id, key } => {
@@ -499,7 +667,7 @@ pub fn estimate_redo_delta(
                 let before = payload_form_account(&form);
                 form.remove(interner, key);
                 let after = payload_form_account(&form);
-                delta += version_edit(in_batch, before, after, rel_versions(*id), rel_chain_bytes);
+                delta += version_edit(in_batch, before, after, &mut rel_shapes, *id);
                 rels.insert(*id, Some(form));
             }
             RedoOp::AddLabels { id, labels } => {
@@ -515,13 +683,7 @@ pub fn estimate_redo_delta(
                     }
                 }
                 let after = live_node_account(&n, charge);
-                delta += version_edit(
-                    in_batch,
-                    before,
-                    after,
-                    node_versions(*id),
-                    node_chain_bytes,
-                );
+                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
                 nodes.insert(*id, Some(n));
             }
             RedoOp::RemoveLabels { id, labels } => {
@@ -533,13 +695,7 @@ pub fn estimate_redo_delta(
                 let before = live_node_account(&n, charge);
                 Arc::make_mut(&mut n.labels).retain(|l| !labels.contains(l));
                 let after = live_node_account(&n, charge);
-                delta += version_edit(
-                    in_batch,
-                    before,
-                    after,
-                    node_versions(*id),
-                    node_chain_bytes,
-                );
+                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
                 nodes.insert(*id, Some(n));
             }
             RedoOp::CreateIndex { .. }
@@ -557,7 +713,10 @@ pub fn estimate_redo_delta(
             | RedoOp::OntologyDrop { .. } => {}
         }
     }
-    delta
+    RedoDelta {
+        total: delta,
+        tombstone_spill,
+    }
 }
 
 #[cfg(test)]

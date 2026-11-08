@@ -5,6 +5,10 @@ Claim: ffc4b83048d2719965934ac977eb3cfff880949d
 Date: 2026-10-16
 Deciders: Oskar Hane (agreed in conversation), CypherLite maintainers (Linear LABS-325)
 
+Later references: ADR-0546 supersedes this ADR in full — the website moved
+to the relate-web repository; there is no gh-pages branch and no
+Pages-deploy chain in this repository anymore.
+
 ## Context
 
 The `gh-pages` branch is the source of the website, not what the website

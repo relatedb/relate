@@ -32,12 +32,8 @@ help:
 	@echo ""
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /'
 	@echo ""
-	@echo "In-tree gates"
-	@echo "  make baseline         freeze Relate surface + loadtest summaries"
-	@echo "  make gate             lint, tests, fraud-loadtest compare"
-	@echo "  make fraud-loadtest / identity-loadtest / fraud-checkpoint / memory-shape-loadtest / processing-memory-loadtest"
+	@echo "In-tree loadtests default to Docker 2 vCPU / 2 GB (ADR-0070):"
 	@echo "  make memory-shape-loadtest LOGICAL_MB=32 MEMORY_SHAPE_MEMORY=2g ATTRIBUTES=1 TEXT_INDEXES=0 POINT_INDEXES=0 RANGE_INDEXES=0"
-	@echo "  (in-tree loadtests default to Docker 2 vCPU / 2 GB — ADR-0070)"
 
 ## build: Build the relate binary (release)
 build:
@@ -199,13 +195,11 @@ baseline: baseline-relate baseline-loadtests
 
 ## baseline-relate: Run Relate main surface tests (test, python, doc-examples)
 baseline-relate:
-	mkdir -p $(BASELINES)
 	$(MAKE) test
 	$(MAKE) install-python
 	$(MAKE) test-python
 	$(MAKE) build
 	RELATE_BIN=$(CURDIR)/target/release/relate bash $(CURDIR)/scripts/check-doc-examples.sh
-	$(PYTHON) -c "import json,pathlib; p=pathlib.Path('$(BASELINES)/relate-surface.json'); p.write_text(json.dumps({'source':'$(CURDIR)','jobs':['test','test-python','check-doc-examples'],'ci_only':['notebook'],'status':'ok'}, indent=2)+'\n')"
 
 ## baseline-loadtests: Freeze fraud, identity, checkpoint, memory-shape, query-latency (Docker env; ADR-0070, ADR-0245)
 baseline-loadtests:
@@ -234,6 +228,50 @@ baseline-loadtests:
 	cp $(CURDIR)/target/fraud-checkpoint-envelope-run$(BASELINE_RUNS).json $(CURDIR)/target/fraud-checkpoint.json
 	cp $(CURDIR)/target/memory-shape-loadtest-envelope-run$(BASELINE_RUNS).json $(CURDIR)/target/memory-shape-loadtest.json
 
+## baseline-memory-controls: Freeze the memory-controls envelope (Docker only, full profile)
+baseline-memory-controls:
+	@if [ "$(BASELINE_ENV)" != docker ]; then \
+		echo "baseline-memory-controls: BASELINE_ENV must be docker (ADR-0070); host runs are not freezeable"; \
+		exit 1; \
+	fi
+	mkdir -p $(BASELINES)
+	rm -f $(CURDIR)/target/memory-controls-envelope-run*.json
+	@set -e; i=1; while [ $$i -le $(BASELINE_RUNS) ]; do \
+		echo "baseline-memory-controls: round $$i/$(BASELINE_RUNS)"; \
+		$(MAKE) memory-controls-test MEMORY_CONTROLS_PROFILE=full OUT_MEMORY_CONTROLS=target/memory-controls-envelope-run$$i.json; \
+		i=$$((i + 1)); \
+	done
+	$(PYTHON) $(CURDIR)/scripts/freeze-memory-controls.py --out $(BASELINES)/memory-controls.json $(CURDIR)/target/memory-controls-envelope-run*.json
+
+## compare-memory-controls: Judge target/memory-controls.json against the envelope
+compare-memory-controls:
+	$(PYTHON) $(CURDIR)/scripts/compare-memory-controls.py --baseline $(BASELINES)/memory-controls.json --report $(OUT_MEMORY_CONTROLS)
+
+## memory-controls-gate: Run the suite, then compare
+memory-controls-gate: memory-controls-test compare-memory-controls
+
+## baseline-memory-shape: Freeze the memory-shape envelope (Docker only)
+baseline-memory-shape:
+	@if [ "$(BASELINE_ENV)" != docker ]; then \
+		echo "baseline-memory-shape: BASELINE_ENV must be docker (ADR-0070); host runs are not freezeable"; \
+		exit 1; \
+	fi
+	mkdir -p $(BASELINES)
+	rm -f $(CURDIR)/target/memory-shape-envelope-run*.json
+	@set -e; i=1; while [ $$i -le $(BASELINE_RUNS) ]; do \
+		echo "baseline-memory-shape: round $$i/$(BASELINE_RUNS)"; \
+		$(MAKE) memory-shape-loadtest OUT_MEMORY_SHAPE=target/memory-shape-envelope-run$$i.json; \
+		i=$$((i + 1)); \
+	done
+	$(PYTHON) $(CURDIR)/scripts/freeze-memory-shape.py --out $(BASELINES)/memory-shape.json $(CURDIR)/target/memory-shape-envelope-run*.json
+
+## compare-memory-shape: Judge target/memory-shape-loadtest.json against the envelope
+compare-memory-shape:
+	$(PYTHON) $(CURDIR)/scripts/compare-memory-shape.py --baseline $(BASELINES)/memory-shape.json --report $(OUT_MEMORY_SHAPE)
+
+## memory-shape-gate: Run the suite, then compare
+memory-shape-gate: memory-shape-loadtest compare-memory-shape
+
 ## compare-loadtests: Compare current in-tree reports to baselines/fraud-loadtest.json
 compare-loadtests:
 	@test -f $(BASELINES)/fraud-loadtest.json
@@ -252,10 +290,6 @@ render-loadtest-comparison:
 gate:
 	$(MAKE) lint
 	$(MAKE) test
-	cargo test \
-		-p relate-core -p relate-catalog -p relate-error \
-		-p relate-ir -p relate-front -p relate-planner \
-		-p relate-executor -p relate-storage -p relate
 	$(MAKE) test-compare-loadtest
 	@if [ -f $(BASELINES)/fraud-loadtest.json ]; then $(MAKE) compare-loadtests; else echo "gate: loadtest baselines missing; run make baseline-loadtests"; exit 1; fi
 	@if [ -f $(CURDIR)/target/query-latency/report-graph-benchmark-ldbc-sf$(SF).json ]; then $(MAKE) compare-query-latency; else echo "gate: query-latency report missing (make query-latency); the envelope skip is compare-query-latency's own"; fi
@@ -404,23 +438,44 @@ else
 	$(error BASELINE_ENV must be docker or host (got '$(BASELINE_ENV)'))
 endif
 
-OUT_PROCESSING_MEMORY ?= target/processing-memory-loadtest.json
-PROCESSING_MEMORY_RUN ?= $(shell date +%Y%m%dT%H%M%S)
-URI_PROCESSING_MEMORY ?= /tmp/processing-memory-loadtest-$(PROCESSING_MEMORY_RUN)
-GRAPH_SCALE ?= 1
-WORKERS ?= 4
+OUT_MEMORY_CONTROLS ?= target/memory-controls.json
+MEMORY_CONTROLS_RUN ?= $(shell date +%Y%m%dT%H%M%S)
+URI_MEMORY_CONTROLS ?= /tmp/memory-controls-$(MEMORY_CONTROLS_RUN)
+GRAPH_SCALE ?= 10
 READ_WRITE_RATIO ?= 80:20
 MAX_CONNECTIONS ?= 0
-CONCURRENT_LOGICAL_WORKSPACE_LIMIT ?= 0
-OPS ?= 40
+CONCURRENT_LOGICAL_WORKSPACE_LIMIT ?= 55829120
 WARMUP_OPS ?= 8
-WORKLOAD_SEED ?= 1
 INDEX_MODE ?= both
+# WORKERS, OPS, and WORKLOAD_SEED are the fraud and identity knobs, set
+# earlier in this file. A later ?= cannot replace them, and a later = would
+# change those lanes. These apply only while this target's recipe runs, and
+# a value on the make command line still wins.
+memory-controls-test: WORKERS = 16
+memory-controls-test: OPS = 40
+memory-controls-test: WORKLOAD_SEED = 1
 READ_QUERY ?= mix
 CALIBRATION_REPEATS ?= 3
 CALIBRATION_HOLD_MS ?= 2500
 CALIBRATION_FAMILY ?=
-PROCESSING_MEMORY_ARGS = \
+# pr is one repeat of every family (25 observations). full is the three-repeat
+# matrix (75 observations) used by the cadence and the baseline freeze.
+ifeq ($(MEMORY_CONTROLS_PROFILE),pr)
+CALIBRATION_REPEATS = 1
+endif
+ifeq ($(MEMORY_CONTROLS_PROFILE),full)
+CALIBRATION_REPEATS = 3
+endif
+# CASE selects one case. PROBE and SKIP_PROBES remain as the previous names.
+CASE ?= $(PROBE)
+SKIP_CONTROLS ?= $(SKIP_PROBES)
+ifeq ($(CASE),connections)
+CASE := connection-cap
+endif
+ifeq ($(CASE),peak-token-rss)
+CASE := workspace-memory-calibration
+endif
+MEMORY_CONTROLS_ARGS = \
 	--graph-scale $(GRAPH_SCALE) \
 	--workers $(WORKERS) \
 	--read-write-ratio $(READ_WRITE_RATIO) \
@@ -433,30 +488,35 @@ PROCESSING_MEMORY_ARGS = \
 	--read-query $(READ_QUERY) \
 	--calibration-repeats $(CALIBRATION_REPEATS) \
 	--calibration-hold-ms $(CALIBRATION_HOLD_MS)
-ifeq ($(SKIP_PROBES),1)
-PROCESSING_MEMORY_ARGS += --skip-probes
+ifeq ($(SKIP_CONTROLS),1)
+MEMORY_CONTROLS_ARGS += --skip-controls
 endif
-ifneq ($(PROBE),)
-PROCESSING_MEMORY_ARGS += --probe $(PROBE)
+ifneq ($(CASE),)
+MEMORY_CONTROLS_ARGS += --case $(CASE)
 endif
 ifneq ($(CALIBRATION_FAMILY),)
-PROCESSING_MEMORY_ARGS += --calibration-family $(CALIBRATION_FAMILY)
+MEMORY_CONTROLS_ARGS += --calibration-family $(CALIBRATION_FAMILY)
 endif
 
-## processing-memory-loadtest: RSS, RSS growth, and typed limit failures (ADR-0333, ADR-0070)
+## memory-controls-test: memory control verifications and workspace memory calibration (ADR-0070)
 ##   Every case runs `relate serve`. The standalone relate-bolt binary
 ##   is retired (LABS-381, ADR-0368).
-processing-memory-loadtest:
+memory-controls-test:
 ifeq ($(BASELINE_ENV),host)
 	cargo build $(CARGO_PROFILE) -p relate-cli --bin relate
-	cargo build $(CARGO_PROFILE) -p relate-datasets --bin processing-memory-loadtest
-	cargo run -p relate-datasets $(CARGO_PROFILE) --bin processing-memory-loadtest -- --out $(OUT_PROCESSING_MEMORY) --uri $(URI_PROCESSING_MEMORY) $(PROCESSING_MEMORY_ARGS)
+	cargo build $(CARGO_PROFILE) -p relate-datasets --bin memory-controls
+	cargo run -p relate-datasets $(CARGO_PROFILE) --bin memory-controls -- --out $(OUT_MEMORY_CONTROLS) --uri $(URI_MEMORY_CONTROLS) $(MEMORY_CONTROLS_ARGS)
 else ifeq ($(BASELINE_ENV),docker)
-	@echo "processing-memory  container $(MEMORY_SHAPE_MEMORY)  scale $(GRAPH_SCALE)  workers $(WORKERS)  ratio $(READ_WRITE_RATIO)  index $(INDEX_MODE)  connections $(MAX_CONNECTIONS)  workspace $(CONCURRENT_LOGICAL_WORKSPACE_LIMIT)  uri $(URI_PROCESSING_MEMORY)"
-	BASELINE_MEMORY=$(MEMORY_SHAPE_MEMORY) HOST_OUT=$(OUT_PROCESSING_MEMORY) PROCESSING_MEMORY_URI=$(URI_PROCESSING_MEMORY) bash $(CURDIR)/scripts/processing-memory-docker.sh $(PROCESSING_MEMORY_ARGS)
+	@echo "memory-controls  container $(MEMORY_SHAPE_MEMORY)  scale $(GRAPH_SCALE)  workers $(WORKERS)  ratio $(READ_WRITE_RATIO)  index $(INDEX_MODE)  connections $(MAX_CONNECTIONS)  workspace $(CONCURRENT_LOGICAL_WORKSPACE_LIMIT)  uri $(URI_MEMORY_CONTROLS)  profile $(MEMORY_CONTROLS_PROFILE)"
+	BASELINE_MEMORY=$(MEMORY_SHAPE_MEMORY) HOST_OUT=$(OUT_MEMORY_CONTROLS) MEMORY_CONTROLS_URI=$(URI_MEMORY_CONTROLS) bash $(CURDIR)/scripts/memory-controls-docker.sh $(MEMORY_CONTROLS_ARGS)
 else
 	$(error BASELINE_ENV must be docker or host (got '$(BASELINE_ENV)'))
 endif
+
+## processing-memory-loadtest: previous name of memory-controls-test
+processing-memory-loadtest:
+	@echo "processing-memory-loadtest was renamed to memory-controls-test"
+	$(MAKE) memory-controls-test
 
 # query-latency-profile knobs (ADR-0244): the query id is required.
 SF ?= 0.1
@@ -528,6 +588,8 @@ test-compare-loadtest:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_verdict.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_freeze_baseline_envelope.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_query_latency_gate.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_controls.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_shape.py
 
 ## test-adr-scripts: Unit-test the ADR number mint and the PR conflict
 ##   checker (scripts/adr_mint.py, scripts/check_adr_numbers.py)
@@ -542,10 +604,22 @@ test-bolt-compat-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_bolt_compat_probe.py
 
 ## test-release-scripts: Unit-test the release sweep's version-token rule
-##   (scripts/version_tokens.py) that scripts/release-bump.sh runs
+##   (scripts/version_tokens.py) and the CHANGELOG rotation
+##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
+##   and the bump script end to end (first-release and steady-state paths)
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
+	sh $(CURDIR)/scripts/tests/test_release_bump.sh
+	sh $(CURDIR)/scripts/tests/test_toml_sh.sh
+
+## test-front-bench-scripts: Unit-test the front-bench statement corpus
+##   builder (scripts/front_bench_corpus.py): the Gherkin walk's container
+##   sink, the doc-string dedent (textwrap.dedent parity), the semicolon
+##   splitter, the keyword filter, and the one dedupe pass
+test-front-bench-scripts:
+	$(PYTHON) $(CURDIR)/scripts/tests/test_front_bench_corpus.py
 
 ## test-install-sh: Offline stub-curl harness for distribution/install.sh
 test-install-sh:
@@ -585,7 +659,8 @@ test-stamp-swift-package:
 ##   runs a scripts/tests suite hangs off this list)
 test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
-	test-release-scripts test-stamp-swift-package test-makefile-targets
+	test-release-scripts test-front-bench-scripts test-stamp-swift-package \
+	test-makefile-targets
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 

@@ -1,6 +1,7 @@
 //! Adjacency access (ADR-0031/ADR-0033 typed chunks): degree, neighbor
 //! iteration, and snapshot-visible traversal — split out of `mod.rs`.
 use super::hop_counts;
+use super::id_vec::IdVec;
 use super::*;
 
 fn flatten_adj(by_type: Option<&TypedAdj>) -> Vec<RelId> {
@@ -11,7 +12,7 @@ fn flatten_adj(by_type: Option<&TypedAdj>) -> Vec<RelId> {
 }
 
 pub(super) fn adj_insert(
-    map: &CoreMap<NodeId, TypedAdj>,
+    map: &IdVec<TypedAdj>,
     node: NodeId,
     type_id: u32,
     id: RelId,
@@ -21,13 +22,26 @@ pub(super) fn adj_insert(
 }
 
 pub(super) fn adj_reposition(
-    map: &CoreMap<NodeId, TypedAdj>,
+    map: &IdVec<TypedAdj>,
     node: NodeId,
     type_id: u32,
     id: RelId,
     ts: Option<i64>,
 ) {
     map.entry(node).or_default().reposition(type_id, id, ts);
+}
+
+/// Remove one hop from `node`'s `type_id` chunk (LABS-1116: the GC prunes
+/// the hops of chains it removed, so adjacency never references a rel the
+/// version map no longer holds). A node left with no chunks leaves no
+/// adjacency entry behind — `remove_if` re-checks emptiness under the
+/// store's write lock, so a racing insert that recreated a chunk wins and
+/// the entry stays.
+pub(super) fn adj_remove(map: &IdVec<TypedAdj>, node: NodeId, type_id: u32, id: RelId) {
+    if let Some(mut adj) = map.get_mut(&node) {
+        adj.remove(type_id, id);
+    }
+    map.remove_if(&node, |adj| adj.chunks.is_empty());
 }
 
 impl Graph {
@@ -49,7 +63,7 @@ impl Graph {
         let Some(ids) = types.ids() else {
             return self.adj_len(id, dir);
         };
-        let len = |m: &CoreMap<NodeId, TypedAdj>| {
+        let len = |m: &IdVec<TypedAdj>| {
             let Some(adj) = m.get(&id) else {
                 return 0;
             };
@@ -94,7 +108,7 @@ impl Graph {
     /// an approximate degree for choosing which side of an existence
     /// probe to walk (LABS-193).
     pub fn adj_len(&self, id: NodeId, dir: relate_ir::Direction) -> usize {
-        let len = |m: &CoreMap<NodeId, TypedAdj>| {
+        let len = |m: &IdVec<TypedAdj>| {
             m.get(&id)
                 .map(|a| a.chunks.iter().map(|(_, v)| v.len()).sum())
                 .unwrap_or(0)
@@ -114,9 +128,11 @@ impl Graph {
         self.neighbors_at(id, dir, self.read_ts())
     }
 
-    /// Snapshot-visible neighbors without cloning adjacency. `types` is
-    /// the name-keyed boundary spelling: it resolves once, then the walk
-    /// compares interned ids ([`Self::try_for_each_neighbor_resolved_at`]).
+    /// Snapshot-visible neighbors. `types` is the name-keyed boundary
+    /// spelling: it resolves once, then the walk compares interned ids
+    /// ([`Self::try_for_each_neighbor_resolved_at`]). Hop ids are copied
+    /// out from under the store lock before the callback runs, so a
+    /// variable-length walk can re-enter this same store.
     pub fn for_each_neighbor_at<T: AsRef<str>>(
         &self,
         id: NodeId,
@@ -155,7 +171,9 @@ impl Graph {
                 self.for_each_typed(&self.in_adj, id, ts, types, &mut f)?;
             }
             Direction::Both => {
-                let mut seen = HashSet::new();
+                // The crate's engine-id set alias — `UsedSet`, the
+                // FxHash/CoreMap rule (ADR-0355 / LABS-337).
+                let mut seen = crate::UsedSet::default();
                 let mut dedup = |rid: RelId| -> std::result::Result<(), E> {
                     if seen.insert(rid) {
                         f(rid)?;
@@ -171,34 +189,39 @@ impl Graph {
 
     fn for_each_typed<E>(
         &self,
-        map: &CoreMap<NodeId, TypedAdj>,
+        map: &IdVec<TypedAdj>,
         id: NodeId,
         ts: u64,
         types: &RelTypes,
         f: &mut impl FnMut(RelId) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
-        let Some(by_type) = map.get(&id) else {
-            return Ok(());
-        };
-        // One visit body; only the chunk source differs per arm.
-        let mut visit = |vec: &[crate::store::AdjHop]| {
-            for hop in vec {
-                if self.rel_visible_at(hop.id, ts) {
-                    f(hop.id)?;
+        // Copy the hop ids, then drop the store guard before visiting.
+        // `IdVec`'s lock is not re-entrant. The variable-length walker
+        // (`pattern_walk::walk_var_length`) and the GPM descent
+        // (`gpm_rel_dfs`) call back into this same map from `f`; holding
+        // the guard across that call deadlocks on the second hop.
+        let hops = {
+            let Some(by_type) = map.get(&id) else {
+                return Ok(());
+            };
+            let mut hops = Vec::new();
+            match types.ids() {
+                None => {
+                    for (_, vec) in &by_type.chunks {
+                        hops.extend(vec.iter().map(|hop| hop.id));
+                    }
+                }
+                Some(ids) => {
+                    for tid in ids {
+                        hops.extend(by_type.chunk(tid).iter().map(|hop| hop.id));
+                    }
                 }
             }
-            Ok::<(), E>(())
+            hops
         };
-        match types.ids() {
-            None => {
-                for (_, vec) in &by_type.chunks {
-                    visit(vec)?;
-                }
-            }
-            Some(ids) => {
-                for tid in ids {
-                    visit(by_type.chunk(tid))?;
-                }
+        for rid in hops {
+            if self.rel_visible_at(rid, ts) {
+                f(rid)?;
             }
         }
         Ok(())

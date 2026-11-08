@@ -1,0 +1,107 @@
+[
+  {
+    "tagName": "v0.12.5",
+    "publishedAt": "2026-10-18T12:00:00Z",
+    "isDraft": false,
+    "isPrerelease": false,
+    "body": "### Highlights\n- a CLI release the channel index must ignore",
+    "assets": [
+      {
+        "name": "relate-darwin-arm64"
+      },
+      {
+        "name": "relate-darwin-amd64"
+      },
+      {
+        "name": "relate-linux-amd64"
+      },
+      {
+        "name": "relate-linux-arm64"
+      },
+      {
+        "name": "SHA256SUMS"
+      },
+      {
+        "name": "SHA256SUMS.sig"
+      }
+    ]
+  },
+  {
+    "tagName": "relate-extensions-greet-1.2.3",
+    "publishedAt": "2026-10-20T09:30:00Z",
+    "isDraft": false,
+    "isPrerelease": false,
+    "body": "",
+    "assets": [
+      {
+        "name": "greet-1.2.3-darwin-arm64.tar.gz"
+      },
+      {
+        "name": "greet-1.2.3-linux-amd64.tar.gz"
+      },
+      {
+        "name": "extensions.json"
+      },
+      {
+        "name": "extensions.json.sig"
+      }
+    ]
+  },
+  {
+    "tagName": "relate-extensions-greet-1.1.0",
+    "publishedAt": "2026-10-19T09:30:00Z",
+    "isDraft": false,
+    "isPrerelease": false,
+    "body": "",
+    "assets": [
+      {
+        "name": "greet-1.1.0-darwin-arm64.tar.gz"
+      },
+      {
+        "name": "greet-1.1.0-linux-amd64.tar.gz"
+      },
+      {
+        "name": "extensions.json"
+      },
+      {
+        "name": "extensions.json.sig"
+      }
+    ]
+  },
+  {
+    "tagName": "relate-extensions-greet-1.3.0-rc.1",
+    "publishedAt": "2026-10-21T09:30:00Z",
+    "isDraft": false,
+    "isPrerelease": true,
+    "body": "",
+    "assets": [
+      {
+        "name": "greet-1.3.0-rc.1-darwin-arm64.tar.gz"
+      },
+      {
+        "name": "extensions.json"
+      },
+      {
+        "name": "extensions.json.sig"
+      }
+    ]
+  },
+  {
+    "tagName": "relate-extensions-egg-0.0.1",
+    "publishedAt": "2026-10-19T10:00:00Z",
+    "isDraft": true,
+    "isPrerelease": false,
+    "body": "a draft extension release that must never be published",
+    "assets": [
+      {
+        "name": "egg-0.0.1-darwin-arm64.tar.gz"
+      },
+      {
+        "name": "extensions.json"
+      },
+      {
+        "name": "extensions.json.sig"
+      }
+    ]
+  }
+]

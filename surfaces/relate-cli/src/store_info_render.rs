@@ -28,6 +28,11 @@ const NOTE_JSON_CODEC: &str = "a JSON-codec store keeps the format version, coun
 /// and printed after the store block on every human surface.
 const NOTE_MARKDOWN_CODEC: &str = "a markdown-codec store keeps the format version, counts and the index/constraint catalog in the .cypherlite sidecar manifest, which a cold info read never uses to walk the vault (ADR-0406)";
 
+/// Why an experimental-codec store (rkyv, fjall) reports envelope-only
+/// fields; one note for both — their images differ in container but not
+/// in what a cold read skips.
+const NOTE_EXPERIMENTAL_CODEC: &str = "an experimental-codec store keeps the format version, counts and the index/constraint catalog in its checkpoint image and payload, which a cold info read never parses";
+
 /// A cold `store_info` read projected into display-ready fields. The
 /// snapshot half is the typed [`SnapshotInfo`]: each variant carries exactly
 /// the fields that snapshot shape can report, so a field that does not
@@ -147,11 +152,14 @@ impl InfoReport {
                 // state — a Parquet store carries the full manifest
                 // (`StoreSnapshot::Parquet`), never an envelope —
                 // refused loudly here, so the illegal shape cannot be
-                // constructed and the renderers' envelope path is total
-                // over {Json, Markdown} by construction.
+                // constructed and every envelope codec prints its own
+                // note.
                 let note = match codec {
                     SnapshotCodecKind::Json => NOTE_JSON_CODEC,
                     SnapshotCodecKind::Markdown => NOTE_MARKDOWN_CODEC,
+                    SnapshotCodecKind::Rkyv | SnapshotCodecKind::Fjall => {
+                        NOTE_EXPERIMENTAL_CODEC
+                    }
                     SnapshotCodecKind::Parquet => unreachable!(
                         "an envelope snapshot is never parquet: a parquet store carries the full manifest"
                     ),

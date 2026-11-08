@@ -14,12 +14,12 @@ use crate::row::{Row, RowNames};
 
 use super::aggregate::{aggregate_ex, GroupSubclauses};
 use super::order::{
-    park_order_keys, skip_limit_count, sort_rows_by_parked_keys, unpark_order_keys, OrderKeys,
+    page, pages_eagerly, park_order_keys, resolve_page_bounds, sort_rows_by_parked_keys,
+    unpark_order_keys, OrderKeys,
 };
 use super::scope::{
-    has_star_item, is_internal_column, is_star_item, projection_collides_with_internal_names,
-    projection_names, result_column, return_columns, star_scope_names, visible_keys,
-    ProjectionFields,
+    has_star_item, is_internal_column, is_star_item, projection_names, result_column,
+    return_columns, star_scope_names, visible_keys, ProjectionFields,
 };
 use super::{materialize_rows_strict, QueryResult};
 
@@ -129,124 +129,6 @@ fn retain_distinct(
     Ok((kept, retained_rows))
 }
 
-/// A following `RETURN`/`WITH` the match sink can evaluate per path.
-///
-/// Eager `SKIP`/`LIMIT` (no `ORDER BY`, `DISTINCT`, or `WITH` filter) stays
-/// on the ordinary projection so a later row's error is not raised (CIP-27).
-pub(crate) struct SinkProjection<'a> {
-    pub items: &'a [Projection],
-    /// The clause's `ORDER BY` keys, parked per row by
-    /// [`finish_match_row`]. The sink declines an explicit `GROUP BY` and an
-    /// aggregate item, so it only ever sees the implicit-grouping decision.
-    order: OrderKeys<'a>,
-    names: RowNames,
-}
-
-impl<'a> SinkProjection<'a> {
-    fn new(items: &'a [Projection], order: &'a [relate_ir::OrderItem]) -> Self {
-        let order = OrderKeys::new(order, items, false);
-        let mut names = projection_names(items);
-        for index in 0..order.len() {
-            names.push(order.name(index));
-        }
-        Self {
-            items,
-            order,
-            names: RowNames::new(&names),
-        }
-    }
-}
-
-/// The projection a `MATCH` may finish in its sink, when the next clause
-/// is a non-aggregate `RETURN` or `WITH`.
-pub(crate) fn sinkable_projection(clause: &Clause) -> Option<SinkProjection<'_>> {
-    let ProjectionFields {
-        distinct,
-        items,
-        group_by,
-        order,
-        skip,
-        limit,
-        where_clause,
-    } = ProjectionFields::from_clause(clause)?;
-    if group_by.is_some()
-        || items
-            .iter()
-            .any(|item| is_star_item(item) || is_agg_expr(&item.expr))
-        // The `__` namespace reservation: an alias the sink would park
-        // beside cannot be told apart from engine-internal state, so the
-        // sink declines and the ordinary projection keeps the column.
-        || projection_collides_with_internal_names(items)
-        // ADR-0453: an aggregating subclause (ORDER BY key or WHERE
-        // predicate) recomputes over a group — the sink parks keys per
-        // incoming row, so it declines and the aggregation path answers.
-        || order.iter().any(|o| is_agg_expr(&o.expr))
-        || where_clause.is_some_and(is_agg_expr)
-    {
-        return None;
-    }
-    // A `WITH` filter runs later, on the projected row. When it names a
-    // variable the projection does not produce, the ordinary path has to
-    // keep that binding (pre-projection scope).
-    if let Some(predicate) = where_clause {
-        let mut named = HashSet::new();
-        expr_vars(predicate, &mut named);
-        let produced: HashSet<String> = items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| item.output_name(index))
-            .collect();
-        if named.iter().any(|name| !produced.contains(name)) {
-            return None;
-        }
-    }
-    let eager_page = !distinct
-        && order.is_empty()
-        && where_clause.is_none()
-        && (skip.is_some() || limit.is_some());
-    if eager_page {
-        return None;
-    }
-    Some(SinkProjection::new(items, order))
-}
-
-/// Evaluate `projection` against `row` and keep only those values, plus the
-/// order keys the later sort reads. `row` itself is not retained.
-pub(crate) fn finish_match_row(
-    graph: &ExecGraph<'_>,
-    row: &Row,
-    projection: &SinkProjection<'_>,
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Row> {
-    // The projected row: the incoming bindings with each item's value
-    // written over its output name. Order keys read it (`ORDER BY
-    // answer.kind`), and a key that is verbatim an item answers from that
-    // item's value here.
-    let mut projected = row.clone();
-    for (index, item) in projection.items.iter().enumerate() {
-        let value = eval(graph, row, &item.expr, params, cypher_version)?;
-        projected.insert(item.output_name(index), value);
-    }
-    park_order_keys(&projection.order, &mut projected, |expr, scope| {
-        eval(graph, scope, expr, params, cypher_version).unwrap_or(Value::Null)
-    });
-    let mut values = Vec::with_capacity(projection.names_len());
-    for (index, item) in projection.items.iter().enumerate() {
-        values.push(result_column(&projected, &item.output_name(index)).clone());
-    }
-    for index in 0..projection.order.len() {
-        values.push(result_column(&projected, &projection.order.name(index)).clone());
-    }
-    Ok(Row::from_names(&projection.names, values))
-}
-
-impl SinkProjection<'_> {
-    fn names_len(&self) -> usize {
-        self.items.len() + self.order.len()
-    }
-}
-
 /// Where a `RETURN`/`WITH` projection's incoming rows come from. The sink's
 /// caller is the only authority for the projected case: a row carries no
 /// marker a user alias could forge, and an ordinary batch whose bindings
@@ -292,36 +174,6 @@ fn filter_where(
         }
     }
     Ok(filtered)
-}
-
-/// The paging stage: drop the first `skip_n` rows, keep at most `limit_n`.
-/// The DISTINCT stage's row-buffer charge is re-measured by the caller
-/// against the shrunken buffer — paging itself owns no workspace state.
-fn page(mut rows: Vec<Row>, skip_n: usize, limit_n: Option<usize>) -> Vec<Row> {
-    drop(rows.drain(..skip_n.min(rows.len())));
-    if let Some(n) = limit_n {
-        rows.truncate(n);
-    }
-    rows
-}
-
-/// Resolve the SKIP/LIMIT bounds against the empty row. The two paging
-/// sites — the eager pre-projection stop and the post-merge stage — both
-/// resolve through this one spelling, each at its own evaluation
-/// position, so CIP-27's error ordering is unchanged.
-fn resolve_page_bounds(
-    graph: &ExecGraph<'_>,
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-    skip: Option<&Expr>,
-    limit: Option<&Expr>,
-) -> Result<(usize, Option<usize>)> {
-    let bound = |exprs: Option<&Expr>| -> Result<Option<usize>> {
-        exprs
-            .map(|expr| skip_limit_count(&eval(graph, &Row::new(), expr, params, cypher_version)?))
-            .transpose()
-    };
-    Ok((bound(skip)?.unwrap_or(0), bound(limit)?))
 }
 
 pub(crate) fn project_rows(
@@ -378,10 +230,15 @@ pub(crate) fn project_rows(
     // row evaluation. In particular a LIMIT 1 must not evaluate a later row
     // whose projection raises an error (CIP-27).
     let eager_paged = !has_agg
-        && !distinct
-        && order.is_empty()
-        && where_clause.is_none()
-        && (skip.is_some() || limit.is_some());
+        && pages_eagerly(&ProjectionFields {
+            distinct,
+            items,
+            group_by,
+            order,
+            skip: skip.as_ref(),
+            limit: limit.as_ref(),
+            where_clause,
+        });
     // The match sink already evaluated these items. Eager paging never takes
     // that path, so this bag is the full input the sort and the page see.
     let preprojected = matches!(source, RowSource::SinkProjected);
@@ -460,7 +317,7 @@ pub(crate) fn project_rows(
                 }
                 drop(r);
                 park_order_keys(&order_keys, &mut n, |expr, scope| {
-                    eval(graph, scope, expr, params, cypher_version).unwrap_or(Value::Null)
+                    eval(graph, scope, expr, params, cypher_version)
                 });
                 // The star branch's output row landing in its final
                 // shape, through the same one `add_row` charge.
@@ -562,7 +419,7 @@ pub(crate) fn project_rows(
             // would skip its payload.
             drop(row);
             park_order_keys(&order_keys, &mut row2, |expr, scope| {
-                eval(graph, scope, expr, params, cypher_version).unwrap_or(Value::Null)
+                eval(graph, scope, expr, params, cypher_version)
             });
             // The built row landing in the output container, in its
             // final shape: the identity rule counts each distinct

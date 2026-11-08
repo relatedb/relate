@@ -6,10 +6,11 @@
 //! pattern N+1 immediately and returns at the first binding that satisfies
 //! the predicate.
 
+use crate::UsedSet;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
-use relate_core::{RelId, Result, Value};
+use relate_core::{Result, Value};
 use relate_ir::{
     classify_aggregate, AggregateKind, BinaryOp, Clause, Expr, MatchMode, PathPattern, Projection,
 };
@@ -122,7 +123,7 @@ pub(crate) fn patterns_exist(
         patterns,
         0,
         row,
-        HashSet::new(),
+        UsedSet::default(),
         &residual,
         pred,
     )?))
@@ -133,7 +134,7 @@ fn seek(
     patterns: &[PathPattern],
     idx: usize,
     row: Row,
-    used: HashSet<RelId>,
+    used: UsedSet,
     residual: &Residual<'_>,
     pred: ExistencePred<'_>,
 ) -> Result<bool> {
@@ -145,7 +146,7 @@ fn seek(
     let graph = ctx.graph;
     let params = ctx.params;
     let cypher_version = ctx.cypher_version;
-    let accept = |row2: Row, used2: HashSet<RelId>| -> Result<bool> {
+    let accept = |row2: Row, used2: UsedSet| -> Result<bool> {
         seek(
             ExecCtx::new(graph, params, cypher_version),
             patterns,
@@ -210,6 +211,8 @@ fn plain_match(clause: &Clause) -> Option<PlainMatch<'_>> {
         patterns,
         where_clause,
         search,
+        using_index: _,
+        using_join: _,
     } = clause
     else {
         return None;

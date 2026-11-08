@@ -164,8 +164,10 @@ fn success_envelope_shape() {
     );
 
     let obj = env.as_object().unwrap();
-    // Exactly the eleven canonical keys, with `rows` (not `data`).
-    assert_eq!(obj.len(), 11);
+    // Exactly the sixteen canonical keys, with `rows` (not `data`) — the
+    // LABS-1120 fine sub-split and the plan-cache outcome joined the
+    // eleven.
+    assert_eq!(obj.len(), 16);
     // LABS-418: the structured plan is always present, null here.
     assert!(obj["plan"].is_null());
     assert!(obj.contains_key("columns"));

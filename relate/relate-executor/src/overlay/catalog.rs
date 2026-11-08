@@ -8,7 +8,7 @@ use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::Result;
 
 use crate::graph::{QueryStats, ShowSchema};
-use crate::redo::{CatalogName, RedoOp};
+use crate::redo::{CatalogName, IndexFacts, RedoOp};
 
 use super::{ExecGraph, WriteScratch};
 
@@ -91,6 +91,41 @@ impl WriteScratch {
 }
 
 impl<'a> ExecGraph<'a> {
+    /// The typed facts of every named index, resolved through the one
+    /// [`IndexFacts`] precedence (detail, then backing constraint, then
+    /// the legacy encoding) in the catalog's name order — the snapshot a
+    /// statement-scoped index reader (the 03N95 dynamic-property
+    /// detector) reads instead of re-spelling the chain over raw
+    /// [`IndexDef`] rows.
+    pub fn index_facts(&self) -> Result<Vec<IndexFacts>> {
+        // One admission boundary for the three catalog views (the pinned
+        // snapshot the view carries, else the base's single capture): the
+        // per-kind scratch folds and the show overlay replay over this one
+        // capture, where three separate reader calls could tear.
+        let (indexes, constraints, mut show) = match self.schema {
+            Some(schema) => (
+                schema.indexes.clone(),
+                schema.constraints.clone(),
+                schema.show.clone(),
+            ),
+            None => {
+                let snapshot = self.base.schema_snapshot();
+                (snapshot.indexes, snapshot.constraints, snapshot.show)
+            }
+        };
+        let indexes = self.fold_named_indexes(indexes);
+        let constraints = self.fold_named_constraints(constraints);
+        if let Some(scratch) = self.scratch {
+            crate::graph::apply_show_overlay(&mut show, scratch.borrow().redo.catalog_ops())?;
+        }
+        let details = &show.data.index_details;
+        Ok(crate::redo::resolve_index_facts(
+            &indexes,
+            details,
+            &constraints,
+        ))
+    }
+
     pub(crate) fn show_schema(&self) -> Result<ShowSchema> {
         // A view carrying an admitted `SchemaSnapshot` reads that pinned
         // theater. Schema-less views (`read`/`read_at`/`write`) fall back to
@@ -136,6 +171,13 @@ impl<'a> ExecGraph<'a> {
             .schema
             .map(|s| s.indexes.clone())
             .unwrap_or_else(|| self.base.named_indexes());
+        self.fold_named_indexes(committed)
+    }
+
+    /// The index fold of [`Self::named_indexes`], over an already-captured
+    /// committed set — the piece [`Self::index_facts`] reuses so its one
+    /// capture and the single reader agree.
+    fn fold_named_indexes(&self, committed: Vec<IndexDef>) -> Vec<IndexDef> {
         self.named_defs(committed, |map, op| match op {
             RedoOp::CreateIndex {
                 name,
@@ -183,6 +225,13 @@ impl<'a> ExecGraph<'a> {
             .schema
             .map(|s| s.constraints.clone())
             .unwrap_or_else(|| self.base.named_constraints());
+        self.fold_named_constraints(committed)
+    }
+
+    /// The constraint fold of [`Self::named_constraints`], over an
+    /// already-captured committed set — the piece [`Self::index_facts`]
+    /// reuses so its one capture and the single reader agree.
+    fn fold_named_constraints(&self, committed: Vec<ConstraintDef>) -> Vec<ConstraintDef> {
         self.named_defs(committed, |map, op| {
             if let Some(def) = op.constraint_def() {
                 map.insert(def.name.clone(), def);

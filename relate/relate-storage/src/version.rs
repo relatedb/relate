@@ -31,35 +31,32 @@ pub(crate) enum Classification<T> {
     Unreadable(T),
 }
 
-/// Parquet snapshot: manifest `format_version`.
+/// Snapshot manifest `format_version` facts — codec-neutral (every codec
+/// that writes a `manifest.json` gates on them), so they compile with any
+/// manifest-bearing codec: the Parquet codec (whose reader lives in
+/// `snapshot::native`, ADR-0105) or an experimental one.
+#[cfg(manifest_codec)]
 pub(crate) mod manifest {
-    #[cfg(parquet_codec)]
     use super::Classification;
 
-    // The read gate lives in `snapshot::native`, compiled only with the
-    // Parquet codec (ADR-0105), and so are the readable set and classifier.
     /// Oldest manifest this binary can load.
-    #[cfg(parquet_codec)]
     pub(crate) const MIN_READABLE_VERSION: u32 = 1;
     /// What this binary writes while the manifest selects no ontology
     /// object.
-    #[cfg(parquet_codec)]
     pub(crate) const CURRENT_VERSION: u32 = 3;
     /// What this binary writes when the manifest selects an ontology object
-    /// (ADR-0120 §5). A v4 manifest is a v3 manifest plus `ontology_path`.
-    #[cfg(parquet_codec)]
+    /// (ADR-0120 §5). A v4 manifest is a v3 manifest plus the ontology
+    /// selection.
     pub(crate) const ONTOLOGY_VERSION: u32 = 4;
     /// Every readable version; v1/v2 use the monolithic
     /// `nodes.parquet`/`relationships.parquet` fallback reader (ADR-0005,
     /// pre-ADR-0022 shards).
-    #[cfg(parquet_codec)]
     pub(crate) const READABLE: &[u32] =
         &[MIN_READABLE_VERSION, 2, CURRENT_VERSION, ONTOLOGY_VERSION];
 
     /// The version a manifest is written with (ADR-0120 §8: the format
     /// follows the content): [`ONTOLOGY_VERSION`] when it selects an
     /// ontology object, [`CURRENT_VERSION`] otherwise.
-    #[cfg(parquet_codec)]
     pub(crate) fn version_for_write(has_ontology: bool) -> u32 {
         if has_ontology {
             ONTOLOGY_VERSION
@@ -73,7 +70,6 @@ pub(crate) mod manifest {
     /// emits is current — `(3, no ontology)` or `(4, ontology)`; every
     /// other readable pair is legacy and migrate-on-open normalizes it to
     /// the content's version.
-    #[cfg(parquet_codec)]
     pub(crate) fn classify(version: u32, has_ontology: bool) -> Classification<u32> {
         if version == version_for_write(has_ontology) {
             Classification::Current
@@ -88,7 +84,6 @@ pub(crate) mod manifest {
     /// classify it and reject an unreadable store with this subsystem's
     /// one unsupported-version error; a readable version comes back as
     /// the [`super::SnapshotMarker`] the loader hands to its caller.
-    #[cfg(parquet_codec)]
     pub(crate) fn gate(
         version: u32,
         has_ontology: bool,

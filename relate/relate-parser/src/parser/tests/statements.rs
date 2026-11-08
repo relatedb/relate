@@ -304,9 +304,44 @@ fn test_using_index_hint_is_parsed_and_ignored() {
 }
 
 #[test]
-fn test_using_scan_and_join_hints_are_parsed_and_ignored() {
+fn test_using_scan_is_parsed_and_join_hints_are_retained() {
     assert!(parse("MATCH (n:Person) USING SCAN n:Person RETURN n").is_ok());
-    assert!(parse("MATCH (a:A), (b:B) USING JOIN ON a, b WHERE a.id = b.id RETURN a, b").is_ok());
+    // The JOIN hints are retained, one per `USING JOIN ON`, keys in
+    // written order: the planner never fulfils one, so the plan-time
+    // notification reports each.
+    let stmt =
+        parse("MATCH (a:A), (b:B) USING JOIN ON a, b WHERE a.id = b.id RETURN a, b").unwrap();
+    match &stmt.clauses[0] {
+        Clause::Match(m) => {
+            let keys = m
+                .using_join
+                .iter()
+                .map(|hint| {
+                    hint.variables
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(keys, [vec!["a".to_string(), "b".to_string()]]);
+        }
+        other => panic!("expected Match clause, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_using_join_without_on_is_rejected() {
+    // `ON` is mandatory in the CIP-79 production `USING JOIN ON <var>...`
+    // (live Neo4j rejects the bare form); the parser expects it.
+    let err = parse("MATCH (a:A), (b:B) USING JOIN a, b WHERE a.id = b.id RETURN a, b")
+        .expect_err("USING JOIN without ON must not parse");
+    // The parser's own refusal message, not the Display rendering (which
+    // echoes the source line and caret).
+    assert!(
+        err.message.starts_with("expected ON"),
+        "the error should name the missing ON: {}",
+        err.message
+    );
 }
 
 #[test]

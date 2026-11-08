@@ -225,6 +225,9 @@ Success:
              "relationships_deleted": 0 },
   "notifications": [],
   "elapsed_ms": 0.041,
+  "parse_ms": 0.012, "plan_ms": 0.008, "execute_ms": 0.021,
+  "lex_parse_ms": 0.006, "rewrite_ms": 0.001, "lower_ms": 0.005,
+  "result_generation_ms": 0.0002, "plan_cache": "miss",
   "error": null
 }
 ```
@@ -235,7 +238,11 @@ each entry carries `code`, `gql_status`, `severity`, `category`, `title`,
 is empty on a plain run (the engine derives notifications only where an
 `EXPLAIN`/`PROFILE` plan tree is built); an `EXPLAIN` envelope carries the
 plan-time list, e.g. the `Neo.ClientNotification.Statement.CartesianProduct`
-entry. `elapsed_ms` is the engine-reported statement elapsed (ADR-0221).
+entry. `elapsed_ms` is the engine-reported statement elapsed (ADR-0221),
+with its ADR-0491 phase split (`parse_ms`/`plan_ms`/`execute_ms`) and the
+LABS-1120 fine sub-split (`lex_parse_ms`/`rewrite_ms`/`lower_ms`,
+`result_generation_ms`) beside it, plus the `plan_cache` outcome string
+(all `0` fine parse windows on a cache hit, which the outcome explains).
 The renderer in the previous section (`renderResult`) ignores the extra
 envelope keys; it classifies rows from `columns` and `rows`.
 

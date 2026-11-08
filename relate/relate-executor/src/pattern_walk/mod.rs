@@ -99,14 +99,12 @@
 //! avoidance), but that is a placement constraint the two concerns share,
 //! not subject matter they share.
 
-use std::collections::HashSet;
-
 use relate_core::{NodeId, RelId, Value};
 use relate_ir::{NodePattern, RelPattern};
 use relate_names::SmallName;
 
-use crate::hash_seed::shared_random_state;
 use crate::row::Row;
+use crate::UsedSet;
 
 mod admit;
 mod binds;
@@ -327,27 +325,13 @@ pub(crate) fn within_hop_bounds(min_h: u32, max_h: u32, hops: u32) -> bool {
 /// a walk branch pays one flat allocation instead of constructing a
 /// SipHash table per hop. The set form is reconstructed only at the sink
 /// boundary, where a stored binding carries the type the multi-pattern
-/// carriers ([`super::exec::pattern_policies::Matched`]) share.
+/// carriers ([`super::exec::pattern_policies::Matched`]) share — the
+/// crate-root [`crate::UsedSet`] alias (LABS-1116), FxHash for
+/// engine-generated ids (the `CoreMap` rule, ADR-0355).
 #[derive(Clone, Default)]
 pub(crate) struct UsedRels {
     ids: Vec<RelId>,
 }
-
-// Every used-set hashes from the one process-wide seeded state
-// (`crate::hash_seed::shared_random_state`, LABS-822): `RelId`s are
-// engine-generated dense ids, never attacker-chosen, so one process-wide
-// seed answers the provenance rule the crate's other engine-id tables
-// already follow (the `CoreMap` family's fixed hasher; ADR-0355 bars only
-// attacker-writable keys) — and the conversions below stop paying a fresh
-// `RandomState` per row, whose thread-local RNG seed read dominated the
-// classic walker's offer profile.
-//
-// The set type stays the default-`RandomState` `HashSet<RelId>` — not
-// the `CoreMap` family's FxHash — because that exact type is the
-// contract threaded through every used-set signature (`Matched`, the
-// walk-entry and probe-predicate parameters, the GPM state carry);
-// migrating it to a fixed-hasher alias is its own change, not a
-// side effect of this one.
 
 impl UsedRels {
     /// The empty carrier every walk starts from.
@@ -357,7 +341,7 @@ impl UsedRels {
 
     /// The walk-entry conversion from the set form a caller's pattern
     /// chain carries.
-    pub(crate) fn from_set(set: &HashSet<RelId>) -> Self {
+    pub(crate) fn from_set(set: &UsedSet) -> Self {
         Self {
             ids: set.iter().copied().collect(),
         }
@@ -365,25 +349,10 @@ impl UsedRels {
 
     /// The sink-boundary materialization into the set form a stored
     /// binding or by-value consumer carries — the one arena→set
-    /// conversion, sized exactly to this row's rels and seeded from the
-    /// one process-wide hasher (LABS-822): no caller threads a hasher,
-    /// and no row converted here pays a fresh `RandomState`
-    /// construction. (Sibling producers that build a used-set straight
-    /// from a rel slice — the frontier emitter, the shortest-route
-    /// entry — are not `UsedRels` holders and keep their own
-    /// construction until the set-type migration.)
-    pub(crate) fn to_set(&self) -> HashSet<RelId> {
-        let mut set = HashSet::with_capacity_and_hasher(self.ids.len(), shared_random_state());
-        set.extend(self.ids.iter().copied());
-        set
-    }
-
-    /// The empty used-set a finished row carries (LABS-822) — the
-    /// nothing-to-hash twin of [`to_set`]: no allocation, no hasher
-    /// construction. The one shared-empty spelling the carry decision's
-    /// single home reads (`MatchTail::store_row`'s Finish arm).
-    pub(crate) fn empty_set() -> HashSet<RelId> {
-        HashSet::with_capacity_and_hasher(0, shared_random_state())
+    /// conversion, sized exactly to this row's rels (LABS-822; the
+    /// fixed hasher since LABS-1116).
+    pub(crate) fn to_set(&self) -> UsedSet {
+        self.ids.iter().copied().collect()
     }
 
     /// Whether `rid` is already consumed on this walk.
@@ -429,14 +398,14 @@ mod tests {
     #[test]
     fn to_set_carries_the_arenas_rels() {
         // LABS-822: the one arena→set conversion. Set equality is
-        // content, not seed, so the shared hasher changes nothing the
+        // content, not seed, so the fixed hasher changes nothing the
         // consumer can observe.
         let mut used = UsedRels::new();
         for id in [1, 2, 3] {
             used.insert(id);
         }
-        assert_eq!(used.to_set(), HashSet::from([1, 2, 3]));
-        assert_eq!(UsedRels::new().to_set(), HashSet::new());
-        assert!(UsedRels::empty_set().is_empty());
+        assert_eq!(used.to_set(), UsedSet::from_iter([1, 2, 3]));
+        assert_eq!(UsedRels::new().to_set(), UsedSet::default());
+        assert!(UsedSet::default().is_empty());
     }
 }

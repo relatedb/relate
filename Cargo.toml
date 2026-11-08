@@ -89,6 +89,7 @@ relate-mcp = { path = "surfaces/relate-mcp" }
 relate-serve = { path = "surfaces/relate-serve" }
 relate-datasets = { path = "testing/relate-datasets" }
 relate-test-support = { path = "testing/relate-test-support" }
+relate-query-latency = { path = "testing/relate-query-latency" }
 # First-party extension children (ADR-0431 §11, ADR-0430 §6): the wire
 # kit both sides of a mount share (the CLI host consumes it; the
 # children link it), the importer children, and the game child — none
@@ -194,13 +195,21 @@ tempfile = "3"
 # codegen unit shrink every artifact with no behavior change and no measured
 # perf cost (fat LTO gains nothing further); the query-latency ratchet
 # (ADR-0245) and the loadtest gates watch perf.
-# `strip = "none"` is deliberate (LABS-876): rustc's `-C strip` runs
-# llvm-objcopy, which leaves the Mach-O __LINKEDIT string table 4-byte
-# aligned; macOS 26+ dyld demands 8 and refuses to load the stripped dylibs
-# (Python wheel, FFI cdylib). Fixed upstream in LLVM 23 (rust-lang/rust#157750,
-# llvm/llvm-project#203678) — the 1.88 pin predates it; re-enable then.
+# `strip = "debuginfo"` is cargo's own implicit release default, made
+# explicit. The former `"none"` (the macOS dyld workaround, LABS-876) also
+# disabled the default DWARF strip on every platform: the FFI cdylib
+# shipped 3.2 MB of debug info no earlier release ever carried.
+# `"symbols"` stays off: rustc's `-C strip=symbols` runs llvm-objcopy,
+# which leaves the Mach-O __LINKEDIT string table 4-byte aligned; macOS 26+
+# dyld demands 8 and refuses to load the dylibs (rust-lang/rust#157750,
+# fixed in LLVM 23 — the 1.88 pin predates it). Debuginfo-only stripping
+# never shrinks the symbol table, so dylibs stay loadable (verified on the
+# 1.88 pin: stroff mod 8 = 0, dlopen OK — and every pre-recipe release
+# shipped this way via the implicit default). ELF symbol tables and the
+# staticlib members' embedded thin-LTO bitcode are dropped at packaging
+# time in release.yml instead.
 [profile.release]
-strip = "none"
+strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
 

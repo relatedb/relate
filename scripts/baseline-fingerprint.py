@@ -72,6 +72,11 @@ def container_uname_m(run_image: str) -> str:
 def config_int(report: dict[str, Any], key: str) -> int | None:
     raw = (report.get("config") or {}).get(key)
     if raw is None:
+        # memory-controls keeps the same knobs on `controls` (warmup is
+        # `warmup_ops` there). Other reports keep `config`.
+        controls = report.get("controls") or {}
+        raw = controls.get("warmup_ops" if key == "warmup" else key)
+    if raw is None:
         return None
     return int(raw)
 

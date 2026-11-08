@@ -69,9 +69,11 @@ pub(super) fn shared_execution_plan(
             seed: import_seed(vars, first)?,
         }),
         relate_ir::CallScope::None => {
+            // Row keys are unique (a map), so key-set equality is
+            // length-plus-containment — no per-row set allocation.
             if rows
                 .iter()
-                .any(|row| row.keys().collect::<HashSet<_>>() != first.keys().collect())
+                .any(|row| row.len() != first.len() || row.keys().any(|k| !first.contains_key(k)))
             {
                 return Ok(None);
             }

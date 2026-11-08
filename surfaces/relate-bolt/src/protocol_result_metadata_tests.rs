@@ -164,6 +164,59 @@ fn pull_success_carries_the_structured_plan() {
     }
 }
 
+/// LABS-1117: the plan value is the engine's own tree, so the PROFILE
+/// metadata carries the per-clause traversal rung (`KernelRung`) and the
+/// static pattern-engine mode (`PatternEngine`) on the MATCH operator —
+/// no Bolt-specific encoding, the shared plan presentation's args.
+#[test]
+fn pull_success_carries_the_traversal_rung() {
+    let mut client = crate::testutil::connected_client();
+    run_success(
+        &mut client,
+        relate_test_support::plan_rung::THREE_HOP_CORRIDOR,
+    );
+    drain_success(&mut client, Message::Pull);
+    run_success(
+        &mut client,
+        &format!(
+            "PROFILE {}",
+            relate_test_support::plan_rung::THREE_HOP_MATCH
+        ),
+    );
+    let pull = drain_success(&mut client, Message::Pull);
+    let plan = pull
+        .get("profile")
+        .unwrap_or_else(|| panic!("the drained PROFILE carries the plan: {pull:?}"));
+
+    /// The first node (pre-order) whose args carry `key`, over the plan
+    /// value's plain nested maps and children list.
+    fn arg<'a>(node: &'a Pack, key: &str) -> Option<&'a Pack> {
+        if let Some(value) = node.get("args").and_then(|args| args.get(key)) {
+            return Some(value);
+        }
+        match node.get("children") {
+            Some(Pack::List(children)) => children.iter().find_map(|child| arg(child, key)),
+            _ => None,
+        }
+    }
+
+    assert_eq!(
+        arg(plan, "KernelRung").and_then(Pack::as_str),
+        Some("chain"),
+        "the PROFILE summary names the chain rung: {plan:?}"
+    );
+    assert_eq!(
+        arg(plan, "KernelHops").and_then(Pack::as_int),
+        Some(3),
+        "the chain rung's hop count rides beside it: {plan:?}"
+    );
+    assert_eq!(
+        arg(plan, "PatternEngine").and_then(Pack::as_str),
+        Some("auto"),
+        "the static pattern-engine mode rides the MATCH operator: {plan:?}"
+    );
+}
+
 /// A DISCARD ending carries the same pair (ADR-0357): the plan rides the
 /// drained result, never the RUN, whichever message drains it.
 #[test]

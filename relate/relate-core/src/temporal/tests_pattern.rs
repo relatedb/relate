@@ -798,3 +798,36 @@ fn read_number_restores_position_on_failure() {
     let digits = read_number("123", &mut pos, None, false).unwrap().unwrap();
     assert_eq!((digits.value, digits.digits, pos), (123, 3, 3));
 }
+
+/// The month/weekday name tables are the formatter's own: full names and
+/// the three-letter abbreviations parse case-insensitively, and nothing
+/// else (a two-letter or near-miss spelling) matches.
+#[test]
+fn month_and_weekday_names_parse_case_insensitively_from_the_shared_tables() {
+    for (input, pattern, want) in [
+        ("JUNE 27", "MMMM d", "--06-27"),
+        ("jun 27", "MMM d", "--06-27"),
+        ("Dec 3", "MMM d", "--12-03"),
+    ] {
+        let parsed = parse_pattern("date", &format!("2024 {input}"), &format!("yyyy {pattern}"))
+            .unwrap_or_else(|err| panic!("{input}: {err:?}"));
+        assert!(parsed.iso_string().ends_with(&want[1..]), "{input}");
+    }
+    let monday = parse_pattern("date", "2024-06-24 mon", "yyyy-MM-dd EEE").unwrap();
+    assert_eq!(monday.iso_string(), "2024-06-24");
+    for (input, pattern) in [
+        ("2024 Ju 27", "yyyy MMM d"),
+        ("2024 Junee 27", "yyyy MMM d"),
+        ("2024-06-24 Mo", "yyyy-MM-dd EEE"),
+    ] {
+        assert!(parse_pattern("date", input, pattern).is_err(), "{input}");
+    }
+}
+
+/// A repeated field is the one duplicate-field error in both grammars.
+#[test]
+fn duplicate_fields_share_one_error_across_both_grammars() {
+    let instant = parse_pattern("date", "2024 2025", "yyyy yyyy").unwrap_err();
+    let duration = parse_pattern("duration", "1 2", "H H").unwrap_err();
+    assert_eq!(format!("{instant:?}"), format!("{duration:?}"));
+}

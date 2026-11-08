@@ -24,6 +24,7 @@ mod plan_table;
 mod plan_text;
 mod speedscope;
 mod table_layout;
+mod timings;
 
 /// The one render scaffold for the whole suite: run `f` over a single
 /// column-ordered fixture and return the output as a `String`. `plan` is
@@ -50,6 +51,7 @@ fn render_with_plan(
         cols,
         rows,
         plan.map(|fixture| notified_view(&fixture.value, header, &[], fixture.profiled)),
+        None,
         None,
     )
 }
@@ -80,17 +82,20 @@ fn render_with_plan_roles(
             profiled: fixture.profiled,
         }),
         None,
+        None,
     )
 }
 
 /// The common core of the scaffolds: run `f` over a single column-ordered
-/// fixture, carrying the plan view (with its notification list).
+/// fixture, carrying the plan view (with its notification list) and the
+/// LABS-1120 timing stamp.
 fn render_with_meta(
     f: Formatter,
     cols: &[String],
     rows: &[Vec<CypherValue>],
     plan: Option<PlanView<'_>>,
     row_cap: Option<RowCap>,
+    timings: Option<wire::TimingStampMs>,
 ) -> String {
     let rows = ordered_rows(cols, rows);
     // The fixtures see the `columnTypes` the engine would stamp, derived
@@ -117,6 +122,7 @@ fn render_with_meta(
             column_types: &column_types,
             row_cap,
             plan,
+            timings,
         },
     )
     .unwrap();
@@ -126,7 +132,7 @@ fn render_with_meta(
 /// Render `rows` under `mode` with a row-cap cut (ADR-0403): the caller
 /// states both counts — the fixture's `rows` are the kept ones.
 fn render_cap(mode: Mode, cols: &[String], rows: &[Vec<CypherValue>], cap: RowCap) -> String {
-    render_with_meta(Formatter::new(mode), cols, rows, None, Some(cap))
+    render_with_meta(Formatter::new(mode), cols, rows, None, Some(cap), None)
 }
 
 fn render_with(f: Formatter, cols: &[String], rows: &[Vec<CypherValue>]) -> String {
@@ -237,6 +243,7 @@ fn profile_fixture() -> PlanFixture {
             reads: Default::default(),
             phases: Default::default(),
             start: None,
+            kernel: None,
             batched: false,
             zone_skips: 0,
             frontier: Default::default(),
@@ -285,6 +292,7 @@ fn render_plan_notified(
             notifications,
             plan.profiled,
         )),
+        None,
         None,
     )
 }

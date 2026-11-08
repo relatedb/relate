@@ -60,6 +60,20 @@ pub(crate) enum Contract<'a> {
     HubStar(Box<HubStar<'a>>),
 }
 
+impl Contract<'_> {
+    /// The rung this contract runs (LABS-1117): the chain with its hop
+    /// count, or the hub-star. The one derivation both the runtime
+    /// engagement record and the PROFILE fact read.
+    pub(crate) fn rung(&self) -> crate::ctx::KernelRung {
+        match self {
+            Contract::Chain(chain) => crate::ctx::KernelRung::Chain {
+                hops: chain.hops.len(),
+            },
+            Contract::HubStar(_) => crate::ctx::KernelRung::HubStar,
+        }
+    }
+}
+
 /// One hop of a kernel's walk: the rel pattern, the traversal direction in
 /// the kernel's walk order, the target node's admission, and the
 /// degree-estimator's facts (the hop's seed-side node pattern and whether
@@ -81,13 +95,15 @@ pub(crate) struct Hop<'a> {
 impl Hop<'_> {
     /// This hop scaled from the driving end by the planner's degree tail:
     /// `rows` rows sitting at the hop's seed side become the hop's
-    /// arrival-side row estimate.
+    /// arrival-side row estimate. A hop the walk model cannot price (an
+    /// untyped rel, an unlabeled seed side) rides the any-label tail
+    /// instead of passing the rows through (LABS-991).
     pub(crate) fn scaled_from_seed(
         &self,
         rows: u128,
         stats: &dyn relate_planner::PatternStats,
     ) -> u128 {
-        relate_planner::apply_degree(rows, self.seed, self.rel, self.seed_on_start, stats)
+        relate_planner::apply_hop_bound(rows, self.seed, self.rel, self.seed_on_start, stats)
     }
 }
 

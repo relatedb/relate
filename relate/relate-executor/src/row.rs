@@ -351,6 +351,20 @@ pub(crate) fn row_bound(row: &Row) -> impl Fn(&str) -> bool + '_ {
     |name: &str| row.get(name).is_some()
 }
 
+// Counts `interned_schema` calls: the per-row schema cost a hot path must
+// not pay. Test-only, so a test can assert a path interns at setup and
+// never per row.
+#[cfg(test)]
+thread_local! {
+    static INTERNED_SCHEMA_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn interned_schema_calls() -> usize {
+    INTERNED_SCHEMA_CALLS.with(std::cell::Cell::get)
+}
+
 /// One schema per column list on this thread. The remaining per-row
 /// `insert` sites (comprehension bindings, the GPM walk's own binds,
 /// the walks a binding-schema ladder cannot serve) build the same
@@ -360,6 +374,8 @@ pub(crate) fn row_bound(row: &Row) -> impl Fn(&str) -> bool + '_ {
 /// per candidate. The cache is cleared past 128 shapes so a long-lived
 /// worker cannot keep every list it has seen.
 fn interned_schema(names: &[String]) -> Arc<RowSchema> {
+    #[cfg(test)]
+    INTERNED_SCHEMA_CALLS.with(|calls| calls.set(calls.get() + 1));
     thread_local! {
         static CACHE: RefCell<HashMap<Vec<String>, Arc<RowSchema>>> =
             RefCell::new(HashMap::new());

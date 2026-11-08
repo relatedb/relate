@@ -31,6 +31,7 @@ Usage: front_bench_corpus.py [output_path]
 import os
 import pathlib
 import sys
+import textwrap
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
@@ -75,11 +76,13 @@ class Feature:
 
 
 def _dedent_doc_string(lines: list[str]) -> str:
-    nonblank = [ln for ln in lines if ln.strip()]
-    if not nonblank:
-        return ""
-    indent = min(len(ln) - len(ln.lstrip()) for ln in nonblank)
-    return "\n".join(ln[indent:] for ln in lines)
+    """A doc string's lines dedented by their common leading whitespace.
+
+    `textwrap.dedent` is the one implementation of the rule — including
+    its normalization of whitespace-only lines to empty, the load-bearing
+    half the hand-rolled margin walk used to differ on
+    (`scripts/tests/test_front_bench_corpus.py` pins it)."""
+    return textwrap.dedent("\n".join(lines))
 
 
 def parse_feature(text: str) -> Feature:
@@ -90,8 +93,12 @@ def parse_feature(text: str) -> Feature:
     step tables and Examples rows are walked past, not modeled."""
     lines = text.splitlines()
     feature = Feature()
-    current: Optional[Scenario] = None
-    in_background = False
+    # One sink for the step stream: None before any container (those
+    # steps are dropped, as the walk always dropped them), the background
+    # list inside a Background block, the open scenario's step list inside
+    # a Scenario. The three states are one value, assigned once per
+    # container line, so the step branch tests it once.
+    sink: Optional[list[Step]] = None
     i = 0
 
     def parse_step_at(idx: int) -> tuple[Step, int]:
@@ -127,29 +134,22 @@ def parse_feature(text: str) -> Feature:
             i += 1
             continue
 
-        if line.startswith("Feature:"):
-            i += 1
-            continue
-
         if line.startswith("Background:"):
-            in_background = True
-            current = None
+            sink = feature.background
             i += 1
             continue
 
         if line.startswith("Scenario Outline:") or line.startswith("Scenario:"):
-            current = Scenario()
-            in_background = False
-            feature.scenarios.append(current)
+            scenario = Scenario()
+            feature.scenarios.append(scenario)
+            sink = scenario.steps
             i += 1
             continue
 
         if any(line.startswith(kw) for kw in STEP_KEYWORDS):
             step, i = parse_step_at(i)
-            if in_background:
-                feature.background.append(step)
-            elif current is not None:
-                current.steps.append(step)
+            if sink is not None:
+                sink.append(step)
             continue
 
         i += 1
@@ -262,27 +262,29 @@ def main():
         tck = tck_statements(root)
     # One dedupe pass over the concatenation, workload-first,
     # first-occurrence order, so the append-if-unseen policy and its
-    # precedence live here alone. Both per-source counts come off that
-    # same pass: a statement's source is the list that contributed it —
-    # a statement in both counts as a workload statement, exactly the
-    # workload-first order's attribution.
+    # precedence live here alone. `sources` is the one spelling of the
+    # source vocabulary: the counts dict and the summary line both derive
+    # from it. Both per-source counts come off that same pass: a
+    # statement's source is the list that contributed it — a statement in
+    # both counts as a workload statement, exactly the workload-first
+    # order's attribution.
+    sources = (("workloads", wl), ("tck", tck))
     statements: list[str] = []
     seen: set[str] = set()
-    counts = {"workloads": 0, "tck": 0}
-    for source, stmts in (("workloads", wl), ("tck", tck)):
+    counts = dict.fromkeys((name for name, _ in sources), 0)
+    for name, stmts in sources:
         for stmt in stmts:
             if stmt in seen:
                 continue
             seen.add(stmt)
             statements.append(stmt)
-            counts[source] += 1
-    wl_count = counts["workloads"]
-    tck_count = counts["tck"]
+            counts[name] += 1
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("w", encoding="utf-8") as fh:
         fh.write("\x1e".join(statements))
     total_bytes = sum(len(s) for s in statements)
-    print(f"workloads: {wl_count}  tck: {tck_count}  total: {len(statements)}")
+    summary = "  ".join(f"{name}: {counts[name]}" for name, _ in sources)
+    print(f"{summary}  total: {len(statements)}")
     print(f"total bytes: {total_bytes}")
     print(f"wrote {OUT}")
 

@@ -12,7 +12,7 @@ use crate::Result;
 use super::exact::DurationTiers;
 use super::field::{PatternSymbol, NANOS_PER_SECOND};
 use super::pattern::{
-    duplicate_field_err, invalid_value, mismatch, nanos_from_fraction, read_literal, read_number,
+    invalid_value, mismatch, nanos_from_fraction, note_field, read_literal, read_number,
 };
 use super::{range_err, DurationField, Temporal};
 
@@ -101,9 +101,7 @@ fn reject_duplicate_duration_fields(tokens: &[DurationToken]) -> Result<()> {
             DurationToken::Fraction => DuplicateSlot::Fraction,
             DurationToken::Literal(_) => continue,
         };
-        if !seen.insert(slot) {
-            return Err(duplicate_field_err());
-        }
+        note_field(&mut seen, slot)?;
     }
     Ok(())
 }

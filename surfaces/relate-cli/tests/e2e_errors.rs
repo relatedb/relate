@@ -71,11 +71,17 @@ fn test_non_json_modes_print_no_envelope_but_keep_the_exit_code() {
 fn test_rows_before_a_failing_statement_stay_valid_json_lines() {
     let (status, stdout, _) = run_cli(Opts::new(&["--jsonl", "RETURN 1 AS a; RETRN 2"]));
     assert_eq!(status.code(), Some(6));
+    // LABS-1120: the successful statement's stream closes with its
+    // timing line before the failing statement's error envelope.
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 2, "stdout: {stdout}");
+    assert_eq!(lines.len(), 3, "stdout: {stdout}");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["a"],
         1
+    );
+    assert!(
+        lines[1].contains("\"timings\""),
+        "the timing line closes the successful statement's stream: {stdout}"
     );
     assert_eq!(envelope(&stdout)["error"]["exit_code"], 6);
 }
@@ -84,7 +90,16 @@ fn test_rows_before_a_failing_statement_stay_valid_json_lines() {
 fn test_success_and_empty_result_still_exit_0_without_an_envelope() {
     let (status, stdout, stderr) = run_cli(Opts::new(&["--jsonl", "MATCH (n) RETURN n"]));
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert!(stdout.is_empty(), "stdout: {stdout}");
+    // LABS-1120: no rows, but the statement's timing line still closes the
+    // stream — and no error envelope: success stays success.
+    assert!(
+        !stdout.contains("\"error\""),
+        "a successful empty result prints no error envelope: {stdout}"
+    );
+    assert!(
+        stdout.lines().count() == 1 && stdout.contains("\"timings\""),
+        "the timing line is the stream's only line: {stdout}"
+    );
 }
 
 #[test]

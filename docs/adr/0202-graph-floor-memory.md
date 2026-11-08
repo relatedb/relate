@@ -4,6 +4,10 @@
 - **Date**: 2026-10-10
 - **Deciders**: MemoryDB maintainers
 - **Amends**: ADR-0042
+- **Later references**: ADR-0529 (a single-version row is an inline
+  slot, charged without a version list or `xmax`); ADR-0532 (the four
+  core stores are id-indexed vectors, and the hash-map slot is not
+  charged for them)
 
 ## Context
 

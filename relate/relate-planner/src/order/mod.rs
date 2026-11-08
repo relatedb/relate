@@ -562,8 +562,57 @@ fn scale_degree(
     stats: &dyn PatternStats,
     hop_rows: HopRows,
 ) -> u128 {
-    let [rel_type] = rel.types.as_slice() else {
+    priced_degree(rows, start, rel, seed_is_start, stats, hop_rows).unwrap_or(rows)
+}
+
+/// One hop's fanout for a kernel's cost gate (LABS-991): [`apply_degree`]'s
+/// price where the statistics can name one, and — where they cannot (an
+/// untyped rel, or a hop leaving an unlabeled node, which the walk model
+/// leaves at the input row count) — the out-degree tail over every
+/// labeled node ([`PatternStats::any_degree_tail`]), unclamped so the
+/// bound compounds across a chain's hops. A hop leaving the walk's seed on
+/// the rel's start side only: the in-degree and undirected shapes have no
+/// histogram to ride and keep the unpriced row count, as does a stats
+/// source with no histogram. `pub` for the executor kernels' gate, the one
+/// consumer — the planner's own orientation costs keep [`apply_degree`].
+pub fn apply_hop_bound(
+    rows: u128,
+    start: &NodePattern,
+    rel: &RelPattern,
+    seed_is_start: bool,
+    stats: &dyn PatternStats,
+) -> u128 {
+    if let Some(priced) = priced_degree(rows, start, rel, seed_is_start, stats, HopRows::Seeds) {
+        return priced;
+    }
+    if !seed_is_start {
         return rows;
+    }
+    // One named type rides that type's tail; untyped and alternated
+    // (`[:A|B]`) rels ride the any-type tail, which bounds every type.
+    let rel_type = match rel.types.as_slice() {
+        [rel_type] => Some(rel_type),
+        _ => None,
+    };
+    stats
+        .any_degree_tail(rel_type)
+        .map_or(rows, |tail| rows.saturating_mul(u128::from(tail)))
+}
+
+/// The walk model's price for one hop, or `None` when the statistics
+/// cannot name one (an untyped or alternated rel, no rel-type count, a
+/// seed with no label count or an empty label) — the callers differ only
+/// in what an unpriced hop costs.
+fn priced_degree(
+    rows: u128,
+    start: &NodePattern,
+    rel: &RelPattern,
+    seed_is_start: bool,
+    stats: &dyn PatternStats,
+    hop_rows: HopRows,
+) -> Option<u128> {
+    let [rel_type] = rel.types.as_slice() else {
+        return None;
     };
     // LABS-426 (the mean-to-tail flip): when the hop's seed rides the
     // rel's START side ([`seed_is_start`], the caller's one derived fact),
@@ -596,27 +645,23 @@ fn scale_degree(
             // the tail alone: one row matched the label's supernode is
             // the case the mean cannot price.
             let scaled = rows.saturating_mul(u128::from(tail));
-            return match (hop_rows, stats.rel_type_rows(rel_type)) {
+            return Some(match (hop_rows, stats.rel_type_rows(rel_type)) {
                 (HopRows::Seeds, Some(total)) => scaled.min(u128::from(total)),
                 _ => scaled,
-            };
+            });
         }
     }
-    let Some(rel_rows) = stats.rel_type_rows(rel_type) else {
-        return rows;
-    };
-    let Some(label_rows) = label_hits(start, stats) else {
-        return rows;
-    };
+    let rel_rows = stats.rel_type_rows(rel_type)?;
+    let label_rows = label_hits(start, stats)?;
     if label_rows == 0 {
-        return rows;
+        return None;
     }
     let scaled = rows.saturating_mul(u128::from(rel_rows)) / u128::from(label_rows);
-    if rows > 0 && rel_rows > 0 && scaled == 0 {
+    Some(if rows > 0 && rel_rows > 0 && scaled == 0 {
         1
     } else {
         scaled
-    }
+    })
 }
 
 fn endpoint_bound(node: &NodePattern, bound: Bound<'_>) -> bool {

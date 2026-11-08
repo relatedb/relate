@@ -18,16 +18,13 @@ use super::super::collection::{
 use super::super::{into_items, Extreme};
 
 pub(super) fn bi_length(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    Ok(match vals.first() {
-        Some(Value::Path(p)) => Value::Int(p.rels.len() as i64),
-        Some(Value::String(s)) => Value::Int(s.chars().count() as i64),
-        Some(Value::List(xs)) => Value::Int(xs.len() as i64),
-        Some(Value::Null) | None => Value::Null,
-        _ => {
-            return Err(Error::invalid_argument_type(
-                "length() needs a path, string, or list",
-            ))
-        }
+    unary_arg(vals, |value| match value {
+        Value::Path(p) => Ok(Value::Int(p.rels.len() as i64)),
+        Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
+        Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
+        _ => Err(Error::invalid_argument_type(
+            "length() needs a path, string, or list",
+        )),
     })
 }
 
@@ -35,13 +32,7 @@ pub(super) fn bi_length(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> R
 /// shared sentence (see `relate_core::expected_type_detail`) in the
 /// typed argument-error channel.
 fn expected_type_error(expected: &str, value: &Value) -> Error {
-    Error::invalid_argument_type(expected_type_detail(expected, &value_type_name(value)))
-}
-
-/// `size()`'s legacy wrong-argument channel — the `InvalidArgumentValue`
-/// class token, spelled once for both of its arms.
-fn invalid_argument_value(detail: String) -> Error {
-    Error::ty(format!("InvalidArgumentValue: {detail}"))
+    Error::invalid_argument_type_expected(expected, &value_type_name(value))
 }
 
 /// The shared unary-argument preamble of every list builtin that takes
@@ -74,12 +65,12 @@ pub(super) fn bi_size(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Res
         Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
         Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
         Value::Vector { values, .. } => Ok(Value::Int(values.len() as i64)),
-        Value::Path(_) => Err(invalid_argument_value("size() on paths".into())),
+        Value::Path(_) => Err(Error::invalid_argument_value("size() on paths")),
         other => {
             // Same sentence as the 22N01 family, in size()'s legacy
             // `InvalidArgumentValue` class — the class is what the corpus
             // pins, the sentence is shared.
-            Err(invalid_argument_value(expected_type_detail(
+            Err(Error::invalid_argument_value(expected_type_detail(
                 "LIST<ANY>, STRING or VECTOR",
                 &value_type_name(&other),
             )))
@@ -138,12 +129,11 @@ pub(super) fn bi_reverse(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> 
 }
 
 pub(super) fn bi_cardinality(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    Ok(match vals.first() {
-        Some(Value::List(xs)) => Value::Int(xs.len() as i64),
-        Some(Value::Map(m)) => Value::Int(m.len() as i64),
-        Some(Value::Path(p)) => Value::Int((p.nodes.len() + p.rels.len()) as i64),
-        Some(Value::Null) | None => Value::Null,
-        _ => return Err(Error::ty("CARDINALITY() requires a list, path, or map")),
+    unary_arg(vals, |value| match value {
+        Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
+        Value::Map(m) => Ok(Value::Int(m.len() as i64)),
+        Value::Path(p) => Ok(Value::Int((p.nodes.len() + p.rels.len()) as i64)),
+        _ => Err(Error::ty("CARDINALITY() requires a list, path, or map")),
     })
 }
 
@@ -348,11 +338,33 @@ mod tests {
         let g = Graph::default();
         let graph = ExecGraph::read(&g);
 
-        for (name, builtin) in [
-            ("head", bi_head as super::super::registry::Builtin),
-            ("last", bi_last as super::super::registry::Builtin),
-            ("tail", bi_tail as super::super::registry::Builtin),
+        for (name, builtin, nonempty, empty) in [
+            (
+                "head",
+                bi_head as super::super::registry::Builtin,
+                Value::Int(1),
+                Value::Null,
+            ),
+            (
+                "last",
+                bi_last as super::super::registry::Builtin,
+                Value::Int(3),
+                Value::Null,
+            ),
+            (
+                "tail",
+                bi_tail as super::super::registry::Builtin,
+                ints(&[2, 3]),
+                ints(&[]),
+            ),
         ] {
+            // The positive cases ride the same table as the negative ones,
+            // so a builtin added here cannot lack either.
+            assert_eq!(
+                builtin(&graph, name, vec![ints(&[1, 2, 3])]).unwrap(),
+                nonempty
+            );
+            assert_eq!(builtin(&graph, name, vec![ints(&[])]).unwrap(), empty);
             // Null-in stays null-out; zero arguments is the typed arity
             // error (the planner's FIXED_ARITY_FUNCTIONS row owns the
             // user-facing rejection, this is the executor backstop).
@@ -366,7 +378,6 @@ mod tests {
             assert_one_argument_error(
                 builtin(&graph, name, vec![ints(&[1, 2]), Value::Null]).unwrap_err(),
             );
-            assert!(builtin(&graph, name, vec![ints(&[1, 2, 3])]).is_ok());
             // Every other type is the 22N01 wrong-argument error.
             for bad in [
                 Value::Int(1),
@@ -383,28 +394,6 @@ mod tests {
                 assert_invalid_argument(error, "LIST<ANY>");
             }
         }
-
-        assert_eq!(
-            bi_head(&graph, "head", vec![ints(&[1, 2, 3])]).unwrap(),
-            Value::Int(1)
-        );
-        assert_eq!(
-            bi_head(&graph, "head", vec![ints(&[])]).unwrap(),
-            Value::Null
-        );
-        assert_eq!(
-            bi_last(&graph, "last", vec![ints(&[1, 2, 3])]).unwrap(),
-            Value::Int(3)
-        );
-        assert_eq!(
-            bi_last(&graph, "last", vec![ints(&[])]).unwrap(),
-            Value::Null
-        );
-        assert_eq!(
-            bi_tail(&graph, "tail", vec![ints(&[1, 2, 3])]).unwrap(),
-            ints(&[2, 3])
-        );
-        assert_eq!(bi_tail(&graph, "tail", vec![ints(&[])]).unwrap(), ints(&[]));
 
         assert_eq!(
             bi_reverse(&graph, "reverse", vec![Value::Null]).unwrap(),
@@ -542,6 +531,35 @@ mod tests {
         }
     }
 
+    /// `length()`/`cardinality()` share the one unary-arity contract of the
+    /// other list builtins: extra and zero arguments are the typed arity
+    /// error, null stays null.
+    #[test]
+    fn length_and_cardinality_use_the_unary_arity_contract() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        for (name, builtin) in [
+            ("length", bi_length as super::super::registry::Builtin),
+            (
+                "cardinality",
+                bi_cardinality as super::super::registry::Builtin,
+            ),
+        ] {
+            assert_one_argument_error(builtin(&graph, name, vec![]).unwrap_err());
+            assert_one_argument_error(
+                builtin(&graph, name, vec![ints(&[1]), ints(&[2])]).unwrap_err(),
+            );
+            assert_eq!(
+                builtin(&graph, name, vec![Value::Null]).unwrap(),
+                Value::Null
+            );
+            assert_eq!(
+                builtin(&graph, name, vec![ints(&[1, 2])]).unwrap(),
+                Value::Int(2)
+            );
+        }
+    }
+
     /// `coll.min`/`coll.max` use the one openCypher ORDER BY rank
     /// (MAP < … < LIST < … < STRING < BOOLEAN < NUMBER), not an ad-hoc
     /// type grouping: the harness pins
@@ -587,6 +605,47 @@ mod tests {
         assert_eq!(
             bi_coll_max(&graph, "coll.max", vec![ranked]).unwrap(),
             Value::Int(3)
+        );
+    }
+
+    /// `coll.max` poisons on any null element while `coll.min` skips
+    /// nulls — live Neo4j 2026.10.1, probed 2026-11-07; the plain
+    /// `max()`/`min()` aggregates keep the null-skipping fold.
+    #[test]
+    fn coll_max_poisons_on_null_while_coll_min_skips() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        let with_null = Value::List(
+            vec![
+                Value::String("hello".into()),
+                Value::Int(1),
+                Value::Bool(true),
+                Value::Null,
+            ]
+            .into(),
+        );
+        assert_eq!(
+            bi_coll_max(&graph, "coll.max", vec![with_null.clone()]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            bi_coll_min(&graph, "coll.min", vec![with_null]).unwrap(),
+            Value::String("hello".into())
+        );
+        // A null among numbers poisons max the same way, and a null input
+        // list is null for both.
+        let nums = Value::List(vec![Value::Int(1), Value::Null, Value::Int(2)].into());
+        assert_eq!(
+            bi_coll_max(&graph, "coll.max", vec![nums.clone()]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            bi_coll_min(&graph, "coll.min", vec![nums]).unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            bi_coll_max(&graph, "coll.max", vec![Value::Null]).unwrap(),
+            Value::Null
         );
     }
 

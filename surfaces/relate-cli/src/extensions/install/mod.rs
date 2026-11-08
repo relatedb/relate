@@ -104,9 +104,10 @@ type GithubResolver<'a> = &'a dyn Fn(&str) -> Result<GithubRoute, InstallError>;
 /// `$XDG_CONFIG_HOME` nor `$HOME`) is the environment failure (exit 1).
 pub(crate) fn run_install(args: &InstallArgs) -> Result<(), InstallError> {
     let Some(config_dir) = crate::config_dir::config_dir() else {
-        return Err(InstallError::Runtime(
-            "no config directory resolves: set XDG_CONFIG_HOME or HOME".to_string(),
-        ));
+        return Err(InstallError::Runtime(format!(
+            "no config directory resolves: {}",
+            crate::config_dir::NO_BASE_HINT
+        )));
     };
     let registry =
         crate::extensions::registry::ActionRegistry::load().map_err(install_registry_error)?;

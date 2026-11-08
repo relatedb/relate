@@ -440,6 +440,21 @@ canonical() {
   [ ! -e "${OUT_SIG}" ]
 }
 
+@test "the channel's own index files on a release are skipped, never indexed" {
+  # ADR-0546: extensions.json + extensions.json.sig ride the extension
+  # release as assets (relate-web pulls them from there); the publisher
+  # must skip its own output instead of aborting on the convention.
+  run run_publisher "${FIXTURES_DIR}/publish-extensions-json-releases-with-index.json"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  # The index matches the happy-path fixture exactly: the index assets
+  # left no trace.
+  run jq -e 'all(.packages[]; all(.versions[]; all(.assets[]; .asset | endswith(".tar.gz"))))' "${OUT_JSON}"
+  [ "$status" -eq 0 ]
+  run bash -c "cmp -s <(jq -S 'del(.generated_at)' '${OUT_JSON}') <(jq -S 'del(.generated_at)' '${EXPECTED_FIXTURE}')"
+  [ "$status" -eq 0 ]
+}
+
 @test "a published tag claiming the channel prefix without the convention is refused" {
   run run_publisher "${BAD_TAG_FIXTURE}"
   echo "$output"

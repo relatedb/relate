@@ -8,7 +8,7 @@ the local write engine. This document explains how the two fit together,
 what crosses the boundary, and what a second engine has to supply.
 
 The decisions behind it are recorded in
-[ADR-0526](../adr/0526-query-engine-seam.md) (query engine) and
+[ADR-0548](../adr/0548-query-engine-seam.md) (query engine) and
 [ADR-0527](../adr/0527-write-engine-seam.md) (write engine).
 
 ## Why two engines
@@ -231,7 +231,7 @@ these gaps first:
   and CDC suites. That waits on the write-path move above.
 - **Shared evaluation.** Expression evaluation and the function and
   procedure registries live inside `relate-executor`. A second query
-  engine needs them in a shared crate, as ADR-0526 records.
+  engine needs them in a shared crate, as ADR-0548 records.
 
 ## Adding an engine later
 

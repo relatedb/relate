@@ -9,9 +9,9 @@
 //! dispatch (`exists_probe::seek`) — instead of the join and the probe
 //! reaching back up into the driver's module, a module two-cycle.
 
-use std::collections::HashSet;
+use crate::UsedSet;
 
-use relate_core::{RelId, Result};
+use relate_core::Result;
 use relate_ir::{MatchMode, PathPattern};
 
 use crate::ctx::ExecCtx;
@@ -65,18 +65,12 @@ pub(crate) fn match_one_path(
     path: &PathPattern,
     filters: &PathFilters,
     row: Row,
-    used: HashSet<RelId>,
+    used: UsedSet,
     match_mode: MatchMode,
     residual: &Residual<'_>,
     rider: Option<&mut Rider<'_, '_>>,
     tail: MatchTail<'_>,
 ) -> Result<Matched> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
     // The one engine fork: GPM shapes (and REPEATABLE ELEMENTS) walk the
     // GPM engine, everything else the classic walk — the single spelling
     // of the choice (exists_probe::seek routes through here too, with a
@@ -112,17 +106,7 @@ pub(crate) fn match_one_path(
             // LABS-161: an elementId()/id() equality (or a row-bound variable) on
             // the first rel seeks the rel directly instead of scanning every
             // node's adjacency; a Gone seek matches nothing (zero rows).
-            match_resolved_path(
-                graph,
-                path,
-                filters,
-                params,
-                cypher_version,
-                residual,
-                row,
-                used,
-                &mut sink,
-            )?;
+            match_resolved_path(ctx, path, filters, residual, row, used, &mut sink)?;
             Ok(out)
         }
     }

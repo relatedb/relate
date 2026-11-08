@@ -41,32 +41,34 @@ pub(in crate::validate::aggregation) fn check_projection_order_by(
     }
     let projected = post_projection_names(parts, scope);
     let restatable = post_projection_restatable(parts, projected, scope, grouping_key_exprs);
-    match projection_mode(parts) {
-        ProjectionMode::Distinct => {
-            for ob in parts.order_by {
-                check_post_projection_expr(&ob.expr, &restatable)?;
-            }
-            Ok(())
-        }
+    // One per-ORDER-BY loop for both post-projection modes (Distinct and
+    // Aggregating): only the aggregating mode adds the ambiguity check,
+    // resolved once here instead of duplicated per arm.
+    let ambiguous_keys = match projection_mode(parts) {
+        ProjectionMode::Plain => return Ok(()),
+        ProjectionMode::Distinct => None,
         ProjectionMode::Aggregating => {
             // The ambiguity model still owns the mixed aggregation policy
             // (ADR-0198, ADR-0453); the visibility rule above owns which
             // names the subclause may read.
-            let keys = GroupingKeys::new(parts.items, grouping_key_exprs)
-                .with_aliases(parts.items.iter().filter_map(|i| i.alias.as_ref().cloned()));
-            for ob in parts.order_by {
-                check_post_projection_expr(&ob.expr, &restatable)?;
-                // The ambiguity predicate self-gates on
-                // aggregation-containing expressions, so it runs
-                // unconditionally.
-                if is_ambiguous_aggregation(&ob.expr, &keys) {
-                    return Err(ambiguous_aggregation_error());
-                }
-            }
-            Ok(())
+            Some(
+                GroupingKeys::new(parts.items, grouping_key_exprs)
+                    .with_aliases(parts.items.iter().filter_map(|i| i.alias.as_ref().cloned())),
+            )
         }
-        ProjectionMode::Plain => Ok(()),
+    };
+    for ob in parts.order_by {
+        check_post_projection_expr(&ob.expr, &restatable)?;
+        if let Some(keys) = &ambiguous_keys {
+            // The ambiguity predicate self-gates on
+            // aggregation-containing expressions, so it runs
+            // unconditionally.
+            if is_ambiguous_aggregation(&ob.expr, keys) {
+                return Err(ambiguous_aggregation_error());
+            }
+        }
     }
+    Ok(())
 }
 
 /// The WITH `WHERE` half of the same policy: a non-aggregating,
@@ -168,8 +170,12 @@ fn check_post_projection_expr(expr: &Expr, restatable: &Restatable<'_>) -> Resul
         return Ok(());
     }
     let mut visit = |node: &Expr| -> Result<(), EngineError> {
-        if is_subquery(node) {
-            return check_subquery_correlation(node, &restatable.projected, restatable.incoming);
+        if let Some(statement) = subquery_statement(node) {
+            return check_subquery_correlation(
+                statement,
+                &restatable.projected,
+                restatable.incoming,
+            );
         }
         if is_direct_aggregation(node) {
             let mut vars = IdentHashSet::default();
@@ -238,30 +244,34 @@ impl Restatable<'_> {
     }
 }
 
-/// Whether `expr` is a subquery expression (`EXISTS`/`COUNT`/`COLLECT {
-/// ... }`), which re-evaluates its inner statement rather than being a
-/// value the projection already computed.
+/// The inner statement of a subquery expression (`EXISTS`/`COUNT`/`COLLECT
+/// { ... }`), which re-evaluates its inner statement rather than being a
+/// value the projection already computed — `None` for every other
+/// expression. The vocabulary is spelled once here; [`is_subquery`] and
+/// the correlation check derive from it.
+fn subquery_statement(expr: &Expr) -> Option<&Statement> {
+    match expr {
+        Expr::ExistsSubquery(e) => Some(&e.statement),
+        Expr::CountSubquery(e) => Some(&e.statement),
+        Expr::CollectSubquery(e) => Some(&e.statement),
+        _ => None,
+    }
+}
+
+/// Whether `expr` is a subquery expression ([`subquery_statement`]'s
+/// vocabulary).
 fn is_subquery(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::ExistsSubquery(_) | Expr::CountSubquery(_) | Expr::CollectSubquery(_)
-    )
+    subquery_statement(expr).is_some()
 }
 
 /// A subquery expression in a post-projection subclause re-evaluates over
 /// the projected row: its own bindings and the projected columns are
 /// visible, an incoming-only variable is not (Neo4j 42N44).
 fn check_subquery_correlation(
-    expr: &Expr,
+    statement: &Statement,
     projected: &IdentHashSet<SmallName>,
     incoming: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    let statement: &Statement = match expr {
-        Expr::ExistsSubquery(e) => &e.statement,
-        Expr::CountSubquery(e) => &e.statement,
-        Expr::CollectSubquery(e) => &e.statement,
-        _ => return Ok(()),
-    };
     let mut used = IdentHashSet::default();
     let mut introduced = IdentHashSet::default();
     let mut no_stmt = |_: StmtRef<'_>| Ok(());

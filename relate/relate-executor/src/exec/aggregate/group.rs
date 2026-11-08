@@ -240,16 +240,13 @@ pub(crate) fn aggregate_ex(
         // their item; a key that cannot be evaluated orders as null rather
         // than failing the statement — the documented `ORDER BY` policy.
         park_order_keys(order, &mut n, |expr, scope| {
-            match agg_eval(
+            agg_eval(
                 graph,
                 AggScope::of_row(&group, scope),
                 expr,
                 params,
                 cypher_version,
-            ) {
-                Ok(value) => value,
-                Err(_) => Value::Null,
-            }
+            )
         });
         // HAVING (ADR-0453): the aggregating WHERE, answered per group with
         // the same scope an ORDER BY key gets. Not-true (or failed) drops

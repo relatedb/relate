@@ -45,7 +45,7 @@ public struct QueryResult: Sendable {
                                                  // nil for a read, an empty write pipeline, EXPLAIN, a statement
                                                  // inside an explicit transaction, or an error result
     public let queryType: QueryType              // ADR-0162: .read "r" | .write "w" | .readWrite "rw" | .schema "s"
-    public let namespace: String                 // ADR-0117: resolved namespace (USE target, else session)
+    public let namespace: Namespace              // ADR-0117: .neo4j | .system | .systemOntologies (USE target, else session)
     public let stats: QueryStats                 // ADR-0216: the canonical 11 counters
     public let notifications: [Notification]     // ADR-0363: [] on a plain run
     public let plan: PlanDocument?               // ADR-0381: relate.plan/v1; nil on a plain run
@@ -129,7 +129,9 @@ wire JSON and no per-column type stamp. Every value carries its kind at every
 depth: a map that merely looks like a node stays `.map`, a path nested in a
 list stays `.path`, and `value.kind` (``CypherValueKind``) reads it back. An
 enumerator this client does not know (a later, additive ABI) is a defined
-`.decoding` error, never a silent null.
+`.decoding` error, never a silent null. The result metadata is closed the same
+way: a `query_type` outside `r`/`w`/`rw`/`s` or a `namespace` outside the three
+fixed names is a `.decoding` error reading `ABI contract violated: ...`.
 
 | ABI kind | Swift value |
 | --- | --- |
@@ -190,7 +192,8 @@ handle and open a new one.
 - A panic inside the engine poisons the handle (C ABI contract): later calls
   throw `.engine` with stage `internal`; release it and open a new one.
 - `transaction(_:)` commits when the body returns and rolls back, then
-  rethrows the body's error, when it throws. `commit()` returns the
+  rethrows the body's error, when it throws; a throwing `commit()` inside it
+  likewise rolls back and rethrows the commit's error. `commit()` returns the
   transaction's bookmark, or `nil` when the transaction committed nothing; a
   `retryable` conflict can surface on a statement's error result
   (auto-commit) or on `commit()` — a retry loop must check both.

@@ -11,10 +11,8 @@ use crate::row::Row;
 
 use super::super::QueryResult;
 use super::entity_variable;
-use crate::exec::catalog::{
-    backing_constraint_by_name, backtick, catalog_row, optional_string_cell, string_list,
-};
-use crate::redo::{IndexDetailSpec, IndexFacts, IndexKindSpec};
+use crate::exec::catalog::{backtick, catalog_row, optional_string_cell, string_list};
+use crate::redo::{backing_constraint_by_name, IndexDetailSpec, IndexFacts, IndexKindSpec};
 
 // `SHOW INDEXES` rendering helpers over the shared
 // `relate_model::EntityKind`: they bind the index pattern shapes to

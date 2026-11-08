@@ -34,8 +34,8 @@ pub use dynamic::{
     dynamic_label_names, dynamic_property_key, DynamicAccessError, DynamicNameToken,
 };
 pub use error::{
-    uniqueness_violation_detail, ArithmeticFailure, CapacityKind, Error, Result,
-    FUNCTION_REQUIRES_ONE_ARGUMENT,
+    expected_type_detail, uniqueness_violation_detail, ArithmeticFailure, CapacityKind, Error,
+    Result, FUNCTION_REQUIRES_ONE_ARGUMENT,
 };
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
@@ -59,9 +59,7 @@ pub use traversal::{
     require_traversal_depth, traversal_depth_exceeded_message, MAX_TRAVERSAL_DEPTH,
     MAX_TRAVERSAL_DEPTH_CEILING,
 };
-pub use typename::{
-    bare_type_name, expected_type_detail, expected_value_type_detail, value_type_name,
-};
+pub use typename::{bare_type_name, expected_value_type_detail, value_type_name};
 pub use value::{
     bytes_logical_bytes, logical_bytes_within, next_depth, point_component, str_logical_bytes,
     tagged_str, uuid_hyphenated, uuid_parse, value_depth_exceeded, Node, Path, PointValue,

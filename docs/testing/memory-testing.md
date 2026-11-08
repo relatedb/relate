@@ -91,7 +91,7 @@ Graph size and indexes. These five are the inputs to the generator. The pin file
 
 | Variable | Default | What it adds | Limit |
 |---|---|---|---|
-| `LOGICAL_MB` | `32` | Memory limit for each filled shape, passed to the database as `logical_graph_size_limit` (logical bytes). One MB is 1024×1024 bytes. Loading continues until the database returns `capacity exceeded`. | `0` is rejected. The rejected batch is not committed, so measured `logical_bytes` sits at most one batch under the limit. `base` stays empty and does not hit the limit. |
+| `LOGICAL_MB` | `32` | Logical ceiling for each filled shape, passed to the database as `logical_graph_size_limit` (logical bytes). One MB is 1024×1024 bytes. The load stops at the fixed counts. Reaching this ceiling first fails the run. | `0` is rejected. `base` stays empty and does not hit the ceiling. |
 | `ATTRIBUTES` | `1` | Integer properties on every node: `id`, then `a1`, `a2`, …. Each integer is 12 payload bytes, and the property vectors reserve the next power of two. | At least 1. More attributes cost more per node, so fewer nodes fit under the limit. |
 | `TEXT_INDEXES` | `0` | String properties `s0`, `s1`, …, each with its own `TEXT` index. The value is `abcdefghijklmnop`. | On top of `ATTRIBUTES`. Fanout creates the index for `:Hub` and `:Leaf`. |
 | `POINT_INDEXES` | `0` | Point properties `loc0`, `loc1`, …, each with its own `POINT` index. The value is `point({srid: 7203, x: 1.0, y: 2.0})`. | On top of `ATTRIBUTES`. Fanout creates the index for `:Hub` and `:Leaf`. |
@@ -207,14 +207,13 @@ freeze a host report.
 For each large shape the binary:
 
 1. Opens an in-process database at `$URI_MEMORY_SHAPE/<shape>` with
-   `logical_graph_size_limit` set to `LOGICAL_MB` and writes batches until the
-   database returns `capacity exceeded`. The rejected batch is not
-   committed. It then checkpoints, drops the database, and sums every
-   file in that directory. That sum is reported as disk and is not
-   gated. The WAL is included.
+   `logical_graph_size_limit` set to `LOGICAL_MB` and writes batches until
+   the fixed count below. Reaching the ceiling first fails the run. It
+   then checkpoints, drops the database, and sums every file in that
+   directory, including the WAL. That sum is disk.
 2. The bolt case spawns `relate serve --bolt` with `--auth none`
    and `--logical-graph-size-limit` set to the same byte count, and
-   runs the same batches until the same limit (ADR-0368, ADR-0390).
+   loads the same counts (ADR-0368, ADR-0390).
    (Historically the standalone `relate-bolt` binary took `--uri`
    and `--memory-limit`. Before ADR-0390, `relate serve` had no
    graph-size flag and this case failed loudly.)
@@ -223,21 +222,43 @@ For each large shape the binary:
    samples. The test process is not the sample.
 
 The matrix, in report order, is `base`, `flat`, `fanout`, `ring`, and
-`dense ring`. The same index counts apply to every filled shape, and
-`base` still has no index DDL. `base` RSS is the empty server and is
-subtracted from the others. The gated value is
-`(rss − base) / logical_bytes`. `base` itself has no ratio. The report
-config records `attributes`, `text_indexes`, `point_indexes`, and
-`range_indexes`. Each row's `index` field is `none`, or a token such
-as `text2+point1+range1` (zero counts omitted, text then point then
-range). Compare treats that token as part of the shape key, so a run
-with different index counts does not match a freeze taken at `none`.
+`dense ring`. The loadtest stops at:
 
-Logical bytes must match the frozen file exactly. The RSS ratio may be
-up to `LOADTEST_MAX_RSS_RATIO` (default 15%) above the frozen ratio.
-The freeze keeps the highest ratio per shape across `BASELINE_RUNS`.
-An environment-class mismatch still checks logical bytes. The ratio
-check is skipped on a local mismatch and fails in GitHub Actions.
+| Shape | Nodes | Relationships |
+|---|---:|---:|
+| flat | 120,000 | 0 |
+| fanout | 52,016 | 52,000 |
+| ring | 46,000 | 46,000 |
+| dense ring | 5,000 | 100,000 |
+
+`base` stays empty. Its RSS is the empty server and is subtracted from
+the others. The ratio is attributed RSS divided by logical bytes. The
+report stores Given / When / Then / Outcome with each shape and prints
+sizes as MB, or GB once a value reaches 1024 MB.
+
+The gate is [ADR-0539](../adr/0539-memory-shape-gate.md). An improvement
+warns and the job stays green ([ADR-0544](../adr/0544-memory-envelope-improvements-warn.md)).
+`make compare-memory-shape` reads `target/memory-shape-loadtest.json`
+against `baselines/memory-shape.json` and writes `target/memory-shape.md`
+and `target/memory-shape-verdict.json`. Each shape section states
+**Baseline** (the frozen min and max), **Validated** (this run), and
+**Report** (the measured sizes and ratio against those boundaries).
+`make baseline-memory-shape` runs the loadtest `BASELINE_RUNS` times
+inside `create-loadtest-baselines`. Until that file is frozen, compare
+reports `no-baseline` and exits 0.
+
+Counts that miss the table are a regression. Logical bytes, disk, and
+attributed RSS are lower-is-better, with a 15% band and a 1 MB floor.
+The ratio is lower-is-better, with a 5% band. A numeric regression has
+to clear the top by both the band and the floor. An improvement clears
+the bottom the same way. Both warn and leave the job green until a new
+envelope is taken. A count that misses the table still fails. An
+environment-class or knob mismatch is `incompatible`: a local run skips
+the numeric bands, and `CI_COMPARE=1` fails the job. The index counts
+are knobs, so a run with indexes does not match a freeze taken at zero.
+
+`baselines/memory-shape-loadtest.json` remains the worst-of-N file from
+`make baseline-loadtests`. It is not this gate.
 
 At 32 MiB and one attribute, with no indexes, the closed-form census the
 unit tests pin is:
@@ -249,11 +270,9 @@ unit tests pin is:
 | ring | 46,603 | 46,603 |
 | dense ring | 5,010 | 100,200 |
 
-That census is the pin for the formula. The loadtest does not stop at
-those counts. It keeps writing 2,000-row batches until the live meter
-rejects the next one, so the reported logical size is at most one batch
-under `LOGICAL_MB` and the node count is however many fit. `Large` in
-the unit tests still picks the node count whose closed form is nearest
+That census is the pin for the formula. The RSS loadtest stops at the
+fixed counts stated above this census.
+`Large` in the unit tests still picks the node count whose closed form is nearest
 the requested logical size. Ring, flat, and dense ring use
 `(target + per/2) / per`.
 Fanout searches the leaf count because a hub's adjacency vector reserves
@@ -342,15 +361,23 @@ The small pin uses degree 8: 1,000 nodes and 8,000 relationships,
 to the logical target. At 32 MiB that is 5,010 nodes and 100,200
 relationships, 6,697 bytes per node.
 
-## Processing memory loadtest
+## Memory controls and workspace memory calibration
 
-`make processing-memory-loadtest` pushes the ADR-0333 controls in the
-same ADR-0070 container as the shape suite (`MEMORY_SHAPE_MEMORY`,
-default 2 GB). `Dockerfile.baseline`, with the lane's bin list, builds
-`relate` and `processing-memory-loadtest`. Every case launches
-`relate serve` (ADR-0368). `BASELINE_ENV=host` is a debug escape.
-Do not freeze a host RSS number. The container report is the one that
-can later be baselined.
+`make memory-controls-test` verifies the memory controls and calibrates
+workspace memory in the same ADR-0070 container as the shape suite
+(`MEMORY_SHAPE_MEMORY`, default 2 GB). `Dockerfile.baseline`, with the
+lane's bin list, builds `relate` and `memory-controls`. Every case
+launches `relate serve` (ADR-0368). `BASELINE_ENV=host` is a debug
+escape. Do not freeze a host RSS number. The container report is the
+one the gate compares. `make processing-memory-loadtest` is the previous
+name: it prints a rename notice and runs this target.
+
+A **memory control verification** checks that a limit holds. The cases
+are `connection-cap`, `unlimited-connections`,
+`concurrent-logical-workspace-limit`, and the configured `workload`.
+**Workspace memory calibration** is the case
+`workspace-memory-calibration`. It measures RSS per live logical
+workspace byte for each family.
 
 The suite records cold and peak RSS. It does not apply a byte ceiling.
 Idle `VmRSS` after later repeats must stay within 8 MiB of the first
@@ -358,8 +385,10 @@ idle sample. The child must stay alive. Stderr must not contain a
 panic, stack overflow, or abort. The report also records cgroup
 `memory.peak` when that file is present.
 
-Each case prints Operating RSS over Graph Logical, Graph RSS, and
-Processing Memory. Graph Logical is the cold graph's admission meter.
+Each case prints Given, When, Then, and Outcome: the setup, the action,
+the expected result, and what the run observed. It then prints Operating
+RSS over Graph Logical, Graph RSS, and Processing Memory. Graph Logical
+is the cold graph's admission meter.
 Graph RSS is Baseline plus Floor: the cold empty process, sampled
 before the graph is loaded, plus the RSS added by that graph.
 Operating RSS remains Graph RSS plus Processing Memory.
@@ -375,7 +404,7 @@ currency, balance, status, opened, region, risk, and note. Organisations
 are linked by `PARENT_OF`. Each account has two transfers to the next
 level.
 
-The configured workload is separate from the probes. It loads that
+The configured workload is separate from the control verifications. It loads that
 ledger with the limits off, restarts the same store with the requested
 limits, samples Graph RSS, runs `WARMUP_OPS` uncounted, then `WORKERS`
 Bolt clients share `OPS` operations. `READ_WRITE_RATIO` is `reads:writes`
@@ -385,46 +414,54 @@ not a multiple of 100 is scaled so the counts sum to `OPS`).
 `both`. `READ_QUERY` is `mix` (the six-way read rotation), `deep-paths`,
 or `size-sort`. The last two replace every read with that one statement.
 `--max-connections` and `--concurrent-logical-workspace-limit` pass through to
-the server. `0` leaves `--max-connections` off. A positive
+the server. `0` is passed as `--max-connections 0`, the explicit unlimited
+spelling (ADR-0451). An absent flag is the server default of 128. A positive
 logical-workspace capacity turns admission on (ADR-0452). The value is logical bytes:
 a former token capacity `N` is `N × 4096`. A `concurrent-logical-workspace-limit`
 refusal counts as limited. Any other query error fails the run.
 
 ```text
-make processing-memory-loadtest \
+make memory-controls-test \
   GRAPH_SCALE=10 \
   WORKERS=16 \
   READ_WRITE_RATIO=80:20 \
-  MAX_CONNECTIONS=20 \
-  CONCURRENT_PEAK_TOKEN_LIMIT=32768
+  MAX_CONNECTIONS=0 \
+  CONCURRENT_LOGICAL_WORKSPACE_LIMIT=55829120
 ```
 
-`CONCURRENT_PEAK_TOKEN_LIMIT` is the Makefile knob. `32768` is logical
+`CONCURRENT_LOGICAL_WORKSPACE_LIMIT` is the Makefile knob. `32768` is logical
 bytes (a former token capacity of 8).
 
-Defaults are scale 1, 4 workers, 80:20, every limit off, 40 operations,
-8 warmup operations, seed 1, and both index modes. The invariant probes
-below keep their own caps and do not inherit those limits.
+Defaults are scale 10, 16 workers, 80:20, `--max-connections 0`,
+a concurrent logical workspace of 55829120 bytes, 40 operations,
+8 warmup operations, seed 1, and both index modes. `WORKERS`, `OPS`, and
+`WORKLOAD_SEED` are target-specific, so the fraud and identity lanes keep
+their own values. The control verifications below keep their own caps and
+do not inherit the workload limits. `CASE` runs one case.
+`SKIP_CONTROLS=1` runs the workload only. `PROBE` and `SKIP_PROBES` still
+select the same way; `connections` means `connection-cap` and
+`peak-token-rss` means `workspace-memory-calibration`.
 
 The bounded read is an id lookup and an 8-row page. The bounded write
 marks one account and creates a review. The size stretch sorts every
 account. The cost stretch walks the organisation spine and up to 4
 transfer hops.
 
-- Connections. `relate serve` with a small `--max-connections`
+- Connection cap (`CASE=connection-cap`). `relate serve` with `--max-connections 2`
   hosts Bolt and HTTP on one cap. The Bolt session writes a review and
   the HTTP query reads one account. The next Bolt connection is closed,
   and the log names `bolt: --max-connections <N> reached`. A later
-  connection works after one closes. A separate case omits the flag and
-  shows connection 129 is still accepted, then reads and writes on one
-  of those sessions. That case checks idle residue and a live child; it
-  does not invent a session allowance for a cap that is off.
-- Concurrent peak. `--concurrent-logical-workspace-limit` is 4096 logical
-  bytes (one quantum; the old token capacity `1`). One session
-  holds `RETURN 1`. The overlapping write returns
+  connection works after one closes. A separate case passes
+  `--max-connections 0` and shows connection 129 is still accepted, then
+  reads and writes on one of those sessions. That case checks idle residue
+  and a live child; it does not invent a session allowance for a cap that
+  is off.
+- Concurrent logical workspace (`CASE=concurrent-logical-workspace-limit`).
+  The pool is sized for one statement, its cached plan, and one later
+  statement. One session holds `RETURN 1`. The overlapping write returns
   `concurrent-logical-workspace-limit`, then the same session writes the review
-  and reads the account.
-- Logical-workspace RSS calibration (`PROBE=peak-token-rss`). Each observation starts a fresh server,
+  and reads the account. The running query stays in place.
+- Workspace memory calibration (`CASE=workspace-memory-calibration`). Each observation starts a fresh server,
   loads and warms its graph, runs `RETURN 1` on the sessions that will
   execute the measured query, and samples parked RSS and cgroup memory.
   The same sessions then hold one named workspace family after its live
@@ -435,15 +472,62 @@ transfer hops.
   raw VmRSS and cgroup deltas, live held logical bytes, RSS bytes per logical byte, and
   linear fits by family. The cgroup ratio is the relevant physical
   boundary for a container; VmRSS isolates the server process.
-  `PROBE=peak-token-rss` runs this matrix on its own.
+  `CASE=workspace-memory-calibration` runs this matrix on its own.
+
+`MEMORY_CONTROLS_PROFILE=pr` sets one repeat of every family, 25
+observations. That is the pull-request lane. `MEMORY_CONTROLS_PROFILE=full`
+sets three repeats, 75 observations. That is the nightly cadence and the
+baseline freeze. A command-line `CALIBRATION_REPEATS` still wins.
 
 The comparable run is the ADR-0070 Docker environment:
 
 ```bash
-make processing-memory-loadtest PROBE=peak-token-rss \
-  CALIBRATION_REPEATS=3 CALIBRATION_HOLD_MS=2500 \
-  MEMORY_SHAPE_MEMORY=4g
+make memory-controls-test MEMORY_CONTROLS_PROFILE=full \
+  CALIBRATION_HOLD_MS=2500
 ```
+
+A bare `make memory-controls-test` runs the full matrix after the control
+verifications: 5 families, 5 shapes, and 3 repeats, which is 75
+observations. Each observation starts a fresh server, loads its graph, and
+holds for `CALIBRATION_HOLD_MS`, so the matrix takes tens of minutes. It
+prints one progress line per observation on stderr, with the elapsed time.
+To skip it, use `SKIP_CONTROLS=1` (workload only) or pick another `CASE`.
+To shrink it, use `CALIBRATION_FAMILY=sort` or `MEMORY_CONTROLS_PROFILE=pr`.
+
+### The gate
+
+`make compare-memory-controls` reads `target/memory-controls.json` against
+`baselines/memory-controls.json` and writes `target/memory-controls.md`
+and `target/memory-controls-verdict.json`. The document opens with
+`**Status:**`.
+
+- `ok` — every check held.
+- `regression` — a behavioural expectation failed, or a lower-is-better
+  metric rose above the envelope max by both the band and the floor.
+  The numeric miss warns and the job stays green. A behavioural miss
+  still fails the job
+  ([ADR-0544](../adr/0544-memory-envelope-improvements-warn.md)).
+- `improvement` — a lower-is-better metric fell below the envelope min by
+  both the band and the floor. Behaviour has no improvement verdict.
+  The comment warns, and the job stays green.
+- `mixed` — the run has both a regression and an improvement. The job
+  stays green when every regression is an envelope reading, and fails
+  when one of them is behavioural.
+- `incompatible` — the environment class or the knobs do not match the
+  envelope. With `CI_COMPARE=1` that fails the job. A local run skips the
+  numeric bands and still judges behaviour.
+- `no-baseline` — the envelope is not frozen yet. The comment warns, and
+  the job stays green.
+
+RSS uses a 15% band and a 1 MiB floor. Each family is gated on its RSS
+ratio and its cgroup ratio. The frozen min and max are the boundaries,
+and a reading may sit 5% outside them. Slopes stay in the run report and
+are not gated. Workload limited counts use a band of 0 and a floor of 2, so
+fewer refusals is an improvement. An envelope miss warns and does not
+fail the job. It still asks for an investigation: confirm it is real,
+then re-freeze with
+`create-loadtest-baselines` (`make baseline-memory-controls` inside that
+workflow). `make memory-controls-gate` runs the suite and then compares.
 
 `CALIBRATION_REPEATS` controls repeats per matrix point.
 `CALIBRATION_HOLD_MS` controls how long every query remains paused while
@@ -470,22 +554,15 @@ raw ratio, not an automatic production-constant update. Inspect slopes,
 intercepts, R², repeat spread, and equal-total concurrency points before
 deciding whether one multiplier is adequate.
 
-Each family row prints three numbers that answer different questions:
+The run prints one outcome line per family: the retained memory of the
+observation that set the ratio, in MB or GB, and the ratio itself. The
+compare document states the frozen boundaries, the 5% slack, then that
+measured size and ratio. The ratio is retained memory divided by the
+live logical bytes of that observation. The envelope stores the min and
+max of each family's largest RSS ratio and largest cgroup ratio.
 
-- `1q slope` fits only the one-holder shapes. It is RSS per logical
-  workspace byte with no concurrency term.
-- `per holder` fits the equal-total shapes (16,777,216×1, 8,388,608×2,
-  4,194,304×4 logical bytes; the old token shapes 4096×1, 2048×2, and
-  1024×4) against holder count. It is the RSS each extra concurrent query
-  adds at the same total logical-byte target. Each delta is first rescaled
-  to 16,777,216 logical bytes. The `overall` row leaves it blank because it
-  mixes families.
-- `max` is the largest raw observed ratio across every shape.
-
-`all slope` is the old fit across every shape. It mixes workspace scaling
-with holder cost, so a family with a large per-holder cost reports an
-all-shape slope above its single-query slope. The JSON summary carries
-the same fields for RSS and cgroup. A large family ratio can
+The JSON summary still records the linear fits, including the per-holder
+slope. Those fits are not gated. A large family ratio can
 also identify resident executor input or transaction state that peak
 logical bytes do not account for; do not hide that gap by treating the ratio as
 allocator overhead without inspecting the plan. Create charges the fitted

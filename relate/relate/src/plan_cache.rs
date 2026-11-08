@@ -155,11 +155,60 @@ impl PlanCacheEntry {
 /// clones of the entry's own storage, so a raw hit allocates nothing.
 /// Carried directly by the cache lookup's hit variant; a template hit
 /// builds the same shape with the entry's handles and the normalizer's
-/// fresh values.
+/// fresh values. `stage` names which lookup stage produced it (LABS-1120)
+/// — the plan-cache outcome's hit flavor, read by the admission path.
 #[derive(Debug)]
 pub(crate) struct HitPayload {
     pub(crate) handles: EntryHandles,
     pub(crate) values: Arc<Vec<(String, Value)>>,
+    /// Which lookup stage produced the hit (LABS-1120), typed as the
+    /// outcome it becomes when the generation check agrees — the hit
+    /// flavor itself, never a second vocabulary it converts into.
+    pub(crate) stage: PlanCacheOutcome,
+}
+
+/// The statement's plan-cache outcome (LABS-1120): which ADR-0503 stage
+/// served the plan — one fact the admission path already knows, surfaced
+/// beside the phase timings so "is the plan cache active for this
+/// workload?" is answered from the result, never from the source. The
+/// wire spelling ([`Self::as_str`], kebab-case) is the one every surface
+/// renders; the enum is the engine's single vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanCacheOutcome {
+    /// Stage 2 served the cached plan: the auto-parameterized template
+    /// matched, the stats generation agreed.
+    HitTemplate,
+    /// Stage 1 served the cached plan: the raw statement text matched an
+    /// entry's last raw hit, no normalizer pass.
+    HitRawFastPath,
+    /// A hit whose entry's stats generation no longer matched — the store
+    /// committed since the plan was compiled — so the carried AST
+    /// re-planned under the fresh generation.
+    ReplanGenerationMismatch,
+    /// No entry matched — or a hit whose cached plan was rejected for
+    /// literal-shape safety, so the statement ran an original compile:
+    /// either way, no cached plan served the statement (a cacheable miss
+    /// may insert the parameterized plan for later statements).
+    Miss,
+    /// The cache was not consulted: the plan-tree path's bypass, a caller
+    /// parameter map carrying the reserved prefix, or a statement the
+    /// normalizer refuses as non-cacheable.
+    Bypassed,
+}
+
+impl PlanCacheOutcome {
+    /// The outcome's wire spelling (LABS-1120), rendered by every surface
+    /// that carries the signal — the one table, never re-spelled per
+    /// surface.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HitTemplate => "hit-template",
+            Self::HitRawFastPath => "hit-raw-fastpath",
+            Self::ReplanGenerationMismatch => "replan-generation-mismatch",
+            Self::Miss => "miss",
+            Self::Bypassed => "bypassed",
+        }
+    }
 }
 
 /// The per-store cache: entries most-recent-first, at most
@@ -193,7 +242,11 @@ impl PlanCache {
             .position(|entry| entry.raw.text.as_ref() == cypher)?;
         let handles = self.entries[index].handles();
         let values = Arc::clone(&self.entries[index].raw.values);
-        let hit = HitPayload { handles, values };
+        let hit = HitPayload {
+            handles,
+            values,
+            stage: PlanCacheOutcome::HitRawFastPath,
+        };
         self.touch_at(index);
         Some(hit)
     }
@@ -344,6 +397,40 @@ fn engine_value(value: NormalizedValue) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LABS-1120: the outcome vocabulary pinned against the enum's own
+    /// spelling — the wire table `as_str` owns, in full and exactly once
+    /// per variant, kebab-case throughout. The wire envelope carries this
+    /// spelling as a bare string across the crate boundary, so this pin
+    /// (not a hand-maintained list in a doc comment) is what a rename or
+    /// an added variant must pass through.
+    #[test]
+    fn outcome_spellings_are_the_complete_kebab_vocabulary() {
+        let expected = [
+            PlanCacheOutcome::HitTemplate,
+            PlanCacheOutcome::HitRawFastPath,
+            PlanCacheOutcome::ReplanGenerationMismatch,
+            PlanCacheOutcome::Miss,
+            PlanCacheOutcome::Bypassed,
+        ];
+        let spellings: Vec<&str> = expected.iter().map(|o| o.as_str()).collect();
+        assert_eq!(
+            spellings,
+            [
+                "hit-template",
+                "hit-raw-fastpath",
+                "replan-generation-mismatch",
+                "miss",
+                "bypassed",
+            ]
+        );
+        for spelling in &spellings {
+            assert!(
+                !spelling.contains(|c: char| c.is_uppercase() || c == '_'),
+                "the wire spelling is kebab-case: {spelling}"
+            );
+        }
+    }
 
     /// One entry for the cache-shape tests: a stand-in lowered AST and
     /// plan (a fixed `RETURN 1 AS one` — the tests exercise keying, LRU

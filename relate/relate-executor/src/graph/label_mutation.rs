@@ -21,7 +21,7 @@ impl Graph {
         if before.is_none() {
             return;
         }
-        let before_len = self.node_chain_len(id);
+        let before_shape = self.node_chain_shape(id);
         // The effect, not the request: the ids the node does not already
         // carry. ADD mints a name it has never seen (unlike REMOVE, whose
         // drop set is lookups only), so each request label is interned here
@@ -75,7 +75,7 @@ impl Graph {
                 self.declared_dirty(lid, kid, id);
             }
         }
-        self.charge_node_after_edit(id, before.as_ref(), before_len);
+        self.charge_node_after_edit(id, before.as_ref(), before_shape);
         // The one count-family entry: the degree rebucket (LABS-351), the
         // incident pair counts and the exact label counts (LABS-370).
         self.apply_label_delta_stats(id, &added_ids, CountDelta::Add);
@@ -108,7 +108,7 @@ impl Graph {
             return;
         }
         let before = self.node(id);
-        let before_len = self.node_chain_len(id);
+        let before_shape = self.node_chain_shape(id);
         // ADR-0439: a removed constraint label frees the node's constrained
         // tuple; a label no constraint carries cannot change any tuple. The
         // map's scope is the only source of that answer.
@@ -145,7 +145,7 @@ impl Graph {
             self.mark_node_dirty(id);
         }
         self.index_add(id);
-        self.charge_node_after_edit(id, before.as_ref(), before_len);
+        self.charge_node_after_edit(id, before.as_ref(), before_shape);
         // The one count-family entry, in the removal direction (the ids are
         // the labels ACTUALLY removed, never the requested list).
         self.apply_label_delta_stats(id, &actually_removed, CountDelta::Remove);

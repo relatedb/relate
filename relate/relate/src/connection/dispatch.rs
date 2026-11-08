@@ -12,7 +12,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use web_time::Instant;
 
@@ -139,7 +138,7 @@ impl ExecutionFailure {
     pub(crate) fn staged(
         logical: &LogicalPlan,
         stamp: ResultStamp,
-        timing: TimingStamp,
+        timing: impl FnOnce() -> TimingStamp,
         error: Error,
     ) -> Executed {
         let columns = relate_planner::plan_output_names_expect(logical);
@@ -167,24 +166,22 @@ impl Executed {
 /// The dispatch-only inputs bundled so `dispatch` stays under
 /// `clippy::too_many_arguments`: the stamp; the statement's start
 /// instant (ADR-0221), whose elapsed is stamped at result
-/// construction; the admission-measured PARSE / PLAN stage durations
-/// (LABS-832), which join the dispatch-measured EXECUTE at the same
-/// construction — the one site that builds the complete split; the
-/// admission-resolved administration fact (ADR-0116 §2) the dispatch
-/// target selection reads; and the PROFILE metrics sink (ADR-0344
-/// phase 2) the dispatch's request sites read.
+/// construction; the admission-measured timing facts (LABS-832's
+/// PARSE / PLAN durations with LABS-1120's fine sub-split and the
+/// plan-cache outcome), which join the dispatch-measured EXECUTE at
+/// the same construction — the one site that builds the complete
+/// split; the admission-resolved administration fact (ADR-0116 §2)
+/// the dispatch target selection reads; and the PROFILE metrics sink
+/// (ADR-0344 phase 2) the dispatch's request sites read.
 pub(super) struct DispatchCtx<'a> {
     stamp: ResultStamp,
     started: Instant,
     /// The carried admission fact: whether the statement is a
     /// database-administration command (ADR-0116 §2).
     admin: bool,
-    /// The PARSE stage's measured duration (LABS-832), as admission
-    /// measured it.
-    parse: Duration,
-    /// The PLAN stage's measured duration (LABS-832), as admission
-    /// measured it.
-    plan: Duration,
+    /// The admission-measured timing facts (LABS-832 + LABS-1120): PARSE
+    /// and PLAN with the fine sub-split and the plan-cache outcome.
+    timing: crate::phase_timing::AdmissionTiming,
     /// ADR-0344 phase 2: the PROFILE metrics sink when the statement was
     /// `PROFILE`; `None` on every other run. Rides the ctx like the
     /// stamp: built and coerced to the trait object once in
@@ -391,8 +388,7 @@ impl Connection {
             admin,
             logical,
             stamp,
-            parse,
-            plan,
+            timing,
             effective: _,
             memory: _,
         } = &admission;
@@ -401,8 +397,9 @@ impl Connection {
         let profile = preamble.profile();
         let admin = *admin;
         let stamp = *stamp;
-        let parse = *parse;
-        let plan = *plan;
+        // LABS-1120: the admission's timing facts ride as the one carrier
+        // — the same bundle the stamping tail consumes, no re-shaping here.
+        let timing = *timing;
         let logical = logical.as_ref();
         // `commit_write` reserves returned rows before it appends to the
         // WAL. Explicit transactions still reserve here: their write has
@@ -443,8 +440,7 @@ impl Connection {
             stamp,
             started,
             admin,
-            parse,
-            plan,
+            timing,
             profile_metrics,
         };
         let mut outcome = self.dispatch(logical, params, parse_plan_ns, cypher, token, ctx);
@@ -711,24 +707,51 @@ impl Connection {
         // (a planned statement's output names derive, so the staging keeps
         // the result; the one path that cannot derive them reports the
         // statement's error before any result).
-        // The phase split completes here (LABS-832): both outcome arms —
-        // the finished rows and the staged failure — carry the same
-        // admission-measured PARSE / PLAN plus this stage's EXECUTE, as one
-        // timing stamp with the ADR-0221 total. The stamping policy is
-        // spelled once, in `TimingStamp::stamped` (phase_timing.rs).
-        let timing = TimingStamp::stamped(ctx.started, execute_started, ctx.parse, ctx.plan);
+        // The phase split completes here (LABS-832 + LABS-1120): both
+        // outcome arms — the finished rows and the staged failure — carry
+        // the same admission-measured PARSE / PLAN (with the fine sub-split
+        // and the plan-cache outcome) as one timing stamp with the
+        // ADR-0221 total. The stamping policy is spelled once, in
+        // `TimingStamp::stamped` (phase_timing.rs).
+        let result_gen_started = Instant::now();
+        // Both EXECUTE windows close at the same instant, inside whichever
+        // arm runs — the window IS the arm's construction work (the header
+        // build, the staged columns) — so the stamp closure is handed to
+        // the constructor, not called here: `ResultHeader::new` evaluates
+        // it after its own per-column stamp, so the windows cover the
+        // build (LABS-1120). Calling it as an argument would close the
+        // window before the build it documents and report a near-zero
+        // value. One clock stamp for both durations, so the sub-window
+        // containment ADR-0540 documents is structural: EXECUTE spans the
+        // dispatch plus the result build, `result_generation` is its tail
+        // — `result_gen_started` is at or after `execute_started`, and
+        // both durations read the same `tail`, so the fine window can
+        // never exceed its coarse phase.
+        let stamp_tail = || {
+            let tail = Instant::now();
+            TimingStamp::stamped(
+                ctx.started,
+                crate::phase_timing::DispatchWindows {
+                    execute: tail.duration_since(execute_started),
+                    result_generation: tail.duration_since(result_gen_started),
+                },
+                ctx.timing,
+            )
+        };
         let result = match result {
             // The auto-commit write's commit sequence (ADR-0502 §7) stamps
             // the result's bookmark at the same single tail — every other
             // arm's `None` leaves the result bookmark-free.
             Ok((r, commit_sequence)) => Ok(Executed::Rows(
-                QueryResult::from_exec(r, ctx.stamp.namespace, ctx.stamp.qtype, timing)
+                QueryResult::from_exec(r, ctx.stamp.namespace, ctx.stamp.qtype, stamp_tail)
                     .with_commit_sequence(commit_sequence),
             )),
             // `staged` derives the planned output names (the UNION
             // column-agreement check ran in `plan`), so a planned statement
             // always stages its failure with its columns.
-            Err(error) => Ok(ExecutionFailure::staged(logical, ctx.stamp, timing, error)),
+            Err(error) => Ok(ExecutionFailure::staged(
+                logical, ctx.stamp, stamp_tail, error,
+            )),
         };
         QueryOutcome { result, admitted }
     }

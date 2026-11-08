@@ -221,9 +221,9 @@ impl Graph {
     /// `None` when the rel is not visible: the overlay's shared type
     /// read resolves the batch layer first, so this is the base half.
     pub(crate) fn rel_type_name_shared(&self, id: RelId, ts: u64) -> Option<Arc<str>> {
-        self.rels.get(&id).and_then(|vers| {
-            visible_version(vers.as_slice(), ts).map(|ver| ver.live.type_name_shared())
-        })
+        self.rels
+            .get(&id)
+            .and_then(|vers| visible_version(&vers, ts).map(|ver| ver.live.type_name_shared()))
     }
 
     /// At most `cap` ids of label `lid`'s `label_index` set, copied under one
@@ -251,7 +251,7 @@ impl Graph {
             vers.iter()
                 .rev()
                 .find(|v| visible(v.xmin, v.xmax, ts))
-                .map(|v| f(&v.live))
+                .map(|v| f(v.live))
         })
     }
 
@@ -262,25 +262,16 @@ impl Graph {
             .unwrap_or(false)
     }
 
-    /// Whether `id`'s version visible at `ts` carries `label`, compared by
-    /// interned id: no label string is built. `None` when no version is
-    /// visible.
-    pub(crate) fn node_has_label_at(&self, id: NodeId, ts: u64, label: &str) -> Option<bool> {
-        let lid = self.label_id(label);
-        self.with_visible_node(id, ts, |live| lid.is_some_and(|lid| live.has_label(lid)))
-    }
-
     /// The label's interned id, when anything in the store ever carried
     /// it — the one interning lookup a caller that checks the label per
-    /// candidate makes (ADR-0473's prepared programs), instead of one per
-    /// candidate like [`Self::node_has_label_at`].
+    /// candidate makes (ADR-0473's prepared programs, the per-statement
+    /// memo of LABS-1116), instead of one per candidate.
     pub(crate) fn interned_label_id(&self, label: &str) -> Option<u32> {
         self.label_id(label)
     }
 
     /// Whether `id`'s version visible at `ts` carries the interned label
-    /// `lid` — [`Self::node_has_label_at`] with the interning already
-    /// paid. `None` when no version is visible.
+    /// `lid`. `None` when no version is visible.
     pub(crate) fn node_has_label_id_at(&self, id: NodeId, ts: u64, lid: u32) -> Option<bool> {
         self.with_visible_node(id, ts, |live| live.has_label(lid))
     }
@@ -313,19 +304,17 @@ impl Graph {
         let Some(type_id) = self.rel_type_id(rel_type) else {
             return Vec::new();
         };
-        let mut ids: Vec<_> = self
-            .rels
-            .iter()
-            .filter(|entry| {
-                entry
-                    .value()
-                    .iter()
-                    .rev()
-                    .find(|v| visible(v.xmin, v.xmax, ts))
-                    .is_some_and(|v| v.live.type_id == type_id)
-            })
-            .map(|entry| *entry.key())
-            .collect();
+        let mut ids = Vec::new();
+        self.rels.for_each(|id, vers| {
+            let matches = vers
+                .iter()
+                .rev()
+                .find(|v| visible(v.xmin, v.xmax, ts))
+                .is_some_and(|v| v.live.type_id == type_id);
+            if matches {
+                ids.push(id);
+            }
+        });
         ids.sort_unstable();
         ids
     }

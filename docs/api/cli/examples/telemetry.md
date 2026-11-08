@@ -15,7 +15,9 @@ relate telemetry off
 Expected stdout is `telemetry disabled (<path to config.json>)`: the
 `telemetry: false` key is persisted under
 `$XDG_CONFIG_HOME/relate/config.json` (or
-`~/.config/relate/config.json`), and no usage metrics are sent from the
+`~/.config/relate/config.json`, or — the Windows bases —
+`%APPDATA%\relate\config.json`), any pending spooled events are
+removed, and no usage metrics are sent from the
 next run on. Turn it back on with:
 
 ```bash

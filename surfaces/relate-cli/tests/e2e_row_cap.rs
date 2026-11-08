@@ -20,7 +20,8 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> (std::process::ExitStatus, Strin
 fn test_no_cap_outside_an_agent_harness() {
     let (status, stdout, stderr) = run(&[], &[]);
     assert!(status.success(), "{stderr}");
-    assert_eq!(stdout.lines().count(), 250);
+    // 250 rows + the LABS-1120 timings line.
+    assert_eq!(stdout.lines().count(), 251);
     assert!(!stderr.contains("truncated"), "stderr: {stderr}");
 }
 
@@ -31,7 +32,9 @@ fn test_agent_harness_caps_at_100_and_warns_on_stderr() {
     // ADR-0403: the machine mode carries the cut in-band — 100 row lines
     // plus the keyed terminal record naming both counts.
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 101, "{stdout}");
+    // 100 row lines, the keyed terminal record, then the LABS-1120
+    // timings line.
+    assert_eq!(lines.len(), 102, "{stdout}");
     assert_eq!(
         lines[100], r#"{"rowCap":{"kept":100,"total":250}}"#,
         "{stdout}"
@@ -48,7 +51,7 @@ fn test_agent_harness_caps_at_100_and_warns_on_stderr() {
 fn test_every_detected_harness_variable_triggers_the_cap() {
     for name in support::AGENT_ENV_VARS {
         let (_, stdout, _) = run(&[], &[(name, "1")]);
-        assert_eq!(stdout.lines().count(), 101, "{name}"); // rows + the rowCap record
+        assert_eq!(stdout.lines().count(), 102, "{name}"); // rows + the rowCap record + the timings line
     }
 }
 
@@ -56,7 +59,7 @@ fn test_every_detected_harness_variable_triggers_the_cap() {
 fn test_max_rows_zero_lifts_the_agent_cap() {
     let (status, stdout, stderr) = run(&["--max-rows", "0"], &[("CLAUDECODE", "1")]);
     assert!(status.success(), "{stderr}");
-    assert_eq!(stdout.lines().count(), 250);
+    assert_eq!(stdout.lines().count(), 251); // rows + the timings line
     assert!(!stderr.contains("truncated"), "stderr: {stderr}");
 }
 
@@ -64,7 +67,8 @@ fn test_max_rows_zero_lifts_the_agent_cap() {
 fn test_explicit_max_rows_applies_outside_a_harness_too() {
     let (_, stdout, stderr) = run(&["--max-rows", "7"], &[]);
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 8, "{stdout}"); // rows + the rowCap record
+    // rows + the rowCap record + the LABS-1120 timings line.
+    assert_eq!(lines.len(), 9, "{stdout}");
     assert_eq!(lines[7], r#"{"rowCap":{"kept":7,"total":250}}"#, "{stdout}");
     assert!(stderr.contains("truncated to 7 rows"), "stderr: {stderr}");
 }
@@ -72,18 +76,18 @@ fn test_explicit_max_rows_applies_outside_a_harness_too() {
 #[test]
 fn test_a_result_within_the_cap_is_not_truncated() {
     let (_, stdout, stderr) = run(&["--max-rows", "250"], &[]);
-    assert_eq!(stdout.lines().count(), 250);
+    assert_eq!(stdout.lines().count(), 251); // rows + the timings line
     assert!(!stderr.contains("truncated"), "stderr: {stderr}");
 }
 
 #[test]
 fn test_env_var_sets_the_default_and_the_flag_overrides_it() {
     let (_, stdout, _) = run(&[], &[("RELATE_MAX_ROWS", "3")]);
-    assert_eq!(stdout.lines().count(), 4); // rows + the rowCap record
+    assert_eq!(stdout.lines().count(), 5); // rows + the rowCap record + the timings line
     let (_, stdout, _) = run(&["--max-rows", "5"], &[("RELATE_MAX_ROWS", "3")]);
-    assert_eq!(stdout.lines().count(), 6); // rows + the rowCap record
+    assert_eq!(stdout.lines().count(), 7); // rows + the rowCap record + the timings line
     let (_, stdout, _) = run(&[], &[("RELATE_MAX_ROWS", "0"), ("CLAUDECODE", "1")]);
-    assert_eq!(stdout.lines().count(), 250);
+    assert_eq!(stdout.lines().count(), 251);
 }
 
 #[test]
@@ -141,7 +145,10 @@ fn test_each_statement_is_capped_independently() {
     ]));
     // rows: 2 + 2 + 1; the two capped statements each end in their
     // rowCap record (ADR-0403).
-    assert_eq!(stdout.lines().count(), 7, "stdout: {stdout}");
+    // rows: 2 + 2 + 1, each capped statement's rowCap record, each
+    // statement's LABS-1120 timings line (2 capped + 1 plain).
+    assert_eq!(stdout.lines().count(), 10, "stdout: {stdout}");
     assert_eq!(stdout.matches("rowCap").count(), 2, "stdout: {stdout}");
+    assert_eq!(stdout.matches("\"timings\"").count(), 3, "stdout: {stdout}");
     assert_eq!(stderr.matches("warning: result truncated").count(), 2);
 }

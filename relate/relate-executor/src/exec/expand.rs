@@ -16,13 +16,15 @@
 //! lives at the rider's exec-level home, [`super::rider`], beside the
 //! riders a one-path match carries.
 
-use std::collections::{BTreeMap, HashSet};
+use crate::UsedSet;
+use std::collections::BTreeMap;
 
 use relate_core::{
     bare_type_name, expected_value_type_detail, Error, NodeId, RelId, Result, Value,
 };
 use relate_ir::{Direction, NodePattern, PathPattern};
 
+use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
 use crate::pattern_walk::{
     bind_pattern_node, node_candidates, rel_list_binding, Binding, PathRow, RelFilter, RelHop,
@@ -138,18 +140,24 @@ fn entity_type_error(variable: &str, value: &Value, expected: &str) -> Error {
 /// nothing; `RelSeek::Decline` declines the seek and the adjacency scan
 /// runs), then
 /// the walk from node 0 into `sink`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn match_resolved_path(
-    graph: &ExecGraph<'_>,
+    ctx: ExecCtx<'_>,
     path: &PathPattern,
     rel_filters: &[RelFilter],
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     residual: &Residual<'_>,
     row: Row,
-    used: HashSet<RelId>,
+    used: UsedSet,
     sink: &mut dyn BindingSink,
 ) -> Result<()> {
+    // The walk entry reads the layer's bundle (F-1-3): the graph, params,
+    // and cypher version arrive as the one `ExecCtx`, not three loose
+    // parameters beside it.
+    let ExecCtx {
+        graph,
+        params,
+        cypher_version,
+        ..
+    } = ctx;
     // Neo4j 2026's runtime entity-type check: a pattern variable already
     // bound to a non-null value that is not the entity its position demands
     // is 22N27 (22N01 for a map), not the silent no-match the classic

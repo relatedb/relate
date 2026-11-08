@@ -70,6 +70,20 @@ impl Formatter {
                 serde_json::to_string(&cap.to_wire_json(rows.len())).map_err(io::Error::other)?
             )?;
         }
+        // LABS-1120: the timing block as terminal entries — `timings:`
+        // with the same nested object every machine mode carries (TOON's
+        // nested-value rule: inline compact JSON), and the plan-cache
+        // outcome beside it as a bare TOON token.
+        if let Some(timings) = meta.timings {
+            writeln!(w, "timings:")?;
+            writeln!(
+                w,
+                "  {}",
+                serde_json::to_string(&timings.to_timings_json()).map_err(io::Error::other)?
+            )?;
+            writeln!(w, "planCache:")?;
+            writeln!(w, "  {}", toon_token(timings.plan_cache)?)?;
+        }
         Ok(())
     }
 }

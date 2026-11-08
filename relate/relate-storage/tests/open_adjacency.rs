@@ -78,7 +78,10 @@ fn hop_holders(g: &Graph, rel: RelId) -> [Vec<NodeId>; 2] {
 /// e2e. Never a variant-name comparison a future sidecar codec would
 /// silently drift past.
 fn reload_preserves_raw_ids(codec: SnapshotCodecKind) -> bool {
-    codec.engine_dir().is_none()
+    // The named memory-store set (a codec that needs its own directory
+    // cannot be driven by this suite), plus this suite's own root-layout
+    // fact.
+    SnapshotCodecKind::compiled_with_root_layout().any(|c| c == codec)
 }
 
 #[test]

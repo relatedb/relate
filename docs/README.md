@@ -1,9 +1,9 @@
 # Relate documentation
 
-Plain markdown, no site generator. The public website is a static page on the
-[`gh-pages`](https://github.com/relatedb/relate/tree/gh-pages) branch
-(see `gh-pages/MAINTAINING.md` for its contract; `update-website.yml` keeps it
-in sync with releases).
+Plain markdown, no site generator. The public website lives in the separate
+[relate-web](https://github.com/relatedb/relate-web) repository (ADR-0546);
+the release pipeline attaches `releases.json` and `install.sh` to each
+release's assets and pokes relate-web to pull them.
 
 ## Layout
 
@@ -14,7 +14,7 @@ in sync with releases).
 | [`cookbook/`](cookbook/) | Tested recipes with runnable Cypher cells, published as the website cookbook (ADR-0130) |
 | [`reference/`](reference/) | Deep references: Cypher syntax, functions, ontology procedures, CLI flags, storage formats, dot-commands, client libraries, Bolt, C ABI |
 | [`adr/`](adr/) | Architecture Decision Records (immutable, numbered) |
-| [`design/`](design/) | Design studies and research: the extension-system tiering, the loader-plugin study, memory optimization, swappable query and write engines, Swift platforms, token budgets, the embedded driver-provider spikes (LABS-447) |
+| [`design/`](design/) | Design studies and research: the extension-system tiering, the loader-plugin study, memory optimization, swappable query and write engines, Swift platforms, token budgets, the embedded driver-provider spikes (LABS-447), the kernel-composition direction, the [kernel coverage inventory](design/kernel-coverage-inventory.md) |
 | [`tck/`](tck/) | the retired in-repo TCK pin's history; language coverage lives in the spec harness (ADR-0482, ADR-0520) |
 | [`testing/`](testing/) | Test notes. [Memory pins and Bolt RSS](testing/memory-testing.md) |
 | [`datasets.md`](datasets.md) | Dataset / load-test binary flag tables (agent contract) |

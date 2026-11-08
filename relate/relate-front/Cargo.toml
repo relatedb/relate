@@ -16,6 +16,10 @@ relate-model = { workspace = true }
 relate-parser = { workspace = true }
 relate-core = { workspace = true }
 relate-ir = { workspace = true }
+# LABS-1120: the PARSE stage's fine sub-split stamps the same monotonic
+# clock the engine's phase timing uses (`web_time::Instant`) — native
+# `std::time::Instant`, the Performance clock on wasm32.
+web-time = { workspace = true }
 
 [dev-dependencies]
 relate-test-support = { workspace = true }

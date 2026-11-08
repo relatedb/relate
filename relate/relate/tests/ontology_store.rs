@@ -53,44 +53,65 @@ fn roundtrip_drop_reopen(reopen: impl Fn() -> Database, db: Database) {
     assert_eq!(db.ontology_document().unwrap(), None);
 }
 
-/// The roundtrip matrix every store backend runs: both compiled codecs, each
-/// with the set and the drop scenario. `open` is the backend's only
-/// contribution — its storage setup, returning the closure that reopens the
-/// store it created (the closure owns the store location, so a temp dir or
-/// `MemoryVfs` outlives the reopens).
-fn roundtrips_both_codecs<R>(open: impl Fn(SnapshotCodecKind) -> R)
-where
+/// The roundtrip matrix every store backend runs — the one loop body,
+/// over whichever codec set the backend can host: each codec with the set
+/// and the drop scenario. `open` is the backend's only contribution — its
+/// storage setup, returning the closure that reopens the store it created
+/// (the closure owns the store location, so a temp dir or `MemoryVfs`
+/// outlives the reopens).
+fn roundtrip_each<R>(
+    open: impl Fn(SnapshotCodecKind) -> R,
+    codecs: impl Iterator<Item = SnapshotCodecKind>,
+) where
     R: Fn() -> Database,
 {
-    for &codec in SnapshotCodecKind::compiled() {
+    for codec in codecs {
         let reopen = open(codec);
         roundtrip_set_reopen(&reopen, reopen());
         roundtrip_drop_reopen(&reopen, reopen());
     }
 }
 
+/// Every compiled codec this build has.
+fn roundtrips_compiled_codecs<R>(open: impl Fn(SnapshotCodecKind) -> R)
+where
+    R: Fn() -> Database,
+{
+    roundtrip_each(open, SnapshotCodecKind::compiled().iter().copied());
+}
+
+/// [`roundtrips_compiled_codecs`] for store kinds a codec cannot host: the LSM
+/// keyspace codec needs a real directory, so the memory-VFS and bundle
+/// variants exclude it by the typed capability.
+fn roundtrips_stores_without_a_native_root<R>(open: impl Fn(SnapshotCodecKind) -> R)
+where
+    R: Fn() -> Database,
+{
+    roundtrip_each(open, SnapshotCodecKind::compiled_for_memory_stores());
+}
+
 #[test]
-fn native_dir_roundtrips_both_codecs() {
+fn native_dir_roundtrips_compiled_codecs() {
     common::preview_ontology();
-    roundtrips_both_codecs(|codec| {
+    roundtrips_compiled_codecs(|codec| {
         let dir = tempfile::tempdir().unwrap();
         move || Database::open_with(dir.path().to_str().unwrap(), opts(codec)).unwrap()
     });
 }
 
 #[test]
-fn memory_vfs_roundtrips_both_codecs() {
+fn memory_vfs_roundtrips_compiled_codecs() {
     common::preview_ontology();
-    roundtrips_both_codecs(|codec| {
+    roundtrips_stores_without_a_native_root(|codec| {
         let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
         move || Database::open_vfs(Arc::clone(&vfs), opts(codec)).unwrap()
     });
 }
 
 #[test]
-fn bundle_roundtrips_both_codecs() {
+fn bundle_roundtrips_compiled_codecs() {
     common::preview_ontology();
-    roundtrips_both_codecs(|codec| {
+    roundtrips_stores_without_a_native_root(|codec| {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().join("graph.rl");
         move || Database::open_with(uri.to_str().unwrap(), opts(codec)).unwrap()
@@ -106,7 +127,8 @@ fn bundle_roundtrips_both_codecs() {
 #[test]
 fn set_without_checkpoint_survives_reopen_via_wal() {
     common::preview_ontology();
-    for &codec in SnapshotCodecKind::compiled() {
+    // Memory-VFS stores only: the LSM keyspace codec needs a directory.
+    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
         let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
         {
             let db = Database::open_vfs(Arc::clone(&vfs), opts(codec)).unwrap();

@@ -584,17 +584,14 @@ impl Graph {
     fn backfill_constraint(&self, spec: &KeySpec) -> HashMap<KeyTuple, TupleEntry> {
         let mut holders: HashMap<KeyTuple, Vec<EntityId>> = HashMap::new();
         if spec.is_relationship() {
-            for entry in self.rels.iter() {
-                let Some(live) = super::live_version(entry.value()) else {
-                    continue;
+            self.rels.for_each(|id, vers| {
+                let Some(live) = super::live_version(vers) else {
+                    return;
                 };
-                if let Some(tuple) = spec.live_rel_tuple(&self.interner, &live.live) {
-                    holders
-                        .entry(tuple)
-                        .or_default()
-                        .push(EntityId::Rel(*entry.key()));
+                if let Some(tuple) = spec.live_rel_tuple(&self.interner, live.live) {
+                    holders.entry(tuple).or_default().push(EntityId::Rel(id));
                 }
-            }
+            });
         } else {
             let ids: Vec<NodeId> = self
                 .indexes
@@ -609,7 +606,7 @@ impl Graph {
                 let Some(live) = super::live_version(&vers) else {
                     continue;
                 };
-                if let Some(tuple) = spec.live_node_tuple(&live.live) {
+                if let Some(tuple) = spec.live_node_tuple(live.live) {
                     holders.entry(tuple).or_default().push(EntityId::Node(id));
                 }
             }

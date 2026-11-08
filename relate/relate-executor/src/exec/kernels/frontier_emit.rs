@@ -75,8 +75,9 @@
 //! differential suite (the feature's later node) pins the divergence
 //! classes this leaves.
 
+use crate::UsedSet;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use relate_core::{Error, Node, NodeId, Path, RelId, Relationship, Result, Value};
 use relate_ir::{PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
@@ -349,7 +350,7 @@ impl<'a> Emission<'a> {
         &self,
         parents: &Parents<'_>,
         endpoint: &Endpoint,
-    ) -> Result<Option<(Row, HashSet<RelId>)>> {
+    ) -> Result<Option<(Row, UsedSet)>> {
         let chain = chain_of(parents, self.seed, endpoint);
         if !self.in_bounds(&chain) {
             return Ok(None);
@@ -544,7 +545,7 @@ impl<'a> Emission<'a> {
     /// subpath), and the used-rel set. The returned row is the row the
     /// materializing walk would push, minus the order it would push it
     /// in (Decision 4).
-    fn bind_row(&self, chain: &Chain, records: &ChainRecords) -> Result<(Row, HashSet<RelId>)> {
+    fn bind_row(&self, chain: &Chain, records: &ChainRecords) -> Result<(Row, UsedSet)> {
         let nodes = &records.nodes;
         let rels = &records.rels;
         let mut row = self.entering.clone();

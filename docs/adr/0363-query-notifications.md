@@ -330,3 +330,8 @@ The facts the design starts from:
   Option<Box<PlanArtifacts>>` artifact carrying `root` and `notifications`,
   read through `plan_root()`/`notifications()`; the derivation, ordering,
   dedup and transport decisions above are unchanged.
+- ADR-0535: the vocabulary gains the `HINT` category (ranked after
+  `SCHEMA` in the decision 6 order) with the two planner-hint kinds
+  `HintedIndexNotFound` (`01N31`) and `JoinHintUnfulfillable` (`01N30`),
+  per this ADR's own "a new namespace or category is a new ADR"
+  consequence.

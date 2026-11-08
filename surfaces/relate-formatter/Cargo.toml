@@ -21,4 +21,7 @@ unicode-width = "0.2"
 # (PlanNode::to_value + value_to_cypher), never hand-copies of the wire
 # form, so producer-to-consumer vocabulary drift fails a test.
 relate = { workspace = true }
+# The shared traversal-rung fixture (LABS-1117): the same corridor and
+# statement the engine and surface tests pin, never a local copy.
+relate-test-support = { workspace = true }
 chrono = { workspace = true }

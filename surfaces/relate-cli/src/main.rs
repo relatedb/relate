@@ -510,8 +510,8 @@ fn resolve_store(
 
 /// Flush pending telemetry events, then exit with `code`. Every exit path
 /// after the shared handle is constructed goes through this helper. The
-/// flush is best-effort and bounded (ADR-0079 §5): a final batch still in
-/// flight past the budget is dropped, not awaited.
+/// flush is one local spool append — never a network wait (ADR-0079 §5,
+/// ADR-0545): pending events are delivered by the next enabled run.
 fn exit_flushed(telemetry: &mut telemetry::Telemetry, code: i32) -> ! {
     // A remote `--load` source's staged bundle is this process's temp file
     // (LABS-872); every post-fetch exit — success, a failed open, a failed
@@ -618,9 +618,11 @@ fn run_lifecycle_command(cmd: LifecycleCommand, telemetry: &mut telemetry::Telem
         }
         #[cfg(feature = "telemetry")]
         LifecycleCommand::Telemetry { action } => {
-            // Status reports the state this handle already resolved, so env
-            // layers override the config file exactly as in Telemetry::new.
-            let exit_code = telemetry_cmd::run(action, telemetry.effective_state());
+            // The command owns the handle: `off` disarms it (one ordered
+            // transition, ADR-0545 §5) and `status` reports the state
+            // this same handle resolved, so env layers override the
+            // config file exactly as in Telemetry::new.
+            let exit_code = telemetry_cmd::run(action, telemetry);
             finish_command(telemetry, name, Some(action.as_str()), exit_code);
         }
         #[cfg(feature = "pull")]

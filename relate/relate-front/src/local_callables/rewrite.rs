@@ -45,9 +45,9 @@
 
 use relate_core::{Error, Result};
 use relate_parser::{
-    CallProcedureClause, CallScope, CallSubqueryClause, Clause, Expr, InterpPart, LabelExpr,
-    LocalDefinitionBody, LocalParam, MapProjectionItem, PatternElement, PatternPath, ReturnClause,
-    ReturnItem, SearchSpec, Statement, WithClause, WithOrigin, YieldMode,
+    CallProcedureClause, CallScope, CallSubqueryClause, Clause, Expr, LabelExpr,
+    LocalDefinitionBody, LocalParam, PatternElement, PatternPath, ReturnClause, ReturnItem,
+    SearchSpec, Statement, StructuralEdgeMut, WithClause, WithOrigin, YieldMode,
 };
 
 use relate_names::SmallName;
@@ -105,152 +105,29 @@ impl Resolver {
     /// The one mutable expression visitor: rewrites local function
     /// invocations in place and recurses into nested subquery statements
     /// (each a fresh scope frame, so definitions inside an expression
-    /// subquery stay local to it). Exhaustive over [`Expr`] on purpose --
-    /// no catch-all arm, so a later `Expr` variant that can carry an
-    /// invocation fails compilation here instead of silently skipping it.
+    /// subquery stay local to it). Expression edges come from
+    /// [`Expr::children_mut`] (exhaustive there, so a new variant is covered
+    /// by one edit); only the arms below that enter a pattern, label
+    /// expression or nested statement are spelled out here.
     pub(super) fn visit_expr(&mut self, expr: &mut Expr) -> Result<()> {
-        match expr {
-            Expr::Literal(_)
-            | Expr::Variable(_)
-            | Expr::Parameter(_)
-            | Expr::OptionValuePlaceholder
-            | Expr::CountStar
-            | Expr::Star => Ok(()),
-            Expr::List(items) => {
-                for item in items {
-                    self.visit_expr(item)?;
-                }
-                Ok(())
-            }
-            Expr::Map(pairs) => {
-                for pair in pairs {
-                    self.visit_expr(&mut pair.value)?;
-                }
-                Ok(())
-            }
-            Expr::StringInterp(parts) => {
-                for part in parts {
-                    if let InterpPart::Interp(embed) = part {
-                        self.visit_expr(embed)?;
-                    }
-                }
-                Ok(())
-            }
-            Expr::Property(access) => {
-                self.visit_expr(&mut access.expr)?;
-                if let Some(key) = &mut access.key_expr {
-                    self.visit_expr(key)?;
-                }
-                Ok(())
-            }
-            Expr::FunctionCall(call) => self.rewrite_function_call(call),
-            Expr::Binary(binary) => {
-                self.visit_expr(&mut binary.left)?;
-                self.visit_expr(&mut binary.right)
-            }
-            Expr::Unary(unary) => self.visit_expr(&mut unary.expr),
-            Expr::Comparison(cmp) => {
-                self.visit_expr(&mut cmp.left)?;
-                self.visit_expr(&mut cmp.right)
-            }
-            Expr::In(in_expr) => {
-                self.visit_expr(&mut in_expr.expr)?;
-                self.visit_expr(&mut in_expr.list)
-            }
-            Expr::IsNull(is_null) => self.visit_expr(&mut is_null.expr),
-            Expr::IsType(is_type) => self.visit_expr(&mut is_type.expr),
-            Expr::IsNormalized(is_norm) => self.visit_expr(&mut is_norm.expr),
-            Expr::ChronologicalCompare(chrono) => {
-                self.visit_expr(&mut chrono.left)?;
-                self.visit_expr(&mut chrono.right)
-            }
-            Expr::StringMatch(match_expr) => {
-                self.visit_expr(&mut match_expr.left)?;
-                self.visit_expr(&mut match_expr.right)
-            }
-            Expr::Case(case) => {
-                for when in &mut case.whens {
-                    self.visit_expr(&mut when.condition)?;
-                    self.visit_expr(&mut when.result)?;
-                }
-                if let Some(else_expr) = &mut case.else_expr {
-                    self.visit_expr(else_expr)?;
-                }
-                Ok(())
-            }
-            Expr::ExistsSubquery(sub) => self.resolve_statement(&mut sub.statement),
-            Expr::CountSubquery(sub) => self.resolve_statement(&mut sub.statement),
-            Expr::CollectSubquery(sub) => self.resolve_statement(&mut sub.statement),
-            Expr::ListComprehension(list_comp) => {
-                self.visit_expr(&mut list_comp.list_expr)?;
-                if let Some(where_expr) = &mut list_comp.where_expr {
-                    self.visit_expr(where_expr)?;
-                }
-                if let Some(map_expr) = &mut list_comp.map_expr {
-                    self.visit_expr(map_expr)?;
-                }
-                Ok(())
-            }
-            Expr::MapComprehension(map_comp) => {
-                self.visit_expr(&mut map_comp.source_expr)?;
-                if let Some(where_expr) = &mut map_comp.where_expr {
-                    self.visit_expr(where_expr)?;
-                }
-                self.visit_expr(&mut map_comp.key_expr)?;
-                self.visit_expr(&mut map_comp.value_expr)
-            }
-            Expr::PatternComprehension(pattern_comp) => {
-                self.visit_pattern(&mut pattern_comp.pattern)?;
-                if let Some(where_expr) = &mut pattern_comp.where_expr {
-                    self.visit_expr(where_expr)?;
-                }
-                self.visit_expr(&mut pattern_comp.map_expr)
-            }
-            Expr::Reduce(reduce) => {
-                self.visit_expr(&mut reduce.init_expr)?;
-                self.visit_expr(&mut reduce.list_expr)?;
-                self.visit_expr(&mut reduce.expression)
-            }
-            Expr::AllReduce(reduce) => {
-                self.visit_expr(&mut reduce.init_expr)?;
-                self.visit_expr(&mut reduce.list_expr)?;
-                self.visit_expr(&mut reduce.expression)?;
-                self.visit_expr(&mut reduce.predicate)
-            }
-            Expr::ShortestPath(shortest) => self.visit_pattern(&mut shortest.pattern),
-            Expr::Subscript(subscript) => {
-                self.visit_expr(&mut subscript.expr)?;
-                for slot_expr in [&mut subscript.index, &mut subscript.from, &mut subscript.to]
-                    .into_iter()
-                    .flatten()
-                {
-                    self.visit_expr(slot_expr)?;
-                }
-                Ok(())
-            }
-            Expr::Quantifier(quantifier) => {
-                self.visit_expr(&mut quantifier.list)?;
-                if let Some(predicate) = &mut quantifier.predicate {
-                    self.visit_expr(predicate)?;
-                }
-                Ok(())
-            }
-            Expr::HasLabel(has_label) => {
-                self.visit_expr(&mut has_label.expr)?;
-                self.visit_label_expr(&mut has_label.label_expr)
-            }
-            Expr::Paren(inner) => self.visit_expr(inner),
-            Expr::PatternPredicate(predicate) => self.visit_pattern(&mut predicate.pattern),
-            Expr::MapProjection(projection) => {
-                self.visit_expr(&mut projection.expr)?;
-                for item in &mut projection.items {
-                    if let MapProjectionItem::KeyValue(_, value) = item {
-                        self.visit_expr(value)?;
-                    }
-                }
-                Ok(())
+        // A function call rewrites itself (visiting its own arguments
+        // first); every other node takes its edges from the parser's one
+        // table, structural edges first (the two borrows of `expr` are disjoint
+        // in time, so the label expression cannot trail the children here).
+        if let Expr::FunctionCall(call) = expr {
+            return self.rewrite_function_call(call);
+        }
+        for edge in expr.structural_edges_mut() {
+            match edge {
+                StructuralEdgeMut::Pattern(pattern) => self.visit_pattern(pattern)?,
+                StructuralEdgeMut::Subquery(statement) => self.resolve_statement(statement)?,
+                StructuralEdgeMut::Label(label) => self.visit_label_expr(label)?,
             }
         }
+        for child in expr.children_mut() {
+            self.visit_expr(child)?;
+        }
+        Ok(())
     }
 
     /// The mutable label-expression visitor: only the dynamic

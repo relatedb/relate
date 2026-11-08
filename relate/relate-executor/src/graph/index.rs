@@ -1,6 +1,6 @@
 use relate_ir::BinaryOp;
 
-use super::adjacency::adj_insert;
+use super::adjacency::{adj_insert, adj_remove};
 use super::*;
 
 /// Lazily materialized equality postings for one `(class, key)` pair
@@ -106,7 +106,7 @@ impl Graph {
         let Some(vers) = self.nodes.get(&id) else {
             return;
         };
-        let Some(v) = vers.iter().rev().find(|v| visible(v.xmin, v.xmax, ts)) else {
+        let Some(v) = vers.visible_at(ts) else {
             return;
         };
         let live = &v.live;
@@ -147,10 +147,7 @@ impl Graph {
             .nodes
             .get(&id)
             .expect("string dirty-mark follows an installed node version");
-        let live = &vers
-            .last()
-            .expect("a node version chain is never empty")
-            .live;
+        let live = vers.last().live;
         for (lid, kid) in self.declared_dirty_pairs(live) {
             self.declared_dirty(lid, kid, id);
         }
@@ -178,15 +175,15 @@ impl Graph {
     pub(super) fn rebuild_adj(&self) {
         #[cfg(test)]
         ADJ_BUILDS.with(|n| n.set(n.get() + 1));
-        let mut rows: Vec<_> = self
-            .rels
-            .iter()
-            .filter_map(|e| {
-                let live = &live_version(e.as_slice())?.live;
-                let ts = live.payload.ts(&self.interner);
-                Some((*e.key(), live.start, live.type_id, live.end, ts))
-            })
-            .collect();
+        let mut rows = Vec::new();
+        self.rels.for_each(|id, vers| {
+            let Some(ver) = live_version(vers) else {
+                return;
+            };
+            let live = &ver.live;
+            let ts = live.payload.ts(&self.interner);
+            rows.push((id, live.start, live.type_id, live.end, ts));
+        });
         rows.sort_unstable_by_key(|&(id, ..)| id);
         self.out_adj.clear();
         self.in_adj.clear();
@@ -244,11 +241,11 @@ impl Graph {
 
     pub fn gc_versions(&self) {
         let horizon = self.gc_horizon();
-        let nids: Vec<NodeId> = self.nodes.iter().map(|e| *e.key()).collect();
+        let nids: Vec<NodeId> = self.nodes.keys();
         for id in nids {
             self.gc_node_chain(id, horizon);
         }
-        let rids: Vec<RelId> = self.rels.iter().map(|e| *e.key()).collect();
+        let rids: Vec<RelId> = self.rels.keys();
         for id in rids {
             self.gc_rel_chain(id, horizon);
         }
@@ -259,23 +256,22 @@ impl Graph {
         let Some(mut vers) = self.nodes.get_mut(&id) else {
             return;
         };
+        if !vers.any_dead(horizon) {
+            return;
+        }
         let dead: Vec<Node> = vers
             .iter()
             .filter(|v| v.dead_at(horizon))
             .map(|v| v.live.to_node(id, &self.interner))
             .collect();
-        if dead.is_empty() {
-            return;
-        }
-        vers.retain(|v| !v.dead_at(horizon));
-        if !vers.is_empty() {
-            crate::memory::fit_reserved(&mut vers);
-        }
-        let remaining: Vec<Node> = vers
-            .iter()
-            .map(|v| v.live.to_node(id, &self.interner))
-            .collect();
-        let empty = vers.is_empty();
+        let empty = !vers.collect(horizon);
+        let remaining: Vec<Node> = if empty {
+            Vec::new()
+        } else {
+            vers.iter()
+                .map(|v| v.live.to_node(id, &self.interner))
+                .collect()
+        };
         drop(vers);
         if empty {
             self.nodes.remove(&id);
@@ -295,9 +291,18 @@ impl Graph {
         let Some(mut vers) = self.rels.get_mut(&id) else {
             return;
         };
-        if !vers.iter().any(|v| v.dead_at(horizon)) {
+        if !vers.any_dead(horizon) {
             return;
         }
+        // LABS-1116: the chain's endpoints and type, needed to prune its
+        // adjacency hops when the chain empties. The `any(dead_at)` guard
+        // above proves the chain non-empty, and every version of one rel
+        // id shares its endpoints (`cow` clones the previous version's
+        // endpoints; no operation moves a rel) — and `Chain::last` fails
+        // loud on an empty chain, a broken invariant that must not
+        // silently skip the prune (F-1-11).
+        let newest = vers.last();
+        let (start, end, type_id) = (newest.live.start, newest.live.end, newest.live.type_id);
         let dead: Vec<LiveRel> = if prune {
             vers.iter()
                 .filter(|v| v.dead_at(horizon))
@@ -306,19 +311,22 @@ impl Graph {
         } else {
             Vec::new()
         };
-        vers.retain(|v| !v.dead_at(horizon));
-        if !vers.is_empty() {
-            crate::memory::fit_reserved(&mut vers);
-        }
-        let remaining: Vec<LiveRel> = if prune {
+        let empty = !vers.collect(horizon);
+        let remaining: Vec<LiveRel> = if prune && !empty {
             vers.iter().map(|v| v.live.clone()).collect()
         } else {
             Vec::new()
         };
-        let empty = vers.is_empty();
         drop(vers);
         if empty {
             self.rels.remove(&id);
+            // LABS-1116: prune the orphaned hops — without this, a chain
+            // the GC collected leaves its hops in adjacency forever, and
+            // every later scan pays a `rels` map miss per ghost hop (the
+            // per-hop visibility probe stays the authority; this only
+            // stops offering it a rel it cannot resolve).
+            adj_remove(&self.out_adj, start, type_id, id);
+            adj_remove(&self.in_adj, end, type_id, id);
         }
         // Prune after the `rels` guard is released — the pair guard is never
         // taken while a `rels` guard is held. When `prune` is false both
@@ -601,8 +609,8 @@ impl Graph {
                 // map per node (the profile-hot `to_map` path, ADR-0033),
                 // and the visible version's probe stays inside the one
                 // `nodes` guard it borrows.
-                self.nodes.get(*id).is_some_and(|vers| {
-                    visible_version(vers.as_slice(), ts).is_some_and(|ver| {
+                self.nodes.get(id).is_some_and(|vers| {
+                    visible_version(&vers, ts).is_some_and(|ver| {
                         ver.live.props.get(kid).is_some_and(|value| {
                             value.as_string().is_some_and(|s| s.contains(needle))
                         })

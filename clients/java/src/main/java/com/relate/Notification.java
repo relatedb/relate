@@ -57,7 +57,7 @@ public final class Notification {
     public String getGqlStatus() { return gqlStatus; }
     /** {@code INFORMATION} or {@code WARNING}. */
     public String getSeverity() { return severity; }
-    /** {@code PERFORMANCE}, {@code UNRECOGNIZED} or {@code DEPRECATION}. */
+    /** {@code PERFORMANCE}, {@code UNRECOGNIZED}, {@code DEPRECATION}, {@code SCHEMA} or {@code HINT}. */
     public String getCategory() { return category; }
     /** The kind's short human-readable title, e.g. {@code Cartesian product}. */
     public String getTitle() { return title; }

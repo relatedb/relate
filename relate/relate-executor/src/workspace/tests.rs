@@ -5,6 +5,7 @@ use relate_core::Value;
 use super::*;
 use crate::row::RowNames;
 use crate::test_support::PeakPoolDouble;
+use crate::UsedSet;
 
 #[test]
 fn shared_string_adds_no_deep_heap_and_a_unique_string_does() {
@@ -163,7 +164,7 @@ fn incremental_meters_match_full_walks() {
     let mut binding_meter = BindingMeter::default();
     for i in 0..40 {
         let row = Row::from_names(&names, vec![Value::Int(i)]);
-        let mut used = HashSet::new();
+        let mut used = UsedSet::default();
         if i % 2 == 0 {
             used.insert(i);
         }

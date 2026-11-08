@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::processing_harness::Server;
+use crate::memory_controls::harness::Server;
 
 pub(crate) fn logical_bytes(server: &Server) -> Result<u64, String> {
     let deadline = Instant::now() + Duration::from_secs(2);

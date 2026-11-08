@@ -290,10 +290,11 @@ with `--snapshot-format json`, which every build reads and writes.
 `target/release/relate` from `cargo build --release -p relate-cli`.
 Measured on Darwin arm64 (macOS, Rust 1.88.0) with the workspace
 `[profile.release]` recipe (`opt-level = 3`, `lto = "thin"`,
-`codegen-units = 1`, `strip = "symbols"` — PR #679; the size recipe trims
-every released native artifact). LABS-876 since reverted `strip` to `"none"`
-(stripped Mach-O dylibs fail to load on macOS 26+), so current release
-binaries carry their symbol table and run larger than this table:
+`codegen-units = 1`, `strip = "debuginfo"`). The table's bytes were
+measured under `strip = "symbols"`, which additionally drops the symbol
+table; current binaries keep it (symbol-level stripping broke macOS dylibs
+until the toolchain carries the LLVM 23 fix) and run slightly larger than
+this table:
 
 | Features | Normal crates | Release binary (bytes) |
 | --- | --- | --- |
@@ -664,8 +665,16 @@ relate extension list --available
 `telemetry on|off` persists the `telemetry` key in
 `<config>/relate/config.json` (`$XDG_CONFIG_HOME/relate/` when
 `$XDG_CONFIG_HOME` is set, non-empty and absolute — a relative or empty
-value is treated as unset — otherwise `~/.config/relate/`) and prints a
-confirmation with the config path; `telemetry status` prints
+value is treated as unset, as for the Windows bases — otherwise
+`~/.config/relate/`, otherwise `%APPDATA%\relate\`, finally
+`%USERPROFILE%\.config\relate\` — the Windows bases ADR-0545 §6 adds)
+and prints a confirmation with the config path. `telemetry off` is one
+ordered transition: the run disarms its own telemetry pipeline before
+persisting, so it neither transmits nor records anything of its own,
+and it removes any pending spooled events (see
+[Usage metrics](#usage-metrics)) — turning telemetry off means no
+further transmissions, the pending ones included. `telemetry status`
+prints
 `<enabled|disabled> (<layer>)` where the layer that decided the effective
 state is `default`, `config file`, `RELATE_TELEMETRY`, or
 `DO_NOT_TRACK`. Exit codes: 0 on success, 1 when no config directory
@@ -1412,7 +1421,7 @@ variable-length pattern, a missing range index, a label/relationship
 type/property key the catalog does not know, a deprecated function or
 procedure, a scope-less `CALL { … }`. Each entry carries a stable `code`, a
 GQLSTATUS (`gql_status`), a severity (`INFORMATION` or `WARNING`), a
-category (`PERFORMANCE`, `UNRECOGNIZED` or `DEPRECATION`), a title, the
+category (`PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT`), a title, the
 instance `description` (the diagnosis) and a runnable `remedy` (the
 action). A plain run derives no list.
 
@@ -1515,6 +1524,24 @@ declined. `SeekTimeNs`/
 candidate resolution (`NodeReads`) and the relationship traversal
 (`Hops`/`NeighborWalks`) each spent, inclusive of a multi-element
 pattern's nested phases — zero for a clause that does no pattern work.
+
+`KernelRung` (LABS-1117) names the traversal rung that actually served
+a `MATCH` clause: `chain` (the unrolled fixed-k kernel), `hub-star`
+(the hub candidate intersection), `frontier-nfa` (the frontier-NFA
+rung), or `walker` (the per-row walker, every gate's decline). The
+chain rung emits `KernelHops` beside it; no other rung carries a hop
+count, and a non-`MATCH` clause, a `MATCH` a fold answered, or a `MATCH`
+the batch scan/filter chain answered (`Batched`) emits no `KernelRung`; a
+`SEARCH` `MATCH` emits `walker` (it walks the pattern per row). On every
+`MATCH`
+operator, EXPLAIN and PROFILE alike also emit `PatternEngine` — the
+store's `RELATE_PATTERN_ENGINE` mode (`auto`, `nfa`, or `walk`), the
+one static rung fact the plan can state: the rungs themselves are
+runtime choices inside an operator, so EXPLAIN names the mode that
+governs the gates and PROFILE's `KernelRung` names the executed rung.
+The plan table's `Details` cell marks the executed rung
+`[kernel chain hops=3]`, `[kernel hub-star]`, `[kernel frontier-nfa]`,
+or `[kernel walker]`.
 
 The deprecated `_profile_plan`/`_profile_time`/`_profile_rows`/
 `_profile_mutations` columns are **removed** (ADR-0345's sanctioned
@@ -1725,7 +1752,7 @@ naming both counts, so a capped result never reads as a complete one:
 | --- | --- |
 | `jsonl` | one keyed terminal line after the rows: `{"rowCap":{"kept":100,"total":250}}` — keyed like the plan line, never confusable with a data row |
 | `envelope` | `"truncated": true` plus `"rowCap": {"kept": 100, "total": 250}` ([Result envelope](#result-envelope)) |
-| `json` | the rows are wrapped: `{"data": [...], "rowCap": {...}}` (the `PROFILE` wrapper's shape); an uncapped result stays the bare array |
+| `json` | the rows are wrapped: `{"data": [...], "rowCap": {...}}` (the `PROFILE` wrapper's shape, with the always-present `timings`/`planCache` riders beside it — LABS-1120) |
 | `toon` | a terminal `rowCap:` entry with the counts as one inline compact JSON value |
 | `markdown` | one footer line after the table: `> truncated: 100 of 250 rows shown` (counts only — the `--max-rows` opt-out stays in the stderr warning, the channel the CLI owns) |
 | `csv`, `cypher`, `table` | no in-band record — the strict formats' streams stay pure and the human table keeps stderr; the warning above is their only channel |
@@ -1759,7 +1786,7 @@ statement runs.
 one line, so a multi-statement run is JSON Lines of envelopes:
 
 ```json
-{"columnTypes":["INTEGER","LIST"],"columns":["a","l"],"notifications":[],"rows":[{"a":1,"l":[1,2]}],"truncated":false}
+{"columnTypes":["INTEGER","LIST"],"columns":["a","l"],"notifications":[],"rows":[{"a":1,"l":[1,2]}],"timings":{"elapsed_ms":0.5,"parse_ms":0.25,"plan_ms":0.19,"execute_ms":0.06,"lex_parse_ms":0.13,"rewrite_ms":0.06,"lower_ms":0.06,"result_generation_ms":0.03},"planCache":"miss","truncated":false}
 ```
 
 | Field | Type | Meaning |
@@ -1771,12 +1798,24 @@ one line, so a multi-statement run is JSON Lines of envelopes:
 | `rowCap` | object | present only when the [row cap](#row-cap) cut the rows (ADR-0403): `{"kept": N, "total": M}` — the rows printed and the rows the statement returned |
 | `notifications` | array of objects | the complete query notification list (ADR-0363 decision 9), always present and `[]` on a plain run; entries carry `code`, `gql_status`, `severity`, `category`, `title`, `description`, `remedy` and `operator_id` on operator-scoped kinds. See [Query notifications](#query-notifications-adr-0363) |
 | `plan` | object | present only on an `EXPLAIN`/`PROFILE` result: the structured plan tree ([EXPLAIN and PROFILE output](#explain-and-profile-output-adr-03440345)) |
+| `timings` | object | the statement's timing block (LABS-1120), always present: `elapsed_ms` (the ADR-0221 wall-clock total) with its always-on `parse_ms` / `plan_ms` / `execute_ms` split (ADR-0491) and the fine sub-split — `lex_parse_ms` (lexing + AST build), `rewrite_ms` (the CIP-231 resolver pass), `lower_ms` (validation + lowering, fused), all sub-windows of `parse_ms`, and `result_generation_ms` (the result build), a sub-window of `execute_ms`. All non-negative milliseconds; every fine window never exceeds its coarse phase. On a plan-cache hit the fine parse windows are `0` — nothing was parsed — which `planCache` explains |
+| `planCache` | string | the plan-cache outcome (LABS-1120): `miss` (no cached plan served — the first run of a template, or a hit whose cached plan was rejected for literal-shape safety), `hit-raw-fastpath` (stage 1: the raw statement text matched), `hit-template` (stage 2: the auto-parameterized template matched), `replan-generation-mismatch` (a hit whose entry re-planned under a fresh stats generation), `bypassed` (the cache was not consulted — a caller parameter map carrying the reserved `__AUTO_*__` prefix, or a statement the normalizer refuses) |
 
-An empty result is `{"columnTypes":["ANY"],"columns":["n"],"notifications":[],"rows":[],"truncated":false}`,
-so "no rows" is distinguishable from "no output". `--json` (a bare array) and
-`--jsonl` (one object per row) are unchanged for plain results; an
-`EXPLAIN`/`PROFILE` result is one `{"plan": ..., "notifications": [...]}`
-object in both, with the complete list. A failure prints the [error
+An empty result is `{"columnTypes":["ANY"],"columns":["n"],...,"rows":[],"timings":{...},"planCache":"miss","truncated":false}`,
+so "no rows" is distinguishable from "no output". `--json` and `--jsonl`
+carry the same timing block for every plain result (LABS-1120): `--json`
+wraps the rows as `{"data": [...], "timings": {...}, "planCache": "..."}`
+(the `PROFILE` wrapper's shape — a plain run with its result behind it no
+longer renders the bare array), and `--jsonl` closes every statement's
+stream with one keyed terminal line `{"timings": {...}, "planCache": "..."}`
+after any plan and `rowCap` lines — a zero-row statement emits exactly that
+line, nothing else. `-mode toon` renders terminal `timings:` and
+`planCache:` entries after the rows (the timing object inline, the outcome
+as a bare token). The strict text formats (`csv`, `cypher`) and the human
+`table` mode carry none of it — the interactive session's `.timer` line
+remains the human rendering. An `EXPLAIN`/`PROFILE` result is one
+`{"plan": ..., "notifications": [...]}` object in `--json`/`--jsonl`, with
+the complete list. A failure prints the [error
 envelope](#query-run-errors) as in the other JSON modes. New fields may be
 added; existing ones are never renamed.
 
@@ -1894,10 +1933,9 @@ See the [executable help example](examples/help.md).
 | `RELATE_AUTH` | `serve` | Basic-auth credential (`user:password`, or `none`) for every served network surface; `--auth` overrides it, and with neither set a token is generated and persisted (ADR-0232 §1). A present-but-malformed value is a loud startup error |
 | `RELATE_MIXPANEL_ENDPOINT` | usage metrics | Override the Mixpanel `/track` POST URL (dev/test); `https://` required for any host, `http://` allowed only for loopback hosts (`localhost`, `127.0.0.1`, `::1`); a rejected value disables telemetry for the run with one stderr warning (ADR-0263) |
 | `RELATE_MIXPANEL_TOKEN` | usage metrics | Override the compiled-in Mixpanel project token (dev/test) |
-| `RELATE_TELEMETRY_FLUSH_MS` | usage metrics | The exit flush's wait budget in milliseconds (default `250`); `0` = fire-and-forget — the final batch is left to a detached worker (ADR-0079 §5); unset or unparsable values keep the default |
 | `RELATE_BULK_BATCH_THRESHOLD` | query engine | Estimated touched-entity count at which an eligible global bulk write (`MATCH (n) DETACH DELETE n`, cross-product `CREATE`, global `SET`/`REMOVE`) switches to batched commits; default `10000` (ADR-0209). Unset defaults; a set value that does not parse as a positive integer fails `Database::open` with a semantic error (same contract as `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`); read once at open |
 | `RELATE_BULK_BATCH_BUDGET` | query engine | Estimated touched-entity budget per batch commit of an eligible global bulk write; default `25000` (ADR-0209). Unset defaults; a set value that does not parse as a positive integer fails `Database::open` with a semantic error (same contract as `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`); read once at open |
-| `RELATE_PREVIEW` | query engine | Global opt-in for preview Cypher features (ADR-0371): a comma-separated list of kebab-case feature names, whitespace tolerated, read once at open. Unset or empty enables nothing. An unknown name fails `Database::open` (exit 1) with `Error: …: invalid RELATE_PREVIEW value: unknown preview feature '<name>' (known features: …)` naming the known names — fail-closed, never silently ignored. Fifteen features are gated live: `hybrid-search` (CIP-278 hybrid search `COMBINE`, ADR-0379), `local-callables` (CIP-231 `DEFINE PROCEDURE`/`DEFINE FUNCTION`, ADR-0382), `ontology` (the `db.ontology.*` procedure family, ADR-0378), the CIP graph-type trio — `graph-type-opt-props` (CIP-283 optional properties `prop :: ANY`), `graph-type-default-values` (CIP-262 `DEFAULT ON COMMIT <value expression>`) and `graph-type-implied-labels` (CIP-266 implied labels, inheritance) — `gql-for` (CIP-250 `FOR <variable> IN <expression>`, the GQL-compliant successor spelling of `UNWIND`, normalized onto the existing UNWIND machinery — ADR-0391), `obfuscated-literals` (the Neo4j `******` dummy literal, gated at the lexer so the disabled form is the parser's own syntax error — ADR-0454), `mixed-label-syntax` (Neo4j's mixed-label-syntax allowance: colon-conjunction, GQL label symbols and `IS` may mix across one clause's label expressions — ADR-0456), `float16-coordinate-types` (CIP-280 FLOAT16/BFLOAT16 vector coordinate types in `VECTOR<…>` type expressions and the `vector()` constructor — ADR-0464), `chronological-comparisons` (Cypher 25's four chronological operators — `IS [NOT] BEFORE`, `AFTER`, `SAME INSTANT`, `SAME REPRESENTATION` — ADR-0467) and `complex-search-patterns` (widening a SEARCH MATCH statement's pattern shape — ADR-0467), `coll-zip` (CIP-274's `coll.zip`, ADR-0497), `coll-has` (CIP-286's `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf`, ADR-0497), `gql-stddev-aliases` (CIP-245's `stddev_samp`/`stddev_pop` spellings, ADR-0497). The name gates are one of the four gate-location exceptions ADR-0497 records: they gate *name admission*, not syntax, so a gated name invoked while disabled fails with the registry's ordinary unknown-function rejection (`UnknownFunction: <name>`, 42N48) exactly like any unknown name — never the authored `preview feature …` error, which would advertise a name the catalogue must not list. While a name gate is off its names are also absent from `SHOW FUNCTIONS`. With `ontology` off, every `db.ontology.*` call fails with the authored `semantic error: SemanticError: preview feature 'ontology' is not enabled: set RELATE_PREVIEW=ontology`, and `SHOW PROCEDURES` omits the four rows; with it on, the four rows are listed with unchanged signatures and modes and every call runs. Enabling it on a served store — `relate serve` with Bolt, HTTP or MCP — exposes the four procedures, including the store-level writers `db.ontology.set` and `db.ontology.drop`, to every connected client: the gate is the server process's environment, read once at open, not a per-caller check. A gated feature invoked while disabled fails with `Error: …: preview feature '<name>' is not enabled: set RELATE_PREVIEW=<name>` |
+| `RELATE_PREVIEW` | query engine | Global opt-in for preview Cypher features (ADR-0371): a comma-separated list of kebab-case feature names, whitespace tolerated, read once at open. Unset or empty enables nothing. An unknown name fails `Database::open` (exit 1) with `Error: …: invalid RELATE_PREVIEW value: unknown preview feature '<name>' (known features: …)` naming the known names — fail-closed, never silently ignored. Fourteen features are gated live: `hybrid-search` (CIP-278 hybrid search `COMBINE`, ADR-0379), `local-callables` (CIP-231 `DEFINE PROCEDURE`/`DEFINE FUNCTION`, ADR-0382), `ontology` (the `db.ontology.*` procedure family, ADR-0378), the CIP graph-type trio — `graph-type-opt-props` (CIP-283 optional properties `prop :: ANY`), `graph-type-default-values` (CIP-262 `DEFAULT ON COMMIT <value expression>`) and `graph-type-implied-labels` (CIP-266 implied labels, inheritance) — `obfuscated-literals` (the Neo4j `******` dummy literal, gated at the lexer so the disabled form is the parser's own syntax error — ADR-0454), `mixed-label-syntax` (Neo4j's mixed-label-syntax allowance: colon-conjunction, GQL label symbols and `IS` may mix across one clause's label expressions — ADR-0456), `float16-coordinate-types` (CIP-280 FLOAT16/BFLOAT16 vector coordinate types in `VECTOR<…>` type expressions and the `vector()` constructor — ADR-0464), `chronological-comparisons` (Cypher 25's four chronological operators — `IS [NOT] BEFORE`, `AFTER`, `SAME INSTANT`, `SAME REPRESENTATION` — ADR-0467) and `complex-search-patterns` (widening a SEARCH MATCH statement's pattern shape — ADR-0467), `coll-zip` (CIP-274's `coll.zip`, ADR-0497), `coll-has` (CIP-286's `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf`, ADR-0497), `gql-stddev-aliases` (CIP-245's `stddev_samp`/`stddev_pop` spellings, ADR-0497). The name gates are one of the four gate-location exceptions ADR-0497 records: they gate *name admission*, not syntax, so a gated name invoked while disabled fails with the registry's ordinary unknown-function rejection (`UnknownFunction: <name>`, 42N48) exactly like any unknown name — never the authored `preview feature …` error, which would advertise a name the catalogue must not list. While a name gate is off its names are also absent from `SHOW FUNCTIONS`. With `ontology` off, every `db.ontology.*` call fails with the authored `semantic error: SemanticError: preview feature 'ontology' is not enabled: set RELATE_PREVIEW=ontology`, and `SHOW PROCEDURES` omits the four rows; with it on, the four rows are listed with unchanged signatures and modes and every call runs. Enabling it on a served store — `relate serve` with Bolt, HTTP or MCP — exposes the four procedures, including the store-level writers `db.ontology.set` and `db.ontology.drop`, to every connected client: the gate is the server process's environment, read once at open, not a per-caller check. A gated feature invoked while disabled fails with `Error: …: preview feature '<name>' is not enabled: set RELATE_PREVIEW=<name>` |
 | `RELATE_PATTERN_ENGINE` | query engine | Diagnostic pattern-engine switch (ADR-0519): `auto`, `nfa`, or `walk`, read once at open by every session (`query`, `serve`, and library embeddings — there is no flag, the variable is the whole surface). Unset, blank, or `auto` routes exactly as today; `nfa` forces the frontier NFA rung (ADR-0478) onto every frontier-compilable clause (its cost gate is bypassed; every structural, answer-shape and budget proof stands, declines still fail through); `walk` stands the traversal kernels (ADR-0473, ADR-0478) down, so the batch scan-filter chain and the per-row walker serve every clause. A value that is not one of the three fails the open with `Error: …: invalid RELATE_PATTERN_ENGINE: invalid pattern engine "…"; expected auto, nfa, or walk` — never a silent default. Diagnostic-only — a measurement instrument for the pattern-engine spike, not a supported tuning knob — and never Cypher syntax: a statement cannot select its engine. It dies with the old engines it switches between |
 
 ## Query-engine flags
@@ -2173,13 +2211,27 @@ machine identifier — none is ever read.
 structurally excluded: the event-builder types have no fields for them, so
 capturing them is a compile error, not a policy violation (ADR-0079 §4).
 
-**Delivery.** Events go onto a bounded channel drained by a background
-thread with a 2-second HTTP timeout; the exit flush waits at most 250 ms
-(`RELATE_TELEMETRY_FLUSH_MS` overrides, `0` = fire-and-forget for
-loop-shaped callers) and drops a final request still in flight past the
-budget, so no exit is ever perceptibly slowed (ADR-0079 §5). All
-telemetry errors are swallowed — nothing on stdout or stderr, exit codes
-unaffected.
+**Delivery.** A run's exit writes its pending events to a local spool
+file under `<config>/relate/` — one fresh JSONL file per run, mode 0600
+on unix, never touching a file that already existed — and that is the
+whole exit cost: no network wait, ever (ADR-0079 §5, ADR-0545). The
+next enabled run's background drain thread (started at that run's
+first recorded event) claims the spool files (spooled files and any
+claims a killed drain left behind; regular files only, never symbolic
+links — a planted link is neither claimed, read, nor followed) and
+POSTs them in batches of at most 50 with a 2-second HTTP timeout — at
+most 8 files per sweep, the rest waiting for the next run — deleting
+each claim only after every batch is confirmed; an undelivered claim
+waits for the next enabled run, and a claim whose content cannot be
+read is removed on the spot — attempt-once, like a corrupt line — so
+undeliverable content never starves a sweep. Each file is bounded by the run's in-memory backlog cap,
+and the spool holds at most 64 pending files — past that a sweep drops
+the excess. Delivery is at-least-once — the sink dedups on
+`$insert_id`, making it effectively-once — and event `time` is stamped
+at emit, so late delivery does not skew time-based reports. A run with
+no resolvable config directory records nothing — the same degraded
+mode as its ephemeral install ID. All telemetry errors are swallowed —
+nothing on stdout or stderr, exit codes unaffected.
 
 **Opt-out.** Telemetry defaults to ON. First match wins (ADR-0079 §6):
 
@@ -2194,6 +2246,10 @@ opt-out, regardless of whether stdin is a terminal (the notice is claimed once
 and is suppressed entirely when telemetry is opted out). A `notice_shown` flag
 in `state.json` suppresses repeats.
 
-`state.json` and `config.json` are written under `<config>/relate/` via
-unique `create_new` staging files that are renamed into place, and both are mode
-**0600** on unix — the install UUID and the opt-out choice are private.
+`state.json`, `config.json`, and the per-run spool files
+(`telemetry-spool-<uuid>.jsonl`, `telemetry-claim-<uuid>.jsonl`) are
+written under `<config>/relate/` — the state and config files via unique
+`create_new` staging files renamed into place, the spool by a direct
+0600-creating append — and all of them are mode **0600** on unix: the
+install UUID, the opt-out choice, and the spooled event envelopes are
+private.

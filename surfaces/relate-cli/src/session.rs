@@ -254,8 +254,11 @@ impl Exec<'_> {
         }
     }
 
-    /// Emit `RELATE-CLI_QUERY` for one executed statement.
-    fn emit_query(&self, success: bool) {
+    /// Emit `RELATE-CLI_QUERY` for one executed statement. `&mut self`:
+    /// the live handle's `emit` takes the owning thread's `&mut` (its
+    /// backlog is plainly owned), and this method's only caller holds
+    /// `&mut exec`.
+    fn emit_query(&mut self, success: bool) {
         self.telemetry.emit(telemetry::Event::Query {
             success,
             source: self.query_ctx.source,

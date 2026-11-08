@@ -428,6 +428,20 @@ fn success_envelope(
         ));
     }
     members.push(("bookmarks".to_string(), Json::Array(Vec::new())));
+    // LABS-1120: the statement's timing block rides the reply after the
+    // Neo4j Query API v2 members — one keyed `timings` object (the model's
+    // one builder, the same nested form the CLI machine modes carry) with
+    // the `planCache` outcome beside it. Namespaced Relate extension keys,
+    // absent in the reference server's shape: clients that ignore unknown
+    // members are unaffected (the official drivers' hydrators drop unknown
+    // keys), and the alternative — no phase visibility on this surface —
+    // is what LABS-1120 set out to fix.
+    let timings = relate::timing_stamp_ms(result);
+    members.push(("timings".to_string(), timings.to_timings_json()));
+    members.push((
+        "planCache".to_string(),
+        Json::String(timings.plan_cache.into()),
+    ));
     Reply::json_as(success_status, ReplyBody::new(members), media_type)
 }
 

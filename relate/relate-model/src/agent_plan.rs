@@ -287,6 +287,15 @@ fn actual_json(metrics: &PlanMetricsWire, subtree_ns: i64, loops: Option<u64>) -
             None => Value::Null,
         },
     );
+    // LABS-1117: which rung served the clause's MATCH walk — always
+    // present, `null` when no rung served it (the one absence spelling).
+    out.insert(
+        "kernel".to_string(),
+        match metrics.kernel {
+            Some(rung) => json!({"rung": rung.as_str(), "hops": rung.hops()}),
+            None => Value::Null,
+        },
+    );
     Value::Object(out)
 }
 

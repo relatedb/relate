@@ -1192,6 +1192,7 @@ impl<'a> Parser<'a> {
                 pattern,
                 using_scan: Vec::new(),
                 using_index: Vec::new(),
+                using_join: Vec::new(),
                 where_expr,
                 search: None,
             })],

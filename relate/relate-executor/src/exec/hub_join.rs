@@ -13,9 +13,10 @@
 //! [`merged_schema`], [`group_by_hub`], [`plain_side_rows`],
 //! [`row_node_id`]), and the LABS-348 test hooks.
 
+use crate::UsedSet;
 use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{NodeId, RelId, Result, Value};
+use relate_core::{NodeId, Result, Value};
 use relate_ir::{path_pattern_vars, MatchMode, PathPattern};
 use relate_names::SmallName;
 
@@ -276,8 +277,8 @@ fn merged_schema(a_names: &[String], b_names: &[&str]) -> HubMerge {
 fn group_by_hub<'a>(
     rows: &'a Matched,
     hub_var: &SmallName,
-) -> BTreeMap<NodeId, Vec<&'a (Row, HashSet<RelId>)>> {
-    let mut by_hub: BTreeMap<NodeId, Vec<&'a (Row, HashSet<RelId>)>> = BTreeMap::new();
+) -> BTreeMap<NodeId, Vec<&'a (Row, UsedSet)>> {
+    let mut by_hub: BTreeMap<NodeId, Vec<&'a (Row, UsedSet)>> = BTreeMap::new();
     for pair in rows {
         let id = row_node_id(&pair.0, hub_var);
         by_hub.entry(id).or_default().push(pair);
@@ -303,7 +304,7 @@ fn plain_side_rows(
         pattern,
         filters,
         row,
-        HashSet::<RelId>::new(),
+        UsedSet::default(),
         match_mode,
         residual,
         None,

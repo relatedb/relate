@@ -170,6 +170,18 @@ fn walk_pattern(
         },
         _ => None,
     };
+    // The descent's one state (F-1-7), derived once per frame from the
+    // step and its trail: `descend_candidate` matches it exhaustively,
+    // and the former Option pair's unreachable `(None, Some)` corner
+    // cannot be constructed.
+    let descent = match (&step, bound_trail.as_ref()) {
+        (Some(step), Some(ids)) => Descent::Trail {
+            step,
+            ids: ids.as_slice(),
+        },
+        (Some(step), None) => Descent::Rel { step },
+        (None, _) => Descent::Terminal,
+    };
     // The one node-binding classification (`pattern_walk::binding`,
     // LABS-668's vocabulary), hoisted out of the candidate loop — it
     // reads only the pattern and the pre-walk row, and every candidate
@@ -226,17 +238,7 @@ fn walk_pattern(
             v.with_str(|name| bind_rung_name(&mut row2, name, graph.node_value(id), node_rung));
         }
         descend_candidate(
-            ctx,
-            path,
-            ladder,
-            filters,
-            node_idx,
-            step.as_ref(),
-            bound_trail.as_ref(),
-            id,
-            row2,
-            &used,
-            collect,
+            ctx, path, ladder, filters, node_idx, descent, id, row2, &used, collect,
         )?;
     }
     Ok(())
@@ -252,6 +254,22 @@ struct RelStep<'a> {
     filter: &'a RelFilter,
 }
 
+/// The descent's one step state (F-1-7): the terminal path-bind, the rel
+/// walk, or the pre-bound trail walk — one enum where an `Option` pair
+/// with an unreachable `(None, Some)` corner used to sit, so the
+/// three-way state cannot be spelled any other way.
+#[derive(Clone, Copy)]
+enum Descent<'a> {
+    Terminal,
+    Rel {
+        step: &'a RelStep<'a>,
+    },
+    Trail {
+        step: &'a RelStep<'a>,
+        ids: &'a [RelId],
+    },
+}
+
 /// The per-candidate descent — the eval counterpart of the exec engine's
 /// `expand_rel`: the bound-trail walk (a pre-bound rel list walks exactly
 /// it, the eval spelling of the exec exact-trail walk), the terminal
@@ -264,8 +282,7 @@ fn descend_candidate(
     ladder: &WalkLadder,
     filters: &[RelFilter],
     node_idx: usize,
-    step: Option<&RelStep<'_>>,
-    bound_trail: Option<&Vec<RelId>>,
+    descent: Descent<'_>,
     id: NodeId,
     mut row2: Row,
     used: &UsedRels,
@@ -277,12 +294,12 @@ fn descend_candidate(
         cypher_version,
         ..
     } = ctx;
-    // A pre-bound trail is the only trail this rel can bind: walk exactly
-    // it, never the enumeration that would reconcile one trail out of the
-    // whole space. (A bound trail implies a rel follows this node, so the
-    // terminal arm below is never reached from here.)
-    if let (Some(step), Some(ids)) = (step, bound_trail) {
-        return crate::ctx::phase_walk(|| {
+    match descent {
+        // A pre-bound trail is the only trail this rel can bind: walk exactly
+        // it, never the enumeration that would reconcile one trail out of the
+        // whole space. (A bound trail implies a rel follows this node, so the
+        // terminal arm below is never reached from here.)
+        Descent::Trail { step, ids } => crate::ctx::phase_walk(|| {
             walk_bound_trail(
                 ctx,
                 path,
@@ -298,52 +315,52 @@ fn descend_candidate(
                 ids,
                 collect,
             )
-        });
-    }
-    let Some(step) = step else {
-        bind_eval_path(graph, path, &mut row2, &ladder.complete);
-        // Element inline predicates are evaluated once the whole pattern
-        // is bound, so a predicate may reference an element declared
-        // later in the same pattern (CIP-17/CIP-18 5.2.1). The shared
-        // inline-predicate checker (`eval::predicates::inline_predicates_ok`)
-        // applies every element's `WHERE` and the path's own.
-        if !crate::eval::inline_predicates_ok(
-            graph,
-            std::slice::from_ref(path),
-            &row2,
-            params,
-            cypher_version,
-        )? {
-            return Ok(());
+        }),
+        Descent::Terminal => {
+            bind_eval_path(graph, path, &mut row2, &ladder.complete);
+            // Element inline predicates are evaluated once the whole pattern
+            // is bound, so a predicate may reference an element declared
+            // later in the same pattern (CIP-17/CIP-18 5.2.1). The shared
+            // inline-predicate checker (`eval::predicates::inline_predicates_ok`)
+            // applies every element's `WHERE` and the path's own.
+            if !crate::eval::inline_predicates_ok(
+                graph,
+                std::slice::from_ref(path),
+                &row2,
+                params,
+                cypher_version,
+            )? {
+                return Ok(());
+            }
+            collect.out.push(row2);
+            Ok(())
         }
-        collect.out.push(row2);
-        return Ok(());
-    };
-    // LABS-448: the walk phase — following relationships, the store
-    // work behind the `Rels`/`Degree` kinds — through the one wrapper,
-    // inclusive of the nested phases the recursion performs.
-    crate::ctx::phase_walk(|| {
-        walk_rel(
-            ctx,
-            path,
-            ladder,
-            filters,
-            node_idx,
-            step.filter,
-            id,
-            PathRow {
-                row: row2,
-                used: used.clone(),
-            },
-            VarWalk {
-                min_h: step.hop_bounds.0,
-                max_h: step.hop_bounds.1,
-                hops: 0,
-                trail: Vec::new(),
-            },
-            collect,
-        )
-    })
+        // LABS-448: the walk phase — following relationships, the store
+        // work behind the `Rels`/`Degree` kinds — through the one wrapper,
+        // inclusive of the nested phases the recursion performs.
+        Descent::Rel { step } => crate::ctx::phase_walk(|| {
+            walk_rel(
+                ctx,
+                path,
+                ladder,
+                filters,
+                node_idx,
+                step.filter,
+                id,
+                PathRow {
+                    row: row2,
+                    used: used.clone(),
+                },
+                VarWalk {
+                    min_h: step.hop_bounds.0,
+                    max_h: step.hop_bounds.1,
+                    hops: 0,
+                    trail: Vec::new(),
+                },
+                collect,
+            )
+        }),
+    }
 }
 
 /// The eval walk's per-hop admission closure — the one per-hop admission

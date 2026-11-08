@@ -14,6 +14,7 @@ use crate::row::Row;
 
 use super::eval;
 
+mod bar;
 mod convert;
 mod entity;
 mod list;
@@ -169,7 +170,9 @@ fn render_scalar(v: &Value) -> Option<Arc<str>> {
 #[cfg(test)]
 mod tests {
     use super::convert::{bi_tostring, bi_tostringornull};
-    use super::registry::{builtins, Arity, ARITY_AT_LEAST_ONE, ARITY_AT_MOST_ONE};
+    use super::registry::{
+        builtins, Arity, ARITY_AT_LEAST_ONE, ARITY_AT_MOST_ONE, ARITY_EXACTLY_FOUR_ENGINE_ONLY,
+    };
     use super::string::bi_string_interp;
     use super::*;
     use crate::graph::Graph;
@@ -204,8 +207,10 @@ mod tests {
             registered_arities
                 .iter()
                 .filter(|a| a.verified.is_empty())
-                .all(|a| a == &ARITY_AT_LEAST_ONE || a == &ARITY_AT_MOST_ONE),
-            "only the floor and the registry-derived clock arity may carry an empty verified set"
+                .all(|a| a == &ARITY_AT_LEAST_ONE
+                    || a == &ARITY_AT_MOST_ONE
+                    || a == &ARITY_EXACTLY_FOUR_ENGINE_ONLY),
+            "only the floor, the registry-derived clock arity and the engine-only bar arity may carry an empty verified set"
         );
         for arity in registered_arities {
             // The floor's every-row behavior is checked by the per-row test
@@ -218,6 +223,9 @@ mod tests {
                 // The clock rows are generated from the spelling registry —
                 // pin them to it, not to a second hand-written list.
                 relate_core::temporal::clock_spellings().collect()
+            } else if arity == ARITY_EXACTLY_FOUR_ENGINE_ONLY {
+                // Engine-only: no live spec exists, so the one name is pinned.
+                vec!["bar"]
             } else {
                 arity.verified.to_vec()
             };

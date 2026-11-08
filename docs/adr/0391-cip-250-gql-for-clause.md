@@ -116,3 +116,11 @@ gate, in three pieces:
 - GQ11/GQ24/GQ23 are future CIPs; when one lands, the `for_syntax`
   spelling record is the hook its detector and renderer extend — a new
   row, not a rework of this one.
+
+## Later references
+
+ADR-0533 graduates the clause out of the preview registry: the reference
+dialect shipped it default-on, so the `gql-for` row, its detector arm
+and the gate are deleted, and the `FOR` spelling became default dialect.
+The parse-time normalization and the `for_syntax` spelling record this
+ADR introduced remain.

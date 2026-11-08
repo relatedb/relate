@@ -87,6 +87,8 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
             patterns,
             where_clause: None,
             search: None,
+            using_index: _,
+            using_join: _,
         },
         Clause::Return {
             distinct: false,

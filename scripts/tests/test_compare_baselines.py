@@ -16,14 +16,18 @@ unconditionally.
 """
 
 import json
-import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from loadtest_fixtures import ENV, checkpoint_report, memory_report, report
+from loadtest_fixtures import (
+    ENV,
+    aggregator_env,
+    checkpoint_report,
+    memory_report,
+    report,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,18 +79,19 @@ class CompareBaselinesTestBase(unittest.TestCase):
         summary: Path | None = None,
         extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        # Render mode must not depend on either; gate mode must stay
-        # deterministic outside a GitHub Actions runner.
-        env.pop("GITHUB_ACTIONS", None)
-        env.pop("GITHUB_STEP_SUMMARY", None)
-        env["BASELINES"] = str(self.baselines)
-        env["REPORTS_DIR"] = str(self.reports)
-        env["PYTHON"] = sys.executable
-        if summary is not None:
-            env["GITHUB_STEP_SUMMARY"] = str(summary)
-        if extra_env:
-            env.update(extra_env)
+        # Render mode must not depend on the Actions reporting pair; gate
+        # mode must stay deterministic outside a GitHub Actions runner.
+        # The aggregator's env contract is loadtest_fixtures.aggregator_env.
+        env = aggregator_env(
+            self.baselines,
+            self.reports,
+            {
+                "GITHUB_STEP_SUMMARY": (
+                    str(summary) if summary is not None else None
+                ),
+                **(extra_env or {}),
+            },
+        )
         return subprocess.run(
             ["bash", str(SCRIPT), *args],
             text=True,
@@ -298,33 +303,17 @@ class CompareBaselinesRenderTests(CompareBaselinesTestBase):
         repo_target = ROOT / "target"
         repo_target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=str(repo_target)) as tmp:
-            baselines = Path(tmp) / "baselines"
-            reports = Path(tmp) / "reports"
-            baselines.mkdir()
-            reports.mkdir()
-            (baselines / "fraud-loadtest.json").write_text(
-                json.dumps(report(p99=1_000_000))
-            )
-            (reports / "fraud-loadtest.json").write_text(
-                json.dumps(report(p99=1_100_000))
-            )
-            env = os.environ.copy()
-            env.pop("GITHUB_ACTIONS", None)
-            env.pop("GITHUB_STEP_SUMMARY", None)
-            env.update(
-                BASELINES=str(baselines),
-                REPORTS_DIR=str(reports),
-                PYTHON=sys.executable,
-            )
-            result = subprocess.run(
-                ["bash", str(SCRIPT), "--render-only"],
-                text=True,
-                capture_output=True,
-                check=False,
-                env=env,
-            )
+            # Point the fixture tree at the temp dir inside the repo, so
+            # the base class's one runner is what invokes the aggregator.
+            self.baselines = Path(tmp) / "baselines"
+            self.reports = Path(tmp) / "reports"
+            self.baselines.mkdir()
+            self.reports.mkdir()
+            self.write_baseline("fraud-loadtest.json", report(p99=1_000_000))
+            self.write_report("fraud-loadtest.json", report(p99=1_100_000))
+            result = self.run_script("--render-only")
             self.assertEqual(result.returncode, 0, result.stderr)
-            doc = (reports / "loadtest-comparison.md").read_text()
+            doc = (self.reports / "loadtest-comparison.md").read_text()
             rel = f"target/{Path(tmp).name}"
             self.assertIn(
                 f"`{rel}/baselines/fraud-loadtest.json` → "

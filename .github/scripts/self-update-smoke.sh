@@ -26,8 +26,9 @@
 # so GITHUB_TOKEN is required. The website's releases.json must already
 # list the expected version as latest: the release pipeline used to
 # guarantee that by chaining this smoke after the Pages deploy
-# (ADR-0330); Pages deploys are paused (2026-11-05, deploy-pages.yml
-# runs on manual dispatch only), so the smoke checks that currency
+# (ADR-0330); the website now lives in the separate relate-web repository
+# (ADR-0546) and deploys itself on the release pipeline's
+# repository_dispatch poke, so the smoke checks that currency
 # itself before downloading anything — the live-site currency gate
 # below skips with a stated reason while the site lags the release
 # list, instead of downloading into a guaranteed wrong-version assert.
@@ -187,9 +188,9 @@ fi
 # The inner upgrade reads the live website's releases.json (ADR-0250) and
 # can only ever reach the version that document lists as latest. The
 # release pipeline used to guarantee the site already listed the expected
-# release by chaining this smoke after the Pages deploy (ADR-0330); Pages
-# deploys are paused (deploy-pages.yml runs on manual dispatch only), so
-# the site can lag the release list — gh knows v<expected>, the site does
+# release by chaining this smoke after the Pages deploy (ADR-0330); the
+# site is relate-web's now (ADR-0546) and can lag the release list — gh
+# knows v<expected>, the site does
 # not — and an upgrade run now would end in the wrong-version assert for
 # a reason that is the pause, not the update path. Skip with a stated
 # reason instead, the same contract as the first-stable-release and
@@ -205,7 +206,7 @@ fi
 RELEASES_JSON_URL="https://relatedb.ai/releases.json"
 site_latest="$(curl -fsSL "$RELEASES_JSON_URL" 2>/dev/null | jq -r '.latest.tag // empty' || true)"
 if [[ "$site_latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$site_latest" != "v$expected" ]]; then
-  log "SKIP: the live site's releases.json lists $site_latest as latest, not v$expected — the site has not been redeployed for this release (Pages deploys are paused; deploy-pages.yml runs on manual dispatch only), so the upgrade path cannot be canaried against a site that does not know v$expected; nothing downloaded, nothing upgraded"
+  log "SKIP: the live site's releases.json lists $site_latest as latest, not v$expected — the site has not been redeployed for this release (the site is relate-web's, deployed on the release pipeline's poke, ADR-0546), so the upgrade path cannot be canaried against a site that does not know v$expected; nothing downloaded, nothing upgraded"
   exit 0
 fi
 

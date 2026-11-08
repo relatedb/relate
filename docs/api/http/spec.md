@@ -533,7 +533,9 @@ carry `framing::BodyEncoding` (`identity` or `gzip`).
 - The **success envelope serializes in its wire order**: `data.fields`
   first, then the `data.values` rows as the serializer pulls them from the
   engine's materialized result, then the plan / counters / notifications /
-  bookmark tail (and a `transaction` block on the tx routes). The order is
+  bookmark tail, then the LABS-1120 timing block — a `timings` object with
+  the `planCache` outcome string beside it — and a `transaction` block on
+  the tx routes. The order is
   the same for the one-shot and the chunked path, so a below-threshold reply
   carries exactly the bytes a streamed one does. The serializer feeds the
   rows to the writer one at a time and never rebuilds the rows array; what
@@ -661,7 +663,11 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   Neo4j-facing float the decoration writes, ADR-0357), the PROFILE metric
   entries (`Rows`, `TimeNs`, `DbHits`, `MemoryBytes`, `ExpressionBuiltBytes` —
   Neo4j's own
-  `arguments` keeps its `Rows`/`DbHits` there too), and on the root the
+  `arguments` keeps its `Rows`/`DbHits` there too), the ADR-0538
+  traversal-rung entries on a `MATCH` operator (`PatternEngine`, the
+  store's `RELATE_PATTERN_ENGINE` mode; and on a PROFILE tree the served
+  clause's `KernelRung` — `chain` with `KernelHops`, `hub-star`,
+  `frontier-nfa`, or `walker`), and on the root the
   Neo4j-facing args (`version`, `planner*`, `runtime*`, `Memory`,
   `GlobalMemory`, `string-representation`). The metric fields above are
   projected from the same values, so both carry the metric (Neo4j's own
@@ -700,22 +706,24 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   negotiation.
 
 Result-metadata note (cross-surface alignment): the engine-stamped column
-types (ADR-0224), the engine-reported statement elapsed (ADR-0221) and its
-per-phase split — `parse_ms` / `plan_ms` / `execute_ms`, the always-on
-PARSE / PLAN / EXECUTE window split that lands beside `elapsed_ms` on the
-canonical wire envelope (ADR-0491) — are **not** added to this envelope.
-The Query API v2 wire contract is fixed by
-the reference server — `data.fields` / `data.values` / `counters` /
-`bookmarks` / `notifications`, with no column-type or timing slot — and
-this surface's verified Neo4j Browser compatibility rests on matching that
-shape exactly, so extension keys are deliberately not invented here
-(`queryPlan`/`profiledQueryPlan` are the Neo4j plan field names, not
-invented extensions). Under
-the negotiated typed media type the per-value `$type` tags already carry
-the same type information row-by-row; clients needing the stamped
-`columnTypes` / `elapsed_ms` / `parse_ms` / `plan_ms` / `execute_ms`
-metadata use the CLI/FFI/wire envelope or the
-MCP surface, which do expose them.
+types (ADR-0224) stay off this envelope — under the negotiated typed media
+type the per-value `$type` tags carry the same information row-by-row, and
+clients needing the stamped `columnTypes` use the CLI/FFI wire envelope or
+the MCP surface. The statement's timing, however, now rides the reply
+(LABS-1120, reversing ADR-0491's exclusion of it): after the Neo4j members,
+every success envelope carries a `timings` object — `elapsed_ms` with its
+always-on `parse_ms` / `plan_ms` / `execute_ms` split (ADR-0491) and the
+fine sub-split `lex_parse_ms` / `rewrite_ms` / `lower_ms` /
+`result_generation_ms`, all in milliseconds — plus a `planCache` string,
+the plan-cache outcome (`miss` / `hit-raw-fastpath` / `hit-template` /
+`replan-generation-mismatch` / `bypassed`), which explains a hit's
+near-zero parse window. These are Relate extension keys the reference
+server does not send: they sit after `bookmarks` (the Neo4j members keep
+their exact reference order), official drivers ignore unknown members, and
+a client that reads only the reference shape sees an unchanged envelope.
+The keys are per-request — two requests for the same statement differ in
+them, so byte-identity comparisons (caching, fixtures) must exclude the
+timing block.
 
 ## Error envelope
 

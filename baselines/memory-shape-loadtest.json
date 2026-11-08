@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "name": "memory-shape",
-  "started_at": "2026-11-05T13:27:33Z",
-  "finished_at": "2026-11-05T13:33:51Z",
+  "started_at": "2026-11-07T13:12:43Z",
+  "finished_at": "2026-11-07T13:18:37Z",
   "workload": {
     "kind": "memory-shape"
   },
@@ -13,7 +13,7 @@
     "text_indexes": 0,
     "point_indexes": 0,
     "range_indexes": 0,
-    "uri": "/tmp/memory-shape-loadtest-20261105T132732",
+    "uri": "/tmp/memory-shape-loadtest-20261107T131241",
     "container_memory_bytes": 2147483648
   },
   "shapes": [
@@ -24,9 +24,9 @@
       "relationships": 0,
       "logical_bytes": 258,
       "disk_bytes": 769,
-      "rss_bytes": 13791232,
-      "peak_rss_bytes": 13803520,
-      "baseline_rss_bytes": 13791232,
+      "rss_bytes": 12058624,
+      "peak_rss_bytes": 12070912,
+      "baseline_rss_bytes": 12058624,
       "attributed_rss_bytes": 0,
       "ratio": 0.0
     },
@@ -37,11 +37,11 @@
       "relationships": 0,
       "logical_bytes": 33120516,
       "disk_bytes": 2041295,
-      "rss_bytes": 64159744,
-      "peak_rss_bytes": 64204800,
-      "baseline_rss_bytes": 13606912,
-      "attributed_rss_bytes": 50552832,
-      "ratio": 1.52632984341186
+      "rss_bytes": 62689280,
+      "peak_rss_bytes": 62734336,
+      "baseline_rss_bytes": 11841536,
+      "attributed_rss_bytes": 50847744,
+      "ratio": 1.53523405251295
     },
     {
       "shape": "fanout",
@@ -50,11 +50,11 @@
       "relationships": 52000,
       "logical_bytes": 33316930,
       "disk_bytes": 1837437,
-      "rss_bytes": 59736064,
-      "peak_rss_bytes": 59785216,
-      "baseline_rss_bytes": 13844480,
-      "attributed_rss_bytes": 45891584,
-      "ratio": 1.3774253510152346
+      "rss_bytes": 58109952,
+      "peak_rss_bytes": 58159104,
+      "baseline_rss_bytes": 11841536,
+      "attributed_rss_bytes": 46268416,
+      "ratio": 1.3887358769250349
     },
     {
       "shape": "ring",
@@ -63,11 +63,11 @@
       "relationships": 46000,
       "logical_bytes": 33121108,
       "disk_bytes": 1850979,
-      "rss_bytes": 58908672,
-      "peak_rss_bytes": 58978304,
-      "baseline_rss_bytes": 13606912,
-      "attributed_rss_bytes": 45301760,
-      "ratio": 1.3677610060629615
+      "rss_bytes": 57442304,
+      "peak_rss_bytes": 57511936,
+      "baseline_rss_bytes": 11841536,
+      "attributed_rss_bytes": 45600768,
+      "ratio": 1.3767887233724185
     },
     {
       "shape": "dense ring",
@@ -76,11 +76,11 @@
       "relationships": 100000,
       "logical_bytes": 33366110,
       "disk_bytes": 1699957,
-      "rss_bytes": 54042624,
-      "peak_rss_bytes": 54988800,
-      "baseline_rss_bytes": 13606912,
-      "attributed_rss_bytes": 40435712,
-      "ratio": 1.2118797186726291
+      "rss_bytes": 52494336,
+      "peak_rss_bytes": 53379072,
+      "baseline_rss_bytes": 11841536,
+      "attributed_rss_bytes": 40652800,
+      "ratio": 1.2183859610844656
     }
   ],
   "environment": {

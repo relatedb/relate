@@ -2,14 +2,16 @@ use super::*;
 
 use crate::token::token_start_byte;
 
-/// The two hint kinds `parse_using_hints` keeps: the `USING SCAN`
-/// variables (the executor honours them) and the `USING INDEX` hints (the
-/// front end validates their fulfillability). `USING JOIN ON` steers
-/// nothing and is discarded.
+/// The three hint kinds `parse_using_hints` keeps: the `USING SCAN`
+/// variables (the executor honours them), the `USING INDEX` hints (the
+/// front end validates their fulfillability), and the `USING JOIN ON`
+/// hints (the planner never fulfils one, so the `01N30` notification
+/// reports each).
 #[derive(Debug, Default)]
 pub(super) struct UsingHints {
     pub(super) scan: Vec<crate::ast::ScanHint>,
     pub(super) index: Vec<crate::ast::IndexHint>,
+    pub(super) join: Vec<crate::ast::JoinHint>,
 }
 
 impl<'a> Parser<'a> {
@@ -263,7 +265,8 @@ impl<'a> Parser<'a> {
         // CIP-79: `USING INDEX`/`USING INDEX SEEK`/`USING JOIN ON`/`USING
         // SCAN` query-planner hints, written directly after the pattern
         // and before WHERE. Relate has no cost-based planner to steer,
-        // so the JOIN hints are accepted and discarded. `USING SCAN` is
+        // so a JOIN hint is never fulfilled — it is kept for the `01N30`
+        // plan-time notification that reports each one. `USING SCAN` is
         // kept: an indexed equality seek and a label scan answer
         // differently for a zoned-datetime DST overlap (Neo4j keys the
         // index on instant plus zone), so the hint must reach the
@@ -300,6 +303,7 @@ impl<'a> Parser<'a> {
             pattern,
             using_scan: hints.scan,
             using_index: hints.index,
+            using_join: hints.join,
             where_expr,
             search,
         }))
@@ -310,11 +314,12 @@ impl<'a> Parser<'a> {
     /// `USING SCAN <var>:<Label>` planner hints directly after a MATCH
     /// clause's pattern. `USING` is a non-reserved word (never added to
     /// `token.rs`'s keyword table), recognized by spelling like `SEARCH`/
-    /// `FILTER` above. The JOIN hints are parsed and discarded (the planner
-    /// is not cost-based); the SCAN variable is returned because the
-    /// executor must honour it, and the INDEX hints because the front end
-    /// validates their fulfillability (see [`MatchClause::using_scan`] /
-    /// [`MatchClause::using_index`]).
+    /// `FILTER` above. The SCAN variable is returned because the executor
+    /// must honour it, and the INDEX hints because the front end validates
+    /// their fulfillability; the JOIN hints are returned because the
+    /// planner never fulfils one and the `01N30` plan-time notification
+    /// reports each (see [`MatchClause::using_scan`] /
+    /// [`MatchClause::using_index`] / [`MatchClause::using_join`]).
     pub(super) fn parse_using_hints(&mut self) -> ParseResult<UsingHints> {
         let mut hints = UsingHints::default();
         while self.peek_type() == TokenType::Identifier
@@ -352,17 +357,20 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "join" => {
-                    if self.peek_type() == TokenType::ON {
-                        self.next_token();
-                    }
+                    // `ON` is mandatory in `USING JOIN ON <var>…` — every
+                    // sibling parse of the keyword in this crate expects
+                    // it, and live Neo4j rejects the bare form.
+                    self.expect(TokenType::ON)?;
+                    let mut variables = Vec::new();
                     loop {
-                        self.parse_bare_name("identifier")?; // variable
+                        variables.push(self.parse_bare_name("identifier")?); // variable
                         if self.peek_type() == TokenType::Comma {
                             self.next_token();
                             continue;
                         }
                         break;
                     }
+                    hints.join.push(crate::ast::JoinHint { variables });
                 }
                 "scan" => {
                     let variable = self.parse_bare_name("identifier")?;
@@ -1530,9 +1538,9 @@ impl<'a> Parser<'a> {
     /// UNWIND parse produces (`for_syntax: true`), so the clause validates,
     /// lowers, plans and executes identically to UNWIND -- the CIP's own
     /// "no new logical plan operators" rule. UNWIND is not deprecated; the
-    /// two spellings coexist. The ADR-0371 `gql-for` preview gate (the
-    /// front-end's statement admission) fails this spelling closed unless
-    /// enabled.
+    /// two spellings coexist. Default dialect since its graduation from
+    /// the `gql-for` preview row (verified unlocked in live Neo4j 2026.09
+    /// and 2026.10.1).
     pub(super) fn parse_for_clause(&mut self) -> ParseResult<Clause> {
         self.next_token(); // consume FOR
                            // The binding variable is a symbolic name, so any keyword spelling
