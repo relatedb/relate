@@ -38,4 +38,4 @@ pub mod websocket;
 #[cfg(test)]
 pub mod testutil;
 
-pub use server::{serve, serve_listener, serve_listener_with_cap};
+pub use server::{serve, serve_listener, serve_listener_with_cap, serve_on};

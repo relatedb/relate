@@ -159,3 +159,40 @@ fn resolved_typed_walk_filters_by_interned_id() {
     // The untyped filter walks every chunk.
     assert_eq!(walk(&RelTypes::Any).len(), 3);
 }
+
+/// A callback that walks the next node re-enters the same adjacency
+/// store. `IdVec` is not re-entrant, so this deadlocks if the hop ids
+/// are still borrowed from the store lock. Two hops is the identity
+/// loadtest's `MEMBER_OF*1..8` shape.
+#[test]
+fn neighbor_walk_reenters_the_same_store() {
+    use relate_ir::Direction;
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(vec!["A".into()], BTreeMap::new()).unwrap();
+    let b = g.create_node(vec!["B".into()], BTreeMap::new()).unwrap();
+    let c = g.create_node(vec!["C".into()], BTreeMap::new()).unwrap();
+    g.create_rel(a, b, "R".into(), BTreeMap::new()).unwrap();
+    let bc = g.create_rel(b, c, "R".into(), BTreeMap::new()).unwrap();
+    g.commit_write();
+
+    let mut second_hop = Vec::new();
+    g.for_each_neighbor_at(
+        a,
+        Direction::Outgoing,
+        g.commit_ts(),
+        &["R".to_string()],
+        |rid| {
+            let (start, end) = g.rel_ends_at(rid, g.commit_ts()).unwrap();
+            let next = if start == a { end } else { start };
+            g.for_each_neighbor_at(
+                next,
+                Direction::Outgoing,
+                g.commit_ts(),
+                &["R".to_string()],
+                |next_rid| second_hop.push(next_rid),
+            );
+        },
+    );
+    assert_eq!(second_hop, vec![bc]);
+}

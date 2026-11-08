@@ -96,6 +96,18 @@ impl Args {
 }
 
 pub fn serve(args: &Args) -> Result<(), Box<dyn Error + Send + Sync>> {
+    serve_on(args, None)
+}
+
+/// [`serve`] on a listener the caller already bound. `None` binds `args.bind`
+/// at the same point `serve` always has. The e2e harness uses `Some` so it
+/// holds its port from boot to serve: a probed-then-dropped port can be taken
+/// by another process before the server binds, and the readiness probe would
+/// then talk to the wrong listener.
+pub fn serve_on(
+    args: &Args,
+    listener: Option<TcpListener>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let tls = load_tls_config(
         args.tls_cert.as_deref(),
         args.tls_key.as_deref(),
@@ -140,7 +152,10 @@ pub fn serve(args: &Args) -> Result<(), Box<dyn Error + Send + Sync>> {
         eprintln!("{line}");
     }
     let db = Arc::new(Database::open_with(&args.uri, args.open_options())?);
-    let listener = TcpListener::bind(&args.bind)?;
+    let listener = match listener {
+        Some(listener) => listener,
+        None => TcpListener::bind(&args.bind)?,
+    };
     let transport = Transport {
         plaintext_allowed: policy.plaintext_allowed,
         websocket: args.ws_policy(auth_config.is_enabled()),

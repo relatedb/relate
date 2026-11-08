@@ -25,7 +25,7 @@
 //! # Helper convention
 //!
 //! Helpers shared by every e2e root: `Server` / `start_server` (with the
-//! private `free_addr`, `boot` and `wait_for_listen` internals), the
+//! private `boot` and `wait_for_listen` internals), the
 //! `packstream` re-export, and `send`, `read_message` and `is_success`.
 //! `handshake`, `MAGIC` and `VERSION_4_4` serve the roots that drive the
 //! handshake themselves (`e2e_auth`, `e2e_websocket`). The `bolt_compat`
@@ -51,9 +51,9 @@ pub(crate) use relate_bolt::packstream;
 use clap::Parser;
 use relate_bolt::cli_args::Args;
 use relate_bolt::packstream::{decode, try_struct_msg, Pack};
-use relate_bolt::serve;
+use relate_bolt::serve_on;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -70,11 +70,13 @@ pub struct Server {
 
 /// Start the server with the given extra args on a free port.
 ///
-/// One retry on a fresh port (LABS-144): another process can steal the
-/// probed port in the window before the server binds, and a loaded machine
-/// can stall one boot past the wait — both are harness flakes, not server
-/// bugs. A genuinely broken startup still fails, with the serve thread's
-/// own error from both attempts in the panic message.
+/// The harness binds the port itself and hands the listener to the server,
+/// so no other process can take it between a probe and the server's bind
+/// (that race let the readiness probe reach a foreign listener, and a
+/// wrong-password check then succeeded against it). One retry on a fresh
+/// boot covers a loaded machine stalling one boot past the wait, a harness
+/// flake rather than a server bug. A genuinely broken startup still fails,
+/// with the serve thread's own error from both attempts in the panic message.
 pub fn start_server(extra: &[&str]) -> Server {
     match boot(extra, 1) {
         Ok(server) => server,
@@ -87,7 +89,12 @@ pub fn start_server(extra: &[&str]) -> Server {
 
 /// One boot attempt; `Err` carries the attempt's diagnostics on failure.
 fn boot(extra: &[&str], attempt: u32) -> Result<Server, String> {
-    let bind = free_addr();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("attempt {attempt}: binding a free port: {e}"))?;
+    let bind = listener
+        .local_addr()
+        .map_err(|e| format!("attempt {attempt}: reading the bound port: {e}"))?
+        .to_string();
     // The same flag vocabulary the retired binary parsed, through the same
     // clap definition — a harness argv that fails to parse is a harness bug
     // and panics here rather than silently skipping the server.
@@ -104,8 +111,10 @@ fn boot(extra: &[&str], attempt: u32) -> Result<Server, String> {
         // leaving the harness polling a dead thread for the full timeout
         // (catch_unwind turns it into an error event; the default hook has
         // already printed it).
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&args)))
-            .unwrap_or_else(|_| Err("the serve thread panicked (payload logged above)".into()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            serve_on(&args, Some(listener))
+        }))
+        .unwrap_or_else(|_| Err("the serve thread panicked (payload logged above)".into()));
         // The empty string is a clean return; anything else is the error the
         // boot report carries.
         let message = match result {
@@ -120,12 +129,6 @@ fn boot(extra: &[&str], attempt: u32) -> Result<Server, String> {
     Ok(Server { addr: bind })
 }
 
-pub fn free_addr() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    format!("127.0.0.1:{port}")
-}
-
 /// Poll until the server accepts connections and has closed the readiness
 /// probe. Waiting for peer closure matters for capped servers: a successful
 /// TCP connect occupies a connection slot until its handler observes EOF and
@@ -137,9 +140,8 @@ pub fn free_addr() -> String {
 fn wait_for_listen(done: &mpsc::Receiver<String>, addr: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        // A serve thread that already returned is a startup crash — and if
-        // the connect "succeeded", it landed on whoever stole the port,
-        // not on our server.
+        // A serve thread that already returned is a startup crash, so fail
+        // fast with its error instead of polling for the full timeout.
         if let Ok(error) = done.try_recv() {
             return Err(if error.is_empty() {
                 "serve returned before binding".to_string()
@@ -172,7 +174,18 @@ fn wait_for_listen(done: &mpsc::Receiver<String>, addr: &str) -> Result<(), Stri
                                 | std::io::ErrorKind::NotConnected
                         ) =>
                     {
-                        return Ok(());
+                        // The harness holds the listener, and `serve` drops
+                        // it on the way out. A reset therefore means the
+                        // serve thread has already failed or is about to
+                        // report why, so wait for its verdict rather than
+                        // calling the port ready.
+                        return match done.recv_timeout(Duration::from_secs(5)) {
+                            Ok(error) if error.is_empty() => {
+                                Err("serve returned before binding".to_string())
+                            }
+                            Ok(error) => Err(format!("serve failed before binding: {error}")),
+                            Err(_) => Ok(()),
+                        };
                     }
                     Err(e) => return Err(format!("draining readiness probe: {e}")),
                 }

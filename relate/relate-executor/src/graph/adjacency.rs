@@ -115,9 +115,11 @@ impl Graph {
         self.neighbors_at(id, dir, self.read_ts())
     }
 
-    /// Snapshot-visible neighbors without cloning adjacency. `types` is
-    /// the name-keyed boundary spelling: it resolves once, then the walk
-    /// compares interned ids ([`Self::try_for_each_neighbor_resolved_at`]).
+    /// Snapshot-visible neighbors. `types` is the name-keyed boundary
+    /// spelling: it resolves once, then the walk compares interned ids
+    /// ([`Self::try_for_each_neighbor_resolved_at`]). Hop ids are copied
+    /// out from under the store lock before the callback runs, so a
+    /// variable-length walk can re-enter this same store.
     pub fn for_each_neighbor_at<T: AsRef<str>>(
         &self,
         id: NodeId,
@@ -178,28 +180,33 @@ impl Graph {
         types: &RelTypes,
         f: &mut impl FnMut(RelId) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
-        let Some(by_type) = map.get(&id) else {
-            return Ok(());
-        };
-        // One visit body; only the chunk source differs per arm.
-        let mut visit = |vec: &[crate::store::AdjHop]| {
-            for hop in vec {
-                if self.rel_visible_at(hop.id, ts) {
-                    f(hop.id)?;
+        // Copy the hop ids, then drop the store guard before visiting.
+        // `IdVec`'s lock is not re-entrant. The variable-length walker
+        // (`pattern_walk::walk_var_length`) and the GPM descent
+        // (`gpm_rel_dfs`) call back into this same map from `f`; holding
+        // the guard across that call deadlocks on the second hop.
+        let hops = {
+            let Some(by_type) = map.get(&id) else {
+                return Ok(());
+            };
+            let mut hops = Vec::new();
+            match types.ids() {
+                None => {
+                    for (_, vec) in &by_type.chunks {
+                        hops.extend(vec.iter().map(|hop| hop.id));
+                    }
+                }
+                Some(ids) => {
+                    for tid in ids {
+                        hops.extend(by_type.chunk(tid).iter().map(|hop| hop.id));
+                    }
                 }
             }
-            Ok::<(), E>(())
+            hops
         };
-        match types.ids() {
-            None => {
-                for (_, vec) in &by_type.chunks {
-                    visit(vec)?;
-                }
-            }
-            Some(ids) => {
-                for tid in ids {
-                    visit(by_type.chunk(tid))?;
-                }
+        for rid in hops {
+            if self.rel_visible_at(rid, ts) {
+                f(rid)?;
             }
         }
         Ok(())
