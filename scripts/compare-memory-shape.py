@@ -7,8 +7,9 @@ regression. There is no improvement verdict for counts.
 Numeric checks are lower-is-better. A regression clears the top of the
 envelope by both a band and a floor. An improvement clears the bottom the
 same way. Logical bytes, disk, and attributed RSS use 15% and 1 MB. The
-ratio uses 5%. An improvement fails the job until the envelope is
-re-frozen.
+ratio uses 5%. An improvement warns and exits 0 (ADR-0544). A regression
+and a mixed run still fail. The document still asks for a re-freeze when
+the drop is real.
 
 An environment-class or knob mismatch is incompatible. With CI_COMPARE=1
 or inside GitHub Actions that is a hard failure. A local run skips the
@@ -366,11 +367,22 @@ def verdict(baseline: dict, report: dict) -> tuple[str, list[dict], str]:
 
 
 def exit_code(status: str) -> int:
-    if status in {"regression", "improvement", "mixed"}:
+    if status in {"regression", "mixed"}:
         return 1
     if status == "incompatible" and ci_hard_fail():
         return 1
     return 0
+
+
+def emit_checks(prefix: str, rows: list[dict]) -> None:
+    for row in rows:
+        if row["verdict"] == "ok":
+            continue
+        message = f"{prefix}: {row['name']} {row['metric']} {row['verdict']}"
+        if row["verdict"] == "improvement" and _env.in_github_actions():
+            print(f"::warning::{message}", file=sys.stderr, flush=True)
+        else:
+            print(message, file=sys.stderr, flush=True)
 
 
 def main() -> int:
@@ -398,9 +410,7 @@ def main() -> int:
     args.doc.write_text(document)
     args.verdict.write_text(json.dumps({"status": status, "checks": rows}, indent=2) + "\n")
     print(f"compare-memory-shape: {status}")
-    for row in rows:
-        if row["verdict"] != "ok":
-            print(f"compare-memory-shape: {row['name']} {row['metric']} {row['verdict']}", file=sys.stderr)
+    emit_checks("compare-memory-shape", rows)
     return exit_code(status)
 
 

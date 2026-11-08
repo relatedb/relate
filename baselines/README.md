@@ -122,11 +122,12 @@ it does not push to the default branch.
 
 A regression is a behavioural miss, or a lower-is-better metric above
 the range by both its band and its floor. An improvement is the same
-metric below the range. Confirm an improvement is real, then dispatch
+metric below the range. It warns and the job stays green (ADR-0544).
+Confirm an improvement is real, then dispatch
 `create-loadtest-baselines` again so the envelope moves to the new
-numbers. The pull-request lane runs one calibration repeat. The freeze
-and the nightly cadence run three. Repeat count is not part of the
-class match.
+numbers. A regression still fails. The pull-request lane runs one
+calibration repeat. The freeze and the nightly cadence run three.
+Repeat count is not part of the class match.
 
 ## Notes
 

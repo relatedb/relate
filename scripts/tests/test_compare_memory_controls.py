@@ -216,10 +216,16 @@ class CompareMemoryControlsTests(unittest.TestCase):
         current["cases"][0]["processing_rss_min_bytes"] = 1_000_000
         current["cases"][0]["processing_rss_max_bytes"] = 1_000_000
         current["cases"][0]["session_cost_bytes"] = 100_000
-        result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 1)
+        result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.payload["status"], "improvement")
         self.assertIn("create-loadtest-baselines", result.document)
+        self.assertIn("improvement", result.stderr)
+        self.assertNotIn("::warning::", result.stderr)
+        warned = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        self.assertIn("::warning::compare-memory-controls:", warned.stderr)
+        self.assertIn("improvement", warned.stderr)
 
     def test_mixed(self):
         _, payload = self.freeze([report(), report()])
@@ -228,9 +234,10 @@ class CompareMemoryControlsTests(unittest.TestCase):
         current["cases"][0]["floor_rss_bytes"] = 20_000_000
         current["workloads"][0]["reads_limited"] = 0
         current["workloads"][0]["writes_limited"] = 0
-        result = self.run_compare(payload, current)
+        result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.payload["status"], "mixed")
+        self.assertIn("::warning::", result.stderr)
 
     def test_incompatible_is_local_skip_and_ci_failure(self):
         _, payload = self.freeze([report(), report()])

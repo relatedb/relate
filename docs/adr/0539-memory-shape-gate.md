@@ -2,6 +2,7 @@
 
 Status: Proposed
 Claim: 0bad150d5f87bf2b90805b12a876a82824c53ff4
+Later references: ADR-0544 (an improvement warns and the job stays green)
 
 ## Context
 

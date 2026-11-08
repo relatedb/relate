@@ -599,6 +599,7 @@ test-compare-loadtest:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_freeze_baseline_envelope.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_query_latency_gate.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_controls.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_shape.py
 
 ## test-adr-scripts: Unit-test the ADR number mint and the PR conflict
 ##   checker (scripts/adr_mint.py, scripts/check_adr_numbers.py)

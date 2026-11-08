@@ -1261,8 +1261,9 @@ jobs:
         run: scripts/report-disk.sh
 
   # Memory control verifications and one calibration repeat. The Sonic
-  # stage exits non-zero on a regression or an improvement; the upload,
-  # the step summary, and the PR comment still run.
+  # stage exits non-zero on a regression. An improvement warns and the
+  # stage stays green (ADR-0544). The upload, the step summary, and the
+  # PR comment still run.
   memory-controls:
     name: Memory controls
     needs: [changes, sonic-init]
@@ -1328,8 +1329,9 @@ jobs:
         run: scripts/report-disk.sh
 
   # Fixed graph shapes compared with the min/max envelope. The Sonic stage
-  # exits non-zero on a regression or an improvement; the upload, the step
-  # summary, and the PR comment still run.
+  # exits non-zero on a regression. An improvement warns and the stage
+  # stays green (ADR-0544). The upload, the step summary, and the PR
+  # comment still run.
   memory-shape:
     name: Memory shape
     needs: [changes, sonic-init]

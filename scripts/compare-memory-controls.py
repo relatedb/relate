@@ -12,7 +12,8 @@ the same way. RSS uses 15% and 1 MiB. Each family is gated on its RSS
 ratio and its cgroup ratio: the frozen min and max, and 5% outside that
 range. Slopes in an older envelope are ignored. Workload limited counts
 use a band of 0 and a floor of 2: fewer refusals is an improvement and
-needs a fresh envelope.
+needs a fresh envelope. An improvement warns and exits 0 (ADR-0544).
+A regression, a mixed run, and an incompatible class in CI still exit 1.
 
 An environment-class or knob mismatch is incompatible. With CI_COMPARE=1
 or inside GitHub Actions that is a hard failure. A local run skips the
@@ -525,11 +526,22 @@ def verdict(baseline: dict, report: dict) -> tuple[str, list[dict], str]:
 
 
 def exit_code(status: str) -> int:
-    if status in {"regression", "improvement", "mixed"}:
+    if status in {"regression", "mixed"}:
         return 1
     if status == "incompatible" and ci_hard_fail():
         return 1
     return 0
+
+
+def emit_checks(prefix: str, rows: list[dict]) -> None:
+    for row in rows:
+        if row["verdict"] == "ok":
+            continue
+        message = f"{prefix}: {row['name']} {row['metric']} {row['verdict']}"
+        if row["verdict"] == "improvement" and _env.in_github_actions():
+            print(f"::warning::{message}", file=sys.stderr, flush=True)
+        else:
+            print(message, file=sys.stderr, flush=True)
 
 
 def main() -> int:
@@ -559,9 +571,7 @@ def main() -> int:
         json.dumps({"status": status, "checks": rows}, indent=2) + "\n"
     )
     print(f"compare-memory-controls: {status}")
-    for row in rows:
-        if row["verdict"] != "ok":
-            print(f"compare-memory-controls: {row['name']} {row['metric']} {row['verdict']}", file=sys.stderr)
+    emit_checks("compare-memory-controls", rows)
     return exit_code(status)
 
 
