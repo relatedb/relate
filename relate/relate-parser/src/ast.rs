@@ -2015,6 +2015,9 @@ pub enum Direction {
 
 // -- Expression nodes --
 
+mod expr_children;
+pub use expr_children::{StructuralEdge, StructuralEdgeMut};
+
 /// One segment of a CIP-261 interpolated string literal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpPart {
