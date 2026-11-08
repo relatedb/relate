@@ -74,7 +74,7 @@ impl LatencyNs {
         let sum: u128 = sorted.iter().map(|sample| *sample as u128).sum();
         let at = |p: f64| match rank {
             Rank::Canonical => sorted[nearest_rank(sorted.len(), p)],
-            Rank::FrozenEnvelope => frozen_envelope_rank(&sorted, p),
+            Rank::FrozenEnvelope => sorted[frozen_envelope_rank(sorted.len(), p)],
         };
         Some(LatencyNs {
             min: sorted[0],
@@ -87,11 +87,12 @@ impl LatencyNs {
     }
 }
 
-/// The frozen envelopes' index: `round((n - 1) * p)` into the sorted
-/// samples, clamped to the last one. See [`Rank::FrozenEnvelope`].
-fn frozen_envelope_rank(sorted: &[u64], p: f64) -> u64 {
-    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
+/// The frozen envelopes' index, like [`nearest_rank`] an index into `len`
+/// sorted samples: `round((len - 1) * p)`, clamped to the last one. See
+/// [`Rank::FrozenEnvelope`].
+fn frozen_envelope_rank(len: usize, p: f64) -> usize {
+    let idx = ((len as f64 - 1.0) * p).round() as usize;
+    idx.min(len - 1)
 }
 
 /// The pretty-JSON body of `report`, plus the trailing newline every dataset
