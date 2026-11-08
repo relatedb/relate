@@ -85,6 +85,7 @@ relate-mcp = { path = "surfaces/relate-mcp" }
 relate-serve = { path = "surfaces/relate-serve" }
 relate-datasets = { path = "testing/relate-datasets" }
 relate-test-support = { path = "testing/relate-test-support" }
+relate-query-latency = { path = "testing/relate-query-latency" }
 # First-party extension children (ADR-0431 §11, ADR-0430 §6): the wire
 # kit both sides of a mount share (the CLI host consumes it; the
 # children link it), the importer children, and the game child — none

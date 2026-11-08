@@ -613,6 +613,20 @@ pub fn assert_checkpoint_format(
                 "the sidecar manifest carries no ontology field",
             );
         }
+        // The experimental codecs' image is the plain codec manifest: the
+        // format marker (classifying against the manifest's own ontology
+        // flag, ADR-0120 §8) plus the checkpoint theater. The ontology
+        // document rides the codec payload, so the image never carries it.
+        relate_storage::SnapshotCodecKind::Rkyv | relate_storage::SnapshotCodecKind::Fjall => {
+            assert_eq!(image["format_version"], if held { 4 } else { 3 });
+            assert_eq!(image["has_ontology"], held);
+            assert_ontology(
+                &image,
+                "ontology",
+                ExpectedOntology::Absent,
+                "the experimental codec manifest carries no ontology document",
+            );
+        }
     }
 }
 

@@ -14,6 +14,8 @@ pub mod envelope;
 #[cfg(feature = "fetch")]
 pub mod fetch;
 pub mod git;
+#[cfg(feature = "graph")]
+pub mod graph;
 #[cfg(any(feature = "wire", feature = "loopback"))]
 pub mod loopback;
 #[cfg(feature = "nested_eval")]

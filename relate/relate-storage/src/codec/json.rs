@@ -76,12 +76,6 @@ pub fn dump(
     snapshot_ts: u64,
     ontology: Option<&str>,
 ) -> Result<()> {
-    if snapshot_ts == u64::MAX {
-        return Err(Error::storage("JSON snapshot timestamp exhausted"));
-    }
-    if graph.next_node_id() < 0 || graph.next_rel_id() < 0 {
-        return Err(Error::storage("JSON snapshot has unsupported next ID"));
-    }
     let theater = graph.checkpoint_theater_for_write()?;
     let body = dump_to_vec(graph, snapshot_ts, theater, ontology)?;
     put_object(target, GRAPH_JSON, &body)?;
@@ -92,7 +86,7 @@ pub fn dump(
     };
     let env_bytes =
         serde_json::to_vec_pretty(&envelope).map_err(|e| Error::storage(e.to_string()))?;
-    put_object(target, "manifest.json", &env_bytes)?;
+    put_object(target, crate::snapshot::MANIFEST_JSON, &env_bytes)?;
     // The shared checkpoint tail (ADR-0481 §4/§5): the mirror publishes
     // after the envelope it reflects, then the dirty tracking clears.
     crate::schema_files::finish_checkpoint(target, graph, ontology)?;
@@ -239,14 +233,11 @@ fn probe_value_encoding(text: &str) -> Option<u64> {
     }
 }
 
-fn envelope_meta(target: &StoreTarget) -> Result<(Option<u64>, u64)> {
+pub(crate) fn envelope_meta(target: &StoreTarget) -> Result<(Option<u64>, u64)> {
     let Some(env) = crate::codec::read_envelope(target)? else {
         return Ok((None, 0));
     };
-    if env.commit_ts == u64::MAX {
-        return Err(Error::storage("JSON manifest timestamp exhausted"));
-    }
-    Ok((Some(env.commit_ts).filter(|ts| *ts > 0), env.checkpoint_lsn))
+    env.envelope_meta()
 }
 
 /// Decode into the in-memory graph, returning the inline ontology document
@@ -261,77 +252,53 @@ fn graph_from_data(
     if data.read_only {
         return Err(Error::storage("read-only snapshot not supported"));
     }
-    if data.next_node_id < 0 || data.next_rel_id < 0 {
-        return Err(Error::storage("JSON snapshot has unsupported next ID"));
-    }
-    for n in &data.nodes {
-        relate_core::validate_persisted_id(n.id, "JSON snapshot node")?;
-    }
-    for r in &data.relationships {
-        relate_core::validate_persisted_id(r.id, "JSON snapshot relationship")?;
-        relate_core::validate_persisted_id(r.start_node, "JSON snapshot relationship start")?;
-        relate_core::validate_persisted_id(r.end_node, "JSON snapshot relationship end")?;
-    }
-    let graph = Graph::default();
-    graph.set_next_node_id(data.next_node_id);
-    graph.set_next_rel_id(data.next_rel_id);
-    let mut loaded = 0usize;
+    // Rows decode with the gated encoding, then the shared rebuild tail
+    // (`SnapshotContents::into_graph`) installs them — the same tail every
+    // codec that decodes into contents uses.
+    let mut nodes = Vec::with_capacity(data.nodes.len());
     for n in data.nodes {
         let properties = props_from_cypher_json(&n.properties, value_encoding)
             .map_err(|e| storage_context(e, format_args!("node {}", n.id)))?;
-        graph.load_checkpoint_node(Node {
+        nodes.push(Node {
             id: n.id,
             labels: std::sync::Arc::new(n.labels),
             properties: relate_core::PropertyMap::share(properties),
-        })?;
-        loaded += 1;
+        });
     }
+    let mut relationships = Vec::with_capacity(data.relationships.len());
     for r in data.relationships {
         let properties = props_from_cypher_json(&r.properties, value_encoding)
             .map_err(|e| storage_context(e, format_args!("relationship {}", r.id)))?;
-        graph.load_checkpoint_rel(Relationship {
+        relationships.push(Relationship {
             id: r.id,
             start: r.start_node,
             end: r.end_node,
             rel_type: r.rel_type,
             properties: relate_core::PropertyMap::share(properties),
-        })?;
-        loaded += 1;
+        });
     }
-    if let Some(ts) = envelope_commit_ts {
-        graph.set_commit_ts(ts);
-    }
-    // The load-tail commit-timestamp floor, shared with the markdown
-    // codec (the one home of the policy, `snapshot::ensure_commit_ts`).
-    crate::snapshot::ensure_commit_ts(&graph, loaded);
-    catalog::restore(
-        &graph,
+    let rows = super::model::SnapshotRows {
+        nodes,
+        relationships,
+        next_node_id: data.next_node_id,
+        next_rel_id: data.next_rel_id,
+    };
+    let graph = rows.into_graph(
         CatalogWire {
             indexes: data.indexes,
             constraints: data.constraints,
             graph_type: data.graph_type,
         },
+        envelope_commit_ts,
         data.theater,
     )?;
     Ok((graph, ontology))
 }
 
 pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
-    let mut sum = 0u64;
-    for name in [crate::snapshot::MANIFEST_JSON, GRAPH_JSON] {
-        if !target.vfs.exists(name)? {
-            continue;
-        }
-        // Bounded JSON metadata: prove the size on the metadata and on the
-        // opened handle without reading the object. `graph.json` is the
-        // large payload and is summed from metadata alone.
-        let len = match crate::snapshot::bounded_read_for(name) {
-            Some(kind) => crate::snapshot::checked_object_len(target, name, kind)?.0,
-            None => target.vfs.metadata(name)?.len,
-        };
-        sum = sum.saturating_add(len);
-    }
-    Ok(sum)
+    // The one size-accounting policy over this codec's objects (see
+    // `snapshot::sum_object_bytes`).
+    crate::snapshot::sum_object_bytes(target, &[crate::snapshot::MANIFEST_JSON, GRAPH_JSON])
 }
 
 #[cfg(test)]

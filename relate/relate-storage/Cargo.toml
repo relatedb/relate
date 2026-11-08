@@ -11,6 +11,14 @@ default = ["parquet"]
 # Parquet snapshot codec (ADR-0105). Without it, new stores use the JSON codec
 # and Parquet stores fail closed at open.
 parquet = ["dep:arrow", "dep:parquet", "dep:bytes"]
+# EXPERIMENTAL, default off: an rkyv snapshot codec (measurement only; not
+# a product codec until an ADR promotes it). The flat value table keeps the
+# archive's type non-recursive, so `bytecheck` validates it and the load
+# needs no unchecked access; `unaligned` lets the archive sit in a plain
+# byte buffer (ADR-0537).
+rkyv-codec = ["dep:rkyv", "dep:lz4_flex", "dep:indexmap"]
+# EXPERIMENTAL, default off: an embedded LSM keyspace snapshot codec.
+fjall-codec = ["dep:fjall"]
 
 [dependencies]
 relate-catalog = { workspace = true }
@@ -33,6 +41,20 @@ web-time = { workspace = true }
 # arrow-json; the dylib is byte-identical without it).
 arrow = { version = "54", default-features = false, optional = true }
 parquet = { version = "54", default-features = false, features = ["arrow", "snap"], optional = true }
+# Experimental codecs (default off). rkyv 0.8 is the archive library; fjall
+# is pinned to 2.x because 3.x requires rustc 1.90 and the workspace MSRV is
+# 1.88. `bytecheck` validates the archive on load and `unaligned` lets it sit
+# in a plain byte buffer — both are what let the codec avoid unchecked
+# access (the flat value table keeps the archived type non-recursive, which
+# is what `bytecheck` needs; ADR-0537).
+rkyv = { version = "0.8", default-features = false, features = ["std", "alloc", "bytecheck", "unaligned"], optional = true }
+# The rkyv codec's name dictionary: one insertion-ordered set serves both
+# the id→name and name→id directions, so a name is stored once.
+indexmap = { workspace = true, optional = true }
+# Pure-Rust lz4 (no C build) — the shard-level compression that makes the
+# rkyv comparison fair against snappy-parquet and lz4-fjall.
+lz4_flex = { version = "0.11", optional = true }
+fjall = { version = "2.11", optional = true }
 getrandom = "0.2"
 fs4 = { workspace = true }
 
@@ -64,7 +86,7 @@ tempfile = "3"
 relate-parser = { workspace = true }
 # The one recursive VFS walk the markdown-vault integration suites
 # share with the golden-store suite (`vfs_walk` feature; test-only).
-relate-test-support = { workspace = true, features = ["vfs_walk"] }
+relate-test-support = { workspace = true, features = ["vfs_walk", "graph"] }
 # Property-testing harness for WAL/checkpoint invariants (ADR-0268).
 # Dev-only: never compiled into the library or the released artifact. This was
 # the first crate to adopt proptest; `relate-executor` also does now, for

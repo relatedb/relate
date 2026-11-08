@@ -1,11 +1,95 @@
 mod catalog;
 mod convert;
+// The experimental codecs follow the Parquet codec's optional-module shape
+// (see `snapshot`'s `native`/`unavailable` pair): the implementation file
+// compiles only with its feature, and a same-named stub takes its place
+// otherwise, failing closed through `codec_unavailable` — so the dispatch
+// matches in `lib.rs` and the ops table in `open.rs` stay cfg-free, one
+// unconditional arm per codec.
+#[cfg(fjall_codec)]
+pub(crate) mod fjall;
+#[cfg(not(fjall_codec))]
+pub(crate) mod fjall {
+    use super::{codec_unavailable, SnapshotCodecKind};
+    use crate::snapshot::LoadedSnapshot;
+    use crate::{Result, StoreTarget};
+    use relate_executor::Graph;
+
+    pub fn dump(_: &StoreTarget, _: &Graph, _: u64, _: u64, _: Option<&str>) -> Result<()> {
+        Err(codec_unavailable(SnapshotCodecKind::Fjall))
+    }
+
+    pub(crate) fn load_with_checkpoint_lsn(_: &StoreTarget) -> Result<LoadedSnapshot> {
+        Err(codec_unavailable(SnapshotCodecKind::Fjall))
+    }
+
+    pub fn snapshot_data_bytes(_: &StoreTarget) -> Result<u64> {
+        Err(codec_unavailable(SnapshotCodecKind::Fjall))
+    }
+
+    /// No evidence in a build without this codec (an uncompiled codec's
+    /// store files cannot be its evidence).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn has_store_files(_: &StoreTarget) -> Result<bool> {
+        Ok(false)
+    }
+}
+/// The experimental codecs' shared machinery — their checkpoint manifest
+/// and the load tail their decoders hand off to — behind one module cfg.
+#[cfg(any(rkyv_codec, fjall_codec))]
+mod experimental;
+#[cfg(any(rkyv_codec, fjall_codec))]
+pub(crate) use experimental::{
+    assemble_loaded, checkpoint_identity_mismatch, content_encoding, publication_failure,
+    read_codec_manifest, restore_object, write_codec_manifest,
+};
 pub mod json;
 mod kind;
 pub(crate) mod markdown;
 mod model;
 #[cfg(parquet_codec)]
 pub(crate) mod parquet;
+#[cfg(rkyv_codec)]
+pub(crate) mod rkyv;
+#[cfg(not(rkyv_codec))]
+pub(crate) mod rkyv {
+    use super::{codec_unavailable, SnapshotCodecKind};
+    use crate::snapshot::LoadedSnapshot;
+    use crate::{Result, StoreTarget};
+    use relate_executor::Graph;
+
+    pub fn dump(_: &StoreTarget, _: &Graph, _: u64, _: u64, _: Option<&str>) -> Result<()> {
+        Err(codec_unavailable(SnapshotCodecKind::Rkyv))
+    }
+
+    pub(crate) fn load_with_checkpoint_lsn(_: &StoreTarget) -> Result<LoadedSnapshot> {
+        Err(codec_unavailable(SnapshotCodecKind::Rkyv))
+    }
+
+    pub fn snapshot_data_bytes(_: &StoreTarget) -> Result<u64> {
+        Err(codec_unavailable(SnapshotCodecKind::Rkyv))
+    }
+
+    /// No evidence in a build without this codec (an uncompiled codec's
+    /// store files cannot be its evidence).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn has_store_files(_: &StoreTarget) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// The single archive object of an rkyv store — declared once for the
+/// real module and the evidence probe alike. Dead in a build without the
+/// codec (only the codec module and the codec-gated tests name it).
+#[cfg_attr(not(rkyv_codec), allow(dead_code))]
+pub(crate) const GRAPH_RKYV: &str = "graph.rkyv";
+/// The rkyv archive's staging and backup object names — publication
+/// swaps the live archive through them by rename, never by a byte copy.
+/// Dead in a build without the codec, like [`GRAPH_RKYV`] above.
+#[cfg_attr(not(rkyv_codec), allow(dead_code))]
+pub(crate) const GRAPH_RKYV_STAGING: &str = "graph.rkyv.new";
+#[cfg_attr(not(rkyv_codec), allow(dead_code))]
+pub(crate) const GRAPH_RKYV_BACKUP: &str = "graph.rkyv.old";
 
 pub use kind::SnapshotCodecKind;
 
@@ -24,12 +108,23 @@ pub(crate) struct Envelope {
     pub(crate) commit_ts: u64,
 }
 
-/// Parquet resolved from disk or requested in a build without the codec
-/// (ADR-0105). Fails closed; never falls back to JSON.
-pub(crate) fn parquet_unavailable() -> Error {
-    Error::storage(
-        "parquet snapshot codec is not compiled into this build (enable the \"parquet\" feature)",
-    )
+impl Envelope {
+    /// The envelope's commit-timestamp floor and checkpoint LSN — the
+    /// shared policy ([`envelope_commit_ts`]), on the type that owns the
+    /// fields.
+    pub(crate) fn envelope_meta(&self) -> Result<(Option<u64>, u64)> {
+        Ok((envelope_commit_ts(self.commit_ts)?, self.checkpoint_lsn))
+    }
+}
+
+/// A codec resolved from disk (or requested by the caller) that this
+/// build does not compile in (ADR-0105). Fails closed; never falls back.
+pub(crate) fn codec_unavailable(codec: SnapshotCodecKind) -> Error {
+    Error::storage(format!(
+        "{} snapshot codec is not compiled into this build (enable the \"{}\" feature)",
+        codec.as_str(),
+        codec.feature_name(),
+    ))
 }
 
 /// The never-written state a root `manifest.json` naming the markdown
@@ -110,10 +205,22 @@ pub(crate) fn root_envelope_names_classic(path: &std::path::Path) -> bool {
     let Ok(probe) = serde_json::from_slice::<ClassicProbe>(&bytes) else {
         return false;
     };
-    matches!(
-        probe.codec,
-        SnapshotCodecKind::Json | SnapshotCodecKind::Parquet
-    )
+    // The typed layout fact decides (engine_dir): a codec whose engine
+    // state lives at the store root writes a root manifest.json, and the
+    // markdown codec — the one that does not — is already refused by
+    // `read_envelope`. A new codec needs no edit here.
+    probe.codec.engine_dir().is_none()
+}
+
+/// The envelope's commit-timestamp policy, the one spelling every codec's
+/// load shares: `u64::MAX` is the exhaustion the writer refuses (a forged
+/// or corrupted value must not become the graph's commit ts), `0` means
+/// absent (no floor), anything else floors the loaded graph.
+pub(crate) fn envelope_commit_ts(commit_ts: u64) -> Result<Option<u64>> {
+    if commit_ts == u64::MAX {
+        return Err(Error::storage("manifest timestamp exhausted"));
+    }
+    Ok(Some(commit_ts).filter(|ts| *ts > 0))
 }
 
 pub(crate) fn read_envelope(target: &StoreTarget) -> Result<Option<Envelope>> {
@@ -141,9 +248,15 @@ pub(crate) fn read_envelope(target: &StoreTarget) -> Result<Option<Envelope>> {
 pub(crate) fn resolve_codec(
     target: &StoreTarget,
     requested: Option<SnapshotCodecKind>,
+    mode: crate::OpenMode,
 ) -> Result<SnapshotCodecKind> {
     let has_json = snapshot::object_exists(target, json::GRAPH_JSON)?;
     let has_parquet = snapshot::has_parquet_store_files(target)?;
+    // The experimental codecs' evidence: their object / keyspace directory,
+    // each through the codec's own named probe (the stub modules answer
+    // "no evidence" for a build without the codec).
+    let has_rkyv = rkyv::has_store_files(target)?;
+    let has_fjall = fjall::has_store_files(target)?;
     // The markdown store's evidence is its sidecar manifest (ADR-0406
     // §5): explicit opt-in or an engine-written `.cypherlite/`, read
     // through the codec's one typed reader (bounded, fail-closed — a
@@ -160,19 +273,17 @@ pub(crate) fn resolve_codec(
     // codec. The set check is exhaustive: any incoherent pair fails
     // here, including combinations no hand-enumerated branch used to
     // spell.
-    let mut evidenced: Vec<SnapshotCodecKind> = Vec::new();
-    if has_markdown {
-        evidenced.push(SnapshotCodecKind::Markdown);
-    }
-    if let Some(env) = &envelope {
-        evidenced.push(env.codec);
-    }
-    if has_json {
-        evidenced.push(SnapshotCodecKind::Json);
-    }
-    if has_parquet {
-        evidenced.push(SnapshotCodecKind::Parquet);
-    }
+    let evidenced: Vec<SnapshotCodecKind> = [
+        has_markdown.then_some(SnapshotCodecKind::Markdown),
+        envelope.map(|env| env.codec),
+        has_json.then_some(SnapshotCodecKind::Json),
+        has_parquet.then_some(SnapshotCodecKind::Parquet),
+        has_rkyv.then_some(SnapshotCodecKind::Rkyv),
+        has_fjall.then_some(SnapshotCodecKind::Fjall),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     if let Some((&first, rest)) = evidenced.split_first() {
         if let Some(&other) = rest.iter().find(|codec| **codec != first) {
             return Err(Error::storage(format!(
@@ -195,6 +306,14 @@ pub(crate) fn resolve_codec(
         (None, None) => SnapshotCodecKind::default(),
     };
     check_available(codec)?;
+    // The read-only capability is refused here, where the typed open
+    // mode and the resolved codec are both in hand — not re-derived as a
+    // flag on the target for one loader to re-check.
+    if mode == crate::OpenMode::ReadOnly && !codec.supports_read_only_open() {
+        return Err(Error::storage(format!(
+            "{codec} snapshot codec cannot serve a read-only open: loading it writes to the store"
+        )));
+    }
     Ok(codec)
 }
 
@@ -202,9 +321,11 @@ pub(crate) fn check_available(codec: SnapshotCodecKind) -> Result<()> {
     if codec.is_compiled() {
         Ok(())
     } else {
-        Err(parquet_unavailable())
+        Err(codec_unavailable(codec))
     }
 }
 
+#[cfg(all(test, any(rkyv_codec, fjall_codec)))]
+mod experimental_tests;
 #[cfg(test)]
 mod tests;

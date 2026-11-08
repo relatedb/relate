@@ -309,6 +309,60 @@ pub(crate) fn check_bounded_len(name: &str, len: u64) -> Result<()> {
     Ok(())
 }
 
+/// The one size-accounting policy for the codecs that sum whole objects:
+/// each named object's length is proven against its size class (bounded
+/// JSON metadata on the metadata and the opened handle; the large payload
+/// objects from metadata alone) and the sum is overflow-checked. A codec's
+/// `snapshot_data_bytes` passes its object list; only the list differs.
+/// The Parquet codec keeps its own richer accounting (id-window parts, the
+/// selected pull-identity map, orphan exclusion) — this helper is the
+/// policy for the codecs whose store is a fixed object list.
+pub(crate) fn sum_object_bytes(target: &StoreTarget, names: &[&str]) -> Result<u64> {
+    let mut sum = 0u64;
+    for &name in names {
+        if !target.vfs.exists(name)? {
+            continue;
+        }
+        let len = match bounded_read_for(name) {
+            Some(kind) => checked_object_len(target, name, kind)?.0,
+            None => target.vfs.metadata(name)?.len,
+        };
+        sum = sum
+            .checked_add(len)
+            .ok_or_else(|| Error::storage("snapshot size overflows u64"))?;
+    }
+    Ok(sum)
+}
+
+/// The one recursive native-directory byte sum — the store-size accounting
+/// every codec's on-disk measurement and the cold info read share:
+/// iterative (no recursion depth), symlink-aware (`symlink_metadata`, so a
+/// link is never followed into a larger tree), files only, and
+/// overflow-checked. A read failure propagates — a store's size is never
+/// fabricated.
+pub(crate) fn dir_bytes(root: &std::path::Path) -> Result<u64> {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| Error::storage(format!("{}: {e}", dir.display())))?
+        {
+            let entry = entry.map_err(|e| Error::storage(format!("{}: {e}", dir.display())))?;
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path)
+                .map_err(|e| Error::storage(format!("{}: {e}", path.display())))?;
+            if meta.is_dir() {
+                pending.push(path);
+            } else if meta.is_file() {
+                total = total
+                    .checked_add(meta.len())
+                    .ok_or_else(|| Error::storage("store size overflow"))?;
+            }
+        }
+    }
+    Ok(total)
+}
+
 /// The manifest's over-bound refusal (ADR-0086): the canonical too-large
 /// error of the manifest size class, for the writer that refuses before
 /// serializing — the manifest encoder's bounded sink returns exactly the
@@ -491,7 +545,8 @@ pub(crate) mod native;
 #[cfg(not(parquet_codec))]
 mod unavailable {
     use super::*;
-    use crate::codec::parquet_unavailable;
+    use crate::codec::codec_unavailable;
+    use crate::SnapshotCodecKind;
 
     pub fn checkpoint_at(
         _: &StoreTarget,
@@ -500,18 +555,18 @@ mod unavailable {
         _: u64,
         _: Option<&str>,
     ) -> Result<()> {
-        Err(parquet_unavailable())
+        Err(codec_unavailable(SnapshotCodecKind::Parquet))
     }
 
     pub fn load_with_checkpoint_lsn(_: &StoreTarget) -> Result<LoadedSnapshot> {
-        Err(parquet_unavailable())
+        Err(codec_unavailable(SnapshotCodecKind::Parquet))
     }
 
     pub fn snapshot_data_bytes(_: &StoreTarget) -> Result<u64> {
-        Err(parquet_unavailable())
+        Err(codec_unavailable(SnapshotCodecKind::Parquet))
     }
 
     pub fn sweep_orphans(_: &StoreTarget) -> Result<()> {
-        Err(parquet_unavailable())
+        Err(codec_unavailable(SnapshotCodecKind::Parquet))
     }
 }

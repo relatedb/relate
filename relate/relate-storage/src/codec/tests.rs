@@ -179,7 +179,10 @@ mod without_parquet {
 
     fn assert_unavailable(error: Error) {
         assert_eq!(error, Error::Storage(UNAVAILABLE.into()));
-        assert_eq!(error, parquet_unavailable());
+        assert_eq!(
+            error,
+            crate::codec::codec_unavailable(crate::SnapshotCodecKind::Parquet)
+        );
     }
 
     #[test]

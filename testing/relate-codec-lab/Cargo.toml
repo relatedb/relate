@@ -1,0 +1,20 @@
+[package]
+name = "relate-codec-lab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Experimental snapshot-codec measurement harness (store size, checkpoint and load times) — never a shipped surface"
+license.workspace = true
+
+[dependencies]
+# `research` (non-default, ADR-0476): the lab reads the live graph
+# through `Database::sol_graph` — a measurement harness is exactly the
+# research-only consumer that feature quarantines.
+relate = { workspace = true, features = ["research"] }
+relate-core = { workspace = true }
+relate-executor = { workspace = true }
+relate-storage = { workspace = true, features = ["parquet", "rkyv-codec", "fjall-codec"] }
+relate-datasets = { workspace = true }
+relate-query-latency = { workspace = true }
+relate-test-support = { workspace = true, features = ["graph", "pokec"] }
+tempfile = "3"
