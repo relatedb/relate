@@ -109,6 +109,19 @@ pub trait PatternStats {
         let _ = (label, rel_type);
         None
     }
+
+    /// LABS-991: the out-degree tail over every labeled node — the
+    /// log2-bucket floor of the highest observed degree of `rel_type`
+    /// (for `None`, of any relationship: the per-type tails summed, the
+    /// same floor scale, not a strict upper bound). The estimate a hop leaving
+    /// an unlabeled node, or crossing an untyped rel, rides when
+    /// [`PatternStats::degree_tail`] has no `(label, type)` pair to name.
+    /// Nodes carrying no label sit in no histogram and are not covered.
+    /// `None` when the stats keep no histogram.
+    fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
+        let _ = rel_type;
+        None
+    }
 }
 
 /// No counts. Ordering uses the bound / equality / label / bare ranks.

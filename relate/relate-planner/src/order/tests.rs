@@ -251,6 +251,80 @@ fn apply_path_degree_drops_the_degree_sum_clamp() {
     assert_eq!(apply_path_degree(4, &start, &rel, false, &stats), 16);
 }
 
+/// LABS-991: stats with an any-label tail per rel type (`""` keys the
+/// any-type tail) beside the label and rel-type counts.
+struct AnyTailStub {
+    labels: &'static [(&'static str, u64)],
+    rels: &'static [(&'static str, u64)],
+    any_tails: &'static [(&'static str, u64)],
+}
+
+impl PatternStats for AnyTailStub {
+    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+        label.with_str(|text| rows_of(self.labels, text))
+    }
+
+    fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<u64> {
+        None
+    }
+
+    fn contains_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<ContainsCount> {
+        None
+    }
+
+    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+        rel_type.with_str(|text| rows_of(self.rels, text))
+    }
+
+    fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
+        let key = rel_type.map_or(String::new(), |rel_type| rel_type.to_string());
+        rows_of(self.any_tails, &key)
+    }
+}
+
+/// LABS-991: a hop the walk model cannot price — an untyped rel, or a hop
+/// leaving an unlabeled node — rides the any-label tail in the kernel
+/// gate's [`apply_hop_bound`], unclamped so it compounds across a chain
+/// (an alternation rides the any-type tail); every hop the model CAN price
+/// keeps `apply_degree`'s price, and the shapes with no histogram to ride
+/// (incoming, undirected, no stats) keep the row count.
+#[test]
+fn apply_hop_bound_prices_what_the_walk_model_leaves_unpriced() {
+    let stats = AnyTailStub {
+        labels: &[("P", 1000)],
+        rels: &[("KNOWS", 53000)],
+        any_tails: &[("KNOWS", 1024), ("", 2048)],
+    };
+    // Unlabeled seed side, typed: the walk model leaves the rows; the
+    // bound is the type's any-label tail, and it compounds hop on hop.
+    let (start, rel) = first_hop("MATCH ()-[:KNOWS]->(q) RETURN q");
+    assert_eq!(apply_degree(1, &start, &rel, true, &stats), 1);
+    assert_eq!(apply_hop_bound(1, &start, &rel, true, &stats), 1024);
+    assert_eq!(apply_hop_bound(1024, &start, &rel, true, &stats), 1_048_576);
+    // Untyped rel (labeled or not): the any-type tail.
+    let (start, rel) = first_hop("MATCH (p:P)-->(q) RETURN q");
+    assert_eq!(apply_degree(1, &start, &rel, true, &stats), 1);
+    assert_eq!(apply_hop_bound(1, &start, &rel, true, &stats), 2048);
+    // Incoming or undirected: no histogram side to ride — unchanged.
+    let (start, rel) = first_hop("MATCH ()<-[:KNOWS]-(q) RETURN q");
+    assert_eq!(apply_hop_bound(7, &start, &rel, false, &stats), 7);
+    let (start, rel) = first_hop("MATCH ()-[:KNOWS]-(q) RETURN q");
+    assert_eq!(apply_hop_bound(7, &start, &rel, false, &stats), 7);
+    // An alternation rides the any-type tail, which bounds every type.
+    let (start, rel) = first_hop("MATCH ()-[:KNOWS|LIKES]->(q) RETURN q");
+    assert_eq!(apply_hop_bound(7, &start, &rel, true, &stats), 7 * 2048);
+    // A priceable hop (labeled seed, typed, mean arm) keeps apply_degree's
+    // price — the bound never replaces a price the model has.
+    let (start, rel) = first_hop("MATCH (p:P)<-[:KNOWS]-(q) RETURN q");
+    assert_eq!(
+        apply_hop_bound(1000, &start, &rel, false, &stats),
+        apply_degree(1000, &start, &rel, false, &stats)
+    );
+    // No histogram (the null stats): the rows pass through, as before.
+    let (start, rel) = first_hop("MATCH ()-[:KNOWS]->(q) RETURN q");
+    assert_eq!(apply_hop_bound(5, &start, &rel, true, &NoPatternStats), 5);
+}
+
 fn starts_with_label(path: &PathPattern, label: &str) -> bool {
     path.nodes
         .first()

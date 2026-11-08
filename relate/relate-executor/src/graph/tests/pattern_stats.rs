@@ -713,3 +713,41 @@ fn stats_entry_growth_prices_an_in_batch_self_loop_on_both_sides() {
         + Graph::LABEL_COUNT_ENTRY_BYTES) as i64;
     assert_eq!(g.estimate_stats_entry_growth(&ops), expected);
 }
+
+/// LABS-991: the any-label tail — the highest per-type tail over every
+/// labeled node's histogram, the per-type maxima summed for the any-type
+/// form — is the bound a hop with no `(label, type)` pair rides.
+#[test]
+fn any_degree_tail_is_the_highest_tail_across_labels_and_types() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let leaves: Vec<_> = (0..20)
+        .map(|_| g.create_node(vec!["Leaf".into()], BTreeMap::new()).unwrap())
+        .collect();
+    let small = g
+        .create_node(vec!["Small".into()], BTreeMap::new())
+        .unwrap();
+    let big = g.create_node(vec!["Big".into()], BTreeMap::new()).unwrap();
+    g.create_rel(small, leaves[0], "R".into(), BTreeMap::new())
+        .unwrap();
+    // Big: degree 20 on R (tail 16), degree 3 on S (tail 2).
+    for leaf in &leaves {
+        g.create_rel(big, *leaf, "R".into(), BTreeMap::new())
+            .unwrap();
+    }
+    for leaf in leaves.iter().take(3) {
+        g.create_rel(big, *leaf, "S".into(), BTreeMap::new())
+            .unwrap();
+    }
+    g.commit_write();
+
+    // Per type: the highest label's tail (Big's 16, not Small's 1).
+    assert_eq!(g.pattern_any_degree_tail(Some("R")), Some(16));
+    assert_eq!(g.pattern_any_degree_tail(Some("S")), Some(2));
+    // Any type: the per-type maxima summed (floors on the same scale).
+    assert_eq!(g.pattern_any_degree_tail(None), Some(18));
+    // A type never written answers None, not zero.
+    assert_eq!(g.pattern_any_degree_tail(Some("NEVER")), None);
+    // No histogram at all: None.
+    assert_eq!(Graph::default().pattern_any_degree_tail(None), None);
+}

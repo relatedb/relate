@@ -81,13 +81,15 @@ pub(crate) struct Hop<'a> {
 impl Hop<'_> {
     /// This hop scaled from the driving end by the planner's degree tail:
     /// `rows` rows sitting at the hop's seed side become the hop's
-    /// arrival-side row estimate.
+    /// arrival-side row estimate. A hop the walk model cannot price (an
+    /// untyped rel, an unlabeled seed side) rides the any-label tail
+    /// instead of passing the rows through (LABS-991).
     pub(crate) fn scaled_from_seed(
         &self,
         rows: u128,
         stats: &dyn relate_planner::PatternStats,
     ) -> u128 {
-        relate_planner::apply_degree(rows, self.seed, self.rel, self.seed_on_start, stats)
+        relate_planner::apply_hop_bound(rows, self.seed, self.rel, self.seed_on_start, stats)
     }
 }
 

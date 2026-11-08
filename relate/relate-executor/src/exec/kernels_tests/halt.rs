@@ -147,27 +147,31 @@ fn first_n_halts_the_hub_star_at_the_want() {
     assert!(past_boundary.rows.iter().any(|row| row[0] == Value::Int(2)));
 }
 
-/// LABS-990's own shape, bounded: an estimate-blind fan-out chain (the
-/// unlabeled interiors scale by nothing, LABS-991's gap) whose uncapped
-/// enumeration would walk every one of the `F^hops` paths — pinned by
-/// the neighbor-walk tally, which the halt keeps three orders below the
-/// path count. The walk tallies land only while store profiling is
-/// armed (the test-build default).
+/// LABS-990's own shape, bounded: a fan-out chain through unlabeled
+/// interiors whose uncapped enumeration would walk every one of the
+/// `F^hops` paths — pinned by the neighbor-walk tally, which the halt
+/// keeps an order below the path count. The keyed seed (a RANGE index)
+/// prices the start at one row and the unlabeled hops ride the any-label
+/// tail (LABS-991), so the gate admits the shape at 16^4 stage rows; a
+/// wider fan-out declines to the walker instead (`chain_gate_tests`). The
+/// walk tallies land only while store profiling is armed (the test-build
+/// default).
 #[test]
-fn first_n_bounds_the_estimate_blind_fan_out() {
+fn first_n_bounds_the_chain_fan_out() {
     let g = Builder::new().done();
-    // Five layers of 40 nodes, fan-out 40: 40^4 = 2.56M complete
-    // bindings from the keyed seed; 200 nodes, 6.4k rels.
+    // Five layers of 16 nodes, fan-out 16: 16^4 = 65k complete bindings
+    // from the keyed seed; 80 nodes, 1.0k rels.
     exec_autocommit(
         &g,
-        "UNWIND range(0, 4) AS l UNWIND range(0, 39) AS w \
+        "UNWIND range(0, 4) AS l UNWIND range(0, 15) AS w \
            CREATE (:L {id: l * 100 + w, layer: l})",
     )
     .unwrap();
+    exec_autocommit(&g, "CREATE INDEX l_id FOR (n:L) ON (n.id)").unwrap();
     exec_autocommit(
         &g,
-        "MATCH (a:L) WHERE a.layer < 4 UNWIND range(0, 39) AS k \
-           MATCH (b:L {id: (a.layer + 1) * 100 + ((a.id % 100) * 7 + k * 13) % 40}) \
+        "MATCH (a:L) WHERE a.layer < 4 UNWIND range(0, 15) AS k \
+           MATCH (b:L {id: (a.layer + 1) * 100 + ((a.id % 100) * 7 + k * 13) % 16}) \
            CREATE (a)-[:R]->(b)",
     )
     .unwrap();
@@ -183,18 +187,18 @@ fn first_n_bounds_the_estimate_blind_fan_out() {
         "the chain kernel takes the shape"
     );
     assert_eq!(capped.rows.len(), 1);
-    // A last-layer id: 400..440, read through the canonical column reader.
+    // A last-layer id: 400..416, read through the canonical column reader.
     let nid = column(&capped, "nid", int_cell)[0];
     assert!(
-        (400..440).contains(&nid),
+        (400..416).contains(&nid),
         "the binding must land in the last layer"
     );
     // The halt's proof of work: the walked rels stay at the intermediate
-    // stages' widths (40 + 1.6k + 64k, the final hop halted at one), not
-    // the path product — two orders below 2.56M even with margin.
+    // stages' widths (16 + 256 + 4k, the final hop halted at one), not
+    // the path product — an order below the 70k an unhalted walk tallies.
     let walks = take_neighbor_walks();
     assert!(
-        walks < 500_000,
+        walks < 10_000,
         "the halt must bound the walk: {walks} walked rels is the dropped-cap path count class, not the halted one"
     );
 }

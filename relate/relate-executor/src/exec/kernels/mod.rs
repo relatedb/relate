@@ -113,6 +113,11 @@ mod frontier_differential_tests;
 #[cfg(test)]
 mod engine_switch_tests;
 
+// The chain gate's pricing of the hops the walk model leaves unpriced
+// (LABS-991).
+#[cfg(test)]
+mod chain_gate_tests;
+
 mod chain;
 mod hub_star;
 

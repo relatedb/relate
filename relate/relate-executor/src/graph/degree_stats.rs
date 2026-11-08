@@ -167,9 +167,50 @@ impl Graph {
         let label_id = self.interner.get_id(label)?;
         let type_id = self.interner.get_id(rel_type)?;
         let histograms = self.degree_histograms.lock().unwrap();
-        let buckets = histograms.get(&(label_id, type_id))?;
-        let highest = buckets.iter().rposition(|&c| c > 0)?;
-        Some(1u64 << highest)
+        Self::bucket_tail(histograms.get(&(label_id, type_id))?)
+    }
+
+    /// The floor of the highest observed degree in one histogram (2^k
+    /// for the highest non-empty bucket k) — the one bucket-to-degree
+    /// reading both tail lookups share. `None` for an empty histogram.
+    fn bucket_tail(buckets: &[u64; Self::DEGREE_BUCKETS]) -> Option<u64> {
+        buckets
+            .iter()
+            .rposition(|&count| count > 0)
+            .map(|highest| 1u64 << highest)
+    }
+
+    /// LABS-991: the highest tail ([`Graph::pattern_degree_tail`]'s floor)
+    /// over every labeled node's histogram for `rel_type`, or — for `None` —
+    /// the per-type maxima summed — each term the same log2-bucket floor
+    /// as [`Graph::pattern_degree_tail`], so the sum is an estimate on that
+    /// scale, not a strict upper bound. Nodes without a label sit in no
+    /// histogram. `None` when no histogram entry matches.
+    pub(crate) fn pattern_any_degree_tail(&self, rel_type: Option<&str>) -> Option<u64> {
+        let wanted = match rel_type {
+            Some(text) => Some(self.interner.get_id(text)?),
+            None => None,
+        };
+        let histograms = self.degree_histograms.lock().unwrap();
+        let mut per_type: HashMap<u32, u64> = HashMap::new();
+        for (&(_, type_id), buckets) in histograms.iter() {
+            if wanted.is_some_and(|w| w != type_id) {
+                continue;
+            }
+            let Some(tail) = Self::bucket_tail(buckets) else {
+                continue;
+            };
+            let slot = per_type.entry(type_id).or_insert(0);
+            *slot = (*slot).max(tail);
+        }
+        if per_type.is_empty() {
+            return None;
+        }
+        Some(
+            per_type
+                .values()
+                .fold(0u64, |sum, tail| sum.saturating_add(*tail)),
+        )
     }
 
     /// Every per-label statistics change one label-set mutation makes: the

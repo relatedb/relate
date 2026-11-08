@@ -136,6 +136,11 @@ impl PatternStats for GraphPatternStats<'_> {
     fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params).degree_tail(label, rel_type)
     }
+
+    /// LABS-991: the any-label tail rides the same delegation.
+    fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
+        relate_executor::GraphStats::new(self.graph, self.params).any_degree_tail(rel_type)
+    }
 }
 
 #[cfg(test)]
