@@ -18,8 +18,12 @@
 //!
 //! This crate depends on the engine only; it never depends on the CLI.
 
+pub mod canvas;
 mod cowsay;
 mod fortune;
+mod graph;
+mod layout;
+mod lolwut;
 mod matrix;
 mod rng;
 pub mod sprite;
@@ -100,6 +104,8 @@ pub type Entry = (&'static str, Handler);
 pub const EGGS: &[Entry] = &[
     (".cowsay", cowsay::run),
     (".fortune", fortune::run),
+    (".graph", graph::run),
+    (".lolwut", lolwut::run),
     (".matrix", matrix::run),
 ];
 
