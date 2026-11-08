@@ -128,7 +128,7 @@ fn substring_counts_characters_and_clamps_at_the_boundaries() {
     assert_eq!(sub(vec![s(MB), int(9), int(2)]), s(""));
     assert_eq!(sub(vec![s(""), int(0), int(1)]), s(""));
     // ADR-0175: a negative or beyond-int32 position is NumberOutOfRange;
-    // a float truncates; null or non-numeric positions are ignored.
+    // a float truncates; a missing or non-numeric position is ignored.
     let oor = |vals: Vec<Value>| {
         bi_substring(&graph, "substring", vals)
             .unwrap_err()
@@ -150,7 +150,25 @@ fn substring_counts_characters_and_clamps_at_the_boundaries() {
         sub(vec![s(MB), Value::Float(1.0), Value::Float(1.0)]),
         s("ñ")
     );
-    assert_eq!(sub(vec![s(MB), Value::Null, Value::Null]), s(MB));
+    // A null start or length nulls the call, before the sibling's range
+    // check (live Neo4j 2026.10.1: both `substring('HELLO', null, 2^40)` and
+    // `substring('HELLO', -1, null)` are null, never a range error).
+    assert_eq!(sub(vec![s(MB), Value::Null, Value::Null]), Value::Null);
+    assert_eq!(sub(vec![s(MB), Value::Null]), Value::Null);
+    assert_eq!(sub(vec![s(MB), Value::Null, int(1)]), Value::Null);
+    assert_eq!(sub(vec![s(MB), int(0), Value::Null]), Value::Null);
+    assert_eq!(
+        sub(vec![s(MB), Value::Null, int(3708444074355087135)]),
+        Value::Null
+    );
+    assert_eq!(sub(vec![s(MB), int(-1), Value::Null]), Value::Null);
+    // The string argument's type check still runs before the null guard.
+    assert_eq!(
+        bi_substring(&graph, "substring", vec![int(1), Value::Null])
+            .unwrap_err()
+            .to_string(),
+        Error::ty("substring() needs a string").to_string()
+    );
     // Null input is null; any other non-string input is an error.
     assert_eq!(sub(vec![Value::Null, int(1)]), Value::Null);
     assert_eq!(sub(vec![]), Value::Null);
@@ -180,13 +198,22 @@ fn left_and_right_count_characters_and_clamp_at_the_boundaries() {
     assert_eq!(right(vec![s(MB), int(99)]).unwrap(), s(MB));
     assert_eq!(left(vec![s(MB), int(i64::from(i32::MAX))]).unwrap(), s(MB));
     assert_eq!(right(vec![s(MB), int(i64::from(i32::MAX))]).unwrap(), s(MB));
-    // A zero or missing length is empty.
-    for n in [vec![int(0)], vec![], vec![Value::Null]] {
+    // A zero or missing length is empty; a null one nulls the call.
+    for n in [vec![int(0)], vec![]] {
         let mut vals = vec![s(MB)];
         vals.extend(n);
         assert_eq!(left(vals.clone()).unwrap(), s(""));
         assert_eq!(right(vals).unwrap(), s(""));
     }
+    // Live Neo4j 2026.10.1: left('HELLO', null) is null, and the null wins
+    // over the sibling argument's range error (`left(null, -1)` is null).
+    assert_eq!(left(vec![s(MB), Value::Null]).unwrap(), Value::Null);
+    assert_eq!(right(vec![s(MB), Value::Null]).unwrap(), Value::Null);
+    assert_eq!(left(vec![Value::Null, int(-2)]).unwrap(), Value::Null);
+    assert_eq!(
+        right(vec![Value::Null, int(i64::MAX)]).unwrap(),
+        Value::Null
+    );
     // ADR-0175: a negative or beyond-int32 length is NumberOutOfRange.
     for n in [int(-2), int(i64::MAX)] {
         assert_eq!(
