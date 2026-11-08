@@ -170,3 +170,12 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
   checks and survives failed admission, the phase clock spans only the
   measured statement body. Unifying them is a future decision, recorded
   here so the coexistence reads as decided rather than accidental.
+
+## Later references
+
+- ADR-0540 extends this split: the fine sub-split (lexing+AST / rewrite /
+  validation+lowering / result generation), the plan-cache outcome, and —
+  reversing this ADR's exclusion of them — timing keys on the CLI's
+  machine modes and the HTTP Query API v2 envelope (namespaced after the
+  Neo4j members). This ADR's Bolt contract keys and the canonical
+  envelope's flat `_ms` family are unchanged; the new keys join them.

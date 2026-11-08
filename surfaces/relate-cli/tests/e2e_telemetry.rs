@@ -587,8 +587,18 @@ fn test_stdout_and_exit_code_identical_with_telemetry_disabled() {
     assert!(status_off.success(), "disabled run failed: {stderr_off}");
 
     assert_eq!(status_on.code(), status_off.code());
+    // LABS-1120: the timing line carries per-run numbers, so the identity
+    // comparison reads the data rows alone (the one typed discriminator,
+    // `support::timing_terminal_line`).
+    fn data(stdout: &str) -> Vec<&str> {
+        stdout
+            .lines()
+            .filter(|line| !support::timing_terminal_line(line))
+            .collect()
+    }
     assert_eq!(
-        stdout_on, stdout_off,
+        data(&stdout_on),
+        data(&stdout_off),
         "stdout must be identical with and without telemetry"
     );
     // Sanity: the enabled run really did phone home, so the comparison is

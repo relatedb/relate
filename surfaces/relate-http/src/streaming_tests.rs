@@ -19,6 +19,30 @@ use crate::v2_envelope::tests::body_json;
 /// so its reply takes the chunked framing (ADR-0386 §1).
 const STREAM_BODY: &str = r#"{"statement": "UNWIND range(1, 100000) AS n RETURN n"}"#;
 
+/// LABS-1120: the envelope's per-request tail — everything from the
+/// `"timings"` member to the closing brace — cut from the raw bytes, so a
+/// byte-for-byte comparison of two requests for the same statement holds
+/// for the deterministic prefix. The one spelling: the parent module's
+/// gzip roundtrip test calls it too (`pub(super)`).
+pub(super) fn strip_timing_tail(body: &[u8]) -> &[u8] {
+    let text = std::str::from_utf8(body).expect("the reply body is UTF-8");
+    match text.find(",\"timings\":") {
+        Some(index) => &body[..index],
+        None => body,
+    }
+}
+
+/// LABS-1120: the `timings`/`planCache` members carry per-request numbers,
+/// so cross-request envelope comparisons drop them — everything else is
+/// deterministic for the same statement and stays compared.
+fn without_timing_members(mut envelope: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = envelope.as_object_mut() {
+        object.remove("timings");
+        object.remove("planCache");
+    }
+    envelope
+}
+
 /// The success envelope for `statement` as the reply seam constructs it: the
 /// identity envelope a chunked (and gzip-wrapped) streaming body must
 /// reassemble to (ADR-0386 §2/§4). Built through the seam's own handler so the
@@ -126,8 +150,8 @@ fn a_large_result_streams_chunk_frames_that_reassemble_to_the_envelope() {
     assert_eq!(values[99_999], serde_json::json!([100_000]));
     assert_eq!(envelope["bookmarks"], serde_json::json!([]));
     assert_eq!(
-        envelope,
-        identity_envelope(STREAM_BODY),
+        without_timing_members(envelope.clone()),
+        without_timing_members(identity_envelope(STREAM_BODY)),
         "the reassembled chunked body is the identity envelope"
     );
 
@@ -149,8 +173,11 @@ fn a_large_result_streams_chunk_frames_that_reassemble_to_the_envelope() {
         "{identity_head}"
     );
     let (identity_body, _) = dechunk(identity_frames);
+    // LABS-1120: the byte-for-byte contract holds for the deterministic
+    // body — the timing members are the per-request tail.
     assert_eq!(
-        body, identity_body,
+        strip_timing_tail(&body),
+        strip_timing_tail(&identity_body),
         "the chunked body is the identity-fetched envelope, byte for byte"
     );
 }
@@ -194,8 +221,10 @@ fn a_large_gzip_result_streams_chunk_frames_that_inflate_to_the_envelope() {
         "the compressor's writes are several frames"
     );
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&gunzip(&compressed)).unwrap(),
-        identity_envelope(STREAM_BODY),
+        without_timing_members(
+            serde_json::from_slice::<serde_json::Value>(&gunzip(&compressed)).unwrap()
+        ),
+        without_timing_members(identity_envelope(STREAM_BODY)),
         "gzip over chunked inflates to the exact identity envelope"
     );
 }

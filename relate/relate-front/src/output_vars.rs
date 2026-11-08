@@ -13,7 +13,9 @@ use relate_names::SmallName;
 
 use relate_parser::{Clause, Statement};
 
-use crate::ast::collect::{bind_pattern_vars, projected_names, search_score_var};
+use crate::ast::collect::{
+    bind_pattern_vars, is_updating_clause, projected_names, search_score_var,
+};
 use crate::show_columns::{catalog_output_names, is_catalog_clause};
 
 /// Simulates the column-name evolution through `stmt`'s own MATCH/WITH/
@@ -106,8 +108,10 @@ fn local_stage_output_vars(
             // so the importing WITH must not be mistaken for the terminal
             // projection -- otherwise the CALL collision check reports the
             // imported name as re-exported (`VariableAlreadyBound`). Matches
-            // the Create/Merge arms above.
-            Clause::Delete(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Foreach(_) => {
+            // the Create/Merge arms above. The shared updating-clause
+            // classification (the Create/Merge arms above handle their
+            // bindings first), never a hand-listed subset of it.
+            c if is_updating_clause(c) => {
                 last_projection = None;
             }
             // CIP-46/CIP-187: a SHOW clause introduces its YIELD'd (or,

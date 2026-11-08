@@ -139,6 +139,9 @@ pub use relate_model::wire::{
     Notification, NotificationCategory, NotificationKind, NotificationSeverity,
 };
 pub use relate_planner::QueryType;
+// LABS-1120: the plan-cache outcome rides the result header — the one
+// public path for the type (its home module is crate-private).
+pub use plan_cache::PlanCacheOutcome;
 pub use result::{QueryResult, ResultHeader};
 #[cfg(test)]
 pub(crate) use shared::ReadPause;

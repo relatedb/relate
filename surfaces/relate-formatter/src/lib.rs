@@ -259,6 +259,17 @@ pub struct StatementMeta<'a> {
     /// the engine-derived notification list (ADR-0363), so a non-empty
     /// list without its plan view is unrepresentable.
     pub plan: Option<PlanView<'a>>,
+    /// The statement's timing stamp (LABS-1120): the ADR-0221 total, its
+    /// PARSE / PLAN / EXECUTE split, the fine sub-split, and the
+    /// plan-cache outcome — the one projection (`relate::timing_stamp_ms`)
+    /// every envelope-building surface calls. `Some` renders one keyed
+    /// `timings` object (plus the `planCache` outcome beside it) in the
+    /// serializing modes (`envelope`, `json`, `jsonl`, `toon`); `None`
+    /// omits both keys — the presence policy of `plan`, so a caller that
+    /// renders without a result behind it changes nothing. The strict row
+    /// formats (`csv`, `cypher`) and the human `table`/`markdown` modes
+    /// never render it.
+    pub timings: Option<relate_model::wire::TimingStampMs>,
 }
 
 impl<'a> StatementMeta<'a> {

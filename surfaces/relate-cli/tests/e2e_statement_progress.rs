@@ -112,7 +112,11 @@ fn test_a_dot_command_counts_toward_the_numbering_but_a_failed_one_does_not_repo
     let (status, stdout, stderr) =
         run_cli(Opts::new(&["--jsonl", "-c", "RETURN 1; .commit; RETURN 3"]));
     assert_eq!(status.code(), Some(1), "{stderr}");
-    assert_eq!(stdout, "{\"1\":1}\n", "the third statement never ran");
+    // LABS-1120: the run statement's timing line, nothing after it.
+    assert!(
+        stdout.starts_with("{\"1\":1}\n") && stdout.matches('\n').count() == 2,
+        "the third statement never ran: {stdout}"
+    );
     assert!(stderr.contains("no transaction"), "{stderr}");
     assert!(!stderr.contains("statement "), "{stderr}");
 }
@@ -146,7 +150,15 @@ fn test_single_statements_and_successful_runs_are_unchanged() {
     // A multi-statement run that succeeds prints no report.
     let (status, stdout, stderr) = run_cli(Opts::new(&["--jsonl", "-c", "RETURN 1; RETURN 2"]));
     assert_eq!(status.code(), Some(0));
-    assert_eq!(stdout, "{\"1\":1}\n{\"2\":2}\n");
+    // LABS-1120: each statement's stream closes with its timing line; no
+    // progress report on success (the one typed discriminator,
+    // `support::timing_terminal_line`).
+    let data_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !support::timing_terminal_line(line))
+        .collect();
+    assert_eq!(data_lines, ["{\"1\":1}", "{\"2\":2}"], "{stdout}");
+    assert_eq!(stdout.matches("\"timings\"").count(), 2, "{stdout}");
     assert!(stderr.is_empty(), "{stderr}");
 }
 

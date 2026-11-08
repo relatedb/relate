@@ -1,8 +1,9 @@
 //! The engine's public query-result type and its construction-time
 //! metadata stamps: the resolved namespace (ADR-0117 §7), the plan-derived
 //! query type (ADR-0162), the wall-clock elapsed (ADR-0221) with its
-//! always-on PARSE / PLAN / EXECUTE phase split (LABS-832), and the
-//! per-column type names (ADR-0224).
+//! always-on PARSE / PLAN / EXECUTE phase split (LABS-832) and its fine
+//! sub-split plus the plan-cache outcome (LABS-1120), and the per-column
+//! type names (ADR-0224).
 
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use relate_model::wire::Notification;
 use relate_planner::QueryType;
 
 use crate::phase_timing::{PhaseTimings, TimingStamp};
-use crate::{ExecutionReceipt, Namespace, Value};
+use crate::{ExecutionReceipt, Namespace, PlanCacheOutcome, Value};
 
 /// Duration → wall-clock milliseconds (ADR-0221): the single conversion
 /// behind [`QueryResult::elapsed_ms`] and the phase accessors
@@ -71,6 +72,12 @@ pub struct ResultHeader {
     /// Stamped at every header construction — there is no placeholder
     /// value, the same construction-time stamp as the total.
     pub(crate) phases: PhaseTimings,
+    /// The statement's plan-cache outcome (LABS-1120): which ADR-0503
+    /// stage served the plan — the fact that explains a hit's near-zero
+    /// parse window and zero fine parse sub-windows. Stamped with the
+    /// timing it explains; read publicly through
+    /// [`QueryResult::plan_cache`].
+    pub(crate) plan_cache: crate::PlanCacheOutcome,
 }
 
 impl ResultHeader {
@@ -80,17 +87,23 @@ impl ResultHeader {
     /// `explain_result` and `ExecutionFailure::staged` cannot hand-spell the
     /// derivation (and its `column_types` length) apart. `rows` is `&[]`
     /// when the statement has none — a staged failure — which stamps every
-    /// column `ANY`. `timing` is the statement's measured timing as one
-    /// stamp — the ADR-0221 total and its always-on PARSE / PLAN /
-    /// EXECUTE split (LABS-832).
+    /// column `ANY`. `timing` produces the statement's measured timing as
+    /// one stamp — the ADR-0221 total, its always-on PARSE / PLAN /
+    /// EXECUTE split with the fine sub-split, and the plan-cache outcome
+    /// (LABS-832 + LABS-1120). It is taken *after* the per-column stamp
+    /// below, because that derivation is this construction's work: a
+    /// caller passing a window's elapsed evaluates it here, so the
+    /// window covers the result build it documents instead of closing
+    /// before it (LABS-1120).
     pub(crate) fn new(
         columns: Vec<String>,
         rows: &[Vec<Value>],
         query_type: QueryType,
         namespace: Namespace,
-        timing: TimingStamp,
+        timing: impl FnOnce() -> TimingStamp,
     ) -> Self {
         let column_types = stamp_column_types(columns.len(), rows);
+        let timing = timing();
         Self {
             columns,
             column_types,
@@ -98,6 +111,7 @@ impl ResultHeader {
             namespace,
             elapsed: timing.elapsed,
             phases: timing.phases,
+            plan_cache: timing.plan_cache,
         }
     }
 }
@@ -226,14 +240,16 @@ impl QueryResult {
     /// statement's measured elapsed (ADR-0221). Construction is the
     /// stamp: a `QueryResult` always carries its resolved namespace
     /// (ADR-0117 §7), its query type (ADR-0162) and its plan-plus-run
-    /// elapsed — there is no placeholder value. `timing` carries the
+    /// elapsed — there is no placeholder value. `timing` produces the
     /// elapsed with its always-on PARSE / PLAN / EXECUTE split
-    /// (LABS-832) as one stamp.
+    /// (LABS-832) as one stamp; it is taken at the header's construction,
+    /// after the per-column stamp, so a lazily-handed window covers the
+    /// build.
     pub(crate) fn from_exec(
         r: ExecResult,
         namespace: Namespace,
         query_type: QueryType,
-        timing: TimingStamp,
+        timing: impl FnOnce() -> TimingStamp,
     ) -> Self {
         let header = ResultHeader::new(r.columns, &r.rows, query_type, namespace, timing);
         Self {
@@ -353,6 +369,52 @@ impl QueryResult {
     pub fn execute_ms(&self) -> f64 {
         duration_ms(self.header.phases.execute())
     }
+
+    /// The PARSE stage's lexing-plus-AST-build sub-window in wall-clock
+    /// milliseconds (LABS-1120, the fine split of [`QueryResult::parse_ms`]):
+    /// tokenize, the AST build and the preview-gate walk — the lexer and
+    /// the parser are fused at the parser's one tokenizing constructor, so
+    /// this is one window, never two. Zero on a plan-cache hit: nothing was
+    /// parsed, and [`QueryResult::plan_cache`] says why.
+    pub fn lex_parse_ms(&self) -> f64 {
+        duration_ms(self.header.phases.parse_stages().lex_parse)
+    }
+
+    /// The PARSE stage's rewrite sub-window in wall-clock milliseconds
+    /// (LABS-1120): the CIP-231 `DEFINE`-block resolver pass with its
+    /// nesting-depth guard. Zero on a plan-cache hit.
+    pub fn rewrite_ms(&self) -> f64 {
+        duration_ms(self.header.phases.parse_stages().rewrite)
+    }
+
+    /// The PARSE stage's validation-and-lowering sub-window in wall-clock
+    /// milliseconds (LABS-1120): the lowering battery — validation fused
+    /// into the lowering walk, so this is one window. Zero on a
+    /// plan-cache hit.
+    pub fn lower_ms(&self) -> f64 {
+        duration_ms(self.header.phases.parse_stages().lower)
+    }
+
+    /// The EXECUTE stage's result-generation sub-window in wall-clock
+    /// milliseconds (LABS-1120, carved out of [`QueryResult::execute_ms`]):
+    /// the buffered executor result's conversion into this result — the
+    /// column-type stamp, the header, a staged failure's derived columns.
+    /// Zero on the `EXPLAIN` path, whose execute-equivalent stage (the
+    /// render) is itself its result generation.
+    pub fn result_generation_ms(&self) -> f64 {
+        duration_ms(self.header.phases.result_generation())
+    }
+
+    /// The statement's plan-cache outcome (LABS-1120): which ADR-0503
+    /// stage served the plan — `HitTemplate` / `HitRawFastPath` /
+    /// `ReplanGenerationMismatch` / `Miss` / `Bypassed`,
+    /// rendered on every machine-readable surface through
+    /// [`PlanCacheOutcome::as_str`]. The fact that explains a hit's
+    /// near-zero [`QueryResult::parse_ms`] and zero fine parse
+    /// sub-windows.
+    pub fn plan_cache(&self) -> PlanCacheOutcome {
+        self.header.plan_cache
+    }
 }
 
 /// The ADR-0224 per-column stamp behind [`ResultHeader::new`] — the one
@@ -387,8 +449,46 @@ fn stamp_column_types(column_count: usize, rows: &[Vec<Value>]) -> Vec<String> {
 mod tests {
     use std::time::Duration;
 
-    use super::{duration_ms, QueryResult};
-    use crate::Database;
+    use std::cell::Cell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use relate_planner::QueryType;
+
+    use super::{duration_ms, QueryResult, ResultHeader};
+    use crate::{Database, Namespace, Value};
+
+    /// The result-generation window covers the result build instead of
+    /// closing ahead of it (LABS-1120): the header's timing stamp is taken
+    /// *after* the per-column stamp, so a build that fails (a row short of
+    /// its column count is `stamp_column_types`' documented contract break)
+    /// fails before the window closes. The closure panics instead of
+    /// producing a stamp, so a window taken ahead of the build trips the
+    /// `taken` flag and fails this test.
+    #[test]
+    fn the_timing_stamp_is_taken_after_the_column_stamp() {
+        let taken = Cell::new(false);
+        let ragged = vec![vec![Value::Int(1)]];
+        let build = catch_unwind(AssertUnwindSafe(|| {
+            ResultHeader::new(
+                vec!["a".to_owned(), "b".to_owned()],
+                &ragged,
+                QueryType::Read,
+                Namespace::Neo4j,
+                || {
+                    taken.set(true);
+                    panic!("the timing stamp ran before the column stamp")
+                },
+            )
+        }));
+        assert!(
+            build.is_err(),
+            "a row short of its column count is the column stamp's contract break",
+        );
+        assert!(
+            !taken.get(),
+            "the result-generation window must close after the build it documents",
+        );
+    }
 
     /// A first-row `Value::Uuid` stamps `STRING`, not the reserved `UUID`
     /// name (ADR-0224: the wire taxonomy cannot distinguish a UUID from a
@@ -450,6 +550,93 @@ mod tests {
             let result = conn.query(statement).unwrap();
             assert_own_window(statement, &result);
         }
+    }
+
+    /// LABS-1120: the fine sub-split partitions its coarse phase through
+    /// the public accessors — `lex_parse + rewrite + lower <= parse` and
+    /// `result_generation <= execute` — over the same sample corpus, so a
+    /// fine window that escapes its phase fails here, not in a surface's
+    /// rendering.
+    #[test]
+    fn fine_split_accessors_partition_their_coarse_phases() {
+        let db = Database::open(":memory:").unwrap();
+        let mut conn = db.connect().unwrap();
+        conn.query("CREATE (:Person {name: 'a'})").unwrap();
+        for statement in crate::phase_timing::SAMPLE_STATEMENTS {
+            let result = conn.query(statement).unwrap();
+            let fine = result.lex_parse_ms() + result.rewrite_ms() + result.lower_ms();
+            assert!(
+                fine <= result.parse_ms(),
+                "{statement}: fine parse {fine} exceeds parse {}",
+                result.parse_ms()
+            );
+            assert!(
+                result.result_generation_ms() <= result.execute_ms(),
+                "{statement}: result generation {} exceeds execute {}",
+                result.result_generation_ms(),
+                result.execute_ms()
+            );
+        }
+    }
+
+    /// LABS-1120: the plan-cache outcome distinguishes the cache's real
+    /// arms — a value that would read the same whether or not the cache
+    /// served the statement is worthless here. The sequence walks every
+    /// reachable outcome in one session: the first run of a template
+    /// misses; the same text again hits the raw fast path (stage 1); a
+    /// different literal on the same template hits the template key
+    /// (stage 2); a write bumps the stats generation, so the next read
+    /// re-plans from the carried AST; and the plan-tree path (EXPLAIN)
+    /// bypasses the cache entirely.
+    #[test]
+    fn plan_cache_outcome_distinguishes_miss_raw_template_replan_and_bypass() {
+        use crate::PlanCacheOutcome;
+        let db = Database::open(":memory:").unwrap();
+        let mut conn = db.connect().unwrap();
+        conn.query("CREATE (:Person {name: 'a', age: 30})").unwrap();
+        let read = |conn: &mut crate::Connection, name: &str| {
+            let statement = format!("MATCH (n:Person {{name: '{name}'}}) RETURN n.age");
+            let result = conn.query(&statement).unwrap();
+            (result.plan_cache(), result.parse_ms())
+        };
+        // No entry yet: the first run of the template compiles and inserts.
+        let (first, first_parse) = read(&mut conn, "a");
+        assert_eq!(first, PlanCacheOutcome::Miss);
+        // The same text again: stage 1, the raw fast path — no normalizer.
+        let (again, _) = read(&mut conn, "a");
+        assert_eq!(again, PlanCacheOutcome::HitRawFastPath);
+        // A different literal, same template: stage 2 — and the parse
+        // window collapses to the lookup (the fine parse sub-windows are
+        // zero), which is exactly what the outcome explains.
+        let (templated, templated_parse) = read(&mut conn, "zzz-not-there");
+        assert_eq!(templated, PlanCacheOutcome::HitTemplate);
+        assert_eq!(
+            conn.query("MATCH (n:Person {name: 'a'}) RETURN n.age")
+                .unwrap()
+                .lex_parse_ms(),
+            0.0,
+            "a hit parses nothing: the fine parse sub-windows are zero"
+        );
+        assert!(
+            templated_parse < first_parse,
+            "a hit's parse window ({templated_parse}) must be smaller than the first \
+             compile's ({first_parse}) — otherwise the cache never served it"
+        );
+        // A write bumps the stats generation: the next hit re-plans from
+        // the entry's carried AST under the fresh generation.
+        conn.query("CREATE (:Person {name: 'b', age: 1})").unwrap();
+        let (replanned, _) = read(&mut conn, "a");
+        assert_eq!(replanned, PlanCacheOutcome::ReplanGenerationMismatch);
+        // A caller parameter map carrying the reserved `__AUTO_*__` prefix
+        // disables the cache for the statement entirely — no stage, not
+        // even the raw lookup — while the statement itself runs normally.
+        let mut reserved = std::collections::BTreeMap::new();
+        reserved.insert("name".to_string(), crate::Value::String("a".into()));
+        reserved.insert("__AUTO_INT_0__".to_string(), crate::Value::Int(1));
+        let bypassed = conn
+            .query_with_params("MATCH (n:Person {name: $name}) RETURN n.age", reserved)
+            .unwrap();
+        assert_eq!(bypassed.plan_cache(), PlanCacheOutcome::Bypassed);
     }
 
     /// Multi-statement semantics: phases are per statement, exactly like

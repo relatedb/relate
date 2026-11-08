@@ -69,6 +69,14 @@ path = "src/bin/plan_bench.rs"
 name = "pokec_profile"
 path = "src/bin/pokec_profile.rs"
 
+# LABS-1120's measurement harness (ADR-0540 §2's always-on decision): the
+# fine-split cost on the point-read path and the price of one clock read.
+# Dev tool, not CI-gated — moved from relate/relate/tests/, where every
+# file is built and run by `cargo test -p relate`.
+[[bin]]
+name = "phase_bench"
+path = "src/bin/phase_bench.rs"
+
 # Research-only gap-measurement harness (ADR-0476): compiled only under
 # `--features research`.
 [[example]]

@@ -12,11 +12,25 @@
 #[allow(dead_code)]
 mod support;
 
-use support::{node_count, run_cli, statement_note, tempdir, CliRunOptions as Opts, COMMIT_NOTE};
+use support::{
+    node_count, run_cli, statement_note, tempdir, timing_terminal_line, CliRunOptions as Opts,
+    COMMIT_NOTE,
+};
 
 /// Run one one-shot batch against `./db` in `dir` (JSONL output).
 fn run_in(dir: &std::path::Path, statement: &str) -> (std::process::ExitStatus, String, String) {
     run_cli(Opts::new(&["--jsonl", "--database", "./db", "-c", statement]).in_dir(dir))
+}
+
+/// LABS-1120: every statement's JSONL stream closes with its timing
+/// terminal line, so the zero-effect contract is "no data rows" — the
+/// timing lines are per-statement metadata, never rows (the one typed
+/// discriminator, `support::timing_terminal_line`).
+fn data_rows(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| !timing_terminal_line(line))
+        .collect()
 }
 
 #[test]
@@ -39,7 +53,7 @@ fn test_the_labs_313_block_reports_both_notes_and_commits_nothing() {
         ".begin; MATCH (m:NoSuchLabel) DELETE m CREATE (n:Label {id: 1}); .commit",
     );
     assert_eq!(status.code(), Some(0), "the no-op keeps its earned code");
-    assert_eq!(stdout, "", "stdout bytes are unchanged");
+    assert!(data_rows(&stdout).is_empty(), "stdout bytes are unchanged");
     assert_eq!(
         stderr,
         format!("{}{COMMIT_NOTE}", statement_note(Some((2, 3)))),
@@ -66,7 +80,7 @@ fn test_a_one_shot_zero_effect_write_reports_one_unnumbered_note() {
     let dir = tempdir();
     let (status, stdout, stderr) = run_in(dir.path(), "MATCH (n:Ghost) SET n.seen = true");
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr,
         statement_note(None),
@@ -83,7 +97,7 @@ fn test_a_piped_stdin_zero_effect_write_reports_the_same_note() {
             .with_stdin(b"MATCH (m:NoSuchLabel) DELETE m\n"),
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr,
         statement_note(None),
@@ -96,7 +110,7 @@ fn test_an_empty_or_read_only_transaction_says_nothing() {
     let dir = tempdir();
     let (status, stdout, stderr) = run_in(dir.path(), ".begin; .commit");
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(stderr, "", "an empty .begin/.commit is silent");
 
     // A read inside the transaction does not make the commit news either.
@@ -106,7 +120,8 @@ fn test_an_empty_or_read_only_transaction_says_nothing() {
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert_eq!(
-        stdout, "{\"count(n)\":0}\n",
+        data_rows(&stdout),
+        ["{\"count(n)\":0}"],
         "the read's own row is unchanged"
     );
     assert_eq!(stderr, "", "committing a read-only transaction is silent");
@@ -121,7 +136,8 @@ fn test_a_zero_row_read_and_an_effective_write_say_nothing() {
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert_eq!(
-        stdout, "{\"n\":{\"id\":1,\"kind\":\"node\",\"labels\":[\"Made\"],\"properties\":{}}}\n",
+        data_rows(&stdout),
+        ["{\"n\":{\"id\":1,\"kind\":\"node\",\"labels\":[\"Made\"],\"properties\":{}}}"],
         "the effective writes' stdout is unchanged"
     );
     assert_eq!(
@@ -143,7 +159,7 @@ fn test_a_mixed_transaction_reports_the_statement_only_without_a_summary() {
         ".begin; CREATE (:Kept); MATCH (m:Ghost) DELETE m; .commit",
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr,
         statement_note(Some((3, 4))),
@@ -192,7 +208,7 @@ fn test_an_autocommit_zero_effect_write_never_reaches_a_later_summary() {
     let dir = tempdir();
     let (status, stdout, stderr) = run_in(dir.path(), "MATCH (m:Ghost) DELETE m; .begin; .commit");
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr,
         statement_note(Some((1, 3))),
@@ -239,7 +255,7 @@ fn test_a_rollback_prints_no_commit_summary() {
         ".begin; CREATE (:Dropped); MATCH (m:Ghost) DELETE m; .rollback",
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr,
         statement_note(Some((3, 4))),
@@ -286,7 +302,14 @@ fn test_output_modes_keep_their_stdout_bytes() {
         .in_dir(dir.path()),
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "[]\n", "json's empty result is unchanged");
+    // LABS-1120: the empty result rides under `data` beside the timing
+    // rider — still no rows.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(
+        parsed["data"],
+        serde_json::json!([]),
+        "json's empty result is unchanged"
+    );
     assert_eq!(stderr, statement_note(None));
 
     let (status, stdout, stderr) = run_cli(
@@ -301,16 +324,24 @@ fn test_output_modes_keep_their_stdout_bytes() {
         .in_dir(dir.path()),
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(
-        stdout,
-        "{\"columnTypes\":[],\"columns\":[],\"notifications\":[],\"rows\":[],\"truncated\":false}\n",
+        parsed["rows"],
+        serde_json::json!([]),
         "the envelope is unchanged"
+    );
+    assert!(
+        parsed["timings"]["elapsed_ms"].is_number(),
+        "the timing block: {stdout}"
     );
     assert_eq!(stderr, statement_note(None));
 
     let (status, stdout, stderr) = run_in(dir.path(), "MATCH (n:Ghost) SET n.x = 1");
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "", "JSONL prints nothing for a zero-row result");
+    assert!(
+        data_rows(&stdout).is_empty(),
+        "JSONL prints nothing for a zero-row result"
+    );
     assert_eq!(stderr, statement_note(None));
 }
 
@@ -346,7 +377,10 @@ fn test_alter_database_is_not_reported_as_changed_nothing() {
         "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5",
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "", "the admin command returns no rows");
+    assert!(
+        data_rows(&stdout).is_empty(),
+        "the admin command returns no rows"
+    );
     assert_eq!(
         stderr, "",
         "a persisted catalog change is not a zero-effect write"
@@ -359,7 +393,8 @@ fn test_alter_database_is_not_reported_as_changed_nothing() {
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert_eq!(
-        stdout, "{\"defaultLanguage\":\"CYPHER 5\",\"name\":\"neo4j\"}\n",
+        data_rows(&stdout),
+        ["{\"defaultLanguage\":\"CYPHER 5\",\"name\":\"neo4j\"}"],
         "ALTER DATABASE persisted the language"
     );
 
@@ -370,7 +405,7 @@ fn test_alter_database_is_not_reported_as_changed_nothing() {
         ".begin; ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25; .commit",
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr, "",
         "a catalog change is not a zero-effect transaction"
@@ -392,7 +427,10 @@ fn test_preview_gated_catalog_writes_are_not_reported() {
                 .with_envs(&[("RELATE_PREVIEW", "ontology,graph-type-implied-labels")]),
         );
         assert_eq!(status.code(), Some(0), "{statement}: {stderr}");
-        assert_eq!(stdout, "", "{statement} produces no rows");
+        assert!(
+            data_rows(&stdout).is_empty(),
+            "{statement} produces no rows"
+        );
         assert_eq!(
             stderr, "",
             "{statement} persisted a catalog change, so it is not zero-effect"
@@ -425,7 +463,7 @@ fn test_preview_gated_catalog_writes_are_not_reported() {
         .with_envs(&[("RELATE_PREVIEW", "ontology")]),
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(stderr, "", "the drop persisted a catalog change");
 }
 
@@ -442,7 +480,7 @@ fn test_read_only_statements_classified_as_writes_are_silent() {
     ] {
         let (status, stdout, stderr) = run_in(dir.path(), statement);
         assert_eq!(status.code(), Some(0), "{statement}: {stderr}");
-        assert_eq!(stdout, "", "{statement} returns no rows");
+        assert!(data_rows(&stdout).is_empty(), "{statement} returns no rows");
         assert_eq!(
             stderr, "",
             "{statement} is a read the planner classifies as a write"
@@ -467,7 +505,7 @@ fn test_read_only_statements_classified_as_writes_are_silent() {
         .in_dir(dir.path()),
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "{\"name\":\"Ada\"}\n");
+    assert_eq!(data_rows(&stdout), ["{\"name\":\"Ada\"}"]);
     assert_eq!(
         stderr, "",
         "LOAD CSV without a write clause applied nothing and attempted nothing"
@@ -479,7 +517,7 @@ fn test_read_only_statements_classified_as_writes_are_silent() {
         ".begin; CALL { MATCH (n) RETURN n } RETURN n; .commit",
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert_eq!(stdout, "");
+    assert!(data_rows(&stdout).is_empty(), "no data rows");
     assert_eq!(
         stderr, "",
         "a read-only transaction is silent, however its statements were classified"
@@ -499,7 +537,7 @@ fn test_idempotent_merge_reports_and_idempotent_set_does_not() {
     for _ in 0..2 {
         let (status, stdout, stderr) = run_in(dir.path(), "MATCH (n:Person) SET n.id = 1");
         assert_eq!(status.code(), Some(0), "{stderr}");
-        assert_eq!(stdout, "");
+        assert!(data_rows(&stdout).is_empty(), "no data rows");
         assert_eq!(
             stderr, "",
             "an idempotent SET re-applies the property write"

@@ -94,8 +94,11 @@ fn ontology_param(document: &str) -> String {
 }
 
 fn rows(stdout: &str) -> Vec<Value> {
+    // LABS-1120: the stream's timing terminal line is metadata, not a row
+    // (the one typed discriminator, `support::timing_terminal_line`).
     stdout
         .lines()
+        .filter(|line| !support::timing_terminal_line(line))
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             serde_json::from_str(line).unwrap_or_else(|e| panic!("row is JSON: {e}: {line}"))

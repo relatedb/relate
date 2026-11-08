@@ -13,10 +13,11 @@ use super::{json_f64, notification_keys, notifications_to_wire_json, Notificatio
 /// The statement's timing block as one wire value — the wire-side spelling
 /// of the engine's result-header timing stamp: the ADR-0221 wall-clock
 /// total (`elapsed_ms`) together with its always-on PARSE / PLAN / EXECUTE
-/// split (ADR-0491), flattened to the four envelope keys' own milliseconds.
-/// Bundled like the engine bundles its stamp, so an envelope construction
-/// site cannot carry the total without its split — and the canonical
-/// builder stays under `clippy::too_many_arguments`.
+/// split (ADR-0491) and the fine sub-split plus the plan-cache outcome
+/// (LABS-1120), flattened to the envelope keys' own milliseconds. Bundled
+/// like the engine bundles its stamp, so an envelope construction site
+/// cannot carry the total without its split — and the canonical builder
+/// stays under `clippy::too_many_arguments`.
 ///
 /// PARSE is the front-end parse and lowering; PLAN is binding, logical
 /// planning and the admission classification; EXECUTE is the dispatch —
@@ -25,7 +26,9 @@ use super::{json_f64, notification_keys, notifications_to_wire_json, Notificatio
 /// spans, so their sum never exceeds the total (the inter-stage gaps stay
 /// in the total alone); milliseconds because this is the `elapsed_ms`
 /// family it extends (Bolt's seconds rendering is that surface's own
-/// conversion, per ADR-0491 §3).
+/// conversion, per ADR-0491 §3). The LABS-1120 fine sub-windows partition
+/// their coarse phase the same way; `plan_cache` explains a hit's
+/// near-zero parse window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimingStampMs {
     /// The ADR-0221 wall-clock total, in milliseconds.
@@ -36,6 +39,58 @@ pub struct TimingStampMs {
     pub plan_ms: f64,
     /// The EXECUTE stage, in milliseconds.
     pub execute_ms: f64,
+    /// The PARSE stage's lexing-plus-AST-build sub-window, in milliseconds
+    /// (LABS-1120) — zero on a plan-cache hit, which `plan_cache` explains.
+    pub lex_parse_ms: f64,
+    /// The PARSE stage's rewrite sub-window (the CIP-231 resolver), in
+    /// milliseconds (LABS-1120) — zero on a plan-cache hit.
+    pub rewrite_ms: f64,
+    /// The PARSE stage's validation-and-lowering sub-window, in
+    /// milliseconds (LABS-1120) — zero on a plan-cache hit.
+    pub lower_ms: f64,
+    /// The EXECUTE stage's result-generation sub-window, in milliseconds
+    /// (LABS-1120) — zero on the `EXPLAIN` path, whose render is itself
+    /// its result generation.
+    pub result_generation_ms: f64,
+    /// The statement's plan-cache outcome (LABS-1120) as the engine
+    /// enum's own wire spelling (`PlanCacheOutcome::as_str`, kebab-case)
+    /// — never re-spelled here: the engine crate pins the vocabulary
+    /// against its enum with a test, so this field cannot drift from it.
+    pub plan_cache: &'static str,
+}
+
+impl TimingStampMs {
+    /// The nested `timings` object (LABS-1120): every duration key of the
+    /// stamp under one object — the form the surfaces that had no flat
+    /// `elapsed_ms` family before (the CLI machine modes, the HTTP Query
+    /// API v2 envelope) carry, so those envelopes stay forward-compatible
+    /// (a later phase joins the object, never the top level). The
+    /// plan-cache outcome rides **beside** the object, never inside it —
+    /// it is an outcome, not a duration. One builder for every surface, so
+    /// the key set cannot drift between them.
+    pub fn to_timings_json(&self) -> Value {
+        let mut object = Map::new();
+        insert_duration_keys(&mut object, self);
+        Value::Object(object)
+    }
+}
+
+/// The stamp's eight duration keys, each through the one f64 conversion —
+/// THE table, consulted by both wire forms (the nested `timings` object
+/// and the canonical envelope's flat family), so a key can never be added
+/// to one form and not the other (found in review).
+fn insert_duration_keys(object: &mut Map<String, Value>, stamp: &TimingStampMs) {
+    object.insert("elapsed_ms".into(), json_f64(stamp.elapsed_ms));
+    object.insert("parse_ms".into(), json_f64(stamp.parse_ms));
+    object.insert("plan_ms".into(), json_f64(stamp.plan_ms));
+    object.insert("execute_ms".into(), json_f64(stamp.execute_ms));
+    object.insert("lex_parse_ms".into(), json_f64(stamp.lex_parse_ms));
+    object.insert("rewrite_ms".into(), json_f64(stamp.rewrite_ms));
+    object.insert("lower_ms".into(), json_f64(stamp.lower_ms));
+    object.insert(
+        "result_generation_ms".into(),
+        json_f64(stamp.result_generation_ms),
+    );
 }
 
 /// Build the canonical success response envelope (ADR-0491): the one
@@ -44,8 +99,9 @@ pub struct TimingStampMs {
 ///
 /// `{ "columns": [...], "columnTypes": [...], "rows": [...], "stats": {...},
 /// "notifications": [...], "elapsed_ms": <f64>, "parse_ms": <f64>,
-/// "plan_ms": <f64>, "execute_ms": <f64>, "plan": {...} | null,
-/// "error": null }`.
+/// "plan_ms": <f64>, "execute_ms": <f64>, "lex_parse_ms": <f64>,
+/// "rewrite_ms": <f64>, "lower_ms": <f64>, "result_generation_ms": <f64>,
+/// "plan_cache": "<outcome>", "plan": {...} | null, "error": null }`.
 /// The `plan` key (LABS-418, ADR-0381) is always present too: the
 /// `relate.plan/v1` document, `null` on a plain run.
 /// `elapsed_ms` is the engine-reported statement elapsed in wall-clock
@@ -90,12 +146,14 @@ pub fn response_envelope(
         notifications_to_wire_json(notifications),
     );
     // ADR-0221: the engine-reported statement elapsed, in milliseconds;
-    // ADR-0491: its PARSE / PLAN / EXECUTE split beside it — the one
-    // insertion site, from the one bundled stamp.
-    obj.insert("elapsed_ms".into(), json_f64(timings.elapsed_ms));
-    obj.insert("parse_ms".into(), json_f64(timings.parse_ms));
-    obj.insert("plan_ms".into(), json_f64(timings.plan_ms));
-    obj.insert("execute_ms".into(), json_f64(timings.execute_ms));
+    // ADR-0491: its PARSE / PLAN / EXECUTE split beside it; LABS-1120: the
+    // fine sub-split and the plan-cache outcome — the duration keys from
+    // the one table both wire forms share, the outcome beside them.
+    insert_duration_keys(&mut obj, &timings);
+    obj.insert(
+        "plan_cache".into(),
+        Value::String(timings.plan_cache.into()),
+    );
     obj.insert("error".into(), Value::Null);
     // The structured plan document (LABS-418, ADR-0381): always present,
     // `null` when the statement carried no plan — the same presence policy

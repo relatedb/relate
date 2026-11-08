@@ -70,36 +70,50 @@ fn check_default_is_constant(default: &Expr) -> Result<()> {
     walk_expr(default, &mut visit).map_err(walker_error)
 }
 
-/// The one whole-tree rejection helper: walks `body` with the shared
+/// The whole-tree clause rejection: walks `body` with the shared
 /// statement-tree walker and raises `message` from the detection point
-/// when `clause_offended` (a clause) or `statement_offended` (a statement
-/// chain link) fires. The CIP-231 whole-body rules below are its
-/// predicates.
-fn reject_if(
+/// when `offended` fires on a clause. The CIP-231 whole-body clause rules
+/// below are its predicates.
+fn reject_clause(
     body: &Statement,
     message: &str,
-    clause_offended: impl Fn(&Clause) -> bool,
-    statement_offended: impl Fn(&crate::ast::stmt_ref::StmtRef<'_>) -> bool,
+    offended: impl Fn(&Clause) -> bool,
 ) -> Result<()> {
-    let mut clause_visitor = |clause: &Clause| -> std::result::Result<(), EngineError> {
-        if clause_offended(clause) {
-            Err(rejection(message.to_string()))
-        } else {
-            Ok(())
-        }
-    };
-    let mut stmt_visitor =
-        |stmt: crate::ast::stmt_ref::StmtRef<'_>| -> std::result::Result<(), EngineError> {
-            if statement_offended(&stmt) {
+    walk_statement_tree(
+        body,
+        &mut |_| Ok(()),
+        &mut |clause: &Clause| {
+            if offended(clause) {
                 Err(rejection(message.to_string()))
             } else {
                 Ok(())
             }
-        };
+        },
+        &mut |_| Ok(()),
+    )
+    .map_err(walker_error)
+}
+
+/// The whole-tree statement-chain rejection: walks `body` with the shared
+/// statement-tree walker and raises `message` from the detection point
+/// when `offended` fires on a chain link (a statement node). The
+/// clause/link split is the shape the rules actually use — no rule fires
+/// on both.
+fn reject_link(
+    body: &Statement,
+    message: &str,
+    offended: impl Fn(&crate::ast::stmt_ref::StmtRef<'_>) -> bool,
+) -> Result<()> {
     walk_statement_tree(
         body,
-        &mut stmt_visitor,
-        &mut clause_visitor,
+        &mut |stmt: crate::ast::stmt_ref::StmtRef<'_>| {
+            if offended(&stmt) {
+                Err(rejection(message.to_string()))
+            } else {
+                Ok(())
+            }
+        },
+        &mut |_| Ok(()),
         &mut |_| Ok(()),
     )
     .map_err(walker_error)
@@ -114,11 +128,10 @@ fn rejection(message: String) -> EngineError {
 /// The 42NAF/42NAG rule: no `USE` clause anywhere inside a local callable
 /// body (including nested subqueries).
 fn check_no_use(body: &Statement, kind: &str) -> Result<()> {
-    reject_if(
+    reject_clause(
         body,
         &format!("USE clause is not supported in local {kind} definitions."),
         |clause| matches!(clause, Clause::Use(_)),
-        |_| false,
     )
 }
 
@@ -126,17 +139,16 @@ fn check_no_use(body: &Statement, kind: &str) -> Result<()> {
 /// parameters bind once at the body's head, so a later stage could not
 /// see them (NOTES.md records the deferral).
 fn check_no_next(body: &Statement) -> Result<()> {
-    reject_if(
+    reject_link(
         body,
         "NEXT stages are not supported in local callable bodies.",
-        |_| false,
         |stmt| stmt.next().is_some(),
     )
 }
 
 /// A function's query body shall not contain updates (CIP-231).
 fn check_no_updates(body: &Statement, name: &SmallName) -> Result<()> {
-    reject_if(
+    reject_clause(
         body,
         &format!("Updates are not supported in the query body of local function {name}()."),
         // `LOAD CSV` is a read in the shared classification but a local
@@ -144,7 +156,6 @@ fn check_no_updates(body: &Statement, name: &SmallName) -> Result<()> {
         |clause| {
             crate::ast::collect::is_updating_clause(clause) || matches!(clause, Clause::LoadCSV(_))
         },
-        |_| false,
     )
 }
 

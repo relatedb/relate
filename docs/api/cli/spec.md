@@ -1744,7 +1744,7 @@ naming both counts, so a capped result never reads as a complete one:
 | --- | --- |
 | `jsonl` | one keyed terminal line after the rows: `{"rowCap":{"kept":100,"total":250}}` — keyed like the plan line, never confusable with a data row |
 | `envelope` | `"truncated": true` plus `"rowCap": {"kept": 100, "total": 250}` ([Result envelope](#result-envelope)) |
-| `json` | the rows are wrapped: `{"data": [...], "rowCap": {...}}` (the `PROFILE` wrapper's shape); an uncapped result stays the bare array |
+| `json` | the rows are wrapped: `{"data": [...], "rowCap": {...}}` (the `PROFILE` wrapper's shape, with the always-present `timings`/`planCache` riders beside it — LABS-1120) |
 | `toon` | a terminal `rowCap:` entry with the counts as one inline compact JSON value |
 | `markdown` | one footer line after the table: `> truncated: 100 of 250 rows shown` (counts only — the `--max-rows` opt-out stays in the stderr warning, the channel the CLI owns) |
 | `csv`, `cypher`, `table` | no in-band record — the strict formats' streams stay pure and the human table keeps stderr; the warning above is their only channel |
@@ -1778,7 +1778,7 @@ statement runs.
 one line, so a multi-statement run is JSON Lines of envelopes:
 
 ```json
-{"columnTypes":["INTEGER","LIST"],"columns":["a","l"],"notifications":[],"rows":[{"a":1,"l":[1,2]}],"truncated":false}
+{"columnTypes":["INTEGER","LIST"],"columns":["a","l"],"notifications":[],"rows":[{"a":1,"l":[1,2]}],"timings":{"elapsed_ms":0.5,"parse_ms":0.25,"plan_ms":0.19,"execute_ms":0.06,"lex_parse_ms":0.13,"rewrite_ms":0.06,"lower_ms":0.06,"result_generation_ms":0.03},"planCache":"miss","truncated":false}
 ```
 
 | Field | Type | Meaning |
@@ -1790,12 +1790,24 @@ one line, so a multi-statement run is JSON Lines of envelopes:
 | `rowCap` | object | present only when the [row cap](#row-cap) cut the rows (ADR-0403): `{"kept": N, "total": M}` — the rows printed and the rows the statement returned |
 | `notifications` | array of objects | the complete query notification list (ADR-0363 decision 9), always present and `[]` on a plain run; entries carry `code`, `gql_status`, `severity`, `category`, `title`, `description`, `remedy` and `operator_id` on operator-scoped kinds. See [Query notifications](#query-notifications-adr-0363) |
 | `plan` | object | present only on an `EXPLAIN`/`PROFILE` result: the structured plan tree ([EXPLAIN and PROFILE output](#explain-and-profile-output-adr-03440345)) |
+| `timings` | object | the statement's timing block (LABS-1120), always present: `elapsed_ms` (the ADR-0221 wall-clock total) with its always-on `parse_ms` / `plan_ms` / `execute_ms` split (ADR-0491) and the fine sub-split — `lex_parse_ms` (lexing + AST build), `rewrite_ms` (the CIP-231 resolver pass), `lower_ms` (validation + lowering, fused), all sub-windows of `parse_ms`, and `result_generation_ms` (the result build), a sub-window of `execute_ms`. All non-negative milliseconds; every fine window never exceeds its coarse phase. On a plan-cache hit the fine parse windows are `0` — nothing was parsed — which `planCache` explains |
+| `planCache` | string | the plan-cache outcome (LABS-1120): `miss` (no cached plan served — the first run of a template, or a hit whose cached plan was rejected for literal-shape safety), `hit-raw-fastpath` (stage 1: the raw statement text matched), `hit-template` (stage 2: the auto-parameterized template matched), `replan-generation-mismatch` (a hit whose entry re-planned under a fresh stats generation), `bypassed` (the cache was not consulted — a caller parameter map carrying the reserved `__AUTO_*__` prefix, or a statement the normalizer refuses) |
 
-An empty result is `{"columnTypes":["ANY"],"columns":["n"],"notifications":[],"rows":[],"truncated":false}`,
-so "no rows" is distinguishable from "no output". `--json` (a bare array) and
-`--jsonl` (one object per row) are unchanged for plain results; an
-`EXPLAIN`/`PROFILE` result is one `{"plan": ..., "notifications": [...]}`
-object in both, with the complete list. A failure prints the [error
+An empty result is `{"columnTypes":["ANY"],"columns":["n"],...,"rows":[],"timings":{...},"planCache":"miss","truncated":false}`,
+so "no rows" is distinguishable from "no output". `--json` and `--jsonl`
+carry the same timing block for every plain result (LABS-1120): `--json`
+wraps the rows as `{"data": [...], "timings": {...}, "planCache": "..."}`
+(the `PROFILE` wrapper's shape — a plain run with its result behind it no
+longer renders the bare array), and `--jsonl` closes every statement's
+stream with one keyed terminal line `{"timings": {...}, "planCache": "..."}`
+after any plan and `rowCap` lines — a zero-row statement emits exactly that
+line, nothing else. `-mode toon` renders terminal `timings:` and
+`planCache:` entries after the rows (the timing object inline, the outcome
+as a bare token). The strict text formats (`csv`, `cypher`) and the human
+`table` mode carry none of it — the interactive session's `.timer` line
+remains the human rendering. An `EXPLAIN`/`PROFILE` result is one
+`{"plan": ..., "notifications": [...]}` object in `--json`/`--jsonl`, with
+the complete list. A failure prints the [error
 envelope](#query-run-errors) as in the other JSON modes. New fields may be
 added; existing ones are never renamed.
 

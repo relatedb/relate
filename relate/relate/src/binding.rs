@@ -270,19 +270,26 @@ pub fn query_result_to_wire(result: &QueryResult) -> serde_json::Value {
     )
 }
 
-/// The statement's timing stamp for the canonical wire envelope (ADR-0491):
-/// the ADR-0221 wall-clock total together with its always-on PARSE / PLAN /
-/// EXECUTE split, each re-sourced through the one Duration→ms conversion
-/// behind its `QueryResult` accessor — never a second conversion site. The
-/// one projection every envelope-building surface calls (the wire envelope
-/// here, the MCP tool result): a surface must not hand-spell the
-/// `TimingStampMs` literal, or the re-sourcing policy drifts per surface.
+/// The statement's timing stamp for the canonical wire envelope (ADR-0491,
+/// extended by LABS-1120): the ADR-0221 wall-clock total together with its
+/// always-on PARSE / PLAN / EXECUTE split, the fine sub-split, and the
+/// plan-cache outcome, each re-sourced through the one Duration→ms
+/// conversion behind its `QueryResult` accessor — never a second conversion
+/// site. The one projection every envelope-building surface calls (the wire
+/// envelope here, the MCP tool result, the CLI and HTTP timing blocks): a
+/// surface must not hand-spell the `TimingStampMs` literal, or the
+/// re-sourcing policy drifts per surface.
 pub fn timing_stamp_ms(result: &QueryResult) -> relate_model::wire::TimingStampMs {
     relate_model::wire::TimingStampMs {
         elapsed_ms: result.elapsed_ms(),
         parse_ms: result.parse_ms(),
         plan_ms: result.plan_ms(),
         execute_ms: result.execute_ms(),
+        lex_parse_ms: result.lex_parse_ms(),
+        rewrite_ms: result.rewrite_ms(),
+        lower_ms: result.lower_ms(),
+        result_generation_ms: result.result_generation_ms(),
+        plan_cache: result.plan_cache().as_str(),
     }
 }
 

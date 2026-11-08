@@ -494,6 +494,22 @@ pub fn staged_path(stderr: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(staged)
 }
 
+/// LABS-1120: the per-statement timing terminal line of a `--jsonl`
+/// stream is metadata, never a data row — the one typed discriminator
+/// every JSONL-reading helper and e2e comparison uses: the terminal line
+/// is an object carrying exactly the timing rider's two keys (`timings`
+/// and `planCache`, the formatter's one rider builder), so a data row
+/// that happens to carry a `timings` column stays a row.
+#[allow(dead_code)]
+pub fn timing_terminal_line(line: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(serde_json::Value::Object(map)) => {
+            map.len() == 2 && map.contains_key("timings") && map.contains_key("planCache")
+        }
+        _ => false,
+    }
+}
+
 /// Run one follow-up query against a persisted database with `--jsonl` and
 /// return every row, parsed. `params` are the `--param name=value` arguments
 /// the query takes; pass `&[]` for a query without parameters.
@@ -520,6 +536,9 @@ pub fn query_rows(
     stdout
         .lines()
         .filter(|line| !line.trim().is_empty())
+        // LABS-1120: the stream's timing terminal line is metadata, not a
+        // data row — the helper's contract is the rows.
+        .filter(|line| !timing_terminal_line(line))
         .map(|line| {
             serde_json::from_str(line).unwrap_or_else(|error| panic!("bad JSON {line:?}: {error}"))
         })
@@ -671,4 +690,30 @@ pub fn commands_section_words(stdout: &str) -> Vec<&str> {
         .skip(1)
         .map(|line| line.split_whitespace().next().expect("command word"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timing_terminal_line;
+
+    /// LABS-1120: the typed discriminator — a data row whose column is
+    /// literally named `timings` is a row, never the terminal line (the
+    /// raw-substring filter this replaced dropped it), and only the
+    /// rider's exact two-key object is the terminal line.
+    #[test]
+    fn a_data_row_with_a_timings_column_stays_a_row() {
+        assert!(
+            !timing_terminal_line(r#"{"timings": 1}"#),
+            "a single `timings` column is a data row"
+        );
+        assert!(
+            !timing_terminal_line(r#"{"timings": 1, "a": 2}"#),
+            "a `timings` column beside another is a data row"
+        );
+        assert!(
+            timing_terminal_line(r#"{"timings":{"elapsed_ms":0.5},"planCache":"miss"}"#),
+            "the rider's exact two-key object is the terminal line"
+        );
+        assert!(!timing_terminal_line(r#"{"a": 1}"#), "a plain row is a row");
+    }
 }

@@ -75,22 +75,26 @@ fn test_param_tagged_objects_are_ordinary_maps_and_typed_values_use_cypher_const
             "RETURN $p AS p, $complete AS complete, $nested AS nested, point($coords) AS spatial, date($iso) AS temporal",
         ]));
     assert_eq!(status.code(), Some(0), "parameter query failed: {stderr}");
+    // LABS-1120: the rows ride under `data` beside the timing rider.
     let rows: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(rows[0]["p"], serde_json::json!({"__type":"point","x":1}));
     assert_eq!(
-        rows[0]["complete"],
+        rows["data"][0]["p"],
+        serde_json::json!({"__type":"point","x":1})
+    );
+    assert_eq!(
+        rows["data"][0]["complete"],
         serde_json::json!({"__type":"point","srid":7203,"x":1,"y":2})
     );
     assert_eq!(
-        rows[0]["nested"],
+        rows["data"][0]["nested"],
         serde_json::json!({"items":[{"__type":"date","value":"bad"}]})
     );
     assert_eq!(
-        rows[0]["spatial"],
+        rows["data"][0]["spatial"],
         /* the ADR-0223 wire form, LABS-107 */
         serde_json::json!({"crs": "cartesian", "srid": 7203, "x": 1.5, "y": 2.5})
     );
-    assert_eq!(rows[0]["temporal"], "2024-03-14");
+    assert_eq!(rows["data"][0]["temporal"], "2024-03-14");
 }
 
 #[test]
@@ -182,7 +186,7 @@ fn test_param_overflow_not_int_zero() {
     );
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"));
-    let arr = parsed.as_array().expect("expected JSON array");
+    let arr = parsed["data"].as_array().expect("expected the data array");
     assert_eq!(
         arr[0]["v"],
         serde_json::json!(1e20),
