@@ -118,6 +118,12 @@ mod engine_switch_tests;
 #[cfg(test)]
 mod chain_gate_tests;
 
+// The PROFILE rung record's own pins (LABS-1117): two distinct shapes
+// (a fixed chain and a var-length pattern) so a constant rung fails, plus
+// the walker's positive record.
+#[cfg(test)]
+mod rung_tests;
+
 mod chain;
 mod hub_star;
 
@@ -183,7 +189,9 @@ pub(crate) enum KernelOutput {
 
 /// The row-returning entry: one `MATCH` clause's patterns as the batch
 /// chain's traversal twin. `Ok(None)` is the decline — the caller runs
-/// its per-row path unchanged; `Ok(Some(rows))` is the clause's output.
+/// its per-row path unchanged; `Ok(Some((rows, rung)))` is the clause's
+/// output together with the rung that served it (LABS-1117), so the
+/// ladder's return value names the kernel without a second lookup.
 ///
 /// The engagement proofs beyond the matcher's: the clause is the
 /// statement's first (a single unbound seed row — bindings carried into a
@@ -205,7 +213,7 @@ pub(crate) fn try_match_kernel(
     patterns: &[PathPattern],
     where_clause: Option<&Expr>,
     cap_want: Option<usize>,
-) -> Result<Option<Vec<Row>>> {
+) -> Result<Option<(Vec<Row>, KernelRung)>> {
     if kernels_stood_down(ctx.graph.base()) {
         return Ok(None);
     }
@@ -220,6 +228,7 @@ pub(crate) fn try_match_kernel(
     if !engages(&stats, &conjuncts, &contract, false) {
         return Ok(None);
     }
+    let rung = contract.rung();
     #[cfg(test)]
     kernel_engaged();
     let residual = Residual {
@@ -233,7 +242,7 @@ pub(crate) fn try_match_kernel(
         KernelMode::Rows { want: cap_want },
     )?;
     Ok(Some(match output {
-        KernelOutput::Rows(rows) => rows,
+        KernelOutput::Rows(rows) => (rows, rung),
         // `run` answers Rows for the rows mode — the two halves of the
         // enum pair up at the two entry points, never across them.
         KernelOutput::Exists(_) => {
@@ -525,6 +534,8 @@ fn engages(
 #[cfg(test)]
 use std::cell::Cell;
 
+use crate::ctx::KernelRung;
+
 #[cfg(test)]
 thread_local! {
     /// Test hook: force the decline, so a differential test can pin the
@@ -638,7 +649,10 @@ pub(crate) fn with_rearival_deferred_budget<R>(work: u64, f: impl FnOnce() -> R)
     f()
 }
 
-/// Count one engagement.
+/// Count one engaged kernel — the differential suites' test-only counter.
+/// The production rung is the ladder's own return value (LABS-1117), so
+/// this counter never feeds PROFILE: a nested evaluation's engagement
+/// cannot be attributed to the enclosing clause.
 #[cfg(test)]
 fn kernel_engaged() {
     KERNEL_ENGAGED.with(|c| c.set(c.get() + 1));

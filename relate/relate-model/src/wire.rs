@@ -692,18 +692,25 @@ mod tests;
 pub(crate) mod plan_test_fixtures;
 
 // ---------------------------------------------------------------------------
-// Structured query plan wire form (ADR-0344/0345) — lives in `plan_wire`,
-// re-exported here so `wire::plan_keys` paths keep working: the one
-// public path stays under `wire`.
+// Structured query plan wire form (ADR-0344/0345) — the node types and
+// decoder live in `plan_wire`, the key vocabulary in its own `plan_keys`
+// module; both are re-exported here so the one public path stays under
+// `wire`.
 // ---------------------------------------------------------------------------
 
 #[path = "plan_wire.rs"]
 mod plan_wire;
 
+// The plan wire form's key vocabulary, its own module beside the types and
+// decoder it names (`plan_keys.rs`); `wire::plan_keys` stays the one public
+// path.
+#[path = "plan_keys.rs"]
+pub mod plan_keys;
+
 pub use plan_wire::{
-    metric_i64, metric_u64, plan_keys, plan_node_wire, plan_subtree_totals, profiled_facts,
-    time_ns_ms, PlanMetricsWire, PlanNodeWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire,
-    CYPHER_VERSION, NEO4J_PLANNER_IMPL, PLAN_UNAVAILABLE,
+    metric_i64, metric_u64, plan_node_wire, plan_subtree_totals, profiled_facts, time_ns_ms,
+    KernelRungWire, PlanMetricsWire, PlanNodeWire, PlanPhasesWire, PlanProfiledFacts,
+    PlanReadsWire, CYPHER_VERSION, NEO4J_PLANNER_IMPL, PLAN_UNAVAILABLE,
 };
 
 // The typed plan-warning vocabulary (LABS-461: one warning type) — its

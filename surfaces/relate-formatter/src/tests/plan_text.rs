@@ -531,6 +531,10 @@ fn the_frontier_kernel_marks_the_clause_it_ran() {
         !text.contains("[frontier-declined"),
         "a served clause carries no decline mark: {text}"
     );
+    assert!(
+        text.lines().any(|l| l.contains("[kernel frontier-nfa]")),
+        "the frontier rung names itself on the served row (LABS-1117): {text}"
+    );
     // The full enumeration the family declined carries no mark.
     let plain = text_of(
         &mut conn,
@@ -541,5 +545,46 @@ fn the_frontier_kernel_marks_the_clause_it_ran() {
     assert!(
         !plain.contains("[frontier"),
         "a declined clause carries no mark: {plain}"
+    );
+}
+
+/// LABS-1117: the Details cell names the traversal rung that served the
+/// `MATCH` — the chain with its hop count, the frontier-NFA rung, or the
+/// per-row walker — so the text table answers "which path ran this
+/// clause". A non-`MATCH` operator carries no mark.
+#[test]
+fn the_kernel_rung_marks_the_clause_it_served() {
+    let mut conn = conn();
+    conn.query(relate_test_support::plan_rung::THREE_HOP_CORRIDOR)
+        .unwrap();
+    let chain = text_of(
+        &mut conn,
+        &format!(
+            "PROFILE {}",
+            relate_test_support::plan_rung::THREE_HOP_MATCH
+        ),
+    )
+    .join("\n");
+    assert!(
+        chain.lines().any(|l| l.contains("[kernel chain hops=3]")),
+        "the chain rung and its hop count ride the served row: {chain}"
+    );
+
+    // The walker is a named rung too: an untyped rel leaves the kernels'
+    // closed vocabulary, so the ladder records the per-row walker.
+    let walked = text_of(
+        &mut conn,
+        "PROFILE MATCH (a:Alpha)-->(b:Beta) RETURN a.k AS ak",
+    )
+    .join("\n");
+    assert!(
+        walked.lines().any(|l| l.contains("[kernel walker]")),
+        "the walker rides its own row: {walked}"
+    );
+    assert!(
+        !walked
+            .lines()
+            .any(|l| l.contains("ProduceResults") && l.contains("[kernel")),
+        "a non-MATCH operator carries no rung: {walked}"
     );
 }

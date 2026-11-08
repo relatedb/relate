@@ -49,6 +49,7 @@ impl PlanMetricsSink for ProfileMetrics {
                 time_ns: record.time_ns,
                 reads: record.reads,
                 start: record.start,
+                kernel: record.kernel,
                 phases: record.phases,
                 batched: record.batched,
                 zone_skips: record.zone_skips,

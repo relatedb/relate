@@ -414,6 +414,51 @@ fn an_index_backed_start_narrates_the_seek_over_http() {
     assert_eq!(seek["arguments"]["EstimatedRows"], json!(5));
 }
 
+/// LABS-1117: the v2 plan's `arguments` carry the per-clause traversal
+/// rung (`KernelRung`, with the chain's `KernelHops`) and the static
+/// pattern-engine mode (`PatternEngine`) on the MATCH operator — the
+/// shared plan presentation's args, no HTTP-specific encoding.
+#[test]
+fn profile_plan_arguments_carry_the_traversal_rung() {
+    let db = db();
+    {
+        let mut conn = db.connect().unwrap();
+        conn.query(relate_test_support::plan_rung::THREE_HOP_CORRIDOR)
+            .unwrap();
+    }
+    let statement = format!(
+        "PROFILE {}",
+        relate_test_support::plan_rung::THREE_HOP_MATCH
+    );
+    let body = serde_json::json!({ "statement": statement }).to_string();
+    let reply = dispatch(&db, &post("neo4j", &body), OPEN, &txs());
+    assert_eq!(reply.status, 200);
+    let body = body_json(&reply);
+    let plan = &body["profiledQueryPlan"];
+
+    /// The first node (pre-order) whose `arguments` carry `key`.
+    fn arg<'a>(node: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+        if let Some(value) = node.get("arguments").and_then(|args| args.get(key)) {
+            return Some(value);
+        }
+        node.get("children")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|children| children.iter().find_map(|child| arg(child, key)))
+    }
+
+    assert_eq!(
+        arg(plan, "KernelRung"),
+        Some(&json!("chain")),
+        "the v2 plan names the chain rung: {plan:?}"
+    );
+    assert_eq!(arg(plan, "KernelHops"), Some(&json!(3)));
+    assert_eq!(
+        arg(plan, "PatternEngine"),
+        Some(&json!("auto")),
+        "the static pattern-engine mode rides the MATCH operator: {plan:?}"
+    );
+}
+
 #[test]
 fn explain_carries_query_plan_and_profile_carries_profiled_query_plan() {
     let db = db();

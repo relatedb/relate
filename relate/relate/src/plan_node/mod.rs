@@ -83,6 +83,15 @@ pub struct PlanNode {
     /// admission is on. `None` when admission is off, including every
     /// hand-built tree.
     pub token_estimate: Option<TokenEstimate>,
+    /// The store's active pattern-engine rung (LABS-1117):
+    /// `RELATE_PATTERN_ENGINE`'s `auto`/`nfa`/`walk`, stamped on every
+    /// `MATCH` operator at tree construction — the one static fact
+    /// EXPLAIN can state about which rung governs the clause's gates.
+    /// `None` on every other operator and on a hand-built tree; the wire
+    /// emits the `PatternEngine` arg when present. The *executed* rung
+    /// (chain/hub-star/frontier/walker) is a runtime fact and lives on
+    /// [`ClauseMetrics::kernel`].
+    pub pattern_engine: Option<relate_executor::PatternEngine>,
 }
 
 /// The PROFILE metrics collected per `(stage, part, clause)` — one
@@ -184,6 +193,16 @@ pub struct ClauseMetrics {
     /// `Expand` hid: a displaced start shows here instead of only as a
     /// large `Db Hits` total.
     pub start: Option<relate_executor::WalkStart>,
+    /// Which rung served the clause's `MATCH` walk (LABS-1117): the chain
+    /// kernel, the hub-star kernel, the frontier-NFA rung, or the per-row
+    /// walker. `None` exactly when no `MATCH` operator ran: a non-`MATCH`
+    /// clause; a `MATCH` a fold answered; a `MATCH` inside a nested
+    /// evaluation; and a `MATCH` the ADR-0468 batch chain answered
+    /// ([`ClauseMetrics::batched`]). A `SEARCH` `MATCH` reports `Walker`
+    /// (it runs the per-row walker directly). The plan table's `Details`
+    /// cell marks it (`[kernel …]`) and the wire emits `KernelRung` with
+    /// the metric set when present.
+    pub kernel: Option<relate_executor::KernelRung>,
     /// The clause's inclusive phase times (LABS-448): the seek (candidate
     /// resolution and admission — the `Nodes` kind's store work) and the
     /// walk (relationship traversal — the `Rels`/`Degree` kinds' store
@@ -247,6 +266,7 @@ impl PlanNode {
             warnings: Vec::new(),
             statement_echo: String::new(),
             token_estimate: None,
+            pattern_engine: None,
         }
     }
 
@@ -492,6 +512,9 @@ fn part_tree(
                 .copied(),
         );
         node.id = base + (clauses - 1 - clause_index);
+        // LABS-1117: the store's static pattern-engine rung, stamped on a
+        // MATCH operator so every EXPLAIN/PROFILE tree carries it.
+        node.pattern_engine = facts.pattern_engine;
         // `EstimationMiss` (typed node warnings): derived beside the
         // metrics through the one derivation helper — the same 10x
         // policy the ratio cell's warning marker reads.
@@ -535,6 +558,9 @@ struct ClauseNode {
     estimated_rows: Option<u64>,
     warnings: Vec<PlanWarning>,
     notifications: Vec<Notification>,
+    /// The store's active pattern-engine rung (LABS-1117), set on a
+    /// `MATCH` clause and `None` on every other.
+    pattern_engine: Option<relate_executor::PatternEngine>,
 }
 
 impl ClauseNode {
@@ -550,6 +576,7 @@ impl ClauseNode {
             estimated_rows: None,
             warnings: Vec::new(),
             notifications: Vec::new(),
+            pattern_engine: None,
         }
     }
 
@@ -565,6 +592,7 @@ impl ClauseNode {
             estimated_rows: None,
             warnings: Vec::new(),
             notifications: Vec::new(),
+            pattern_engine: None,
         }
     }
 }
@@ -633,6 +661,7 @@ fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode {
                 ),
                 warnings: warning::match_warnings(patterns, stats),
                 notifications: notifications::match_notifications(patterns, stats),
+                pattern_engine: stats.pattern_engine(),
                 ..ClauseNode::new(subject_operator, details, Vec::new())
             }
         }

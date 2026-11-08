@@ -36,6 +36,14 @@ pub(crate) trait PlanStats: PatternStats {
     /// component (the executor materializes and seeks each one); a
     /// relationship index contributes no node pair.
     fn range_indexed_properties(&self) -> Vec<RangeIndexedProperty>;
+
+    /// The store's active pattern-engine rung (LABS-1117), stamped on
+    /// every `MATCH` plan node so EXPLAIN carries the one static fact
+    /// about which rung governs the clause's gates. The live graph
+    /// answers; test fakes decline (`None`), so their trees carry no rung.
+    fn pattern_engine(&self) -> Option<relate_executor::PatternEngine> {
+        None
+    }
 }
 
 /// Label, index, and relationship-type counts from the connection's graph.
@@ -83,6 +91,12 @@ impl PlanStats for GraphPatternStats<'_> {
             .into_iter()
             .map(|(label, property)| RangeIndexedProperty { label, property })
             .collect()
+    }
+
+    /// The store's static pattern-engine rung (LABS-1117): the
+    /// `RELATE_PATTERN_ENGINE` value read once at `Database::open`.
+    fn pattern_engine(&self) -> Option<relate_executor::PatternEngine> {
+        Some(self.graph.pattern_engine())
     }
 }
 

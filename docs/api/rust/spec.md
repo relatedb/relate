@@ -1320,8 +1320,20 @@ The plan representation is the `PlanNode` tree:
   `[frontier-declined rearrival-budget]` and the wire emits
   `FrontierDeclineReason` with the metric set when present) is
   `None` on every EXPLAIN node and stamped on every clause-granularity
-  node the dispatch loop executed on a PROFILE run (ADR-0344). The tree
-  itself is only
+  node the dispatch loop executed on a PROFILE run (ADR-0344). `kernel`
+  (`Option<KernelRung>`, LABS-1117) names the traversal rung that served
+  the clause's `MATCH` walk — `Chain { hops }`, `HubStar`, `FrontierNfa`,
+  or `Walker` — `None` for every clause with no `MATCH` operator (a
+  non-`MATCH` clause, a folded `MATCH`, a nested `MATCH`) and for a
+  `MATCH` the batch chain answered (`batched`); a `SEARCH` `MATCH` reports
+  `Walker`; the `Details` cell marks
+  it `[kernel …]` and the wire emits `KernelRung` (plus `KernelHops` for
+  the chain) with the metric set when present. `PlanNode::pattern_engine`
+  (`Option<relate_executor::PatternEngine>`, LABS-1117) carries the
+  store's static `RELATE_PATTERN_ENGINE` mode on every `MATCH` operator,
+  EXPLAIN included (the wire `PatternEngine` arg) — the runtime rungs
+  are operator-internal choices, so the plan can state the mode while
+  `kernel` states what actually ran. The tree itself is only
   ever constructed on the
   EXPLAIN/PROFILE path, so a plain query pays nothing for it. `id` is the
   pre-order number (parent before children) the text `Id` column and the

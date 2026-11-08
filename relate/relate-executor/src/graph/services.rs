@@ -201,8 +201,10 @@ impl Graph {
 
     /// The store-level pattern-engine switch (ADR-0519) the kernel
     /// rungs' routing reads: [`PatternEngine::Auto`] on every store
-    /// opened without the diagnostic variable.
-    pub(crate) fn pattern_engine(&self) -> PatternEngine {
+    /// opened without the diagnostic variable. Public since LABS-1117:
+    /// the EXPLAIN tree stamps it on every `MATCH` operator, so the one
+    /// static rung fact travels with the plan.
+    pub fn pattern_engine(&self) -> PatternEngine {
         self.services.pattern_engine
     }
 

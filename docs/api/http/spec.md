@@ -661,7 +661,11 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   Neo4j-facing float the decoration writes, ADR-0357), the PROFILE metric
   entries (`Rows`, `TimeNs`, `DbHits`, `MemoryBytes`, `ExpressionBuiltBytes` —
   Neo4j's own
-  `arguments` keeps its `Rows`/`DbHits` there too), and on the root the
+  `arguments` keeps its `Rows`/`DbHits` there too), the ADR-0538
+  traversal-rung entries on a `MATCH` operator (`PatternEngine`, the
+  store's `RELATE_PATTERN_ENGINE` mode; and on a PROFILE tree the served
+  clause's `KernelRung` — `chain` with `KernelHops`, `hub-star`,
+  `frontier-nfa`, or `walker`), and on the root the
   Neo4j-facing args (`version`, `planner*`, `runtime*`, `Memory`,
   `GlobalMemory`, `string-representation`). The metric fields above are
   projected from the same values, so both carry the metric (Neo4j's own

@@ -11,7 +11,7 @@ use web_time::Instant;
 use relate_core::{Error, Result, Value};
 use relate_ir::{Clause, MatchMode};
 
-use crate::ctx::{ClauseMetricsRecord, ExecCtx, PlanMetricsSite, QueryCtx};
+use crate::ctx::{ClauseMetricsRecord, ExecCtx, KernelRung, PlanMetricsSite, QueryCtx};
 use crate::eval::rows_logical_bytes;
 use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
@@ -184,11 +184,14 @@ fn run_clauses_mode(
         // `RETURN` moves its cells into the query result before this tail
         // runs. Record that clause while the values are still in the rows.
         let mut profile_recorded = false;
-        // ADR-0468 (LABS-359): whether this clause ran the batch
-        // scan/filter/project chain — a PROFILE fact the metric tick
-        // reports, beside the rows it produced. Set only by the `MATCH`
-        // arm that took the chain; `false` is every other clause's value.
-        let mut clause_batched = false;
+        // The operator that served this clause's `MATCH` (LABS-1117) — the
+        // single source both PROFILE facts project from (`batched` and the
+        // rung). `None` exactly when no `MATCH` operator ran: a non-`MATCH`
+        // clause; a `MATCH` a fold answered (`try_match_folds`, e.g. a
+        // boolean or walk count); and a `MATCH` inside a nested evaluation
+        // (which has its own loop). A `SEARCH` `MATCH` sets `Rung(Walker)`:
+        // it runs the per-row walker directly, so its rung is the walker.
+        let mut clause_operator: Option<MatchOperator> = None;
         // The read path's one admission rule, asked once per clause before
         // any clause arm runs: the policy names the message, the dispatcher
         // only reports it. The clause match below therefore holds clause arms
@@ -304,6 +307,11 @@ fn run_clauses_mode(
                         where_clause.as_ref(),
                         search,
                     )?;
+                    // A SEARCH MATCH resolves its candidate window from
+                    // the vector index and then walks the pattern with the
+                    // per-row `match_clause` directly (`exec/search.rs`),
+                    // never the ladder — its rung is the walker (LABS-1117).
+                    clause_operator = Some(MatchOperator::Rung(KernelRung::Walker));
                     if let Some(live) = live_from(&clauses[i + 1..]) {
                         trim_rows(&mut rows, &live);
                     }
@@ -371,7 +379,9 @@ fn run_clauses_mode(
                                 &clauses[i + 1..],
                             )?;
                             rows = ladder_rows;
-                            clause_batched = matches!(operator, MatchOperator::BatchChain);
+                            // The ladder's one returned value; the tick
+                            // projects both PROFILE facts from it below.
+                            clause_operator = Some(operator);
                             if projection.is_some() {
                                 rows_source = RowSource::SinkProjected;
                             } else if let Some(live) = live_from(&clauses[i + 1..]) {
@@ -391,7 +401,7 @@ fn run_clauses_mode(
                             // charge here — #763 owns their per-push
                             // form. The refusal fires at ~the cap with
                             // the crossing row's honest figure.
-                            if !matches!(operator, MatchOperator::Walker) {
+                            if !matches!(operator, MatchOperator::Rung(KernelRung::Walker)) {
                                 let mut match_retained = graph.retain_bytes(0)?;
                                 for row in &rows {
                                     match_retained.add_row(graph, row.values())?;
@@ -535,7 +545,7 @@ fn run_clauses_mode(
                     scope,
                 )?;
                 if let Some(tick) = &metrics_tick {
-                    tick.record(i, &rows, clause_batched);
+                    tick.record(i, &rows, clause_operator);
                     profile_recorded = true;
                 }
                 last_result = Some(return_result(graph, items, clauses, &mut rows)?);
@@ -550,7 +560,7 @@ fn run_clauses_mode(
         // read, the counter reads, and the row-size walk happen only on the
         // PROFILE path.
         if let Some(tick) = metrics_tick.filter(|_| !profile_recorded) {
-            tick.record(i, &rows, clause_batched);
+            tick.record(i, &rows, clause_operator);
         }
         clause_i = i + 1 + skip;
     }
@@ -570,6 +580,19 @@ impl ExpressionBytes {
 
     fn since(self, start: Self) -> u64 {
         self.0.saturating_sub(start.0)
+    }
+}
+
+/// The two PROFILE facts a clause's `MATCH` operator projects to
+/// (LABS-1117): the ADR-0468 `batched` flag and the traversal rung. Both
+/// derive from the ladder's one returned value — the dispatcher's only
+/// projection, so the two cannot disagree, and the `None` operator (no
+/// ladder ran) is stated once.
+fn match_facts(operator: Option<MatchOperator>) -> (bool, Option<crate::ctx::KernelRung>) {
+    match operator {
+        None => (false, None),
+        Some(MatchOperator::BatchChain) => (true, None),
+        Some(MatchOperator::Rung(rung)) => (false, Some(rung)),
     }
 }
 
@@ -674,7 +697,12 @@ impl ProfileTick<'_> {
     /// (ADR-0478) carries the frontier family's run counters — the
     /// delta of the counter snapshot the tick took, the same
     /// subtraction's shape.
-    fn record(&self, clause: usize, rows: &[Row], batched: bool) {
+    /// `operator` is the clause's `MATCH` ladder result (LABS-1117); the
+    /// tick projects the `batched` flag and the rung from it here — the
+    /// one projection, so the two facts cannot disagree and a non-`MATCH`
+    /// clause's `None` carries both.
+    fn record(&self, clause: usize, rows: &[Row], operator: Option<MatchOperator>) {
+        let (batched, kernel) = match_facts(operator);
         let reads = super::store_reads().since(self.reads);
         self.site.sink.record_clause(ClauseMetricsRecord {
             stage: self.site.stage,
@@ -688,6 +716,7 @@ impl ProfileTick<'_> {
             reads,
             phases: crate::ctx::phase_times().since(self.phases),
             start: super::take_walk_start(),
+            kernel,
             batched,
             zone_skips: super::zone_skips() - self.zone_skips,
             frontier: super::frontier_counters().since(self.frontier),

@@ -113,11 +113,10 @@ pub(crate) fn try_fold_walk_count(
     for seed in seeds(ctx, &contract, entering, &residual)? {
         let mut facts = FrontierCounters::default();
         let walks = count_walks(graph, &contract.nfa, seed, &mut facts)?;
-        // The run's accounting, either way (the rider's `record_run`
-        // spelling): the PROFILE `[frontier]` counters and the
-        // neighbor-walk read mix.
-        super::super::count_neighbor_walks(facts.edge_visits);
-        super::super::count_frontier(facts);
+        // The run's accounting, either way — the rider's one helper, so
+        // the PROFILE `[frontier]` counters and the neighbor-walk read
+        // mix cannot drift between the two arms.
+        super::frontier_run::record_run(facts);
         let Some(walks) = walks else {
             return Ok(None);
         };

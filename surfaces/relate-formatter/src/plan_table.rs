@@ -11,8 +11,8 @@
 use std::io::Write;
 
 use relate_model::wire::{
-    estimation_miss, metric_u64, profiled_facts, ratio_defined, time_ns_ms, PlanMetricsWire,
-    PlanProfiledFacts, PlanWarning, PLAN_UNAVAILABLE,
+    estimation_miss, metric_u64, profiled_facts, ratio_defined, time_ns_ms, KernelRungWire,
+    PlanMetricsWire, PlanProfiledFacts, PlanWarning, PLAN_UNAVAILABLE,
 };
 use relate_model::CypherValue;
 
@@ -316,6 +316,17 @@ fn details_marks(metrics: &PlanMetricsWire) -> Vec<String> {
             "start #{}, {direction}, {}",
             start.element, start.reason
         ));
+    }
+    // LABS-1117: the traversal rung that served the clause's MATCH —
+    // the chain (with its hop count), the hub-star, the frontier-NFA
+    // rung, or the per-row walker. The typed value carries the pairing,
+    // so no string comparison can silently drop the hop count.
+    if let Some(rung) = metrics.kernel {
+        let name = rung.as_str();
+        marks.push(match rung {
+            KernelRungWire::Chain { hops } => format!("kernel {name} hops={hops}"),
+            _ => format!("kernel {name}"),
+        });
     }
     if metrics.batched {
         marks.push("batched".to_string());

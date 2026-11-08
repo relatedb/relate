@@ -75,7 +75,7 @@ mod vector_similarity;
 pub use catalog_meta::{DeprecatedBy, DeprecationForm};
 pub use csv::CsvPolicy;
 pub use ctx::{
-    BatchCommit, ClauseMetricsRecord, FrontierCounters, FrontierRunDecline, PhaseTimes,
+    BatchCommit, ClauseMetricsRecord, FrontierCounters, FrontierRunDecline, KernelRung, PhaseTimes,
     PlanMetricsSink, StartReason, StoreReads, WalkStart,
 };
 pub use effect::StatementEffect;

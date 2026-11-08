@@ -203,8 +203,9 @@ pub(crate) fn try_frontier_rows(
             unreachable!("the Exists and WalkCount declines above already returned")
         }
     }
-    // The engagement the test counter reads (the exists entry's own arm
-    // counts its engagement at its caller, `kernels/mod.rs`).
+    // The test counter's engagement tick (the production rung is the
+    // ladder's own return value now, LABS-1117; the exists entry's own
+    // arm counts at its caller, `kernels/mod.rs`).
     #[cfg(test)]
     super::kernel_engaged();
     Row::share_schemas(&mut out);
@@ -442,7 +443,8 @@ pub(super) fn seeds(
 /// neighbor walk, the same read kind the chain kernel's traversals
 /// tick, batched once per run. The facts are the outcome's own
 /// ([`RunOutcome::facts`]), either arm: a declined run still walked.
-fn record_run(facts: FrontierCounters) {
+/// Shared with the walk-count arm (`frontier_count`), its other caller.
+pub(super) fn record_run(facts: FrontierCounters) {
     super::super::count_neighbor_walks(facts.edge_visits);
     super::super::count_frontier(facts);
 }

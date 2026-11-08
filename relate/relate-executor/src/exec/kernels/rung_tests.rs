@@ -1,0 +1,127 @@
+//! LABS-1117: the PROFILE record names the traversal rung that served a
+//! `MATCH` clause — the fact EXPLAIN cannot show, because the rungs are
+//! runtime choices inside an operator, not plan nodes.
+//!
+//! Two distinct shapes pin the record as the *actual* rung, never a
+//! constant: a 3-hop fixed chain (the chain kernel, with its hop count)
+//! and an unbounded quantifier (the frontier-NFA rung). A record that
+//! always returned one value fails one of the two.
+
+use relate_core::Value;
+
+use crate::ctx::KernelRung;
+
+use super::super::test_support::{profiled, Builder};
+use super::frontier_rider_tests::ring_graph;
+
+/// A 3-hop fixed chain in the chain kernel's closed vocabulary (typed
+/// hops, static label conjunctions, one terminal predicate) — the
+/// corridor's longer sibling, so the recorded hop count is the shape's
+/// own three, not a constant.
+fn three_hop_corridor() -> crate::graph::Graph {
+    let b = Builder::new();
+    let a1 = b.prop_node("a1", &["Alpha"], &[("k", Value::Int(1))]);
+    let a2 = b.prop_node("a2", &["Alpha"], &[("k", Value::Int(2))]);
+    let b1 = b.node("b1", &["Beta"]);
+    let b2 = b.node("b2", &["Beta"]);
+    let g1 = b.node("g1", &["Gamma"]);
+    let g2 = b.node("g2", &["Gamma"]);
+    let d1 = b.prop_node("d1", &["Delta"], &[("name", Value::String("one".into()))]);
+    let d2 = b.prop_node("d2", &["Delta"], &[("name", Value::String("two".into()))]);
+    b.rel(a1, b1, "R", &[]);
+    b.rel(a2, b2, "R", &[]);
+    b.rel(b1, g1, "S", &[]);
+    b.rel(b2, g2, "S", &[]);
+    b.rel(g1, d1, "T", &[]);
+    b.rel(g2, d2, "T", &[]);
+    b.done()
+}
+
+/// The one record whose `MATCH` clause a rung served — the ladder's own
+/// fact, found by the field rather than by a clause position.
+fn served(records: &[crate::ctx::ClauseMetricsRecord]) -> &crate::ctx::ClauseMetricsRecord {
+    records
+        .iter()
+        .find(|record| record.kernel.is_some())
+        .unwrap_or_else(|| panic!("a rung served the MATCH clause ({} records)", records.len()))
+}
+
+/// The unrolled fixed-k chain engages on a 3-hop typed chain, and the
+/// record names it with its hop count — not the walker, not the frontier.
+#[test]
+fn profile_names_the_chain_kernel_for_a_fixed_chain() {
+    let graph = three_hop_corridor();
+    let records = profiled(&graph, relate_test_support::plan_rung::THREE_HOP_MATCH);
+    assert_eq!(
+        served(&records).kernel,
+        Some(KernelRung::Chain { hops: 3 }),
+        "the fixed 3-hop chain runs the chain kernel"
+    );
+}
+
+/// The frontier-NFA rung engages on an unbounded quantifier whose answer
+/// is the distinct endpoint set, and the record names it — never the
+/// chain, never the walker.
+#[test]
+fn profile_names_the_frontier_rung_for_a_varlen_pattern() {
+    let graph = ring_graph();
+    let records = profiled(
+        &graph,
+        "MATCH (x:Geo {id:'n0'})-[:LINK*]-(y:Geo) RETURN count(DISTINCT y.id) AS c",
+    );
+    assert_eq!(
+        served(&records).kernel,
+        Some(KernelRung::FrontierNfa),
+        "the unbounded distinct-endpoint shape runs the frontier rung"
+    );
+}
+
+/// The walker is a recorded rung too, not an absent fact: a `MATCH` the
+/// traversal gates decline (a pattern outside the kernels' closed
+/// vocabulary) reports `Walker`, and no other clause of the statement
+/// reports a rung at all.
+#[test]
+fn profile_names_the_walker_for_a_declined_pattern() {
+    let built = super::super::test_support::build(
+        &[&["N"], &["N"], &["N"], &["N"]],
+        &[(0, 1, "E"), (1, 2, "E"), (2, 3, "E")],
+    );
+    // An untyped rel keeps the recursive walker (the matcher's static
+    // type-list proof), so no kernel engages.
+    let records = profiled(&built.graph, "MATCH (a:N)-->(b:N) RETURN b");
+    let served = served(&records);
+    assert_eq!(served.kernel, Some(KernelRung::Walker));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.kernel.is_some())
+            .count(),
+        1,
+        "only the MATCH clause carries a rung"
+    );
+}
+
+/// A nested evaluation's rung never lands on the enclosing clause
+/// (LABS-1117): a `CALL { … }` subquery and a `RETURN EXISTS { … }` have
+/// no `MATCH` ladder of their own, so their records carry no rung even
+/// when the inner `MATCH` runs the chain kernel. The rung is the
+/// ladder's return value, not a thread-local the nesting could inherit.
+#[test]
+fn a_nested_match_rung_does_not_leak_onto_the_enclosing_clause() {
+    let graph = three_hop_corridor();
+    let chain = "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma)-[:T]->(d:Delta)";
+    for cypher in [
+        format!(
+            "CALL {{ {chain} WHERE a.k >= 1 AND d.name CONTAINS 'o' \
+             RETURN a.k AS ak, d.name AS dn LIMIT 99 }} RETURN ak LIMIT 10"
+        ),
+        format!("RETURN EXISTS {{ {chain} }} AS hit"),
+    ] {
+        let records = profiled(&graph, &cypher);
+        let rungs: Vec<_> = records.iter().map(|record| record.kernel).collect();
+        assert!(
+            rungs.iter().all(Option::is_none),
+            "no clause reports the nested MATCH's rung for {cypher}: {rungs:?}"
+        );
+    }
+}

@@ -18,6 +18,7 @@ pub mod git;
 pub mod loopback;
 #[cfg(feature = "nested_eval")]
 pub mod nested_eval;
+pub mod plan_rung;
 #[cfg(feature = "pokec")]
 pub mod pokec;
 pub mod rng;

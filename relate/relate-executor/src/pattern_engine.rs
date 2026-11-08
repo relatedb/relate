@@ -44,18 +44,49 @@ pub enum PatternEngine {
     Walk,
 }
 
+impl PatternEngine {
+    /// Every rung, in the vocabulary's order — the parser's iteration
+    /// source, so the accepted names derive from [`Self::as_str`] instead
+    /// of a second hand-maintained match. Crate-private: the only readers
+    /// are this module's `from_str` and `expected_names`, so the table is
+    /// not part of the re-exported type's surface.
+    pub(crate) const ALL: [PatternEngine; 3] =
+        [PatternEngine::Auto, PatternEngine::Nfa, PatternEngine::Walk];
+
+    /// The rung's stable wire name — the same three values the env value
+    /// parses (`auto`, `nfa`, `walk`), single-sourced here for the plan
+    /// args.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PatternEngine::Auto => "auto",
+            PatternEngine::Nfa => "nfa",
+            PatternEngine::Walk => "walk",
+        }
+    }
+
+    /// The authored rejection's expected-names clause, built from
+    /// [`Self::ALL`] so a renamed rung reaches the message too.
+    fn expected_names() -> String {
+        let names = Self::ALL.map(Self::as_str);
+        let (last, rest) = names.split_last().expect("three pattern engines");
+        format!("{}, or {last}", rest.join(", "))
+    }
+}
+
 impl FromStr for PatternEngine {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "nfa" => Ok(Self::Nfa),
-            "walk" => Ok(Self::Walk),
-            other => Err(Error::semantic(format!(
-                "invalid pattern engine {other:?}; expected auto, nfa, or walk"
-            ))),
-        }
+        let lower = s.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|engine| engine.as_str() == lower)
+            .ok_or_else(|| {
+                Error::semantic(format!(
+                    "invalid pattern engine {lower:?}; expected {}",
+                    Self::expected_names()
+                ))
+            })
     }
 }
 

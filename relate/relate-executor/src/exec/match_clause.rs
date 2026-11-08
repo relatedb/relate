@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use relate_core::{RelId, Result};
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
-use crate::ctx::ExecCtx;
+use crate::ctx::{ExecCtx, KernelRung};
 use crate::eval::candidate_passes;
 use crate::row::{Row, RowRung};
 
@@ -28,17 +28,21 @@ use super::project::{finish_match_row, SinkProjection};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
 
-/// Which operator took one `MATCH` clause down the ladder — the
-/// dispatcher's PROFILE `batched` fact (ADR-0468) reports the batch
-/// chain; the kernel and the row loop report unbatched.
+/// Which operator took one `MATCH` clause down the ladder — the one
+/// operator-state vocabulary (LABS-1117). The two facts the dispatcher
+/// records project from this single value: [`MatchOperator::BatchChain`]
+/// is the ADR-0468 `batched` fact, and [`MatchOperator::Rung`] carries
+/// the clause's `KernelRung` (the walker included). The ladder returns
+/// it, so a nested evaluation cannot contribute or overwrite one.
+#[derive(Clone, Copy)]
 pub(crate) enum MatchOperator {
     /// ADR-0468 (LABS-359): the batch scan/filter/project chain over
     /// `Chunk`.
     BatchChain,
-    /// ADR-0473 (LABS-644): a contracted traversal kernel.
-    Kernel,
-    /// This module's per-row `match_clause` — every decline's home.
-    Walker,
+    /// The traversal rung that served the clause: a contracted kernel
+    /// (ADR-0473), the frontier rung (ADR-0478), or the per-row walker
+    /// (every decline's home).
+    Rung(KernelRung),
 }
 
 /// Run one `MATCH` clause the folds declined down the operator ladder:
@@ -88,7 +92,7 @@ pub(crate) fn run_match_operator_ladder(
         suffix,
         projection,
     )? {
-        return Ok((rows, MatchOperator::Kernel));
+        return Ok((rows, MatchOperator::Rung(KernelRung::FrontierNfa)));
     }
     // The one cap classification both rungs below read: the plain cap's
     // want, `Some` only for a plain cap. The gate admits the clause on
@@ -122,9 +126,11 @@ pub(crate) fn run_match_operator_ladder(
     if let Some(rows) = batched {
         return Ok((rows, MatchOperator::BatchChain));
     }
-    if let Some(rows) = kernaled {
-        return Ok((rows, MatchOperator::Kernel));
+    if let Some((rows, rung)) = kernaled {
+        return Ok((rows, MatchOperator::Rung(rung)));
     }
+    // Every rung above declined: the walker is this clause's rung, and
+    // the ladder's return value carries it (LABS-1117).
     Ok((
         match_clause(
             ctx,
@@ -136,7 +142,7 @@ pub(crate) fn run_match_operator_ladder(
             cap.as_mut(),
             projection,
         )?,
-        MatchOperator::Walker,
+        MatchOperator::Rung(KernelRung::Walker),
     ))
 }
 

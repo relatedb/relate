@@ -237,6 +237,7 @@ fn profile_fixture() -> PlanFixture {
             reads: Default::default(),
             phases: Default::default(),
             start: None,
+            kernel: None,
             batched: false,
             zone_skips: 0,
             frontier: Default::default(),
