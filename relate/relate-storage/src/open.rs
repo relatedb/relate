@@ -10,6 +10,11 @@ use crate::snapshot::{self, LoadedSnapshot};
 use crate::wal::Wal;
 use crate::{codec, version, SnapshotCodecKind, StoreTarget};
 
+/// One codec's checkpoint writer. The graph is the export surface, so the
+/// pointer does not name a concrete engine.
+type CheckpointDump =
+    fn(&StoreTarget, &dyn relate_engine_api::GraphImport, u64, u64, Option<&str>) -> Result<()>;
+
 /// The codec vocabulary's one behavioral surface: what the codec does at
 /// the open tail — the dirty-WAL guard plus the load's deferred open-time
 /// action — whether it sweeps orphaned store objects after open, how it
@@ -24,8 +29,7 @@ pub(crate) struct CodecOps {
     pub(crate) finish_open:
         fn(&StoreTarget, u64, u64, Option<snapshot::DeferredOpenAction>) -> Result<()>,
     pub(crate) sweep_after_open: fn(&StoreTarget) -> Result<()>,
-    pub(crate) dump:
-        fn(&StoreTarget, &dyn relate_engine_api::GraphImport, u64, u64, Option<&str>) -> Result<()>,
+    pub(crate) dump: CheckpointDump,
     pub(crate) snapshot_data_bytes: fn(&StoreTarget) -> Result<u64>,
 }
 
