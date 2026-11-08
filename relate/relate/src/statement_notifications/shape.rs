@@ -170,23 +170,27 @@ impl ExhaustivePredicateVars {
 /// created in the same clause. One notification per (referencing property
 /// expression, referenced entity) pair.
 pub(super) fn observe_create(notifications: &mut Vec<Notification>, patterns: &[PathPattern]) {
-    let created: BTreeSet<String> = patterns
-        .iter()
-        .flat_map(|pattern| {
+    // One post-rewrite walk collects both facts the scan needs: the created
+    // names and the property maps that may read them.
+    let mut created: BTreeSet<String> = BTreeSet::new();
+    let mut property_maps: Vec<&[(_, Expr)]> = Vec::new();
+    for pattern in patterns {
+        walk_pattern_payloads(pattern, &mut |payload| {
+            let (variable, properties) = match payload {
+                PatternPayload::Node(node) => (&node.variable, &node.properties),
+                PatternPayload::Relationship(rel) => (&rel.variable, &rel.properties),
+                PatternPayload::Quantified(_) => return,
+            };
             // Text render: the created-name set is the String sink the
             // property expressions' variable reads probe.
-            pattern
-                .nodes
-                .iter()
-                .filter_map(|node| node.variable.as_ref().map(|v| v.to_string()))
-                .chain(
-                    pattern
-                        .rels
-                        .iter()
-                        .filter_map(|rel| rel.variable.as_ref().map(|v| v.to_string())),
-                )
-        })
-        .collect();
+            if let Some(variable) = variable {
+                created.insert(variable.to_string());
+            }
+            if let Some(Expr::Map(items)) = properties {
+                property_maps.push(items);
+            }
+        });
+    }
     if created.is_empty() {
         return;
     }
@@ -194,51 +198,23 @@ pub(super) fn observe_create(notifications: &mut Vec<Notification>, patterns: &[
     // past the shared budget, like the sibling detectors, so a crafted `CREATE`
     // with a wide property map and many created entities cannot pin a core
     // before execution.
-    let values: u64 = patterns
-        .iter()
-        .flat_map(|pattern| {
-            pattern
-                .nodes
-                .iter()
-                .map(|node| &node.properties)
-                .chain(pattern.rels.iter().map(|rel| &rel.properties))
-        })
-        .map(|properties| match properties {
-            Some(Expr::Map(items)) => items.len() as u64,
-            _ => 0,
-        })
-        .sum();
+    let values: u64 = property_maps.iter().map(|items| items.len() as u64).sum();
     if !within_work_budget(values.saturating_mul(created.len() as u64)) {
         return;
     }
-    for pattern in patterns {
-        let payloads = pattern
-            .nodes
-            .iter()
-            .map(|node| (&node.variable, &node.properties))
-            .chain(
-                pattern
-                    .rels
-                    .iter()
-                    .map(|rel| (&rel.variable, &rel.properties)),
-            );
-        for (_, properties) in payloads {
-            let Some(Expr::Map(items)) = properties else {
-                continue;
-            };
-            for (_, value) in items {
-                let mut vars = HashSet::new();
-                expr_vars(value, &mut vars);
-                for name in &created {
-                    if vars.contains(name) {
-                        notifications.push(Notification::new(
-                            NotificationKind::CreateSelfReference,
-                            format!(
-                                "Creating an entity (`{name}`) and referencing that entity \
-                                 in a property definition in the same CREATE is deprecated."
-                            ),
-                        ));
-                    }
+    for items in property_maps {
+        for (_, value) in items {
+            let mut vars = HashSet::new();
+            expr_vars(value, &mut vars);
+            for name in &created {
+                if vars.contains(name) {
+                    notifications.push(Notification::new(
+                        NotificationKind::CreateSelfReference,
+                        format!(
+                            "Creating an entity (`{name}`) and referencing that entity \
+                             in a property definition in the same CREATE is deprecated."
+                        ),
+                    ));
                 }
             }
         }
@@ -725,9 +701,6 @@ fn complex_references<'a>(
 /// [`SHAPE_CHECK_WORK_BUDGET`] the check declines (returns `false`, emitting
 /// no notification): a wide crafted conjunction must not pin a core.
 fn type_expression_unsatisfiable(expr: &LabelExpr) -> bool {
-    if label_expression_has_dynamic(expr) {
-        return false;
-    }
     let mut names = BTreeSet::new();
     collect_label_names(expr, &mut names);
     let candidates = names.len() as u64 + 1;
@@ -736,9 +709,17 @@ fn type_expression_unsatisfiable(expr: &LabelExpr) -> bool {
     }
     let mut candidates: Vec<Option<&str>> = names.iter().map(|name| Some(name.as_str())).collect();
     candidates.push(None);
-    !candidates
-        .into_iter()
-        .any(|candidate| label_expression_satisfied(expr, candidate))
+    // The first candidate's evaluation visits every node, so a dynamic
+    // member anywhere makes the first call `None` and declines the check.
+    let mut satisfiable = false;
+    for candidate in candidates {
+        match label_expression_satisfied(expr, candidate) {
+            Some(true) => satisfiable = true,
+            Some(false) => {}
+            None => return false,
+        }
+    }
+    !satisfiable
 }
 
 /// The expression's node count — the per-candidate cost of
@@ -753,462 +734,35 @@ fn label_expression_size(expr: &LabelExpr) -> usize {
     }
 }
 
-fn label_expression_has_dynamic(expr: &LabelExpr) -> bool {
-    match expr {
-        LabelExpr::Dynamic { .. } => true,
-        LabelExpr::Not(inner) => label_expression_has_dynamic(inner),
-        LabelExpr::And(items) | LabelExpr::Or(items) => {
-            items.iter().any(label_expression_has_dynamic)
-        }
-        LabelExpr::Label(_) | LabelExpr::Wildcard => false,
-    }
-}
-
 /// The expression's truth under a relationship whose single type is
-/// `candidate`; `None` is a type the expression does not name.
-fn label_expression_satisfied(expr: &LabelExpr, candidate: Option<&str>) -> bool {
-    match expr {
+/// `candidate`; `None` is a type the expression does not name. The result
+/// is `None` when the expression holds a dynamic label (its truth is a
+/// runtime fact), so the undecidable case is the callee's typed answer, not
+/// a caller-side guard. Every node is visited (no short-circuit), so the
+/// `None` surfaces whatever the candidate.
+fn label_expression_satisfied(expr: &LabelExpr, candidate: Option<&str>) -> Option<bool> {
+    Some(match expr {
         LabelExpr::Label(name) => name.with_str(|text| candidate == Some(text)),
         LabelExpr::Wildcard => true,
-        LabelExpr::Not(inner) => !label_expression_satisfied(inner, candidate),
-        LabelExpr::And(items) => items
-            .iter()
-            .all(|item| label_expression_satisfied(item, candidate)),
-        LabelExpr::Or(items) => items
-            .iter()
-            .any(|item| label_expression_satisfied(item, candidate)),
-        LabelExpr::Dynamic { .. } => false,
-    }
+        LabelExpr::Not(inner) => !label_expression_satisfied(inner, candidate)?,
+        LabelExpr::And(items) => {
+            let mut all = true;
+            for item in items {
+                all &= label_expression_satisfied(item, candidate)?;
+            }
+            all
+        }
+        LabelExpr::Or(items) => {
+            let mut any = false;
+            for item in items {
+                any |= label_expression_satisfied(item, candidate)?;
+            }
+            any
+        }
+        LabelExpr::Dynamic { .. } => return None,
+    })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use relate_names::SmallName;
-
-    fn label(name: &str) -> LabelExpr {
-        LabelExpr::Label(name.into())
-    }
-
-    /// ADR-0363: a relationship has exactly one type, so a conjunction of
-    /// two distinct type names — or a conjunction of a type with a
-    /// disjunction of other types — admits no type. A disjunction and a
-    /// negation stay satisfiable; a dynamic part declines the check.
-    #[test]
-    fn relationship_type_expression_satisfiability_follows_the_one_type_rule() {
-        assert!(type_expression_unsatisfiable(&LabelExpr::And(vec![
-            label("A"),
-            label("B"),
-        ])));
-        assert!(type_expression_unsatisfiable(&LabelExpr::And(vec![
-            LabelExpr::Not(Box::new(label("A"))),
-            label("B"),
-            LabelExpr::Or(vec![label("C"), label("D")]),
-        ])));
-        assert!(!type_expression_unsatisfiable(&LabelExpr::Or(vec![
-            label("A"),
-            label("B"),
-        ])));
-        assert!(!type_expression_unsatisfiable(&label("A")));
-        assert!(!type_expression_unsatisfiable(&LabelExpr::Not(Box::new(
-            label("A")
-        ))));
-        assert!(!type_expression_unsatisfiable(&LabelExpr::And(vec![
-            label("A"),
-            LabelExpr::Dynamic {
-                expr: Box::new(Expr::Parameter("p".into())),
-                quantifier: relate_ir::DynamicLabelQuantifier::Default,
-            },
-        ])));
-    }
-
-    /// A crafted wide conjunction must not pay names × expression nodes:
-    /// every candidate fails (which is the input's point), so nothing
-    /// short-circuits. Past the shared budget the check declines and returns
-    /// `false`; a small conjunction is still checked normally.
-    #[test]
-    fn wide_type_expression_declines_past_the_work_budget() {
-        // (WIDTH + 1) candidate types × (WIDTH + 1) expression nodes is well
-        // past SHAPE_CHECK_WORK_BUDGET.
-        const WIDTH: usize = 5000;
-        let wide = LabelExpr::And(
-            (0..WIDTH)
-                .map(|index| label(&format!("T{index}")))
-                .collect(),
-        );
-        assert!(
-            !type_expression_unsatisfiable(&wide),
-            "a wide conjunction declines instead of scanning every candidate"
-        );
-        assert!(
-            type_expression_unsatisfiable(&LabelExpr::And(vec![label("A"), label("B")])),
-            "a small conjunction is still checked"
-        );
-    }
-
-    /// The sibling scans carry the same budget: a `CREATE` whose property map
-    /// and created-entity count multiply past `SHAPE_CHECK_WORK_BUDGET`
-    /// declines (no notification) instead of testing every pair.
-    #[test]
-    fn wide_create_self_reference_scan_declines_past_the_work_budget() {
-        // WIDTH property values × WIDTH created entities is well past the
-        // budget; the values reference the created names, so a checked scan
-        // would emit WIDTH notifications.
-        const WIDTH: usize = 5000;
-        let mut body = String::from("(n0 {p: 1})");
-        for index in 1..WIDTH {
-            body.push_str(&format!(", (n{index} {{q: n0.p}})"));
-        }
-        // The self-reference notification is Cypher 5's 01N00; Cypher 25
-        // rejects the same shape (42I58) at validation, so the notification
-        // scan is exercised under an explicit `CYPHER 5` preamble.
-        let query = relate_front::parse_and_lower(&format!("CYPHER 5 CREATE {body}")).unwrap();
-        let Clause::Create { patterns } = &query.parts[0].clauses[0] else {
-            panic!("expected a CREATE clause");
-        };
-        let mut notifications = Vec::new();
-        observe_create(&mut notifications, patterns);
-        assert!(
-            notifications.is_empty(),
-            "a wide CREATE declines instead of testing every (value, name) pair"
-        );
-
-        let small =
-            relate_front::parse_and_lower("CYPHER 5 CREATE (a {p: 1}), (b {q: a.p})").unwrap();
-        let Clause::Create { patterns } = &small.parts[0].clauses[0] else {
-            panic!("expected a CREATE clause");
-        };
-        let mut notifications = Vec::new();
-        observe_create(&mut notifications, patterns);
-        assert_eq!(notifications.len(), 1, "a small CREATE is still checked");
-    }
-
-    /// A complex projection item is anything but a variable, literal, or
-    /// parameter; aggregates are recognized sort keys and stay out.
-    #[test]
-    fn complex_projection_items_exclude_variables_literals_and_aggregates() {
-        assert!(!is_complex_projection_item(&Expr::Variable("a".into())));
-        assert!(!is_complex_projection_item(&Expr::Int(1)));
-        assert!(!is_complex_projection_item(&Expr::Parameter("p".into())));
-        assert!(!is_complex_projection_item(&Expr::Function {
-            name: "sum".into(),
-            distinct: false,
-            args: vec![Expr::Variable("a".into())],
-        }));
-        assert!(is_complex_projection_item(&Expr::Function {
-            name: "toInteger".into(),
-            distinct: false,
-            args: vec![Expr::Variable("a".into())],
-        }));
-        assert!(is_complex_projection_item(&Expr::Property {
-            expr: Box::new(Expr::Variable("a".into())),
-            key: "p".into(),
-        }));
-    }
-
-    /// A `USE`-headed importing WITH still imports: the leading clause is
-    /// the first non-`USE` one (`SingleQuery::leading_importing_with`), so
-    /// the body rebinding `x` through it is an import, not a shadow (the
-    /// previous first-clause-only derivation reported 03N60 here).
-    /// The one observe-and-count scaffold the subquery-shadowing tests
-    /// share: walk the statement, run the detector, count its 03N60 rows.
-    fn subquery_shadowing_count(query: &relate_ir::Query) -> usize {
-        let mut parts = Vec::new();
-        relate_planner::walk_query_parts(query, &mut |part| parts.push(part));
-        let mut notifications = Vec::new();
-        observe_subquery_scopes(&mut notifications, &parts);
-        notifications
-            .iter()
-            .filter(|notification| {
-                notification.kind() == NotificationKind::SubqueryVariableShadowing
-            })
-            .count()
-    }
-
-    #[test]
-    fn subquery_shadowing_sees_a_use_headed_importing_with() {
-        let query = relate_front::parse_and_lower(
-            "MATCH (x:Person) CALL { USE neo4j WITH x RETURN x AS y } RETURN x, y",
-        )
-        .unwrap();
-        assert_eq!(
-            subquery_shadowing_count(&query),
-            0,
-            "a USE-headed importing WITH imports `x`"
-        );
-    }
-
-    /// WB2: imports are per UNION arm. Arm 2's importing WITH must not
-    /// suppress arm 1's shadow of the same name.
-    #[test]
-    fn subquery_shadowing_is_per_union_arm() {
-        // `x` is in scope outside; arm 1 rebinds it, arm 2 imports it. Arm
-        // 1 still shadows (the flat statement-wide import set hid this).
-        let per_arm = relate_front::parse_and_lower(
-            "MATCH (x:Old) CALL { MATCH (x:Inner) RETURN x AS y \
-             UNION WITH x RETURN x AS y } RETURN x, y",
-        )
-        .unwrap();
-        assert_eq!(
-            subquery_shadowing_count(&per_arm),
-            1,
-            "arm 1's shadow is not suppressed by arm 2's import"
-        );
-    }
-
-    /// A name bound inside one `CALL { … }` body is local to it: a sibling
-    /// body later in the statement walk does not see it, so rebinding the
-    /// same spelling there shadows nothing. The flat pre-order occurrence
-    /// test reported this as a shadow because the first body's `x` preceded
-    /// the second body in the walk.
-    #[test]
-    fn subquery_shadowing_does_not_leak_across_sibling_bodies() {
-        let siblings = relate_front::parse_and_lower(
-            "CALL () { MATCH (x:First) RETURN x AS y } \
-             CALL () { MATCH (x:Second) RETURN x AS z } RETURN y, z",
-        )
-        .unwrap();
-        assert_eq!(
-            subquery_shadowing_count(&siblings),
-            0,
-            "a sibling body's local name is not in the second body's outer scope"
-        );
-    }
-
-    /// The complex-reference check sees every nested occurrence of a
-    /// projection item's expression — matched structurally, because lowering
-    /// builds the subclause expression independently of the projection list —
-    /// but not the root: an expression equal to the whole subclause
-    /// expression is the projection item itself, a recognized sort key.
-    #[test]
-    fn subquery_shadowing_ignores_names_introduced_after_the_body() {
-        // `n` is bound inside the body and rebound by a *later* clause: it is
-        // not in the subquery's outer scope, so nothing shadows. The
-        // statement-wide occurrence test used to report it.
-        let after = relate_front::parse_and_lower(
-            "CALL () { MATCH (n:Old) RETURN count(n) AS c } MATCH (n:New) RETURN n.title, c",
-        )
-        .unwrap();
-        assert_eq!(
-            subquery_shadowing_count(&after),
-            0,
-            "a name introduced after the subquery shadows nothing"
-        );
-
-        // The control: a name bound *before* the body is in scope, so the
-        // body rebinding it still shadows.
-        let before = relate_front::parse_and_lower(
-            "MATCH (n:Old) CALL () { MATCH (n:New) RETURN n AS x } RETURN n",
-        )
-        .unwrap();
-        assert_eq!(
-            subquery_shadowing_count(&before),
-            1,
-            "a name bound before the body is in its outer scope"
-        );
-    }
-
-    #[test]
-    fn complex_references_find_nested_occurrences_but_not_the_root() {
-        let inner = Expr::Binary {
-            op: relate_ir::BinaryOp::Add,
-            left: Box::new(Expr::Variable("a".into())),
-            right: Box::new(Expr::Int(0)),
-        };
-        let outer = Expr::Binary {
-            op: relate_ir::BinaryOp::Add,
-            left: Box::new(inner.clone()),
-            right: Box::new(Expr::Int(1)),
-        };
-        let projection = |expr: Expr| Projection {
-            expr,
-            alias: None,
-            source_text: None,
-        };
-        let nested = projection(inner.clone());
-        let exact = projection(outer.clone());
-        let elsewhere = projection(Expr::Variable("b".into()));
-        let candidates = [(0, &nested), (1, &exact), (2, &elsewhere)];
-        let found = complex_references(&outer, &candidates);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].0, 0, "the nested occurrence is a reference");
-        assert!(
-            complex_references(&inner, &candidates).is_empty(),
-            "an equal root is the projection item itself, not a reference"
-        );
-    }
-
-    /// The complex-reference detector walks the subclause expression once,
-    /// not once per (expression, item) pair: a projection and an `ORDER BY`
-    /// this large would be quadratic in the pairing and is not in the walk.
-    #[test]
-    fn complex_reference_detection_is_one_walk_per_subclause_expression() {
-        const WIDTH: usize = 2000;
-        let items: Vec<Projection> = (0..WIDTH)
-            .map(|index| Projection {
-                expr: Expr::Property {
-                    expr: Box::new(Expr::Variable("n".into())),
-                    key: SmallName::from_name(&format!("p{index}")),
-                },
-                alias: Some(SmallName::from_name(&format!("a{index}"))),
-                source_text: None,
-            })
-            .collect();
-        let order = OrderItem {
-            expr: Expr::List(items.iter().map(|item| item.expr.clone()).collect()),
-            ascending: true,
-        };
-        let mut notifications = Vec::new();
-        observe_projection(&mut notifications, &items, &[order], None, true);
-        assert_eq!(
-            notifications
-                .iter()
-                .filter(|notification| {
-                    notification.kind() == NotificationKind::ComplexSubclauseReference
-                })
-                .count(),
-            WIDTH,
-            "every projected expression is found in the subclause expression"
-        );
-    }
-
-    /// A wide projection checked against a wide subclause expression declines
-    /// at the shared node × item work budget instead of comparing every pair.
-    #[test]
-    fn complex_reference_check_declines_past_the_work_budget() {
-        const WIDTH: usize = 3000;
-        let items: Vec<Projection> = (0..WIDTH)
-            .map(|index| Projection {
-                expr: Expr::Property {
-                    expr: Box::new(Expr::Variable("n".into())),
-                    key: SmallName::from_name(&format!("p{index}")),
-                },
-                alias: Some(SmallName::from_name(&format!("a{index}"))),
-                source_text: None,
-            })
-            .collect();
-        let candidates: Vec<(usize, &Projection)> = items.iter().enumerate().collect();
-        let wide = Expr::List(items.iter().map(|item| item.expr.clone()).collect());
-        // 2 × WIDTH visited nodes × WIDTH items is past the budget.
-        assert!(
-            complex_references(&wide, &candidates).is_empty(),
-            "a wide nodes × items pair declines instead of comparing every pair"
-        );
-    }
-
-    /// The complex-reference deprecation only applies when the projection
-    /// groups (`DISTINCT` or an aggregation); a plain non-grouping
-    /// projection keeps its pre-projection scope visible to `ORDER BY`.
-    #[test]
-    fn complex_reference_requires_grouping_or_distinct() {
-        let item = Projection {
-            expr: Expr::Property {
-                expr: Box::new(Expr::Variable("n".into())),
-                key: "name".into(),
-            },
-            alias: Some("x".into()),
-            source_text: None,
-        };
-        let order = OrderItem {
-            expr: Expr::Binary {
-                op: relate_ir::BinaryOp::Add,
-                left: Box::new(item.expr.clone()),
-                right: Box::new(Expr::Int(1)),
-            },
-            ascending: true,
-        };
-        let mut plain = Vec::new();
-        observe_projection(
-            &mut plain,
-            std::slice::from_ref(&item),
-            &[order.clone()],
-            None,
-            false,
-        );
-        assert!(plain.is_empty(), "a non-grouping projection does not warn");
-        let mut grouped = Vec::new();
-        observe_projection(&mut grouped, &[item], &[order], None, true);
-        assert_eq!(grouped.len(), 1, "DISTINCT makes the reference deprecated");
-    }
-
-    /// A scope-less call's legacy leading `WITH` imports bare variables and
-    /// the `*` star — one set per UNION arm.
-    #[test]
-    fn call_imports_read_each_arms_leading_with() {
-        let query =
-            relate_front::parse_and_lower("CALL { WITH *, a RETURN a AS x } RETURN x").unwrap();
-        let Clause::CallSubquery {
-            query: body, scope, ..
-        } = &query.parts[0].clauses[0]
-        else {
-            panic!("expected a CALL subquery");
-        };
-        let outer = BTreeSet::from(["a".to_string(), "b".to_string()]);
-        let imports = call_imports(scope, body, &outer);
-        assert_eq!(imports.len(), body.parts.len());
-        assert!(imports[0].contains("a"), "bare variable imported");
-        assert!(imports[0].contains("b"), "star imports the outer scope");
-    }
-
-    /// A named subpath binds the same path value under its own name, so a
-    /// `length(…)` over the subpath name forces the exhaustive evaluation
-    /// just as one over the outer path variable does.
-    #[test]
-    fn named_subpath_length_forces_exhaustive_shortest_path() {
-        let query = relate_front::parse_and_lower(
-            "MATCH p = shortestPath((q = (a)-[r*]-(b))) WHERE length(q) > 1 RETURN p",
-        )
-        .unwrap();
-        let Clause::Match {
-            patterns,
-            where_clause,
-            ..
-        } = &query.parts[0].clauses[0]
-        else {
-            panic!("expected a MATCH clause");
-        };
-        let mut notifications = Vec::new();
-        observe_match(&mut notifications, patterns, where_clause.as_ref(), false);
-        assert_eq!(
-            notifications
-                .iter()
-                .filter(|notification| {
-                    notification.kind() == NotificationKind::ExhaustiveShortestPath
-                })
-                .count(),
-            1,
-            "a length over the named subpath forces the exhaustive evaluation"
-        );
-    }
-
-    /// A multi-relationship shortest path can carry its quantifier on any
-    /// relationship, not just the first: a `[*]` on a later relationship
-    /// variable forces the exhaustive evaluation too.
-    #[test]
-    fn later_relationship_quantifier_forces_exhaustive_shortest_path() {
-        let query = relate_front::parse_and_lower(
-            "MATCH p = shortestPath((a)-[r]->(b)<-[s*]-(c)) WHERE any(x IN s WHERE x IS NOT NULL) RETURN p",
-        )
-        .unwrap();
-        let Clause::Match {
-            patterns,
-            where_clause,
-            ..
-        } = &query.parts[0].clauses[0]
-        else {
-            panic!("expected a MATCH clause");
-        };
-        let mut notifications = Vec::new();
-        observe_match(&mut notifications, patterns, where_clause.as_ref(), false);
-        assert_eq!(
-            notifications
-                .iter()
-                .filter(|notification| {
-                    notification.kind() == NotificationKind::ExhaustiveShortestPath
-                })
-                .count(),
-            1,
-            "a quantifier over a later relationship variable forces the exhaustive evaluation"
-        );
-    }
-}
+#[path = "shape_tests.rs"]
+mod tests;

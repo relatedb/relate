@@ -1,6 +1,6 @@
 //! CIP-223 temporal pattern formatting.
 
-use chrono::{Datelike, Timelike, Weekday};
+use chrono::{Datelike, Timelike};
 
 use crate::{Error, Result};
 
@@ -10,6 +10,35 @@ use super::{format_offset, time_to_nanos, Temporal};
 mod duration;
 
 use duration::format_duration_pattern;
+
+/// English month names, January first: the one table the formatter renders
+/// from and the pattern parser reads (case-insensitively, with the
+/// three-letter abbreviation).
+pub(super) const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// English weekday names, Monday first (`num_days_from_monday` indexes it).
+pub(super) const WEEKDAY_NAMES: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
 
 /// The one fraction-of-second width policy: a pattern run of 1..=9 digits.
 /// Shared by the duration fraction spellings (`n`/`S`) and the date/time `S`
@@ -144,20 +173,7 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
             'M' | 'L' => {
                 let month = supported_field(date)?.month();
                 if len >= 3 {
-                    let full = [
-                        "January",
-                        "February",
-                        "March",
-                        "April",
-                        "May",
-                        "June",
-                        "July",
-                        "August",
-                        "September",
-                        "October",
-                        "November",
-                        "December",
-                    ][month as usize - 1];
+                    let full = MONTH_NAMES[month as usize - 1];
                     // The match's `_` arm is the single width rejection.
                     match len {
                         3 => full.chars().take(3).collect(),
@@ -194,15 +210,7 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
             'D' => format!("{:0len$}", supported_field(date)?.ordinal()),
             'E' => {
                 let weekday = supported_field(date)?.weekday();
-                let name = match weekday {
-                    Weekday::Mon => "Monday",
-                    Weekday::Tue => "Tuesday",
-                    Weekday::Wed => "Wednesday",
-                    Weekday::Thu => "Thursday",
-                    Weekday::Fri => "Friday",
-                    Weekday::Sat => "Saturday",
-                    Weekday::Sun => "Sunday",
-                };
+                let name = WEEKDAY_NAMES[weekday.num_days_from_monday() as usize];
                 if len >= 4 {
                     name.into()
                 } else {
