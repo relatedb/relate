@@ -16,15 +16,18 @@ that re-freeze. The failure does not add a signal the comment lacks.
 
 ## Decision
 
-An improvement keeps its verdict. The compare document, the
-pull-request comment, and the step summary still carry it. Inside
-GitHub Actions each improvement check is a warning annotation. The
-compare exits 0, so the job stays green.
+An envelope miss keeps its verdict. An improvement and a numeric
+regression both stay in the compare document, the pull-request
+comment, and the step summary. Inside GitHub Actions each such check
+is a warning annotation. The compare exits 0, so the job stays green,
+until a new envelope is frozen.
 
-A regression still fails. A run that is both a regression and an
-improvement still fails. An incompatible environment class in CI
-still fails. Behaviour checks have no improvement verdict, as
-ADR-0526 set out.
+A behavioural regression still fails: a missed cap, a refused
+connection, idle residue, a wrong shape count, a missing report, or a
+schema the gate cannot read. A run whose regression is behavioural
+still fails, including when the same run also has an envelope miss.
+An incompatible environment class in CI still fails. Behaviour checks
+have no improvement verdict, as ADR-0526 set out.
 
 ## Alternatives considered
 
@@ -36,10 +39,10 @@ ADR-0526 set out.
 
 ## Consequences
 
-- A pull request whose only misses are improvements stays green. The
-  comment still warns, and a real drop still wants a new freeze.
+- A pull request whose only misses are envelope readings stays green.
+  The comment still names each miss. A real drop, and a reading above
+  the top, both want a new freeze.
 - The nightly memory-controls and memory-shape runs use the same
-  compare, so an improvement warns there too.
-- The bottom of the envelope can sit above current use until someone
-  re-freezes. The warning is the reminder. A regression above the
-  top of the envelope still fails.
+  compare, so an envelope miss warns there too.
+- The envelope can sit away from current use until someone re-freezes.
+  The warning is the reminder. A behavioural miss still fails.

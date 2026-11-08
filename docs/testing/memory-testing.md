@@ -249,9 +249,10 @@ reports `no-baseline` and exits 0.
 
 Counts that miss the table are a regression. Logical bytes, disk, and
 attributed RSS are lower-is-better, with a 15% band and a 1 MB floor.
-The ratio is lower-is-better, with a 5% band. A regression has to clear
-the top by both the band and the floor. An improvement clears the bottom
-the same way, warns, and leaves the job green. A regression still fails. An
+The ratio is lower-is-better, with a 5% band. A numeric regression has
+to clear the top by both the band and the floor. An improvement clears
+the bottom the same way. Both warn and leave the job green until a new
+envelope is taken. A count that misses the table still fails. An
 environment-class or knob mismatch is `incompatible`: a local run skips
 the numeric bands, and `CI_COMPARE=1` fails the job. The index counts
 are knobs, so a run with indexes does not match a freeze taken at zero.
@@ -503,12 +504,15 @@ and `target/memory-controls-verdict.json`. The document opens with
 - `ok` — every check held.
 - `regression` — a behavioural expectation failed, or a lower-is-better
   metric rose above the envelope max by both the band and the floor.
+  The numeric miss warns and the job stays green. A behavioural miss
+  still fails the job
+  ([ADR-0544](../adr/0544-memory-envelope-improvements-warn.md)).
 - `improvement` — a lower-is-better metric fell below the envelope min by
   both the band and the floor. Behaviour has no improvement verdict.
-  The comment warns, and the job stays green
-  ([ADR-0544](../adr/0544-memory-envelope-improvements-warn.md)).
+  The comment warns, and the job stays green.
 - `mixed` — the run has both a regression and an improvement. The job
-  fails because of the regression.
+  stays green when every regression is an envelope reading, and fails
+  when one of them is behavioural.
 - `incompatible` — the environment class or the knobs do not match the
   envelope. With `CI_COMPARE=1` that fails the job. A local run skips the
   numeric bands and still judges behaviour.
@@ -519,7 +523,7 @@ RSS uses a 15% band and a 1 MiB floor. Each family is gated on its RSS
 ratio and its cgroup ratio. The frozen min and max are the boundaries,
 and a reading may sit 5% outside them. Slopes stay in the run report and
 are not gated. Workload limited counts use a band of 0 and a floor of 2, so
-fewer refusals is an improvement. An improvement warns and does not
+fewer refusals is an improvement. An envelope miss warns and does not
 fail the job. It still asks for an investigation: confirm it is real,
 then re-freeze with
 `create-loadtest-baselines` (`make baseline-memory-controls` inside that

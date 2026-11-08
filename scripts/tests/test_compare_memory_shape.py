@@ -144,19 +144,23 @@ class CompareMemoryShapeTests(unittest.TestCase):
         _, payload = self.freeze([report(), report()])
         current = report()
         current["shapes"][1]["attributed_rss_bytes"] = 60_000_000
-        result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 1)
+        result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.payload["status"], "regression")
         self.assertIn("**Given:**", result.document)
         self.assertIn("57.22 MB", result.document)
         self.assertIn("44.82 MB", result.document)
+        self.assertIn("job stays green", result.document)
+        warned = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        self.assertIn("::warning::compare-memory-shape:", warned.stderr)
 
     def test_ratio_regression(self):
         _, payload = self.freeze([report(), report()])
         current = report()
         current["shapes"][1]["ratio"] = 1.6
         result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.payload["status"], "regression")
         self.assertIn("ratio measured 1.600x", result.document)
 

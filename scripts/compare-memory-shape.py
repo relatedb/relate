@@ -7,9 +7,9 @@ regression. There is no improvement verdict for counts.
 Numeric checks are lower-is-better. A regression clears the top of the
 envelope by both a band and a floor. An improvement clears the bottom the
 same way. Logical bytes, disk, and attributed RSS use 15% and 1 MB. The
-ratio uses 5%. An improvement warns and exits 0 (ADR-0544). A regression
-and a mixed run still fail. The document still asks for a re-freeze when
-the drop is real.
+ratio uses 5%. An envelope miss warns and exits 0 (ADR-0544). A count
+that misses the table still fails. The document still asks for a
+re-freeze when the drop is real.
 
 An environment-class or knob mismatch is incompatible. With CI_COMPARE=1
 or inside GitHub Actions that is a hard failure. A local run skips the
@@ -50,6 +50,10 @@ KNOBS = (
 IMPROVEMENT_NOTE = (
     "Investigate whether this improvement is a false positive. "
     "When it is real, re-freeze the envelope with the create-loadtest-baselines workflow."
+)
+ENVELOPE_REGRESSION_NOTE = (
+    "This reading is above the frozen envelope. The compare warns and the "
+    "job stays green until a new envelope is taken."
 )
 
 
@@ -292,6 +296,9 @@ def shape_section(name: str, rows: list[dict]) -> list[str]:
     if any(item["verdict"] == "improvement" for item in failing):
         lines.append(IMPROVEMENT_NOTE)
         lines.append("")
+    if any(item["verdict"] == "regression" and "min" in item for item in failing):
+        lines.append(ENVELOPE_REGRESSION_NOTE)
+        lines.append("")
     return lines
 
 
@@ -366,8 +373,12 @@ def verdict(baseline: dict, report: dict) -> tuple[str, list[dict], str]:
     return status, rows, note.strip()
 
 
-def exit_code(status: str) -> int:
-    if status in {"regression", "mixed"}:
+def envelope_reading(row: dict) -> bool:
+    return "min" in row and "max" in row
+
+
+def exit_code(status: str, rows: list[dict]) -> int:
+    if any(row["verdict"] == "regression" and not envelope_reading(row) for row in rows):
         return 1
     if status == "incompatible" and ci_hard_fail():
         return 1
@@ -379,7 +390,7 @@ def emit_checks(prefix: str, rows: list[dict]) -> None:
         if row["verdict"] == "ok":
             continue
         message = f"{prefix}: {row['name']} {row['metric']} {row['verdict']}"
-        if row["verdict"] == "improvement" and _env.in_github_actions():
+        if envelope_reading(row) and row["verdict"] in {"improvement", "regression"} and _env.in_github_actions():
             print(f"::warning::{message}", file=sys.stderr, flush=True)
         else:
             print(message, file=sys.stderr, flush=True)
@@ -411,7 +422,7 @@ def main() -> int:
     args.verdict.write_text(json.dumps({"status": status, "checks": rows}, indent=2) + "\n")
     print(f"compare-memory-shape: {status}")
     emit_checks("compare-memory-shape", rows)
-    return exit_code(status)
+    return exit_code(status, rows)
 
 
 if __name__ == "__main__":

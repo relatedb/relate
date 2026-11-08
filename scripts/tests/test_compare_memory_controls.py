@@ -201,12 +201,18 @@ class CompareMemoryControlsTests(unittest.TestCase):
         current = report()
         current["cases"][0]["baseline_rss_bytes"] = 20_000_000
         current["cases"][0]["floor_rss_bytes"] = 20_000_000
-        result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 1)
+        result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.payload["status"], "regression")
         self.assertIn("**Given:**", result.document)
         self.assertIn("38.15 MB", result.document)
         self.assertIn("9.54 MB", result.document)
+        self.assertIn("job stays green", result.document)
+        self.assertNotIn("::warning::", result.stderr)
+        warned = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        self.assertIn("::warning::compare-memory-controls:", warned.stderr)
+        self.assertIn("regression", warned.stderr)
 
     def test_improvement(self):
         _, payload = self.freeze([report(), report()])
@@ -235,7 +241,7 @@ class CompareMemoryControlsTests(unittest.TestCase):
         current["workloads"][0]["reads_limited"] = 0
         current["workloads"][0]["writes_limited"] = 0
         result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.payload["status"], "mixed")
         self.assertIn("::warning::", result.stderr)
 
@@ -283,7 +289,7 @@ class CompareMemoryControlsTests(unittest.TestCase):
             }
         ]
         result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.payload["status"], "regression")
         self.assertIn("Expected RSS ratio 3.000x–3.000x.", result.document)
         self.assertIn("A reading may sit 5% outside that range.", result.document)

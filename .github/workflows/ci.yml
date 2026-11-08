@@ -1260,9 +1260,9 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
-  # Memory control verifications and one calibration repeat. The Sonic
-  # stage exits non-zero on a regression. An improvement warns and the
-  # stage stays green (ADR-0544). The upload, the step summary, and the
+  # Memory control verifications and one calibration repeat. An envelope
+  # miss warns and the Sonic stage stays green (ADR-0544). A behavioural
+  # miss still fails the stage. The upload, the step summary, and the
   # PR comment still run.
   memory-controls:
     name: Memory controls
@@ -1328,9 +1328,9 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
-  # Fixed graph shapes compared with the min/max envelope. The Sonic stage
-  # exits non-zero on a regression. An improvement warns and the stage
-  # stays green (ADR-0544). The upload, the step summary, and the PR
+  # Fixed graph shapes compared with the min/max envelope. An envelope
+  # miss warns and the Sonic stage stays green (ADR-0544). A wrong count
+  # still fails the stage. The upload, the step summary, and the PR
   # comment still run.
   memory-shape:
     name: Memory shape

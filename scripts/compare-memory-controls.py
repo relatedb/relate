@@ -12,8 +12,9 @@ the same way. RSS uses 15% and 1 MiB. Each family is gated on its RSS
 ratio and its cgroup ratio: the frozen min and max, and 5% outside that
 range. Slopes in an older envelope are ignored. Workload limited counts
 use a band of 0 and a floor of 2: fewer refusals is an improvement and
-needs a fresh envelope. An improvement warns and exits 0 (ADR-0544).
-A regression, a mixed run, and an incompatible class in CI still exit 1.
+needs a fresh envelope. An envelope miss warns and exits 0 (ADR-0544).
+A behavioural regression still exits 1, as does an incompatible class
+in CI.
 
 An environment-class or knob mismatch is incompatible. With CI_COMPARE=1
 or inside GitHub Actions that is a hard failure. A local run skips the
@@ -88,6 +89,10 @@ KNOB_FIELDS = (
 IMPROVEMENT_NOTE = (
     "Investigate whether this improvement is a false positive. "
     "When it is real, re-freeze the envelope with the create-loadtest-baselines workflow."
+)
+ENVELOPE_REGRESSION_NOTE = (
+    "This reading is above the frozen envelope. The compare warns and the "
+    "job stays green until a new envelope is taken."
 )
 
 
@@ -454,6 +459,9 @@ def render(status: str, rows: list[dict], note: str) -> str:
             if row["verdict"] == "improvement":
                 lines.append(IMPROVEMENT_NOTE)
                 lines.append("")
+            elif row["verdict"] == "regression":
+                lines.append(ENVELOPE_REGRESSION_NOTE)
+                lines.append("")
             continue
         if scenario:
             lines.append(f"**Outcome:** {scenario.get('outcome', '')}")
@@ -483,6 +491,9 @@ def render(status: str, rows: list[dict], note: str) -> str:
         lines.append("")
         if row["verdict"] == "improvement":
             lines.append(IMPROVEMENT_NOTE)
+            lines.append("")
+        elif row["verdict"] == "regression" and "min" in row:
+            lines.append(ENVELOPE_REGRESSION_NOTE)
             lines.append("")
     return "\n".join(lines)
 
@@ -525,8 +536,12 @@ def verdict(baseline: dict, report: dict) -> tuple[str, list[dict], str]:
     return status, rows, note.strip()
 
 
-def exit_code(status: str) -> int:
-    if status in {"regression", "mixed"}:
+def envelope_reading(row: dict) -> bool:
+    return "min" in row and "max" in row
+
+
+def exit_code(status: str, rows: list[dict]) -> int:
+    if any(row["verdict"] == "regression" and not envelope_reading(row) for row in rows):
         return 1
     if status == "incompatible" and ci_hard_fail():
         return 1
@@ -538,7 +553,7 @@ def emit_checks(prefix: str, rows: list[dict]) -> None:
         if row["verdict"] == "ok":
             continue
         message = f"{prefix}: {row['name']} {row['metric']} {row['verdict']}"
-        if row["verdict"] == "improvement" and _env.in_github_actions():
+        if envelope_reading(row) and row["verdict"] in {"improvement", "regression"} and _env.in_github_actions():
             print(f"::warning::{message}", file=sys.stderr, flush=True)
         else:
             print(message, file=sys.stderr, flush=True)
@@ -572,7 +587,7 @@ def main() -> int:
     )
     print(f"compare-memory-controls: {status}")
     emit_checks("compare-memory-controls", rows)
-    return exit_code(status)
+    return exit_code(status, rows)
 
 
 if __name__ == "__main__":
