@@ -26,6 +26,25 @@ fn test_egg_names_are_unknown_commands_off_a_terminal() {
 }
 
 #[test]
+fn test_text_egg_names_are_unknown_commands_off_a_terminal() {
+    let home = tempdir();
+    for command in [".matrix", ".cowsay hi", ".fortune"] {
+        let (status, stdout, stderr) = run_cli(
+            Opts::new(&["query"])
+                .in_home(home.path())
+                .with_stdin(command.as_bytes()),
+        );
+        assert_eq!(status.code(), Some(1), "{command}: {stderr}");
+        assert!(stdout.is_empty(), "{command} printed to stdout: {stdout}");
+        let name = command.split(' ').next().unwrap();
+        assert!(
+            stderr.contains(&format!("unknown command {name}")),
+            "{command}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn test_one_shot_runs_print_no_banner_art_even_when_forced() {
     let home = tempdir();
     let (status, stdout, stderr) = run_cli(
@@ -53,4 +72,16 @@ fn test_eggs_are_not_listed_in_help() {
 fn test_archie_banner_prompt_and_command_on_a_terminal() {
     let binary = env!("CARGO_BIN_EXE_relate");
     support::assert_pty_driver_ok("pty_eggs.py", &[binary]);
+}
+
+/// `.fortune`, `.cowsay` and `.matrix` on a PTY, plain under NO_COLOR.
+#[cfg(all(feature = "eggs", unix))]
+#[test]
+fn test_text_eggs_on_a_terminal() {
+    let binary = env!("CARGO_BIN_EXE_relate");
+    let fortunes = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../relate-eggs/assets/fortunes.txt"
+    );
+    support::assert_pty_driver_ok("pty_eggs_text.py", &[binary, fortunes]);
 }

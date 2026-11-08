@@ -1,0 +1,35 @@
+# One fortune per line. Blank lines and lines starting with '#' are skipped.
+# Edit freely; `.fortune` picks one line at random.
+A graph is just a table that finally learned to remember its friends.
+MATCH (you)-[:LOOKING_AT]->(a:Bug) RETURN a -- it was in the last place you looked.
+Every JOIN is a relationship that did not get a first-class edge.
+An index you did not create is a full scan you have not met yet.
+There are two hard problems: cache invalidation, and naming relationship types.
+The shortest path between two nodes is rarely the one in the requirements doc.
+Cypher reads like ASCII art because the graph is already a drawing.
+fsync is the only honest answer to "did it save?".
+A WAL entry written is a promise kept after the power cord is pulled.
+Orphan nodes are not lonely; they just have not been MERGEd yet.
+MERGE is CREATE with commitment issues resolved.
+DETACH DELETE: because some relationships have to end first.
+Always RETURN something. Even a query deserves closure.
+In memory it is fast; on disk it is true. Relate does both.
+When in doubt, EXPLAIN; when still in doubt, PROFILE.
+The cartesian product you did not intend is always the biggest one.
+Your schema is a hypothesis; your data is the experiment.
+NULL is not zero, not empty, and not sorry.
+A checkpoint a day keeps the replay away.
+Direction matters in an edge, and in life; undirected patterns are only polite.
+Small graph, big ideas. Big graph, small ideas, usually.
+One transaction at a time, one commit at a time, one coffee at a time.
+The planner knows more than you think and less than you hope.
+LIMIT without ORDER BY is a coin toss with extra steps.
+Property graphs: because your data already has opinions about its neighbours.
+A relationship without a type is a rumour.
+Never trust a count(*) you have not met in a unit test.
+Embedded means there is no network between you and your data. Enjoy the silence.
+The best query is the one the optimizer rewrites into the one you meant.
+Variable-length paths: for when six degrees of separation is a feature request.
+Everything is a node if you squint hard enough.
+Parquet is just a graph that went to sleep in columns.
+Keep calm and OPTIONAL MATCH.

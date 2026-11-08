@@ -18,6 +18,10 @@
 //!
 //! This crate depends on the engine only; it never depends on the CLI.
 
+mod cowsay;
+mod fortune;
+mod matrix;
+mod rng;
 pub mod sprite;
 
 use std::io::{IsTerminal, Write};
@@ -92,8 +96,12 @@ pub type Handler = fn(&mut Ctx<'_>, &[&str]) -> Result<(), Refusal>;
 pub type Entry = (&'static str, Handler);
 
 /// The registry of this crate's eggs. A new egg is one row here and one
-/// module beside this file; none ship yet.
-pub const EGGS: &[Entry] = &[];
+/// module beside this file.
+pub const EGGS: &[Entry] = &[
+    (".cowsay", cowsay::run),
+    (".fortune", fortune::run),
+    (".matrix", matrix::run),
+];
 
 /// The interactive, non-agent REPL the session reports, on a terminal
 /// stdout: the one gate every egg surface (commands, banner, prompt) shares.
