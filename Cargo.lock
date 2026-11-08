@@ -2302,6 +2302,7 @@ dependencies = [
  "relate-auth",
  "relate-bolt",
  "relate-catalog",
+ "relate-eggs",
  "relate-formatter",
  "relate-fs-to-graph",
  "relate-git-to-graph",
@@ -2388,6 +2389,14 @@ dependencies = [
  "relate-wire",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "relate-eggs"
+version = "0.16.1"
+dependencies = [
+ "relate",
+ "tempfile",
 ]
 
 [[package]]

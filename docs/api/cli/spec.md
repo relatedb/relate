@@ -251,12 +251,13 @@ require a compiled-in capability: `--snapshot-format parquet` needs the
 | `mcp` | `relate serve --mcp PORT|stdio` (ADR-0232, ADR-0375) | `relate-mcp`, `relate-auth`, `ctrlc` | `--mcp` is an unknown flag; with `http` also absent, `serve` is a not-included command |
 | `bolt` | `relate serve --bolt PORT` (ADR-0232; LABS-298) | `relate-bolt`, `relate-auth`, `ctrlc` | `--bolt` is an unknown flag; with `http`/`mcp` also absent, `serve` is a not-included command |
 | `agent-context` | `relate agent-context [COMMAND]` (ADR-0242) | none | `agent-context` is a not-included command |
+| `eggs` | Hidden client-side REPL dot commands, the Archie first-run banner and the opt-in `RELATE_PROMPT=archie` prompt glyph ([Hidden commands](#hidden-repl-commands)) | `relate-eggs` | The hidden command names are unknown commands; no banner art, and `RELATE_BANNER` / `RELATE_PROMPT` have no effect |
 | `extensions` | `relate run <name> [flags]` (ADR-0429): dispatch an installed command-kind extension — the wire host (ADR-0430), the XDG registry, the `run` mount — and the dependency-free lifecycle half, `relate extension init` (the language scaffolds), `relate extension list`, `relate extension remove` and `relate extension check <dir>`, with the provenance marker (ADR-0431). The first-party importers `fs-to-graph` and `git-to-graph` are extension packages now (ADR-0431 §11); the `lab` command retired with them (ADR-0431 §12: no stub, nothing recognizes `lab` after) | `relate-wire` (the extension group's shared kit, ADR-0431 §11) | `run` and `extension` are not-included commands |
 | `extension-install` | `relate extension install <name> [--github REPO@TAG\|@SHA] [--url URL] [--from DIR] [--version V] [--force] [--re-approve \| --approve SHA]` and `extension list --available` — the signed channel index fetch and SSHSIG verification (the one release signing root `upgrade` verifies against), the GitHub pin resolution (ADR-0449), the tarball SHA256 check, the probe-then-fallback download route (ADR-0358), and the closed-contract tarball unpacker (ADR-0431). Implies `extensions` | `ureq`, `sha2`, `ssh-key`, `flate2` | `extension install` and `extension list --available` parse in every build (ADR-0137) and answer with the not-included error, exit 2, in this one; `init`, `list`, `remove` and `check` keep working (the network dependencies gate the install verbs only) |
 
 | Bundle | Features | Intended use |
 | --- | --- | --- |
-| `full` (**default**) | `repl`, `pull`, `push`, `skill`, `upgrade`, `telemetry`, `fetch-params`, `remote-database`, `parquet`, `extensions`, `extension-install`, `info`, `http`, `mcp`, `bolt`, `agent-context` | Release binary (GitHub releases, install script, Homebrew); developer workstations |
+| `full` (**default**) | `repl`, `pull`, `push`, `skill`, `upgrade`, `telemetry`, `fetch-params`, `remote-database`, `parquet`, `extensions`, `extension-install`, `info`, `http`, `mcp`, `bolt`, `agent-context`, `eggs` | Release binary (GitHub releases, install script, Homebrew); developer workstations |
 | `agent` | `skill`, `pull`, `push`, `fetch-params`, `remote-database`, `info`, `agent-context`, `extensions`, `extension-install` | Sandbox/Docker images for AI agents: one-shot/stdin queries, JSON output, remote/file JSON sources via `--fetch-params`, a database loaded from a URL via `--load` (ADR-0500), the `run` extension mount, no self-update, no telemetry; JSON snapshots only; the extension channel and install verbs ride along (ADR-0431 §3: `full` and `agent` carry both) |
 | `minimal` | *(none)* | Smallest query-only shell: one-shot, stdin, and plain interactive input; JSON snapshots only |
 | `serve` | `serve` | The bare compile gate (ADR-0232): `serve` with every surface flag an unknown flag — a usage error at run, the smallest serve-shaped build; the empty-`SURFACE_FLAGS` shape is a CI-tested lane (LABS-628) |
@@ -1772,6 +1773,18 @@ detection never announces — a per-command CLI would repeat a banner on
 every one-shot run. An invalid `RELATE_AGENT_MODE` exits 2 before any
 statement runs.
 
+## Hidden REPL commands
+
+Builds with the `eggs` feature (`full` only, ADR-0543) carry a small set of
+client-side REPL dot commands that are deliberately **not documented
+individually**: they appear in no `.help` and no `--help`, and this spec does
+not enumerate them. They exist only in the interactive human REPL on a
+terminal; in agent mode, a one-shot or piped run, or a build without the
+feature, their names are ordinary unknown commands. They never touch the
+store's contents unless a command says so on screen. Everything an operator
+can configure about them is the environment variables `RELATE_BANNER` and
+`RELATE_PROMPT` in [Environment](#environment).
+
 ## Result envelope
 
 `--mode envelope` (ADR-0195) prints one compact JSON object per result set, on
@@ -1898,6 +1911,8 @@ See the [executable help example](examples/help.md).
 | `RELATE_HELP_EXAMPLES` | (none) | `0`, `false`, `off` or `no` (case-insensitive) drops the `Examples:` section from every `--help` page; any other value, or unset, keeps it. Only the examples change: the synopsis, flags, stdout and exit code do not (ADR-0200) |
 | `RELATE_MAX_ROWS` | `--max-rows` | Default row cap per statement; `0` is unlimited. A value that is not a non-negative integer exits 2 with `Error: invalid RELATE_MAX_ROWS: …` before any statement runs. The flag overrides it ([Row cap](#row-cap)) |
 | `RELATE_AGENT_MODE` | `--agent-mode` / `--no-agent-mode` | The agent-mode override (ADR-0407): `1` turns agent ergonomics on unconditionally, `0` turns them off; anything else exits 2 with `Error: invalid RELATE_AGENT_MODE: …` before any statement runs. The flags override it ([Agent mode](#agent-mode-adr-0407)) |
+| `RELATE_BANNER` | (none) | `eggs` builds, interactive REPL only: `1` always prints the Archie banner art, `0` never does; unset or empty prints it once per install, on the first interactive start, tracked by the `archie-banner-seen` marker file in the config directory. Any other value is reported on stderr and ignored. Needs a UTF-8 locale; never printed in agent mode, on a non-terminal stdout, or by a one-shot or piped run. Without `COLORTERM=truecolor`/`24bit`, or under `NO_COLOR` or `TERM=dumb`, the art is plain shade characters |
+| `RELATE_PROMPT` | (none) | `eggs` builds, interactive REPL only: `archie` turns the primary prompt into the `∩ ` glyph (the continuation prompt is unchanged). Falls back to `cypher> ` on a non-UTF-8 locale, under `NO_COLOR`, in agent mode, or on a non-terminal stdout. Any other value is reported on stderr and ignored |
 | `RELATE_LOGICAL_GRAPH_SIZE_LIMIT` | `--logical-graph-size-limit` | Default live graph + index cap; `0` or unset is unlimited. A value that does not parse exits 2 with `Error: invalid RELATE_LOGICAL_GRAPH_SIZE_LIMIT: …`, the same rejection as a bad `--logical-graph-size-limit` (no usage dump). `--help` and `--version` still win |
 | `RELATE_EXPRESSION_MEMORY_LIMIT` | `--expression-memory-limit` | Default per-allocation expression cap (ADR-0463); unset keeps 256 MiB, `none`/`0` disables it. A value that does not parse exits 2 with `Error: invalid RELATE_EXPRESSION_MEMORY_LIMIT: …` |
 | `RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT` | `--concurrent-logical-workspace-limit` | Default concurrent logical-workspace pool (ADR-0452). Unset or blank leaves admission off. A positive `SIZE` (bytes or mb/mib/gb/gib) turns admission on. `0` exits 2 with `Error: invalid RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT: must be positive`; a value that does not parse exits 2 with `Error: invalid RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT: …` (no usage dump). The flag overrides it. `--help` and `--version` still win. A set `RELATE_TOKEN_ADMISSION` fails open: that variable is ignored; set this one |

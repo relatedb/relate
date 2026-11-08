@@ -30,6 +30,7 @@ pub(crate) const CONFIG_DIR_NAME: &str = "relate";
 /// surfaces (`telemetry_cmd`'s runs, the handle's event walks) and by
 /// the registry's real-env entry (`ActionRegistry::load` in
 /// `extensions::registry`, ADR-0429 §6).
+#[cfg(any(feature = "telemetry", feature = "extensions"))]
 pub(crate) fn config_dir() -> Option<PathBuf> {
     config_dir_with(&|k| std::env::var(k).ok())
 }

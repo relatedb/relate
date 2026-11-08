@@ -20,6 +20,7 @@ default-members = [
     "relate/relate-splitter",
     "relate/relate-names",
     "surfaces/relate-arrow",
+    "surfaces/relate-eggs",
     "surfaces/relate-cli",
     "surfaces/relate-load",
     "surfaces/relate-ffi",
@@ -66,6 +67,7 @@ relate-error = { path = "relate/relate-error" }
 relate-formatter = { path = "surfaces/relate-formatter" }
 relate-splitter = { path = "relate/relate-splitter" }
 relate-arrow = { path = "surfaces/relate-arrow" }
+relate-eggs = { path = "surfaces/relate-eggs" }
 
 # Runtime crates
 relate-core = { path = "relate/relate-core" }

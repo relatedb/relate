@@ -159,6 +159,7 @@ stages:
             relate-error
             relate-formatter
             relate-arrow
+            relate-eggs
             relate-splitter
             relate-core
             relate-catalog

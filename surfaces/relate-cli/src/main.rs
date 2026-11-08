@@ -18,10 +18,12 @@ mod atomic_file;
 mod clone_cmd;
 // The config directory (ADR-0079 §3's resolution): shared by telemetry's
 // state walk and the extension registry's discovery (ADR-0429 §6) —
-// compiled exactly when one of them is.
-#[cfg(any(feature = "telemetry", feature = "extensions"))]
+// the eggs' first-run banner marker (ADR-0543) — compiled exactly when
+// one of them is.
+#[cfg(any(feature = "telemetry", feature = "extensions", feature = "eggs"))]
 mod config_dir;
 mod dot_info;
+mod eggs;
 mod errors;
 mod examples;
 mod exec_query;
@@ -383,6 +385,7 @@ fn main() {
             // in-memory store after the load, whatever path or URL it came
             // from; a durable-target load is the target's persistent store.
             storage: telemetry::StorageKind::for_store(&db_path, open_mode),
+            agent_mode: agent_mode.is_on(),
         },
     });
 }
