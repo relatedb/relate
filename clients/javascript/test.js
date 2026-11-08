@@ -284,7 +284,7 @@ try {
 // a RelateError with fabricated null fields (a missing "retryable"
 // would silently decode as false and a retry loop would decline to
 // retry). The Go and Swift clients hold the same contract.
-const { errorFromJson } = require("./errors");
+const { errorFromJson, decodeQueryType, decodeNamespace } = require("./errors");
 const shape = (over = {}) => JSON.stringify({
   code: "Neo.ClientError.Statement.ArithmeticError",
   gql_status: "22G03",
@@ -308,6 +308,18 @@ const transient = errorFromJson(shape({
   message: "write-write conflict",
 }));
 assert.strictEqual(transient.isRetriable, true);
+// The closed result-metadata vocabularies (ADR-0162, ADR-0117): every listed
+// value passes through, anything else is an ABI contract violation.
+for (const qt of ["r", "w", "rw", "s"]) assert.strictEqual(decodeQueryType(qt), qt);
+for (const ns of ["neo4j", "system", "system_ontologies"]) {
+  assert.strictEqual(decodeNamespace(ns), ns);
+}
+for (const bad of ["", "R", "x", null]) {
+  assert.throws(() => decodeQueryType(bad), /ABI contract violated: query type/);
+}
+for (const bad of ["", "Neo4j", "other", null]) {
+  assert.throws(() => decodeNamespace(bad), /ABI contract violated: namespace/);
+}
 // Every violation names itself: not JSON, not an object, a missing field,
 // a mistyped field, an off-vocabulary stage.
 assert.throws(() => errorFromJson("{not json"), /ABI contract violated: .*not JSON/);

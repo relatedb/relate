@@ -51,6 +51,9 @@ exceptions — see gotchas.
 
 ## Gotchas
 
+- **Metadata vocabularies are closed** — a `getQueryType()` /
+  `getNamespace()` value outside the documented set throws
+  `RelateException` (`ABI contract violated: ...`), like the Go client.
 - **Native library resolution** — the bundled resource
   `native/<key>/<library>` for the running platform is extracted once per
   version into the user cache (`~/Library/Caches/relate`,

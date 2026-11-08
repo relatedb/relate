@@ -18,6 +18,25 @@ import Testing
         #expect(try conn.query("CREATE INDEX FOR (n:A) ON (n.x)").queryType == .schema)
     }
 
+    @Test func metadataVocabulariesRefuseUnknownValues() throws {
+        // The closed vocabularies (ADR-0162, ADR-0117): every listed value
+        // decodes, anything else is an ABI contract violation.
+        for raw in ["r", "w", "rw", "s"] { _ = try QueryType.decode(raw) }
+        for raw in ["neo4j", "system", "system_ontologies"] { _ = try Namespace.decode(raw) }
+        #expect(try Namespace.decode("system_ontologies") == .systemOntologies)
+        for bad in ["", "R", "x", "read"] {
+            #expect(throws: RelateError.self) { try QueryType.decode(bad) }
+        }
+        for bad in ["", "Neo4j", "other"] {
+            #expect(throws: RelateError.self) { try Namespace.decode(bad) }
+        }
+        do {
+            _ = try QueryType.decode("x")
+        } catch {
+            #expect(error.message.contains("ABI contract violated: query type 'x'"))
+        }
+    }
+
     @Test func phaseTimingSplit() throws {
         // ADR-0491: the elapsed total splits into three always-on, disjoint
         // sub-windows whose sum never exceeds the total (the inter-stage
@@ -32,13 +51,13 @@ import Testing
     }
 
     @Test func namespaceRouting() throws {
-        #expect(try conn.query("RETURN 1").namespace == "neo4j")
-        #expect(try conn.query("USE system SHOW DATABASES YIELD name RETURN name").namespace == "system")
-        #expect(try conn.query("RETURN 1").namespace == "neo4j")
+        #expect(try conn.query("RETURN 1").namespace == .neo4j)
+        #expect(try conn.query("USE system SHOW DATABASES YIELD name RETURN name").namespace == .system)
+        #expect(try conn.query("RETURN 1").namespace == .neo4j)
         try conn.setNamespace("system")
-        #expect(try conn.query("SHOW DATABASES").namespace == "system")
+        #expect(try conn.query("SHOW DATABASES").namespace == .system)
         let sys = try conn.database.connect(namespace: "system")
-        #expect(try sys.query("SHOW DATABASES").namespace == "system")
+        #expect(try sys.query("SHOW DATABASES").namespace == .system)
         #expect(throws: RelateError.self) { try conn.database.connect(namespace: "nope") }
     }
 

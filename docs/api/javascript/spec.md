@@ -266,13 +266,15 @@ them during marshalling):
 - `result.namespace` (`string`) — the statement's *resolved* namespace
   (ADR-0117 §7): the `USE` target when the statement carries a `USE`
   clause, else the session namespace. One of `"neo4j"`, `"system"` or
-  `"system_ontologies"`. This is per-statement: a `USE`-routed statement
+  `"system_ontologies"` (any other value is an `ABI contract violated: namespace ...`
+  error, like Go). This is per-statement: a `USE`-routed statement
   reports its target without changing the connection's session
   namespace.
 - `result.queryType` (`string`) — the statement's plan-time
   classification (ADR-0162) as its Neo4j Query API v2 wire code: `"r"`
   (read), `"w"` (a write with no returned columns), `"rw"` (a write with
-  returned columns) or `"s"` (schema), the split per ADR-0332. EXPLAIN
+  returned columns) or `"s"` (schema), the split per ADR-0332; any other value
+  is an `ABI contract violated: query type ...` error. EXPLAIN
   and PROFILE report the wrapped statement's type without executing it.
 - `result.consume().elapsedMs` (`number`) — the engine-reported statement
   elapsed in wall-clock milliseconds (ADR-0221): parse, plan and run,

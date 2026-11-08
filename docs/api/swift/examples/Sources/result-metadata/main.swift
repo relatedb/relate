@@ -9,7 +9,7 @@ precondition(write.stats.nodesCreated == 2 && write.stats.propertiesSet == 2)
 
 let read = try conn.query("MATCH (c:City) RETURN c.name AS name, c AS node ORDER BY name")
 print("type:", read.queryType, "namespace:", read.namespace, "elapsed ms:", read.elapsedMs)
-precondition(read.queryType == .read && read.namespace == "neo4j")
+precondition(read.queryType == .read && read.namespace == .neo4j)
 // The elapsed total splits into parse / plan / execute windows (ADR-0491);
 // their sum never exceeds the total.
 precondition(read.parseMs >= 0 && read.planMs >= 0 && read.executeMs >= 0)
