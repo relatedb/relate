@@ -8,7 +8,7 @@ use relate_core::{Result, Value};
 
 use crate::overlay::ExecGraph;
 
-use super::{convert, entity, list, math, scalar, spatial, string, temporal, vector};
+use super::{bar, convert, entity, list, math, scalar, spatial, string, temporal, vector};
 
 /// Whether a builtin samples the clock or entropy on each call, so two
 /// evaluations in one statement can return different values. This is the
@@ -206,6 +206,16 @@ pub(super) const ARITY_EXACTLY_TWO_STRINGS: Arity = Arity {
 
     verified: &["split"],
 };
+/// `bar`: value, min, max and width, all four required. Engine-only (not in
+/// the Cypher-25 corpus, so there is no live-Neo4j spec): `verified` stays
+/// empty and the lockstep test pins the one registered name instead.
+pub(super) const ARITY_EXACTLY_FOUR_ENGINE_ONLY: Arity = Arity {
+    min: 4,
+    max: Some(4),
+    requirement: "requires exactly four arguments",
+
+    verified: &[],
+};
 /// Everything else's floor; the upper bounds are the LABS-758 catalogue.
 pub(super) const ARITY_AT_LEAST_ONE: Arity = Arity {
     min: 1,
@@ -300,6 +310,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
     row("asin", math::bi_asin, false, ARITY_AT_LEAST_ONE),
     row("atan", math::bi_atan, false, ARITY_AT_LEAST_ONE),
     row("atan2", math::bi_atan2, false, ARITY_AT_LEAST_ONE),
+    row("bar", bar::bi_bar, false, ARITY_EXACTLY_FOUR_ENGINE_ONLY),
     row("btrim", string::bi_btrim, false, ARITY_AT_LEAST_ONE),
     row(
         "cardinality",

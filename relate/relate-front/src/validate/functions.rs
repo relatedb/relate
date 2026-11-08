@@ -237,7 +237,11 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
 ///   write are `ltrim`/`rtrim`. Because the parser produces the same call
 ///   node either way, moving the spellings here is what removes their
 ///   `SHOW FUNCTIONS` rows while the lowering's own form keeps binding.
+/// - `bar` -- the engine-only text bar `bar(value, min, max, width)`
+///   (ADR-0542's admission class): callable in every build, not in the
+///   Cypher-25 corpus, so it is never a `SHOW FUNCTIONS` row.
 pub(crate) const UNADVERTISED_FUNCTIONS: &[&str] = &[
+    "bar",
     "graph.byname",
     "string.interp",
     "trim_spec",
@@ -448,6 +452,10 @@ mod tests {
             );
             assert!(UNADVERTISED_FUNCTIONS.contains(&internal));
         }
+        // The engine-only admission class: binder-known, never advertised.
+        assert!(is_known_function("bar"));
+        assert!(!KNOWN_FUNCTIONS.contains(&"bar"));
+        assert!(UNADVERTISED_FUNCTIONS.contains(&"bar"));
         // The canonical spellings the renames target are untouched.
         for canonical in [
             "ltrim",

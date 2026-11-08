@@ -439,4 +439,25 @@ Implemented beyond the openCypher function set (Neo4j Cypher 25 / GQL alignment)
 - set-quantifiers on aggregates: `count(DISTINCT x)`, `count(ALL x)`, and the same for `sum`/`avg`/`collect`/`stDev`/`percentileCont`/`percentileDisc`
 - GQL aggregate name aliases (e.g. `collect_list`, `percentile_cont`, `stdev_samp`); the `stddev_samp`/`stddev_pop` spellings are also reachable, but only under `RELATE_PREVIEW=gql-stddev-aliases` (ADR-0497) — the default dialect advertises and dispatches the canonical `stdev_samp`/`stdev_pop` rows only
 
+## Unlisted functions
+
+These functions are callable in every build and dialect but are deliberately
+absent from `SHOW FUNCTIONS` (ADR-0542): they are engine-only helpers outside
+the Cypher-25 function corpus the catalogue mirrors.
+
+### `bar(value, min, max, width)`
+
+Renders `value` as a text bar of block characters. The bar is `width` cells
+long when `value >= max` and empty when `value <= min`; in between it grows
+in steps of one eighth of a cell (`▏▎▍▌▋▊▉█`, floored). `value`, `min` and
+`max` are INTEGER or FLOAT, `width` is an INTEGER from 0 to 1024. Any `null`
+argument returns `null`. A non-numeric argument is an `InvalidArgumentType`
+error; NaN or infinite numbers and `min >= max` are `InvalidArgumentValue`
+errors; a `width` outside 0..1024 is `NumberOutOfRange`.
+
+```cypher
+RETURN bar(5, 0, 10, 10) AS half   // '█████'
+RETURN bar(1.25, 0, 10, 4) AS part // '▌'
+```
+
 See the [Cypher Syntax reference](./cypher-syntax.md#neo4j--gql-extensions) for the full extended surface.
