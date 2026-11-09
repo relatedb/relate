@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use relate_core::{Error, Result};
-use relate_ir::{Clause, Expr, PathPattern, PatternElement, Projection, Query, SingleQuery};
+use relate_ir::{Clause, Expr, PathPattern, Projection, Query, SingleQuery};
 use relate_model::name_list::same_name_multiset;
 use relate_names::SmallName;
 
@@ -326,42 +326,54 @@ pub(crate) fn call_body_names(
     (seed, imports)
 }
 
-/// Extend the running scope with the names one non-projecting clause
-/// introduces: pattern variables, `UNWIND`/`LOAD CSV` aliases, `CALL … YIELD`
-/// names, `CALL { … }` exports (and a reporting status), and catalog rows.
-/// The projecting clauses (`WITH`, `RETURN`, `WHEN`, `FINISH`) are handled by
-/// the two scope drivers above, which *replace* the scope.
-///
-/// Exhaustive over the IR clause enum: a new clause kind cannot be added
-/// without deciding what it introduces into a scope.
-fn extend_scope(clause: &Clause, names: &mut Vec<String>) -> Result<()> {
+/// One clause's variable introductions — the single spelling of "what a
+/// clause binds" (`names.rs` owns it; every other consumer collects this
+/// enumerator instead of re-matching the `Clause` vocabulary): pattern
+/// variables and the CIP-224 score var, `UNWIND`/`LOAD CSV` aliases,
+/// `CALL … YIELD` names, subquery exports and reporting status, catalog
+/// output columns. Projections (`WITH`/`RETURN`) replace the scope
+/// instead of extending it — their drivers own that policy — so they
+/// introduce nothing here. The introduced names come back in enumeration
+/// order and a name may appear more than once (the pattern walk's
+/// path-names prefix and payload walk can both yield it) — dedup is the
+/// caller's own policy. `incoming` is the running scope as an ordered
+/// name list (the subquery seed consumes it in declaration order — a
+/// body-level `RETURN *` expands to exactly it), supplied lazily and
+/// materialized inside the subquery arm alone — no other clause pays for
+/// a snapshot.
+pub(crate) fn clause_bindings(
+    clause: &Clause,
+    incoming: impl FnOnce() -> Vec<String>,
+) -> Result<Vec<String>> {
+    let mut introduced = Vec::new();
+    let push = &mut |name: String| introduced.push(name);
     match clause {
         Clause::Match {
             patterns, search, ..
         } => {
             for path in patterns {
-                pattern_names(path, names);
+                pattern_names(path, push);
             }
             // CIP-224: a `<search clause>`'s `SCORE AS` variable is bound by
             // this MATCH like its pattern variables are (the same binding
             // `validate/clause.rs` and `rewrite.rs` record).
             if let Some(score_var) = search.as_ref().and_then(|search| search.score_var.as_ref()) {
-                push_name(names, score_var.to_string());
+                push(score_var.to_string());
             }
         }
         Clause::Create { patterns } => {
             for path in patterns {
-                pattern_names(path, names);
+                pattern_names(path, push);
             }
         }
-        Clause::Merge { pattern, .. } => pattern_names(pattern, names),
+        Clause::Merge { pattern, .. } => pattern_names(pattern, push),
         Clause::Unwind { alias, .. }
         | Clause::LoadCsv {
             variable: alias, ..
-        } => push_name(names, alias.to_string()),
+        } => push(alias.to_string()),
         Clause::Call { yield_items, .. } => {
             for name in yield_items.effective_names() {
-                push_name(names, name.to_string());
+                push(name.to_string());
             }
         }
         Clause::CallSubquery {
@@ -372,7 +384,7 @@ fn extend_scope(clause: &Clause, names: &mut Vec<String>) -> Result<()> {
         } => {
             // The body's two name lists, derived once (seed = what the body
             // sees; imports = the CIP-218 Rule 10 exclusion set).
-            let (seed, excluded_imports) = call_body_names(scope, names);
+            let (seed, excluded_imports) = call_body_names(scope, &incoming());
             // CIP-218 Rule 10: the body's export set carries none of the
             // names the scope clause imported, so the star exclusion is
             // part of the UNION-arm agreement itself (a star arm must not
@@ -380,18 +392,18 @@ fn extend_scope(clause: &Clause, names: &mut Vec<String>) -> Result<()> {
             // The exclusion is applied by the name computation, so the
             // returned names are the export set verbatim.
             for name in query_output_names_with_seed(query, seed, &excluded_imports)? {
-                push_name(names, name);
+                push(name);
             }
             if let Some(status) = in_transactions
                 .as_ref()
                 .and_then(|transaction| transaction.report_status.as_ref())
             {
-                push_name(names, status.to_string());
+                push(status.to_string());
             }
         }
         Clause::Catalog(command) => {
             for name in catalog_output_names(command) {
-                push_name(names, name);
+                push(name);
             }
         }
         // Projections replace the scope (handled by the drivers); the rest
@@ -408,6 +420,23 @@ fn extend_scope(clause: &Clause, names: &mut Vec<String>) -> Result<()> {
         | Clause::CreateIndex { .. }
         | Clause::DropIndex { .. }
         | Clause::ShowIndexes => {}
+    }
+    Ok(introduced)
+}
+
+/// Extend the running scope with the names one non-projecting clause
+/// introduces: pattern variables, `UNWIND`/`LOAD CSV` aliases, `CALL … YIELD`
+/// names, `CALL { … }` exports (and a reporting status), and catalog rows.
+/// The projecting clauses (`WITH`, `RETURN`, `WHEN`, `FINISH`) are handled by
+/// the two scope drivers above, which *replace* the scope.
+///
+/// Exhaustive over the IR clause enum: a new clause kind cannot be added
+/// without deciding what it introduces into a scope.
+fn extend_scope(clause: &Clause, names: &mut Vec<String>) -> Result<()> {
+    // The lazy scope is materialized inside the subquery arm alone — the
+    // immutable borrow ends at the call, so the fold needs no snapshot.
+    for name in clause_bindings(clause, || names.clone())? {
+        push_name(names, name);
     }
     Ok(())
 }
@@ -447,47 +476,13 @@ pub(crate) fn catalog_output_names(command: &relate_parser::Clause) -> Vec<Strin
     relate_front::show_columns::catalog_output_columns(command)
 }
 
-/// The names a path pattern introduces, in the order it spells them: the
-/// path variable, each node and relationship variable, then the GPM element
-/// variables. The one walk both the `MATCH`/`CREATE` and `MERGE` arms use.
-fn pattern_names(path: &PathPattern, names: &mut Vec<String>) {
-    // The output-name list is the String rendering domain: every IR
-    // name renders once, at its push.
-    for name in path.path_names() {
-        push_name(names, name.to_string());
-    }
-    for node in &path.nodes {
-        if let Some(name) = &node.variable {
-            push_name(names, name.to_string());
-        }
-    }
-    for rel in &path.rels {
-        if let Some(name) = &rel.variable {
-            push_name(names, name.to_string());
-        }
-    }
-    push_gpm_names(names, &path.elements);
-}
-
-fn push_gpm_names(names: &mut Vec<String>, elements: &[PatternElement]) {
-    for element in elements {
-        match element {
-            PatternElement::Node(node) => {
-                if let Some(name) = &node.variable {
-                    push_name(names, name.to_string());
-                }
-            }
-            PatternElement::Relationship(rel) => {
-                if let Some(name) = &rel.variable {
-                    push_name(names, name.to_string());
-                }
-            }
-            PatternElement::Quantified(qpp) => {
-                if let Some(name) = &qpp.subpath_variable {
-                    push_name(names, name.to_string());
-                }
-                push_gpm_names(names, &qpp.elements);
-            }
-        }
+/// The names a path pattern introduces, in the order it spells them —
+/// the IR walk owns the enumeration and its promised declaration order
+/// (path names first, then payload variables, quantified subpath before
+/// its group); this is the String-rendering seam only. Raw pushes (a
+/// name may repeat) — dedup is the caller's own policy.
+fn pattern_names(path: &PathPattern, push: &mut impl FnMut(String)) {
+    for name in relate_ir::pattern_anchor_variables(path) {
+        push(name.to_string());
     }
 }

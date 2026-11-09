@@ -11,7 +11,6 @@ use relate_ir::{
 };
 use relate_names::{NamedToken, SmallName};
 
-use crate::rewrite::add_pattern_vars;
 use crate::stats::{ContainsCount, NoPatternStats, PatternStats};
 
 /// Synthetic row counts for the rank fallback. A higher rank is cheaper,
@@ -811,18 +810,17 @@ fn reverse_path(path: &mut PathPattern) {
 /// Greedy seed plus connected expansion: the cheapest pattern seeds, then
 /// each next pattern that shares a variable already bound (LABS-157), or
 /// the cheapest remaining one when none is connected. Orientation and the
-/// bound set advance with every chosen pattern; the grown bound set is
-/// returned. Equal costs keep written order.
+/// bound set advance with every chosen pattern; the grown set stays
+/// internal (connectivity/orientation state — the caller's binding set is
+/// `rewrite.rs`'s `advance_bound` fold, the one spelling of what a clause
+/// binds). Equal costs keep written order.
 pub(crate) fn order_patterns(
     patterns: &mut Vec<PathPattern>,
     prebound: &HashSet<String>,
     where_clause: Option<&Expr>,
     stats: &dyn PatternStats,
-) -> HashSet<String> {
+) {
     let mut bound = prebound.clone();
-    if patterns.is_empty() {
-        return bound;
-    }
     // The MATCH's conjunct view, derived once for every orientation this
     // MATCH prices: the where clause is loop-invariant, so each
     // candidate's `choose_orientation` reads this slice instead of
@@ -867,7 +865,20 @@ pub(crate) fn order_patterns(
         chosen.push(path);
     }
     *patterns = chosen;
-    bound
+}
+
+/// Add one pattern's variables to a binding set — the ordering pass's own
+/// incremental scope, fed pattern by pattern as `order_patterns` commits
+/// each chosen orientation. The canonical IR walk supplies the names for
+/// both pattern representations.
+fn add_pattern_vars(bound: &mut HashSet<String>, p: &PathPattern) {
+    // Map-bridge feeds: the bound sets stay String-keyed; every IR name
+    // renders once, at its push.
+    bound.extend(
+        relate_ir::pattern_anchor_variables(p)
+            .into_iter()
+            .map(|name| name.to_string()),
+    );
 }
 
 #[cfg(test)]

@@ -2,106 +2,234 @@
 
 use std::collections::HashSet;
 
-use relate_ir::{BinaryOp, Clause, Expr, LabelExpr, PathPattern, Projection};
+use relate_ir::{BinaryOp, Clause, Expr, LabelExpr, PathPattern};
 use relate_names::{NamedToken, SmallName, Token};
 
 use crate::order::order_patterns;
 use crate::stats::PatternStats;
 
 pub fn rewrite_part(clauses: &mut [Clause], stats: &dyn PatternStats) {
+    let introduced = push_match_where_down(clauses);
+    let mut scope: Vec<String> = Vec::new();
     let mut bound = HashSet::new();
-    for clause in clauses {
-        match clause {
-            Clause::Catalog(_) => {}
-            Clause::Match {
-                patterns,
-                where_clause,
-                search,
-                ..
-            } => {
-                if let Some(w) = where_clause.take() {
-                    // Only the fold reads the introduced set — a MATCH
-                    // without a WHERE never pays for it.
-                    let introduced = pattern_introduced_vars(patterns);
-                    *where_clause = fold_where(patterns, w, &bound, &introduced);
-                }
-                bound = order_patterns(patterns, &bound, where_clause.as_ref(), stats);
-                if let Some(score_var) =
-                    search.as_ref().and_then(|search| search.score_var.as_ref())
-                {
-                    bound.insert(score_var.to_string());
-                }
+    for (i, clause) in clauses.iter_mut().enumerate() {
+        if let Clause::Match {
+            patterns,
+            where_clause,
+            ..
+        } = clause
+        {
+            if let Some(w) = where_clause.take() {
+                // The fold reads the clause's introductions from the
+                // pass's recorded list — the one derivation of "what this
+                // MATCH introduces" feeds both the scope and the fold.
+                *where_clause = fold_where(patterns, w, &bound, &introduced[i]);
             }
-            Clause::Create { patterns } => {
-                for p in patterns {
-                    add_pattern_vars(&mut bound, p);
-                }
-            }
-            Clause::Merge { pattern, .. } => add_pattern_vars(&mut bound, pattern),
-            Clause::Unwind { alias, .. } => {
-                bound.insert(alias.to_string());
-            }
-            Clause::Call { yield_items, .. } => {
-                bound.extend(yield_items.effective_names().map(|name| name.to_string()));
-            }
-            Clause::With { items, .. } => {
-                bound = with_bound(items, &bound);
-            }
-            Clause::Return { .. }
-            | Clause::Delete { .. }
-            | Clause::Set { .. }
-            | Clause::Remove { .. }
-            | Clause::CreateIndex { .. }
-            | Clause::DropIndex { .. }
-            | Clause::ShowIndexes
-            | Clause::Finish
-            | Clause::LoadCsv { .. }
-            | Clause::CallSubquery { .. }
-            | Clause::Conditional { .. }
-            | Clause::Foreach { .. }
-            | Clause::Use { .. } => {}
+            // The ordering pass reorders `patterns` in place; the set it
+            // grows stays internal (the caller's binding set advances once,
+            // through `advance_scope` below).
+            order_patterns(patterns, &bound, where_clause.as_ref(), stats);
         }
+        advance_scope(&mut scope, &mut bound, clause, &introduced[i]);
     }
 }
 
-fn pattern_introduced_vars(patterns: &[PathPattern]) -> HashSet<String> {
-    patterns
+/// Move each MATCH-level `WHERE` conjunct to the earliest clause of its run
+/// of consecutive non-`OPTIONAL`, non-`SEARCH` MATCH clauses that binds
+/// every variable the conjunct reads. Neo4j places such a predicate where
+/// its variables become available, and the placement is observable for a
+/// `shortestPath()` pattern: a predicate on the selected path must hold
+/// *inside* the search, which then answers the shortest path satisfying it
+/// instead of filtering the one path it already chose. A filter commutes
+/// with an inner-join MATCH, so no other pattern's rows change. A run stops
+/// at the first clause of another kind, at an `OPTIONAL MATCH` (its WHERE
+/// belongs to the optional match, not to the joined rows), and at a
+/// `SEARCH` clause (top-K semantics).
+///
+/// One binding set decides every placement: after the walk passes clause
+/// `e`, the set is exactly what a conjunct placed on `e` may read, so a
+/// cumulative per-clause table never exists (that table would make
+/// planning quadratic in the clause count), and each parked conjunct's
+/// variable set is computed once where it is parked — the per-clause test
+/// is a containment check, never a re-walk. Returns each clause's recorded
+/// introductions so the caller's fold reads them without re-deriving.
+fn push_match_where_down(clauses: &mut [Clause]) -> Vec<Vec<String>> {
+    let n = clauses.len();
+    let crossing: Vec<bool> = clauses
         .iter()
-        .flat_map(relate_ir::path_pattern_vars)
-        .map(|name| name.to_string())
-        .collect()
-}
-
-pub(crate) fn add_pattern_vars(bound: &mut HashSet<String>, p: &PathPattern) {
-    // Map-bridge feeds: the rewrite's bound sets stay String-keyed; every
-    // IR name renders once, at its push.
-    if let Some(v) = &p.variable {
-        bound.insert(v.to_string());
-    }
-    bound.extend(relate_ir::path_pattern_vars(p).map(|name| name.to_string()));
-}
-
-fn with_bound(items: &[Projection], prev: &HashSet<String>) -> HashSet<String> {
-    let has_star = items.iter().any(|i| matches!(i.expr, Expr::Star));
-    let mut next = if has_star {
-        prev.clone()
-    } else {
-        HashSet::new()
-    };
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item.expr, Expr::Star) {
+        .map(|clause| crossing_where(clause).is_some())
+        .collect();
+    // Per conjunct (in collection order): the clause it moves to, `None`
+    // when it stays at its own.
+    let mut assignment: Vec<Vec<Option<usize>>> = vec![Vec::new(); n];
+    let mut participates = vec![false; n];
+    let mut introduced: Vec<Vec<String>> = Vec::with_capacity(n);
+    let mut scope: Vec<String> = Vec::new();
+    let mut bound = HashSet::new();
+    let mut i = 0;
+    while i < n {
+        if !crossing[i] {
+            let names = bindings_of(&clauses[i], &scope);
+            advance_scope(&mut scope, &mut bound, &clauses[i], &names);
+            introduced.push(names);
+            i += 1;
             continue;
         }
-        next.insert(item.output_name(i));
+        // A run of crossing MATCHes: park its conjuncts first, each with
+        // its variable set computed once (source clause, position in its
+        // conjunct list, that set), then walk the run once, advancing the
+        // one binding set.
+        let start = i;
+        let mut pending: Vec<(usize, usize, HashSet<String>)> = Vec::new();
+        while i < n && crossing[i] {
+            let conjuncts = crate::order::where_conjuncts_of(
+                crossing_where(&clauses[i]).and_then(Option::as_ref),
+            );
+            assignment[i] = vec![None; conjuncts.len()];
+            for (slot, conjunct) in conjuncts.into_iter().enumerate() {
+                let mut vars = HashSet::new();
+                relate_ir::expr_vars(conjunct, &mut vars);
+                pending.push((i, slot, vars));
+            }
+            i += 1;
+        }
+        for e in start..i {
+            let names = bindings_of(&clauses[e], &scope);
+            advance_scope(&mut scope, &mut bound, &clauses[e], &names);
+            introduced.push(names);
+            // Earliest covering clause: the walk reaches it first — a
+            // conjunct leaves the pending list at the first clause of its
+            // run whose available set covers every variable it reads. A
+            // conjunct with no variables never moves (it holds or fails
+            // at every clause alike, so its placement stays the author's
+            // own).
+            pending.retain_mut(|(source, slot, vars)| {
+                if *source > e && !vars.is_empty() && vars.iter().all(|name| bound.contains(name)) {
+                    assignment[*source][*slot] = Some(e);
+                    participates[*source] = true;
+                    participates[e] = true;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
-    next
+    commit_where_assignment(clauses, assignment, participates);
+    introduced
+}
+
+/// The commit half of the push-down: every participating clause's WHERE is
+/// taken and rebuilt once — its surviving conjuncts plus the ones routed
+/// to it, in the collection order the placement walk numbered. Walked in
+/// reverse: a conjunct only ever moves to an earlier clause, so every
+/// source above `i` has already routed into `incoming[i]` by the time `i`
+/// rebuilds.
+fn commit_where_assignment(
+    clauses: &mut [Clause],
+    assignment: Vec<Vec<Option<usize>>>,
+    participates: Vec<bool>,
+) {
+    let n = clauses.len();
+    let mut incoming: Vec<Vec<Expr>> = vec![Vec::new(); n];
+    for i in (0..n).rev() {
+        if !participates[i] {
+            continue;
+        }
+        let mut all = Vec::new();
+        if let Some(expr) = crossing_where_mut(&mut clauses[i]).and_then(Option::take) {
+            let mut conjuncts = Vec::new();
+            flatten_into(expr, &mut conjuncts);
+            for (slot, conjunct) in conjuncts.into_iter().enumerate() {
+                // One assignment slot per conjunct: the placement walk
+                // numbered this same list — a divergence is a bug, not a
+                // silently kept conjunct.
+                assert!(
+                    slot < assignment[i].len(),
+                    "one assignment slot per conjunct"
+                );
+                if let Some(target) = assignment[i][slot] {
+                    incoming[target].push(conjunct);
+                } else {
+                    all.push(conjunct);
+                }
+            }
+        }
+        all.append(&mut incoming[i]);
+        let where_clause = crossing_where_mut(&mut clauses[i])
+            .expect("a participating clause is a crossing MATCH");
+        *where_clause = combine_and(all);
+    }
+}
+
+/// One clause's introductions, read through the canonical enumerator —
+/// bind already validated the query, so its error is an invariant here.
+/// The lazy scope is the pass's ordered running scope: the subquery arm
+/// seeds on it in declaration order.
+fn bindings_of(clause: &Clause, scope: &[String]) -> Vec<String> {
+    crate::names::clause_bindings(clause, || scope.to_vec()).expect("bind validated the query")
+}
+
+/// Advance the pass's scope pair past one clause from its recorded
+/// introductions — the one fold every pass in this module shares. The
+/// ordered list is the subquery seed's declaration order; the set is the
+/// membership index the placement tests read. `WITH` replaces both
+/// through the canonical projection fold.
+fn advance_scope(
+    scope: &mut Vec<String>,
+    bound: &mut HashSet<String>,
+    clause: &Clause,
+    introduced: &[String],
+) {
+    match clause {
+        Clause::With { items, .. } => {
+            *scope = crate::names::projected_scope(items, std::mem::take(scope));
+            *bound = scope.iter().cloned().collect();
+        }
+        _ => {
+            for name in introduced {
+                if bound.insert(name.clone()) {
+                    scope.push(name.clone());
+                }
+            }
+        }
+    }
+}
+
+/// A push-down run's crossing MATCH: neither `OPTIONAL` (its WHERE
+/// belongs to the optional match, not to the joined rows) nor `SEARCH`
+/// (top-K semantics). The one spelling of the rule — the run guard, the
+/// placement reads and the write phase all go through this pair, which
+/// hands back the WHERE slot of the MATCH it proves crossable.
+fn crossing_where(clause: &Clause) -> Option<&Option<Expr>> {
+    match clause {
+        Clause::Match {
+            optional: false,
+            search: None,
+            where_clause,
+            ..
+        } => Some(where_clause),
+        _ => None,
+    }
+}
+
+fn crossing_where_mut(clause: &mut Clause) -> Option<&mut Option<Expr>> {
+    match clause {
+        Clause::Match {
+            optional: false,
+            search: None,
+            where_clause,
+            ..
+        } => Some(where_clause),
+        _ => None,
+    }
 }
 
 fn fold_where(
     patterns: &mut [PathPattern],
     expr: Expr,
     bound: &HashSet<String>,
-    introduced: &HashSet<String>,
+    introduced: &[String],
 ) -> Option<Expr> {
     // One conjunct list for the whole `AND` tree — the flattening this
     // used to do with a fresh `Vec` per leaf (and one per inner node's
@@ -141,14 +269,14 @@ fn fold_conjunct(
     patterns: &mut [PathPattern],
     expr: &Expr,
     bound: &HashSet<String>,
-    introduced: &HashSet<String>,
+    introduced: &[String],
 ) -> bool {
     if let Expr::LabelPredicate {
         expr, label_expr, ..
     } = expr
     {
         if let Expr::Variable(v) = expr.as_ref() {
-            if v.with_str(|text| introduced.contains(text))
+            if v.with_str(|text| introduced.iter().any(|name| name.as_str() == text))
                 && !v.with_str(|text| bound.contains(text))
             {
                 if let Some(labels) = static_labels(label_expr).filter(|labels| !labels.is_empty())
@@ -162,7 +290,9 @@ fn fold_conjunct(
     let Some((v, key, val)) = eq_prop(expr) else {
         return false;
     };
-    if !v.with_str(|text| introduced.contains(text)) || v.with_str(|text| bound.contains(text)) {
+    if !v.with_str(|text| introduced.iter().any(|name| name.as_str() == text))
+        || v.with_str(|text| bound.contains(text))
+    {
         return false;
     }
     if !val.is_seek_const() {
@@ -380,5 +510,51 @@ mod tests {
         let (labels, where_clause) = rewritten("MATCH (n:A|B) WHERE n:C RETURN n");
         assert!(labels.is_empty(), "{labels:?}");
         assert!(where_clause.is_some());
+    }
+
+    /// The variables of each MATCH clause's surviving WHERE, in clause
+    /// order — the push-down's observable placement.
+    fn clause_where_vars(cypher: &str) -> Vec<Option<HashSet<String>>> {
+        let mut query = relate_front::parse_and_lower(cypher).unwrap();
+        rewrite_part(&mut query.parts[0].clauses, &crate::NoPatternStats);
+        query.parts[0]
+            .clauses
+            .iter()
+            .map(|clause| match clause {
+                Clause::Match { where_clause, .. } => where_clause.as_ref().map(|expr| {
+                    let mut vars = HashSet::new();
+                    relate_ir::expr_vars(expr, &mut vars);
+                    vars
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A predicate moved to the earlier clause applies where its variables
+    /// become available — observable for `shortestPath()`, whose search
+    /// must choose the path against a predicate on it. A conjunct that also
+    /// reads its own clause's variables stays.
+    #[test]
+    fn match_where_conjuncts_move_to_the_earliest_clause_that_binds_them() {
+        let clauses =
+            clause_where_vars("MATCH (a) MATCH (b) WHERE a.x > 1 AND b.y > 2 RETURN a, b");
+        assert_eq!(
+            clauses,
+            vec![
+                Some(HashSet::from(["a".to_string()])),
+                Some(HashSet::from(["b".to_string()])),
+                None, // the RETURN clause
+            ]
+        );
+    }
+
+    /// An `OPTIONAL MATCH`'s WHERE belongs to the optional match, not to
+    /// the joined rows, so nothing is pushed across it.
+    #[test]
+    fn match_where_push_down_stops_at_optional_match() {
+        let clauses = clause_where_vars("MATCH (a) OPTIONAL MATCH (b) WHERE a.x > 1 RETURN a, b");
+        assert_eq!(clauses[0], None);
+        assert!(clauses[1].is_some());
     }
 }

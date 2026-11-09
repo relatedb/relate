@@ -178,3 +178,72 @@ fn bidir_closed_shortest_path_keeps_per_side_stop() {
     assert_eq!(closed(&[(0, 1), (1, 0)], "(s)-[*1..8]->(s)"), Value::Int(2));
     assert_eq!(closed(&[(0, 1)], "(s)-[*1..8]-(s)"), Value::Null);
 }
+
+/// A predicate on a `shortestPath()` variable written on a *later* MATCH
+/// clause moves down to the pattern it reads (Neo4j's placement), so the
+/// search answers the shortest path that satisfies it instead of filtering
+/// the one path it already chose. Pins ShortestPathAcceptance's
+/// relationship-expander scenario.
+#[test]
+fn shortest_path_where_on_a_later_match_selects_the_satisfying_path() {
+    let b = Builder::new();
+    let x = b.node("x", &["X"]);
+    let y = b.node("y", &["Y"]);
+    let n3 = b.anon(&[]);
+    let n4 = b.anon(&[]);
+    b.rel(x, y, "REL", &[("blocked", Value::Bool(true))]);
+    b.rel(x, n3, "REL", &[]);
+    b.rel(n3, y, "REL", &[("blocked", Value::Bool(true))]);
+    b.rel(n3, n4, "REL", &[]);
+    b.rel(n4, y, "REL", &[]);
+    let g = b.done();
+    let rows = exec_cypher(
+        &g,
+        "MATCH (a:X), (b:Y) \
+         MATCH p1 = shortestPath((a)-[r1:REL*]->(b)) \
+         MATCH p2 = shortestPath((a)-[r2:REL*]->(b)) \
+         WHERE ALL(r IN relationships(p1) WHERE r.blocked IS NULL) \
+         RETURN length(p1) AS l1, length(p2) AS l2",
+    )
+    .rows;
+    assert_eq!(rows, vec![vec![Value::Int(3), Value::Int(1)]]);
+}
+
+/// The two shortest paths keep their own predicates: one on the path's
+/// relationships, one on its nodes, written on the later MATCH. Pins
+/// ShortestPathAcceptance's node-and-relationship-expander scenario.
+#[test]
+fn two_shortest_paths_resolve_their_own_predicates() {
+    let b = Builder::new();
+    let named = |id: &str, labels: &[&str]| {
+        b.prop_node(
+            id,
+            labels,
+            &[("name", Value::String(id.to_string().into()))],
+        )
+    };
+    let x = named("x", &["X"]);
+    let y = named("y", &["Y"]);
+    let a = named("a", &[]);
+    let c = named("c", &[]);
+    let unnamed = b.anon(&[]);
+    // p1's only unblocked route runs through the unnamed node; p2's only
+    // all-named route crosses the blocked relationship.
+    b.rel(x, unnamed, "REL", &[]);
+    b.rel(unnamed, y, "REL", &[]);
+    b.rel(x, a, "REL", &[("blocked", Value::Bool(true))]);
+    b.rel(a, c, "REL", &[]);
+    b.rel(c, y, "REL", &[]);
+    let g = b.done();
+    let rows = exec_cypher(
+        &g,
+        "MATCH (s:X), (t:Y) \
+         MATCH p1 = shortestPath((s)-[r1:REL*]->(t)) \
+         MATCH p2 = shortestPath((s)-[r2:REL*]->(t)) \
+         WHERE ALL(n IN nodes(p2) WHERE n.name IS NOT NULL) \
+           AND NONE(r IN relationships(p1) WHERE r.blocked IS NOT NULL) \
+         RETURN length(p1) AS l1, length(p2) AS l2",
+    )
+    .rows;
+    assert_eq!(rows, vec![vec![Value::Int(2), Value::Int(3)]]);
+}

@@ -138,11 +138,18 @@ pub(crate) fn apply_gpm_selector(
             }
         }
     }
-    Ok(states
+    let mut selected: Vec<GpmState> = states
         .into_iter()
         .zip(keep)
         .filter_map(|(state, keep)| keep.then_some(state))
-        .collect())
+        .collect();
+    // The reference emits a selector's kept paths grouped by start node and,
+    // within one start, in ascending cost — the order its breadth-first
+    // search pops them. A stable sort keeps the enumeration order for
+    // equal-length ties (the reference's discovery order); an empty node
+    // slice (an invisible endpoint) sorts first, as the partition key does.
+    selected.sort_by_key(|state| (state.nodes.first().copied(), state.rels.len()));
+    Ok(selected)
 }
 
 /// The shared ordering for both selectors: by rel count, then the rel-type

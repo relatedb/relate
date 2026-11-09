@@ -88,6 +88,36 @@ fn any_keeps_the_shortest_members() {
     );
 }
 
+/// A selector's kept paths emit grouped by start node and, within one
+/// start, in ascending length — the reference's breadth-first pop order.
+/// Pins StatefulShortestPathAcceptance's `ANY SHORTEST` row order, where
+/// the DFS enumeration lists a longer closed walk between two one-hop ones.
+#[test]
+fn selector_output_is_ordered_by_start_then_length() {
+    let states = vec![
+        selector_state(1, 2, 1),
+        selector_state(1, 1, 3),
+        selector_state(1, 3, 1),
+        selector_state(2, 3, 1),
+        selector_state(2, 1, 2),
+    ];
+    let selected = apply_gpm_selector(
+        states,
+        Some(&PathSelector::AnyShortest),
+        &BTreeMap::new(),
+        rel_type_r,
+    )
+    .unwrap();
+    let shape: Vec<(NodeId, NodeId, usize)> = selected
+        .iter()
+        .map(|state| (state.nodes[0], state.nodes[1], state.rels.len()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![(1, 2, 1), (1, 3, 1), (1, 1, 3), (2, 3, 1), (2, 1, 2)]
+    );
+}
+
 #[test]
 fn gpm_acyclic_and_simple_apply_distinct_node_rules() {
     let cycle: [NodeId; 3] = [1, 2, 1];

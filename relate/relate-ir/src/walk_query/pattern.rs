@@ -101,9 +101,12 @@ pub fn pattern_node_anchor_variables(pattern: &PathPattern) -> Vec<SmallName> {
 /// Every variable one pattern binds — its path names, node and
 /// relationship variables, and quantified subpath variables — through
 /// the same one payload visitor as [`pattern_node_anchor_variables`],
-/// in a single traversal. An unordered enumeration that may repeat a
-/// name (a self-loop binds its node variable at both ends); every
-/// consumer performs membership tests only, so no dedup is promised.
+/// in a single traversal. Declaration order is promised: the path names
+/// first, then the payload variables in their spelled order, a
+/// quantified subpath variable before its group's members. A name may
+/// repeat (the path-names prefix and the payload walk can both yield
+/// it); every consumer dedups or membership-tests, so no dedup is
+/// promised here.
 pub fn pattern_anchor_variables(pattern: &PathPattern) -> Vec<SmallName> {
     let mut variables: Vec<SmallName> = pattern.path_names().cloned().collect();
     walk_pattern_payloads(pattern, &mut |payload| {
