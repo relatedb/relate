@@ -6,18 +6,44 @@ fd until a predicate matches, and cleans up by killing the child and
 closing the fd. Test-specific scripts import this module; a same-dir
 ``import pty_driver`` works because Python puts the script's directory on
 ``sys.path`` when run as ``python3 path/to/script.py``.
+
+The egg drivers share the session lifecycle in ``session`` (spawn, size,
+wait for the prompt, ``.quit``, clean-exit check, cleanup) and report every
+failure through ``fail``.
 """
 
 from __future__ import annotations
 
 import errno
+import fcntl
 import os
 import pty
 import select
 import signal
+import struct
+import sys
 import tempfile
+import termios
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import NoReturn
+
+# A transcript predicate: True once the bytes read so far satisfy the wait.
+Pred = Callable[[bytes], bool]
+
+
+def fail(message: str, transcript: bytes | None = None) -> NoReturn:
+    """The one failure exit: print ``FAIL: <message>`` (plus the transcript,
+    when given) to stderr and exit non-zero, so the Rust harness shows it."""
+    detail = f"\n{transcript!r}" if transcript is not None else ""
+    print(f"FAIL: {message}{detail}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def set_size(fd: int, cols: int, rows: int) -> None:
+    """Resize the PTY window behind the master ``fd``."""
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 def fork_exec(
@@ -67,7 +93,7 @@ def fork_exec(
     return pid, fd
 
 
-def read_until(fd: int, pred: Callable[[bytes], bool], timeout: float) -> bytes:
+def read_until(fd: int, pred: Pred, timeout: float) -> bytes:
     """Read from the PTY master fd until ``pred`` matches or ``timeout``.
 
     Returns everything read so far, including when the deadline expires
@@ -138,3 +164,38 @@ def cleanup(pid: int, fd: int) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def prompt_ready(data: bytes) -> bool:
+    """The default readiness check: a ``> `` prompt has been printed."""
+    return b"> " in data
+
+
+@contextmanager
+def session(
+    binary: str,
+    env: dict[str, str] | None = None,
+    size: tuple[int, int] | None = None,
+    ready: Pred = prompt_ready,
+) -> Iterator[tuple[int, bytes]]:
+    """Run the shell on a PTY; yield ``(fd, startup_transcript)``.
+
+    Spawns ``binary`` with ``env``, optionally resizes to ``(cols, rows)``,
+    and waits (15 s) for ``ready``. On normal exit of the ``with`` body it
+    sends ``.quit`` and requires a clean exit; the child is always killed
+    and the fd closed.
+    """
+    pid, fd = fork_exec([binary], extra_env=env)
+    try:
+        if size is not None:
+            set_size(fd, *size)
+        out = read_until(fd, ready, 15.0)
+        if not ready(out):
+            fail("no prompt", out)
+        yield fd, out
+        os.write(fd, b".quit\r")
+        drain(fd, 2.0)
+        if expect_clean_exit(pid, 5.0) != 0:
+            fail("shell did not exit cleanly")
+    finally:
+        cleanup(pid, fd)

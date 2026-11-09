@@ -8,11 +8,9 @@ that is too small is refused before the screen is touched. Prints `OK`.
 
 from __future__ import annotations
 
-import fcntl
 import os
-import struct
 import sys
-import termios
+from collections.abc import Callable
 
 import pty_driver
 
@@ -22,40 +20,25 @@ HIDE = b"\x1b[?25l"
 SHOW = b"\x1b[?25h"
 
 
-def set_size(fd: int, cols: int, rows: int) -> None:
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-
-
-def session(binary: str, size: tuple[int, int], steps) -> None:
-    pid, fd = pty_driver.fork_exec([binary], extra_env={"LANG": "en_US.UTF-8"})
-    try:
-        set_size(fd, *size)
-        out = pty_driver.read_until(fd, lambda b: b"> " in b, 15.0)
-        if b"> " not in out:
-            raise SystemExit(f"FAIL: no prompt\n{out!r}")
+def session(binary: str, size: tuple[int, int], steps: Callable[[int], None]) -> None:
+    with pty_driver.session(binary, {"LANG": "en_US.UTF-8"}, size=size) as (fd, _):
         steps(fd)
-        os.write(fd, b".quit\r")
-        pty_driver.drain(fd, 2.0)
-        if pty_driver.expect_clean_exit(pid, 5.0) != 0:
-            raise SystemExit("FAIL: shell did not exit cleanly")
-    finally:
-        pty_driver.cleanup(pid, fd)
 
 
-def play_and_leave(command: bytes, leave_key: bytes):
+def play_and_leave(command: bytes, leave_key: bytes) -> Callable[[int], None]:
     def steps(fd: int) -> None:
         os.write(fd, command + b"\r")
         out = pty_driver.read_until(fd, lambda b: HIDE in b and b"\x1b[H" in b, 10.0)
         if ENTER not in out or HIDE not in out:
-            raise SystemExit(f"FAIL: {command!r} did not take the screen\n{out!r}")
+            pty_driver.fail(f"{command!r} did not take the screen", out)
         os.write(fd, leave_key)
         out = pty_driver.read_until(fd, lambda b: SHOW in b and LEAVE in b, 10.0)
         if LEAVE not in out or SHOW not in out:
-            raise SystemExit(f"FAIL: {command!r} left the terminal as it was\n{out!r}")
+            pty_driver.fail(f"{command!r} left the terminal as it was", out)
         os.write(fd, b"RETURN 41 + 1 AS answer;\r")
         out = pty_driver.read_until(fd, lambda b: b"42" in b, 10.0)
         if b"42" not in out:
-            raise SystemExit(f"FAIL: shell dead after {command!r}\n{out!r}")
+            pty_driver.fail(f"shell dead after {command!r}", out)
 
     return steps
 
@@ -64,7 +47,7 @@ def too_small(fd: int) -> None:
     os.write(fd, b".tetris\r")
     out = pty_driver.read_until(fd, lambda b: b"too small" in b, 10.0)
     if b"too small" not in out or ENTER in out:
-        raise SystemExit(f"FAIL: small window not refused cleanly\n{out!r}")
+        pty_driver.fail("small window not refused cleanly", out)
 
 
 def main() -> int:

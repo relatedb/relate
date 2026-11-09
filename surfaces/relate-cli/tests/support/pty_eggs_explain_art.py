@@ -12,20 +12,13 @@ import pty_driver
 HEADER = b"plan flame: width ="
 
 
-def session(binary: str, env: dict[str, str], lines: list[bytes], until) -> bytes:
-    pid, fd = pty_driver.fork_exec([binary], extra_env=env)
-    try:
-        out = pty_driver.read_until(fd, lambda b: b"> " in b, 15.0)
+def session(
+    binary: str, env: dict[str, str], lines: list[bytes], until: pty_driver.Pred
+) -> bytes:
+    with pty_driver.session(binary, env) as (fd, out):
         for line in lines:
             os.write(fd, line)
-        out += pty_driver.read_until(fd, until, 10.0)
-        os.write(fd, b".quit\r")
-        pty_driver.drain(fd, 2.0)
-        if pty_driver.expect_clean_exit(pid, 5.0) != 0:
-            raise SystemExit("FAIL: shell did not exit cleanly")
-        return out
-    finally:
-        pty_driver.cleanup(pid, fd)
+        return out + pty_driver.read_until(fd, until, 10.0)
 
 
 def main() -> int:
@@ -40,8 +33,7 @@ def main() -> int:
         lambda b: b"ProduceResults" in b and b.count(b"\x1b[0m") >= 2,
     )
     if HEADER not in colour or b"\x1b[48;2;" not in colour:
-        print(f"FAIL: truecolor flame missing\n{colour!r}", file=sys.stderr)
-        return 1
+        pty_driver.fail("truecolor flame missing", colour)
 
     plain = session(
         binary,
@@ -50,8 +42,7 @@ def main() -> int:
         lambda b: b"ProduceResults" in b,
     )
     if HEADER not in plain or b"\x1b[48;2;" in plain:
-        print(f"FAIL: NO_COLOR flame wrong\n{plain!r}", file=sys.stderr)
-        return 1
+        pty_driver.fail("NO_COLOR flame wrong", plain)
 
     refused = session(
         binary,
@@ -60,8 +51,7 @@ def main() -> int:
         lambda b: b"refusing a write" in b and b"0" in b.split(b"refusing a write", 1)[1],
     )
     if HEADER in refused:
-        print(f"FAIL: write drew a flame\n{refused!r}", file=sys.stderr)
-        return 1
+        pty_driver.fail("write drew a flame", refused)
     print("OK")
     return 0
 

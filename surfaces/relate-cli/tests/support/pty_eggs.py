@@ -18,19 +18,11 @@ SHADE = "▓".encode()
 HL_FG = b"\x1b[38;2;76;153;164m"
 
 
-def session(binary: str, env: dict[str, str], keys: bytes, until) -> bytes:
-    pid, fd = pty_driver.fork_exec([binary], extra_env=env)
-    try:
-        out = pty_driver.read_until(fd, lambda b: b"> " in b or "∩".encode() in b, 15.0)
+def session(binary: str, env: dict[str, str], keys: bytes, until: pty_driver.Pred) -> bytes:
+    ready = lambda b: b"> " in b or "∩".encode() in b
+    with pty_driver.session(binary, env, ready=ready) as (fd, out):
         os.write(fd, keys)
-        out += pty_driver.read_until(fd, until, 10.0)
-        os.write(fd, b".quit\r")
-        pty_driver.drain(fd, 2.0)
-        if pty_driver.expect_clean_exit(pid, 5.0) != 0:
-            raise SystemExit("FAIL: shell did not exit cleanly")
-        return out
-    finally:
-        pty_driver.cleanup(pid, fd)
+        return out + pty_driver.read_until(fd, until, 10.0)
 
 
 def main() -> int:
@@ -50,8 +42,7 @@ def main() -> int:
         (HALF_BLOCK, "half blocks"),
     ]:
         if needle not in colour:
-            print(f"FAIL: truecolor session lacks {what}\n{colour!r}", file=sys.stderr)
-            return 1
+            pty_driver.fail(f"truecolor session lacks {what}", colour)
 
     plain = session(
         binary,
@@ -60,14 +51,11 @@ def main() -> int:
         lambda b: b.count(SHADE) > 20,
     )
     if BANNER not in plain or SHADE not in plain:
-        print(f"FAIL: plain session lacks banner or shades\n{plain!r}", file=sys.stderr)
-        return 1
+        pty_driver.fail("plain session lacks banner or shades", plain)
     if b"\x1b[38;2;" in plain or "∩".encode() in plain:
-        print(f"FAIL: NO_COLOR session coloured or used the glyph\n{plain!r}", file=sys.stderr)
-        return 1
+        pty_driver.fail("NO_COLOR session coloured or used the glyph", plain)
     if b"cypher> " not in plain:
-        print(f"FAIL: NO_COLOR session lost the classic prompt\n{plain!r}", file=sys.stderr)
-        return 1
+        pty_driver.fail("NO_COLOR session lost the classic prompt", plain)
     print("OK")
     return 0
 

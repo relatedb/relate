@@ -79,11 +79,7 @@ fn test_archie_banner_prompt_and_command_on_a_terminal() {
 #[test]
 fn test_text_eggs_on_a_terminal() {
     let binary = env!("CARGO_BIN_EXE_relate");
-    let fortunes = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../relate-eggs/assets/fortunes.txt"
-    );
-    support::assert_pty_driver_ok("pty_eggs_text.py", &[binary, fortunes]);
+    support::assert_pty_driver_ok("pty_eggs_text.py", &[binary]);
 }
 
 /// `.explain-art` on a PTY: the flame under truecolor and NO_COLOR, and a
