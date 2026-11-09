@@ -21,6 +21,7 @@ use super::scope::{
     has_star_item, is_internal_column, is_star_item, projection_names, result_column,
     return_columns, star_scope_names, visible_keys, ProjectionFields,
 };
+use super::unwind::RowFeed;
 use super::{materialize_rows_strict, QueryResult};
 
 /// The statement's result columns for a `RETURN`/`WITH`: the shared
@@ -176,9 +177,23 @@ fn filter_where(
     Ok(filtered)
 }
 
+/// Whether a projection folds its input as it arrives, so an `UNWIND`
+/// feeding it can generate rows one at a time instead of materializing them:
+/// an aggregating projection with no `*` item (a `*` groups by every carried
+/// variable, which needs the rows' shape up front). One decision for the
+/// dispatcher, which chooses the feed, and the projection, which consumes it.
+pub(crate) fn streams_from_unwind(spec: &ProjectSpec<'_>) -> bool {
+    let aggregating_subclause = spec.order.iter().any(|o| is_agg_expr(&o.expr))
+        || spec.where_clause.is_some_and(is_agg_expr);
+    let has_agg = spec.items.iter().any(|p| is_agg_expr(&p.expr))
+        || spec.group_by.is_some()
+        || (spec.distinct && aggregating_subclause);
+    has_agg && !has_star_item(spec.items)
+}
+
 pub(crate) fn project_rows(
     ctx: ExecCtx<'_>,
-    rows: Vec<Row>,
+    feed: RowFeed<'_>,
     spec: &ProjectSpec<'_>,
     inflate: bool,
     source: RowSource,
@@ -249,6 +264,23 @@ pub(crate) fn project_rows(
     // plain post-merge filter.
     let having = where_clause.filter(|w| has_agg && is_agg_expr(w));
     let plain_where = where_clause.filter(|_| having.is_none());
+    // A generated feed reaches the aggregation unmaterialized; every other
+    // consumer receives it collected, exactly as the clause would have left
+    // it.
+    let (rows, stream) = match feed {
+        RowFeed::Held(rows) => (rows, None),
+        RowFeed::Unwind(unwind) if streams_from_unwind(spec) => (Vec::new(), Some(unwind)),
+        RowFeed::Unwind(unwind) => {
+            let mut retained = graph.retain_bytes(0)?;
+            let mut rows = Vec::new();
+            for row in unwind {
+                let row = row?;
+                retained.add_row(graph, row.values())?;
+                rows.push(row);
+            }
+            (rows, None)
+        }
+    };
     let mut rows = if eager_paged {
         let (skip_n, limit_n) =
             resolve_page_bounds(graph, params, cypher_version, skip.as_ref(), limit.as_ref())?;
@@ -333,7 +365,10 @@ pub(crate) fn project_rows(
         // evaluate the aggregates against the aggregated row and fail.
         let mut agg = aggregate_ex(
             graph,
-            rows,
+            match stream {
+                Some(unwind) => RowFeed::Unwind(unwind),
+                None => RowFeed::Held(rows),
+            },
             items,
             group_by,
             params,

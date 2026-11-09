@@ -19,6 +19,7 @@ use crate::row::Row;
 
 use super::super::order::{park_order_keys, OrderKeys};
 use super::super::scope::{has_star_item, is_internal_column, is_star_item, visible_keys};
+use super::super::unwind::RowFeed;
 use super::eval::{agg_eval, AggScope};
 use super::stream::{AggSites, GroupAccs};
 
@@ -61,7 +62,7 @@ struct GroupState<'e> {
 /// grouping set (`GROUP BY ()`): one global group.
 pub(crate) fn aggregate_ex(
     graph: &ExecGraph<'_>,
-    rows: Vec<Row>,
+    rows: RowFeed<'_>,
     items: &[Projection],
     group_by: Option<&[Expr]>,
     params: &BTreeMap<String, Value>,
@@ -85,7 +86,7 @@ pub(crate) fn aggregate_ex(
                 .map(|p| Cow::Borrowed(&p.expr))
                 .collect(),
         },
-        &rows,
+        rows.probe(),
     );
     // One row for an empty input only when there are no grouping keys at
     // all: implicit grouping over an all-aggregate projection, an explicit
@@ -118,7 +119,12 @@ pub(crate) fn aggregate_ex(
     let mut meter = crate::workspace::GroupMapMeter::default();
     // The input vector stays allocated until this loop finishes. Bill it up
     // front, then hand each row's payload to the group map as it moves.
-    let mut retained = account.then(|| crate::workspace::RetainedRows::measure(&rows));
+    // A generated feed holds no input vector: nothing to bill, nothing to
+    // release row by row.
+    let mut retained = match &rows {
+        RowFeed::Held(held) if account => Some(crate::workspace::RetainedRows::measure(held)),
+        _ => None,
+    };
     let mut input_charge = match &retained {
         Some(retained) => {
             let charge = relate_core::tokens::WorkspaceCharge::retain(retained.bytes())?;
@@ -154,6 +160,7 @@ pub(crate) fn aggregate_ex(
         }
     }
     for row in rows {
+        let row = row?;
         graph.cancel_tick()?;
         // Star-free after the desugar above: one `eval` per key, and the
         // capacity is exact.

@@ -2,6 +2,7 @@
 //! `execute_part_read_seeded` (read path).
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 // `web_time` on wasm32: `std::time::Instant::now()` traps on
 // `wasm32-unknown-unknown`, and PROFILE is a user-reachable path in the
 // browser build — the clock must read, not panic (the facade uses the
@@ -31,13 +32,14 @@ use super::exists_probe::try_fold_boolean_count;
 use super::foreach::exec_foreach;
 use super::match_clause::{run_match_operator_ladder, MatchOperator};
 use super::procedures::{exec_call, CallSpec};
-use super::project::{project_rows, return_result, ProjectSpec, RowSource};
+use super::project::{project_rows, return_result, streams_from_unwind, ProjectSpec, RowSource};
 use super::pushdown::{
     live_from, match_limit_cap, trim_rows, try_fold_one_hop_aggs, try_fold_path_aggs, FoldedReturn,
 };
 use super::scope::{carry_scope_bindings, star_scope_names};
 use super::search::search_match_clause;
 use super::sink::sinkable_projection;
+use super::unwind::{RowFeed, UnwindFeed, UnwindStats};
 use super::QueryResult;
 
 /// Read/write mode for the unified clause dispatcher. Both clause loops —
@@ -163,6 +165,13 @@ fn run_clauses_mode(
     // so a user alias can never forge this state; the dispatcher is its one
     // authority.
     let mut rows_source = RowSource::Bindings;
+    // An `UNWIND` whose consumer folds rows as they arrive (an aggregating
+    // `WITH`/`RETURN`) is not run as a clause of its own: its generator is
+    // parked here and the consumer pulls rows from it, so the rows are never
+    // held. The parked value carries the generator with its own statistics
+    // and PROFILE position, so each streamed `UNWIND` reports its own facts
+    // once the consumer has drained it.
+    let mut pending_unwind: Option<ParkedUnwind<'_>> = None;
     while clause_i < clauses.len() {
         let i = clause_i;
         let clause = &clauses[i];
@@ -175,7 +184,7 @@ fn run_clauses_mode(
         // an `Instant` or a counter read on the off-path. The site bundles the sink with
         // its position, so both half-states (a tick with no sink, a sink
         // with no position) are unrepresentable.
-        let metrics_tick = profile.map(|site| profile_tick(graph, site));
+        let mut metrics_tick = profile.map(|site| profile_tick(graph, site));
         // The two MATCH fast paths (the search MATCH and the folded
         // MATCH) consume more than this clause; `skip` carries how many
         // extra clauses they swallowed past `i` (0 for the ordinary
@@ -431,6 +440,27 @@ fn run_clauses_mode(
             Clause::Remove { items } => {
                 rows = exec_remove(graph, rows, items, params, qctx)?;
             }
+            Clause::Unwind { expression, alias } if unwind_streams_into(clauses.get(i + 1)) => {
+                let stats = Rc::new(UnwindStats::new(profile.is_some()));
+                pending_unwind = Some(ParkedUnwind {
+                    feed: UnwindFeed::new(
+                        ExecCtx::new(graph, params, qctx.cypher_version),
+                        &clauses[i + 1..],
+                        std::mem::take(&mut rows),
+                        expression,
+                        alias,
+                        Rc::clone(&stats),
+                    ),
+                    facts: UnwindFacts {
+                        stats,
+                        record: profile.map(|site| (site, i)),
+                    },
+                });
+                // No arm ran: the consumer's own tick covers the work, and
+                // this clause reports its facts when that tick closes.
+                drop(metrics_tick.take());
+                profile_recorded = true;
+            }
             Clause::Unwind { expression, alias } => {
                 rows = exec_unwind(
                     graph,
@@ -498,9 +528,10 @@ fn run_clauses_mode(
                 where_clause,
                 ..
             } => {
+                let (feed, parked) = take_feed(&mut pending_unwind, &mut rows);
                 rows = project_rows(
                     ExecCtx::new(graph, params, qctx.cypher_version),
-                    rows,
+                    feed,
                     &ProjectSpec {
                         items,
                         distinct: *distinct,
@@ -514,6 +545,7 @@ fn run_clauses_mode(
                     rows_from,
                     scope,
                 )?;
+                finish_parked_unwind(parked, metrics_tick.as_mut());
                 // An importing subquery's scope bindings survive a `WITH`
                 // (Cypher never lets a body projection drop them); re-attach
                 // the ones it did drop.
@@ -529,9 +561,10 @@ fn run_clauses_mode(
                 skip,
                 limit,
             } => {
+                let (feed, parked) = take_feed(&mut pending_unwind, &mut rows);
                 rows = project_rows(
                     ExecCtx::new(graph, params, qctx.cypher_version),
-                    rows,
+                    feed,
                     &ProjectSpec {
                         items,
                         distinct: *distinct,
@@ -545,6 +578,7 @@ fn run_clauses_mode(
                     rows_from,
                     scope,
                 )?;
+                finish_parked_unwind(parked, metrics_tick.as_mut());
                 if let Some(tick) = &metrics_tick {
                     tick.record(i, &rows, clause_operator);
                     profile_recorded = true;
@@ -641,6 +675,9 @@ struct ProfileTick<'a> {
     /// `ExpressionBytes::now(..).since(start)`, the same delta protocol as
     /// `StoreReads` and `PhaseTimes`.
     expression_built_bytes_start: ExpressionBytes,
+    /// Time a fused producer spent inside this arm and reports itself (a
+    /// streamed `UNWIND`'s generator), excluded from this clause's time.
+    excluded_ns: u128,
 }
 
 impl Drop for ProfileTick<'_> {
@@ -682,6 +719,7 @@ fn profile_tick<'a>(graph: &'a ExecGraph<'a>, site: PlanMetricsSite<'a>) -> Prof
         frontier: super::frontier_counters(),
         graph,
         expression_built_bytes_start: ExpressionBytes::now(graph),
+        excluded_ns: 0,
     }
 }
 
@@ -713,7 +751,11 @@ impl ProfileTick<'_> {
             memory_bytes: rows_logical_bytes(rows),
             expression_built_bytes: ExpressionBytes::now(self.graph)
                 .since(self.expression_built_bytes_start),
-            time_ns: self.t0.elapsed().as_nanos(),
+            time_ns: self
+                .t0
+                .elapsed()
+                .as_nanos()
+                .saturating_sub(self.excluded_ns),
             reads,
             phases: crate::ctx::phase_times().since(self.phases),
             start: super::take_walk_start(),
@@ -724,6 +766,118 @@ impl ProfileTick<'_> {
             frontier_decline: super::take_frontier_decline(),
         });
     }
+}
+
+/// Whether the clause after an `UNWIND` consumes its rows as a stream: a
+/// `WITH` or `RETURN` whose projection folds an aggregation as rows arrive.
+/// Every other follower takes the rows as a held vector, as ever.
+fn unwind_streams_into(next: Option<&Clause>) -> bool {
+    match next {
+        Some(Clause::With {
+            distinct,
+            group_by,
+            items,
+            order,
+            skip,
+            limit,
+            where_clause,
+            ..
+        }) => streams_from_unwind(&ProjectSpec {
+            items,
+            distinct: *distinct,
+            group_by: group_by.as_deref(),
+            order,
+            skip,
+            limit,
+            where_clause: where_clause.as_ref(),
+        }),
+        Some(Clause::Return {
+            distinct,
+            group_by,
+            items,
+            order,
+            skip,
+            limit,
+        }) => streams_from_unwind(&ProjectSpec {
+            items,
+            distinct: *distinct,
+            group_by: group_by.as_deref(),
+            order,
+            skip,
+            limit,
+            where_clause: None,
+        }),
+        _ => false,
+    }
+}
+
+/// Report a streamed `UNWIND`'s PROFILE facts after its consumer drained
+/// it: the rows it generated, one row's size as its in-flight memory (it
+/// yields one row at a time, so its working set is one row, not the
+/// retained total), no expression bytes (no list was built), and the time
+/// its generator ran, which the consumer's own record excludes.
+/// What a streamed `UNWIND` reports once its consumer drained it: the
+/// statistics its generator filled and the PROFILE position its facts are
+/// reported at.
+struct UnwindFacts<'a> {
+    stats: Rc<UnwindStats>,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
+}
+
+/// A streamed `UNWIND` waiting for its consumer: the generator and its own
+/// facts. One value per streamed clause, so two of them in a statement never
+/// share counters.
+struct ParkedUnwind<'a> {
+    feed: UnwindFeed<'a>,
+    facts: UnwindFacts<'a>,
+}
+
+/// The feed a `WITH`/`RETURN` consumes: the parked generator when an
+/// `UNWIND` was fused into it (with the facts to report once it is drained),
+/// otherwise the held rows.
+fn take_feed<'a>(
+    pending: &mut Option<ParkedUnwind<'a>>,
+    rows: &mut Vec<Row>,
+) -> (RowFeed<'a>, Option<UnwindFacts<'a>>) {
+    match pending.take() {
+        Some(ParkedUnwind { feed, facts }) => (RowFeed::Unwind(feed), Some(facts)),
+        None => (RowFeed::Held(std::mem::take(rows)), None),
+    }
+}
+
+/// Close a fused `UNWIND` after its consumer drained it: the consumer's
+/// clock excludes the generator's time, and the clause reports its own.
+fn finish_parked_unwind(parked: Option<UnwindFacts<'_>>, tick: Option<&mut ProfileTick<'_>>) {
+    let Some(UnwindFacts { stats, record }) = parked else {
+        return;
+    };
+    if let Some(tick) = tick {
+        tick.excluded_ns = stats.time_ns();
+    }
+    record_streamed_unwind(record, &stats);
+}
+
+fn record_streamed_unwind(record: Option<(PlanMetricsSite<'_>, usize)>, unwound: &UnwindStats) {
+    let Some((site, clause)) = record else {
+        return;
+    };
+    site.sink.record_clause(ClauseMetricsRecord {
+        stage: site.stage,
+        part: site.part,
+        clause,
+        rows: unwound.rows(),
+        memory_bytes: unwound.row_bytes(),
+        expression_built_bytes: 0,
+        time_ns: unwound.time_ns(),
+        reads: Default::default(),
+        phases: Default::default(),
+        start: None,
+        kernel: None,
+        batched: false,
+        zone_skips: 0,
+        frontier: Default::default(),
+        frontier_decline: None,
+    });
 }
 
 fn try_match_folds(

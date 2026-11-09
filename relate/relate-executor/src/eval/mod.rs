@@ -43,7 +43,7 @@ pub(crate) use aggregate::{
     fold_aggregate, rewrite_horizontal_aggregates, FoldInput, StreamFold, SumAcc,
 };
 pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, membership, Extreme};
-pub(crate) use items::into_items;
+pub(crate) use items::{into_items, Items};
 pub(crate) use labels::{
     dynamic_label_names, dynamic_property_key, label_expr_matches, resolve_write_labels,
 };
@@ -57,6 +57,7 @@ pub(crate) use expr::{binary, binary_pure, cmp_bool, in_op, in_rhs, ordering_ope
 use expr::{eval_case, prop, reject_deleted_access, slice, subscript, unary};
 pub(crate) use function::is_nondeterministic;
 use function::{entity_backing_map, function};
+pub(crate) use function::{lazy_range, RangeValues};
 #[cfg(test)]
 pub(crate) use predicates::take_candidate_passes;
 pub(crate) use predicates::{

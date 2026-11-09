@@ -18,6 +18,7 @@ mod bar;
 mod convert;
 mod entity;
 mod list;
+pub(crate) use list::{RangePlan, RangeValues};
 mod math;
 mod property;
 mod registry;
@@ -30,6 +31,38 @@ mod vector;
 pub(super) use entity::entity_backing_map;
 pub(crate) use registry::is_nondeterministic;
 use registry::{arity_rejection, lookup_builtin, BuiltinImplementation};
+
+/// The `range(...)` call an `UNWIND` can walk without building its list:
+/// resolves the call exactly as [`function`] does — the lower-cased name
+/// against the builtin table, the arity contract before any argument is
+/// evaluated, the arguments in order — and returns the plan instead of the
+/// materialized list. `None` for every other call.
+pub(crate) fn lazy_range(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    name: &str,
+    args: &[Expr],
+    cypher_version: Option<u32>,
+) -> Result<Option<RangePlan>> {
+    let n = name.to_ascii_lowercase();
+    if n != "range" {
+        return Ok(None);
+    }
+    let builtin = lookup_builtin(n.as_str()).expect("range is a registered builtin");
+    if let Some(requirement) = builtin.arity.violation(args.len()) {
+        return Err(Error::syntax(arity_rejection(
+            n.as_str(),
+            requirement,
+            args.len(),
+        )));
+    }
+    let mut vals = Vec::with_capacity(args.len());
+    for a in args {
+        vals.push(eval(graph, row, a, params, cypher_version)?);
+    }
+    list::range_plan(&vals).map(Some)
+}
 
 pub(crate) fn function(
     graph: &ExecGraph<'_>,

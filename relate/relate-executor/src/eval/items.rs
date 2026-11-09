@@ -9,14 +9,16 @@ use relate_core::Value;
 /// shared one (still bound in a row, a parameter, …) is left intact and each
 /// element is cloned only when `next()` reaches it, so a consumer that stops
 /// early clones just the elements it visited.
-pub(crate) fn into_items(xs: Arc<Vec<Value>>) -> impl ExactSizeIterator<Item = Value> {
+pub(crate) fn into_items(xs: Arc<Vec<Value>>) -> Items {
     match Arc::try_unwrap(xs) {
         Ok(owned) => Items::Owned(owned.into_iter()),
         Err(shared) => Items::Shared { xs: shared, at: 0 },
     }
 }
 
-enum Items {
+/// The element walk [`into_items`] returns, named so a consumer can hold it
+/// across calls (the `UNWIND` row stream).
+pub(crate) enum Items {
     Owned(std::vec::IntoIter<Value>),
     Shared { xs: Arc<Vec<Value>>, at: usize },
 }

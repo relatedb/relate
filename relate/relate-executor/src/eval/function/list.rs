@@ -137,69 +137,133 @@ pub(super) fn bi_cardinality(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>)
     })
 }
 
-pub(super) fn bi_range(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    Ok({
-        // ADR-0175: a float argument converts with Java `(long)`-cast
-        // semantics (truncate toward zero, NaN → 0, ±Infinity and
-        // out-of-range saturate at the i64 limits); every non-numeric
-        // argument stays a type error.
-        let int_arg = |v: Option<&Value>, what: &str| {
-            super::super::numeric::int_arg(v)
-                .ok_or_else(|| Error::invalid_argument_type(format!("range() {what}")))
-        };
-        let start = int_arg(vals.first(), "start")?;
-        let end = int_arg(vals.get(1), "end")?;
-        let step = if vals.len() >= 3 {
-            int_arg(vals.get(2), "step")?
-        } else {
-            1
-        };
-        if step == 0 {
-            return Err(Error::ty("NumberOutOfRange: range() step cannot be 0"));
+/// A resolved `range(start, end[, step])` call: the exact element count and
+/// the walk that yields the elements, with no list built. `range()` builds
+/// its list from this plan and `UNWIND range(...)` walks it row by row, so
+/// the two read one argument contract and one size computation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RangePlan {
+    start: i64,
+    step: i64,
+    size: i64,
+}
+
+/// The elements of a [`RangePlan`], one at a time. In range by construction
+/// (the size is exact); the advance is checked anyway so an extreme input
+/// errors honestly instead of wrapping or looping forever.
+#[derive(Clone, Debug)]
+pub(crate) struct RangeValues {
+    next: i64,
+    step: i64,
+    remaining: i64,
+}
+
+impl RangePlan {
+    /// The element count as a `usize`, or the arithmetic-overflow error when
+    /// it does not fit this platform's address space.
+    pub(crate) fn len(&self) -> Result<usize> {
+        usize::try_from(self.size).map_err(|_| Error::ty("integer out of range"))
+    }
+
+    /// The walk over the plan's elements.
+    pub(crate) fn values(self) -> RangeValues {
+        RangeValues {
+            next: self.start,
+            step: self.step,
+            remaining: self.size,
         }
-        // ADR-0175: a size computation overflowing i64 is the
-        // arithmetic-overflow error (Neo4j 22N28, IntegralRangeListValue's
-        // subtractExact/divideExact/addExact) — `range(1, -Infinity)`
-        // errors because `end - start` overflows once -Infinity has
-        // saturated to i64::MIN, while `range(5, 1, -Infinity)` is `[5]`.
-        // A direction-inconsistent range (the end unreachable from the
-        // start at this step sign) is empty (TCK List11 [2]/[3]).
-        let diff = end
-            .checked_sub(start)
-            .ok_or_else(|| Error::ty("integer out of range"))?;
-        let size = if (diff > 0 && step < 0) || (diff < 0 && step > 0) {
-            0
-        } else {
-            diff.checked_div(step)
-                .and_then(|q| q.checked_add(1))
-                .ok_or_else(|| Error::ty("integer out of range"))?
-        };
-        // ADR-0463: the exact element count is known here, so one guarded
-        // block charges the whole result buffer and allocates exactly it —
-        // the charged model and the allocation cannot disagree. A
-        // billion-element `range` is refused before a slot is reserved.
-        let xs = if size > 0 {
-            let len = usize::try_from(size).map_err(|_| Error::ty("integer out of range"))?;
-            graph.charge_value_buffer(len)?;
-            let mut xs = Vec::with_capacity(len);
-            xs.push(Value::Int(start));
-            let mut i = start;
-            for _ in 1..size {
-                graph.cancel_tick()?;
-                // In range by construction (size is exact); checked anyway
-                // so an extreme input errors honestly instead of wrapping
-                // or looping forever.
-                i = i
-                    .checked_add(step)
-                    .ok_or_else(|| Error::ty("integer out of range"))?;
-                xs.push(Value::Int(i));
+    }
+}
+
+impl RangeValues {
+    /// Elements not yet yielded.
+    pub(crate) fn remaining(&self) -> i64 {
+        self.remaining
+    }
+}
+
+impl Iterator for RangeValues {
+    type Item = Result<Value>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining <= 0 {
+            return None;
+        }
+        let value = Value::Int(self.next);
+        self.remaining -= 1;
+        if self.remaining > 0 {
+            match self.next.checked_add(self.step) {
+                Some(next) => self.next = next,
+                None => {
+                    self.remaining = 0;
+                    return Some(Err(Error::ty("integer out of range")));
+                }
             }
-            xs
-        } else {
-            Vec::new()
-        };
-        Value::List(xs.into())
-    })
+        }
+        Some(Ok(value))
+    }
+}
+
+/// Resolve `range()`'s arguments: the ADR-0175 conversions and the size
+/// computation, with no allocation.
+pub(crate) fn range_plan(vals: &[Value]) -> Result<RangePlan> {
+    // ADR-0175: a float argument converts with Java `(long)`-cast
+    // semantics (truncate toward zero, NaN → 0, ±Infinity and
+    // out-of-range saturate at the i64 limits); every non-numeric
+    // argument stays a type error.
+    let int_arg = |v: Option<&Value>, what: &str| {
+        super::super::numeric::int_arg(v)
+            .ok_or_else(|| Error::invalid_argument_type(format!("range() {what}")))
+    };
+    let start = int_arg(vals.first(), "start")?;
+    let end = int_arg(vals.get(1), "end")?;
+    let step = if vals.len() >= 3 {
+        int_arg(vals.get(2), "step")?
+    } else {
+        1
+    };
+    if step == 0 {
+        return Err(Error::ty("NumberOutOfRange: range() step cannot be 0"));
+    }
+    // ADR-0175: a size computation overflowing i64 is the
+    // arithmetic-overflow error (Neo4j 22N28, IntegralRangeListValue's
+    // subtractExact/divideExact/addExact) — `range(1, -Infinity)`
+    // errors because `end - start` overflows once -Infinity has
+    // saturated to i64::MIN, while `range(5, 1, -Infinity)` is `[5]`.
+    // A direction-inconsistent range (the end unreachable from the
+    // start at this step sign) is empty (TCK List11 [2]/[3]).
+    let diff = end
+        .checked_sub(start)
+        .ok_or_else(|| Error::ty("integer out of range"))?;
+    let size = if (diff > 0 && step < 0) || (diff < 0 && step > 0) {
+        0
+    } else {
+        diff.checked_div(step)
+            .and_then(|q| q.checked_add(1))
+            .ok_or_else(|| Error::ty("integer out of range"))?
+    };
+    Ok(RangePlan { start, step, size })
+}
+
+pub(super) fn bi_range(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
+    let plan = range_plan(&vals)?;
+    // ADR-0463: the exact element count is known here, so one guarded
+    // block charges the whole result buffer and allocates exactly it —
+    // the charged model and the allocation cannot disagree. A
+    // billion-element `range` is refused before a slot is reserved.
+    let xs = if plan.size > 0 {
+        let len = plan.len()?;
+        graph.charge_value_buffer(len)?;
+        let mut xs = Vec::with_capacity(len);
+        for value in plan.values() {
+            graph.cancel_tick()?;
+            xs.push(value?);
+        }
+        xs
+    } else {
+        Vec::new()
+    };
+    Ok(Value::List(xs.into()))
 }
 
 pub(super) fn bi_coll_flatten(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
