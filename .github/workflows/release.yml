@@ -137,6 +137,7 @@ jobs:
           set -euo pipefail
           git config user.name "release-bot"
           git config user.email "actions@github.com"
+          committed=0
           for attempt in 1 2 3; do
             bash scripts/build-xcframework.sh --zip
             bash scripts/stamp-swift-package.sh "${{ steps.version.outputs.tag }}" \
@@ -147,11 +148,18 @@ jobs:
             git add -u
             # The bump script is idempotent: a re-dispatch after a
             # fail-before-tag can produce an empty diff; skip the commit but
-            # still emit HEAD.
+            # still emit HEAD. After a rejected push the rebase already
+            # carries the bump commit, so a re-stamp's diff (the rebuilt
+            # zip's checksum) folds into it with --amend — never stacked as
+            # a second "chore(release): <tag>" commit (observed on the
+            # v0.1.1 run: the tag's chain carried two of them).
             if git diff --cached --quiet; then
               echo "No version changes to commit; reusing HEAD."
+            elif [ "$committed" = 1 ]; then
+              git commit --amend --no-edit
             else
               git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
+              committed=1
             fi
             if git push origin HEAD:main; then
               break
@@ -164,7 +172,6 @@ jobs:
             git fetch origin main
             git rebase origin/main
           done
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # After the push: the artifact is the FINAL zip (a retried rebase
