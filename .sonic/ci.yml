@@ -55,6 +55,10 @@ actions:
   build-sonic-rust:
     runner: docker-cli
     docker_socket: true
+    # Docker Desktop exposes the socket as root:root 660, and a host gid does not
+    # match it. The socket is root-equivalent on the host, so these stages run as root
+    # as they did before the hardened runner.
+    user: root
     once: true
     # The image downloads cargo-nextest from a GitHub release. secrets
     # copies those host variables into the container. The Dockerfile
@@ -63,6 +67,10 @@ actions:
     secrets: &github-download-secrets
       - GITHUB_TOKEN
       - GITHUB_ACTIONS
+    # The stage runs as the host uid, which has no home in this image.
+    # Point the docker CLI config at a writable path.
+    environment:
+      DOCKER_CONFIG: /tmp/docker-config
     commands:
       - |
         set -eu
@@ -77,7 +85,13 @@ actions:
   build-sonic-polyglot:
     runner: docker-cli
     docker_socket: true
+    # Docker Desktop exposes the socket as root:root 660, and a host gid does not
+    # match it. The socket is root-equivalent on the host, so these stages run as root
+    # as they did before the hardened runner.
+    user: root
     once: true
+    environment:
+      DOCKER_CONFIG: /tmp/docker-config
     commands:
       - docker build --pull=false -t localhost/relate-sonic-polyglot:1.88 -f .sonic/docker/sonic-polyglot.Dockerfile .sonic/docker
 
@@ -438,8 +452,8 @@ stages:
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/npm-smoke
-    secrets: *github-download-secrets
       RELATE_LIB: /cargo-target/npm-smoke/debug/librelate_ffi.so
+    secrets: *github-download-secrets
     volumes: *cargo-cache
     commands:
       # The shared wasm toolchain setup (LABS-622): wasm-bindgen +
