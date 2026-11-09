@@ -142,6 +142,20 @@ validate_payload_lines() {
     | grep 'slack-payload.json' || true
 }
 
+# The `if:` line authored on a release.yml job (job-scoped sed range, same
+# shape as slack_announce_needs_line). Empty when the job or its gate is
+# gone.
+job_if_line() {
+  sed -n "/^  $1:\$/,/^  [^ #]/p" "${RELEASE_YML}" \
+    | grep '^    if:' || true
+}
+
+# The `if:` line authored on the relate-web poke step (step-scoped range).
+poke_if_line() {
+  sed -n '/^      - name: Poke relate-web (repository_dispatch)$/,/^      [^ ]/p' "${RELEASE_YML}" \
+    | grep '^        if:' || true
+}
+
 # ---------------------------------------------------------------------------
 # Tests: the announce job waits for the whole tail (ADR-0465)
 # ---------------------------------------------------------------------------
@@ -273,4 +287,44 @@ validate_payload_lines() {
   [ -n "${scan_at}" ]
   [ -n "${upload_at}" ]
   [ "${scan_at}" -lt "${upload_at}" ]
+}
+
+# ---------------------------------------------------------------------------
+# Tests: the offline (GitHub-only) release gates
+# ---------------------------------------------------------------------------
+# release.yml's `offline` dispatch input is the GitHub-only release: every
+# artifact, the tag, and the release notes land as usual, but nothing
+# outside GitHub is touched — the relate-web poke, the Slack announcement,
+# and the self-update canary (which reads the live site) are gated off.
+# These locks pin the three gates and the input.
+
+@test "release.yml offers the offline dispatch input" {
+  grep -qF 'offline:' "${RELEASE_YML}"
+  sed -n '/^      offline:$/,/^      [^ ]/p' "${RELEASE_YML}" \
+    | grep -qF 'type: boolean'
+}
+
+@test "slack-announce is gated off on offline releases" {
+  if_line="$(job_if_line slack-announce)"
+  echo "slack-announce if line: ${if_line}"
+  [ -n "${if_line}" ]
+  grep -qF 'if: ${{ !inputs.offline }}' <<< "${if_line}"
+}
+
+@test "self-update-smoke is gated off on offline releases" {
+  if_line="$(job_if_line self-update-smoke)"
+  echo "self-update-smoke if line: ${if_line}"
+  [ -n "${if_line}" ]
+  grep -qF 'if: ${{ !inputs.offline }}' <<< "${if_line}"
+}
+
+@test "the relate-web poke is gated off on offline releases (the assets still attach)" {
+  if_line="$(poke_if_line)"
+  echo "poke if line: ${if_line}"
+  [ -n "${if_line}" ]
+  grep -qF 'if: ${{ !inputs.offline }}' <<< "${if_line}"
+  # The attach step itself carries no gate: releases.json and install.sh
+  # land on the release in both modes.
+  ! sed -n '/^      - name: Attach releases.json and install.sh to the release$/,/^      [^ ]/p' "${RELEASE_YML}" \
+    | grep -q '^        if:'
 }

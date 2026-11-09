@@ -160,10 +160,20 @@ impl ReleasesFixture {
         }
     }
 
-    /// The upgrade env pairs every release-discovery test runs with: the one
-    /// loopback base. Everything else stays at the harness default.
-    fn envs(&self) -> [(&str, &str); 1] {
-        [("RELATE_RELEASES_JSON_URL", &self.url)]
+    /// The upgrade env pairs every release-discovery test runs with: the
+    /// metadata fixture as the primary, and a refused loopback port as the
+    /// fallback (ADR-0550) — the two seams stay distinguishable, so a run
+    /// that read the fallback where the primary was meant shows up as a
+    /// failed fetch, the fail-closed cases stay fail-closed, and no test
+    /// ever leaves loopback. Everything else stays at the harness default.
+    fn envs(&self) -> [(&str, &str); 2] {
+        [
+            ("RELATE_RELEASES_JSON_URL", &self.url),
+            (
+                "RELATE_RELEASES_JSON_FALLBACK_URL",
+                "http://127.0.0.1:9/releases.json",
+            ),
+        ]
     }
 
     /// Wait for the metadata fixture to serve its one response and return the
@@ -514,13 +524,15 @@ struct RouteFixture {
 
 #[cfg(unix)]
 impl RouteFixture {
-    /// The four upgrade env pairs every route test runs with: the metadata
-    /// pair [`ReleasesFixture::envs`] seeds, plus the two loopback bases and
-    /// the token. Everything else stays at the harness default.
-    fn envs(&self) -> [(&str, &str); 4] {
-        let [(releases_key, releases_url)] = self.releases.envs();
+    /// The five upgrade env pairs every route test runs with: the two
+    /// discovery pairs [`ReleasesFixture::envs`] seeds (ADR-0550), plus the
+    /// two loopback bases and the token. Everything else stays at the
+    /// harness default.
+    fn envs(&self) -> [(&str, &str); 5] {
+        let [(releases_key, releases_url), (fallback_key, fallback_url)] = self.releases.envs();
         [
             (releases_key, releases_url),
+            (fallback_key, fallback_url),
             ("RELATE_RELEASE_DOWNLOAD_URL", &self.direct_base),
             ("RELATE_GITHUB_API_URL", &self.api_base),
             ("GITHUB_TOKEN", &self.token),

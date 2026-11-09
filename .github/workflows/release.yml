@@ -14,6 +14,11 @@ on:
           - patch
           - minor
           - major
+      offline:
+        description: "GitHub-only release: build, tag, and publish the GitHub release with every asset and the generated notes — skip the relate-web poke, the Slack announcement, and the self-update canary"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -1081,8 +1086,10 @@ jobs:
       # pulls releases.json, install.sh and the release assets it needs;
       # this repo never commits into it. 404 = the repository does not
       # exist yet (or the token cannot see it) — a stated skip, not a
-      # failure, until relate-web is stood up.
+      # failure, until relate-web is stood up. Offline releases never
+      # poke: the files are on the release for a later backfill.
       - name: Poke relate-web (repository_dispatch)
+        if: ${{ !inputs.offline }}
         env:
           DISPATCH_TOKEN: ${{ secrets.RELATE_WEB_DISPATCH_TOKEN }}
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
@@ -1122,9 +1129,12 @@ jobs:
   # A previous release below the v0.12.6 floor (the first release carrying
   # the API-fallback route) cannot self-update while the repository is
   # internal; the script skips that case with a stated reason and exits 0.
+  # Offline releases skip the canary entirely: it exists to prove the live
+  # website path, which an offline release deliberately does not touch.
   self-update-smoke:
     name: Self-update smoke
     needs: [version, create-release]
+    if: ${{ !inputs.offline }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1187,10 +1197,13 @@ jobs:
   # the same string release-notes.yml serializes its posters on — keeps this
   # POST from overlapping an inline-posting standalone run for the same tag;
   # cancel-in-progress: false because a queued announce must never be
-  # cancelled.
+  # cancelled. Offline releases never announce: nothing outside GitHub is
+  # touched, so there is nothing to announce yet — a later non-offline
+  # release-notes dispatch can post for the same tag.
   slack-announce:
     name: Announce release on Slack
     needs: [version, release-notes, publish-releases-json, self-update-smoke]
+    if: ${{ !inputs.offline }}
     runs-on: ubuntu-latest
     # The announce leg is a CA patch, a sparse checkout, one artifact
     # download and one curl — minutes at most. The bound exists for the

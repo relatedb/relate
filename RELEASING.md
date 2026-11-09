@@ -17,6 +17,15 @@ gh workflow run release.yml -f bump=patch   # or minor / major
 Or from the browser: **Actions → Release → Run workflow → choose `bump`**
 (`patch`, `minor`, or `major`; default `patch`).
 
+**Offline (GitHub-only) releases**: dispatch with `offline=true` —
+`gh workflow run release.yml -f bump=patch -f offline=true` — to build every
+artifact, tag, and publish the GitHub release with all assets and the
+generated notes, without touching anything outside GitHub: no relate-web
+poke (`releases.json` and `install.sh` are still attached to the release for
+a later backfill), no Slack announcement, no self-update canary. Use it
+while the website and announcement channels are being stood up; a later
+non-offline release-notes dispatch can still announce the tag.
+
 The version is derived from the existing `v*` git tags plus the chosen bump,
 not from the workspace version. The first ever run (no `v*` tags yet)
 produces `v0.1.0` regardless of the bump choice — the first release cut
