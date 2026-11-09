@@ -120,36 +120,47 @@ class SteadyState:
         return f"[{version}]: {self.base_url}/compare/v{self.prev}...v{version}\n"
 
 
-def find_line(lines: list[str], pred: Callable[[str], bool], refusal: str, start: int = 0) -> int:
-    """The absolute index of the first line at or after `start` matching
-    pred, or the refusal."""
+def find_line(
+    lines: list[str], pred: Callable[[str], bool], refusal: str, start: int = 0
+) -> tuple[int, str]:
+    """The absolute index and newline-stripped text of the first line at or
+    after `start` matching pred, or the refusal."""
     for idx in range(start, len(lines)):
-        if pred(lines[idx].rstrip("\n")):
-            return idx
+        text = lines[idx].rstrip("\n")
+        if pred(text):
+            return idx, text
     raise RotateError(refusal)
 
 
-def parse_unreleased_ref(
-    lines: list[str], *, start: int
-) -> tuple[FirstRelease | SteadyState, int]:
+@dataclass(frozen=True)
+class UnreleasedRef:
+    """The [Unreleased] link ref: its release mode and its line index."""
+
+    mode: FirstRelease | SteadyState
+    line_idx: int
+
+
+def parse_unreleased_ref(lines: list[str], *, start: int) -> UnreleasedRef:
     """The [Unreleased] link ref's shape is the mode: a compare link is
     steady state (and carries the previous version), a plain repository
     URL is the first release from this repository. Returns the mode and
     the ref's line index. `start` is required so every call states the
     lower bound explicitly — an unbounded scan is exactly the silent
     mis-splice (a ref above the heading) this must never perform."""
-    ref_idx = find_line(
+    ref_idx, ref_line = find_line(
         lines,
         lambda l: l.startswith(UNRELEASED_REF),
         "changelog_rotate: no [Unreleased] link ref found",
         start=start,
     )
-    url = lines[ref_idx].rstrip("\n")[len(UNRELEASED_REF):].strip()
+    url = ref_line[len(UNRELEASED_REF):].strip()
     compare = COMPARE_REF.match(url)
     if compare:
-        return SteadyState(base_url=compare.group("base"), prev=compare.group("prev")), ref_idx
+        return UnreleasedRef(
+            SteadyState(base_url=compare.group("base"), prev=compare.group("prev")), ref_idx
+        )
     if REPO_URL.match(url):
-        return FirstRelease(base_url=url), ref_idx
+        return UnreleasedRef(FirstRelease(base_url=url), ref_idx)
     raise RotateError(
         "changelog_rotate: cannot derive previous version from the"
         " [Unreleased] link ref, and it is not a plain repository"
@@ -164,12 +175,13 @@ def rotate(text: str, *, version: str, date: str) -> str:
     up once — each missing position is its refusal. Each mode computes
     only where and what to insert; the splice happens once."""
     lines = text.splitlines(keepends=True)
-    heading_idx = find_line(
+    heading_idx, _ = find_line(
         lines,
         lambda l: l == version_heading("Unreleased"),
         "changelog_rotate: no ## [Unreleased] heading found",
     )
-    mode, ref_idx = parse_unreleased_ref(lines, start=heading_idx + 1)
+    ref = parse_unreleased_ref(lines, start=heading_idx + 1)
+    mode, ref_idx = ref.mode, ref.line_idx
     out = lines[: heading_idx + 1]
     out += ["\n", f"{version_heading(version)} — {date}\n"]
     out += lines[heading_idx + 1 : ref_idx]
@@ -178,7 +190,7 @@ def rotate(text: str, *, version: str, date: str) -> str:
         insert_at = ref_idx + 1
         insertion = ["\n", mode.new_ref_line(version)]
     else:
-        insert_at = find_line(
+        insert_at, _ = find_line(
             lines,
             lambda l: l.startswith(mode.anchor),
             f"changelog_rotate: no [{mode.prev}] link ref found",

@@ -114,4 +114,24 @@ tap_check "refusal: the diagnostic names the first-release shape" $?
 cmp -s "$sandbox/changelog-bad.md" "$fx3/CHANGELOG.md"
 tap_check "refusal: the changelog is restored byte-identical" $?
 
+# --- Case 4: refusal (uncommitted edit to a touched path) ---------------------
+
+fx4="$sandbox/dirty"
+build_fixture "$fx4" "$sandbox/changelog-first.md"
+echo "unrelated local edit" >>"$fx4/README.md"
+cp "$fx4/README.md" "$sandbox/readme-dirty.md"
+
+run_bump "$fx4" 0.1.0
+[ $? -ne 0 ]
+tap_check "dirty tree: bump refuses (exits non-zero)" $?
+
+grep -q 'uncommitted changes in touched paths' "$fx4/stderr.log"
+tap_check "dirty tree: the diagnostic names the cause" $?
+
+cmp -s "$sandbox/readme-dirty.md" "$fx4/README.md"
+tap_check "dirty tree: the unrelated edit survives byte-identical" $?
+
+cmp -s "$sandbox/changelog-first.md" "$fx4/CHANGELOG.md"
+tap_check "dirty tree: nothing else was rewritten" $?
+
 tap_done

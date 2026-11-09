@@ -104,10 +104,11 @@ sedi() {
   rm -f "$file.bak"
 }
 
-# Print an npm manifest's top-level "version" value (the 2-space-indent
-# line; the @relate platform pins sit at deeper indent and never match).
-npm_manifest_version() {
-  sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$1"
+# npm JSON reads (manifest and lockfile versions, platform pins) go through
+# one typed parse; see the module docstring for the subcommands.
+npm_json_py="$repo_root/scripts/lib/npm_json.py"
+npm_json() {
+  python3 "$npm_json_py" "$@"
 }
 
 # Restore every touched path, remove the sweep's sidecar files, and exit 1.
@@ -135,6 +136,15 @@ restore_touched() {
 # failing command (set -e exits), an explicit `exit 1`, and a signal — INT,
 # TERM, HUP, a CI cancel — all land in the same restore: no per-site failure
 # routing exists in the steps below.
+#
+# Rollback restores to HEAD, so it would destroy uncommitted edits to a
+# touched path; refuse up front, before the traps arm (nothing to restore yet).
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+  && ! git diff --quiet HEAD -- "${touched[@]}"; then
+  echo "release-bump: refusing to run: uncommitted changes in touched paths (rollback restores to HEAD):" >&2
+  git diff --name-only HEAD -- "${touched[@]}" >&2
+  exit 1
+fi
 trap '(( ok )) || restore_touched "unexpected failure"' EXIT
 trap 'restore_touched "interrupted"' INT TERM HUP
 
@@ -246,44 +256,37 @@ fi
 # lockfile below) expect the platform-package list's length — the same count
 # the sweep above iterates, never a second copy of the number.
 js_pin_count="${#js_platform_pkgs[@]}"
-check_js_main="$(npm_manifest_version "$js_main_pkg")"
+check_js_main="$(npm_json version "$js_main_pkg")"
 [[ "$check_js_main" == "$next" ]] || {
   echo "release-bump: $js_main_pkg version is '$check_js_main', expected '$next'" >&2
   fail=1
 }
-check_js_pins="$(grep -cE "\"@relate/[a-z0-9-]+\": \"$next\"" "$js_main_pkg" || true)"
+check_js_pins="$(npm_json pins "$js_main_pkg" "$next")"
 [[ "$check_js_pins" == "$js_pin_count" ]] || {
   echo "release-bump: expected $js_pin_count optionalDependencies pins at $next in $js_main_pkg, found $check_js_pins" >&2
   fail=1
 }
 for f in "${js_platform_pkgs[@]}"; do
-  check_platform="$(npm_manifest_version "$f")"
+  check_platform="$(npm_json version "$f")"
   [[ "$check_platform" == "$next" ]] || {
     echo "release-bump: $f version is '$check_platform', expected '$next'" >&2
     fail=1
   }
 done
 
-# npm lockfile: the top-level "version" (2-space indent), the packages[""]
-# root entry's "version" (read with awk — a plain 6-space-indent sed would
-# also match node_modules/koffi's "version"), and the five platform pins.
-check_js_lock_root="$(npm_manifest_version "$js_lockfile")"
+# npm lockfile: the top-level "version", the packages[""] root entry's
+# "version", and the five platform pins.
+check_js_lock_root="$(npm_json version "$js_lockfile")"
 [[ "$check_js_lock_root" == "$next" ]] || {
   echo "release-bump: $js_lockfile top-level version is '$check_js_lock_root', expected '$next'" >&2
   fail=1
 }
-check_js_lock_pkg="$(awk '
-  /^    "": \{/ { in_root = 1; next }
-  in_root && /^      "version": "/ {
-    v = $0; sub(/^      "version": "/, "", v); sub(/".*$/, "", v)
-    print v; exit
-  }
-' "$js_lockfile")"
+check_js_lock_pkg="$(npm_json root-version "$js_lockfile")"
 [[ "$check_js_lock_pkg" == "$next" ]] || {
   echo "release-bump: $js_lockfile root-entry version is '$check_js_lock_pkg', expected '$next'" >&2
   fail=1
 }
-check_js_lock_pins="$(grep -cE "\"@relate/[a-z0-9-]+\": \"$next\"" "$js_lockfile" || true)"
+check_js_lock_pins="$(npm_json lock-pins "$js_lockfile" "$next")"
 [[ "$check_js_lock_pins" == "$js_pin_count" ]] || {
   echo "release-bump: expected $js_pin_count optionalDependencies pins at $next in $js_lockfile, found $check_js_lock_pins" >&2
   fail=1
