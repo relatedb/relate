@@ -1,8 +1,8 @@
 # Portable Linux lanes from .github/workflows/ci.yml.
 # Run from the Relate checkout:
-#   bash scripts/gosonic-run.sh ci run smoke-test
-#   bash scripts/gosonic-run.sh ci run full-test
-#   bash scripts/gosonic-run.sh ci run clean
+#   gosonic ci run smoke-test
+#   gosonic ci run full-test
+#   gosonic ci run clean
 version: "1"
 project:
   name: relate
@@ -63,8 +63,8 @@ actions:
     # The image downloads cargo-nextest from a GitHub release. secrets
     # copies those host variables into the container. The Dockerfile
     # reads the token from a BuildKit secret, not from the layer history.
-    # scripts/gosonic-run.sh exports an empty value when the host has none.
-    secrets: &github-download-secrets
+    # optional_secrets passes an empty value when the host has none.
+    optional_secrets: &github-download-secrets
       - GITHUB_TOKEN
       - GITHUB_ACTIONS
     # The stage runs as the host uid, which has no home in this image.
@@ -293,7 +293,7 @@ stages:
     # install-lychee.sh writes /usr/local/bin.
     user: root
     before: *before-rust
-    secrets: *github-download-secrets
+    optional_secrets: *github-download-secrets
     commands:
       - bash scripts/install-lychee.sh
       - lychee --config lychee.toml --no-progress --root-dir "$(pwd)/docs" README.md docs/guides docs/reference
@@ -453,7 +453,7 @@ stages:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/npm-smoke
       RELATE_LIB: /cargo-target/npm-smoke/debug/librelate_ffi.so
-    secrets: *github-download-secrets
+    optional_secrets: *github-download-secrets
     volumes: *cargo-cache
     commands:
       # The shared wasm toolchain setup (LABS-622): wasm-bindgen +
@@ -496,9 +496,9 @@ stages:
     # github-actions:ubuntu-24.04 and makes an in-stage compare hard-fail
     # on a class mismatch. GITHUB_TOKEN feeds buildx's GitHub release
     # download. CI_COMPARE turns the memory compares into hard failures.
-    # scripts/gosonic-run.sh exports each name as empty when the host has
+    # optional_secrets passes each name as empty when the host has
     # no value, which the stages treat as not provided.
-    secrets: &baseline-env-forwarding
+    optional_secrets: &baseline-env-forwarding
       - GITHUB_WORKSPACE
       - BASELINE_RUNNER
       - GITHUB_ACTIONS
@@ -529,7 +529,7 @@ stages:
     before: *before-rust
     # The baseline secrets and the Docker-baseline setup step, both
     # anchored in loadtest-baselines (LABS-627).
-    secrets: *baseline-env-forwarding
+    optional_secrets: *baseline-env-forwarding
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/query-latency
@@ -547,7 +547,7 @@ stages:
     user: root
     docker_socket: true
     before: *before-rust
-    secrets: *baseline-env-forwarding
+    optional_secrets: *baseline-env-forwarding
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/memory-controls
@@ -563,7 +563,7 @@ stages:
     user: root
     docker_socket: true
     before: *before-rust
-    secrets: *baseline-env-forwarding
+    optional_secrets: *baseline-env-forwarding
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/memory-controls-full
@@ -581,7 +581,7 @@ stages:
     user: root
     docker_socket: true
     before: *before-rust
-    secrets: *baseline-env-forwarding
+    optional_secrets: *baseline-env-forwarding
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/memory-shape
@@ -593,7 +593,7 @@ stages:
 
   # apk and make clean need root. The cargo caches are Docker volumes.
   # Run this on its own, after the other stages have finished:
-  #   bash scripts/gosonic-run.sh ci run clean
+  #   gosonic ci run clean
   clean:
     runner: docker-cli
     user: root

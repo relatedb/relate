@@ -103,7 +103,7 @@ runs:
           args+=(--matrix "${{ inputs.matrix }}")
         fi
         args+=("${{ inputs.stage }}")
-        bash scripts/gosonic-run.sh "${args[@]}"
+        gosonic "${args[@]}"
 
     - name: Copy Sonic cargo volumes back to rust-cache
       if: inputs.rust-cache == 'true' && success()
