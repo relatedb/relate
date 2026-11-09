@@ -42,36 +42,68 @@ pub(crate) mod manifest {
     /// Oldest manifest this binary can load.
     pub(crate) const MIN_READABLE_VERSION: u32 = 1;
     /// What this binary writes while the manifest selects no ontology
-    /// object.
+    /// object and the store has not opted into the wide-column part
+    /// encoding (ADR-0534): the tagged-JSON property column.
     pub(crate) const CURRENT_VERSION: u32 = 3;
     /// What this binary writes when the manifest selects an ontology object
     /// (ADR-0120 §5). A v4 manifest is a v3 manifest plus the ontology
     /// selection.
     pub(crate) const ONTOLOGY_VERSION: u32 = 4;
+    /// What this binary writes for a wide-column store (ADR-0534): one
+    /// typed column per promoted property key plus a residual tagged-JSON
+    /// tail, opted into per store — a manifest at 5 or 6 keeps the store
+    /// wide, whatever the open flags.
+    pub(crate) const WIDE_VERSION: u32 = 5;
+    /// A v6 manifest is a v5 manifest plus `ontology_path` (ADR-0120 §5).
+    pub(crate) const WIDE_ONTOLOGY_VERSION: u32 = 6;
     /// Every readable version; v1/v2 use the monolithic
     /// `nodes.parquet`/`relationships.parquet` fallback reader (ADR-0005,
-    /// pre-ADR-0022 shards).
-    pub(crate) const READABLE: &[u32] =
-        &[MIN_READABLE_VERSION, 2, CURRENT_VERSION, ONTOLOGY_VERSION];
+    /// pre-ADR-0022 shards), v5/v6 carry wide-column parts (ADR-0534).
+    pub(crate) const READABLE: &[u32] = &[
+        MIN_READABLE_VERSION,
+        2,
+        CURRENT_VERSION,
+        ONTOLOGY_VERSION,
+        WIDE_VERSION,
+        WIDE_ONTOLOGY_VERSION,
+    ];
 
     /// The version a manifest is written with (ADR-0120 §8: the format
-    /// follows the content): [`ONTOLOGY_VERSION`] when it selects an
-    /// ontology object, [`CURRENT_VERSION`] otherwise.
-    pub(crate) fn version_for_write(has_ontology: bool) -> u32 {
-        if has_ontology {
-            ONTOLOGY_VERSION
-        } else {
-            CURRENT_VERSION
+    /// follows the content; ADR-0534: the wide-column option follows the
+    /// store): the ontology pair when it selects an ontology object, the
+    /// wide pair when the store writes wide parts.
+    pub(crate) fn version_for_write(has_ontology: bool, wide: bool) -> u32 {
+        match (has_ontology, wide) {
+            (true, true) => WIDE_ONTOLOGY_VERSION,
+            (false, true) => WIDE_VERSION,
+            (true, false) => ONTOLOGY_VERSION,
+            (false, false) => CURRENT_VERSION,
         }
     }
 
+    /// Whether a manifest version records a wide-column store (ADR-0534)
+    /// — the one predicate over the wide pair, so the version-to-encoding
+    /// mapping lives only in this registry. Parquet-gated: the wide pair
+    /// is the Parquet codec's, so an experimental-manifest build without
+    /// Parquet never reads it.
+    #[cfg(parquet_codec)]
+    pub(crate) fn writes_wide(version: u32) -> bool {
+        version == WIDE_VERSION || version == WIDE_ONTOLOGY_VERSION
+    }
+
     /// Classify a decoded manifest `format_version` against the content it
-    /// carries (ADR-0127 Decision 2, ADR-0120 §8). Only the pair the writer
-    /// emits is current — `(3, no ontology)` or `(4, ontology)`; every
-    /// other readable pair is legacy and migrate-on-open normalizes it to
-    /// the content's version.
+    /// carries (ADR-0127 Decision 2, ADR-0120 §8). Both pairs this binary
+    /// writes are current — the legacy `(3, no ontology)` / `(4, ontology)`
+    /// and the wide `(5, no ontology)` / `(6, ontology)` of ADR-0534; a
+    /// store never migrates between them, it opts in. Every other readable
+    /// pair is legacy and migrate-on-open normalizes it to the content's
+    /// version.
     pub(crate) fn classify(version: u32, has_ontology: bool) -> Classification<u32> {
-        if version == version_for_write(has_ontology) {
+        let writes = [
+            version_for_write(has_ontology, false),
+            version_for_write(has_ontology, true),
+        ];
+        if writes.contains(&version) {
             Classification::Current
         } else if READABLE.contains(&version) {
             Classification::Legacy(version)

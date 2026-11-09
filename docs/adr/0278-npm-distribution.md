@@ -93,3 +93,8 @@ npmjs.com — are runbook items in `docs/PUBLISHING.md`, not automation.
   package.
 - The loadtest CLIs (`bin/`) stay repo-internal and are excluded from the
   published tarball.
+
+## Later references
+
+- ADR-0530 moves the playground to the relate-web repository, which
+  serves a copy of `surfaces/relate-wasm/pkg/`; no in-tree mirror remains.

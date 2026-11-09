@@ -1,11 +1,10 @@
 //! Recordings: the canonical text form of a script's result (ADR-0132).
 //!
-//! A recording is what a cookbook recipe keeps under each step, as a
-//! ```` ```table ```` or ```` ```gram ```` block. The native harness
-//! (`testing/relate-cookbook`) renders with this module, and the browser
-//! renders with the same code through the WASM `renderResult` export
-//! (ADR-0131), so a recording reads the same wherever it is made. It must
-//! lose nothing the wire envelope says.
+//! A recording is the text a host keeps for a step's result, as a
+//! ```` ```table ```` or ```` ```gram ```` block: the relate-web cookbook
+//! records each recipe step this way. Hosts render with this module through
+//! the WASM `renderResult` export (ADR-0131), so a recording reads the same
+//! wherever it is made. It must lose nothing the wire envelope says.
 //!
 //! It renders wire JSON (`relate_model::wire`), not engine values:
 //! numbers stay exactly as the wire spells them and strings are
@@ -74,8 +73,8 @@ impl Kind {
     }
 }
 
-/// A table recording's cells, for hosts that lay it out themselves (the
-/// cookbook pages draw it as an HTML table).
+/// A table recording's cells, for hosts that lay it out themselves (a web
+/// page can draw it as an HTML table).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     pub columns: Vec<String>,

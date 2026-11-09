@@ -167,3 +167,6 @@ Constraints that shape the decision:
   `docs/product-capabilities.yaml` contract: the `docs_routes` consequence
   above has no contract to land in, and the cookbook pages' links are covered
   by the link check alone.
+- ADR-0528 moves the cookbook to the relate-web repository: the recipes,
+  their harness, the site build, and the deploy step this ADR set up no
+  longer live here, and this repository's CI no longer runs them.

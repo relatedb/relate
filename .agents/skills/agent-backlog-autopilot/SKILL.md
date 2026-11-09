@@ -115,7 +115,7 @@ Never omit it; a body without it severs the automation this run relies on.
    review. Wait — never flip the draft flag yourself. The run continues
    only on their explicit go.
 2. With the go: mark the PR ready. The full matrix runs now (OS sweeps,
-   sharded tests, corpus, cookbook, loadtest gates, clients, WASM/site).
+   sharded tests, corpus, loadtest gates, clients, WASM/site).
    Same loop, same rules, same budget: newest findings first, fix,
    re-squash, re-push, wait.
 3. All green → Step 6 (merge). Budget spent → Step 6 (give-up).
@@ -129,8 +129,7 @@ never anything merging on your behalf. Two guardrails first:
 - **Carve-out.** Never self-merge — even fully green — a diff that
   touches anything CI executes, reads, or gates on: workflows
   (`.github/`), CI-invoked tooling (`Makefile`, `scripts/`, `.cargo/`,
-  `rust-toolchain.toml`, `Dockerfile*`, `docs/cookbook/` — the cookbook
-  cells execute in CI), auth (`surfaces/relate-auth/`), dependency
+  `rust-toolchain.toml`, `Dockerfile*`), auth (`surfaces/relate-auth/`), dependency
   manifests (any `Cargo.toml` / `Cargo.lock`), or agent-instruction
   surfaces (`.agents/`, `.claude/`, `AGENTS.md`) — the rules that govern
   future runs. Post the diff stat and why, and hand the merge to the

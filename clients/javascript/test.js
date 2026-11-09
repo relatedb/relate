@@ -611,6 +611,15 @@ assert.ok(Number.isNaN(tag.query("RETURN $v AS v", { v: NaN }).single().v));
 assert.strictEqual(tag.query("RETURN $v AS v", { v: [Infinity] }).single().v[0], Infinity);
 assert.strictEqual(tag.query`RETURN ${-Infinity} AS v`.single().v, -Infinity);
 assert.strictEqual(tag.query("RETURN $v AS v", { v: 42 }).single().v, 42);
+// The empty string binds as a zero-length STRING, distinct from null
+// (LABS-1198): koffi marshals a zero-length buffer as NULL, and the ABI
+// reads that spelling as "" instead of refusing it.
+const empty = tag
+  .query("RETURN $v AS v, $v IS NULL AS n, $v = '' AS e", { v: "" })
+  .single();
+assert.strictEqual(empty.v, "");
+assert.strictEqual(empty.n, false);
+assert.strictEqual(empty.e, true);
 const nullProto = Object.create(null); // null-prototype objects are plain too
 nullProto.v = 7;
 assert.strictEqual(tag.query("RETURN $v AS v", nullProto).single().v, 7);

@@ -54,25 +54,17 @@ bash scripts/build-wasm.sh --mode release  # same thing
 
 # fast iteration (dev, ~1.5× larger, wasm-opt -O2):
 bash scripts/build-wasm.sh --mode dev
-
-# from examples/wasm-playground/:
-npm run build:wasm          # alias of build:wasm:dev
-npm run build:wasm:release  # explicit release build
-npm run build               # vite build only; run build:wasm:release
-                            # first if you touched the wasm crate
 ```
 
-All entry points call `scripts/build-wasm.sh`. In `--mode release`
+Both entry points call `scripts/build-wasm.sh`. In `--mode release`
 (default) it runs `cargo build --profile release-wasm --target
 wasm32-unknown-unknown` on `surfaces/relate-wasm`, then
 `wasm-bindgen --target web`, then `wasm-opt -Oz`, and writes the bundle
 to `surfaces/relate-wasm/pkg/`. In `--mode dev` it uses the workspace
-`release` profile and `wasm-opt -O2`. The script also mirrors the bundle
-into `examples/wasm-playground/src/wasm/` when that directory is present
-(`relate.js`, `relate.d.ts`, `relate_bg.wasm`,
-`relate_bg.wasm.d.ts`, `trap.js`, `trap.d.ts`, `opfs.js`,
-`opfs.d.ts`, and the `snippets/` directory the glue imports), so the
-playground's Vite build always picks up a fresh bundle.
+`release` profile and `wasm-opt -O2`. A host that serves the bundle
+itself copies `relate.js`, `relate.d.ts`, `relate_bg.wasm`,
+`relate_bg.wasm.d.ts`, `trap.js`, `opfs.js`, and the `snippets/`
+directory the glue imports from `pkg/`.
 
 Local prerequisites (CI installs these automatically):
 
@@ -171,8 +163,9 @@ if (last.error) throw new Error(last.error);
 
 - `kind` is `"table"` or `"gram"` (gram when a row holds a node,
   relationship, or path).
-- `text` is the canonical text form the cookbook records under each step:
-  the last statement's result, with the counters summed over the script.
+- `text` is the canonical text form of the result (what the cookbook
+  records under each step): the last statement's result, with the counters
+  summed over the script.
 - `table` is `{columns, rows, numeric, summary}` for a table with rows
   (each cell a Cypher literal, `numeric` true for columns of numbers and
   nulls), and `null` for gram or a result without rows.
@@ -184,15 +177,14 @@ if (last.error) throw new Error(last.error);
   `properties_set` per property write, schema DDL in the index and
   constraint counters.
 
-No envelopes render as `(no rows)`. It is `relate_formatter::recording`,
-the renderer the native cookbook harness uses. Throws on an envelope that is
-not wire JSON.
+No envelopes render as `(no rows)`. It is `relate_formatter::recording`.
+Throws on an envelope that is not wire JSON.
 
 `isWasmTrap(err: unknown): boolean` — exported by `trap.js`, which
 `scripts/build-wasm.sh` ships next to `relate.js`. True when `err`,
 thrown by a call into the bundle, means the instance trapped and must be
 replaced; false for any other error, after which the instance is still
-usable. The playground and the cookbook pages both use it.
+usable. The relate-web playground and cookbook pages use it.
 
 ## Examples
 

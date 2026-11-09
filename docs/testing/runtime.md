@@ -142,7 +142,7 @@ build caches ([build-caches.md](build-caches.md)) attack exactly that term.
 | `test` | Full unit/integration suite; the 604-test `relate` crate alone is ~2.5 min wall locally |
 | `feature-bundles` | Two more CLI compile configurations (`agent`, `minimal`) plus no-parquet engine |
 | `stack-release` | Release-profile compile for the stack-depth tests (ADR-0259) |
-| `corpus` | One corpus-profile (optimized) compile feeding TCK + CIP-eval + cookbook + the LDBC SF0.1 answer gate (ADR-0252); execution is seconds, the compile is not |
+| `corpus` | One corpus-profile (optimized) compile feeding TCK + CIP-eval + the LDBC SF0.1 answer gate (ADR-0252); execution is seconds, the compile is not |
 | `python` | pyo3 extension build, wheel packaging, full pytest |
 | `os-smoke` (macOS) | Storage filesystem depth + the full surface smoke set, incl. wheel link, npm, Maven |
 | `swift` (macOS) | Five release-profile `relate-ffi` cross-compiles for the XCFramework, then the Swift package, examples and the iOS app build |
@@ -153,7 +153,7 @@ build caches ([build-caches.md](build-caches.md)) attack exactly that term.
 | `npm-smoke` | npm pack/install/one-query |
 | `loadtest-smoke` | Dev-profile dataset suites at `ci()` scale |
 | `loadtest-baselines` | The pinned ADR-0070 Docker environment; intentionally not host-fast |
-| docs lanes (`doc-examples`, `cookbook-wasm`, `notebook`) | Example builds and the dev-WASM parity check |
+| docs lanes (`doc-examples`, `notebook`) | Example builds |
 
 This table is the dashboard's seed: a lane leaves it when a cache or split
 change brings it under 60 s, and §7's dashboard tracks the shrinking
@@ -238,7 +238,8 @@ Local measurement (warm compile, Apple Silicon laptop — more cores than the
 Lanes switched: `test` (core crates), `feature-bundles`, `relate-bolt`.
 Each gains a `cargo test --doc` step where the switched invocation
 previously covered doctests (nextest cannot see them). Installed prebuilt
-via `taiki-e/install-action` (~2 s), never `cargo install`.
+via `scripts/install-nextest.sh` (authenticated GitHub release download),
+never `cargo install`.
 
 Deliberately NOT switched:
 
@@ -367,7 +368,8 @@ for the pinned version, verifies its published `.sha256sum`, and falls back
 to the source build on hosts without one. Measured locally: ~3 s vs the
 ~2 min compile. The same fix benefits `cookbook-wasm`, and the nightly
 browser lane's `cargo install wasm-pack --version 0.13.1 --locked` (2-4 min)
-became `taiki-e/install-action` `wasm-pack@0.13.1` (ADR-0255).
+became `scripts/install-wasm-pack.sh` at wasm-pack 0.13.1 (ADR-0255),
+downloaded through the GitHub API.
 
 Not pursued: npm caching for the smoke's temp-project installs (no lockfile
 to key on; the tarball deps are two small registry fetches), and the

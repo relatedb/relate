@@ -47,6 +47,7 @@ impl Args {
 
     fn open_options(&self) -> OpenOptions {
         OpenOptions {
+            wide_columns: false,
             wal_dir: self.wal_dir.clone(),
             checkpoint_interval: self
                 .checkpoint_interval_secs

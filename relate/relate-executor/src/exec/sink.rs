@@ -127,12 +127,14 @@ pub(crate) fn finish_match_row(
 ) -> Result<Row> {
     // Each item evaluated once against the incoming row. The result
     // columns are the projection's precomputed names, so the row's schema
-    // is an `Arc` clone.
-    let item_values = projection
-        .items
-        .iter()
-        .map(|item| eval(graph, row, &item.expr, params, cypher_version))
-        .collect::<Result<Vec<_>>>()?;
+    // is an `Arc` clone. The buffer is reserved to that column count:
+    // `collect::<Result<Vec<_>>>()` reports a size hint of 0, and the
+    // first push of a `Value` then allocates four slots. A one-column
+    // expand kept the spare three, which the ledger does not charge.
+    let mut values = Vec::with_capacity(projection.names.names().len());
+    for item in projection.items {
+        values.push(eval(graph, row, &item.expr, params, cypher_version)?);
+    }
     // `ORDER BY` keys read the projected row: the incoming bindings with
     // each item's value written over its output name. Without a key there
     // is no scope row to build — the parked values follow the items, and
@@ -145,14 +147,14 @@ pub(crate) fn finish_match_row(
         // schema if ORDER BY lands on a hot expansion.
         let mut scope = row.clone();
         for (index, name) in projection.item_names().iter().enumerate() {
-            scope.insert(name.clone(), item_values[index].clone());
+            scope.insert(name.clone(), values[index].clone());
         }
         parked_values(&projection.order, &scope, |expr, scope| {
             eval(graph, scope, expr, params, cypher_version)
         })
     };
-    let mut values = item_values;
     values.extend(parked);
+    debug_assert_eq!(values.len(), values.capacity());
     Ok(Row::from_names(&projection.names, values))
 }
 
@@ -263,6 +265,31 @@ mod tests {
             assert_eq!(out.values(), [Value::Int(1), Value::Int(2)]);
         }
         interned_schema_calls() - before
+    }
+
+    /// A one-column keyless row reserves one slot. The value buffer must
+    /// not take the four-slot first allocation of an unhinted collect.
+    #[test]
+    fn a_keyless_one_column_row_reserves_its_column_count() {
+        let row = finish("RETURN n.a AS a", &row_with_n(&[("a", Value::Int(1))]));
+        assert_eq!(row.values().len(), 1);
+        assert_eq!(row.values_capacity(), 1);
+        let wide = finish(
+            "RETURN n.a AS a, n.b AS b",
+            &row_with_n(&[("a", Value::Int(1)), ("b", Value::Int(2))]),
+        );
+        assert_eq!(wide.values_capacity(), 2);
+    }
+
+    /// An ordered row reserves the projected columns plus the parked key.
+    #[test]
+    fn an_ordered_projection_row_reserves_its_columns_and_key() {
+        let row = finish(
+            "RETURN n.a AS a ORDER BY n.b",
+            &row_with_n(&[("a", Value::Int(1)), ("b", Value::Int(2))]),
+        );
+        assert_eq!(row.values().len(), 2);
+        assert_eq!(row.values_capacity(), 2);
     }
 
     /// The projection path's output schema is the sink's, built once: a row

@@ -19,7 +19,7 @@ use super::commit::commit_timing_env;
 use super::ontology;
 use super::open_config::{
     reject_cypherlite_env, resolve_bulk_batch_limits, resolve_checkpoint_interval,
-    resolve_durability_mode, resolve_expression_memory_limit, resolve_markdown_bodies,
+    resolve_codec_config, resolve_durability_mode, resolve_expression_memory_limit,
     resolve_max_traversal_depth, resolve_memory_limit, resolve_pattern_engine,
     resolve_preview_features, resolve_snapshot_codec, resolve_token_limits,
 };
@@ -188,7 +188,7 @@ impl Database {
             preview: resolve_preview_features()?,
             pattern_engine: resolve_pattern_engine()?,
             snapshot_codec: resolve_snapshot_codec(opts)?,
-            codec_config: resolve_markdown_bodies(opts)?.map(CodecOpenConfig::MarkdownBodies),
+            codec_config: resolve_codec_config(opts)?,
             checkpoint_interval: resolve_checkpoint_interval(opts),
             bulk_batch_limits: resolve_bulk_batch_limits()?,
             token_limits: resolve_token_limits(opts)?,

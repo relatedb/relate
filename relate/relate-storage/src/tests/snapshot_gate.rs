@@ -125,23 +125,19 @@ fn rewrite_manifest_version(target: &StoreTarget, version: u32) {
 
 #[cfg(parquet_codec)]
 #[test]
-fn parquet_version_5_gate_runs_before_wal_recovery() {
+fn unreadable_parquet_versions_gate_before_wal_recovery() {
+    // Every unreadable version — the first past the readable set and a
+    // far one — fails the open at the gate, before WAL recovery runs.
     let dir = tempfile::tempdir().unwrap();
     for target in parquet_stores(dir.path()) {
         checkpointed_store_with_torn_tail(&target);
-        rewrite_manifest_version(&target, 5);
-        assert_failed_open_preserves_wal(&target, "unsupported snapshot version 5");
-    }
-}
-
-#[cfg(parquet_codec)]
-#[test]
-fn parquet_version_99_gate_runs_before_wal_recovery() {
-    let dir = tempfile::tempdir().unwrap();
-    for target in parquet_stores(dir.path()) {
-        checkpointed_store_with_torn_tail(&target);
-        rewrite_manifest_version(&target, 99);
-        assert_failed_open_preserves_wal(&target, "unsupported snapshot version 99");
+        for version in [7, 99] {
+            rewrite_manifest_version(&target, version);
+            assert_failed_open_preserves_wal(
+                &target,
+                &format!("unsupported snapshot version {version}"),
+            );
+        }
     }
 }
 

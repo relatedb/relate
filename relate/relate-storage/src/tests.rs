@@ -15,6 +15,8 @@ mod exclusive_create;
 mod migrate;
 #[cfg(not(target_arch = "wasm32"))]
 mod reset;
+#[cfg(all(parquet_codec, not(target_arch = "wasm32")))]
+mod wide;
 
 #[test]
 fn storage_context_names_the_object_of_storage_and_io_messages_only() {
@@ -113,6 +115,41 @@ pub(crate) fn person_ada() -> (Graph, Wal) {
     (g, wal)
 }
 
+/// The commit tail every synthetic-store builder shares: create `nodes`
+/// (labels and properties), commit once, replay — the one spelling of
+/// the begin/take_redo/append_commit/apply_redo protocol.
+#[cfg(parquet_codec)]
+pub(crate) fn commit_nodes(
+    graph: &Graph,
+    wal: &mut Wal,
+    nodes: impl IntoIterator<
+        Item = (
+            Vec<String>,
+            std::collections::BTreeMap<String, relate_core::Value>,
+        ),
+    >,
+) -> u64 {
+    graph.begin_write().unwrap();
+    for (labels, props) in nodes {
+        graph.create_node(labels, props).unwrap();
+    }
+    let ops = graph.take_redo();
+    let ts = graph.pending_commit_ts();
+    graph.abort_write();
+    wal.append_commit(ts, &ops).unwrap();
+    graph.apply_redo(ops, ts).unwrap();
+    ts
+}
+
+/// The manifest of an on-disk store, as the crate's one manifest reader
+/// decodes it.
+#[cfg(parquet_codec)]
+pub(crate) fn on_disk_manifest(target: &StoreTarget) -> Manifest {
+    snapshot::native::read_manifest_for_test(target)
+        .unwrap()
+        .unwrap()
+}
+
 /// The codecs whose checkpoint image is a root-level store object —
 /// the set layout-asserting tests iterate: the markdown codec keeps its
 /// manifest under the `.cypherlite/` sidecar with journal-based crash
@@ -143,7 +180,7 @@ fn snapshot_is_wal_applied_state() {
 #[test]
 fn legacy_wal_label_constraint_replays_with_typed_marker_after_recycle() {
     use relate_executor::RedoOp;
-    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
+    for &codec in SnapshotCodecKind::compiled() {
         let store = memory_store_with_codec(codec).unwrap();
         let (vfs, prefix) = store.wal_vfs();
         let mut wal = Wal::open(vfs, prefix, 0).unwrap();
@@ -202,9 +239,6 @@ fn direct_graph_incomplete_label_constraint_fails_before_checkpoint_writes() {
             SnapshotCodecKind::Rkyv => {
                 vec![crate::snapshot::MANIFEST_JSON, crate::codec::GRAPH_RKYV]
             }
-            // Unreachable in this loop (the set excludes native-root
-            // codecs); the arm keeps the match exhaustive.
-            SnapshotCodecKind::Fjall => vec![crate::snapshot::MANIFEST_JSON],
         };
         let old: Vec<(&str, Vec<u8>)> = covered
             .iter()
@@ -339,7 +373,7 @@ fn legacy_omission_never_masks_a_new_incomplete_definition() {
 #[test]
 fn typed_checkpoint_rejects_forged_legacy_unknown_markers_in_compiled_codecs() {
     use relate_executor::RedoOp;
-    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
+    for &codec in SnapshotCodecKind::compiled() {
         let store = memory_store_with_codec(codec).unwrap();
         let graph = Graph::default();
         graph

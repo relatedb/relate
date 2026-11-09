@@ -33,12 +33,15 @@ prebuilt_target() {
 }
 
 install_prebuilt() {
-  local target="$1" work url expected actual
+  local target="$1" work asset expected actual here
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' RETURN
-  url="https://github.com/rustwasm/wasm-bindgen/releases/download/${WBG}/wasm-bindgen-${WBG}-${target}"
-  curl -fsSL "$url.tar.gz" -o "$work/wbg.tar.gz" || return 1
-  curl -fsSL "$url.tar.gz.sha256sum" -o "$work/wbg.sha256sum" || return 1
+  here="$(cd "$(dirname "$0")" && pwd)"
+  asset="wasm-bindgen-${WBG}-${target}.tar.gz"
+  # Release bytes go through the API when a token is set. A failed
+  # download still falls through to the source build below.
+  sh "$here/github-download.sh" --repo rustwasm/wasm-bindgen --tag "$WBG" --asset "$asset" -o "$work/wbg.tar.gz" || return 1
+  sh "$here/github-download.sh" --repo rustwasm/wasm-bindgen --tag "$WBG" --asset "${asset}.sha256sum" -o "$work/wbg.sha256sum" || return 1
   expected="$(awk '{print $1}' "$work/wbg.sha256sum")"
   actual="$(shasum -a 256 "$work/wbg.tar.gz" | awk '{print $1}')"
   [[ -n "$expected" && "$expected" == "$actual" ]] || return 1

@@ -359,6 +359,7 @@ fn main() {
         width: width::effective_width(width),
         timeout,
         open: relate::OpenOptions {
+            wide_columns: false,
             wal_dir,
             checkpoint_interval: checkpoint_interval_secs.map(std::time::Duration::from_secs),
             durability_mode,

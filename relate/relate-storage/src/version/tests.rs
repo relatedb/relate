@@ -27,8 +27,19 @@ fn manifest_classification() {
         manifest::classify(manifest::ONTOLOGY_VERSION, false),
         Classification::Legacy(manifest::ONTOLOGY_VERSION)
     );
-    assert_eq!(manifest::classify(5, false), Classification::Unreadable(5));
-    assert_eq!(manifest::classify(5, true), Classification::Unreadable(5));
+    // Both write pairs are current (ADR-0534): legacy and wide, with and
+    // without ontology.
+    assert_eq!(manifest::classify(3, false), Classification::Current);
+    assert_eq!(manifest::classify(4, true), Classification::Current);
+    assert_eq!(manifest::classify(5, false), Classification::Current);
+    assert_eq!(manifest::classify(6, true), Classification::Current);
+    // Content-mismatched pairs are readable legacy: a wide manifest
+    // selecting no ontology, an ontology-less wide one, and the crossed
+    // pairs.
+    assert_eq!(manifest::classify(5, true), Classification::Legacy(5));
+    assert_eq!(manifest::classify(6, false), Classification::Legacy(6));
+    assert_eq!(manifest::classify(7, false), Classification::Unreadable(7));
+    assert_eq!(manifest::classify(7, true), Classification::Unreadable(7));
     assert_eq!(
         manifest::classify(99, false),
         Classification::Unreadable(99)

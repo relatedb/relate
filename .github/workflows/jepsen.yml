@@ -26,6 +26,11 @@ concurrency:
   group: jepsen-${{ github.ref }}
   cancel-in-progress: true
 
+# make docker fetches the pinned sccache release inside the image
+# build. The job token has to be in the environment for that GET.
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   jepsen:
     name: Jepsen (set + kill -9 crash durability)

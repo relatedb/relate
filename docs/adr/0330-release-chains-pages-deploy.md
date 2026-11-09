@@ -105,3 +105,9 @@ Chain the Pages deploy explicitly from the release run, using the
   `workflow_run`, and pushes to `main` still deploy directly.
 - A **Later references** note is added to ADR-0129 and ADR-0250 per the
   decision-log rule.
+
+## Later references
+
+- ADR-0528 and ADR-0530 move the cookbook and the playground to the
+  relate-web repository. The deploy publishes the `gh-pages` tree only,
+  with no bundle, playground, or cookbook build.

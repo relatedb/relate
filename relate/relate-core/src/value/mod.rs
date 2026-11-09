@@ -440,22 +440,11 @@ impl Value {
                     .collect();
                 format!("{{{}}}", inner.join(", "))
             }
-            // Labels only, no properties, alphabetically (CIP-271): Neo4j
-            // 2026.09.0 renders toString(node-with-props) as "(:X)" and a
-            // multi-label node as "(:A:B:C)" whatever the creation order.
-            Value::Node(n) => {
-                let mut labels: Vec<&str> = n.labels.iter().map(String::as_str).collect();
-                labels.sort_unstable();
-                let labels: String = labels
-                    .iter()
-                    .map(|l| format!(":{}", quote_identifier_shaped(l)))
-                    .collect();
-                format!("({labels})")
-            }
-            Value::Relationship(r) => format!("[:{}]", quote_identifier_shaped(&r.rel_type)),
-            // ADR-0462: keep the walker's depth — the depth-0 wrapper would
-            // reset the budget mid-walk.
-            Value::Path(p) => p.to_cypher_literal_at(depth),
+            Value::Node(n) => node_display(n),
+            Value::Relationship(r) => relationship_display(r),
+            // No depth: the display walk renders no properties, so it never
+            // recurses and has no ADR-0462 budget to thread.
+            Value::Path(p) => p.display_string(),
             Value::Temporal(t) => t.full_seconds_string(),
             // Bare hyphenated string (verified on 2026.09.0).
             Value::Uuid(u) => uuid_hyphenated(*u),
@@ -605,26 +594,71 @@ impl Path {
         if next_depth(depth).is_none() {
             return DEPTH_LIMIT_MARKER.into();
         }
-        let mut s = String::from("<");
+        format!(
+            "<{}>",
+            self.walk(
+                |n| n.to_cypher_literal_at(depth),
+                |r| r.to_cypher_literal_at(depth)
+            )
+        )
+    }
+
+    /// The CIP-271 `toString()` form of a path: no enclosing `<…>` and no
+    /// properties — the same label-only / type-only element rendering a
+    /// standalone node or relationship gets (Neo4j 2026.10.1 renders
+    /// `toString(path)` as `(:A)-[:FIRST]->(:B)<-[:SECOND]-(:C)`). The
+    /// display walk renders no properties, so nothing recurses and no
+    /// depth budget applies — the literal twin's guard bounds its own
+    /// property-rendering recursion, not this walk.
+    fn display_string(&self) -> String {
+        self.walk(node_display, relationship_display)
+    }
+
+    /// The path's element chain — one node then, if the path continues past
+    /// it, the relationship traversed from it, with the arrows of the
+    /// direction actually stored. `node`/`rel` render one element, so the
+    /// literal and display walks share the direction policy.
+    fn walk(
+        &self,
+        node: impl Fn(&Node) -> String,
+        rel: impl Fn(&Relationship) -> String,
+    ) -> String {
+        let mut s = String::new();
         for (i, n) in self.nodes.iter().enumerate() {
-            s.push_str(&n.to_cypher_literal_at(depth));
+            s.push_str(&node(n));
             if let Some(r) = self.rels.get(i) {
-                let next = self.nodes.get(i + 1);
-                let outgoing = next.is_some_and(|m| r.start == n.id && r.end == m.id);
-                let incoming = next.is_some_and(|m| r.end == n.id && r.start == m.id);
-                let (left, right) = if outgoing {
+                // `rels[i]` connects `nodes[i]` and `nodes[i+1]`, so the
+                // arrow is the one bit that is always defined: which
+                // endpoint is the current node. A self-loop is outgoing.
+                let (left, right) = if r.start == n.id {
                     ("-", "->")
-                } else if incoming {
-                    ("<-", "-")
                 } else {
-                    ("-", "-")
+                    ("<-", "-")
                 };
-                s.push_str(&format!("{left}{}{right}", r.to_cypher_literal_at(depth)));
+                s.push_str(&format!("{left}{}{right}", rel(r)));
             }
         }
-        s.push('>');
         s
     }
+}
+
+/// Labels only, no properties, alphabetically (CIP-271): Neo4j 2026.09.0
+/// renders `toString(node-with-props)` as `(:X)` and a multi-label node as
+/// `(:A:B:C)` whatever the creation order.
+fn node_display(n: &Node) -> String {
+    let mut labels: Vec<&str> = n.labels.iter().map(String::as_str).collect();
+    labels.sort_unstable();
+    let labels: String = labels
+        .iter()
+        .map(|l| format!(":{}", quote_identifier_shaped(l)))
+        .collect();
+    format!("({labels})")
+}
+
+/// Type only, no properties (CIP-271), the relationship half of
+/// [`node_display`].
+fn relationship_display(r: &Relationship) -> String {
+    format!("[:{}]", quote_identifier_shaped(&r.rel_type))
 }
 
 impl fmt::Display for Value {

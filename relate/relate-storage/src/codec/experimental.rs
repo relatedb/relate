@@ -1,6 +1,6 @@
-//! The experimental codecs' shared machinery (ADR-0537): the checkpoint
-//! image they publish and read, and the load tail their decoders hand off
-//! to. One module cfg — the whole file compiles with either experimental
+//! The experimental codec's shared machinery (ADR-0537): the checkpoint
+//! image it publishes and reads, and the load tail its decoder hands off
+//! to. One module cfg — the whole file compiles with the experimental
 //! codec and not otherwise.
 
 use relate_core::{Error, Result};
@@ -11,7 +11,7 @@ use super::{Envelope, SnapshotCodecKind};
 use crate::snapshot::LoadedSnapshot;
 use crate::StoreTarget;
 
-/// The experimental codecs' checkpoint image: the wire envelope plus the
+/// The experimental codec's checkpoint image: the wire envelope plus the
 /// format marker, the checkpoint theater and the catalog. The theater must
 /// ride the image (not the codec payload) — the engine's marker discipline
 /// and its forgery tests read it there, exactly as the Parquet manifest
@@ -38,7 +38,7 @@ pub(crate) struct CodecManifest {
     pub(crate) has_ontology: bool,
 }
 
-/// Publish the experimental codecs' manifest — the envelope, the format
+/// Publish the experimental codec's manifest — the envelope, the format
 /// marker (`version::manifest::version_for_write`) and the theater.
 pub(crate) fn write_codec_manifest(
     target: &StoreTarget,
@@ -50,7 +50,9 @@ pub(crate) fn write_codec_manifest(
     ontology: Option<&str>,
 ) -> Result<()> {
     let manifest = CodecManifest {
-        format_version: crate::version::manifest::version_for_write(ontology.is_some()),
+        // An experimental codec never writes wide parts: ADR-0534's
+        // encoding belongs to the Parquet codec's parts.
+        format_version: crate::version::manifest::version_for_write(ontology.is_some(), false),
         envelope: Envelope {
             codec,
             checkpoint_lsn,
@@ -156,7 +158,7 @@ pub(crate) fn publication_failure(error: Error, rollback: Result<()>) -> Error {
     }
 }
 
-/// The experimental codecs' shared load tail: rebuild the graph from the
+/// The experimental codec's shared load tail: rebuild the graph from the
 /// decoded rows (the shared `SnapshotRows::into_graph`), floor its commit
 /// ts from the manifest envelope, and assemble the [`LoadedSnapshot`] —
 /// everything after a codec's own row decode. The manifest's ontology

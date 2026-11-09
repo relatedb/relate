@@ -55,3 +55,9 @@ docs/api/extensions/examples/*
 !target
 target/*
 !target/docker-prebuilt
+# scripts/github-download.sh is the authenticated GitHub release GET
+# the chef stage uses for sccache. Re-include that one file; the rest
+# of scripts/ stays out of the context.
+!scripts
+scripts/*
+!scripts/github-download.sh

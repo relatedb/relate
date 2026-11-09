@@ -582,7 +582,10 @@ relate_status relate_params_put_null(relate_params p, const char *name, char **e
 relate_status relate_params_put_bool(relate_params p, const char *name, uint8_t v, char **error_json);
 relate_status relate_params_put_int(relate_params p, const char *name, int64_t v, char **error_json);
 relate_status relate_params_put_float(relate_params p, const char *name, double v, char **error_json);
-/* STRING: len bytes of UTF-8 at v (an interior NUL crosses whole). */
+/* STRING: len bytes of UTF-8 at v (an interior NUL crosses whole). A NULL
+ * v with no bytes binds the empty string — a marshalling layer may hand a
+ * zero-length buffer over as NULL (koffi does); NULL with bytes to read
+ * refuses. */
 relate_status relate_params_put_string(relate_params p, const char *name, const char *v, size_t len, char **error_json);
 
 /*

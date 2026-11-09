@@ -213,7 +213,7 @@ fn run_matrix(open: impl Fn(SnapshotCodecKind) -> Box<dyn Fn() -> Database>) {
 fn run_matrix_stores_without_a_native_root(
     open: impl Fn(SnapshotCodecKind) -> Box<dyn Fn() -> Database>,
 ) {
-    run_matrix_each(open, SnapshotCodecKind::compiled_for_memory_stores());
+    run_matrix_each(open, SnapshotCodecKind::compiled().iter().copied());
 }
 
 #[test]

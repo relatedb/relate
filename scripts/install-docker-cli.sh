@@ -37,7 +37,14 @@ case "$buildx_arch" in
   x86_64) buildx_name=amd64 ;;
   *) buildx_name=arm64 ;;
 esac
-curl -fsSL -o /tmp/docker-buildx "https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-${buildx_name}"
+# The CLI tarball above is download.docker.com. buildx is a GitHub
+# release; github-download.sh sends it through the API when a token is set.
+here="$(cd "$(dirname "$0")" && pwd)"
+sh "$here/github-download.sh" \
+  --repo docker/buildx \
+  --tag v0.19.3 \
+  --asset "buildx-v0.19.3.linux-${buildx_name}" \
+  -o /tmp/docker-buildx
 echo "${buildx_pinned}  /tmp/docker-buildx" | sha256sum --check --quiet
 mkdir -p /usr/local/lib/docker/cli-plugins
 mv /tmp/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx

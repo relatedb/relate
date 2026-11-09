@@ -92,35 +92,6 @@ test-go:
 	cd clients/go && go test -count=1 ./...
 	bash scripts/check-go-examples.sh
 
-## cookbook: The whole cookbook gate CI runs: recipes natively, tooling tests, the browser build, the site (ADR-0130)
-cookbook: cookbook-native cookbook-js cookbook-wasm
-
-## cookbook-native: Every recipe reproduces its recorded results natively
-cookbook-native:
-	# ADR-0212: recipe corpus runs in the corpus profile (opt-level 2).
-	cargo test --profile corpus -p relate-cookbook
-
-## cookbook-deps: Install the cookbook tooling's npm packages (once per make run)
-cookbook-deps:
-	cd scripts/cookbook && npm ci
-
-## cookbook-js: The cookbook tooling's unit tests (scripts/cookbook)
-cookbook-js: cookbook-deps
-	cd scripts/cookbook && npm test
-
-## cookbook-wasm: A dev wasm build, then the site build into a temp dir: WASM parity, diagram renderings, links
-cookbook-wasm: cookbook-deps
-	bash scripts/build-wasm.sh --mode dev
-	out=$$(mktemp -d) && node scripts/cookbook/build.mjs --out "$$out/cookbook" && rm -rf "$$out"
-
-## cookbook-update: Re-record each recipe step's table/gram result block and the cookbook index
-cookbook-update:
-	COOKBOOK_UPDATE=1 cargo test -p relate-cookbook
-
-## cookbook-site: Build the cookbook pages into scripts/cookbook/dist to preview them (needs a wasm build)
-cookbook-site: cookbook-deps
-	cd scripts/cookbook && node build.mjs
-
 ## test: Run all Rust tests (excluding the Python crate)
 test:
 	cargo test --jobs 1 \
@@ -162,10 +133,8 @@ CLEAN_PATHS := \
 	target \
 	surfaces/relate-python/.venv \
 	clients/javascript/node_modules \
-	examples/wasm-playground/node_modules \
 	clients/java/target \
 	docs/api/bolt/examples/websocket/node_modules \
-	scripts/cookbook/node_modules \
 	surfaces/relate-wasm/pkg
 SONIC_CACHE_VOLUMES := \
 	gosonic-cache-cargo-home \
@@ -680,7 +649,17 @@ docker:
 ifdef DOCKER_PREBUILT_DIR
 	cp $(DOCKER_PREBUILT_DIR)/relate $(DOCKER_PREBUILT_DIR)/entrypoint target/docker-prebuilt/
 endif
-	docker build $(DOCKER_BUILD_FLAGS) $(if $(DOCKER_PREBUILT_DIR),--build-arg BINARY_SOURCE=prebuilt,) -t relate-bolt:$(VERSION) -t relate-bolt:latest .
+	token="$${GH_TOKEN:-$${GITHUB_TOKEN:-}}"; \
+	secret=""; \
+	gha=""; \
+	if [ -n "$$token" ] && [ "$$token" != "GITHUB_TOKEN" ] && [ "$$token" != "GH_TOKEN" ]; then \
+		export GITHUB_TOKEN="$$token"; \
+		secret="--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN"; \
+	fi; \
+	if [ "$${GITHUB_ACTIONS:-}" = "true" ]; then \
+		gha="--build-arg GITHUB_ACTIONS=true"; \
+	fi; \
+	docker build $$secret $$gha $(DOCKER_BUILD_FLAGS) $(if $(DOCKER_PREBUILT_DIR),--build-arg BINARY_SOURCE=prebuilt,) -t relate-bolt:$(VERSION) -t relate-bolt:latest .
 
 ## prebuilt: Stage the relate binary for the current commit into
 ##   target/.prebuilt/<sha>[-dirty]/<profile>/ (ADR-0251 §5,

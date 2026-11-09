@@ -7,6 +7,11 @@
       "manifest": "extensions/relate-dungeon/package/extension.json"
     },
     {
+      "name": "ideas",
+      "crate_dir": "extensions/relate-ideas",
+      "manifest": "extensions/relate-ideas/package/extension.json"
+    },
+    {
       "name": "fs-to-graph",
       "crate_dir": "extensions/relate-fs-to-graph",
       "manifest": "extensions/relate-fs-to-graph/package/extension.json"

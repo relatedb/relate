@@ -1,6 +1,8 @@
 //! The copy cursor over one previous shard (ADR-0183). A rewrite copies
 //! clean rows out of the previous shard's Arrow batches into the file being
-//! written; they are not loaded from the live graph or re-encoded.
+//! written; they are not loaded from the live graph or re-encoded. A
+//! copied batch still in its source part's schema is adapted into the
+//! writer's before it is written (ADR-0534).
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -11,11 +13,11 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
 use relate_core::{Error, Result};
 
 use crate::snapshot::Kind;
-use crate::storage_context;
 use crate::vfs::Vfs;
 
 use super::encode::{ShardError, ShardWriter};
-use super::{preflight, ShardRules, VfsChunkReader, ROW_GROUP_CAP};
+use super::wide::{self, ColumnType};
+use super::{preflight, source_error, ShardRules, VfsChunkReader, ROW_GROUP_CAP};
 
 /// A forward cursor over one previous shard's rows, in ascending id order.
 /// Every failure to read the shard is fatal: fewer rows do not avoid it.
@@ -36,19 +38,57 @@ struct Held {
     next: usize,
 }
 
-/// The one shape of a failure to read previous shard `path`: `error`,
-/// naming the shard.
-fn source_error(path: &str, error: Error) -> Error {
-    storage_context(error, format_args!("previous Parquet shard {path}"))
+/// Open previous shard `path` through bounded VFS ranges, of the manifest
+/// part that declares id range `range`, held to the shard rules over that
+/// range as the loader holds the part — the one open-and-check policy
+/// every reader of a previous shard runs: the copy cursor, and the schema
+/// footer read of ADR-0534.
+pub(super) fn open_previous_shard(
+    vfs: Arc<dyn Vfs>,
+    path: &str,
+    kind: Kind,
+    range: Range<i64>,
+) -> Result<PreviousShard> {
+    let fail = |error| source_error(path, error);
+    let source = VfsChunkReader::open(vfs, path, super::MAX_FILE).map_err(fail)?;
+    let builder = preflight(source.clone()).map_err(fail)?;
+    let rules = ShardRules::open(&builder, kind, range).map_err(fail)?;
+    Ok(PreviousShard {
+        source,
+        builder,
+        rules,
+    })
+}
+
+/// A previous shard opened and held to the shard rules: the bounded
+/// source, the batch reader builder over it, and the rules it passed.
+pub(super) struct PreviousShard {
+    pub(super) source: VfsChunkReader,
+    pub(super) builder:
+        parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder<VfsChunkReader>,
+    pub(super) rules: ShardRules,
+}
+
+/// The promoted columns the previous shard `path` carries (ADR-0534): a
+/// wide part's own, none for a legacy-shaped one — the schema footer read
+/// beside the one open-and-check policy every reader of a previous shard
+/// runs.
+pub(crate) fn previous_shard_columns(
+    vfs: Arc<dyn Vfs>,
+    path: &str,
+    kind: Kind,
+    range: Range<i64>,
+) -> Result<Vec<(String, ColumnType)>> {
+    Ok(open_previous_shard(vfs, path, kind, range)?
+        .rules
+        .columns()
+        .to_vec())
 }
 
 impl ShardCursor {
-    /// Open previous shard `path` through bounded VFS ranges, of the manifest
-    /// part that declares id range `range`. It is held to
-    /// the shard rules over that range, as the loader holds the part: its
-    /// schema here, and its ids as each batch is read. The writer would
-    /// reject or mislabel other columns, a repeated id would be skipped, and
-    /// a row outside the range belongs to another part.
+    /// Open previous shard `path` through [`open_previous_shard`]. The
+    /// writer would reject or mislabel other columns, a repeated id would
+    /// be skipped, and a row outside the range belongs to another part.
     pub(crate) fn open(
         vfs: Arc<dyn Vfs>,
         path: &str,
@@ -56,18 +96,17 @@ impl ShardCursor {
         range: Range<i64>,
     ) -> Result<Self> {
         let fail = |error| source_error(path, error);
-        let source = VfsChunkReader::open(vfs, path, super::MAX_FILE).map_err(fail)?;
-        let builder = preflight(source.clone()).map_err(fail)?;
-        let rules = ShardRules::open(&builder, kind, range).map_err(fail)?;
-        let reader = builder
+        let previous = open_previous_shard(vfs, path, kind, range)?;
+        let reader = previous
+            .builder
             .with_batch_size(ROW_GROUP_CAP)
             .build()
             .map_err(|e| fail(Error::storage(e.to_string())))?;
         Ok(Self {
             path: path.to_owned(),
-            source,
+            source: previous.source,
             reader,
-            rules,
+            rules: previous.rules,
             held: None,
         })
     }
@@ -118,7 +157,16 @@ impl ShardCursor {
             }
             let start = held.next + skip;
             held.next = start + run;
-            writer.write_rows(&held.batch.slice(start, run))?;
+            let rows = held.batch.slice(start, run);
+            // A copied run is still in its source part's schema
+            // (ADR-0534): adapted here, so the writer takes only batches
+            // of its own.
+            let rows = if rows.schema().fields() == writer.schema().fields() {
+                rows
+            } else {
+                wide::adapt_copied_batch(&rows, writer.schema())?
+            };
+            writer.write_rows(&rows)?;
             rest = &rest[run..];
         }
         self.source
@@ -165,7 +213,7 @@ impl ShardCursor {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{load_part, write_bare_table};
-    use super::super::{load_nodes, with_shard_writer, MAX_FILE};
+    use super::super::{load_nodes, with_wide_shard_writer, MAX_FILE};
     use super::*;
     use crate::vfs::{MemoryVfs, VfsOpen};
     use bytes::Bytes;
@@ -182,7 +230,7 @@ mod tests {
 
     /// Copy each of `runs` in turn through one cursor over `cursor`'s rows.
     fn take_runs(cursor: ShardCursor, runs: &[&[i64]]) -> Result<Bytes> {
-        let (bytes, _) = with_shard_writer(Kind::Node, MAX_FILE, |writer| {
+        let (bytes, _) = with_wide_shard_writer(Kind::Node, &[], MAX_FILE, |writer| {
             runs.iter()
                 .try_fold(cursor, |cursor, run| cursor.take(run, writer))
         })?;

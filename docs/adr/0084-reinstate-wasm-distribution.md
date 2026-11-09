@@ -68,3 +68,7 @@ gated in `.github/workflows/ci.yml`:
 - ADR-0145 supersedes the memory-only clause for one worker path:
   `CypherliteDb.open("opfs://<name>")`. The default constructor is still
   `:memory:`.
+- ADR-0530 moves the playground to the relate-web repository:
+  `examples/wasm-playground/` is removed, so the examples clause has no
+  in-tree app and `scripts/build-wasm.sh` has no playground caller. The
+  shared build entry is unchanged.

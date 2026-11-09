@@ -19,9 +19,6 @@ pub enum SnapshotCodecKind {
     /// EXPERIMENTAL (default off, `rkyv-codec`): one zero-copy rkyv
     /// archive. Measurement only until an ADR promotes it.
     Rkyv,
-    /// EXPERIMENTAL (default off, `fjall-codec`): an embedded LSM
-    /// keyspace directory. Measurement only until an ADR promotes it.
-    Fjall,
 }
 
 impl Default for SnapshotCodecKind {
@@ -38,14 +35,8 @@ impl SnapshotCodecKind {
     /// [`Self::as_str`]. A new codec edits this table, `as_str`, and a
     /// compile-forced arm in each layout fact ([`Self::wal_dir`],
     /// [`Self::checkpoint_image`], [`Self::engine_dir`],
-    /// [`Self::feature_name`], [`Self::needs_native_root`]).
-    const ALL: [Self; 5] = [
-        Self::Parquet,
-        Self::Json,
-        Self::Markdown,
-        Self::Rkyv,
-        Self::Fjall,
-    ];
+    /// [`Self::feature_name`]).
+    const ALL: [Self; 4] = [Self::Parquet, Self::Json, Self::Markdown, Self::Rkyv];
 
     /// Whether this codec is compiled into the build. JSON always is;
     /// Parquet needs the `parquet` feature on a non-wasm32 target (ADR-0105).
@@ -63,20 +54,7 @@ impl SnapshotCodecKind {
         match self {
             Self::Parquet => cfg!(parquet_codec),
             Self::Rkyv => cfg!(rkyv_codec),
-            Self::Fjall => cfg!(fjall_codec),
             Self::Json | Self::Markdown => true,
-        }
-    }
-
-    /// Whether this codec's store must live on a real local directory.
-    /// The LSM keyspace codec opens a directory of its own and fails
-    /// closed on any other target; every other codec writes through the
-    /// store's VFS (`:memory:` included), so memory-store suites filter
-    /// this one out by the typed fact rather than by its name.
-    pub const fn needs_native_root(self) -> bool {
-        match self {
-            Self::Fjall => true,
-            Self::Parquet | Self::Json | Self::Markdown | Self::Rkyv => false,
         }
     }
 
@@ -88,18 +66,19 @@ impl SnapshotCodecKind {
         match self {
             Self::Parquet => "parquet",
             Self::Rkyv => "rkyv-codec",
-            Self::Fjall => "fjall-codec",
             Self::Json | Self::Markdown => "",
         }
     }
 
-    /// The compiled codecs whose engine state lives at the store root and
-    /// which a memory store can host — the set the layout-asserting suites
-    /// iterate: the markdown codec keeps its manifest in the
-    /// `.cypherlite/` sidecar (ADR-0406 §5), and a native-root codec
-    /// cannot be driven by a `:memory:` store at all.
+    /// The compiled codecs whose engine state lives at the store root —
+    /// the set the layout-asserting suites iterate: the markdown codec
+    /// keeps its engine state in the `.cypherlite/` sidecar
+    /// (ADR-0406 §5), so its stores are not root-layout.
     pub fn compiled_with_root_layout() -> impl Iterator<Item = SnapshotCodecKind> {
-        Self::compiled_for_memory_stores().filter(|codec| codec.engine_dir().is_none())
+        Self::compiled()
+            .iter()
+            .copied()
+            .filter(|codec| codec.engine_dir().is_none())
     }
 
     /// Every codec compiled into the build, the new-store default first.
@@ -127,18 +106,6 @@ impl SnapshotCodecKind {
         })
     }
 
-    /// The compiled codecs a memory-VFS store can host — every suite that
-    /// drives stores through `:memory:` (or a bundle) filters by this
-    /// named set, never by re-spelling `needs_native_root` at each loop:
-    /// the one place the "drivable without a native root" capability is
-    /// derived from the layout facts.
-    pub fn compiled_for_memory_stores() -> impl Iterator<Item = SnapshotCodecKind> {
-        Self::compiled()
-            .iter()
-            .copied()
-            .filter(|codec| !codec.needs_native_root())
-    }
-
     /// The codec names as the unknown-codec error spells them —
     /// [`ALL`](Self::ALL) rendered as prose, so the message cannot
     /// drift from the vocabulary.
@@ -160,7 +127,7 @@ impl SnapshotCodecKind {
     /// vault's own files (ADR-0406 §3).
     pub const fn wal_dir(self) -> &'static str {
         match self {
-            Self::Parquet | Self::Json | Self::Rkyv | Self::Fjall => "wal",
+            Self::Parquet | Self::Json | Self::Rkyv => "wal",
             Self::Markdown => super::markdown::WAL_DIR,
         }
     }
@@ -175,7 +142,7 @@ impl SnapshotCodecKind {
     /// vocabulary its consumers pin.
     pub const fn checkpoint_image(self) -> &'static str {
         match self {
-            Self::Parquet | Self::Rkyv | Self::Fjall => crate::snapshot::MANIFEST_JSON,
+            Self::Parquet | Self::Rkyv => crate::snapshot::MANIFEST_JSON,
             Self::Json => super::json::GRAPH_JSON,
             Self::Markdown => super::markdown::MANIFEST,
         }
@@ -190,7 +157,7 @@ impl SnapshotCodecKind {
     pub const fn engine_dir(self) -> Option<&'static str> {
         match self {
             Self::Markdown => Some(super::markdown::ENGINE_DIR),
-            Self::Parquet | Self::Json | Self::Rkyv | Self::Fjall => None,
+            Self::Parquet | Self::Json | Self::Rkyv => None,
         }
     }
 
@@ -211,22 +178,12 @@ impl SnapshotCodecKind {
             .filter(|kind| !kind.writes_vault())
     }
 
-    /// Whether a read-only open (ADR-0136) can load this codec's stores:
-    /// every codec's except fjall's, whose keyspace open takes an
-    /// exclusive lock and creates or recovers files — a write, so a
-    /// read-only open refuses the codec at resolution instead of mutating
-    /// the store or dying on read-only media mid-recovery.
-    pub const fn supports_read_only_open(self) -> bool {
-        !matches!(self, Self::Fjall)
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Parquet => "parquet",
             Self::Json => "json",
             Self::Markdown => "markdown",
             Self::Rkyv => "rkyv",
-            Self::Fjall => "fjall",
         }
     }
 

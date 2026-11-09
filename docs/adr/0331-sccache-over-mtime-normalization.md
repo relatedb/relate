@@ -2,6 +2,7 @@
 
 Status: Accepted
 Claim: 99dd31ca0c021ce92c53718346112dc52d66e8f7
+Later references: the preamble installs the pinned release with scripts/install-sccache.sh (GitHub API asset download). The GHA backend and the probe are unchanged.
 
 ## Context
 

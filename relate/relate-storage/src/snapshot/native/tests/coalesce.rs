@@ -448,14 +448,15 @@ fn file_without_rows_is_refused() {
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let mut ctx = ShardWrite {
-        target: &store,
-        graph: &graph,
-        ts: 1,
-        kind: Kind::Node,
-        target_bytes: 1,
-        owned: &mut owned,
-    };
+    let mut ctx = ShardWrite::new(
+        &store,
+        &graph,
+        1,
+        Kind::Node,
+        1,
+        Encoding::Legacy,
+        &mut owned,
+    );
     // Ids 7 and 8 get a new window [0, 4096), with no previous file.
     let err = coalesce::rewrite(&mut ctx, Vec::new(), &[7, 8], &[], 4096).unwrap_err();
     assert!(matches!(err, Error::Storage(_)), "{err}");

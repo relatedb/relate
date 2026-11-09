@@ -1,6 +1,7 @@
 //! Shard files for tests, malformed ones included, a part loader and a
 //! commit helper. A file of the shard schema is written as a checkpoint
-//! writes it: over [`Kind::schema`] through [`with_shard_writer`].
+//! writes it: over [`Kind::schema`] — the wide schema with no promoted
+//! columns (ADR-0534) — through [`with_wide_shard_writer`].
 
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use relate_executor::Graph;
 
 use crate::snapshot::Kind;
 
-use super::{file_ceiling, with_shard_writer, Loader, Origin};
+use super::{file_ceiling, with_wide_shard_writer, Loader, Origin};
 
 /// Load `bytes` with `loader` as a manifest part spanning every persisted id.
 pub(super) fn load_part(loader: Loader, graph: &Graph, bytes: &[u8]) -> Result<()> {
@@ -34,7 +35,9 @@ pub(super) fn commit_ops(g: &Graph) -> u64 {
 fn encode_batch(kind: Kind, columns: Vec<ArrayRef>) -> Result<Vec<u8>> {
     let batch =
         RecordBatch::try_new(kind.schema(), columns).map_err(|e| Error::storage(e.to_string()))?;
-    let (bytes, ()) = with_shard_writer(kind, file_ceiling(), |writer| writer.write_rows(&batch))?;
+    let (bytes, ()) = with_wide_shard_writer(kind, &[], file_ceiling(), |writer| {
+        writer.write_rows(&batch)
+    })?;
     Ok(bytes.into())
 }
 

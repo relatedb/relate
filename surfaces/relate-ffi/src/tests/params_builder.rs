@@ -353,6 +353,64 @@ unsafe fn refused(reason: &str, put: impl FnOnce(*mut *mut c_char) -> relate_sta
     assert!(message.contains(reason), "{reason}: {message}");
 }
 
+/// The empty STRING binds (LABS-1198): a NULL buffer with no bytes is the
+/// canonical C spelling of `""` — a marshalling layer may hand a
+/// a zero-length buffer over as NULL — and it round-trips as a zero-length
+/// STRING, distinct from null and from absent. A NULL buffer that claims
+/// bytes stays the "null string value" refusal.
+#[test]
+fn ffi_params_empty_string_binds_as_zero_length_string() {
+    // SAFETY: test drives the FFI with handles, strings and out-params it
+    // owns.
+    unsafe {
+        let (db, conn) = open_memory();
+        let params = relate_params_new();
+        // The koffi spelling: a zero-length buffer marshals as NULL.
+        ok(relate_params_put_string(
+            params,
+            c("none").as_ptr(),
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+        ));
+        // A non-NULL zero-length buffer binds the same value.
+        ok(relate_params_put_string(
+            params,
+            c("some").as_ptr(),
+            "".as_ptr().cast(),
+            0,
+            ptr::null_mut(),
+        ));
+        // Bytes claimed at NULL is still a refusal.
+        refused("null string value", |e| {
+            relate_params_put_string(params, c("bad").as_ptr(), ptr::null(), 1, e)
+        });
+
+        let result = run_query(
+            conn,
+            "RETURN $none AS none, $some AS some, $none IS NULL AS is_null, \
+             $none = '' AND $some = '' AS both_empty",
+            params,
+        );
+        for col in 0..2 {
+            let cell = cell(result, 0, col);
+            // STRING kind, not NULL: the zero-length string is a value.
+            assert_eq!(relate_value_kind(cell), RELATE_V_STRING as i32);
+            assert_eq!(str_of(cell), "");
+        }
+        let mut b = 0;
+        ok(relate_value_bool(cell(result, 0, 2), &mut b));
+        assert_eq!(b, 0);
+        ok(relate_value_bool(cell(result, 0, 3), &mut b));
+        assert_eq!(b, 1);
+
+        relate_destroy_result(result);
+        relate_params_free(params);
+        relate_disconnect(conn);
+        relate_database_close(db);
+    }
+}
+
 /// Every malformed put is a defined refusal on the error channel — never
 /// UB — and leaves the builder unchanged and usable.
 #[test]
@@ -393,7 +451,7 @@ fn ffi_params_malformed_puts_are_defined_refusals() {
             relate_params_put_int(list, n, 1, e)
         });
         refused("null string value", |e| {
-            relate_params_put_string(p, c("s").as_ptr(), ptr::null(), 0, e)
+            relate_params_put_string(p, c("s").as_ptr(), ptr::null(), 1, e)
         });
         refused("invalid utf-8", |e| {
             relate_params_put_string(p, c("s").as_ptr(), b"\xff".as_ptr().cast(), 1, e)

@@ -5,8 +5,7 @@
 # catch broken *relative* documentation links (a renamed or moved page) and dead
 # *external* links before they ship.
 #
-# NOTE: the input scope is README.md + docs/guides + docs/reference +
-# docs/cookbook only.
+# NOTE: the input scope is README.md + docs/guides + docs/reference only.
 
 # --- Documented allowlist: not-yet-public URLs (publication pending) ----------
 # The relatedb GitHub repository and its site 404 until the repo

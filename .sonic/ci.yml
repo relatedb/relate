@@ -56,8 +56,23 @@ actions:
     runner: docker-cli
     docker_socket: true
     once: true
+    # The image downloads cargo-nextest from a GitHub release. The
+    # docker CLI container only sees mapped vars; the Dockerfile reads
+    # the token from a BuildKit secret, not from the layer history.
+    environment: &github-download-env
+      GITHUB_TOKEN: GITHUB_TOKEN
+      GITHUB_ACTIONS: GITHUB_ACTIONS
     commands:
-      - docker build -t localhost/relate-sonic-rust:1.88 -f .sonic/docker/sonic-rust.Dockerfile .sonic/docker
+      - |
+        set -eu
+        set -- build -t localhost/relate-sonic-rust:1.88 -f .sonic/docker/sonic-rust.Dockerfile --build-context scripts=scripts
+        if [ -n "${GITHUB_TOKEN:-}" ] && [ "$GITHUB_TOKEN" != "GITHUB_TOKEN" ]; then
+          set -- "$@" --secret id=GITHUB_TOKEN,env=GITHUB_TOKEN
+        fi
+        if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+          set -- "$@" --build-arg GITHUB_ACTIONS=true
+        fi
+        docker "$@" .sonic/docker
   build-sonic-polyglot:
     runner: docker-cli
     docker_socket: true
@@ -78,7 +93,6 @@ suites:
     - python
     - link-check
     - doc-examples
-    - cookbook-wasm
     - notebook
     - corpus
     - bolt
@@ -172,6 +186,7 @@ stages:
             relate-fs-to-graph
             relate-git-to-graph
             relate-dungeon
+            relate-ideas
             relate-ontology
             relate-markdown
             relate-test-support
@@ -259,17 +274,11 @@ stages:
   link-check:
     runner: sonic-rust
     before: *before-rust
+    environment:
+      <<: *github-download-env
     commands:
-      - |
-        arch="$(uname -m)"
-        case "$arch" in
-          x86_64) lychee_arch=x86_64 ;;
-          aarch64|arm64) lychee_arch=aarch64 ;;
-          *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
-        esac
-        curl -fsSL -o /tmp/lychee.tar.gz "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.18.1/lychee-${lychee_arch}-unknown-linux-gnu.tar.gz"
-        tar -xzf /tmp/lychee.tar.gz -C /usr/local/bin
-        lychee --config lychee.toml --no-progress --root-dir "$(pwd)/docs" README.md docs/guides docs/reference docs/cookbook
+      - bash scripts/install-lychee.sh
+      - lychee --config lychee.toml --no-progress --root-dir "$(pwd)/docs" README.md docs/guides docs/reference
 
   doc-examples:
     runner: sonic-rust
@@ -285,24 +294,6 @@ stages:
     commands:
       - cargo build --release -p relate-cli
       - bash scripts/check-doc-examples.sh
-
-  cookbook-wasm:
-    runner: sonic-polyglot
-    # The toolchain setup below is sourced — its exports must reach this
-    # shell, so the stage pins bash like the other multi-line stages.
-    shell: bash
-    before: *before-polyglot
-    environment:
-      <<: *cargo-env
-      CARGO_TARGET_DIR: /cargo-target/cookbook-wasm
-    volumes: *cargo-cache
-    commands:
-      # The shared wasm toolchain setup (LABS-622): wasm-bindgen +
-      # binaryen onto PATH. Sourced so the exports reach this shell;
-      # anchored once, aliased by npm-smoke (LABS-631).
-      - &wasm-toolchain source scripts/install-wasm-toolchain.sh
-      - make cookbook-js
-      - make cookbook-wasm
 
   notebook:
     runner: sonic-polyglot
@@ -327,19 +318,22 @@ stages:
 
   # Opt-level 2 compile of the engine. It shares the cargo home volume
   # and the workspace mount with the other cargo stages. Under --jobs 4 it
-  # died while cookbook-wasm and notebook were still compiling, and bolt
-  # started into the freed slot a second later. Wait for those two, and
-  # hold the cargo stages listed after this one.
+  # died while notebook was still compiling, and bolt started into the
+  # freed slot a second later. Wait for it, and hold the cargo stages
+  # listed after this one.
   corpus:
     runner: sonic-rust
     before: *before-rust
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/corpus
+      # Set here, not as a command prefix: a stage with a single command
+      # and no `shell:` is exec'd directly, so `VAR=1 cargo …` would be
+      # run as a program named `VAR=1`.
+      RELATE_QUERY_LATENCY: "1"
     volumes: *cargo-cache
     commands:
-      - make cookbook-native
-      - RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test graph_benchmark_ldbc
+      - cargo test --profile corpus -p relate-query-latency --test graph_benchmark_ldbc
 
   bolt:
     runner: sonic-polyglot
@@ -436,12 +430,14 @@ stages:
     shell: bash
     before: *before-polyglot
     environment:
-      <<: *cargo-env
+      <<: [ *cargo-env, *github-download-env ]
       CARGO_TARGET_DIR: /cargo-target/npm-smoke
       RELATE_LIB: /cargo-target/npm-smoke/debug/librelate_ffi.so
     volumes: *cargo-cache
     commands:
-      - *wasm-toolchain
+      # The shared wasm toolchain setup (LABS-622): wasm-bindgen +
+      # binaryen onto PATH. Sourced so the exports reach this shell.
+      - source scripts/install-wasm-toolchain.sh
       - cargo build -p relate-ffi
       - bash scripts/npm-smoke-test.sh
 
@@ -483,13 +479,15 @@ stages:
       # unset locally; the literals are ignored.
       # The spec-sanctioned sequence form merges both maps: the
       # forwarding trio (anchored here, its contract comments the single
-      # home) and the shared cargo env.
+      # home), the shared cargo env, and the GitHub-download token
+      # (anchored on build-sonic-rust). buildx is a GitHub release.
       <<:
         - &baseline-env-forwarding
           GITHUB_WORKSPACE: GITHUB_WORKSPACE
           BASELINE_RUNNER: BASELINE_RUNNER
           GITHUB_ACTIONS: GITHUB_ACTIONS
         - *cargo-env
+        - *github-download-env
       CARGO_TARGET_DIR: /cargo-target/loadtest-baselines
     volumes: *cargo-cache
     commands:
@@ -512,7 +510,7 @@ stages:
     environment:
       # The baseline env-forwarding trio and the Docker-baseline setup
       # step, both anchored in loadtest-baselines (LABS-627).
-      <<: [ *baseline-env-forwarding, *cargo-env ]
+      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
       CARGO_TARGET_DIR: /cargo-target/query-latency
     volumes: *cargo-cache
     commands:
@@ -527,7 +525,7 @@ stages:
     docker_socket: true
     before: *before-rust
     environment:
-      <<: [ *baseline-env-forwarding, *cargo-env ]
+      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
       CARGO_TARGET_DIR: /cargo-target/memory-controls
       CI_COMPARE: CI_COMPARE
     volumes: *cargo-cache
@@ -541,7 +539,7 @@ stages:
     docker_socket: true
     before: *before-rust
     environment:
-      <<: [ *baseline-env-forwarding, *cargo-env ]
+      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
       CARGO_TARGET_DIR: /cargo-target/memory-controls-full
       CI_COMPARE: CI_COMPARE
     volumes: *cargo-cache
@@ -557,7 +555,7 @@ stages:
     docker_socket: true
     before: *before-rust
     environment:
-      <<: [ *baseline-env-forwarding, *cargo-env ]
+      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
       CARGO_TARGET_DIR: /cargo-target/memory-shape
       CI_COMPARE: CI_COMPARE
     volumes: *cargo-cache

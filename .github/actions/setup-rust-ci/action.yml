@@ -74,8 +74,16 @@ runs:
     # serve an artifact built from different content (the mtime scheme could —
     # it served #317 a stale `ir` rlib). Set RUSTC_WRAPPER + the GHA backend
     # BEFORE rust-cache so they land in the env hash.
-    - uses: mozilla-actions/sccache-action@v0.0.7
+    # The binary is the pinned release, fetched through the GitHub API
+    # with the job token. releases/download is anonymous and 504s.
+    - name: Install sccache
       if: inputs.sccache == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        dir="$(bash scripts/install-sccache.sh)"
+        echo "$dir" >> "$GITHUB_PATH"
     # The GHA cache backend hard-fails the entire build when the Actions
     # cache service is down (observed 2026-10-16: the service served "Our
     # services aren't available right now" and every sccache lane died on

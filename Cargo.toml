@@ -41,13 +41,13 @@ default-members = [
     "surfaces/relate-serve",
     "testing/relate-datasets",
     "testing/relate-test-support",
-    "testing/relate-cookbook",
     "testing/relate-query-latency",
     "surfaces/relate-wasm",
     "extensions/relate-wire",
     "extensions/relate-fs-to-graph",
     "extensions/relate-git-to-graph",
     "extensions/relate-dungeon",
+    "extensions/relate-ideas",
 ]
 
 [workspace.package]
@@ -96,6 +96,7 @@ relate-query-latency = { path = "testing/relate-query-latency" }
 relate-wire = { path = "extensions/relate-wire" }
 relate-fs-to-graph = { path = "extensions/relate-fs-to-graph" }
 relate-dungeon = { path = "extensions/relate-dungeon" }
+relate-ideas = { path = "extensions/relate-ideas" }
 relate-git-to-graph = { path = "extensions/relate-git-to-graph" }
 
 # Property-testing harness (ADR-0268): dev-only, never compiled into the
@@ -221,8 +222,8 @@ lto = "fat"
 panic = "abort"
 overflow-checks = false
 
-# ADR-0212: corpus profile for the cookbook recipes and the query-latency
-# suite — release without the opt-level 3 passes: compiles noticeably
+# ADR-0212: corpus profile for the query-latency suite and the corpus
+# gates — release without the opt-level 3 passes: compiles noticeably
 # faster, runs within ~1-5% of release, no debug info.
 [profile.corpus]
 inherits = "release"
