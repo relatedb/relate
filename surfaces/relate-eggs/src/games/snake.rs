@@ -6,7 +6,8 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use super::term::{self, fit, lerp, Flow, Game, Key, Rng, Style};
+use super::term::{self, fit, lerp, Flow, Game, Key, Style};
+use crate::rng::Rng;
 use crate::sprite::{Rgb, BRAND_PALETTE};
 use crate::{Ctx, Refusal};
 
@@ -313,7 +314,7 @@ mod tests {
             apple,
             score: 0,
             state: State::Playing,
-            rng: Rng::new(5),
+            rng: Rng::seeded(5),
         }
     }
 
@@ -411,7 +412,7 @@ mod tests {
 
     #[test]
     fn the_autopilot_plays_a_long_game_without_dying_early() {
-        let mut b = Board::new(Rng::new(11));
+        let mut b = Board::new(Rng::seeded(11));
         for _ in 0..400 {
             if b.state != State::Playing {
                 break;

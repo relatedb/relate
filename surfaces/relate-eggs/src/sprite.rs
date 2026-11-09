@@ -141,6 +141,7 @@ impl Sprite {
     }
 
     /// The tone at pixel (`x`, `y`), `None` for an empty or out-of-range pixel.
+    #[cfg(feature = "games")]
     pub(crate) fn tone(&self, x: usize, y: usize) -> Option<&'static Tone> {
         self.rows.get(y).and_then(|r| r.get(x)).copied().flatten()
     }

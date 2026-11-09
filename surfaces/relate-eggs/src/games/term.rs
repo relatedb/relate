@@ -9,7 +9,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::panic::{self, AssertUnwindSafe};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
@@ -88,38 +88,6 @@ pub(crate) fn lerp(a: Rgb, b: Rgb, num: usize, den: usize) -> Rgb {
 /// Cut a line to at most `cols` characters.
 pub(crate) fn fit(s: &str, cols: usize) -> String {
     s.chars().take(cols).collect()
-}
-
-/// A small xorshift generator: the games need variety, not quality.
-pub(crate) struct Rng(u64);
-
-impl Rng {
-    pub fn new(seed: u64) -> Rng {
-        Rng(seed | 1)
-    }
-
-    pub fn from_clock() -> Rng {
-        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d,
-            Err(before) => before.duration(),
-        };
-        Rng::new(nanos.as_nanos() as u64 ^ (std::process::id() as u64) << 32)
-    }
-
-    pub fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// Uniform-enough value below `n` (`n > 0`).
-    pub fn below(&mut self, n: usize) -> usize {
-        assert!(n > 0, "Rng::below(0)");
-        (self.next_u64() % n as u64) as usize
-    }
 }
 
 /// The terminal's size, once stdin and stdout are known to be terminals
@@ -276,7 +244,16 @@ pub(crate) fn play(ctx: &mut Ctx<'_>, game: &mut dyn Game) -> Result<(), Refusal
     panic::set_hook(hook);
     match result {
         Ok(r) => r.map_err(io_err),
-        Err(_) => Err(Refusal::Io("the game crashed".to_string())),
+        Err(payload) => {
+            let why = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+            Err(Refusal::Io(match why {
+                Some(msg) => format!("the game crashed: {msg}"),
+                None => "the game crashed".to_string(),
+            }))
+        }
     }
 }
 
@@ -320,14 +297,6 @@ mod tests {
         assert_eq!(lerp(a, b, 0, 4), a);
         assert_eq!(lerp(a, b, 4, 4), b);
         assert_eq!(lerp(a, b, 2, 4), Rgb(50, 50, 150));
-    }
-
-    #[test]
-    fn rng_is_bounded_and_not_stuck() {
-        let mut r = Rng::new(0);
-        let draws: Vec<usize> = (0..200).map(|_| r.below(7)).collect();
-        assert!(draws.iter().all(|&d| d < 7));
-        assert!((0..7).all(|v| draws.contains(&v)));
     }
 
     #[test]

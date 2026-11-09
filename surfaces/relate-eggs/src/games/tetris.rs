@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use super::term::{self, fit, Flow, Game, Key, Rng, Style};
+use super::term::{self, fit, Flow, Game, Key, Style};
+use crate::rng::Rng;
 use crate::sprite::Rgb;
 use crate::{Ctx, Refusal};
 
@@ -365,7 +366,7 @@ impl Well {
     /// A fresh game; the generator carries on.
     fn restart(&mut self) {
         let seed = self.rng.next_u64();
-        *self = Well::new(Rng::new(seed));
+        *self = Well::new(Rng::seeded(seed));
     }
 }
 
@@ -387,7 +388,7 @@ mod tests {
     use super::*;
 
     fn well() -> Well {
-        Well::new(Rng::new(9))
+        Well::new(Rng::seeded(9))
     }
 
     fn put(w: &mut Well, kind: usize) {
@@ -543,7 +544,7 @@ mod tests {
     #[test]
     fn the_bag_deals_each_kind_once_per_seven() {
         let mut bag = Vec::new();
-        let mut rng = Rng::new(4);
+        let mut rng = Rng::seeded(4);
         for _ in 0..3 {
             let mut seven: Vec<usize> = (0..7).map(|_| draw(&mut bag, &mut rng)).collect();
             seven.sort_unstable();

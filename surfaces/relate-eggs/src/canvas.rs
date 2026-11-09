@@ -13,7 +13,7 @@ const COORD_LIMIT: i32 = 4096;
 const BRAILLE_BASE: u32 = 0x2800;
 
 /// Dot bit for subpixel (x % 2, y % 4), as laid out by Unicode braille.
-const DOT_BITS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+pub(crate) const DOT_BITS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
 
 pub struct Canvas {
     cols: usize,

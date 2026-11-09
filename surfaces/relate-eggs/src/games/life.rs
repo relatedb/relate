@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use super::term::{self, fit, Flow, Game, Key, Rng, Style};
+use super::term::{self, fit, Flow, Game, Key, Style};
+use crate::canvas::DOT_BITS;
+use crate::rng::Rng;
 use crate::sprite::BRAND_PALETTE;
 use crate::{Ctx, Refusal};
 
@@ -86,14 +88,12 @@ impl Grid {
     /// The braille character for the 2x4 block of cells at character
     /// position (`cx`, `cy`); cells beyond the grid read as dead.
     pub fn braille(&self, cx: usize, cy: usize) -> char {
-        // Dot bit for each (column, row) of the block.
-        const BITS: [[u32; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
         let mut mask = 0;
-        for (dx, col) in BITS.iter().enumerate() {
+        for (dx, col) in DOT_BITS.iter().enumerate() {
             for (dy, bit) in col.iter().enumerate() {
                 let (x, y) = (cx * 2 + dx, cy * 4 + dy);
                 if x < self.w && y < self.h && self.get(x, y) {
-                    mask |= bit;
+                    mask |= u32::from(*bit);
                 }
             }
         }
@@ -309,17 +309,17 @@ mod tests {
     #[test]
     fn randomize_fills_roughly_a_third_and_is_seeded() {
         let mut a = Grid::new(40, 40);
-        a.randomize(&mut Rng::new(7));
+        a.randomize(&mut Rng::seeded(7));
         let pop = a.population();
         assert!(pop > 300 && pop < 700, "{pop}");
         let mut b = Grid::new(40, 40);
-        b.randomize(&mut Rng::new(7));
+        b.randomize(&mut Rng::seeded(7));
         assert_eq!(a, b);
     }
 
     fn game() -> Life {
         let style = Style { color: false };
-        Life::new(30, 10, style, Rng::new(3))
+        Life::new(30, 10, style, Rng::seeded(3))
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn the_grid_is_capped_on_huge_windows() {
         let style = Style { color: false };
-        let g = Life::new(500, 500, style, Rng::new(1));
+        let g = Life::new(500, 500, style, Rng::seeded(1));
         assert_eq!(g.min_size(), (MAX_COLS, MAX_ROWS));
     }
 }

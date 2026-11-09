@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use super::term::{self, fit, Flow, Game, Key, Rng, Style};
+use super::term::{self, fit, Flow, Game, Key, Style};
+use crate::rng::Rng;
 use crate::sprite::{Rgb, Sprite};
 use crate::{Ctx, Refusal};
 
@@ -323,7 +324,7 @@ mod tests {
     use super::*;
 
     fn run_with(obstacles: &[Obstacle]) -> Run {
-        let mut r = Run::new(Rng::new(7));
+        let mut r = Run::new(Rng::seeded(7));
         r.obstacles = obstacles.to_vec();
         r.gap = 1000;
         r
@@ -412,7 +413,7 @@ mod tests {
 
     #[test]
     fn obstacles_scroll_off_and_new_ones_keep_a_playable_gap() {
-        let mut r = Run::new(Rng::new(3));
+        let mut r = Run::new(Rng::seeded(3));
         let mut saw_flyer = false;
         for _ in 0..400 {
             r.step();
@@ -430,7 +431,7 @@ mod tests {
     fn the_demo_survives_a_long_run() {
         for seed in 1..6u64 {
             let mut g = Dash::new(true, Style { color: false });
-            g.run = Run::new(Rng::new(seed));
+            g.run = Run::new(Rng::seeded(seed));
             for _ in 0..3000 {
                 g.tick();
                 assert_eq!(g.run.state, State::Playing, "seed {seed} died");
