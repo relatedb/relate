@@ -17,6 +17,7 @@ release's assets and pokes relate-web to pull them.
 | [`tck/`](tck/) | the retired in-repo TCK pin's history; language coverage lives in the spec harness (ADR-0482, ADR-0520) |
 | [`testing/`](testing/) | Test notes. [Memory pins and Bolt RSS](testing/memory-testing.md) |
 | [`datasets.md`](datasets.md) | Dataset / load-test binary flag tables (agent contract) |
+| [`pr-descriptions.md`](pr-descriptions.md) | Pull-request title and body template (agent contract) |
 | [`engine-architecture.md`](engine-architecture.md) | Engine overview: memory model, persistence, querying |
 | [`limitations.md`](limitations.md) | Known gaps and unsupported surfaces |
 | [`PUBLISHING.md`](PUBLISHING.md) | Release runbook |

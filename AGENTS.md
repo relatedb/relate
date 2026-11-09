@@ -374,6 +374,13 @@ Process, not code shape:
   stacked base), works and commits there, and PRs from there. The main
   checkout stays on `main` and clean, for reading and coordination only;
   it never carries a working diff or a task branch
+- **Every PR carries a title and body from the repo template** —
+  [`docs/pr-descriptions.md`](docs/pr-descriptions.md): conventional-commit
+  title matching the squashed commit's subject, classification-first
+  summary, per-change bullets, user-facing impact + example only when
+  user-facing, and verification evidence naming what actually ran. The
+  body describes the final squashed diff — re-check it after every
+  re-squash
 
 ## Merge bar and review-loop bounds
 
