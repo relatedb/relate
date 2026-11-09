@@ -82,13 +82,6 @@ pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
             dump: codec::rkyv::dump,
             snapshot_data_bytes: codec::rkyv::snapshot_data_bytes,
         },
-        SnapshotCodecKind::Fjall => CodecOps {
-            load: codec::fjall::load_with_checkpoint_lsn,
-            finish_open: admit_every_replay,
-            sweep_after_open: nothing_to_sweep,
-            dump: codec::fjall::dump,
-            snapshot_data_bytes: codec::fjall::snapshot_data_bytes,
-        },
     }
 }
 

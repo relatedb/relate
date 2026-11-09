@@ -297,7 +297,7 @@ fn parse_filesystem_uri(
         };
         let vfs: Arc<dyn Vfs> = Arc::new(bundle);
         let mut target = on_vfs(vfs, SnapshotCodecKind::Parquet);
-        target.codec = codec::resolve_codec(&target, requested, mode)?;
+        target.codec = codec::resolve_codec(&target, requested)?;
         // No native lease behind a bundle; the installer's own refusal
         // covers a mismatched configuration (a created-exclusive bundle
         // is removed by the publish path's cleanup).
@@ -365,7 +365,7 @@ fn parse_filesystem_uri(
         codec: SnapshotCodecKind::Parquet,
         codec_config: None,
     };
-    target.codec = codec::resolve_codec(&target, requested, mode)?;
+    target.codec = codec::resolve_codec(&target, requested)?;
     install_config(target, config)
 }
 

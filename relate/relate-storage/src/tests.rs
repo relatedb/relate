@@ -180,7 +180,7 @@ fn snapshot_is_wal_applied_state() {
 #[test]
 fn legacy_wal_label_constraint_replays_with_typed_marker_after_recycle() {
     use relate_executor::RedoOp;
-    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
+    for &codec in SnapshotCodecKind::compiled() {
         let store = memory_store_with_codec(codec).unwrap();
         let (vfs, prefix) = store.wal_vfs();
         let mut wal = Wal::open(vfs, prefix, 0).unwrap();
@@ -239,9 +239,6 @@ fn direct_graph_incomplete_label_constraint_fails_before_checkpoint_writes() {
             SnapshotCodecKind::Rkyv => {
                 vec![crate::snapshot::MANIFEST_JSON, crate::codec::GRAPH_RKYV]
             }
-            // Unreachable in this loop (the set excludes native-root
-            // codecs); the arm keeps the match exhaustive.
-            SnapshotCodecKind::Fjall => vec![crate::snapshot::MANIFEST_JSON],
         };
         let old: Vec<(&str, Vec<u8>)> = covered
             .iter()
@@ -376,7 +373,7 @@ fn legacy_omission_never_masks_a_new_incomplete_definition() {
 #[test]
 fn typed_checkpoint_rejects_forged_legacy_unknown_markers_in_compiled_codecs() {
     use relate_executor::RedoOp;
-    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
+    for &codec in SnapshotCodecKind::compiled() {
         let store = memory_store_with_codec(codec).unwrap();
         let graph = Graph::default();
         graph

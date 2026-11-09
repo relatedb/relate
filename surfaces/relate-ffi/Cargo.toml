@@ -9,9 +9,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = []
-# Measurement-only pass-throughs for the experimental snapshot codecs.
+# Measurement-only pass-through for the experimental snapshot codec.
 rkyv-codec = ["relate/rkyv-codec"]
-fjall-codec = ["relate/fjall-codec"]
 
 [dependencies]
 chrono = { workspace = true }

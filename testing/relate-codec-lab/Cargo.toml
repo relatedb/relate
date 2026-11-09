@@ -13,7 +13,7 @@ license.workspace = true
 relate = { workspace = true, features = ["research"] }
 relate-core = { workspace = true }
 relate-executor = { workspace = true }
-relate-storage = { workspace = true, features = ["parquet", "rkyv-codec", "fjall-codec"] }
+relate-storage = { workspace = true, features = ["parquet", "rkyv-codec"] }
 relate-datasets = { workspace = true }
 relate-query-latency = { workspace = true }
 relate-test-support = { workspace = true, features = ["graph", "pokec"] }

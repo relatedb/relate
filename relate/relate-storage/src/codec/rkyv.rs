@@ -361,7 +361,7 @@ pub fn dump(
         // One lz4 block for the whole archive: the columnar layout alone
         // does not compress (v1 has no per-column encodings), so the codec
         // relies on the same class of shard compression parquet (snappy)
-        // and fjall (lz4) use. Pure Rust, no C toolchain.
+        // uses. Pure Rust, no C toolchain.
         // The lz4 block's size prefix is a u32: refuse an archive it
         // cannot describe rather than publishing one every later load
         // fails to read.
@@ -375,7 +375,7 @@ pub fn dump(
     };
     drop(snapshot);
     drop(contents);
-    // The publication is a rename swap, like the fjall codec's: the new
+    // The publication is a rename swap: the new
     // archive is written to a staging object, the live one renamed aside,
     // the staging one moved in, and only then does the manifest publish.
     // The previous archive is never read back — the rollback moves it by
