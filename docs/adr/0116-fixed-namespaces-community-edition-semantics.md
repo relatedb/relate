@@ -250,3 +250,12 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
   texts are checked against a live CE container and pinned as test fixtures.
 - ADR-0094 and ADR-0095 gain Later references notes: their database theater
   rows now mirror the fixed namespaces.
+
+## Later references
+
+ADR-0554 makes the element-id namespace segment of (7) dash-bearing: the
+writable namespace's segment is now `relate-neo4j` (this ADR's
+`cypherlite` spelling predates the product rename; the segment was
+`relate` at the time of that change) and the ontology namespace's is
+`relate-system-ontologies`. The three-part shape and the
+segment-to-namespace mapping of (7) are unchanged.

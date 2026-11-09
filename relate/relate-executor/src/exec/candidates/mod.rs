@@ -32,7 +32,7 @@ use crate::store::RelTypes;
 
 /// The relationship twin of the node ids seek (`crate::pattern_walk`'s
 /// `ids_seek_expr`, LABS-161): `id(r) = <expr>`
-/// (integer) or `elementId(r) = <expr>` (the `5:relate:r<id>` string
+/// (integer) or `elementId(r) = <expr>` (the `5:relate-neo4j:r<id>` string
 /// form, which self-encodes the RelId) on the relationship variable `var`
 /// resolves the RelId directly, so the walk can seek the id-keyed
 /// relationship storage instead of walking every node's adjacency. Only

@@ -412,12 +412,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn element_id_uses_relate_namespace_and_name_from_element_id_resolves_it() {
+    /// The row shared by the elementId tests — node 7 and relationship 9
+    /// under the variables `n` and `r`. The tests differ only in the
+    /// graph's namespace and the expected strings.
+    fn element_id_row() -> Row {
         use relate_core::{Node, Relationship};
 
-        let g = Graph::default();
-        let graph = ExecGraph::read(&g);
         let mut row = Row::new();
         row.insert(
             "n".to_string(),
@@ -437,33 +437,66 @@ mod tests {
                 properties: relate_core::PropertyMap::share(BTreeMap::new()),
             }),
         );
-        let params = BTreeMap::new();
-        let call = |name: &str, arg: Expr| {
-            function(&graph, &row, &params, name, false, &[arg], None).unwrap()
-        };
+        row
+    }
 
-        // elementId() emits the `4:relate:n{id}` / `5:relate:r{id}`
+    /// The single-argument function call shared by the elementId tests,
+    /// against their fixture's graph/row/params.
+    fn element_id_fn(
+        graph: &ExecGraph<'_>,
+        row: &Row,
+        params: &BTreeMap<String, Value>,
+        name: &str,
+        arg: Expr,
+    ) -> Result<Value> {
+        function(graph, row, params, name, false, &[arg], None)
+    }
+
+    #[test]
+    fn element_id_uses_relate_namespace_and_name_from_element_id_resolves_it() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        let row = element_id_row();
+        let params = BTreeMap::new();
+
+        // elementId() emits the `4:relate-neo4j:n{id}` / `5:relate-neo4j:r{id}`
         // wire format.
-        let node_id = call("elementId", Expr::Variable("n".into()));
-        assert_eq!(node_id, Value::String("4:relate:n7".into()));
-        let rel_id = call("elementId", Expr::Variable("r".into()));
-        assert_eq!(rel_id, Value::String("5:relate:r9".into()));
+        let node_id = element_id_fn(
+            &graph,
+            &row,
+            &params,
+            "elementId",
+            Expr::Variable("n".into()),
+        )
+        .unwrap();
+        assert_eq!(node_id, Value::String("4:relate-neo4j:n7".into()));
+        let rel_id = element_id_fn(
+            &graph,
+            &row,
+            &params,
+            "elementId",
+            Expr::Variable("r".into()),
+        )
+        .unwrap();
+        assert_eq!(rel_id, Value::String("5:relate-neo4j:r9".into()));
 
         // db.nameFromElementId accepts a relate-namespaced id and rejects
         // a wrong-namespace id.
-        let name = call(
-            "db.nameFromElementId",
-            Expr::String("4:relate:n7".to_string()),
-        );
-        assert_eq!(name, Value::String("neo4j".into()));
-        let err = function(
+        let name = element_id_fn(
             &graph,
             &row,
             &params,
             "db.nameFromElementId",
-            false,
-            &[Expr::String("4:memorydb:n7".to_string())],
-            None,
+            Expr::String("4:relate-neo4j:n7".to_string()),
+        )
+        .unwrap();
+        assert_eq!(name, Value::String("neo4j".into()));
+        let err = element_id_fn(
+            &graph,
+            &row,
+            &params,
+            "db.nameFromElementId",
+            Expr::String("4:memorydb:n7".to_string()),
         )
         .unwrap_err();
         assert!(
@@ -475,47 +508,38 @@ mod tests {
 
     #[test]
     fn element_id_uses_the_graphs_namespace_segment() {
-        use relate_core::{Node, Relationship};
-
         let mut g = Graph::default();
         g.set_namespace(Namespace::SystemOntologies);
         let graph = ExecGraph::read(&g);
-        let mut row = Row::new();
-        row.insert(
-            "n".to_string(),
-            Value::from_node(Node {
-                id: 7,
-                labels: Arc::new(vec![]),
-                properties: relate_core::PropertyMap::share(BTreeMap::new()),
-            }),
-        );
-        row.insert(
-            "r".to_string(),
-            Value::from_relationship(Relationship {
-                id: 9,
-                start: 1,
-                end: 2,
-                rel_type: "T".to_string(),
-                properties: relate_core::PropertyMap::share(BTreeMap::new()),
-            }),
-        );
+        let row = element_id_row();
         let params = BTreeMap::new();
-        let call = |name: &str, arg: Expr| {
-            function(&graph, &row, &params, name, false, &[arg], None).unwrap()
-        };
 
         // Nodes and relationships carry the system_ontologies segment, keep
         // the 4/5 kind prefix, and stay exactly three colon-separated parts
         // (ADR-0116 §7).
-        let node_id = call("elementId", Expr::Variable("n".into()));
+        let node_id = element_id_fn(
+            &graph,
+            &row,
+            &params,
+            "elementId",
+            Expr::Variable("n".into()),
+        )
+        .unwrap();
         assert_eq!(
             node_id,
-            Value::String("4:relate.system_ontologies:n7".into())
+            Value::String("4:relate-system-ontologies:n7".into())
         );
-        let rel_id = call("elementId", Expr::Variable("r".into()));
+        let rel_id = element_id_fn(
+            &graph,
+            &row,
+            &params,
+            "elementId",
+            Expr::Variable("r".into()),
+        )
+        .unwrap();
         assert_eq!(
             rel_id,
-            Value::String("5:relate.system_ontologies:r9".into())
+            Value::String("5:relate-system-ontologies:r9".into())
         );
         for id in [node_id, rel_id] {
             let Value::String(id) = id else {
@@ -525,10 +549,14 @@ mod tests {
         }
 
         // db.nameFromElementId maps the system_ontologies segment back.
-        let name = call(
+        let name = element_id_fn(
+            &graph,
+            &row,
+            &params,
             "db.nameFromElementId",
-            Expr::String("5:relate.system_ontologies:r9".to_string()),
-        );
+            Expr::String("5:relate-system-ontologies:r9".to_string()),
+        )
+        .unwrap();
         assert_eq!(name, Value::String("system_ontologies".into()));
     }
 
@@ -540,14 +568,12 @@ mod tests {
         let graph = ExecGraph::read(&g);
         let row = Row::new();
         let params = BTreeMap::new();
-        let name = function(
+        let name = element_id_fn(
             &graph,
             &row,
             &params,
             "db.nameFromElementId",
-            false,
-            &[Expr::String("4:relate:999999".to_string())],
-            None,
+            Expr::String("4:relate-neo4j:999999".to_string()),
         )
         .unwrap();
         assert_eq!(name, Value::String("neo4j".into()));

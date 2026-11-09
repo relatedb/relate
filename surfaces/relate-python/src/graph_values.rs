@@ -17,7 +17,7 @@ pub(super) struct Node {
     #[pyo3(get)]
     pub(super) id: i64,
     /// Exactly what Cypher `elementId()` returns for this node (ADR-0502 §6,
-    /// `4:relate:n<id>` in the `neo4j` namespace), so
+    /// `4:relate-neo4j:n<id>` in the `neo4j` namespace), so
     /// `WHERE elementId(n) = $id` round-trips. `None` only in a namespace
     /// whose elements have no element ids (`system`), where `elementId()`
     /// itself fails.
@@ -76,7 +76,7 @@ pub(super) struct Relationship {
     #[pyo3(get)]
     pub(super) id: i64,
     /// Exactly what Cypher `elementId()` returns for this relationship
-    /// (ADR-0502 §6, `5:relate:r<id>` in the `neo4j` namespace); `None`
+    /// (ADR-0502 §6, `5:relate-neo4j:r<id>` in the `neo4j` namespace); `None`
     /// only where `Node.element_id` is.
     #[pyo3(get)]
     pub(super) element_id: Option<String>,

@@ -478,7 +478,7 @@ enum IdsCmp {
 
 /// The ids recognizer: one seek whose id conversion is selected by the
 /// left shape — `id(n) =/IN …` (integer), `elementId(n) =/IN …` (the
-/// `4:relate:n<id>` string form), or the bare node variable
+/// `4:relate-neo4j:n<id>` string form), or the bare node variable
 /// (`n = node` / `n IN [nodes…]`, LABS-250, the node-value conversion).
 /// The shapes are disjoint, so at most one conversion applies per
 /// conjunct.

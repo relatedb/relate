@@ -315,8 +315,8 @@ to consume here). A result with no graph entities returns an empty
 `Node` and `Relationship` also expose driver-parity members for
 neo4j-viz-style consumers: `element_id` and `items()` (the property pairs).
 `element_id` is exactly what Cypher `elementId()` returns for the entity
-(ADR-0502 §6) — `4:relate:n<id>` for a node, `5:relate:r<id>` for a
-relationship in the `neo4j` namespace (`4:relate.system_ontologies:n<id>`
+(ADR-0502 §6) — `4:relate-neo4j:n<id>` for a node, `5:relate-neo4j:r<id>` for a
+relationship in the `neo4j` namespace (`4:relate-system-ontologies:n<id>`
 in `system_ontologies`; the result's resolved namespace decides) — so
 `WHERE elementId(n) = $id` round-trips and node 0 never collides with
 relationship 0. A relationship also carries `start_node_element_id` /

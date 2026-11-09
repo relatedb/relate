@@ -47,7 +47,7 @@ pub(crate) enum RelSeek {
 }
 
 /// LABS-161, the rel twin of the node id seek: relate element ids are
-/// transparent (`5:relate:r<id>` self-encodes the RelId), so
+/// transparent (`5:relate-neo4j:r<id>` self-encodes the RelId), so
 /// `elementId(r) = <expr>` / `id(r) = <expr>` on the first rel's variable
 /// — or `r` already bound in the row — resolves the RelId with a parse,
 /// no lookup structure and nothing to invalidate. The walk then seeds

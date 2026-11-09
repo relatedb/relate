@@ -44,7 +44,7 @@ impl UseTarget {
     /// Same-graph identity: two `USE` clauses target the same graph when
     /// this holds. Namespace names match case-insensitively (ADR-0116 §1),
     /// and a resolved element id compares on its namespace so
-    /// `USE neo4j … USE graph.byElementId('4:relate:n1') …` is one
+    /// `USE neo4j … USE graph.byElementId('4:relate-neo4j:n1') …` is one
     /// target. The three variants can never collide.
     fn same_target(&self, other: &UseTarget) -> bool {
         match (self, other) {
@@ -154,8 +154,9 @@ pub(crate) fn static_graph_name(expr: &Expr) -> Option<String> {
     }
 }
 
-/// ADR-0116 §7: an element id is `<kind>:relate[.<namespace>]:<n|r><id>`;
-/// the middle segment names the namespace. An id naming no namespace keeps
+/// ADR-0116 §7, ADR-0554: an element id is `<kind>:<segment>:<n|r><id>`;
+/// the dash-bearing middle segment names the namespace (`relate-neo4j`,
+/// `relate-system-ontologies`). An id naming no namespace keeps
 /// its full text so the 42NA7 error can echo it as CE does.
 fn resolve_element_id(id: &str) -> UseTarget {
     match ElementIdRef::parse(id).and_then(|parsed| parsed.namespace()) {
@@ -271,8 +272,8 @@ mod tests {
                 "graph.propertiesByName('neo4j')",
             ),
             (
-                "RETURN graph.byElementId('4:relate:n1') AS g",
-                "graph.byElementId('4:relate:n1')",
+                "RETURN graph.byElementId('4:relate-neo4j:n1') AS g",
+                "graph.byElementId('4:relate-neo4j:n1')",
             ),
         ] {
             let err = resolve(cypher).unwrap_err().to_string();
@@ -288,11 +289,11 @@ mod tests {
     #[test]
     fn by_element_id_resolves_the_middle_segment() {
         assert_eq!(
-            resolve("USE graph.byElementId('4:relate:n1') RETURN 1").unwrap(),
+            resolve("USE graph.byElementId('4:relate-neo4j:n1') RETURN 1").unwrap(),
             Some(Namespace::Neo4j)
         );
         assert_eq!(
-            resolve("USE graph.byElementId('4:relate.system_ontologies:n1') RETURN 1").unwrap(),
+            resolve("USE graph.byElementId('4:relate-system-ontologies:n1') RETURN 1").unwrap(),
             Some(Namespace::SystemOntologies)
         );
     }
@@ -361,7 +362,7 @@ mod tests {
         // An element id naming the same namespace is the same target.
         assert_eq!(
             resolve(
-                "USE neo4j CALL { USE graph.byElementId('4:relate:n1') RETURN 1 AS x } RETURN x"
+                "USE neo4j CALL { USE graph.byElementId('4:relate-neo4j:n1') RETURN 1 AS x } RETURN x"
             )
             .unwrap(),
             Some(Namespace::Neo4j)

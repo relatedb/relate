@@ -101,7 +101,7 @@ typed struct initializers for the temporal / point / vector cases. Accessors:
 `Node` is `{id, elementId, labels, properties}` and `Relationship` is
 `{id, elementId, type, startId, endId, startElementId, endElementId,
 properties}` — the element ids are the engine's own spelling
-(`"4:relate:n0"`), exactly what `elementId(n)` returns, so
+(`"4:relate-neo4j:n0"`), exactly what `elementId(n)` returns, so
 `WHERE elementId(n) = $id` round-trips through a string parameter. The
 numeric `id` / `startId` / `endId` (`Int64`) are the deprecated numeric
 entity ids (ADR-0506): exactly the INTEGERs Cypher's `id()` /

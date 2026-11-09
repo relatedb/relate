@@ -47,7 +47,7 @@ fn records_at_5_4_carry_the_element_id_structures() {
                 Pack::Int(0),
                 Pack::List(vec![Pack::String("P".into())]),
                 Pack::Map(vec![(Pack::String("k".into()), Pack::Int(1))]),
-                Pack::String("4:relate:n0".into()),
+                Pack::String("4:relate-neo4j:n0".into()),
             ],
         },
         "Node 0x4E is the 4-field structure at 5.4"
@@ -62,9 +62,9 @@ fn records_at_5_4_carry_the_element_id_structures() {
                 Pack::Int(1),
                 Pack::String("R".into()),
                 Pack::Map(vec![(Pack::String("w".into()), Pack::Int(2))]),
-                Pack::String("5:relate:r0".into()),
-                Pack::String("4:relate:n0".into()),
-                Pack::String("4:relate:n1".into()),
+                Pack::String("5:relate-neo4j:r0".into()),
+                Pack::String("4:relate-neo4j:n0".into()),
+                Pack::String("4:relate-neo4j:n1".into()),
             ],
         },
         "Relationship 0x52 is the 8-field structure at 5.4"
@@ -77,14 +77,14 @@ fn records_at_5_4_carry_the_element_id_structures() {
                 Pack::Int(1),
                 Pack::List(vec![Pack::String("P".into())]),
                 Pack::Map(vec![(Pack::String("k".into()), Pack::Int(3))]),
-                Pack::String("4:relate:n1".into()),
+                Pack::String("4:relate-neo4j:n1".into()),
             ],
         }
     );
     // The struct's element_id field is exactly `elementId()`'s string.
-    assert_eq!(row[3], Pack::String("4:relate:n0".into()));
-    assert_eq!(row[4], Pack::String("5:relate:r0".into()));
-    assert_eq!(row[5], Pack::String("4:relate:n1".into()));
+    assert_eq!(row[3], Pack::String("4:relate-neo4j:n0".into()));
+    assert_eq!(row[4], Pack::String("5:relate-neo4j:r0".into()));
+    assert_eq!(row[5], Pack::String("4:relate-neo4j:n1".into()));
     let Pack::Struct { fields, .. } = &row[0] else {
         panic!("a node is a structure");
     };
@@ -119,7 +119,7 @@ fn records_at_5_4_carry_the_element_id_path_structures() {
                 Pack::Int(0),
                 Pack::List(vec![Pack::String("P".into())]),
                 Pack::Map(vec![(Pack::String("k".into()), Pack::Int(1))]),
-                Pack::String("4:relate:n0".into()),
+                Pack::String("4:relate-neo4j:n0".into()),
             ],
         }
     );
@@ -134,7 +134,7 @@ fn records_at_5_4_carry_the_element_id_path_structures() {
                 Pack::Int(0),
                 Pack::String("R".into()),
                 Pack::Map(vec![(Pack::String("w".into()), Pack::Int(2))]),
-                Pack::String("5:relate:r0".into()),
+                Pack::String("5:relate-neo4j:r0".into()),
             ],
         },
         "UnboundRelationship 0x72 is the 4-field structure at 5.4"

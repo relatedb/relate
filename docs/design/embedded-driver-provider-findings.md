@@ -488,7 +488,7 @@ Overhead per trivial statement:
 | INTEGER, FLOAT, STRING, BOOLEAN, NULL | correct | correct | correct | typed |
 | NaN / ±Inf | correct | correct | correct | typed float (Java: top level only) |
 | LIST, MAP | correct | correct | correct | typed |
-| NODE / RELATIONSHIP | correct, but the element id needs a **hack** | correct | n/a | typed `relate.Node`/`Relationship` → `neo4j.graph`. The binding's `element_id` is `str(id)` (`"0"`, and node 0 and rel 0 collide), while Cypher's `elementId()` returns `4:relate:n0` / `5:relate:r0`. The provider re-spells the engine's format so `WHERE elementId(n) = $id` round-trips. |
+| NODE / RELATIONSHIP | correct, but the element id needs a **hack** | correct | n/a | typed `relate.Node`/`Relationship` → `neo4j.graph`. The binding's `element_id` is `str(id)` (`"0"`, and node 0 and rel 0 collide), while Cypher's `elementId()` returns `4:relate-neo4j:n0` / `5:relate-neo4j:r0`. The provider re-spells the engine's format so `WHERE elementId(n) = $id` round-trips. |
 | PATH | correct | **correct** (Java: broken) | n/a | typed `relate.Path` |
 | User map shaped like an entity | correct (stays a map) | correct | n/a | typed (Java: mis-hydrated as a NODE) |
 | DATE, LOCAL TIME, TIME (offset), LOCAL DATETIME, DATETIME (offset), DATETIME (named zone), nanoseconds | **correct** | **correct** | **correct** | stdlib `datetime` when lossless, `relate.Temporal` otherwise. `Temporal.text` is the Query-API ISO form, parsed by the driver's own HTTP hydrators. Zone survives (`tzinfo.zone == "Europe/Berlin"`). Cosmetic: tzinfo is stdlib `timezone` or `pytz.FixedOffset` depending on the path (Bolt always gives pytz). |
@@ -609,7 +609,7 @@ resource cap is unrecoverable.
    month or sub-µs durations become strings. The same type is needed as a
    parameter, because month durations cannot be bound.
 4. ✅ **Element ids.** Entities must carry the engine's `elementId()` string
-   (`4:relate:n0`), and relationships their endpoints' element ids. The
+   (`4:relate-neo4j:n0`), and relationships their endpoints' element ids. The
    binding's `element_id = str(id)` disagrees with Cypher and collides between
    node 0 and rel 0.
 5. ✅ **Tagged vectors.** A vector type distinct from a map at every depth.
@@ -1095,7 +1095,7 @@ yields.
 | NODE / RELATIONSHIP | Node / Relationship | correct (**hack**: `kind` sniffing; element id re-spelled) | correct | correct | n/a |
 | User map shaped like a node | Object | **Node** | **Node** | **Node** | n/a |
 | DATE column, row 1 holds the STRING `'2020-01-02'` | string | **Date** (the stamp describes row 0 only) | | | |
-| `elementId` round trip (`WHERE elementId(n) = $id`) | 1 match | 1 match (`4:relate:n22`) | | | |
+| `elementId` round trip (`WHERE elementId(n) = $id`) | 1 match | 1 match (`4:relate-neo4j:n22`) | | | |
 
 This matches Java's table row for row. Python's typed binding fixes all of
 these rows except durations and vectors. JS-specific detail:
@@ -1105,7 +1105,7 @@ these rows except durations and vectors. JS-specific detail:
   provider needs a lossless decoder, built with the `JSON.parse` reviver's
   `context.source`.
 - **Element ids.** The provider re-spells the engine's own `elementId()` format
-  (`4:relate:n<id>` / `5:relate:r<id>`), as Python did, so
+  (`4:relate-neo4j:n<id>` / `5:relate-neo4j:r<id>`), as Python did, so
   `elementId(n) = $id` round-trips. Real Bolt 4.4 sends no element id, and the
   driver would then expose `String(identity)`. That breaks the round trip
   against Relate's `elementId()`. **"Advertise 4.4" and "element ids that

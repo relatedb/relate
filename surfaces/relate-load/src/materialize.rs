@@ -307,7 +307,7 @@ fn run_rows_batch(
         .map_err(|e| LoadError::Engine(e.to_string()))
 }
 
-/// The `relate` element id of a local node id (`4:relate:n<id>`).
+/// The `relate` element id of a local node id (`4:relate-neo4j:n<id>`).
 /// Generated statements use `elementId()` (Neo4j deprecates `id()`), so the
 /// loader converts between the local numeric id and this string form via the
 /// engine's canonical constructor/parser — one owner of the wire format.

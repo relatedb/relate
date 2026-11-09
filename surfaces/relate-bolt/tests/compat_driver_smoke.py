@@ -400,7 +400,7 @@ def bolt_5_4_smoke(driver):
     )
     node = records[0]["n"]
     assert node.element_id == records[0]["eid"], node.element_id
-    assert node.element_id.startswith("4:relate:n"), node.element_id
+    assert node.element_id.startswith("4:relate-neo4j:n"), node.element_id
 
     # A telemetry-disabled connection (decision 5): the driver opts out and
     # the server's HELLO hint says telemetry.enabled false, so no TELEMETRY

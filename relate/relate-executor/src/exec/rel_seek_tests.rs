@@ -1,7 +1,7 @@
 //! Relationship id()/elementId() equality seek tests (LABS-161), the rel
 //! twin of `id_seek_tests.rs`: `elementId(r) = <expr>` / `id(r) = <expr>`
 //! on the first rel of a pattern resolves the RelId by parsing the
-//! transparent `5:relate:r<id>` form and seeds the walk from that
+//! transparent `5:relate-neo4j:r<id>` form and seeds the walk from that
 //! rel's endpoint, instead of scanning every node and walking each
 //! adjacency per row.
 
@@ -38,7 +38,7 @@ fn element_id_equality_seeks_instead_of_walking() {
     take_neighbor_walks();
     let rows = exec_cypher(
         &g,
-        &format!("MATCH ()-[r]->() WHERE elementId(r) = '5:relate:r{rid}' RETURN r"),
+        &format!("MATCH ()-[r]->() WHERE elementId(r) = '5:relate-neo4j:r{rid}' RETURN r"),
     )
     .rows;
     let walks = take_neighbor_walks();
@@ -52,7 +52,7 @@ fn element_id_equality_seeks_instead_of_walking() {
         "MATCH ()-[r]->() WHERE elementId(r) = $eid RETURN r",
         &BTreeMap::from([(
             "eid".into(),
-            Value::String(format!("5:relate:r{rid}").into()),
+            Value::String(format!("5:relate-neo4j:r{rid}").into()),
         )]),
     )
     .unwrap()
@@ -63,7 +63,7 @@ fn element_id_equality_seeks_instead_of_walking() {
     // A non-existent rel id yields no rows (not an error, not a scan hit).
     let rows = exec_cypher(
         &g,
-        "MATCH ()-[r]->() WHERE elementId(r) = '5:relate:r999999' RETURN r",
+        "MATCH ()-[r]->() WHERE elementId(r) = '5:relate-neo4j:r999999' RETURN r",
     )
     .rows;
     assert!(rows.is_empty());
@@ -94,7 +94,7 @@ fn id_equality_seeks_instead_of_walking() {
 #[test]
 fn non_rel_element_id_matches_nothing() {
     let (g, _) = chain(4);
-    for bad in ["4:relate:n0", "5:neo4j:r0", "garbage"] {
+    for bad in ["4:relate-neo4j:n0", "5:neo4j:r0", "garbage"] {
         let rows = exec_cypher(
             &g,
             &format!("MATCH ()-[r]->() WHERE elementId(r) = '{bad}' RETURN r"),
@@ -113,13 +113,13 @@ fn seek_keeps_pattern_semantics() {
 
     let rows = exec_cypher(
         &g,
-        &format!("MATCH ()-[r:NOPE]->() WHERE elementId(r) = '5:relate:r{rid}' RETURN r"),
+        &format!("MATCH ()-[r:NOPE]->() WHERE elementId(r) = '5:relate-neo4j:r{rid}' RETURN r"),
     )
     .rows;
     assert!(rows.is_empty(), "type filter must reject the seeked rel");
     let rows = exec_cypher(
         &g,
-        &format!("MATCH ()-[r:R]->() WHERE elementId(r) = '5:relate:r{rid}' RETURN r"),
+        &format!("MATCH ()-[r:R]->() WHERE elementId(r) = '5:relate-neo4j:r{rid}' RETURN r"),
     )
     .rows;
     assert_eq!(rows.len(), 1);
@@ -129,7 +129,7 @@ fn seek_keeps_pattern_semantics() {
     g.commit_write();
     let rows = exec_cypher(
         &g,
-        &format!("MATCH ()-[r]->() WHERE elementId(r) = '5:relate:r{rid}' RETURN r"),
+        &format!("MATCH ()-[r]->() WHERE elementId(r) = '5:relate-neo4j:r{rid}' RETURN r"),
     )
     .rows;
     assert!(
@@ -169,7 +169,7 @@ fn declined_shapes_keep_walking() {
     let rows = exec_cypher(
         &g,
         &format!(
-            "MATCH ()-[r]->() WHERE elementId(r) IN ['5:relate:r{rid}', '5:relate:r{other}'] RETURN r"
+            "MATCH ()-[r]->() WHERE elementId(r) IN ['5:relate-neo4j:r{rid}', '5:relate-neo4j:r{other}'] RETURN r"
         ),
     )
     .rows;
@@ -180,7 +180,7 @@ fn declined_shapes_keep_walking() {
     // Undirected: both orientations of the rel match.
     let rows = exec_cypher(
         &g,
-        &format!("MATCH ()-[r]-() WHERE elementId(r) = '5:relate:r{rid}' RETURN r"),
+        &format!("MATCH ()-[r]-() WHERE elementId(r) = '5:relate-neo4j:r{rid}' RETURN r"),
     )
     .rows;
     assert_eq!(rows.len(), 2, "undirected matches both orientations");
@@ -197,7 +197,7 @@ fn aggregate_fold_seeks_instead_of_walking() {
     let rows = exec_cypher(
         &g,
         &format!(
-            "UNWIND range(1, 20) AS _ MATCH ()-[x]->() WHERE elementId(x) = '5:relate:r{rid}' RETURN count(*)"
+            "UNWIND range(1, 20) AS _ MATCH ()-[x]->() WHERE elementId(x) = '5:relate-neo4j:r{rid}' RETURN count(*)"
         ),
     )
     .rows;
@@ -208,7 +208,7 @@ fn aggregate_fold_seeks_instead_of_walking() {
     // A miss folds to zero rows' worth of count, not an error.
     let rows = exec_cypher(
         &g,
-        "MATCH ()-[x]->() WHERE elementId(x) = '5:relate:r999999' RETURN count(*)",
+        "MATCH ()-[x]->() WHERE elementId(x) = '5:relate-neo4j:r999999' RETURN count(*)",
     )
     .rows;
     assert_eq!(rows[0][0].as_int(), Some(0));
@@ -216,7 +216,7 @@ fn aggregate_fold_seeks_instead_of_walking() {
     // A node element id still matches nothing through the fold.
     let rows = exec_cypher(
         &g,
-        "MATCH ()-[x]->() WHERE elementId(x) = '4:relate:n0' RETURN count(*)",
+        "MATCH ()-[x]->() WHERE elementId(x) = '4:relate-neo4j:n0' RETURN count(*)",
     )
     .rows;
     assert_eq!(rows[0][0].as_int(), Some(0));
@@ -224,7 +224,9 @@ fn aggregate_fold_seeks_instead_of_walking() {
     // The type filter still applies through the fold.
     let rows = exec_cypher(
         &g,
-        &format!("MATCH ()-[x:NOPE]->() WHERE elementId(x) = '5:relate:r{rid}' RETURN count(*)"),
+        &format!(
+            "MATCH ()-[x:NOPE]->() WHERE elementId(x) = '5:relate-neo4j:r{rid}' RETURN count(*)"
+        ),
     )
     .rows;
     assert_eq!(rows[0][0].as_int(), Some(0));
@@ -238,7 +240,7 @@ fn aggregate_fold_seeks_instead_of_walking() {
 #[test]
 fn aggregate_fold_seek_rejects_mismatched_row_bindings() {
     let (g, rid) = chain(4);
-    let seek = format!("elementId(x) = '5:relate:r{rid}'");
+    let seek = format!("elementId(x) = '5:relate-neo4j:r{rid}'");
     let count = |q: String| exec_cypher(&g, &q).rows[0][0].as_int();
 
     // Sanity: unbound seats accept the one seeked hop.

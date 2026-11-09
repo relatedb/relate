@@ -199,10 +199,10 @@ class TestResultGraph:
     def test_node_relationship_driver_parity_members(self, graph_cursor):
         g = graph_cursor.graph()
         node = g.nodes[0]
-        assert node.element_id == f"4:relate:n{node.id}"
+        assert node.element_id == f"4:relate-neo4j:n{node.id}"
         assert dict(node.items()) == dict(node.properties)
         rel = g.relationships[0]
-        assert rel.element_id == f"5:relate:r{rel.id}"
+        assert rel.element_id == f"5:relate-neo4j:r{rel.id}"
         assert dict(rel.items()) == dict(rel.properties)
         # r.start / r.end are short aliases of the integer endpoint ids.
         assert (rel.start, rel.end) == (rel.start_node, rel.end_node)

@@ -46,8 +46,8 @@ wall-clock milliseconds for the statement (ADR-0221) — its
 a `relate.ResultGraph` (`nodes` / `relationships`, id-ordered). `Node`
 and `Relationship` expose the driver-parity `element_id` and `items()`
 members, so neo4j-viz-style consumers can map them directly. The
-`element_id` is exactly Cypher's `elementId()` (`4:relate:n0`,
-`5:relate:r0`), relationships carry their endpoints' too, so an id read
+`element_id` is exactly Cypher's `elementId()` (`4:relate-neo4j:n0`,
+`5:relate-neo4j:r0`), relationships carry their endpoints' too, so an id read
 from a result finds the same entity again with `WHERE elementId(n) = $id`.
 
 The binding carries the engine's facts rather than re-deriving them

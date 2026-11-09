@@ -393,7 +393,7 @@ fn apply_semantics() {
     let err = err_text(conn.query("CALL db.ontology.apply()"));
     assert!(err.contains("ConstraintValidationFailed"), "{err}");
     assert!(err.contains("constraint_63dbe7c8"), "{err}");
-    assert!(err.contains("4:relate:n0"), "{err}");
+    assert!(err.contains("4:relate-neo4j:n0"), "{err}");
     // The failed apply changed nothing: the graph type is still empty.
     let result = conn
         .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
