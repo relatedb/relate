@@ -46,6 +46,11 @@ env:
   # mapped env, so the spawning stage commands in .sonic/ci.yml carry
   # their own opt-out — keep the two layers together.
   DO_NOT_TRACK: "1"
+  # Release and raw GitHub downloads (sccache, nextest, lychee, the
+  # Sonic image's nextest tarball, buildx inside baseline stages). The
+  # job token is not in the environment unless named here. Sonic only
+  # forwards variables a stage maps.
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   # One gosonic binary for every Linux lane. Stages run on separate runners,
@@ -353,9 +358,8 @@ jobs:
           cache-save-if-cold-only: "true"
           cache-workspace-crates: "true"
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
+      - name: Install cargo-nextest
+        run: bash scripts/install-nextest.sh
 
       # The draft's fmt signal — seconds, no compile (the lint job's
       # workspace fmt + clippy wait for ready-for-review).

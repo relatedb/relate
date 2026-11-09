@@ -17,6 +17,7 @@ flate2 = { workspace = true }
 relate-auth = { workspace = true }
 chrono = { workspace = true }
 relate-serve = { workspace = true }
+relate-error = { workspace = true }
 relate-model = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }

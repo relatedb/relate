@@ -189,6 +189,55 @@ fn to_display_string_quotes_special_names_and_sorts_labels() {
     );
 }
 
+// CIP-271 / TypeConversion4 [6][8][10]: `toString(path)` is the bare
+// traversal chain — no enclosing `<…>` and no properties — while the
+// round-trippable literal keeps both. Verified against Neo4j 2026.10.1:
+// `toString(p)` of (:A {name:'a'})-[:FIRST]->(:B)<-[:SECOND]-(:C) is
+// `(:A)-[:FIRST]->(:B)<-[:SECOND]-(:C)`.
+#[test]
+fn to_display_string_of_a_path_is_the_bare_traversal_chain() {
+    let node = |id, label: &str| Node {
+        id,
+        labels: Arc::new(vec![label.into()]),
+        properties: crate::PropertyMap::share(BTreeMap::from([(
+            "name".into(),
+            Value::String(label.to_ascii_lowercase().into()),
+        )])),
+    };
+    let rel = |id, start, end, ty: &str| Relationship {
+        id,
+        start,
+        end,
+        rel_type: ty.into(),
+        properties: crate::PropertyMap::share(BTreeMap::from([("w".into(), Value::Int(1))])),
+    };
+    // The second relationship is traversed backwards.
+    let path = Value::from_path(Path {
+        nodes: vec![node(1, "A"), node(2, "B"), node(3, "C")],
+        rels: vec![rel(10, 1, 2, "FIRST"), rel(11, 3, 2, "SECOND")],
+    });
+    assert_eq!(
+        path.to_display_string(),
+        "(:A)-[:FIRST]->(:B)<-[:SECOND]-(:C)"
+    );
+    assert_eq!(
+        path.to_cypher_literal(),
+        "<(:A {name: 'a'})-[:FIRST {w: 1}]->(:B {name: 'b'})<-[:SECOND {w: 1}]-(:C {name: 'c'})>"
+    );
+    // A zero-length path is its single node.
+    let single = Value::from_path(Path {
+        nodes: vec![node(1, "A")],
+        rels: vec![],
+    });
+    assert_eq!(single.to_display_string(), "(:A)");
+    // `toStringList([path])` renders the same bare chain.
+    let list = Value::List(vec![path].into());
+    assert_eq!(
+        list.to_display_string(),
+        "[(:A)-[:FIRST]->(:B)<-[:SECOND]-(:C)]"
+    );
+}
+
 // ADR-0170: cloning a String, List, Map or Vector shares its payload.
 #[test]
 fn clone_shares_arc_payloads() {

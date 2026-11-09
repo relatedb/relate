@@ -83,8 +83,10 @@ pub(crate) mod manifest {
 
     /// Whether a manifest version records a wide-column store (ADR-0534)
     /// — the one predicate over the wide pair, so the version-to-encoding
-    /// mapping lives only in this registry. Called only from the
-    /// Parquet-codec snapshot path.
+    /// mapping lives only in this registry. Parquet-gated: the wide pair
+    /// is the Parquet codec's, so an experimental-manifest build without
+    /// Parquet never reads it.
+    #[cfg(parquet_codec)]
     pub(crate) fn writes_wide(version: u32) -> bool {
         version == WIDE_VERSION || version == WIDE_ONTOLOGY_VERSION
     }

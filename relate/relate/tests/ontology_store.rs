@@ -87,7 +87,7 @@ fn roundtrips_stores_without_a_native_root<R>(open: impl Fn(SnapshotCodecKind) -
 where
     R: Fn() -> Database,
 {
-    roundtrip_each(open, SnapshotCodecKind::compiled_for_memory_stores());
+    roundtrip_each(open, SnapshotCodecKind::compiled().iter().copied());
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn bundle_roundtrips_compiled_codecs() {
 fn set_without_checkpoint_survives_reopen_via_wal() {
     common::preview_ontology();
     // Memory-VFS stores only: the LSM keyspace codec needs a directory.
-    for codec in SnapshotCodecKind::compiled_for_memory_stores() {
+    for &codec in SnapshotCodecKind::compiled() {
         let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
         {
             let db = Database::open_vfs(Arc::clone(&vfs), opts(codec)).unwrap();

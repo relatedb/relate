@@ -25,7 +25,7 @@ fn metadata_cap_precedes_read_in_codec_snapshot_and_legacy_pull_map() {
     for metadata_lies in [true, false] {
         let (injected, fake) = inject_oversized(&store, MANIFEST_JSON, metadata_lies);
         let err = if metadata_lies {
-            crate::codec::resolve_codec(&injected, None, crate::OpenMode::OpenOrCreate).unwrap_err()
+            crate::codec::resolve_codec(&injected, None).unwrap_err()
         } else {
             load(&injected).unwrap_err()
         };

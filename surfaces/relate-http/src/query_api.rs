@@ -9,12 +9,11 @@ use serde_json::{json, Map, Value as Json};
 use relate::Database;
 
 use crate::http::{Request, RequestHead};
-use crate::reply::{
-    error_envelope, invalid_request_body, run_on, Reply, DATABASE_NOT_FOUND_CODE, GENERAL_CODE,
-};
+use crate::reply::{error_envelope, invalid_request_body, run_on, Reply};
 use crate::tx_registry::TxRegistry;
 use crate::typed_params::RequestDialect;
 use crate::v2_envelope::ReplyBody;
+use relate_error::{GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL};
 
 /// The request body: `statement` (required), `parameters` (optional object of
 /// `$name` bindings), `includeCounters` (optional, default false). Everything
@@ -248,7 +247,7 @@ fn post_dialect(request: &Request) -> Result<RequestDialect, Reply> {
 /// (ADR-0425): the versioned Query API family is typed envelopes, plain
 /// `application/json` is plain values — and anything else, the
 /// unversioned `application/vnd.neo4j.query` every real server rejects
-/// included, fails closed with 400 (the route's GENERAL_CODE) naming the
+/// included, fails closed with 400 (the route's GQLSTATUS_GENERAL) naming the
 /// two accepted spellings.
 fn resolve_dialect(request: &Request) -> Result<RequestDialect, Reply> {
     crate::typed_params::request_dialect(request.header("content-type"))
@@ -258,14 +257,14 @@ fn resolve_dialect(request: &Request) -> Result<RequestDialect, Reply> {
 /// The 405 envelope: one helper every route arm shares, so a new route
 /// never re-spells the guard.
 fn method_not_allowed() -> Reply {
-    error_envelope(405, GENERAL_CODE, "method not allowed")
+    error_envelope(405, GQLSTATUS_GENERAL, "method not allowed")
 }
 
 /// The 404 envelope for an unknown path: one helper beside
 /// [`method_not_allowed`]; the engine's DatabaseNotFound code, not a
 /// re-spelled literal.
 fn not_found() -> Reply {
-    error_envelope(404, DATABASE_NOT_FOUND_CODE, "not found")
+    error_envelope(404, GQLSTATUS_DATABASE_NOT_FOUND, "not found")
 }
 
 /// The discovery document at `GET /` (public, as in Neo4j): the query

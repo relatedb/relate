@@ -91,6 +91,11 @@ runs:
 
     - name: Run Sonic stage
       shell: bash
+      env:
+        # Stages that download a GitHub release map this into the
+        # container (.sonic/ci.yml). The public releases/download URL
+        # is anonymous even with a header, so the scripts use the API.
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         install -m 0755 "${{ runner.temp }}/gosonic-bin/gosonic" /usr/local/bin/gosonic
         args=(ci run --jobs "${{ inputs.jobs }}")

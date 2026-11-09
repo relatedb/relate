@@ -238,7 +238,8 @@ Local measurement (warm compile, Apple Silicon laptop — more cores than the
 Lanes switched: `test` (core crates), `feature-bundles`, `relate-bolt`.
 Each gains a `cargo test --doc` step where the switched invocation
 previously covered doctests (nextest cannot see them). Installed prebuilt
-via `taiki-e/install-action` (~2 s), never `cargo install`.
+via `scripts/install-nextest.sh` (authenticated GitHub release download),
+never `cargo install`.
 
 Deliberately NOT switched:
 
@@ -367,7 +368,8 @@ for the pinned version, verifies its published `.sha256sum`, and falls back
 to the source build on hosts without one. Measured locally: ~3 s vs the
 ~2 min compile. The same fix benefits `cookbook-wasm`, and the nightly
 browser lane's `cargo install wasm-pack --version 0.13.1 --locked` (2-4 min)
-became `taiki-e/install-action` `wasm-pack@0.13.1` (ADR-0255).
+became `scripts/install-wasm-pack.sh` at wasm-pack 0.13.1 (ADR-0255),
+downloaded through the GitHub API.
 
 Not pursued: npm caching for the smoke's temp-project installs (no lockfile
 to key on; the tarball deps are two small registry fetches), and the

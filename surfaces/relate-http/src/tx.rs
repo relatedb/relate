@@ -27,12 +27,13 @@ use serde_json::{json, Map, Value as Json};
 use relate::Database;
 
 use crate::reply::{
-    error_envelope, invalid_request_body, run_error, run_on, Reply, ResponseMediaType, GENERAL_CODE,
+    error_envelope, invalid_request_body, run_error, run_on, Reply, ResponseMediaType,
 };
 use crate::tx_limits::render_deadline;
 use crate::tx_registry::{AccessMode, Lease, LookupMiss, TxEntry, TxRegistry};
 use crate::typed_params::RequestDialect;
 use crate::v2_envelope::ReplyBody;
+use relate_error::GQLSTATUS_GENERAL;
 
 /// A tx-route body: the statement fields are the same as
 /// [`StatementRequest`], but `statement` is optional (a pure BEGIN or COMMIT
@@ -315,7 +316,11 @@ fn roll_back(mut entry: TxEntry) {
 
 /// The 404 for an unknown or closed transaction id.
 fn tx_not_found(id: &str) -> Reply {
-    error_envelope(404, GENERAL_CODE, &format!("transaction {id} not found"))
+    error_envelope(
+        404,
+        GQLSTATUS_GENERAL,
+        &format!("transaction {id} not found"),
+    )
 }
 
 /// The 404 for a transaction this operation took and found idle past the

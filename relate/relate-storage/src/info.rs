@@ -211,15 +211,15 @@ fn read_snapshot(target: &StoreTarget) -> Result<StoreSnapshot> {
         return Ok(StoreSnapshot::None);
     };
     match envelope.codec {
-        // The plain-wire-envelope codecs: JSON and the experimental
-        // codecs (no codec-specific manifest body).
-        SnapshotCodecKind::Json | SnapshotCodecKind::Rkyv | SnapshotCodecKind::Fjall => {
-            Ok(StoreSnapshot::Envelope {
-                codec: envelope.codec,
-                checkpoint_lsn: envelope.checkpoint_lsn,
-                commit_ts: envelope.commit_ts,
-            })
-        }
+        // The envelope-only projection: JSON's root envelope is its
+        // whole image, while the experimental codec's manifest is its
+        // full CodecManifest (theater, catalog) — this cold read parses
+        // it but projects only the envelope fields.
+        SnapshotCodecKind::Json | SnapshotCodecKind::Rkyv => Ok(StoreSnapshot::Envelope {
+            codec: envelope.codec,
+            checkpoint_lsn: envelope.checkpoint_lsn,
+            commit_ts: envelope.commit_ts,
+        }),
         // A root envelope naming markdown is normally refused inside
         // `read_envelope` itself (the markdown manifest home is the
         // `.cypherlite/` sidecar, ADR-0406 §3); the arm stays as the

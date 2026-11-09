@@ -1,5 +1,11 @@
 # Experimental snapshot-codec results (2026-11-07)
 
+> The fjall rows below are the record of a codec that was measured and
+> then dropped (2026-11-08, ADR-0537): no measured dimension favored it
+> against rkyv and parquet. Its code is preserved under the
+> `experimental/fjall-codec` git tag; the lab no longer compiles or
+> measures it.
+
 Harness: `testing/relate-codec-lab` (branch `feat/experimental-codecs`).
 Graph: `relate-datasets` fraud generator, scale 2.0 — **29,989 nodes /
 8,675,808 relationships** (rel-heavy by construction), built once and

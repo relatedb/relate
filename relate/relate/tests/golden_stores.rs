@@ -296,7 +296,7 @@ fn run_golden(store: &GoldenStore) {
         // No golden fixture can exist for a codec that postdates it: the
         // markdown codec (ADR-0406) is new, so the versioned store
         // fixtures only ever enumerate Parquet and JSON.
-        SnapshotCodecKind::Markdown | SnapshotCodecKind::Rkyv | SnapshotCodecKind::Fjall => {
+        SnapshotCodecKind::Markdown | SnapshotCodecKind::Rkyv => {
             unreachable!(
                 "no versioned golden store can exist for a codec that postdates the fixtures; \
              fixtures are Parquet/JSON only"

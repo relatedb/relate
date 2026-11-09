@@ -85,10 +85,10 @@ pub const UNKNOWN_ERROR_CODE: &str = "Neo.DatabaseError.General.UnknownError";
 
 /// The GQL general error code: the code of a caller-facing class without a
 /// class-specific GQLSTATUS.
-const GQLSTATUS_GENERAL: &str = "42000";
+pub const GQLSTATUS_GENERAL: &str = "42000";
 
 /// The GQLSTATUS of a rejected statement (the `SyntaxError` class).
-const GQLSTATUS_SYNTAX: &str = "42N06";
+pub const GQLSTATUS_SYNTAX: &str = "42N06";
 
 /// The GQLSTATUS of an absent query parameter (ADR-0308).
 const GQLSTATUS_PARAMETER_MISSING: &str = "42N02";
@@ -97,7 +97,7 @@ const GQLSTATUS_PARAMETER_MISSING: &str = "42N02";
 const GQLSTATUS_TYPE: &str = "22G03";
 
 /// The GQLSTATUS of an unknown database (ADR-0116 §9).
-const GQLSTATUS_DATABASE_NOT_FOUND: &str = "42N00";
+pub const GQLSTATUS_DATABASE_NOT_FOUND: &str = "42N00";
 
 /// The GQLSTATUS of an unsupported administration command (ADR-0116 §9).
 const GQLSTATUS_UNSUPPORTED_ADMINISTRATION_COMMAND: &str = "51N27";

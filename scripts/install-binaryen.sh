@@ -38,10 +38,14 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 TARBALL="binaryen-version_${VERSION}-${arch}-linux.tar.gz"
-URL="https://github.com/WebAssembly/binaryen/releases/download/version_${VERSION}/${TARBALL}"
+here="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$DIR"
-curl -sSfL "$URL" -o "$DIR/$TARBALL"
+sh "$here/github-download.sh" \
+  --repo WebAssembly/binaryen \
+  --tag "version_${VERSION}" \
+  --asset "$TARBALL" \
+  -o "$DIR/$TARBALL"
 echo "$SHA256  $DIR/$TARBALL" | sha256sum --check --quiet - >&2
 tar -xzf "$DIR/$TARBALL" -C "$DIR" --strip-components=1
 rm "$DIR/$TARBALL"

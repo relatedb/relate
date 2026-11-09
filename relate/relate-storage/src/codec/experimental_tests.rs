@@ -1,4 +1,4 @@
-//! Roundtrip fidelity for the experimental codecs (measurement features,
+//! Roundtrip fidelity for the experimental codec (measurement feature,
 //! default off). Each test compares a reload through the experimental
 //! codec against the same graph reloaded through the JSON codec, so the
 //! reference is the codec that shares their property conversion.
@@ -66,20 +66,6 @@ fn rich() -> Graph {
     graph
 }
 
-/// The fjall tests' one store fixture: a native tempdir target with the
-/// fjall codec. The TempDir is returned so it outlives the target.
-#[cfg(fjall_codec)]
-fn fjall_target() -> (tempfile::TempDir, crate::StoreTarget) {
-    let dir = tempfile::tempdir().unwrap();
-    let target = crate::parse_uri_with_options(
-        dir.path().join("db").to_str().unwrap(),
-        None,
-        Some(SnapshotCodecKind::Fjall),
-    )
-    .unwrap();
-    (dir, target)
-}
-
 fn json_reference() -> String {
     let graph = rich();
     let store = memory_store_with_codec(SnapshotCodecKind::Json).unwrap();
@@ -96,33 +82,6 @@ fn rkyv_roundtrips_every_row_and_property_type() {
     let reloaded = load(&store).unwrap();
     assert_eq!(signature(&reloaded), signature(&graph));
     assert_eq!(signature(&reloaded), json_reference());
-}
-
-#[cfg(fjall_codec)]
-#[test]
-fn fjall_roundtrips_every_row_and_property_type() {
-    let graph = rich();
-    let (_dir, target) = fjall_target();
-    checkpoint(&target, &graph, None).unwrap();
-    let reloaded = load(&target).unwrap();
-    assert_eq!(signature(&reloaded), signature(&graph));
-    assert_eq!(signature(&reloaded), json_reference());
-}
-
-#[cfg(fjall_codec)]
-#[test]
-fn fjall_refuses_a_store_without_a_local_directory() {
-    // A `:memory:` store has no native root: the codec fails closed
-    // rather than writing nothing.
-    let graph = rich();
-    let store = memory_store_with_codec(SnapshotCodecKind::Fjall).unwrap();
-    let error = checkpoint(&store, &graph, None).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("requires a local filesystem store"),
-        "unexpected error: {error}"
-    );
 }
 
 #[cfg(rkyv_codec)]
@@ -176,49 +135,6 @@ fn rkyv_ontology_checkpoint_reopens_current() {
     assert_eq!(loaded.ontology.as_deref(), Some("(:Person {name: 'Ada'})"));
 }
 
-/// The fjall twin of the marker regression above.
-#[cfg(fjall_codec)]
-#[test]
-fn fjall_ontology_checkpoint_reopens_current() {
-    let graph = rich();
-    let (_dir, target) = fjall_target();
-    checkpoint(&target, &graph, Some("(:Person {name: 'Ada'})")).unwrap();
-    let loaded = crate::codec::fjall::load_with_checkpoint_lsn::<Graph>(&target).unwrap();
-    assert!(
-        matches!(loaded.marker, crate::version::SnapshotMarker::Current),
-        "an ontology-bearing fjall store must reopen as Current, got {:?}",
-        loaded.marker
-    );
-    assert_eq!(loaded.ontology.as_deref(), Some("(:Person {name: 'Ada'})"));
-}
-
-/// The replacement-semantics regression: a checkpoint of a smaller graph
-/// must not leave the vanished rows in the keyspace — an insert-only
-/// dump resurrects them on the next open.
-#[cfg(fjall_codec)]
-#[test]
-fn fjall_shrinking_checkpoint_does_not_resurrect_rows() {
-    let full = rich();
-    let (_dir, target) = fjall_target();
-    checkpoint(&target, &full, None).unwrap();
-    // The shrunk graph: node 2 and the relationship gone, counters wound
-    // back to what the remaining rows imply.
-    let shrunk = Graph::default();
-    shrunk
-        .load_checkpoint_node(Node {
-            id: 1,
-            labels: Arc::new(vec!["Person".into(), "Employee".into()]),
-            properties: props(vec![("name", Value::String("Ada".into()))]),
-        })
-        .unwrap();
-    shrunk.set_next_node_id(2);
-    shrunk.set_next_rel_id(1);
-    shrunk.set_commit_ts(2);
-    checkpoint(&target, &shrunk, None).unwrap();
-    let reloaded = load(&target).unwrap();
-    assert_eq!(signature(&reloaded), signature(&shrunk));
-}
-
 /// The rkyv load validates its archive: a corrupted store file is a typed
 /// error, never undefined behaviour.
 #[cfg(rkyv_codec)]
@@ -265,30 +181,6 @@ fn rkyv_declared_length_beyond_the_block_ceiling_fails_closed() {
     );
 }
 
-/// A fjall manifest whose keyspace directory is gone is a damaged store,
-/// not a fresh one: serving an empty graph would let the next checkpoint
-/// publish that emptiness over the real data.
-#[cfg(fjall_codec)]
-#[test]
-fn fjall_manifest_without_keyspace_fails_closed() {
-    let graph = rich();
-    let (_dir, target) = fjall_target();
-    checkpoint(&target, &graph, None).unwrap();
-    std::fs::remove_dir_all(
-        target
-            .native_root
-            .as_ref()
-            .unwrap()
-            .join(crate::codec::fjall::FJALL_DIR),
-    )
-    .unwrap();
-    let error = load::<Graph>(&target).expect_err("a damaged store must not load");
-    assert!(
-        error.to_string().contains("damaged"),
-        "unexpected error: {error}"
-    );
-}
-
 /// An explicit `null` theater is a corrupt image: absent means "no
 /// theater", null means the field was written wrong.
 #[cfg(rkyv_codec)]
@@ -313,77 +205,4 @@ fn rkyv_null_theater_fails_closed() {
             .contains("expected struct CheckpointTheater"),
         "unexpected error: {error}"
     );
-}
-
-/// A symlinked keyspace directory is refused: fjall writes through
-/// `std::fs`, so the VFS's below-root symlink policy does not cover it and
-/// a crafted store could otherwise redirect keyspace writes outside the
-/// store root.
-#[cfg(all(unix, fjall_codec))]
-#[test]
-fn fjall_refuses_a_symlinked_keyspace() {
-    let graph = rich();
-    let (_dir, target) = fjall_target();
-    // A real fjall store first, so the store resolves as one; then its
-    // keyspace is replaced by a symlink pointing outside the store.
-    checkpoint(&target, &graph, None).unwrap();
-    let root = target.native_root.clone().unwrap();
-    let keyspace = root.join(crate::codec::fjall::FJALL_DIR);
-    let outside = tempfile::tempdir().unwrap();
-    std::fs::remove_dir_all(&keyspace).unwrap();
-    std::os::unix::fs::symlink(outside.path(), &keyspace).unwrap();
-    let error =
-        checkpoint(&target, &graph, None).expect_err("a symlinked keyspace must not be written");
-    assert!(
-        error.to_string().contains("is a symlink"),
-        "unexpected error: {error}"
-    );
-    // The redirect target is untouched.
-    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
-}
-
-/// A read-only open (ADR-0136) refuses the fjall codec at resolution:
-/// fjall has no read-only keyspace open, so serving one would take an
-/// exclusive lock and create or recover files — a write, on an open that
-/// promised none.
-#[cfg(fjall_codec)]
-#[test]
-fn fjall_refuses_a_read_only_open() {
-    let graph = rich();
-    let (dir, target) = fjall_target();
-    checkpoint(&target, &graph, None).unwrap();
-    let error = crate::parse_uri_opening(dir.path().join("db").to_str().unwrap(), None, None, true)
-        .err()
-        .expect("a read-only open must refuse the fjall codec");
-    assert!(
-        error.to_string().contains("read-only"),
-        "unexpected error: {error}"
-    );
-}
-
-/// A symlink *inside* the keyspace is refused too: the top-level guard
-/// covers the `fjall/` entry itself, but fjall creates and recovers
-/// partition files throughout the directory it opens, so a symlinked
-/// partition would redirect those writes outside the store root.
-#[cfg(all(unix, fjall_codec))]
-#[test]
-fn fjall_refuses_a_symlinked_partition_inside_the_keyspace() {
-    let graph = rich();
-    let (_dir, target) = fjall_target();
-    checkpoint(&target, &graph, None).unwrap();
-    let root = target.native_root.clone().unwrap();
-    let keyspace = root.join(crate::codec::fjall::FJALL_DIR);
-    let outside = tempfile::tempdir().unwrap();
-    // A symlinked partition directory inside an otherwise real keyspace
-    // (fjall keeps partitions under a `partitions/` subdirectory).
-    let nodes = keyspace.join("partitions").join("nodes");
-    std::fs::remove_dir_all(&nodes).unwrap();
-    std::os::unix::fs::symlink(outside.path(), &nodes).unwrap();
-    let error = load::<Graph>(&target).expect_err("a symlinked partition must not be opened");
-    assert!(
-        error.to_string().contains("refuses to follow"),
-        "unexpected error: {error}"
-    );
-    // The redirect target is untouched.
-    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
 }

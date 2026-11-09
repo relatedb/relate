@@ -58,11 +58,25 @@ for entry in "${vaults[@]}"; do
   fi
 
   echo "pull $name from $url"
+  # A token makes the clone an authenticated GitHub request. Without one,
+  # and outside GitHub Actions, the public clone stays anonymous.
+  token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  case "$token" in
+    GITHUB_TOKEN|GH_TOKEN) token="" ;;
+  esac
+  if [[ -z "$token" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "pull_obsidian_vaults: GITHUB_TOKEN is required in GitHub Actions" >&2
+    exit 1
+  fi
   # Stage inside the destination's own tree: the final `mv` then stays
   # on one filesystem (an atomic rename), never a copy+delete that can
   # fail halfway across the /tmp boundary.
   tmp="$(mktemp -d "$dest/.pull.XXXXXX")"
-  git clone --depth 1 "$url" "$tmp/$name"
+  if [[ -n "$token" ]]; then
+    git -c "http.extraheader=AUTHORIZATION: bearer ${token}" clone --depth 1 "$url" "$tmp/$name"
+  else
+    git clone --depth 1 "$url" "$tmp/$name"
+  fi
   # Keep only the wanted subtree while preserving the vault root layout.
   if [[ -n "$keep" ]]; then
     (

@@ -324,7 +324,7 @@ are read as C strings; an interior NUL in a name is a defined refusal).
 | `relate_params_put_bool(p, name, uint8_t v, &err)` | 0 is false, any other value true |
 | `relate_params_put_int(p, name, int64_t v, &err)` | full int64 range |
 | `relate_params_put_float(p, name, double v, &err)` | NaN/±Inf bind |
-| `relate_params_put_string(p, name, const char *v, size_t len, &err)` | `len` bytes of UTF-8; an interior NUL crosses whole; invalid UTF-8 refuses |
+| `relate_params_put_string(p, name, const char *v, size_t len, &err)` | `len` bytes of UTF-8; an interior NUL crosses whole; invalid UTF-8 refuses; a NULL `v` with no bytes binds the empty string (a marshalling layer may hand a zero-length buffer over as NULL — koffi does), a NULL `v` that claims bytes refuses ("null string value"); `put_null` binds an explicit null |
 | `relate_params_put_date(p, name, year, month, day, &err)` | a real calendar date |
 | `relate_params_put_local_time(p, name, hour, minute, second, nanosecond, &err)` | wall clock only |
 | `relate_params_put_time(p, name, hour, minute, second, nanosecond, offset_seconds, zone, &err)` | wall clock + offset; a non-NULL zone supplies the offset, resolved at the current instant as Cypher's `time({timezone: …})` does — a TIME keeps no zone id |

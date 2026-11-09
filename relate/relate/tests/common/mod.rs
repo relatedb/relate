@@ -599,11 +599,11 @@ pub fn assert_checkpoint_format(
             assert_eq!(image["codec"], "markdown");
             assert_ontology(inline_ontology(&image), expected);
         }
-        // The experimental codecs' image is the plain codec manifest: the
+        // The experimental codec's image is the plain codec manifest: the
         // format marker (classifying against the manifest's own ontology
         // flag, ADR-0120 §8) plus the checkpoint theater. The ontology
         // document rides the codec payload, so the image never carries it.
-        relate_storage::SnapshotCodecKind::Rkyv | relate_storage::SnapshotCodecKind::Fjall => {
+        relate_storage::SnapshotCodecKind::Rkyv => {
             assert_eq!(image["format_version"], if held { 4 } else { 3 });
             assert_eq!(image["has_ontology"], held);
             assert_ontology(None, ExpectedOntology::Absent);

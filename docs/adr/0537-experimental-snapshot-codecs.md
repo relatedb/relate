@@ -1,4 +1,4 @@
-# ADR-0537: Experimental snapshot codecs behind default-off features
+# ADR-0537: Experimental snapshot codec behind a default-off feature
 
 Status: Proposed
 Claim: adcb1136ef022207ffd7bfd8cff8a3be3a3779fa
@@ -16,25 +16,39 @@ engine, not in a fork.
 
 ## Decision
 
-Two measurement-only snapshot codecs compile behind default-off Cargo
-features (`rkyv-codec`, `fjall-codec`) in `relate-storage` and the
-facade:
+One measurement-only snapshot codec compiles behind the default-off
+`rkyv-codec` Cargo feature in `relate-storage` and the facade:
 
 - **rkyv**: one columnar struct-of-arrays archive (id columns, a shared
   name dictionary, per-row property lists over a key dictionary) with
   one lz4 block, loaded by zero-copy access.
-- **fjall**: an embedded LSM keyspace (two row partitions plus a meta
-  partition) holding the same cypher-json rows the JSON codec writes.
 
-Neither is in the default build; neither is a product codec. A store
-written by one is readable only by a build with its feature. A
-measurement harness (`testing/relate-codec-lab`) compares every
-compiled codec on one graph with a cross-codec content-equality gate.
-Promoting either codec to a default or product codec is its own ADR and
-requires the wide-column encodings and real-shape validation first.
+It is not in the default build and not a product codec. A store written
+by it is readable only by a build with the feature. A measurement
+harness (`testing/relate-codec-lab`) compares every compiled codec on
+one graph with a cross-codec content-equality gate. Promoting the codec
+to a default or product codec is its own ADR and requires the
+wide-column encodings and real-shape validation first.
+
+A second candidate — an embedded-LSM keyspace codec (the `fjall` crate)
+holding the same cypher-json rows the JSON codec writes — was measured
+alongside rkyv and dropped; the measurements are the rejection record
+in Alternatives considered. Its code is preserved under the
+`experimental/fjall-codec` git tag.
 
 ## Alternatives considered
 
+- **fjall, an embedded LSM keyspace codec — measured and dropped:** its
+  rows are the JSON codec's cypher-json (property names repeated per
+  row, one LSM entry and one lz4 block per row), so the store is
+  row-overhead-bound: 5.8-6.7x Parquet's bytes on property-light shapes
+  against rkyv's 0.68x; checkpoint 5.1 s and load 4.5 s against rkyv's
+  0.56 s and 1.73 s on the same shape; +1.0 MB binary against rkyv's
+  +0.1 MB; the only codec that refused read-only opens and required a
+  native directory. Its one structural advantage, in-place incremental
+  writes, is unused by the replacement-semantics checkpoint (staging
+  keyspace + rename swap), so the LSM costs were paid without the
+  benefit. No measured dimension favored it.
 - Promote rkyv as the default codec now — rejected: the v1 archive has
   no per-column encodings, the measured shapes are synthetic-heavy, and
   a default swap without an interop story (Parquet remains the exchange
@@ -49,18 +63,17 @@ requires the wide-column encodings and real-shape validation first.
 
 ## Consequences
 
-The engine gains two small dependency trees behind flags (rkyv + lz4,
-fjall; both pure Rust, native-only, +0.1 MB and +1.0 MB respectively
-when enabled). The codec vocabulary, dispatch and manifest machinery
-are shared, so a fifth codec lands in the ops table alone. The
-manifest version facts are codec-neutral. Measurements (fraud, pokec, LDBC SF0.1): rkyv
-wins checkpoints by 2.1-4.4x and is 0.68x Parquet's size on
-property-light shapes, but only 0.93-1.10x where property values
-dominate — validating the archive costs the inline-value compactness of
-the first layout, a trade the codec takes deliberately (a corrupt store
-file is a typed error, never undefined behaviour). Load is at parity:
-fastest on two of the three shapes, slower on the largest where the
-validation traversal shows. fjall's size is row-overhead-bound (5.8-6.7x
-on property-light shapes).
+The engine gains one small dependency tree behind a flag (rkyv, lz4,
+indexmap; pure Rust, native-only, +0.1 MB when enabled). The codec
+vocabulary, dispatch and manifest machinery are shared, so another
+codec lands in the ops table alone. The manifest version facts are
+codec-neutral. Measurements (fraud, pokec, LDBC SF0.1): rkyv wins
+checkpoints by 2.1-4.4x and is 0.68x Parquet's size on property-light
+shapes, but only 0.93-1.10x where property values dominate — validating
+the archive costs the inline-value compactness of the first layout, a
+trade the codec takes deliberately (a corrupt store file is a typed
+error, never undefined behaviour). Load is at parity: fastest on two of
+the three shapes, slower on the largest where the validation traversal
+shows.
 The load path (direct mapping, concurrency) remains the follow-up
-investigation, not the codec. Deferred polish is tracked on the review backlog.
+investigation, not the codec.

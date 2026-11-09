@@ -575,8 +575,9 @@ fn expand_java_replacement(
 /// an integer passes through; a float converts with Java `(long)`-cast
 /// semantics (truncate toward zero, NaN → 0, saturate at the i64 limits);
 /// the result must lie in [0, 2147483647] — a negative or beyond-int32
-/// value (±Infinity included) raises NumberOutOfRange. A null, missing, or
-/// non-numeric argument keeps the historical `default`.
+/// value (±Infinity included) raises NumberOutOfRange. A missing or
+/// non-numeric argument keeps the historical `default`; a null one never
+/// reaches here ([`null_index_arg`] returns the call's null first).
 fn string_index_arg(v: Option<&Value>, default: i64, what: &str) -> Result<i64> {
     let Some(n) = super::super::numeric::int_arg(v) else {
         return Ok(default);
@@ -587,11 +588,46 @@ fn string_index_arg(v: Option<&Value>, default: i64, what: &str) -> Result<i64> 
     Ok(n)
 }
 
-pub(super) fn bi_substring(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
+/// A null start/length argument nulls the whole call *before* a sibling
+/// argument's range check, and the string argument's type check still runs
+/// first. Live Neo4j 2026.10.1: `left('HELLO', null)`,
+/// `substring('HELLO', null, 2^40)` and `substring('HELLO', -1, null)` are
+/// all null, while `left(1, null)` is the string type error.
+fn null_index_arg(vals: &[Value]) -> bool {
+    vals.iter().skip(1).any(Value::is_null)
+}
+
+/// The shared prologue of the index-taking string calls — the string
+/// argument's extraction (`what` is the call's own non-string type error)
+/// then the null prescan: a null start/length nulls the whole call
+/// *before* a sibling argument's range check. `Ok(None)` is the nulled
+/// call.
+fn string_call_arg<'a>(vals: &'a [Value], what: &str) -> Result<Option<&'a str>> {
     let s = match vals.first() {
+        None | Some(Value::Null) => return Ok(None),
         Some(Value::String(s)) => s,
-        Some(Value::Null) | None => return Ok(Value::Null),
-        _ => return Err(Error::ty("substring() needs a string")),
+        _ => return Err(Error::ty(what)),
+    };
+    if null_index_arg(vals) {
+        return Ok(None);
+    }
+    Ok(Some(s))
+}
+
+/// `left()`/`right()`'s shared prefix: the prologue (their string type
+/// error is the shared `expected string argument` text) plus the length
+/// argument's parse. `Ok(None)` is the nulled call.
+fn string_and_length<'a>(vals: &'a [Value], fn_name: &str) -> Result<Option<(&'a str, usize)>> {
+    let Some(s) = string_call_arg(vals, "expected string argument")? else {
+        return Ok(None);
+    };
+    let n = string_index_arg(vals.get(1), 0, &format!("{fn_name} length"))? as usize;
+    Ok(Some((s, n)))
+}
+
+pub(super) fn bi_substring(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
+    let Some(s) = string_call_arg(&vals, "substring() needs a string")? else {
+        return Ok(Value::Null);
     };
     let start = string_index_arg(vals.get(1), 0, "substring() start")? as usize;
     // Without an integer length the substring runs to the end of the string.
@@ -601,22 +637,18 @@ pub(super) fn bi_substring(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -
     ))
 }
 pub(super) fn bi_left(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    let s = string_arg(&vals, 0)?;
-    let n = string_index_arg(vals.get(1), 0, "left() length")? as usize;
-    Ok(match s {
-        Some(s) => Value::String(char_range(s, 0..n).into()),
-        None => Value::Null,
-    })
+    let Some((s, n)) = string_and_length(&vals, "left()")? else {
+        return Ok(Value::Null);
+    };
+    Ok(Value::String(char_range(s, 0..n).into()))
 }
 pub(super) fn bi_right(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    let s = string_arg(&vals, 0)?;
-    let n = string_index_arg(vals.get(1), 0, "right() length")? as usize;
-    Ok(match s {
-        Some(s) => {
-            Value::String(char_range(s, s.chars().count().saturating_sub(n)..usize::MAX).into())
-        }
-        None => Value::Null,
-    })
+    let Some((s, n)) = string_and_length(&vals, "right()")? else {
+        return Ok(Value::Null);
+    };
+    Ok(Value::String(
+        char_range(s, s.chars().count().saturating_sub(n)..usize::MAX).into(),
+    ))
 }
 
 #[cfg(test)]
