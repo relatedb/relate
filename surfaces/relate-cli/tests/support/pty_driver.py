@@ -121,6 +121,16 @@ def read_until(fd: int, pred: Pred, timeout: float) -> bytes:
     return bytes(buf)
 
 
+def expect(fd: int, pred: Pred, what: str, timeout: float = 10.0) -> bytes:
+    """The one wait-and-verify step: read until ``pred`` matches, return the
+    transcript, and ``fail`` with ``what`` (plus the transcript) when the
+    deadline passes or the child closes without a match."""
+    out = read_until(fd, pred, timeout)
+    if not pred(out):
+        fail(what, out)
+    return out
+
+
 def wait_status(pid: int, timeout: float) -> int | None:
     """Reap ``pid`` if it exits within ``timeout``; otherwise return None.
 
@@ -189,9 +199,7 @@ def session(
     try:
         if size is not None:
             set_size(fd, *size)
-        out = read_until(fd, ready, 15.0)
-        if not ready(out):
-            fail("no prompt", out)
+        out = expect(fd, ready, "no prompt", 15.0)
         yield fd, out
         os.write(fd, b".quit\r")
         drain(fd, 2.0)

@@ -28,25 +28,25 @@ def session(binary: str, size: tuple[int, int], steps: Callable[[int], None]) ->
 def play_and_leave(command: bytes, leave_key: bytes) -> Callable[[int], None]:
     def steps(fd: int) -> None:
         os.write(fd, command + b"\r")
-        out = pty_driver.read_until(fd, lambda b: HIDE in b and b"\x1b[H" in b, 10.0)
-        if ENTER not in out or HIDE not in out:
-            pty_driver.fail(f"{command!r} did not take the screen", out)
+        pty_driver.expect(
+            fd,
+            lambda b: ENTER in b and HIDE in b and b"\x1b[H" in b,
+            f"{command!r} did not take the screen",
+        )
         os.write(fd, leave_key)
-        out = pty_driver.read_until(fd, lambda b: SHOW in b and LEAVE in b, 10.0)
-        if LEAVE not in out or SHOW not in out:
-            pty_driver.fail(f"{command!r} left the terminal as it was", out)
+        pty_driver.expect(
+            fd, lambda b: SHOW in b and LEAVE in b, f"{command!r} left the terminal as it was"
+        )
         os.write(fd, b"RETURN 41 + 1 AS answer;\r")
-        out = pty_driver.read_until(fd, lambda b: b"42" in b, 10.0)
-        if b"42" not in out:
-            pty_driver.fail(f"shell dead after {command!r}", out)
+        pty_driver.expect(fd, lambda b: b"42" in b, f"shell dead after {command!r}")
 
     return steps
 
 
 def too_small(fd: int) -> None:
     os.write(fd, b".tetris\r")
-    out = pty_driver.read_until(fd, lambda b: b"too small" in b, 10.0)
-    if b"too small" not in out or ENTER in out:
+    out = pty_driver.expect(fd, lambda b: b"too small" in b, "small window not refused")
+    if ENTER in out:
         pty_driver.fail("small window not refused cleanly", out)
 
 

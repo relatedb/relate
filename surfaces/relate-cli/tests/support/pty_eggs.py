@@ -19,7 +19,7 @@ HL_FG = b"\x1b[38;2;76;153;164m"
 
 
 def session(binary: str, env: dict[str, str], keys: bytes, until: pty_driver.Pred) -> bytes:
-    ready = lambda b: b"> " in b or "∩".encode() in b
+    ready = lambda b: pty_driver.prompt_ready(b) or "∩".encode() in b
     with pty_driver.session(binary, env, ready=ready) as (fd, out):
         os.write(fd, keys)
         return out + pty_driver.read_until(fd, until, 10.0)

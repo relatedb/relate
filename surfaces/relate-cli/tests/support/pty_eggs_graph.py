@@ -22,15 +22,15 @@ def main() -> int:
     env = {"LANG": "en_US.UTF-8", "RELATE_BANNER": "0", "NO_COLOR": "1"}
     with pty_driver.session(binary, env) as (fd, _):
         os.write(fd, b".lolwut\r")
-        lol = pty_driver.read_until(fd, lambda b: b"Relate ver. " in b, 10.0)
+        lol = pty_driver.expect(fd, lambda b: b"Relate ver. " in b, ".lolwut printed no version")
         pty_driver.drain(fd, 0.5)
         if not has_braille(lol):
             pty_driver.fail(".lolwut drew no braille", lol)
         os.write(fd, b"CREATE (:P {name:'Ada'})-[:KNOWS]->(:P {name:'Grace'});\r")
-        pty_driver.read_until(fd, lambda b: b"> " in b, 10.0)
+        pty_driver.expect(fd, pty_driver.prompt_ready, "no prompt after CREATE")
         pty_driver.drain(fd, 0.5)
         os.write(fd, b".graph\r")
-        graph = pty_driver.read_until(fd, lambda b: b"relationships" in b, 10.0)
+        graph = pty_driver.expect(fd, lambda b: b"relationships" in b, ".graph printed no footer")
         for needle, what in [
             (b"Ada", "node label"),
             (b"Grace", "node label"),

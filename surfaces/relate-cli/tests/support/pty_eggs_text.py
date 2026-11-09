@@ -31,21 +31,28 @@ def main() -> int:
     env = {"LANG": "en_US.UTF-8", "NO_COLOR": "1", "COLUMNS": "40", "LINES": "12"}
     with pty_driver.session(binary, env) as (fd, _):
         os.write(fd, b".fortune\r")
-        got = pty_driver.read_until(
-            fd, lambda b: fortune_line(b) is not None and b.rstrip().endswith(b">"), 10.0
+        pty_driver.expect(
+            fd,
+            lambda b: fortune_line(b) is not None and pty_driver.prompt_ready(b),
+            ".fortune printed no fortune followed by a prompt",
         )
-        if fortune_line(got) is None:
-            pty_driver.fail(".fortune printed no fortune", got)
 
         os.write(fd, b".cowsay hello archie\r")
-        got = pty_driver.read_until(fd, lambda b: "▓".encode() in b, 10.0)
-        if b"< hello archie >" not in got:
-            pty_driver.fail(".cowsay bubble missing", got)
+        pty_driver.expect(
+            fd,
+            lambda b: "▓".encode() in b and b"< hello archie >" in b,
+            ".cowsay bubble missing",
+        )
 
         os.write(fd, b".matrix decrypted\r")
-        got = pty_driver.read_until(fd, lambda b: b"decrypted" in b and b"\x1b[2K" in b, 15.0)
-        if b"decrypted" not in got or b"\x1b[38;5;" in got:
-            pty_driver.fail(".matrix did not decrypt, or coloured under NO_COLOR", got)
+        got = pty_driver.expect(
+            fd,
+            lambda b: b"decrypted" in b and b"\x1b[2K" in b,
+            ".matrix did not decrypt",
+            15.0,
+        )
+        if b"\x1b[38;5;" in got:
+            pty_driver.fail(".matrix coloured under NO_COLOR", got)
     print("OK")
     return 0
 
