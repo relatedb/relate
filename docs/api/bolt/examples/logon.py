@@ -33,7 +33,7 @@ def main():
     # decision 6): Node appends element_id, Relationship appends
     # element_id, start_node_element_id and end_node_element_id. The
     # strings are the engine elementId() helper's own output
-    # (4:relate-neo4j:n<N> / 5:relate-neo4j:r<N>) -- the same string the
+    # (4:rl-id:n<N> / 5:rl-id:r<N>) -- the same string the
     # elementId() function answers, never Neo4j's uuid form.
     records, _, _ = driver.execute_query(
         "CREATE (a:Probe {name: $ada})-[r:KNOWS]->(b:Probe {name: $bob}) "
@@ -44,8 +44,8 @@ def main():
     node, rel = records[0]["a"], records[0]["r"]
     assert node.element_id == records[0]["eid"], node.element_id
     assert rel.element_id == records[0]["reid"], rel.element_id
-    assert node.element_id.startswith("4:relate-neo4j:n"), node.element_id
-    assert rel.element_id.startswith("5:relate-neo4j:r"), rel.element_id
+    assert node.element_id.startswith("4:rl-id:n"), node.element_id
+    assert rel.element_id.startswith("5:rl-id:r"), rel.element_id
     driver.close()
     print("ok")
 

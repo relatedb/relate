@@ -12,8 +12,8 @@ LOGON reopens it. With a credential configured (`--auth user:password`)
 the same LOGON checks it, and a mismatch fails
 `Neo.ClientError.Security.Unauthorized` and closes the connection. At
 5.4 the graph structures also carry element ids — Node and Relationship
-append the engine `elementId()` helper's strings (`4:relate-neo4j:n0`,
-`5:relate-neo4j:r0`) — and the DateTime structures are the fixed UTC forms
+append the engine `elementId()` helper's strings (`4:rl-id:n0`,
+`5:rl-id:r0`) — and the DateTime structures are the fixed UTC forms
 (`0x49`/`0x69`).
 
 In one terminal, run from the repository root:

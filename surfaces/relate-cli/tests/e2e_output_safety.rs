@@ -90,7 +90,7 @@ fn test_multiline_engine_error_renders_legibly_on_one_line() {
     // that newline to a space — not delete it — so the rendered error keeps
     // a word boundary (". Attempted", not ".Attempted"), while still never
     // emitting a raw control byte.
-    let query = "RETURN graph.byElementId('4:relate-neo4j:n1')";
+    let query = "RETURN graph.byElementId('4:rl-id:n1')";
     let (status, _stdout, stderr) = run_cli(Opts::new(&["-c", query]));
     assert_eq!(
         status.code(),
@@ -99,7 +99,7 @@ fn test_multiline_engine_error_renders_legibly_on_one_line() {
     );
     assert!(
         stderr.contains(
-            "composite databases. Attempted to access graph graph.byElementId('4:relate-neo4j:n1')"
+            "composite databases. Attempted to access graph graph.byElementId('4:rl-id:n1')"
         ),
         "expected the multi-line error joined with a space, got: {stderr:?}"
     );
@@ -109,7 +109,7 @@ fn test_multiline_engine_error_renders_legibly_on_one_line() {
         .find(|l| l.contains("composite databases"))
         .expect("the composite error line must exist");
     assert!(
-        line.contains("byElementId('4:relate-neo4j:n1')"),
+        line.contains("byElementId('4:rl-id:n1')"),
         "the error must render on one line, got: {stderr:?}"
     );
     assert!(

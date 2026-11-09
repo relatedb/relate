@@ -28,7 +28,7 @@ public enum CypherValue: Sendable, Hashable {
 
     /// A graph node. `id` is the deprecated numeric entity id — exactly the
     /// INTEGER Cypher's `id()` returns for the same node (ADR-0506).
-    /// `elementId` is the engine's element id (`"4:relate-neo4j:n0"`), spelled
+    /// `elementId` is the engine's element id (`"4:rl-id:n0"`), spelled
     /// exactly as Cypher's `elementId()` returns it, so
     /// `WHERE elementId(n) = $id` round-trips.
     public struct Node: Sendable, Hashable {

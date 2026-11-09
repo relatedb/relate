@@ -432,8 +432,8 @@ const char *relate_value_string(relate_value v, size_t *len);
 
 /*
  * Entities (ADR-0502 §6). NODE / RELATIONSHIP: the element id, spelled
- * exactly as Cypher elementId() returns it ("4:relate-neo4j:n0",
- * "5:relate-neo4j:r0") at every depth, so WHERE elementId(n) = $id
+ * exactly as Cypher elementId() returns it ("4:rl-id:n0",
+ * "5:rl-id:r0") at every depth, so WHERE elementId(n) = $id
  * round-trips. RELATIONSHIP only: the start / end node's element id.
  * Result-owned.
  *

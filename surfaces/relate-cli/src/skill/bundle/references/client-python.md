@@ -20,7 +20,7 @@ import relate
 conn = relate.connect(":memory:")     # or "./mydata" / "./task.rl"
 cur = conn.execute("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"})
 p = cur.single()["p"]                    # a relate.Node
-p.element_id                             # '4:relate-neo4j:n0' == elementId(p)
+p.element_id                             # '4:rl-id:n0' == elementId(p)
 cur.consume().bookmark                   # 'relate:1' — auto-commit write
 
 conn.autocommit = False                  # explicit transaction
@@ -49,8 +49,8 @@ and `graph()`.
 - **Vectors are `relate.Vector`** at every depth (`.coordinate_type`,
   `.dimension`, `.values`), never a dict; build new ones in Cypher with
   `vector($list, 3, FLOAT32)`.
-- **Element ids are Cypher's `elementId()`** — `4:relate-neo4j:n<id>` /
-  `5:relate-neo4j:r<id>`; relationships add `start_node_element_id` /
+- **Element ids are Cypher's `elementId()`** — `4:rl-id:n<id>` /
+  `5:rl-id:r<id>`; relationships add `start_node_element_id` /
   `end_node_element_id`. Integer ids stay on `.id` / `.start_node` /
   `.end_node`.
 - **Thread-affine connections** (`threadsafety` 1) — use a connection only

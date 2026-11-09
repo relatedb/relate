@@ -293,7 +293,7 @@ database or the `USE` target (ADR-0227 §1) — which must be `neo4j`
 its row (ADR-0116 §6's values), the name stays accepted everywhere a
 namespace name is parsed (session-namespace selection over the embedding
 APIs and Bolt, a static `USE` target, the CLI `--namespace` flag), and
-`graph.byElementId` keeps decoding the `relate-system-ontologies`
+`graph.byElementId` keeps decoding the `rl-onto`
 element-id segment to it. But every statement routed to it — reads
 included, `EXPLAIN`/`PROFILE`-wrapped included — fails at the plan-based
 semantic gate with (ADR-0229 §1/§2):

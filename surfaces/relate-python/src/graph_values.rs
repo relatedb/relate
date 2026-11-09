@@ -17,12 +17,11 @@ pub(super) struct Node {
     #[pyo3(get)]
     pub(super) id: i64,
     /// Exactly what Cypher `elementId()` returns for this node (ADR-0502 §6,
-    /// `4:relate-neo4j:n<id>` in the `neo4j` namespace), so
-    /// `WHERE elementId(n) = $id` round-trips. `None` only in a namespace
-    /// whose elements have no element ids (`system`), where `elementId()`
-    /// itself fails.
+    /// `4:rl-id:n<id>`), so `WHERE elementId(n) = $id` round-trips. Never
+    /// `None`: the no-segment namespace (`system`) fails the conversion
+    /// with the same error `elementId()` itself gives.
     #[pyo3(get)]
-    pub(super) element_id: Option<String>,
+    pub(super) element_id: String,
     #[pyo3(get)]
     pub(super) labels: Vec<String>,
     pub(super) properties: Py<PyDict>,
@@ -76,21 +75,21 @@ pub(super) struct Relationship {
     #[pyo3(get)]
     pub(super) id: i64,
     /// Exactly what Cypher `elementId()` returns for this relationship
-    /// (ADR-0502 §6, `5:relate-neo4j:r<id>` in the `neo4j` namespace); `None`
-    /// only where `Node.element_id` is.
+    /// (ADR-0502 §6, `5:rl-id:r<id>`). Never `None`: the no-segment
+    /// namespace fails the conversion, as for `Node::element_id`.
     #[pyo3(get)]
-    pub(super) element_id: Option<String>,
+    pub(super) element_id: String,
     pub(super) rel_type: String,
     #[pyo3(get)]
     pub(super) start_node: i64,
     #[pyo3(get)]
     pub(super) end_node: i64,
-    /// `elementId(startNode(r))`.
+    /// `elementId(startNode(r))`. Never `None`, like `element_id`.
     #[pyo3(get)]
-    pub(super) start_node_element_id: Option<String>,
-    /// `elementId(endNode(r))`.
+    pub(super) start_node_element_id: String,
+    /// `elementId(endNode(r))`. Never `None`, like `element_id`.
     #[pyo3(get)]
-    pub(super) end_node_element_id: Option<String>,
+    pub(super) end_node_element_id: String,
     pub(super) properties: Py<PyDict>,
 }
 

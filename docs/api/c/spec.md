@@ -234,7 +234,7 @@ stays usable:
 | `relate_value_float(v, double *out)` | FLOAT | NaN and ±Inf included |
 | `relate_value_is_nan(v, uint8_t *out)` / `_is_inf` | FLOAT | 1 when NaN / infinite (either sign) |
 | `relate_value_string(v, size_t *len)` | STRING | NUL-terminated UTF-8, result-owned; `*len` (when non-NULL) is the byte length without the terminator — a string with an interior NUL crosses whole |
-| `relate_value_element_id(v)` | NODE, RELATIONSHIP | spelled exactly as Cypher `elementId()` returns it (`"4:relate-neo4j:n0"`, `"5:relate-neo4j:r0"`), so `WHERE elementId(n) = $id` round-trips |
+| `relate_value_element_id(v)` | NODE, RELATIONSHIP | spelled exactly as Cypher `elementId()` returns it (`"4:rl-id:n0"`, `"5:rl-id:r0"`), so `WHERE elementId(n) = $id` round-trips |
 | `relate_value_start_element_id(v)` / `_end_element_id` | RELATIONSHIP | the end nodes' element ids |
 | `relate_value_id(v, int64_t *out)` | NODE, RELATIONSHIP | the deprecated numeric entity id — exactly the INTEGER Cypher `id()` returns for the same entity (ADR-0506); driver providers that decide entity equality by numeric id read it here |
 | `relate_value_start_id(v, int64_t *out)` / `_end_id` | RELATIONSHIP | the endpoints' numeric ids, as `id(startNode(r))` / `id(endNode(r))` return them; wrong kind (a NODE, a non-entity) or NULL handle → `RELATE_ERROR` with `*out` untouched — an entity always carries an id, so there is no in-kind refusal |

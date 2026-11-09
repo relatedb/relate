@@ -294,8 +294,8 @@ What the *values* in those rows are depends on the column:
 
 | Returned | Python value |
 | --- | --- |
-| `RETURN p` (a node) | `relate.Node` — `id`, `element_id` (exactly `elementId(p)`, e.g. `4:relate-neo4j:n0`), `labels`, `properties` |
-| `RETURN r` (a relationship) | `relate.Relationship` — `id`, `element_id` (`5:relate-neo4j:r0`), `type`, `properties`, `start_node`, `end_node`, `start_node_element_id`, `end_node_element_id` |
+| `RETURN p` (a node) | `relate.Node` — `id`, `element_id` (exactly `elementId(p)`, e.g. `4:rl-id:n0`), `labels`, `properties` |
+| `RETURN r` (a relationship) | `relate.Relationship` — `id`, `element_id` (`5:rl-id:r0`), `type`, `properties`, `start_node`, `end_node`, `start_node_element_id`, `end_node_element_id` |
 | `RETURN p` (a path) | `relate.Path` — `nodes`, `relationships` |
 | `RETURN point(...)` | `relate.Point` — `srid`, `x`, `y` |
 | temporal values stdlib can carry losslessly (microsecond-aligned, offset only) | `datetime.datetime` / `date` / `time` |

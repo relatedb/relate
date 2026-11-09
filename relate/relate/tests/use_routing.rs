@@ -118,7 +118,7 @@ fn graph_by_element_id_is_42n72_in_expression_position() {
     // In an arbitrary expression position `graph.byElementId` fails with
     // the same CE 42N72 composite-databases text as the other selectors
     // (ADR-0116 §3) — not as an unknown function.
-    let function = "graph.byElementId('4:relate-neo4j:n1')";
+    let function = "graph.byElementId('4:rl-id:n1')";
     let err = err_text(conn.query(&format!("RETURN {function} AS g")));
     assert!(
         err.ends_with(&format!("{COMPOSITE_ONLY_PREFIX}{function}")),
@@ -128,9 +128,7 @@ fn graph_by_element_id_is_42n72_in_expression_position() {
     // Its `USE`-target path keeps the element-id resolution: the id
     // resolves to `system_ontologies`, and the statement then fails that
     // namespace's gate (ADR-0229 §5).
-    let err = err_text(
-        conn.query("USE graph.byElementId('4:relate-system-ontologies:n1') RETURN 1 AS one"),
-    );
+    let err = err_text(conn.query("USE graph.byElementId('4:rl-onto:n1') RETURN 1 AS one"));
     assert!(err.ends_with(NOT_QUERYABLE_SUFFIX), "{err}");
 }
 
@@ -140,14 +138,14 @@ fn use_graph_by_element_id_resolves_the_id_namespace() {
 
     // ADR-0229 §5: the `system_ontologies` segment still decodes and routes
     // the statement to the namespace, which then rejects it (§1/§2).
-    let err = err_text(conn.query(
-        "USE graph.byElementId('4:relate-system-ontologies:n1') MATCH (n) RETURN count(n) AS c",
-    ));
+    let err = err_text(
+        conn.query("USE graph.byElementId('4:rl-onto:n1') MATCH (n) RETURN count(n) AS c"),
+    );
     assert!(err.ends_with(NOT_QUERYABLE_SUFFIX), "{err}");
 
-    // The `relate-neo4j` segment is `neo4j` (ADR-0116 §7, ADR-0554).
+    // The `rl-id` segment is `neo4j` (ADR-0116 §7, ADR-0554).
     let result = conn
-        .query("USE graph.byElementId('4:relate-neo4j:n1') RETURN 1 AS one")
+        .query("USE graph.byElementId('4:rl-id:n1') RETURN 1 AS one")
         .unwrap();
     assert_eq!(result.rows[0][0], Value::Int(1));
     assert_eq!(result.header.namespace, Namespace::Neo4j);

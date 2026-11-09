@@ -80,8 +80,8 @@ cur.to_df()      # pandas DataFrame — pip install relate-db[pandas]
 `Relationship`, `Path` in the rows (nested values walked), de-duplicated
 by id — as a `ResultGraph` (`nodes`, `relationships`, id-ordered). Nodes
 and relationships expose `id`, `labels`/`type`, `properties`,
-`element_id` (exactly Cypher's `elementId()`: `4:relate-neo4j:n0` /
-`5:relate-neo4j:r0`, so `WHERE elementId(n) = $id` finds it again),
+`element_id` (exactly Cypher's `elementId()`: `4:rl-id:n0` /
+`5:rl-id:r0`, so `WHERE elementId(n) = $id` finds it again),
 `items()`, and `start`/`end`; relationships add `start_node_element_id` /
 `end_node_element_id`. This is viz-independent:
 convert to networkx/igraph without a bridge dependency (see

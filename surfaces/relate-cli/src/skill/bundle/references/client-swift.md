@@ -55,7 +55,7 @@ day: 2))`, `.point(.init(srid: 4326, x: -105.0, y: 40.0, z: nil))`).
 - **Blocking calls** — queries run synchronously; never call them on the
   `MainActor`.
 - **Every value is typed** — nodes and relationships carry element ids
-  (`"4:relate-neo4j:n0"`, `elementId(n) = $id` round-trips) plus the
+  (`"4:rl-id:n0"`, `elementId(n) = $id` round-trips) plus the
   deprecated numeric ids Cypher's `id()` returns (`node.id`,
   `rel.id`/`rel.startId`/`rel.endId`, ADR-0506 — use them for entity
   equality, not lookups), temporals arrive

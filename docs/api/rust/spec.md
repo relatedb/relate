@@ -233,9 +233,9 @@ A connection's session namespace selects the namespace its statements run in
 statement (ADR-0116 §3): the target is resolved before execution — a static
 name must be one of the three namespaces (anything else fails with
 `Error::DatabaseNotFound { name }`, ending `DatabaseNotFound: Graph not found: <name>`),
-`graph.byElementId('<kind>:relate-neo4j:<n|r><id>')`
+`graph.byElementId('<kind>:rl-id:<n|r><id>')`
 resolves through the element id's dash-bearing middle segment
-(`relate-system-ontologies` for the ontology namespace) (an id naming no namespace
+(`rl-onto` for the ontology namespace) (an id naming no namespace
 fails ending ``SemanticError: No database is corresponding to `graph.byElementId(<id>)`. Verify that the elementId is correct.``, with `<id>` echoed as written), and `graph.byName` / `graph.names` / `graph.propertiesByName`
 fail ending `SemanticError: Dynamic graph lookup not allowed here. This
 feature is only available on composite databases.\nAttempted to access graph

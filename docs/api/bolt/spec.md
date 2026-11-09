@@ -579,8 +579,8 @@ results keep their string encodings (ADR-0272, CIP-246).
 | Bytes (byte array) | marker `CC`/`CD`/`CE` (not a struct) | 8/16/32-bit length then the bytes, the shortest marker that fits (ADR-0328) |
 
 The 5.x `element_id` strings are the engine `elementId()` helpers' own
-output (ADR-0116 §7) — `4:relate-neo4j:n0` for the first node,
-`5:relate-neo4j:r0` for the first relationship — sourced per result
+output (ADR-0116 §7) — `4:rl-id:n0` for the first node,
+`5:rl-id:r0` for the first relationship — sourced per result
 namespace; the integer `id` fields stay. The `system` namespace has no
 element-id segment, so a 5.x result carrying a graph value from there
 fails with the typed error `elements of this namespace have no element

@@ -1,5 +1,5 @@
 """Element ids: the engine's ``elementId()`` spelling (ADR-0502 §6) —
-``<sid>:relate-neo4j:n<id>`` for nodes, ``r<id>`` for relationships, so node
+``<sid>:rl-id:n<id>`` for nodes, ``r<id>`` for relationships, so node
 0 never collides with relationship 0."""
 
 
@@ -10,8 +10,8 @@ def test_element_ids_match_cypher_element_id(db):
         "elementId(r) AS er, elementId(b) AS eb"
     ).fetchone()
     a, r, b = row["a"], row["r"], row["b"]
-    assert a.element_id == row["ea"] == f"4:relate-neo4j:n{a.id}"
-    assert r.element_id == row["er"] == f"5:relate-neo4j:r{r.id}"
+    assert a.element_id == row["ea"] == f"4:rl-id:n{a.id}"
+    assert r.element_id == row["er"] == f"5:rl-id:r{r.id}"
     assert b.element_id == row["eb"]
     assert r.start_node_element_id == a.element_id
     assert r.end_node_element_id == b.element_id

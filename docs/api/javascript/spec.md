@@ -92,7 +92,7 @@ applies at every depth and to `CypherVector`'s INTEGER* coordinates and
 the temporal components.
 
 **Entities.** `elementId` is the engine's `elementId()` spelling
-(`"4:relate-neo4j:n0"`), so `WHERE elementId(n) = $id` round-trips; a
+(`"4:rl-id:n0"`), so `WHERE elementId(n) = $id` round-trips; a
 relationship's endpoints are `startElementId` / `endElementId`. Every
 entity also carries the deprecated numeric ids (ADR-0506): `id` is
 exactly what Cypher `id()` returns for the same entity, and a

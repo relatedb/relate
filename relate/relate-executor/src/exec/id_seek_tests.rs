@@ -79,7 +79,7 @@ fn element_id_equality_seeks_instead_of_scanning() {
 
     let rows = exec_cypher(
         &g,
-        &format!("MATCH (n) WHERE elementId(n) = '4:relate-neo4j:n{b}' RETURN n"),
+        &format!("MATCH (n) WHERE elementId(n) = '4:rl-id:n{b}' RETURN n"),
     )
     .rows;
     assert_eq!(rows.len(), 1);
@@ -87,14 +87,14 @@ fn element_id_equality_seeks_instead_of_scanning() {
 
     let rows = exec_cypher(
         &g,
-        &format!("MATCH (n) WHERE elementId(n) IN ['4:relate-neo4j:n{a}', '4:relate-neo4j:n{b}'] RETURN n"),
+        &format!("MATCH (n) WHERE elementId(n) IN ['4:rl-id:n{a}', '4:rl-id:n{b}'] RETURN n"),
     )
     .rows;
     assert_eq!(rows.len(), 2);
 
     // A relationship element id never matches a node, and a foreign
     // namespace is not this engine's id space: no rows, no error.
-    for bad in ["5:relate-neo4j:r0", "4:neo4j:n0", "garbage"] {
+    for bad in ["5:rl-id:r0", "4:neo4j:n0", "garbage"] {
         let rows = exec_cypher(
             &g,
             &format!("MATCH (n) WHERE elementId(n) = '{bad}' RETURN n"),

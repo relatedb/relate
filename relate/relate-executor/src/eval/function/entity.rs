@@ -459,7 +459,7 @@ mod tests {
         let row = element_id_row();
         let params = BTreeMap::new();
 
-        // elementId() emits the `4:relate-neo4j:n{id}` / `5:relate-neo4j:r{id}`
+        // elementId() emits the `4:rl-id:n{id}` / `5:rl-id:r{id}`
         // wire format.
         let node_id = element_id_fn(
             &graph,
@@ -469,7 +469,7 @@ mod tests {
             Expr::Variable("n".into()),
         )
         .unwrap();
-        assert_eq!(node_id, Value::String("4:relate-neo4j:n7".into()));
+        assert_eq!(node_id, Value::String("4:rl-id:n7".into()));
         let rel_id = element_id_fn(
             &graph,
             &row,
@@ -478,7 +478,7 @@ mod tests {
             Expr::Variable("r".into()),
         )
         .unwrap();
-        assert_eq!(rel_id, Value::String("5:relate-neo4j:r9".into()));
+        assert_eq!(rel_id, Value::String("5:rl-id:r9".into()));
 
         // db.nameFromElementId accepts a relate-namespaced id and rejects
         // a wrong-namespace id.
@@ -487,7 +487,7 @@ mod tests {
             &row,
             &params,
             "db.nameFromElementId",
-            Expr::String("4:relate-neo4j:n7".to_string()),
+            Expr::String("4:rl-id:n7".to_string()),
         )
         .unwrap();
         assert_eq!(name, Value::String("neo4j".into()));
@@ -525,10 +525,7 @@ mod tests {
             Expr::Variable("n".into()),
         )
         .unwrap();
-        assert_eq!(
-            node_id,
-            Value::String("4:relate-system-ontologies:n7".into())
-        );
+        assert_eq!(node_id, Value::String("4:rl-onto:n7".into()));
         let rel_id = element_id_fn(
             &graph,
             &row,
@@ -537,10 +534,7 @@ mod tests {
             Expr::Variable("r".into()),
         )
         .unwrap();
-        assert_eq!(
-            rel_id,
-            Value::String("5:relate-system-ontologies:r9".into())
-        );
+        assert_eq!(rel_id, Value::String("5:rl-onto:r9".into()));
         for id in [node_id, rel_id] {
             let Value::String(id) = id else {
                 unreachable!()
@@ -554,7 +548,7 @@ mod tests {
             &row,
             &params,
             "db.nameFromElementId",
-            Expr::String("5:relate-system-ontologies:r9".to_string()),
+            Expr::String("5:rl-onto:r9".to_string()),
         )
         .unwrap();
         assert_eq!(name, Value::String("system_ontologies".into()));
@@ -573,7 +567,7 @@ mod tests {
             &row,
             &params,
             "db.nameFromElementId",
-            Expr::String("4:relate-neo4j:999999".to_string()),
+            Expr::String("4:rl-id:999999".to_string()),
         )
         .unwrap();
         assert_eq!(name, Value::String("neo4j".into()));

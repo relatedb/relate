@@ -39,6 +39,15 @@ fn properties_to_py<'py>(
     Ok(dict)
 }
 
+/// The one owner of the no-segment policy at this boundary: the same fact
+/// the engine's `elementId()` states as a typed error — a namespace whose
+/// elements have no element ids (`system`) — raised here as a Python error.
+/// The sibling surfaces spell the same refusal their own way (the C ABI a
+/// NULL, Bolt a typed encode error); this one follows the engine's own.
+fn element_id_or_err(id: Option<String>) -> PyResult<String> {
+    id.ok_or_else(|| PyRuntimeError::new_err("elements of this namespace have no element ids"))
+}
+
 /// Build a [`Node`]. `ns` is the result's resolved namespace — the one input
 /// `elementId()` reads besides the id (ADR-0116 §7), so the element id is the
 /// engine's own `node_element_id`, never a re-spelling.
@@ -53,7 +62,7 @@ pub(super) fn make_node(
         py,
         Node {
             id,
-            element_id: node_element_id(id, ns),
+            element_id: element_id_or_err(node_element_id(id, ns))?,
             labels: labels.to_vec(),
             properties: properties_to_py(py, properties, ns)?.unbind(),
         },
@@ -75,12 +84,12 @@ pub(super) fn make_rel(
         py,
         Relationship {
             id,
-            element_id: rel_element_id(id, ns),
+            element_id: element_id_or_err(rel_element_id(id, ns))?,
             rel_type: rel_type.to_string(),
             start_node: start_id,
             end_node: end_id,
-            start_node_element_id: node_element_id(start_id, ns),
-            end_node_element_id: node_element_id(end_id, ns),
+            start_node_element_id: element_id_or_err(node_element_id(start_id, ns))?,
+            end_node_element_id: element_id_or_err(node_element_id(end_id, ns))?,
             properties: properties_to_py(py, properties, ns)?.unbind(),
         },
     )

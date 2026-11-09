@@ -186,7 +186,7 @@ fn walker_round_trips_kinds_at_every_depth() {
         assert_eq!(kind(a), RELATE_V_NODE as i32);
         assert_eq!(
             text(relate_value_element_id(a)),
-            "4:relate-neo4j:n0",
+            "4:rl-id:n0",
             "the engine's elementId() spelling"
         );
         assert_eq!(relate_value_list_len(a), 1);
@@ -229,14 +229,11 @@ fn walker_round_trips_kinds_at_every_depth() {
         assert_eq!(kind(start), RELATE_V_NODE as i32);
         assert_eq!(kind(rel), RELATE_V_RELATIONSHIP as i32);
         assert_eq!(kind(end), RELATE_V_NODE as i32);
-        assert_eq!(text(relate_value_element_id(start)), "4:relate-neo4j:n0");
-        assert_eq!(text(relate_value_element_id(end)), "4:relate-neo4j:n1");
-        assert_eq!(text(relate_value_element_id(rel)), "5:relate-neo4j:r0");
-        assert_eq!(
-            text(relate_value_start_element_id(rel)),
-            "4:relate-neo4j:n0"
-        );
-        assert_eq!(text(relate_value_end_element_id(rel)), "4:relate-neo4j:n1");
+        assert_eq!(text(relate_value_element_id(start)), "4:rl-id:n0");
+        assert_eq!(text(relate_value_element_id(end)), "4:rl-id:n1");
+        assert_eq!(text(relate_value_element_id(rel)), "5:rl-id:r0");
+        assert_eq!(text(relate_value_start_element_id(rel)), "4:rl-id:n0");
+        assert_eq!(text(relate_value_end_element_id(rel)), "4:rl-id:n1");
         assert_eq!(str_of(rel), "KNOWS");
         assert_eq!(int_of(get(rel, "since")), 1833);
         assert_eq!(str_of(get(end, "name")), "Babbage");

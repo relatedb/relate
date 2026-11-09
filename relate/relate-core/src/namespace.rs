@@ -13,8 +13,8 @@ use std::str::FromStr;
 ///
 /// Element ids name their namespace through the middle segment of
 /// `<kind>:<segment>:<n|r><id>` (ADR-0116 §7, ADR-0554): the segment is
-/// dash-bearing and names the database — `relate-neo4j` for `neo4j`,
-/// `relate-system-ontologies` for `system_ontologies` — and `system` has
+/// dash-bearing and names the database — `rl-id` for `neo4j`,
+/// `rl-onto` for `system_ontologies` — and `system` has
 /// no elements and no
 /// segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -75,9 +75,9 @@ impl Namespace {
     /// observable dash (ADR-0554's Context).
     pub fn element_id_segment(&self) -> Option<&'static str> {
         match self {
-            Namespace::Neo4j => Some("relate-neo4j"),
+            Namespace::Neo4j => Some("rl-id"),
             Namespace::System => None,
-            Namespace::SystemOntologies => Some("relate-system-ontologies"),
+            Namespace::SystemOntologies => Some("rl-onto"),
         }
     }
 
@@ -153,7 +153,7 @@ pub struct ElementIdRef<'a> {
     /// The first segment: the element kind (`4` node, `5` relationship).
     pub kind: &'a str,
     /// The middle segment: names the namespace, dash-bearing
-    /// (ADR-0554): `relate-neo4j` or `relate-system-ontologies`.
+    /// (ADR-0554): `rl-id` or `rl-onto`.
     pub segment: &'a str,
     /// The third segment: the entity reference (`n<id>` / `r<id>`), opaque.
     pub id: &'a str,
@@ -327,11 +327,11 @@ mod tests {
 
     #[test]
     fn element_id_segments_round_trip() {
-        assert_eq!(Namespace::Neo4j.element_id_segment(), Some("relate-neo4j"));
+        assert_eq!(Namespace::Neo4j.element_id_segment(), Some("rl-id"));
         assert_eq!(Namespace::System.element_id_segment(), None);
         assert_eq!(
             Namespace::SystemOntologies.element_id_segment(),
-            Some("relate-system-ontologies")
+            Some("rl-onto")
         );
         for ns in Namespace::ALL {
             if let Some(segment) = ns.element_id_segment() {
@@ -340,10 +340,7 @@ mod tests {
         }
         // `system` has no segment, and unknown segments map to nothing.
         assert_eq!(Namespace::from_element_id_segment("system"), None);
-        assert_eq!(
-            Namespace::from_element_id_segment("relate-neo4j.system"),
-            None
-        );
+        assert_eq!(Namespace::from_element_id_segment("rl-id.system"), None);
         assert_eq!(Namespace::from_element_id_segment("neo4j"), None);
         assert_eq!(Namespace::from_element_id_segment(""), None);
     }
@@ -365,24 +362,22 @@ mod tests {
 
     #[test]
     fn element_id_ref_parses_the_three_part_shape() {
-        let parsed = ElementIdRef::parse("4:relate-system-ontologies:r9").unwrap();
+        let parsed = ElementIdRef::parse("4:rl-onto:r9").unwrap();
         assert_eq!(parsed.kind, "4");
-        assert_eq!(parsed.segment, "relate-system-ontologies");
+        assert_eq!(parsed.segment, "rl-onto");
         assert_eq!(parsed.id, "r9");
         assert_eq!(parsed.namespace(), Some(Namespace::SystemOntologies));
         assert_eq!(
-            ElementIdRef::parse("5:relate-neo4j:n1")
-                .unwrap()
-                .namespace(),
+            ElementIdRef::parse("5:rl-id:n1").unwrap().namespace(),
             Some(Namespace::Neo4j)
         );
         // Only the shape is split: kind and entity segment stay opaque.
-        let parsed = ElementIdRef::parse("4:relate-neo4j:999999").unwrap();
+        let parsed = ElementIdRef::parse("4:rl-id:999999").unwrap();
         assert_eq!(parsed.id, "999999");
         // Not exactly three segments, or a segment naming no namespace.
         assert_eq!(ElementIdRef::parse("garbage"), None);
-        assert_eq!(ElementIdRef::parse("4:relate-neo4j"), None);
-        assert_eq!(ElementIdRef::parse("4:relate-neo4j:n1:extra"), None);
+        assert_eq!(ElementIdRef::parse("4:rl-id"), None);
+        assert_eq!(ElementIdRef::parse("4:rl-id:n1:extra"), None);
         assert_eq!(ElementIdRef::parse("4::n1").unwrap().namespace(), None);
         assert_eq!(
             ElementIdRef::parse("4:00000000-0000-0000-0000-000000000000:n1")

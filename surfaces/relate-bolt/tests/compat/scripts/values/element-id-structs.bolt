@@ -4,7 +4,7 @@
 # start_node_element_id, end_node_element_id] — and a Path's unbound
 # relationships are the 4-field 0x72 [id, type, properties, element_id].
 # The strings are the engine elementId() helpers' own output
-# (4:relate-neo4j:n0 / 5:relate-neo4j:r0, ADR-0116 §7): like the 4.4 ids in
+# (4:rl-id:n0 / 5:rl-id:r0, ADR-0116 §7): like the 4.4 ids in
 # baseline/value-*.bolt, they are pinned — the ones this script's own
 # fresh :memory: server assigns its first nodes and relationship.
 !: BOLT 5.4
@@ -15,10 +15,10 @@
 C: RUN "CREATE (a:P {k: 1})-[r:R {w: 2}]->(b:P {k: 3}) RETURN a, r, b" {} {}
    PULL {"n": -1}
 S: SUCCESS {"fields": ["a", "r", "b"]}
-   RECORD [{"#4E": [0, ["P"], {"k": 1}, "4:relate-neo4j:n0"]}, {"#52": [0, 0, 1, "R", {"w": 2}, "5:relate-neo4j:r0", "4:relate-neo4j:n0", "4:relate-neo4j:n1"]}, {"#4E": [1, ["P"], {"k": 3}, "4:relate-neo4j:n1"]}]
+   RECORD [{"#4E": [0, ["P"], {"k": 1}, "4:rl-id:n0"]}, {"#52": [0, 0, 1, "R", {"w": 2}, "5:rl-id:r0", "4:rl-id:n0", "4:rl-id:n1"]}, {"#4E": [1, ["P"], {"k": 3}, "4:rl-id:n1"]}]
    SUCCESS {}
 C: RUN "MATCH p = (x:P)-[r:R]->(y:P) RETURN p" {} {}
    PULL {"n": -1}
 S: SUCCESS {"fields": ["p"]}
-   RECORD [{"#50": [[{"#4E": [0, ["P"], {"k": 1}, "4:relate-neo4j:n0"]}, {"#4E": [1, ["P"], {"k": 3}, "4:relate-neo4j:n1"]}], [{"#72": [0, "R", {"w": 2}, "5:relate-neo4j:r0"]}], [1, 1]]}]
+   RECORD [{"#50": [[{"#4E": [0, ["P"], {"k": 1}, "4:rl-id:n0"]}, {"#4E": [1, ["P"], {"k": 3}, "4:rl-id:n1"]}], [{"#72": [0, "R", {"w": 2}, "5:rl-id:r0"]}], [1, 1]]}]
    SUCCESS {}

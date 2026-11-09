@@ -2,6 +2,7 @@
 
 Status: Proposed
 Claim: dc9769cbeeecd1b90570f963ba0c48125e6a0b46
+Revision: the first landing proposed `relate-neo4j` / `relate-system-ontologies`; the maintainers shortened the tokens to `rl-id` / `rl-onto` for wire economy before this ADR was accepted
 
 ## Context
 
@@ -21,12 +22,13 @@ whose endpoint node was never on screen.
 
 ## Decision
 
-The element-id middle segment is dash-bearing and names the database, as
-Neo4j's does:
+The element-id middle segment is a short, dash-bearing product token —
+short because ids travel in every result row and in every client query,
+and dash-bearing because that is the property clients observe:
 
-- the writable namespace's segment is `relate-neo4j`
-  (ids `4:relate-neo4j:n5`, `5:relate-neo4j:r9`)
-- the ontology namespace's segment is `relate-system-ontologies`
+- the writable namespace's segment is `rl-id`
+  (ids `4:rl-id:n5`, `5:rl-id:r9`)
+- the ontology namespace's segment is `rl-onto`
 - `system` still has no elements and no segment
 
 The three-part `<kind>:<segment>:<n|r><id>` shape, the shared parser, and
@@ -42,8 +44,9 @@ element id contains a dash.
 ## Alternatives considered
 
 - Emit a fixed UUID as the segment, byte-shaped like Neo4j's. Rejected: a
-  fabricated UUID claims an identity the store does not have; an honest
-  database name is debuggable and carries the same dash.
+  fabricated UUID claims an identity the store does not have, and a long
+  segment pays its bytes on every row; a short honest token carries the
+  same dash.
 - Keep `relate` and accept only the third segment changing. Rejected: the
   third segment is the parsed entity reference; a dash there breaks the
   engine's own decoder for no benefit.
@@ -54,8 +57,9 @@ element id contains a dash.
 ## Consequences
 
 Clients that sniff the dash now take the element-id path and address the
-node actually clicked. Clients that matched the literal `relate` segment
-must move to `relate-neo4j`; `db.nameFromElementId` and
+node actually clicked. Clients that matched an earlier segment spelling
+(`relate`, or the first proposed `relate-neo4j`) must move to `rl-id`;
+`db.nameFromElementId` and
 `graph.byElementId` follow the shared table and keep their failures for
 anything else. ADR-0116's pre-rename `cypherlite` spelling remains as
 written; this ADR is the current record.
