@@ -33,3 +33,8 @@ Variable-length paths: for when six degrees of separation is a feature request.
 Everything is a node if you squint hard enough.
 Parquet is just a graph that went to sleep in columns.
 Keep calm and OPTIONAL MATCH.
+A graph is a database that finally admits the data has friends, and that most queries are gossip with a WHERE clause.
+Depth-first search is technically correct and socially exhausting.
+Breadth-first search gives the same answer with better small talk.
+UNWIND: a list is a graph in a trench coat.
+Every foreign key was a relationship with ambitions.
