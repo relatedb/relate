@@ -649,7 +649,17 @@ docker:
 ifdef DOCKER_PREBUILT_DIR
 	cp $(DOCKER_PREBUILT_DIR)/relate $(DOCKER_PREBUILT_DIR)/entrypoint target/docker-prebuilt/
 endif
-	docker build $(DOCKER_BUILD_FLAGS) $(if $(DOCKER_PREBUILT_DIR),--build-arg BINARY_SOURCE=prebuilt,) -t relate-bolt:$(VERSION) -t relate-bolt:latest .
+	token="$${GH_TOKEN:-$${GITHUB_TOKEN:-}}"; \
+	secret=""; \
+	gha=""; \
+	if [ -n "$$token" ] && [ "$$token" != "GITHUB_TOKEN" ] && [ "$$token" != "GH_TOKEN" ]; then \
+		export GITHUB_TOKEN="$$token"; \
+		secret="--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN"; \
+	fi; \
+	if [ "$${GITHUB_ACTIONS:-}" = "true" ]; then \
+		gha="--build-arg GITHUB_ACTIONS=true"; \
+	fi; \
+	docker build $$secret $$gha $(DOCKER_BUILD_FLAGS) $(if $(DOCKER_PREBUILT_DIR),--build-arg BINARY_SOURCE=prebuilt,) -t relate-bolt:$(VERSION) -t relate-bolt:latest .
 
 ## prebuilt: Stage the relate binary for the current commit into
 ##   target/.prebuilt/<sha>[-dirty]/<profile>/ (ADR-0251 §5,

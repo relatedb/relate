@@ -101,7 +101,16 @@ if ! docker image inspect "$PRODUCT_IMAGE" >/dev/null 2>&1; then
          "of it)" >&2
     exit 1
 fi
-docker build -f db-lazyfs.Dockerfile -t "$DB_IMAGE" .
+build_args=(build -f db-lazyfs.Dockerfile -t "$DB_IMAGE")
+token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -n "$token" ] && [ "$token" != "GITHUB_TOKEN" ] && [ "$token" != "GH_TOKEN" ]; then
+    export GITHUB_TOKEN="$token"
+    build_args+=(--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN)
+fi
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    build_args+=(--build-arg GITHUB_ACTIONS=true)
+fi
+docker "${build_args[@]}" .
 
 # --- 3. Host semantics probe: the lane's first-run probe, every run ------
 # Certifies THIS host's fault semantics (fsynced bytes reach the backing

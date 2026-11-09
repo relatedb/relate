@@ -23,18 +23,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git config --system --add safe.directory /workspace
 
 # Rust 1.88.0 matches rust-toolchain.toml. nextest is the CI test runner.
-# nextest publishes one tarball per arch. `linux` is x86_64; `linux-arm` is aarch64.
-RUN arch="$(uname -m)" \
+# get.nexte.st redirects to an anonymous GitHub release. The tarball is
+# fetched through scripts/github-download.sh (BuildKit secret when the
+# host has GITHUB_TOKEN; anonymous only outside GitHub Actions).
+ARG GITHUB_ACTIONS=
+RUN --mount=type=bind,from=scripts,source=github-download.sh,target=/tmp/github-download.sh \
+    --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    arch="$(uname -m)" \
     && case "$arch" in \
-        x86_64) nexte_slug=linux ;; \
-        aarch64|arm64) nexte_slug=linux-arm ;; \
+        x86_64) nexte_triple=x86_64-unknown-linux-gnu ;; \
+        aarch64|arm64) nexte_triple=aarch64-unknown-linux-gnu ;; \
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac \
+    && if [ -s /run/secrets/GITHUB_TOKEN ]; then export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; fi \
+    && export GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
     && curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain 1.88.0 --profile minimal \
             --component rustfmt,clippy \
-    && curl -LsSf "https://get.nexte.st/0.9.87/${nexte_slug}" \
-        | tar zxf - -C /root/.cargo/bin \
+    && sh /tmp/github-download.sh \
+        --repo nextest-rs/nextest \
+        --tag cargo-nextest-0.9.87 \
+        --asset "cargo-nextest-0.9.87-${nexte_triple}.tar.gz" \
+        -o /tmp/nextest.tar.gz \
+    && sh /tmp/github-download.sh \
+        --repo nextest-rs/nextest \
+        --tag cargo-nextest-0.9.87 \
+        --asset "cargo-nextest-0.9.87-${nexte_triple}.sha256" \
+        -o /tmp/nextest.sha256 \
+    && expected="$(awk '{print $1; exit}' /tmp/nextest.sha256)" \
+    && actual="$(sha256sum /tmp/nextest.tar.gz | awk '{print $1}')" \
+    && [ -n "$expected" ] && [ "$expected" = "$actual" ] \
+    && mkdir -p /tmp/nextest-unpack \
+    && tar -xzf /tmp/nextest.tar.gz -C /tmp/nextest-unpack \
+    && install -m 0755 "$(find /tmp/nextest-unpack -type f -name cargo-nextest | head -n 1)" /root/.cargo/bin/cargo-nextest \
+    && rm -rf /tmp/nextest.tar.gz /tmp/nextest.sha256 /tmp/nextest-unpack \
     && rustc --version \
     && cargo nextest --version
 

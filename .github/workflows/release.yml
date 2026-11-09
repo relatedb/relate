@@ -31,6 +31,9 @@ concurrency:
 # environment hash is untouched.
 env:
   DO_NOT_TRACK: "1"
+  # wasm-bindgen and binaryen install scripts. The job token has to be
+  # in the environment or those downloads stay anonymous.
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   release-owner:

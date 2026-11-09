@@ -72,15 +72,25 @@ ARG BINARY_SOURCE=build
 # ring's assembly glue needs.
 # --- chef base: toolchain + the two pinned build tools -----------------------
 FROM rust:1.88-alpine AS chef
-RUN apk add --no-cache build-base ca-certificates curl
+RUN apk add --no-cache build-base ca-certificates curl python3
 # sccache wraps rustc and cache-keys on content hash — cargo's own
 # fingerprints are mtime-based and `COPY . .` refreshes every mtime, so
 # without it every build recompiled the world even with a warm target
 # cache (measured in CI: restored cache, full rebuild). Version + sha256
-# pinned.
+# pinned. The tarball is a GitHub release; github-download.sh uses the
+# API when the BuildKit secret is present. python3 reads the asset list.
+ARG GITHUB_ACTIONS=
 ARG SCCACHE_VERSION=0.12.0
 ARG SCCACHE_SHA256=b0e89ead6899224a4ba2b90e9073bf1ce036d95bab30f3dc33c1e1468bc4ad44
-RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/sccache.tgz \
+RUN --mount=type=bind,source=scripts/github-download.sh,target=/tmp/github-download.sh \
+    --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    if [ -s /run/secrets/GITHUB_TOKEN ]; then export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; fi \
+    && export GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
+    && sh /tmp/github-download.sh \
+        --repo mozilla/sccache \
+        --tag "v${SCCACHE_VERSION}" \
+        --asset "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+        -o /tmp/sccache.tgz \
     && echo "${SCCACHE_SHA256}  /tmp/sccache.tgz" | sha256sum -c - \
     && tar -xzf /tmp/sccache.tgz --strip-components=1 -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
     && rm /tmp/sccache.tgz && sccache --version

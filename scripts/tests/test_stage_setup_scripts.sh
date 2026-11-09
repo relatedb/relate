@@ -179,4 +179,21 @@ topology_policy "$ROOT/docs/api/bolt/examples/_topology.py" >"$sandbox/policy-ex
 cmp -s "$sandbox/policy-tests" "$sandbox/policy-examples"
 tap_check "the two _topology.py policy texts are identical" $?
 
+# --- github-download.sh: Actions never falls back to an anonymous GET ----
+
+# A missing token, and the Sonic literal-name forward, both refuse to
+# curl. These cases exit before any network call.
+tap_run_failure \
+  "github-download refuses an anonymous GET in GitHub Actions" \
+  env -u GH_TOKEN GITHUB_ACTIONS=true GITHUB_TOKEN= \
+  sh "$ROOT/scripts/github-download.sh" --repo mozilla/sccache --tag v0.19.0 --asset sccache.tar.gz -o "$sandbox/out"
+tap_run_failure \
+  "github-download treats a literal GITHUB_TOKEN forward as unset" \
+  env -u GH_TOKEN GITHUB_ACTIONS=true GITHUB_TOKEN=GITHUB_TOKEN \
+  sh "$ROOT/scripts/github-download.sh" --repo mozilla/sccache --tag v0.19.0 --asset sccache.tar.gz -o "$sandbox/out"
+tap_run_failure \
+  "github-download rejects a raw URL that is not raw.githubusercontent.com" \
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_ACTIONS \
+  sh "$ROOT/scripts/github-download.sh" --raw https://example.com/file -o "$sandbox/out"
+
 tap_done

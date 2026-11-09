@@ -59,7 +59,10 @@ grep -q 'test result: ok' "$W/suite.log" || fail "suite"
 
 log "phase 2: manual docker EE source with the northwind dump"
 DUMP="$W/northwind-50.dump"
-curl -fsSL -o "$DUMP" https://raw.githubusercontent.com/neo4j-graph-examples/northwind/main/data/northwind-50.dump || fail "dump download"
+repo="$(cd "$(dirname "$0")/../../.." && pwd)"
+sh "$repo/scripts/github-download.sh" \
+  --raw https://raw.githubusercontent.com/neo4j-graph-examples/northwind/main/data/northwind-50.dump \
+  -o "$DUMP" || fail "dump download"
 echo "3aef3fdf2f9e6a7e6e813d7fcd4e46a8ea7e75573ee7d4fb84f6884ec1f66b9f  $DUMP" | shasum -a 256 -c - >/dev/null 2>&1 || fail "dump sha mismatch"
 docker rm -f nw-src >/dev/null 2>&1; docker volume rm nw-src-vol >/dev/null 2>&1
 docker volume create nw-src-vol >/dev/null || fail "volume"

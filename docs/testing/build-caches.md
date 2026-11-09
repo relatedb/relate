@@ -122,7 +122,7 @@ checkout's source mtimes invalidate the restored target dir, so the three
 gates now run as steps of the job that compiled them.
 
 The fresh-checkout mtime invalidation is handled for the shared-key jobs by
-**sccache** (`mozilla-actions/sccache-action`, GHA backend, `RUSTC_WRAPPER=sccache`)
+**sccache** (`scripts/install-sccache.sh`, GHA backend, `RUSTC_WRAPPER=sccache`)
 set up by the composite preamble before the cache step — see
 [ADR-0331](../adr/0331-sccache-over-mtime-normalization.md) for the mechanism,
 the correctness argument, and why it replaces the earlier (unsound)
