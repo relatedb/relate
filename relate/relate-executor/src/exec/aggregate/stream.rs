@@ -6,8 +6,8 @@
 //! one recursive evaluator in its discovery mode, so the sites are exactly
 //! the calls the evaluator reaches. Each site gets one accumulator per
 //! group ([`GroupAccs`]): a non-retaining aggregate (`count`, `sum`, `avg`,
-//! `min`, `max`, `stDev`, `stDevP`) keeps constant-size state and never an
-//! operand value; only `collect`, the percentiles and DISTINCT calls retain
+//! `min`, `max`, `stDev`, `stDevP`, DISTINCT or not) keeps constant-size state
+//! (plus a DISTINCT call's seen-set) and never an operand value; only `collect` and the percentiles retain
 //! their operands, charged to the expression budget as a retaining
 //! container. [`GroupAccs::finish`] resolves every site once, and the
 //! evaluator reads the results back from the [`FoldedGroup`].
@@ -19,6 +19,7 @@ use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::{classify_aggregate, AggregateArity, AggregateKind, Expr};
 use relate_names::SmallName;
 
+use crate::distinct_set::DistinctSet;
 use crate::eval::{eval, fold_aggregate, FoldInput, StreamFold};
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
@@ -31,14 +32,12 @@ use super::eval::{agg_eval, AggScope};
 struct Call<'e> {
     kind: AggregateKind,
     name: &'e SmallName,
-    distinct: bool,
     operand: &'e Expr,
     /// The percentile argument of a `PercentilePair` call.
     percentile: Option<&'e Expr>,
 }
 
 /// One site's per-group state.
-#[derive(Clone)]
 enum SiteAcc<'e> {
     CountStar(i64),
     /// A non-retaining aggregate: constant-size state, independent of the
@@ -49,13 +48,20 @@ enum SiteAcc<'e> {
         /// The peak payload bytes of the one value a `min`/`max` keeps,
         /// already charged ([`GroupAccs::settle`]).
         held: u64,
+        /// A DISTINCT call's seen-set: an operand folds only when it is
+        /// first seen, and is dropped at once; the set's keys are the
+        /// only per-distinct-value state.
+        seen: Option<DistinctSet>,
     },
-    /// `collect`, the percentiles and DISTINCT calls: the operands are the
+    /// `collect` and the percentiles (and their DISTINCT forms): the operands are the
     /// state, charged to the aggregation's running total as they settle.
     Retain {
         vals: Vec<Value>,
         /// How many of `vals` are already charged.
         charged: usize,
+        /// A DISTINCT call's seen-set: only first-seen operands reach
+        /// `vals`, so the state is proportional to the distinct values.
+        seen: Option<DistinctSet>,
         call: Call<'e>,
     },
     /// A lenient site (one only an `ORDER BY` key or HAVING reads) whose
@@ -71,7 +77,6 @@ enum SiteAcc<'e> {
     Rejected(Error),
 }
 
-#[derive(Clone)]
 struct Slot<'e> {
     /// The call's identity: the evaluator asks for its value by this
     /// reference.
@@ -82,6 +87,35 @@ struct Slot<'e> {
     /// contract ([`GroupSubclauses::having`], ADR-0458 §7).
     lenient: bool,
     acc: SiteAcc<'e>,
+}
+
+impl<'e> SiteAcc<'e> {
+    /// A fresh group's state from this template site: the same call, an
+    /// empty accumulator (a DISTINCT call's seen-set starts empty).
+    fn open(&self) -> SiteAcc<'e> {
+        match self {
+            Self::CountStar(_) => Self::CountStar(0),
+            Self::Stream {
+                fold,
+                call,
+                held,
+                seen,
+            } => Self::Stream {
+                fold: fold.clone(),
+                call: *call,
+                held: *held,
+                seen: seen.as_ref().map(|_| DistinctSet::default()),
+            },
+            Self::Retain { seen, call, .. } => Self::Retain {
+                vals: Vec::new(),
+                charged: 0,
+                seen: seen.as_ref().map(|_| DistinctSet::default()),
+                call: *call,
+            },
+            Self::Failed(error) => Self::Failed(error.clone()),
+            Self::Rejected(error) => Self::Rejected(error.clone()),
+        }
+    }
 }
 
 impl SiteAcc<'_> {
@@ -95,14 +129,29 @@ impl SiteAcc<'_> {
     ) -> Result<()> {
         match self {
             Self::CountStar(n) => *n += 1,
-            Self::Stream { fold, call, .. } => {
+            Self::Stream {
+                fold, call, seen, ..
+            } => {
                 graph.cancel_tick()?;
                 let value = eval(graph, row, call.operand, params, cypher_version)?;
-                call.name.with_str(|name| fold.offer(value, name))?;
+                if seen
+                    .as_mut()
+                    .map_or(Ok(true), |seen| seen.insert_value(&value))?
+                {
+                    call.name.with_str(|name| fold.offer(value, name))?;
+                }
             }
-            Self::Retain { vals, call, .. } => {
+            Self::Retain {
+                vals, seen, call, ..
+            } => {
                 graph.cancel_tick()?;
-                vals.push(eval(graph, row, call.operand, params, cypher_version)?);
+                let value = eval(graph, row, call.operand, params, cypher_version)?;
+                if seen
+                    .as_mut()
+                    .map_or(Ok(true), |seen| seen.insert_value(&value))?
+                {
+                    vals.push(value);
+                }
             }
             Self::Failed(_) | Self::Rejected(_) => {}
         }
@@ -160,7 +209,18 @@ impl<'e> AggSites<'e> {
 
     /// A fresh group's accumulators.
     pub(crate) fn open_group(&self) -> GroupAccs<'e> {
-        self.template.clone()
+        GroupAccs {
+            slots: self
+                .template
+                .slots
+                .iter()
+                .map(|slot| Slot {
+                    expr: slot.expr,
+                    lenient: slot.lenient,
+                    acc: slot.acc.open(),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -199,30 +259,30 @@ fn site_acc(expr: &Expr) -> Result<SiteAcc<'_>> {
     let call = Call {
         kind,
         name,
-        distinct,
         operand: &args[0],
         percentile: args.get(1),
     };
     // `min`/`max` ignore DISTINCT (the extreme of the distinct values is the
-    // extreme of the values), so they stream either way; every other
-    // DISTINCT call needs its seen-set and retains.
-    let streams = !distinct || matches!(kind, AggregateKind::Min | AggregateKind::Max);
-    Ok(match StreamFold::for_kind(kind).filter(|_| streams) {
+    // extreme of the values), so they need no seen-set; every other
+    // streaming DISTINCT call folds an operand when its seen-set admits it.
+    let dedups = distinct && !matches!(kind, AggregateKind::Min | AggregateKind::Max);
+    Ok(match StreamFold::for_kind(kind) {
         Some(fold) => SiteAcc::Stream {
             fold,
             call,
             held: 0,
+            seen: dedups.then(DistinctSet::default),
         },
         None => SiteAcc::Retain {
             vals: Vec::new(),
             charged: 0,
+            seen: distinct.then(DistinctSet::default),
             call,
         },
     })
 }
 
 /// One group's accumulators, one per site.
-#[derive(Clone)]
 pub(crate) struct GroupAccs<'e> {
     slots: Vec<Slot<'e>>,
 }
@@ -330,11 +390,11 @@ impl<'e> GroupAccs<'e> {
 }
 
 /// A retaining site's result: the percentile argument is validated first,
-/// DISTINCT dedups in first-seen order under the one `dedup_first_seen`
-/// policy, and the shared per-kind fold finishes.
+/// and the shared per-kind fold finishes the operands (`collect` and
+/// the percentiles).
 fn finish_retained(
     graph: &ExecGraph<'_>,
-    mut vals: Vec<Value>,
+    vals: Vec<Value>,
     call: Call<'_>,
     seed: Option<&Row>,
     params: &BTreeMap<String, Value>,
@@ -365,9 +425,6 @@ fn finish_retained(
                 .with_str(|text| FoldInput::percentile(call.kind, p, text))?
         }
     };
-    if call.distinct {
-        vals = crate::distinct_set::dedup_first_seen(vals)?;
-    }
     call.name.with_str(|text| fold_aggregate(input, text, vals))
 }
 

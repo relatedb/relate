@@ -65,6 +65,14 @@ check-boundaries: 28 packages, 77 edges checked, 2 violations
 | 1 | One or more violations, each printed as `<from-pkg> -> <to-pkg> (<dep-kind>): <rule id>` or `<pkg> (<dir>): R5` |
 | 2 | Usage error or `cargo metadata` failure |
 
+### Executor `Vec<Row>` guard (ADR-0555)
+
+`check-boundaries` also fails when a non-test fn under
+`relate/relate-executor/src` returns `Vec<Row>` or `Result<Vec<Row>>` and is
+not listed in [`row_vec_allowlist.txt`](row_vec_allowlist.txt) (one
+`<file>::<fn> # <reason>` per line), or when a listed fn no longer exists, so
+the list only shrinks. Violations print as `<file>::<fn>: <reason>`, exit 1.
+
 ## Environment
 
 | Variable | Description |

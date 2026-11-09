@@ -31,6 +31,9 @@ From the Review Questions:
 - Did the diff introduce casts, optionality, or ad-hoc shapes that
   obscure the real invariant?
 - Is orchestration more sequential or less atomic than it needs to be?
+- For each new operator, clause arm, rung or kernel signature: does
+  memory scale with output cardinality (e.g. returns `Vec<Row>`)? If so,
+  name the breaker that bounds it (ADR-0555).
 
 From Flag Aggressively:
 

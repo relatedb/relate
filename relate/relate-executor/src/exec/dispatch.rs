@@ -1,6 +1,7 @@
 //! Clause dispatchers: `run_clauses` (write path) and
 //! `execute_part_read_seeded` (read path).
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 // `web_time` on wasm32: `std::time::Instant::now()` traps on
@@ -18,6 +19,7 @@ use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::aggregate::Aggregation;
 use super::call::{
     concluding_part_result, exec_call_subquery, exec_conditional, exec_load_csv, SubquerySpec,
 };
@@ -31,8 +33,12 @@ use super::ddl::{exec_create_index, exec_drop_index};
 use super::exists_probe::try_fold_boolean_count;
 use super::foreach::exec_foreach;
 use super::match_clause::{run_match_operator_ladder, MatchOperator};
+use super::order::OrderKeys;
+use super::pattern_policies::RowFold;
 use super::procedures::{exec_call, CallSpec};
-use super::project::{project_rows, return_result, streams_from_unwind, ProjectSpec, RowSource};
+use super::project::{
+    open_match_fold, project_rows, return_result, streams_into_projection, ProjectSpec, RowSource,
+};
 use super::pushdown::{
     live_from, match_limit_cap, trim_rows, try_fold_one_hop_aggs, try_fold_path_aggs, FoldedReturn,
 };
@@ -172,6 +178,13 @@ fn run_clauses_mode(
     // and PROFILE position, so each streamed `UNWIND` reports its own facts
     // once the consumer has drained it.
     let mut pending_unwind: Option<ParkedUnwind<'_>> = None;
+    // A `MATCH` whose consumer folds an aggregation streams its rows into it
+    // as they are emitted; the aggregation waits here for that consumer. Its
+    // `ORDER BY` plan is borrowed for as long as it lives, so it sits in a
+    // cell declared first (dropped last): one streamed `MATCH` per part, any
+    // later one takes the held path.
+    let fold_order: OnceCell<OrderKeys<'_>> = OnceCell::new();
+    let mut pending_fold: Option<Aggregation<'_>> = None;
     while clause_i < clauses.len() {
         let i = clause_i;
         let clause = &clauses[i];
@@ -373,6 +386,18 @@ fn run_clauses_mode(
                                 )?
                             };
                             let projection = clauses.get(i + 1).and_then(sinkable_projection);
+                            let fold = if cap.is_none() && !*optional {
+                                open_match_fold(
+                                    graph,
+                                    clauses.get(i + 1),
+                                    &fold_order,
+                                    params,
+                                    qctx.cypher_version,
+                                    scope,
+                                )?
+                            } else {
+                                None
+                            };
                             // The operator ladder — batch chain
                             // (ADR-0468), contracted kernel (ADR-0473),
                             // per-row walker, first taker owns the clause
@@ -388,8 +413,17 @@ fn run_clauses_mode(
                                 &mut cap,
                                 projection.as_ref(),
                                 &clauses[i + 1..],
+                                fold.as_ref().map(|f| f as &dyn RowFold),
                             )?;
                             rows = ladder_rows;
+                            let folded = fold.is_some();
+                            if let Some(fold) = fold {
+                                let (aggregation, offered) = fold.into_parts();
+                                pending_fold = Some(aggregation);
+                                if let Some(tick) = metrics_tick.as_mut() {
+                                    tick.streamed_rows = Some(offered);
+                                }
+                            }
                             // The ladder's one returned value; the tick
                             // projects both PROFILE facts from it below.
                             clause_operator = Some(operator);
@@ -414,7 +448,7 @@ fn run_clauses_mode(
                             // exclusion list re-derived from operator
                             // identity. The refusal fires at ~the cap
                             // with the crossing row's honest figure.
-                            if operator.hands_dispatch_a_finished_container() {
+                            if !folded && operator.hands_dispatch_a_finished_container() {
                                 charge_finished_container(graph, &rows)?;
                             }
                         }
@@ -440,7 +474,7 @@ fn run_clauses_mode(
             Clause::Remove { items } => {
                 rows = exec_remove(graph, rows, items, params, qctx)?;
             }
-            Clause::Unwind { expression, alias } if unwind_streams_into(clauses.get(i + 1)) => {
+            Clause::Unwind { expression, alias } if streams_into_projection(clauses.get(i + 1)) => {
                 let stats = Rc::new(UnwindStats::new(profile.is_some()));
                 pending_unwind = Some(ParkedUnwind {
                     feed: UnwindFeed::new(
@@ -528,7 +562,7 @@ fn run_clauses_mode(
                 where_clause,
                 ..
             } => {
-                let (feed, parked) = take_feed(&mut pending_unwind, &mut rows);
+                let (feed, parked) = take_feed(&mut pending_unwind, &mut pending_fold, &mut rows);
                 rows = project_rows(
                     ExecCtx::new(graph, params, qctx.cypher_version),
                     feed,
@@ -561,7 +595,7 @@ fn run_clauses_mode(
                 skip,
                 limit,
             } => {
-                let (feed, parked) = take_feed(&mut pending_unwind, &mut rows);
+                let (feed, parked) = take_feed(&mut pending_unwind, &mut pending_fold, &mut rows);
                 rows = project_rows(
                     ExecCtx::new(graph, params, qctx.cypher_version),
                     feed,
@@ -695,6 +729,10 @@ struct ProfileTick<'a> {
     /// Time a fused producer spent inside this arm and reports itself (a
     /// streamed `UNWIND`'s generator), excluded from this clause's time.
     excluded_ns: u128,
+    /// Rows a fused consumer took as they were emitted (a streamed `MATCH`
+    /// folds them into its aggregation): the clause's row count when its own
+    /// output holds none.
+    streamed_rows: Option<u64>,
 }
 
 impl Drop for ProfileTick<'_> {
@@ -737,6 +775,7 @@ fn profile_tick<'a>(graph: &'a ExecGraph<'a>, site: PlanMetricsSite<'a>) -> Prof
         graph,
         expression_built_bytes_start: ExpressionBytes::now(graph),
         excluded_ns: 0,
+        streamed_rows: None,
     }
 }
 
@@ -764,7 +803,7 @@ impl ProfileTick<'_> {
             stage: self.site.stage,
             part: self.site.part,
             clause,
-            rows: rows.len() as u64,
+            rows: self.streamed_rows.unwrap_or(rows.len() as u64),
             memory_bytes: rows_logical_bytes(rows),
             expression_built_bytes: ExpressionBytes::now(self.graph)
                 .since(self.expression_built_bytes_start),
@@ -782,49 +821,6 @@ impl ProfileTick<'_> {
             frontier: super::frontier_counters().since(self.frontier),
             frontier_decline: super::take_frontier_decline(),
         });
-    }
-}
-
-/// Whether the clause after an `UNWIND` consumes its rows as a stream: a
-/// `WITH` or `RETURN` whose projection folds an aggregation as rows arrive.
-/// Every other follower takes the rows as a held vector, as ever.
-fn unwind_streams_into(next: Option<&Clause>) -> bool {
-    match next {
-        Some(Clause::With {
-            distinct,
-            group_by,
-            items,
-            order,
-            skip,
-            limit,
-            where_clause,
-            ..
-        }) => streams_from_unwind(&ProjectSpec {
-            items,
-            distinct: *distinct,
-            group_by: group_by.as_deref(),
-            order,
-            skip,
-            limit,
-            where_clause: where_clause.as_ref(),
-        }),
-        Some(Clause::Return {
-            distinct,
-            group_by,
-            items,
-            order,
-            skip,
-            limit,
-        }) => streams_from_unwind(&ProjectSpec {
-            items,
-            distinct: *distinct,
-            group_by: group_by.as_deref(),
-            order,
-            skip,
-            limit,
-            where_clause: None,
-        }),
-        _ => false,
     }
 }
 
@@ -849,13 +845,17 @@ struct ParkedUnwind<'a> {
     facts: UnwindFacts<'a>,
 }
 
-/// The feed a `WITH`/`RETURN` consumes: the parked generator when an
-/// `UNWIND` was fused into it (with the facts to report once it is drained),
-/// otherwise the held rows.
+/// The feed a `WITH`/`RETURN` consumes: the aggregation a `MATCH` folded its
+/// rows into, the parked generator when an `UNWIND` was fused into it (with
+/// the facts to report once it is drained), otherwise the held rows.
 fn take_feed<'a>(
     pending: &mut Option<ParkedUnwind<'a>>,
+    folded: &mut Option<Aggregation<'a>>,
     rows: &mut Vec<Row>,
 ) -> (RowFeed<'a>, Option<UnwindFacts<'a>>) {
+    if let Some(aggregation) = folded.take() {
+        return (RowFeed::Folded(Box::new(aggregation)), None);
+    }
     match pending.take() {
         Some(ParkedUnwind { feed, facts }) => (RowFeed::Unwind(feed), Some(facts)),
         None => (RowFeed::Held(std::mem::take(rows)), None),

@@ -54,11 +54,13 @@ fn only_retaining_aggregates_charge_per_row() {
     }
 }
 
-/// A DISTINCT call needs its seen-set, so it retains even where the plain
-/// call streams — except `min`/`max`, whose extreme ignores duplicates.
+/// A DISTINCT call that has a streaming accumulator keeps no operand per
+/// distinct key: the seen-set's keys are the only per-value state, so a
+/// 100,000-distinct-value group passes a cap that `collect(DISTINCT)`
+/// (which retains its operands) crosses.
 #[test]
-fn distinct_aggregates_retain_except_min_and_max() {
-    let cap = 1_024;
+fn distinct_streaming_aggregates_retain_no_operands() {
+    let cap = 64 * 1_024;
     let mut g = Graph::default();
     g.configure_expression_memory_limit(Some(cap));
     let graph = ExecGraph::read(&g);
@@ -68,15 +70,45 @@ fn distinct_aggregates_retain_except_min_and_max() {
         distinct: true,
         args: vec![Expr::Variable("x".into())],
     };
-    for name in ["count", "sum", "avg", "stDev"] {
-        let error =
-            agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new(), None).unwrap_err();
-        assert_expression_cap(&error, cap);
-    }
-    for name in ["min", "max"] {
+    for name in ["count", "sum", "avg", "stDev", "min", "max"] {
         agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new(), None)
             .unwrap_or_else(|error| panic!("{name}(DISTINCT) streams, yet refused: {error}"));
     }
+    let error =
+        agg_eval_rows(&graph, &group, &distinct("collect"), &BTreeMap::new(), None).unwrap_err();
+    assert_expression_cap(&error, cap);
+}
+
+/// A DISTINCT call folds only first-seen operands through its seen-set, so
+/// its state is proportional to the distinct values: `count(DISTINCT x)`
+/// over 200,000 rows of 10 distinct values stays under a 64 KiB cap that a
+/// non-DISTINCT `collect` and a `collect(DISTINCT)` over distinct operands
+/// both cross.
+#[test]
+fn distinct_state_is_proportional_to_distinct_values() {
+    let cap = 64 * 1_024;
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(cap));
+    let graph = ExecGraph::read(&g);
+    let few = group_with_xs(&(0..200_000).map(|i| i % 10).collect::<Vec<_>>());
+    let distinct = |name: &str| Expr::Function {
+        name: name.into(),
+        distinct: true,
+        args: vec![Expr::Variable("x".into())],
+    };
+    let counted = agg_eval_rows(&graph, &few, &distinct("count"), &BTreeMap::new(), None)
+        .expect("ten distinct values fit the cap");
+    assert_eq!(counted, Value::Int(10));
+    let collected = agg_eval_rows(&graph, &few, &distinct("collect"), &BTreeMap::new(), None)
+        .expect("ten distinct values fit the cap");
+    assert!(matches!(collected, Value::List(items) if items.len() == 10));
+    let error =
+        agg_eval_rows(&graph, &few, &agg_fn("collect"), &BTreeMap::new(), None).unwrap_err();
+    assert_expression_cap(&error, cap);
+    let many = group_with_xs(&(0..200_000).collect::<Vec<_>>());
+    let error =
+        agg_eval_rows(&graph, &many, &distinct("collect"), &BTreeMap::new(), None).unwrap_err();
+    assert_expression_cap(&error, cap);
 }
 
 /// LABS-802 / ADR-0499: a retaining fold keeps the exact cumulative charge.

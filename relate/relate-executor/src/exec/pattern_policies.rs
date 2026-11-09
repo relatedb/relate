@@ -40,6 +40,7 @@
 //! crate's lowest shared tier, not this exec-level one.
 
 use crate::UsedSet;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{NodeId, RelId, Result, Value};
@@ -50,6 +51,7 @@ use crate::eval::{candidate_passes, expr_vars};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::aggregate::Aggregation;
 use super::match_cap::MatchCap;
 use super::sink::{finish_match_row, SinkProjection};
 
@@ -387,18 +389,78 @@ fn element_binding_names(element: &PatternElement, out: &mut HashSet<String>) {
     out.extend(names);
 }
 
+/// What a row that passed the reduce's checks becomes.
+pub(crate) enum ReduceSink<'a> {
+    /// The filter-only reduce `match_clause` builds when a cap rides a
+    /// `WHERE`-bearing walk without a sink projection (LABS-853): the
+    /// clause filter runs once, in the sink, ahead of the cap's count.
+    Filter,
+    /// The projected row is stored.
+    Project(&'a SinkProjection<'a>),
+    /// The streamed-aggregation sink: the raw row is offered to the fold
+    /// and not returned, so the clause collects nothing.
+    Fold(&'a dyn RowFold),
+}
+
+impl<'a> ReduceSink<'a> {
+    /// The sink a clause's projection and fold select; a fold excludes a
+    /// projection (the consumer folds the raw row).
+    pub(crate) fn select(
+        projection: Option<&'a SinkProjection<'a>>,
+        fold: Option<&'a dyn RowFold>,
+    ) -> Self {
+        match (fold, projection) {
+            (Some(fold), _) => Self::Fold(fold),
+            (None, Some(projection)) => Self::Project(projection),
+            (None, None) => Self::Filter,
+        }
+    }
+}
+
 /// What the last pattern of a `MATCH` evaluates before a row is stored
 /// — the plain spec bundle `reduce_row` reads (moved from `expand`, the
-/// home every consumer already reaches). `projection` is `None` for the
-/// filter-only reduce `match_clause` builds when a cap rides a
-/// `WHERE`-bearing walk without a sink projection (LABS-853): the clause
-/// filter then runs once, in the sink, ahead of the cap's count.
+/// home every consumer already reaches).
 pub(crate) struct MatchReduce<'a> {
-    pub projection: Option<&'a SinkProjection<'a>>,
+    pub sink: ReduceSink<'a>,
     pub patterns: &'a [PathPattern],
     pub where_clause: Option<&'a Expr>,
     pub params: &'a BTreeMap<String, Value>,
     pub cypher_version: Option<u32>,
+}
+
+/// A consumer that takes a `MATCH`'s finished rows one at a time instead of
+/// the clause collecting them. Object-safe so [`MatchReduce`] carries it
+/// without naming the aggregation's lifetime.
+pub(crate) trait RowFold {
+    fn offer(&self, graph: &ExecGraph<'_>, row: Row) -> Result<()>;
+}
+
+/// The `MATCH` output folded into an [`Aggregation`] as it is emitted, with
+/// the count of rows it took (the clause's PROFILE row count).
+pub(crate) struct MatchFold<'a> {
+    aggregation: RefCell<Aggregation<'a>>,
+    offered: Cell<u64>,
+}
+
+impl<'a> MatchFold<'a> {
+    pub(crate) fn new(aggregation: Aggregation<'a>) -> Self {
+        Self {
+            aggregation: RefCell::new(aggregation),
+            offered: Cell::new(0),
+        }
+    }
+
+    /// The aggregation holding every offered row, and how many there were.
+    pub(crate) fn into_parts(self) -> (Aggregation<'a>, u64) {
+        (self.aggregation.into_inner(), self.offered.get())
+    }
+}
+
+impl RowFold for MatchFold<'_> {
+    fn offer(&self, graph: &ExecGraph<'_>, row: Row) -> Result<()> {
+        self.offered.set(self.offered.get() + 1);
+        self.aggregation.borrow_mut().offer(graph, row)
+    }
 }
 
 /// The matched-rows payload: each surviving row with its used-rel set
@@ -489,9 +551,9 @@ impl MatchTail<'_> {
     ) -> Result<Option<Row>> {
         // the one spelling of the count, at its one load-bearing
         // position per arm
-        let count = |cap: Option<&mut MatchCap<'_>>| -> Result<()> {
+        let count = |cap: Option<&mut MatchCap<'_>>, row: &Row| -> Result<()> {
             if let Some(cap) = cap {
-                cap.offer(graph, &row)?;
+                cap.offer(graph, row)?;
             }
             Ok(())
         };
@@ -499,14 +561,19 @@ impl MatchTail<'_> {
             MatchTail::Finish {
                 reduce: Some(reduce),
             } => {
-                let Some(stored) = reduce_row(graph, &row, Some(*reduce))? else {
+                // a cap counts the pre-projection row the checks accepted,
+                // so only a capped tail keeps it past the reduce's move
+                let counted = cap.is_some().then(|| row.clone());
+                let Some(stored) = reduce_row(graph, row, Some(*reduce))? else {
                     return Ok(None);
                 };
-                count(cap)?;
+                if let Some(counted) = &counted {
+                    count(cap, counted)?;
+                }
                 Ok(Some(stored))
             }
             MatchTail::Finish { reduce: None } | MatchTail::Carry => {
-                count(cap)?;
+                count(cap, &row)?;
                 Ok(Some(row))
             }
         }
@@ -529,11 +596,11 @@ impl MatchTail<'_> {
 /// would emit by construction, not by hand-maintained copies agreeing.
 pub(crate) fn reduce_row(
     graph: &ExecGraph<'_>,
-    row: &Row,
+    row: Row,
     reduce: Option<&MatchReduce<'_>>,
 ) -> Result<Option<Row>> {
     let Some(reduce) = reduce else {
-        return Ok(Some(row.clone()));
+        return Ok(Some(row));
     };
     // the one filter policy — the same candidate_passes the walk's sink
     // and the ordinary MATCH projection consult
@@ -541,22 +608,26 @@ pub(crate) fn reduce_row(
         graph,
         reduce.patterns,
         reduce.where_clause,
-        row,
+        &row,
         reduce.params,
         reduce.cypher_version,
     )? {
         return Ok(None);
     }
-    let Some(projection) = reduce.projection else {
-        return Ok(Some(row.clone()));
-    };
-    Ok(Some(finish_match_row(
-        graph,
-        row,
-        projection,
-        reduce.params,
-        reduce.cypher_version,
-    )?))
+    match reduce.sink {
+        ReduceSink::Fold(fold) => {
+            fold.offer(graph, row)?;
+            Ok(None)
+        }
+        ReduceSink::Filter => Ok(Some(row)),
+        ReduceSink::Project(projection) => Ok(Some(finish_match_row(
+            graph,
+            &row,
+            projection,
+            reduce.params,
+            reduce.cypher_version,
+        )?)),
+    }
 }
 
 #[cfg(test)]

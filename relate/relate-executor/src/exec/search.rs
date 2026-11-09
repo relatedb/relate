@@ -621,6 +621,7 @@ fn direct_search_rows(
                 where_clause,
                 None,
                 None,
+                None,
             )?;
             if matched.is_empty() {
                 continue;
@@ -665,6 +666,7 @@ fn deferred_search_rows(
         false,
         match_mode,
         patterns,
+        None,
         None,
         None,
         None,

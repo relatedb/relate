@@ -41,7 +41,7 @@ use crate::overlay::RetainedTotal;
 use crate::row::Row;
 
 use super::super::graph_stats::GraphStats;
-use super::super::pattern_policies::{reduce_row, MatchReduce};
+use super::super::pattern_policies::{reduce_row, MatchReduce, ReduceSink, RowFold};
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
 use super::super::sink::SinkProjection;
 use super::super::{record_frontier_decline, record_walk_start};
@@ -74,6 +74,7 @@ pub(crate) fn try_frontier_rows(
     where_clause: Option<&Expr>,
     suffix: &[Clause],
     projection: Option<&SinkProjection<'_>>,
+    fold: Option<&dyn RowFold>,
 ) -> Result<Option<Vec<Row>>> {
     // The walker's admission shapes the specialized operators share: not
     // `OPTIONAL` (the null-binding arm is the walker's), one entering row
@@ -108,8 +109,8 @@ pub(crate) fn try_frontier_rows(
     else {
         return Ok(None);
     };
-    let reduce = projection.map(|projection| MatchReduce {
-        projection: Some(projection),
+    let reduce = (projection.is_some() || fold.is_some()).then_some(MatchReduce {
+        sink: ReduceSink::select(projection, fold),
         patterns,
         where_clause,
         params: ctx.params,
@@ -186,6 +187,11 @@ pub(crate) fn try_frontier_rows(
             // clause's recycled tables pass seed to seed, reclaimed
             // after each run's consumers are done.
             let pool = contract.pool;
+            let mut parked: Vec<(NodeId, NodeId)> = Vec::new();
+            // The parked pairs are output-cardinality memory: bill each to
+            // a retaining container so the per-value cap refuses them. The
+            // total is scoped to this arm, so it is released with `parked`.
+            let mut parked_bytes = ctx.graph.retain_bytes(0)?;
             for seed in seeds {
                 ctx.graph.cancel_tick()?;
                 let outcome = frontier::run(
@@ -207,14 +213,33 @@ pub(crate) fn try_frontier_rows(
                     walked: &walked,
                     reduce: reduce.as_ref(),
                 };
-                endpoint_rows(
-                    ctx,
-                    Admission::of(&contract.target),
-                    &pass,
-                    &mut out,
-                    &mut out_retained,
-                )?;
+                if fold.is_some() {
+                    // A fold takes rows irrevocably, and a later seed's run
+                    // can still decline (the walker then re-offers every
+                    // row): park the admitted pairs, offer once all served.
+                    let pred = Admission::of(&contract.target);
+                    for_each_admitted(ctx, pred, &walked.endpoints, |_, endpoint| {
+                        parked_bytes
+                            .add_bytes(ctx.graph, std::mem::size_of::<(NodeId, NodeId)>() as u64)?;
+                        parked.push((seed, endpoint));
+                        Ok(false)
+                    })?;
+                } else {
+                    endpoint_rows(
+                        ctx,
+                        Admission::of(&contract.target),
+                        &pass,
+                        &mut out,
+                        &mut out_retained,
+                    )?;
+                }
                 tables = walked.reclaim();
+            }
+            for (seed, endpoint) in parked {
+                ctx.graph.cancel_tick()?;
+                let mut row = rows[0].clone();
+                bind_boundary(&mut row, ctx, &contract, seed, endpoint);
+                emit_reduced_row(ctx, row, reduce.as_ref(), &mut out, &mut out_retained)?;
             }
         }
         // The consumer gate above already returned: the decoder answers
@@ -526,8 +551,7 @@ fn emit_reduced_row(
     out: &mut Vec<Row>,
     out_retained: &mut RetainedTotal,
 ) -> Result<()> {
-    let landed = reduce_row(ctx.graph, &source, reduce)?;
-    drop(source);
+    let landed = reduce_row(ctx.graph, source, reduce)?;
     if let Some(row) = landed {
         out_retained.add_row(ctx.graph, row.values())?;
         out.push(row);

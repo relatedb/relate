@@ -58,117 +58,176 @@ struct GroupState<'e> {
     accs: GroupAccs<'e>,
 }
 
-/// CIP-236: `group_by` carries explicit grouping keys when a GROUP BY
-/// clause is present. That is the *only* difference from the implicit
-/// form: the keys come from those expressions instead of being inferred
-/// from the non-aggregating projection items. `Some(&[])` is the empty
-/// grouping set (`GROUP BY ()`): one global group.
-pub(crate) fn aggregate_ex(
-    graph: &ExecGraph<'_>,
-    rows: RowFeed<'_>,
-    items: &[Projection],
-    group_by: Option<&[Expr]>,
-    params: &BTreeMap<String, Value>,
+/// One aggregating projection, fed a row at a time: [`Self::open`] does the
+/// plan setup, [`Self::offer`] folds one row into its group, and
+/// [`Self::finish`] emits the group rows (`ORDER BY` keys parked, HAVING
+/// applied). The graph is passed per call, as the accumulators take it.
+pub(crate) struct Aggregation<'a> {
+    items: &'a [Projection],
+    params: &'a BTreeMap<String, Value>,
     cypher_version: Option<u32>,
-    subclauses: &GroupSubclauses<'_>,
-) -> Result<Vec<Row>> {
-    let GroupSubclauses {
-        order,
-        having,
-        import_scope,
-    } = *subclauses;
-    // The grouping strategy is loop-invariant: decide once whether the key
-    // comes from the explicit `group_by` expressions or from the inferred
-    // non-aggregating projection items, then loop over rows.
-    let key_exprs = desugar_star_keys(
-        match group_by {
-            Some(keys) => keys.iter().map(Cow::Borrowed).collect(),
-            None => items
+    order: &'a OrderKeys<'a>,
+    having: Option<&'a Expr>,
+    import_scope: Option<&'a Row>,
+    key_exprs: Vec<Cow<'a, Expr>>,
+    star: bool,
+    account: bool,
+    sites: AggSites<'a>,
+    groups: IndexMap<Vec<GroupKey>, GroupState<'a>>,
+    groups_charge: relate_core::tokens::WorkspaceCharge,
+    meter: crate::workspace::GroupMapMeter,
+    retained: Option<crate::workspace::RetainedRows>,
+    input_charge: relate_core::tokens::WorkspaceCharge,
+    group_retained: crate::overlay::RetainedTotal,
+}
+
+impl<'a> Aggregation<'a> {
+    /// Plan setup. `group_by` (CIP-236) carries explicit grouping keys when
+    /// a GROUP BY clause is present; that is the only difference from the
+    /// implicit form, whose keys come from the non-aggregating projection
+    /// items. `Some(&[])` is the empty grouping set (`GROUP BY ()`): one
+    /// global group. `feed` supplies the first-row shape for the `*` key
+    /// desugar and, when held, the input vector to bill.
+    pub(crate) fn open(
+        graph: &ExecGraph<'_>,
+        feed: &RowFeed<'_>,
+        items: &'a [Projection],
+        group_by: Option<&'a [Expr]>,
+        params: &'a BTreeMap<String, Value>,
+        cypher_version: Option<u32>,
+        subclauses: &GroupSubclauses<'a>,
+    ) -> Result<Self> {
+        let GroupSubclauses {
+            order,
+            having,
+            import_scope,
+        } = *subclauses;
+        // The grouping strategy is loop-invariant: decide once whether the
+        // key comes from the explicit `group_by` expressions or from the
+        // inferred non-aggregating projection items.
+        let key_exprs = desugar_star_keys(
+            match group_by {
+                Some(keys) => keys.iter().map(Cow::Borrowed).collect(),
+                None => items
+                    .iter()
+                    .filter(|p| !is_agg_expr(&p.expr))
+                    .map(|p| Cow::Borrowed(&p.expr))
+                    .collect(),
+            },
+            feed.probe(),
+        );
+        // One row for an empty input only when there are no grouping keys
+        // at all: implicit grouping over an all-aggregate projection, an
+        // explicit empty grouping set (`GROUP BY ()`), or an explicit empty
+        // `ALL` (which lowers to no keys). An explicit non-empty key set
+        // has no group to emit for an empty input, so it yields zero rows --
+        // emitting the phantom global group there would invent a row with
+        // no key values. A `*` item counts as a key: it carries every
+        // in-scope variable (ADR-0198).
+        let keyless = key_exprs.is_empty();
+        // ADR-0198 ruling 1: with aggregation in play, a `*` item groups by
+        // all of the row's carried variables and projects them through to
+        // the output row alongside the aggregate aliases.
+        let star = has_star_item(items);
+        // The aggregate calls the projection evaluates — items, ORDER BY
+        // keys, HAVING — found once, so every group streams its input
+        // through constant-size accumulators instead of retaining its rows.
+        let sites = AggSites::discover(
+            graph,
+            items
                 .iter()
-                .filter(|p| !is_agg_expr(&p.expr))
-                .map(|p| Cow::Borrowed(&p.expr))
-                .collect(),
-        },
-        rows.probe(),
-    );
-    // One row for an empty input only when there are no grouping keys at
-    // all: implicit grouping over an all-aggregate projection, an explicit
-    // empty grouping set (`GROUP BY ()`), or an explicit empty `ALL` (which
-    // lowers to no keys). An explicit non-empty key set has no group to emit
-    // for an empty input, so it yields zero rows -- emitting the phantom
-    // global group there would invent a row with no key values. A `*` item
-    // counts as a key: it carries every in-scope variable (ADR-0198).
-    let keyless = key_exprs.is_empty();
-    // ADR-0198 ruling 1: with aggregation in play, a `*` item groups by all
-    // of the row's carried variables and projects them through to the
-    // output row alongside the aggregate aliases.
-    let star = has_star_item(items);
-    // The aggregate calls the projection evaluates — items, ORDER BY keys,
-    // HAVING — found once, so every group streams its input through
-    // constant-size accumulators instead of retaining its rows.
-    let sites = AggSites::discover(
-        graph,
-        items
-            .iter()
-            .filter(|p| !is_star_item(p) && is_agg_expr(&p.expr))
-            .map(|p| &p.expr),
-        order.exprs().chain(having),
-        params,
-        cypher_version,
-    )?;
-    let mut groups: IndexMap<Vec<GroupKey>, GroupState<'_>> = IndexMap::new();
-    let mut groups_charge = relate_core::tokens::WorkspaceCharge::empty();
-    let account = relate_core::tokens::workspace_accounting();
-    let mut meter = crate::workspace::GroupMapMeter::default();
-    // The input vector stays allocated until this loop finishes. Bill it up
-    // front, then hand each row's payload to the group map as it moves.
-    // A generated feed holds no input vector: nothing to bill, nothing to
-    // release row by row.
-    let mut retained = match &rows {
-        RowFeed::Held(held) if account => Some(crate::workspace::RetainedRows::measure(held)),
-        _ => None,
-    };
-    let mut input_charge = match &retained {
-        Some(retained) => {
-            let charge = relate_core::tokens::WorkspaceCharge::retain(retained.bytes())?;
-            relate_core::tokens::peak_hold("aggregation");
-            charge
+                .filter(|p| !is_star_item(p) && is_agg_expr(&p.expr))
+                .map(|p| &p.expr),
+            order.exprs().chain(having),
+            params,
+            cypher_version,
+        )?;
+        let account = relate_core::tokens::workspace_accounting();
+        // The input vector stays allocated until the fold finishes. Bill it
+        // up front, then hand each row's payload to the group map as it
+        // moves. A generated feed holds no input vector: nothing to bill,
+        // nothing to release row by row.
+        let retained = match feed {
+            RowFeed::Held(held) if account => Some(crate::workspace::RetainedRows::measure(held)),
+            _ => None,
+        };
+        let input_charge = match &retained {
+            Some(retained) => {
+                let charge = relate_core::tokens::WorkspaceCharge::retain(retained.bytes())?;
+                relate_core::tokens::peak_hold("aggregation");
+                charge
+            }
+            None => relate_core::tokens::WorkspaceCharge::empty(),
+        };
+        let mut this = Self {
+            items,
+            params,
+            cypher_version,
+            order,
+            having,
+            import_scope,
+            key_exprs,
+            star,
+            account,
+            sites,
+            groups: IndexMap::new(),
+            groups_charge: relate_core::tokens::WorkspaceCharge::empty(),
+            meter: crate::workspace::GroupMapMeter::default(),
+            retained,
+            input_charge,
+            // ADR-0463 (LABS-781): the group map is one retaining
+            // container. Each landed group — its key, its seed row and its
+            // accumulators — grows a running total enforced at the
+            // per-value cap, so a high-cardinality key set refuses at ~the
+            // cap while the groups land. A row that joins an existing group
+            // adds nothing: the group keeps constant-size accumulators,
+            // never its rows. (A retaining aggregate — `collect`, a
+            // percentile, a DISTINCT call — charges its operands to its own
+            // container.)
+            group_retained: graph.retain_bytes(0)?,
+        };
+        // A keyless aggregation has exactly one group whose key is the
+        // empty set: seed it here, through the same charge-and-meter
+        // sequence a row landing pays, and every input row lands in it —
+        // the empty input keeps the seed as its phantom group (the
+        // ADR-0453 import scope's stand-in) and no post-loop insertion is
+        // needed.
+        if keyless {
+            this.group_retained.add_group_entry(graph, 0, &[], 0)?;
+            let accs = this.sites.open_group();
+            this.group_retained.add_bytes(graph, accs.footprint())?;
+            this.groups
+                .insert(Vec::new(), GroupState { seed: None, accs });
+            if account {
+                this.meter.add_empty_group();
+                charge_group_map(&mut this.groups_charge, &this.meter)?;
+            }
         }
-        None => relate_core::tokens::WorkspaceCharge::empty(),
-    };
-    // ADR-0463 (LABS-781): the group map is one retaining container. Each
-    // landed group — its key, its seed row and its accumulators — grows a
-    // running total enforced at the per-value cap, so a high-cardinality
-    // key set refuses at ~the cap while the groups land. A row that joins
-    // an existing group adds nothing: the group keeps constant-size
-    // accumulators, never its rows, so the state is independent of how many
-    // rows feed a group. (A retaining aggregate — `collect`, a percentile, a
-    // DISTINCT call — charges its operands to its own container.)
-    let mut group_retained = graph.retain_bytes(0)?;
-    // A keyless aggregation (implicit grouping over an all-aggregate
-    // projection, `GROUP BY ()`, an explicit empty `ALL`) has exactly one
-    // group whose key is the empty set: seed it here, through the same
-    // charge-and-meter sequence a row-loop landing pays, and every input
-    // row lands in it — the empty input keeps the seed as its phantom group
-    // (the ADR-0453 import scope's stand-in) and no post-loop insertion is
-    // needed.
-    if keyless {
-        group_retained.add_group_entry(graph, 0, &[], 0)?;
-        let accs = sites.open_group();
-        group_retained.add_bytes(graph, accs.footprint())?;
-        groups.insert(Vec::new(), GroupState { seed: None, accs });
-        if account {
-            meter.add_empty_group();
-            charge_group_map(&mut groups_charge, &meter)?;
-        }
+        Ok(this)
     }
-    for row in rows {
-        let row = row?;
+
+    /// Fold one input row into its group.
+    pub(crate) fn offer(&mut self, graph: &ExecGraph<'_>, row: Row) -> Result<()> {
+        let Self {
+            params,
+            cypher_version,
+            key_exprs,
+            account,
+            sites,
+            groups,
+            groups_charge,
+            meter,
+            retained,
+            input_charge,
+            group_retained,
+            ..
+        } = self;
+        let (params, cypher_version, account) = (*params, *cypher_version, *account);
         graph.cancel_tick()?;
-        // Star-free after the desugar above: one `eval` per key, and the
+        // Star-free after the desugar in `open`: one `eval` per key, and the
         // capacity is exact.
         let mut key = Vec::with_capacity(key_exprs.len());
-        for k in &key_exprs {
+        for k in key_exprs.iter() {
             key.push(GroupKey::new(&eval(
                 graph,
                 &row,
@@ -205,7 +264,7 @@ pub(crate) fn aggregate_ex(
                 } else {
                     drop(row);
                 }
-                state.accs.settle(graph, &mut group_retained)?;
+                state.accs.settle(graph, group_retained)?;
             }
             Entry::Vacant(entry) => {
                 if account {
@@ -232,7 +291,7 @@ pub(crate) fn aggregate_ex(
                 accs.offer(graph, &row, params, cypher_version)?;
                 // The row stays as the seed and holds its share of what the
                 // sites kept; that payload was charged once with the seed.
-                accs.settle(graph, &mut group_retained)?;
+                accs.settle(graph, group_retained)?;
                 entry.insert(GroupState {
                     seed: Some(row),
                     accs,
@@ -240,94 +299,138 @@ pub(crate) fn aggregate_ex(
             }
         }
         if account {
-            charge_group_map(&mut groups_charge, &meter)?;
+            charge_group_map(groups_charge, meter)?;
         }
+        Ok(())
     }
-    drop(input_charge);
-    let mut out = Vec::new();
-    // ADR-0463 (LABS-781): the aggregating projection's output
-    // container — each emitted group row charges as it lands, ahead of
-    // the landing, in its final shape (seed bindings, projected
-    // values, aggregate results, parked order keys).
-    let mut out_retained = graph.retain_bytes(0)?;
-    for (_, state) in groups {
-        // The group's own first row is the seed every non-aggregate leaf
-        // reads; the phantom keyless group over an emptied input has none,
-        // so an importing subquery's scope row stands in (ADR-0453) — the
-        // imports are per-row constants, present even when the body's rows
-        // are gone.
-        let GroupState { seed, accs } = state;
-        let seed_row = seed.as_ref().or(import_scope);
-        let mut n = seed_row.cloned().unwrap_or_default();
-        let folded = accs.finish(graph, seed.as_ref(), params, cypher_version);
-        if star {
-            // The variables `*` carries are already in the first-row seed;
-            // keep the internal `__*` names out of the projected row, the
-            // same filter the non-aggregating `*` path applies.
-            n.retain(|name, _| !is_internal_column(name));
-        }
-        for (i, p) in items.iter().enumerate() {
-            if is_star_item(p) {
-                continue;
+
+    /// Emit the group rows: projected columns, parked `ORDER BY` keys, and
+    /// HAVING applied.
+    pub(crate) fn finish(self, graph: &ExecGraph<'_>) -> Result<Vec<Row>> {
+        let Self {
+            items,
+            params,
+            cypher_version,
+            order,
+            having,
+            import_scope,
+            star,
+            groups,
+            groups_charge,
+            input_charge,
+            ..
+        } = self;
+        drop(input_charge);
+        let mut out = Vec::new();
+        // ADR-0463 (LABS-781): the aggregating projection's output
+        // container — each emitted group row charges as it lands, ahead of
+        // the landing, in its final shape (seed bindings, projected
+        // values, aggregate results, parked order keys).
+        let mut out_retained = graph.retain_bytes(0)?;
+        for (_, state) in groups {
+            // The group's own first row is the seed every non-aggregate leaf
+            // reads; the phantom keyless group over an emptied input has
+            // none, so an importing subquery's scope row stands in
+            // (ADR-0453) — the imports are per-row constants, present even
+            // when the body's rows are gone.
+            let GroupState { seed, accs } = state;
+            let seed_row = seed.as_ref().or(import_scope);
+            let mut n = seed_row.cloned().unwrap_or_default();
+            let folded = accs.finish(graph, seed.as_ref(), params, cypher_version);
+            if star {
+                // The variables `*` carries are already in the first-row
+                // seed; keep the internal `__*` names out of the projected
+                // row, the same filter the non-aggregating `*` path applies.
+                n.retain(|name, _| !is_internal_column(name));
             }
-            let name = p.output_name(i);
-            let val = if is_agg_expr(&p.expr) {
+            for (i, p) in items.iter().enumerate() {
+                if is_star_item(p) {
+                    continue;
+                }
+                let name = p.output_name(i);
+                let val = if is_agg_expr(&p.expr) {
+                    agg_eval(
+                        graph,
+                        AggScope::of_group(&folded, seed_row),
+                        &p.expr,
+                        params,
+                        cypher_version,
+                    )?
+                } else if let Some(row) = seed_row {
+                    eval(graph, row, &p.expr, params, cypher_version)?
+                } else {
+                    Value::Null
+                };
+                n.insert(name, val);
+            }
+            // Park the `ORDER BY` keys beside the projected columns, through
+            // the same decision and writer every other projection path uses.
+            // A key reads `n`, the projected row, so an aggregate call in it
+            // reads this group's resolved value and the deprecated
+            // implicit-grouping shapes still answer from their item; a key
+            // that cannot be evaluated orders as null rather than failing
+            // the statement — the documented `ORDER BY` policy.
+            park_order_keys(order, &mut n, |expr, scope| {
                 agg_eval(
                     graph,
-                    AggScope::of_group(&folded, seed_row),
-                    &p.expr,
+                    AggScope::of_row(&folded, scope),
+                    expr,
                     params,
                     cypher_version,
-                )?
-            } else if let Some(row) = seed_row {
-                eval(graph, row, &p.expr, params, cypher_version)?
-            } else {
-                Value::Null
-            };
-            n.insert(name, val);
-        }
-        // Park the `ORDER BY` keys beside the projected columns, through the
-        // same decision and writer every other projection path uses. A key
-        // reads `n`, the projected row, so an aggregate call in it reads this
-        // group's resolved value and the deprecated implicit-grouping shapes
-        // still answer from their item; a key that cannot be evaluated
-        // orders as null rather than failing the statement — the documented
-        // `ORDER BY` policy.
-        park_order_keys(order, &mut n, |expr, scope| {
-            agg_eval(
-                graph,
-                AggScope::of_row(&folded, scope),
-                expr,
-                params,
-                cypher_version,
-            )
-        });
-        // HAVING (ADR-0453): the aggregating WHERE, answered per group with
-        // the same scope an ORDER BY key gets. Not-true drops the group —
-        // the retain's verdict for a failing row; a non-boolean is the
-        // typed rejection live raises (22N01) and a list/path converts,
-        // both through the one predicate policy (ADR-0458 §7).
-        if let Some(predicate) = having {
-            let keeps = agg_eval(
-                graph,
-                AggScope::of_row(&folded, &n),
-                predicate,
-                params,
-                cypher_version,
-            )?;
-            if !crate::eval::predicate_value_holds(&keeps)? {
-                continue;
+                )
+            });
+            // HAVING (ADR-0453): the aggregating WHERE, answered per group
+            // with the same scope an ORDER BY key gets. Not-true drops the
+            // group — the retain's verdict for a failing row; a non-boolean
+            // is the typed rejection live raises (22N01) and a list/path
+            // converts, both through the one predicate policy (ADR-0458 §7).
+            if let Some(predicate) = having {
+                let keeps = agg_eval(
+                    graph,
+                    AggScope::of_row(&folded, &n),
+                    predicate,
+                    params,
+                    cypher_version,
+                )?;
+                if !crate::eval::predicate_value_holds(&keeps)? {
+                    continue;
+                }
             }
+            // The resolved aggregate values are shared with `n` until the
+            // folded group lets go; drop it so the output row's landing
+            // charge sees the payloads it solely owns.
+            drop(folded);
+            out_retained.add_row(graph, n.values())?;
+            out.push(n);
         }
-        // The resolved aggregate values are shared with `n` until the folded
-        // group lets go; drop it so the output row's landing charge sees
-        // the payloads it solely owns.
-        drop(folded);
-        out_retained.add_row(graph, n.values())?;
-        out.push(n);
+        drop(groups_charge);
+        Ok(out)
     }
-    drop(groups_charge);
-    Ok(out)
+}
+
+/// The loop over [`Aggregation`]: open, offer every row of the feed, finish.
+pub(crate) fn aggregate_ex<'a>(
+    graph: &ExecGraph<'_>,
+    rows: RowFeed<'_>,
+    items: &'a [Projection],
+    group_by: Option<&'a [Expr]>,
+    params: &'a BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    subclauses: &GroupSubclauses<'a>,
+) -> Result<Vec<Row>> {
+    let mut aggregation = Aggregation::open(
+        graph,
+        &rows,
+        items,
+        group_by,
+        params,
+        cypher_version,
+        subclauses,
+    )?;
+    for row in rows {
+        aggregation.offer(graph, row?)?;
+    }
+    aggregation.finish(graph)
 }
 
 /// Charge the group map's growth after an entry insert, then sample the

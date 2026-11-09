@@ -1,0 +1,76 @@
+# Executor fns returning Vec<Row> / Result<Vec<Row>> (ADR-0555). Format: <file under relate/relate-executor/src>::<fn> # <reason>.
+# Remove a line when its fn is gone or streams; never add one without a reason.
+eval_walk/pattern.rs::collect_pattern_rows # projection/filter stage materializes its rows; to be replaced by streaming
+eval_walk/pattern.rs::walk_collect # projection/filter stage materializes its rows; to be replaced by streaming
+exec/agg_fold/one_hop.rs::finish # projection/filter stage materializes its rows; to be replaced by streaming
+exec/aggregate/group.rs::aggregate_ex # projection/filter stage materializes its rows; to be replaced by streaming
+exec/aggregate/group.rs::finish # emits one row per group, bounded by the group map the aggregation already holds and charges
+exec/batch.rs::try_scan_filter_batch # batch rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
+exec/call/conditional.rs::exec_conditional # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/in_transactions.rs::exec_call_in_transactions # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/mod.rs::call_subquery_row # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/mod.rs::exec_call_subquery # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/mod.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/shared.rs::exec_call_subquery_shared # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::compose_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::execute_catalog # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::finish_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::imported_catalog # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::project_catalog # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::project_catalog_by_row # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog.rs::visible_catalog # projection/filter stage materializes its rows; to be replaced by streaming
+exec/catalog_schema.rs::catalog_alter_database # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_schema.rs::catalog_create_constraint # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_schema.rs::catalog_create_index # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_schema.rs::catalog_drop_constraint # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_schema.rs::catalog_drop_index # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/constraints.rs::show_constraints_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/databases.rs::show_databases_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/databases.rs::show_transactions_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/databases.rs::terminate_transactions_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/indexes.rs::show_indexes_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/mod.rs::show_current_graph_type_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/mod.rs::show_graph_type_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/mod.rs::show_roles_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/mod.rs::show_settings_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/chunk.rs::to_rows # row-chunk or seed conversion at an operator boundary
+exec/clause_arms.rs::exec_create # clause arm materializes its output rows; to be replaced by streaming
+exec/clause_arms.rs::exec_delete # clause arm materializes its output rows; to be replaced by streaming
+exec/clause_arms.rs::exec_merge # clause arm materializes its output rows; to be replaced by streaming
+exec/clause_arms.rs::exec_remove # clause arm materializes its output rows; to be replaced by streaming
+exec/clause_arms.rs::exec_set # clause arm materializes its output rows; to be replaced by streaming
+exec/clause_arms.rs::exec_unwind # clause arm materializes its output rows; to be replaced by streaming
+exec/count_stats.rs::count_only_stats_result # bounded count-only result, one row per statement
+exec/dispatch.rs::run_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
+exec/dispatch.rs::run_clauses_mode # clause driver hands its driving table to the next clause; to be replaced by streaming
+exec/dispatch.rs::run_nested_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
+exec/dispatch.rs::run_nested_clauses_scoped # clause driver hands its driving table to the next clause; to be replaced by streaming
+exec/graph_type_schema.rs::alter_current_graph_type # bounded catalog/admin/procedure result, not graph-sized
+exec/graph_type_schema.rs::catalog_create_graph_type # bounded catalog/admin/procedure result, not graph-sized
+exec/hub_join.rs::try_hub_join # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
+exec/kernels/chain.rs::emit_rows # clause arm materializes its output rows; to be replaced by streaming
+exec/kernels/frontier_run.rs::try_frontier_rows # rung result handed back to the ladder, bounded by the rung's own breaker; ADR-0555 follow-up
+exec/kernels/mod.rs::try_match_kernel # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
+exec/match_clause.rs::match_clause # clause arm materializes its output rows; to be replaced by streaming
+exec/match_clause.rs::match_paths # clause arm materializes its output rows; to be replaced by streaming
+exec/match_clause.rs::run_match_operator_ladder # rung result handed back to the clause driver, bounded by the rung's own breaker; ADR-0555 follow-up
+exec/mod.rs::next_seeds # row-chunk or seed conversion at an operator boundary
+exec/mod.rs::result_seed_rows # row-chunk or seed conversion at an operator boundary
+exec/ontology.rs::exec_ontology_call # bounded catalog/admin/procedure result, not graph-sized
+exec/ontology.rs::exec_ontology_get # bounded catalog/admin/procedure result, not graph-sized
+exec/order.rs::page # ORDER BY / SKIP / LIMIT buffer bounded by the sort or limit
+exec/order.rs::take_parked_top_k # ORDER BY / SKIP / LIMIT buffer bounded by the sort or limit
+exec/procedures.rs::compose_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/procedures.rs::exec_call # bounded catalog/admin/procedure result, not graph-sized
+exec/procedures.rs::exec_fulltext_query_call # bounded catalog/admin/procedure result, not graph-sized
+exec/procedures.rs::exec_registry_call # bounded catalog/admin/procedure result, not graph-sized
+exec/procedures.rs::exec_vector_query_call # bounded catalog/admin/procedure result, not graph-sized
+exec/project.rs::filter_where # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::retain_distinct # projection/filter stage materializes its rows; to be replaced by streaming
+exec/search.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
+exec/search.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
+exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
+exec/unwind.rs::materialize # row-chunk or seed conversion at an operator boundary
+show_catalog.rs::function_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
+show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result, not graph-sized

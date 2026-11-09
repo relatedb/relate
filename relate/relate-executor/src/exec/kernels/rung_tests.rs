@@ -125,3 +125,64 @@ fn a_nested_match_rung_does_not_leak_onto_the_enclosing_clause() {
         );
     }
 }
+
+/// A 40-node `R` chain: every node has one successor, so a `*1..2`
+/// recursion from every node has two paths per interior endpoint pool.
+fn r_chain() -> crate::graph::Graph {
+    let b = Builder::new();
+    let n: Vec<_> = (0..40)
+        .map(|i| b.node(&format!("c{i}"), &["Chain"]))
+        .collect();
+    for i in 0..39 {
+        b.rel(n[i], n[i + 1], "R", &[]);
+    }
+    b.done()
+}
+
+/// The rung and the single-column integer answer of one statement.
+fn rung_and_count(graph: &crate::graph::Graph, cypher: &str) -> (Option<KernelRung>, Value) {
+    let records = profiled(graph, cypher);
+    let rung = served(&records).kernel;
+    let result = super::super::test_support::exec_cypher(graph, cypher);
+    (rung, result.rows[0][0].clone())
+}
+
+/// A bounded recursion whose consumer needs only the distinct endpoints
+/// is served by the frontier rung in auto mode (the cost gate prices an
+/// unlabeled endpoint as the whole store, `frontier_engages`).
+#[test]
+fn count_distinct_end_over_a_bounded_path_takes_the_frontier() {
+    let (rung, count) = rung_and_count(
+        &r_chain(),
+        "MATCH (h)-[:R*1..2]->(e) RETURN count(DISTINCT e) AS c",
+    );
+    assert_eq!(rung, Some(KernelRung::FrontierNfa));
+    assert_eq!(count, Value::Int(39));
+}
+
+/// Shapes that need the paths themselves decline the frontier rung and
+/// the walker answers: same counts, never `FrontierNfa`.
+#[test]
+fn path_needing_shapes_stay_on_the_walker() {
+    let graph = r_chain();
+    for (cypher, expected) in [
+        (
+            "MATCH p = (h)-[:R*1..2]->(e) RETURN count(DISTINCT p) AS c",
+            77,
+        ),
+        ("MATCH (h)-[:R*1..2]->(e) RETURN count(*) AS c", 77),
+        (
+            "MATCH (h)-[r:R*1..2]->(e) RETURN count(DISTINCT r) AS c",
+            77,
+        ),
+        (
+            "MATCH p = (h)-[:R*1..2]->(e) WHERE length(p) = 2 \
+             RETURN count(DISTINCT e) AS c",
+            38,
+        ),
+    ] {
+        let (rung, count) = rung_and_count(&graph, cypher);
+        assert_eq!(rung, Some(KernelRung::Walker), "{cypher}");
+        assert_eq!(count, Value::Int(expected), "{cypher}");
+    }
+}

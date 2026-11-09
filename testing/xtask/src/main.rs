@@ -1,4 +1,5 @@
 mod boundaries;
+mod row_vec;
 
 use std::process::{Command, ExitCode};
 
@@ -35,6 +36,12 @@ Exit status:
      `<from-pkg> -> <to-pkg> (<dep-kind>): <rule id>` or
      `<pkg> (<dir>): R5`
   2  usage error or `cargo metadata` failure
+
+Also runs the executor `Vec<Row>` guard (ADR-0555): a non-test fn under
+relate/relate-executor/src returning `Vec<Row>` or `Result<Vec<Row>>` must
+be listed, with a reason, in testing/xtask/row_vec_allowlist.txt; a listed
+fn that no longer exists fails too. Violations print as
+`<file>::<fn>: <reason>` and exit 1.
 ";
 
 fn main() -> ExitCode {
@@ -63,11 +70,41 @@ fn usage_error(message: &str) -> ExitCode {
 }
 
 fn check_boundaries() -> ExitCode {
+    let dependencies = check_dependencies();
+    let row_vec = check_row_vec();
+    // Both checks always run and print; exit 2 (I/O or metadata failure)
+    // outranks a plain violation failure.
+    [dependencies, row_vec]
+        .into_iter()
+        .max()
+        .map_or(ExitCode::SUCCESS, Outcome::exit_code)
+}
+
+/// What one check of `check-boundaries` concluded. Variants are declared in
+/// severity order: the derived ordering ranks `Clean < Violations < Error`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Outcome {
+    Clean,
+    Violations,
+    Error,
+}
+
+impl Outcome {
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Outcome::Clean => ExitCode::SUCCESS,
+            Outcome::Violations => ExitCode::FAILURE,
+            Outcome::Error => ExitCode::from(2),
+        }
+    }
+}
+
+fn check_dependencies() -> Outcome {
     let packages = match load_metadata().and_then(|m| boundaries::parse_metadata(&m)) {
         Ok(packages) => packages,
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     };
     let report = boundaries::check(&packages);
@@ -79,13 +116,34 @@ fn check_boundaries() -> ExitCode {
     );
     if report.violations.is_empty() {
         println!("{summary}");
-        return ExitCode::SUCCESS;
+        return Outcome::Clean;
     }
     for violation in &report.violations {
         eprintln!("{violation}");
     }
     eprintln!("{summary}");
-    ExitCode::FAILURE
+    Outcome::Violations
+}
+
+/// The executor `Vec<Row>` guard (ADR-0555); runs beside the dependency checks.
+fn check_row_vec() -> Outcome {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    match row_vec::check(&root) {
+        Ok(violations) if violations.is_empty() => {
+            println!("check-boundaries: executor Vec<Row> guard clean");
+            Outcome::Clean
+        }
+        Ok(violations) => {
+            for v in &violations {
+                eprintln!("{v}");
+            }
+            Outcome::Violations
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Outcome::Error
+        }
+    }
 }
 
 fn load_metadata() -> Result<serde_json::Value, String> {

@@ -25,6 +25,7 @@ use crate::eval::{eval, into_items, lazy_range, rows_logical_bytes, Items, Range
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::aggregate::Aggregation;
 use super::scope::call_scope_reads;
 
 pub(super) enum Source {
@@ -446,6 +447,9 @@ impl UnwindFeed<'_> {
 pub(crate) enum RowFeed<'a> {
     Held(Vec<Row>),
     Unwind(UnwindFeed<'a>),
+    /// Rows already folded into an [`Aggregation`] by the producer: the
+    /// projection only finishes it. Built by the streaming match sink.
+    Folded(Box<Aggregation<'a>>),
 }
 
 impl RowFeed<'_> {
@@ -454,7 +458,7 @@ impl RowFeed<'_> {
     pub(crate) fn probe(&self) -> &[Row] {
         match self {
             RowFeed::Held(rows) => rows,
-            RowFeed::Unwind(_) => &[],
+            RowFeed::Unwind(_) | RowFeed::Folded(_) => &[],
         }
     }
 }
@@ -473,6 +477,8 @@ impl<'a> IntoIterator for RowFeed<'a> {
         match self {
             RowFeed::Held(rows) => FeedRows::Held(rows.into_iter()),
             RowFeed::Unwind(feed) => FeedRows::Unwind(feed),
+            // No rows left to walk: the aggregation holds them all.
+            RowFeed::Folded(_) => FeedRows::Held(Vec::new().into_iter()),
         }
     }
 }

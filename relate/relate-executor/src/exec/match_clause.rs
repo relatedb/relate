@@ -22,7 +22,7 @@ use super::batch::try_scan_filter_batch;
 use super::hub_join::try_hub_join;
 use super::kernels;
 use super::one_path::{match_one_path, PathFilters};
-use super::pattern_policies::{MatchReduce, MatchTail};
+use super::pattern_policies::{reduce_row, MatchReduce, MatchTail, ReduceSink, RowFold};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
 use super::sink::{finish_match_row, SinkProjection};
@@ -100,6 +100,7 @@ pub(crate) fn run_match_operator_ladder(
     cap: &mut Option<MatchCap<'_>>,
     projection: Option<&SinkProjection<'_>>,
     suffix: &[Clause],
+    fold: Option<&dyn RowFold>,
 ) -> Result<(Vec<Row>, MatchOperator)> {
     // The frontier family's rung (ADR-0478): the quantified-path shapes
     // with a pair-shaped answer contract — the capped emission, the
@@ -115,6 +116,7 @@ pub(crate) fn run_match_operator_ladder(
         where_clause,
         suffix,
         projection,
+        fold,
     )? {
         return Ok((rows, MatchOperator::Rung(KernelRung::FrontierNfa)));
     }
@@ -147,11 +149,19 @@ pub(crate) fn run_match_operator_ladder(
     } else {
         None
     };
-    if let Some(rows) = batched {
-        return Ok((rows, MatchOperator::BatchChain));
-    }
-    if let Some((rows, rung)) = kernaled {
-        return Ok((rows, MatchOperator::Rung(rung)));
+    // A rung that returns a finished container hands its rows to the fold
+    // (when one rides) right here, so the clause still collects nothing.
+    let finished = batched
+        .map(|rows| (rows, MatchOperator::BatchChain))
+        .or(kernaled.map(|(rows, rung)| (rows, MatchOperator::Rung(rung))));
+    if let Some((rows, operator)) = finished {
+        let Some(fold) = fold else {
+            return Ok((rows, operator));
+        };
+        for row in rows {
+            fold.offer(ctx.graph, row)?;
+        }
+        return Ok((Vec::new(), operator));
     }
     // Every rung above declined: the walker is this clause's rung, and
     // the ladder's return value carries it (LABS-1117).
@@ -165,6 +175,7 @@ pub(crate) fn run_match_operator_ladder(
             where_clause,
             cap.as_mut(),
             projection,
+            fold,
         )?,
         MatchOperator::Rung(KernelRung::Walker),
     ))
@@ -180,6 +191,7 @@ pub(crate) fn match_clause(
     where_clause: Option<&Expr>,
     mut cap: Option<&mut MatchCap<'_>>,
     projection: Option<&SinkProjection<'_>>,
+    fold: Option<&dyn RowFold>,
 ) -> Result<Vec<Row>> {
     let ExecCtx {
         graph,
@@ -204,8 +216,10 @@ pub(crate) fn match_clause(
     // the plain cap's count is exact only because the two ends agree.
     let sink_filters =
         super::match_cap::sink_filters_clause(projection, cap.as_deref(), where_clause);
-    let reduce = sink_filters.then_some(MatchReduce {
-        projection,
+    // A fold takes the rows after the same checks, so it rides the reduce
+    // whether or not the sink projects.
+    let reduce = (sink_filters || fold.is_some()).then_some(MatchReduce {
+        sink: ReduceSink::select(projection, fold),
         patterns,
         where_clause,
         params,
@@ -340,9 +354,15 @@ pub(crate) fn match_paths(
                 base,
                 &current,
                 residual,
-                cap.is_none() && reduce.is_none(),
+                // A fold-only reduce rides the join: its rows take the same
+                // reduce below that the nested loop's rows take in the sink.
+                cap.is_none() && reduce.is_none_or(|r| matches!(r.sink, ReduceSink::Fold(_))),
             )? {
-                return Ok(rows);
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    out.extend(reduce_row(ctx.graph, row, reduce)?);
+                }
+                return Ok(out);
             }
         }
         let mut next = Vec::new();

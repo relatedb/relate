@@ -1,6 +1,7 @@
 //! Projection (`RETURN`/`WITH`): expressions, ORDER BY, DISTINCT,
 //! SKIP/LIMIT with top-k selection.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
@@ -12,11 +13,12 @@ use crate::eval::{eval, expr_vars, is_agg_expr};
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::{Row, RowNames};
 
-use super::aggregate::{aggregate_ex, GroupSubclauses};
+use super::aggregate::{aggregate_ex, Aggregation, GroupSubclauses};
 use super::order::{
     page, pages_eagerly, park_order_keys, resolve_page_bounds, sort_rows_by_parked_keys,
     unpark_order_keys, OrderKeys,
 };
+use super::pattern_policies::MatchFold;
 use super::scope::{
     has_star_item, is_internal_column, is_star_item, projection_names, result_column,
     return_columns, star_scope_names, visible_keys, ProjectionFields,
@@ -157,6 +159,20 @@ pub(crate) struct ProjectSpec<'a> {
     pub where_clause: Option<&'a Expr>,
 }
 
+impl<'a> ProjectSpec<'a> {
+    fn fields(&self) -> ProjectionFields<'a> {
+        ProjectionFields {
+            distinct: self.distinct,
+            items: self.items,
+            group_by: self.group_by,
+            order: self.order,
+            skip: self.skip.as_ref(),
+            limit: self.limit.as_ref(),
+            where_clause: self.where_clause,
+        }
+    }
+}
+
 /// The post-merge WHERE stage: keep the rows whose predicate reads true;
 /// a failing filter expression propagates, the one error policy every
 /// WHERE path shares. The HAVING form never reaches here (ADR-0453): the
@@ -183,18 +199,80 @@ fn filter_where(
     Ok(filtered)
 }
 
-/// Whether a projection folds its input as it arrives, so an `UNWIND`
-/// feeding it can generate rows one at a time instead of materializing them:
-/// an aggregating projection with no `*` item (a `*` groups by every carried
-/// variable, which needs the rows' shape up front). One decision for the
-/// dispatcher, which chooses the feed, and the projection, which consumes it.
-pub(crate) fn streams_from_unwind(spec: &ProjectSpec<'_>) -> bool {
-    let aggregating_subclause = spec.order.iter().any(|o| is_agg_expr(&o.expr))
-        || spec.where_clause.is_some_and(is_agg_expr);
-    let has_agg = spec.items.iter().any(|p| is_agg_expr(&p.expr))
-        || spec.group_by.is_some()
-        || (spec.distinct && aggregating_subclause);
-    has_agg && !has_star_item(spec.items)
+/// Whether a projection folds its input as it arrives, so an `UNWIND` or a
+/// `MATCH` feeding it can generate rows one at a time instead of
+/// materializing them: an aggregating projection with no `*` item (a `*`
+/// groups by every carried variable, which needs the rows' shape up front).
+/// One decision for the dispatcher, which chooses the feed, and the
+/// projection, which consumes it.
+pub(crate) fn streams_into_aggregation(fields: &ProjectionFields<'_>) -> bool {
+    let aggregating_subclause = fields.order.iter().any(|o| is_agg_expr(&o.expr))
+        || fields.where_clause.is_some_and(is_agg_expr);
+    let has_agg = fields.items.iter().any(|p| is_agg_expr(&p.expr))
+        || fields.group_by.is_some()
+        || (fields.distinct && aggregating_subclause);
+    has_agg && !has_star_item(fields.items)
+}
+
+/// Whether the clause after an `UNWIND` or a `MATCH` consumes its rows as a
+/// stream: a `WITH` or `RETURN` whose projection folds an aggregation as rows
+/// arrive. Every other follower takes the rows as a held vector, as ever.
+pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
+    next.and_then(ProjectionFields::from_clause)
+        .is_some_and(|fields| streams_into_aggregation(&fields))
+}
+
+/// Open the aggregation a streamed `MATCH` folds into, for the
+/// `WITH`/`RETURN` that [`streams_into_aggregation`] accepts: the plan
+/// [`project_rows`] would have built from the collected rows, minus the rows.
+pub(crate) fn open_fold<'a>(
+    graph: &ExecGraph<'_>,
+    fields: &ProjectionFields<'a>,
+    order: &'a OrderKeys<'a>,
+    params: &'a BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    scope: Option<&'a Row>,
+) -> Result<Aggregation<'a>> {
+    Aggregation::open(
+        graph,
+        &RowFeed::Held(Vec::new()),
+        fields.items,
+        fields.group_by,
+        params,
+        cypher_version,
+        &GroupSubclauses {
+            order,
+            having: fields.where_clause.filter(|w| is_agg_expr(w)),
+            import_scope: scope,
+        },
+    )
+}
+
+/// The fold an uncapped `MATCH` streams into when the clause after it
+/// aggregates (`next`), `None` when it does not stream or a fold already
+/// parked its order keys in `order_slot` (the slot keeps them alive for the
+/// fold's borrow).
+pub(crate) fn open_match_fold<'a>(
+    graph: &ExecGraph<'_>,
+    next: Option<&'a Clause>,
+    order_slot: &'a OnceCell<OrderKeys<'a>>,
+    params: &'a BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    scope: Option<&'a Row>,
+) -> Result<Option<MatchFold<'a>>> {
+    if order_slot.get().is_some() {
+        return Ok(None);
+    }
+    let Some(fields) = next
+        .and_then(ProjectionFields::from_clause)
+        .filter(streams_into_aggregation)
+    else {
+        return Ok(None);
+    };
+    let order = order_slot
+        .get_or_init(|| OrderKeys::new(fields.order, fields.items, fields.group_by.is_some()));
+    open_fold(graph, &fields, order, params, cypher_version, scope)
+        .map(|aggregation| Some(MatchFold::new(aggregation)))
 }
 
 pub(crate) fn project_rows(
@@ -275,7 +353,10 @@ pub(crate) fn project_rows(
     // it.
     let (rows, stream) = match feed {
         RowFeed::Held(rows) => (rows, None),
-        RowFeed::Unwind(unwind) if streams_from_unwind(spec) => (Vec::new(), Some(unwind)),
+        RowFeed::Unwind(unwind) if streams_into_aggregation(&spec.fields()) => {
+            (Vec::new(), Some(RowFeed::Unwind(unwind)))
+        }
+        folded @ RowFeed::Folded(_) => (Vec::new(), Some(folded)),
         RowFeed::Unwind(unwind) => {
             let mut retained = graph.retain_bytes(0)?;
             let mut rows = Vec::new();
@@ -369,22 +450,22 @@ pub(crate) fn project_rows(
         // (aggregate calls fold the group, non-aggregate leaves read the
         // projected row) and filters there; the plain filter below would
         // evaluate the aggregates against the aggregated row and fail.
-        let mut agg = aggregate_ex(
-            graph,
-            match stream {
-                Some(unwind) => RowFeed::Unwind(unwind),
-                None => RowFeed::Held(rows),
-            },
-            items,
-            group_by,
-            params,
-            cypher_version,
-            &GroupSubclauses {
-                order: &order_keys,
-                having,
-                import_scope: scope,
-            },
-        )?;
+        let mut agg = match stream {
+            Some(RowFeed::Folded(aggregation)) => aggregation.finish(graph)?,
+            stream => aggregate_ex(
+                graph,
+                stream.unwrap_or(RowFeed::Held(rows)),
+                items,
+                group_by,
+                params,
+                cypher_version,
+                &GroupSubclauses {
+                    order: &order_keys,
+                    having,
+                    import_scope: scope,
+                },
+            )?,
+        };
         if inflate {
             for row in &mut agg {
                 // The parked `__ord*` sort keys keep the values the group
