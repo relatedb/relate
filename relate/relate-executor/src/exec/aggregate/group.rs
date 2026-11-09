@@ -35,8 +35,11 @@ pub(crate) struct GroupSubclauses<'a> {
     /// (ADR-0453): HAVING semantics — evaluated once per group through
     /// [`agg_eval`] (aggregate calls fold the group, non-aggregate leaves
     /// read the projected row), a group whose predicate is not true is
-    /// dropped. A predicate error drops the group, the same verdict the
-    /// ordinary WHERE retain gives a row whose evaluation fails. `None` for
+    /// dropped; false and null drop, a non-boolean value is the typed
+    /// rejection live raises (22N01) rather than a silent drop, and a
+    /// predicate evaluation error aborts the statement — the same
+    /// convert-or-raise policy the ordinary WHERE positions read
+    /// (ADR-0458 §7, [`crate::eval::predicate_value_holds`]). `None` for
     /// every other shape.
     pub having: Option<&'a Expr>,
     /// ADR-0453: an importing subquery's scope row — the seed the phantom
@@ -300,8 +303,10 @@ pub(crate) fn aggregate_ex(
             )
         });
         // HAVING (ADR-0453): the aggregating WHERE, answered per group with
-        // the same scope an ORDER BY key gets. Not-true (or failed) drops
-        // the group — the retain's verdict for a failing row.
+        // the same scope an ORDER BY key gets. Not-true drops the group —
+        // the retain's verdict for a failing row; a non-boolean is the
+        // typed rejection live raises (22N01) and a list/path converts,
+        // both through the one predicate policy (ADR-0458 §7).
         if let Some(predicate) = having {
             let keeps = agg_eval(
                 graph,
@@ -309,8 +314,8 @@ pub(crate) fn aggregate_ex(
                 predicate,
                 params,
                 cypher_version,
-            );
-            if !matches!(keeps, Ok(value) if value.truthy() == Some(true)) {
+            )?;
+            if !crate::eval::predicate_value_holds(&keeps)? {
                 continue;
             }
         }

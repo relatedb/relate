@@ -285,13 +285,25 @@ fn gpm_qpp_iteration_predicates_ok(
             PatternElement::Quantified(_) => None,
         };
         if let Some(predicate) = predicate {
-            if eval(graph, row, predicate, params, cypher_version)?.truthy() != Some(true) {
+            if !crate::eval::predicate_value_holds(&eval(
+                graph,
+                row,
+                predicate,
+                params,
+                cypher_version,
+            )?)? {
                 return Ok(false);
             }
         }
     }
     if let Some(predicate) = &qpp.where_clause {
-        if eval(graph, row, predicate, params, cypher_version)?.truthy() != Some(true) {
+        if !crate::eval::predicate_value_holds(&eval(
+            graph,
+            row,
+            predicate,
+            params,
+            cypher_version,
+        )?)? {
             return Ok(false);
         }
     }

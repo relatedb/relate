@@ -9,7 +9,7 @@ use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::test_support::ints;
-use relate_core::Value;
+use relate_core::{Error, Value};
 use relate_ir::Expr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -605,17 +605,19 @@ fn an_order_by_only_aggregate_that_fails_to_fold_sorts_as_null() {
     assert_eq!(result.rows, vec![vec![Value::Int(2)]]);
 }
 
-/// The same for HAVING: a group whose aggregating predicate cannot be
-/// evaluated is dropped, the statement still succeeds; an item's own fold
-/// error still fails it.
+/// HAVING follows the predicate-positions contract (ADR-0458 §7): a
+/// predicate-evaluation error aborts the statement — live 2026.10.1
+/// surfaces 22N27 for a failing HAVING predicate and never silently
+/// drops the group; an item's own fold error fails it the same way.
 #[test]
-fn a_having_only_aggregate_that_fails_to_fold_drops_the_group() {
-    let result = super::test_support::try_exec_cypher(
+fn a_having_only_aggregate_that_fails_to_fold_aborts_the_statement() {
+    let error = super::test_support::try_exec_cypher(
         &Graph::default(),
         "UNWIND ['a', 'b'] AS x WITH count(*) AS c WHERE sum(x) > 0 RETURN c",
     )
-    .expect("a failing HAVING aggregate drops the group");
-    assert!(result.rows.is_empty());
+    .err()
+    .expect("a failing HAVING aggregate aborts the statement");
+    assert!(error.to_string().contains("needs numbers"), "{error}");
     let error = super::test_support::try_exec_cypher(
         &Graph::default(),
         "UNWIND ['a', 'b'] AS x RETURN sum(x) AS s",
@@ -623,4 +625,34 @@ fn a_having_only_aggregate_that_fails_to_fold_drops_the_group() {
     .err()
     .expect("an item's fold error fails the statement");
     assert!(error.to_string().contains("needs numbers"), "{error}");
+}
+
+/// ADR-0458 §7 at the HAVING position, through the query-level harness
+/// (the same `GroupSubclauses::having` path a real statement drives): a
+/// non-empty `collect(x)` converts to true so the group is kept, an empty
+/// one drops it (the keyless phantom group), and a non-boolean (`count(x)`)
+/// is the typed rejection live raises (22N01) — never a silent group drop.
+#[test]
+fn the_having_predicate_converts_lists_and_rejects_non_booleans() {
+    // count(x) is an INTEGER per group: the typed rejection.
+    let error = super::test_support::try_exec_cypher(
+        &Graph::default(),
+        "UNWIND [1] AS x WITH count(x) AS c WHERE count(x) RETURN c",
+    )
+    .err()
+    .expect("a non-boolean HAVING is the typed rejection");
+    assert!(matches!(error, Error::InvalidArgumentType(_)), "{error}");
+    assert!(error.to_string().contains("boolean"), "{error}");
+
+    // collect(x) over a non-empty input is a non-empty LIST: converted,
+    // the group is kept; over an empty input the keyless phantom group
+    // collects an empty LIST: false, the group is dropped.
+    for (unwind, expected) in [("[1, 2]", 1), ("[]", 0)] {
+        let cypher = format!("UNWIND {unwind} AS x WITH collect(x) AS c WHERE collect(x) RETURN c");
+        let rows = super::test_support::try_exec_cypher(&Graph::default(), &cypher)
+            .unwrap()
+            .rows
+            .len();
+        assert_eq!(rows, expected, "{cypher}");
+    }
 }

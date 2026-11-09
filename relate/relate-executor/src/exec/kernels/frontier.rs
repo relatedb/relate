@@ -87,7 +87,7 @@
 use relate_core::{Error, NodeId, Result, Value};
 
 use crate::ctx::{ExecCtx, FrontierCounters, FrontierRunDecline};
-use crate::eval::eval;
+use crate::eval::{eval, predicate_value_holds};
 use crate::exec::candidates::node_ok;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -824,15 +824,17 @@ impl RunGuards<'_, '_> {
                 .expect("a walked node is live under the view that walked it");
             row.insert(name.clone(), Value::from_node(node));
         }
-        Ok(eval(
+        // The pattern engines' per-trial WHERE reads the one predicate
+        // policy (ADR-0458 §7): a runtime list/path converts (live: a QPP
+        // leg `WHERE r.ls` accepts a non-empty list), a non-boolean is the
+        // typed rejection live raises (22N01).
+        predicate_value_holds(&eval(
             self.ctx.graph,
             &row,
             &predicate.expr,
             self.ctx.params,
             self.ctx.cypher_version,
-        )?
-        .truthy()
-            == Some(true))
+        )?)
     }
 }
 

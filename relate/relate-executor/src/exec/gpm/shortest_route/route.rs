@@ -428,10 +428,17 @@ impl<'a> Route<'a> {
                     "shortest-path route: predicate not decidable against a bound trail",
                 ));
             }
-            if crate::eval::eval_match_predicate(graph, row, predicate, params, cypher_version)?
-                .truthy()
-                != Some(true)
-            {
+            // The one predicate policy (ADR-0458 §7): a list/path converts
+            // (live: `ANY SHORTEST ... -[r WHERE r.ls]-> ...` accepts a
+            // non-empty list), a non-boolean is the typed rejection live
+            // raises (22N01).
+            if !crate::eval::predicate_value_holds(&crate::eval::eval_match_predicate(
+                graph,
+                row,
+                predicate,
+                params,
+                cypher_version,
+            )?)? {
                 return Ok(false);
             }
         }

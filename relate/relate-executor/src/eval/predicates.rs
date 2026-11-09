@@ -37,9 +37,9 @@ pub(crate) fn eval_match_predicate(
 }
 
 /// Whether a MATCH predicate holds on `row` — the one spelling of the
-/// truthiness decision every inline-predicate site reads
-/// (`truthy() == Some(true)`: a null or non-boolean answer does not
-/// hold, matching the walk's predicate filter).
+/// truthiness decision every inline-predicate site reads: the runtime
+/// list/path conversion applies, a null does not hold, and any other
+/// non-boolean is a type error (the walk's predicate filter).
 pub(crate) fn predicate_holds(
     graph: &ExecGraph<'_>,
     row: &Row,
@@ -47,7 +47,13 @@ pub(crate) fn predicate_holds(
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
 ) -> Result<bool> {
-    Ok(eval_match_predicate(graph, row, predicate, params, cypher_version)?.truthy() == Some(true))
+    super::predicate_value_holds(&eval_match_predicate(
+        graph,
+        row,
+        predicate,
+        params,
+        cypher_version,
+    )?)
 }
 
 /// The optional-WHERE gate — the one spelling of "a WHERE clause that is

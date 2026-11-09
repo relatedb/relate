@@ -60,11 +60,22 @@ procedure and conformance-pin decisions.
    `AND`/`OR`/`XOR`/`NOT` converts to a boolean (empty list false, non-empty
    list and any path true); the conversion is deprecated in Cypher 25. A
    list *literal* operand stays a compile-time `InvalidArgumentType` error,
-   as openCypher TCK Boolean1-3 [8] pins. The conversion is scoped to these
-   four operators only: every other requiring site — the list-quantifier
-   `WHERE` predicate in particular — reads the boolean-or-null rule alone, so
-   a list or path there is an `InvalidArgumentType` error rather than a
-   truthiness.
+   as openCypher TCK Boolean1-3 [8] pins. The same runtime conversion is the
+   predicate policy of the boolean predicate positions — a `MATCH`’s and
+   `WITH`’s `WHERE`, the `FILTER` clause, the aggregating `HAVING`, the
+   GPM route filter and the pattern engines’ per-trial `WHERE` (a QPP
+   leg), and the list/map comprehension `WHERE`s: a predicate value that
+   is a runtime list or path converts, a null does not hold, and any other
+   non-boolean is an `InvalidArgumentType` — a property read has no
+   statically known type, so the check cannot fire before the value is
+   known (Neo4j’s `listCoercedToBooleanCheck` exempts it and the runtime
+   converts). The list-quantifier’s inner `WHERE` predicate keeps the
+   boolean-or-null rule alone, so a list or path there is an
+   `InvalidArgumentType` error rather than a truthiness. A recorded
+   divergence: `SHOW … YIELD … WHERE` over a non-boolean column is
+   statically rejected by the reference server (22N27/22N37 against the
+   column’s known type); this engine has no static column typing, so the
+   row simply does not match there.
 
 8. **`db.schema.visualization` options.** The optional argument accepts a
    `BOOLEAN` (Cypher 25) or the legacy options `MAP` (contents ignored).

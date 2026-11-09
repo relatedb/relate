@@ -68,6 +68,25 @@ fn a_non_boolean_operand_is_the_typed_invalid_argument_type() {
     assert_eq!(bool_or_null(&Value::Null, "AND").unwrap(), None);
 }
 
+/// ADR-0458 §7: the predicate positions apply the deprecated list/path
+/// runtime conversion (a property read has no statically known type), and
+/// a non-boolean predicate is the typed `InvalidArgumentType` rather than a
+/// silent no-match.
+#[test]
+fn predicate_positions_convert_a_runtime_list_and_reject_other_non_booleans() {
+    assert!(predicate_value_holds(&Value::Bool(true)).unwrap());
+    assert!(!predicate_value_holds(&Value::Bool(false)).unwrap());
+    assert!(!predicate_value_holds(&Value::Null).unwrap());
+    assert!(predicate_value_holds(&Value::List(vec![Value::Int(1)].into())).unwrap());
+    assert!(!predicate_value_holds(&Value::List(Vec::new().into())).unwrap());
+    let err = predicate_value_holds(&Value::Int(1)).unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidArgumentType(_))
+            && err.to_string().contains("requires a boolean"),
+        "{err:?}"
+    );
+}
+
 /// LABS-156 (ADR-0170): reading a bound variable and carrying a row
 /// share the String/List/Map/Vector payload (a refcount bump) instead of
 /// deep-copying it, so the cost no longer scales with the payload size.

@@ -89,18 +89,32 @@ pub(crate) fn bool_or_null(v: &Value, ctx: &str) -> Result<Option<bool>> {
 }
 
 /// The one boolean-operand policy of the boolean operators (`expr.rs`'s
-/// NOT/AND/OR/XOR): [`bool_or_null`] plus the deprecated list/path
-/// conversion ADR-0458 §7 scopes to exactly these four operators — an empty
-/// list is false, a non-empty one (and any path, which always holds at
-/// least one node) is true (ReturnAcceptance "RETURN true AND list"). Every
-/// other requiring site reads [`bool_or_null`] directly, so a list or path
-/// can never stand in for a quantifier predicate.
+/// NOT/AND/OR/XOR) and, through [`predicate_value_holds`], the predicate
+/// positions (MATCH/WHERE, WITH/FILTER, HAVING, the GPM route filter, the
+/// pattern engines' per-trial WHERE, the comprehension WHEREs):
+/// [`bool_or_null`] plus the deprecated list/path conversion ADR-0458 §7 —
+/// an empty list is false, a non-empty one (and any path, which always
+/// holds at least one node) is true (ReturnAcceptance "RETURN true AND
+/// list"). Every other requiring site reads [`bool_or_null`] directly, so
+/// a list or path can never stand in for a quantifier predicate.
 pub(crate) fn bool_operand(v: &Value, ctx: &str) -> Result<Option<bool>> {
     match v {
         Value::List(values) => Ok(Some(!values.is_empty())),
         Value::Path(_) => Ok(Some(true)),
         _ => bool_or_null(v, ctx),
     }
+}
+
+/// Whether an evaluated boolean-context predicate holds: the same runtime
+/// list/path conversion the boolean operators apply (an empty list is false,
+/// a non-empty list and any path true), a null never holds, and any other
+/// non-boolean is the typed `InvalidArgumentType` a statically known one is
+/// rejected with. The MATCH/WHERE, WITH/FILTER, HAVING, GPM route-filter,
+/// pattern-engine and comprehension predicate positions read this one
+/// helper; the list-quantifier's inner WHERE keeps [`bool_or_null`].
+/// Named apart from [`predicate_holds`] (the expression-level form).
+pub(crate) fn predicate_value_holds(v: &Value) -> Result<bool> {
+    Ok(bool_operand(v, "predicate")? == Some(true))
 }
 
 /// An operand of a container access (`Subscript`/`Property`/
@@ -532,7 +546,7 @@ fn retain_projected(
     for r in rows {
         graph.cancel_tick()?;
         if let Some(pred) = predicate {
-            if eval(graph, &r, pred, params, cypher_version)?.truthy() != Some(true) {
+            if !predicate_value_holds(&eval(graph, &r, pred, params, cypher_version)?)? {
                 continue;
             }
         }
@@ -642,7 +656,7 @@ fn eval_map_comp(
         }
         r.insert(value_ident.to_string(), v);
         if let Some(pred) = predicate {
-            if eval(graph, &r, pred, params, cypher_version)?.truthy() != Some(true) {
+            if !predicate_value_holds(&eval(graph, &r, pred, params, cypher_version)?)? {
                 continue;
             }
         }

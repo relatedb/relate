@@ -60,8 +60,9 @@ enum SiteAcc<'e> {
     },
     /// A lenient site (one only an `ORDER BY` key or HAVING reads) whose
     /// operand failed to fold: the error is parked here and surfaces when
-    /// the site is read, where the key orders as null and HAVING drops the
-    /// group — the documented policy — instead of failing the statement.
+    /// the site is read. The read's outcome is stated once at the
+    /// canonical contract ([`GroupSubclauses::having`], ADR-0458 §7); an
+    /// ORDER BY key orders as null.
     Failed(Error),
     /// An arity violation (a backtick-escaped `` `count`() `` bypasses the
     /// parser and front validation): raised when the group resolves, as the
@@ -76,7 +77,9 @@ struct Slot<'e> {
     /// reference.
     expr: &'e Expr,
     /// Whether only an `ORDER BY` key or HAVING reads this call: a fold
-    /// error there is not a statement failure (see [`SiteAcc::Failed`]).
+    /// error parks instead of failing the statement (see
+    /// [`SiteAcc::Failed`]); the read's outcome is the canonical HAVING
+    /// contract ([`GroupSubclauses::having`], ADR-0458 §7).
     lenient: bool,
     acc: SiteAcc<'e>,
 }

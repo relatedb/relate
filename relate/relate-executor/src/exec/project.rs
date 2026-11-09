@@ -170,7 +170,13 @@ fn filter_where(
 ) -> Result<Vec<Row>> {
     let mut filtered = Vec::with_capacity(rows.len());
     for row in rows {
-        if eval(graph, &row, predicate, params, cypher_version)?.truthy() == Some(true) {
+        if crate::eval::predicate_value_holds(&eval(
+            graph,
+            &row,
+            predicate,
+            params,
+            cypher_version,
+        )?)? {
             filtered.push(row);
         }
     }
