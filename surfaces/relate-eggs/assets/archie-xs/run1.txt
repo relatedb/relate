@@ -1,0 +1,7 @@
+# Archie XS (6x4), editable pixel art for .dash. One character per pixel, one line per row.
+# Lines starting with # are comments; rows must be rectangular, do not strip trailing spaces.
+# Legend: h highlight, m mid, s shadow, "." or " " empty (same table as src/sprite.rs TONES).
+.hhhh.
+hmmmms
+hms.ms
+hs..s.

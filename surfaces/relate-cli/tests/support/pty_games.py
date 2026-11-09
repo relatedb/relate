@@ -1,6 +1,6 @@
 """Drive the hidden terminal games (ADR-0547) in a PTY.
 
-For each of `.life`, `.snake`, `.snake demo`, `.tetris`: the game enters
+For each of `.dash`, `.dash demo`, `.life`, `.snake`, `.snake demo`, `.tetris`: the game enters
 the alternate screen and hides the cursor, `q` leaves it and the cursor and
 the shell answer a query again. Ctrl-C also leaves cleanly, and a window
 that is too small is refused before the screen is touched. Prints `OK`.
@@ -70,7 +70,7 @@ def too_small(fd: int) -> None:
 def main() -> int:
     binary = sys.argv[1]
     big = (100, 40)
-    for command in [b".life", b".snake", b".snake demo", b".tetris"]:
+    for command in [b".dash", b".dash demo", b".life", b".snake", b".snake demo", b".tetris"]:
         session(binary, big, play_and_leave(command, b"q"))
     session(binary, big, play_and_leave(b".tetris", b"\x03"))
     session(binary, (40, 10), too_small)

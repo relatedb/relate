@@ -140,6 +140,11 @@ impl Sprite {
         Ok(Sprite { rows })
     }
 
+    /// The tone at pixel (`x`, `y`), `None` for an empty or out-of-range pixel.
+    pub(crate) fn tone(&self, x: usize, y: usize) -> Option<&'static Tone> {
+        self.rows.get(y).and_then(|r| r.get(x)).copied().flatten()
+    }
+
     /// Pixel columns.
     pub fn width(&self) -> usize {
         self.rows[0].len()

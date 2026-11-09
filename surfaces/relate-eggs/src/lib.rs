@@ -119,6 +119,8 @@ pub type Entry = (&'static str, Handler);
 /// module beside this file.
 pub const EGGS: &[Entry] = &[
     (".cowsay", cowsay::run),
+    #[cfg(feature = "games")]
+    (".dash", games::dash::run),
     (".explain-art", explain_art::run),
     (".fortune", fortune::run),
     (".graph", graph::run),
