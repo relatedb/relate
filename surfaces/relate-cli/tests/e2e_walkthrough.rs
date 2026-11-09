@@ -48,7 +48,7 @@ use support::extensions::{
 use support::importers::{importer_bin, GIT_MANIFEST};
 // Only the `full`-bundle help-golden test lists the compiled codecs.
 #[cfg(feature = "full")]
-use support::compiled_codecs;
+use support::snapshot_format_values;
 use support::{query_count, run_cli, tempdir, CliRunOptions as Opts};
 
 /// The channel index fixture (the committed `extensions.json`) and a
@@ -449,14 +449,18 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
     let pre: Vec<&str> = PRE_FEATURE_HELP.lines().collect();
     let now: Vec<&str> = current.lines().collect();
     let (removed, added) = line_diff(&pre, &now);
-    // The gained row's codec set is the one shared derivation
-    // (`support::compiled_codecs`): `compiled()`'s declaration order pins
-    // the listing, so a codec change fails here without a golden
+    // The gained row's value set is the one shared derivation
+    // (`support::snapshot_format_values`, over `compiled()`'s pinned
+    // order): a codec or opt-in change fails here without a golden
     // re-capture.
-    let gained_codec_row = format!(
-        "  --snapshot-format F  Snapshot codec ({}); empty directory only",
-        compiled_codecs()
-    );
+    let gained_codec_rows = [
+        format!(
+            "  --snapshot-format F  Snapshot codec ({}); empty directory only (parquet-wide:",
+            snapshot_format_values()
+        ),
+        "                       ADR-0534 wide-column parts; the manifest keeps the store wide)"
+            .to_string(),
+    ];
     // The full row texts, byte for byte: the golden pins not just the
     // words but the blurbs the rows carry.
     assert_eq!(
@@ -476,7 +480,8 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "  extension      Scaffold, install, check, list, or remove command extensions",
             "                       The store to open — never a URL: a remote store is a --load",
             "                       source (LABS-903, ADR-0500)",
-            gained_codec_row.as_str(),
+            gained_codec_rows[0].as_str(),
+            gained_codec_rows[1].as_str(),
             "  --markdown-body-properties LIST  Markdown vault body properties (LIST or",
             "                       Label=LIST; entries separated by ';'; first bare, rest as",
             "                       ## sections; default: body)",
@@ -497,8 +502,9 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "                       clone (LABS-872, ADR-0496)",
         ],
         "the final build's help must gain exactly the run, extension, --database \
-         target-axis (LABS-903, ADR-0500), markdown-codec snapshot-format, markdown \
-         body-properties, durability-mode variable (ADR-0470), and --load (LABS-903, \
-         ADR-0500; LABS-872's remote fetch folded into it) rows"
+         target-axis (LABS-903, ADR-0500), markdown-codec snapshot-format and the \
+         parquet-wide opt-in (ADR-0534), markdown body-properties, durability-mode \
+         variable (ADR-0470), and --load (LABS-903, ADR-0500; LABS-872's remote \
+         fetch folded into it) rows"
     );
 }

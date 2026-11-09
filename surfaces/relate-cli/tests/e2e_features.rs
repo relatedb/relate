@@ -130,6 +130,49 @@ fn test_json_snapshot_codec_roundtrip() {
     assert!(stdout.contains("true"), "expected true, got: {stdout}");
 }
 
+/// ADR-0534: `--snapshot-format parquet-wide` opts an empty directory
+/// into the wide-column part encoding — the exit checkpoint publishes a
+/// v5 manifest, which keeps the store wide when reopened without the
+/// flag.
+#[cfg(feature = "parquet")]
+#[test]
+fn test_parquet_wide_snapshot_format_roundtrip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("wide_snap");
+    let db_path = db.to_str().unwrap();
+    let (status, _stdout, stderr) = run_cli(
+        &[
+            "--snapshot-format",
+            "parquet-wide",
+            "--database",
+            db_path,
+            "CREATE (:Codec {ok: true});",
+        ],
+        None,
+    );
+    assert!(
+        status.success(),
+        "parquet-wide snapshot create failed: {stderr}"
+    );
+    let manifest = support::manifest_json(&db);
+    assert_eq!(
+        manifest["format_version"], 5,
+        "the wide opt-in publishes the v5 manifest"
+    );
+    // Reopened without the flag: the wide manifest keeps the store wide.
+    let (status, stdout, stderr) = run_cli(
+        &[
+            "-csv",
+            "--database",
+            db_path,
+            "MATCH (n:Codec) RETURN n.ok AS ok;",
+        ],
+        None,
+    );
+    assert!(status.success(), "plain reopen failed: {stderr}");
+    assert!(stdout.contains("true"), "expected true, got: {stdout}");
+}
+
 fn count_label(db_path: &str, label: &str) -> String {
     let query = format!("MATCH (n:{label}) RETURN count(n) AS c;");
     let (status, stdout, stderr) = run_cli(&["-csv", "--database", db_path, &query], None);

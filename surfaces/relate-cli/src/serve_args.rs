@@ -178,6 +178,12 @@ pub(crate) struct ServeCmd {
     /// the shared resolution (`flags::durability_mode_from_env_checked`),
     /// so serve and the query session cannot drift on the same store.
     pub durability_mode: Option<relate::DurabilityMode>,
+    /// `--snapshot-format F` (ADR-0163, ADR-0534): the served store's
+    /// snapshot format — a codec name, or `parquet-wide` for the Parquet
+    /// codec's wide-column part encoding, the same grammar the query
+    /// session's flag parses (flags.rs). `None` defers to the engine's
+    /// own resolution (`RELATE_SNAPSHOT_FORMAT`, then the build default).
+    pub snapshot_format: Option<crate::flags::SnapshotFormat>,
     /// The store's open mode, resolved from the post-verb access slot
     /// through `parse_error::resolve_access` (`None` = the no-flag
     /// `OpenMode::Writable` default) — with the one `--load` implication
@@ -334,6 +340,7 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
     let mut logical_graph_size_limit = None;
     let mut expression_memory_limit = None;
     let mut durability_mode = None;
+    let mut snapshot_format = None;
     // The access flag is a post-verb arm here, and the local `access`
     // slot parks through the shared helpers — `parse_access_sighting` and
     // `set_access_once` in parse_error.rs own the grammar and the
@@ -507,6 +514,15 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
                     parse_durability_mode,
                 )?;
             }
+            "--snapshot-format" => {
+                value_flag(
+                    &mut snapshot_format,
+                    "--snapshot-format",
+                    &mut args,
+                    &format!("a value ({})", crate::flags::snapshot_format_values(" or ")),
+                    parse_snapshot_format,
+                )?;
+            }
             #[cfg(feature = "bolt")]
             "--bolt-identity" => {
                 value_flag(
@@ -574,6 +590,7 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
         logical_graph_size_limit,
         expression_memory_limit,
         durability_mode,
+        snapshot_format,
         access,
         load,
     };
@@ -792,6 +809,18 @@ fn parse_durability_mode(flag: &str, value: &str) -> Result<relate::DurabilityMo
     value
         .parse::<relate::DurabilityMode>()
         .map_err(|e| format!("serve {flag} expects a durability mode, got {value:?}: {e}").into())
+}
+
+// ADR-0534: the flag's values are the codec names plus `parquet-wide`,
+// the same grammar the query session's `--snapshot-format` parses
+// (flags.rs), so serve and the query session cannot drift on one store.
+fn parse_snapshot_format(
+    flag: &str,
+    value: &str,
+) -> Result<crate::flags::SnapshotFormat, ParseError> {
+    value
+        .parse::<crate::flags::SnapshotFormat>()
+        .map_err(|e| format!("serve {flag} expects a snapshot format, got {value:?}: {e}").into())
 }
 
 // Live only through a surface feature (the `--http`/`--bolt` port flags

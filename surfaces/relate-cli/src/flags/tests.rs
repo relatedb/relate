@@ -450,3 +450,43 @@ fn help_and_version_win_over_the_load_conflict() {
         "a verb's help page must win over the --load conflict"
     );
 }
+
+#[test]
+fn snapshot_format_parses_codecs_and_parquet_wide() {
+    // ADR-0534: the flag's values are the codec names plus the
+    // `parquet-wide` opt-in — an option on Parquet, never a codec of its
+    // own. An uncompiled choice parses and fails closed at open
+    // (ADR-0105), so parsing is unconditional here.
+    let flags = parse(&argv(&["--snapshot-format", "parquet-wide"]));
+    assert_eq!(flags.snapshot_format, Some(SnapshotFormat::ParquetWide));
+    assert_eq!(
+        flags.snapshot_format.map(SnapshotFormat::codec),
+        Some(relate::SnapshotCodecKind::Parquet)
+    );
+    assert_eq!(
+        flags.snapshot_format.map(SnapshotFormat::wide_columns),
+        Some(true)
+    );
+    // The flag's grammar owns its unknown-value error: the expected
+    // list names the opt-in beside the codecs, never the codec parser's
+    // narrower set.
+    let err = "parquet-wdie"
+        .parse::<SnapshotFormat>()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("unknown snapshot format 'parquet-wdie'"),
+        "{err}"
+    );
+    // A codec spelling is unchanged, case-insensitive like the codec
+    // parser, and opts nothing in.
+    let flags = parse(&argv(&["--snapshot-format", "JSON"]));
+    assert_eq!(
+        flags.snapshot_format,
+        Some(SnapshotFormat::Codec(relate::SnapshotCodecKind::Json))
+    );
+    assert_eq!(
+        flags.snapshot_format.map(SnapshotFormat::wide_columns),
+        Some(false)
+    );
+}

@@ -315,12 +315,24 @@ fn main() {
     // existing durable target is a usage error (exit 2). A durable-target
     // load creates the store with the run's codec knobs (R-M2), so the
     // created store and the open below agree.
+    // The flag's one open projection (ADR-0534): the codec it requests
+    // and the wide-column opt-in, for the load-create path below and the
+    // open after it alike.
+    let (snapshot_codec, wide_columns) = match snapshot_format {
+        Some(format) => {
+            let (codec, wide) = format.open_knobs();
+            (Some(codec), wide)
+        }
+        None => (None, false),
+    };
     let db_path = resolve_store(
         db_path,
         load.as_deref(),
         safe_mode,
         load::CreateCodecs {
-            to_snapshot_format: snapshot_format,
+            // The durable-target create path names a codec; the
+            // wide-column opt-in is the open's, applied below.
+            to_snapshot_format: snapshot_codec,
             markdown_body_properties: markdown_body_properties.clone(),
         },
         &mut telemetry,
@@ -359,13 +371,15 @@ fn main() {
         width: width::effective_width(width),
         timeout,
         open: relate::OpenOptions {
-            wide_columns: false,
+            // ADR-0534: the opt-in half of the flag's projection; the
+            // created-by-load target takes the codec half above.
+            wide_columns,
             wal_dir,
             checkpoint_interval: checkpoint_interval_secs.map(std::time::Duration::from_secs),
             durability_mode,
             logical_graph_size_limit,
             expression_memory_limit,
-            snapshot_codec: snapshot_format,
+            snapshot_codec,
             markdown_body_properties,
             load_csv_dir,
             load_csv_max_bytes: None,

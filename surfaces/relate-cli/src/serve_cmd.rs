@@ -413,6 +413,17 @@ fn store_options(cmd: &ServeCmd) -> Result<relate::OpenOptions, i32> {
         2,
         crate::flags::durability_mode_from_env_checked(cmd.durability_mode),
     )?;
+    // ADR-0163, ADR-0534: the served store's snapshot format — the same
+    // grammar the query session's flag parses, resolved onto the one
+    // open the served surfaces share. `parquet-wide` requests the Parquet
+    // codec and opts it into the wide-column part encoding; `None` leaves
+    // the engine's own resolution (`RELATE_SNAPSHOT_FORMAT`, then the
+    // build default).
+    if let Some(format) = cmd.snapshot_format {
+        let (codec, wide) = format.open_knobs();
+        options.snapshot_codec = Some(codec);
+        options.wide_columns = wide;
+    }
     Ok(options)
 }
 

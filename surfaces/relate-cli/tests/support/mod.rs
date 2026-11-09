@@ -674,7 +674,20 @@ pub fn run_cli_stdin_in_home(
 // Only the durability and pull E2E suites read the manifest; allow until more do.
 #[allow(dead_code)]
 pub fn manifest_codec(db: &Path) -> String {
-    parse_manifest_codec(&std::fs::read(db.join("manifest.json")).unwrap())
+    parse_manifest_codec(&manifest_bytes(db))
+}
+
+/// The store's `manifest.json` bytes — the one read every manifest
+/// consumer (the codec pin, the parsed document) decodes from.
+fn manifest_bytes(db: &Path) -> Vec<u8> {
+    std::fs::read(db.join("manifest.json")).expect("manifest.json reads")
+}
+
+/// The store's `manifest.json`, parsed — the one read the suite's
+/// marker asserts share (the codec pin and the format version alike).
+#[allow(dead_code)]
+pub fn manifest_json(db: &Path) -> serde_json::Value {
+    serde_json::from_slice(&manifest_bytes(db)).expect("manifest.json parses")
 }
 
 /// The snapshot codec pinned in a `.rl` bundle's `manifest.json`. Opening
@@ -738,6 +751,23 @@ pub fn compiled_codecs() -> String {
         .map(|codec| codec.as_str())
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// The `--snapshot-format` values this build accepts, as the help rows
+/// spell them: [`compiled_codecs`] plus — in a Parquet build — the
+/// `parquet-wide` opt-in (ADR-0534), mirroring the help module's one
+/// value list so a vocabulary change fails these suites too.
+#[allow(dead_code)]
+pub fn snapshot_format_values() -> String {
+    // The binary's own vocabulary list is unreachable from `tests/`, so
+    // this mirrors it on the same typed facts: the compiled codec names
+    // plus, gated on the one typed build predicate, the `parquet-wide`
+    // opt-in (ADR-0534).
+    if relate::SnapshotCodecKind::Parquet.is_compiled() {
+        format!("{compiled}|parquet-wide", compiled = compiled_codecs())
+    } else {
+        compiled_codecs()
+    }
 }
 
 /// The `Commands:` block of a top-level help output.

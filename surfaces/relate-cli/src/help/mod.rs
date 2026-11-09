@@ -444,14 +444,11 @@ pub(crate) fn command_usage(topic: HelpTopic) -> &'static str {
 }
 
 /// The snapshot-codec names compiled into this build, joined by `separator`:
-/// the one list the top-level `--help`, the clone help page, and the
-/// `--snapshot-format`/`--to-snapshot-format` "requires" texts render.
+/// the one list the clone help page and the `--to-snapshot-format`
+/// "requires" text render (the `--snapshot-format` vocabulary lives in
+/// `flags::snapshot_format`).
 pub(crate) fn compiled_codecs(separator: &str) -> String {
-    relate::SnapshotCodecKind::compiled()
-        .iter()
-        .map(|codec| codec.as_str())
-        .collect::<Vec<_>>()
-        .join(separator)
+    crate::flags::codec_names(separator)
 }
 
 /// Exact-match did-you-mean aliases (ADR-0239): spellings from other CLIs
