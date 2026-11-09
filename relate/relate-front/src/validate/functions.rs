@@ -218,9 +218,11 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
 
 /// Function names the binder accepts on lowered IR but which are *not* part
 /// of the user-facing registry (`KNOWN_FUNCTIONS`, the `SHOW FUNCTIONS`
-/// source): the binder knows each one for a form the engine itself produces,
-/// while `SHOW FUNCTIONS` never lists it and no reference server registers
-/// it. Members:
+/// source): the binder accepts each one, while `SHOW FUNCTIONS` never lists
+/// it. Admission rule: a name belongs here when it is either a form the
+/// engine itself produces (the lowered internals) or an engine-only
+/// user-writable function outside the Cypher-25 corpus (`bar`, ADR-0542).
+/// Members:
 ///
 /// - `graph.byname` -- valid only as a `USE` graph selector; it is listed
 ///   by `SHOW FUNCTIONS` through the executor's catalog-only entries, not
@@ -238,8 +240,9 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
 ///   node either way, moving the spellings here is what removes their
 ///   `SHOW FUNCTIONS` rows while the lowering's own form keeps binding.
 /// - `bar` -- the engine-only text bar `bar(value, min, max, width)`
-///   (ADR-0542's admission class): callable in every build, not in the
-///   Cypher-25 corpus, so it is never a `SHOW FUNCTIONS` row.
+///   (ADR-0542's admission class): user-writable and callable in every
+///   build, but not in the Cypher-25 corpus, so never a `SHOW FUNCTIONS`
+///   row.
 pub(crate) const UNADVERTISED_FUNCTIONS: &[&str] = &[
     "bar",
     "graph.byname",
@@ -401,6 +404,15 @@ mod tests {
     /// callable (`removed`) versus the spellings that move to the lowering's
     /// unadvertised set (`renamed_internal`) — pinned literally, so a
     /// registry edit that put one back fails here.
+    /// The engine-only admission class (ADR-0542): binder-known, never
+    /// advertised.
+    #[test]
+    fn engine_only_names_bind_but_are_not_advertised() {
+        assert!(is_known_function("bar"));
+        assert!(!KNOWN_FUNCTIONS.contains(&"bar"));
+        assert!(UNADVERTISED_FUNCTIONS.contains(&"bar"));
+    }
+
     #[test]
     fn the_removed_and_internalised_names_leave_the_registry() {
         for removed in [
@@ -452,10 +464,6 @@ mod tests {
             );
             assert!(UNADVERTISED_FUNCTIONS.contains(&internal));
         }
-        // The engine-only admission class: binder-known, never advertised.
-        assert!(is_known_function("bar"));
-        assert!(!KNOWN_FUNCTIONS.contains(&"bar"));
-        assert!(UNADVERTISED_FUNCTIONS.contains(&"bar"));
         // The canonical spellings the renames target are untouched.
         for canonical in [
             "ltrim",

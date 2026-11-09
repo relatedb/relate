@@ -218,50 +218,53 @@ mod tests {
             .collect()
     }
 
-    /// The lockstep test: every distinct special arity registered in
-    /// The table must carry exactly the names its constant's verified set
+    /// The lockstep test: every distinct special arity registered in the
+    /// table must carry exactly the names its constant's verified set
     /// declares (the spec verified against live Neo4j 2026.09, riding the
-    /// constant the way its requirement does) — the independent fact the
-    /// behavior test alone cannot supply.
+    /// constant the way its requirement does) -- the independent fact the
+    /// behavior test alone cannot supply. The three arities with an empty
+    /// `verified` set are the one typed table below.
     #[test]
     fn special_arity_rows_match_the_verified_sets() {
-        // The distinct arities actually registered (sorted before dedup —
+        /// How an arity with no verified set is pinned instead.
+        enum Specless {
+            /// The floor: every-row behavior is checked by the per-row test.
+            Floor,
+            /// Rows generated from the spelling registry, pinned to it.
+            Clock,
+            /// Engine-only: no live spec exists, so the one name is pinned.
+            EngineOnly(&'static str),
+        }
+        let specless = |arity: &Arity| {
+            if *arity == ARITY_AT_LEAST_ONE {
+                Some(Specless::Floor)
+            } else if *arity == ARITY_AT_MOST_ONE {
+                Some(Specless::Clock)
+            } else if *arity == ARITY_EXACTLY_FOUR_ENGINE_ONLY {
+                Some(Specless::EngineOnly("bar"))
+            } else {
+                None
+            }
+        };
+        // The distinct arities actually registered (sorted before dedup --
         // the table is sorted by name, not arity).
         let mut registered_arities: Vec<Arity> = builtins().iter().map(|b| b.arity).collect();
-        registered_arities.sort_by(|a, b| {
-            (a.min, a.max)
-                .partial_cmp(&(b.min, b.max))
-                .expect("comparable")
-        });
+        registered_arities.sort_by_key(|a| (a.min, a.max));
         registered_arities.dedup();
-        // Only the floor may be specless — the sentinel is pinned, not
-        // trusted: any other arity with an empty verified set fails here.
-        assert!(
-            registered_arities
-                .iter()
-                .filter(|a| a.verified.is_empty())
-                .all(|a| a == &ARITY_AT_LEAST_ONE
-                    || a == &ARITY_AT_MOST_ONE
-                    || a == &ARITY_EXACTLY_FOUR_ENGINE_ONLY),
-            "only the floor, the registry-derived clock arity and the engine-only bar arity may carry an empty verified set"
-        );
         for arity in registered_arities {
-            // The floor's every-row behavior is checked by the per-row test
-            // below; every other arity's rows must be exactly its spec.
-            if arity == ARITY_AT_LEAST_ONE {
-                continue;
-            }
-            let mut actual = registered(arity);
-            let mut expected = if arity == ARITY_AT_MOST_ONE {
-                // The clock rows are generated from the spelling registry —
-                // pin them to it, not to a second hand-written list.
-                relate_core::temporal::clock_spellings().collect()
-            } else if arity == ARITY_EXACTLY_FOUR_ENGINE_ONLY {
-                // Engine-only: no live spec exists, so the one name is pinned.
-                vec!["bar"]
-            } else {
-                arity.verified.to_vec()
+            let mut expected: Vec<&str> = match specless(&arity) {
+                Some(Specless::Floor) => continue,
+                Some(Specless::Clock) => relate_core::temporal::clock_spellings().collect(),
+                Some(Specless::EngineOnly(name)) => vec![name],
+                None => {
+                    assert!(
+                        !arity.verified.is_empty(),
+                        "{arity:?}: only the floor, the clock arity and the engine-only bar arity may carry an empty verified set"
+                    );
+                    arity.verified.to_vec()
+                }
             };
+            let mut actual = registered(arity);
             actual.sort_unstable();
             expected.sort_unstable();
             assert_eq!(actual, expected, "{arity:?}");

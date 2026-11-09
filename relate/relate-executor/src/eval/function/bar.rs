@@ -12,7 +12,7 @@ use crate::overlay::ExecGraph;
 /// The widest bar a call may request, in cells. It bounds the output
 /// (at most 3 bytes per cell) so a call can never size an allocation from
 /// an unchecked argument.
-pub(super) const BAR_MAX_WIDTH: i64 = 1024;
+const BAR_MAX_WIDTH: i64 = 1024;
 
 /// The eight fill levels in order: `FILL[i]` is a cell filled `i + 1`
 /// eighths from the left, ending in the full block.
@@ -80,6 +80,7 @@ pub(super) fn bi_bar(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Resu
 mod tests {
     use super::*;
     use crate::graph::Graph;
+    use crate::test_support::int;
 
     fn bar(args: Vec<Value>) -> Result<Value> {
         let g = Graph::default();
@@ -95,10 +96,6 @@ mod tests {
             Value::String(s) => s.to_string(),
             other => panic!("expected a string, got {other:?}"),
         }
-    }
-
-    fn int(i: i64) -> Value {
-        Value::Int(i)
     }
 
     #[test]

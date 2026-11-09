@@ -25,6 +25,11 @@ pub(crate) fn value_map(entries: &[(&str, Value)]) -> Value {
     Value::Map(map(entries).into())
 }
 
+/// A `Value::Int` -- the scalar shorthand the test modules share.
+pub(crate) fn int(i: i64) -> Value {
+    Value::Int(i)
+}
+
 /// A list of integers.
 pub(crate) fn ints(xs: &[i64]) -> Value {
     Value::List(xs.iter().map(|&x| Value::Int(x)).collect::<Vec<_>>().into())
