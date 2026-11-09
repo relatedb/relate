@@ -123,38 +123,56 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
-      # Built after the bump so the binary carries the release version; the
-      # stamp edits Package.swift, which the commit below stages with the
-      # bump's files (`git add -u`).
-      - name: Build and stamp the Swift XCFramework
+      # Build, stamp, commit, push — under a fetch + rebase + rebuild retry:
+      # a merge landing on main during the XCFramework build rejects the push
+      # as non-fast-forward (observed on the v0.1.1 run). The retry rebases
+      # and REBUILDS: ADR-0433 §6's contract is that the tagged commit's
+      # Package.swift checksum pins a zip built from that exact tree, so a
+      # rebase that changes the tree must re-stamp a fresh zip, not reuse a
+      # pre-rebase one. A rebase conflict fails loudly (nothing to merge
+      # automatically; the release stays untagged).
+      - name: Build, stamp, commit and push the version bump
+        id: commit
         run: |
-          bash scripts/build-xcframework.sh --zip
-          bash scripts/stamp-swift-package.sh "${{ steps.version.outputs.tag }}" \
-            target/apple/RelateFFI.xcframework.zip
+          set -euo pipefail
+          git config user.name "release-bot"
+          git config user.email "actions@github.com"
+          for attempt in 1 2 3; do
+            bash scripts/build-xcframework.sh --zip
+            bash scripts/stamp-swift-package.sh "${{ steps.version.outputs.tag }}" \
+              target/apple/RelateFFI.xcframework.zip
+            # scripts/release-bump.sh is the single source of truth for
+            # which files a bump touches; stage whatever it modified so a
+            # new version surface can never be left out of the commit.
+            git add -u
+            # The bump script is idempotent: a re-dispatch after a
+            # fail-before-tag can produce an empty diff; skip the commit but
+            # still emit HEAD.
+            if git diff --cached --quiet; then
+              echo "No version changes to commit; reusing HEAD."
+            else
+              git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
+            fi
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::push to main rejected after 3 attempts"
+              exit 1
+            fi
+            echo "push to main rejected (attempt $attempt) — rebasing onto origin/main and rebuilding"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # After the push: the artifact is the FINAL zip (a retried rebase
+      # rebuilt it), byte-identical to what the tagged Package.swift pins.
       - uses: actions/upload-artifact@v4
         with:
           name: swift-xcframework
           path: target/apple/RelateFFI.xcframework.zip
-
-      - name: Commit and push version bump
-        id: commit
-        run: |
-          git config user.name "release-bot"
-          git config user.email "actions@github.com"
-          # scripts/release-bump.sh is the single source of truth for which
-          # files a bump touches; stage whatever it modified so a new version
-          # surface can never be left out of the release commit.
-          git add -u
-          # The bump script is idempotent: a re-dispatch after a fail-before-tag
-          # can produce an empty diff; skip the commit but still emit HEAD.
-          if git diff --cached --quiet; then
-            echo "No version changes to commit; reusing HEAD."
-          else
-            git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
-            git push origin HEAD:main
-          fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   cli:
     name: CLI (${{ matrix.target }})
