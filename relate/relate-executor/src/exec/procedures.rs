@@ -10,13 +10,16 @@ use std::collections::BTreeMap;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, YieldItems};
+use relate_model::EntityKind;
 
 use crate::ctx::ExecCtx;
 use crate::eval::eval;
+use crate::exec::candidates::{materialize_candidate, resolve_search_index};
 use crate::graph::Procedure;
 use crate::procedure_registry::ProcSignature;
 use crate::row::Row;
 
+use super::fulltext;
 use super::ontology::{exec_ontology_call, OntologyProc};
 use super::procedure_rows::{builtin_procedure_rows, executable_signature, procedure_metadata};
 use super::vector::{vector_index_candidates, vector_operand, VectorSearchFilter};
@@ -617,11 +620,12 @@ pub(crate) fn exec_fulltext_query_call(
             args.len()
         )));
     }
-    let columns = if relationship {
-        ["relationship", "score"]
-    } else {
-        ["node", "score"]
-    };
+    // The entity column is the divert's classification; the score column
+    // is shared by both entity variants, so the table is one choice plus
+    // one literal.
+    let entity_column = if relationship { "relationship" } else { "node" };
+    let score_key = "score";
+    let columns = [entity_column, score_key];
     compose_rows(
         ctx,
         rows,
@@ -638,84 +642,38 @@ pub(crate) fn exec_fulltext_query_call(
                 .as_string()
                 .ok_or_else(|| Error::invalid_argument_type("query must be STRING"))?
                 .to_string();
-            let detail = graph
-                .show_schema()?
-                .data
-                .index_details
-                .get(&index_name)
-                .cloned()
-                .filter(|detail| {
-                    detail.kind == crate::redo::IndexKindSpec::Fulltext
-                        && detail.relationship == relationship
-                })
-                .ok_or_else(|| Error::execution("IndexNotFound: fulltext index"))?;
-            let (property_filter, token) = query
-                .split_once(':')
-                .map_or((None, query.as_str()), |(property, token)| {
-                    (Some(property), token)
-                });
-            let token = token.to_ascii_lowercase();
-            let matches = |entity_properties: &relate_core::PropertyMap| {
-                detail
-                    .properties
-                    .iter()
-                    .filter(|property| property_filter.is_none_or(|wanted| wanted == *property))
-                    .filter_map(|property| entity_properties.get(property))
-                    .any(|value| fulltext_value_matches(value, &token))
-            };
-            let mut produced = Vec::new();
-            if relationship {
-                for id in graph.all_rel_ids() {
-                    let Some(rel) = graph.rel(id) else {
-                        continue;
-                    };
-                    if !detail
-                        .labels
-                        .iter()
-                        .any(|rel_type| rel_type == &rel.rel_type)
-                        || !matches(&rel.properties)
-                    {
-                        continue;
-                    }
-                    produced.push(BTreeMap::from([
-                        ("relationship".to_string(), Value::from_relationship(rel)),
-                        ("score".to_string(), Value::Float(1.0)),
-                    ]));
-                }
-            } else {
-                for id in graph.all_node_ids() {
-                    let Some(node) = graph.node(id) else {
-                        continue;
-                    };
-                    if !detail
-                        .labels
-                        .iter()
-                        .any(|label| node.labels.contains(label))
-                        || !matches(&node.properties)
-                    {
-                        continue;
-                    }
-                    produced.push(BTreeMap::from([
-                        ("node".to_string(), Value::from_node(node.clone())),
-                        ("score".to_string(), Value::Float(1.0)),
-                    ]));
-                }
+            // The shared SEARCH index resolution (the vector procedure's
+            // one spelling): a missing or non-fulltext index is that
+            // helper's typed error. Only the entity-kind disagreement is
+            // this procedure's own — `queryNodes` on a relationship index
+            // (or the reverse) has no scan to run.
+            let (detail, _options) =
+                resolve_search_index(graph, &index_name, crate::redo::IndexKindSpec::Fulltext)?;
+            if detail.relationship != relationship {
+                return Err(Error::execution(
+                    "WrongIndexType: fulltext index entity type mismatch",
+                ));
             }
-            Ok(produced.into_iter().map(Cow::Owned).collect())
+            // The one CIP-225 scan: the Lucene-style query parser (terms
+            // OR'd, `AND`/`OR`/`NOT`, `property:term` field filters) and the
+            // live-fitted BM25 score, ranked best-first, no window.
+            let kind = EntityKind::from_relationship_flag(detail.relationship);
+            let produced =
+                fulltext::search_all(graph, &detail, &query, fulltext::Analyzer::Standard)
+                    .into_iter()
+                    .map(|(id, score)| {
+                        Cow::Owned(BTreeMap::from([
+                            (
+                                entity_column.to_string(),
+                                materialize_candidate(graph, kind, id),
+                            ),
+                            (score_key.to_string(), Value::Float(score)),
+                        ]))
+                    })
+                    .collect();
+            Ok(produced)
         },
     )
-}
-
-pub(crate) fn fulltext_value_matches(value: &Value, token: &str) -> bool {
-    match value {
-        Value::String(value) => value
-            .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
-            .any(|word| word.eq_ignore_ascii_case(token)),
-        Value::List(values) => values
-            .iter()
-            .any(|value| fulltext_value_matches(value, token)),
-        _ => false,
-    }
 }
 
 fn exec_vector_query_call(

@@ -1,8 +1,9 @@
 //! The exec engine's node-match residency: the relationship twin of the
 //! node id seek ([`rel_seek_expr`], the LABS-161 decode), the node
 //! admission ([`node_ok`]), and the shared SEARCH scan contract — index
-//! resolution and survivor materialization, the one spelling both SEARCH
-//! paths (vector, fulltext) call — which lives here (stellar round 3,
+//! resolution, survivor materialization, the ranked ordering and the
+//! bounded [`TopWindow`], the one spelling every ranked scan (vector,
+//! fulltext, WRRF fusion) calls — which lives here (stellar round 3,
 //! std-6), not in either feature module. The node-candidate funnel
 //! itself — which index, if any, answers a node pattern's residual
 //! predicates, and the label/property scan it falls back to — is not
@@ -10,10 +11,12 @@
 //! walk tier ([`crate::pattern_walk::node_candidates`]). Relationship
 //! expansion lives in `expand`.
 
-use std::collections::BTreeMap;
+use std::cmp::Ordering as CmpOrdering;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 
-use relate_core::{Error, Node, NodeId, RelId, Result, Value};
+use relate_core::{Error, Node, NodeId, PropertyMap, RelId, Result, Value};
 use relate_ir::{BinaryOp, Direction, Expr, NodePattern, RelPattern};
 use relate_model::EntityKind;
 use relate_names::SmallName;
@@ -183,6 +186,176 @@ pub(crate) fn materialize_candidate(graph: &ExecGraph<'_>, kind: EntityKind, id:
         graph.node(id).map(Value::from_node)
     };
     expect_enumerated_candidate(candidate, id)
+}
+
+/// One FULLTEXT/VECTOR index's entity population: every live entity the
+/// index covers as `(id, properties)` — the population half of the shared
+/// scan contract (the vector and fulltext scans both read it). It carries
+/// the two per-kind enumeration policies:
+///
+/// * node: the exact per-label enumeration (`live_node_ids_with_label`;
+///   LABS-442 — a sparse label skips the other labels' rows and lookups
+///   instead of sweeping every id and label-checking each record). The
+///   multi-label index is the per-label union; no labels enumerates
+///   nothing, as a sweep's label check did.
+/// * relationship: the sweep, because the base has no relationship-by-type
+///   postings (`live_rel_ids_of_type` is itself an O(R) walk, so a per-type
+///   enumeration would pay k whole-table walks). The type filter runs
+///   before the record clone.
+///
+/// Both arms hand back an enumerated record via
+/// [`expect_enumerated_candidate`] — the type read included — so a miss
+/// anywhere is a catalog/visibility invariant violation, never a silently
+/// dropped candidate.
+pub(crate) fn index_population(
+    graph: &ExecGraph<'_>,
+    detail: &IndexDetailSpec,
+) -> Vec<(i64, Arc<PropertyMap>)> {
+    if detail.relationship {
+        graph
+            .all_rel_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let rel_type = expect_enumerated_candidate(graph.rel_type(id), id);
+                if !detail.labels.iter().any(|label| label == &rel_type) {
+                    return None;
+                }
+                let rel = expect_enumerated_candidate(graph.rel(id), id);
+                Some((id, Arc::clone(&rel.properties)))
+            })
+            .collect()
+    } else {
+        let mut ids: Vec<NodeId> = detail
+            .labels
+            .iter()
+            .flat_map(|label| graph.live_node_ids_with_label(label))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter()
+            .map(|id| {
+                let node = expect_enumerated_candidate(graph.node(id), id);
+                (id, Arc::clone(&node.properties))
+            })
+            .collect()
+    }
+}
+
+/// The one canonical CIP-225 candidate ordering: `a` is `Greater` (better)
+/// than `b` when its score is higher, or the scores tie and its element id
+/// is lower. Scores order by `f64::total_cmp` — the crate's canonical
+/// float order (the aggregate sort's), total and transitive where
+/// `partial_cmp` + tie is not (a pathological NaN score now orders above
+/// every finite one instead of tying intransitively with each). Shared by
+/// every ranked scan (vector, fulltext, WRRF fusion).
+pub(crate) fn ranked_better_cmp(score_a: f64, id_a: i64, score_b: f64, id_b: i64) -> CmpOrdering {
+    score_a.total_cmp(&score_b).then_with(|| id_b.cmp(&id_a))
+}
+
+/// A scan candidate ordered by [`ranked_better_cmp`]: `Greater` is better.
+/// `PartialEq` agrees with `Ord` by construction (stellar round 1, std-5):
+/// the derived-eq disagreement on NaN ties is gone.
+#[derive(Clone, Copy)]
+struct Ranked {
+    score: f64,
+    id: i64,
+}
+
+// Total under `ranked_better_cmp` (`total_cmp` scores), so `Ord` applies
+// even though the bare `f64` score is not `Eq`.
+impl Eq for Ranked {}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == CmpOrdering::Equal
+    }
+}
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        ranked_better_cmp(self.score, self.id, other.score, other.id)
+    }
+}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// ADR-0256: the bounded top-k collector for the indexed scans — the one
+/// CIP-225 result window (score descending, element id ascending,
+/// `SKIP`/`LIMIT`). Retains only the best `offset + limit` candidates —
+/// worst at the heap root — so the scan costs `O(n log window)` with no
+/// full-length collect, and materializes the element `Value` only for the
+/// survivors. Owns `(offset, limit)` itself so no caller can let the
+/// retained window and the windowed rows drift (stellar round 1, std-5).
+pub(crate) struct TopWindow {
+    worst_first: BinaryHeap<Reverse<Ranked>>,
+    offset: usize,
+    limit: usize,
+    /// `offset + limit`, computed once: the heap's retention bound and the
+    /// per-push comparison, never re-derived on the scan's hot path.
+    window: usize,
+}
+
+impl TopWindow {
+    pub(crate) fn new(offset: usize, limit: usize) -> Self {
+        // `offset + limit`, computed once here — the only place the
+        // retention bound is derived.
+        let window = offset.saturating_add(limit);
+        Self {
+            // The heap grows on demand; the clamp only avoids reserving an
+            // unbounded window's capacity up front.
+            worst_first: BinaryHeap::with_capacity(window.min(1024)),
+            offset,
+            limit,
+            window,
+        }
+    }
+
+    /// The whole ranking, unbounded — the `db.index.fulltext.query*`
+    /// procedures' scan, which wants every hit rather than a page. Keeping
+    /// this beside [`Self::new`] means the unbounded intent is stated here,
+    /// not as a `usize::MAX` sentinel at the call site.
+    pub(crate) fn ranking_all() -> Self {
+        Self::new(0, usize::MAX)
+    }
+
+    /// Retain `candidate` if it beats the current worst retained entry.
+    /// Equal (score, id) pairs never displace each other; ids are unique per
+    /// candidate so an equal-ranked push is always the same candidate.
+    pub(crate) fn push(&mut self, score: f64, id: i64) {
+        if self.window == 0 {
+            return;
+        }
+        let candidate = Ranked { score, id };
+        if self.worst_first.len() < self.window {
+            self.worst_first.push(Reverse(candidate));
+        } else {
+            // A retained entry exists exactly when the window is full.
+            let mut worst = self
+                .worst_first
+                .peek_mut()
+                .expect("a full window has a worst entry");
+            if candidate > worst.0 {
+                *worst = Reverse(candidate);
+            }
+        }
+    }
+
+    /// The retained candidates best-first, windowed by the constructor's
+    /// `offset`/`limit` — the heap emits best-first already
+    /// (`Reverse<Ranked>` ascending is `Ranked` best-first).
+    pub(crate) fn into_sorted_rows(self) -> Vec<(i64, f64)> {
+        self.worst_first
+            .into_sorted_vec()
+            .into_iter()
+            .map(|Reverse(r)| (r.id, r.score))
+            .skip(self.offset)
+            .take(self.limit)
+            .collect()
+    }
 }
 
 pub(crate) fn node_ok(

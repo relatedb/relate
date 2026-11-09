@@ -54,6 +54,7 @@ pub(crate) mod dispatch;
 pub(crate) mod exists_probe;
 pub(crate) mod expand;
 pub(crate) mod far_probe;
+pub(crate) mod fulltext;
 pub(crate) mod gpm;
 // The LABS-348 hub join — the whole family (gate, join, row-shape
 // helpers, test hooks), invoked by the driver at its pattern-0→

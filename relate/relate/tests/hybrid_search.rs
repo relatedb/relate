@@ -7,6 +7,7 @@
 
 mod common;
 
+use common::first_column_strings as titles;
 use relate::Value;
 
 /// The CIP-278 preview gate is process-level (ADR-0371: `Database::open`
@@ -75,19 +76,6 @@ fn movie_store() -> relate::Connection {
     c
 }
 
-/// The fused result titles, in the engine's fused order (score descending,
-/// entity id ascending on ties).
-fn titles(result: &relate::QueryResult) -> Vec<String> {
-    result
-        .rows
-        .iter()
-        .map(|row| match &row[0] {
-            Value::String(title) => title.to_string(),
-            other => panic!("expected a title string, got {other:?}"),
-        })
-        .collect()
-}
-
 /// The CIP-278 "Proposal" showcase query: the weighted vector + fulltext
 /// hybrid over the appendix corpus, weights 0.7/0.3, constant 60, fused
 /// LIMIT 5. The CIP's own result table (The Little Mermaid, Moana, Frozen,
@@ -123,12 +111,9 @@ fn combine_fuses_vector_and_fulltext_with_wrrf() {
 
 /// Example R2&4.1: omitted WEIGHTs default to 1 and an omitted WITH
 /// CONSTANT defaults to 60 (unweighted RRF), with no fused LIMIT. The
-/// CIP's own table orders Tangled before Frozen and puts The Lion King
-/// fifth (its Lucene fulltext tie-break); this engine ties the fused
-/// scores of Moana/Frozen exactly and orders ties by entity id ascending
-/// (the CIP removed its documented tie-breaker -- implementation-dependent,
-/// CLG-102), so Frozen (earlier id) precedes Tangled, and Aladdin's
-/// both-source contributions edge The Lion King's by a hair for fifth.
+/// fused order is the CIP's own table (Tangled before Frozen, The Lion
+/// King fifth): the fulltext source now ranks on the live Neo4j 2026.10.1
+/// BM25 scores (they match exactly), so no engine-specific tie remains.
 #[test]
 fn combine_defaults_weight_one_and_constant_sixty() {
     let mut c = movie_store();
@@ -151,9 +136,9 @@ fn combine_defaults_weight_one_and_constant_sixty() {
         vec![
             "The Little Mermaid",
             "Moana",
-            "Frozen",
             "Tangled",
-            "Aladdin",
+            "Frozen",
+            "The Lion King",
         ]
     );
 }

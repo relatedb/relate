@@ -3,15 +3,16 @@
 //! COMBINE's weighted reciprocal rank fusion over two or more (possibly
 //! nested) sources -- and the `search_match_clause` entry the executor's
 //! dispatch calls. The vector-similarity kernels live in
-//! [`crate::vector_similarity`], the vector scan orchestration and the
-//! bounded top-k window in [`super::vector`], and the shared scan
-//! contract (index resolution, survivor materialization) in
+//! [`crate::vector_similarity`], the vector and fulltext scans'
+//! orchestration in [`super::vector`] and [`super::fulltext`], and the
+//! shared scan contract — index resolution, entity enumeration, survivor
+//! materialization, ranked ordering, bounded top-k window — in
 //! [`crate::exec::candidates`]; this module owns the SEARCH clause
 //! semantics layered over them.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use relate_core::{expected_type_detail, value_type_name, Error, PropertyMap, Result, Value};
+use relate_core::{expected_type_detail, value_type_name, Error, Result, Value};
 use relate_ir::{
     Expr, MatchMode, PathPattern, PatternPayload, SearchClause, SearchCombineSpec, SearchIndexSpec,
     SearchKind, SearchSpec,
@@ -21,14 +22,13 @@ use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
 use crate::eval::eval;
-use crate::exec::candidates::{materialize_candidate, resolve_search_index};
+use crate::exec::candidates::{materialize_candidate, ranked_better_cmp, resolve_search_index};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::fulltext;
 use super::match_clause::{bind_pattern_nulls, match_clause};
-use super::vector::{
-    ranked_better_cmp, vector_index_candidates, vector_operand, TopWindow, VectorSearchFilter,
-};
+use super::vector::{vector_index_candidates, vector_operand, VectorSearchFilter};
 
 /// The SEARCH clause's legacy `InvalidValueType` detail channel: the class
 /// token is spelled once for the helper's users here, the call site owns
@@ -83,95 +83,52 @@ fn eval_window_int(
     }
 }
 
-/// CIP-225 fulltext candidate generation: scan the named FULLTEXT index's
-/// entities, tokenize the indexed string properties, and score each entity
-/// by the query terms it contains (OR semantics, case-insensitive; the
-/// score is the total occurrence count of the query terms). Sorted by score
-/// desc, then element id; then the CIP-225 offset window and LIMIT.
+/// CIP-225 fulltext candidate generation: the shared [`super::fulltext`]
+/// scan over the named FULLTEXT index ranks the matches by its live-fitted
+/// BM25 score, then the CIP-225 offset window and LIMIT page them.
 ///
 /// WHERE is rejected for FULLTEXT SEARCH by the front-end validator (Neo4j
 /// error 42N14), so there is no inner filter here.
 fn fulltext_index_candidates(
     ctx: ExecCtx<'_>,
-    index_name: &str,
+    input: &Row,
+    index: &SearchIndexSpec,
     query: &str,
     offset: usize,
     limit: usize,
 ) -> Result<(EntityKind, Vec<(Value, f64)>)> {
-    let graph = ctx.graph;
+    let ExecCtx {
+        graph,
+        params,
+        cypher_version,
+        ..
+    } = ctx;
     // The shared SEARCH index resolution (stellar round 3, std-6): the
     // schema read, the missing-index policy, and the wrong-kind
     // rejection are the one spelling in `exec::candidates`, shared with
     // the vector path. The fulltext scan reads no options, so the
     // resolution's options half is discarded here.
-    let (detail, _options) =
-        resolve_search_index(graph, index_name, crate::redo::IndexKindSpec::Fulltext)?;
-    let terms = tokenize_text(query);
-    let scan = |properties: &PropertyMap| -> Option<f64> {
-        let mut score = 0.0f64;
-        for property in &detail.properties {
-            let Some(Value::String(text)) = properties.get(property) else {
-                continue;
-            };
-            let tokens = tokenize_text(text);
-            for term in &terms {
-                score += tokens
-                    .iter()
-                    .filter(|t| t.as_str() == term.as_str())
-                    .count() as f64;
-            }
+    let (detail, _options) = resolve_search_index(
+        graph,
+        &index.index_name,
+        crate::redo::IndexKindSpec::Fulltext,
+    )?;
+    // The per-row `WITH ANALYZER` expression (CIP-225 Rule 7,
+    // FulltextSearchAcceptance [57]); an absent slot means the standard
+    // analyzer, and the value's own NULL/unknown-name/type rejections are
+    // `Analyzer::from_value`'s.
+    let analyzer = match &index.analyzer {
+        Some(expr) => {
+            fulltext::Analyzer::from_value(&eval(graph, input, expr, params, cypher_version)?)?
         }
-        (score > 0.0).then_some(score)
+        None => fulltext::Analyzer::Standard,
     };
     let kind = EntityKind::from_relationship_flag(detail.relationship);
-    let mut top = TopWindow::new(offset, limit);
-    if kind.is_relationship() {
-        for id in graph.all_rel_ids() {
-            let Some(rel_type) = graph.rel_type(id) else {
-                continue;
-            };
-            if !detail.labels.iter().any(|label| label == &rel_type) {
-                continue;
-            }
-            let Some(rel) = graph.rel(id) else { continue };
-            let Some(score) = scan(&rel.properties) else {
-                continue;
-            };
-            top.push(score, id);
-        }
-    } else {
-        for id in graph.all_node_ids() {
-            let Some(node) = graph.node(id) else { continue };
-            if !detail
-                .labels
-                .iter()
-                .any(|label| node.labels.iter().any(|actual| actual == label))
-            {
-                continue;
-            }
-            let Some(score) = scan(&node.properties) else {
-                continue;
-            };
-            top.push(score, node.id);
-        }
-    }
-    let mut candidates = Vec::new();
-    for (id, score) in top.into_sorted_rows() {
-        candidates.push((materialize_candidate(graph, kind, id), score));
-    }
+    let candidates = fulltext::search(graph, &detail, query, analyzer, offset, limit)
+        .into_iter()
+        .map(|(id, score)| (materialize_candidate(graph, kind, id), score))
+        .collect();
     Ok((kind, candidates))
-}
-
-/// Tokenize text for fulltext scoring: lowercase, split on any run of
-/// non-alphanumeric characters (a stand-in for the standard analyzer; the
-/// CIP's configurable analyzers are accepted syntactically but not
-/// differentiated).
-fn tokenize_text(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 /// One source specification's ranked candidate list: the entity kind of
@@ -265,24 +222,14 @@ fn search_index_candidates(
             )?))
         }
         SearchKind::Fulltext => {
-            // CIP-225: the fulltext query is a STRING (analyzer accepted,
-            // not differentiated). A null query matches nothing — the same
-            // null-propagates-to-no-candidates policy the vector arm gets
-            // from `vector_operand`.
-            let Value::String(query) = query else {
-                if query.is_null() {
-                    return Ok(None);
-                }
-                return Err(invalid_value_type(
-                    "fulltext SEARCH requires a STRING query",
-                ));
+            // CIP-225: the fulltext query is a STRING (the per-index
+            // analyzer decides its tokenization); the operand read is
+            // `fulltext::operand`, the vector arm's `vector_operand` twin.
+            let Some(query) = fulltext::operand(&query)? else {
+                return Ok(None);
             };
             Ok(Some(fulltext_index_candidates(
-                ctx,
-                &index.index_name,
-                &query,
-                offset,
-                limit,
+                ctx, input, index, query, offset, limit,
             )?))
         }
     }

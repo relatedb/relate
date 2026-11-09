@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{connection, params, run, scalar_one};
+use common::{connection, first_column_strings, params, run, scalar_one};
 use relate::Value;
 
 #[test]
@@ -294,18 +294,11 @@ fn fulltext_query_relationships_returns_relationship_matches() {
         &mut conn,
         "CREATE FULLTEXT INDEX relNotes FOR ()-[r:RELATED_TO|SIMILAR_TO]-() ON EACH [r.note]",
     );
-    let mut notes: Vec<String> = run(
+    let mut notes = first_column_strings(&run(
         &mut conn,
         "CALL db.index.fulltext.queryRelationships('relNotes', 'lamp') \
          YIELD relationship RETURN relationship.note AS note",
-    )
-    .rows
-    .into_iter()
-    .map(|row| match &row[0] {
-        Value::String(note) => note.to_string(),
-        ref other => panic!("expected a string, got {other:?}"),
-    })
-    .collect();
+    ));
     notes.sort();
     assert_eq!(notes, ["lamp of wishes", "magic lamp"]);
 }

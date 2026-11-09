@@ -1,23 +1,21 @@
 //! Vector-index scan orchestration: the operand and CIP-240 filter
-//! preparation, candidate enumeration, the stored-config read
-//! (`stored_config`, the create side's mirror in
-//! `super::ddl_options`), and the bounded top-k window the
+//! preparation, the stored-config read (`stored_config`, the create side's
+//! mirror in `super::ddl_options`), and the per-candidate scoring the
 //! SEARCH clause machinery (`super::search`) layers over the crate-root
 //! similarity kernels ([`crate::vector_similarity`]) and the shared scan
-//! contract ([`crate::exec::candidates`]).
+//! contract — the index population, ranked ordering and bounded top-k
+//! window — in [`crate::exec::candidates`].
 
-use std::cmp::Ordering as CmpOrdering;
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{Error, NodeId, PropertyMap, Result, Value};
+use relate_core::{Error, PropertyMap, Result, Value};
 use relate_ir::{SearchFilterPred, SearchOp};
 use relate_model::EntityKind;
 
 use crate::ctx::ExecCtx;
 use crate::eval::{binary, eval, in_op, in_rhs};
 use crate::exec::candidates::{
-    expect_enumerated_candidate, materialize_candidate, resolve_search_index,
+    index_population, materialize_candidate, resolve_search_index, TopWindow,
 };
 use crate::exec::ddl_options::index_config;
 use crate::overlay::ExecGraph;
@@ -298,104 +296,6 @@ fn prepare_vector_filters<'a>(
     Ok(evaluated)
 }
 
-/// The one canonical CIP-225 candidate ordering: `a` is `Greater` (better)
-/// than `b` when its score is higher, or the scores tie and its element id
-/// is lower. NaN scores tie with everything — the `unwrap_or(Equal)` of the
-/// pre-ADR-0256 comparator, kept so a pathological NaN ranks the same way.
-pub(crate) fn ranked_better_cmp(score_a: f64, id_a: i64, score_b: f64, id_b: i64) -> CmpOrdering {
-    score_a
-        .partial_cmp(&score_b)
-        .unwrap_or(CmpOrdering::Equal)
-        .then_with(|| id_b.cmp(&id_a))
-}
-
-/// A scan candidate ordered by [`ranked_better_cmp`]: `Greater` is better.
-/// `PartialEq` agrees with `Ord` by construction (stellar round 1, std-5):
-/// the derived-eq disagreement on NaN ties is gone.
-#[derive(Clone, Copy)]
-struct Ranked {
-    score: f64,
-    id: i64,
-}
-
-// Total under `ranked_better_cmp` (NaN ties with everything), so `Ord`
-// applies even though the bare `f64` score is not `Eq`.
-impl Eq for Ranked {}
-
-impl PartialEq for Ranked {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == CmpOrdering::Equal
-    }
-}
-
-impl Ord for Ranked {
-    fn cmp(&self, other: &Self) -> CmpOrdering {
-        ranked_better_cmp(self.score, self.id, other.score, other.id)
-    }
-}
-
-impl PartialOrd for Ranked {
-    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// ADR-0256: the bounded top-k collector for the vector and fulltext flat
-/// scans — the one CIP-225 result window (score descending, element id
-/// ascending, `SKIP`/`LIMIT`). Retains only the best `offset + limit`
-/// candidates — worst at the heap root — so the scan costs
-/// `O(n log window)` with no full-length collect, and materializes the
-/// element `Value` only for the survivors. Owns `(offset, limit)` itself
-/// so no caller can let the retained window and the windowed rows drift
-/// (stellar round 1, std-5).
-pub(crate) struct TopWindow {
-    worst_first: BinaryHeap<Reverse<Ranked>>,
-    offset: usize,
-    limit: usize,
-}
-
-impl TopWindow {
-    pub(crate) fn new(offset: usize, limit: usize) -> Self {
-        let window = offset.saturating_add(limit);
-        Self {
-            worst_first: BinaryHeap::with_capacity(window.min(1024)),
-            offset,
-            limit,
-        }
-    }
-
-    /// Retain `candidate` if it beats the current worst retained entry.
-    /// Equal (score, id) pairs never displace each other; ids are unique per
-    /// candidate so an equal-ranked push is always the same candidate.
-    pub(crate) fn push(&mut self, score: f64, id: i64) {
-        let window = self.offset.saturating_add(self.limit);
-        if window == 0 {
-            return;
-        }
-        let candidate = Ranked { score, id };
-        if self.worst_first.len() < window {
-            self.worst_first.push(Reverse(candidate));
-        } else if let Some(mut worst) = self.worst_first.peek_mut() {
-            if candidate > worst.0 {
-                *worst = Reverse(candidate);
-            }
-        }
-    }
-
-    /// The retained candidates best-first, windowed by the constructor's
-    /// `offset`/`limit` — the heap emits best-first already
-    /// (`Reverse<Ranked>` ascending is `Ranked` best-first).
-    pub(crate) fn into_sorted_rows(self) -> Vec<(i64, f64)> {
-        self.worst_first
-            .into_sorted_vec()
-            .into_iter()
-            .map(|Reverse(r)| (r.id, r.score))
-            .skip(self.offset)
-            .take(self.limit)
-            .collect()
-    }
-}
-
 /// Bundled CIP-240 vector-search inputs: the decomposed filter
 /// predicates (attached at lowering, Rules 1/6 already enforced there)
 /// and the row their RHS expressions are evaluated against. (Bundled to
@@ -458,52 +358,12 @@ pub(crate) fn vector_index_candidates(
         }
         Ok(())
     };
-    if kind.is_relationship() {
-        // The rel arm keeps the sweep: the base has no relationship-by-
-        // type postings (live_rel_ids_of_type itself is an O(R) walk),
-        // so a per-type enumeration would pay k whole-table walks where
-        // this sweep pays one.
-        for id in graph.all_rel_ids() {
-            // The type filter runs before the record clone: a sparse
-            // indexed rel type must not pay one Relationship clone per
-            // non-matching relationship per SEARCH statement.
-            let Some(rel_type) = graph.rel_type(id) else {
-                continue;
-            };
-            if !detail.labels.iter().any(|label| label == &rel_type) {
-                continue;
-            }
-            let rel = expect_enumerated_candidate(graph.rel(id), id);
-            keep(id, &rel.properties)?;
-        }
-    } else {
-        // The node candidates ride the exact live per-label enumeration
-        // (LABS-442: a sparse label skips the other labels' rows and
-        // lookups instead of sweeping every id and label-checking each
-        // record) — base postings at the pinned snapshot plus every
-        // scratch entry by its actual labels, deletions filtered, so an
-        // in-statement `SET n:Label` copy-on-write node is enumerated
-        // exactly like the sweep found it. The multi-label index is the
-        // per-label union; no labels enumerates nothing, as the sweep's
-        // label check did. Computed here, in the node arm, so a
-        // relationship-index search pays nothing for it.
-        let node_candidates: Vec<NodeId> = {
-            let mut ids: Vec<NodeId> = detail
-                .labels
-                .iter()
-                .flat_map(|label| graph.live_node_ids_with_label(label))
-                .collect();
-            ids.sort_unstable();
-            ids.dedup();
-            ids
-        };
-        for id in node_candidates {
-            // The exact enumeration guarantees the node exists at this
-            // snapshot: a miss is an invariant violation, not a skip
-            // (the materialize_candidate contract).
-            let node = expect_enumerated_candidate(graph.node(id), id);
-            keep(id, &node.properties)?;
-        }
+    // The shared index population (exec::candidates): the node arm rides
+    // the exact per-label enumeration, the relationship arm the type-first
+    // sweep — both already enumerated, so a materialization miss there is
+    // that contract's invariant.
+    for (id, properties) in index_population(graph, &detail) {
+        keep(id, &properties)?;
     }
     let rows = top.into_sorted_rows();
     let mut candidates = Vec::with_capacity(rows.len());
@@ -516,6 +376,8 @@ pub(crate) fn vector_index_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::candidates::ranked_better_cmp;
+
     /// A duration has no total order, so a range filter over one excludes
     /// the candidate while an equality still compares (CIP-240 value-type
     /// rules) — pinning the guard vector_filter_passes carries.

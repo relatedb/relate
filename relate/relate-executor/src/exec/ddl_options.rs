@@ -19,6 +19,7 @@ use relate_core::{Error, Result, Value};
 use relate_parser::{IndexKind, OptionsForm};
 
 use crate::eval::eval;
+use crate::exec::fulltext::Analyzer;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -328,11 +329,7 @@ impl ValueShape {
                 }
             }
             Self::Analyzer => match value {
-                Value::String(name)
-                    if FULLTEXT_ANALYZERS.contains(&name.to_ascii_lowercase().as_str()) =>
-                {
-                    Ok(())
-                }
+                Value::String(name) if Analyzer::from_name(name).is_some() => Ok(()),
                 _ => Err(Error::argument_error(format!(
                     "Invalid input for analyzer name: {value:?}"
                 ))),
@@ -389,56 +386,6 @@ const FULLTEXT_FAMILY: ConfigFamily = ConfigFamily {
     foreign_prefixes: &["spatial.", "vector."],
     foreign_expected: "'fulltext.analyzer' or 'fulltext.eventually_consistent'",
 };
-
-/// The fulltext analyzer names Neo4j's engine admits (live-verified
-/// 2026-11-02 on neo4j:2026.09-enterprise).
-const FULLTEXT_ANALYZERS: [&str; 45] = [
-    "arabic",
-    "armenian",
-    "basque",
-    "brazilian",
-    "bulgarian",
-    "catalan",
-    "cjk",
-    "classic",
-    "czech",
-    "danish",
-    "dutch",
-    "email",
-    "english",
-    "finnish",
-    "french",
-    "galician",
-    "german",
-    "greek",
-    "hindi",
-    "hungarian",
-    "indonesian",
-    "irish",
-    "italian",
-    "keyword",
-    "latvian",
-    "lithuanian",
-    "norwegian",
-    "persian",
-    "portuguese",
-    "romanian",
-    "russian",
-    "simple",
-    "sorani",
-    "spanish",
-    "standard",
-    "standard-folding",
-    "standard-no-stop-words",
-    "stop",
-    "swedish",
-    "thai",
-    "turkish",
-    "unicode_whitespace",
-    "url",
-    "url_or_email",
-    "whitespace",
-];
 
 /// The create side of the vector option schema, the read side's mirror
 /// (`exec::vector::stored_config`): one adjacent pipeline — navigate the

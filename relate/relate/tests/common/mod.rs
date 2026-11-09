@@ -102,6 +102,20 @@ pub fn connection() -> relate::Connection {
         .unwrap()
 }
 
+/// The first column of every result row as a `String` — the shape the
+/// title/name/note assertions of the SEARCH and procedure test crates all
+/// spelled inline.
+pub fn first_column_strings(result: &relate::QueryResult) -> Vec<String> {
+    result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            relate::Value::String(value) => value.to_string(),
+            other => panic!("expected a string column, got {other:?}"),
+        })
+        .collect()
+}
+
 /// A fresh connection whose store carries one `IS UNIQUE` constraint:
 /// `CREATE CONSTRAINT <constraint> FOR (n:<label>) REQUIRE n.<prop> IS UNIQUE`
 /// — the shared scaffold `temporal_identity_split.rs` and
