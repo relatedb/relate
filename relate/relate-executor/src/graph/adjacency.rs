@@ -151,9 +151,12 @@ impl Graph {
 
     /// The engine's resolved-walk core (LABS-801): every hop is a chunk
     /// lookup by interned id — no per-node interning, no string
-    /// comparison, no dedup allocation. The engine's walks resolve once
-    /// at their construction and come through here; the name-keyed
-    /// [`Self::for_each_neighbor_at`] is the boundary's spelling.
+    /// comparison. The engine's walks resolve once at their construction
+    /// and come through here; the name-keyed [`Self::for_each_neighbor_at`]
+    /// is the boundary's spelling.
+    ///
+    /// The rid-only spelling of the one walk core,
+    /// [`Self::try_for_each_hop_resolved_at`]: it discards the endpoints.
     pub(crate) fn try_for_each_neighbor_resolved_at<E>(
         &self,
         id: NodeId,
@@ -162,38 +165,72 @@ impl Graph {
         types: &RelTypes,
         mut f: impl FnMut(RelId) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
+        self.try_for_each_hop_resolved_at(id, dir, ts, types, |rid, _| f(rid))
+    }
+
+    /// The resolved-walk core's hop spelling: each visible relationship
+    /// with the node it reaches. The peer comes from the one version-chain
+    /// read that also answers visibility — a rel walk plus a `rel_ends_at`
+    /// per relationship reads the same chain twice per hop, which every
+    /// walk-then-`hop` loop (the traversal kernels, the shortest-path
+    /// searches) paid per followed relationship.
+    pub(crate) fn try_for_each_hop_resolved_at<E>(
+        &self,
+        id: NodeId,
+        dir: relate_ir::Direction,
+        ts: u64,
+        types: &RelTypes,
+        mut f: impl FnMut(RelId, NodeId) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
         use relate_ir::Direction;
+        let mut emit = |rid: RelId, start: NodeId, end: NodeId| {
+            match crate::store::hop_other(id, start, end, dir) {
+                Some(peer) => f(rid, peer),
+                // A hop whose resolved endpoints do not answer to `dir`
+                // (a stale hop of a reused rel id) is dropped — the
+                // walk + `hop` spelling this replaces did the same.
+                None => Ok(()),
+            }
+        };
         match dir {
             Direction::Outgoing => {
-                self.for_each_typed(&self.out_adj, id, ts, types, &mut f)?;
+                self.for_each_typed_ends(&self.out_adj, id, ts, types, &mut emit)?;
             }
             Direction::Incoming => {
-                self.for_each_typed(&self.in_adj, id, ts, types, &mut f)?;
+                self.for_each_typed_ends(&self.in_adj, id, ts, types, &mut emit)?;
             }
             Direction::Both => {
-                // The crate's engine-id set alias — `UsedSet`, the
-                // FxHash/CoreMap rule (ADR-0355 / LABS-337).
+                // Dedup by rel id, not endpoints: a self-loop sits in
+                // both of a node's lists, and a reused rel id (WAL redo
+                // replay keeps the old hop in the old end's adjacency)
+                // can repeat within one list. The crate's engine-id set
+                // alias — `UsedSet`, the FxHash/CoreMap rule
+                // (ADR-0355 / LABS-337).
                 let mut seen = crate::UsedSet::default();
-                let mut dedup = |rid: RelId| -> std::result::Result<(), E> {
+                let mut dedup = |rid: RelId, start: NodeId, end: NodeId| {
                     if seen.insert(rid) {
-                        f(rid)?;
+                        emit(rid, start, end)?;
                     }
                     Ok(())
                 };
-                self.for_each_typed(&self.out_adj, id, ts, types, &mut dedup)?;
-                self.for_each_typed(&self.in_adj, id, ts, types, &mut dedup)?;
+                self.for_each_typed_ends(&self.out_adj, id, ts, types, &mut dedup)?;
+                self.for_each_typed_ends(&self.in_adj, id, ts, types, &mut dedup)?;
             }
         }
         Ok(())
     }
 
-    fn for_each_typed<E>(
+    /// The one typed-chunk walk skeleton: chunk selection by the resolved
+    /// type filter, one version-chain read per hop (visibility and both
+    /// endpoints — `rel_ends_at` answering `Some` is the same check
+    /// `rel_visible_at` makes).
+    fn for_each_typed_ends<E>(
         &self,
         map: &IdVec<TypedAdj>,
         id: NodeId,
         ts: u64,
         types: &RelTypes,
-        f: &mut impl FnMut(RelId) -> std::result::Result<(), E>,
+        f: &mut impl FnMut(RelId, NodeId, NodeId) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         // Copy the hop ids, then drop the store guard before visiting.
         // `IdVec`'s lock is not re-entrant. The variable-length walker
@@ -220,8 +257,8 @@ impl Graph {
             hops
         };
         for rid in hops {
-            if self.rel_visible_at(rid, ts) {
-                f(rid)?;
+            if let Some((start, end)) = self.rel_ends_at(rid, ts) {
+                f(rid, start, end)?;
             }
         }
         Ok(())

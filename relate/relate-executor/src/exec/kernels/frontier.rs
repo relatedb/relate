@@ -483,11 +483,8 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> bool>(
             let (u, s) = tables.pair_at(index);
             for arm in &arms[s as usize] {
                 let t = &nfa.transitions[arm.transition];
-                view.try_for_each_neighbor_resolved(u, t.direction, &arm.types, |rid| {
+                view.try_for_each_hop_resolved::<Error>(u, t.direction, &arm.types, |rid, v| {
                     edge_visits += 1;
-                    let Some(v) = view.hop(u, rid, t.direction) else {
-                        return Ok::<(), Error>(());
-                    };
                     // The guards (the forced rung's gap classes): an
                     // arrival failing its state's admission or the
                     // transition's group predicate is not admitted — no

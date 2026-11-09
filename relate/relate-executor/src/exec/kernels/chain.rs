@@ -203,16 +203,13 @@ fn expand_hop<P: NodePred>(
         }
         let from = prev.current(r);
         let tallies = &tallies;
-        graph.try_for_each_neighbor_resolved(from, hop.traverse, &types, |rid| {
+        graph.try_for_each_hop_resolved(from, hop.traverse, &types, |rid, arrival| {
             if next.full() {
                 return Ok::<(), Error>(());
             }
             if prev.lineage_contains(r, rid) {
                 return Ok::<(), Error>(());
             }
-            let Some(arrival) = graph.hop(from, rid, hop.traverse) else {
-                return Ok(());
-            };
             if !pred.admits(&mut prepared, ctx, arrival)? {
                 return Ok(());
             }

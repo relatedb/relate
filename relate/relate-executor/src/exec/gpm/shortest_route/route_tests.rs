@@ -3,7 +3,7 @@
 
 use relate_core::Value::{self, Bool, Int, Null};
 
-use crate::exec::test_support::build;
+use crate::exec::test_support::{build, Builder};
 use crate::graph::Graph;
 use crate::test_support::ints;
 
@@ -422,4 +422,99 @@ fn all_shortest_stops_at_the_shortest_satisfying_length() {
              WHERE NONE(n IN nodes(p) WHERE n.id = 99) \
              RETURN [n IN nodes(p) | n.id]";
     assert_eq!(on_route(&g, q), expect(&[&[ints(&[0, 1, 3])]]));
+}
+/// Property-map endpoints, both sides: the pattern is not row-bound, but
+/// each endpoint's map is a bounded seek — the pair search over the
+/// candidate product, not the one-sided fan. Pinned two ways: the answer
+/// matches the row-bound form, and the expansions match it too — the fan
+/// would expand the full-depth ball from the start, the pair search meets
+/// in the middle.
+#[test]
+fn both_endpoints_by_property_map_take_the_pair_search() {
+    let g = shortcut();
+    let bound = "MATCH (a {id: 0}), (b {id: 3}) \
+                 MATCH p = shortestPath((a)-[*]->(b)) RETURN [n IN nodes(p) | n.id]";
+    let seek = "MATCH p = shortestPath((a {id: 0})-[*]->(b {id: 3})) \
+                RETURN [n IN nodes(p) | n.id]";
+    let (rows, seek_counts) = run(&g, seek);
+    assert_eq!(sorted(rows), expect(&[&[ints(&[0, 4, 3])]]));
+    let (_, bound_counts) = run(&g, bound);
+    assert!(seek_counts.route_runs > 0);
+    assert_eq!(
+        seek_counts.expands, bound_counts.expands,
+        "the property-endpoint form must take the pair search, not the fan"
+    );
+}
+
+/// Several end candidates match one map (a non-unique property): one
+/// partition per candidate with a path, the product over both sides.
+#[test]
+fn property_map_seeking_several_end_candidates() {
+    let b = Builder::new();
+    let nodes: Vec<_> = (0..5)
+        .map(|i| {
+            let id = i.to_string();
+            if i == 2 || i == 4 {
+                b.prop_node(&id, &[], &[("tag", Value::String("x".into()))])
+            } else {
+                b.node(&id, &[])
+            }
+        })
+        .collect();
+    for (a, z) in [(0, 1), (1, 2), (3, 2), (0, 4), (4, 2)] {
+        b.rel(nodes[a], nodes[z], "R", &[]);
+    }
+    let g = b.done();
+    let q = "MATCH p = shortestPath((a {id: '0'})-[*..3]->(b {tag: 'x'})) \
+             RETURN b.id, length(p)";
+    assert_eq!(
+        on_route(&g, q),
+        expect(&[
+            &[Value::String("2".into()), Int(2)],
+            &[Value::String("4".into()), Int(1)],
+        ])
+    );
+}
+
+/// A bare start with a property-seekable end whose list is bounded: the
+/// end side drives — one backward fan from the single resolved end, not a
+/// forward ball per start. Pinned by the expansion count: each of the
+/// three starts has twenty dead-end neighbours, so the forward fans would
+/// follow over sixty relationships, while the backward fan follows only
+/// the six that lead into the end.
+#[test]
+fn fan_from_bounded_seekable_end_when_start_is_bare() {
+    let b = Builder::new();
+    let t = b.prop_node("t", &[], &[("tag", Value::String("x".into()))]);
+    for i in 0..3 {
+        let s = b.node(&format!("s{i}"), &["S"]);
+        let m = b.node(&format!("m{i}"), &[]);
+        b.rel(s, m, "R", &[]);
+        b.rel(m, t, "R", &[]);
+        for j in 0..20 {
+            let dead = b.node(&format!("d{i}_{j}"), &[]);
+            b.rel(s, dead, "R", &[]);
+        }
+    }
+    let g = b.done();
+    let q = "MATCH p = shortestPath((a:S)-[*]->(b {tag: 'x'})) RETURN a.id, length(p)";
+    let (rows, counts) = run(&g, q);
+    assert_eq!(sorted(rows), sorted(gpm(&g, q)));
+    assert!(counts.route_runs > 0);
+    assert!(
+        counts.expands < 20,
+        "the bounded end must drive a backward fan, not a forward ball per start: {} expansions",
+        counts.expands
+    );
+}
+
+/// An end map whose property matches nothing: no candidates, no rows —
+/// the route still ran (the pair product over an empty end list).
+#[test]
+fn property_map_seeking_to_no_candidate() {
+    let g = shortcut();
+    let q = "MATCH p = shortestPath((a {id: 0})-[*]->(b {id: 99})) RETURN length(p)";
+    let (rows, counts) = run(&g, q);
+    assert!(counts.route_runs > 0);
+    assert_eq!(sorted(rows), Vec::<Vec<Value>>::new());
 }

@@ -312,15 +312,12 @@ fn step_hop<P: NodePred>(
     // comparison (the admission's own lazy path) — a side with no
     // neighbor never evaluates it, the per-row path's behavior.
     let mut prepared: Option<P::Prepared> = None;
-    let stream = graph.try_for_each_neighbor_resolved(from, hop.traverse, types, |rid| {
+    let stream = graph.try_for_each_hop_resolved(from, hop.traverse, types, |rid, arrival| {
         // The different-relationships rule inside the side: this hop's rel
         // differs from the rels the binding already took.
         if rels[..index].contains(&rid) {
             return Ok(());
         }
-        let Some(arrival) = graph.hop(from, rid, hop.traverse) else {
-            return Ok(());
-        };
         if !pred.admits(&mut prepared, ctx, arrival)? {
             return Ok(());
         }

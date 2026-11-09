@@ -14,6 +14,12 @@ use std::sync::OnceLock;
 /// every other engine-id table. Keyless — never for client-controlled keys.
 pub(crate) type FxBuildHasher = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
 
+/// An engine-id table on [`FxBuildHasher`] — the spelled `std` map type
+/// for the dense-id policy (the shortest-path searches' trees and
+/// predecessor tables), so a table names the seam instead of the
+/// dependency. [`crate::graph::CoreMap`] is the concurrent spelling.
+pub(crate) type FxMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
+
 /// The seeded build-hasher of every table whose keys a client can
 /// influence: the one name for the policy [`shared_random_state`]
 /// constructs, spelled at type boundaries instead of `RandomState`.

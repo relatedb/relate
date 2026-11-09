@@ -196,3 +196,174 @@ fn neighbor_walk_reenters_the_same_store() {
     );
     assert_eq!(second_hop, vec![bc]);
 }
+
+/// The hop walk's (rel, peer) pairs for one node — the one collector the
+/// two hop-walk tests share.
+fn hop_pairs(
+    g: &Graph,
+    at: relate_core::NodeId,
+    dir: relate_ir::Direction,
+    ts: u64,
+    types: &crate::store::RelTypes,
+) -> Vec<(relate_core::RelId, relate_core::NodeId)> {
+    let mut out = Vec::new();
+    g.try_for_each_hop_resolved_at(at, dir, ts, types, |rid, peer| {
+        out.push((rid, peer));
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    out
+}
+
+/// The hop spelling's walk pinned against literal expectations: chunk
+/// order (ts DESC, newest rel first — ADR-0203), direction filtering,
+/// peer resolution, the self-loop's single hop under `Both`, and a rel
+/// invisible at the probed ts. Literals, not a differential against the
+/// rid-only spelling — that spelling delegates to this walk, so a
+/// differential would assert the walk against itself.
+#[test]
+fn hop_walk_matches_literal_expectations() {
+    use crate::store::RelTypes;
+    use relate_ir::Direction;
+
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(vec!["A".into()], BTreeMap::new()).unwrap();
+    let b = g.create_node(vec!["B".into()], BTreeMap::new()).unwrap();
+    let r_ab = g.create_rel(a, b, "R".into(), BTreeMap::new()).unwrap();
+    let r_ba = g.create_rel(b, a, "R".into(), BTreeMap::new()).unwrap();
+    let r_loop = g.create_rel(a, a, "LOOP".into(), BTreeMap::new()).unwrap();
+    let r_ghost = g.create_rel(a, b, "GHOST".into(), BTreeMap::new()).unwrap();
+    g.commit_write();
+    let ts = g.commit_ts();
+
+    let walk = |dir: Direction, types: &RelTypes| hop_pairs(&g, a, dir, ts, types);
+
+    // Outgoing: a's out-chunks in insertion order (R, LOOP, GHOST).
+    assert_eq!(
+        walk(Direction::Outgoing, &g.rel_types(&["R"])),
+        vec![(r_ab, b)]
+    );
+    assert_eq!(
+        walk(Direction::Outgoing, &g.rel_types(&["LOOP"])),
+        vec![(r_loop, a)]
+    );
+    assert_eq!(
+        walk(Direction::Outgoing, &RelTypes::Any),
+        vec![(r_ab, b), (r_loop, a), (r_ghost, b)]
+    );
+    // Incoming: a's in-chunks hold only b→a (R) and the loop.
+    assert_eq!(
+        walk(Direction::Incoming, &g.rel_types(&["R"])),
+        vec![(r_ba, b)]
+    );
+    assert_eq!(
+        walk(Direction::Incoming, &RelTypes::Any),
+        vec![(r_ba, b), (r_loop, a)]
+    );
+    // Both: out pass then in pass; the loop dedups to one hop.
+    assert_eq!(
+        walk(Direction::Both, &g.rel_types(&["R"])),
+        vec![(r_ab, b), (r_ba, b)]
+    );
+    assert_eq!(
+        walk(Direction::Both, &g.rel_types(&["LOOP"])),
+        vec![(r_loop, a)],
+        "the self-loop is one hop under Both, not two"
+    );
+    assert_eq!(
+        walk(Direction::Both, &RelTypes::Any),
+        vec![(r_ab, b), (r_loop, a), (r_ghost, b), (r_ba, b)]
+    );
+
+    // A rel deleted after the commit is invisible at the later ts — the
+    // same matrix mode as the other cells: the same walk closure at the
+    // new commit ts, the literal surviving list.
+    g.begin_write().unwrap();
+    g.delete_rel(r_loop);
+    g.commit_write();
+    let ts = g.commit_ts();
+    let walk = |dir: Direction, types: &RelTypes| hop_pairs(&g, a, dir, ts, types);
+    assert_eq!(
+        walk(Direction::Both, &RelTypes::Any),
+        vec![(r_ab, b), (r_ghost, b), (r_ba, b)],
+        "the deleted rel is not a hop"
+    );
+}
+
+/// A rel id reused with different endpoints (WAL redo replay keeps the
+/// first hops as history — the `pair_counts_skip_a_reused_rel_ids_stale_hop`
+/// precedent): rel 6 lives (1→2), dies, and its id is re-created (1→3).
+/// Node 1's out-adjacency then carries TWO hops named 6 and node 2's
+/// in-adjacency a stale one. The `Both` walk must key dedup on the rel
+/// id — an endpoint check would double-emit — and a stale hop whose
+/// resolved endpoints no longer touch the walked node drops via
+/// `hop_other`.
+#[test]
+fn hop_walk_dedups_a_reused_rel_ids_stale_hops() {
+    use relate_ir::Direction;
+
+    use crate::graph::RedoOp;
+    use crate::store::RelTypes;
+
+    let g = Graph::default();
+    g.apply_redo(
+        vec![
+            RedoOp::create_node(1, vec!["A".to_string()], BTreeMap::new()),
+            RedoOp::create_node(2, vec!["B".to_string()], BTreeMap::new()),
+            RedoOp::create_node(3, vec!["C".to_string()], BTreeMap::new()),
+        ],
+        1,
+    )
+    .unwrap();
+    g.apply_redo(
+        vec![RedoOp::create_rel(
+            6,
+            1,
+            2,
+            "R".to_string(),
+            // Distinct ts payloads per life: equal (ts, id) hops compare
+            // equal in TypedAdj::insert_hop and the second create's hop
+            // would be dropped from the chunk — the double-hop fixture
+            // needs both to survive.
+            BTreeMap::from([("ts".to_string(), Value::Int(1))]),
+        )],
+        2,
+    )
+    .unwrap();
+    g.apply_redo(vec![RedoOp::delete_rel(6)], 3).unwrap();
+    g.apply_redo(
+        vec![RedoOp::create_rel(
+            6,
+            1,
+            3,
+            "R".to_string(),
+            BTreeMap::from([("ts".to_string(), Value::Int(2))]),
+        )],
+        4,
+    )
+    .unwrap();
+
+    let walk = |at, dir| hop_pairs(&g, at, dir, g.commit_ts(), &RelTypes::Any);
+
+    // Per-arm contract under the reuse: Both dedups by rel id, so the two
+    // surviving out-hops named 6 emit once, with the resolved peer. The
+    // directed arms do not collapse a reused id's repeat entries — the
+    // walk's policy since before this change (storage-level pruning of
+    // stale hops is the deferred invariant, LABS-928).
+    assert_eq!(
+        walk(1, Direction::Both),
+        vec![(6, 3)],
+        "Both collapses the two surviving out-hops named 6"
+    );
+    assert_eq!(
+        walk(1, Direction::Outgoing),
+        vec![(6, 3), (6, 3)],
+        "the directed arms keep both repeat entries (pre-existing policy, LABS-928)"
+    );
+    assert_eq!(walk(1, Direction::Incoming), vec![]);
+    // The stale hop in node 2's in-adjacency resolves to (1→3): node 2 is
+    // not an endpoint, so the hop drops.
+    assert_eq!(walk(2, Direction::Both), vec![]);
+    assert_eq!(walk(3, Direction::Both), vec![(6, 1)]);
+}

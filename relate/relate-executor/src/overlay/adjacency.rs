@@ -7,13 +7,14 @@
 //! are the plan boundary's adapters for the callers that still hold
 //! written names; each resolves once and delegates.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
 
 use relate_core::{NodeId, RelId};
 use relate_ir::{Direction, RelPattern};
 
 use crate::store::RelTypes;
 
+use super::scratch::WriteScratch;
 use super::ExecGraph;
 
 impl ExecGraph<'_> {
@@ -124,9 +125,9 @@ impl ExecGraph<'_> {
     }
 
     /// Overlay-visible neighbors under the resolved type filter
-    /// (LABS-801): the committed adjacency walk compares interned ids; the
-    /// write overlay's rel copies carry type strings, so that arm compares
-    /// the filter's names (`RelTypes::matches_name`).
+    /// (LABS-801) — the rid-only spelling of
+    /// [`Self::try_for_each_hop_resolved`], the same relation the base
+    /// layer states between its two walks.
     pub(crate) fn try_for_each_neighbor_resolved<E>(
         &self,
         id: NodeId,
@@ -134,57 +135,105 @@ impl ExecGraph<'_> {
         types: &RelTypes,
         mut f: impl FnMut(RelId) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
+        self.try_for_each_hop_resolved(id, dir, types, |rid, _| f(rid))
+    }
+
+    /// The neighbor walk yielding the reached node with each relationship
+    /// — the hop spelling of the traversal kernels and the shortest-path
+    /// searches. The read-only arm: nothing to dedup against and nothing
+    /// hidden, so the base walk's own visibility check at the pinned ts is
+    /// the complete answer — the write overlay's per-hop existence
+    /// re-check is an overlay cost a read-only traversal must not pay. The
+    /// write arm is [`Self::try_for_each_hop_overlay`].
+    pub(crate) fn try_for_each_hop_resolved<E>(
+        &self,
+        id: NodeId,
+        dir: Direction,
+        types: &RelTypes,
+        f: impl FnMut(RelId, NodeId) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        match self.scratch {
+            None => self
+                .base
+                .try_for_each_hop_resolved_at(id, dir, self.snapshot_ts(), types, f),
+            Some(cell) => self.try_for_each_hop_overlay(cell, id, dir, types, f),
+        }
+    }
+
+    /// The one write-overlay walk (LABS-801): committed rels ride the
+    /// base's fused hop walk — one version-chain read per hop, the peer
+    /// carried along — gated by the scratch prologue's existence check
+    /// (a rel deleted in the overlay is not a neighbor); the scratch
+    /// extras' rel copies answer type and endpoints from their one record
+    /// (the copies carry type strings, so the filter compares names,
+    /// `RelTypes::matches_name`).
+    fn try_for_each_hop_overlay<E>(
+        &self,
+        scratch: &RefCell<WriteScratch>,
+        id: NodeId,
+        dir: Direction,
+        types: &RelTypes,
+        mut f: impl FnMut(RelId, NodeId) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
         let ts = self.snapshot_ts();
-        let extras = self.scratch.map(|cell| {
-            let s = cell.borrow();
-            let mut v = Vec::new();
-            match dir {
-                Direction::Outgoing => {
-                    if let Some(xs) = s.batch.out_adj.get(&id) {
-                        v.extend_from_slice(xs);
-                    }
-                }
-                Direction::Incoming => {
-                    if let Some(xs) = s.batch.in_adj.get(&id) {
-                        v.extend_from_slice(xs);
-                    }
-                }
-                Direction::Both => {
-                    if let Some(xs) = s.batch.out_adj.get(&id) {
-                        v.extend_from_slice(xs);
-                    }
-                    if let Some(xs) = s.batch.in_adj.get(&id) {
-                        v.extend_from_slice(xs);
-                    }
-                }
-            }
-            v
-        });
-        let mut seen = HashSet::new();
+        let extras = Self::scratch_hops(scratch, id, dir, types);
         self.base
-            .try_for_each_neighbor_resolved_at(id, dir, ts, types, |rid| {
-                // rel_exists is the canonical existence check: a rel deleted in
-                // the overlay (or absent from the base) is not a neighbor.
+            .try_for_each_hop_resolved_at(id, dir, ts, types, |rid, peer| {
+                // rel_exists is the canonical existence check: a rel
+                // deleted in the overlay is not a neighbor.
                 if !self.rel_exists(rid) {
                     return Ok(());
                 }
-                seen.insert(rid);
-                f(rid)
+                f(rid, peer)
             })?;
-        for rid in extras.unwrap_or_default() {
-            if !seen.insert(rid) {
-                continue;
-            }
-            // The stub answers existence + type without cloning the
-            // property map.
-            let Some(rel) = self.rel_stub(rid) else {
-                continue;
-            };
-            if !types.matches_name(&rel.rel_type) {
-                continue;
-            }
-            f(rid)?;
+        for (rid, peer) in extras {
+            f(rid, peer)?;
         }
         Ok(())
+    }
+
+    /// The write scratch's hops out of `id` under `dir` and the type
+    /// filter, with the node each reaches, gathered under the one borrow —
+    /// no `RefCell` borrow is alive while the caller's closure runs. The
+    /// direction picks the scratch lists (out, in, or out then in), the
+    /// peer is the one `hop_other` rule the base walk applies, and a rel
+    /// id already gathered (a self-loop sits in both lists) is skipped —
+    /// the base walk's `Both` rule. Every entry is a key of `batch.rels`
+    /// (absent = created-then-deleted in this batch), so one record read
+    /// answers type, endpoints and peer.
+    fn scratch_hops(
+        scratch: &RefCell<WriteScratch>,
+        id: NodeId,
+        dir: Direction,
+        types: &RelTypes,
+    ) -> Vec<(RelId, NodeId)> {
+        let s = scratch.borrow();
+        let lists = match dir {
+            Direction::Outgoing => [Some(&s.batch.out_adj), None],
+            Direction::Incoming => [Some(&s.batch.in_adj), None],
+            Direction::Both => [Some(&s.batch.out_adj), Some(&s.batch.in_adj)],
+        };
+        let mut seen = crate::UsedSet::default();
+        let mut hops = Vec::new();
+        for list in lists.into_iter().flatten() {
+            for &rid in list.get(&id).into_iter().flatten() {
+                let Some(rel) = s.batch.rels.get(&rid) else {
+                    continue;
+                };
+                if !types.matches_name(&rel.rel_type) {
+                    continue;
+                }
+                // Scratch adjacency is written only by `create_rel` under the
+                // rel's own endpoint (`out_adj[start]`, `in_adj[end]`) and a
+                // scratch rel never re-points, so the peer always resolves.
+                let peer = crate::store::hop_other(id, rel.start, rel.end, dir).expect(
+                    "a scratch adjacency entry lies under the endpoint list that yielded it",
+                );
+                if seen.insert(rid) {
+                    hops.push((rid, peer));
+                }
+            }
+        }
+        hops
     }
 }

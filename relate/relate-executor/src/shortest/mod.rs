@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use relate_core::{Error, NodeId, Path, RelId, Result};
+use relate_core::{NodeId, Path, RelId, Result};
 use relate_ir::{Direction, NodePattern, RelPattern};
 
 use crate::overlay::ExecGraph;
@@ -80,13 +80,13 @@ impl Search<'_, '_> {
     /// it reaches.
     fn each_hop(&self, node: NodeId, mut f: impl FnMut(NodeId, RelId) -> Result<()>) -> Result<()> {
         let graph = self.graph;
-        graph.try_for_each_neighbor_resolved::<Error>(node, self.dir, &self.types, |rid| {
+        // The hop spelling: the walk yields the peer from the one
+        // version-chain read it already makes, instead of a rel walk plus
+        // a `hop` lookup per followed relationship.
+        graph.try_for_each_hop_resolved(node, self.dir, &self.types, |rid, next| {
             graph.cancel_tick()?;
             note_expand();
-            match graph.hop(node, rid, self.dir) {
-                Some(next) => f(next, rid),
-                None => Ok(()),
-            }
+            f(next, rid)
         })
     }
 

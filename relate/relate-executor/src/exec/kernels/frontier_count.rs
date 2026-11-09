@@ -30,9 +30,11 @@
 //!   projection;
 //! - a count past `i64` declines (the DFS keeps its own semantics).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use relate_core::{Error, NodeId, Result, Value};
+
+use crate::hash_seed::FxMap;
 use relate_ir::{classify_aggregate, AggregateKind, Clause, Expr, MatchMode, Projection};
 
 use crate::ctx::{ExecCtx, FrontierCounters};
@@ -222,7 +224,7 @@ fn count_walks(
         .expect("the WALK pool is bounded: the mode gate declines an unbounded quantifier");
     let arms = arms(view, nfa);
     let mut total: u128 = u128::from(nfa.min_hops == 0 && nfa.accepting[nfa.start as usize]);
-    let mut level: HashMap<(NodeId, u32), u128> = HashMap::from([((seed, nfa.start), 1)]);
+    let mut level: FxMap<(NodeId, u32), u128> = FxMap::from_iter([((seed, nfa.start), 1)]);
     facts.levels = 1;
     facts.cells = 1;
     for hop in 1..=max {
@@ -232,7 +234,7 @@ fn count_walks(
         view.cancel_tick()?;
         facts.levels += 1;
         let expand = hop < max;
-        let mut next: HashMap<(NodeId, u32), u128> = HashMap::new();
+        let mut next: FxMap<(NodeId, u32), u128> = FxMap::default();
         let mut overflow = false;
         for (&(u, s), &walks) in &level {
             for arm in &arms[s as usize] {
@@ -242,10 +244,7 @@ fn count_walks(
                     continue;
                 }
                 let mut degree: u128 = 0;
-                view.try_for_each_neighbor_resolved(u, t.direction, &arm.types, |rid| {
-                    let Some(v) = view.hop(u, rid, t.direction) else {
-                        return Ok::<(), Error>(());
-                    };
+                view.try_for_each_hop_resolved::<Error>(u, t.direction, &arm.types, |_, v| {
                     facts.edge_visits += 1;
                     degree += 1;
                     if expand {
@@ -277,6 +276,6 @@ fn count_walks(
 }
 
 /// One level's cell count, as the counters' unit.
-fn level_len(level: &HashMap<(NodeId, u32), u128>) -> u64 {
+fn level_len(level: &FxMap<(NodeId, u32), u128>) -> u64 {
     u64::try_from(level.len()).expect("a level's cells fit u64")
 }

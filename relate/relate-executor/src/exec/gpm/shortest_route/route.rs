@@ -13,7 +13,7 @@ use relate_ir::{Expr, MatchMode, NodePattern, PathPattern};
 use crate::ctx::ExecCtx;
 use crate::exec::candidates::node_ok;
 use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
-use crate::exec::pushdown::{conjunct_ready, Residual};
+use crate::exec::pushdown::{conjunct_ready, expr_ready, Residual};
 use crate::pattern_walk::{
     bind_path_names, bind_rel_stub_list, bound_node, memoized_path_rung, node_candidates,
 };
@@ -24,19 +24,41 @@ use crate::shortest::{pair, path_from_trail, Search};
 use super::guard::Shape;
 use super::Matched;
 
-/// Which endpoints one input row fixes, resolved once per row.
+/// The pair product's candidate bound: past it, the product's
+/// bidirectional searches would out-count the fan's one ball per start,
+/// and the fan covers the shape.
+const SEEK_PAIR_LIMIT: usize = 16;
+
+/// How the endpoints of one input row resolve, once per row.
 enum Anchor {
-    /// Both endpoints bound: the one (s, e) partition.
-    Pair(NodeId, NodeId),
-    /// Only the start bound: one forward search reaches every end.
-    Start(NodeId),
-    /// Only the end bound: one backward search reaches every start.
-    End(NodeId),
-    /// Neither bound: one forward search per start candidate.
-    Free,
+    /// Both endpoints resolved to real sides — a row-bound node is `One`,
+    /// a seeked list is `Many`: pair partitions over the product, the
+    /// bidirectional search per pair.
+    Pair { starts: Side, ends: Side },
+    /// One fan search per origin candidate, along `way` — the origins
+    /// (a bound node or a resolved candidate list) come from `anchor`,
+    /// never re-materialized.
+    Fan { origins: Side, way: Way },
     /// One unbound variable at both ends (`(a)-[*]-(a)`): the (s, s)
     /// partition of every start candidate.
     Loop,
+}
+
+/// One resolved endpoint side of a routed pattern: a row-bound endpoint
+/// is one node, a property seek or the start scan is a candidate list.
+enum Side {
+    One(NodeId),
+    Many(Vec<NodeId>),
+}
+
+impl Side {
+    /// Candidate count: a bound node is one.
+    fn len(&self) -> usize {
+        match self {
+            Side::One(_) => 1,
+            Side::Many(ids) => ids.len(),
+        }
+    }
 }
 
 /// The endpoint a fan search starts from.
@@ -157,13 +179,15 @@ impl<'a> Route<'a> {
                 return Ok(None);
             }
         }
-        match self.anchor() {
-            Anchor::Pair(s, e) => self.pair_partition(s, e, &mut out),
-            Anchor::Start(s) => self.fan(s, Way::Forward, &mut out),
-            Anchor::End(e) => self.fan(e, Way::Backward, &mut out),
-            Anchor::Free => self.each_start(|s| self.fan(s, Way::Forward, &mut out)),
-            Anchor::Loop => self.each_start(|s| self.pair_partition(s, s, &mut out)),
-        }?;
+        match self.anchor()? {
+            Anchor::Pair { starts, ends } => self.each_side(&starts, |s| {
+                self.each_side(&ends, |e| self.pair_partition(s, e, &mut out))
+            })?,
+            Anchor::Fan { origins, way } => {
+                self.each_side(&origins, |origin| self.fan(origin, way, &mut out))?
+            }
+            Anchor::Loop => self.each_start(|s| self.pair_partition(s, s, &mut out))?,
+        };
         Ok(Some(out))
     }
 
@@ -206,17 +230,97 @@ impl<'a> Route<'a> {
             .all(|predicate| conjunct_ready(predicate, &probe, filter.scope))
     }
 
-    fn anchor(&self) -> Anchor {
+    fn anchor(&self) -> Result<Anchor> {
         let (start, end) = (self.shape.start, self.shape.end);
-        match (self.bound(start), self.bound(end)) {
-            (Some(s), Some(e)) => Anchor::Pair(s, e),
-            (Some(s), None) => Anchor::Start(s),
-            (None, Some(e)) => Anchor::End(e),
-            (None, None) if start.variable.is_some() && start.variable == end.variable => {
-                Anchor::Loop
-            }
-            (None, None) => Anchor::Free,
+        // The one shape pre-check: one unbound variable at both ends
+        // (`(a)-[*]-(a)`) is the (s, s) partition of every start
+        // candidate.
+        if start.variable.is_some() && start.variable == end.variable && self.bound(start).is_none()
+        {
+            return Ok(Anchor::Loop);
         }
+        // Each endpoint resolves once: a row-bound node is a one-element
+        // side, a property map is the seeked list, anything else is scan
+        // territory for the fan.
+        let starts = self.resolve(start)?;
+        let ends = self.resolve(end)?;
+        Ok(match (starts, ends) {
+            (Some(starts), Some(ends)) => {
+                if starts.len().saturating_mul(ends.len()) <= SEEK_PAIR_LIMIT {
+                    Anchor::Pair { starts, ends }
+                } else if ends.len() < starts.len() {
+                    // Past the product bound, fan from the shorter side:
+                    // fewer full-depth balls.
+                    Anchor::Fan {
+                        origins: ends,
+                        way: Way::Backward,
+                    }
+                } else {
+                    Anchor::Fan {
+                        origins: starts,
+                        way: Way::Forward,
+                    }
+                }
+            }
+            (Some(starts), None) => Anchor::Fan {
+                origins: starts,
+                way: Way::Forward,
+            },
+            // The end side drives only when its list is bounded: one
+            // full-depth fan per property match must not beat the start
+            // scan's one ball per start (a non-selective map makes the
+            // backward fan pay |ends| balls). Past the bound the start
+            // candidates fan forward.
+            (None, Some(ends)) if ends.len() <= SEEK_PAIR_LIMIT => Anchor::Fan {
+                origins: ends,
+                way: Way::Backward,
+            },
+            (None, Some(_)) | (None, None) => Anchor::Fan {
+                origins: Side::Many(self.start_candidates()?),
+                way: Way::Forward,
+            },
+        })
+    }
+
+    /// One endpoint's resolution, once: a row-bound node is `Side::One`;
+    /// a row-resolvable property map is the seeked `Side::Many`; anything
+    /// else is `None` — scan territory the fan answers itself.
+    fn resolve(&self, np: &NodePattern) -> Result<Option<Side>> {
+        match self.bound(np) {
+            Some(id) => Ok(Some(Side::One(id))),
+            None => Ok(self.seek_candidates(np)?.map(Side::Many)),
+        }
+    }
+
+    /// One side's candidates through the one per-candidate loop.
+    fn each_side(&self, side: &Side, f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
+        match side {
+            Side::One(id) => self.each_of(&[*id], f),
+            Side::Many(ids) => self.each_of(ids, f),
+        }
+    }
+
+    /// The pattern's candidates when it is property-seekable: the map is
+    /// present and row-resolvable. `None` for a bare label or unbound
+    /// variable — scan territory, answered by the fan's own seek, not
+    /// materialized here. Uncapped by design: `anchor` applies
+    /// [`SEEK_PAIR_LIMIT`] where a product is formed, and a one-sided
+    /// answer fans its own list when that side drives.
+    fn seek_candidates(&self, np: &NodePattern) -> Result<Option<Vec<NodeId>>> {
+        let Some(props) = &np.properties else {
+            return Ok(None);
+        };
+        // The map must resolve from the input row: a variable the walk
+        // binds later (the start's own `a` in `(a)-[*]->(b {id: a.id})`)
+        // is fan territory — the fan resolves the start first, and the
+        // partition's admission then reads the map with it bound. The
+        // canonical readiness kernel (pushdown) answers it.
+        if !expr_ready(props, self.row) {
+            return Ok(None);
+        }
+        // The funnel's contract is ascending and deduplicated
+        // (overlay/idlists.rs), so the seek's list needs no re-sorting.
+        Ok(Some(self.candidates(np)?))
     }
 
     /// The node `np`'s variable is bound to in the input row. The guard
@@ -235,8 +339,11 @@ impl<'a> Route<'a> {
         node_ok(graph, id, np, row, params, cypher_version)
     }
 
-    /// Call `f` with every candidate of the unbound start pattern.
-    fn each_start(&self, mut f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
+    /// The route's one candidate-resolution call: the funnel's scan or
+    /// seek for `np` (the counted funnel — the seek phase is stamped
+    /// inside it), from the route's empty residual. The fan's start scan
+    /// and the property seek share it.
+    fn candidates(&self, np: &NodePattern) -> Result<Vec<NodeId>> {
         let ExecCtx {
             graph,
             params,
@@ -244,19 +351,36 @@ impl<'a> Route<'a> {
             ..
         } = self.ctx;
         let residual = Residual::empty();
-        // LABS-448: the seek phase — the route's start resolution — is
-        // stamped inside the one counted funnel.
-        let starts = node_candidates(
+        node_candidates(
             graph,
-            self.shape.start,
+            np,
             self.row,
             params,
             cypher_version,
             residual.conjuncts,
-        )?;
-        for s in starts {
-            graph.cancel_tick()?;
-            f(s)?;
+        )
+    }
+
+    /// The unbound start pattern's full candidate list (the fan anchor's
+    /// driver — the same call `each_start` makes for the loop anchor).
+    fn start_candidates(&self) -> Result<Vec<NodeId>> {
+        self.candidates(self.shape.start)
+    }
+
+    /// Call `f` with every candidate of the unbound start pattern (the
+    /// loop anchor's driver).
+    fn each_start(&self, f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
+        let starts = self.start_candidates()?;
+        self.each_of(&starts, f)
+    }
+
+    /// The route's one per-candidate loop: tick the statement's
+    /// cancellation window, then drive the candidate. `each_start`, the
+    /// fan arms and the pair product all ride it.
+    fn each_of(&self, ids: &[NodeId], mut f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
+        for &id in ids {
+            self.ctx.graph.cancel_tick()?;
+            f(id)?;
         }
         Ok(())
     }

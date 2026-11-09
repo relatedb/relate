@@ -164,7 +164,7 @@ fn collect_neighbors(
 ) -> Result<()> {
     out.clear();
     let graph = env.graph;
-    graph.try_for_each_neighbor_resolved(origin, dir, types, |rid| {
+    graph.try_for_each_hop_resolved(origin, dir, types, |rid, id| {
         graph.cancel_tick()?;
         if skip_rel == Some(rid) {
             return Ok::<(), Error>(());
@@ -182,9 +182,7 @@ fn collect_neighbors(
         if !rel_props_ok(graph, rid, rel, env.row, env.params, env.cypher_version)? {
             return Ok::<(), Error>(());
         }
-        if let Some(id) = graph.hop(origin, rid, dir) {
-            out.push((rid, id));
-        }
+        out.push((rid, id));
         Ok::<(), Error>(())
     })?;
     Ok(())

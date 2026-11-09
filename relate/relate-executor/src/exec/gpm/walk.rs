@@ -283,7 +283,7 @@ fn gpm_rel_dfs(
     // per hop.
     let enforce_unique = gctx.enforce_unique;
     let current = state.current;
-    graph.try_for_each_neighbor_resolved(current, rel.direction, &filter.types, |rid| {
+    graph.try_for_each_hop_resolved(current, rel.direction, &filter.types, |rid, next_id| {
         if gctx.halted() {
             return Ok(());
         }
@@ -298,14 +298,9 @@ fn gpm_rel_dfs(
             return Ok(());
         }
         // A hop the rel does not resolve (it does not touch the current
-        // node) is a defensive skip, not an impossibility: the adjacency
-        // and the rel's endpoints are maintained by different machinery,
-        // and this guard is the classic walker's own spelling for the
-        // same case (`hop_candidate`'s `None` hop) — consistency with
-        // the family, not a claim the case cannot happen.
-        let Some(next_id) = graph.hop(current, rid, rel.direction) else {
-            return Ok(());
-        };
+        // node) never reaches this closure: the fused hop walk drops it
+        // (`hop_other`'s `None`), the classic walker's own rule
+        // (`hop_candidate`).
         // PROFILE: one relationship traversed — the walkers' counting
         // event (the relationship actually walked, tallied after the hop
         // resolves; the folds' enumerated-pair event differs — see

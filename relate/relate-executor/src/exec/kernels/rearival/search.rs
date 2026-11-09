@@ -349,14 +349,11 @@ pub(super) fn seek<P: SearchPolicy>(
         let walked =
             tables
                 .view
-                .try_for_each_neighbor_resolved(node, direction, &arm.types, |rid| {
+                .try_for_each_hop_resolved(node, direction, &arm.types, |rid, next| {
                     if *work == 0 {
                         return Err(Stop::Exhausted);
                     }
                     *work -= 1;
-                    let Some(next) = tables.view.hop(node, rid, direction) else {
-                        return Ok(());
-                    };
                     // The landing state's guards: a node the state's
                     // pattern rejects is a position the DFS never binds,
                     // whatever the policy's rel bookkeeping allows.

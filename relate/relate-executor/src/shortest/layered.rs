@@ -3,10 +3,10 @@
 //! shortest closed trails through one node (ADR-0186, ADR-0189).
 
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 
 use relate_core::{NodeId, RelId, Result};
 
+use crate::hash_seed::FxMap;
 use crate::overlay::ExecGraph;
 
 use super::Search;
@@ -16,9 +16,9 @@ use super::Search;
 pub(crate) struct Dag {
     origin: NodeId,
     /// First predecessor of each reached node other than the origin.
-    first: HashMap<NodeId, (NodeId, RelId)>,
+    first: FxMap<NodeId, (NodeId, RelId)>,
     /// Later same-depth predecessors; all-path searches only.
-    more: HashMap<NodeId, Vec<(NodeId, RelId)>>,
+    more: FxMap<NodeId, Vec<(NodeId, RelId)>>,
     /// Reached nodes other than the origin, in discovery order.
     order: Vec<NodeId>,
 }
@@ -79,8 +79,10 @@ impl Search<'_, '_> {
         // never a member: it is carried by the `Dag` itself, and a hop
         // back to it is ignored at admission below — so every entry
         // carries a real first predecessor and no `Option` is needed.
-        let mut reach: HashMap<NodeId, (u32, (NodeId, RelId))> = HashMap::new();
-        let mut more: HashMap<NodeId, Vec<(NodeId, RelId)>> = HashMap::new();
+        // Dense engine-id keys: the dense-id hasher rule (ADR-0355,
+        // LABS-337), `hash_seed::FxMap`.
+        let mut reach: FxMap<NodeId, (u32, (NodeId, RelId))> = FxMap::default();
+        let mut more: FxMap<NodeId, Vec<(NodeId, RelId)>> = FxMap::default();
         let mut order = Vec::new();
         let mut stopped = stop(origin, 0)?;
         let mut frontier = vec![origin];
@@ -115,8 +117,10 @@ impl Search<'_, '_> {
             frontier = next;
             depth = next_depth;
         }
-        // Depth only served the search; the result keeps predecessors.
-        let first = reach.into_iter().map(|(n, (_, pred))| (n, pred)).collect();
+        // Depth only served the search; the result keeps predecessors,
+        // in the one hasher family.
+        let first: FxMap<NodeId, (NodeId, RelId)> =
+            reach.into_iter().map(|(n, (_, pred))| (n, pred)).collect();
         Ok(Dag {
             origin,
             first,
