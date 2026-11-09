@@ -106,6 +106,13 @@ pub use graph::{
     CheckpointTheater, ContainsCount, DatabaseEntry, Graph, Procedure, QueryStats, SchemaSnapshot,
     SnapshotPin,
 };
+// One public path (the graph module stays private): the whole-graph
+// index-rebuild count the facade's reopen tests read to pin the
+// empty-replay rebuild skip (LABS-1112). Test seam behind `test-hooks`,
+// never in a shipped build.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use graph::take_index_rebuilds;
 pub use query_engine::InMemoryQueryEngine;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): the re-export (and the

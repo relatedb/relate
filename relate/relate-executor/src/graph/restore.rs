@@ -118,14 +118,15 @@ impl Graph {
         restore(&self.rels, rel.id, live)
     }
 
-    /// End a checkpoint load, after its last row: build adjacency and the
-    /// indexes from the restored versions and clear the dirty ids, which
-    /// the checkpoint already holds. Called once per load; WAL replay after
-    /// it keeps adjacency current and ends in [`Graph::rebuild_indexes`].
+    /// End a checkpoint load, after its last row: build adjacency and clear
+    /// the dirty ids, which the checkpoint already holds. Called once per
+    /// load. The index rebuild is deliberately NOT here: the open flow's
+    /// single post-replay site runs it exactly once per open, after the
+    /// graph is final (snapshot plus replayed tail) — a snapshot+tail
+    /// reopen must not pay the whole-graph rebuild twice (LABS-1112).
     #[doc(hidden)]
     pub fn finish_restore(&self) {
         self.rebuild_adj();
-        self.rebuild_indexes();
         self.clear_checkpoint_dirty();
     }
 

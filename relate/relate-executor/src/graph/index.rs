@@ -165,6 +165,23 @@ pub(super) fn take_adj_builds() -> u64 {
     ADJ_BUILDS.with(|n| n.replace(0))
 }
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// Whole-graph index rebuilds (`rebuild_indexes`) on this thread. Behind
+    /// the off-by-default `test-hooks` feature, unlike the cfg(test)-only
+    /// `ADJ_BUILDS` seam above: the facade's reopen tests read it across the
+    /// crate boundary to pin that a clean close's open skips the wholesale
+    /// rebuild (LABS-1112) — behavior with no other observable surface.
+    static INDEX_REBUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Take this thread's whole-graph index-rebuild count, resetting it.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub fn take_index_rebuilds() -> u64 {
+    INDEX_REBUILDS.with(|n| n.replace(0))
+}
+
 impl Graph {
     /// Derive adjacency from each relationship's live version, inserting in
     /// ascending id order: a node's type chunks then follow their first id,
@@ -210,8 +227,12 @@ impl Graph {
 
     /// Rebuild the indexes from the live versions. Adjacency is left as it
     /// is: writes and replayed redo keep it current, and
-    /// `Graph::finish_restore` builds it after a checkpoint load.
+    /// `Graph::finish_restore` builds it after a checkpoint load. The open
+    /// flow's single post-replay site owns this rebuild — exactly once per
+    /// open, after the graph is final (snapshot plus replayed tail).
     pub fn rebuild_indexes(&self) {
+        #[cfg(feature = "test-hooks")]
+        INDEX_REBUILDS.with(|n| n.set(n.get() + 1));
         // Equality and string postings are both lazy (ADR-0063), and
         // relationship equality pairs are lazy the same way (ADR-0185):
         // drop them; the next seek rebuilds from the live graph on demand.

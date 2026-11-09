@@ -90,8 +90,16 @@ pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
 /// A fresh snapshot load of a store — the guarded preamble
 /// ([`load_snapshot_with_schema_guard`]) included, like every other
 /// fresh load: a drifted `.cypherlite/schema/` mirror refuses here too.
+///
+/// The snapshot-only materialization boundary: no WAL is replayed here, so
+/// this path completes its own indexes (the no-replay half of the split
+/// [`replay_after_ontology`] owns for opens that do replay). One
+/// completion per path — `finish_restore` in the codec tail builds
+/// adjacency only.
 pub fn load<G: SnapshotGraph>(target: &StoreTarget) -> Result<G> {
-    Ok(load_snapshot_with_schema_guard(target)?.graph)
+    let graph: G = load_snapshot_with_schema_guard(target)?.graph;
+    graph.rebuild_indexes();
+    Ok(graph)
 }
 
 /// Load the snapshot and its checkpoint LSN from one manifest read
@@ -379,6 +387,16 @@ fn replay_after_ontology(
         }
         graph.apply_replayed_redo(rec.ops, rec.commit_ts)
     })?;
+    // The one wholesale index rebuild of a replaying open, after the graph
+    // is final: `finish_restore` builds only adjacency, so this site owns
+    // the indexes (LABS-1112 — the old flow paid it twice on a snapshot+tail
+    // reopen, and once even on a clean one). Unconditional, deliberately:
+    // any skip condition has to be right about every shape (a checkpoint can
+    // carry rows at lsn 0, and a store can carry constraints with no live
+    // nodes — constraint keys must build), and the cheapest honest probe
+    // (`live_node_count`) materializes and sorts the node-id list this call
+    // walks anyway. The rebuild over an empty graph is a clear plus an empty
+    // refill.
     graph.rebuild_indexes();
     Ok(ontology)
 }

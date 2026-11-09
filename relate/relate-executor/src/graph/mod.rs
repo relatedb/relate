@@ -70,6 +70,11 @@ use index::{ContainsMemo, Indexes};
 pub(crate) use label_probe::take_label_probe_checks;
 pub(crate) use label_probe::LabelProbe;
 pub use query_stats::QueryStats;
+// One public path (index stays private): the whole-graph index-rebuild
+// count the facade's reopen tests read (LABS-1112's empty-replay skip).
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use index::take_index_rebuilds;
 pub use relate_planner::ContainsCount;
 pub(crate) use services::StoreServices;
 

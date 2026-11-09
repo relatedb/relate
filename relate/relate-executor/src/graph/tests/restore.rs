@@ -74,6 +74,9 @@ fn restoring_a_node_twice_keeps_one_version_of_the_later_row() {
         .unwrap();
     g.set_commit_ts(1);
     g.finish_restore();
+    // The open flow's single post-replay site owns the index rebuild — a
+    // bare load (this test's shape) supplies it the same way.
+    g.rebuild_indexes();
     assert_eq!(g.nodes.get(&3).unwrap().len(), 1);
     let node = g.node(3).unwrap();
     assert_eq!(node.labels.as_slice(), ["New".to_string()].as_slice());

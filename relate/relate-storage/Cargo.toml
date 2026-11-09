@@ -74,7 +74,7 @@ getrandom03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"]
 libc = { workspace = true }
 
 [dev-dependencies]
-relate-executor = { workspace = true }
+relate-executor = { workspace = true, features = ["test-hooks"] }
 tempfile = "3"
 # The graph-type mirror's re-parse assert (ADR-0481 §1): the vault's
 # `graph-type.cypher` must parse through the parser's own

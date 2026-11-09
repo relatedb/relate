@@ -14,6 +14,12 @@ license.workspace = true
 # retired with its prototype (ADR-0478): the production frontier-NFA
 # kernel in `exec/kernels/` replaced `graph/qpp.rs`.
 research = []
+# Test-only observation seams a dependent crate's integration tests read
+# across the crate boundary (LABS-1112's whole-graph index-rebuild count;
+# `cfg(test)` items do not exist for a dependent's tests). Off in every
+# bundle; a dependent enables it from its `[dev-dependencies]`, the
+# `vfs_walk` precedent in relate-test-support.
+test-hooks = []
 
 [dependencies]
 # The PROFILE clock must read on wasm32 too, not trap (std Instant panics).
