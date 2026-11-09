@@ -194,7 +194,9 @@ fn to_integer_or_null_and_to_float_or_null_match_neo4j() {
         call("toFloatOrNull", Expr::String("nope".into())),
         Value::Null
     );
-    assert_eq!(call("toIntegerOrNull", Expr::Bool(true)), Value::Null);
+    // Neo4j converts booleans to 1/0 for toInteger (live 2026.10.1);
+    // toFloat has no boolean arm.
+    assert_eq!(call("toIntegerOrNull", Expr::Bool(true)), Value::Int(1));
     assert_eq!(call("toFloatOrNull", Expr::Bool(true)), Value::Null);
     assert_eq!(
         call("toIntegerOrNull", Expr::List(vec![Expr::Int(1)])),
@@ -205,17 +207,21 @@ fn to_integer_or_null_and_to_float_or_null_match_neo4j() {
         Value::Null
     );
 
-    // The base functions keep erroring on the same non-convertible input.
-    assert!(function(
-        &graph,
-        &row,
-        &params,
-        "toInteger",
-        false,
-        &[Expr::Bool(true)],
-        None
-    )
-    .is_err());
+    // The base functions keep the same arms: toInteger converts a boolean
+    // (live 2026.10.1: toInteger(true) is 1), toFloat has no boolean arm.
+    assert_eq!(
+        function(
+            &graph,
+            &row,
+            &params,
+            "toInteger",
+            false,
+            &[Expr::Bool(true)],
+            None
+        )
+        .unwrap(),
+        Value::Int(1)
+    );
     assert!(function(
         &graph,
         &row,

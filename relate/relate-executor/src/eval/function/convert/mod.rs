@@ -299,6 +299,9 @@ fn to_integer_value(v: Option<&Value>) -> Result<Value> {
     Ok(match v {
         Some(Value::Int(i)) => Value::Int(*i),
         Some(Value::Float(f)) => Value::Int(float_to_i64(*f)),
+        // Neo4j converts booleans to 1/0 (live 2026.10.1: toInteger(true)
+        // is 1); the list projection already does the same for elements.
+        Some(Value::Bool(b)) => Value::Int(i64::from(*b)),
         Some(Value::String(s)) => match integer_from_string(s) {
             IntegerString::InRange(i) => Value::Int(i),
             IntegerString::OutOfRange => {

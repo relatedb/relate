@@ -345,3 +345,40 @@ fn datetime_equality_and_ordering_are_zone_sensitive() {
     ];
     assert_comparison_cases(&mut c, &cases);
 }
+
+/// `coll.sort` orders across every value kind, the temporal kinds included
+/// (ZONED DATETIME < LOCAL DATETIME < DATE < ZONED TIME < LOCAL TIME <
+/// DURATION), and propagates null (live Neo4j 2026.10.1).
+#[test]
+fn coll_sort_orders_across_types_and_propagates_null() {
+    let mut c = connection();
+    let got = row(
+        &mut c,
+        "WITH {prop: 42} AS mapVal, ['hello'] AS listVal, \
+              vector([1, 2, 3], 3, FLOAT32) AS vectorVal, \
+              point({x: 0.5, y: 0.5}) AS pointVal, \
+              datetime('2023-05-24T00:02:03.456789Z') AS dateTimeVal, \
+              localdatetime('2023-05-24T00:02:03.456789') AS localDateTimeVal, \
+              date('2023-05-24') AS dateVal, \
+              time('02:02:02.000000002+00:00') AS timeVal, \
+              localtime('00:02:03.456789') AS localTimeVal, \
+              duration({hours: 3}) AS durationVal, \
+              'hello' AS stringVal, true AS booleanVal, 1.5 AS floatVal, 7 AS intVal \
+         RETURN coll.sort([intVal, floatVal, booleanVal, stringVal, durationVal, \
+                           localTimeVal, timeVal, dateVal, localDateTimeVal, dateTimeVal, \
+                           pointVal, vectorVal, listVal, mapVal]) \
+                  = [mapVal, listVal, vectorVal, pointVal, dateTimeVal, localDateTimeVal, \
+                     dateVal, timeVal, localTimeVal, durationVal, stringVal, booleanVal, \
+                     floatVal, intVal] AS inTypeOrder, \
+                coll.sort([]) AS emptyList, \
+                coll.sort(null) AS nullInput",
+    );
+    assert_eq!(
+        got,
+        vec![
+            Value::Bool(true),
+            Value::List(Vec::new().into()),
+            Value::Null
+        ]
+    );
+}

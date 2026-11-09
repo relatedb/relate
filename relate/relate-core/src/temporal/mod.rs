@@ -97,6 +97,55 @@ pub enum Temporal {
     },
 }
 
+/// The six temporal type kinds, one per Cypher type name — the variant
+/// grouping the type-name spelling and the ORDER BY sub-ranks both key
+/// off, so it exists in one place. Declared in the ORDER BY rank order:
+/// ZONED DATETIME < LOCAL DATETIME < DATE < ZONED TIME < LOCAL TIME <
+/// DURATION (live Neo4j 2026.10.1, value-independent), so a kind's
+/// discriminant is that rank's offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TemporalKind {
+    DateTime,
+    LocalDateTime,
+    Date,
+    Time,
+    LocalTime,
+    Duration,
+}
+
+impl TemporalKind {
+    /// The kind's lowercase wire name — the `Temporal::kind_name`
+    /// spelling, owned by the kind so the variant partition has one
+    /// owner.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            TemporalKind::DateTime => "datetime",
+            TemporalKind::LocalDateTime => "localdatetime",
+            TemporalKind::Date => "date",
+            TemporalKind::Time => "time",
+            TemporalKind::LocalTime => "localtime",
+            TemporalKind::Duration => "duration",
+        }
+    }
+}
+
+impl Temporal {
+    /// This value's type kind — the one spelling of the variant grouping
+    /// (the civil out-of-range forms share their kind's name).
+    pub(crate) fn kind(&self) -> TemporalKind {
+        match self {
+            Temporal::DateTime { .. } => TemporalKind::DateTime,
+            Temporal::LocalDateTime(_) | Temporal::CivilDateTime { .. } => {
+                TemporalKind::LocalDateTime
+            }
+            Temporal::Date(_) | Temporal::CivilDate { .. } => TemporalKind::Date,
+            Temporal::Time { .. } => TemporalKind::Time,
+            Temporal::LocalTime(_) => TemporalKind::LocalTime,
+            Temporal::Duration { .. } => TemporalKind::Duration,
+        }
+    }
+}
+
 /// The zone half of a `DateTime`'s equality identity (TCK TemporalCompare):
 /// an IANA zone is identified by its name — so the two halves of a DST
 /// fall-back overlap stay equal — and every other spelling (`Z`, `+00:00`,
@@ -173,14 +222,7 @@ impl Temporal {
     }
 
     pub fn kind_name(&self) -> &'static str {
-        match self {
-            Temporal::Date(_) | Temporal::CivilDate { .. } => "date",
-            Temporal::LocalTime(_) => "localtime",
-            Temporal::Time { .. } => "time",
-            Temporal::LocalDateTime(_) | Temporal::CivilDateTime { .. } => "localdatetime",
-            Temporal::DateTime { .. } => "datetime",
-            Temporal::Duration { .. } => "duration",
-        }
+        self.kind().name()
     }
 
     /// Whether the value carries a calendar date — the one statement of the

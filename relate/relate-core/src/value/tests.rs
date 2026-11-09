@@ -525,6 +525,52 @@ fn order_by_type_rank() {
     );
 }
 
+/// ORDER BY / coll.sort order the temporal kinds among themselves, in the
+/// live Neo4j 2026.10.1 sequence ZONED DATETIME < LOCAL DATETIME < DATE <
+/// ZONED TIME < LOCAL TIME < DURATION (value-independent; `coll.sort` and
+/// `ORDER BY` agree).
+#[test]
+fn order_by_temporal_kind_ranks() {
+    use crate::temporal::Temporal;
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+
+    let date = NaiveDate::from_ymd_opt(2023, 5, 24).unwrap();
+    let time = NaiveTime::from_hms_opt(2, 2, 2).unwrap();
+    let ordered = [
+        Value::Temporal(Temporal::DateTime {
+            utc: NaiveDateTime::new(date, time),
+            offset: 0,
+            zone: None,
+        }),
+        Value::Temporal(Temporal::LocalDateTime(NaiveDateTime::new(date, time))),
+        Value::Temporal(Temporal::Date(date)),
+        Value::Temporal(Temporal::Time { time, offset: 0 }),
+        Value::Temporal(Temporal::LocalTime(time)),
+        Value::Temporal(Temporal::Duration {
+            months: 0,
+            days: 0,
+            nanos: 3 * 3_600 * 1_000_000_000,
+        }),
+    ];
+    for pair in ordered.windows(2) {
+        assert_eq!(
+            pair[0].order_by_cmp(&pair[1]),
+            Ordering::Less,
+            "{} < {}",
+            pair[0],
+            pair[1]
+        );
+        assert_eq!(pair[1].order_by_cmp(&pair[0]), Ordering::Greater);
+    }
+    // The whole block still sits between POINT and STRING.
+    let point = Value::Point(PointValue::cartesian_2d(0.5, 0.5));
+    assert_eq!(point.order_by_cmp(&ordered[0]), Ordering::Less);
+    assert_eq!(
+        ordered[ordered.len() - 1].order_by_cmp(&Value::String("a".into())),
+        Ordering::Less
+    );
+}
+
 #[test]
 fn uuid_compare_and_order() {
     // CIP-246: comparison operators do NOT order UUIDs -- only equality is

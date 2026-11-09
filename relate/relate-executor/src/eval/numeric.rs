@@ -4,13 +4,12 @@ use relate_core::{ArithmeticFailure, Error, Result, Value};
 
 /// The largest `round()` precision the f64-backed engine supports: an f64
 /// carries at most ~15–17 significant decimal digits, so a larger decimal
-/// precision cannot express anything the value does not already have, and
-/// the scale computation would overflow (ADR-0336).
+/// precision cannot express anything the value does not already have
+/// (ADR-0336).
 const MAX_ROUND_PRECISION: i64 = 15;
-
-/// `2^52`: the first f64 magnitude whose spacing exceeds 1, i.e. the point
-/// past which no value has a fractional part to round. `round()` is the
-/// identity from there on (TCK RoundingNumbers [4], [5]).
+/// Once a float's ulp is at least 1 (|x| >= 2^52), every value of that
+/// magnitude is already an integer — `Math.round`'s `floor(x + 0.5)`
+/// would instead round an odd ulp up, and live returns the identity.
 const NO_FRACTION_LIMIT: f64 = 4_503_599_627_370_496.0;
 
 /// The `round()` mode vocabulary (Neo4j's eight names), parsed once at the
@@ -29,10 +28,6 @@ enum RoundingMode {
     HalfDown,
     HalfEven,
     Unnecessary,
-    /// The mode of a `round()` call that names none: ties toward positive
-    /// infinity (`floor(x + 0.5)`), which is *not* the wire `HALF_UP` —
-    /// `round(-1.5)` is -1.0 while `round(-1.5, 0, 'HALF_UP')` is -2.0.
-    HalfUpTowardPositiveInfinity,
 }
 
 impl RoundingMode {
@@ -51,6 +46,41 @@ impl RoundingMode {
             _ => return Err(Error::execution("UnsupportedRoundingMode")),
         })
     }
+
+    /// The digit run is unsigned (the sign is factored out), so the two
+    /// directional modes read the sign once, here: CEILING and FLOOR swap
+    /// on a negative value and land on their unsigned UP/DOWN spellings —
+    /// ceiling a positive moves away from zero, ceiling a negative stays
+    /// at the truncation; floor is the mirror. The result is
+    /// sign-resolved: no CEILING/FLOOR state survives, so the digit walk
+    /// matches only reachable modes.
+    fn for_sign(self, negative: bool) -> AppliedMode {
+        match (self, negative) {
+            (RoundingMode::Up, _)
+            | (RoundingMode::Ceiling, false)
+            | (RoundingMode::Floor, true) => AppliedMode::Up,
+            (RoundingMode::Down, _)
+            | (RoundingMode::Ceiling, true)
+            | (RoundingMode::Floor, false) => AppliedMode::Down,
+            (RoundingMode::HalfUp, _) => AppliedMode::HalfUp,
+            (RoundingMode::HalfDown, _) => AppliedMode::HalfDown,
+            (RoundingMode::HalfEven, _) => AppliedMode::HalfEven,
+            (RoundingMode::Unnecessary, _) => AppliedMode::Unnecessary,
+        }
+    }
+}
+
+/// A rounding mode with the sign resolved — CEILING/FLOOR have already
+/// landed on their unsigned UP/DOWN spellings, so [`increment`] matches
+/// only reachable states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppliedMode {
+    Up,
+    Down,
+    HalfUp,
+    HalfDown,
+    HalfEven,
+    Unnecessary,
 }
 
 /// The `round()` precision argument, normalized once: an INTEGER and a FLOAT
@@ -59,7 +89,7 @@ impl RoundingMode {
 /// A fraction truncates toward zero — the reference engine's
 /// `round(3.14…, -0.02)` is `round(3.14…, 0)` — and a value that is not a
 /// truncatable number keeps the `must be INTEGER` type rejection.
-fn round_precision(v: &Value) -> Result<i32> {
+fn round_precision(v: &Value) -> Result<usize> {
     let Some(n) = v.as_number() else {
         return Err(Error::invalid_argument_type(
             "round precision must be INTEGER",
@@ -81,7 +111,9 @@ fn round_precision(v: &Value) -> Result<i32> {
             "NumericValueOutOfRange: round precision must be at most {MAX_ROUND_PRECISION}"
         )));
     }
-    Ok(n as i32)
+    // The range gate above bounds n to 0..=15, so this is the one checked
+    // conversion — callers carry a plain `usize` with nothing to cast.
+    Ok(n as usize)
 }
 
 pub(crate) fn round_function(vals: &[Value]) -> Result<Value> {
@@ -101,50 +133,135 @@ pub(crate) fn round_function(vals: &[Value]) -> Result<Value> {
         Some(v) => round_precision(v)?,
     };
     let mode = match vals.get(2) {
-        None => RoundingMode::HalfUpTowardPositiveInfinity,
-        Some(Value::String(mode)) => RoundingMode::parse(mode)?,
+        None => None,
+        Some(Value::String(mode)) => Some(RoundingMode::parse(mode)?),
         _ => return Err(Error::invalid_argument_type("round mode must be STRING")),
     };
     if !value.is_finite() {
         return Ok(Value::Float(value));
     }
-    // At or beyond 2^52 an f64 has no fractional part left to round, and
-    // both scaling by 10^precision and `x + 0.5` perturb the value (the
-    // former injects ulp noise, the latter can step to the next float), so
-    // every mode is the identity there.
-    if value.abs() >= NO_FRACTION_LIMIT {
-        return Ok(Value::Float(value));
-    }
-    let scale = 10_f64.powi(precision);
-    let scaled = value * scale;
-    let rounded = match mode {
-        RoundingMode::Up => {
-            if scaled.is_sign_negative() {
-                scaled.floor()
-            } else {
-                scaled.ceil()
-            }
-        }
-        RoundingMode::Down => scaled.trunc(),
-        RoundingMode::Ceiling => scaled.ceil(),
-        RoundingMode::Floor => scaled.floor(),
-        RoundingMode::HalfUp => scaled.round(),
-        RoundingMode::HalfUpTowardPositiveInfinity => (scaled + 0.5).floor(),
-        RoundingMode::HalfEven => scaled.round_ties_even(),
-        RoundingMode::HalfDown => {
-            let trunc = scaled.trunc();
-            if (scaled - trunc).abs() > 0.5 {
-                scaled.round()
-            } else {
-                trunc
-            }
-        }
-        RoundingMode::Unnecessary if scaled.fract() != 0.0 => {
-            return Err(Error::arithmetic(ArithmeticFailure::RoundingNecessary))
-        }
-        RoundingMode::Unnecessary => scaled,
+    let rounded = match (mode, precision) {
+        // Java's `Math.round`: `floor(x + 0.5)` — ties toward positive
+        // infinity, which is why `round(-2.5)` is -2.0 while the wire
+        // HALF_UP mode (ties away from zero) gives -3.0. Once the ulp is
+        // at least 1 (|x| >= 2^52) every float is already an integer and
+        // the addition would round an odd ulp up instead (live Neo4j
+        // 2026.10.1: `round(4503599627370497.0)` is the identity).
+        (None, 0) if value.abs() >= NO_FRACTION_LIMIT => value,
+        (None, 0) => (value + 0.5).floor(),
+        // An explicit precision with no mode is HALF_UP on the decimal
+        // spelling (away from zero): live Neo4j 2026.10.1 rounds
+        // `round(-2.55, 1)` to -2.6.
+        (mode, _) => round_decimal(value, precision, mode.unwrap_or(RoundingMode::HalfUp))?,
     };
-    Ok(Value::Float(rounded / scale))
+    Ok(Value::Float(rounded))
+}
+
+/// `round()` on the decimal spelling: Java's
+/// `BigDecimal.valueOf(value).setScale(precision, mode)`, which rounds the
+/// shortest decimal that round-trips (Rust's `Display`, the same digits as
+/// Java's `Double.toString`) rather than the binary image. `round(265.335,
+/// 2)` is 265.34 because the shortest spelling is `265.335`, although the
+/// exact binary value is 265.33499999999997 (live Neo4j 2026.10.1).
+fn round_decimal(value: f64, precision: usize, mode: RoundingMode) -> Result<f64> {
+    let (negative, digits, scale) = decimal_digits(&value.to_string());
+    if scale <= precision {
+        return Ok(value);
+    }
+    let (kept, dropped) = digits.split_at(digits.len() - (scale - precision));
+    let last_kept = kept.as_bytes()[kept.len() - 1] - b'0';
+    // `scale > precision` keeps at least one dropped digit — the split
+    // never hands `increment` an empty run, so the first digit is read
+    // here, at the invariant's owner.
+    let (first, rest) = (dropped.as_bytes()[0] - b'0', &dropped.as_bytes()[1..]);
+    let mode = mode.for_sign(negative);
+    let rounded = if increment(first, rest, last_kept, mode)? {
+        increment_digits(kept)
+    } else {
+        kept.to_string()
+    };
+    render_decimal(negative, &rounded, precision)
+        .parse::<f64>()
+        .map_err(|_| Error::execution("round() rendered an invalid decimal"))
+}
+
+/// Split a finite f64's `Display` spelling into sign, digit run and scale
+/// (the fraction digit count). `Display` never uses exponent notation, so
+/// the scale is exactly the digits after the decimal point.
+fn decimal_digits(text: &str) -> (bool, String, usize) {
+    let (negative, body) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+    let mut digits = String::with_capacity(whole.len() + fraction.len());
+    digits.push_str(whole);
+    digits.push_str(fraction);
+    (negative, digits, fraction.len())
+}
+
+/// Whether the dropped digit run rounds `kept` away from its truncation,
+/// under `mode`. `first` is the first dropped digit (the run is non-empty —
+/// `round_decimal` owns that invariant) and `rest` the digits behind it;
+/// `last_kept` is the last kept digit's value, which HALF_EVEN reads for
+/// the tie case. `mode` arrives sign-resolved ([`AppliedMode`], from
+/// [`RoundingMode::for_sign`]).
+fn increment(first: u8, rest: &[u8], last_kept: u8, mode: AppliedMode) -> Result<bool> {
+    let after_nonzero = rest.iter().any(|digit| *digit != b'0');
+    let any_nonzero = first != 0 || after_nonzero;
+    Ok(match mode {
+        AppliedMode::Up => any_nonzero,
+        AppliedMode::Down => false,
+        AppliedMode::HalfUp => first >= 5,
+        AppliedMode::HalfDown => first > 5 || (first == 5 && after_nonzero),
+        AppliedMode::HalfEven => first > 5 || (first == 5 && (after_nonzero || last_kept % 2 == 1)),
+        AppliedMode::Unnecessary => {
+            if any_nonzero {
+                return Err(Error::arithmetic(ArithmeticFailure::RoundingNecessary));
+            }
+            false
+        }
+    })
+}
+
+/// Add one to a run of decimal digits, growing it on an all-nines carry
+/// (`"99"` → `"100"`).
+fn increment_digits(digits: &str) -> String {
+    let mut bytes = digits.as_bytes().to_vec();
+    for index in (0..bytes.len()).rev() {
+        if bytes[index] == b'9' {
+            bytes[index] = b'0';
+        } else {
+            bytes[index] += 1;
+            return String::from_utf8(bytes).expect("decimal digits are ASCII");
+        }
+    }
+    let mut grown = String::with_capacity(bytes.len() + 1);
+    grown.push('1');
+    grown.push_str(&"0".repeat(bytes.len()));
+    grown
+}
+
+/// Render a sign, digit run and decimal place count back as a decimal
+/// number the f64 parser reads exactly.
+fn render_decimal(negative: bool, digits: &str, precision: usize) -> String {
+    let mut out = String::with_capacity(digits.len() + precision + 2);
+    if negative {
+        out.push('-');
+    }
+    if precision == 0 {
+        out.push_str(digits);
+    } else if digits.len() > precision {
+        let (whole, fraction) = digits.split_at(digits.len() - precision);
+        out.push_str(whole);
+        out.push('.');
+        out.push_str(fraction);
+    } else {
+        out.push_str("0.");
+        out.push_str(&"0".repeat(precision - digits.len()));
+        out.push_str(digits);
+    }
+    out
 }
 
 /// Generic numeric unary op. The integer arm must be a checked op (`None`
@@ -259,6 +376,53 @@ mod tests {
         assert_eq!(
             round_function(&[Value::Null, Value::Int(400)]).unwrap(),
             Value::Null
+        );
+    }
+
+    /// `round()` rounds the shortest decimal spelling, not the binary image
+    /// (Java's `BigDecimal.valueOf(...).setScale`), and an explicit
+    /// precision with no mode is HALF_UP away from zero. Every pair is
+    /// live-verified against Neo4j 2026.10.1.
+    #[test]
+    fn round_rounds_the_shortest_decimal_spelling() {
+        let cases: &[(f64, i64, Option<&str>, f64)] = &[
+            (265.335, 2, None, 265.34),
+            (1.005, 2, None, 1.01),
+            (2.675, 2, None, 2.68),
+            (1.15, 1, None, 1.2),
+            (1.45, 1, None, 1.5),
+            (0.35, 1, None, 0.4),
+            (-2.55, 1, None, -2.6),
+            (2.55, 1, None, 2.6),
+            (-1.25, 1, None, -1.3),
+            (1.25, 1, None, 1.3),
+            (2.675, 0, Some("HALF_UP"), 3.0),
+            (2.675, 0, Some("HALF_EVEN"), 3.0),
+            (1.235, 2, Some("HALF_EVEN"), 1.24),
+            (1.245, 2, Some("HALF_EVEN"), 1.24),
+            (1.005, 2, Some("DOWN"), 1.0),
+            (-1.005, 2, Some("UP"), -1.01),
+        ];
+        for &(value, precision, mode, want) in cases {
+            let mut args = vec![Value::Float(value), Value::Int(precision)];
+            if let Some(mode) = mode {
+                args.push(Value::String(mode.into()));
+            }
+            assert_eq!(
+                round_function(&args).unwrap(),
+                Value::Float(want),
+                "round({value}, {precision}, {mode:?})"
+            );
+        }
+        // Precision 0 with no mode stays Java's Math.round (floor(x + 0.5),
+        // ties toward positive infinity), which is not the wire HALF_UP.
+        assert_eq!(
+            round_function(&[Value::Float(-2.55), Value::Int(0)]).unwrap(),
+            Value::Float(-3.0)
+        );
+        assert_eq!(
+            round_function(&[Value::Float(-2.5), Value::Int(0)]).unwrap(),
+            Value::Float(-2.0)
         );
     }
 

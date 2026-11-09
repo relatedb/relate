@@ -43,15 +43,13 @@ pub fn value_type_name(value: &Value) -> String {
         // list of integers (ADR-0327), and an empty one as an empty list.
         Value::Bytes(b) if b.is_empty() => format!("LIST<NOTHING>{NOT_NULL_SUFFIX}"),
         Value::Bytes(_) => format!("LIST<INTEGER{NOT_NULL_SUFFIX}>{NOT_NULL_SUFFIX}"),
-        Value::Temporal(t) => suffixed(match t {
-            temporal::Temporal::Date(_) | temporal::Temporal::CivilDate { .. } => "DATE",
-            temporal::Temporal::LocalTime(_) => "LOCAL TIME",
-            temporal::Temporal::Time { .. } => "ZONED TIME",
-            temporal::Temporal::LocalDateTime(_) | temporal::Temporal::CivilDateTime { .. } => {
-                "LOCAL DATETIME"
-            }
-            temporal::Temporal::DateTime { .. } => "ZONED DATETIME",
-            temporal::Temporal::Duration { .. } => "DURATION",
+        Value::Temporal(t) => suffixed(match t.kind() {
+            temporal::TemporalKind::Date => "DATE",
+            temporal::TemporalKind::LocalTime => "LOCAL TIME",
+            temporal::TemporalKind::Time => "ZONED TIME",
+            temporal::TemporalKind::LocalDateTime => "LOCAL DATETIME",
+            temporal::TemporalKind::DateTime => "ZONED DATETIME",
+            temporal::TemporalKind::Duration => "DURATION",
         }),
         Value::Vector { coord, values } => format!(
             "VECTOR<{}{NOT_NULL_SUFFIX}>({}){NOT_NULL_SUFFIX}",
@@ -73,6 +71,14 @@ pub fn bare_type_name(value: &Value) -> String {
     value_type_name(value).replace(NOT_NULL_SUFFIX, "")
 }
 
+/// Strip exactly one trailing ` NOT NULL` refinement — the outer-only
+/// policy the union merge reads (a null sibling elides the element's own
+/// trailing suffix; inner suffixes survive). The all-occurrence spelling
+/// is [`bare_type_name`] — the two policies stay distinguishable by name.
+fn strip_outer_not_null(name: &str) -> &str {
+    name.strip_suffix(NOT_NULL_SUFFIX).unwrap_or(name)
+}
+
 /// The value-bearing form of [`crate::expected_type_detail`] (22N01): the offending
 /// value renders as its Cypher literal, except the null literal, which Neo4j
 /// spells `NULL` in this sentence, and the actual type is
@@ -90,85 +96,202 @@ pub fn expected_value_type_detail(expected: &str, value: &Value) -> String {
 }
 
 /// The CIP-100 union type name of a list's element types: an empty (or
-/// all-null) list renders `LIST<NOTHING>`; otherwise the element types are
-/// sorted, deduplicated, subtype-subsumed and joined in CIP-100 order.
+/// all-null) list renders `LIST<NOTHING>`; otherwise the element types
+/// are built once ([`ElementType::of`]), sorted ([`sort_union_members`]),
+/// deduplicated, subtype-subsumed ([`retain_not_subsumed`]) and joined —
+/// a null sibling's outer suffix strip applied once, here, where the
+/// parent's null fact lives.
 fn list_type_name(values: &[Value]) -> String {
     if values.is_empty() {
         return format!("LIST<NOTHING>{NOT_NULL_SUFFIX}");
     }
     let has_null = values.iter().any(Value::is_null);
-    let mut types = values
+    let mut types: Vec<ElementType> = values
         .iter()
         .filter(|v| !v.is_null())
-        .map(value_type_name)
-        .map(|s| {
-            if has_null {
-                s.trim_end_matches(NOT_NULL_SUFFIX).to_string()
-            } else {
-                s
-            }
-        })
-        .collect::<Vec<_>>();
+        .map(ElementType::of)
+        .collect();
+    sort_union_members(&mut types);
+    types.dedup_by(|a, b| a.name == b.name);
+    let mut types = retain_not_subsumed(types);
+    if types.len() > 1 {
+        types.retain(|ty| !ty.is_empty_sequence());
+    }
+    let element = if types.is_empty() {
+        "NULL".into()
+    } else {
+        types
+            .iter()
+            .map(|ty| match has_null {
+                true => strip_outer_not_null(&ty.name),
+                false => ty.name.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    format!("LIST<{element}>{NOT_NULL_SUFFIX}")
+}
+
+/// The union's CIP-100 order — one total order: the type sort key's rank
+/// and member count, then the element's flatness (a flat `LIST<…>` name
+/// sorts after a nested one), then the name — descending between two
+/// flat lists (live Neo4j's rendering order), ascending otherwise. Every
+/// level is a per-element key, so no comparison can mix directions and
+/// the order can never cycle.
+fn sort_union_members(types: &mut [ElementType]) {
     types.sort_by(|a, b| {
-        let ak = value_type_sort_key(a);
-        let bk = value_type_sort_key(b);
-        if a.starts_with("LIST<")
-            && b.starts_with("LIST<")
-            && ak.1 == bk.1
-            && !a["LIST<".len()..].contains("LIST<")
-            && !b["LIST<".len()..].contains("LIST<")
-        {
-            b.cmp(a)
-        } else {
-            ak.cmp(&bk)
-        }
+        let ak = value_type_sort_key(&a.name);
+        let bk = value_type_sort_key(&b.name);
+        (ak.0, ak.1, a.flat())
+            .cmp(&(bk.0, bk.1, b.flat()))
+            .then_with(|| match (a.flat(), b.flat()) {
+                (true, true) => b.name.cmp(&a.name),
+                _ => a.name.cmp(&b.name),
+            })
     });
-    types.dedup();
-    let nested_sets = types
-        .iter()
-        .map(|ty| nested_list_members(ty))
-        .collect::<Vec<_>>();
+}
+
+/// Drop every element whose flat-list member set another element
+/// subsumes (CIP-100's subtype-subsumption step): `LIST<INTEGER | FLOAT>`
+/// absorbs `LIST<INTEGER>`. Both sides read [`ElementType::member_rows`],
+/// so elements without rows — nested lists, non-lists, the
+/// empty-sequence marker — skip the step in both directions; the union's
+/// elision owns the empty sequences.
+fn retain_not_subsumed(types: Vec<ElementType>) -> Vec<ElementType> {
     let mut keep = vec![true; types.len()];
     for i in 0..types.len() {
-        let Some(left) = &nested_sets[i] else {
+        let Some(left) = types[i].member_rows() else {
             continue;
         };
-        for (j, right) in nested_sets.iter().enumerate() {
+        for (j, right) in types.iter().enumerate() {
             if i != j
                 && right
-                    .as_ref()
-                    .is_some_and(|right| left.len() < right.len() && left.is_subset(right))
+                    .member_rows()
+                    .is_some_and(|right| subsumes(right, left))
             {
                 keep[i] = false;
                 break;
             }
         }
     }
-    types = types
+    types
         .into_iter()
         .zip(keep)
         .filter_map(|(ty, keep)| keep.then_some(ty))
-        .collect();
-    if types.len() > 1 {
-        types.retain(|ty| ty.strip_suffix(NOT_NULL_SUFFIX) != Some("LIST<NOTHING>"));
-    }
-    let element = if types.is_empty() {
-        "NULL".into()
-    } else {
-        types.join(" | ")
-    };
-    format!("LIST<{element}>{NOT_NULL_SUFFIX}")
+        .collect()
 }
 
-/// The member set of a non-nested `LIST<…>` type name, for the CIP-100
-/// subtype-subsumption step; `None` for any other name.
-fn nested_list_members(name: &str) -> Option<HashSet<String>> {
-    let suffix = format!(">{NOT_NULL_SUFFIX}");
-    let inner = name.strip_prefix("LIST<")?.strip_suffix(&suffix)?;
-    if inner.contains("LIST<") {
-        return None;
+/// One element's type as the CIP-100 union merge reads it — the rendered
+/// name and, for a flat list union, the member rows the subsumption
+/// merge consumes, classified once from the value (never re-parsed from
+/// a rendered name).
+struct ElementType {
+    name: String,
+    members: Option<HashSet<(String, bool)>>,
+}
+
+impl ElementType {
+    /// One element's typed representation, classified once from the
+    /// value in this pure constructor: the rendered name (the union's
+    /// join applies the outer null-sibling strip, where the parent's
+    /// null fact lives) plus the member rows a flat list union
+    /// contributes to the subsumption merge. The empty row set marks an
+    /// empty sequence (empty bytes or an empty list); non-empty bytes
+    /// are a flat INTEGER list; an all-null list keeps its null
+    /// member's NULL row. A byte-array element's own suffix sits inside
+    /// the brackets and never strips (ADR-0327). `None` member rows — a
+    /// nested list (a member that is itself a list or byte array
+    /// renders an inner `LIST<`) or a non-list element — skip the
+    /// subsumption step.
+    fn of(v: &Value) -> ElementType {
+        let name = value_type_name(v);
+        let members = match v {
+            // An empty sequence has no members at all: the empty row set
+            // is the marker `is_empty_sequence` reads.
+            Value::Bytes(b) if b.is_empty() => Some(HashSet::new()),
+            Value::Bytes(_) => Some([("INTEGER".to_string(), true)].into()),
+            Value::List(items) => {
+                // The non-null members, collected once: their count is
+                // the element's own not-null flag. An empty collection
+                // is an empty list (no members) or an all-null list
+                // (whose one member is the null literal — its row
+                // renders NULL and survives the union: live 2026.10.1
+                // types valueType([[null],[1]]) as
+                // LIST<LIST<NULL> NOT NULL | LIST<INTEGER NOT NULL>>).
+                let non_null: Vec<&Value> = items.iter().filter(|it| !it.is_null()).collect();
+                let not_null = non_null.len() == items.len();
+                if non_null.is_empty() {
+                    return match items.is_empty() {
+                        true => ElementType {
+                            name,
+                            members: Some(HashSet::new()),
+                        },
+                        false => ElementType {
+                            name,
+                            members: Some([("NULL".to_string(), false)].into()),
+                        },
+                    };
+                }
+                // One walk builds the rows and answers the nested-list
+                // question: a list/byte-array member yields `None` and
+                // `collect` short-circuits on the first one.
+                non_null
+                    .into_iter()
+                    .map(|it| match it {
+                        Value::List(_) | Value::Bytes(_) => None,
+                        _ => Some((
+                            strip_outer_not_null(&value_type_name(it)).to_string(),
+                            not_null,
+                        )),
+                    })
+                    .collect()
+            }
+            _ => None,
+        };
+        ElementType { name, members }
     }
-    Some(inner.split(" | ").map(str::to_string).collect())
+
+    /// The non-empty member rows a subsumption candidate carries —
+    /// `None` for a nested list, a non-list element, or the
+    /// empty-sequence marker (which participates in neither side of the
+    /// subsumption step; the union's elision owns it). The one read
+    /// path for the member classification.
+    fn member_rows(&self) -> Option<&HashSet<(String, bool)>> {
+        self.members.as_ref().filter(|rows| !rows.is_empty())
+    }
+
+    /// A flat list union element — one that carries member rows; a
+    /// nested list or non-list element does not. Derived from the
+    /// classified shape, so the sort key can never drift from the
+    /// classifier and names stay render-only.
+    fn flat(&self) -> bool {
+        self.members.is_some()
+    }
+
+    /// An empty sequence element — empty bytes or an empty list — the
+    /// row the multi-element union elides (live 2026.10.1:
+    /// valueType([[],[1]]) keeps only LIST<INTEGER NOT NULL>). The
+    /// empty member-row set is the marker; an all-null list is not
+    /// empty — its null member renders NULL and survives.
+    fn is_empty_sequence(&self) -> bool {
+        self.members.as_ref().is_some_and(|rows| rows.is_empty())
+    }
+}
+
+/// Whether list member set `wide` subsumes `narrow`: every member of
+/// `narrow` is in `wide` once the ` NOT NULL` refinement is ignored, and
+/// `wide` is strictly wider (a proper superset, or the same names with
+/// fewer ` NOT NULL` markers). A list of nullable elements subsumes the
+/// same list of non-null elements — live Neo4j 2026.10.1 types
+/// `[[1, null], [2]]` as `LIST<LIST<INTEGER> NOT NULL> NOT NULL` and
+/// `[[1, 2], [1.0, 1, null]]` as `LIST<LIST<INTEGER | FLOAT>> NOT NULL`.
+fn subsumes(wide: &HashSet<(String, bool)>, narrow: &HashSet<(String, bool)>) -> bool {
+    wide != narrow
+        && narrow.iter().all(|(name, narrow_not_null)| {
+            wide.iter().any(|(wide_name, wide_not_null)| {
+                wide_name == name && (!wide_not_null || *narrow_not_null)
+            })
+        })
 }
 
 /// CIP-100 "General order of types" rank for a rendered type name, with the
@@ -227,6 +350,11 @@ fn value_type_sort_key(name: &str) -> (u8, usize, &str) {
 mod tests {
     use super::*;
     use crate::temporal::Temporal;
+
+    /// The one list-construction helper the union tests share.
+    fn list(values: Vec<Value>) -> Value {
+        Value::List(values.into())
+    }
 
     /// The CIP-100 "General order of types" sequence the shared vocabulary
     /// must render in. This table pins [`value_type_sort_key`]; the parser's
@@ -293,6 +421,78 @@ mod tests {
         assert_eq!(
             value_type_name(&mixed),
             "LIST<STRING NOT NULL | INTEGER NOT NULL> NOT NULL"
+        );
+    }
+
+    /// Nested list types merge by subtype subsumption on the bare member
+    /// names, so a wider element union (or a nullable-element list) absorbs
+    /// the narrower one. Every expectation is live Neo4j 2026.10.1.
+    #[test]
+    fn nested_list_types_merge_by_subsumption() {
+        let ints = || list(vec![Value::Int(1), Value::Int(2)]);
+
+        // [[1, 2], null, [1.0, 1, null]]: the FLOAT-bearing list absorbs
+        // the INTEGER one.
+        assert_eq!(
+            value_type_name(&list(vec![
+                ints(),
+                Value::Null,
+                list(vec![Value::Float(1.0), Value::Int(1), Value::Null]),
+            ])),
+            "LIST<LIST<INTEGER | FLOAT>> NOT NULL"
+        );
+        // [[1, null], [2]]: a nullable-element list subsumes the non-null
+        // list of the same member.
+        assert_eq!(
+            value_type_name(&list(vec![
+                list(vec![Value::Int(1), Value::Null]),
+                list(vec![Value::Int(2)]),
+            ])),
+            "LIST<LIST<INTEGER> NOT NULL> NOT NULL"
+        );
+        // [[1], [2.0], null]: disjoint member sets stay separate.
+        assert_eq!(
+            value_type_name(&list(vec![
+                list(vec![Value::Int(1)]),
+                list(vec![Value::Float(2.0)]),
+                Value::Null,
+            ])),
+            "LIST<LIST<INTEGER NOT NULL> | LIST<FLOAT NOT NULL>> NOT NULL"
+        );
+        // [[], [1], null]: the NOTHING member is dropped beside a sibling.
+        assert_eq!(
+            value_type_name(&list(vec![
+                list(Vec::new()),
+                list(vec![Value::Int(1)]),
+                Value::Null,
+            ])),
+            "LIST<LIST<INTEGER NOT NULL>> NOT NULL"
+        );
+    }
+
+    /// An empty sequence element is elided from a multi-element union;
+    /// an all-null element is not — its null member renders NULL and
+    /// survives. Every expectation is live Neo4j 2026.10.1 (the
+    /// empty-row-set marker vs the surviving NULL row).
+    #[test]
+    fn unions_elide_empty_sequences_but_keep_all_null_elements() {
+        // [[], [1]] and [[null], []]: the empty element drops, the
+        // all-null one stays.
+        assert_eq!(
+            value_type_name(&list(vec![list(Vec::new()), list(vec![Value::Int(1)]),])),
+            "LIST<LIST<INTEGER NOT NULL> NOT NULL> NOT NULL"
+        );
+        assert_eq!(
+            value_type_name(&list(vec![list(vec![Value::Null]), list(Vec::new()),])),
+            "LIST<LIST<NULL> NOT NULL> NOT NULL"
+        );
+        // [[null], [1]]: both survive, the flat-list descending order.
+        assert_eq!(
+            value_type_name(&list(vec![
+                list(vec![Value::Null]),
+                list(vec![Value::Int(1)]),
+            ])),
+            "LIST<LIST<NULL> NOT NULL | LIST<INTEGER NOT NULL> NOT NULL> NOT NULL"
         );
     }
 

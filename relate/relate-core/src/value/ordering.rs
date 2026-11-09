@@ -319,6 +319,14 @@ impl Value {
     /// minimum and `true` the maximum of `[date, true, 'hi']`; UUID sits
     /// between BOOLEAN and NUMBER per the CIP-246 amendment; BYTES, a
     /// sequence value in Neo4j, directly after LIST, ADR-0327).
+    ///
+    /// The temporal kinds are ordered among themselves — ZONED DATETIME <
+    /// LOCAL DATETIME < DATE < ZONED TIME < LOCAL TIME < DURATION — because
+    /// `Temporal::total_cmp` answers `Equal` across unlike kinds and this
+    /// rank is what keeps them distinct (live Neo4j 2026.10.1: `coll.sort`
+    /// and `ORDER BY` agree on that sequence, independent of the values).
+    /// [`TemporalKind`] is declared in exactly that order, so its
+    /// discriminant is the rank's offset from TEMPORAL's base rank.
     fn order_type_rank(&self) -> u8 {
         match self {
             Value::Map(_) => 0,
@@ -329,16 +337,16 @@ impl Value {
             Value::Path(_) => 5,
             Value::Vector { .. } => 6,
             Value::Point(_) => 7,
-            Value::Temporal(_) => 8,
-            Value::String(_) => 9,
-            Value::Bool(_) => 10,
+            Value::Temporal(t) => 8 + t.kind() as u8,
+            Value::String(_) => 14,
+            Value::Bool(_) => 15,
             // CIP-246: UUID orders between BOOLEAN and NUMBER (live
             // Neo4j 2026.09: true < uuid < 1).
-            Value::Uuid(_) => 11,
-            Value::Int(_) => 12,
-            Value::Float(f) if f.is_nan() => 14,
-            Value::Float(_) => 12,
-            Value::Null => 15,
+            Value::Uuid(_) => 16,
+            Value::Int(_) => 17,
+            Value::Float(f) if f.is_nan() => 19,
+            Value::Float(_) => 17,
+            Value::Null => 20,
         }
     }
 }

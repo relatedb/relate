@@ -453,7 +453,17 @@ pub(crate) fn pow(l: Value, r: Value) -> Result<Value> {
     } else {
         let a = l.as_number().ok_or_else(|| Error::ty("^ needs numbers"))?;
         let b = r.as_number().ok_or_else(|| Error::ty("^ needs numbers"))?;
-        Value::Float(a.powf(b))
+        // Java's Math.pow (Neo4j) answers NaN when the base's absolute
+        // value is exactly 1 and the exponent is not finite (NaN or either
+        // infinity), while IEEE pow (Rust's `powf`) answers 1 for a base of
+        // exactly 1 whatever the exponent. Live Neo4j 2026.10.1: `1 ^
+        // (0/0.0)` and `1 ^ (1/0.0)` are NaN, `(-1) ^ (±1/0.0)` is NaN,
+        // `(0/0.0) ^ 0` is 1.0.
+        if a.abs() == 1.0 && !b.is_finite() {
+            Value::Float(f64::NAN)
+        } else {
+            Value::Float(a.powf(b))
+        }
     })
 }
 
