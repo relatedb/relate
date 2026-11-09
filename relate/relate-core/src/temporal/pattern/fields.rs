@@ -12,6 +12,15 @@ use super::super::zone::{parse_offset, zone_from_short_name};
 use super::token::{FieldKind, Token};
 use super::{as_u32, nanos_from_fraction, read_literal, read_number, Digits};
 
+/// The era a pattern's `G` field named; a year-of-era under `Bc` is
+/// shifted by one (44 BC is proleptic year -43).
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Era {
+    #[default]
+    Ad,
+    Bc,
+}
+
 /// The field values an instant pattern collected, before the target kind
 /// decides which of them it uses (CIP-228: a character outside the kind's
 /// checkmarks is parsed but ignored).
@@ -40,12 +49,24 @@ pub(super) struct Fields {
     /// The `y` spelling is year-of-era; `u` is the proleptic year.
     pub(super) year_of_era: bool,
     /// A parsed `BC`/`BCE` era shifts a year-of-era by one.
-    pub(super) era_bc: bool,
+    pub(super) era: Era,
     pub(super) offset: Option<i32>,
-    pub(super) zone: Option<String>,
+    pub(super) zone: Option<Tz>,
 }
 
 impl Fields {
+    /// The proleptic year: a `BC`/`BCE` era shifts a year-of-era (`y`) by
+    /// one (44 BC is year -43); a proleptic `u` year is already absolute.
+    pub(super) fn proleptic_year(&self) -> Option<i64> {
+        self.year.map(|year| {
+            if self.year_of_era && self.era == Era::Bc {
+                1 - year
+            } else {
+                year
+            }
+        })
+    }
+
     /// Whether the pattern named a time-of-day field — derived from the
     /// collected fields rather than tracked beside them.
     pub(super) fn has_time(&self) -> bool {
@@ -220,12 +241,12 @@ fn read_field(
         FieldKind::Era => {
             let era =
                 read_alpha(input, p).and_then(|era| match era.to_ascii_uppercase().as_str() {
-                    "AD" | "CE" => Some(false),
-                    "BC" | "BCE" => Some(true),
+                    "AD" | "CE" => Some(Era::Ad),
+                    "BC" | "BCE" => Some(Era::Bc),
                     _ => None,
                 });
-            if let Some(bc) = era {
-                fields.era_bc = bc;
+            if let Some(era) = era {
+                fields.era = era;
             }
             era.is_some()
         }
@@ -252,12 +273,20 @@ fn read_zone_id(input: &str, pos: &mut usize, fields: &mut Fields) -> bool {
             return false;
         };
         fields.offset = Some(offset);
+        true
     } else {
-        if name.parse::<Tz>().is_err() {
-            return false;
-        }
-        fields.zone = Some(name.to_string());
+        accept_zone(name, fields)
     }
+}
+
+/// Record `name` as the pattern's zone when it is an IANA id; `false`
+/// (a shape mismatch) otherwise. The one zone-id acceptance rule for `VV`
+/// and `z`.
+fn accept_zone(name: &str, fields: &mut Fields) -> bool {
+    let Ok(zone) = name.parse::<Tz>() else {
+        return false;
+    };
+    fields.zone = Some(zone);
     true
 }
 
@@ -266,17 +295,7 @@ fn read_zone_name(input: &str, pos: &mut usize, fields: &mut Fields) -> bool {
     let Some(name) = read_non_space(input, pos) else {
         return false;
     };
-    let zone = match zone_from_short_name(name) {
-        Some(zone) => zone.to_string(),
-        None => {
-            if name.parse::<Tz>().is_err() {
-                return false;
-            }
-            name.to_string()
-        }
-    };
-    fields.zone = Some(zone);
-    true
+    accept_zone(zone_from_short_name(name).unwrap_or(name), fields)
 }
 
 /// `O` is the localized offset spelling: a `GMT`/`UTC` prefix and an

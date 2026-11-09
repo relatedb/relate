@@ -26,18 +26,14 @@ mod token;
 
 use std::collections::BTreeSet;
 
-use chrono::Offset;
-use chrono_tz::Tz;
-
 use crate::{Error, Result};
 
-use super::zone::{
-    ambiguous_datetime_err, resolve_local, sub_offset, unknown_zone_err, LocalResolution,
-};
+use super::clock::ClockKind;
+
 use super::{range_err, Temporal};
 
 use fields::{match_tokens, Fields};
-use resolve::{resolve_date, resolve_time};
+use resolve::{resolve_date, resolve_datetime, resolve_time};
 use token::tokenize;
 
 /// The one spelling of a pattern/value failure. Neo4j reports pattern
@@ -154,7 +150,11 @@ pub(super) fn read_literal(input: &str, pos: &mut usize, text: &str) -> Option<(
     Some(())
 }
 /// `date(value, pattern)` and the other instant kinds.
-pub(super) fn parse_instant_pattern(kind: &str, value: &str, pattern: &str) -> Result<Temporal> {
+pub(super) fn parse_instant_pattern(
+    kind: ClockKind,
+    value: &str,
+    pattern: &str,
+) -> Result<Temporal> {
     let tokens = tokenize(pattern)?;
     let mut fields = Fields::default();
     let end = match_tokens(&tokens, value, 0, &mut fields)?.ok_or_else(mismatch)?;
@@ -162,49 +162,15 @@ pub(super) fn parse_instant_pattern(kind: &str, value: &str, pattern: &str) -> R
         return Err(mismatch());
     }
     match kind {
-        "date" => Ok(Temporal::Date(resolve_date(&fields)?)),
-        "localtime" => Ok(Temporal::LocalTime(resolve_time(&fields)?)),
-        "time" => Ok(Temporal::Time {
+        ClockKind::Date => Ok(Temporal::Date(resolve_date(&fields)?)),
+        ClockKind::LocalTime => Ok(Temporal::LocalTime(resolve_time(&fields)?)),
+        ClockKind::Time => Ok(Temporal::Time {
             time: resolve_time(&fields)?,
             offset: fields.offset.unwrap_or(0),
         }),
-        "localdatetime" => Ok(Temporal::LocalDateTime(
+        ClockKind::LocalDateTime => Ok(Temporal::LocalDateTime(
             resolve_date(&fields)?.and_time(resolve_time(&fields)?),
         )),
-        "datetime" => {
-            let date = resolve_date(&fields)?;
-            let time = resolve_time(&fields)?;
-            let local = date.and_time(time);
-            if let Some(zone) = fields.zone.as_deref() {
-                let tz: Tz = zone.parse().map_err(|_| unknown_zone_err(zone))?;
-                let resolved = match resolve_local(tz, local) {
-                    LocalResolution::Unique(dt) => dt,
-                    // ADR-0178's overlap rule: the earlier occurrence.
-                    LocalResolution::Ambiguous { earlier, .. } => earlier,
-                    LocalResolution::None => return Err(ambiguous_datetime_err()),
-                };
-                return Ok(Temporal::DateTime {
-                    utc: resolved.naive_utc(),
-                    offset: resolved.offset().fix().local_minus_utc(),
-                    zone: Some(zone.to_string()),
-                });
-            }
-            if fields.has_time() {
-                let offset = fields.offset.unwrap_or(0);
-                return Ok(Temporal::DateTime {
-                    utc: sub_offset(local, offset)?,
-                    offset,
-                    zone: fields.offset.is_none().then(|| "Z".into()),
-                });
-            }
-            // A date-only pattern: a parsed offset does not apply (CIP-228
-            // instant semantics), so the value is midnight UTC.
-            Ok(Temporal::DateTime {
-                utc: local,
-                offset: 0,
-                zone: Some("Z".into()),
-            })
-        }
-        other => Err(invalid_value(format!("unknown temporal kind {other}"))),
+        ClockKind::DateTime => resolve_datetime(&fields),
     }
 }

@@ -4,6 +4,7 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use crate::{Error, Result, Value};
 
+use super::clock::ClockKind;
 use super::construct::date_from_week;
 use super::duration::parse_duration_iso;
 use super::duration_pattern::parse_duration_pattern;
@@ -60,6 +61,8 @@ pub fn parse_pattern(kind: &str, value: &str, pattern: &str) -> Result<Temporal>
     if kind == "duration" {
         return parse_duration_pattern(value, pattern);
     }
+    let kind = ClockKind::from_name(kind)
+        .ok_or_else(|| invalid_value(format!("unknown temporal kind {kind}")))?;
     parse_instant_pattern(kind, value, pattern)
 }
 
