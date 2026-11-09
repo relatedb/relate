@@ -22,7 +22,7 @@ use crate::shortest::layered::Dag;
 use crate::shortest::{pair, path_from_trail, Search};
 
 use super::guard::Shape;
-use super::Matched;
+use super::sink::RouteSink;
 
 /// The pair product's candidate bound: past it, the product's
 /// bidirectional searches would out-count the fan's one ball per start,
@@ -121,6 +121,9 @@ pub(super) struct Route<'a> {
     /// trail's row (every trail binds the same names against the one
     /// input row), one per route, stamped by every later trail.
     path_rung: Cell<Option<RowRung>>,
+    /// The consumer's halt cell (a probe's verdict): raised once it needs no
+    /// more rows, read only through [`Self::halted`].
+    halt: Option<&'a Cell<bool>>,
 }
 
 impl<'a> Route<'a> {
@@ -130,6 +133,7 @@ impl<'a> Route<'a> {
         row: &'a Row,
         shape: Shape<'a>,
         filter: Option<PathFilter<'a>>,
+        halt: Option<&'a Cell<bool>>,
     ) -> Self {
         let rel = shape.rel;
         let search = Search {
@@ -148,6 +152,7 @@ impl<'a> Route<'a> {
             shape,
             search,
             filter,
+            halt,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
         }
@@ -165,30 +170,31 @@ impl<'a> Route<'a> {
             .get_or_init(|| unbounded_dfs_cap(self.ctx.graph, MatchMode::DifferentRelationships))
     }
 
-    /// Every selected row: the row's anchoring, resolved once, picks the
-    /// searches. A pattern whose minimum exceeds its maximum matches nothing;
-    /// one whose predicate the route cannot decide declines (`None`) before
-    /// any search runs, and the pattern enumerates instead.
-    pub(super) fn run(&self) -> Result<Option<Matched>> {
-        let mut out = Vec::new();
+    /// Push every selected row into `out` as it is bound: the row's
+    /// anchoring, resolved once, picks the searches. A pattern whose minimum
+    /// exceeds its maximum matches nothing; one whose predicate the route
+    /// cannot decide declines (`false`) before any search runs or row is
+    /// pushed, and the pattern enumerates instead. The run stops early once
+    /// the sink is halted.
+    pub(super) fn run(&self, out: &mut RouteSink<'_>) -> Result<bool> {
         if self.search.min > self.search.max {
-            return Ok(Some(out));
+            return Ok(true);
         }
         if let Some(filter) = &self.filter {
             if !self.predicates_decidable(filter) {
-                return Ok(None);
+                return Ok(false);
             }
         }
         match self.anchor()? {
             Anchor::Pair { starts, ends } => self.each_side(&starts, |s| {
-                self.each_side(&ends, |e| self.pair_partition(s, e, &mut out))
+                self.each_side(&ends, |e| self.pair_partition(s, e, out))
             })?,
             Anchor::Fan { origins, way } => {
-                self.each_side(&origins, |origin| self.fan(origin, way, &mut out))?
+                self.each_side(&origins, |origin| self.fan(origin, way, out))?
             }
-            Anchor::Loop => self.each_start(|s| self.pair_partition(s, s, &mut out))?,
+            Anchor::Loop => self.each_start(|s| self.pair_partition(s, s, out))?,
         };
-        Ok(Some(out))
+        Ok(true)
     }
 
     /// Whether the search can decide every predicate it must evaluate, against
@@ -379,10 +385,19 @@ impl<'a> Route<'a> {
     /// fan arms and the pair product all ride it.
     fn each_of(&self, ids: &[NodeId], mut f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
         for &id in ids {
+            if self.halted() {
+                break;
+            }
             self.ctx.graph.cancel_tick()?;
             f(id)?;
         }
         Ok(())
+    }
+
+    /// Whether the consumer needs no more rows — the one reader of the
+    /// halt cell, consulted at the loop heads that fan out.
+    fn halted(&self) -> bool {
+        self.halt.is_some_and(Cell::get)
     }
 
     /// The input row with the start node bound, or `None` when `id` fails
@@ -408,7 +423,7 @@ impl<'a> Route<'a> {
 
     /// Both endpoints fixed: the pair search for single-path selectors, the
     /// layered search stopped at `e` for all-path ones.
-    fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut Matched) -> Result<()> {
+    fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut RouteSink<'_>) -> Result<()> {
         let Some(srow) = self.bind_start(s)? else {
             return Ok(());
         };
@@ -425,7 +440,7 @@ impl<'a> Route<'a> {
     /// One endpoint fixed: one layered search from it, `way` saying which,
     /// reaches every node at the other end. Each reached node, and the
     /// origin itself, is one partition.
-    fn fan(&self, origin: NodeId, way: Way, out: &mut Matched) -> Result<()> {
+    fn fan(&self, origin: NodeId, way: Way, out: &mut RouteSink<'_>) -> Result<()> {
         // Forward, the origin is the start, bound once; backward, each
         // reached node is a start, bound in its own partition.
         let (search, origin_row) = match way {
@@ -439,6 +454,9 @@ impl<'a> Route<'a> {
         };
         let dag = self.dag(search, origin, |_, _| Ok(false))?;
         for &far in std::iter::once(&origin).chain(dag.order()) {
+            if self.halted() {
+                break;
+            }
             self.ctx.graph.cancel_tick()?;
             let (s, e) = way.ends(origin, far);
             let srow = match &origin_row {
@@ -464,7 +482,7 @@ impl<'a> Route<'a> {
         s: NodeId,
         e: NodeId,
         srow: &Row,
-        out: &mut Matched,
+        out: &mut RouteSink<'_>,
         trails: impl FnOnce() -> Result<Vec<Vec<RelId>>>,
     ) -> Result<()> {
         if !self.node_ok(e, self.shape.end, srow)? {
@@ -481,6 +499,9 @@ impl<'a> Route<'a> {
             self.search.closed(s, self.shape.all)?
         };
         for trail in &trails {
+            if self.halted() {
+                break;
+            }
             self.emit(s, e, trail, srow, out)?;
         }
         Ok(())
@@ -499,7 +520,7 @@ impl<'a> Route<'a> {
         e: NodeId,
         srow: &Row,
         filter: &PathFilter<'_>,
-        out: &mut Matched,
+        out: &mut RouteSink<'_>,
     ) -> Result<()> {
         // The one GPM bound policy: a bounded pattern keeps its written
         // bound, an unbounded one takes the engine's unbounded DFS cap
@@ -526,7 +547,6 @@ impl<'a> Route<'a> {
             used: UsedSet::default(),
         };
         for length in self.shape.min..=max {
-            self.ctx.graph.cancel_tick()?;
             if walk.any_of_length(s, length, out)? {
                 return Ok(());
             }
@@ -604,20 +624,13 @@ impl<'a> Route<'a> {
         e: NodeId,
         trail: &[RelId],
         srow: &Row,
-        out: &mut Matched,
+        out: &mut RouteSink<'_>,
     ) -> Result<()> {
         self.ctx.graph.cancel_tick()?;
         let Some(row) = self.bind_trail(s, e, trail, srow) else {
             return Ok(());
         };
-        self.push(row, trail, out);
-        Ok(())
-    }
-
-    /// Push one trail already bound by [`Self::bind_trail`] — the one place a
-    /// selected trail is copied into the result.
-    fn push(&self, row: Row, trail: &[RelId], out: &mut Matched) {
-        out.push((row, trail.iter().copied().collect()));
+        out.offer(self.ctx, row, trail)
     }
 }
 
@@ -647,7 +660,7 @@ impl TrailWalk<'_, '_, '_> {
     /// Every frame ticks the statement's cancellation window (ADR-0111), so a
     /// dense graph stays interruptible *inside* one length's enumeration
     /// instead of only at the next length's boundary.
-    fn any_of_length(&mut self, at: NodeId, length: u32, out: &mut Matched) -> Result<bool> {
+    fn any_of_length(&mut self, at: NodeId, length: u32, out: &mut RouteSink<'_>) -> Result<bool> {
         self.route.ctx.graph.cancel_tick()?;
         if self.trail.len() == length as usize {
             if at != self.end {
@@ -662,7 +675,7 @@ impl TrailWalk<'_, '_, '_> {
             if !self.route.filter_ok(&row, self.filter)? {
                 return Ok(false);
             }
-            self.route.push(row, &self.trail, out);
+            out.offer(self.route.ctx, row, &self.trail)?;
             return Ok(true);
         }
         // Accumulate the satisfied flag across frames and return it after
@@ -672,6 +685,9 @@ impl TrailWalk<'_, '_, '_> {
         // walking past it (which returned non-shortest trails).
         let mut any_satisfied = false;
         for (next, rid) in self.route.search.hops(at)? {
+            if self.route.halted() {
+                break;
+            }
             if !self.used.insert(rid) {
                 continue;
             }

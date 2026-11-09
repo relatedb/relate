@@ -410,20 +410,13 @@ pub(crate) fn match_gpm_path(
     // below); the walk itself carries no residual (it checks inline
     // pattern predicates per element and the caller applies the WHERE
     // afterwards).
-    if let Some(rows) = match_shortest_route(
-        ctx,
-        path,
-        rel_filters,
-        &row,
-        &used,
-        match_mode,
-        where_clause,
-    )? {
-        // A probe still answers from the route's rows (the route is its
-        // own matcher — there is no frontier left to short-circuit); a cap
-        // does not ride the route (the caller's projection keeps the
-        // LIMIT).
-        return emit::answer_or_reduce(ctx, rider.as_deref(), where_clause, rows, tail);
+    // The route pushes its rows through the rider/tail sink as it binds
+    // them (a probe answers and halts in place; a cap does not ride the
+    // route — the caller's projection keeps the LIMIT).
+    let mut routed = Matched::new();
+    let sink = shortest_route::RouteSink::new(rider.as_deref(), where_clause, tail, &mut routed);
+    if match_shortest_route(sink, ctx, path, rel_filters, &row, &used, match_mode)? {
+        return Ok(routed);
     }
     if path.elements.is_empty() {
         return Ok(Vec::new());

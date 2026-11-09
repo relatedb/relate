@@ -22,10 +22,12 @@ use crate::row::Row;
 
 mod guard;
 mod route;
+mod sink;
 
 use super::GpmFilters;
 use guard::route_shape;
 use route::{PathFilter, Route};
+pub(crate) use sink::RouteSink;
 
 /// The predicates a routed shortest path must satisfy **during** the
 /// search: the pattern's own inline `WHERE`, plus the MATCH-level `WHERE`
@@ -77,8 +79,6 @@ mod reject_tests;
 #[cfg(test)]
 mod route_tests;
 
-use crate::exec::pattern_policies::Matched;
-
 #[cfg(test)]
 thread_local! {
     static FORCE_GPM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -116,33 +116,42 @@ fn with_forced_gpm<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// Match `path` on the BFS route, or `Ok(None)` when [`route_shape`] rejects
+/// Match `path` on the BFS route, or decline (`Ok(false)`) when [`route_shape`] rejects
 /// it or the route declines it: a predicate the search cannot decide against
 /// the rows it binds falls back to enumeration, which applies it to the
 /// complete row (`Route::predicates_decidable`). Each row's used set is its
 /// trail's relationships, as GPM's would be: the guard admits only an empty
 /// incoming set.
+///
+/// Rows are pushed into the consumer as the route binds them
+/// ([`RouteSink`], ADR-0555): an EXISTS probe riding the match answers
+/// from each row and halts the search at its first accept (the verdict is
+/// the probe's halt cell, no row is kept); anything else reduces each row
+/// through the tail into the caller's vector. Returns whether the route
+/// took the pattern (`false`: it declined before any row was pushed).
 pub(super) fn match_shortest_route(
+    mut sink: RouteSink<'_>,
     ctx: ExecCtx<'_>,
     path: &PathPattern,
     filters: &GpmFilters,
     row: &Row,
     used: &UsedSet,
     match_mode: MatchMode,
-    residual: &Residual<'_>,
-) -> Result<Option<Matched>> {
+) -> Result<bool> {
     #[cfg(test)]
     if FORCE_GPM.with(|c| c.get()) {
-        return Ok(None);
+        return Ok(false);
     }
     // The guard decodes the shape and carries its resolved filter from the
     // pattern-level table (LABS-801) — one pass, no second shape sniffing.
     let Some(shape) = route_shape(path, filters, match_mode, used, row) else {
-        return Ok(None);
+        return Ok(false);
     };
-    let Some(rows) = Route::new(ctx, path, row, shape, path_filter(path, residual)).run()? else {
-        return Ok(None);
-    };
+    let residual = sink.residual();
+    let halt = sink.halt_cell();
+    if !Route::new(ctx, path, row, shape, path_filter(path, residual), halt).run(&mut sink)? {
+        return Ok(false);
+    }
     note_route_run();
-    Ok(Some(rows))
+    Ok(true)
 }

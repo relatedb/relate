@@ -518,3 +518,36 @@ fn property_map_seeking_to_no_candidate() {
     assert!(counts.route_runs > 0);
     assert_eq!(sorted(rows), Vec::<Vec<Value>>::new());
 }
+
+/// An `EXISTS` probe riding the route (the selector spelling — the
+/// `shortestPath()` function form never carries a probe) answers from the
+/// rows as they are bound and halts at the first accept: true when some
+/// shortest path exists, false when none does, and the route ran for both.
+#[test]
+fn exists_probe_answers_from_the_streamed_rows() {
+    let g = shortcut();
+    let hit = "RETURN EXISTS { MATCH p = ANY SHORTEST (a {id: 0})-[*]->(b {id: 3}) } AS found";
+    let (rows, counts) = run(&g, hit);
+    assert!(counts.route_runs > 0, "the probe must ride the route");
+    assert_eq!(sorted(rows), expect(&[&[Bool(true)]]));
+    assert_eq!(on_route(&g, hit), gpm(&g, hit));
+
+    let miss = "RETURN EXISTS { MATCH p = ANY SHORTEST (a {id: 0})-[*]->(b {id: 99}) } AS found";
+    let (rows, counts) = run(&g, miss);
+    assert!(counts.route_runs > 0, "the probe must ride the route");
+    assert_eq!(sorted(rows), expect(&[&[Bool(false)]]));
+}
+
+/// A probe over a path-filtered all-shortest pattern stops inside the
+/// filtered trail walk: the first satisfying trail halts the enumeration
+/// of the rest of the level (the verdict is the same as the unfiltered
+/// pattern's, the walk just does not keep going).
+#[test]
+fn exists_probe_halts_the_filtered_trail_walk() {
+    let g = shortcut();
+    let q = "RETURN EXISTS { MATCH p = ALL SHORTEST (a {id: 0})-[*]->(b {id: 3}) \
+             WHERE length(p) > 0 } AS found";
+    let (rows, counts) = run(&g, q);
+    assert!(counts.route_runs > 0, "the probe must ride the route");
+    assert_eq!(sorted(rows), expect(&[&[Bool(true)]]));
+}

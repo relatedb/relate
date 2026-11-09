@@ -218,6 +218,19 @@ pub(crate) enum Rider<'a, 'cap> {
     Probe(&'a PathProbe<'a>),
 }
 
+impl<'a> Rider<'a, '_> {
+    /// The probe this rider carries, if it is one — the vocabulary's one
+    /// probe-or-not split, for the consumers that treat every non-probe
+    /// rider alike (the shortest route, which no cap rides). Exhaustive,
+    /// so a new rider kind must decide here.
+    pub(crate) fn probe(&self) -> Option<&'a PathProbe<'a>> {
+        match self {
+            Rider::Probe(probe) => Some(probe),
+            Rider::Cap(_) => None,
+        }
+    }
+}
+
 /// The classic walk's sink for whatever rides the one-path match — the
 /// rider→sink decision in one exhaustive match (`for_rider`), so the
 /// classic arm of `match_one_path` spells neither an early return nor a
