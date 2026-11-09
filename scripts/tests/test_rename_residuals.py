@@ -16,11 +16,10 @@ class ClassifyTests(unittest.TestCase):
         ]:
             self.assertEqual(residuals.classify("relate/relate-storage/src/x.rs", line), "on-disk artifact")
 
-    def test_guard_and_notice_and_precutover_lines_are_keeps(self) -> None:
+    def test_guard_adr_filename_and_precutover_lines_are_keeps(self) -> None:
         cases = [
             ("relate/relate/src/open_config.rs", 'if !upper.starts_with("CYPHERLITE_") {', "rename guard"),
             ("surfaces/relate-cli/tests/e2e_version.rs", "cYpHeRlItE_pReViEw", "rename guard"),
-            ("surfaces/relate-cli/src/upgrade_cmd/mod.rs", "cypherlite is now relate — this is the final", "swan-song notice"),
             (".github/workflows/spec-harness.yml", "repository: neo4j-labs/cypherlite-cypher-test-harness", "pre-cutover name"),
             ("docs/guides/x.md", 'doc": "adr/0046-cypherlite-parser-memorydb-runtime.md', "ADR filename ref"),
         ]

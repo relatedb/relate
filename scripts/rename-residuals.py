@@ -5,14 +5,16 @@ The rename (ADR-0517, PR #749) keeps a deliberate keep-list: frozen records
 (accepted ADRs, baseline envelopes, vendored corpora, golden stores, dated
 research notes, the CHANGELOG), the on-disk store artifacts whose bytes
 existing stores depend on (`.cypherlite.lock`, the `.cypherlite` sidecar,
-`CYPHERLITE-LOCK-v1`), the still-set-old-env guard, the swan-song notice
+ `CYPHERLITE-LOCK-v1`), the still-set-old-env guard
 (LABS-973), and pre-cutover external names (the harness repository) that
 flip at the relatedb cutover. Everything else carrying the old name is a
 stray the rename missed.
 
 Every occurrence is classified and the strays are listed; exit is 1 when
-any stray exists, so a manual pre-push run fails loudly on regressions —
-the scan is deliberately manual, not a CI lane.
+any stray exists. The scan runs in CI: `make test-rename-residuals` (a
+`test-scripts` prerequisite) runs the unit suite including the
+tracked-tree gate, so a stray fails the review-scripts lane. The manual
+forms below are the same scan against a local checkout:
 
     python3 scripts/rename-residuals.py            # classify + strays
     python3 scripts/rename-residuals.py --all      # also print every keep
@@ -37,7 +39,6 @@ from pathlib import Path
 class OccurrenceClass(str, Enum):
     ON_DISK_ARTIFACT = "on-disk artifact"
     RENAME_GUARD = "rename guard"
-    SWAN_SONG_NOTICE = "swan-song notice"
     ADR_FILENAME_REF = "ADR filename ref"
     PRE_CUTOVER_NAME = "pre-cutover name"
     STRAY = "stray"
@@ -68,10 +69,6 @@ KEEP_LINE_PATTERNS = (
     # The rename guard's own symbol and its ADR citations.
     (OccurrenceClass.RENAME_GUARD, re.compile(r"reject_cypherlite_env")),
     (OccurrenceClass.RENAME_GUARD, re.compile(r"ADR-0517")),
-    # The swan-song notice text (LABS-973), byte-frozen on purpose.
-    (OccurrenceClass.SWAN_SONG_NOTICE, re.compile(r"cypherlite is now relate")),
-    (OccurrenceClass.SWAN_SONG_NOTICE, re.compile(r"cypherlite-is-now-relate")),
-    (OccurrenceClass.SWAN_SONG_NOTICE, re.compile(r"LABS-973")),
     # ADR filenames keep the old name (§7); references to them are keeps.
     (OccurrenceClass.ADR_FILENAME_REF, re.compile(r"[0-9]{4}-cypherlite-")),
     # The harness repository lives under its pre-rename name until the

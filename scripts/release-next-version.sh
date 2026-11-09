@@ -3,7 +3,7 @@
 # Usage: release-next-version.sh patch|minor|major
 # Prints exactly one line to stdout: the next tag (e.g. v0.4.1).
 # With no prior tags, the seed is v0.1.0 regardless of bump (the first
-# release cut from this repository; the cypherlite-era tags never came
+# release cut from this repository; the old repository’s tags never came
 # across, so the line starts here).
 set -euo pipefail
 

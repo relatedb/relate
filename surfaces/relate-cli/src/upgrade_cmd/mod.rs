@@ -63,19 +63,6 @@ const SUMS_SIG_ASSET: &str = "SHA256SUMS.sig";
 const INSTALL_ONE_LINER: &str =
     "curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash";
 
-/// The two-line rename notice every successful upgrade outcome prints after
-/// its status line (LABS-973): this final cypherlite release ends the old
-/// update channel, and the notice names the relate install one-liner that
-/// replaces it. One constant, one printer — never re-typed at a call site.
-const RENAME_NOTICE: &str = "cypherlite is now relate — this is the final cypherlite release\n\
-install relate with: curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash";
-
-/// Print [`RENAME_NOTICE`] on stdout; the one helper every success site in
-/// [`run_inner`] calls.
-fn print_rename_notice() {
-    println!("{RENAME_NOTICE}");
-}
-
 /// Options for `relate upgrade`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpgradeOpts {
@@ -150,12 +137,10 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
         } else {
             println!("relate is up to date");
         }
-        print_rename_notice();
         return Ok(());
     }
     if !newer {
         println!("relate {VERSION} is up to date (latest release: {latest})");
-        print_rename_notice();
         return Ok(());
     }
 
@@ -229,7 +214,6 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
 
     let exe = replace_current_exe(&binary)?;
     println!("upgraded relate {VERSION} -> {latest} at {}", exe.display());
-    print_rename_notice();
 
     crate::skill::refresh::skill_refresh(opts.yes, &exe);
     Ok(())
@@ -439,20 +423,6 @@ mod tests {
         assert_eq!(
             parse_upgrade_args(&args(&["now"])).unwrap_err().to_string(),
             "unexpected argument to upgrade: now"
-        );
-    }
-
-    // The exact two lines are the contract: the notice must name the relate
-    // installer one-liner and must never say "skill" (the self-update smoke
-    // transcript guard), which pinning them verbatim covers.
-    #[test]
-    fn rename_notice_is_the_two_approved_lines() {
-        assert_eq!(
-            RENAME_NOTICE.lines().collect::<Vec<_>>(),
-            vec![
-                "cypherlite is now relate — this is the final cypherlite release",
-                "install relate with: curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash",
-            ]
         );
     }
 

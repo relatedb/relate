@@ -29,7 +29,7 @@ non-offline release-notes dispatch can still announce the tag.
 The version is derived from the existing `v*` git tags plus the chosen bump,
 not from the workspace version. The first ever run (no `v*` tags yet)
 produces `v0.1.0` regardless of the bump choice — the first release cut
-from this repository; the cypherlite-era tags never came across.
+from this repository; the old repository’s tags never came across.
 
 ## What the run does, in order
 

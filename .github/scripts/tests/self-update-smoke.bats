@@ -23,16 +23,7 @@
 # proceeds, while a missing manifest, no entry for the asset, a
 # malformed line, a mismatched entry, and a tampered binary each fail
 # closed with exit 1 and zero spawns of the binary.
-#
-# The rename notice (LABS-973) is pinned on both witnesses: the upgraded
-# copy's `upgrade --check` output must carry both notice lines (a copy
-# that prints neither, or only the headline, fails the smoke), and the
-# completed-upgrade transcript must carry the notice once the previous
-# release is v0.16.1 or later — GH_STUB_UPGRADE_NOTICE=on makes the
-# fake binary's upgrade arm print it, emulating that upgrade, while a
-# previous release below v0.16.1 (the v0.16.0 of the v0.16.1 release
-# run) needs none.
-#
+
 # The gh CLI is stubbed on PATH (no network): the stub comes from the
 # shared gh-stub writer (gh-stub.bash — the same harness
 # publish-releases-json.bats and publish-extensions-json.bats use) and
@@ -190,41 +181,19 @@ setup() {
 set -euo pipefail
 state="$(dirname "$0")/.smoke-version"
 echo "spawned $*" >> "${SMOKE_BIN_LOG:?SMOKE_BIN_LOG not set}"
-# The two-line rename notice the real binary prints on every success
-# path from v0.16.1 on (LABS-973; upgrade_cmd::RENAME_NOTICE), as one
-# copy for both arms.
-notice_1='cypherlite is now relate — this is the final cypherlite release'
-notice_2='install relate with: curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash'
 case "${1:-}" in
   --version)
     cat "$state"
     ;;
   upgrade)
     if [ "${2:-}" = "--check" ]; then
-      # The upgraded copy's own check path. The real binary prints the
-      # rename notice on every success path (LABS-973); the smoke proves
-      # that live, so the stub must print it too. GH_STUB_NOTICE=off
-      # withholds it, for the fail-closed test.
+      # The upgraded copy's own check path.
       printf 'latest release:  %s\n' "${SMOKE_NEW_VERSION:?SMOKE_NEW_VERSION not set}"
       printf 'relate is up to date\n'
-      case "${GH_STUB_NOTICE:-on}" in
-        on) printf '%s\n' "$notice_1" "$notice_2" ;;
-        # Only the headline, no one-liner: the second canary line's
-        # fail-closed mode.
-        first-line) printf '%s\n' "$notice_1" ;;
-      esac
       exit 0
     fi
     printf 'relate %s\n' "${SMOKE_NEW_VERSION:?SMOKE_NEW_VERSION not set}" > "$state"
     printf 'upgrade: installed v%s\n' "${SMOKE_NEW_VERSION:?}"
-    # An upgrading binary of v0.16.1 or later prints the notice after its
-    # upgraded line; GH_STUB_UPGRADE_NOTICE=on emulates that completed
-    # upgrade (the tests pair it with PREV_TAG=v0.16.1, the first
-    # notice-carrying release). Earlier previous releases print none, so
-    # the default is off.
-    if [ "${GH_STUB_UPGRADE_NOTICE:-off}" = "on" ]; then
-      printf '%s\n' "$notice_1" "$notice_2"
-    fi
     ;;
   *)
     echo "fake relate: unexpected invocation: $*" >&2
@@ -479,7 +448,7 @@ assert_integrity_fail() {
 @test "the smoke's pinned releases.json URL matches the CLI's constant" {
   # bash cannot read releases_json.rs's RELEASES_JSON_URL, so the smoke
   # pins it — this lock keeps the pin and the constant from drifting
-  # apart (the NOTICE lines pin their constants the same way).
+  # apart.
   grep -qF 'const RELEASES_JSON_URL: &str = "https://relatedb.ai/releases.json";' \
     "${REPO_ROOT}/surfaces/relate-cli/src/upgrade_cmd/releases_json.rs"
   grep -qF 'RELEASES_JSON_URL="https://relatedb.ai/releases.json"' "${SCRIPT}"
@@ -513,59 +482,9 @@ assert_integrity_fail() {
   grep -qF "PASS: v0.13.1 -> v${SMOKE_NEW_VERSION} self-upgrade verified" <<<"$output"
   [ -s "${SMOKE_BIN_LOG}" ]
 
-  # The renamed-release notice (LABS-973): the upgrade transcript above
-  # comes from the upgrading binary, which predates the notice, so the
-  # smoke proves it from the upgraded copy's own --check output.
-  grep -qF "PASS: the upgraded copy prints the cypherlite-is-now-relate notice" <<<"$output"
 
   # The relate on PATH stays untouched.
   [ "$(sha256_of "${STUBS_DIR}/relate")" = "${before_sha}" ]
-}
-
-# ---------------------------------------------------------------------------
-# Tests: the renamed-release notice (LABS-973)
-# ---------------------------------------------------------------------------
-
-@test "an upgrade from v0.16.1 witnesses the rename notice in the transcript" {
-  # v0.16.1 is the first release carrying the notice, so an upgrading
-  # binary of that version prints it after its completed-upgrade line —
-  # the smoke must surface that transcript witness.
-  run run_smoke PREV_TAG="v0.16.1" GH_STUB_UPGRADE_NOTICE=on
-  echo "$output"
-  [ "$status" -eq 0 ]
-  grep -qF "PASS: the upgrading binary printed the rename notice on its completed-upgrade path" <<<"$output"
-}
-
-@test "an upgrade from v0.16.1 that completes without the notice fails the smoke" {
-  run run_smoke PREV_TAG="v0.16.1" GH_STUB_UPGRADE_NOTICE=off
-  echo "$output"
-  [ "$status" -eq 1 ]
-  grep -qF "the upgrading binary printed no rename notice" <<<"$output"
-}
-
-@test "a previous release at v0.16.0 needs no transcript notice (the v0.16.1 release run)" {
-  # The release that introduces the notice upgrades from v0.16.0, which
-  # predates it: its transcript can never carry the notice, so the
-  # transcript assert must stay gated and the run stays green.
-  run run_smoke PREV_TAG="v0.16.0" GH_STUB_UPGRADE_NOTICE=off
-  echo "$output"
-  [ "$status" -eq 0 ]
-  grep -qF "PASS: v0.16.0 -> v${SMOKE_NEW_VERSION} self-upgrade verified" <<<"$output"
-  ! grep -qF "PASS: the upgrading binary printed the rename notice" <<<"$output"
-}
-
-@test "an upgraded copy that prints no rename notice fails the smoke" {
-  run run_smoke PREV_TAG="v0.13.0" GH_STUB_NOTICE=off
-  echo "$output"
-  [ "$status" -eq 1 ]
-  grep -qF "printed no rename notice" <<<"$output"
-}
-
-@test "an upgraded copy that prints only the first notice line fails the smoke" {
-  run run_smoke PREV_TAG="v0.13.0" GH_STUB_NOTICE=first-line
-  echo "$output"
-  [ "$status" -eq 1 ]
-  grep -qF "printed no relate install one-liner" <<<"$output"
 }
 
 # ---------------------------------------------------------------------------

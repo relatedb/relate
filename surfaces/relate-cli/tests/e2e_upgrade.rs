@@ -36,29 +36,6 @@ const GENERATOR_EXPECTED_RELEASES_JSON: &str = include_str!(concat!(
     "/../../.github/scripts/tests/fixtures/publish-releases-json-expected.json"
 ));
 
-// --- the rename notice every success site prints (LABS-973) ---
-
-/// The two notice lines every `upgrade` success site prints after its status
-/// line, re-typed here on purpose: the end-to-end test pins the user-visible
-/// text, so it must not read it back from the CLI's own constant.
-const RENAME_NOTICE_LINES: [&str; 2] = [
-    "cypherlite is now relate — this is the final cypherlite release",
-    "install relate with: curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash",
-];
-
-/// Assert `stdout` carries the two notice lines as one contiguous block, in
-/// order: the notice reads as a block, so a run that split it (another line
-/// between them) must not pass.
-fn assert_rename_notice(stdout: &str) {
-    let block = RENAME_NOTICE_LINES.join("\n");
-    assert!(
-        stdout.contains(&block),
-        "missing the contiguous rename notice block {block:?}: {stdout}"
-    );
-}
-
-// --- usage guards for the positional grammar ---
-
 #[test]
 fn test_upgrade_unknown_flag_is_usage_error() {
     let home = tempdir();
@@ -207,7 +184,6 @@ fn test_upgrade_check_reads_releases_json_without_a_token() {
         stdout.contains("relate is up to date"),
         "a stale latest release is not an error: {stdout}"
     );
-    assert_rename_notice(&stdout);
     let heads = fixture.heads();
     assert_eq!(heads.len(), 1, "one metadata request only: {heads:?}");
     assert!(
@@ -244,7 +220,6 @@ fn test_upgrade_check_parses_the_generator_expected_fixture() {
         stdout.contains("relate is up to date"),
         "a stale latest release is not an error: {stdout}"
     );
-    assert_rename_notice(&stdout);
     let heads = fixture.heads();
     assert_eq!(heads.len(), 1, "one metadata request only: {heads:?}");
     assert!(
@@ -255,9 +230,9 @@ fn test_upgrade_check_parses_the_generator_expected_fixture() {
 }
 
 #[test]
-fn test_upgrade_up_to_date_prints_the_rename_notice() {
+fn test_upgrade_up_to_date_stops_before_any_download() {
     // The plain (non-`--check`) up-to-date site: the stale latest release
-    // stops the run before any download and prints the notice as well.
+    // stops the run before any download.
     let home = tempdir();
     let fixture = ReleasesFixture::spawn(RELEASES_JSON);
     let (status, stdout, stderr) = run_cli(
@@ -270,7 +245,6 @@ fn test_upgrade_up_to_date_prints_the_rename_notice() {
         stdout.contains("is up to date (latest release: 0.0.9)"),
         "the plain up-to-date line must name the stale release: {stdout}"
     );
-    assert_rename_notice(&stdout);
     let heads = fixture.heads();
     assert_eq!(heads.len(), 1, "only the metadata request: {heads:?}");
 }
@@ -351,12 +325,12 @@ const NEWER_RELEASES_JSON: &str = r#"{
   "releases": []
 }"#;
 
-/// `--check` against a newer latest release reports the availability line and
-/// the notice, then returns before any download: one metadata request reaches
+/// `--check` against a newer latest release reports the availability line,
+/// then returns before any download: one metadata request reaches
 /// the loopback and nothing else is fetched.
 #[cfg(unix)]
 #[test]
-fn test_upgrade_check_upgrade_available_prints_the_rename_notice() {
+fn test_upgrade_check_upgrade_available_stops_at_the_metadata_request() {
     let home = tempdir();
     let fixture = ReleasesFixture::spawn(NEWER_RELEASES_JSON);
     let (status, stdout, stderr) = run_cli(
@@ -369,7 +343,6 @@ fn test_upgrade_check_upgrade_available_prints_the_rename_notice() {
         stdout.contains("upgrade available: run `relate upgrade` to install 99.0.0"),
         "the newer latest release must be reported: {stdout}"
     );
-    assert_rename_notice(&stdout);
     let heads = fixture.heads();
     assert_eq!(
         heads.len(),

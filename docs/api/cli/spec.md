@@ -486,27 +486,12 @@ is at or below **v0.14.0** (the last headerless release), and rejected above
 that. The legacy window is fixed, never extended. `install.sh` applies the
 same rule against the tag the GitHub API resolved (ADR-0068).
 
-Every successful outcome prints the same two-line rename notice on stdout,
-after its status line: this is the final relate release, and the notice
-names the install one-liner for its successor.
-
-```text
-relate is now relate — this is the final relate release
-install relate with: curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash
-```
-
 The four success sites are the `--check` upgrade-available report
 (``upgrade available: run `relate upgrade` to install <latest>``), the
 `--check` up-to-date report, the plain `upgrade` up-to-date report
 (`relate <current> is up to date (latest release: <latest>)`), and the
-completed replace, where it prints before the skill refresh below. The
-notice is informational and never auto-executable: `relate` only writes
-the two lines to stdout — it changes no exit code, and no failure path
-prints it — and the relate installer origin they name sits outside the
-relate signing root, so the release key `upgrade` verifies with signs
-nothing in it.
-
-After the rename notice, a successful replace refreshes the installed skill
+completed replace. No success site prints anything after its status line,
+and no failure path prints a status line.
 bundle (ADR-0261). It pre-flights each detected agent's
 `<skills dir>/relate` and classifies it:
 
@@ -569,8 +554,8 @@ outcomes are defined (ADR-0250 §4):
   asset request.
 - **Stale** — a `latest` that is not newer than the running binary is not an
   error: it prints
-  `relate <current> is up to date (latest release: <latest>)`, followed by
-  the rename notice above, and exits 0. There is no downgrade path.
+  `relate <current> is up to date (latest release: <latest>)` and exits 0.
+  There is no downgrade path.
 
 In all three cases nothing is downloaded or modified, and there is no retry,
 no on-disk cache, and no API fallback for the metadata request itself — not

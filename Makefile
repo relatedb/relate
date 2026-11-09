@@ -566,6 +566,11 @@ test-adr-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_adr_mint.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_check_adr_numbers.py
 
+## test-rename-residuals: Unit-test the pre-rename residual scanner and run
+##   its tracked-tree gate (scripts/rename-residuals.py)
+test-rename-residuals:
+	$(PYTHON) $(CURDIR)/scripts/tests/test_rename_residuals.py
+
 ## test-bolt-compat-scripts: Unit-test the Bolt compat probe's framing,
 ##   masking, selectors, transcript rendering, manifest decode and findings
 ##   catalog (scripts/bolt_compat_probe.py and its modules)
@@ -631,7 +636,7 @@ test-stamp-swift-package:
 test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-stamp-swift-package \
-	test-makefile-targets
+	test-rename-residuals test-makefile-targets
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 

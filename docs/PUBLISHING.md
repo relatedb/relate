@@ -16,7 +16,7 @@ everything at the `relatedb/relate` repository (private for now) and turn it on.
 ## 0. Preconditions
 
 - [ ] `main` is green: `make lint` and `make test` pass; the spec-harness lane (ADR-0482) reports language coverage on the release PR — reporting-only, never a gate.
-- [ ] The cypherlite-era `v*` tags did **not** come across with the move —
+- [ ] The old repository’s `v*` tags did **not** come across with the move —
   the release workflow seeds the first tag at `v0.1.0`
   (ADR-0067; see `RELEASING.md`). Verify with
   `git ls-remote origin 'refs/tags/v*'` (empty), and never push the old

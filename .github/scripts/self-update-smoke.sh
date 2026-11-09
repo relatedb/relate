@@ -13,12 +13,6 @@
 # dirs, so the post-upgrade skill refresh must skip silently
 # (ADR-0261).
 #
-# The upgraded copy must also witness the rename notice (LABS-973): the
-# smoke proves both notice lines on the upgraded copy's `upgrade --check`
-# up-to-date path, and — once the previous release is v0.16.1 or later,
-# the first notice-carrying release — on the upgrading binary's
-# completed-upgrade transcript too.
-#
 # The inner upgrade reads the live website releases.json (ADR-0250) and
 # downloads the new release's assets through the probe-then-fallback
 # route (ADR-0358): while the repository is internal the direct route
@@ -201,8 +195,7 @@ fi
 # failed or malformed read falls through and the smoke judges the
 # upgrade on its own merits.
 # releases_json.rs's RELEASES_JSON_URL, pinned here once — bash cannot
-# read the Rust constant (the NOTICE lines below pin their constants the
-# same way).
+# read the Rust constant.
 RELEASES_JSON_URL="https://relatedb.ai/releases.json"
 site_latest="$(curl -fsSL "$RELEASES_JSON_URL" 2>/dev/null | jq -r '.latest.tag // empty' || true)"
 if [[ "$site_latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$site_latest" != "v$expected" ]]; then
@@ -356,44 +349,5 @@ if ! grep -q "$expected" <<<"$after"; then
   fail "the upgraded copy does not report v$expected: $(head -n 1 <<<"$after")"
 fi
 
-# --- The rename notice (LABS-973) ------------------------------------------
-# The notice's two lines, byte-identical to the CLI's RENAME_NOTICE
-# (upgrade_cmd::RENAME_NOTICE): bash cannot read the Rust constant, so
-# both witnesses below pin the text here, once.
-NOTICE_LINE='cypherlite is now relate — this is the final cypherlite release'
-# shellcheck disable=SC2016 # the $(gh auth token) is literal notice text
-NOTICE_ONE_LINER='install relate with: curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash'
-
-# The completed-upgrade transcript above was printed by the *upgrading*
-# binary. From v0.16.1 on — the first release carrying the notice — that
-# binary prints the notice on its completed-upgrade path, so the
-# transcript must carry it: the notice is what points an upgrading user at
-# the relate installer. A previous release below v0.16.1 predates the
-# notice and can never print one, so the assert is gated: the v0.16.1
-# release run, whose previous release is v0.16.0, stays green.
-NOTICE_FLOOR="0.16.1"
-if ! version_below "${prev_tag#v}" "$NOTICE_FLOOR"; then
-  if ! grep -qF -- "$NOTICE_LINE" "$upgrade_log"; then
-    fail "the upgrading binary printed no rename notice on its completed-upgrade path (transcript above)"
-  fi
-  log "PASS: the upgrading binary printed the rename notice on its completed-upgrade path"
-fi
-
-# The upgraded copy prints the notice on its `upgrade --check` up-to-date
-# path too (metadata only, no download) — prove both lines live there,
-# the witness an earlier previous release cannot provide.
-if ! check_log="$(run_bin upgrade --check 2>&1)"; then
-  cat <<<"$check_log" >&2
-  fail "the upgraded copy's \`upgrade --check\` exited non-zero (transcript above)"
-fi
-if ! grep -qF -- "$NOTICE_LINE" <<<"$check_log"; then
-  cat <<<"$check_log" >&2
-  fail "the upgraded copy printed no rename notice on its --check up-to-date path (transcript above)"
-fi
-if ! grep -qF -- "$NOTICE_ONE_LINER" <<<"$check_log"; then
-  cat <<<"$check_log" >&2
-  fail "the upgraded copy printed no relate install one-liner on its --check up-to-date path (transcript above)"
-fi
-log "PASS: the upgraded copy prints the cypherlite-is-now-relate notice"
 
 log "PASS: $prev_tag -> v$expected self-upgrade verified ($asset, isolated in $WORK)"
