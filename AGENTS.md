@@ -286,6 +286,19 @@ rate.
   are `pub(crate)` until a second crate needs them
 - **Layering.** Sibling-shared helpers go in the lowest shared module;
   lower-level modules never import up into harnesses
+- **Stream rows; never accumulate an unbounded result** (ADR-0555). The
+  boundary between executor operators is a pull stream of rows or of
+  bounded batches (≤ 1024 rows, default low hundreds) — or a push into the
+  consumer's fold — never a `Vec<Row>` that grows with intermediate
+  results. A new operator, clause arm or rung returning an unbounded
+  `Vec<Row>` is rejected in review. Only declared breakers (unlimited sort,
+  `collect`, percentiles, a distinct set, a join build side) may retain
+  state proportional to input, and each charges it (ADR-0463) and prefers a
+  bounded form (top-k heap, seen-set of keys). Small closed results
+  (catalog listings, procedure output, the final page) are exempt. A
+  feature that makes memory scale with path or row count instead of
+  distinct answers or groups ships a test showing peak memory independent
+  of that count
 - **No 1k-line creep.** Split before a file crosses 1000 lines (`wc -l`
   every file you grow). Exempt: pinned vendored artifacts byte-identical
   to upstream (e.g.

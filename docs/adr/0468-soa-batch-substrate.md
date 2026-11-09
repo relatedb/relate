@@ -4,6 +4,8 @@ Status: Proposed
 
 Claim: 67925094d026b75e63fe6cd64445de611154ec76
 
+Later references: ADR-0555 bounds how many rows may be alive between operators: the row-at-a-time boundary this ADR takes as given becomes a stream of rows or bounded batches, and unbounded results are never accumulated.
+
 ## Context
 
 The executor's clause interiors are row-at-a-time. `Row`

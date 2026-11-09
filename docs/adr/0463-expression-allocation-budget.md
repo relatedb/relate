@@ -2,7 +2,7 @@
 
 Status: Proposed
 Claim: 0bcfafbf52360ba687499fa22de021d8c6cb3ab2
-Later references: ADR-0499 keeps the vals container's per-row charge exact for every fold (a transient fold's vals hold the payloads until the fold completes; a fixed-width estimate was tried and rejected — constructed payloads nested one level escape it) and removes the measured per-row overhead by inlining the walk chain instead. The collect/comprehension/UNWIND/projection totals above are unchanged.
+Later references: ADR-0499 keeps the vals container's per-row charge exact for every fold (a transient fold's vals hold the payloads until the fold completes; a fixed-width estimate was tried and rejected — constructed payloads nested one level escape it) and removes the measured per-row overhead by inlining the walk chain instead. The collect/comprehension/UNWIND/projection totals above are unchanged. ADR-0555 makes the retaining-container charge the price of a declared breaker only: an operator output that grows with intermediate rows is not a container to charge but a shape to stream.
 
 ## Context
 
