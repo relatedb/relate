@@ -1,5 +1,130 @@
 {
   "schema_version": 1,
   "name": "memory-shape",
-  "frozen": false
+  "frozen": true,
+  "rounds": 5,
+  "environment": {
+    "class": "relate-loadtest-baseline/v1",
+    "arch": "x86_64",
+    "os": "linux",
+    "build_image": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
+    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "cpus": 2,
+    "cpu_period_us": 10000,
+    "cpu_quota_us": 20000,
+    "memory": "2g",
+    "ops": null,
+    "warmup": null,
+    "workers": null,
+    "runner": "github-actions:linux-4-core-x86"
+  },
+  "knobs": {
+    "logical_target_bytes": 33554432,
+    "attributes": 1,
+    "text_indexes": 0,
+    "point_indexes": 0,
+    "range_indexes": 0
+  },
+  "shapes": {
+    "base": {
+      "nodes": 0,
+      "relationships": 0,
+      "logical_bytes": {
+        "min": 258,
+        "max": 258
+      },
+      "disk_bytes": {
+        "min": 769,
+        "max": 769
+      },
+      "attributed_rss_bytes": {
+        "min": 0,
+        "max": 0
+      },
+      "ratio": {
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "flat": {
+      "nodes": 120000,
+      "relationships": 0,
+      "logical_bytes": {
+        "min": 27286276,
+        "max": 27286276
+      },
+      "disk_bytes": {
+        "min": 2041295,
+        "max": 2041295
+      },
+      "attributed_rss_bytes": {
+        "min": 38260736,
+        "max": 38723584
+      },
+      "ratio": {
+        "min": 1.402197060529623,
+        "max": 1.4191597270364047
+      }
+    },
+    "fanout": {
+      "nodes": 52016,
+      "relationships": 52000,
+      "logical_bytes": {
+        "min": 30015298,
+        "max": 30015298
+      },
+      "disk_bytes": {
+        "min": 1837437,
+        "max": 1837437
+      },
+      "attributed_rss_bytes": {
+        "min": 36622336,
+        "max": 38383616
+      },
+      "ratio": {
+        "min": 1.2201223522751632,
+        "max": 1.278801763020977
+      }
+    },
+    "ring": {
+      "nodes": 46000,
+      "relationships": 46000,
+      "logical_bytes": {
+        "min": 31442900,
+        "max": 31442900
+      },
+      "disk_bytes": {
+        "min": 1850979,
+        "max": 1850979
+      },
+      "attributed_rss_bytes": {
+        "min": 37019648,
+        "max": 37629952
+      },
+      "ratio": {
+        "min": 1.1773611212706208,
+        "max": 1.1967710357505192
+      }
+    },
+    "dense ring": {
+      "nodes": 5000,
+      "relationships": 100000,
+      "logical_bytes": {
+        "min": 32931406,
+        "max": 32931406
+      },
+      "disk_bytes": {
+        "min": 1699957,
+        "max": 1699957
+      },
+      "attributed_rss_bytes": {
+        "min": 32788480,
+        "max": 34041856
+      },
+      "ratio": {
+        "min": 0.9956598877071936,
+        "max": 1.03372009078507
+      }
+    }
+  }
 }

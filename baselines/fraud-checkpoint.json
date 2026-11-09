@@ -6,8 +6,8 @@
   "relationships": 25346,
   "accounts": 1005,
   "transfers": 24341,
-  "logical_used_bytes": 9488310,
-  "rss_bytes": 64520192,
+  "logical_used_bytes": 9276582,
+  "rss_bytes": 62603264,
   "data_file_bytes": 1024998,
   "environment": {
     "class": "relate-loadtest-baseline/v1",
