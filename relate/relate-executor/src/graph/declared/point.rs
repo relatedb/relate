@@ -47,6 +47,15 @@ impl Default for PointIndex {
     }
 }
 
+impl PointIndex {
+    /// Distinct posted points — the research-gated census harness's count
+    /// (ADR-0476 quarantine; `pts` stays private).
+    #[cfg(feature = "research")]
+    pub(crate) fn pt_count(&self) -> usize {
+        self.pts.len()
+    }
+}
+
 /// One posted point: the tree payload (the position) plus the node id it
 /// posts for. `PartialEq` keys rstar's `remove` on the exact (position, id)
 /// pair — two nodes sharing coordinates stay distinct leaves.

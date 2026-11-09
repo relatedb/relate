@@ -153,6 +153,15 @@ pub fn overflow_entry_bytes(value: u64) -> u64 {
     OVERHEAD_MAP_ENTRY + value
 }
 
+/// Heap of a `HashSet<i64>` that can hold `capacity` entries: hashbrown's
+/// 9-byte buckets (8-byte key plus control byte), one slack bucket past
+/// `capacity`, and the 16-byte hasher state. The census harness's one
+/// spelling of a `HashSet<i64>` allocation (research-only, ADR-0476).
+#[cfg(feature = "research")]
+pub(crate) fn hashset_i64_bytes(capacity: usize) -> u64 {
+    (capacity as u64 + 1) * 9 + 16
+}
+
 /// Heap of a spilled version chain. An inline row lives in the id slot, so
 /// it adds nothing here, and the spilled vector's header does too.
 pub fn chain_bytes(shape: ChainShape, stride: u64) -> u64 {
@@ -168,6 +177,31 @@ pub fn node_chain_bytes(shape: ChainShape) -> u64 {
 
 pub fn rel_chain_bytes(shape: ChainShape) -> u64 {
     chain_bytes(shape, crate::graph::rel_version_stride())
+}
+
+/// One id family's version-chain tally — the census harness's count shape
+/// (research-only, ADR-0476). Beside [`chain_bytes`] so every
+/// [`ChainShape`] arm is matched in one module.
+#[cfg(feature = "research")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ChainCensus {
+    pub inline: u64,
+    pub spilled_slots: u64,
+    pub spilled_versions: u64,
+}
+
+#[cfg(feature = "research")]
+impl ChainCensus {
+    pub(crate) fn count(&mut self, shape: ChainShape) {
+        match shape {
+            ChainShape::Inline => self.inline += 1,
+            ChainShape::Spilled(n) => {
+                self.spilled_slots += 1;
+                self.spilled_versions += n as u64;
+            }
+            ChainShape::Absent => {}
+        }
+    }
 }
 
 /// `to_id` slot, `to_str` slot, and one `Arc<str>` allocation. A second

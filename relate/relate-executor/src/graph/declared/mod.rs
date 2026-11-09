@@ -511,6 +511,80 @@ pub(super) fn intersect_acc(acc: &mut Option<HashSet<NodeId>>, next: HashSet<Nod
     });
 }
 
+/// Per-kind byte estimate of the lazily built declared index pairs — the
+/// research-gated census harness's view (ADR-0476 quarantine). Only
+/// the order/by-node arms are counted; the eq-only fallback arms are not.
+/// [`Self::text_bytes`] and [`Self::point_bytes`] are per-posting
+/// estimates (no byte walk); every printed census row is one of these
+/// fields.
+#[cfg(feature = "research")]
+#[derive(Debug, Default, Clone)]
+pub struct DeclaredCensus {
+    pub range_pairs: usize,
+    pub range_order_keys: u64,
+    pub range_posted_ids: u64,
+    pub range_bytes: u64,
+    pub text_pairs: usize,
+    pub text_grams: u64,
+    /// 8 bytes per gram posting.
+    pub text_bytes: u64,
+    pub point_pairs: usize,
+    pub point_entries: u64,
+    /// 40 bytes per posted point.
+    pub point_bytes: u64,
+}
+
+impl Graph {
+    #[cfg(feature = "research")]
+    pub(super) fn declared_index_census(&self) -> DeclaredCensus {
+        use std::mem::size_of;
+
+        use crate::memory::{hashset_i64_bytes, vec_heap, OVERHEAD_MAP_ENTRY};
+
+        let mut c = DeclaredCensus::default();
+        for pair in self.indexes.range_pairs.iter() {
+            c.range_pairs += 1;
+            let st = pair.value();
+            for postings in st.order.values() {
+                c.range_order_keys += 1;
+                c.range_bytes += size_of::<order::OrderKey>() as u64
+                    + size_of::<order::Postings>() as u64
+                    + OVERHEAD_MAP_ENTRY;
+                match postings {
+                    order::Postings::One(_) => c.range_posted_ids += 1,
+                    order::Postings::Many(set) => {
+                        c.range_posted_ids += set.len() as u64;
+                        c.range_bytes += hashset_i64_bytes(set.capacity());
+                    }
+                }
+            }
+            for keys in st.by_node.values() {
+                c.range_bytes +=
+                    OVERHEAD_MAP_ENTRY + size_of::<order::RevKeys<order::OrderKey>>() as u64;
+                if let order::RevKeys::Many(keys) = keys {
+                    c.range_bytes += vec_heap(keys.len(), size_of::<order::OrderKey>() as u64);
+                }
+            }
+            // Both sets are charged by element count: they are transient
+            // and small next to the postings above.
+            c.range_bytes += hashset_i64_bytes(st.dirty.len() + st.unbounded.len());
+        }
+        for pair in self.indexes.gram_pairs.iter() {
+            c.text_pairs += 1;
+            let grams = pair.value().grams.len() as u64;
+            c.text_grams += grams;
+            c.text_bytes += grams * 8;
+        }
+        for pair in self.indexes.point_pairs.iter() {
+            c.point_pairs += 1;
+            let entries = pair.value().pt_count() as u64;
+            c.point_entries += entries;
+            c.point_bytes += entries * 40;
+        }
+        c
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

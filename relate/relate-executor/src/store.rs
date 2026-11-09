@@ -106,6 +106,12 @@ impl Interner {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// Distinct interned strings — the census harness's key count.
+    #[cfg(feature = "research")]
+    pub(crate) fn key_count(&self) -> usize {
+        self.to_id.len()
+    }
+
     pub(crate) fn get_id(&self, s: &str) -> Option<u32> {
         #[cfg(test)]
         GET_ID_CALLS.with(|c| c.set(c.get() + 1));

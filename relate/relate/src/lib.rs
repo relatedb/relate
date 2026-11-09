@@ -107,6 +107,11 @@ pub use relate_executor::{
 #[cfg(feature = "research")]
 #[doc(hidden)]
 pub use relate_executor::sol;
+// The research-only heap-census harness's result type (same quarantine):
+// named by the `heap_census` example through this crate.
+#[cfg(feature = "research")]
+#[doc(hidden)]
+pub use relate_executor::HeapCensus;
 // The ADR-0463 default per-allocation expression cap, for the surfaces that
 // render or calibrate against it (`serve --help`, the budget fixtures).
 pub use open_config::{

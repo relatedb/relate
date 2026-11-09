@@ -82,3 +82,11 @@ path = "src/bin/phase_bench.rs"
 [[example]]
 name = "sol"
 required-features = ["research"]
+
+# The per-structure heap-census harness (research-gated): per-structure
+# memory of a restored store and the default-vs-wide Parquet restore
+# comparison. The engine half lives behind relate-executor's research
+# feature (ADR-0476 quarantine).
+[[example]]
+name = "heap_census"
+required-features = ["research"]

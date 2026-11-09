@@ -200,6 +200,34 @@ impl<T> Default for IdVec<T> {
     }
 }
 
+/// One read of an id store's slot placement — the census harness's view
+/// (research-only, ADR-0476). [`Self::len`] is the count both occupancy
+/// terms add up to; deriving it here keeps the caller from re-naming the
+/// pair.
+#[cfg(feature = "research")]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SlotCounts {
+    /// Dense vector length, holes included; side-map ids are not in it.
+    pub span: usize,
+    /// Occupied dense slots.
+    pub occupied: usize,
+    /// Side-map entries (ids whose slot array does not fit).
+    pub side: usize,
+}
+
+#[cfg(feature = "research")]
+impl SlotCounts {
+    /// Occupied slots, dense and side map together.
+    pub fn len(&self) -> usize {
+        self.occupied + self.side
+    }
+
+    /// Dense vector length, holes included.
+    pub fn span(&self) -> usize {
+        self.span
+    }
+}
+
 impl<T> IdVec<T> {
     #[allow(dead_code)]
     fn new() -> Self {
@@ -216,6 +244,18 @@ impl<T> IdVec<T> {
     /// Length of the dense vector, holes included. Side-map ids are not in it.
     pub(super) fn span(&self) -> usize {
         self.slots.read().expect("id store lock").dense.len()
+    }
+
+    /// The census harness's one read of the slot placement (worktree
+    /// scratch): dense span, occupied dense slots, and side-map entries.
+    #[cfg(feature = "research")]
+    pub(super) fn slot_counts(&self) -> SlotCounts {
+        let store = self.slots.read().expect("id store lock");
+        SlotCounts {
+            span: store.dense.len(),
+            occupied: store.dense.iter().filter(|slot| slot.is_some()).count(),
+            side: store.overflow.len(),
+        }
     }
 
     /// Reserved slot-array bytes, holes included, plus one side-map entry

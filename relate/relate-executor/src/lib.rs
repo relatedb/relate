@@ -113,7 +113,16 @@ pub use query_engine::InMemoryQueryEngine;
 #[cfg(feature = "research")]
 #[doc(hidden)]
 pub use graph::sol;
+// Research-only heap-census harness (same quarantine, ADR-0476): the
+// census example in relate-query-latency names `HeapCensus`; the nested
+// types are re-exported so every public census field has a public type.
+#[cfg(feature = "research")]
+#[doc(hidden)]
+pub use graph::census::{AdjacencyCensus, DeclaredCensus, HeapCensus};
 pub use graph_type::GraphTypeSpec;
+#[cfg(feature = "research")]
+#[doc(hidden)]
+pub use memory::ChainCensus;
 pub use overlay::{ExecGraph, WriteScratch};
 // The diagnostic switch's typed value (ADR-0519): re-exported for the
 // `relate` crate's open path (the resolver and the installer below),

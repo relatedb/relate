@@ -23,6 +23,11 @@ mod engine_api;
 
 mod adjacency;
 mod apply_redo;
+// The research-only heap-census harness (ADR-0476 quarantine shape): the
+// testing example of the same name reads it through the research feature.
+// Private module with root re-exports only (one public path per item).
+#[cfg(feature = "research")]
+pub(crate) mod census;
 mod chain;
 mod conflict;
 pub(crate) mod constraint_keys;
