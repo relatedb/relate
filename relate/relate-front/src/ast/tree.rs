@@ -8,7 +8,7 @@
 
 use relate_core::DynamicNameToken;
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, Expr, LocalDefinitionBody, PatternElement, Statement, StructuralEdge};
+use relate_parser::{Clause, Edge, Expr, LocalDefinitionBody, PatternElement, Statement};
 
 use super::stmt_ref::StmtRef;
 
@@ -606,39 +606,34 @@ fn walk_expr_at(
         return Err(nesting_depth_error());
     }
     (walk.expr)(expr)?;
-    // The structural descents the expression children cannot express come
-    // from the parser's one edge table (`Expr::structural_edges`), so a new
-    // pattern- or subquery-bearing variant cannot be dropped here. Patterns
-    // and subquery statements are entered before the expression children, a
-    // label expression after them (the historical order).
-    let edges = expr.structural_edges();
+    // One pass over the parser's edge table (`Expr::try_for_each_edge`),
+    // which yields edges in the documented visit order: patterns and
+    // subquery statements before the expression children, a label
+    // expression after them. A new pattern- or subquery-bearing variant
+    // cannot be dropped here.
     let enter = walk.descend == SubqueryDescent::Enter;
-    for edge in &edges {
-        match edge {
-            StructuralEdge::Pattern(pattern) if enter => {
+    expr.try_for_each_edge(|edge| match edge {
+        Edge::Pattern(pattern) => {
+            if enter {
                 walk_path_exprs_tree(pattern, depths.deeper_expr(), walk)?;
             }
-            // Expression-embedded subquery: lowering lowers the body from
-            // inside `lower_expr`'s recursion, so the body's expressions sit
-            // one past this node's depth on the same native stack — carry
-            // the count across the statement boundary instead of resetting.
-            StructuralEdge::Subquery(statement) => {
-                enter_substatement(walk, StmtRef::Real(statement), depths.deeper_subquery())?;
-            }
-            StructuralEdge::Pattern(_) | StructuralEdge::Label(_) => {}
+            Ok(())
         }
-    }
-    for child in expr.children() {
-        walk_expr_child(expr, child, depths.deeper_expr(), walk)?;
-    }
-    for edge in &edges {
-        if let StructuralEdge::Label(label) = edge {
+        Edge::Label(label) => {
             if enter {
                 walk_label_expr_tree(label, depths.deeper_expr(), walk)?;
             }
+            Ok(())
         }
-    }
-    Ok(())
+        // Expression-embedded subquery: lowering lowers the body from
+        // inside `lower_expr`'s recursion, so the body's expressions sit
+        // one past this node's depth on the same native stack -- carry
+        // the count across the statement boundary instead of resetting.
+        Edge::Subquery(statement) => {
+            enter_substatement(walk, StmtRef::Real(statement), depths.deeper_subquery())
+        }
+        Edge::Expr(child) => walk_expr_child(expr, child, depths.deeper_expr(), walk),
+    })
 }
 
 /// Recurse from `parent` into its expression child `child` when the walk's

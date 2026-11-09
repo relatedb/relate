@@ -1,14 +1,20 @@
 //! The one edge table of [`Expr`]: its expression children and its
-//! structural (non-expression) children, each in a shared and a mutable
-//! spelling generated from a single definition.
+//! structural (non-expression) children in one visit-ordered enumeration,
+//! in a shared and a mutable spelling generated from a single definition.
 
 use super::{Expr, InterpPart, LabelExpr, MapProjectionItem, PatternPath, Statement};
 
-/// A non-expression child of an [`Expr`] node: what a walker that enters
-/// patterns, label expressions or nested statements must visit beyond
-/// [`Expr::children`].
+/// One direct child of an [`Expr`] node, in the table's visit order.
+///
+/// The visit order is part of the contract: a pattern or subquery edge comes
+/// before the node's expression children and a label edge after them, so a
+/// walker that visits edges as they arrive reproduces the documented order
+/// without a second pass.
 #[derive(Debug)]
-pub enum StructuralEdge<'a> {
+pub enum Edge<'a> {
+    /// An expression child: operand, argument, list/map item, CASE arm,
+    /// comprehension or reduce body, subscript part, interpolation embed.
+    Expr(&'a Expr),
     /// The pattern of a pattern comprehension, pattern predicate or
     /// `shortestPath()`.
     Pattern(&'a PatternPath),
@@ -18,25 +24,37 @@ pub enum StructuralEdge<'a> {
     Label(&'a LabelExpr),
 }
 
-/// Mutable twin of [`StructuralEdge`].
+/// Mutable twin of [`Edge`].
 #[derive(Debug)]
-pub enum StructuralEdgeMut<'a> {
-    /// See [`StructuralEdge::Pattern`].
+pub enum EdgeMut<'a> {
+    /// See [`Edge::Expr`].
+    Expr(&'a mut Expr),
+    /// See [`Edge::Pattern`].
     Pattern(&'a mut PatternPath),
-    /// See [`StructuralEdge::Subquery`].
+    /// See [`Edge::Subquery`].
     Subquery(&'a mut Statement),
-    /// See [`StructuralEdge::Label`].
+    /// See [`Edge::Label`].
     Label(&'a mut LabelExpr),
 }
 
-/// Expands the one exhaustive `Expr` match into a shared or a mutable
-/// accessor: `$r` is the borrow (`&` or `&mut`), `$iter` the matching
-/// iterator method, `$edge` the output enum. `$kind` selects which of the
-/// two edge families the expansion lists (`expr` children or `structural`
-/// edges); the variant coverage is written once, so the two spellings cannot
-/// drift.
+/// Expands the one exhaustive `Expr` match into the shared or the mutable
+/// edge enumeration: `$r` is the borrow (`&` or `&mut`), `$iter` the matching
+/// iterator method, `$edge` the output enum (`Edge` or `EdgeMut`), `$f` the
+/// fallible sink. Every edge, expression or structural, is listed once and
+/// in visit order, so the two spellings cannot drift and nothing is dropped.
 macro_rules! edge_table {
-    ($self:expr, $kind:ident, [$($r:tt)+], $iter:ident, $edge:ident, $out:ident) => {
+    (@expr $f:ident, $edge:ident, $e:expr) => { $f($edge::Expr($e))? };
+    (@exprs $f:ident, $edge:ident, $e:expr) => {
+        for x in $e {
+            $f($edge::Expr(x))?;
+        }
+    };
+    (@opt $f:ident, $edge:ident, $e:expr) => {
+        if let Some(x) = $e {
+            $f($edge::Expr(x))?;
+        }
+    };
+    ($self:expr, [$($r:tt)+], $iter:ident, $edge:ident, $f:ident) => {
         match $self {
             Expr::Literal(_)
             | Expr::Variable(_)
@@ -44,153 +62,123 @@ macro_rules! edge_table {
             | Expr::OptionValuePlaceholder
             | Expr::CountStar
             | Expr::Star => {}
-            Expr::List(items) => edge_table!(@$kind $out, extend items.$iter()),
+            Expr::List(items) => edge_table!(@exprs $f, $edge, items.$iter()),
             Expr::Map(pairs) => {
-                edge_table!(@$kind $out, extend pairs.$iter().map(|p| $($r)+ p.value))
+                edge_table!(@exprs $f, $edge, pairs.$iter().map(|p| $($r)+ p.value))
             }
-            Expr::StringInterp(parts) => edge_table!(@$kind $out, extend
-                parts.$iter().filter_map(|part| match part {
-                    InterpPart::Interp(e) => Some($($r)+ **e),
-                    InterpPart::Text(_) => None,
-                })),
+            Expr::StringInterp(parts) => {
+                for part in parts.$iter() {
+                    match part {
+                        InterpPart::Interp(e) => edge_table!(@expr $f, $edge, $($r)+ **e),
+                        InterpPart::Text(_) => {}
+                    }
+                }
+            }
             Expr::Property(p) => {
-                edge_table!(@$kind $out, push $($r)+ p.expr);
-                edge_table!(@$kind $out, extend $($r)+ p.key_expr);
+                edge_table!(@expr $f, $edge, $($r)+ p.expr);
+                edge_table!(@opt $f, $edge, $($r)+ p.key_expr);
             }
-            Expr::FunctionCall(fc) => edge_table!(@$kind $out, extend fc.args.$iter()),
-            Expr::Binary(b) => edge_table!(@$kind $out, extend [$($r)+ b.left, $($r)+ b.right]),
-            Expr::Unary(u) => edge_table!(@$kind $out, push $($r)+ u.expr),
+            Expr::FunctionCall(fc) => edge_table!(@exprs $f, $edge, fc.args.$iter()),
+            Expr::Binary(b) => edge_table!(@exprs $f, $edge, [$($r)+ b.left, $($r)+ b.right]),
+            Expr::Unary(u) => edge_table!(@expr $f, $edge, $($r)+ u.expr),
             Expr::Comparison(c) => {
-                edge_table!(@$kind $out, extend [$($r)+ c.left, $($r)+ c.right])
+                edge_table!(@exprs $f, $edge, [$($r)+ c.left, $($r)+ c.right])
             }
-            Expr::In(i) => edge_table!(@$kind $out, extend [$($r)+ i.expr, $($r)+ i.list]),
-            Expr::IsNull(x) => edge_table!(@$kind $out, push $($r)+ x.expr),
-            Expr::IsType(x) => edge_table!(@$kind $out, push $($r)+ x.expr),
-            Expr::IsNormalized(x) => edge_table!(@$kind $out, push $($r)+ x.expr),
+            Expr::In(i) => edge_table!(@exprs $f, $edge, [$($r)+ i.expr, $($r)+ i.list]),
+            Expr::IsNull(x) => edge_table!(@expr $f, $edge, $($r)+ x.expr),
+            Expr::IsType(x) => edge_table!(@expr $f, $edge, $($r)+ x.expr),
+            Expr::IsNormalized(x) => edge_table!(@expr $f, $edge, $($r)+ x.expr),
             Expr::ChronologicalCompare(c) => {
-                edge_table!(@$kind $out, extend [$($r)+ c.left, $($r)+ c.right])
+                edge_table!(@exprs $f, $edge, [$($r)+ c.left, $($r)+ c.right])
             }
             Expr::StringMatch(m) => {
-                edge_table!(@$kind $out, extend [$($r)+ m.left, $($r)+ m.right])
+                edge_table!(@exprs $f, $edge, [$($r)+ m.left, $($r)+ m.right])
             }
             Expr::Case(c) => {
                 for w in c.whens.$iter() {
-                    edge_table!(@$kind $out, extend [$($r)+ w.condition, $($r)+ w.result]);
+                    edge_table!(@exprs $f, $edge, [$($r)+ w.condition, $($r)+ w.result]);
                 }
-                edge_table!(@$kind $out, extend $($r)+ c.else_expr);
+                edge_table!(@opt $f, $edge, $($r)+ c.else_expr);
             }
             Expr::ListComprehension(lc) => {
-                edge_table!(@$kind $out, push $($r)+ lc.list_expr);
-                edge_table!(@$kind $out, extend $($r)+ lc.where_expr);
-                edge_table!(@$kind $out, extend $($r)+ lc.map_expr);
+                edge_table!(@expr $f, $edge, $($r)+ lc.list_expr);
+                edge_table!(@opt $f, $edge, $($r)+ lc.where_expr);
+                edge_table!(@opt $f, $edge, $($r)+ lc.map_expr);
             }
             Expr::MapComprehension(mc) => {
-                edge_table!(@$kind $out, push $($r)+ mc.source_expr);
-                edge_table!(@$kind $out, extend $($r)+ mc.where_expr);
-                edge_table!(@$kind $out, extend [$($r)+ mc.key_expr, $($r)+ mc.value_expr]);
+                edge_table!(@expr $f, $edge, $($r)+ mc.source_expr);
+                edge_table!(@opt $f, $edge, $($r)+ mc.where_expr);
+                edge_table!(@exprs $f, $edge, [$($r)+ mc.key_expr, $($r)+ mc.value_expr]);
             }
             Expr::PatternComprehension(pc) => {
-                edge_table!(@$kind $out, extend $($r)+ pc.where_expr);
-                edge_table!(@$kind $out, push $($r)+ pc.map_expr);
-                edge_table!(@$kind $out, pattern $edge, $($r)+ pc.pattern);
+                $f($edge::Pattern($($r)+ pc.pattern))?;
+                edge_table!(@opt $f, $edge, $($r)+ pc.where_expr);
+                edge_table!(@expr $f, $edge, $($r)+ pc.map_expr);
             }
-            Expr::Reduce(r) => edge_table!(@$kind $out, extend
+            Expr::Reduce(r) => edge_table!(@exprs $f, $edge,
                 [$($r)+ r.init_expr, $($r)+ r.list_expr, $($r)+ r.expression]),
-            Expr::AllReduce(r) => edge_table!(@$kind $out, extend
+            Expr::AllReduce(r) => edge_table!(@exprs $f, $edge,
                 [$($r)+ r.init_expr, $($r)+ r.list_expr, $($r)+ r.expression, $($r)+ r.predicate]),
             Expr::Subscript(s) => {
-                edge_table!(@$kind $out, push $($r)+ s.expr);
-                edge_table!(@$kind $out, extend $($r)+ s.index);
-                edge_table!(@$kind $out, extend $($r)+ s.from);
-                edge_table!(@$kind $out, extend $($r)+ s.to);
+                edge_table!(@expr $f, $edge, $($r)+ s.expr);
+                edge_table!(@opt $f, $edge, $($r)+ s.index);
+                edge_table!(@opt $f, $edge, $($r)+ s.from);
+                edge_table!(@opt $f, $edge, $($r)+ s.to);
             }
             Expr::Quantifier(q) => {
-                edge_table!(@$kind $out, push $($r)+ q.list);
-                edge_table!(@$kind $out, extend $($r)+ q.predicate);
+                edge_table!(@expr $f, $edge, $($r)+ q.list);
+                edge_table!(@opt $f, $edge, $($r)+ q.predicate);
             }
             Expr::HasLabel(h) => {
-                edge_table!(@$kind $out, push $($r)+ h.expr);
-                edge_table!(@$kind $out, label $edge, $($r)+ h.label_expr);
+                edge_table!(@expr $f, $edge, $($r)+ h.expr);
+                $f($edge::Label($($r)+ h.label_expr))?;
             }
-            Expr::Paren(inner) => edge_table!(@$kind $out, push $($r)+ **inner),
+            Expr::Paren(inner) => edge_table!(@expr $f, $edge, $($r)+ **inner),
             Expr::MapProjection(mp) => {
-                edge_table!(@$kind $out, push $($r)+ mp.expr);
-                edge_table!(@$kind $out, extend mp.items.$iter().filter_map(|item| match item {
-                    MapProjectionItem::KeyValue(_, v) => Some(v),
-                    MapProjectionItem::AllProperties
-                    | MapProjectionItem::Property(_)
-                    | MapProjectionItem::Variable(_) => None,
-                }));
+                edge_table!(@expr $f, $edge, $($r)+ mp.expr);
+                for item in mp.items.$iter() {
+                    match item {
+                        MapProjectionItem::KeyValue(_, v) => edge_table!(@expr $f, $edge, v),
+                        MapProjectionItem::AllProperties
+                        | MapProjectionItem::Property(_)
+                        | MapProjectionItem::Variable(_) => {}
+                    }
+                }
             }
-            Expr::ExistsSubquery(s) => {
-                edge_table!(@$kind $out, subquery $edge, $($r)+ s.statement)
-            }
-            Expr::CountSubquery(s) => {
-                edge_table!(@$kind $out, subquery $edge, $($r)+ s.statement)
-            }
-            Expr::CollectSubquery(s) => {
-                edge_table!(@$kind $out, subquery $edge, $($r)+ s.statement)
-            }
-            Expr::ShortestPath(s) => edge_table!(@$kind $out, pattern $edge, $($r)+ s.pattern),
-            Expr::PatternPredicate(p) => {
-                edge_table!(@$kind $out, pattern $edge, $($r)+ p.pattern)
-            }
+            Expr::ExistsSubquery(s) => $f($edge::Subquery($($r)+ s.statement))?,
+            Expr::CountSubquery(s) => $f($edge::Subquery($($r)+ s.statement))?,
+            Expr::CollectSubquery(s) => $f($edge::Subquery($($r)+ s.statement))?,
+            Expr::ShortestPath(s) => $f($edge::Pattern($($r)+ s.pattern))?,
+            Expr::PatternPredicate(p) => $f($edge::Pattern($($r)+ p.pattern))?,
         }
-    };
-    // Expression-children family: only expression edges are recorded.
-    (@expr $out:ident, push $e:expr) => { $out.push($e) };
-    (@expr $out:ident, extend $e:expr) => { $out.extend($e) };
-    (@expr $out:ident, pattern $edge:ident, $e:expr) => {{ let _ = $e; }};
-    (@expr $out:ident, label $edge:ident, $e:expr) => {{ let _ = $e; }};
-    (@expr $out:ident, subquery $edge:ident, $e:expr) => {{ let _ = $e; }};
-    // Structural family: only the non-expression edges are recorded.
-    (@structural $out:ident, push $e:expr) => {{ let _ = $e; }};
-    (@structural $out:ident, extend $e:expr) => {{ let _ = $e; }};
-    (@structural $out:ident, pattern $edge:ident, $e:expr) => { $out.push($edge::Pattern($e)) };
-    (@structural $out:ident, label $edge:ident, $e:expr) => { $out.push($edge::Label($e)) };
-    (@structural $out:ident, subquery $edge:ident, $e:expr) => {
-        $out.push($edge::Subquery($e))
     };
 }
 
 impl Expr {
-    /// The expression-typed direct children of this node, in source order:
-    /// operands, arguments, list/map items, CASE arms, comprehension and
-    /// reduce bodies, subscript parts, interpolation embeds. The one
-    /// enumeration of the model's expression->expression edges, so a new
-    /// variant costs one edit here instead of one per walker. Patterns, label
-    /// expressions and subquery statements come from
-    /// [`Self::structural_edges`]. The underlying match is exhaustive (no
-    /// catch-all), so a later variant fails compilation.
-    pub fn children(&self) -> Vec<&Expr> {
-        let mut out = Vec::new();
-        edge_table!(self, expr, [&], iter, StructuralEdge, out);
-        out
+    /// Feeds every direct child of this node to `f`, in visit order, stopping
+    /// at the first error. The one enumeration of the model's edges: a
+    /// pattern or subquery edge precedes the expression children, a label
+    /// edge follows them, and expression children appear in source order
+    /// (operands, arguments, list/map items, CASE arms, comprehension and
+    /// reduce bodies, subscript parts, interpolation embeds). A walker that
+    /// consumes edges as they arrive needs no allocation and no second pass.
+    /// The underlying match is exhaustive (no catch-all), so a later variant
+    /// fails compilation.
+    pub fn try_for_each_edge<'a, E>(
+        &'a self,
+        mut f: impl FnMut(Edge<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        edge_table!(self, [&], iter, Edge, f);
+        Ok(())
     }
 
-    /// Mutable twin of [`Self::children`], generated from the same table.
-    pub fn children_mut(&mut self) -> Vec<&mut Expr> {
-        let mut out = Vec::new();
-        edge_table!(self, expr, [&mut], iter_mut, StructuralEdgeMut, out);
-        out
-    }
-
-    /// The non-expression children of this node: the pattern of a pattern
-    /// comprehension / predicate / `shortestPath()`, a subquery's statement,
-    /// a `HasLabel`'s label expression. Generated from the same exhaustive
-    /// table as [`Self::children`], so a variant carrying one of these
-    /// cannot be dropped by a walker. A walker visits a pattern edge before
-    /// the expression children and a label edge after them.
-    pub fn structural_edges(&self) -> Vec<StructuralEdge<'_>> {
-        let mut out = Vec::new();
-        edge_table!(self, structural, [&], iter, StructuralEdge, out);
-        out
-    }
-
-    /// Mutable twin of [`Self::structural_edges`].
-    pub fn structural_edges_mut(&mut self) -> Vec<StructuralEdgeMut<'_>> {
-        let mut out = Vec::new();
-        edge_table!(self, structural, [&mut], iter_mut, StructuralEdgeMut, out);
-        out
+    /// Mutable twin of [`Self::try_for_each_edge`], generated from the same
+    /// table.
+    pub fn try_for_each_edge_mut<'a, E>(
+        &'a mut self,
+        mut f: impl FnMut(EdgeMut<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        edge_table!(self, [&mut], iter_mut, EdgeMut, f);
+        Ok(())
     }
 }

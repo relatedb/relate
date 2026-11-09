@@ -231,11 +231,9 @@ impl Resolver {
 
     /// The function-invocation rewrite arm of [`Self::visit_expr`] (the
     /// visitor itself lives in `rewrite.rs`): looks the name up and
-    /// replaces the call with the scalar-subquery rewrite.
+    /// replaces the call with the scalar-subquery rewrite. The arguments
+    /// are already visited by the caller.
     pub(super) fn rewrite_function_call(&mut self, call: &mut FunctionCallExpr) -> Result<()> {
-        for arg in &mut call.args {
-            self.visit_expr(arg)?;
-        }
         if let Some(callable) = self.lookup(LocalCallableKind::Function, &call.name)? {
             let args = std::mem::take(&mut call.args);
             *call = self.rewrite_function_invocation(

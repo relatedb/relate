@@ -45,9 +45,9 @@
 
 use relate_core::{Error, Result};
 use relate_parser::{
-    CallProcedureClause, CallScope, CallSubqueryClause, Clause, Expr, LabelExpr,
+    CallProcedureClause, CallScope, CallSubqueryClause, Clause, EdgeMut, Expr, LabelExpr,
     LocalDefinitionBody, LocalParam, PatternElement, PatternPath, ReturnClause, ReturnItem,
-    SearchSpec, Statement, StructuralEdgeMut, WithClause, WithOrigin, YieldMode,
+    SearchSpec, Statement, WithClause, WithOrigin, YieldMode,
 };
 
 use relate_names::SmallName;
@@ -106,26 +106,23 @@ impl Resolver {
     /// invocations in place and recurses into nested subquery statements
     /// (each a fresh scope frame, so definitions inside an expression
     /// subquery stay local to it). Expression edges come from
-    /// [`Expr::children_mut`] (exhaustive there, so a new variant is covered
+    /// [`Expr::try_for_each_edge_mut`] (exhaustive there, so a new variant is covered
     /// by one edit); only the arms below that enter a pattern, label
     /// expression or nested statement are spelled out here.
     pub(super) fn visit_expr(&mut self, expr: &mut Expr) -> Result<()> {
-        // A function call rewrites itself (visiting its own arguments
-        // first); every other node takes its edges from the parser's one
-        // table, structural edges first (the two borrows of `expr` are disjoint
-        // in time, so the label expression cannot trail the children here).
+        // Every node takes its edges, in the table's visit order, from the
+        // parser's one table (patterns and subqueries before the expression
+        // children, a label expression after them -- the order the whole-tree
+        // walker uses). A function call is rewritten after its arguments, so
+        // the call site sees them already resolved.
+        expr.try_for_each_edge_mut(|edge| match edge {
+            EdgeMut::Expr(child) => self.visit_expr(child),
+            EdgeMut::Pattern(pattern) => self.visit_pattern(pattern),
+            EdgeMut::Subquery(statement) => self.resolve_statement(statement),
+            EdgeMut::Label(label) => self.visit_label_expr(label),
+        })?;
         if let Expr::FunctionCall(call) = expr {
-            return self.rewrite_function_call(call);
-        }
-        for edge in expr.structural_edges_mut() {
-            match edge {
-                StructuralEdgeMut::Pattern(pattern) => self.visit_pattern(pattern)?,
-                StructuralEdgeMut::Subquery(statement) => self.resolve_statement(statement)?,
-                StructuralEdgeMut::Label(label) => self.visit_label_expr(label)?,
-            }
-        }
-        for child in expr.children_mut() {
-            self.visit_expr(child)?;
+            self.rewrite_function_call(call)?;
         }
         Ok(())
     }
