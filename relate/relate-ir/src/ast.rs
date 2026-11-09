@@ -330,6 +330,14 @@ pub struct SearchClause {
     /// `COMBINE` of two or more weighted sources fused with WRRF.
     pub spec: SearchSpec,
     pub score_var: Option<SmallName>,
+    /// The MATCH's pattern goes beyond CIP-225 Rule 0's plain shape (the
+    /// `complex-search-patterns` family) -- classified once at lowering by
+    /// the same shape test the preview gate rejects. The executor's top-K
+    /// rule keys on it: a plain pattern's `LIMIT` is a hard candidate
+    /// window, with the MATCH's outer `WHERE`, label or score predicate
+    /// post-filtering, while a complex pattern's `LIMIT` counts the
+    /// candidates the whole MATCH keeps.
+    pub complex_pattern: bool,
 }
 
 /// `DROP INDEX name` or `DROP INDEX ON :Label(prop)` (ADR-0040).

@@ -127,8 +127,7 @@ fn references_var(expr: &relate_ir::Expr, name: &SmallName) -> bool {
 /// the LHS property must be the binding variable's -- or, when it names
 /// the index source's entity variable (`FOR m.embedding` -> `m.rating`),
 /// the RHS must reference the binding variable, so the predicate still
-/// identifies the searched entity (`m.rating <= movie.rating`, the
-/// "independent property as LHS" form). A predicate with no RHS (the NOT
+/// identifies the searched entity. A predicate with no RHS (the NOT
 /// rewrite, the existence forms) cannot take the entity-variable
 /// exception.
 fn validate_property_rule(
@@ -186,20 +185,24 @@ fn to_predicate(
             else {
                 return Err(invalid_predicate_error());
             };
-            // Rule 0's flipped-operand rewrite: prefer the property on
-            // the left (the canonical form); if only the right side is a
-            // bare property reference, flip the operator and swap sides
-            // (Example R0.8). If both sides are property references
-            // (e.g. `movie.year = movie.rating`), the left side wins and
-            // the right side is treated as an ordinary RHS expression --
-            // Rule 6's self-reference check below then catches it if it
-            // depends on the LHS variable.
-            let (var, prop, op, rhs_expr) = if let Some((var, prop)) = var_property(&c.left) {
-                (var, prop, op, &c.right)
-            } else if let Some((var, prop)) = var_property(&c.right) {
-                (var, prop, op.flip(), &c.left)
-            } else {
-                return Err(invalid_predicate_error());
+            // Rule 0's flipped-operand rewrite: the predicate's candidate
+            // side is the searched entity's own property, so a side naming
+            // the binding variable wins -- Rule 1's independent-property
+            // form `q.rating <= p.rating` filters the candidates on
+            // `p.rating >= q.rating`, with `q.rating` the per-row RHS (live
+            // Neo4j 2026.10.1 returns the same rows either way round).
+            // Otherwise the canonical left property reference wins and the
+            // right side is an ordinary RHS expression -- Rule 6's
+            // self-reference check below then catches it if it depends on
+            // the LHS variable (e.g. `movie.year = movie.rating`).
+            let left_property = var_property(&c.left);
+            let right_property = var_property(&c.right);
+            let (var, prop, op, rhs_expr) = match (left_property, right_property) {
+                (Some((var, prop)), _) if &var == binding_var => (var, prop, op, &c.right),
+                (_, Some((var, prop))) if &var == binding_var => (var, prop, op.flip(), &c.left),
+                (Some((var, prop)), _) => (var, prop, op, &c.right),
+                (None, Some((var, prop))) => (var, prop, op.flip(), &c.left),
+                (None, None) => return Err(invalid_predicate_error()),
             };
             let rhs = lower_expr(rhs_expr)?;
             validate_property_rule(&var, binding_var, for_var, Some(&rhs))?;
@@ -337,23 +340,30 @@ mod tests {
 
     #[test]
     fn property_predicates_may_name_the_for_entity_variable() {
-        // `FOR m.embedding` names the index entity; both `m.rating` (the
-        // entity variable) and `movie.rating` (the binding variable) are
-        // accepted LHS forms.
+        // `FOR m.embedding` names the index entity; the binding variable's
+        // side is the candidate property whatever the operand order, so
+        // `m.rating <= movie.rating` filters on `movie.rating >= m.rating`
+        // with the row's `m.rating` as the RHS (live Neo4j 2026.10.1
+        // returns the same rows as the `movie.rating >= m.rating` form).
         let filters = lower_filters(
             "MATCH (m:Movie) MATCH (movie:Movie) \
              SEARCH movie IN (VECTOR INDEX moviePlots FOR m.embedding \
              WHERE m.rating <= movie.rating LIMIT 2) RETURN movie.title",
         )
         .expect("accepted");
-        assert!(matches!(
-            filters.as_slice(),
-            [SearchFilterPred::Comparison {
-                property,
-                op: SearchOp::Lte,
-                ..
-            }] if property == "rating"
-        ));
+        let [SearchFilterPred::Comparison {
+            property,
+            op: SearchOp::Gte,
+            rhs,
+        }] = filters.as_slice()
+        else {
+            panic!("expected one comparison on the binding variable: {filters:?}")
+        };
+        assert_eq!(property, "rating");
+        assert!(
+            matches!(rhs, relate_ir::Expr::Property { .. }),
+            "the row's `m.rating` is the RHS: {rhs:?}"
+        );
     }
 
     #[test]

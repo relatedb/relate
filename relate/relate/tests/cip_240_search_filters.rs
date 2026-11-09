@@ -122,31 +122,39 @@ fn cip_240_search_filter_forms() {
     );
 
     // A property predicate may name the FOR entity variable; its property
-    // value is the per-row RHS.
-    assert_eq!(
-        names(
-            &c.query(
-                "MATCH (q:Person {name: 'a'}) MATCH (p:Person) \
-                 SEARCH p IN (VECTOR INDEX vidx FOR q.embed \
-                 WHERE q.rating <= p.rating LIMIT 10) RETURN p.name AS n ORDER BY n"
-            )
-            .unwrap()
-        ),
-        ["a", "b", "c"]
-    );
-    // The mirror shape: the binding variable on the LHS, the FOR entity's
-    // property as the per-row RHS.
-    assert_eq!(
-        names(
-            &c.query(
-                "MATCH (q:Person {name: 'a'}) MATCH (p:Person) \
-                 SEARCH p IN (VECTOR INDEX vidx FOR q.embed \
-                 WHERE p.rating >= q.rating LIMIT 10) RETURN p.name AS n ORDER BY n"
-            )
-            .unwrap()
-        ),
-        ["a", "b", "c"]
-    );
+    // value is the per-row RHS. The binding variable's side is the
+    // candidate property whichever way round the comparison reads, so both
+    // orders keep the same window (live Neo4j 2026.10.1:
+    // SearchWithSingleStageAcceptance's "independent property as LHS" and
+    // its RHS mirror return the same rows).
+    for predicate in ["q.rating <= p.rating", "p.rating >= q.rating"] {
+        assert_eq!(
+            names(
+                &c.query(&format!(
+                    "MATCH (q:Person {{name: 'a'}}) MATCH (p:Person) \
+                     SEARCH p IN (VECTOR INDEX vidx FOR q.embed \
+                     WHERE {predicate} LIMIT 10) RETURN p.name AS n ORDER BY n"
+                ))
+                .unwrap()
+            ),
+            ["a", "b", "c"],
+            "`{predicate}`"
+        );
+        // `LIMIT 2` counts the candidates the predicate keeps: `d` carries
+        // no rating, and the two best-ranked rated candidates survive.
+        assert_eq!(
+            names(
+                &c.query(&format!(
+                    "MATCH (q:Person {{name: 'a'}}) MATCH (p:Person) \
+                     SEARCH p IN (VECTOR INDEX vidx FOR q.embed \
+                     WHERE {predicate} LIMIT 2) RETURN p.name AS n ORDER BY n"
+                ))
+                .unwrap()
+            ),
+            ["a", "b"],
+            "`{predicate}` LIMIT 2"
+        );
+    }
 
     // A re-bound binding variable searches once per incoming row: four
     // rows, the two best-rated candidates each.
@@ -179,18 +187,26 @@ fn cip_240_relationship_index_filters() {
         ),
         ["x", "y"]
     );
-    // Independent property as LHS on the relationship arm.
-    assert_eq!(
-        names(
-            &c.query(
-                "MATCH ()-[r {name: 'x'}]->() MATCH ()-[rel]->() \
-                 SEARCH rel IN (VECTOR INDEX ridx FOR r.vec \
-                 WHERE rel.name = r.name LIMIT 10) RETURN rel.name AS n ORDER BY n"
-            )
-            .unwrap()
-        ),
-        ["x"]
-    );
+    // Independent property on either side of the relationship arm: the
+    // searched relationship's `name` is the candidate property and the
+    // pre-bound `r.name` the per-row RHS, so the LIMIT counts only the
+    // candidates the predicate keeps (live Neo4j 2026.10.1:
+    // SearchWithSingleStageAcceptance "independent property as LHS - rel
+    // index" and its mirror both return `cs` alone).
+    for predicate in ["rel.name = r.name", "r.name = rel.name"] {
+        assert_eq!(
+            names(
+                &c.query(&format!(
+                    "MATCH ()-[r {{name: 'x'}}]->() MATCH ()-[rel]->() \
+                     SEARCH rel IN (VECTOR INDEX ridx FOR r.vec \
+                     WHERE {predicate} LIMIT 2) RETURN rel.name AS n ORDER BY n"
+                ))
+                .unwrap()
+            ),
+            ["x"],
+            "`{predicate}`"
+        );
+    }
     // The entity-set filter's relationship-id branch.
     assert_eq!(
         names(
@@ -226,6 +242,75 @@ fn vector_to_string_uses_the_value_constructor() {
         vec![vec![Value::String(
             "A value of: vector([1, 2], 2, INTEGER8)".into()
         )]]
+    );
+}
+
+/// CIP-240's post-filtering rule: a *plain* SEARCH MATCH shape (the search
+/// element alone) keeps the `LIMIT` as a hard candidate window, so its
+/// outer `WHERE` — before or after the SEARCH — and the MATCH's label
+/// post-filter the window instead of widening it. Probed on live Neo4j
+/// 2026.10.1 (SearchWithSingleStageAcceptance "outer WHERE clause",
+/// SearchAcceptance "search with outer where clause", FulltextSearch
+/// [37], CIP-224 [8]/[9]): `LIMIT 2` over Alpha (1950), Beta (2013) with
+/// `year < 2000` returns Alpha alone — the deeper Gamma (1995) never
+/// enters.
+fn post_filter_store() -> relate::Connection {
+    let mut c = common::connection();
+    c.query("CREATE VECTOR INDEX filmVectors FOR (f:Film) ON f.embedding")
+        .unwrap();
+    c.query(
+        "CREATE (:Film {title: 'Alpha', year: 1950, embedding: [1.0, 0.0]}), \
+         (:Film {title: 'Beta', year: 2013, embedding: [0.9, 0.1]}), \
+         (:Film {title: 'Gamma', year: 1995, embedding: [0.8, 0.2]}), \
+         (:Film {title: 'Delta', year: 1990, embedding: [0.7, 0.3]})",
+    )
+    .unwrap();
+    c
+}
+
+#[test]
+fn a_plain_search_shape_post_filters_its_outer_where() {
+    let mut c = post_filter_store();
+    for query in [
+        "MATCH (movie:Film) SEARCH movie IN (VECTOR INDEX filmVectors FOR [1.0, 0.0] \
+         LIMIT 2) SCORE AS score WHERE movie.year < 2000 RETURN movie.title AS title",
+        "MATCH (movie:Film) WHERE movie.year < 2000 \
+         SEARCH movie IN (VECTOR INDEX filmVectors FOR [1.0, 0.0] LIMIT 2) \
+         SCORE AS score RETURN movie.title AS title",
+    ] {
+        assert_eq!(
+            names(&c.query(query).unwrap()),
+            ["Alpha"],
+            "the WHERE post-filters the two-candidate window: {query}"
+        );
+    }
+}
+
+/// The label restriction is a post-filter too: a multi-label index yields a
+/// candidate the MATCH's own label rejects, and the search does not widen
+/// past it (live Neo4j 2026.10.1: FulltextSearchAcceptance [37] "label
+/// filter applies after LIMIT" — its LIMIT 1 page holds no Movie at all).
+#[test]
+fn a_plain_search_shape_post_filters_the_match_label() {
+    let mut c = common::connection();
+    c.query("CREATE VECTOR INDEX mediaVectors FOR (n:Alpha|Beta) ON n.embedding")
+        .unwrap();
+    c.query(
+        "CREATE (:Alpha {id: 'a1', embedding: [1.0, 0.0]}), \
+         (:Beta {id: 'b1', embedding: [0.9, 0.1]}), \
+         (:Alpha {id: 'a2', embedding: [0.8, 0.2]})",
+    )
+    .unwrap();
+    assert_eq!(
+        names(
+            &c.query(
+                "MATCH (n:Alpha) SEARCH n IN (VECTOR INDEX mediaVectors FOR [1.0, 0.0] \
+                 LIMIT 2) RETURN n.id AS id"
+            )
+            .unwrap()
+        ),
+        ["a1"],
+        "the Beta candidate consumes a window slot the label filter frees"
     );
 }
 

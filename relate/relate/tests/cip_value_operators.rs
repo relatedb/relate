@@ -556,6 +556,47 @@ fn cip_225_hybrid_search_intersection() {
         .is_err());
 }
 
+// CIP-225 pre-bound binds: a null binding joins no candidate, and a
+// non-null one keeps the LIMIT as a hard candidate window.
+#[test]
+fn cip_225_prebound_null_binding_matches_nothing() {
+    let mut c = connection();
+    c.query("CREATE VECTOR INDEX ridx FOR ()-[r:REL]->() ON r.vec")
+        .unwrap();
+    c.query(
+        "CREATE (a:A)-[:REL {name: 'x', vec: [1.0, 0.0]}]->(b:B), \
+                (b)-[:REL {name: 'y', vec: [0.9, 0.1]}]->(a), \
+                (:Book)",
+    )
+    .unwrap();
+
+    // SearchAcceptance "pre-bound relationship search with a null
+    // relationship from OPTIONAL MATCH": the null binding matches nothing
+    // (live Neo4j 2026.10.1: no rows), never every candidate.
+    let r = c
+        .query(
+            "OPTIONAL MATCH (:Book)-[r:REL]->() MATCH ()-[r]->() \
+             SEARCH r IN (VECTOR INDEX ridx FOR [1.0, 0.0] LIMIT 2) RETURN r.name AS name",
+        )
+        .unwrap();
+    assert!(
+        r.rows.is_empty(),
+        "a null pre-bound relationship matches no candidate: {:?}",
+        r.rows
+    );
+
+    // Pre-bound rows keep their window: `y` is pre-bound on one incoming
+    // row but ranks below `LIMIT 1`, so it is dropped rather than widening
+    // the search (live Neo4j 2026.10.1: `x` alone).
+    let r = c
+        .query(
+            "MATCH ()-[r:REL]->() MATCH ()-[r]->() \
+             SEARCH r IN (VECTOR INDEX ridx FOR [1.0, 0.0] LIMIT 1) RETURN r.name AS name",
+        )
+        .unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("x".into())]]);
+}
+
 // CIP-246: UUID type (cherry-picked from #55).
 #[test]
 fn cip_246_uuid_property_values() {

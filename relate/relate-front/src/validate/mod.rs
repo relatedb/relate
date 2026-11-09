@@ -97,6 +97,7 @@ pub use self::index_hint::validate_index_hints;
 pub use self::match_shape::validate_match_shape;
 pub(crate) use self::safe_mode::validate_statement_shape;
 pub use self::scope::validate_variable_types;
+pub(crate) use self::search::search_pattern_is_complex;
 pub use self::search::validate_search_clauses;
 pub(crate) use self::self_reference::validate_create_self_reference_conservative;
 pub use self::show::{

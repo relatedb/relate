@@ -21,7 +21,9 @@ pub(super) fn lower_clause(c: &cl::Clause) -> Result<mdb::Clause> {
             // planner steers nothing by them.
             using_index: m.using_index.clone(),
             using_join: m.using_join.clone(),
-            search: lower_boxed(m.search.as_ref(), lower_search_clause)?,
+            search: lower_boxed(m.search.as_ref(), |search| {
+                lower_search_clause(search, &m.pattern)
+            })?,
         },
         cl::Clause::Create(cr) => mdb::Clause::Create {
             patterns: lower_paths(&cr.pattern)?,
@@ -430,12 +432,17 @@ pub(super) fn lower_remove_items(items: &[cl::RemoveItem]) -> Result<Vec<mdb::Re
 }
 
 /// Lowers a CIP-278 `SEARCH` clause: the bound variable, its source
-/// specification, and the score variable.
-fn lower_search_clause(search: &cl::SearchClause) -> Result<mdb::SearchClause> {
+/// specification, the score variable, and whether the MATCH's pattern is
+/// the gated complex shape (the executor's top-K rule keys on it).
+fn lower_search_clause(
+    search: &cl::SearchClause,
+    pattern: &[cl::PatternPath],
+) -> Result<mdb::SearchClause> {
     Ok(mdb::SearchClause {
         binding_var: search.binding_var.clone(),
         spec: lower_search_spec(&search.binding_var, &search.spec)?,
         score_var: search.score_var.clone(),
+        complex_pattern: crate::validate::search_pattern_is_complex(pattern),
     })
 }
 

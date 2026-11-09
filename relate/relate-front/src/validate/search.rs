@@ -58,7 +58,13 @@ pub fn validate_search_clauses(
                 Some(search) => {
                     let mut this_match_vars: IdentHashSet<SmallName> = IdentHashSet::default();
                     bind_pattern_vars(&mc.pattern, &mut this_match_vars);
-                    validate_search_clause_rules(&mc.pattern, search, &this_match_vars, options)?;
+                    validate_search_clause_rules(
+                        &mc.pattern,
+                        search,
+                        &this_match_vars,
+                        &scope,
+                        options,
+                    )?;
                     scope.extend(this_match_vars);
                     // Rule 5, checked where the scope lifecycle lives: after
                     // this MATCH's own variables have entered the scope, one
@@ -104,6 +110,7 @@ fn validate_search_clause_rules(
     pattern: &[PatternPath],
     search: &SearchClause,
     this_match_vars: &IdentHashSet<SmallName>,
+    scope: &IdentHashSet<SmallName>,
     options: ValidateOptions,
 ) -> Result<(), EngineError> {
     // CIP-225 Rule 0: one bound variable, one node or single-hop
@@ -114,11 +121,17 @@ fn validate_search_clause_rules(
     // multi-hop and selected-path rows); everything else this function
     // checks — the binding-variable reference and the per-index
     // kind×option/self-reference rules — holds either way.
+    let shape = search_pattern_shape(pattern);
     if !options
         .preview
         .enabled(relate_core::PreviewFeature::ComplexSearchPatterns)
     {
-        validate_search_pattern_shape(pattern)?;
+        if let SearchPatternShape::Complex(reason) = shape {
+            return Err(EngineError::semantic(
+                ErrorKind::SyntaxError,
+                reason.to_string(),
+            ));
+        }
     }
     if !this_match_vars.contains(&search.binding_var) {
         return Err(EngineError::semantic(
@@ -184,11 +197,41 @@ fn validate_search_clause_rules(
                 SearchSlot::Analyzer => {
                     "the analyzer expression may not depend on the search clause binding variable"
                 }
-                // InnerWhere/Offset/Limit are exempt by policy (the inner
-                // WHERE names the binding variable by design); the match is
-                // exhaustive so a new slot must state its policy here before
-                // it compiles.
-                SearchSlot::InnerWhere | SearchSlot::Offset | SearchSlot::Limit => return Ok(()),
+                // The LIMIT expression reads the input row, never a
+                // pattern binding: under a complex pattern the executor
+                // states one LIMIT for a whole deferred round, so a
+                // pattern-binding read (a per-row LIMIT) is rejected
+                // rather than silently applied to every row. InnerWhere
+                // and Offset stay exempt (the inner WHERE names the
+                // binding variable by design); the match is exhaustive
+                // so a new slot must state its policy here before it
+                // compiles.
+                SearchSlot::InnerWhere | SearchSlot::Offset => return Ok(()),
+                SearchSlot::Limit => {
+                    // The LIMIT expression reads the input row, never a
+                    // variable this MATCH's pattern newly binds: the
+                    // executor states one LIMIT for a whole round (the
+                    // deferred shape evaluates it per matched row), so a
+                    // per-row LIMIT is rejected under every shape, not
+                    // silently collapsed to the first row's. The reported
+                    // name is the deterministic minimum of the reads
+                    // (IdentHashSet iteration is process-random,
+                    // ADR-0505 §4).
+                    let mut vars = IdentHashSet::default();
+                    collect_expr_variables(expr, &mut vars);
+                    let newly_bound =
+                        |var: &SmallName| this_match_vars.contains(var) && !scope.contains(var);
+                    if let Some(var) = vars.iter().filter(|v| newly_bound(v)).min() {
+                        return Err(EngineError::semantic(
+                            ErrorKind::SyntaxError,
+                            format!(
+                                "SearchClauseLimitReadsPattern: the LIMIT expression \
+                                 may not depend on the pattern variable '{var}'"
+                            ),
+                        ));
+                    }
+                    return Ok(());
+                }
             };
             let mut vars = IdentHashSet::default();
             collect_expr_variables(expr, &mut vars);
@@ -203,41 +246,56 @@ fn validate_search_clause_rules(
     )
 }
 
-/// CIP-225 Rule 0: a SEARCH clause's MATCH statement must be a
-/// single path pattern of one node or one single-hop relationship, binding
-/// at most one variable, with predicates only on that bound variable.
-fn validate_search_pattern_shape(pattern: &[PatternPath]) -> Result<(), EngineError> {
+/// The typed shape of a SEARCH clause's MATCH statement — the single
+/// authority every consumer keys on: the `complex-search-patterns` gate
+/// maps [`SearchPatternShape::Complex`] to its per-reason rejection, and
+/// the executor's top-K rule reads the classification (a plain pattern's
+/// LIMIT is a hard candidate window; a complex pattern's counts the
+/// candidates the whole MATCH keeps — live Neo4j 2026.10.1 splits the
+/// two exactly here). Classification is never the negation of a
+/// validation verdict: a new shape rule lands here once, and both the
+/// gate and the top-K rule follow it.
+pub(crate) enum SearchPatternShape {
+    /// CIP-225 Rule 0's plain shape.
+    Plain,
+    /// Everything beyond it — the `complex-search-patterns` family, with
+    /// the gate's rejection detail.
+    Complex(&'static str),
+}
+
+/// Classify a SEARCH clause's MATCH statement: [`SearchPatternShape`].
+pub(crate) fn search_pattern_shape(pattern: &[PatternPath]) -> SearchPatternShape {
     if pattern.len() != 1 {
-        return Err(EngineError::semantic(ErrorKind::SyntaxError,
-            "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement must be a single path pattern".to_string(),
-        ));
+        return SearchPatternShape::Complex(
+            "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement must be a single path pattern",
+        );
     }
     let path = &pattern[0];
     if path.selector.is_some() || path.is_shortest_path_function {
-        return Err(EngineError::semantic(ErrorKind::SyntaxError,
-            "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement cannot use a path selector".to_string(),
-        ));
+        return SearchPatternShape::Complex(
+            "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement cannot use a path selector",
+        );
     }
     match path.elements.as_slice() {
-        [PatternElement::Node(_)] => Ok(()),
+        [PatternElement::Node(_)] => SearchPatternShape::Plain,
         [PatternElement::Node(n0), PatternElement::Relationship(rp), PatternElement::Node(n1)] => {
             if rp.min_hops.is_some() || rp.max_hops.is_some() || rp.quantified {
-                return Err(EngineError::semantic(ErrorKind::SyntaxError,
-                    "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement cannot use a variable-length relationship".to_string(),
-                ));
+                return SearchPatternShape::Complex(
+                    "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement cannot use a variable-length relationship",
+                );
             }
             let bound_count = [n0.variable.is_some(), rp.variable.is_some(), n1.variable.is_some()]
                 .iter()
                 .filter(|b| **b)
                 .count();
             if bound_count > 1 {
-                return Err(EngineError::semantic(ErrorKind::SyntaxError,
-                    "SearchClauseMultipleBoundVariables: a SEARCH clause's MATCH statement may bind only one variable".to_string(),
-                ));
+                return SearchPatternShape::Complex(
+                    "SearchClauseMultipleBoundVariables: a SEARCH clause's MATCH statement may bind only one variable",
+                );
             }
             // The bound variable is the only element that may carry
-            // predicates (Rule 7) -- one spelling of the rejection, checked
-            // over every element position.
+            // predicates (Rule 7) -- one spelling of the rejection,
+            // checked over every element position.
             let unbound_with_predicates = [
                 (n0.variable.is_none(), has_node_pattern_predicates(n0)),
                 (n1.variable.is_none(), has_node_pattern_predicates(n1)),
@@ -246,16 +304,25 @@ fn validate_search_pattern_shape(pattern: &[PatternPath]) -> Result<(), EngineEr
             .into_iter()
             .any(|(unbound, has_predicates)| unbound && has_predicates);
             if unbound_with_predicates {
-                return Err(EngineError::semantic(ErrorKind::SyntaxError,
-                    "SearchClauseInvalidPredicates: a SEARCH clause's MATCH statement cannot have predicates on elements other than the bound variable".to_string(),
-                ));
+                return SearchPatternShape::Complex(
+                    "SearchClauseInvalidPredicates: a SEARCH clause's MATCH statement cannot have predicates on elements other than the bound variable",
+                );
             }
-            Ok(())
+            SearchPatternShape::Plain
         }
-        _ => Err(EngineError::semantic(ErrorKind::SyntaxError,
-            "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement must be a single node or single-hop relationship pattern".to_string(),
-        )),
+        _ => SearchPatternShape::Complex(
+            "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement must be a single node or single-hop relationship pattern",
+        ),
     }
+}
+
+/// Whether a SEARCH clause's MATCH statement goes beyond CIP-225 Rule 0's
+/// plain shape -- the `complex-search-patterns` family ([`SearchPatternShape`]).
+pub(crate) fn search_pattern_is_complex(pattern: &[PatternPath]) -> bool {
+    matches!(
+        search_pattern_shape(pattern),
+        SearchPatternShape::Complex(_)
+    )
 }
 
 fn has_node_pattern_predicates(np: &relate_parser::NodePattern) -> bool {
@@ -314,6 +381,30 @@ mod tests {
     /// one: `-[] {}]-` counts exactly like `(a {})` under Rule 7
     /// (live-verified — Neo4j rejects both with 42I71).
     #[test]
+    fn a_limit_reading_a_pattern_variable_is_rejected() {
+        // Live Neo4j 2026.10.1 rejects the same reads with 42N28 ("only
+        // statically inferrable patterns and variables are allowed in
+        // 'LIMIT'"): the executor states one LIMIT per round, so a
+        // per-row LIMIT is refused at validation under every shape.
+        for query in [
+            "MATCH (m:Movie) \
+             SEARCH m IN (FULLTEXT INDEX ft FOR 'x' LIMIT toInteger(m.keep)) \
+             RETURN m",
+            "MATCH (m:Movie)-[]->() \
+             SEARCH m IN (FULLTEXT INDEX ft FOR 'x' LIMIT toInteger(m.keep)) \
+             RETURN m",
+        ] {
+            let error =
+                crate::validate::validate_statement_tree(&relate_parser::parse(query).unwrap())
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains("SearchClauseLimitReadsPattern"),
+                "{query}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn an_empty_property_map_counts_as_a_predicate() {
         for query in [
             "MATCH (a:Person)-[{}]->() \
@@ -327,6 +418,61 @@ mod tests {
             assert!(
                 error.to_string().contains("SearchClauseInvalidPredicates"),
                 "{query}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_complex_pattern_classifier_matches_the_shape_check() {
+        // The executor's top-K rule keys on this classifier: a plain shape
+        // keeps the LIMIT as a hard candidate window (its outer WHERE
+        // post-filters), every shape the gate rejects counts the candidates
+        // the whole MATCH keeps (live Neo4j 2026.10.1 splits the two exactly
+        // here).
+        for (query, complex) in [
+            (
+                "MATCH (p:Person) SEARCH p IN (FULLTEXT INDEX ft FOR 'x' LIMIT 5) RETURN p",
+                false,
+            ),
+            (
+                "MATCH ()-[r:KNOWS]->() SEARCH r IN (FULLTEXT INDEX ft FOR 'x' LIMIT 5) \
+                 RETURN r",
+                false,
+            ),
+            (
+                "MATCH (m:Movie)-[r]->() SEARCH m IN (FULLTEXT INDEX ft FOR 'x' LIMIT 5) \
+                 RETURN m",
+                true,
+            ),
+            (
+                "MATCH (m:Movie)-[]->(:Book) SEARCH m IN (FULLTEXT INDEX ft FOR 'x' LIMIT 5) \
+                 RETURN m",
+                true,
+            ),
+            (
+                "MATCH (seed:Person {name: 'Alice'}), (p:Person) \
+                 SEARCH p IN (FULLTEXT INDEX ft FOR 'x' LIMIT 5) RETURN p",
+                true,
+            ),
+            (
+                "MATCH (p:Person)-[:KNOWS*1..2]->(target:Person) \
+                 SEARCH p IN (FULLTEXT INDEX ft FOR 'x' LIMIT 5) RETURN p",
+                true,
+            ),
+        ] {
+            let statement = relate_parser::parse(query).unwrap();
+            let pattern = statement
+                .clauses
+                .iter()
+                .find_map(|clause| match clause {
+                    relate_parser::Clause::Match(mc) if mc.search.is_some() => Some(&mc.pattern),
+                    _ => None,
+                })
+                .expect("a searching MATCH");
+            assert_eq!(
+                search_pattern_is_complex(pattern),
+                complex,
+                "{query}: the classifier must agree with the shape check"
             );
         }
     }

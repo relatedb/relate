@@ -21,7 +21,7 @@ use relate_model::EntityKind;
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
-use crate::eval::eval;
+use crate::eval::{eval, predicate_holds};
 use crate::exec::candidates::{materialize_candidate, ranked_better_cmp, resolve_search_index};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -132,9 +132,19 @@ fn fulltext_index_candidates(
 }
 
 /// One source specification's ranked candidate list: the entity kind of
-/// the source's index(es), plus the materialized `(entity, score)` rows,
-/// best-first. `None`: the source's query evaluated absent.
-type SpecCandidates = Option<(EntityKind, Vec<(Value, f64)>)>;
+/// the source's index(es), the materialized `(entity, score)` rows,
+/// best-first, the source's own LIMIT, and whether a wider window could
+/// yield deeper candidates.
+struct SpecCandidates {
+    kind: EntityKind,
+    candidates: Vec<(Value, f64)>,
+    /// The source's own LIMIT: how many candidates the SEARCH clause
+    /// keeps, counted over the ones that survive the pattern and WHERE.
+    limit: usize,
+    /// The candidate list came back as deep as the index goes (or the
+    /// source cannot widen): the caller's growth loop stops.
+    may_widen: bool,
+}
 
 /// The OPTIONAL rule's null row for one input row: the pattern's bound
 /// variables nulled, the score column (if named) nulled, pushed once --
@@ -156,13 +166,20 @@ fn push_optional_null_row(
 /// `None`: the source's query evaluated absent (a NULL or non-list VECTOR
 /// query), so the source contributes no rows -- the caller applies the
 /// OPTIONAL rule, exactly as the pre-CIP-278 top-level index path did.
+///
+/// `extra_candidates` is the caller's top-K growth demand: the window is
+/// widened by that many entries so a value the pattern filtered out can
+/// be replaced by the next-ranked one. Only an index source widens -- a
+/// COMBINE's source LIMITs are fusion inputs (they fix each source's
+/// ranks), so its fused list keeps its own window.
 fn search_spec_candidates(
     ctx: ExecCtx<'_>,
     input: &Row,
     spec: &SearchSpec,
-) -> Result<SpecCandidates> {
+    extra_candidates: usize,
+) -> Result<Option<SpecCandidates>> {
     match spec {
-        SearchSpec::Index(index) => search_index_candidates(ctx, input, index),
+        SearchSpec::Index(index) => search_index_candidates(ctx, input, index, extra_candidates),
         SearchSpec::Combine(combine) => search_combine_candidates(ctx, input, combine),
     }
 }
@@ -174,7 +191,8 @@ fn search_index_candidates(
     ctx: ExecCtx<'_>,
     input: &Row,
     index: &SearchIndexSpec,
-) -> Result<SpecCandidates> {
+    extra_candidates: usize,
+) -> Result<Option<SpecCandidates>> {
     let ExecCtx {
         graph,
         params,
@@ -189,6 +207,9 @@ fn search_index_candidates(
         cypher_version,
         "LIMIT",
     )?;
+    // The caller's growth demand widens the fetched window only; the
+    // clause's LIMIT stays the number of survivors it keeps.
+    let window = limit.saturating_add(extra_candidates);
     // CIP-225 `<offset clause>`, shared by both kinds.
     let offset = match &index.offset_expr {
         Some(expr) => eval_window_int(
@@ -204,22 +225,22 @@ fn search_index_candidates(
     // The FOR expression is the query for both kinds — evaluated once,
     // each arm only interprets the resulting value.
     let query = eval(graph, input, &index.for_expr, params, cypher_version)?;
-    match index.kind {
+    let (kind, candidates) = match index.kind {
         SearchKind::Vector => {
             let Some(query) = vector_operand(&query)? else {
                 return Ok(None);
             };
-            Ok(Some(vector_index_candidates(
+            vector_index_candidates(
                 ctx,
                 &index.index_name,
                 &query,
                 offset,
-                limit,
+                window,
                 VectorSearchFilter {
                     filters: &index.filters,
                     input,
                 },
-            )?))
+            )?
         }
         SearchKind::Fulltext => {
             // CIP-225: the fulltext query is a STRING (the per-index
@@ -228,11 +249,22 @@ fn search_index_candidates(
             let Some(query) = fulltext::operand(&query)? else {
                 return Ok(None);
             };
-            Ok(Some(fulltext_index_candidates(
-                ctx, input, index, query, offset, limit,
-            )?))
+            // #61's scan machinery (analyzers, live BM25) at this
+            // branch's growth-loop depth: the window widens past the
+            // source's own LIMIT, which SpecCandidates carries for the
+            // survivor count.
+            fulltext_index_candidates(ctx, input, index, query, offset, window)?
         }
-    }
+    };
+    // A full window means the scan may hold deeper candidates (the scan
+    // reports every passing candidate up to the offset+window it kept).
+    let may_widen = candidates.len() == window;
+    Ok(Some(SpecCandidates {
+        kind,
+        candidates,
+        limit,
+        may_widen,
+    }))
 }
 
 /// One CIP-278 `<combined specification clause>`'s fused candidates for
@@ -252,7 +284,7 @@ fn search_combine_candidates(
     ctx: ExecCtx<'_>,
     input: &Row,
     combine: &SearchCombineSpec,
-) -> Result<SpecCandidates> {
+) -> Result<Option<SpecCandidates>> {
     // Rules 3/4: the dampening constant, default 60.
     let constant = match &combine.constant_expr {
         Some(expr) => eval_wrrf_number(ctx, input, expr, "CONSTANT")?,
@@ -266,10 +298,10 @@ fn search_combine_candidates(
     for source in &combine.sources {
         // An absent source query contributes no ranks -- the CIP's
         // "missing from a source" rule (zero contribution).
-        let Some((source_kind, candidates)) = search_spec_candidates(ctx, input, &source.spec)?
-        else {
+        let Some(fetched) = search_spec_candidates(ctx, input, &source.spec, 0)? else {
             continue;
         };
+        let source_kind = fetched.kind;
         // "Compatibility of indexes"/Example O1.1: every source must index
         // the same entity kind as the first.
         match kind {
@@ -288,7 +320,7 @@ fn search_combine_candidates(
             Some(expr) => eval_wrrf_number(ctx, input, expr, "WEIGHT")?,
             None => 1.0,
         };
-        for (rank, (candidate, _score)) in candidates.into_iter().enumerate() {
+        for (rank, (candidate, _score)) in fetched.candidates.into_iter().enumerate() {
             let id = candidate_entity_id(&candidate)?;
             let contribution = weight / (constant + rank as f64 + 1.0);
             fused
@@ -324,7 +356,14 @@ fn search_combine_candidates(
         .take(limit)
         .map(|(_id, score, candidate)| (candidate, score))
         .collect();
-    Ok(Some((kind, candidates)))
+    Ok(Some(SpecCandidates {
+        kind,
+        candidates,
+        limit,
+        // The fused window is a user constraint (Rule 7: keep the n best
+        // fused results), not a fetched slice, so it never widens.
+        may_widen: false,
+    }))
 }
 
 /// Evaluates a CIP-278 Rule 1/Rule 3 control expression (a WEIGHT or the
@@ -434,19 +473,148 @@ pub(crate) fn search_match_clause(
     let deferred = search_reads_pattern(search, patterns);
     let mut out = Vec::new();
     for input in rows {
-        // The CIP-278 source specification's candidate list -- one index
-        // search or a COMBINE's fused list, ranked best-first. `None`: the
-        // source's query evaluated absent, so it contributes no rows and
-        // the single OPTIONAL rule below covers the input row (exactly the
-        // pre-CIP-278 null-vector-query behavior).
-        let mut produced = 0;
-        if deferred {
+        let matched = if deferred {
             // The source reads a variable bound by this same MATCH, so match
             // the pattern first (binding the search variable freely) and keep
             // the rows whose binding is among the row's own candidates.
+            deferred_search_rows(
+                ctx,
+                &input,
+                binding_kind,
+                match_mode,
+                patterns,
+                where_clause,
+                search,
+            )?
+        } else {
+            direct_search_rows(
+                ctx,
+                &input,
+                binding_kind,
+                match_mode,
+                patterns,
+                where_clause,
+                search,
+            )?
+        };
+        // The OPTIONAL null-row rule, stated once (stellar round 3): no
+        // source match and no produced row both mean the input row rides
+        // through with the score null.
+        if matched.is_empty() && optional {
+            push_optional_null_row(input, patterns, search.score_var.as_ref(), &mut out);
+        } else {
+            out.extend(matched);
+        }
+    }
+    Ok(out)
+}
+
+/// The top-K growth policy, the one spelling both search paths follow:
+/// only a complex pattern widens its window (a plain pattern's LIMIT is a
+/// hard candidate window), and only while a wider window can reach a
+/// candidate the current one cannot — always true in the direct path
+/// (the binding is seeded per candidate, so a pre-bound binding's
+/// partner may sit arbitrarily deep), never true in the deferred path
+/// once the binding is pre-bound (its rows already carry their only
+/// possible candidate, so no wider window can add a survivor).
+fn top_k_grows(search: &SearchClause, wider_reaches_new_candidate: bool) -> bool {
+    search.complex_pattern && wider_reaches_new_candidate
+}
+
+/// The top-K completion test, stated once for both paths: the growth
+/// loop ends when the clause does not grow, the index cannot widen, or
+/// enough candidates have a surviving row.
+fn top_k_complete(grows: bool, may_widen: bool, survivors: usize, needed: usize) -> bool {
+    !grows || !may_widen || survivors >= needed
+}
+
+/// The next growth round's extra-candidate budget: geometric doubling
+/// from `base` — which is at least 1, guaranteed by the caller's
+/// zero-LIMIT break — so the window grows toward the index's depth in
+/// logarithmic rounds.
+fn widen_extra(extra: usize, base: usize) -> usize {
+    extra.saturating_add(extra).max(base)
+}
+
+/// The un-deferred shape: the source specification reads none of this
+/// MATCH's pattern variables, so a candidate seeds the binding variable
+/// and the pattern matches per candidate.
+///
+/// A *complex* pattern's LIMIT counts candidates that produce at least one
+/// row, not fetched candidates (CIP-224's top-K guarantee): a window whose
+/// candidates the pattern or the MATCH's outer WHERE rejected is widened
+/// until the LIMIT is met or the index is exhausted, and the deeper
+/// candidates are matched too. Verified on Neo4j 2026.10.1:
+/// `MATCH (movie:Movie)<-[:ACTED_IN]-({name: 'Al Pacino'}) SEARCH movie IN
+/// (... LIMIT 5)` returns the five best-scoring Pacino films, skipping four
+/// better-scoring films the pattern rejects.
+///
+/// A *plain* pattern (the search element alone) keeps the LIMIT as a hard
+/// candidate window: its outer WHERE, label or score predicate post-filters
+/// the window without freeing slots (verified on Neo4j 2026.10.1:
+/// `MATCH (x:Film) SEARCH x IN (... LIMIT 4) WHERE x.year < 2000` returns
+/// the WHERE-passing rows *inside* the top four, not four passing rows).
+///
+/// A pre-bound binding variable follows the same rule — it widens under a
+/// complex pattern until the pre-bound candidate appears (live 2026.10.1:
+/// one row per incoming row), keeps the window under a plain one, and a
+/// pre-bound null (an OPTIONAL MATCH that matched nothing) joins with no
+/// candidate at all.
+fn direct_search_rows(
+    ctx: ExecCtx<'_>,
+    input: &Row,
+    binding_kind: Option<EntityKind>,
+    match_mode: MatchMode,
+    patterns: &[PathPattern],
+    where_clause: Option<&Expr>,
+    search: &SearchClause,
+) -> Result<Vec<Row>> {
+    let prebound = input.get_name(&search.binding_var);
+    // A null pre-bound binding matches no pattern row, so no candidate can
+    // join it -- no window is worth fetching.
+    if prebound.is_some_and(Value::is_null) {
+        return Ok(Vec::new());
+    }
+    // The binding is seeded per candidate, so a pre-bound binding's
+    // partner may sit arbitrarily deep: a wider window always reaches
+    // further (see [`top_k_grows`]).
+    let grows = top_k_grows(search, true);
+    let mut out = Vec::new();
+    let mut extra = 0usize;
+    // Candidates already matched in an earlier (narrower, hence identical
+    // prefix of the same ranking) round.
+    let mut processed = 0usize;
+    let mut survivors = 0usize;
+    while let Some(fetched) = search_spec_candidates(ctx, input, &search.spec, extra)? {
+        check_binding_kind(binding_kind, fetched.kind)?;
+        // A LIMIT-0 clause keeps no candidate at all: terminate before
+        // any growth round -- with a zero base the widen step could
+        // otherwise never leave `extra` at 0 and the loop would spin
+        // forever (round-2 High: a pre-bound binding under a complex
+        // pattern stays non-terminal while the window stays empty).
+        if fetched.limit == 0 {
+            break;
+        }
+        // The needed survivor count, stated once: the clause LIMIT, or
+        // the single join partner a pre-bound binding can ever reach.
+        let needed = if prebound.is_some() { 1 } else { fetched.limit };
+        for (candidate, score) in fetched.candidates.into_iter().skip(processed) {
+            processed += 1;
+            if let Some(existing) = prebound {
+                // A different non-null binding is dropped rather than
+                // overwritten (live Neo4j 2026.09.0: `MATCH (p) SEARCH p IN
+                // (VECTOR ...) WITH p MATCH (p) SEARCH p IN (FULLTEXT ...)`
+                // intersects the two result sets).
+                if !existing.eq_non_null(&candidate) {
+                    continue;
+                }
+            }
+            let mut seeded = input.clone();
+            seeded.insert(search.binding_var.to_string(), candidate);
+            attach_score(&mut seeded, search.score_var.as_ref(), Value::Float(score));
             let matched = match_clause(
                 ctx,
-                vec![input.clone()],
+                vec![seeded],
                 false,
                 match_mode,
                 patterns,
@@ -454,71 +622,197 @@ pub(crate) fn search_match_clause(
                 None,
                 None,
             )?;
-            for row in matched {
-                let Some((index_kind, candidates)) =
-                    search_spec_candidates(ctx, &row, &search.spec)?
-                else {
-                    continue;
-                };
-                check_binding_kind(binding_kind, index_kind)?;
-                let score = row.get_name(&search.binding_var).and_then(|bound| {
-                    candidates
-                        .iter()
-                        .find(|(candidate, _)| bound.eq_non_null(candidate))
-                        .map(|(_, score)| *score)
-                });
-                let Some(score) = score else { continue };
-                let mut matched_row = row;
-                attach_score(
-                    &mut matched_row,
-                    search.score_var.as_ref(),
-                    Value::Float(score),
-                );
-                out.push(matched_row);
-                produced += 1;
+            if matched.is_empty() {
+                continue;
             }
-        } else if let Some((index_kind, candidates)) =
-            search_spec_candidates(ctx, &input, &search.spec)?
-        {
-            check_binding_kind(binding_kind, index_kind)?;
-            for (candidate, score) in candidates {
-                // When the binding variable is already bound on the input row
-                // (e.g. a hybrid query composing two SEARCH clauses through
-                // WITH), a candidate must match that binding; a different
-                // candidate is dropped rather than overwriting it. Verified on
-                // Neo4j 2026.09.0: `MATCH (p) SEARCH p IN (VECTOR ...) WITH p
-                // MATCH (p) SEARCH p IN (FULLTEXT ...)` intersects the two
-                // result sets.
-                if let Some(existing) = input.get_name(&search.binding_var) {
-                    if !existing.is_null() && !existing.eq_non_null(&candidate) {
-                        continue;
-                    }
-                }
-                let mut seeded = input.clone();
-                seeded.insert(search.binding_var.to_string(), candidate);
-                attach_score(&mut seeded, search.score_var.as_ref(), Value::Float(score));
-                let matched = match_clause(
-                    ctx,
-                    vec![seeded],
-                    false,
-                    match_mode,
-                    patterns,
-                    where_clause,
-                    None,
-                    None,
-                )?;
-                produced += matched.len();
-                out.extend(matched);
+            out.extend(matched);
+            survivors += 1;
+            if survivors >= needed {
+                break;
             }
         }
-        // The OPTIONAL null-row rule, stated once (stellar round 3): no
-        // source match and no produced row both mean the input row rides
-        // through with the score null.
-        if produced == 0 && optional {
-            push_optional_null_row(input, patterns, search.score_var.as_ref(), &mut out);
+        if top_k_complete(grows, fetched.may_widen, survivors, needed) {
+            break;
         }
+        extra = widen_extra(extra, fetched.limit);
     }
     Ok(out)
+}
+
+/// The deferred shape: matching the pattern first and filtering each row's
+/// binding against its own candidate list. The same complex-pattern top-K
+/// rule applies — the LIMIT counts distinct candidates that have a row — so
+/// a window with too few surviving candidates is widened, and the LIMIT
+/// keeps the best-ranked survivors (every row of a kept candidate rides
+/// along).
+fn deferred_search_rows(
+    ctx: ExecCtx<'_>,
+    input: &Row,
+    binding_kind: Option<EntityKind>,
+    match_mode: MatchMode,
+    patterns: &[PathPattern],
+    where_clause: Option<&Expr>,
+    search: &SearchClause,
+) -> Result<Vec<Row>> {
+    // The pattern matches WITHOUT the MATCH's outer WHERE: each row's
+    // binding and score are resolved from its own candidate list and the
+    // score attached before the WHERE runs — the direct path's order of
+    // operations, so a WHERE naming the SCORE AS variable behaves the
+    // same in both paths.
+    let matched = match_clause(
+        ctx,
+        vec![input.clone()],
+        false,
+        match_mode,
+        patterns,
+        None,
+        None,
+        None,
+    )?;
+    // The rows of a pre-bound binding already carry their only possible
+    // candidate, so no wider window can add a survivor ([`top_k_grows`]).
+    let binding_prebound = input.get_name(&search.binding_var).is_some();
+    let grows = top_k_grows(search, !binding_prebound);
+    let mut extra = 0usize;
+    // The outer WHERE's verdict per matched row, cached at the row's
+    // first in-window resolution: the binding's rank and score in its
+    // own candidate list are window-invariant (a wider window only
+    // appends lower-ranked candidates), so the verdict cannot change
+    // between growth rounds.
+    let mut where_ok: Vec<Option<bool>> = vec![None; matched.len()];
+    // The terminal round's per-row binding and score, for the emitted
+    // rows.
+    let mut resolved: Vec<Option<(i64, f64)>> = vec![None; matched.len()];
+    loop {
+        let mut round = DeferredRound::default();
+        for (index, row) in matched.iter().enumerate() {
+            // One binding entry per matched row, by construction.
+            let Some((id, rank, score)) =
+                deferred_row_binding(ctx, row, extra, binding_kind, search, &mut round)?
+            else {
+                continue;
+            };
+            if where_ok[index].is_none() {
+                let mut scored = row.clone();
+                attach_score(&mut scored, search.score_var.as_ref(), Value::Float(score));
+                let holds = match where_clause {
+                    Some(predicate) => predicate_holds(
+                        ctx.graph,
+                        &scored,
+                        predicate,
+                        ctx.params,
+                        ctx.cypher_version,
+                    )?,
+                    None => true,
+                };
+                where_ok[index] = Some(holds);
+            }
+            resolved[index] = Some((id, score));
+            if where_ok[index] == Some(true) {
+                round.survivors.entry(id).and_modify(|slot| {
+                    if rank < slot.0 {
+                        *slot = (rank, score);
+                    }
+                });
+            }
+        }
+        let needed = round.limit.unwrap_or(usize::MAX);
+        if !top_k_complete(grows, round.may_widen, round.survivors.len(), needed) {
+            extra = widen_extra(extra, needed);
+            continue;
+        }
+        // The clause's LIMIT keeps the best-ranked survivors -- the one
+        // canonical CIP-225 candidate order ([`ranked_better_cmp`] over
+        // score and id), the same order the candidate lists carry.
+        let mut kept: Vec<(i64, f64)> = round
+            .survivors
+            .iter()
+            .map(|(id, (_rank, score))| (*id, *score))
+            .collect();
+        kept.sort_by(|a, b| ranked_better_cmp(b.1, b.0, a.1, a.0));
+        kept.truncate(needed);
+        let kept: HashSet<i64> = kept.into_iter().map(|(id, _)| id).collect();
+        // The matched rows are consumed, not cloned: each emitted row is
+        // moved out and carries the score its resolution recorded. A row
+        // rides along when its WHERE verdict is true and its candidate is
+        // among the kept survivors.
+        let mut out = Vec::with_capacity(matched.len());
+        for (index, mut row) in matched.into_iter().enumerate() {
+            if where_ok[index] != Some(true) {
+                continue;
+            }
+            let Some((id, score)) = resolved[index] else {
+                continue;
+            };
+            if !kept.contains(&id) {
+                continue;
+            }
+            attach_score(&mut row, search.score_var.as_ref(), Value::Float(score));
+            out.push(row);
+        }
+        return Ok(out);
+    }
+}
+
+/// One deferred growth round's accumulator: the clause LIMIT (evaluated
+/// once — the LIMIT expression reads the input row, never a variable the
+/// MATCH's pattern newly binds, enforced at validation, so every matched
+/// row of one input row yields the same value; `None` until the first
+/// row states it, and an absent combined LIMIT stays `usize::MAX`
+/// without colliding with the sentinel), whether any row's scan could
+/// widen, and each surviving candidate's best `(rank, score)` pair —
+/// replaced whole, so the score always travels with the ranking that
+/// kept it.
+#[derive(Default)]
+struct DeferredRound {
+    limit: Option<usize>,
+    may_widen: bool,
+    survivors: HashMap<i64, (usize, f64)>,
+}
+
+/// One matched row's deferred binding: the row's own candidate list
+/// decides whether its binding is a survivor, and at which rank and
+/// score. Exactly one value per row, by construction.
+fn deferred_row_binding(
+    ctx: ExecCtx<'_>,
+    row: &Row,
+    extra: usize,
+    binding_kind: Option<EntityKind>,
+    search: &SearchClause,
+    round: &mut DeferredRound,
+) -> Result<Option<(i64, usize, f64)>> {
+    let Some(fetched) = search_spec_candidates(ctx, row, &search.spec, extra)? else {
+        return Ok(None);
+    };
+    check_binding_kind(binding_kind, fetched.kind)?;
+    if round.limit.is_none() {
+        // The first fetched row states the clause LIMIT for the whole
+        // round (every row's is the same; see DeferredRound).
+        round.limit = Some(fetched.limit);
+    }
+    round.may_widen |= fetched.may_widen;
+    let Some(bound) = row.get_name(&search.binding_var) else {
+        return Ok(None);
+    };
+    let Some(rank) = fetched
+        .candidates
+        .iter()
+        .position(|(candidate, _)| bound.eq_non_null(candidate))
+    else {
+        return Ok(None);
+    };
+    let id = candidate_entity_id(bound)?;
+    let score = fetched.candidates[rank].1;
+    round
+        .survivors
+        .entry(id)
+        .and_modify(|slot| {
+            if rank < slot.0 {
+                *slot = (rank, score);
+            }
+        })
+        .or_insert((rank, score));
+    Ok(Some((id, rank, score)))
 }
 
 #[cfg(test)]
