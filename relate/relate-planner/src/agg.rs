@@ -556,10 +556,7 @@ fn collect_non_agg_leaves(expr: &Expr, inside_agg: bool, out: &mut Vec<Expr>) {
                         out.push(Expr::Variable(name.clone()));
                     }
                     MapProjectionItem::Property { key } => {
-                        out.push(Expr::Property {
-                            expr: target.clone(),
-                            key: key.clone(),
-                        });
+                        out.push(Expr::property((**target).clone(), key.clone()));
                     }
                     MapProjectionItem::KeyValue { .. } | MapProjectionItem::AllProperties => {}
                 }

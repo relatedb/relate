@@ -4,7 +4,7 @@
 //! drive.
 
 use relate_ir::Clause;
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 
 use super::*;
 use crate::plan_with_stats;
@@ -36,7 +36,7 @@ fn label_stats(labels: &'static [(&'static str, u64)]) -> Stub {
 }
 
 fn first_label(path: &PathPattern) -> String {
-    path.nodes[0].labels[0].to_string()
+    path.nodes[0].labels[0].0.to_string()
 }
 
 struct Stub {
@@ -70,25 +70,30 @@ impl Stub {
 }
 
 impl PatternStats for Stub {
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
         label.with_str(|text| rows_of(self.labels, text))
     }
 
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64> {
+    fn equality_rows(
+        &self,
+        (label, _): &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<u64> {
         let text = match value {
             Expr::String(text) => text.as_str(),
             _ => return None,
         };
         self.equals
             .iter()
-            .find(|(l, p, v, _)| label == *l && property == *p && *v == text)
+            .find(|(l, p, v, _)| label == *l && property.0 == *p && *v == text)
             .map(|(_, _, _, rows)| *rows)
     }
 
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        (label, _): &NamedToken,
+        property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
@@ -97,14 +102,14 @@ impl PatternStats for Stub {
         };
         self.ranges
             .iter()
-            .find(|(l, p, o, b, _)| label == *l && property == *p && *o == op && *b == *bound)
+            .find(|(l, p, o, b, _)| label == *l && property.0 == *p && *o == op && *b == *bound)
             .map(|(_, _, _, _, rows)| *rows)
     }
 
     fn contains_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        (label, _): &NamedToken,
+        property: &NamedToken,
         needle: &Expr,
     ) -> Option<ContainsCount> {
         let text = match needle {
@@ -113,11 +118,11 @@ impl PatternStats for Stub {
         };
         self.contains
             .iter()
-            .find(|(l, p, n, _)| label == *l && property == *p && *n == text)
+            .find(|(l, p, n, _)| label == *l && property.0 == *p && *n == text)
             .map(|(_, _, _, count)| *count)
     }
 
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, (rel_type, _): &NamedToken) -> Option<u64> {
         rel_type.with_str(|text| rows_of(self.rels, text))
     }
 }
@@ -141,23 +146,23 @@ struct TailStub {
 }
 
 impl PatternStats for TailStub {
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
         label.with_str(|text| rows_of(self.labels, text))
     }
 
-    fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<u64> {
+    fn equality_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<u64> {
         None
     }
 
-    fn contains_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<ContainsCount> {
+    fn contains_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<ContainsCount> {
         None
     }
 
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, (rel_type, _): &NamedToken) -> Option<u64> {
         rel_type.with_str(|text| rows_of(self.rels, text))
     }
 
-    fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
+    fn degree_tail(&self, (label, _): &NamedToken, (rel_type, _): &NamedToken) -> Option<u64> {
         self.tails
             .iter()
             .find(|(l, t, _)| *l == label && *t == rel_type)
@@ -260,19 +265,19 @@ struct AnyTailStub {
 }
 
 impl PatternStats for AnyTailStub {
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
         label.with_str(|text| rows_of(self.labels, text))
     }
 
-    fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<u64> {
+    fn equality_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<u64> {
         None
     }
 
-    fn contains_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<ContainsCount> {
+    fn contains_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<ContainsCount> {
         None
     }
 
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, (rel_type, _): &NamedToken) -> Option<u64> {
         rel_type.with_str(|text| rows_of(self.rels, text))
     }
 
@@ -328,7 +333,7 @@ fn apply_hop_bound_prices_what_the_walk_model_leaves_unpriced() {
 fn starts_with_label(path: &PathPattern, label: &str) -> bool {
     path.nodes
         .first()
-        .is_some_and(|node| node.labels.iter().any(|got| got == label))
+        .is_some_and(|node| node.label_names().any(|got| got == label))
 }
 
 #[test]
@@ -479,8 +484,8 @@ fn label_and_index_counts_seed_q19_and_q28() {
         &stats,
     );
     assert!(starts_with_label(&q28[0], "Place"));
-    assert!(q28[1].rels[0].types.iter().any(|ty| ty == "hasInterest"));
-    assert!(q28[2].rels[0].types.iter().any(|ty| ty == "hasType"));
+    assert!(q28[1].rels[0].type_names().any(|ty| ty == "hasInterest"));
+    assert!(q28[2].rels[0].type_names().any(|ty| ty == "hasType"));
 }
 
 #[test]
@@ -500,7 +505,7 @@ fn unbound_part_reverses_toward_the_rare_label() {
     let patterns = patterns_of("MATCH (h:Hub)-[:R]->(t:Target) RETURN h", &stats);
     assert_eq!(first_label(&patterns[0]), "Target");
     assert_eq!(
-        patterns[0].nodes.last().unwrap().labels[0].to_string(),
+        patterns[0].nodes.last().unwrap().labels[0].0.to_string(),
         "Hub"
     );
     assert_eq!(

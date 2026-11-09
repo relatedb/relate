@@ -116,6 +116,32 @@ pub fn first_column_strings(result: &relate::QueryResult) -> Vec<String> {
         .collect()
 }
 
+/// Opens a fresh in-memory store with `RELATE_PATTERN_ENGINE` forced to
+/// `engine` (ADR-0519). The switch is read once at open and the variable
+/// is process-global, so the lock keeps the `set_var` + open pair atomic
+/// against sibling tests: a sibling's open must never read this leg's
+/// value.
+pub fn open_with_engine(engine: &str) -> relate::Connection {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("RELATE_PATTERN_ENGINE", engine);
+    relate::Database::open(":memory:")
+        .unwrap()
+        .connect()
+        .unwrap()
+}
+
+/// Runs `body` once per forced pattern engine (the walker and the frontier
+/// NFA), each on its own fresh store from [`open_with_engine`].
+pub fn for_each_engine(mut body: impl FnMut(&str, &mut relate::Connection)) {
+    for engine in ["walk", "nfa"] {
+        let mut conn = open_with_engine(engine);
+        body(engine, &mut conn);
+    }
+}
+
 /// A fresh connection whose store carries one `IS UNIQUE` constraint:
 /// `CREATE CONSTRAINT <constraint> FOR (n:<label>) REQUIRE n.<prop> IS UNIQUE`
 /// — the shared scaffold `temporal_identity_split.rs` and

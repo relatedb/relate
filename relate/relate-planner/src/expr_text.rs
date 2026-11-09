@@ -30,7 +30,7 @@ pub(crate) fn expr_text(expr: &Expr) -> String {
         Expr::Variable(name) => name.to_string(),
         Expr::Star => "*".to_string(),
         Expr::CountStar => "count(*)".to_string(),
-        Expr::Property { expr, key } => format!("{}.{key}", expr_text(expr)),
+        Expr::Property { expr, key, .. } => format!("{}.{key}", expr_text(expr)),
         Expr::DynamicProperty { expr, key } => format!("{}[{}]", expr_text(expr), expr_text(key)),
         Expr::Function {
             name,
@@ -374,6 +374,7 @@ mod tests {
         };
         assert_eq!(expr_text(&expr), "collect(n)");
         let expr = Expr::Property {
+            key_id: Default::default(),
             expr: Box::new(var("n")),
             key: "prop".into(),
         };

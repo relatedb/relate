@@ -418,6 +418,7 @@ mod gate {
                     // the variable and property key are names.
                     "v".to_string(),
                     Expr::Property {
+                        key_id: Default::default(),
                         expr: Box::new(Expr::Variable(SmallName::from_name("a"))),
                         key: SmallName::from_name("marker"),
                     },
@@ -437,6 +438,7 @@ mod gate {
             labels: Vec::new(),
             label_expr: None,
             properties,
+            prop_keys: Vec::new(),
             where_clause: None,
             force_scan: false,
         }
@@ -449,6 +451,7 @@ mod gate {
             type_expr: None,
             direction: Direction::Outgoing,
             properties: None,
+            prop_keys: Vec::new(),
             var_length: false,
             min_hops: 1,
             max_hops: Some(1),

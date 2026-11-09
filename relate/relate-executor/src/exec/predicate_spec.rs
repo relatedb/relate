@@ -200,8 +200,8 @@ impl InlinePred {
         // temporal constructors over exactly `v.key` (a pure parse of the
         // candidate's own value, so `date(p.birthday)` keeps its typed
         // per-row construction).
-        let (ctor, key) = match left.as_ref() {
-            Expr::Property { expr, key } if is_var(expr, var) => (None, key),
+        let (ctor, key, key_id) = match left.as_ref() {
+            Expr::Property { expr, key, key_id } if is_var(expr, var) => (None, key, *key_id),
             Expr::Function {
                 name,
                 distinct: false,
@@ -210,15 +210,15 @@ impl InlinePred {
                 match &args[0] {
                     // Text render: the compiled predicate owns its ctor
                     // and key strings (interner-facing String domain).
-                    Expr::Property { expr, key } if is_var(expr, var) => {
-                        (Some(name.to_string()), key)
+                    Expr::Property { expr, key, key_id } if is_var(expr, var) => {
+                        (Some(name.to_string()), key, *key_id)
                     }
                     _ => return None,
                 }
             }
             _ => return None,
         };
-        let kid = key.with_str(|text| graph.base().prop_key_id(text));
+        let kid = key_id.id_or_else(|| key.with_str(|text| graph.base().prop_key_id(text)));
         Some(match ctor {
             None => Self::Prop {
                 key: key.to_string(),
@@ -480,7 +480,7 @@ impl WalkSpec {
         let labels = np
             .labels
             .iter()
-            .map(|label| {
+            .map(|(label, _)| {
                 (
                     label.to_string(),
                     label.with_str(|text| graph.base().label_id(text)),

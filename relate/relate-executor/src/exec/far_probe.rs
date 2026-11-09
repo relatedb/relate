@@ -92,7 +92,7 @@ impl FarProbe {
                 continue;
             }
             // Text render: the prefilter's tables are String-keyed.
-            let labels: Vec<String> = node.labels.iter().map(|label| label.to_string()).collect();
+            let labels: Vec<String> = node.label_names().map(|label| label.to_string()).collect();
             let state = initial_probe(graph, &labels, &seeks, overlay_dirty);
             nodes.insert(
                 var.to_string(),
@@ -265,7 +265,7 @@ fn far_node_seeks(
         }
     }
     // Text render: the servability check reads the label list as text.
-    let labels: Vec<String> = node.labels.iter().map(|label| label.to_string()).collect();
+    let labels: Vec<String> = node.label_names().map(|label| label.to_string()).collect();
     for conjunct in residual.conjuncts {
         let Some(seek) = leaf_seek(var, conjunct, graph, row, params, cypher_version) else {
             continue;

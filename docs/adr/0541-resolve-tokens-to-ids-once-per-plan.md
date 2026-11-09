@@ -88,3 +88,10 @@ only as strings.
   code path stays and needs its own tests.
 - Plan-display and `EXPLAIN` output must remain name-based and
   byte-identical.
+
+## Later references
+
+Decision 4 landed as one method per statistics probe taking the name beside its
+token, not separate id-keyed forms: the store impl reads the id for a resolved
+token, answers an absent one without a store read, and falls back to the name
+only for an unresolved one.

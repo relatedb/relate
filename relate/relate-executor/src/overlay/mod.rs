@@ -69,19 +69,6 @@ pub struct ExecGraph<'a> {
     /// `db.ontology.get` / `db.ontology.apply` procedure arms.
     /// `None` = no ontology set (also every test/diagnostic view).
     ontology_document: Option<&'a str>,
-    /// The per-statement label-interning memo (LABS-1116): a label check
-    /// pays the interner's string-keyed lookup once per distinct label
-    /// per statement, not once per candidate — the per-row candidates
-    /// path's twin of the prepared programs' `InternedLabels`
-    /// (ADR-0473). Keys are the statement's own label strings —
-    /// client-controlled, so the seeded policy ([`SeededMap`],
-    /// ADR-0355), never FxHash. Interning is append-only, so a cached
-    /// `Some(id)` can never go stale; a cached `None` can —
-    /// `commit_batch` (ADR-0210's `CALL { … } IN TRANSACTIONS`) lands a
-    /// batch's writes and their labels in the base mid-statement, so it
-    /// clears the memo: the one seam where statement writes enter the
-    /// base while the statement runs.
-    label_ids: RefCell<crate::hash_seed::SeededMap<Box<str>, Option<u32>>>,
     pub(crate) csv: CsvReader<'a>,
 }
 
@@ -207,11 +194,6 @@ impl<'a> ExecGraph<'a> {
             expression_budget: ExpressionBudgetCounter::default(),
             expression_limit: base.expression_memory_limit(),
             ontology_document: None,
-            // The process-wide seeded state (LABS-822's rule): no view
-            // construction pays a fresh `RandomState` read.
-            label_ids: RefCell::new(std::collections::HashMap::with_hasher(
-                crate::hash_seed::shared_random_state(),
-            )),
             csv: CsvReader::new(base.csv_policy()),
         }
     }
@@ -322,26 +304,11 @@ impl<'a> ExecGraph<'a> {
     /// restart together at statement entry, so a view reused across
     /// statements reports this statement's counters and its own applied count
     /// — never the previous statement's. A read view carries no scratch and
-    /// resets only the per-statement label memo.
+    /// has nothing to reset.
     pub(crate) fn reset_statement(&self) {
-        self.label_ids.borrow_mut().clear();
         if let Some(scratch) = self.scratch {
             scratch.borrow_mut().reset_statement();
         }
-    }
-
-    /// The interned id of `label`, memoized per statement (LABS-1116) —
-    /// the one interning lookup a statement's label checks pay per
-    /// distinct label, instead of one per candidate. A cached `None` is
-    /// valid only until a mid-statement batch commit; see the
-    /// `label_ids` field.
-    pub(crate) fn memo_label_id(&self, label: &str) -> Option<u32> {
-        if let Some(id) = self.label_ids.borrow().get(label) {
-            return *id;
-        }
-        let id = self.base.interned_label_id(label);
-        self.label_ids.borrow_mut().insert(Box::from(label), id);
-        id
     }
 
     /// One statement's entry reset: the CSV memo, the statement-spanning
@@ -406,19 +373,6 @@ impl<'a> ExecGraph<'a> {
         // redo) intact for the caller's abort/restore path, not
         // half-updated with the redo gone.
         let commit_ts = sink.commit_batch(ops, ts)?;
-        // The batch's writes just entered the base — any label it
-        // interned invalidates the memoized resolutions, so the next
-        // label check of this statement re-resolves against the grown
-        // interner (LABS-1116: a memoized `None` for a label the batch
-        // went on to create would answer a wrong `Some(false)` for the
-        // rest of the statement).
-        // The batch's writes just entered the base — any label it
-        // interned invalidates the memoized resolutions, so the next
-        // label check of this statement re-resolves against the grown
-        // interner (LABS-1116: a memoized `None` for a label the batch
-        // went on to create would answer a wrong `Some(false)` for the
-        // rest of the statement).
-        self.label_ids.borrow_mut().clear();
         scratch.borrow_mut().rebase(commit_ts);
         Ok(())
     }
@@ -527,8 +481,6 @@ mod allocator_exhaustion_tests;
 pub(crate) mod batch_commit_tests;
 #[cfg(test)]
 mod budget_tests;
-#[cfg(test)]
-mod label_memo_tests;
 #[cfg(test)]
 mod materialize_tests;
 #[cfg(test)]

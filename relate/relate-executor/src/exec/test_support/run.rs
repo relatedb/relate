@@ -6,7 +6,7 @@ use std::thread::LocalKey;
 use relate_core::{Result, Value};
 use relate_front::parse_and_lower;
 use relate_ir::Query;
-use relate_planner::plan;
+use relate_planner::{plan, plan_with_tokens, NoPatternStats};
 
 use crate::ctx::{ClauseMetricsRecord, PlanMetricsSink};
 use crate::graph::Graph;
@@ -31,7 +31,7 @@ fn try_exec_lowered(
     cypher: &str,
     params: &BTreeMap<String, Value>,
 ) -> Result<QueryResult> {
-    try_exec_lowered_with_metrics(g, q, cypher, params, None)
+    try_exec_lowered_with_metrics(g, q, cypher, params, None, false)
 }
 
 /// The canonical run scaffold with a plan-metrics sink attached — the
@@ -44,8 +44,13 @@ fn try_exec_lowered_with_metrics(
     cypher: &str,
     params: &BTreeMap<String, Value>,
     plan_metrics: Option<&dyn PlanMetricsSink>,
+    resolve_tokens: bool,
 ) -> Result<QueryResult> {
-    let p = plan(q, &mut |_| false)?;
+    let p = if resolve_tokens {
+        plan_with_tokens(q, &mut |_| false, &NoPatternStats, g)?
+    } else {
+        plan(q, &mut |_| false)?
+    };
     let pin = g.pin_now()?;
     let schema = g.schema_snapshot();
     let mut request = ExecRequest::new(&p, params, cypher);
@@ -62,6 +67,21 @@ fn try_exec_lowered_with_metrics(
 
 pub(crate) fn exec_cypher(g: &Graph, cypher: &str) -> QueryResult {
     exec_lowered(g, parse_and_lower(cypher).unwrap(), cypher)
+}
+
+/// [`exec_cypher`] planned with the store's tokens resolved onto the IR
+/// (ADR-0541), the way the facade plans — the run the id-consuming reads
+/// are tested under.
+pub(crate) fn exec_cypher_resolved(g: &Graph, cypher: &str) -> QueryResult {
+    try_exec_lowered_with_metrics(
+        g,
+        parse_and_lower(cypher).unwrap(),
+        cypher,
+        &BTreeMap::new(),
+        None,
+        true,
+    )
+    .unwrap()
 }
 
 /// The fallible form of [`exec_cypher`] (ADR-0175's integer-argument-site
@@ -135,6 +155,7 @@ pub(crate) fn profiled(g: &Graph, cypher: &str) -> Vec<ClauseMetricsRecord> {
         cypher,
         &BTreeMap::new(),
         Some(&recorder),
+        false,
     )
     .unwrap();
     recorder.0.take()

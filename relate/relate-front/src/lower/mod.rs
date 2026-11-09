@@ -264,10 +264,10 @@ fn lower_group_by(
                                     crate::validate::alias_shadows_its_own_base(base, &i.expr)
                                 });
                             match aliased {
-                                Some(item) => mdb::Expr::Property {
-                                    expr: Box::new(lower_expr(&item.expr)?),
-                                    key: property.property.clone(),
-                                },
+                                Some(item) => mdb::Expr::property(
+                                    lower_expr(&item.expr)?,
+                                    property.property.clone(),
+                                ),
                                 None => lower_expr(k)?,
                             }
                         }

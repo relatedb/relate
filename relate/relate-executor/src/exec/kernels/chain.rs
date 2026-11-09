@@ -25,7 +25,7 @@
 //! arms plus the `WHERE` conjunct, three-valued keep-only-true included).
 
 use relate_core::{NodeId, RelId, Result, Value};
-use relate_ir::{var_prop, Expr};
+use relate_ir::{var_prop_named, Expr};
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
@@ -185,9 +185,7 @@ fn expand_hop<P: NodePred>(
     let graph = ctx.graph;
     // The hop's written type list resolves once per stage hop (LABS-801);
     // the per-candidate adjacency walk compares interned ids.
-    // Text render: the adjacency type resolver reads name text.
-    let hop_types: Vec<String> = hop.rel.types.iter().map(|ty| ty.to_string()).collect();
-    let types = graph.rel_types(&hop_types);
+    let types = graph.rel_types_of(hop.rel);
     // The prepared bound lives outside the row loop: the admission's own
     // lazy path fills it at the first candidate that reaches the
     // comparison, and a stage whose every row has no neighbor never
@@ -318,12 +316,12 @@ fn exists(
         match counted {
             None => return Ok(true),
             Some(expr) => {
-                let (var, key) = var_prop(expr)
+                let (var, key) = var_prop_named(expr)
                     .expect("the engagement proof admits only var.prop counted expressions");
                 let node = node_of_var(chain, stage, r, var)
                     .expect("the engagement proof checked the counted variable is bound");
                 if matches!(
-                    key.with_str(|text| ctx.graph.node_prop(node, text)),
+                    ctx.graph.node_prop_resolved(node, &key),
                     Some(v) if !v.is_null()
                 ) {
                     return Ok(true);

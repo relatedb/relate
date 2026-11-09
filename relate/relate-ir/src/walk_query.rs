@@ -593,6 +593,7 @@ mod tests {
                 labels: Vec::new(),
                 label_expr: label,
                 properties: None,
+                prop_keys: Vec::new(),
                 where_clause: None,
                 force_scan: false,
             }
@@ -610,6 +611,7 @@ mod tests {
                     type_expr: Some(dynamic_label("rel_type")),
                     direction: Direction::Outgoing,
                     properties: None,
+                    prop_keys: Vec::new(),
                     var_length: false,
                     min_hops: 1,
                     max_hops: None,
@@ -662,6 +664,7 @@ mod tests {
             labels: Vec::new(),
             label_expr: Some(dynamic_label("node_label")),
             properties: None,
+            prop_keys: Vec::new(),
             where_clause: None,
             force_scan: false,
         };
@@ -737,6 +740,7 @@ mod tests {
             type_expr: None,
             direction: crate::Direction::Outgoing,
             properties: None,
+            prop_keys: Vec::new(),
             var_length: false,
             min_hops: 1,
             max_hops: None,
@@ -751,6 +755,7 @@ mod tests {
             labels: vec![],
             label_expr,
             properties,
+            prop_keys: Vec::new(),
             where_clause,
             force_scan: false,
         };

@@ -22,7 +22,14 @@ impl Graph {
     pub fn label_count(&self, label: &str) -> u64 {
         self.interner
             .get_id(label)
-            .and_then(|lid| self.indexes.label_index.get(&lid))
+            .map_or(0, |lid| self.label_count_by_id(lid))
+    }
+
+    /// [`Graph::label_count`] for an already-resolved label token id.
+    pub fn label_count_by_id(&self, lid: u32) -> u64 {
+        self.indexes
+            .label_index
+            .get(&lid)
             .map_or(0, |ids| ids.len() as u64)
     }
 

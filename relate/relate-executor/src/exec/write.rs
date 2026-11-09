@@ -135,7 +135,7 @@ fn resolve_property_target(
         Dynamic(&'a Expr),
     }
     let (expr, key) = match target {
-        Expr::Property { expr, key } => (expr, KeySource::Static(key)),
+        Expr::Property { expr, key, .. } => (expr, KeySource::Static(key)),
         Expr::DynamicProperty { expr, key } => (expr, KeySource::Dynamic(key)),
         _ => return Err(Error::ty(err)),
     };

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use relate_core::{Node, NodeId, RelId, Relationship, Result, Value};
 use relate_ir::Direction;
+use relate_names::Token;
 
 use super::ExecGraph;
 
@@ -214,6 +215,58 @@ impl ExecGraph<'_> {
     pub fn node_prop(&self, id: NodeId, key: &str) -> Option<Value> {
         self.node_prologue(id, |n| n.properties.get(key).cloned())
             .resolve(None, || self.base.node_prop_at(id, self.snapshot_ts(), key))
+    }
+
+    /// [`Self::node_prop`] reading a plan-resolved key: no interner lookup
+    /// per call on the snapshot arm. An `Unresolved` key falls back to the
+    /// string lookup and an `Absent` one answers `None` without a store
+    /// read; the scratch arm is string-keyed either way.
+    pub(crate) fn node_prop_resolved(
+        &self,
+        id: NodeId,
+        (name, token): &relate_names::NamedToken,
+    ) -> Option<Value> {
+        name.with_str(|text| {
+            if *token == Token::Unresolved {
+                return self.node_prop(id, text);
+            }
+            self.node_prologue(id, |n| n.properties.get(text).cloned())
+                .resolve(None, || {
+                    token
+                        .id()
+                        .and_then(|kid| self.base.node_prop_id_at(id, self.snapshot_ts(), kid))
+                })
+        })
+    }
+
+    /// [`Self::node_prop_resolved`] for a relationship.
+    pub(crate) fn rel_prop_resolved(
+        &self,
+        id: RelId,
+        (name, token): &relate_names::NamedToken,
+    ) -> Option<Value> {
+        name.with_str(|text| {
+            if *token == Token::Unresolved {
+                return self.rel_prop(id, text);
+            }
+            self.rel_prologue(id, |r| r.properties.get(text).cloned())
+                .resolve(None, || {
+                    token
+                        .id()
+                        .and_then(|kid| self.base.rel_prop_id_at(id, self.snapshot_ts(), text, kid))
+                })
+        })
+    }
+
+    /// The label check for a name the store never interned (`Absent`, or an
+    /// interned id missing): no committed node carries it, so only a write
+    /// overlay can, by string — `None` for an invisible node.
+    pub(crate) fn node_has_uninterned_label(&self, id: NodeId, label: &str) -> Option<bool> {
+        if self.has_write_overlay() {
+            self.node_has_label(id, label)
+        } else {
+            Some(false)
+        }
     }
 
     /// The scan-predicate gate's one candidate read: `check` sees the

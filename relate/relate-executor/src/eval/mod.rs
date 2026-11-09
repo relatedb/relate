@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, MapProjectionItem};
-use relate_names::SmallName;
+use relate_names::{SmallName, Token};
 
 use crate::ctx::EvalCtx;
 // The pattern-expression arms (PatternPred, PatternComp, ShortestPath)
@@ -180,12 +180,12 @@ pub fn eval(
             .cloned()
             .ok_or_else(|| n.with_str(Error::undefined_variable)),
         Expr::Star => Err(Error::semantic("* is not a scalar expression")),
-        Expr::Property { expr, key } => {
+        Expr::Property { expr, key, key_id } => {
             // Variable operands are read by reference (see Subscript): a
             // property read must not clone the whole map it reads from.
             let v = eval_operand(graph, row, expr, params, cypher_version)?;
             reject_deleted_access(graph, &v)?;
-            key.with_str(|text| prop(graph, &v, text))
+            prop(graph, &v, &(key.clone(), *key_id))
         }
         Expr::DynamicProperty { expr, key } => {
             let v = eval_operand(graph, row, expr, params, cypher_version)?;
@@ -194,7 +194,7 @@ pub fn eval(
             }
             reject_deleted_access(graph, &v)?;
             let key = dynamic_property_key(eval(graph, row, key, params, cypher_version)?)?;
-            prop(graph, &v, &key)
+            prop(graph, &v, &(SmallName::from_name(&key), Token::Unresolved))
         }
         Expr::LabelPredicate {
             expr,
@@ -436,7 +436,7 @@ pub fn eval(
                         );
                     }
                     MapProjectionItem::Property { key } => {
-                        let value = key.with_str(|text| prop(graph, &target, text))?;
+                        let value = prop(graph, &target, &(key.clone(), Token::Unresolved))?;
                         map.insert(key.to_string(), value);
                     }
                     MapProjectionItem::Variable { name } => {

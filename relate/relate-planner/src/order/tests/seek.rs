@@ -10,7 +10,7 @@
 
 use std::cell::Cell;
 
-use relate_names::SmallName;
+use relate_names::NamedToken;
 
 use super::*;
 use crate::stats::{ContainsCount, PatternStats};
@@ -26,12 +26,17 @@ fn unbound(_: &str) -> bool {
 struct SawParameter(Cell<bool>);
 
 impl PatternStats for SawParameter {
-    fn label_rows(&self, _: &SmallName) -> Option<u64> {
+    fn label_rows(&self, _: &NamedToken) -> Option<u64> {
         None
     }
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64> {
+    fn equality_rows(
+        &self,
+        (label, _): &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<u64> {
         if label == "Place"
-            && property == "name"
+            && property.0 == "name"
             && matches!(value, Expr::Parameter(name) if name == "city")
         {
             self.0.set(true);
@@ -39,10 +44,10 @@ impl PatternStats for SawParameter {
         }
         None
     }
-    fn contains_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<ContainsCount> {
+    fn contains_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<ContainsCount> {
         None
     }
-    fn rel_type_rows(&self, _: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, _: &NamedToken) -> Option<u64> {
         None
     }
 }
@@ -61,11 +66,11 @@ fn equality_parameters_reach_stats() {
 struct SawRange(Cell<bool>);
 
 impl PatternStats for SawRange {
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
         (label == "Hub").then_some(200_000)
     }
 
-    fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<u64> {
+    fn equality_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<u64> {
         None
     }
 
@@ -74,13 +79,13 @@ impl PatternStats for SawRange {
     /// implementor's), with the op the recognizer oriented.
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        (label, _): &NamedToken,
+        property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
         if label == "Target"
-            && property == "x"
+            && property.0 == "x"
             && op == BinaryOp::Lt
             && matches!(bound, Expr::Parameter(name) if name == "limit")
         {
@@ -90,11 +95,11 @@ impl PatternStats for SawRange {
         None
     }
 
-    fn contains_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<ContainsCount> {
+    fn contains_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<ContainsCount> {
         None
     }
 
-    fn rel_type_rows(&self, _: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, _: &NamedToken) -> Option<u64> {
         None
     }
 }
@@ -117,7 +122,7 @@ fn comparison_parameters_reach_stats_and_win_the_start() {
     assert!(stats.0.get());
     assert_eq!(first_label(&patterns[0]), "Target");
     assert_eq!(
-        patterns[0].nodes.last().unwrap().labels[0].to_string(),
+        patterns[0].nodes.last().unwrap().labels[0].0.to_string(),
         "Hub"
     );
 

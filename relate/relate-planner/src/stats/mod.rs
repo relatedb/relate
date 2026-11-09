@@ -8,7 +8,7 @@
 //! in [`memo`].
 
 use relate_ir::{BinaryOp, Expr};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 
 /// Provenance of a plan-time `CONTAINS` candidate count (LABS-643): the
 /// TEXT index stays the one exact measurement, and without one the count
@@ -48,16 +48,20 @@ impl ContainsCount {
 
 /// Live or stubbed counts used to estimate how many rows a pattern endpoint
 /// produces. Every method returns `None` when that signal is unavailable,
-/// which is not the same as zero rows.
+/// which is not the same as zero rows. Labels and relationship types
+/// arrive as a name beside its planning-time [`relate_names::Token`]
+/// (ADR-0541): an implementor reads the id when planning resolved one and
+/// falls back to the name only for an unresolved token.
 pub trait PatternStats {
     /// Nodes carrying `label`.
-    fn label_rows(&self, label: &SmallName) -> Option<u64>;
+    fn label_rows(&self, label: &NamedToken) -> Option<u64>;
 
     /// Hits of an equality seek on a RANGE index for `(label, property)`.
     /// `value` is the raw predicate expression. Implementors resolve
     /// literals and parameters with [`Expr::seek_value`] and return `None`
     /// for anything else. `None` also means no RANGE index, not zero hits.
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64>;
+    fn equality_rows(&self, label: &NamedToken, property: &NamedToken, value: &Expr)
+        -> Option<u64>;
 
     /// Hits of a comparison predicate (`<`, `<=`, `>`, `>=`) on a RANGE
     /// index for `(label, property)` — the range window (ADR-0486). The
@@ -71,8 +75,8 @@ pub trait PatternStats {
     /// hits.
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        label: &NamedToken,
+        property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
@@ -90,13 +94,13 @@ pub trait PatternStats {
     /// unmeasurable (a non-string needle), not zero candidates.
     fn contains_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        label: &NamedToken,
+        property: &NamedToken,
         needle: &Expr,
     ) -> Option<ContainsCount>;
 
     /// Relationships of `rel_type`.
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64>;
+    fn rel_type_rows(&self, rel_type: &NamedToken) -> Option<u64>;
 
     /// LABS-351: the tail of a (label, rel-type) out-degree distribution —
     /// the conservative floor of the highest observed degree (a log2-bucket
@@ -105,7 +109,7 @@ pub trait PatternStats {
     /// outgoing hop's fanout rides the tail when the histogram has one,
     /// the mean otherwise — the plan-choice consequence of the flip is
     /// the measured part of that change.
-    fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
+    fn degree_tail(&self, label: &NamedToken, rel_type: &NamedToken) -> Option<u64> {
         let _ = (label, rel_type);
         None
     }
@@ -129,14 +133,14 @@ pub trait PatternStats {
 pub struct NoPatternStats;
 
 impl PatternStats for NoPatternStats {
-    fn label_rows(&self, _label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, _label: &NamedToken) -> Option<u64> {
         None
     }
 
     fn equality_rows(
         &self,
-        _label: &SmallName,
-        _property: &SmallName,
+        _label: &NamedToken,
+        _property: &NamedToken,
         _value: &Expr,
     ) -> Option<u64> {
         None
@@ -144,14 +148,14 @@ impl PatternStats for NoPatternStats {
 
     fn contains_rows(
         &self,
-        _label: &SmallName,
-        _property: &SmallName,
+        _label: &NamedToken,
+        _property: &NamedToken,
         _needle: &Expr,
     ) -> Option<ContainsCount> {
         None
     }
 
-    fn rel_type_rows(&self, _rel_type: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, _rel_type: &NamedToken) -> Option<u64> {
         None
     }
 }

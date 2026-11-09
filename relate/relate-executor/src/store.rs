@@ -49,6 +49,28 @@ pub(crate) struct Interner {
     label_vecs: DashMap<Vec<u32>, Arc<Vec<String>>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// `Interner::get_id` calls on this thread — test-only, read through
+    /// [`take_get_id_calls`].
+    static GET_ID_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Returns and resets this thread's `Interner::get_id` call count.
+#[cfg(test)]
+pub(crate) fn take_get_id_calls() -> u64 {
+    GET_ID_CALLS.with(|c| c.replace(0))
+}
+
+impl relate_names::TokenResolver for Interner {
+    fn resolve(&self, name: &str) -> relate_names::Token {
+        match self.get_id(name) {
+            Some(id) => relate_names::Token::Id(relate_names::TokenId(id)),
+            None => relate_names::Token::Absent,
+        }
+    }
+}
+
 /// The empty property map every node and relationship stub shares.
 pub(crate) fn empty_properties() -> Arc<relate_core::PropertyMap> {
     static EMPTY: OnceLock<Arc<relate_core::PropertyMap>> = OnceLock::new();
@@ -85,6 +107,8 @@ impl Interner {
     }
 
     pub(crate) fn get_id(&self, s: &str) -> Option<u32> {
+        #[cfg(test)]
+        GET_ID_CALLS.with(|c| c.set(c.get() + 1));
         self.to_id.get(s).map(|v| *v)
     }
 
@@ -181,6 +205,12 @@ impl LiveNode {
 
     pub(crate) fn prop(&self, interner: &Interner, key: &str) -> Option<Value> {
         let kid = interner.get_id(key)?;
+        self.prop_by_id(kid)
+    }
+
+    /// The property under interned key id `kid` — [`Self::prop`] with the
+    /// interning already paid (a plan-resolved token).
+    pub(crate) fn prop_by_id(&self, kid: u32) -> Option<Value> {
         self.props.get(kid).cloned()
     }
 
@@ -473,13 +503,29 @@ impl<P: PayloadProps> Payload<P> {
 
     pub(crate) fn get(&self, interner: &Interner, key: &str) -> Option<Value> {
         match self {
-            Payload::Triple { id, amount, ts } => match key {
-                "id" => Some(Value::String(id.clone())),
-                "amount" => Some(amount.clone()),
-                "ts" => Some(Value::Int(*ts)),
-                _ => None,
-            },
+            Payload::Triple { id, amount, ts } => triple_prop(id, amount, *ts, key),
             Payload::Other(props) => props.get(interner, key),
+        }
+    }
+}
+
+/// The `Triple` payload's property named `key`.
+fn triple_prop(id: &Arc<str>, amount: &Value, ts: i64, key: &str) -> Option<Value> {
+    match key {
+        "id" => Some(Value::String(id.clone())),
+        "amount" => Some(amount.clone()),
+        "ts" => Some(Value::Int(ts)),
+        _ => None,
+    }
+}
+
+impl RelPayload {
+    /// [`Self::get`] with the key already interned: `kid` is the id of
+    /// `key` (a plan-resolved token), so no interner lookup is paid.
+    pub(crate) fn get_by_id(&self, key: &str, kid: u32) -> Option<Value> {
+        match self {
+            Payload::Triple { id, amount, ts } => triple_prop(id, amount, *ts, key),
+            Payload::Other(props) => props.get(kid).cloned(),
         }
     }
 }
@@ -749,6 +795,20 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(&*i.get(a), "TRANSFER");
         assert_eq!(i.get_id("OTHER"), None);
+    }
+
+    #[test]
+    fn resolver_matches_interner_ids() {
+        use relate_names::{Token, TokenId, TokenResolver};
+        let i = Interner::default();
+        // label, relationship type, property key share the interner's id space
+        for name in ["Person", "KNOWS", "since"] {
+            let id = i.intern(name);
+            assert_eq!(i.resolve(name), Token::Id(TokenId(id)));
+        }
+        for name in ["Absent", "MISSING", "nokey"] {
+            assert_eq!(i.resolve(name), Token::Absent);
+        }
     }
 
     #[test]

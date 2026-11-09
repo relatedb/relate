@@ -103,7 +103,7 @@ pub(super) fn lone_node_of(patterns: &[PathPattern]) -> Option<&NodePattern> {
 /// `(label, property)` index can serve. The one derivation the estimate and
 /// the `MissingIndex` notification share.
 pub(super) fn single_static_label(node: &NodePattern) -> Option<&SmallName> {
-    let [label] = node.labels.as_slice() else {
+    let [(label, _)] = node.labels.as_slice() else {
         return None;
     };
     if node
@@ -157,7 +157,7 @@ pub(super) fn match_estimate(
         // One static label (the `labels` list is its retained conjunction,
         // however the label expression spelled it): the stats count it.
         // A conjunction of several labels has no count of its own.
-        if let Some(label) = single_static_label(node) {
+        if single_static_label(node).is_some() {
             // The indexed point read and the range window narrate as the
             // seek above, whose own rows are this node's estimate.
             // Without one, the fused scan-then-filter operator really
@@ -165,7 +165,7 @@ pub(super) fn match_estimate(
             // the honest estimate, and the est-vs-actual ⚠ it fires on a
             // point lookup is the missing-index diagnosis (the LABS-328
             // class), pairing with the scan warnings.
-            return stats.label_rows(label);
+            return stats.label_rows(&node.labels[0]);
         }
         return None;
     }
@@ -280,7 +280,7 @@ fn push_node(text: &mut String, node: &NodePattern) {
     if let Some(variable) = &node.variable {
         push_name(text, variable);
     }
-    for label in &node.labels {
+    for label in node.label_names() {
         text.push(':');
         push_name(text, label);
     }
@@ -301,7 +301,7 @@ fn push_rel(text: &mut String, rel: &RelPattern, quantifier: Option<(u32, Option
     if let Some(variable) = &rel.variable {
         push_name(text, variable);
     }
-    for (index, rel_type) in rel.types.iter().enumerate() {
+    for (index, rel_type) in rel.type_names().enumerate() {
         if index > 0 {
             text.push('|');
         }
@@ -341,9 +341,10 @@ fn push_quantifier(text: &mut String, min: u32, max: Option<u32>) {
 mod tests {
     use std::collections::BTreeMap;
 
+    use relate_names::NamedToken;
     use relate_planner::PatternStats;
 
-    use super::super::fixtures::{compact, comparison, node, rel, seeking};
+    use super::super::fixtures::{compact, comparison, node, rel, rows_of, seeking};
     use super::super::seek::index_seek;
     use super::*;
 
@@ -523,24 +524,26 @@ mod tests {
     impl PatternStats for Counting {
         // The fixture tables are String literals; the name-domain
         // parameters compare by text.
-        fn label_rows(&self, label: &SmallName) -> Option<u64> {
-            self.labels
-                .iter()
-                .find(|(l, _)| label == *l)
-                .map(|(_, rows)| *rows)
+        fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
+            rows_of(&self.labels, label)
         }
-        fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &relate_ir::Expr) -> Option<u64> {
+        fn equality_rows(
+            &self,
+            _: &NamedToken,
+            _: &NamedToken,
+            _: &relate_ir::Expr,
+        ) -> Option<u64> {
             None
         }
         fn contains_rows(
             &self,
-            _: &SmallName,
-            _: &SmallName,
+            _: &NamedToken,
+            _: &NamedToken,
             _: &relate_ir::Expr,
         ) -> Option<relate_planner::ContainsCount> {
             None
         }
-        fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+        fn rel_type_rows(&self, (rel_type, _): &NamedToken) -> Option<u64> {
             self.rels
                 .iter()
                 .find(|(t, _)| rel_type == *t)

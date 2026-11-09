@@ -39,6 +39,7 @@ mod index_lookup;
 mod index_postings;
 mod label_mutation;
 mod label_probe;
+mod prop_read;
 mod query_stats;
 mod redo_preflight;
 mod rel_postings;
@@ -122,6 +123,15 @@ impl LabelCache {
             .get(&node)
             .expect("the fold cached every endpoint's labels")
             .as_slice()
+    }
+}
+
+/// The store's token resolver (ADR-0541): the facade hands the graph to the
+/// planner beside its statistics, so plan-time resolution reads the same
+/// interner execution does.
+impl relate_names::TokenResolver for Graph {
+    fn resolve(&self, name: &str) -> relate_names::Token {
+        self.interner.resolve(name)
     }
 }
 

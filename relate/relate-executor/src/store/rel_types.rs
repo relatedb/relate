@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use relate_ir::RelPattern;
+
 use super::Interner;
 
 /// The resolved filter: `Any` admits every type (an untyped pattern),
@@ -81,11 +83,29 @@ impl RelTypes {
     pub(crate) fn resolve<T: AsRef<str>>(interner: &Interner, names: &[T]) -> Self {
         Self::only(names.iter().map(|name| {
             let name = name.as_ref();
-            let id = interner.get_id(name);
-            (
-                id,
-                id.map_or_else(|| Arc::from(name), |id| interner.get(id)),
-            )
+            Self::entry(interner, name, interner.get_id(name))
+        }))
+    }
+
+    /// One filter entry for `name` whose interned id is `id` (`None` for a
+    /// never-interned name): an interned name shares the interner's
+    /// canonical `Arc<str>`, a never-interned one gets its own copy.
+    fn entry(interner: &Interner, name: &str, id: Option<u32>) -> (Option<u32>, Arc<str>) {
+        (
+            id,
+            id.map_or_else(|| Arc::from(name), |id| interner.get(id)),
+        )
+    }
+
+    /// [`Self::resolve`] for a planned pattern: the type ids the planner
+    /// resolved onto `rel` (ADR-0541) are read as they are. An unresolved
+    /// plan falls back to the interner lookup; a type the plan saw as never
+    /// interned has no id.
+    pub(crate) fn of_pattern(interner: &Interner, rel: &RelPattern) -> Self {
+        Self::only(rel.types.iter().map(|(name, token)| {
+            name.with_str(|name| {
+                Self::entry(interner, name, token.id_or_else(|| interner.get_id(name)))
+            })
         }))
     }
 

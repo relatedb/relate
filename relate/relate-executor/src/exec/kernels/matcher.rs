@@ -36,7 +36,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use relate_ir::{Direction, Expr, MatchMode, NodePattern, PathPattern, RelPattern};
+use relate_ir::{
+    pattern_prop_key, Direction, Expr, MatchMode, NodePattern, PathPattern, RelPattern,
+};
 use relate_names::SmallName;
 use relate_planner::seed_on_rel_start;
 
@@ -282,7 +284,7 @@ pub(crate) fn compile_node(
                     return None;
                 }
                 Some(Prog::Cmp {
-                    key: key.clone(),
+                    key: pattern_prop_key(&pattern.prop_keys, key),
                     op: relate_ir::BinaryOp::Eq,
                     bound: value.clone(),
                 })
@@ -747,8 +749,8 @@ mod tests {
         let is_org = |target: &NodeTarget<'_>| {
             target
                 .pattern
-                .labels
-                .contains(&SmallName::from_name("Organisation"))
+                .label_names()
+                .any(|label| *label == SmallName::from_name("Organisation"))
         };
         let org = if is_org(&chain.start) {
             &chain.start

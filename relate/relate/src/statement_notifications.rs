@@ -90,7 +90,7 @@ use relate_ir::{
     NodePattern, PathPattern, PatternPayload, RelPattern,
 };
 use relate_model::wire::{Notification, NotificationCategory, NotificationKind};
-use relate_names::SmallName;
+use relate_names::{SmallName, Token};
 use relate_planner::LogicalPlan;
 
 use crate::notifications::dedup_identical;
@@ -514,20 +514,24 @@ impl CatalogName {
 /// the positive-evidence set for the 03N95 detector.
 fn resolve_names_with(
     expr: Option<&LabelExpr>,
-    names: &[SmallName],
+    names: &[(SmallName, Token)],
     out: &mut BTreeSet<String>,
     collect: fn(&LabelExpr, &mut BTreeSet<String>),
 ) {
     // Text render: the fact sets are the String catalog-comparison domain.
     match expr {
         Some(expr) => collect(expr, out),
-        None => out.extend(names.iter().map(|name| name.to_string())),
+        None => out.extend(names.iter().map(|(name, _)| name.to_string())),
     }
 }
 
 /// The mention-set spelling of [`resolve_names_with`] — the unknown-name
 /// detectors' form.
-fn resolve_names(expr: Option<&LabelExpr>, names: &[SmallName], out: &mut BTreeSet<String>) {
+fn resolve_names(
+    expr: Option<&LabelExpr>,
+    names: &[(SmallName, Token)],
+    out: &mut BTreeSet<String>,
+) {
     resolve_names_with(expr, names, out, collect_label_names);
 }
 

@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use relate_core::{NodeId, RelId};
+use relate_ir::RelPattern;
 
 use crate::store::{LiveNode, RelTypes};
 
@@ -204,6 +205,12 @@ impl Graph {
         RelTypes::resolve(&self.interner, names)
     }
 
+    /// [`Self::rel_types`] for a planned pattern, reading the type ids the
+    /// planner resolved onto it.
+    pub(crate) fn rel_types_of(&self, rel: &RelPattern) -> RelTypes {
+        RelTypes::of_pattern(&self.interner, rel)
+    }
+
     /// The name of interned rel-type id `tid` — the reverse of
     /// [`Self::rel_type_id`], for the consumers that hold the compiled
     /// form (the frontier NFA's transitions) and need the written name
@@ -264,8 +271,8 @@ impl Graph {
 
     /// The label's interned id, when anything in the store ever carried
     /// it — the one interning lookup a caller that checks the label per
-    /// candidate makes (ADR-0473's prepared programs, the per-statement
-    /// memo of LABS-1116), instead of one per candidate.
+    /// candidate makes (ADR-0473's prepared programs), instead of one per
+    /// candidate.
     pub(crate) fn interned_label_id(&self, label: &str) -> Option<u32> {
         self.label_id(label)
     }

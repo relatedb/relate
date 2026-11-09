@@ -39,7 +39,10 @@ fn labeled_node(g: &Graph, labels: &[&str], name: &str, age: i64) -> NodeId {
 fn pattern(variable: &str, labels: &[&str], props: Option<&[(&str, Value)]>) -> NodePattern {
     NodePattern {
         variable: Some(SmallName::from_name(variable)),
-        labels: labels.iter().map(|l| SmallName::from_name(l)).collect(),
+        labels: labels
+            .iter()
+            .map(|l| (SmallName::from_name(l), Default::default()))
+            .collect(),
         label_expr: Some(LabelExpr::And(
             labels
                 .iter()
@@ -54,6 +57,7 @@ fn pattern(variable: &str, labels: &[&str], props: Option<&[(&str, Value)]>) -> 
                     .collect(),
             )
         }),
+        prop_keys: Vec::new(),
         where_clause: None,
         force_scan: false,
     }

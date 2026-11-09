@@ -13,9 +13,7 @@ use relate_core::Result;
 
 /// The overlay seam's one `BatchCommit` test double (F-1-27): applies the
 /// batch's redo ops to the base graph at the next commit ts and counts
-/// its calls. Shared by this module's batch tests and the label-memo
-/// pollution test (`label_memo_tests`), which reads only the apply half
-/// — one double, never a stripped second copy.
+/// its calls.
 pub(crate) struct ApplySink<'a> {
     pub(crate) graph: &'a Graph,
     pub(crate) calls: AtomicUsize,

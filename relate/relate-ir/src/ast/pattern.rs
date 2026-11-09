@@ -7,9 +7,18 @@
 //! public path is unchanged (`ast::call` and `ast::expr` set the same
 //! precedent).
 
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName, Token};
 
 use super::Expr;
+
+/// The token of the pattern-map key `name` from a pattern's `prop_keys`;
+/// a key the plan did not spell reads by name (`Token::Unresolved`).
+pub fn pattern_prop_key(keys: &[NamedToken], name: &str) -> NamedToken {
+    keys.iter()
+        .find(|(known, _)| *known == name)
+        .cloned()
+        .unwrap_or_else(|| (SmallName::from_name(name), Token::Unresolved))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathPattern {
@@ -187,11 +196,17 @@ pub enum PathSelector {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePattern {
     pub variable: Option<SmallName>,
-    /// Static conjunction, retained for catalog/index candidate selection.
-    pub labels: Vec<SmallName>,
+    /// Static conjunction, retained for catalog/index candidate selection,
+    /// each name beside its token (`Unresolved` until planning resolves the
+    /// pattern against a store, ADR-0541).
+    pub labels: Vec<NamedToken>,
     /// Complete CIP-14/CIP-156 label expression.
     pub label_expr: Option<LabelExpr>,
     pub properties: Option<Expr>,
+    /// The literal keys of `properties`, each beside its token
+    /// (`Unresolved` until planning resolves them, ADR-0541). A key the
+    /// map does not spell literally has no entry here and reads by name.
+    pub prop_keys: Vec<NamedToken>,
     pub where_clause: Option<Expr>,
     /// CIP-79 `USING SCAN <var>:<Label>`: candidate selection must take the
     /// label scan, never an index seek. Unlike the other hints this is not
@@ -214,21 +229,32 @@ impl NodePattern {
             labels: Vec::new(),
             label_expr: None,
             properties: None,
+            prop_keys: Vec::new(),
             where_clause: None,
             force_scan: false,
         }
+    }
+
+    /// The label names, without their tokens.
+    pub fn label_names(&self) -> impl Iterator<Item = &SmallName> {
+        self.labels.iter().map(|(name, _)| name)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelPattern {
     pub variable: Option<SmallName>,
-    /// Static disjunction, retained for typed-CSR candidate selection.
-    pub types: Vec<SmallName>,
+    /// Static disjunction, retained for typed-CSR candidate selection, each
+    /// name beside its token (`Unresolved` until planning resolves the
+    /// pattern against a store, ADR-0541).
+    pub types: Vec<NamedToken>,
     /// Complete CIP-14/CIP-156 relationship type expression.
     pub type_expr: Option<LabelExpr>,
     pub direction: Direction,
     pub properties: Option<Expr>,
+    /// The literal keys of `properties`, each beside its token — see
+    /// [`NodePattern::prop_keys`].
+    pub prop_keys: Vec<NamedToken>,
     pub var_length: bool,
     pub min_hops: u32,
     pub max_hops: Option<u32>,
@@ -237,6 +263,11 @@ pub struct RelPattern {
 }
 
 impl RelPattern {
+    /// The type names, without their tokens.
+    pub fn type_names(&self) -> impl Iterator<Item = &SmallName> {
+        self.types.iter().map(|(name, _)| name)
+    }
+
     /// Whether `type_expr` spells exactly the static `types` list — a
     /// single label, or an `Or` of the same labels in the same order
     /// (LABS-801). Such an expression is fully applied by any walk that
@@ -247,13 +278,13 @@ impl RelPattern {
     /// case) — answers `false` and keeps the per-edge evaluation.
     pub fn type_expr_is_static_types(&self) -> bool {
         match self.type_expr.as_ref() {
-            Some(LabelExpr::Label(label)) => self.types.len() == 1 && label == &self.types[0],
+            Some(LabelExpr::Label(label)) => self.types.len() == 1 && label == &self.types[0].0,
             Some(LabelExpr::Or(items)) => {
                 items.len() == self.types.len()
                     && items
                         .iter()
                         .zip(&self.types)
-                        .all(|(item, ty)| matches!(item, LabelExpr::Label(label) if label == ty))
+                        .all(|(item, ty)| matches!(item, LabelExpr::Label(label) if *label == ty.0))
             }
             _ => false,
         }

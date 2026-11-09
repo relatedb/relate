@@ -280,7 +280,7 @@ fn binding_arm(
     seeks.sort_by_key(Seek::rank);
     // Map-bridge: the graph's label lookups stay String-keyed; the
     // pattern's labels render once per candidate selection (not per row).
-    let labels: Vec<String> = np.labels.iter().map(|label| label.to_string()).collect();
+    let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
     for seek in &seeks {
         // The one per-seek eligibility call: the label criterion and
         // ADR-0493's crossover, folded into `servable`.
@@ -330,7 +330,7 @@ fn scan_ids(
 ) -> Result<Vec<NodeId>> {
     if label_index_seekable(np) {
         // Same render-once bridge as the seek loop above.
-        let labels: Vec<String> = np.labels.iter().map(|label| label.to_string()).collect();
+        let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
         if let Some(ids) = graph.lookup_nodes(&labels, &props()?) {
             return Ok(ids);
         }

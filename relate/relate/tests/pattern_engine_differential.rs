@@ -18,9 +18,7 @@
 
 mod common;
 
-use std::sync::Mutex;
-
-use common::{rows, run};
+use common::{open_with_engine, rows, run};
 
 /// The f06 sample fixture, loaded from the fraud-qpp workload's own file
 /// (one source of truth; the compile-time path follows the
@@ -48,20 +46,6 @@ const NEEDLE_RING: &str = "CREATE \
      (q3)-[:TO]->(n0), \
      (d:Transaction {test: false, date: date('2025-12-30'), amount: 1000.0})-[:FROM]->(n0), \
      (d)-[:TO]->(n2)";
-
-/// Opens a fresh in-memory store with `engine` forced — the env switch's
-/// read-at-open contract (ADR-0519), serialized per the module header.
-fn open_with_engine(engine: &str) -> relate::Connection {
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("RELATE_PATTERN_ENGINE", engine);
-    relate::Database::open(":memory:")
-        .unwrap()
-        .connect()
-        .unwrap()
-}
 
 /// Asserts the two legs returned the same rows, in the same order, and
 /// that the differential is not vacuous — at least one row answered.

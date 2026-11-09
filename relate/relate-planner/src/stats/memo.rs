@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use relate_ir::{BinaryOp, Expr};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 
 use super::ContainsCount;
 use super::PatternStats;
@@ -257,15 +257,20 @@ impl<'a> StatsMemo<'a> {
 }
 
 impl PatternStats for StatsMemo<'_> {
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, label: &NamedToken) -> Option<u64> {
         self.inner.label_rows(label)
     }
 
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64> {
+    fn equality_rows(
+        &self,
+        label: &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<u64> {
         self.pair_consult(
             &mut self.consults.borrow_mut().equality,
-            label,
-            property,
+            &label.0,
+            &property.0,
             value,
             || self.inner.equality_rows(label, property, value),
         )
@@ -273,8 +278,8 @@ impl PatternStats for StatsMemo<'_> {
 
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        label: &NamedToken,
+        property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
@@ -283,16 +288,16 @@ impl PatternStats for StatsMemo<'_> {
             bound,
             |classified| RangeQuestionRef {
                 pair: PairQuestionRef {
-                    label,
-                    property,
+                    label: &label.0,
+                    property: &property.0,
                     operand: classified,
                 },
                 op,
             },
             |classified| RangeQuestion {
                 pair: PairQuestion {
-                    label: label.clone(),
-                    property: property.clone(),
+                    label: label.0.clone(),
+                    property: property.0.clone(),
                     operand: SeekOperand::from_ref(classified),
                 },
                 op,
@@ -303,24 +308,24 @@ impl PatternStats for StatsMemo<'_> {
 
     fn contains_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        label: &NamedToken,
+        property: &NamedToken,
         needle: &Expr,
     ) -> Option<ContainsCount> {
         self.pair_consult(
             &mut self.consults.borrow_mut().contains,
-            label,
-            property,
+            &label.0,
+            &property.0,
             needle,
             || self.inner.contains_rows(label, property, needle),
         )
     }
 
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, rel_type: &NamedToken) -> Option<u64> {
         self.inner.rel_type_rows(rel_type)
     }
 
-    fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
+    fn degree_tail(&self, label: &NamedToken, rel_type: &NamedToken) -> Option<u64> {
         self.inner.degree_tail(label, rel_type)
     }
 

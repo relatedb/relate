@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use relate_core::{temporal, ArithmeticFailure, Error, Result, Value};
 use relate_ir::{BinaryOp, Expr, UnaryOp};
+use relate_names::{NamedToken, SmallName, Token};
 
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -26,22 +27,30 @@ pub(crate) fn reject_deleted_access(graph: &ExecGraph<'_>, v: &Value) -> Result<
     }
 }
 
-pub(crate) fn prop(graph: &ExecGraph<'_>, v: &Value, key: &str) -> Result<Value> {
+/// `key` is the property name beside its plan-resolved token;
+/// `Token::Unresolved` for a key the plan never saw (a dynamic or
+/// projected key).
+pub(crate) fn prop(graph: &ExecGraph<'_>, v: &Value, key: &NamedToken) -> Result<Value> {
     Ok(match v {
         Value::Node(n) => graph
-            .node_prop(n.id, key)
-            .or_else(|| n.properties.get(key).cloned())
+            .node_prop_resolved(n.id, key)
+            .or_else(|| key.0.with_str(|text| n.properties.get(text).cloned()))
             .unwrap_or(Value::Null),
         Value::Relationship(r) => graph
-            .rel_prop(r.id, key)
-            .or_else(|| r.properties.get(key).cloned())
+            .rel_prop_resolved(r.id, key)
+            .or_else(|| key.0.with_str(|text| r.properties.get(text).cloned()))
             .unwrap_or(Value::Null),
-        Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
-        Value::Temporal(t) => t.component(key)?,
+        Value::Map(m) => key
+            .0
+            .with_str(|text| m.get(text).cloned())
+            .unwrap_or(Value::Null),
+        Value::Temporal(t) => key.0.with_str(|text| t.component(text))?,
         // The point accessor vocabulary is the data model's, beside the
         // temporal one, so the executor only dispatches — and both answer
         // the same typed rejection for a component their value lacks.
-        Value::Point(p) => relate_core::point_component(p, key)?,
+        Value::Point(p) => key
+            .0
+            .with_str(|text| relate_core::point_component(p, text))?,
         Value::Null => Value::Null,
         _ => {
             return Err(Error::invalid_argument_type(
@@ -527,7 +536,7 @@ pub(crate) fn subscript(graph: &ExecGraph<'_>, v: &Value, index: Value) -> Resul
         // A string key rides the same dispatch as `n.k` (property access),
         // so the two paths cannot drift (the Map/Node/Relationship arms used
         // to be a hand-copied, subtly divergent subset of prop).
-        (_, Value::String(k)) => prop(graph, v, &k)?,
+        (_, Value::String(k)) => prop(graph, v, &(SmallName::from_name(&k), Token::Unresolved))?,
         (Value::Vector { .. }, _) => {
             return Err(Error::invalid_argument_type(
                 "vector indexing is not supported",

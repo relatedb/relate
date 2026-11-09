@@ -19,12 +19,13 @@ use std::sync::Arc;
 use relate_core::{Error, Node, NodeId, PropertyMap, RelId, Result, Value};
 use relate_ir::{BinaryOp, Direction, Expr, NodePattern, RelPattern};
 use relate_model::EntityKind;
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName, Token};
 
 use crate::eval::{eval, label_expr_matches};
 use crate::overlay::ExecGraph;
-use crate::pattern_walk::PatternMapRole;
-use crate::pattern_walk::{id_fn_conversion, map_from_expr, static_rel_type_ok, IdConversion};
+use crate::pattern_walk::{
+    id_fn_conversion, pattern_match_props, static_rel_type_ok, IdConversion,
+};
 use crate::redo::{IndexDetailSpec, IndexKindSpec};
 use crate::row::Row;
 use crate::store::RelTypes;
@@ -404,7 +405,11 @@ pub(crate) fn node_ok(
         // builds `And([])`), so the guard needs no labels cross-check —
         // the same single criterion `label_index_seekable` uses.
         Some(expr) if expr.is_static_conjunction() => {
-            if !np.labels.iter().all(|want| view.has_label(graph, id, want)) {
+            if !np
+                .labels
+                .iter()
+                .all(|(want, token)| view.has_label(graph, id, want, *token))
+            {
                 return Ok(false);
             }
         }
@@ -426,15 +431,17 @@ pub(crate) fn node_ok(
             }
         }
     }
-    if let Some(p) = &np.properties {
-        let want = map_from_expr(graph, row, p, PatternMapRole::Match, params, cypher_version)?;
-        for (k, v) in want {
-            // The string-keyed read: `node_prop` runs one interner
-            // lookup per (candidate, key) — the same count any wrapper
-            // of it pays — and the scratch (uncommitted) map it reads is
-            // string-keyed by construction.
-            let have = view.prop(graph, id, &k);
-            match have {
+    if np.properties.is_some() {
+        let want = pattern_match_props(
+            graph,
+            row,
+            np.properties.as_ref(),
+            &np.prop_keys,
+            params,
+            cypher_version,
+        )?;
+        for (key, v) in want {
+            match view.prop(graph, id, &key) {
                 Some(have) if have.eq_non_null(&v) => {}
                 _ => return Ok(false),
             }
@@ -458,14 +465,20 @@ impl ReadView<'_> {
     /// One label check: the tombstone's own string list, or the
     /// interning check — whose `None` (an invisible node) fails the
     /// check exactly like an absent label.
-    fn has_label(&self, graph: &ExecGraph<'_>, id: NodeId, want: &SmallName) -> bool {
+    fn has_label(&self, graph: &ExecGraph<'_>, id: NodeId, want: &SmallName, token: Token) -> bool {
         match self {
             Self::Tombstone(node) => node.labels.iter().any(|have| want == have.as_str()),
+            // Plan-resolved ids skip the lookup; an unresolved plan keeps the
+            // string check. A name the store had not interned at planning
+            // fails without a store read unless a write overlay may carry
+            // it (its labels stay strings until commit).
             Self::Store => {
-                matches!(
-                    want.with_str(|text| graph.node_has_label(id, text)),
-                    Some(true)
-                )
+                let seen = want.with_str(|text| match token {
+                    Token::Id(tid) => graph.node_has_label_id(id, tid.0, text),
+                    Token::Unresolved => graph.node_has_label(id, text),
+                    Token::Absent => graph.node_has_uninterned_label(id, text),
+                });
+                seen == Some(true)
             }
         }
     }
@@ -490,11 +503,11 @@ impl ReadView<'_> {
     }
 
     /// One property read: the tombstone's own map, or the store's
-    /// string-keyed read.
-    fn prop(&self, graph: &ExecGraph<'_>, id: NodeId, key: &str) -> Option<Value> {
+    /// plan-resolved read.
+    fn prop(&self, graph: &ExecGraph<'_>, id: NodeId, key: &NamedToken) -> Option<Value> {
         match self {
-            Self::Tombstone(node) => node.properties.get(key).cloned(),
-            Self::Store => graph.node_prop(id, key),
+            Self::Tombstone(node) => key.0.with_str(|text| node.properties.get(text).cloned()),
+            Self::Store => graph.node_prop_resolved(id, key),
         }
     }
 }

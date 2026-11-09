@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use relate_core::{CancelToken, Error, QueryClockGuard, Result, Value};
 use relate_ir::{Clause, LabelExpr};
-use relate_names::SmallName;
+use relate_names::{SmallName, Token};
 use relate_planner::{clause_mutates_store, clause_projects_rows, plan_any_clause, LogicalPlan};
 
 use crate::ctx::{PlanMetricsSink, PlanMetricsSite};
@@ -175,7 +175,7 @@ use crate::ctx::QueryCtx;
 /// Hoisted from `exec/bulk.rs` (round 4, F-4-1): the static-mirror
 /// discrimination the bulk-write recognizer and the count-only shape
 /// recognizer share — one canonical helper per policy.
-pub(crate) fn static_label_tree(expr: &LabelExpr, names: &[SmallName]) -> bool {
+pub(crate) fn static_label_tree(expr: &LabelExpr, names: &[(SmallName, Token)]) -> bool {
     fn leaves<'a>(expr: &'a LabelExpr, out: &mut Vec<&'a SmallName>) -> bool {
         match expr {
             LabelExpr::Label(name) => {
@@ -191,7 +191,9 @@ pub(crate) fn static_label_tree(expr: &LabelExpr, names: &[SmallName]) -> bool {
     let mut found = Vec::new();
     leaves(expr, &mut found)
         && found.len() == names.len()
-        && found.iter().all(|name| names.iter().any(|n| n == *name))
+        && found
+            .iter()
+            .all(|name| names.iter().any(|(n, _)| n == *name))
 }
 
 /// Whether an optional label expression is absent or static-matches
@@ -199,7 +201,7 @@ pub(crate) fn static_label_tree(expr: &LabelExpr, names: &[SmallName]) -> bool {
 /// consults: gate on static-vs-dynamic, never on presence (round 4,
 /// F-4-1/F-4-2: the raw front-lowered shape carries the static mirror,
 /// and a presence gate would decline real pipeline shapes).
-pub(crate) fn label_expr_ok(expr: &Option<LabelExpr>, names: &[SmallName]) -> bool {
+pub(crate) fn label_expr_ok(expr: &Option<LabelExpr>, names: &[(SmallName, Token)]) -> bool {
     expr.as_ref().is_none_or(|e| static_label_tree(e, names))
 }
 

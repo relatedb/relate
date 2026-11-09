@@ -135,6 +135,7 @@ fn complex_projection_items_exclude_variables_literals_and_aggregates() {
         args: vec![Expr::Variable("a".into())],
     }));
     assert!(is_complex_projection_item(&Expr::Property {
+        key_id: Default::default(),
         expr: Box::new(Expr::Variable("a".into())),
         key: "p".into(),
     }));
@@ -279,6 +280,7 @@ fn complex_reference_detection_is_one_walk_per_subclause_expression() {
     let items: Vec<Projection> = (0..WIDTH)
         .map(|index| Projection {
             expr: Expr::Property {
+                key_id: Default::default(),
                 expr: Box::new(Expr::Variable("n".into())),
                 key: SmallName::from_name(&format!("p{index}")),
             },
@@ -312,6 +314,7 @@ fn complex_reference_check_declines_past_the_work_budget() {
     let items: Vec<Projection> = (0..WIDTH)
         .map(|index| Projection {
             expr: Expr::Property {
+                key_id: Default::default(),
                 expr: Box::new(Expr::Variable("n".into())),
                 key: SmallName::from_name(&format!("p{index}")),
             },
@@ -335,6 +338,7 @@ fn complex_reference_check_declines_past_the_work_budget() {
 fn complex_reference_requires_grouping_or_distinct() {
     let item = Projection {
         expr: Expr::Property {
+            key_id: Default::default(),
             expr: Box::new(Expr::Variable("n".into())),
             key: "name".into(),
         },

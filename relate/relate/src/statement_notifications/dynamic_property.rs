@@ -44,7 +44,7 @@ use relate_ir::{
 };
 use relate_model::wire::{Notification, NotificationKind};
 use relate_model::EntityKind;
-use relate_names::SmallName;
+use relate_names::{SmallName, Token};
 
 use super::resolve_names_with;
 
@@ -195,7 +195,7 @@ impl DynamicPropertyFacts {
         variable: &SmallName,
         kind: EntityKind,
         name_expr: Option<&LabelExpr>,
-        flat_names: &[SmallName],
+        flat_names: &[(SmallName, Token)],
     ) {
         let facts = self
             .variables
@@ -287,7 +287,7 @@ impl DynamicPropertyFacts {
                 self.observe_predicate(key, true, negated, shadowed);
                 self.observe_predicate(expr, in_key, negated, shadowed);
             }
-            Expr::Property { expr, key } => {
+            Expr::Property { expr, key, .. } => {
                 if !in_key {
                     if let Some(facts) = self.variable_facts_mut(expr, shadowed) {
                         facts.static_reads.insert(key.to_string());

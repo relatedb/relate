@@ -4,6 +4,20 @@ use relate_names::SmallName;
 
 use relate_core::{temporal, Value};
 
+/// Lowers a property access: the dynamic bracket form (`n[<expr>]`) to
+/// `DynamicProperty`, the static `n.key` form to a property expression whose
+/// key token is minted `Unresolved` for planning to resolve (ADR-0541).
+pub(super) fn lower_property(p: &cl::PropertyAccess) -> Result<mdb::Expr> {
+    let expr = lower_expr(&p.expr)?;
+    Ok(match &p.key_expr {
+        Some(key) => mdb::Expr::DynamicProperty {
+            expr: Box::new(expr),
+            key: Box::new(lower_expr(key)?),
+        },
+        None => mdb::Expr::property(expr, p.property.clone()),
+    })
+}
+
 pub(super) fn map_exprs(xs: &[cl::Expr]) -> Result<Vec<mdb::Expr>> {
     xs.iter().map(lower_expr).collect()
 }
@@ -192,19 +206,7 @@ pub fn lower_expr(e: &cl::Expr) -> Result<mdb::Expr> {
                 "the OPTIONS placeholder has no expression lowering",
             ))
         }
-        cl::Expr::Property(p) => {
-            if let Some(key) = &p.key_expr {
-                mdb::Expr::DynamicProperty {
-                    expr: Box::new(lower_expr(&p.expr)?),
-                    key: Box::new(lower_expr(key)?),
-                }
-            } else {
-                mdb::Expr::Property {
-                    expr: Box::new(lower_expr(&p.expr)?),
-                    key: p.property.clone(),
-                }
-            }
-        }
+        cl::Expr::Property(p) => lower_property(p)?,
         cl::Expr::FunctionCall(f) => {
             let mut args = map_exprs(&f.args)?;
             let lowered_name = f.name.with_str(str::to_ascii_lowercase);

@@ -113,7 +113,7 @@ mod ladder;
 mod probe;
 
 pub(crate) use admit::{
-    admit_hop, bound_node, map_from_expr, pattern_node_ok, pattern_props, rel_edge_ok,
+    admit_hop, bound_node, pattern_match_props, pattern_node_ok, pattern_props, rel_edge_ok,
     rel_props_ok, static_rel_type_ok, walk_exact_trail, walk_var_length, PatternMapRole, RelFilter,
     RelHop,
 };

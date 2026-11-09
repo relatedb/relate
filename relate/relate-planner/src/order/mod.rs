@@ -6,9 +6,10 @@
 use std::collections::HashSet;
 
 use relate_ir::{
-    key_of, orient, BinaryOp, Expr, NodePattern, PathPattern, PatternElement, RelPattern,
+    orient, pattern_prop_key, var_prop_named, BinaryOp, Expr, NodePattern, PathPattern,
+    PatternElement, RelPattern,
 };
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 
 use crate::rewrite::add_pattern_vars;
 use crate::stats::{ContainsCount, NoPatternStats, PatternStats};
@@ -48,9 +49,9 @@ pub(crate) fn range_seek_wins(window: u64, label_rows: u64) -> bool {
 /// any label is unmeasured (no measurement, no gate — ADR-0486's
 /// default). Allocation-free: the executor's cheapest-start loop runs
 /// it per (pattern, row) (LABS-351).
-pub fn crossover_scan_rows(
-    labels: impl IntoIterator<Item = SmallName>,
-    rows_of: impl Fn(&SmallName) -> Option<u64>,
+pub fn crossover_scan_rows<L>(
+    labels: impl IntoIterator<Item = L>,
+    rows_of: impl Fn(&L) -> Option<u64>,
 ) -> Option<u64> {
     let mut scan_rows: Option<u64> = None;
     for label in labels {
@@ -165,26 +166,26 @@ fn best_equality<'a>(node: &'a NodePattern, stats: &dyn PatternStats) -> Option<
     // a `SeekPick` (a property name clone) per (pair, label) candidate
     // allocated for a minimum only one of them wins. Consult order and
     // the first-wins tie-break are the collected form's.
-    let mut best: Option<(&SmallName, SmallName, &Expr, u64)> = None;
+    let mut best: Option<(&SmallName, NamedToken, &Expr, u64)> = None;
     for (key, value) in pairs {
-        // A value-map key enters the name domain here, classified once
-        // (the stats and the pick speak names).
-        let key = SmallName::from_name(key.as_str());
-        for label in &node.labels {
-            let Some(rows) = stats.equality_rows(label, &key, value) else {
+        // A value-map key enters the name domain here, beside the token
+        // planning resolved for it.
+        let key = pattern_prop_key(&node.prop_keys, key);
+        for named in &node.labels {
+            let Some(rows) = stats.equality_rows(named, &key, value) else {
                 continue;
             };
             if best
                 .as_ref()
                 .is_none_or(|(_, _, _, best_rows)| rows < *best_rows)
             {
-                best = Some((label, key.clone(), value, rows));
+                best = Some((&named.0, key.clone(), value, rows));
             }
         }
     }
     best.map(|(label, prop, bound, rows)| SeekPick {
         label,
-        prop,
+        prop: prop.0,
         op: BinaryOp::Eq,
         bound,
         rows,
@@ -214,17 +215,17 @@ fn best_range<'a>(
     let var = node.variable.as_ref()?;
     // ADR-0493's crossover population, folded once per pattern — the
     // one rule the executor funnel's gate applies too.
-    let scan_rows = crossover_scan_rows(node.labels.iter().cloned(), |l| stats.label_rows(l));
+    let scan_rows = crossover_scan_rows(node.labels.iter(), |label| stats.label_rows(label));
     // The argmin kept as references until the winner is known — the same
     // winner-only discipline as `best_equality` above: one property clone
     // for the pick that wins, none for the candidates that do not.
-    let mut best: Option<(&SmallName, &SmallName, BinaryOp, &Expr, u64)> = None;
+    let mut best: Option<(&SmallName, NamedToken, BinaryOp, &Expr, u64)> = None;
     for expr in where_conjuncts {
         let Some((prop, op, bound)) = range_prop(expr, var) else {
             continue;
         };
-        for label in &node.labels {
-            let Some(rows) = stats.range_rows(label, prop, op, bound) else {
+        for named in &node.labels {
+            let Some(rows) = stats.range_rows(named, &prop, op, bound) else {
                 continue;
             };
             // ADR-0493's crossover per candidate, BEFORE the min: a
@@ -239,13 +240,13 @@ fn best_range<'a>(
                     .as_ref()
                     .is_none_or(|(_, _, _, _, best_rows)| rows < *best_rows)
             {
-                best = Some((label, prop, op, bound, rows));
+                best = Some((&named.0, prop.clone(), op, bound, rows));
             }
         }
     }
     best.map(|(label, prop, op, bound, rows)| SeekPick {
         label,
-        prop: prop.clone(),
+        prop: prop.0,
         op,
         bound,
         rows,
@@ -263,7 +264,7 @@ fn best_range<'a>(
 /// so the tree-build consumes this one spelling, never a second. `Eq`
 /// declines (the property-map fold and `equality_rows` own the point
 /// read), as do `IN` and `STARTS WITH` (deferred, ADR-0486).
-fn range_prop<'a>(expr: &'a Expr, var: &SmallName) -> Option<(&'a SmallName, BinaryOp, &'a Expr)> {
+fn range_prop<'a>(expr: &'a Expr, var: &SmallName) -> Option<(NamedToken, BinaryOp, &'a Expr)> {
     let Expr::Binary { op, left, right } = expr else {
         return None;
     };
@@ -273,7 +274,7 @@ fn range_prop<'a>(expr: &'a Expr, var: &SmallName) -> Option<(&'a SmallName, Bin
     ) {
         return None;
     }
-    orient(|e| key_of(e, var), left, right, *op).map(|(prop, bound, op)| (prop, op, bound))
+    orient(|e| key_named(e, var), left, right, *op).map(|(prop, bound, op)| (prop, op, bound))
 }
 
 /// One indexed seek the start element's predicates resolve to
@@ -342,8 +343,12 @@ fn contains_hits<'a>(
     where_conjuncts
         .into_iter()
         .filter_map(|expr| contains_prop(expr, var))
-        .flat_map(|(prop, needle)| node.labels.iter().map(move |label| (label, prop, needle)))
-        .filter_map(|(label, prop, needle)| stats.contains_rows(label, prop, needle))
+        .flat_map(|(prop, needle)| {
+            node.labels
+                .iter()
+                .map(move |label| (label, prop.clone(), needle))
+        })
+        .filter_map(|(label, prop, needle)| stats.contains_rows(label, &prop, needle))
         .min_by_key(|count| count.rows())
         .map(|count| match count {
             ContainsCount::TextIndex(rows) => Estimate::Measured(u128::from(rows)),
@@ -375,7 +380,14 @@ fn each_conjunct<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     }
 }
 
-fn contains_prop<'a>(expr: &'a Expr, var: &SmallName) -> Option<(&'a SmallName, &'a Expr)> {
+/// `key_of` with the key beside its plan-resolved token.
+fn key_named(expr: &Expr, var: &SmallName) -> Option<NamedToken> {
+    var_prop_named(expr)
+        .filter(|(name, _)| *name == var)
+        .map(|(_, key)| key)
+}
+
+fn contains_prop<'a>(expr: &'a Expr, var: &SmallName) -> Option<(NamedToken, &'a Expr)> {
     let Expr::Binary {
         op: BinaryOp::Contains,
         left,
@@ -388,7 +400,7 @@ fn contains_prop<'a>(expr: &'a Expr, var: &SmallName) -> Option<(&'a SmallName, 
     // side is recognized — a right-side property declines like every other
     // unservable shape, matching string_seek_expr's one-sided policy; the
     // estimate falls back to the unfiltered count.
-    key_of(left, var).map(|key| (key, right.as_ref()))
+    key_named(left, var).map(|key| (key, right.as_ref()))
 }
 
 /// Named paths, named variable-length relationships, and GPM paths stay
@@ -591,7 +603,7 @@ pub fn apply_hop_bound(
     // One named type rides that type's tail; untyped and alternated
     // (`[:A|B]`) rels ride the any-type tail, which bounds every type.
     let rel_type = match rel.types.as_slice() {
-        [rel_type] => Some(rel_type),
+        [(rel_type, _)] => Some(rel_type),
         _ => None,
     };
     stats

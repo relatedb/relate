@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use relate_core::{Error, Result, Value};
+use relate_names::NamedToken;
 
 /// The `TypeError` detail for a byte array stored as a property (ADR-0327).
 const BYTES_PROPERTY_DETAIL: &str = "byte array values cannot be stored as node or \
@@ -225,19 +226,19 @@ pub(crate) fn admit_props(
 
 /// The one canonical property-admission predicate (LABS-668) — the match
 /// half of the pattern-property policy
-/// (`pattern_walk.rs::map_from_expr` produces the wanted map): every
+/// (`pattern_walk.rs::map_from_expr` produces the wanted entries): every
 /// wanted entry must be present on the element and equal under
 /// `eq_non_null`. The element is read key by key through `read` — the
-/// store's per-key reads (`ExecGraph::node_prop`/`rel_prop`), so an
-/// admission compares the wanted entries without cloning the element's
-/// whole property map (LABS-853). The candidates funnel's snapshot-aware
-/// read keeps its own spelling until its sealed unit migrates.
+/// store's per-key reads (`ExecGraph::node_prop_resolved` /
+/// `rel_prop_resolved`), so an admission compares the wanted entries
+/// without cloning the element's whole property map (LABS-853) and
+/// without an interner lookup when the plan resolved the key.
 pub(crate) fn props_all_match(
-    want: &BTreeMap<String, Value>,
-    mut read: impl FnMut(&str) -> Option<Value>,
+    want: &[(NamedToken, Value)],
+    mut read: impl FnMut(&NamedToken) -> Option<Value>,
 ) -> bool {
     want.iter()
-        .all(|(k, v)| read(k).is_some_and(|stored| stored.eq_non_null(v)))
+        .all(|(key, v)| read(key).is_some_and(|stored| stored.eq_non_null(v)))
 }
 
 #[cfg(test)]

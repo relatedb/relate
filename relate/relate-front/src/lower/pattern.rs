@@ -1,6 +1,6 @@
 use super::expr::*;
 use super::*;
-use relate_names::SmallName;
+use relate_names::{SmallName, Token};
 
 pub(super) fn lower_paths(paths: &[cl::PatternPath]) -> Result<Vec<mdb::PathPattern>> {
     paths.iter().map(lower_path).collect()
@@ -217,10 +217,18 @@ fn lower_element_properties(
     Ok(Some(mdb::Expr::Map(pairs)))
 }
 
+/// Names as lowered: planning resolves their tokens later (ADR-0541).
+fn unresolved(names: Vec<SmallName>) -> Vec<(SmallName, Token)> {
+    names
+        .into_iter()
+        .map(|name| (name, Token::Unresolved))
+        .collect()
+}
+
 pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {
     let labels = match &n.label_expr {
         None => Vec::new(),
-        Some(le) => le.as_label_list().unwrap_or_default(),
+        Some(le) => unresolved(le.as_label_list().unwrap_or_default()),
     };
     let properties =
         lower_element_properties(n.properties_param.as_ref(), n.has_properties, &n.properties)?;
@@ -229,17 +237,19 @@ pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {
         labels,
         label_expr: n.label_expr.as_ref().map(lower_label_expr).transpose()?,
         properties,
+        prop_keys: Vec::new(),
         where_clause: n.where_expr.as_ref().map(lower_expr).transpose()?,
         force_scan: false,
     })
 }
 
 pub(super) fn lower_rel(r: &cl::RelPattern) -> Result<mdb::RelPattern> {
-    let types = r
-        .type_expr
-        .as_ref()
-        .and_then(cl::LabelExpr::as_ddl_list)
-        .unwrap_or_default();
+    let types = unresolved(
+        r.type_expr
+            .as_ref()
+            .and_then(cl::LabelExpr::as_ddl_list)
+            .unwrap_or_default(),
+    );
     let properties =
         lower_element_properties(r.properties_param.as_ref(), r.has_properties, &r.properties)?;
     let var_length = r.min_hops.is_some() || r.max_hops.is_some();
@@ -254,6 +264,7 @@ pub(super) fn lower_rel(r: &cl::RelPattern) -> Result<mdb::RelPattern> {
             cl::Direction::Both => mdb::Direction::Both,
         },
         properties,
+        prop_keys: Vec::new(),
         var_length,
         min_hops: r.min_hops.unwrap_or(1),
         max_hops,

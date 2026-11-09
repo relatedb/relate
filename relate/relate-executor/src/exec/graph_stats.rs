@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use relate_core::Value;
 use relate_ir::{BinaryOp, Expr, NodePattern, RelPattern};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName, Token, TokenResolver};
 use relate_planner::{endpoint_estimate, seed_on_rel_start, walk_cost, Bound, ContainsCount};
 
 use crate::graph::Graph;
@@ -67,22 +67,34 @@ impl<'a> GraphStats<'a> {
     }
 }
 
+impl GraphStats<'_> {
+    /// The store id of a name beside its planning token (ADR-0541): `Id`
+    /// answers it, `Absent` answers `None` without a store read, and only
+    /// `Unresolved` interns by name. `None` means no stored entity
+    /// carries the name.
+    fn id_of(&self, name: &SmallName, token: Token) -> Option<u32> {
+        token.id_or_else(|| name.with_str(|text| self.graph.resolve(text).id()))
+    }
+}
+
 impl relate_planner::PatternStats for GraphStats<'_> {
-    // The trait rides the IR's name representation (ADR-0509 stage 3);
-    // each graph API call reads the name text through the allocation-
-    // free bridge.
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
-        label.with_str(|text| Some(self.graph.label_count(text)))
+    fn label_rows(&self, (name, token): &NamedToken) -> Option<u64> {
+        Some(
+            self.id_of(name, *token)
+                .map_or(0, |id| self.graph.label_count_by_id(id)),
+        )
     }
 
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64> {
+    fn equality_rows(
+        &self,
+        (label, label_token): &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<u64> {
         let value = value.seek_value(self.params)?;
-        label.with_str(|label_text| {
-            property.with_str(|property_text| {
-                self.graph
-                    .pattern_equality_rows(label_text, property_text, &value)
-            })
-        })
+        let lid = self.id_of(label, *label_token)?;
+        let kid = self.id_of(&property.0, property.1)?;
+        self.graph.pattern_equality_rows_by_id(lid, kid, &value)
     }
 
     /// ADR-0486: the range window's posting-length count, delegated to
@@ -95,14 +107,20 @@ impl relate_planner::PatternStats for GraphStats<'_> {
     /// plan-time estimate's).
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        (label, label_token): &NamedToken,
+        property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
         let bound = bound.seek_value(self.params)?;
+        // The one by-name fallback: the range seek's owned forms are
+        // names, so a resolved label still reads through the name-keyed
+        // store path; an `Absent` label declines before any store read.
+        if *label_token == Token::Absent {
+            return None;
+        }
         label.with_str(|label_text| {
-            property.with_str(|property_text| {
+            property.0.with_str(|property_text| {
                 self.graph
                     .pattern_range_rows(label_text, property_text, op, &bound)
             })
@@ -114,19 +132,25 @@ impl relate_planner::PatternStats for GraphStats<'_> {
     /// ([`Graph::pattern_contains_rows`]) — so only a non-string needle
     /// stays unmeasured (`None`, the ladder's fallback). The provenance
     /// stays typed in [`ContainsCount`]; the planner compounds the
-    /// sampled form's scan floor on its one scale (ADR-0474).
+    /// sampled form's scan floor on its one scale (ADR-0474). The sample
+    /// rides the name-keyed store path like `range_rows`; an `Absent`
+    /// label is the measurable zero the by-name path answers for a label
+    /// never interned.
     fn contains_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        (label, label_token): &NamedToken,
+        property: &NamedToken,
         needle: &Expr,
     ) -> Option<ContainsCount> {
         let needle = needle.seek_value(self.params)?;
         let Value::String(needle) = needle else {
             return None;
         };
+        if *label_token == Token::Absent {
+            return Some(ContainsCount::SampleScan { rows: 0, scan: 0 });
+        }
         label.with_str(|label_text| {
-            property.with_str(|property_text| {
+            property.0.with_str(|property_text| {
                 Some(
                     self.graph
                         .pattern_contains_rows(label_text, property_text, &needle),
@@ -135,17 +159,19 @@ impl relate_planner::PatternStats for GraphStats<'_> {
         })
     }
 
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
-        rel_type.with_str(|text| Some(self.graph.pattern_rel_type_rows(text)))
+    fn rel_type_rows(&self, (name, token): &NamedToken) -> Option<u64> {
+        Some(
+            self.id_of(name, *token)
+                .map_or(0, |id| self.graph.pattern_rel_type_rows_by_id(id)),
+        )
     }
 
     /// LABS-351: the live graph's histogram tail (the executor keeps the
     /// real one; the null stats default None).
-    fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
-        label.with_str(|label_text| {
-            rel_type
-                .with_str(|rel_type_text| self.graph.pattern_degree_tail(label_text, rel_type_text))
-        })
+    fn degree_tail(&self, label: &NamedToken, rel_type: &NamedToken) -> Option<u64> {
+        let label_id = self.id_of(&label.0, label.1)?;
+        let type_id = self.id_of(&rel_type.0, rel_type.1)?;
+        self.graph.pattern_degree_tail_by_id(label_id, type_id)
     }
 
     /// LABS-991: the live histograms' any-label tail.

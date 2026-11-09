@@ -31,10 +31,3 @@ static SHARED_RANDOM_STATE: OnceLock<RandomState> = OnceLock::new();
 pub(crate) fn shared_random_state() -> SeededState {
     SHARED_RANDOM_STATE.get_or_init(RandomState::new).clone()
 }
-
-/// A map keyed through the seeded policy (LABS-1116, F-1-4): the type a
-/// client-keyed map spells at its boundary, constructed with
-/// [`shared_random_state`] so no fresh `RandomState` is read. The
-/// label-interning memo's keys are the statement's own label strings —
-/// client-controlled, so FxHash is barred (ADR-0355).
-pub(crate) type SeededMap<K, V> = std::collections::HashMap<K, V, SeededState>;

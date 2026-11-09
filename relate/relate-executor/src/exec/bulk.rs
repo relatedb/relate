@@ -123,7 +123,7 @@ fn bare_node_factor(pattern: &PathPattern) -> Option<Factor> {
         // store's count APIs (String domain).
         var: node.variable.as_ref()?.to_string(),
         source: FactorSource::Nodes {
-            labels: node.labels.iter().map(|label| label.to_string()).collect(),
+            labels: node.label_names().map(|label| label.to_string()).collect(),
         },
     })
 }
@@ -161,7 +161,7 @@ fn bare_rel_factor(pattern: &PathPattern) -> Option<Factor> {
     Some(Factor {
         var: rel.variable.as_ref()?.to_string(),
         source: FactorSource::Rels {
-            types: rel.types.iter().map(|ty| ty.to_string()).collect(),
+            types: rel.type_names().map(|ty| ty.to_string()).collect(),
         },
     })
 }

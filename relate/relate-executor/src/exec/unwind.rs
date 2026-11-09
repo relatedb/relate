@@ -148,7 +148,7 @@ fn note(expr: &Expr, source: &Source, hits: &mut Hits) {
     match expr {
         Expr::Star => hits.reads = true,
         Expr::Variable(name) if name == var => hits.vars += 1,
-        Expr::Property { expr, key } => {
+        Expr::Property { expr, key, .. } => {
             if note_base(expr, var, hits) && key.with_str(|text| source.reads_property(text)) {
                 hits.reads = true;
             }

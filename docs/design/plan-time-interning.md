@@ -24,7 +24,8 @@ The cache re-plans on every commit (ADR-0503), so ids never go stale.
    lowest shared crate; store implements it. No behavior change.
    Acceptance: seam unit tests; boundary check passes.
 2. **Resolution step in planning.** Collect names from the statement,
-   resolve once, attach `name + Option<id>` to pattern operators. EXPLAIN
+   resolve once, attach the name beside its three-state `Token`
+   (`Unresolved`, `Absent`, `Id`) to pattern operators. EXPLAIN
    output byte-identical. Acceptance: plan-display tests unchanged; cache
    byte accounting test covers the added field.
 3. **Id-keyed statistics and index probes** in the planner's seam.

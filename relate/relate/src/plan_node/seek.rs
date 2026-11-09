@@ -222,6 +222,7 @@ mod tests {
             op: BinaryOp::Gt,
             left: Box::new(Expr::Int(5)),
             right: Box::new(Expr::Property {
+                key_id: Default::default(),
                 expr: Box::new(Expr::Variable(SmallName::from_name("n"))),
                 key: SmallName::from_name("age"),
             }),

@@ -158,8 +158,7 @@ fn describe(elements: &[mdb::PatternElement]) -> String {
                     .as_ref()
                     .map(|v| v.to_string())
                     .unwrap_or_default(),
-                node.labels
-                    .iter()
+                node.label_names()
                     .map(|label| format!(":{label}"))
                     .collect::<String>(),
             ),
@@ -171,8 +170,7 @@ fn describe(elements: &[mdb::PatternElement]) -> String {
                         .as_ref()
                         .map(|v| v.to_string())
                         .unwrap_or_default(),
-                    rel.types
-                        .iter()
+                    rel.type_names()
                         .map(|t| t.to_string())
                         .collect::<Vec<_>>()
                         .join("|"),

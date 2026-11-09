@@ -41,7 +41,7 @@ fn forced_declines(cypher: &str, names: &[&str]) {
 fn guard_labels(nfa: &FrontierNfa, state: u32) -> Vec<String> {
     nfa.state_guards[state as usize]
         .iter()
-        .flat_map(|guard| guard.labels.iter().map(|label| label.to_string()))
+        .flat_map(|guard| guard.label_names().map(|label| label.to_string()))
         .collect()
 }
 
@@ -266,6 +266,7 @@ fn forced_guards_decline_over_an_unrolling_body() {
     qpp.elements[0] = PatternElement::Node(NodePattern::anonymous());
     let prop = |name: &str| {
         Box::new(relate_ir::Expr::Property {
+            key_id: Default::default(),
             expr: Box::new(relate_ir::Expr::Variable(name.into())),
             key: "k".into(),
         })
@@ -285,7 +286,7 @@ fn forced_guards_decline_over_an_unrolling_body() {
 /// form, the hand-built guard fixture.
 fn labeled_node(label: &str) -> NodePattern {
     NodePattern {
-        labels: vec![label.into()],
+        labels: vec![(label.into(), Default::default())],
         ..NodePattern::anonymous()
     }
 }
@@ -332,7 +333,7 @@ fn forced_dynamic_label_expression_declines() {
 #[test]
 fn rolled_back_probe_leaves_no_stale_guard() {
     let guarded = NodePattern {
-        labels: vec!["User".into()],
+        labels: vec![("User".into(), Default::default())],
         ..named_node("u1")
     };
     let pattern = path_pattern(vec![
@@ -490,6 +491,7 @@ fn forced_group_where_over_a_twice_bound_name_declines() {
     let graph = graph_with_types(&["knows"]);
     let prop = |name: &str| {
         Box::new(relate_ir::Expr::Property {
+            key_id: Default::default(),
             expr: Box::new(relate_ir::Expr::Variable(name.into())),
             key: "k".into(),
         })

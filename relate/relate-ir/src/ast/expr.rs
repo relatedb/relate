@@ -8,7 +8,7 @@
 //! unchanged (`ast::call` sets the same precedent).
 
 use super::{BinaryOp, ChronoOp, LabelExpr, PathPattern, QuantifierKind, Query, TypeExpr, UnaryOp};
-use relate_names::SmallName;
+use relate_names::{SmallName, Token};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -25,6 +25,9 @@ pub enum Expr {
     Property {
         expr: Box<Expr>,
         key: SmallName,
+        /// Token of `key`, set when planning resolves it against a store
+        /// (ADR-0541); `Unresolved` before.
+        key_id: relate_names::Token,
     },
     DynamicProperty {
         expr: Box<Expr>,
@@ -218,6 +221,16 @@ impl VectorMetric {
 }
 
 impl Expr {
+    /// A static property access `expr.key`, its key token minted
+    /// [`Token::Unresolved`] (planning resolves it, ADR-0541).
+    pub fn property(expr: Expr, key: SmallName) -> Expr {
+        Expr::Property {
+            expr: Box::new(expr),
+            key,
+            key_id: Token::Unresolved,
+        }
+    }
+
     /// Fold a seek predicate into a value. Literals fold directly.
     /// Parameters resolve through `params`. `RuntimeValue` is already a
     /// value. `None` means the expression is not a seek constant.

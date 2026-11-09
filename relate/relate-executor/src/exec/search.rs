@@ -532,6 +532,7 @@ mod tests {
             labels: Vec::new(),
             label_expr: None,
             properties: None,
+            prop_keys: Vec::new(),
             where_clause: None,
             force_scan: false,
         }
@@ -544,6 +545,7 @@ mod tests {
             type_expr: None,
             direction: Direction::Outgoing,
             properties: None,
+            prop_keys: Vec::new(),
             var_length: false,
             min_hops: 0,
             max_hops: None,

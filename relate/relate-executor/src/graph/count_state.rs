@@ -84,6 +84,9 @@ pub(crate) enum CountProbe {
     /// One rel type over unlabeled endpoints (`MATCH ()-[r:T]->()`): the
     /// per-type live count (`rel_type_counts`).
     RelType(String),
+    /// [`CountProbe::RelType`] for an already-resolved token id: the one
+    /// by-id read both spellings end in.
+    RelTypeId(u32),
     /// Every rel type over unlabeled endpoints, directed
     /// (`MATCH ()-->() RETURN count(*)`): the sum of the per-type counts.
     /// Undirected declines at the recognizer (each rel matches twice minus
@@ -449,8 +452,16 @@ impl Graph {
     /// bundle's guard; the planner's `PatternStats` adapter and the
     /// constraint-key estimate read this boundary.
     pub(crate) fn pattern_rel_type_rows(&self, rel_type: &str) -> u64 {
+        // A never-interned name is a hard 0, like `interned_count`.
+        self.interner
+            .get_id(rel_type)
+            .map_or(0, |id| self.pattern_rel_type_rows_by_id(id))
+    }
+
+    /// [`Graph::pattern_rel_type_rows`] for an already-resolved token id.
+    pub(crate) fn pattern_rel_type_rows_by_id(&self, type_id: u32) -> u64 {
         let stats = self.count_stats.lock().unwrap();
-        self.probe_count_under(CountProbe::RelType(rel_type.to_string()), &stats)
+        self.probe_count_under(CountProbe::RelTypeId(type_id), &stats)
     }
 
     /// LABS-370 (v1 follow-up): the exact count of live nodes carrying
@@ -528,6 +539,7 @@ impl Graph {
             // is the directed total.
             CountProbe::AllNodes => stats.node_total,
             CountProbe::RelType(t) => self.interned_count(&stats.rel_type_counts, t.as_str()),
+            CountProbe::RelTypeId(id) => stats.rel_type_counts.get(&id).copied().unwrap_or(0),
             CountProbe::AllRels => stats
                 .rel_type_counts
                 .values()

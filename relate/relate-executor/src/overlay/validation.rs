@@ -86,11 +86,10 @@ impl<'a> ExecGraph<'a> {
     }
 
     /// Whether live node `id` carries `label`, compared in place: no label
-    /// list is cloned. `None` when the node is not live. The interner
-    /// lookup is the per-statement memo (LABS-1116): one string-keyed
-    /// probe per distinct label per statement, not one per candidate.
+    /// list is cloned. `None` when the node is not live. Plan-resolved
+    /// callers use [`Self::node_has_label_id`] instead.
     pub(crate) fn node_has_label(&self, id: NodeId, label: &str) -> Option<bool> {
-        self.label_answer(id, label, self.memo_label_id(label))
+        self.label_answer(id, label, self.base.interned_label_id(label))
     }
 
     /// Whether live node `id` carries the interned label `lid` — the id

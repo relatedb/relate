@@ -166,6 +166,11 @@ impl Graph {
     pub fn pattern_degree_tail(&self, label: &str, rel_type: &str) -> Option<u64> {
         let label_id = self.interner.get_id(label)?;
         let type_id = self.interner.get_id(rel_type)?;
+        self.pattern_degree_tail_by_id(label_id, type_id)
+    }
+
+    /// [`Graph::pattern_degree_tail`] for already-resolved token ids.
+    pub fn pattern_degree_tail_by_id(&self, label_id: u32, type_id: u32) -> Option<u64> {
         let histograms = self.degree_histograms.lock().unwrap();
         Self::bucket_tail(histograms.get(&(label_id, type_id))?)
     }

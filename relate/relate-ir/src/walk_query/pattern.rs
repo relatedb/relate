@@ -127,9 +127,10 @@ mod tests {
     fn node(variable: &str, label: &str) -> NodePattern {
         NodePattern {
             variable: Some(variable.into()),
-            labels: vec![label.into()],
+            labels: vec![(label.into(), Default::default())],
             label_expr: None,
             properties: None,
+            prop_keys: Vec::new(),
             where_clause: None,
             force_scan: false,
         }
@@ -156,7 +157,7 @@ mod tests {
         let mut seen = Vec::new();
         walk_pattern_payloads(&folded, &mut |payload| {
             if let PatternPayload::Node(node) = payload {
-                seen.push(node.labels[0].clone());
+                seen.push(node.labels[0].0.clone());
             }
         });
         assert_eq!(
@@ -177,7 +178,7 @@ mod tests {
         let mut seen = Vec::new();
         let mut groups = 0;
         walk_pattern_payloads(&folded, &mut |payload| match payload {
-            PatternPayload::Node(node) => seen.push(node.labels[0].clone()),
+            PatternPayload::Node(node) => seen.push(node.labels[0].0.clone()),
             PatternPayload::Relationship(_) => {}
             PatternPayload::Quantified(_) => groups += 1,
         });

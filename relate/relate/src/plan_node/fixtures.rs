@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use relate_ir::{BinaryOp, Direction, Expr, NodePattern, PathPattern, RelPattern};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 use relate_planner::PatternStats;
 
 use crate::stats::PlanStats;
@@ -15,9 +15,13 @@ use crate::stats::PlanStats;
 pub(super) fn node(variable: Option<&str>, labels: &[&str]) -> NodePattern {
     NodePattern {
         variable: variable.map(SmallName::from_name),
-        labels: labels.iter().map(|s| SmallName::from_name(s)).collect(),
+        labels: labels
+            .iter()
+            .map(|s| (SmallName::from_name(s), Default::default()))
+            .collect(),
         label_expr: None,
         properties: None,
+        prop_keys: Vec::new(),
         where_clause: None,
         force_scan: false,
     }
@@ -40,10 +44,14 @@ pub(super) fn predicated(
 pub(super) fn rel(types: &[&str], min: u32, max: Option<u32>) -> RelPattern {
     RelPattern {
         variable: None,
-        types: types.iter().map(|s| SmallName::from_name(s)).collect(),
+        types: types
+            .iter()
+            .map(|s| (SmallName::from_name(s), Default::default()))
+            .collect(),
         type_expr: None,
         direction: Direction::Outgoing,
         properties: None,
+        prop_keys: Vec::new(),
         var_length: max.is_some() || min > 1,
         min_hops: min,
         max_hops: max,
@@ -72,6 +80,7 @@ pub(super) fn comparison(var: &str, prop: &str, op: BinaryOp, bound: Expr) -> Ex
     Expr::Binary {
         op,
         left: Box::new(Expr::Property {
+            key_id: Default::default(),
             expr: Box::new(Expr::Variable(SmallName::from_name(var))),
             key: SmallName::from_name(prop),
         }),
@@ -129,38 +138,48 @@ fn pair_rows(
         .map(|(_, _, rows)| *rows)
 }
 
+/// The one `name` → rows lookup the label-count stubs share.
+pub(super) fn rows_of(table: &[(&'static str, u64)], key: &SmallName) -> Option<u64> {
+    table
+        .iter()
+        .find(|(name, _)| key == *name)
+        .map(|(_, rows)| *rows)
+}
+
 impl PatternStats for Seeking {
     // The fixture tables are (&str, &str, u64) literals; the name-domain
     // parameters probe them through the text bridge.
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
-        self.labels
-            .iter()
-            .find(|(l, _)| label == *l)
-            .map(|(_, rows)| *rows)
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
+        rows_of(&self.labels, label)
     }
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64> {
+    fn equality_rows(
+        &self,
+        (label, _): &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<u64> {
         value.seek_value(&self.params)?;
-        label.with_str(|l| property.with_str(|p| pair_rows(&self.equalities, l, p)))
+        label.with_str(|l| property.0.with_str(|p| pair_rows(&self.equalities, l, p)))
     }
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        (label, _): &NamedToken,
+        property: &NamedToken,
         _: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
         bound.seek_value(&self.params)?;
-        label.with_str(|l| property.with_str(|p| pair_rows(&self.ranges, l, p)))
+        label.with_str(|l| property.0.with_str(|p| pair_rows(&self.ranges, l, p)))
     }
     fn contains_rows(
         &self,
-        _: &SmallName,
-        _: &SmallName,
+        _: &NamedToken,
+        _: &NamedToken,
         _: &Expr,
     ) -> Option<relate_planner::ContainsCount> {
         None
     }
-    fn rel_type_rows(&self, _: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, _: &NamedToken) -> Option<u64> {
         None
     }
 }

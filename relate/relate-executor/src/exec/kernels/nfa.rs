@@ -439,6 +439,7 @@ fn var_length_quantified(rel: &RelPattern) -> QuantifiedPathPattern {
                 direction: rel.direction,
                 // The clamped rel: the bounds live on the quantifier.
                 properties: None,
+                prop_keys: Vec::new(),
                 var_length: false,
                 min_hops: 1,
                 max_hops: Some(1),
@@ -538,7 +539,9 @@ impl<'a> Builder<'a> {
     fn interned(&self, rel: &RelPattern) -> Option<Vec<u32>> {
         rel.types
             .iter()
-            .map(|name| name.with_str(|text| self.graph.rel_type_id(text)))
+            .map(|(name, token)| {
+                token.id_or_else(|| name.with_str(|text| self.graph.rel_type_id(text)))
+            })
             .collect()
     }
 

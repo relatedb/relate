@@ -65,8 +65,8 @@
 use std::cmp::Ordering;
 
 use relate_core::{NodeId, Result, Value};
-use relate_ir::{var_prop, BinaryOp, Expr, MatchMode, NodePattern, PathPattern, UnaryOp};
-use relate_names::SmallName;
+use relate_ir::{var_prop_named, BinaryOp, Expr, MatchMode, NodePattern, PathPattern, UnaryOp};
+use relate_names::{NamedToken, SmallName};
 
 use crate::ctx::{ExecCtx, WalkStart};
 use crate::eval::{binary_pure, eval};
@@ -171,7 +171,7 @@ struct BatchPlan<'a> {
     var: String,
     /// The distinct properties the conjuncts read, first-mention order —
     /// one scratch column each, at slot `1 + index`.
-    keys: Vec<String>,
+    keys: Vec<NamedToken>,
     /// The compiled `WHERE` conjuncts, in evaluation order.
     preds: Vec<BatchPred>,
 }
@@ -248,15 +248,15 @@ fn compile<'a>(
 /// vocabulary does not cover (functions over the row, `OR`, `NOT`,
 /// comparisons of two properties, …), and declining keeps those answers
 /// byte-identical.
-fn compile_pred(expr: &Expr, var: &SmallName, keys: &mut Vec<String>) -> Option<BatchPred> {
+fn compile_pred(expr: &Expr, var: &SmallName, keys: &mut Vec<NamedToken>) -> Option<BatchPred> {
     /// The chunk slot a predicate's key reads: an already-seen key keeps
     /// its column, a new one claims the next scratch slot.
-    fn slot_of(key: &SmallName, keys: &mut Vec<String>) -> usize {
-        // Text compare against the batch filter's String key list.
-        match keys.iter().position(|k| key == k.as_str()) {
+    fn slot_of(key: NamedToken, keys: &mut Vec<NamedToken>) -> usize {
+        // Compare by written name: one token per name within a plan.
+        match keys.iter().position(|(name, _)| *name == key.0) {
             Some(index) => 1 + index,
             None => {
-                keys.push(key.to_string());
+                keys.push(key);
                 keys.len()
             }
         }
@@ -268,7 +268,7 @@ fn compile_pred(expr: &Expr, var: &SmallName, keys: &mut Vec<String>) -> Option<
                 UnaryOp::IsNotNull => false,
                 _ => return None,
             };
-            let (v, key) = var_prop(expr)?;
+            let (v, key) = var_prop_named(expr)?;
             if v != var {
                 return None;
             }
@@ -281,7 +281,7 @@ fn compile_pred(expr: &Expr, var: &SmallName, keys: &mut Vec<String>) -> Option<
             // The property must be the scan variable's, on the left: a
             // mirrored comparison declines (conservative, like the fold's
             // operand-asymmetric declines).
-            let (v, key) = var_prop(left)?;
+            let (v, key) = var_prop_named(left)?;
             if v != var {
                 return None;
             }
@@ -316,12 +316,12 @@ fn scan_chunk(graph: &ExecGraph<'_>, plan: &BatchPlan<'_>, batch: &[NodeId]) -> 
     for &id in batch {
         binding.push(crate::pattern_walk::bind_node_stub(graph, id));
         for (key, column) in plan.keys.iter().zip(&mut scratch) {
-            column.push(graph.node_prop(id, key).unwrap_or(Value::Null));
+            column.push(graph.node_prop_resolved(id, key).unwrap_or(Value::Null));
         }
     }
     let mut names: Vec<String> = Vec::with_capacity(1 + plan.keys.len());
     names.push(plan.var.clone());
-    names.extend(plan.keys.iter().cloned());
+    names.extend(plan.keys.iter().map(|(name, _)| name.to_string()));
     let mut columns: Vec<Column> = Vec::with_capacity(names.len());
     columns.push(Column::from_values(&binding));
     for column in &scratch {

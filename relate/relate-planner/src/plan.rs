@@ -6,6 +6,7 @@ use std::collections::HashSet;
 
 use relate_core::Result;
 use relate_ir::{Clause, Expr, Query};
+use relate_names::TokenResolver;
 
 use crate::binding::{next_stage_scope, Env};
 use crate::names::stage_output_names;
@@ -316,6 +317,20 @@ pub fn plan_with_stats(
     // on the top-level plan.
     plan.use_target = crate::use_target::resolve_use_target(&plan)?;
     Ok(plan)
+}
+
+/// [`plan_with_stats`] after resolving the statement's labels, relationship
+/// types and property keys to token ids against `resolver` (ADR-0541), once,
+/// before any planning step reads them. The ids ride the compiled plan; the
+/// caller's statement tree (cloned into `query`) stays id-free.
+pub fn plan_with_tokens(
+    mut query: Query,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+    stats: &dyn PatternStats,
+    resolver: &dyn TokenResolver,
+) -> Result<LogicalPlan> {
+    crate::resolve::resolve_query(&mut query, resolver);
+    plan_with_stats(query, is_write_procedure, stats)
 }
 
 /// The scope an enclosing context hands one query.

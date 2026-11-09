@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_front::parse_and_lower;
 use relate_ir::{BinaryOp, Clause, Expr};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName, Token, TokenResolver};
 use relate_planner::{
     plan_with_stats, seed_on_rel_start, walk_cost, ContainsCount, Estimate, PatternStats,
 };
@@ -24,6 +24,11 @@ use relate_planner::{
 use super::graph_stats::GraphStats;
 use super::test_support::{exec_autocommit, exec_cypher, range_start_graph};
 use crate::graph::Graph;
+
+/// A name beside the unresolved token: the by-name stats form.
+fn unresolved(name: &str) -> NamedToken {
+    (SmallName::from_name(name), Token::Unresolved)
+}
 
 /// The GBL q19 shape at toy scale: 40 Tags of which 2 carry the needle,
 /// 30 Places, 200 Comments each tagging one tag and located in one place.
@@ -88,13 +93,13 @@ fn sampled_contains_seeds_q19_on_the_tag_side_without_a_text_index() {
     // the compound's input (ADR-0474).
     assert_eq!(
         stats.contains_rows(
-            &SmallName::from_name("Tag"),
-            &SmallName::from_name("name"),
+            &unresolved("Tag"),
+            &unresolved("name"),
             &Expr::String("Copernicus".into())
         ),
         Some(ContainsCount::SampleScan { rows: 2, scan: 40 })
     );
-    assert_eq!(stats.label_rows(&SmallName::from_name("Place")), Some(30));
+    assert_eq!(stats.label_rows(&unresolved("Place")), Some(30));
 
     let query = parse_and_lower(
         "MATCH (c:Comment)-[:commentHasTag]->(t:Tag), \
@@ -112,8 +117,7 @@ fn sampled_contains_seeds_q19_on_the_tag_side_without_a_text_index() {
     // label rows), and the second pattern then grows from the bound c.
     assert!(
         patterns[0].nodes[0]
-            .labels
-            .iter()
+            .label_names()
             .any(|label| label == "Tag"),
         "expected the Tag pattern first, got {:?}",
         patterns[0].nodes[0].labels
@@ -181,16 +185,16 @@ fn sampled_contains_floor_never_undercuts_an_equality_seeded_start() {
     // whose scan floor (3,000) is the compound's input (ADR-0474).
     assert_eq!(
         stats.equality_rows(
-            &SmallName::from_name("Person"),
-            &SmallName::from_name("firstName"),
+            &unresolved("Person"),
+            &unresolved("firstName"),
             &Expr::String("Lei".into())
         ),
         Some(2)
     );
     assert_eq!(
         stats.contains_rows(
-            &SmallName::from_name("Post"),
-            &SmallName::from_name("content"),
+            &unresolved("Post"),
+            &unresolved("content"),
             &Expr::String("Zulu".into())
         ),
         Some(ContainsCount::SampleScan {
@@ -244,18 +248,18 @@ fn the_range_window_seeds_the_pattern_through_the_live_stats() {
     // index keeps.
     assert_eq!(
         stats.range_rows(
-            &SmallName::from_name("Q"),
-            &SmallName::from_name("x"),
+            &unresolved("Q"),
+            &unresolved("x"),
             BinaryOp::Lt,
             &Expr::Int(4)
         ),
         Some(4)
     );
-    assert_eq!(stats.label_rows(&SmallName::from_name("Q")), Some(100));
+    assert_eq!(stats.label_rows(&unresolved("Q")), Some(100));
     assert_eq!(
         stats.range_rows(
-            &SmallName::from_name("Q"),
-            &SmallName::from_name("nokey"),
+            &unresolved("Q"),
+            &unresolved("nokey"),
             BinaryOp::Lt,
             &Expr::Int(4)
         ),
@@ -419,13 +423,13 @@ fn sampled_contains_scan_floor_flips_q8_to_the_person_side() {
     // Person label the tie-break compares.
     assert_eq!(
         stats.contains_rows(
-            &SmallName::from_name("Forum"),
-            &SmallName::from_name("title"),
+            &unresolved("Forum"),
+            &unresolved("title"),
             &Expr::String("Emilio Fernandez".into())
         ),
         Some(ContainsCount::SampleScan { rows: 2, scan: 100 })
     );
-    assert_eq!(stats.label_rows(&SmallName::from_name("Person")), Some(10));
+    assert_eq!(stats.label_rows(&unresolved("Person")), Some(10));
 
     let query = parse_and_lower(
         "MATCH (p:Person)<-[:hasModerator]-(f:Forum) \
@@ -493,8 +497,8 @@ fn the_compound_first_hop_is_the_planners_sample_scan_arithmetic() {
 
     let got = stats.estimate(np, bound, conjuncts.iter().copied(), Some(rel), false);
     let Some(ContainsCount::SampleScan { rows, scan }) = stats.contains_rows(
-        &SmallName::from_name("Tag"),
-        &SmallName::from_name("name"),
+        &unresolved("Tag"),
+        &unresolved("name"),
         &Expr::String("Copernicus".into()),
     ) else {
         panic!("expected a sampled CONTAINS estimate");
@@ -511,4 +515,49 @@ fn the_compound_first_hop_is_the_planners_sample_scan_arithmetic() {
     assert_eq!(u128::from(got), want);
     // the floor invariant: the whole-label scan is the walk cost's floor
     assert!(got >= scan);
+}
+
+/// ADR-0541: one method per probe. An `Id` token reads the store by id and
+/// an `Absent` one answers its zero without touching the interner, while an
+/// `Unresolved` token falls back to the by-name lookup.
+#[test]
+fn token_forms_probe_the_store_by_id_or_not_at_all() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g
+        .create_node(vec!["Person".into()], BTreeMap::new())
+        .unwrap();
+    let b = g
+        .create_node(vec!["Person".into()], BTreeMap::new())
+        .unwrap();
+    g.create_rel(a, b, "KNOWS".into(), BTreeMap::new()).unwrap();
+    g.commit_write();
+    let params = BTreeMap::new();
+    let stats = GraphStats::new(&g, &params);
+    let resolved = |name: &str| (SmallName::from_name(name), g.resolve(name));
+    let absent = |name: &str| (SmallName::from_name(name), Token::Absent);
+    let (person, knows) = (resolved("Person"), resolved("KNOWS"));
+
+    let _ = crate::store::take_get_id_calls();
+    assert_eq!(stats.label_rows(&person), Some(2));
+    assert_eq!(stats.rel_type_rows(&knows), Some(1));
+    assert_eq!(stats.label_rows(&absent("Ghost")), Some(0));
+    assert_eq!(stats.rel_type_rows(&absent("HAUNTS")), Some(0));
+    assert_eq!(stats.degree_tail(&absent("Ghost"), &knows), None);
+    assert_eq!(
+        stats.contains_rows(
+            &absent("Ghost"),
+            &unresolved("name"),
+            &Expr::String("x".into())
+        ),
+        Some(ContainsCount::SampleScan { rows: 0, scan: 0 })
+    );
+    assert_eq!(
+        crate::store::take_get_id_calls(),
+        0,
+        "id/absent probed by name"
+    );
+
+    assert_eq!(stats.label_rows(&unresolved("Person")), Some(2));
+    assert!(crate::store::take_get_id_calls() > 0);
 }

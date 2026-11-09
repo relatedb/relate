@@ -22,11 +22,11 @@
 //! conjunct's message than the walk order would.
 
 use relate_core::{NodeId, Result, Value};
-use relate_ir::{BinaryOp, Expr, NodePattern, UnaryOp};
-use relate_names::SmallName;
+use relate_ir::{var_prop_named, BinaryOp, Expr, NodePattern, UnaryOp};
+use relate_names::{NamedToken, SmallName, Token};
 
 use crate::ctx::ExecCtx;
-use crate::eval::{binary_pure, eval, expr_vars, is_nondeterministic, orient, var_prop};
+use crate::eval::{binary_pure, eval, expr_vars, is_nondeterministic, orient};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -43,13 +43,13 @@ pub(crate) enum Prog {
     /// evaluator, three-valued logic included (a null operand makes the
     /// comparison null, and a `WHERE` keeps only `true`).
     Cmp {
-        key: String,
+        key: NamedToken,
         op: BinaryOp,
         bound: Expr,
     },
     /// `<var>.<key> IS [NOT] NULL` — answered from the property read
     /// alone; nothing can error.
-    Null { key: String, is_null: bool },
+    Null { key: NamedToken, is_null: bool },
 }
 
 /// One pattern node plus its compiled program: what a kernel stage admits
@@ -82,17 +82,25 @@ impl NodeTarget<'_> {
 /// labels stay strings there, interned only at commit), and its nodes
 /// answer through the string arm instead.
 pub(crate) struct InternedLabels<'a> {
-    labels: &'a [SmallName],
+    labels: &'a [(SmallName, Token)],
     ids: Vec<Option<u32>>,
 }
 
 impl InternedLabels<'_> {
-    fn resolve<'a>(ctx: ExecCtx<'_>, labels: &'a [SmallName]) -> InternedLabels<'a> {
+    /// Read the ids the planner resolved onto `pattern` (ADR-0541); an
+    /// unresolved plan falls back to the interner lookup, a label the plan
+    /// saw as never interned has no id.
+    fn resolve<'a>(ctx: ExecCtx<'_>, pattern: &'a NodePattern) -> InternedLabels<'a> {
         InternedLabels {
-            labels,
-            ids: labels
+            labels: &pattern.labels,
+            ids: pattern
+                .labels
                 .iter()
-                .map(|label| label.with_str(|text| ctx.graph.base().interned_label_id(text)))
+                .map(|(label, token)| {
+                    token.id_or_else(|| {
+                        label.with_str(|text| ctx.graph.base().interned_label_id(text))
+                    })
+                })
                 .collect(),
         }
     }
@@ -108,7 +116,7 @@ impl InternedLabels<'_> {
         self.labels
             .iter()
             .zip(&self.ids)
-            .all(|(label, id)| match id {
+            .all(|((label, _), id)| match id {
                 Some(id) => matches!(
                     label.with_str(|text| graph.node_has_label_id(node, *id, text)),
                     Some(true)
@@ -120,11 +128,7 @@ impl InternedLabels<'_> {
                 // can carry an uninterned label, so the check fails
                 // without a store read.
                 None => {
-                    graph.has_write_overlay()
-                        && matches!(
-                            label.with_str(|text| graph.node_has_label(node, text)),
-                            Some(true)
-                        )
+                    label.with_str(|text| graph.node_has_uninterned_label(node, text)) == Some(true)
                 }
             })
     }
@@ -166,14 +170,14 @@ pub(crate) trait NodePred: Copy {
 /// Labels only.
 #[derive(Clone, Copy)]
 pub(crate) struct LabelsOnly<'a> {
-    labels: &'a [SmallName],
+    pattern: &'a NodePattern,
 }
 
 /// Labels plus one property comparison.
 #[derive(Clone, Copy)]
 pub(crate) struct PropCmp<'a> {
-    labels: &'a [SmallName],
-    key: &'a str,
+    pattern: &'a NodePattern,
+    key: &'a NamedToken,
     op: BinaryOp,
     bound: &'a Expr,
 }
@@ -181,8 +185,8 @@ pub(crate) struct PropCmp<'a> {
 /// Labels plus one null check.
 #[derive(Clone, Copy)]
 pub(crate) struct PropNull<'a> {
-    labels: &'a [SmallName],
-    key: &'a str,
+    pattern: &'a NodePattern,
+    key: &'a NamedToken,
     is_null: bool,
 }
 
@@ -190,7 +194,7 @@ impl<'a> NodePred for LabelsOnly<'a> {
     type Prepared = InternedLabels<'a>;
 
     fn prepare(&self, ctx: ExecCtx<'_>) -> Result<Self::Prepared> {
-        Ok(InternedLabels::resolve(ctx, self.labels))
+        Ok(InternedLabels::resolve(ctx, self.pattern))
     }
 
     fn admits(
@@ -212,7 +216,7 @@ impl<'a> NodePred for LabelsOnly<'a> {
 /// check itself, over the prepared facts alone.
 pub(crate) struct CmpPrepared<'a> {
     labels: InternedLabels<'a>,
-    key: &'a str,
+    key: &'a NamedToken,
     op: BinaryOp,
     value: Value,
 }
@@ -232,7 +236,10 @@ impl CmpPrepared<'_> {
         }
         // The canonical property read: a missing property is null, and a
         // null operand is `binary`'s null arm again.
-        let have = ctx.graph.node_prop(node, self.key).unwrap_or(Value::Null);
+        let have = ctx
+            .graph
+            .node_prop_resolved(node, self.key)
+            .unwrap_or(Value::Null);
         if have.is_null() {
             return Ok(false);
         }
@@ -255,7 +262,7 @@ impl<'a> NodePred for PropCmp<'a> {
             ctx.cypher_version,
         )?;
         Ok(CmpPrepared {
-            labels: InternedLabels::resolve(ctx, self.labels),
+            labels: InternedLabels::resolve(ctx, self.pattern),
             key: self.key,
             op: self.op,
             value,
@@ -281,7 +288,7 @@ impl<'a> NodePred for PropNull<'a> {
 
     fn prepare(&self, ctx: ExecCtx<'_>) -> Result<Self::Prepared> {
         Ok(PreparedNull {
-            labels: InternedLabels::resolve(ctx, self.labels),
+            labels: InternedLabels::resolve(ctx, self.pattern),
             key: self.key,
             is_null: self.is_null,
         })
@@ -305,7 +312,7 @@ impl<'a> NodePred for PropNull<'a> {
 /// written polarity — the check itself reads only the property.
 pub(crate) struct PreparedNull<'a> {
     labels: InternedLabels<'a>,
-    key: &'a str,
+    key: &'a NamedToken,
     is_null: bool,
 }
 
@@ -318,7 +325,7 @@ impl PreparedNull<'_> {
         }
         let is_null = ctx
             .graph
-            .node_prop(node, self.key)
+            .node_prop_resolved(node, self.key)
             .is_none_or(|value: Value| value.is_null());
         Ok(is_null == self.is_null)
     }
@@ -389,17 +396,17 @@ impl<'a> NodePred for Admission<'a> {
 impl<'a> Admission<'a> {
     /// The dispatched admission of `target`'s compiled program.
     pub(crate) fn of(target: &'a NodeTarget<'a>) -> Admission<'a> {
-        let labels = target.pattern.labels.as_slice();
+        let pattern = target.pattern;
         match &target.prog {
-            Prog::Bare => Admission::Bare(LabelsOnly { labels }),
+            Prog::Bare => Admission::Bare(LabelsOnly { pattern }),
             Prog::Cmp { key, op, bound } => Admission::Cmp(PropCmp {
-                labels,
+                pattern,
                 key,
                 op: *op,
                 bound,
             }),
             Prog::Null { key, is_null } => Admission::Null(PropNull {
-                labels,
+                pattern,
                 key,
                 is_null: *is_null,
             }),
@@ -427,24 +434,18 @@ pub(crate) fn decode_conjunct(expr: &Expr) -> Option<(String, Prog)> {
                 UnaryOp::IsNotNull => false,
                 _ => return None,
             };
-            let (var, key) = var_prop(expr)?;
-            Some((
-                var.to_string(),
-                Prog::Null {
-                    key: key.to_string(),
-                    is_null,
-                },
-            ))
+            let (var, key) = var_prop_named(expr)?;
+            Some((var.to_string(), Prog::Null { key, is_null }))
         }
         Expr::Binary { op, left, right } if is_pred_op(*op) => {
-            let ((var, key), other, op) = orient(var_prop, left, right, *op)?;
+            let ((var, key), other, op) = orient(var_prop_named, left, right, *op)?;
             if !bound_is_row_invariant(other) {
                 return None;
             }
             Some((
                 var.to_string(),
                 Prog::Cmp {
-                    key: key.to_string(),
+                    key,
                     op,
                     bound: other.clone(),
                 },
@@ -563,7 +564,7 @@ mod tests {
         assert!(is_bare(&Prog::Bare));
         // Prog is Clone (the matcher stores it beside its pattern).
         let prog = Prog::Cmp {
-            key: "k".to_string(),
+            key: ("k".into(), Token::Unresolved),
             op: BinaryOp::Eq,
             bound: Expr::Int(1),
         };

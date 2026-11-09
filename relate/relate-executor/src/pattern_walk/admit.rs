@@ -23,7 +23,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{Error, NodeId, RelId, Result, Value};
-use relate_ir::{Expr, NodePattern, PathPattern, RelPattern};
+use relate_ir::{pattern_prop_key, Expr, NodePattern, PathPattern, RelPattern};
+use relate_names::NamedToken;
 
 use crate::eval::{eval, label_expr_matches};
 use crate::overlay::ExecGraph;
@@ -110,6 +111,32 @@ pub(crate) fn pattern_props(
     }
 }
 
+/// [`pattern_props`] for a match reader, each wanted key beside its
+/// plan-resolved token from the pattern's `prop_keys` — `Unresolved`
+/// for a key the plan did not spell (a parameter map, a pushed-down
+/// equality), which reads by name.
+pub(crate) fn pattern_match_props(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    properties: Option<&Expr>,
+    prop_keys: &[NamedToken],
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+) -> Result<Vec<(NamedToken, Value)>> {
+    let want = pattern_props(
+        graph,
+        row,
+        properties,
+        PatternMapRole::Match,
+        params,
+        cypher_version,
+    )?;
+    Ok(want
+        .into_iter()
+        .map(|(name, value)| (pattern_prop_key(prop_keys, &name), value))
+        .collect())
+}
+
 /// The eval walk engine's node admission, shared with the expression
 /// shortest paths: visibility, the label expression, then the property
 /// map — both halves with one error policy (LABS-668): a malformed or
@@ -152,16 +179,18 @@ pub(crate) fn pattern_node_ok(
             }
         }
     }
-    let want = pattern_props(
+    let want = pattern_match_props(
         graph,
         row,
         np.properties.as_ref(),
-        PatternMapRole::Match,
+        &np.prop_keys,
         params,
         cypher_version,
     )?;
     // the wanted entries only, read key by key from the store
-    Ok(props_all_match(&want, |key| graph.node_prop(id, key)))
+    Ok(props_all_match(&want, |key| {
+        graph.node_prop_resolved(id, key)
+    }))
 }
 
 /// The one-hop rel-property admission the walker's [`rel_edge_ok`] and
@@ -186,17 +215,19 @@ pub(crate) fn rel_props_ok(
     if !graph.rel_exists(rid) {
         return Ok(false);
     }
-    let want = map_from_expr(
+    let want = pattern_match_props(
         graph,
         row,
-        props,
-        PatternMapRole::Match,
+        Some(props),
+        &rp.prop_keys,
         params,
         cypher_version,
     )?;
     // the wanted entries only, read key by key from the store — never
     // the rel's whole property map (LABS-853)
-    Ok(props_all_match(&want, |key| graph.rel_prop(rid, key)))
+    Ok(props_all_match(&want, |key| {
+        graph.rel_prop_resolved(rid, key)
+    }))
 }
 
 /// One rel pattern's resolved walk facts (LABS-801), computed once at the
@@ -217,12 +248,8 @@ impl RelFilter {
     /// Resolve `rp`'s walk facts against the view's interner — the one
     /// construction every walk's entry spells.
     pub(crate) fn resolve(graph: &ExecGraph<'_>, rp: &RelPattern) -> Self {
-        // Map-bridge: the interner's type lookup stays String-keyed; the
-        // pattern's types render once per filter resolve (per walk, not
-        // per edge).
-        let types: Vec<String> = rp.types.iter().map(|ty| ty.to_string()).collect();
         RelFilter {
-            types: graph.rel_types(&types),
+            types: graph.rel_types_of(rp),
             type_expr_static: rp.type_expr_is_static_types(),
         }
     }

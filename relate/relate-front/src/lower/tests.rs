@@ -260,7 +260,7 @@ fn var_length_chain_keeps_interior_nodes_as_group_targets() {
         other => panic!("expected a quantified element at {i}, got {other:?}"),
     };
     let node_labels = |p: &mdb::PathPattern, i: usize| match &p.elements[i] {
-        mdb::PatternElement::Node(node) => node.labels.clone(),
+        mdb::PatternElement::Node(node) => node.label_names().cloned().collect::<Vec<_>>(),
         other => panic!("expected a node element at {i}, got {other:?}"),
     };
     assert_eq!(chain.elements.len(), 5);

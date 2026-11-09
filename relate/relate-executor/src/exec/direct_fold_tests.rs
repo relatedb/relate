@@ -4,7 +4,7 @@ use super::*;
 use crate::graph::Graph;
 use relate_core::NodeId;
 use relate_ir::Expr;
-use relate_names::SmallName;
+use relate_names::NamedToken;
 
 fn q11_graph() -> Graph {
     let g = Graph::default();
@@ -88,7 +88,7 @@ fn assert_q11(result: &QueryResult) {
 struct OrgSeed;
 
 impl relate_planner::PatternStats for OrgSeed {
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
         match label {
             label if label == "Organisation" => Some(1),
             label if label == "Person" => Some(1_000),
@@ -96,20 +96,20 @@ impl relate_planner::PatternStats for OrgSeed {
         }
     }
 
-    fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &Expr) -> Option<u64> {
+    fn equality_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<u64> {
         None
     }
 
     fn contains_rows(
         &self,
-        _: &SmallName,
-        _: &SmallName,
+        _: &NamedToken,
+        _: &NamedToken,
         _: &Expr,
     ) -> Option<relate_planner::ContainsCount> {
         None
     }
 
-    fn rel_type_rows(&self, _: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, _: &NamedToken) -> Option<u64> {
         None
     }
 }

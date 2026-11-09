@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use relate_ir::{
     classify_aggregate, AggregateKind, BinaryOp, Expr, PathPattern, Projection, UnaryOp,
 };
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 
 use crate::eval::{expr_vars, is_agg_expr, orient};
 
@@ -41,12 +41,12 @@ pub(super) enum KeyPlan {
 
 pub(super) enum PathPred {
     Cmp {
-        key: String,
+        key: NamedToken,
         op: BinaryOp,
         other: Expr,
     },
     Null {
-        key: String,
+        key: NamedToken,
         is_null: bool,
     },
 }
@@ -67,7 +67,7 @@ pub(super) enum CountSeat {
     Prop {
         distinct: bool,
         slot: usize,
-        prop: String,
+        prop: NamedToken,
     },
     Whole {
         distinct: bool,
@@ -80,7 +80,7 @@ pub(super) enum CountSeat {
 /// splits the classified items into the plan's key list, count seats,
 /// and per-item ranks, and no later site re-walks this vocabulary.
 enum PathItem {
-    Key { slot: usize, prop: String },
+    Key { slot: usize, prop: NamedToken },
     Count(CountSeat),
 }
 
@@ -98,7 +98,7 @@ pub(super) struct PathPlan {
     /// The key half of the classified items: one `(slot, prop)` per key
     /// item, in item order. The runtime key derivation reads this list
     /// directly — no per-binding re-filter of the items.
-    pub(super) keys: Vec<(usize, String)>,
+    pub(super) keys: Vec<(usize, NamedToken)>,
     /// The count half of the classified items: one seat per count item,
     /// in item order — the fold's aggregate template.
     pub(super) seats: Vec<CountSeat>,
@@ -208,10 +208,14 @@ fn slot_of(occ: &[Occ], patterns: &[PathPattern], name: &SmallName) -> Option<us
 
 /// The path-fold slot of a `var.prop` access — `var_prop` mapped through
 /// the occurrence table.
-fn node_prop_slot(expr: &Expr, occ: &[Occ], patterns: &[PathPattern]) -> Option<(usize, String)> {
-    let (name, key) = crate::eval::var_prop(expr)?;
+fn node_prop_slot(
+    expr: &Expr,
+    occ: &[Occ],
+    patterns: &[PathPattern],
+) -> Option<(usize, NamedToken)> {
+    let (name, key) = relate_ir::var_prop_named(expr)?;
     let slot = slot_of(occ, patterns, name)?;
-    Some((slot, key.to_string()))
+    Some((slot, key))
 }
 
 /// The path-fold slot of a bare node variable (ADR-0485's whole-node
@@ -394,7 +398,7 @@ pub(super) fn compile_path(
     // halves and records each item's rank within its half: the key
     // derivation, the aggregate template, and the output loop all read
     // these tables — nothing re-walks the `PathItem` vocabulary.
-    let mut keys: Vec<(usize, String)> = Vec::new();
+    let mut keys: Vec<(usize, NamedToken)> = Vec::new();
     let mut seats: Vec<CountSeat> = Vec::new();
     let mut ranks: Vec<Rank> = Vec::with_capacity(items.len());
     for item in items {
@@ -424,7 +428,7 @@ pub(super) fn compile_path(
 /// The key-slot classification of the key list: no keys, keys all
 /// reading the same slot (one key column), or keys reading different
 /// slots.
-fn key_plan_of(keys: &[(usize, String)]) -> KeyPlan {
+fn key_plan_of(keys: &[(usize, NamedToken)]) -> KeyPlan {
     match keys {
         [] => KeyPlan::None,
         keys if keys.iter().all(|(slot, _)| *slot == keys[0].0) => KeyPlan::One(keys[0].0),

@@ -15,7 +15,8 @@ use relate_executor::{is_ontology_store_op, is_ontology_write_procedure};
 use relate_ir::{Clause, Query};
 use relate_planner::{
     admin_command_heads_statement, composed_admin_disallowed_clause, is_database_admin_command,
-    is_write, plan_with_stats, query_type, unsupported_system_clause_names, LogicalPlan, QueryType,
+    is_write, plan_with_tokens, query_type, unsupported_system_clause_names, LogicalPlan,
+    QueryType,
 };
 
 use crate::connection::Connection;
@@ -126,7 +127,9 @@ impl Connection {
         // Same bound-literal window the parameterized parse uses, so a
         // float slice bound fails here the way the original literal does.
         let _auto = relate_core::AutoLiteralGuard::install(params);
-        plan_with_stats(query, &mut is_write_proc, &stats)
+        // Deref-coerced down to the store's `Graph`, the token resolver.
+        let graph: &relate_executor::Graph = &self.inner.graph;
+        plan_with_tokens(query, &mut is_write_proc, &stats, graph)
     }
 
     /// The gate-and-classification half of [`Self::plan_gate_classify`],

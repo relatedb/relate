@@ -575,4 +575,50 @@ mod tests {
             ))
         );
     }
+
+    /// ADR-0541: tokens are resolved only in the compiled plan. The cached
+    /// statement tree stays `Unresolved`; the plan carries the store's ids.
+    #[test]
+    fn statement_tree_holds_no_resolved_tokens() {
+        use relate_names::{Token, TokenId};
+        struct Interned;
+        impl relate_names::TokenResolver for Interned {
+            fn resolve(&self, name: &str) -> Token {
+                if name == "Person" || name == "KNOWS" || name == "age" {
+                    Token::Id(TokenId(7))
+                } else {
+                    Token::Absent
+                }
+            }
+        }
+        let query = relate_front::parse_and_lower(
+            "MATCH (n:Person)-[:KNOWS]->(m) WHERE n.age > 1 RETURN m",
+        )
+        .unwrap();
+        let resolved = relate_planner::plan_with_tokens(
+            query.clone(),
+            &mut |_| false,
+            &relate_planner::NoPatternStats,
+            &Interned,
+        )
+        .unwrap();
+
+        let relate_ir::Clause::Match { patterns, .. } = &query.parts[0].clauses[0] else {
+            panic!("expected MATCH first");
+        };
+        assert!(patterns[0]
+            .nodes
+            .iter()
+            .all(|n| n.labels.iter().all(|(_, t)| *t == Token::Unresolved)));
+        assert!(patterns[0]
+            .rels
+            .iter()
+            .all(|r| r.types.iter().all(|(_, t)| *t == Token::Unresolved)));
+
+        let relate_ir::Clause::Match { patterns, .. } = &resolved.parts[0][0] else {
+            panic!("expected MATCH first");
+        };
+        assert_eq!(patterns[0].nodes[0].labels[0].1, Token::Id(TokenId(7)));
+        assert_eq!(patterns[0].rels[0].types[0].1, Token::Id(TokenId(7)));
+    }
 }

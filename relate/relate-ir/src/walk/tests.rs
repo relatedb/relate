@@ -142,6 +142,7 @@ fn children_do_not_descend_into_patterns_or_subqueries() {
         labels: Vec::new(),
         label_expr: None,
         properties,
+        prop_keys: Vec::new(),
         where_clause: None,
         force_scan: false,
     };
@@ -154,6 +155,7 @@ fn children_do_not_descend_into_patterns_or_subqueries() {
         }),
         direction: crate::Direction::Outgoing,
         properties: Some(var("rp")),
+        prop_keys: Vec::new(),
         var_length: false,
         min_hops: 1,
         max_hops: None,
@@ -252,6 +254,7 @@ fn needs_gpm_is_the_single_shared_predicate() {
         labels: Vec::new(),
         label_expr: None,
         properties: None,
+        prop_keys: Vec::new(),
         where_clause: None,
         force_scan: false,
     };
@@ -261,6 +264,7 @@ fn needs_gpm_is_the_single_shared_predicate() {
         type_expr: None,
         direction: crate::Direction::Outgoing,
         properties: None,
+        prop_keys: Vec::new(),
         var_length: false,
         min_hops: 1,
         max_hops: None,
@@ -584,6 +588,7 @@ fn walk_scope_children_classifies_every_binding_variant() {
         name: "collect".into(),
         distinct: false,
         args: vec![Expr::Property {
+            key_id: Default::default(),
             expr: Box::new(var("n")),
             key: "x".into(),
         }],

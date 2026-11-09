@@ -53,9 +53,7 @@ pub(crate) fn eval_shortest(
     let expr = ShortestExpr {
         search: Search {
             graph,
-            // Map-bridge: the interner's type lookup stays String-keyed;
-            // the pattern's types render once per search build.
-            types: graph.rel_types(&rp.types.iter().map(|ty| ty.to_string()).collect::<Vec<_>>()),
+            types: graph.rel_types_of(rp),
             dir: rp.direction,
             min,
             max,

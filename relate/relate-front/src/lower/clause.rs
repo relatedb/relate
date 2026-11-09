@@ -375,17 +375,7 @@ pub(super) fn lower_set_items(items: &[cl::SetItem]) -> Result<Vec<mdb::SetItem>
                 return Ok(mdb::SetItem::Labels { target, labels });
             }
             let target = if let Some(p) = &s.property {
-                if let Some(key) = &p.key_expr {
-                    mdb::Expr::DynamicProperty {
-                        expr: Box::new(lower_expr(&p.expr)?),
-                        key: Box::new(lower_expr(key)?),
-                    }
-                } else {
-                    mdb::Expr::Property {
-                        expr: Box::new(lower_expr(&p.expr)?),
-                        key: p.property.clone(),
-                    }
-                }
+                lower_property(p)?
             } else if let Some(v) = &s.variable {
                 mdb::Expr::Variable(v.clone())
             } else {
@@ -433,17 +423,7 @@ pub(super) fn lower_remove_items(items: &[cl::RemoveItem]) -> Result<Vec<mdb::Re
                 return Err(nyi("REMOVE item shape"));
             };
             Ok(mdb::RemoveItem::Property {
-                target: if let Some(key) = &p.key_expr {
-                    mdb::Expr::DynamicProperty {
-                        expr: Box::new(lower_expr(&p.expr)?),
-                        key: Box::new(lower_expr(key)?),
-                    }
-                } else {
-                    mdb::Expr::Property {
-                        expr: Box::new(lower_expr(&p.expr)?),
-                        key: p.property.clone(),
-                    }
-                },
+                target: lower_property(p)?,
             })
         })
         .collect()

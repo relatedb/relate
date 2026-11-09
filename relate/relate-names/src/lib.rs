@@ -44,6 +44,54 @@
 use std::fmt;
 use std::sync::Arc;
 
+/// A per-store catalog token id: the id a store's name interner assigned to
+/// a label, relationship type or property key (the id space of
+/// [`SmallName::Id`], ADR-0509 §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TokenId(pub u32);
+
+/// A name's resolution state against a store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Token {
+    /// Planning has not resolved the name: look it up by text.
+    #[default]
+    Unresolved,
+    /// The store has never interned the name, so no stored entity carries it.
+    Absent,
+    /// The store's id for the name.
+    Id(TokenId),
+}
+
+/// A name beside its [`Token`]: the entry type of a pattern's label and
+/// relationship-type lists.
+pub type NamedToken = (SmallName, Token);
+
+impl Token {
+    /// The store id when planning resolved one: `Absent` and `Unresolved`
+    /// answer `None` without any lookup. One dispatch with
+    /// [`Self::id_or_else`].
+    pub fn id(self) -> Option<u32> {
+        self.id_or_else(|| None)
+    }
+
+    /// The store id this token names: `Id` answers it, `Absent` answers
+    /// `None` without calling `lookup`, and only `Unresolved` asks `lookup`
+    /// (the by-name interner read).
+    pub fn id_or_else(self, lookup: impl FnOnce() -> Option<u32>) -> Option<u32> {
+        match self {
+            Token::Id(id) => Some(id.0),
+            Token::Absent => None,
+            Token::Unresolved => lookup(),
+        }
+    }
+}
+
+/// Maps a static name to its [`Token`]: [`Token::Absent`] or [`Token::Id`],
+/// never [`Token::Unresolved`].
+pub trait TokenResolver {
+    fn resolve(&self, name: &str) -> Token;
+}
+
 /// Longest name text carried inline: 7 payload bytes + the top length tag.
 pub const MAX_INLINE_LEN: usize = 7;
 

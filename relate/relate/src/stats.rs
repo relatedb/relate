@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use relate_executor::Graph;
 use relate_ir::{BinaryOp, Expr};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName};
 use relate_planner::PatternStats;
 
 use crate::Value;
@@ -106,11 +106,16 @@ impl PatternStats for GraphPatternStats<'_> {
     // plan-time ordering and exec-time start selection read the same
     // numbers. Only property_index_texts and range_indexed_properties
     // (this crate's own plan-warning/notification facts) stay local.
-    fn label_rows(&self, label: &SmallName) -> Option<u64> {
+    fn label_rows(&self, label: &NamedToken) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params).label_rows(label)
     }
 
-    fn equality_rows(&self, label: &SmallName, property: &SmallName, value: &Expr) -> Option<u64> {
+    fn equality_rows(
+        &self,
+        label: &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params)
             .equality_rows(label, property, value)
     }
@@ -121,8 +126,8 @@ impl PatternStats for GraphPatternStats<'_> {
     /// `degree_tail` precedent, LABS-426).
     fn range_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        label: &NamedToken,
+        property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
     ) -> Option<u64> {
@@ -132,22 +137,22 @@ impl PatternStats for GraphPatternStats<'_> {
 
     fn contains_rows(
         &self,
-        label: &SmallName,
-        property: &SmallName,
+        label: &NamedToken,
+        property: &NamedToken,
         needle: &Expr,
     ) -> Option<relate_planner::ContainsCount> {
         relate_executor::GraphStats::new(self.graph, self.params)
             .contains_rows(label, property, needle)
     }
 
-    fn rel_type_rows(&self, rel_type: &SmallName) -> Option<u64> {
+    fn rel_type_rows(&self, rel_type: &NamedToken) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params).rel_type_rows(rel_type)
     }
 
     /// LABS-426 (the mean-to-tail flip): the histogram tail rides the same
     /// delegation — without this forward the plan path answered the
     /// trait's default `None` and every live plan kept the mean.
-    fn degree_tail(&self, label: &SmallName, rel_type: &SmallName) -> Option<u64> {
+    fn degree_tail(&self, label: &NamedToken, rel_type: &NamedToken) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params).degree_tail(label, rel_type)
     }
 

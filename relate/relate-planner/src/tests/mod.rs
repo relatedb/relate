@@ -459,7 +459,10 @@ fn folds_where_equality_into_node_map() {
         } => {
             assert!(where_clause.is_none());
             let n = &patterns[0].nodes[0];
-            assert_eq!(n.labels, vec![SmallName::from_name("Person")]);
+            assert_eq!(
+                n.label_names().collect::<Vec<_>>(),
+                [&SmallName::from_name("Person")]
+            );
             match &n.properties {
                 Some(Expr::Map(pairs)) => {
                     assert!(pairs

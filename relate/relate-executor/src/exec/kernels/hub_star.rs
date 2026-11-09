@@ -36,7 +36,7 @@
 //! discipline.
 
 use relate_core::{NodeId, RelId, Result, Value};
-use relate_ir::{var_prop, Expr};
+use relate_ir::{var_prop_named, Expr};
 use relate_names::SmallName;
 
 use relate_core::Error;
@@ -115,15 +115,10 @@ pub(super) fn run(
     let tallies = WalkTallies::default();
     // LABS-801: each side's hop filters resolve once per run, beside the
     // tallies — never per hub candidate.
-    // Text render: the adjacency type resolver reads name text.
-    let side_types: [Vec<RelTypes>; 2] = star.sides.each_ref().map(|hops| {
-        hops.iter()
-            .map(|hop| {
-                let types: Vec<String> = hop.rel.types.iter().map(|ty| ty.to_string()).collect();
-                graph.rel_types(&types)
-            })
-            .collect()
-    });
+    let side_types: [Vec<RelTypes>; 2] = star
+        .sides
+        .each_ref()
+        .map(|hops| hops.iter().map(|hop| graph.rel_types_of(hop.rel)).collect());
     'hubs: for hub in hubs {
         graph.cancel_tick()?;
         // The halt's per-hub guard, the chain kernel's per-row guard's
@@ -415,12 +410,12 @@ fn counted_nonnull(
     let Some(expr) = counted else {
         return true;
     };
-    let (var, key) =
-        var_prop(expr).expect("the engagement proof admits only var.prop counted expressions");
+    let (var, key) = var_prop_named(expr)
+        .expect("the engagement proof admits only var.prop counted expressions");
     let node = node_of_var(star, hub, a, b, var)
         .expect("the engagement proof checked the counted variable is bound");
     matches!(
-        key.with_str(|text| ctx.graph.node_prop(node, text)),
+        ctx.graph.node_prop_resolved(node, &key),
         Some(v) if !v.is_null()
     )
 }

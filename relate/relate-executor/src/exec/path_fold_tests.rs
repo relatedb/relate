@@ -1,5 +1,7 @@
 use super::agg_fold::take_path_fold_bindings;
-use super::test_support::{build, error_of, exec_autocommit, exec_cypher, try_exec_cypher};
+use super::test_support::{
+    build, error_of, exec_autocommit, exec_cypher, exec_cypher_resolved, try_exec_cypher,
+};
 use super::*;
 use crate::graph::Graph;
 use relate_core::NodeId;
@@ -687,4 +689,106 @@ fn two_hop_min_max_avg_sum_answer_over_the_shape() {
             vec![Value::String("u2".into()), Value::Int(50), Value::Int(2)],
         ]
     );
+}
+
+/// ADR-0541: with the plan's tokens resolved, the fold's label checks and
+/// property reads take ids from the plan — `Interner::get_id` calls do not
+/// grow with the number of candidates.
+#[test]
+fn path_fold_lookups_do_not_grow_with_candidates() {
+    const QUERY: &str = "MATCH (c:Comment)-[:commentHasCreator]->(p:Person) \
+                         WHERE c.content IS NOT NULL AND p.ID = 1 \
+                         RETURN COUNT(DISTINCT c.ID) AS n";
+    let lookups_for = |comments: i64| {
+        let g = Graph::default();
+        g.begin_write().unwrap();
+        let author = person_named(&g, 1, "Ada", "Local");
+        for id in 0..comments {
+            let comment = g
+                .create_node(
+                    vec!["Comment".into()],
+                    BTreeMap::from([
+                        ("ID".into(), Value::Int(id)),
+                        ("content".into(), Value::String("x".into())),
+                    ]),
+                )
+                .unwrap();
+            g.create_rel(comment, author, "commentHasCreator".into(), BTreeMap::new())
+                .unwrap();
+        }
+        g.commit_write();
+        let _ = crate::store::take_get_id_calls();
+        let result = exec_cypher_resolved(&g, QUERY);
+        assert_eq!(result.rows, vec![vec![Value::Int(comments)]]);
+        crate::store::take_get_id_calls()
+    };
+    let small = lookups_for(10);
+    let large = lookups_for(1000);
+    assert_eq!(small, large, "get_id calls grew with candidates");
+}
+
+/// ADR-0541: a property key the store never interned reads as absent from
+/// the plan's token alone — the equality matches no row and the per-query
+/// `get_id` calls (planning, the seek decision) do not grow with the
+/// number of candidates, in every predicate shape that carries the key.
+#[test]
+fn absent_property_key_reads_do_not_grow_with_candidates() {
+    for query in [
+        "MATCH (p:Person) WHERE p.ghost = 1 RETURN p",
+        "MATCH (p:Person) WHERE p.ghost IS NOT NULL RETURN p",
+        "MATCH (p:Person {ghost: 1}) RETURN p",
+        "MATCH (p:Person) WHERE p.ghost = 1 AND p.ID > 0 RETURN p.ID",
+        "MATCH (p:Person) WHERE p.ghost = 1 RETURN count(p.ghost)",
+    ] {
+        let lookups_for = |people: i64| {
+            let g = Graph::default();
+            g.begin_write().unwrap();
+            for id in 0..people {
+                person_named(&g, id, "Ada", "Local");
+            }
+            g.commit_write();
+            let _ = crate::store::take_get_id_calls();
+            let result = exec_cypher_resolved(&g, query);
+            assert!(
+                result.rows.iter().all(|row| row[0] == Value::Int(0)) || result.rows.is_empty()
+            );
+            crate::store::take_get_id_calls()
+        };
+        assert_eq!(lookups_for(10), lookups_for(500), "{query}");
+    }
+}
+
+/// ADR-0541: a relationship property equality and a relationship or node
+/// pattern map on a key the store never interned match no row with the
+/// same `get_id` count at 10 and 500 candidates — the pattern-map keys
+/// and the relationship read carry the plan's token.
+#[test]
+fn absent_rel_and_pattern_map_keys_do_not_grow_with_candidates() {
+    for query in [
+        "MATCH (:Person)-[r:KNOWS]->(:Person) WHERE r.ghost = 1 RETURN r",
+        "MATCH (:Person)-[r:KNOWS {ghost: 1}]->(:Person) RETURN r",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person {ghost: 1}) RETURN a",
+    ] {
+        let lookups_for = |people: i64| {
+            let g = Graph::default();
+            g.begin_write().unwrap();
+            let first = person_named(&g, 0, "Ada", "Local");
+            for id in 1..=people {
+                let next = person_named(&g, id, "Ada", "Local");
+                g.create_rel(
+                    first,
+                    next,
+                    "KNOWS".into(),
+                    BTreeMap::from([("since".into(), Value::Int(id))]),
+                )
+                .unwrap();
+            }
+            g.commit_write();
+            let _ = crate::store::take_get_id_calls();
+            let result = exec_cypher_resolved(&g, query);
+            assert!(result.rows.is_empty(), "{query}");
+            crate::store::take_get_id_calls()
+        };
+        assert_eq!(lookups_for(10), lookups_for(500), "{query}");
+    }
 }

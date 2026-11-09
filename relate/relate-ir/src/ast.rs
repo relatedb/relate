@@ -416,13 +416,23 @@ pub enum RemoveItem {
 /// property key's borrowed names, or `None` for any other expression.
 /// The seek/fold/vector operand recognizers derive from here.
 pub fn var_prop(expr: &Expr) -> Option<(&SmallName, &SmallName)> {
-    let Expr::Property { expr, key } = expr else {
+    let Expr::Property { expr, key, .. } = expr else {
         return None;
     };
     let Expr::Variable(v) = expr.as_ref() else {
         return None;
     };
     Some((v, key))
+}
+
+/// [`var_prop`] with the key as the shared [`relate_names::NamedToken`]:
+/// the written name beside its plan-resolved token, for the executor reads
+/// that skip the by-name interner lookup.
+pub fn var_prop_named(expr: &Expr) -> Option<(&SmallName, relate_names::NamedToken)> {
+    let Expr::Property { key_id, .. } = expr else {
+        return None;
+    };
+    var_prop(expr).map(|(var, key)| (var, (key.clone(), *key_id)))
 }
 
 /// The owned spelling of the `<var>.<key>` pair (filters and plan

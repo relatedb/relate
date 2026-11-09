@@ -7,7 +7,7 @@ use relate_ir::{
     Direction, DynamicLabelQuantifier, Expr, LabelExpr, NodePattern, PathPattern, PatternElement,
     RelPattern,
 };
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName, Token};
 
 use crate::eval::{dynamic_label_names, eval};
 use crate::overlay::ExecGraph;
@@ -127,7 +127,7 @@ fn resolve_element_names(
     params: &BTreeMap<String, Value>,
     expr: Option<&LabelExpr>,
     cypher_version: Option<u32>,
-) -> Result<Option<(Vec<SmallName>, LabelExpr)>> {
+) -> Result<Option<(Vec<NamedToken>, LabelExpr)>> {
     let Some(expr) = expr else {
         return Ok(None);
     };
@@ -139,6 +139,10 @@ fn resolve_element_names(
         .map(|name| SmallName::from_name(name.as_str()))
         .collect();
     let rebuilt = LabelExpr::And(names.iter().cloned().map(LabelExpr::Label).collect());
+    let names = names
+        .into_iter()
+        .map(|name| (name, Token::Unresolved))
+        .collect();
     Ok(Some((names, rebuilt)))
 }
 
@@ -276,7 +280,7 @@ fn without_self_tautologies(
         .filter(|(key, value)| {
             !matches!(
                 value,
-                Expr::Property { expr, key: read }
+                Expr::Property { expr, key: read, .. }
                     if read == key.as_str()
                         && matches!(expr.as_ref(), Expr::Variable(v) if v == variable)
             )

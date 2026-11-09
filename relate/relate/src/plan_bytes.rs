@@ -8,8 +8,11 @@
 use std::cell::Cell;
 
 use relate_core::{str_logical_bytes, Value};
-use relate_ir::{walk_clauses, walk_query, Clause, Expr, MapProjectionItem, Query};
-use relate_names::SmallName;
+use relate_ir::{
+    walk_clauses, walk_pattern_payloads, walk_query, Clause, Expr, MapProjectionItem, PathPattern,
+    PatternPayload, Query,
+};
+use relate_names::{SmallName, Token};
 use relate_planner::LogicalPlan;
 
 /// Heap overhead charged for one visited clause or expression node.
@@ -126,8 +129,8 @@ fn clause_payload(clause: &Clause) -> u64 {
                 .map(str_logical_bytes)
                 .unwrap_or(0),
         ),
+        Clause::Match { patterns, .. } => tokens_bytes(patterns),
         Clause::Catalog(_)
-        | Clause::Match { .. }
         | Clause::Create { .. }
         | Clause::Merge { .. }
         | Clause::Delete { .. }
@@ -141,12 +144,33 @@ fn clause_payload(clause: &Clause) -> u64 {
     }
 }
 
+/// Bytes of the tokens a pattern list carries beside its names (ADR-0541),
+/// counted once per pattern from the authoritative view: the same
+/// compact-versus-elements selection the IR's payload walk applies to names.
+fn tokens_bytes(patterns: &[PathPattern]) -> u64 {
+    let mut entries = 0u64;
+    for path in patterns {
+        walk_pattern_payloads(path, &mut |payload| match payload {
+            PatternPayload::Node(node) => {
+                entries += (node.labels.len() + node.prop_keys.len()) as u64
+            }
+            PatternPayload::Relationship(rel) => {
+                entries += (rel.types.len() + rel.prop_keys.len()) as u64
+            }
+            PatternPayload::Quantified(_) => {}
+        });
+    }
+    entries.saturating_mul(std::mem::size_of::<Token>() as u64)
+}
+
 fn expr_payload(expr: &Expr) -> u64 {
     match expr {
         Expr::String(text) | Expr::Parameter(text) => str_logical_bytes(text),
         Expr::RuntimeValue(value) => value.logical_bytes(),
+        Expr::Property { key, .. } => {
+            name_bytes(key).saturating_add(std::mem::size_of::<Token>() as u64)
+        }
         Expr::Variable(name)
-        | Expr::Property { key: name, .. }
         | Expr::Function { name, .. }
         | Expr::ListComp { ident: name, .. }
         | Expr::Quantifier { ident: name, .. } => name_bytes(name),
@@ -201,5 +225,59 @@ fn expr_payload(expr: &Expr) -> u64 {
         | Expr::ExistsSubquery { .. }
         | Expr::CountSubquery { .. }
         | Expr::CollectSubquery { .. } => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patterns_of(cypher: &str) -> Vec<PathPattern> {
+        let query = relate_front::parse_and_lower(cypher).unwrap();
+        let Clause::Match { patterns, .. } = &query.parts[0].clauses[0] else {
+            panic!("expected MATCH first");
+        };
+        patterns.clone()
+    }
+
+    /// Each pattern is charged once, from its authoritative view: the
+    /// compact `nodes`/`rels` for a plain pattern, the `elements` for a
+    /// quantified (GPM) one.
+    #[test]
+    fn tokens_are_counted_once_per_pattern_in_either_view() {
+        let entry = std::mem::size_of::<Token>() as u64;
+        let compact = patterns_of("MATCH (n:Person)-[:KNOWS]->(m:Person) RETURN m");
+        assert!(!compact[0].needs_gpm());
+        assert_eq!(tokens_bytes(&compact), 3 * entry);
+
+        let gpm = patterns_of("MATCH (n:Person) ((a)-[:KNOWS]->(b:Person)){1,2} (m) RETURN m");
+        assert!(gpm[0].needs_gpm());
+        assert_eq!(tokens_bytes(&gpm), 3 * entry);
+    }
+
+    /// Property-key tokens of node and relationship patterns are charged
+    /// beside the label and type tokens.
+    #[test]
+    fn pattern_prop_key_tokens_are_counted() {
+        let entry = std::mem::size_of::<Token>() as u64;
+        // Lowering mints no key tokens (planning resolves them), so the
+        // entries are stamped here as resolution would leave them.
+        let mut patterns =
+            patterns_of("MATCH (n:Person {name: 'a', age: 1})-[:KNOWS {w: 1}]->(m) RETURN m");
+        let keyed = |name: &str| (SmallName::from_name(name), Token::Unresolved);
+        patterns[0].nodes[0].prop_keys = vec![keyed("name"), keyed("age")];
+        patterns[0].rels[0].prop_keys = vec![keyed("w")];
+        assert_eq!(tokens_bytes(&patterns), (1 + 2 + 1 + 1) * entry);
+    }
+
+    /// A property access carries one token beside its key name.
+    #[test]
+    fn property_expression_counts_its_key_token() {
+        let entry = std::mem::size_of::<Token>() as u64;
+        let expr = Expr::property(Expr::Variable("n".into()), "name".into());
+        assert_eq!(
+            expr_payload(&expr),
+            name_bytes(&SmallName::from_name("name")) + entry
+        );
     }
 }

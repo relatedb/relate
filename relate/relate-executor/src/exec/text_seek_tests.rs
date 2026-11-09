@@ -60,9 +60,10 @@ fn file_pattern() -> relate_ir::NodePattern {
     use relate_ir::{LabelExpr, NodePattern};
     NodePattern {
         variable: Some("f".into()),
-        labels: vec!["File".into()],
+        labels: vec![("File".into(), Default::default())],
         label_expr: Some(LabelExpr::Label("File".into())),
         properties: None,
+        prop_keys: Vec::new(),
         where_clause: None,
         force_scan: false,
     }

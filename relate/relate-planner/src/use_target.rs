@@ -149,7 +149,7 @@ pub(crate) fn static_graph_name(expr: &Expr) -> Option<String> {
         // text renders through Display here.
         Expr::Variable(name) => Some(name.to_string()),
         Expr::String(name) => Some(name.clone()),
-        Expr::Property { expr, key } => Some(format!("{}.{}", static_graph_name(expr)?, key)),
+        Expr::Property { expr, key, .. } => Some(format!("{}.{}", static_graph_name(expr)?, key)),
         _ => None,
     }
 }

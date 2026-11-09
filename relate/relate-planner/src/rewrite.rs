@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use relate_ir::{BinaryOp, Clause, Expr, LabelExpr, PathPattern, Projection};
-use relate_names::SmallName;
+use relate_names::{NamedToken, SmallName, Token};
 
 use crate::order::order_patterns;
 use crate::stats::PatternStats;
@@ -198,7 +198,7 @@ fn static_labels(expr: &LabelExpr) -> Option<Vec<SmallName>> {
     }
 }
 
-fn eq_prop(expr: &Expr) -> Option<(SmallName, SmallName, Expr)> {
+fn eq_prop(expr: &Expr) -> Option<(SmallName, NamedToken, Expr)> {
     let Expr::Binary {
         op: BinaryOp::Eq,
         left,
@@ -209,10 +209,10 @@ fn eq_prop(expr: &Expr) -> Option<(SmallName, SmallName, Expr)> {
     };
     // Eq is operand-symmetric — no op to mirror, so only the shared
     // side-selection core applies.
-    // The borrowed recognizer (`var_prop`) keeps the name domain; the
+    // The recognizer keeps the key beside its plan-resolved token; the
     // pair is cloned to owned at this one construction.
-    relate_ir::orient_side(relate_ir::var_prop, left, right)
-        .map(|((v, k), other)| (v.clone(), k.clone(), other.clone()))
+    relate_ir::orient_side(relate_ir::var_prop_named, left, right)
+        .map(|((v, k), other)| (v.clone(), k, other.clone()))
 }
 
 fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName]) -> bool {
@@ -233,19 +233,33 @@ fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName
             // (`MATCH (n:A|B) WHERE n:C`) would be narrowed to `{C}`.
             let mut folded = match n.label_expr.as_ref() {
                 None => n.labels.clone(),
+                // A label the pattern already resolved keeps its token.
                 Some(expr) => match static_labels(expr) {
-                    Some(labels) => labels,
+                    Some(labels) => labels
+                        .into_iter()
+                        .map(|label| {
+                            let token = n
+                                .labels
+                                .iter()
+                                .find(|(x, _)| *x == label)
+                                .map_or(Token::Unresolved, |(_, token)| *token);
+                            (label, token)
+                        })
+                        .collect(),
                     None => continue,
                 },
             };
+            // A label folded in from the WHERE has no token yet: resolution
+            // ran before this rewrite and no resolver is in scope here, so
+            // consumers look it up by name (`Token::Unresolved`).
             for l in labels {
-                if !folded.iter().any(|x| x == l) {
-                    folded.push(l.clone());
+                if !folded.iter().any(|(x, _)| x == l) {
+                    folded.push((l.clone(), Token::Unresolved));
                 }
             }
             n.labels = folded;
             n.label_expr = Some(LabelExpr::And(
-                n.labels.iter().cloned().map(LabelExpr::Label).collect(),
+                n.label_names().cloned().map(LabelExpr::Label).collect(),
             ));
             return true;
         }
@@ -253,19 +267,19 @@ fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName
     false
 }
 
-fn add_prop(patterns: &mut [PathPattern], var: &SmallName, key: SmallName, val: Expr) -> bool {
+fn add_prop(patterns: &mut [PathPattern], var: &SmallName, key: NamedToken, val: Expr) -> bool {
     // Same compact-view-only scope as `add_labels` above.
     for p in patterns.iter_mut().filter(|p| !p.needs_gpm()) {
         for n in &mut p.nodes {
             if n.variable.as_ref() == Some(var) {
                 // Map-bridge feed: IR map keys are value-domain
                 // (runtime `Value::Map`), rendered once here.
-                return merge_prop_map(&mut n.properties, key.to_string(), val);
+                return merge_prop_map(&mut n.properties, &mut n.prop_keys, key, val);
             }
         }
         for r in &mut p.rels {
             if r.variable.as_ref() == Some(var) {
-                return merge_prop_map(&mut r.properties, key.to_string(), val);
+                return merge_prop_map(&mut r.properties, &mut r.prop_keys, key, val);
             }
         }
     }
@@ -278,17 +292,25 @@ fn add_prop(patterns: &mut [PathPattern], var: &SmallName, key: SmallName, val: 
 /// holds one value per key, and dropping the conjunct silently discarded a
 /// conflicting predicate — `MATCH (n {p: 1}) WHERE n.p = 2` matched `p = 1`
 /// (LABS-1086 review; Neo4j matches nothing).
-fn merge_prop_map(slot: &mut Option<Expr>, key: String, val: Expr) -> bool {
+fn merge_prop_map(
+    slot: &mut Option<Expr>,
+    keys: &mut Vec<NamedToken>,
+    key: NamedToken,
+    val: Expr,
+) -> bool {
+    let name = key.0.to_string();
     match slot {
         Some(Expr::Map(pairs)) => {
-            if pairs.iter().any(|(k, _)| k == &key) {
+            if pairs.iter().any(|(k, _)| k == &name) {
                 return false;
             }
-            pairs.push((key, val));
+            pairs.push((name, val));
+            keys.push(key);
             true
         }
         None => {
-            *slot = Some(Expr::Map(vec![(key, val)]));
+            *slot = Some(Expr::Map(vec![(name, val)]));
+            keys.push(key);
             true
         }
         Some(_) => false,
@@ -315,8 +337,7 @@ mod tests {
         // The test helper owns String lists; labels render once.
         (
             patterns[0].nodes[0]
-                .labels
-                .iter()
+                .label_names()
                 .map(|label| label.to_string())
                 .collect::<Vec<_>>(),
             where_clause.clone(),

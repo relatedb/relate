@@ -231,7 +231,8 @@ impl Expr {
             | Expr::Star
             | Expr::CountStar
             | Expr::DistanceMetric(_) => self.clone(),
-            Expr::Property { expr, key } => Expr::Property {
+            Expr::Property { expr, key, key_id } => Expr::Property {
+                key_id: *key_id,
                 expr: Box::new(f(expr)?),
                 key: key.clone(),
             },

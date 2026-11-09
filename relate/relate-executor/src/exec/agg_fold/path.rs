@@ -6,6 +6,7 @@ use indexmap::map::Entry;
 use indexmap::IndexMap;
 use relate_core::{Error, NodeId, RelId, Result, Value};
 use relate_ir::{Clause, Direction, Expr, NodePattern, PathPattern, Projection, RelPattern};
+use relate_names::NamedToken;
 
 use crate::eval::{binary, eval};
 use crate::group_key::GroupKey;
@@ -99,11 +100,11 @@ fn path_pred_holds(
 ) -> Result<bool> {
     match pred {
         PathPred::Null { key, is_null } => {
-            let value = graph.node_prop(id, key).unwrap_or(Value::Null);
+            let value = graph.node_prop_resolved(id, key).unwrap_or(Value::Null);
             Ok(value.is_null() == *is_null)
         }
         PathPred::Cmp { key, op, other } => {
-            let prop = graph.node_prop(id, key).unwrap_or(Value::Null);
+            let prop = graph.node_prop_resolved(id, key).unwrap_or(Value::Null);
             let other = eval(graph, row, other, params, cypher_version)?;
             Ok(binary(graph, *op, prop, other)?.truthy() == Some(true))
         }
@@ -426,13 +427,18 @@ fn walk_hop(
     Ok(hops)
 }
 
-fn path_prop(graph: &ExecGraph<'_>, caches: &mut FoldCaches, id: NodeId, key: &str) -> Value {
+fn path_prop(
+    graph: &ExecGraph<'_>,
+    caches: &mut FoldCaches,
+    id: NodeId,
+    key: &NamedToken,
+) -> Value {
     let props = caches.props.entry(id).or_default();
-    if let Some(found) = props.get(key) {
+    if let Some(found) = key.0.with_str(|text| props.get(text)) {
         return found.clone();
     }
-    let value = graph.node_prop(id, key).unwrap_or(Value::Null);
-    props.insert(key.to_string(), value.clone());
+    let value = graph.node_prop_resolved(id, key).unwrap_or(Value::Null);
+    props.insert(key.0.to_string(), value.clone());
     value
 }
 
@@ -688,18 +694,10 @@ pub(crate) fn try_fold_path_aggs(
     // LABS-801: the steps' rel-type filters resolve once beside the plan
     // — every row's env reads them, never a per-row or per-anchor
     // re-resolution.
-    // Text render: the adjacency type resolver reads name text.
     let step_types: Vec<RelTypes> = plan
         .steps
         .iter()
-        .map(|step| {
-            let types: Vec<String> = patterns[step.pattern].rels[step.rel]
-                .types
-                .iter()
-                .map(|ty| ty.to_string())
-                .collect();
-            graph.rel_types(&types)
-        })
+        .map(|step| graph.rel_types_of(&patterns[step.pattern].rels[step.rel]))
         .collect();
     for row in rows {
         // The env is per-row: the row-scoped `preds` map starts empty by

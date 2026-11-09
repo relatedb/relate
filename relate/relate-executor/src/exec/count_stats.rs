@@ -45,7 +45,7 @@ fn node_population(np: &relate_ir::NodePattern) -> Pop<'_> {
     // spelling: no properties, no inline WHERE.
     let plain = np.properties.is_none() && np.where_clause.is_none();
     if np.labels.len() == 1 && plain && label_expr_ok(&np.label_expr, &np.labels) {
-        Pop::Label(&np.labels[0])
+        Pop::Label(&np.labels[0].0)
     } else if np.labels.is_empty() && np.label_expr.is_none() && plain {
         Pop::Any
     } else {
@@ -192,7 +192,7 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
             // is the same single rel seen from the other end: the pair
             // the stats hold is (start, type, end) in the rel's own
             // direction, whichever way the pattern spells it.
-            (Pop::Label(a), Pop::Label(b), [rel_type]) => {
+            (Pop::Label(a), Pop::Label(b), [(rel_type, _)]) => {
                 // Text render: the count probe owns its label/type text
                 // (String domain, interned on the count-state side).
                 let (s, e) = match rp.direction {
@@ -209,7 +209,9 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
             // population, one type ([`CountProbe::RelType`]) or every
             // type ([`CountProbe::AllRels`]); direction is irrelevant
             // (the same rels, seen from either end).
-            (Pop::Any, Pop::Any, [rel_type]) => Some(CountProbe::RelType(rel_type.to_string())),
+            (Pop::Any, Pop::Any, [(rel_type, _)]) => {
+                Some(CountProbe::RelType(rel_type.to_string()))
+            }
             (Pop::Any, Pop::Any, []) => Some(CountProbe::AllRels),
             // One labeled endpoint beside one unlabeled endpoint (the
             // (label, type) side counts are not maintained — the

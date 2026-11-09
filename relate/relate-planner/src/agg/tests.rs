@@ -12,6 +12,7 @@ fn var(name: &str) -> Expr {
 
 fn prop(name: &str, key: &str) -> Expr {
     Expr::Property {
+        key_id: Default::default(),
         expr: Box::new(var(name)),
         key: key.into(),
     }
@@ -116,10 +117,12 @@ fn deeply_nested_subquery_bodies_contain_in_one_pass() {
 #[test]
 fn a_rejected_leaf_without_a_nameable_variable_still_raises() {
     let chained = Expr::Property {
+        key_id: Default::default(),
         expr: Box::new(prop("a", "p")),
         key: "q".into(),
     };
     let parameter_prop = Expr::Property {
+        key_id: Default::default(),
         expr: Box::new(Expr::Parameter("p".into())),
         key: "x".into(),
     };

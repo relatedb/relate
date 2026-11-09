@@ -464,6 +464,11 @@ impl Graph {
     pub fn pattern_equality_rows(&self, label: &str, property: &str, value: &Value) -> Option<u64> {
         let lid = self.interner.get_id(label)?;
         let kid = self.interner.get_id(property)?;
+        self.pattern_equality_rows_by_id(lid, kid, value)
+    }
+
+    /// [`Graph::pattern_equality_rows`] for already-resolved token ids.
+    pub fn pattern_equality_rows_by_id(&self, lid: u32, kid: u32, value: &Value) -> Option<u64> {
         let ids = self.range_equality_ids(lid, kid, value)?;
         Some(ids.len() as u64)
     }

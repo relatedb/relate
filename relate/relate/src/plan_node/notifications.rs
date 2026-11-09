@@ -267,7 +267,7 @@ mod tests {
 
     use relate_ir::PatternElement;
     use relate_model::wire::NotificationKind;
-    use relate_names::SmallName;
+    use relate_names::NamedToken;
 
     use super::super::fixtures::{compact, node, rel};
     use super::super::{PlanNode, PlanTree};
@@ -611,21 +611,26 @@ mod tests {
     }
 
     impl relate_planner::PatternStats for LabelStats {
-        fn label_rows(&self, label: &SmallName) -> Option<u64> {
+        fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
             (label == "Person").then_some(self.rows)
         }
-        fn equality_rows(&self, _: &SmallName, _: &SmallName, _: &relate_ir::Expr) -> Option<u64> {
+        fn equality_rows(
+            &self,
+            _: &NamedToken,
+            _: &NamedToken,
+            _: &relate_ir::Expr,
+        ) -> Option<u64> {
             None
         }
         fn contains_rows(
             &self,
-            _: &SmallName,
-            _: &SmallName,
+            _: &NamedToken,
+            _: &NamedToken,
             _: &relate_ir::Expr,
         ) -> Option<relate_planner::ContainsCount> {
             None
         }
-        fn rel_type_rows(&self, _: &SmallName) -> Option<u64> {
+        fn rel_type_rows(&self, _: &NamedToken) -> Option<u64> {
             None
         }
     }

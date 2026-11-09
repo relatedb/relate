@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 
 use relate_core::{NodeId, RelId};
-use relate_ir::Direction;
+use relate_ir::{Direction, RelPattern};
 
 use crate::store::RelTypes;
 
@@ -116,6 +116,11 @@ impl ExecGraph<'_> {
     /// before its per-edge loop.
     pub(crate) fn rel_types<T: AsRef<str>>(&self, names: &[T]) -> RelTypes {
         self.base.rel_types(names)
+    }
+
+    /// [`Self::rel_types`] for a planned pattern.
+    pub(crate) fn rel_types_of(&self, rel: &RelPattern) -> RelTypes {
+        self.base.rel_types_of(rel)
     }
 
     /// Overlay-visible neighbors under the resolved type filter

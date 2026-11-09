@@ -56,10 +56,14 @@ pub(crate) fn named_node(name: &str) -> NodePattern {
 pub(crate) fn one_hop_rel(types: &[&str]) -> RelPattern {
     RelPattern {
         variable: None,
-        types: types.iter().map(|name| (*name).into()).collect(),
+        types: types
+            .iter()
+            .map(|name| ((*name).into(), Default::default()))
+            .collect(),
         type_expr: None,
         direction: Direction::Both,
         properties: None,
+        prop_keys: Vec::new(),
         var_length: false,
         min_hops: 1,
         max_hops: Some(1),
