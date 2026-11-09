@@ -130,9 +130,10 @@ with open(".stellar/ledger.json", "w") as fh:
   LAST=$(validated_last_head)
   if [ -n "$LAST" ] && git merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null; then
     BASE_SHA="$LAST"
-  elif [ -n "$LAST" ]; then
-    BASE_SHA=$(git merge-base "$LAST" "$HEAD_SHA" 2>/dev/null || true)
   fi
+  # diverged or missing LAST (rebase onto advanced main): the main
+  # merge-base, as CI's pull_request.base.sha — never merge-base(LAST,
+  # HEAD), which re-includes main's whole advance (LABS-955)
   if [ -z "${BASE_SHA:-}" ]; then
     BASE_SHA=$(git merge-base HEAD origin/main)
   fi

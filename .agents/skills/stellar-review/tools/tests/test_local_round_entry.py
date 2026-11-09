@@ -39,6 +39,10 @@ QUICK_FULL_ROUND_MANDATORY = re.compile(
 # sentence-initial "A" is capitalized wherever the sentence opens a
 # paragraph; matching runs on whitespace-collapsed prose because AGENTS.md
 # hard-wraps lines mid-sentence.
+# every `git merge-base ...` call outside comment lines, any number per line
+COMMENT_LINE = re.compile(r"(?m)^[ \t]*#.*$")
+MERGE_BASE_CALL = re.compile(r"git (merge-base [^;)\n]*)")
+
 COMPARISON = re.compile(
     r"[Aa] clean quick round does NOT predict a clean CI round; "
     r"a clean full round is the best local predictor of CI's verdict"
@@ -48,6 +52,13 @@ COMPARISON = re.compile(
 def step0():
     """SKILL.md's Step 0 section, through the next `## ` heading."""
     return region_between(read(SKILL), r"^## Step 0 ", r"^## ", SKILL)
+
+
+def local_branch():
+    """stellar-prep.sh's local-mode input derivation branch."""
+    return region_between(
+        read(PREP), r'^if \[ "\$MODE" = "local" \]; then', r"^else$", PREP
+    )
 
 
 def unwrapped(text):
@@ -129,15 +140,40 @@ class TestLocalRoundEntry(unittest.TestCase):
     def test_prep_local_cites_the_step0_scope_rule(self):
         # the scope rule's one spelling lives in SKILL.md Step 0; the
         # script's local branch must cite it, never restate it
-        branch = region_between(
-            read(PREP), r'^if \[ "\$MODE" = "local" \]; then', r"^else$", PREP
-        )
+        branch = local_branch()
         self.assertRegex(
             branch,
             r"SKILL\.md Step 0",
             "stellar-prep.sh: the local branch must cite SKILL.md Step 0's "
             "scope rule instead of restating it",
         )
+
+    def test_diverged_last_head_falls_back_to_the_main_merge_base(self):
+        # LABS-955: a rebased branch's stale last_head must not widen the
+        # scope via merge-base(LAST, HEAD)
+        branch = local_branch()
+        calls = [
+            c.strip() for c in MERGE_BASE_CALL.findall(COMMENT_LINE.sub('', branch))
+        ]
+        self.assertEqual(
+            calls,
+            ['merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null',
+             "merge-base HEAD origin/main"],
+        )
+
+    def test_merge_base_scan_catches_a_call_after_a_semicolon(self):
+        # a forbidden call appended after `;` on an allowed line must
+        # surface as its own extracted call
+        line = (
+            'git merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null'
+            '; git merge-base "$LAST" "$HEAD_SHA"\n'
+        )
+        self.assertEqual(
+            [c.strip() for c in MERGE_BASE_CALL.findall(COMMENT_LINE.sub('', line))],
+            ['merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null',
+             'merge-base "$LAST" "$HEAD_SHA"'],
+        )
+        self.assertEqual(MERGE_BASE_CALL.findall(COMMENT_LINE.sub("", "# git merge-base x\n")), [])
 
     def test_agents_md_leads_with_the_entry_point(self):
         text = read(AGENTS)

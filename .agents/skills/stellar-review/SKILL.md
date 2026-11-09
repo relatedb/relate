@@ -44,9 +44,9 @@ mkdir -p .stellar
 # last_head is an ancestor of HEAD, ALWAYS pass --base <last_head> --head
 # HEAD. The main merge-base default is for round 1 (no ledger) only — using
 # it on an existing PR re-judges the entire PR diff and balloons the scope
-# (891+ units, hours of pass time). After a force-push/rebase, pass --base
-# <merge-base of the old and new heads> as the smallest range covering the
-# rewritten commits.
+# (891+ units, hours of pass time). After a force-push/rebase (last_head
+# not an ancestor of HEAD), pass --base <merge-base HEAD origin/main> — never
+# the merge-base of the old and new heads, which re-includes main's advance.
 python3 $TOOLS/facts.py --out .stellar/facts.json
 
 # ledger: CI fetches it from the PR summary comment; locally it is a file
