@@ -67,8 +67,12 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
             let (graph, wal, _, report) =
                 open_store_with_report::<relate_executor::Graph>(&target).unwrap();
             assert_eq!(
-                report.migrations(),
-                &[(Subsystem::Manifest, u64::from(version))],
+                report.migration(),
+                Some((
+                    Subsystem::Manifest,
+                    u64::from(version),
+                    u64::from(crate::version::manifest::WIDE_VERSION)
+                )),
                 "v{version} migration report at {uri:?}"
             );
             assert_eq!(
@@ -76,10 +80,11 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
                 2,
                 "checkpoint row plus replayed WAL tail"
             );
-            // The store now carries a current-format manifest.
+            // The store now carries a current-format manifest: the
+            // migration checkpoint writes the wide pair (ADR-0553).
             assert_eq!(
                 on_disk_manifest(&target).format_version,
-                crate::version::manifest::CURRENT_VERSION
+                crate::version::manifest::WIDE_VERSION
             );
             // The WAL rotated to a single fresh segment with the current magic.
             {
@@ -95,11 +100,14 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
             let target = parse_uri(uri.to_str().unwrap()).unwrap();
             let (graph, _wal, _, report) =
                 open_store_with_report::<relate_executor::Graph>(&target).unwrap();
-            assert!(report.is_empty(), "second open must not migrate: {report}");
+            assert!(
+                report.migration().is_none(),
+                "second open must not migrate: {report}"
+            );
             assert_eq!(graph.live_node_count(), 2);
             assert_eq!(
                 on_disk_manifest(&target).format_version,
-                crate::version::manifest::CURRENT_VERSION
+                crate::version::manifest::WIDE_VERSION
             );
         }
     }
@@ -120,7 +128,10 @@ fn memory_open_performs_no_migration_writes() {
         // ...but :memory: never migrates (ADR-0127 Decision 7): no hops,
         // the planted manifest is byte-identical, and no v3 shard dirs
         // appeared.
-        assert!(report.is_empty(), ":memory: must not migrate: {report}");
+        assert!(
+            report.migration().is_none(),
+            ":memory: must not migrate: {report}"
+        );
         assert_eq!(
             snapshot::get_object(&store, "manifest.json").unwrap(),
             before,
@@ -175,7 +186,14 @@ fn open_migrates_legacy_json_value_encoding_then_takes_zero_hops() {
 
         let (graph, wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
-        assert_eq!(report.migrations(), &[(Subsystem::ValueEncoding, 1)]);
+        assert_eq!(
+            report.migration(),
+            Some((
+                Subsystem::ValueEncoding,
+                1,
+                crate::version::value_encoding::CURRENT_VERSION
+            ))
+        );
         assert_eq!(graph.live_node_count(), 1);
         assert_eq!(
             graph.node(1).unwrap().properties["name"],
@@ -195,7 +213,10 @@ fn open_migrates_legacy_json_value_encoding_then_takes_zero_hops() {
                 .unwrap();
         let (graph, _wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
-        assert!(report.is_empty(), "second open must not migrate: {report}");
+        assert!(
+            report.migration().is_none(),
+            "second open must not migrate: {report}"
+        );
         assert_eq!(graph.live_node_count(), 1);
     }
 }
@@ -211,7 +232,10 @@ fn memory_json_open_performs_no_migration_writes() {
     let (graph, _wal, _, report) =
         open_store_with_report::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(graph.live_node_count(), 1);
-    assert!(report.is_empty(), ":memory: must not migrate: {report}");
+    assert!(
+        report.migration().is_none(),
+        ":memory: must not migrate: {report}"
+    );
     assert_eq!(
         snapshot::get_object(&store, "graph.json").unwrap(),
         before,
@@ -262,12 +286,19 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
         let (graph, wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
-        assert_eq!(report.migrations(), &[(Subsystem::Manifest, 2)]);
+        assert_eq!(
+            report.migration(),
+            Some((
+                Subsystem::Manifest,
+                2,
+                u64::from(crate::version::manifest::WIDE_VERSION)
+            ))
+        );
         assert_eq!(graph.live_node_count(), 2, "checkpoint row plus WAL tail");
         assert!(graph.node(0).is_some() && graph.node(1).is_some());
         assert_eq!(
             on_disk_manifest(&target).format_version,
-            crate::version::manifest::CURRENT_VERSION
+            crate::version::manifest::WIDE_VERSION
         );
         {
             let (wv, prefix) = target.wal_vfs();
@@ -282,7 +313,7 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
         let (graph, _wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
         assert!(
-            report.is_empty(),
+            report.migration().is_none(),
             "post-crash re-open must not migrate: {report}"
         );
         assert_eq!(graph.live_node_count(), 2);
@@ -405,7 +436,7 @@ fn current_json_open_reads_graph_json_exactly_once() {
         open_store_with_report::<relate_executor::Graph>(&counted).unwrap();
     assert_eq!(graph.live_node_count(), 1);
     assert!(
-        report.is_empty(),
+        report.migration().is_none(),
         "current store must not migrate: {report}"
     );
     assert_eq!(

@@ -252,21 +252,18 @@ fn common_segments() -> Vec<CommonSegment> {
             relate::DurabilityMode::default()
         ),
     });
-    // The values and the opt-in clause render from the one vocabulary
-    // module (the parser's own), so the help cannot drift from what the
-    // parser accepts — and a build without the Parquet codec neither
-    // lists nor describes the opt-in.
+    // The values render from the one vocabulary module (the parser's
+    // own), so the help cannot drift from what the parser accepts.
     segments.push(CommonSegment {
         usage: " [--snapshot-format F]",
         flags: &["--snapshot-format"],
         rows: format!(
             "  --snapshot-format F
-                       Snapshot format for the served store ({f}){note}.
+                       Snapshot format for the served store ({f}).
                        Default: RELATE_SNAPSHOT_FORMAT (a codec name), else
                        the build default — the same grammar as the query
                        session's flag",
-            f = crate::flags::snapshot_format_values("|"),
-            note = crate::flags::opt_in_note(),
+            f = crate::flags::codec_names("|"),
         ),
     });
     segments

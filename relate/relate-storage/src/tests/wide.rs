@@ -1,10 +1,11 @@
-//! The wide-column opt-in (ADR-0534): an option, not a replacement — a
-//! legacy store stays legacy without it, re-encodes once with it, and a
-//! wide manifest keeps the store wide whatever the next open's flags.
+//! The wide-column part encoding as the Parquet codec's checkpoint
+//! format (ADR-0553): every Parquet checkpoint writes wide parts, a
+//! fresh store starts wide, and a legacy-encoded store upgrades at its
+//! next checkpoint — never the reverse.
 
 use super::*;
 
-/// A v3 store for the wide opt-in test (ADR-0534): six Person nodes —
+/// A v3 store for the upgrade test (ADR-0553): six Person nodes —
 /// `name` and `age` on all, `rare` on the first only (one row in six:
 /// below the promotion share, residual) — under one legacy-shaped node
 /// part, the pre-wide encoder's bytes published as the manifest's only
@@ -55,70 +56,25 @@ fn legacy_v3_shard_store(uri: &std::path::Path) {
     snapshot::put_object(&target, &path, &bytes).unwrap();
 }
 
-/// Open `uri` with the Parquet-wide opt-in (ADR-0534) and load it: the
-/// one spelling of the wide open this suite's tests share.
-#[cfg(parquet_codec)]
-fn open_wide(uri: &std::path::Path) -> (StoreTarget, Graph, Wal, crate::version::MigrationReport) {
-    let target = parse_uri_opening_with_config(
-        uri.to_str().unwrap(),
-        None,
-        Some(crate::SnapshotCodecKind::Parquet),
-        false,
-        Some(crate::CodecOpenConfig::ParquetWide),
-    )
-    .unwrap();
-    let (graph, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
-    (target, graph, wal, report)
-}
-
-/// ADR-0534: the wide-column encoding is an option, not a replacement. A
-/// v3 store opened without the opt-in stays legacy — no migration, its
-/// next checkpoint keeping the part as is; opened with the opt-in, its
-/// first checkpoint re-encodes every part wide and publishes a v5
-/// manifest, which then keeps the store wide whatever the next open's
-/// flags.
+/// ADR-0553: the wide-column encoding is the Parquet codec's checkpoint
+/// format. A v3 store is readable as is — no migration on open, v3 stays
+/// classified current — but its first checkpoint re-encodes every part
+/// wide and publishes a v5 manifest, which then keeps the store wide.
 #[cfg(parquet_codec)]
 #[test]
-fn wide_opt_in_re_encodes_a_legacy_store_once_and_sticks() {
+fn a_legacy_store_upgrades_wide_at_its_next_checkpoint_and_sticks() {
     let dir = tempfile::tempdir().unwrap();
-
-    // Without the opt-in: the store stays legacy, its re-checkpoint keeps
-    // the part as is.
-    let plain = dir.path().join("plain");
-    legacy_v3_shard_store(&plain);
+    let uri = dir.path().join("upgrade");
+    legacy_v3_shard_store(&uri);
     {
-        let target = parse_uri(plain.to_str().unwrap()).unwrap();
+        // The open is a plain one: no knob to set, and no migration.
+        let target = parse_uri(uri.to_str().unwrap()).unwrap();
         let (opened, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
         assert!(
-            report.is_empty(),
+            report.migration().is_none(),
             "a current v3 store does not migrate: {report}"
         );
-        let before = on_disk_manifest(&target).node_parts[0].path.clone();
-        checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
-        let manifest = on_disk_manifest(&target);
-        assert_eq!(
-            manifest.format_version,
-            crate::version::manifest::CURRENT_VERSION
-        );
-        assert_eq!(
-            manifest.node_parts[0].path, before,
-            "the legacy part is kept as is"
-        );
         assert_eq!(opened.live_node_count(), 6);
-        drop((opened, wal));
-    }
-
-    // With the opt-in: the first checkpoint re-encodes every part wide,
-    // the promoted keys becoming typed columns and the manifest publishing
-    // at the wide version.
-    let optin = dir.path().join("optin");
-    legacy_v3_shard_store(&optin);
-    {
-        let (target, opened, wal, report) = open_wide(&optin);
-        assert!(
-            report.is_empty(),
-            "v3 is current: the re-encode is the opt-in checkpoint, not a migration"
-        );
         checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
         let manifest = on_disk_manifest(&target);
         assert_eq!(
@@ -145,11 +101,12 @@ fn wide_opt_in_re_encodes_a_legacy_store_once_and_sticks() {
         drop((opened, wal));
     }
 
-    // The wide store stays wide without the opt-in.
+    // The upgraded store stays wide — the next checkpoint keeps its parts
+    // as is.
     {
-        let target = parse_uri(optin.to_str().unwrap()).unwrap();
+        let target = parse_uri(uri.to_str().unwrap()).unwrap();
         let (opened, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
-        assert!(report.is_empty(), "{report}");
+        assert!(report.migration().is_none(), "{report}");
         let before = on_disk_manifest(&target).node_parts[0].path.clone();
         checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
         let manifest = on_disk_manifest(&target);
@@ -189,7 +146,8 @@ fn a_wide_checkpoint_copies_clean_rows_and_keeps_every_property() {
     legacy_v3_shard_store(&uri);
     let before: Vec<Vec<(String, relate_core::Value)>>;
     {
-        let (target, opened, mut wal, _) = open_wide(&uri);
+        let target = parse_uri(uri.to_str().unwrap()).unwrap();
+        let (opened, mut wal, _, _) = open_store_with_report::<Graph>(&target).unwrap();
         checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
         // The next checkpoint copies the clean rows: only nodes 1 and 2
         // are dirty — node 1's `age` turns String (the carried Int

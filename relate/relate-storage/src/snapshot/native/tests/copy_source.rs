@@ -25,24 +25,31 @@ fn checkpointed_nodes(store: &StoreTarget, ids: &[i64]) -> (Graph, u64) {
     (graph, ts)
 }
 
-/// Checkpoint `graph` with opens of `path` counted; the checkpoint must fail
-/// with `expected`, naming `path`, read `path` once, and leave `manifest`
-/// published.
-fn assert_fails_once(
+/// Checkpoint `graph` with opens of `path` counted; the checkpoint must
+/// fail with `expected`, naming `path`, open `path` exactly `opens` times
+/// — the kept part's schema read (ADR-0534 carry) plus, when the failure
+/// is a cursor failure, the one cursor read that fails, never a retry —
+/// and leave `manifest` published.
+fn assert_fails_without_retry(
     store: &StoreTarget,
     graph: &Graph,
     ts: u64,
     path: &str,
     manifest: &[u8],
     expected: &str,
+    opens: usize,
 ) {
-    let (watched, opens) = watch_opens(store, path);
+    let (watched, counted) = watch_opens(store, path);
     let err = checkpoint_at(&watched, graph, 0, ts, MAX_FILE).unwrap_err();
     assert!(matches!(err, Error::Storage(_)), "{err}");
     let named = format!("previous Parquet shard {path}: ");
     assert!(err.to_string().contains(&named), "{err}");
     assert!(err.to_string().contains(expected), "{err}");
-    assert_eq!(opens.load(Ordering::SeqCst), 1, "the source was retried");
+    assert_eq!(
+        counted.load(Ordering::SeqCst),
+        opens,
+        "the source was retried"
+    );
     assert_eq!(get_object(store, MANIFEST_JSON).unwrap(), manifest);
 }
 
@@ -67,7 +74,16 @@ fn missing_clean_row_fails_without_halving() {
     // clean row beside its dirty neighbor; the failure removes that file.
     stage_dirty(&graph, 1, |id| id == 1 || id == 2_000_004);
     let ts = apply_commit(&graph);
-    assert_fails_once(&store, &graph, ts, &path, &published, "row 2000005 missing");
+    // The schema read plus the cursor read that meets the missing row.
+    assert_fails_without_retry(
+        &store,
+        &graph,
+        ts,
+        &path,
+        &published,
+        "row 2000005 missing",
+        2,
+    );
     assert_eq!(files(), before);
 }
 
@@ -86,13 +102,15 @@ fn duplicate_or_descending_source_ids_fail_open() {
         // open it, fails by the same rule.
         stage_dirty(&graph, 1, |id| id == 1);
         let ts = apply_commit(&graph);
-        assert_fails_once(
+        assert_fails_without_retry(
             &store,
             &graph,
             ts,
             &path,
             &published,
             "ids are not strictly ascending",
+            // The schema read plus the cursor read that meets the bad ids.
+            2,
         );
     }
 }
@@ -115,13 +133,15 @@ fn descending_ids_across_batch_boundary_fail() {
     // reads past the first batch.
     stage_dirty(&graph, 1, |id| id == cap + 5);
     let ts = apply_commit(&graph);
-    assert_fails_once(
+    assert_fails_without_retry(
         &store,
         &graph,
         ts,
         &path,
         &published,
         "ids are not strictly ascending",
+        // The schema read plus the cursor read that meets the bad ids.
+        2,
     );
 }
 
@@ -135,12 +155,15 @@ fn source_schema_mismatch_fails_open() {
 
     stage_dirty(&graph, 1, |id| id == 1);
     let ts = apply_commit(&graph);
-    assert_fails_once(
+    assert_fails_without_retry(
         &store,
         &graph,
         ts,
         &path,
         &published,
         "schema differs from the shard schema",
+        // The mismatch is caught by the schema read itself; the cursor
+        // never opens the part.
+        1,
     );
 }

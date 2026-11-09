@@ -16,15 +16,10 @@ use crate::print_error;
 mod lifecycle;
 pub(crate) use lifecycle::LifecycleCommand;
 
-// The --snapshot-format value: the grammar, the one `parquet-wide`
-// spelling, and the accepted-value list (ADR-0163, ADR-0534).
+// The --snapshot-format value: the grammar and the accepted-value list
+// (ADR-0163).
 mod snapshot_format;
-pub(crate) use snapshot_format::{codec_names, values as snapshot_format_values, SnapshotFormat};
-// The serve help row's opt-in clause — serve-gated like its only
-// consumer, so the always-compiled parser module carries no dead code in
-// the other bundles.
-#[cfg(feature = "serve")]
-pub(crate) use snapshot_format::opt_in_note;
+pub(crate) use snapshot_format::{codec_names, parse as parse_snapshot_format};
 
 // The usage-error presentation (renderer, suggestion slot, shared
 // assemblies). The private `use` serves this module's parse loop (and
@@ -68,10 +63,9 @@ pub(crate) struct Flags {
     pub show_help: bool,
     pub lifecycle: Option<LifecycleCommand>,
     pub assignments: IndexMap<String, params::Assignment>,
-    /// `--snapshot-format` (ADR-0163, ADR-0534): a codec name, or
-    /// `parquet-wide` for the Parquet codec's wide-column part encoding.
-    /// `None` defers to `RELATE_SNAPSHOT_FORMAT`, then the build default.
-    pub snapshot_format: Option<SnapshotFormat>,
+    /// `--snapshot-format` (ADR-0163): a codec name. `None` defers to
+    /// `RELATE_SNAPSHOT_FORMAT`, then the build default.
+    pub snapshot_format: Option<relate::SnapshotCodecKind>,
     /// `--markdown-body-properties` (ADR-0460): the markdown vault's
     /// body-property configuration — the ordered default list plus
     /// `Label=…` per-label overrides. `None` defers to
@@ -627,9 +621,9 @@ fn apply_session_flag(
                 i,
                 arg,
                 scope,
-                &format!("a value ({})", snapshot_format_values(" or ")),
+                &format!("a value ({})", codec_names(" or ")),
             );
-            state.snapshot_format = Some(parse_value(arg, value, |v| v.parse::<SnapshotFormat>()));
+            state.snapshot_format = Some(parse_value(arg, value, parse_snapshot_format));
             true
         }
         "--markdown-body-properties" => {

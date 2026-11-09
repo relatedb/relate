@@ -38,24 +38,9 @@ pub(crate) fn resolve_snapshot_codec(opts: &OpenOptions) -> Result<Option<Snapsh
 }
 
 /// The codec-specific open-time configuration this open carries
-/// (ADR-0460, ADR-0534): the markdown vault's body properties, or the
-/// Parquet wide-column opt-in. The two are codec-exclusive, so a set
-/// pair fails the open — never a silently dropped knob — and the opt-in
-/// on a build without the Parquet codec fails the same way.
+/// (ADR-0460): the markdown vault's body properties.
 pub(crate) fn resolve_codec_config(opts: &OpenOptions) -> Result<Option<CodecOpenConfig>> {
-    let markdown = resolve_markdown_bodies(opts)?.map(CodecOpenConfig::MarkdownBodies);
-    let wide = opts
-        .wide_columns
-        .then(CodecOpenConfig::parquet_wide)
-        .transpose()?;
-    match (markdown, wide) {
-        (Some(config), None) | (None, Some(config)) => Ok(Some(config)),
-        (Some(_), Some(_)) => Err(crate::Error::semantic(
-            "markdown body properties and the wide-columns opt-in are both set; \
-             they configure different snapshot codecs — set only one",
-        )),
-        (None, None) => Ok(None),
-    }
+    Ok(resolve_markdown_bodies(opts)?.map(CodecOpenConfig::MarkdownBodies))
 }
 
 /// The markdown vault's body-property configuration (ADR-0460): the

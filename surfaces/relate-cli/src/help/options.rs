@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use crate::flags::snapshot_format_values;
+use crate::flags::codec_names;
 
 /// One entry of the query-run options block: the headline line and its
 /// continuation lines, kept together so a mid-block insertion cannot
@@ -145,22 +145,9 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         continuation: &[],
         flags: &["--fetch-params"],
     },
-    // ADR-0534: the wide-column opt-in clause rides the same build fact
-    // that lists the spelling in {formats} — a build without the Parquet
-    // codec neither lists nor describes it, and keeps the plain row.
-    #[cfg(not(feature = "parquet"))]
     OptionEntry {
         headline: "  --snapshot-format F  Snapshot codec ({formats}); empty directory only",
         continuation: &[],
-        flags: &["--snapshot-format"],
-    },
-    #[cfg(feature = "parquet")]
-    OptionEntry {
-        headline:
-            "  --snapshot-format F  Snapshot codec ({formats}); empty directory only (parquet-wide:",
-        continuation: &[
-            "                       ADR-0534 wide-column parts; the manifest keeps the store wide)",
-        ],
         flags: &["--snapshot-format"],
     },
     OptionEntry {
@@ -343,10 +330,9 @@ pub(crate) type PlaceholderProvider = fn(&str) -> String;
 pub(crate) const PLACEHOLDERS: &[(&str, PlaceholderProvider)] = &[
     ("{slot}", str::to_string),
     ("{modes}", |_| relate_formatter::Mode::names()),
-    // ADR-0534: the flag's values — the codec names plus, in a Parquet
-    // build, the wide-column opt-in spelling — from the one vocabulary
-    // list (flags::snapshot_format).
-    ("{formats}", |_| snapshot_format_values("|")),
+    // The flag's values — the codec names, from the one vocabulary list
+    // (flags::snapshot_format).
+    ("{formats}", |_| codec_names("|")),
 ];
 
 /// Fill an entry line's build- and caller-dependent placeholders from

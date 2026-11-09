@@ -7,8 +7,8 @@
 mod support;
 
 use support::{
-    command_gates, commands_section, commands_section_words, compiled_commands, run_cli,
-    snapshot_format_values, tempdir, CliRunOptions as Opts,
+    command_gates, commands_section, commands_section_words, compiled_codecs, compiled_commands,
+    run_cli, tempdir, CliRunOptions as Opts,
 };
 
 const COMMAND_WORDS: &[&str] = &[
@@ -154,12 +154,10 @@ fn test_help_lists_only_compiled_in_snapshot_codecs() {
     let (status, stdout, stderr) = run_cli(Opts::new(&["--help"]).in_home(home.path()));
     assert!(status.success(), "--help failed: {stderr}");
     // The codec set and its feature gating come from the one typed source
-    // (`support::snapshot_format_values`, itself over `compiled()`):
+    // (`support::compiled_codecs`, itself over `compiled()`):
     // `compiled()` already excludes Parquet in a build without the
-    // feature, and its declaration order pins the listing order. A Parquet
-    // build additionally lists the `parquet-wide` opt-in (ADR-0534) — an
-    // option on Parquet, never a codec of its own.
-    let fixed = format!("Snapshot codec ({})", snapshot_format_values());
+    // feature, and its declaration order pins the listing order.
+    let fixed = format!("Snapshot codec ({})", compiled_codecs());
     assert!(stdout.contains(&fixed), "missing {fixed:?}:\n{stdout}");
     assert_eq!(stdout.matches("--snapshot-format").count(), 1, "{stdout}");
 }

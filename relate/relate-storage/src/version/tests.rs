@@ -162,23 +162,70 @@ fn annotate_legacy_failure_names_the_version_only_for_legacy_markers() {
 }
 
 #[test]
-fn migration_report_records_was_at_version_now_current() {
+fn migration_report_records_the_one_migration() {
     let mut report = MigrationReport::default();
-    assert!(report.is_empty());
-    assert_eq!(report.to_string(), "store is at current format");
-    report.record(Subsystem::ValueEncoding, 1);
-    assert_eq!(report.migrations(), &[(Subsystem::ValueEncoding, 1)]);
-    assert_eq!(report.to_string(), "value_encoding 1→2");
+    assert_eq!(report.migration(), None);
+    assert_eq!(report.to_string(), "no migration recorded");
+    // Display prints the recorded pair — the ontology half a single
+    // per-subsystem constant could never know.
+    report.record(
+        Subsystem::ValueEncoding,
+        1,
+        value_encoding::ONTOLOGY_VERSION,
+    );
+    assert_eq!(
+        report.migration(),
+        Some((
+            Subsystem::ValueEncoding,
+            1,
+            value_encoding::ONTOLOGY_VERSION
+        ))
+    );
+    assert_eq!(report.to_string(), "value_encoding 1→3");
 
+    // A store's snapshot is one codec's marker, so a second record never
+    // comes; should one anyway, it replaces — there is no list.
     #[cfg(parquet_codec)]
     {
-        report.record(Subsystem::Manifest, 1);
-        assert_eq!(
-            report.migrations(),
-            &[(Subsystem::ValueEncoding, 1), (Subsystem::Manifest, 1)]
+        report.record(
+            Subsystem::Manifest,
+            1,
+            u64::from(manifest::WIDE_ONTOLOGY_VERSION),
         );
-        assert_eq!(report.to_string(), "value_encoding 1→2, manifest 1→3");
+        assert_eq!(
+            report.migration(),
+            Some((
+                Subsystem::Manifest,
+                1,
+                u64::from(manifest::WIDE_ONTOLOGY_VERSION)
+            ))
+        );
+        assert_eq!(report.to_string(), "manifest 1→6");
     }
+}
+
+#[cfg(manifest_codec)]
+#[test]
+fn manifest_published_version_follows_the_codec_and_the_content() {
+    use crate::codec::SnapshotCodecKind;
+    // Parquet publishes the wide pair (ADR-0553), the experimental codecs
+    // the legacy pair (ADR-0537); the ontology half follows the content
+    // (ADR-0120 §8).
+    #[cfg(parquet_codec)]
+    assert_eq!(
+        manifest::published_with(SnapshotCodecKind::Parquet, false),
+        manifest::WIDE_VERSION
+    );
+    #[cfg(parquet_codec)]
+    assert_eq!(
+        manifest::published_with(SnapshotCodecKind::Parquet, true),
+        manifest::WIDE_ONTOLOGY_VERSION
+    );
+    #[cfg(rkyv_codec)]
+    assert_eq!(
+        manifest::published_with(SnapshotCodecKind::Rkyv, false),
+        manifest::CURRENT_VERSION
+    );
 }
 
 #[test]

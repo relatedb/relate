@@ -3,11 +3,10 @@
 //! `ontology/<128-bit-hex>.json` object under the ADR-0092/ADR-0089 rules
 //! (exclusive create, sync, durable name before the manifest; the
 //! superseded object retired only after the new manifest publishes) and
-//! writes `format_version` 4; a checkpoint without one stays at 3. Readers
-//! accept 1..=6 — the wide 5/6 of ADR-0534 included, a store there
-//! staying wide — while the tests below checkpoint legacy, the default
-//! encoding. A crash between the object write and the manifest publish
-//! leaves an orphan the next open sweeps.
+//! writes `format_version` 6; a checkpoint without one stays at 5. Readers
+//! accept 1..=6 — the legacy 3/4 a pre-ADR-0553 store may carry, upgraded
+//! wide at its next checkpoint. A crash between the object write and the
+//! manifest publish leaves an orphan the next open sweeps.
 
 use super::super::super::*;
 use super::super::*;
@@ -53,7 +52,7 @@ fn checkpoint_with_ontology_publishes_the_object_before_a_v4_manifest() {
     checkpoint(&store, &graph, wal.lsn, Some(DOCUMENT));
 
     let manifest = manifest(&store);
-    assert_eq!(manifest.format_version, 4);
+    assert_eq!(manifest.format_version, 6);
     let path = manifest.ontology_path.expect("v4 selects the object");
     assert!(is_ontology_object_name(&path), "{path}");
     assert_eq!(get_object(&store, &path).unwrap(), DOCUMENT.as_bytes());
@@ -81,7 +80,7 @@ fn checkpoint_without_ontology_stays_v3_and_writes_no_field() {
     checkpoint(&store, &graph, wal.lsn, None);
 
     let manifest = manifest(&store);
-    assert_eq!(manifest.format_version, 3);
+    assert_eq!(manifest.format_version, 5);
     assert_eq!(manifest.ontology_path, None);
     let bytes = get_object(&store, MANIFEST_JSON).unwrap();
     assert!(!String::from_utf8(bytes).unwrap().contains("ontology_path"));
@@ -99,7 +98,7 @@ fn unchanged_ontology_keeps_the_same_object_across_checkpoints() {
     modify_two_nodes(&graph, &mut wal);
     checkpoint(&store, &graph, wal.lsn, Some(DOCUMENT));
     let manifest = manifest(&store);
-    assert_eq!(manifest.format_version, 4);
+    assert_eq!(manifest.format_version, 6);
     assert_eq!(manifest.ontology_path.as_deref(), Some(first.as_str()));
     assert_eq!(ontology_objects(&store), vec![first]);
 }
@@ -116,7 +115,7 @@ fn changed_ontology_publishes_a_new_object_and_retires_the_old_one() {
     checkpoint(&store, &graph, wal.lsn, Some(updated));
 
     let manifest = manifest(&store);
-    assert_eq!(manifest.format_version, 4);
+    assert_eq!(manifest.format_version, 6);
     let new = manifest.ontology_path.unwrap();
     assert_ne!(new, old);
     assert_eq!(get_object(&store, &new).unwrap(), updated.as_bytes());
@@ -136,7 +135,7 @@ fn dropped_ontology_returns_the_manifest_to_v3_and_retires_the_object() {
     checkpoint(&store, &graph, wal.lsn, None);
 
     let manifest = manifest(&store);
-    assert_eq!(manifest.format_version, 3);
+    assert_eq!(manifest.format_version, 5);
     assert_eq!(manifest.ontology_path, None);
     assert_eq!(ontology_objects(&store), Vec::<String>::new());
     assert_eq!(load_ontology(&store), None);
@@ -264,7 +263,7 @@ fn bundle_store_roundtrips_and_retires_the_ontology_object() {
     checkpoint(&store, &graph, wal.lsn, Some(updated));
 
     let manifest = manifest(&store);
-    assert_eq!(manifest.format_version, 4);
+    assert_eq!(manifest.format_version, 6);
     assert_ne!(manifest.ontology_path.as_deref(), Some(first.as_str()));
     assert_eq!(load_ontology(&store).as_deref(), Some(updated));
     assert_eq!(

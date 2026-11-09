@@ -210,7 +210,12 @@ fn empty_v3_ignores_retained_monoliths(
     let ts = graph.commit_ts();
     checkpoint_at(&target, &graph, wal.lsn, ts, MAX_FILE).unwrap();
     let manifest = manifest(&target);
-    assert_eq!(manifest.format_version, FORMAT_VERSION);
+    // The checkpoint writes the wide pair (ADR-0553); the empty part
+    // lists stay authoritative at it.
+    assert_eq!(
+        manifest.format_version,
+        crate::version::manifest::WIDE_VERSION
+    );
     assert!(manifest.node_parts.is_empty() && manifest.rel_parts.is_empty());
     let bytes = snapshot_data_bytes(&target).unwrap();
     // Simulate a crash before cleanup or Windows Native's deferred retire.

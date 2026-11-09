@@ -13,7 +13,7 @@ fn sharded_checkpoint_roundtrips() {
     let m = snapshot::native::read_manifest_for_test(&store)
         .unwrap()
         .unwrap();
-    assert_eq!(m.format_version, 3);
+    assert_eq!(m.format_version, 5);
     assert!(!m.node_parts.is_empty());
     assert!(m.node_parts[0].path.starts_with("nodes/"));
     assert!(snapshot_data_bytes(&store).unwrap() > 0);
@@ -133,5 +133,5 @@ fn old_manifest_without_codec_is_parquet() {
         .unwrap()
         .unwrap();
     assert_eq!(m.codec, SnapshotCodecKind::Parquet);
-    assert_eq!(m.format_version, 3);
+    assert_eq!(m.format_version, 5);
 }

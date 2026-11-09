@@ -169,6 +169,17 @@ impl SnapshotCodecKind {
         matches!(self, Self::Markdown)
     }
 
+    /// Whether this codec's manifest writes the wide-column part pair
+    /// (ADR-0553) — the codec half of the version a manifest checkpoint
+    /// publishes, beside the registry's decoded-version predicate
+    /// (`version::manifest::writes_wide`). The experimental codecs keep
+    /// the legacy part encoding (ADR-0537). Manifest-bearing builds only:
+    /// without one, no manifest is written and the fact has no reader.
+    #[cfg(manifest_codec)]
+    pub(crate) const fn writes_wide_parts(self) -> bool {
+        matches!(self, Self::Parquet)
+    }
+
     /// Every compiled codec that writes a snapshot container (a vault
     /// writer is excluded).
     pub fn compiled_snapshot_containers() -> impl Iterator<Item = SnapshotCodecKind> {

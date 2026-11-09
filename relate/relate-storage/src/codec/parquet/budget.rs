@@ -80,13 +80,12 @@ impl<'g> DecodedBudget<'g> {
         ts: u64,
         kind: Kind,
         target: u64,
-        wide: bool,
     ) -> Self {
         Self {
             graph,
             ts,
             kind,
-            row_limit: kind.page_envelope_rows(wide),
+            row_limit: kind.page_envelope_rows(),
             limit: target.min(envelope().decoded),
             rows: 0,
             bytes: 0,
@@ -173,7 +172,8 @@ impl<'g> DecodedBudget<'g> {
 }
 
 /// Decoded bytes of the live rows of `ids`, which must fit the ADR-0086
-/// decoded envelope together.
+/// decoded envelope together — and, because the budget carries a file's
+/// row cap, no more live rows than one file of `kind` holds.
 #[cfg(test)]
 pub(crate) fn decoded_preflight(
     graph: &dyn relate_engine_api::GraphImport,
@@ -181,9 +181,16 @@ pub(crate) fn decoded_preflight(
     ids: &[i64],
     kind: Kind,
 ) -> Result<u64> {
-    let mut budget = DecodedBudget::new(graph, ts, kind, u64::MAX, false);
+    let mut budget = DecodedBudget::new(graph, ts, kind, u64::MAX);
     if !budget.cut(ids)?.is_empty() {
-        return Err(invalid("actual decoded bytes"));
+        // Both of the budget's bounds are named: the caller hands the
+        // whole set, so a cut means either its live rows passed one
+        // file's page-envelope cap or its decoded bytes passed the
+        // envelope — and `cut` skips ids invisible at `ts`, so the
+        // request's own length cannot tell which.
+        return Err(invalid(
+            "actual decoded bytes or live rows over the page-envelope file cap",
+        ));
     }
     Ok(budget.bytes)
 }
@@ -213,7 +220,7 @@ mod tests {
     #[test]
     fn cut_returns_the_id_each_later_file_starts_at() {
         let (graph, ts, row) = graph();
-        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 2 * row, false);
+        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 2 * row);
         // Id 100 is not visible, so it costs nothing and starts no file.
         assert_eq!(budget.cut(&[0, 1, 2, 3, 4, 100, 5]).unwrap(), [2, 4]);
         assert_eq!((budget.rows, budget.bytes), (2, 2 * row));
@@ -224,13 +231,13 @@ mod tests {
         let (graph, ts, row) = graph();
         with_test_envelope(1 << 20, row - 1, MAX_DECODED, || {
             for (kind, named) in [(Kind::Node, "node 0: "), (Kind::Rel, "relationship 0: ")] {
-                let err = DecodedBudget::new(&graph, ts, kind, u64::MAX, false)
+                let err = DecodedBudget::new(&graph, ts, kind, u64::MAX)
                     .cut(&[0])
                     .unwrap_err();
                 let expected = format!("{named}invalid or out-of-bounds 384 MiB decoded row");
                 assert!(err.to_string().contains(&expected), "{err}");
             }
-            let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, u64::MAX, false);
+            let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, u64::MAX);
             assert!(!budget.fill_all(&[0]).unwrap());
             assert!(budget.is_empty());
         });
@@ -239,7 +246,7 @@ mod tests {
     #[test]
     fn fill_all_admits_every_row_or_none_and_counts_them() {
         let (graph, ts, row) = graph();
-        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 3 * row, false);
+        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 3 * row);
         assert!(budget.is_empty());
         // Ids that are not visible admit no row.
         assert!(budget.fill_all(&[100, 101]).unwrap());

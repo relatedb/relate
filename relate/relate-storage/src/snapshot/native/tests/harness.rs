@@ -247,14 +247,6 @@ pub(super) fn checkpoint_at(
         None,
     )
 }
-/// A memory store whose checkpoints write wide parts (ADR-0534): the
-/// open-time opt-in, installed as the codec configuration.
-pub(super) fn wide_memory_store() -> StoreTarget {
-    memory_store()
-        .with_codec_config(crate::CodecOpenConfig::ParquetWide)
-        .unwrap()
-}
-
 /// Take the open write off the graph. The WAL append in
 /// [`commit_open_write`] has to see the ops before `apply_redo` consumes them,
 /// so the two commit helpers share this prefix rather than calling each other.

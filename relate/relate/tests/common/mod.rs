@@ -607,9 +607,11 @@ pub enum ExpectedOntology {
 /// Assert the ADR-0120 §4/§8 checkpoint format markers of a Native store
 /// directory, per snapshot codec, against one typed ontology expectation.
 /// The ontology state is the format-marker state: the plain format
-/// ([`ExpectedOntology::Absent`]) is a Parquet `format_version` 3 / a JSON
-/// `value_encoding` 2 with no ontology published anywhere, and a held
-/// ontology is `format_version` 4 / `value_encoding` 3. Each codec arm
+/// ([`ExpectedOntology::Absent`]) is a Parquet `format_version` 5 (the
+/// wide pair, ADR-0553) / a JSON `value_encoding` 2 with no ontology
+/// published anywhere, and a held ontology is `format_version` 6 /
+/// `value_encoding` 3; the experimental codec writes the legacy pair
+/// (ADR-0537), 3/4. Each codec arm
 /// asserts on one typed read of its own checkpoint image
 /// (`SnapshotCodecKind::checkpoint_image`): the Parquet manifest's
 /// `ontology_path` (by reference, ADR-0120 §5), the JSON `graph.json`'s
@@ -629,7 +631,7 @@ pub fn assert_checkpoint_format(
     let held = !matches!(expected, ExpectedOntology::Absent);
     match codec {
         relate_storage::SnapshotCodecKind::Parquet => {
-            assert_eq!(image["format_version"], if held { 4 } else { 3 });
+            assert_eq!(image["format_version"], if held { 6 } else { 5 });
             // A Parquet manifest publishes the ontology by reference
             // (`ontology_path`) — the referenced object's bytes are the
             // document, asserted verbatim, never just presence.

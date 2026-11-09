@@ -1,8 +1,8 @@
 //! Planning rewrite units over slots (ADR-0183 Decision 2): kept files that
 //! hold more rows or bytes together than one file can stay apart, so the
-//! halves of a file halved on an envelope miss are not merged again. Both
-//! encodings cut a seed at the kind's page-envelope row cap — the wide cap
-//! the smaller, its many leaf columns making rows a binding bound
+//! halves of a file halved on an envelope miss are not merged again. A
+//! seed is cut at the kind's page-envelope row cap, the wide cap — every
+//! part is wide (ADR-0553), its leaf columns making rows a binding bound
 //! (ADR-0534 — the writer test over a real graph covers that cut).
 
 use super::super::coalesce::{plan_units, Step};
@@ -26,20 +26,13 @@ enum Planned {
 }
 
 /// Plan `slots` over `all_ids` around `dirty` for `kind` at `target`
-/// bytes under `encoding` (ADR-0534). The graph is empty, so no id costs
-/// decoded bytes: only the width, the manifest and the row cap decide.
-fn plan(
-    kind: Kind,
-    target: u64,
-    encoding: Encoding,
-    slots: &[Slot],
-    all_ids: &[i64],
-    dirty: &[i64],
-) -> Vec<Planned> {
+/// bytes. The graph is empty, so no id costs decoded bytes: only the
+/// width, the manifest and the row cap decide.
+fn plan(kind: Kind, target: u64, slots: &[Slot], all_ids: &[i64], dirty: &[i64]) -> Vec<Planned> {
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let ctx = ShardWrite::new(&store, &graph, 1, kind, target, encoding, &mut owned);
+    let ctx = ShardWrite::new(&store, &graph, 1, kind, target, &mut owned);
     let steps = plan_units(&ctx, slots, all_ids, dirty).unwrap();
     steps
         .into_iter()
@@ -75,41 +68,23 @@ fn kept_files_over_one_file_together_stay_apart() {
         }
     };
     let target = 10_000;
-    // Both encodings (ADR-0534): the wide row cap is the legacy one
-    // shrunk by the column cap's leaf count.
-    for encoding in [Encoding::Legacy, Encoding::Wide] {
-        for kind in [Kind::Node, Kind::Rel] {
-            // Two halves of the kind's page-envelope rows fill it — the
-            // cap read from the kind itself, never restated; one row more
-            // passes it.
-            let cap = kind.page_envelope_rows(encoding.wide()) as u64;
-            for (rows, joins) in [(cap / 2, true), (cap / 2 + 1, false)] {
-                for dirty in [0, mid] {
-                    let planned = plan(
-                        kind,
-                        target,
-                        encoding,
-                        &pair(rows, 5_000),
-                        &[0, mid],
-                        &[dirty],
-                    );
-                    let expected = if joins { merged() } else { apart(dirty) };
-                    assert_eq!(planned, expected, "{kind:?} {encoding:?} {rows} rows");
-                }
+    for kind in [Kind::Node, Kind::Rel] {
+        // Two halves of the kind's page-envelope rows fill it — the cap
+        // read from the kind itself, never restated; one row more passes
+        // it. Every part is wide (ADR-0553), so the cap is the wide one.
+        let cap = kind.page_envelope_rows() as u64;
+        for (rows, joins) in [(cap / 2, true), (cap / 2 + 1, false)] {
+            for dirty in [0, mid] {
+                let planned = plan(kind, target, &pair(rows, 5_000), &[0, mid], &[dirty]);
+                let expected = if joins { merged() } else { apart(dirty) };
+                assert_eq!(planned, expected, "{kind:?} {rows} rows");
             }
         }
     }
     for dirty in [0, mid] {
         // The files' bytes together fill the target, or pass it.
         for (bytes, joins) in [(target / 2, true), (target / 2 + 1, false)] {
-            let planned = plan(
-                Kind::Node,
-                target,
-                Encoding::Legacy,
-                &pair(1, bytes),
-                &[0, mid],
-                &[dirty],
-            );
+            let planned = plan(Kind::Node, target, &pair(1, bytes), &[0, mid], &[dirty]);
             let expected = if joins { merged() } else { apart(dirty) };
             assert_eq!(planned, expected, "{bytes} bytes");
         }
@@ -119,23 +94,14 @@ fn kept_files_over_one_file_together_stay_apart() {
 #[test]
 fn invisible_ids_cost_nothing_and_width_alone_cuts_nothing() {
     // The graph is empty, so no id costs decoded bytes: a seed of any
-    // width is one file, legacy or wide (ADR-0534). Only bytes or the
-    // row cap cut, and both need visible rows.
+    // width is one file. Only bytes or the row cap cut, and both need
+    // visible rows.
     let ids: Vec<i64> = (0..1_500_000).collect();
     let wide_slot = [Slot::Window(0..3_000_000)];
-    for encoding in [Encoding::Legacy, Encoding::Wide] {
-        let planned = plan(Kind::Node, MAX_FILE, encoding, &wide_slot, &ids, &[]);
-        assert_eq!(planned, [Planned::Unit(0..1, vec![(0, 3_000_000)])]);
-    }
+    let planned = plan(Kind::Node, MAX_FILE, &wide_slot, &ids, &[]);
+    assert_eq!(planned, [Planned::Unit(0..1, vec![(0, 3_000_000)])]);
     let narrow = [Slot::Window(0..MAX_WINDOW)];
-    let planned = plan(
-        Kind::Node,
-        MAX_FILE,
-        Encoding::Legacy,
-        &narrow,
-        &ids[..1_000],
-        &[],
-    );
+    let planned = plan(Kind::Node, MAX_FILE, &narrow, &ids[..1_000], &[]);
     assert_eq!(planned, [Planned::Unit(0..1, vec![(0, MAX_WINDOW)])]);
 }
 
@@ -196,7 +162,9 @@ fn halves_of_a_halved_file_stay_apart() {
         checkpoint_at(&watched, &graph, 0, ts, target).unwrap();
         assert_eq!(take_measured_rows(), 4, "half {half}");
         assert_eq!(take_encoded_rows(), 1, "half {half}");
-        assert_eq!(opens.load(Ordering::SeqCst), 1, "half {half}");
+        // Two opens: the kept half's schema read (ADR-0534 carry) plus
+        // the one cursor read of its copied rows.
+        assert_eq!(opens.load(Ordering::SeqCst), 2, "half {half}");
         let parts = manifest(&store).node_parts;
         assert_eq!(ranges(&parts), ranges(&before));
         assert_eq!(parts[1 - half], before[1 - half]);

@@ -230,8 +230,12 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
     let (_, _, _, report) =
         crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
-        report.migrations(),
-        &[(crate::version::Subsystem::ValueEncoding, 2)]
+        report.migration(),
+        Some((
+            crate::version::Subsystem::ValueEncoding,
+            2,
+            crate::version::value_encoding::ONTOLOGY_VERSION
+        ))
     );
     let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target)
         .unwrap()
@@ -260,8 +264,12 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
     let (_, _, _, report) =
         crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
-        report.migrations(),
-        &[(crate::version::Subsystem::ValueEncoding, 3)]
+        report.migration(),
+        Some((
+            crate::version::Subsystem::ValueEncoding,
+            3,
+            crate::version::value_encoding::CURRENT_VERSION
+        ))
     );
     let ontology = load_with_checkpoint_lsn::<relate_executor::Graph>(&target)
         .unwrap()

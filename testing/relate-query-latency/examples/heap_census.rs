@@ -6,7 +6,9 @@
 //!
 //! ```text
 //! heap_census build <ldbc-csv-dir> <store-dir>     # CSV -> parquet store
-//! heap_census checkpoint-wide <store-dir>          # re-encode a copy wide
+//! heap_census checkpoint <store-dir>               # open + checkpoint (a
+//!                                                   # legacy store upgrades
+//!                                                   # wide here, ADR-0553)
 //! heap_census restore <store-dir>                  # read-only open + census
 //! heap_census rebuild-indexes <store-dir>          # time one extra rebuild
 //! ```
@@ -90,22 +92,17 @@ fn build(csv_dir: &Path, store: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn checkpoint_wide(store: &Path) -> Result<(), String> {
+fn checkpoint(store: &Path) -> Result<(), String> {
+    // A plain checkpoint re-encodes wide: wide parts are the Parquet
+    // codec's only write encoding (ADR-0553), so on a legacy-encoded
+    // store this open + checkpoint pair is the one-time upgrade.
     let t = Instant::now();
-    let db = open(
-        store,
-        OpenOptions {
-            wide_columns: true,
-            ..OpenOptions::default()
-        },
-        "opening wide",
-    )?;
+    let db = open(store, OpenOptions::default(), "opening")?;
     let open = t.elapsed().as_secs_f64();
     let t = Instant::now();
-    db.checkpoint()
-        .map_err(|e| format!("wide checkpoint: {e}"))?;
+    db.checkpoint().map_err(|e| format!("checkpoint: {e}"))?;
     println!(
-        "checkpoint-wide: open {open:.2} s, re-encode {:.2} s",
+        "checkpoint: open {open:.2} s, checkpoint {:.2} s",
         t.elapsed().as_secs_f64()
     );
     Ok(())
@@ -306,11 +303,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let res = match args.as_slice() {
         [cmd, a, b] if cmd == "build" => build(Path::new(a), Path::new(b)),
-        [cmd, a] if cmd == "checkpoint-wide" => checkpoint_wide(Path::new(a)),
+        [cmd, a] if cmd == "checkpoint" => checkpoint(Path::new(a)),
         [cmd, a] if cmd == "restore" => restore(Path::new(a)),
         [cmd, a] if cmd == "rebuild-indexes" => rebuild_indexes(Path::new(a)),
         _ => Err(
-            "usage: heap_census build <csv-dir> <store> | checkpoint-wide <store> | \
+            "usage: heap_census build <csv-dir> <store> | checkpoint <store> | \
              restore <store> | rebuild-indexes <store>"
                 .to_string(),
         ),

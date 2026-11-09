@@ -318,7 +318,20 @@ pub(crate) fn open_store_with_report<G: SnapshotGraph>(
     let mut report = version::MigrationReport::default();
     if let version::SnapshotMarker::Legacy(subsystem, from) = marker {
         if target.is_fully_durable() {
-            report.record(subsystem, from);
+            // The published version from the same codec/ontology facts
+            // the checkpoint below hands its codec — each subsystem's
+            // canonical derivation, never a per-subsystem constant.
+            let to = match subsystem {
+                #[cfg(manifest_codec)]
+                version::Subsystem::Manifest => u64::from(version::manifest::published_with(
+                    target.codec,
+                    ontology.is_some(),
+                )),
+                version::Subsystem::ValueEncoding => {
+                    version::value_encoding::version_for_write(ontology.is_some())
+                }
+            };
+            report.record(subsystem, from, to);
             // The migration checkpoint carries the loaded ontology document
             // so a content-mismatched marker (ADR-0120 §8) is normalized,
             // never dropped. It publishes at the graph's own commit

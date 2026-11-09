@@ -91,9 +91,9 @@ discovery (Agent rule 4).
   in `columnTypes`, ADR-0224;
   `--mode toon` for the compact TOON tabular form),
   `--param N=V` (repeatable),
-  `--snapshot-format json` (empty dir only; `parquet` and
-  `parquet-wide` — ADR-0534's wide-column parts, sticky in the manifest —
-  too in builds with that codec, as `--help` lists),
+  `--snapshot-format json` (empty dir only; `parquet` — whose checkpoints
+  are ADR-0553's wide-column parts — too in builds with that codec, as
+  `--help` lists),
   `--logical-graph-size-limit SIZE`, `--concurrent-logical-workspace-limit SIZE`
   (a positive value turns query admission on; omit leaves it off, ADR-0452),
   `--max-rows N` (rows printed per statement; under an

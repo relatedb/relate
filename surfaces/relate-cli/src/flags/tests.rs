@@ -452,26 +452,18 @@ fn help_and_version_win_over_the_load_conflict() {
 }
 
 #[test]
-fn snapshot_format_parses_codecs_and_parquet_wide() {
-    // ADR-0534: the flag's values are the codec names plus the
-    // `parquet-wide` opt-in — an option on Parquet, never a codec of its
-    // own. An uncompiled choice parses and fails closed at open
-    // (ADR-0105), so parsing is unconditional here.
-    let flags = parse(&argv(&["--snapshot-format", "parquet-wide"]));
-    assert_eq!(flags.snapshot_format, Some(SnapshotFormat::ParquetWide));
+fn snapshot_format_parses_codecs() {
+    // ADR-0163: the flag's values are the codec names. An uncompiled
+    // choice parses and fails closed at open (ADR-0105), so parsing is
+    // unconditional here.
+    let flags = parse(&argv(&["--snapshot-format", "parquet"]));
     assert_eq!(
-        flags.snapshot_format.map(SnapshotFormat::codec),
+        flags.snapshot_format,
         Some(relate::SnapshotCodecKind::Parquet)
     );
-    assert_eq!(
-        flags.snapshot_format.map(SnapshotFormat::wide_columns),
-        Some(true)
-    );
     // The flag's grammar owns its unknown-value error: the expected
-    // list names the opt-in beside the codecs, never the codec parser's
-    // narrower set.
-    let err = "parquet-wdie"
-        .parse::<SnapshotFormat>()
+    // list names every codec, never the codec parser's narrower set.
+    let err = parse_snapshot_format("parquet-wdie")
         .unwrap_err()
         .to_string();
     assert!(
@@ -479,14 +471,7 @@ fn snapshot_format_parses_codecs_and_parquet_wide() {
         "{err}"
     );
     // A codec spelling is unchanged, case-insensitive like the codec
-    // parser, and opts nothing in.
+    // parser.
     let flags = parse(&argv(&["--snapshot-format", "JSON"]));
-    assert_eq!(
-        flags.snapshot_format,
-        Some(SnapshotFormat::Codec(relate::SnapshotCodecKind::Json))
-    );
-    assert_eq!(
-        flags.snapshot_format.map(SnapshotFormat::wide_columns),
-        Some(false)
-    );
+    assert_eq!(flags.snapshot_format, Some(relate::SnapshotCodecKind::Json));
 }

@@ -42,7 +42,7 @@ fn native_dir_info_beside_live_writer() {
     let StoreSnapshot::Parquet(m) = &info.snapshot else {
         panic!("expected a Parquet manifest, got {:?}", info.snapshot);
     };
-    assert_eq!(m.format_version, 3);
+    assert_eq!(m.format_version, 5);
     assert_eq!(m.checkpoint_lsn, 1);
     assert_eq!(m.node_parts.iter().map(|p| p.rows).sum::<u64>(), 1);
     assert_eq!(info.wal_segments, 1);
@@ -69,7 +69,7 @@ fn bundle_info_beside_live_writer() {
     let StoreSnapshot::Parquet(m) = &info.snapshot else {
         panic!("expected a Parquet manifest, got {:?}", info.snapshot);
     };
-    assert_eq!(m.format_version, 3);
+    assert_eq!(m.format_version, 5);
     assert_eq!(info.wal_segments, 1);
     assert_eq!(info.total_bytes, std::fs::metadata(&db).unwrap().len());
 }

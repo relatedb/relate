@@ -4,7 +4,7 @@
 
 | Form | Open as | Notes |
 |------|---------|-------|
-| Directory | `relate --database ./mydata` | WAL + snapshot (Parquet by default in builds with that codec, else JSON; `--help` lists what is compiled in). `--snapshot-format` only on an **empty** directory (values as `--help` lists — `parquet-wide` opts into ADR-0534's wide-column parts); never mix codecs in one database. |
+| Directory | `relate --database ./mydata` | WAL + snapshot (Parquet by default in builds with that codec, else JSON; `--help` lists what is compiled in). `--snapshot-format` only on an **empty** directory (values as `--help` lists); never mix codecs in one database. Parquet checkpoints are wide-column parts (ADR-0553). |
 | Single file | `relate --database ./mydata.rl` | `.rl` bundle: WAL + snapshot inside one host file (ADR-0074). Same semantics as the directory form — copy the one file to back it up. |
 | Ephemeral | `relate :memory:` | Gone when the process exits. Default when no path is given. |
 

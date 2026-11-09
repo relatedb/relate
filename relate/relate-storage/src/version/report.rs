@@ -5,9 +5,7 @@ use relate_core::Error;
 
 use crate::map_message;
 
-#[cfg(manifest_codec)]
-use super::manifest;
-use super::{value_encoding, SnapshotMarker};
+use super::SnapshotMarker;
 
 /// The subsystems a snapshot migration can rewrite. The WAL and bundle
 /// container never appear here today: `MDBWAL01` is both minimum and
@@ -22,17 +20,6 @@ pub(crate) enum Subsystem {
     ValueEncoding,
 }
 
-impl Subsystem {
-    /// The version this binary writes for the subsystem.
-    fn current(&self) -> u64 {
-        match self {
-            #[cfg(manifest_codec)]
-            Subsystem::Manifest => u64::from(manifest::CURRENT_VERSION),
-            Subsystem::ValueEncoding => value_encoding::CURRENT_VERSION,
-        }
-    }
-}
-
 impl std::fmt::Display for Subsystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -43,44 +30,43 @@ impl std::fmt::Display for Subsystem {
     }
 }
 
-/// Record of what migrate-on-open rewrote (ADR-0127 Decision 8): entries
-/// are "subsystem X was at version N, now current". An empty report means
-/// no migration happened. Internal to `relate-storage`; the crate has
+/// Record of what migrate-on-open rewrote (ADR-0127 Decision 8): the one
+/// migration this open performed — "subsystem X was at version N,
+/// published at M", both ends recorded by the one site that knows what
+/// the migration checkpoint published. A store's snapshot is one codec's
+/// marker, so an open migrates at most one subsystem: the report holds
+/// one entry, never a list. Internal to `relate-storage`; the crate has
 /// no logging facility, so the report is observable only through
 /// `pub(crate)` test hooks.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct MigrationReport {
-    migrated: Vec<(Subsystem, u64)>,
+    migrated: Option<(Subsystem, u64, u64)>,
 }
 
 impl MigrationReport {
-    pub(crate) fn record(&mut self, subsystem: Subsystem, from: u64) {
-        self.migrated.push((subsystem, from));
+    /// Record the one migration this open performed. A store's snapshot
+    /// is one codec's marker, so a second record never comes; should one
+    /// anyway, it replaces — there is no list to append to.
+    pub(crate) fn record(&mut self, subsystem: Subsystem, from: u64, to: u64) {
+        self.migrated = Some((subsystem, from, to));
     }
 
-    /// Every migrated subsystem as (subsystem, version it was at), in the
-    /// order recorded.
-    pub(crate) fn migrations(&self) -> &[(Subsystem, u64)] {
-        &self.migrated
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.migrated.is_empty()
+    /// The migration this open performed, if any: (subsystem, the
+    /// version it was at, the version it was published at).
+    pub(crate) fn migration(&self) -> Option<(Subsystem, u64, u64)> {
+        self.migrated
     }
 }
 
 impl std::fmt::Display for MigrationReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_empty() {
-            return f.write_str("store is at current format");
+        match self.migration() {
+            Some((subsystem, from, to)) => write!(f, "{subsystem} {from}→{to}"),
+            // Only what the report knows: an empty report is also a
+            // legacy marker on a VFS migrate-on-open skips (ADR-0127
+            // Decision 7), not proof the store is at the current format.
+            None => f.write_str("no migration recorded"),
         }
-        for (i, (subsystem, from)) in self.migrations().iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            write!(f, "{subsystem} {from}→{}", subsystem.current())?;
-        }
-        Ok(())
     }
 }
 

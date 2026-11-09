@@ -237,7 +237,7 @@ fn bundle_procedure_matrix_compiled_codecs() {
 /// ADR-0120 §4/§8 through the procedure path: the first `db.ontology.set`
 /// rotates the active WAL segment to `MDBWAL02`; segments created while
 /// the ontology is held stay `MDBWAL02`; after `db.ontology.drop()` +
-/// checkpoint + WAL recycle the manifest is format_version 3 (Parquet) /
+/// checkpoint + WAL recycle the manifest is format_version 5 (Parquet) /
 /// graph.json carries no `ontology` field at value_encoding 2 (JSON), the
 /// markdown sidecar manifest publishing the ontology by the JSON
 /// envelope's inline rule (ADR-0406 §3), and new segments are `MDBWAL01`

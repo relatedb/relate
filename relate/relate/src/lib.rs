@@ -338,15 +338,6 @@ pub struct OpenOptions {
     /// JSON otherwise; ADR-0105). Existing directories use the envelope; a
     /// mismatch is an error.
     pub snapshot_codec: Option<relate_storage::SnapshotCodecKind>,
-    /// Opt the Parquet store into the wide-column part encoding
-    /// (ADR-0534): its next checkpoint re-encodes every part with one
-    /// typed column per promoted property key plus a residual
-    /// tagged-JSON tail, and publishes a wide manifest, which then keeps
-    /// the store wide whatever this flag. Default `false` — the legacy
-    /// tagged-JSON property column. Every build reads both encodings; a
-    /// set flag on a store whose codec is not Parquet fails the open
-    /// instead of being ignored.
-    pub wide_columns: bool,
     /// The markdown vault's body-property configuration (ADR-0460):
     /// which properties render as the node file's body — the list's
     /// first entry bare, each subsequent one as a `## <property>`

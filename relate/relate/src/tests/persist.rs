@@ -194,7 +194,7 @@ fn legacy_untyped_label_constraint_survives_checkpoint_and_wal_recycle() {
         let mut old: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         if codec == SnapshotCodecKind::Parquet {
-            assert_eq!(old["format_version"], 3);
+            assert_eq!(old["format_version"], 5);
         } else {
             old["constraints"][0]
                 .as_object_mut()

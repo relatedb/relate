@@ -753,23 +753,6 @@ pub fn compiled_codecs() -> String {
         .join("|")
 }
 
-/// The `--snapshot-format` values this build accepts, as the help rows
-/// spell them: [`compiled_codecs`] plus — in a Parquet build — the
-/// `parquet-wide` opt-in (ADR-0534), mirroring the help module's one
-/// value list so a vocabulary change fails these suites too.
-#[allow(dead_code)]
-pub fn snapshot_format_values() -> String {
-    // The binary's own vocabulary list is unreachable from `tests/`, so
-    // this mirrors it on the same typed facts: the compiled codec names
-    // plus, gated on the one typed build predicate, the `parquet-wide`
-    // opt-in (ADR-0534).
-    if relate::SnapshotCodecKind::Parquet.is_compiled() {
-        format!("{compiled}|parquet-wide", compiled = compiled_codecs())
-    } else {
-        compiled_codecs()
-    }
-}
-
 /// The `Commands:` block of a top-level help output.
 // Only the help and bundle E2E suites parse the top-level help; allow until
 // more do.

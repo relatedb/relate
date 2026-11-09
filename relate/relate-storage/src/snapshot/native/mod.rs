@@ -189,13 +189,6 @@ pub(crate) fn checkpoint_at_with_bytes(
     // Validate against the named catalog before creating *any* shard.
     let theater = graph.checkpoint_theater_for_write()?;
     let prev = read_manifest(target)?.map(|(m, _)| m);
-    // ADR-0534, the one encoding decision: what the previous manifest
-    // records folded with this open's opt-in.
-    let encoding = Encoding::of(
-        prev.as_ref()
-            .map(|m| crate::version::manifest::writes_wide(m.format_version)),
-        target.wide_columns(),
-    );
     // A kind with no previous parts is not checked by read_manifest. Reject
     // even an unused alias before a new leaf can be created through it.
     for kind in Kind::ALL {
@@ -210,7 +203,6 @@ pub(crate) fn checkpoint_at_with_bytes(
         snapshot_ts,
         Kind::Node,
         target_bytes,
-        encoding,
         &mut owned,
     );
     // The publish phase is known statically: a prepare failure cleans up as
@@ -560,46 +552,6 @@ fn validate_shard_name(target: &StoreTarget, name: ShardName) -> Result<()> {
     Ok(())
 }
 
-/// The store's part encoding for one checkpoint (ADR-0534): what the
-/// previous manifest records folded with this open's opt-in — one
-/// three-state fact, never two bools that could disagree.
-#[derive(Clone, Copy, Debug)]
-enum Encoding {
-    /// The one-time legacy→wide transition: every part re-encodes wide
-    /// this checkpoint, every live id dirty.
-    Transition,
-    /// Wide parts, no one-time re-encode.
-    Wide,
-    /// The legacy tagged-JSON property column.
-    Legacy,
-}
-
-impl Encoding {
-    /// The one derivation (ADR-0534): what the previous manifest recorded
-    /// — `None` for a fresh store — folded with this open's opt-in.
-    fn of(previous: Option<bool>, opted_in: bool) -> Self {
-        match (previous, opted_in) {
-            // A wide manifest keeps the store wide whatever the flags.
-            (Some(true), _) => Encoding::Wide,
-            // An opted-in legacy store re-encodes every part once; a
-            // fresh one starts wide with nothing to re-encode.
-            (Some(false), true) => Encoding::Transition,
-            (None, true) => Encoding::Wide,
-            (_, false) => Encoding::Legacy,
-        }
-    }
-
-    /// Whether this checkpoint writes wide parts.
-    fn wide(self) -> bool {
-        !matches!(self, Encoding::Legacy)
-    }
-
-    /// Whether every live id re-encodes — the one-time transition.
-    fn reencodes_all(self) -> bool {
-        matches!(self, Encoding::Transition)
-    }
-}
-
 /// The invariant bundle threaded through the shard-write recursion
 /// (`rewrite_kind` → `coalesce::rewrite` → `publish_part`): everything
 /// except the varying id window.
@@ -609,10 +561,6 @@ struct ShardWrite<'a> {
     ts: u64,
     kind: Kind,
     target_bytes: u64,
-    /// The part encoding this checkpoint writes (ADR-0534) — the
-    /// store's recorded or opted-in encoding, the one-time
-    /// legacy→wide transition included.
-    encoding: Encoding,
     owned: &'a mut Vec<String>,
 }
 
@@ -625,7 +573,6 @@ impl<'a> ShardWrite<'a> {
         ts: u64,
         kind: Kind,
         target_bytes: u64,
-        encoding: Encoding,
         owned: &'a mut Vec<String>,
     ) -> Self {
         Self {
@@ -634,7 +581,6 @@ impl<'a> ShardWrite<'a> {
             ts,
             kind,
             target_bytes,
-            encoding,
             owned,
         }
     }
@@ -681,10 +627,8 @@ fn prepare_manifest(
         .map(|document| ontology::publish_ontology(ctx.target, prev, document, ctx.owned))
         .transpose()?;
     let manifest = Manifest {
-        format_version: crate::version::manifest::version_for_write(
-            ontology_path.is_some(),
-            ctx.encoding.wide(),
-        ),
+        // The Parquet codec writes the wide pair, always (ADR-0553).
+        format_version: crate::version::manifest::version_for_write(ontology_path.is_some(), true),
         next_node_id: ctx.graph.next_node_id(),
         next_rel_id: ctx.graph.next_rel_id(),
         checkpoint_lsn,
@@ -717,9 +661,9 @@ fn prepare_manifest(
 }
 
 /// Rewrite one kind's parts, every live id joining the dirty set when
-/// the store's encoding is the one-time legacy→wide transition
-/// (ADR-0534) — extends, never replaces, so a part whose rows were all
-/// deleted stays touched and retires instead of republishing them.
+/// this checkpoint is the one-time legacy→wide upgrade (ADR-0553) —
+/// extends, never replaces, so a part whose rows were all deleted stays
+/// touched and retires instead of republishing them.
 fn rewrite_kind(
     ctx: &mut ShardWrite<'_>,
     prev: Option<&Manifest>,
@@ -727,7 +671,10 @@ fn rewrite_kind(
     let parts = prev.map(|m| ctx.kind.parts(m).to_vec()).unwrap_or_default();
     let all_ids = ctx.kind.all_ids(ctx.graph, ctx.ts);
     let mut dirty = ctx.kind.dirty_ids(ctx.graph);
-    if ctx.encoding.reencodes_all() {
+    // ADR-0553: the one derivation, from the manifest this rewrite serves —
+    // a previous manifest below the wide versions upgrades every part.
+    let upgrading = prev.is_some_and(|m| !crate::version::manifest::writes_wide(m.format_version));
+    if upgrading {
         dirty.extend(all_ids.iter().copied());
         dirty.sort_unstable();
         dirty.dedup();

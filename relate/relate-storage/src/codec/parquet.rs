@@ -73,15 +73,14 @@ const PAGES_PER_LEAF: u64 = 2;
 impl Kind {
     /// The most rows of this kind one file holds within ADR-0086's
     /// `MAX_PAGES` (ADR-0183, Page envelope): row groups of `ROW_GROUP_CAP`
-    /// rows, each writing `PAGES_PER_LEAF` pages per leaf column. A legacy
-    /// part's fixed schema holds 699,008 node rows and 419,392 relationship
-    /// rows; a wide part's leaf count adds at most
+    /// rows, each writing `PAGES_PER_LEAF` pages per leaf column. Every
+    /// written part is wide (ADR-0553): the leaf count adds at most
     /// [`MAX_PROMOTED_COLUMNS`] promoted columns and the residual
     /// (ADR-0534) — 59,904 node rows and 56,640 relationship rows at the
     /// cap. A file holds fewer when its part promotes fewer columns or a
     /// large value spills into more pages.
-    pub(crate) fn page_envelope_rows(self, wide: bool) -> usize {
-        let leaves = self.leaf_columns() + u64::from(wide) * MAX_PROMOTED_COLUMNS as u64;
+    pub(crate) fn page_envelope_rows(self) -> usize {
+        let leaves = self.leaf_columns() + MAX_PROMOTED_COLUMNS as u64;
         let groups = MAX_PAGES / (PAGES_PER_LEAF * leaves);
         groups as usize * ROW_GROUP_CAP
     }

@@ -175,14 +175,15 @@ fn a_seed_over_the_page_envelope_rows_is_cut_into_full_files() {
     // ADR-0534: a wide part's leaf columns make rows the binding bound of
     // the ADR-0086 page envelope, so a seed of more live rows than one
     // file holds is cut into full files of that many rows by planning —
-    // never written over the envelope and halved.
-    let store = wide_memory_store();
+    // never written over the envelope and halved. Every part is wide
+    // (ADR-0553), so the plain store exercises it.
+    let store = memory_store();
     let graph = Graph::default();
     stage_nodes(&graph, 120_000, 24);
     let ts = apply_commit(&graph);
     checkpoint_at(&store, &graph, 0, ts, MAX_FILE).unwrap();
     let parts = manifest(&store).node_parts;
-    let cap = Kind::Node.page_envelope_rows(true);
+    let cap = Kind::Node.page_envelope_rows();
     assert_eq!(parts.len(), 120_000usize.div_ceil(cap), "{parts:?}");
     assert!(
         parts[..parts.len() - 1]

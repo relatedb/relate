@@ -340,7 +340,7 @@ fn seed_catalog(home: &std::path::Path, db: &std::path::Path) {
 fn assert_seeded_table(stdout: &str, layout: &str, nodes: u64, rels: u64) {
     assert!(stdout.contains(&format!("layout: {layout}")), "{stdout}");
     assert!(stdout.contains("codec: parquet"), "{stdout}");
-    assert!(stdout.contains("format version: 3"), "{stdout}");
+    assert!(stdout.contains("format version: 5"), "{stdout}");
     assert!(stdout.contains("checkpoint LSN: "), "{stdout}");
     assert!(stdout.contains("commit timestamp: "), "{stdout}");
     let (nodes_lsn, nodes_got) = labeled_count(stdout, "nodes").expect("nodes line");
@@ -385,7 +385,7 @@ fn assert_seeded_json(stdout: &str, layout: &str, nodes: u64, rels: u64) -> serd
         serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("bad JSON {stdout:?}: {e}"));
     assert_eq!(value["layout"], layout, "{value}");
     assert_eq!(value["codec"], "parquet", "{value}");
-    assert_eq!(value["format_version"], 3, "{value}");
+    assert_eq!(value["format_version"], 5, "{value}");
     assert!(value["checkpoint_lsn"].is_u64(), "{value}");
     assert_eq!(value["node_count"], nodes, "{value}");
     assert_eq!(value["rel_count"], rels, "{value}");

@@ -178,12 +178,11 @@ pub(crate) struct ServeCmd {
     /// the shared resolution (`flags::durability_mode_from_env_checked`),
     /// so serve and the query session cannot drift on the same store.
     pub durability_mode: Option<relate::DurabilityMode>,
-    /// `--snapshot-format F` (ADR-0163, ADR-0534): the served store's
-    /// snapshot format — a codec name, or `parquet-wide` for the Parquet
-    /// codec's wide-column part encoding, the same grammar the query
-    /// session's flag parses (flags.rs). `None` defers to the engine's
-    /// own resolution (`RELATE_SNAPSHOT_FORMAT`, then the build default).
-    pub snapshot_format: Option<crate::flags::SnapshotFormat>,
+    /// `--snapshot-format F` (ADR-0163): the served store's snapshot
+    /// format — a codec name, the same grammar the query session's flag
+    /// parses (flags.rs). `None` defers to the engine's own resolution
+    /// (`RELATE_SNAPSHOT_FORMAT`, then the build default).
+    pub snapshot_format: Option<relate::SnapshotCodecKind>,
     /// The store's open mode, resolved from the post-verb access slot
     /// through `parse_error::resolve_access` (`None` = the no-flag
     /// `OpenMode::Writable` default) — with the one `--load` implication
@@ -519,7 +518,7 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
                     &mut snapshot_format,
                     "--snapshot-format",
                     &mut args,
-                    &format!("a value ({})", crate::flags::snapshot_format_values(" or ")),
+                    &format!("a value ({})", crate::flags::codec_names(" or ")),
                     parse_snapshot_format,
                 )?;
             }
@@ -811,15 +810,11 @@ fn parse_durability_mode(flag: &str, value: &str) -> Result<relate::DurabilityMo
         .map_err(|e| format!("serve {flag} expects a durability mode, got {value:?}: {e}").into())
 }
 
-// ADR-0534: the flag's values are the codec names plus `parquet-wide`,
-// the same grammar the query session's `--snapshot-format` parses
-// (flags.rs), so serve and the query session cannot drift on one store.
-fn parse_snapshot_format(
-    flag: &str,
-    value: &str,
-) -> Result<crate::flags::SnapshotFormat, ParseError> {
-    value
-        .parse::<crate::flags::SnapshotFormat>()
+// ADR-0163: the flag's values are the codec names, the same grammar the
+// query session's `--snapshot-format` parses (flags.rs), so serve and
+// the query session cannot drift on one store.
+fn parse_snapshot_format(flag: &str, value: &str) -> Result<relate::SnapshotCodecKind, ParseError> {
+    crate::flags::parse_snapshot_format(value)
         .map_err(|e| format!("serve {flag} expects a snapshot format, got {value:?}: {e}").into())
 }
 

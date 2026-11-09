@@ -138,3 +138,13 @@ readers see named, typed, compressed columns.
   with periodic compaction; the arena's append-only shape is what makes
   that natural, and the format decided here (immutable per-part files,
   manifest-selected) is compatible with it.
+
+## Later references
+
+ADR-0553 supersedes the opt-in: the wide-column encoding becomes the
+Parquet codec's only write encoding, the open-time opt-in (the
+`CodecOpenConfig` variant, the facade flag, the CLI value) is deleted, and
+a legacy-encoded store upgrades at its next checkpoint through the
+one-time transition defined here. The encoding design this ADR records —
+promotion policy, column caps, residual tail, layout and incrementality —
+stands unchanged, as does the readable-both-encodings rule.

@@ -278,9 +278,10 @@ fn mixed_file_envelope_retry_recopies_behind_cursor() {
         assert!(parts.len() > 1, "{parts:?}");
         assert!(parts.iter().all(|p| p.bytes <= ceiling), "{parts:?}");
         assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 2000);
-        // The failed file opened the shard. The first half reopens it; the
-        // second half starts ahead of the first half's cursor and reuses it.
-        assert_eq!(opens.load(Ordering::SeqCst), 2, "parity {dirty_parity}");
+        // Three opens: the kept part's schema read (ADR-0534 carry), the
+        // failed file, and the first half's reopen — the second half
+        // starts ahead of the first half's cursor and reuses it.
+        assert_eq!(opens.load(Ordering::SeqCst), 3, "parity {dirty_parity}");
         assert_reopens_as(&store, &graph);
     }
 }
@@ -402,10 +403,11 @@ fn over_target_seed_copies_clean_rows_across_files() {
     take_encoded_rows();
     checkpoint_at(&watched, &graph, 0, ts, target).unwrap();
     // One walk measures each row once and cuts the seed into files; the
-    // clean rows of every file are copied through one cursor.
+    // clean rows of every file are copied through one cursor, beside the
+    // kept part's one schema read (ADR-0534 carry).
     assert_eq!(take_measured_rows(), 2000);
     assert_eq!(take_encoded_rows(), dirty.len());
-    assert_eq!(opens.load(Ordering::SeqCst), 1);
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
     let parts = assert_tiles(&store, &graph, ts, part.id_lo..part.id_hi, target);
     assert!(parts.len() > 1, "{parts:?}");
     assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 2000);
@@ -448,15 +450,7 @@ fn file_without_rows_is_refused() {
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let mut ctx = ShardWrite::new(
-        &store,
-        &graph,
-        1,
-        Kind::Node,
-        1,
-        Encoding::Legacy,
-        &mut owned,
-    );
+    let mut ctx = ShardWrite::new(&store, &graph, 1, Kind::Node, 1, &mut owned);
     // Ids 7 and 8 get a new window [0, 4096), with no previous file.
     let err = coalesce::rewrite(&mut ctx, Vec::new(), &[7, 8], &[], 4096).unwrap_err();
     assert!(matches!(err, Error::Storage(_)), "{err}");

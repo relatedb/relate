@@ -38,27 +38,31 @@ pub(crate) enum Classification<T> {
 #[cfg(manifest_codec)]
 pub(crate) mod manifest {
     use super::Classification;
+    use crate::codec::SnapshotCodecKind;
 
     /// Oldest manifest this binary can load.
     pub(crate) const MIN_READABLE_VERSION: u32 = 1;
     /// What this binary writes while the manifest selects no ontology
-    /// object and the store has not opted into the wide-column part
-    /// encoding (ADR-0534): the tagged-JSON property column.
+    /// object and the codec writes the legacy part encoding — the
+    /// experimental codecs only (ADR-0537); the Parquet codec writes the
+    /// wide pair (ADR-0553).
     pub(crate) const CURRENT_VERSION: u32 = 3;
     /// What this binary writes when the manifest selects an ontology object
-    /// (ADR-0120 §5). A v4 manifest is a v3 manifest plus the ontology
-    /// selection.
+    /// and the codec writes the legacy part encoding (ADR-0120 §5). A v4
+    /// manifest is a v3 manifest plus the ontology selection.
     pub(crate) const ONTOLOGY_VERSION: u32 = 4;
-    /// What this binary writes for a wide-column store (ADR-0534): one
-    /// typed column per promoted property key plus a residual tagged-JSON
-    /// tail, opted into per store — a manifest at 5 or 6 keeps the store
-    /// wide, whatever the open flags.
+    /// What the Parquet codec writes for a store without an ontology
+    /// object (ADR-0553): one typed column per promoted property key plus
+    /// a residual tagged-JSON tail (ADR-0534).
     pub(crate) const WIDE_VERSION: u32 = 5;
-    /// A v6 manifest is a v5 manifest plus `ontology_path` (ADR-0120 §5).
+    /// What the Parquet codec writes when the manifest selects an ontology
+    /// object (ADR-0120 §5): a v6 manifest is a v5 manifest plus
+    /// `ontology_path`.
     pub(crate) const WIDE_ONTOLOGY_VERSION: u32 = 6;
     /// Every readable version; v1/v2 use the monolithic
     /// `nodes.parquet`/`relationships.parquet` fallback reader (ADR-0005,
-    /// pre-ADR-0022 shards), v5/v6 carry wide-column parts (ADR-0534).
+    /// pre-ADR-0022 shards), v3/v4 carry the legacy tagged-JSON property
+    /// column, v5/v6 wide-column parts (ADR-0534).
     pub(crate) const READABLE: &[u32] = &[
         MIN_READABLE_VERSION,
         2,
@@ -69,9 +73,10 @@ pub(crate) mod manifest {
     ];
 
     /// The version a manifest is written with (ADR-0120 §8: the format
-    /// follows the content; ADR-0534: the wide-column option follows the
-    /// store): the ontology pair when it selects an ontology object, the
-    /// wide pair when the store writes wide parts.
+    /// follows the content; ADR-0534: the part encoding follows the
+    /// codec — the wide pair for a codec that writes wide parts, the
+    /// legacy pair for one that does not): the ontology half of each pair
+    /// when the manifest selects an ontology object.
     pub(crate) fn version_for_write(has_ontology: bool, wide: bool) -> u32 {
         match (has_ontology, wide) {
             (true, true) => WIDE_ONTOLOGY_VERSION,
@@ -91,13 +96,23 @@ pub(crate) mod manifest {
         version == WIDE_VERSION || version == WIDE_ONTOLOGY_VERSION
     }
 
+    /// The version a manifest migration publishes: the same codec and
+    /// content facts the migration checkpoint hands its codec — the wide
+    /// pair for a codec that writes wide parts (ADR-0553), the legacy
+    /// pair for one that does not (ADR-0537), the ontology half
+    /// following the content (ADR-0120 §8).
+    pub(crate) fn published_with(codec: SnapshotCodecKind, ontology: bool) -> u32 {
+        version_for_write(ontology, codec.writes_wide_parts())
+    }
+
     /// Classify a decoded manifest `format_version` against the content it
     /// carries (ADR-0127 Decision 2, ADR-0120 §8). Both pairs this binary
     /// writes are current — the legacy `(3, no ontology)` / `(4, ontology)`
-    /// and the wide `(5, no ontology)` / `(6, ontology)` of ADR-0534; a
-    /// store never migrates between them, it opts in. Every other readable
-    /// pair is legacy and migrate-on-open normalizes it to the content's
-    /// version.
+    /// of the experimental codecs (ADR-0537) and the wide `(5, no
+    /// ontology)` / `(6, ontology)` the Parquet codec writes (ADR-0553); a
+    /// legacy-encoded Parquet store upgrades to the wide pair at its next
+    /// checkpoint, never the reverse. Every other readable pair is legacy
+    /// and migrate-on-open normalizes it to the content's version.
     pub(crate) fn classify(version: u32, has_ontology: bool) -> Classification<u32> {
         let writes = [
             version_for_write(has_ontology, false),
