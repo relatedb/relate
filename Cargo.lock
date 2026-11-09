@@ -2341,17 +2341,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "relate-cookbook"
-version = "0.16.1"
-dependencies = [
- "relate",
- "relate-formatter",
- "relate-splitter",
- "relate-test-support",
- "serde_json",
-]
-
-[[package]]
 name = "relate-core"
 version = "0.16.1"
 dependencies = [

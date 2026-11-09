@@ -22,7 +22,7 @@ class ClassifyTests(unittest.TestCase):
             ("surfaces/relate-cli/tests/e2e_version.rs", "cYpHeRlItE_pReViEw", "rename guard"),
             ("surfaces/relate-cli/src/upgrade_cmd/mod.rs", "cypherlite is now relate — this is the final", "swan-song notice"),
             (".github/workflows/spec-harness.yml", "repository: neo4j-labs/cypherlite-cypher-test-harness", "pre-cutover name"),
-            ("docs/cookbook/x.md", 'doc": "adr/0046-cypherlite-parser-memorydb-runtime.md', "ADR filename ref"),
+            ("docs/guides/x.md", 'doc": "adr/0046-cypherlite-parser-memorydb-runtime.md', "ADR filename ref"),
         ]
         for path, line, want in cases:
             self.assertEqual(residuals.classify(path, line), want, f"{path}: {line}")

@@ -1,8 +1,0 @@
-[
-  { "expectError": false, "last": { "error": null }, "problem": null },
-  { "expectError": false, "last": { "error": "boom" }, "problem": "cell `a` failed: boom" },
-  { "expectError": true, "last": { "error": "boom" }, "problem": null },
-  { "expectError": true, "last": { "error": null }, "problem": "cell `a` is marked expect=error but succeeded" },
-  { "expectError": false, "last": null, "problem": null },
-  { "expectError": true, "last": null, "problem": "cell `a` is marked expect=error but succeeded" }
-]

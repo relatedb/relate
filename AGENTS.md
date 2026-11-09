@@ -146,7 +146,6 @@ No behavior without tests.
 | Cypher contract | openCypher TCK via the spec harness (ADR-0482, ADR-0520) |
 | Client contract | each client's tests against C ABI |
 | Persistence | WAL + snapshot roundtrip, Native + Memory VFS |
-| Cookbook | `docs/cookbook/` recipes via `make cookbook`: `relate-cookbook` (native) + site build's WASM parity check |
 
 - Language contract lives in the spec harness (ADR-0482): it runs Neo4j's
   Cypher spec suites against the PR's Python wheel and reports coverage per
@@ -220,7 +219,6 @@ surfaces/                        adapters of `relate::Database` to users, hosts,
 testing/                         conformance, evaluation, datasets, tooling
   relate-datasets                synthetic graphs + loadtest binaries
   relate-test-support            shared test-only helpers (big-stack runner)
-  relate-cookbook                parses and runs the docs/cookbook recipes (ADR-0130)
   relate-query-latency           graph-benchmark-ldbc query latency suite (ADR-0243)
   xtask                          boundary check (`cargo xtask check-boundaries`)
 
@@ -446,7 +444,7 @@ Process, not code shape:
   run the fast gate only — clippy, lint, the draft smoke lane (8 light
   crates' unit suites on a warm shared cache), three opencode reviews
   (code/stellar, security, rust). The full matrix (OS sweeps, Bolt
-  driver smokes, corpus, cookbook, feature bundles, loadtest gates,
+  driver smokes, corpus, feature bundles, loadtest gates,
   clients, WASM/site) runs only when ready. A clean fast gate = the
   signal to ask a human to mark it ready
 - **Catch findings locally first** — local gates are cheaper and faster
@@ -512,20 +510,13 @@ Process, not code shape:
   `gh`). Direct invokes of ToolSearch-deferred tools can silently drop
   in routed sessions (claude-code#103057)
 
-## How to add a cookbook recipe
+## The cookbook
 
-One tested markdown file, `docs/cookbook/<slug>.md` (ADR-0130, ADR-0132);
-the full format contract is
-[`docs/cookbook/README.md`](docs/cookbook/README.md). Hard parts: `cypher
-cell=<id>` steps (code ≤ 88 columns); `json data=<name>` blocks ≤ 512 KB
-(≤ 2 KB beside a step — larger datasets in a collapsed `## Data` section
-with source + license recorded); ≤ 800 lines before `## Data`; a mermaid
-data-model drawing, rendered via
-`node scripts/cookbook/diagrams/render.mjs` (ADR-0135; needs Chrome).
-Record each step's result with `COOKBOOK_UPDATE=1 cargo test -p
-relate-cookbook` and review the diff; `make cookbook` runs the whole gate
-CI runs. Never record a wrong answer — work around an engine bug in
-Cypher, say so in a `> **Note**`, and file the bug.
+The cookbook's recipes, their tests, and the `/cookbook/` pages live in
+the relate-web repository (ADR-0528), which runs every recipe against the
+WASM bundle it ships. Nothing here builds or tests them. Keep the WASM
+`renderResult` export and `relate_formatter::recording` stable: a change to
+the recording format changes every recipe's recorded results there.
 
 ## How to investigate a slow query
 

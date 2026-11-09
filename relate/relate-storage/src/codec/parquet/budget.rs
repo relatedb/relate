@@ -49,12 +49,19 @@ impl Kind {
     }
 }
 
-/// Decoded bytes of consecutive live rows, held under a byte target and the
-/// ADR-0086 row and decoded envelopes.
+/// Decoded bytes of consecutive live rows, held under a byte target, the
+/// kind's page-envelope row cap (ADR-0534: a wide part's many leaf columns
+/// make rows, not bytes, the binding bound), and the ADR-0086 row and
+/// decoded envelopes.
 pub(crate) struct DecodedBudget<'g> {
     graph: &'g dyn relate_engine_api::GraphImport,
     ts: u64,
     kind: Kind,
+    /// The most rows one file of this kind holds within ADR-0086's
+    /// `MAX_PAGES` — the wide leaf count makes rows, not bytes, the
+    /// binding bound (ADR-0534). Hoisted once: the bound never changes
+    /// for a budget's files.
+    row_limit: usize,
     limit: u64,
     /// Rows admitted to the file being filled, and their decoded bytes.
     rows: usize,
@@ -73,15 +80,24 @@ impl<'g> DecodedBudget<'g> {
         ts: u64,
         kind: Kind,
         target: u64,
+        wide: bool,
     ) -> Self {
         Self {
             graph,
             ts,
             kind,
+            row_limit: kind.page_envelope_rows(wide),
             limit: target.min(envelope().decoded),
             rows: 0,
             bytes: 0,
         }
+    }
+
+    /// The two-dimensional admission policy, stated once: a file of
+    /// `rows` rows and `bytes` decoded bytes fits when both stay within
+    /// the target and the kind's page-envelope row cap.
+    fn admits(&self, rows: usize, bytes: u64) -> bool {
+        bytes <= self.limit && rows <= self.row_limit
     }
 
     /// Decoded bytes of `id`'s row, or `None` when it is not visible at `ts`.
@@ -95,13 +111,13 @@ impl<'g> DecodedBudget<'g> {
     }
 
     /// Cut the rows of `ids` into files in one walk that measures each row
-    /// once: a row that would take its file past the target or the decoded
-    /// envelope starts the next file, so a row over the target by itself is
-    /// a file alone. Ids not visible at `ts` cost nothing, and a file only
-    /// starts at a live row. Returns the id each file after the first
-    /// starts at; the budget is left holding the last file. A row that
-    /// cannot fit the row or decoded envelope by itself is an error naming
-    /// its kind and id.
+    /// once: a row that would take its file past the target, the decoded
+    /// envelope, or the row cap starts the next file, so a row over the
+    /// target by itself is a file alone. Ids not visible at `ts` cost
+    /// nothing, and a file only starts at a live row. Returns the id each
+    /// file after the first starts at; the budget is left holding the last
+    /// file. A row that cannot fit the row or decoded envelope by itself
+    /// is an error naming its kind and id.
     pub(crate) fn cut(&mut self, ids: &[i64]) -> Result<Vec<i64>> {
         let mut starts = Vec::new();
         for &id in ids {
@@ -111,7 +127,7 @@ impl<'g> DecodedBudget<'g> {
             check_row(row)
                 .map_err(|e| storage_context(e, format_args!("{} {id}", self.kind.noun())))?;
             let next = add(self.bytes, row)?;
-            if next > self.limit && !self.is_empty() {
+            if !self.admits(self.rows + 1, next) && !self.is_empty() {
                 starts.push(id);
                 (self.rows, self.bytes) = (1, row);
             } else {
@@ -121,15 +137,16 @@ impl<'g> DecodedBudget<'g> {
         Ok(starts)
     }
 
-    /// Whether the rows held fit the target and the decoded envelope; only a
+    /// Whether the rows held fit the target and the row cap; only a
     /// single row over the target does not.
     pub(crate) fn within(&self) -> bool {
-        self.bytes <= self.limit
+        self.admits(self.rows, self.bytes)
     }
 
     /// Admit every row of `ids`, or none of them. A row over the ADR-0086
-    /// row envelope does not fit either, rather than failing: `ids` belong
-    /// to a part the caller then leaves as it is.
+    /// row envelope, the target, or the row cap does not fit either,
+    /// rather than failing: `ids` belong to a part the caller then leaves
+    /// as it is.
     pub(crate) fn fill_all(&mut self, ids: &[i64]) -> Result<bool> {
         let (mut rows, mut bytes) = (self.rows, self.bytes);
         for &id in ids {
@@ -140,10 +157,10 @@ impl<'g> DecodedBudget<'g> {
                 return Ok(false);
             }
             bytes = add(bytes, row)?;
-            if bytes > self.limit {
+            rows += 1;
+            if !self.admits(rows, bytes) {
                 return Ok(false);
             }
-            rows += 1;
         }
         (self.rows, self.bytes) = (rows, bytes);
         Ok(true)
@@ -164,7 +181,7 @@ pub(crate) fn decoded_preflight(
     ids: &[i64],
     kind: Kind,
 ) -> Result<u64> {
-    let mut budget = DecodedBudget::new(graph, ts, kind, u64::MAX);
+    let mut budget = DecodedBudget::new(graph, ts, kind, u64::MAX, false);
     if !budget.cut(ids)?.is_empty() {
         return Err(invalid("actual decoded bytes"));
     }
@@ -196,7 +213,7 @@ mod tests {
     #[test]
     fn cut_returns_the_id_each_later_file_starts_at() {
         let (graph, ts, row) = graph();
-        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 2 * row);
+        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 2 * row, false);
         // Id 100 is not visible, so it costs nothing and starts no file.
         assert_eq!(budget.cut(&[0, 1, 2, 3, 4, 100, 5]).unwrap(), [2, 4]);
         assert_eq!((budget.rows, budget.bytes), (2, 2 * row));
@@ -207,13 +224,13 @@ mod tests {
         let (graph, ts, row) = graph();
         with_test_envelope(1 << 20, row - 1, MAX_DECODED, || {
             for (kind, named) in [(Kind::Node, "node 0: "), (Kind::Rel, "relationship 0: ")] {
-                let err = DecodedBudget::new(&graph, ts, kind, u64::MAX)
+                let err = DecodedBudget::new(&graph, ts, kind, u64::MAX, false)
                     .cut(&[0])
                     .unwrap_err();
                 let expected = format!("{named}invalid or out-of-bounds 384 MiB decoded row");
                 assert!(err.to_string().contains(&expected), "{err}");
             }
-            let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, u64::MAX);
+            let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, u64::MAX, false);
             assert!(!budget.fill_all(&[0]).unwrap());
             assert!(budget.is_empty());
         });
@@ -222,7 +239,7 @@ mod tests {
     #[test]
     fn fill_all_admits_every_row_or_none_and_counts_them() {
         let (graph, ts, row) = graph();
-        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 3 * row);
+        let mut budget = DecodedBudget::new(&graph, ts, Kind::Node, 3 * row, false);
         assert!(budget.is_empty());
         // Ids that are not visible admit no row.
         assert!(budget.fill_all(&[100, 101]).unwrap());

@@ -54,6 +54,7 @@ pub mod json;
 mod kind;
 pub(crate) mod markdown;
 mod model;
+pub(crate) mod open_config;
 #[cfg(parquet_codec)]
 pub(crate) mod parquet;
 #[cfg(rkyv_codec)]

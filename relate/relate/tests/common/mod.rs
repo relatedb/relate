@@ -582,36 +582,22 @@ pub fn assert_checkpoint_format(
         relate_storage::SnapshotCodecKind::Parquet => {
             assert_eq!(image["format_version"], if held { 4 } else { 3 });
             // A Parquet manifest publishes the ontology by reference
-            // (`ontology_path`), never verbatim — the document
-            // expectation collapses to presence.
-            let expected = match expected {
-                ExpectedOntology::Document(_) => ExpectedOntology::Held,
-                other => other,
-            };
-            assert_ontology(
-                &image,
-                "ontology_path",
-                expected,
-                "the plain manifest carries no ontology_path",
-            );
+            // (`ontology_path`) — the referenced object's bytes are the
+            // document, asserted verbatim, never just presence.
+            let published = image.get("ontology_path").map(|value| {
+                let path = value.as_str().expect("ontology_path is a path");
+                relate_storage::read_to_vec(&*store_vfs(dir), path)
+                    .unwrap_or_else(|e| panic!("ontology object {path} of {dir:?} reads: {e}"))
+            });
+            assert_ontology(published, expected);
         }
         relate_storage::SnapshotCodecKind::Json => {
             assert_eq!(image["value_encoding"], if held { 3 } else { 2 });
-            assert_ontology(
-                &image,
-                "ontology",
-                expected,
-                "graph.json carries no ontology field",
-            );
+            assert_ontology(inline_ontology(&image), expected);
         }
         relate_storage::SnapshotCodecKind::Markdown => {
             assert_eq!(image["codec"], "markdown");
-            assert_ontology(
-                &image,
-                "ontology",
-                expected,
-                "the sidecar manifest carries no ontology field",
-            );
+            assert_ontology(inline_ontology(&image), expected);
         }
         // The experimental codecs' image is the plain codec manifest: the
         // format marker (classifying against the manifest's own ontology
@@ -620,40 +606,43 @@ pub fn assert_checkpoint_format(
         relate_storage::SnapshotCodecKind::Rkyv | relate_storage::SnapshotCodecKind::Fjall => {
             assert_eq!(image["format_version"], if held { 4 } else { 3 });
             assert_eq!(image["has_ontology"], held);
-            assert_ontology(
-                &image,
-                "ontology",
-                ExpectedOntology::Absent,
-                "the experimental codec manifest carries no ontology document",
-            );
+            assert_ontology(None, ExpectedOntology::Absent);
         }
     }
 }
 
+/// The inline ontology text of a checkpoint image (`graph.json` or the
+/// markdown sidecar manifest), as published-document bytes.
+fn inline_ontology(image: &serde_json::Value) -> Option<Vec<u8>> {
+    image
+        .get("ontology")
+        .and_then(|value| value.as_str())
+        .map(str::as_bytes)
+        .map(<[u8]>::to_vec)
+}
+
 /// The ontology-publication rule every codec arm of
-/// [`assert_checkpoint_format`] shares, on the codec's own field name:
-/// absent, present, or the published document verbatim.
-fn assert_ontology(
-    envelope: &serde_json::Value,
-    field: &str,
-    expected: ExpectedOntology,
-    absent_message: &str,
-) {
+/// [`assert_checkpoint_format`] shares, over the codec's own
+/// published-document accessor — the inline field's text, or the
+/// referenced object's bytes for a Parquet manifest: absent, present,
+/// or the published document verbatim.
+fn assert_ontology(published: Option<Vec<u8>>, expected: ExpectedOntology) {
     match expected {
         ExpectedOntology::Absent => {
             assert!(
-                envelope.get(field).is_none(),
-                "{absent_message}: {envelope}"
+                published.is_none(),
+                "the checkpoint image publishes no ontology: {published:?}"
             );
         }
         ExpectedOntology::Held => {
-            assert!(
-                envelope.get(field).is_some(),
-                "the checkpoint publishes its ontology through `{field}`: {envelope}"
-            );
+            assert!(published.is_some(), "the checkpoint publishes its ontology");
         }
         ExpectedOntology::Document(document) => {
-            assert_eq!(envelope[field], document);
+            assert_eq!(
+                published.as_deref(),
+                Some(document.as_bytes()),
+                "the published ontology is the document"
+            );
         }
     }
 }

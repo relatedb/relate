@@ -1,18 +1,16 @@
-//! Shard writer. [`with_shard_writer_to`] is the one way a shard file is
-//! written: a file is still one id window, and rows are flushed in groups so
-//! a large property is not held with every neighbor in the window.
-//! [`with_shard_writer`] is its in-memory twin — test-only, handing the
-//! written bytes back for preflight and the cap tests.
+//! Shard writer. [`with_part_shard_writer_to`] is the one way a shard
+//! file is written (ADR-0183, ADR-0534): a file is still one id window,
+//! under the part's columns — the kind's reserved columns, the promoted
+//! property columns, the residual text column; empty for the kind's fixed
+//! schema — and rows are flushed in groups so a large property is not
+//! held with every neighbor in the window. [`with_wide_shard_writer`] is
+//! the in-memory twin — test-only, handing the written bytes back for
+//! preflight and the cap tests.
 
 use std::io::Write;
 use std::sync::Arc;
 
-use crate::snapshot::Kind;
-#[cfg(test)]
-use crate::vfs::CappedSink;
-use crate::vfs::{CappedVfsWriter, VfsFile};
-use arrow::array::{Int64Array, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 #[cfg(test)]
 use bytes::Bytes;
@@ -20,8 +18,14 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
-use relate_core::{Error, Node, Relationship, Result};
+use relate_core::{Error, Result};
 
+use crate::snapshot::Kind;
+#[cfg(test)]
+use crate::vfs::CappedSink;
+use crate::vfs::{CappedVfsWriter, VfsFile};
+
+use super::wide;
 #[cfg(test)]
 use super::{preflight, MAX_FILE};
 use super::{shard_envelope_refusal, ROW_GROUP_CAP};
@@ -39,9 +43,17 @@ pub(crate) fn take_encoded_rows() -> usize {
 }
 
 /// The open writer of one shard file, over a shard writer function's
-/// bounded sink. Rows reach the file only through [`ShardWriter::write_rows`],
-/// which classifies each failure.
-pub(crate) struct ShardWriter<W: Write + Send + OutputLimit>(ArrowWriter<W>);
+/// bounded sink, under the schema it was opened with. Rows reach the file
+/// only through [`ShardWriter::write_rows`], which takes only batches of
+/// its own schema — the copy path adapts a foreign batch first
+/// (ADR-0534) — and classifies each failure.
+pub(crate) struct ShardWriter<W: Write + Send + OutputLimit> {
+    writer: ArrowWriter<W>,
+    /// The part's schema, kept beside the writer: the ArrowWriter does not
+    /// expose the schema it was built with, and the copy adaptation needs
+    /// it.
+    schema: Arc<Schema>,
+}
 
 /// The bounded sink a shard writer writes through. The one query it answers
 /// is the typed refusal of a crossed bound — `None` while the bound held —
@@ -120,11 +132,12 @@ pub(super) fn fixed_column_bytes(kind: Kind) -> u64 {
 }
 
 impl Kind {
+    /// The kind's fixed shard schema — the wide schema with no promoted
+    /// columns (ADR-0534): the reserved columns and the residual
+    /// tagged-JSON tail, from the one constructor every part schema and
+    /// its reader derive from.
     pub(super) fn schema(self) -> Arc<Schema> {
-        match self {
-            Kind::Node => node_schema(),
-            Kind::Rel => rel_schema(),
-        }
+        wide::wide_schema(self, &[])
     }
 
     /// Parquet leaf columns of [`schema`](Self::schema), each written as its
@@ -151,42 +164,24 @@ fn shard_props() -> WriterProperties {
         .build()
 }
 
-fn node_schema() -> Arc<Schema> {
-    let label_field = Field::new("item", DataType::Utf8, true);
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("labels", DataType::List(Arc::new(label_field)), true),
-        Field::new("properties", DataType::Utf8, true),
-    ]))
-}
-
-fn rel_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("start_id", DataType::Int64, false),
-        Field::new("end_id", DataType::Int64, false),
-        Field::new("type", DataType::Utf8, true),
-        Field::new("properties", DataType::Utf8, true),
-    ]))
-}
-
 /// Drive one shard write over `sink`: build the ArrowWriter, run `write`,
 /// close the writer, and classify a close failure through
-/// [`writer_error`] — the one build/write/close/classify skeleton both
-/// shard writers share; each keeps only its sink setup (and the in-memory
-/// twin its preflight).
+/// [`writer_error`] — the one build/write/close/classify skeleton every
+/// shard writer shares; each keeps only its sink setup (and the in-memory
+/// twin its preflight). `schema` is the part's schema: the kind's fixed
+/// schema, or a wide part's (ADR-0534).
 fn drive_shard_writer<S, T>(
     sink: &mut S,
-    kind: Kind,
+    schema: Arc<Schema>,
     write: impl FnOnce(&mut ShardWriter<&mut S>) -> std::result::Result<T, ShardError>,
 ) -> std::result::Result<T, ShardError>
 where
     S: Write + Send + OutputLimit,
 {
     // Building the writer only fills its own buffer, never the sink.
-    let mut writer = ArrowWriter::try_new(&mut *sink, kind.schema(), Some(shard_props()))
-        .map(ShardWriter)
+    let writer = ArrowWriter::try_new(&mut *sink, Arc::clone(&schema), Some(shard_props()))
         .map_err(|e| Error::storage(e.to_string()))?;
+    let mut writer = ShardWriter { writer, schema };
     let value = write(&mut writer)?;
     // Close even when nothing was written. A relationship shard with no
     // rows is a real legacy monolith object (`relationships.parquet`).
@@ -195,74 +190,111 @@ where
     Ok(value)
 }
 
-/// Write one shard file of `kind` through `write`, in memory, and return
+/// Write one shard file of `kind` under `columns` through `write`, in
+/// memory — the test twin of [`with_part_shard_writer_to`] — and return
 /// the file with `write`'s value. The file holds at most `cap` bytes: the
 /// sink refuses more, and the write or close that meets it is an envelope
 /// miss. Any other failure to build, write or close the writer is fatal.
 /// The written file passes the preflight a reader runs, and a file it
 /// rejects is an envelope miss (ADR-0183 Decision 3).
 #[cfg(test)]
-pub(crate) fn with_shard_writer<T>(
+pub(crate) fn with_wide_shard_writer<T>(
     kind: Kind,
+    columns: &[(String, wide::ColumnType)],
     cap: u64,
     write: impl FnOnce(&mut ShardWriter<&mut CappedSink<'_>>) -> std::result::Result<T, ShardError>,
 ) -> std::result::Result<(Bytes, T), ShardError> {
     let mut bytes = Vec::new();
     let value = {
         let mut sink = CappedSink::new(&mut bytes, cap, shard_envelope_refusal());
-        drive_shard_writer(&mut sink, kind, write)?
+        drive_shard_writer(&mut sink, wide::wide_schema(kind, columns), write)?
     };
     let bytes = Bytes::from(bytes);
     preflight(bytes.clone()).map_err(ShardError::Envelope)?;
     Ok((bytes, value))
 }
 
-/// Write a shard candidate directly to its VFS object. The cap is enforced
-/// before each write, avoiding a complete replacement-shard heap buffer.
-pub(crate) fn with_shard_writer_to<T>(
+/// Write one shard candidate directly to its VFS object (ADR-0183),
+/// under `columns` — the wide schema, empty for the kind's fixed
+/// (legacy) one, which is the wide schema with no promoted columns
+/// (ADR-0534). The cap is enforced before each write, avoiding a
+/// complete replacement-shard heap buffer.
+pub(crate) fn with_part_shard_writer_to<T>(
     file: &mut dyn VfsFile,
     kind: Kind,
+    columns: &[(String, wide::ColumnType)],
     cap: u64,
     write: impl FnOnce(&mut ShardWriter<&mut CappedVfsWriter<'_>>) -> std::result::Result<T, ShardError>,
 ) -> std::result::Result<T, ShardError> {
     let mut sink = CappedVfsWriter::new(file, cap, shard_envelope_refusal());
-    drive_shard_writer(&mut sink, kind, write)
+    drive_shard_writer(&mut sink, wide::wide_schema(kind, columns), write)
 }
 
 impl<W: Write + Send + OutputLimit> ShardWriter<W> {
     fn close(self) -> std::result::Result<(), ParquetError> {
-        self.0.close().map(drop)
+        self.writer.close().map(drop)
+    }
+
+    /// The part's schema, for the copy path's adaptation (ADR-0534): a
+    /// copied batch still in its source part's schema is adapted to this
+    /// one before it reaches [`write_rows`], which refuses any other.
+    pub(super) fn schema(&self) -> &Schema {
+        &self.schema
     }
 
     /// Append rows to the open shard. `shard_props` caps a row group at
     /// `ROW_GROUP_CAP` rows and the writer closes it there, so copied slices
     /// and encoded chunks of one shard share row groups (ADR-0183).
+    ///
+    /// The batch must carry the writer's own schema: the copy path adapts
+    /// a previous part's batches first (ADR-0534), so a foreign schema
+    /// here is a caller error the writer refuses — never one it rewrites.
     pub(super) fn write_rows(
         &mut self,
         batch: &RecordBatch,
     ) -> std::result::Result<(), ShardError> {
-        let written = self.0.write(batch);
-        written.map_err(|error| writer_error(self.0.inner(), error))
+        if batch.schema().fields() != self.schema.fields() {
+            return Err(ShardError::Fatal(Error::storage(
+                "batch schema differs from the shard writer's schema",
+            )));
+        }
+        let written = self.writer.write(batch);
+        written.map_err(|error| writer_error(self.writer.inner(), error))
     }
 }
 
-/// Encode the rows of `ids` visible at `ts` from the live graph in chunks of
-/// `ROW_GROUP_CAP`; returns the row count. A row group closes on the row cap
-/// alone: rewrite-unit planning measures `ids` with a
-/// [`DecodedBudget`](super::DecodedBudget) first, and the written file is
-/// preflighted.
-pub(crate) fn encode_rows<W: Write + Send + OutputLimit>(
+/// Encode the rows of `ids` visible at `ts` from the live graph in
+/// chunks of `ROW_GROUP_CAP`, each batch built by the wide builders
+/// under `columns` — the schema the shard writer was opened with, empty
+/// for the kind's fixed (legacy) schema, which is the wide schema with
+/// no promoted columns (ADR-0534): one encoder serves both encodings.
+/// Returns the row count. A row group closes on the row cap alone:
+/// rewrite-unit planning measures `ids` with a
+/// [`DecodedBudget`](super::DecodedBudget) first, and the written file
+/// is preflighted.
+pub(crate) fn encode_wide_rows<W: Write + Send + OutputLimit>(
     writer: &mut ShardWriter<W>,
     graph: &dyn relate_engine_api::GraphImport,
     ts: u64,
     kind: Kind,
     ids: &[i64],
+    columns: &[(String, wide::ColumnType)],
 ) -> std::result::Result<usize, ShardError> {
     #[cfg(test)]
     ENCODED_ROWS.set(ENCODED_ROWS.get() + ids.len());
     match kind {
-        Kind::Node => encode_live(writer, ids, |id| graph.node_at(id, ts), node_batch),
-        Kind::Rel => encode_live(writer, ids, |id| graph.rel_at(id, ts), rel_batch),
+        Kind::Node => encode_live(
+            writer,
+            ids,
+            |id| graph.node_at(id, ts),
+            |rows| wide::node_wide_batch(columns, rows),
+        ),
+        Kind::Rel => encode_live(
+            writer,
+            ids,
+            |id| graph.rel_at(id, ts),
+            |rows| wide::rel_wide_batch(columns, rows),
+        ),
     }
 }
 
@@ -292,59 +324,6 @@ fn encode_live<T, W: Write + Send + OutputLimit>(
     Ok(rows)
 }
 
-fn node_batch(nodes: &[Node]) -> Result<RecordBatch> {
-    let mut ids = Vec::with_capacity(nodes.len());
-    let mut props = Vec::with_capacity(nodes.len());
-    let mut list_builder = arrow::array::ListBuilder::new(arrow::array::StringBuilder::new());
-    for n in nodes {
-        let properties =
-            serde_json::to_string(&n.properties).map_err(|e| Error::storage(e.to_string()))?;
-        ids.push(n.id);
-        for label in n.labels.iter() {
-            list_builder.values().append_value(label);
-        }
-        list_builder.append(true);
-        props.push(properties);
-    }
-    RecordBatch::try_new(
-        node_schema(),
-        vec![
-            Arc::new(Int64Array::from(ids)),
-            Arc::new(list_builder.finish()),
-            Arc::new(StringArray::from(props)),
-        ],
-    )
-    .map_err(|e| Error::storage(e.to_string()))
-}
-
-fn rel_batch(rels: &[Relationship]) -> Result<RecordBatch> {
-    let mut ids = Vec::with_capacity(rels.len());
-    let mut starts = Vec::with_capacity(rels.len());
-    let mut ends = Vec::with_capacity(rels.len());
-    let mut types = Vec::with_capacity(rels.len());
-    let mut props = Vec::with_capacity(rels.len());
-    for r in rels {
-        let properties =
-            serde_json::to_string(&r.properties).map_err(|e| Error::storage(e.to_string()))?;
-        ids.push(r.id);
-        starts.push(r.start);
-        ends.push(r.end);
-        types.push(r.rel_type.clone());
-        props.push(properties);
-    }
-    RecordBatch::try_new(
-        rel_schema(),
-        vec![
-            Arc::new(Int64Array::from(ids)),
-            Arc::new(Int64Array::from(starts)),
-            Arc::new(Int64Array::from(ends)),
-            Arc::new(StringArray::from(types)),
-            Arc::new(StringArray::from(props)),
-        ],
-    )
-    .map_err(|e| Error::storage(e.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::write_table;
@@ -363,9 +342,9 @@ mod tests {
 
     #[test]
     fn shard_writer_cap_overflow_is_an_envelope_miss() {
-        let (empty, ()) = with_shard_writer(Kind::Node, MAX_FILE, |_| Ok(())).unwrap();
+        let (empty, ()) = with_wide_shard_writer(Kind::Node, &[], MAX_FILE, |_| Ok(())).unwrap();
         let cap = empty.len() as u64 - 1;
-        let missed = with_shard_writer(Kind::Node, cap, |_| Ok(()));
+        let missed = with_wide_shard_writer(Kind::Node, &[], cap, |_| Ok(()));
         assert!(matches!(missed, Err(ShardError::Envelope(_))), "{missed:?}");
 
         // Hex labels barely compress, so half the file passes the writer's
@@ -391,7 +370,7 @@ mod tests {
         let mut cursor =
             ShardCursor::open_bytes("nodes/full.parquet", full, Kind::Node, 0..1000).unwrap();
         let mut copied = 0;
-        let missed = with_shard_writer(Kind::Node, half, |writer| {
+        let missed = with_wide_shard_writer(Kind::Node, &[], half, |writer| {
             for chunk in ids.chunks(ROW_GROUP_CAP) {
                 cursor = cursor.take(chunk, writer)?;
                 copied += chunk.len();
@@ -401,7 +380,7 @@ mod tests {
         assert!(matches!(missed, Err(ShardError::Envelope(_))), "{missed:?}");
         assert!(copied < ids.len(), "the cap was only met on close");
 
-        let fatal = with_shard_writer(Kind::Node, MAX_FILE, |_| {
+        let fatal = with_wide_shard_writer(Kind::Node, &[], MAX_FILE, |_| {
             Err::<(), _>(ShardError::Fatal(Error::storage("encode")))
         });
         assert!(matches!(fatal, Err(ShardError::Fatal(_))), "{fatal:?}");

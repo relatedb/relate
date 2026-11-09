@@ -13,8 +13,7 @@ target/
 # In-container CARGO_HOME of the baseline-env docker builds
 # (scripts/baseline-env.sh); kept out of target/ on purpose.
 /.cargo-docker/
-# relate-wasm build output (wasm-bindgen writes here; the playground
-# copies from it, the deploy workflow rebuilds it fresh)
+# relate-wasm build output (wasm-bindgen writes here)
 surfaces/relate-wasm/pkg/
 
 # Test artifacts

@@ -7,6 +7,7 @@ mod envelope;
 #[cfg(test)]
 mod fixtures;
 mod rules;
+mod wide;
 use envelope::invalid;
 pub(crate) use envelope::{preflight, VfsChunkReader};
 use rules::{id_column, ShardRules};
@@ -14,14 +15,15 @@ use rules::{id_column, ShardRules};
 pub(crate) use budget::DecodedBudget;
 #[cfg(test)]
 pub(crate) use budget::{decoded_preflight, take_measured_rows};
-pub(crate) use copy::ShardCursor;
+pub(crate) use copy::{previous_shard_columns, ShardCursor};
+pub(crate) use encode::{
+    encode_wide_rows, with_part_shard_writer_to, OutputLimit, ShardError, ShardWriter,
+};
 #[cfg(test)]
-pub(crate) use encode::take_encoded_rows;
-#[cfg(test)]
-pub(crate) use encode::with_shard_writer;
-pub(crate) use encode::{encode_rows, with_shard_writer_to, OutputLimit, ShardError, ShardWriter};
+pub(crate) use encode::{take_encoded_rows, with_wide_shard_writer};
 #[cfg(test)]
 pub(crate) use fixtures::{write_bare_table, write_int_label_table, write_rel_table, write_table};
+pub(crate) use wide::{ColumnType, MAX_PROMOTED_COLUMNS};
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -33,6 +35,7 @@ use relate_core::{Error, Node, Relationship, Result, Value};
 use relate_engine_api::props_from_json;
 
 use crate::snapshot::Kind;
+use crate::storage_context;
 
 // ADR-0086: these are per object, not per database. Keep the preflight ahead of
 // Arrow's page reader: in parquet 54.3.1 it allocates from PageHeader before
@@ -70,21 +73,49 @@ const PAGES_PER_LEAF: u64 = 2;
 impl Kind {
     /// The most rows of this kind one file holds within ADR-0086's
     /// `MAX_PAGES` (ADR-0183, Page envelope): row groups of `ROW_GROUP_CAP`
-    /// rows, each writing `PAGES_PER_LEAF` pages per leaf column. That is
-    /// 699,008 node rows and 419,392 relationship rows; a file holds fewer
-    /// when a large value spills into more data pages.
-    pub(crate) fn page_envelope_rows(self) -> usize {
-        let groups = MAX_PAGES / (PAGES_PER_LEAF * self.leaf_columns());
+    /// rows, each writing `PAGES_PER_LEAF` pages per leaf column. A legacy
+    /// part's fixed schema holds 699,008 node rows and 419,392 relationship
+    /// rows; a wide part's leaf count adds at most
+    /// [`MAX_PROMOTED_COLUMNS`] promoted columns and the residual
+    /// (ADR-0534) — 59,904 node rows and 56,640 relationship rows at the
+    /// cap. A file holds fewer when its part promotes fewer columns or a
+    /// large value spills into more pages.
+    pub(crate) fn page_envelope_rows(self, wide: bool) -> usize {
+        let leaves = self.leaf_columns() + u64::from(wide) * MAX_PROMOTED_COLUMNS as u64;
+        let groups = MAX_PAGES / (PAGES_PER_LEAF * leaves);
         groups as usize * ROW_GROUP_CAP
     }
 
     /// The row noun errors name: `node` or `relationship`.
     fn noun(self) -> &'static str {
+        self.phrases().noun
+    }
+
+    /// The kind's error phrases — the one table the per-kind error
+    /// vocabulary comes from (the row noun, the row-envelope phrase, the
+    /// id phrase), so no decoder hand-spells a sibling's.
+    fn phrases(self) -> KindPhrases {
         match self {
-            Self::Node => "node",
-            Self::Rel => "relationship",
+            Self::Node => KindPhrases {
+                noun: "node",
+                row_bytes: "node row bytes",
+                id: "node ID",
+            },
+            Self::Rel => KindPhrases {
+                noun: "relationship",
+                row_bytes: "relationship row bytes",
+                id: "relationship ID",
+            },
         }
     }
+}
+
+/// The per-kind error phrases [`Kind::phrases`] hands out.
+#[derive(Clone, Copy)]
+struct KindPhrases {
+    noun: &'static str,
+    row_bytes: &'static str,
+    id: &'static str,
 }
 
 #[cfg(test)]
@@ -195,6 +226,15 @@ fn accumulate(sum: &mut u64, value: u64, limit: u64, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Read-side row-envelope accounting (ADR-0086): the row's decoded bytes
+/// toward its bound — the one byte of slack so the check that follows
+/// (`Decoded::row` over `check_row`) refuses a row at exactly the bound
+/// instead of passing it. Every per-row decoder site charges through
+/// here, never its own copy of the bound.
+fn count_row_bytes(sum: &mut u64, add: u64, what: &str) -> Result<()> {
+    accumulate(sum, add, envelope().row.saturating_add(1), what)
+}
+
 /// Actual rows and decoded row bytes of one loaded file, held to the
 /// ADR-0086 row and decoded envelopes across all of its batches.
 #[derive(Default)]
@@ -248,8 +288,8 @@ fn encode_ids(
     kind: Kind,
 ) -> Result<Vec<u8>> {
     decoded_preflight(graph, ts, ids, kind)?;
-    let (bytes, _) = with_shard_writer(kind, file_ceiling(), |writer| {
-        encode_rows(writer, graph, ts, kind, ids)
+    let (bytes, _) = with_wide_shard_writer(kind, &[], file_ceiling(), |writer| {
+        encode_wide_rows(writer, graph, ts, kind, ids, &[])
     })?;
     Ok(bytes.into())
 }
@@ -275,20 +315,46 @@ pub(crate) enum Origin {
     Monolith,
 }
 
-/// Read one loaded file's batches into `load` with their id column:
-/// preflighted, counted against the ADR-0086 row envelope, and for a
-/// manifest part held to [`ShardRules`], which check the ids it is handed.
+impl Origin {
+    /// The one policy for a slot a pre-shard monolith's writer could
+    /// leave null and a manifest part's writer never does: a part —
+    /// held to the shard rules, its writer one this binary knows —
+    /// fails closed naming `what`; the monolith keeps its historical
+    /// tolerance, taking `tolerated`.
+    fn tolerated<T>(&self, what: &str, tolerated: T) -> Result<T> {
+        match self {
+            Origin::Part(_) => Err(Error::storage(what)),
+            Origin::Monolith => Ok(tolerated),
+        }
+    }
+}
+
+/// Read one loaded file's batches into `load` with its id column and, for
+/// a manifest part, its promoted columns — read once per file from the
+/// schema the part carries (ADR-0534): preflighted, counted against the
+/// ADR-0086 row envelope, and for a manifest part held to [`ShardRules`],
+/// which check the ids it is handed. A monolith hands no columns — the
+/// fixed layout, which is the wide schema with none — so one decode
+/// path serves both shapes; it alone tolerates the pre-shard writers'
+/// null label and type slots.
 fn load_batches(
     bytes: Vec<u8>,
     kind: Kind,
-    origin: Origin,
-    mut load: impl FnMut(&RecordBatch, &Int64Array, &mut Decoded) -> Result<()>,
+    origin: &Origin,
+    mut load: impl FnMut(&RecordBatch, &Int64Array, &mut Decoded, &[(String, ColumnType)]) -> Result<()>,
 ) -> Result<()> {
     let builder = preflight(Bytes::from(bytes))?;
     let mut rules = match origin {
-        Origin::Part(range) => Some(ShardRules::open(&builder, kind, range)?),
+        Origin::Part(range) => Some(ShardRules::open(&builder, kind, range.clone())?),
         Origin::Monolith => None,
     };
+    // A manifest part decodes its own promoted columns (ADR-0534); a
+    // monolith carries none — the fixed layout, which is the wide schema
+    // with no promoted columns, so one decode path serves both.
+    let columns = rules
+        .as_ref()
+        .map(|rules| rules.columns().to_vec())
+        .unwrap_or_default();
     let reader = builder.build().map_err(|e| Error::storage(e.to_string()))?;
     let mut decoded = Decoded::default();
     for batch in reader {
@@ -298,7 +364,7 @@ fn load_batches(
             Some(rules) => rules.ids(&batch)?,
             None => id_column(&batch).ok_or_else(|| Error::storage("id column"))?,
         };
-        load(&batch, &ids, &mut decoded)?;
+        load(&batch, &ids, &mut decoded, &columns)?;
     }
     Ok(())
 }
@@ -338,57 +404,79 @@ pub(crate) fn load_nodes(
     bytes: Vec<u8>,
     origin: Origin,
 ) -> Result<()> {
-    load_batches(bytes, Kind::Node, origin, |batch, ids, decoded| {
-        if batch.num_columns() != 3 {
-            return Err(Error::storage("node shard: expected 3 columns"));
-        }
-        let labels = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<ListArray>()
-            .ok_or_else(|| Error::storage("labels column"))?;
-        let props = Properties::column(batch, 2)?;
-        for i in 0..batch.num_rows() {
-            let mut row_bytes = encode::fixed_column_bytes(Kind::Node);
-            let mut row_labels = Vec::new();
-            if !labels.is_null(i) {
-                let arr = labels.value(i);
-                let s = arr
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| Error::storage("label items"))?;
-                for j in 0..s.len() {
-                    if !s.is_null(j) {
-                        let label = s.value(j);
-                        accumulate(
-                            &mut row_bytes,
-                            label.len() as u64,
-                            envelope().row.saturating_add(1),
-                            "node row bytes",
-                        )?;
-                        row_labels.push(label.to_string());
-                    }
+    load_batches(
+        bytes,
+        Kind::Node,
+        &origin,
+        |batch, ids, decoded, columns| wide_node_rows(graph, &origin, batch, ids, decoded, columns),
+    )
+}
+
+/// One node batch (ADR-0534): the reserved head, one typed column per
+/// promoted key, and the residual tagged-JSON tail — a monolith the same
+/// walk with no columns. The kind's labels feed the shared row tail;
+/// a manifest part refuses a null label list or item, only a pre-shard
+/// monolith's writer is tolerated (fail-closed for everything else).
+fn wide_node_rows(
+    graph: &dyn relate_engine_api::GraphImport,
+    origin: &Origin,
+    batch: &RecordBatch,
+    ids: &Int64Array,
+    decoded: &mut Decoded,
+    columns: &[(String, ColumnType)],
+) -> Result<()> {
+    let head = wide::reserved_width(Kind::Node);
+    if batch.num_columns() != head + columns.len() + 1 {
+        return Err(Error::storage("node shard: wide column layout"));
+    }
+    let labels = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .ok_or_else(|| Error::storage("labels column"))?;
+    let values: Vec<wide::ColumnValues<'_>> = columns
+        .iter()
+        .enumerate()
+        .map(|(j, (_, ty))| wide::ColumnValues::column(batch, head + j, *ty))
+        .collect::<Result<_>>()?;
+    let props = Properties::column(batch, head + columns.len())?;
+    let phrases = Kind::Node.phrases();
+    for i in 0..batch.num_rows() {
+        let mut row_bytes = encode::fixed_column_bytes(Kind::Node);
+        let mut row_labels = Vec::new();
+        if !labels.is_null(i) {
+            let arr = labels.value(i);
+            let items = arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::storage("label items"))?;
+            for j in 0..items.len() {
+                if !items.is_null(j) {
+                    let label = items.value(j);
+                    count_row_bytes(&mut row_bytes, label.len() as u64, phrases.row_bytes)?;
+                    row_labels.push(label.to_string());
+                } else {
+                    origin.tolerated::<()>("node shard: null label", ())?;
                 }
             }
-            if let Some(text) = props.text(i) {
-                accumulate(
-                    &mut row_bytes,
-                    text.len() as u64,
-                    envelope().row.saturating_add(1),
-                    "node row bytes",
-                )?;
-            }
-            decoded.row(row_bytes)?;
-            let id = ids.value(i);
-            relate_core::validate_persisted_id(id, "node ID")?;
-            graph.load_checkpoint_node(Node {
-                id,
-                labels: std::sync::Arc::new(row_labels),
-                properties: relate_core::PropertyMap::share(props.decode(i)?),
-            })?;
+        } else {
+            origin.tolerated::<()>("node shard: null labels", ())?;
         }
-        Ok(())
-    })
+        let row = RowColumns {
+            i,
+            id: ids.value(i),
+            columns,
+            values: &values,
+            props: &props,
+        };
+        let properties = row.properties(Kind::Node, decoded, row_bytes)?;
+        graph.load_checkpoint_node(Node {
+            id: row.id,
+            labels: std::sync::Arc::new(row_labels),
+            properties: relate_core::PropertyMap::share(properties),
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_rels(
@@ -396,66 +484,148 @@ pub(crate) fn load_rels(
     bytes: Vec<u8>,
     origin: Origin,
 ) -> Result<()> {
-    load_batches(bytes, Kind::Rel, origin, |batch, ids, decoded| {
-        if batch.num_columns() != 5 {
-            return Err(Error::storage("relationship shard: expected 5 columns"));
-        }
-        let starts = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| Error::storage("start_id column"))?;
-        let ends = batch
-            .column(2)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| Error::storage("end_id column"))?;
-        let types = batch
-            .column(3)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::storage("type column"))?;
-        let props = Properties::column(batch, 4)?;
-        for i in 0..batch.num_rows() {
-            let mut row_bytes = encode::fixed_column_bytes(Kind::Rel);
-            if !types.is_null(i) {
-                accumulate(
-                    &mut row_bytes,
-                    types.value(i).len() as u64,
-                    envelope().row.saturating_add(1),
-                    "relationship row bytes",
-                )?;
-            }
-            if let Some(text) = props.text(i) {
-                accumulate(
-                    &mut row_bytes,
-                    text.len() as u64,
-                    envelope().row.saturating_add(1),
-                    "relationship row bytes",
-                )?;
-            }
-            decoded.row(row_bytes)?;
-            let id = ids.value(i);
-            let start = starts.value(i);
-            let end = ends.value(i);
-            relate_core::validate_persisted_id(id, "relationship ID")?;
-            relate_core::validate_persisted_id(start, "relationship start ID")?;
-            relate_core::validate_persisted_id(end, "relationship end ID")?;
-            let rel_type = if types.is_null(i) {
-                String::new()
-            } else {
-                types.value(i).to_string()
-            };
-            graph.load_checkpoint_rel(Relationship {
-                id,
-                start,
-                end,
-                rel_type,
-                properties: relate_core::PropertyMap::share(props.decode(i)?),
-            })?;
-        }
-        Ok(())
+    load_batches(bytes, Kind::Rel, &origin, |batch, ids, decoded, columns| {
+        wide_rel_rows(graph, &origin, batch, ids, decoded, columns)
     })
+}
+
+/// One relationship batch (ADR-0534), the sibling of [`wide_node_rows`]:
+/// the reserved head — ids, endpoints, the type — one typed column per
+/// promoted key, the residual tail. A manifest part refuses a null type
+/// slot, only a pre-shard monolith's writer is tolerated.
+fn wide_rel_rows(
+    graph: &dyn relate_engine_api::GraphImport,
+    origin: &Origin,
+    batch: &RecordBatch,
+    ids: &Int64Array,
+    decoded: &mut Decoded,
+    columns: &[(String, ColumnType)],
+) -> Result<()> {
+    let head = wide::reserved_width(Kind::Rel);
+    if batch.num_columns() != head + columns.len() + 1 {
+        return Err(Error::storage("relationship shard: wide column layout"));
+    }
+    let starts = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .ok_or_else(|| Error::storage("start_id column"))?;
+    let ends = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .ok_or_else(|| Error::storage("end_id column"))?;
+    let types = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| Error::storage("type column"))?;
+    let values: Vec<wide::ColumnValues<'_>> = columns
+        .iter()
+        .enumerate()
+        .map(|(j, (_, ty))| wide::ColumnValues::column(batch, head + j, *ty))
+        .collect::<Result<_>>()?;
+    let props = Properties::column(batch, head + columns.len())?;
+    let phrases = Kind::Rel.phrases();
+    for i in 0..batch.num_rows() {
+        let mut row_bytes = encode::fixed_column_bytes(Kind::Rel);
+        let rel_type = if types.is_null(i) {
+            origin.tolerated("relationship shard: null type", String::new())?
+        } else {
+            let rel_type = types.value(i);
+            count_row_bytes(&mut row_bytes, rel_type.len() as u64, phrases.row_bytes)?;
+            rel_type.to_string()
+        };
+        let row = RowColumns {
+            i,
+            id: ids.value(i),
+            columns,
+            values: &values,
+            props: &props,
+        };
+        let properties = row.properties(Kind::Rel, decoded, row_bytes)?;
+        let id = row.id;
+        let start = starts.value(i);
+        let end = ends.value(i);
+        relate_core::validate_persisted_id(id, phrases.id)?;
+        relate_core::validate_persisted_id(start, "relationship start ID")?;
+        relate_core::validate_persisted_id(end, "relationship end ID")?;
+        graph.load_checkpoint_rel(Relationship {
+            id,
+            start,
+            end,
+            rel_type,
+            properties: relate_core::PropertyMap::share(properties),
+        })?;
+    }
+    Ok(())
+}
+
+/// One row's column side: everything the shared row tail reads — the
+/// promoted columns with their decoded values, the residual text column,
+/// and the row's id.
+struct RowColumns<'a> {
+    i: usize,
+    id: i64,
+    columns: &'a [(String, ColumnType)],
+    values: &'a [wide::ColumnValues<'a>],
+    props: &'a Properties<'a>,
+}
+
+impl RowColumns<'_> {
+    /// The per-row tail both decoders share (the read-side counterpart of
+    /// the batch builders' shared loop): the row-envelope accounting over
+    /// the columns' values — the retained key beside its value, the same
+    /// bytes the legacy column counted inside its text — and the residual
+    /// text, the decoded-row check, the id validation, and the residual
+    /// decode with the column overlay, returning the row's properties.
+    fn properties(
+        &self,
+        kind: Kind,
+        decoded: &mut Decoded,
+        mut row_bytes: u64,
+    ) -> Result<BTreeMap<String, Value>> {
+        let phrases = kind.phrases();
+        for ((key, _), value) in self.columns.iter().zip(self.values) {
+            // A null slot retains neither the key nor its value; a carried
+            // one retains both, and the envelope counts both.
+            if value.carries(self.i) {
+                count_row_bytes(&mut row_bytes, key.len() as u64, phrases.row_bytes)?;
+            }
+            count_row_bytes(&mut row_bytes, value.bytes(self.i), phrases.row_bytes)?;
+        }
+        if let Some(text) = self.props.text(self.i) {
+            count_row_bytes(&mut row_bytes, text.len() as u64, phrases.row_bytes)?;
+        }
+        decoded.row(row_bytes)?;
+        relate_core::validate_persisted_id(self.id, phrases.id)?;
+        let mut properties = self.props.decode(self.i)?;
+        wide::overlay_values(self.values, &mut properties, self.columns, self.i);
+        Ok(properties)
+    }
+}
+
+/// The one shape of a failure to read previous shard `path`: `error`,
+/// naming the shard.
+pub(super) fn source_error(path: &str, error: Error) -> Error {
+    storage_context(error, format_args!("previous Parquet shard {path}"))
+}
+
+/// One new part's promoted columns (ADR-0534): the unit's `carried`
+/// columns plus the keys the rows it encodes — `ids`, its dirty and new
+/// ids — promote and the carried set does not already hold.
+pub(crate) fn part_columns(
+    kind: Kind,
+    graph: &dyn relate_engine_api::GraphImport,
+    ts: u64,
+    ids: &[i64],
+    carried: &[(String, ColumnType)],
+) -> Vec<(String, ColumnType)> {
+    let derived = match kind {
+        Kind::Node => wide::derive_columns(ids, |id| graph.node_at(id, ts).map(|n| n.properties)),
+        Kind::Rel => wide::derive_columns(ids, |id| graph.rel_at(id, ts).map(|r| r.properties)),
+    };
+    wide::merge_columns(carried, derived)
 }
 
 #[cfg(test)]

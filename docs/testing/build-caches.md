@@ -109,7 +109,7 @@ not once per job:
 | --- | --- | --- |
 | `dev` | `test` (3 shards), `feature-bundles`, `python`, `relate-bolt`, `relate-clients`, `npm-smoke`, `loadtest-smoke` | dev (`CARGO_PROFILE_DEV_DEBUG=line-tables-only` in every member so the restored cache is fingerprint-compatible — the trim `test` already needed for disk) |
 | `release` | `stack-release`, `doc-examples`, `notebook` | release |
-| `corpus` | `corpus` (merged TCK + CIP-eval + cookbook-native, ADR-0252) | corpus (pre-existing, ADR-0212) |
+| `corpus` | `corpus` (merged TCK + CIP-eval, ADR-0252) | corpus (pre-existing, ADR-0212) |
 | `os-filesystem`, `os-surface` | the Windows lanes | pre-existing per-lane keys |
 
 Unshared on purpose: `lint` (clippy's check profile is a different artifact
@@ -206,13 +206,12 @@ is fastest, and we deliberately do NOT switch. Three reasons:
 - `npm-smoke` must stay npm, full stop — its contract is that the
   published `@relate/relate*` tarballs install with the package
   manager users actually get (`npm pack` / `npm install`).
-- The other Node usages (`clients/javascript` in `relate-clients`,
-  `scripts/cookbook` + `scripts/cookbook/diagrams` for `make cookbook-js`,
-  `examples/wasm-playground` for the site build) only need deps installed
-  and would work under pnpm — but each directory ships a committed
-  `package-lock.json`. pnpm needs a regenerated `pnpm-lock.yaml`, and the
-  lockfile is a dev-workflow fact: local contributors run npm in those
-  dirs today, and the JS client's published artifact is npm-shaped.
+- The other Node usage (`clients/javascript` in `relate-clients`) only
+  needs deps installed and would work under pnpm — but it ships a
+  committed `package-lock.json`. pnpm needs a regenerated
+  `pnpm-lock.yaml`, and the lockfile is a dev-workflow fact: local
+  contributors run npm there today, and the JS client's published
+  artifact is npm-shaped.
   Switching CI alone would fork the lock truth between CI and local dev.
 - The absolute win is small: those installs are tens of seconds, not the
   compile-dominated minutes this document exists to kill.

@@ -1,5 +1,5 @@
 // Render a script's result as a recording (ADR-0131, ADR-0132): the
-// canonical text form the cookbook records under each step. Assumes
+// canonical text form of a result. Assumes
 // relate.js and relate_bg.wasm are next to this file (see
 // docs/api/wasm/spec.md).
 import init, { RelateDb, renderResult } from "./relate.js";

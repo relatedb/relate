@@ -14,12 +14,6 @@ mod wal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use codec::markdown::recorded_body_properties;
-pub use codec::markdown::MarkdownBodyProperties;
-pub use codec::SnapshotCodecKind;
-#[cfg(not(target_arch = "wasm32"))]
-pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
-pub use manifest::Manifest;
 #[cfg(not(target_arch = "wasm32"))]
 use native_ownership::reset_native_with;
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,8 +21,16 @@ pub use native_ownership::{take_writer_lease, WriterLease};
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub use native_ownership::{LOCK_MARKER, ROOT_ROLE, WAL_ROLE, WRITER_LEASE};
-pub use relate_core::{cypher_to_value, value_to_cypher};
 use relate_core::{Error, Result};
+
+pub use codec::markdown::recorded_body_properties;
+pub use codec::markdown::MarkdownBodyProperties;
+pub use codec::open_config::CodecOpenConfig;
+pub use codec::SnapshotCodecKind;
+#[cfg(not(target_arch = "wasm32"))]
+pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
+pub use manifest::Manifest;
+pub use relate_core::{cypher_to_value, value_to_cypher};
 // Used by the crate's migration tests; open_store serves production.
 #[cfg(test)]
 pub(crate) use open::open_store_with_report;
@@ -51,92 +53,6 @@ pub use wal::MAGIC;
 pub use wal::{
     commit_payload_reservation_bytes, AppendCommitStats, Wal, WalCatchUp, WalPreflight, WalRecord,
 };
-
-/// Codec-specific open-time configuration, one generic slot on
-/// [`StoreTarget`] (ADR-0460): resolved alongside the codec at open and
-/// spent by that codec's load and checkpoint only — `None`, the
-/// default, is the recorded/sidecar state every codec falls back to.
-/// One variant per codec that grows open-time knobs; the next codec
-/// extends this enum, never the target's field list.
-#[derive(Clone, Debug)]
-pub enum CodecOpenConfig {
-    /// The markdown vault's explicit body-property configuration
-    /// (ADR-0460); the sidecar manifest's recorded one governs when
-    /// absent.
-    MarkdownBodies(codec::markdown::MarkdownBodyProperties),
-}
-
-/// The set-but-ignored error for a codec-specific configuration on a
-/// store that does not open as its codec — the one spelling every
-/// refusal site in this crate raises, keyed on the configuration's own
-/// identity ([`CodecOpenConfig::describe`]). The `named` evidence names
-/// a codec when a refusal site actually derived one (the request at the
-/// pre-lease refusal, the resolved codec at the installer); `None`
-/// states the fact it can prove: the store does not open as the
-/// configuration's codec.
-pub(crate) fn codec_config_mismatch_error(
-    config: &CodecOpenConfig,
-    named: Option<SnapshotCodecKind>,
-) -> Error {
-    let what = config.describe();
-    let required = config.required_codec();
-    match named {
-        Some(codec) => Error::semantic(format!(
-            "{what} are set but the store's snapshot codec is {codec}, not {required}; \
-             the configuration would be ignored"
-        )),
-        None => Error::semantic(format!(
-            "{what} are set but the store does not open as a {required} vault (no snapshot \
-             codec was requested and the directory carries no {required} sidecar); the \
-             configuration would be ignored"
-        )),
-    }
-}
-
-impl CodecOpenConfig {
-    /// The codec this configuration requires — the one fact every
-    /// refusal site consults, owned by the enum instead of hand-spelled
-    /// at each consumer.
-    pub(crate) fn required_codec(&self) -> SnapshotCodecKind {
-        match self {
-            CodecOpenConfig::MarkdownBodies(_) => SnapshotCodecKind::Markdown,
-        }
-    }
-
-    /// The configuration's own validity — the payload's validation,
-    /// owned by the enum so every install-or-refuse boundary runs it.
-    pub(crate) fn validate(&self) -> Result<()> {
-        match self {
-            CodecOpenConfig::MarkdownBodies(bodies) => bodies.validate(),
-        }
-    }
-
-    /// The configuration's own name in refusal messages — the variant
-    /// owns its identity; no refusal site hardcodes it.
-    pub(crate) fn describe(&self) -> &'static str {
-        match self {
-            CodecOpenConfig::MarkdownBodies(_) => "markdown body properties",
-        }
-    }
-
-    /// The one install-or-refuse sequence every boundary runs: the
-    /// configuration's own validation, then the codec match against
-    /// `opening` — the codec this open resolves. `named` is the codec
-    /// the refusal may cite (the explicit request at the pre-lease
-    /// refusal, the resolved codec at the installer); `None` when no
-    /// codec was derived.
-    pub(crate) fn ensure_matches(
-        &self,
-        opening: SnapshotCodecKind,
-        named: Option<SnapshotCodecKind>,
-    ) -> Result<()> {
-        self.validate()?;
-        if self.required_codec() != opening {
-            return Err(codec_config_mismatch_error(self, named));
-        }
-        Ok(())
-    }
-}
 
 /// Parquet snapshot + WAL on a [`Vfs`] (ADR-0072). `:memory:` is `MemoryVfs`.
 #[derive(Clone)]
@@ -367,11 +283,10 @@ fn parse_filesystem_uri(
         };
         if creates_bundle {
             if let Some(config) = &config {
-                refuse_codec_config_mismatch(
-                    config,
-                    markdown_wal_hint(&path, requested),
-                    requested,
-                )?;
+                // A bundle always resolves Parquet (its snapshot is the
+                // bundle's Parquet objects), so the pre-lease gate judges
+                // against that — the WAL-layout hint cannot name Parquet.
+                config.ensure_pre_lease(Some(SnapshotCodecKind::Parquet))?;
             }
         }
         let bundle = match mode {
@@ -406,9 +321,10 @@ fn parse_filesystem_uri(
     // below consults. The markdown-over-classic evidence refusal keeps
     // its own gate — it refuses only an *explicit* markdown request
     // over classic evidence, a narrower fact than the hint. The bundle
-    // create-check above reads the hint through the same fn.
-    // `resolve_codec` after the lease stays authoritative for every
-    // other conflict shape.
+    // create-check above does not read the hint at all: a created bundle
+    // always resolves Parquet, so it hands the codec-config gate that
+    // proof directly. `resolve_codec` after the lease stays authoritative
+    // for every other conflict shape.
     let hint = markdown_wal_hint(&path, requested);
     if requested == Some(SnapshotCodecKind::Markdown) {
         refuse_markdown_over_classic_evidence(&path)?;
@@ -419,7 +335,10 @@ fn parse_filesystem_uri(
     // behind (the fail-before-lease contract the CSV and memory-limit
     // knobs established).
     if let Some(config) = &config {
-        refuse_codec_config_mismatch(config, hint, requested)?;
+        // The hint proves markdown when it says markdown; it cannot prove
+        // anything else (Json stands for the whole classic family).
+        let proven = (hint == SnapshotCodecKind::Markdown).then_some(hint);
+        config.ensure_pre_lease(proven.or(requested))?;
     }
     let wal_path = match wal_dir {
         Some(dir) => dir,
@@ -449,23 +368,6 @@ fn parse_filesystem_uri(
     install_config(target, config)
 }
 
-/// The pre-materialization half of the codec-config threading: refuse a
-/// configuration whose codec does not match the codec this open will
-/// resolve, judged on the caller's derived [`markdown_wal_hint`] verdict
-/// — never a re-probe. The error names the codec only where it was
-/// actually derived (an explicit request); with none requested it states
-/// the fact it can prove: the store does not open as a markdown vault.
-/// Never refuses a sidecar-classified markdown directory.
-#[cfg(not(target_arch = "wasm32"))]
-fn refuse_codec_config_mismatch(
-    config: &CodecOpenConfig,
-    hint: SnapshotCodecKind,
-    requested: Option<SnapshotCodecKind>,
-) -> Result<()> {
-    // The one install-or-refuse sequence, with the hint as the codec
-    // this open resolves and the request as the namable evidence.
-    config.ensure_matches(hint, requested)
-}
 /// The codec whose default-WAL layout the directory at `path` takes,
 /// for the pre-lease default-WAL routing: [`SnapshotCodecKind::Markdown`]
 /// when the open is markdown — requested, or an engine-written sidecar
@@ -577,28 +479,6 @@ impl StoreTarget {
     pub fn from_vfs_with_codec(vfs: Arc<dyn Vfs>, codec: SnapshotCodecKind) -> Result<Self> {
         codec::check_available(codec)?;
         Ok(on_vfs(vfs, codec))
-    }
-
-    /// Install codec-specific open-time configuration
-    /// ([`CodecOpenConfig`]). The one installer every codec knob passes
-    /// through: the variant's own validation runs here, and a
-    /// configuration whose codec does not match the store's is refused —
-    /// a set-but-ignored knob is an error, never a silent no-op.
-    pub fn with_codec_config(mut self, config: CodecOpenConfig) -> Result<Self> {
-        config.ensure_matches(self.codec, Some(self.codec))?;
-        self.codec_config = Some(config);
-        Ok(self)
-    }
-
-    /// The markdown vault's explicit body-property configuration when
-    /// this open carried one (ADR-0460) — the markdown codec's load and
-    /// checkpoint read it here; `None` lets the sidecar manifest's
-    /// recorded configuration govern.
-    pub(crate) fn markdown_bodies(&self) -> Option<&codec::markdown::MarkdownBodyProperties> {
-        match &self.codec_config {
-            Some(CodecOpenConfig::MarkdownBodies(bodies)) => Some(bodies),
-            None => None,
-        }
     }
 
     /// In-process WAL (`:memory:`). No timed checkpoint (ADR-0041).

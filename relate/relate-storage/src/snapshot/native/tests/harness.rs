@@ -247,6 +247,13 @@ pub(super) fn checkpoint_at(
         None,
     )
 }
+/// A memory store whose checkpoints write wide parts (ADR-0534): the
+/// open-time opt-in, installed as the codec configuration.
+pub(super) fn wide_memory_store() -> StoreTarget {
+    memory_store()
+        .with_codec_config(crate::CodecOpenConfig::ParquetWide)
+        .unwrap()
+}
 
 /// Take the open write off the graph. The WAL append in
 /// [`commit_open_write`] has to see the ops before `apply_redo` consumes them,
@@ -348,9 +355,10 @@ pub(super) fn stage_dirty(graph: &Graph, round: i64, pick: impl Fn(i64) -> bool)
     }
 }
 
-/// The manifest `store` publishes.
+/// The manifest `store` publishes — the shared crate-tests accessor,
+/// so the one-reader rule holds across the suites.
 pub(super) fn manifest(store: &StoreTarget) -> Manifest {
-    read_manifest_for_test(store).unwrap().unwrap()
+    crate::tests::on_disk_manifest(store)
 }
 
 /// Publish `manifest`, which may be forged, as `store`'s manifest; returns

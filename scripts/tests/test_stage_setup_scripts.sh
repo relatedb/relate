@@ -112,7 +112,6 @@ for spec in \
   '.sonic/ci.yml:source scripts/ffi-lib.sh:1' \
   '.sonic/ci.yml:bash /workspace/scripts:0' \
   '.sonic/ci.yml:source scripts/install-wasm-toolchain.sh:1' \
-  '.sonic/ci.yml:\*wasm-toolchain:1' \
   '.github/workflows/ci.yml:^ *crates::0' \
   '.github/workflows/ci.yml:LIB_SHARDS:0' \
   '.sonic/ci.yml:bash scripts/bolt-smoke.sh:1' \

@@ -260,8 +260,9 @@ fn run_golden(store: &GoldenStore) {
     // LABS-132: re-checkpointing a golden store is byte-stable.
     assert_recheckpoint_byte_stable(&working, store);
 
-    // The checkpoint rewrites the snapshot in the same format; the WAL
-    // stays MDBWAL01.
+    // The checkpoint rewrites the snapshot in the same format (the wide
+    // option of ADR-0534 is an opt-in, not a migration); the WAL stays
+    // MDBWAL01.
     let vfs = store_vfs(&working);
     let manifest = read_to_vec(&*vfs, "manifest.json").unwrap();
     let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();

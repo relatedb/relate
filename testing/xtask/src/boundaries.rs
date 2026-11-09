@@ -360,7 +360,7 @@ mod tests {
                 ],
             ),
             pkg("testing/relate-test-support", &[]),
-            pkg("testing/relate-cookbook", &[]),
+            pkg("testing/relate-query-latency", &[]),
             extra,
         ]
     }
@@ -425,9 +425,9 @@ mod tests {
     fn engine_dev_dep_on_other_testing_package_is_rejected() {
         let v = violations(pkg(
             "relate/relate-storage",
-            &[("testing/relate-cookbook", DepKind::Dev)],
+            &[("testing/relate-query-latency", DepKind::Dev)],
         ));
-        assert_eq!(v, ["relate-storage -> relate-cookbook (dev): R2"]);
+        assert_eq!(v, ["relate-storage -> relate-query-latency (dev): R2"]);
     }
 
     #[test]
@@ -465,9 +465,9 @@ mod tests {
     fn surface_dev_dep_on_other_testing_package_is_rejected() {
         let v = violations(pkg(
             "surfaces/relate-cli",
-            &[("testing/relate-cookbook", DepKind::Dev)],
+            &[("testing/relate-query-latency", DepKind::Dev)],
         ));
-        assert_eq!(v, ["relate-cli -> relate-cookbook (dev): R3"]);
+        assert_eq!(v, ["relate-cli -> relate-query-latency (dev): R3"]);
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
             &[
                 ("surfaces/relate-formatter", DepKind::Normal),
                 ("relate/relate", DepKind::Build),
-                ("testing/relate-cookbook", DepKind::Dev),
+                ("testing/relate-query-latency", DepKind::Dev),
             ],
         ));
         assert!(v.is_empty(), "{v:?}");
@@ -555,14 +555,14 @@ mod tests {
                 "R7",
             ),
             (
-                "testing/relate-cookbook",
-                "relate-cookbook",
+                "testing/relate-query-latency",
+                "relate-query-latency",
                 DepKind::Dev,
                 "R7",
             ),
             (
-                "testing/relate-cookbook",
-                "relate-cookbook",
+                "testing/relate-query-latency",
+                "relate-query-latency",
                 DepKind::Normal,
                 "R7",
             ),

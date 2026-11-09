@@ -33,7 +33,7 @@ it was installed (a registry wheel or built from source).
 
 Lead with the use case, not the solution: what you're trying to accomplish,
 what you tried, and where it fell short. Coverage is broad — check the
-[cookbook](docs/cookbook/) and the [references](docs/reference/) first; the
+[guides](docs/guides/) and the [references](docs/reference/) first; the
 answer may already exist.
 
 ## Using AI tools

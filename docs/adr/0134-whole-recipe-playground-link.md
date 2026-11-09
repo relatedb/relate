@@ -73,3 +73,9 @@ with an empty or schema-only database.
   a reader might not expect to be part of "the data" (migration
   rehearsal's deliberate bug and repair). The dialog says so before
   anything runs.
+
+## Later references
+
+- ADR-0528 moves the cookbook to the relate-web repository: the playground's
+  `#recipe=` hand-off this ADR extended is removed, and no page here links
+  to it.

@@ -12,8 +12,8 @@
 # `-O2` instead of `-Oz` so wasm-opt is a few seconds instead of ~30 s.
 #
 # Output goes into `surfaces/relate-wasm/pkg/` (same layout wasm-pack
-# used), so downstream consumers (examples/wasm-playground/, docs snippets)
-# do not need to move.
+# used), so downstream consumers (docs snippets, the relate-web site's
+# copy of the bundle) do not need to move.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -73,7 +73,7 @@ esac
 
 CRATE_DIR="$REPO/surfaces/relate-wasm"
 # BUILD_WASM_OUT_DIR lets a caller keep its bundle off the shared pkg/
-# directory. cookbook-wasm and npm-smoke both run this script, and one
+# directory. When two jobs run this script against the same checkout, one
 # `rm -rf` of that directory removes the other's package.json.
 OUT_DIR="${BUILD_WASM_OUT_DIR:-$CRATE_DIR/pkg}"
 OUT_NAME="relate"
@@ -173,27 +173,3 @@ SIZE=$(wc -c <"$BG" | tr -d ' ')
 # waits on stdin.
 MB=$(awk -v bytes="$SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 printf '[build-wasm] done: %s (%s MB, mode=%s)\n' "$BG" "$MB" "$MODE"
-
-# Mirror the playground-facing files into the SPA's src tree so its
-# Vite build (which does not know about pkg/) picks up a fresh bundle. The
-# copy lives here instead of in the playground's npm scripts so all
-# callers of this script (make build-wasm, npm) stay in
-# sync.
-PLAYGROUND_WASM_DIR="$REPO/examples/wasm-playground/src/wasm"
-if [[ -z "${BUILD_WASM_OUT_DIR:-}" && -d "$REPO/examples/wasm-playground" ]]; then
-  mkdir -p "$PLAYGROUND_WASM_DIR"
-  cp "$OUT_DIR/${OUT_NAME}.js" \
-     "$OUT_DIR/${OUT_NAME}.d.ts" \
-     "$OUT_DIR/${OUT_NAME}_bg.wasm" \
-     "$OUT_DIR/${OUT_NAME}_bg.wasm.d.ts" \
-     "$OUT_DIR/trap.js" \
-     "$OUT_DIR/trap.d.ts" \
-     "$OUT_DIR/opfs.js" \
-     "$OUT_DIR/opfs.d.ts" \
-     "$PLAYGROUND_WASM_DIR/"
-  if [[ -d "$OUT_DIR/snippets" ]]; then
-    rm -rf "$PLAYGROUND_WASM_DIR/snippets"
-    cp -R "$OUT_DIR/snippets" "$PLAYGROUND_WASM_DIR/snippets"
-  fi
-  echo "[build-wasm] copied to $PLAYGROUND_WASM_DIR/"
-fi

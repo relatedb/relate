@@ -13,8 +13,7 @@ crate-type = ["cdylib", "rlib"]
 # ships to every browser page.
 [dependencies]
 relate = { workspace = true }
-# The recording renderer (`renderResult`, ADR-0131): the code the native
-# cookbook harness renders with.
+# The recording renderer (`renderResult`, ADR-0131).
 relate-formatter = { workspace = true }
 serde_json = { workspace = true }
 
