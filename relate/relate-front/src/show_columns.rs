@@ -28,13 +28,17 @@ pub const DEFAULT_FUNCTION_COLUMNS: &[&str] = &["name", "category", "description
 
 /// `SHOW FUNCTIONS`'s Full-only columns: `isDeprecated` (CIP-84) and
 /// `deprecatedBy` (CIP-157) alongside the pre-existing `isBuiltIn`/
-/// `signature`/`argumentDescription`/`returnDescription`/`aggregating`.
+/// `signature`/`argumentDescription`/`returnDescription`/`aggregating`, and
+/// the `rolesExecution`/`rolesBoostedExecution` role lists (live Neo4j
+/// 2026.10.1: `YIELD *`-only, one list pair on every built-in row).
 pub const NON_DEFAULT_FUNCTION_COLUMNS: &[&str] = &[
     "isBuiltIn",
     "signature",
     "argumentDescription",
     "returnDescription",
     "aggregating",
+    "rolesExecution",
+    "rolesBoostedExecution",
     "isDeprecated",
     "deprecatedBy",
 ];
@@ -170,12 +174,16 @@ pub const DEFAULT_PROCEDURE_COLUMNS: &[&str] = &["name", "description", "mode", 
 
 /// `SHOW PROCEDURES`'s Full-only columns: `isDeprecated` (CIP-84) and
 /// `deprecatedBy` (CIP-157) alongside the pre-existing `option` map,
-/// `signature`/`argumentDescription`/`returnDescription`/`admin`.
+/// `signature`/`argumentDescription`/`returnDescription`/`admin`, and the
+/// `rolesExecution`/`rolesBoostedExecution` role lists (live Neo4j
+/// 2026.10.1: `YIELD *`-only, following the `admin` flag).
 pub const NON_DEFAULT_PROCEDURE_COLUMNS: &[&str] = &[
     "signature",
     "argumentDescription",
     "returnDescription",
     "admin",
+    "rolesExecution",
+    "rolesBoostedExecution",
     "isDeprecated",
     "deprecatedBy",
     "option",

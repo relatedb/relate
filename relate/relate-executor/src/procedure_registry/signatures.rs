@@ -114,6 +114,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .deprecated_by(DeprecatedBy::identifier("db.cdc.earliest"))
         .executable(false),
     ProcSignature::read("cdc.query")
+        .admin()
         .described("Query changes happened from the provided change identifier.")
         .args(&[
             ProcArgMeta::described("from", "The change identifier to query from.", "STRING"),
@@ -154,9 +155,11 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("Returns the earliest change identifier that can be used to stream changes from.")
         .executable(false),
     ProcSignature::read("db.cdc.query")
+        .admin()
         .described("Query changes happened from the provided change identifier.")
         .executable(false),
     ProcSignature::read("db.cdc.translateId")
+        .admin()
         .described("Translate any provided change identifier to match the queried database.")
         .executable(false),
     ProcSignature::dbms("db.checkpoint")
@@ -168,6 +171,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .executable(false),
     ProcSignature::dbms("db.clearQueryCaches")
+        .admin()
         .works_on_system()
         .described("Clears all query caches.")
         .executable(false),
@@ -289,6 +293,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .returns(&[ProcArgMeta::described("label", "A label within the database.", "STRING")])
         .rows(RowProducer::DbLabels),
     ProcSignature::dbms("db.listLocks")
+        .admin()
         .works_on_system()
         .described("List all locks at this database.")
         .executable(false),
@@ -325,6 +330,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .returns(&[ProcArgMeta::described("success", "Whether the database answered.", "BOOLEAN")])
         .rows(RowProducer::DbPing),
     ProcSignature::read("db.prepareForReplanning")
+        .admin()
         .works_on_system()
         .described("Triggers an index resample and waits for its completion. If the wait time is 0, it skips waiting. After that, the procedure clears query caches. Once the process is complete, queries are planned using the latest database statistics.")
         .executable(false),
@@ -393,12 +399,14 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .rows(RowProducer::SchemaVisualization),
     ProcSignature::read("db.stats.clear")
+        .admin()
         .works_on_system()
         .described("Clear collected data of a given data section. Valid sections are 'QUERIES'")
         .executable(false),
     // CIP-113 procedure-signatures.feature [1]: the doc's own literal
     // worked example.
     ProcSignature::read("db.stats.collect")
+        .admin()
         .works_on_system()
         .described("Start data collection of a given data section. Valid sections are 'QUERIES'")
         .args(&[
@@ -415,6 +423,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
     // COUNTS diagnostics section, derived from the live constraints,
     // indexes and graph type rather than catalogued alone.
     ProcSignature::read("db.stats.retrieve")
+        .admin()
         .works_on_system()
         .described("Retrieve statistical data about the current database. Valid sections are 'GRAPH COUNTS', 'TOKENS', 'QUERIES', 'META'")
         .args(&[ProcArgMeta::described("section", "The section of statistics to retrieve.", "STRING")])
@@ -424,22 +433,27 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .rows(RowProducer::DbStatsRetrieve),
     ProcSignature::read("db.stats.retrieveAllAnonymized")
+        .admin()
         .works_on_system()
         .described("Retrieve all available statistical data about the current database, in an anonymized form.")
         .executable(false),
     ProcSignature::read("db.stats.status")
+        .admin()
         .works_on_system()
         .described("Retrieve the status of all available collector daemons, for this database.")
         .executable(false),
     ProcSignature::read("db.stats.stop")
+        .admin()
         .works_on_system()
         .described("Stop data collection of a given data section. Valid sections are 'QUERIES'")
         .executable(false),
     ProcSignature::dbms("dbms.checkConfigValue")
+        .admin()
         .works_on_system()
         .described("Check if a potential config setting value is valid.")
         .executable(false),
     ProcSignature::dbms("dbms.cluster.checkConnectivity")
+        .admin()
         .works_on_system()
         .described("Check the connectivity of this instance to other cluster members. Not all ports are relevant to all members. Valid values for 'port-name' are: []")
         .executable(false),
@@ -474,7 +488,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
     ProcSignature::write("dbms.cluster.recreateDatabase")
         .works_on_system()
         .described("Recreates a database while keeping all RBAC settings. The procedure initiates a process, which when complete, will have synchronized and started all database instances within the cluster.")
-        .admin()
         .args(&[ProcArgMeta::described("databaseName", "The name of the database to re-seed.", "STRING")])
         .deprecated_by(DeprecatedBy::identifier("dbms.recreateDatabase"))
         .executable(false),
@@ -486,6 +499,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .deprecated_by(DeprecatedBy::identifier("dbms.routing.getRoutingTable"))
         .executable(false),
     ProcSignature::dbms("dbms.cluster.secondaryReplicationDisable")
+        .admin()
         .works_on_system()
         .described("The toggle can pause or resume the secondary replication process.")
         .executable(false),
@@ -494,6 +508,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("With this method you can set whether free servers are automatically enabled.")
         .executable(false),
     ProcSignature::dbms("dbms.cluster.statusCheck")
+        .admin()
         .works_on_system()
         .described("Performs a rafted status check.")
         .executable(false),
@@ -556,6 +571,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("List capabilities.")
         .executable(false),
     ProcSignature::dbms("dbms.listConfig")
+        .admin()
         .works_on_system()
         .described("List the currently active configuration settings of Neo4j.")
         .returns(CONFIG_RESULT_RETURNS)
@@ -581,6 +597,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("Recreates a database while keeping all RBAC settings. The procedure initiates a process, which when complete, will have synchronized and started all database instances within the cluster.")
         .executable(false),
     ProcSignature::dbms("dbms.reloadProcedures")
+        .admin()
         .works_on_system()
         .described("Reload procedures from disk.")
         .executable(false),
@@ -593,22 +610,27 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .returns(ROUTING_TABLE_RETURNS)
         .executable(false),
     ProcSignature::dbms("dbms.scheduler.failedJobs")
+        .admin()
         .works_on_system()
         .described("List failed job runs. There is a limit for amount of historical data.")
         .executable(false),
     ProcSignature::dbms("dbms.scheduler.groups")
+        .admin()
         .works_on_system()
         .described("List the job groups that are active in the database internal job scheduler.")
         .executable(false),
     ProcSignature::dbms("dbms.scheduler.jobs")
+        .admin()
         .works_on_system()
         .described("List all jobs that are active in the database internal job scheduler.")
         .executable(false),
     ProcSignature::dbms("dbms.security.clearAuthCache")
+        .admin()
         .works_on_system()
         .described("Clears authentication and authorization cache.")
         .executable(false),
     ProcSignature::dbms("dbms.security.reloadTLS")
+        .admin()
         .works_on_system()
         .described("Trigger the dynamic reloading of all TLS certificates and configuration.")
         .executable(false),
@@ -623,10 +645,12 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .executable(false),
     ProcSignature::write("dbms.setDefaultAllocationNumbers")
+        .admin()
         .works_on_system()
         .described("With this method you can set the default number of primaries, secondaries and property shard replicas.")
         .executable(false),
     ProcSignature::write("dbms.setDefaultDatabase")
+        .admin()
         .works_on_system()
         .described("Change the default database to the provided value. The old default database must be stopped.")
         .executable(false),
@@ -643,26 +667,32 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .rows(RowProducer::DbmsShowCurrentUser),
     ProcSignature::read("dbms.showTopologyGraphConfig")
+        .admin()
         .works_on_system()
         .described("With this method the configuration of the Topology Graph can be displayed.")
         .executable(false),
     ProcSignature::dbms("dbms.unquarantineDatabase")
+        .admin()
         .works_on_system()
         .described("Lift quarantine from a database on a given server.")
         .executable(false),
     ProcSignature::dbms("fleetManagement.debugLogging")
+        .admin()
         .works_on_system()
         .described("Enable debug or payload logging for Fleet Manager.")
         .executable(false),
     ProcSignature::dbms("fleetManagement.disable")
+        .admin()
         .works_on_system()
         .described("Disable Fleet Manager")
         .executable(false),
     ProcSignature::dbms("fleetManagement.inspectToken")
+        .admin()
         .works_on_system()
         .described("Inspect a Fleet Manager access token.")
         .executable(false),
     ProcSignature::dbms("fleetManagement.registerToken")
+        .admin()
         .works_on_system()
         .described("Add a token for authenticating to Fleet Manager")
         .executable(false),
@@ -671,10 +701,12 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("Generate documentation for the data structures used in Fleet Manager messages.")
         .executable(false),
     ProcSignature::dbms("fleetManagement.restart")
+        .admin()
         .works_on_system()
         .described("Restart Fleet Manager.")
         .executable(false),
     ProcSignature::read("fleetManagement.status")
+        .admin()
         .works_on_system()
         .described("Check the status of Fleet Manager.")
         .executable(false),

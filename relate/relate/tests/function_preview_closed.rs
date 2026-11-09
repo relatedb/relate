@@ -156,11 +156,13 @@ fn the_added_names_are_listed_with_the_corpus_metadata() {
             )
         })
         .collect();
+    // The catalogue renders in name order, so `allReduce` precedes
+    // `toBooleanList`.
     assert_eq!(
         listed,
         [
-            ("toBooleanList".to_string(), "List".to_string(), false),
             ("allReduce".to_string(), "Predicate".to_string(), false),
+            ("toBooleanList".to_string(), "List".to_string(), false),
         ]
     );
 }
