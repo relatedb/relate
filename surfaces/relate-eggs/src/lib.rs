@@ -30,6 +30,7 @@ mod lolwut;
 mod matrix;
 mod rng;
 pub mod sprite;
+mod text_arg;
 
 use std::io::{IsTerminal, Write};
 
@@ -107,6 +108,14 @@ pub struct Ctx<'a> {
     pub conn: &'a mut relate::Connection,
     pub out: &'a mut dyn Write,
     pub caps: Caps,
+    /// Everything after the command name, byte for byte (surrounding
+    /// whitespace included): for an egg whose argument is a statement, where
+    /// the whitespace inside a string literal is data. Handlers that take
+    /// words read the split `args` instead.
+    pub raw_args: &'a str,
+    /// The terminal's column count as the CLI's one width probe reported it,
+    /// unfloored; `None` when it cannot be asked (a pipe, no `COLUMNS`).
+    pub columns: Option<usize>,
 }
 
 /// A handler: the arguments after the command name.
@@ -145,27 +154,32 @@ pub fn gate_open(human_repl: bool) -> bool {
 /// is open. `None` means "not an egg" — the caller's unknown command error
 /// stands, so a hidden command is indistinguishable from a missing one
 /// wherever it is unavailable. `Some(Err(_))` is a refusal for the caller to
-/// print.
+/// print. `columns` is the CLI's terminal-width probe, handed through as
+/// [`Ctx::columns`].
 pub fn try_dispatch(
     local: &[Entry],
     stmt: &str,
     db: &relate::Database,
     conn: &mut relate::Connection,
     human_repl: bool,
+    columns: Option<usize>,
 ) -> Option<Result<(), Refusal>> {
-    let mut words = stmt.split_whitespace();
-    let name = words.next()?;
+    let stmt = stmt.trim_start();
+    let name = stmt.split_whitespace().next()?;
     let (_, handler) = local.iter().chain(EGGS).find(|(n, _)| *n == name)?;
     if !gate_open(human_repl) {
         return None;
     }
-    let args: Vec<&str> = words.collect();
+    let raw_args = &stmt[name.len()..];
+    let args: Vec<&str> = raw_args.split_whitespace().collect();
     let mut stdout = std::io::stdout();
     let mut ctx = Ctx {
         db,
         conn,
         out: &mut stdout,
         caps: Caps::from_env(&|k| std::env::var(k).ok()),
+        raw_args,
+        columns,
     };
     Some(handler(&mut ctx, &args))
 }

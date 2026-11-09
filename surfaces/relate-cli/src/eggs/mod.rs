@@ -33,7 +33,14 @@ pub(crate) fn try_dispatch(
     human_repl: bool,
 ) -> Option<i32> {
     Some(
-        match relate_eggs::try_dispatch(LOCAL, stmt, db, conn, human_repl)? {
+        match relate_eggs::try_dispatch(
+            LOCAL,
+            stmt,
+            db,
+            conn,
+            human_repl,
+            crate::width::terminal_columns(),
+        )? {
             Ok(()) => 0,
             Err(r) => {
                 crate::print_error(format_args!("Error: {r}"));

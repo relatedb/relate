@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use relate::{Connection, Node, QueryType, Relationship, Value};
 
 use crate::canvas::Canvas;
+use crate::explain_art::statement;
 use crate::layout::layout;
 use crate::{Ctx, Refusal};
 
@@ -176,19 +177,22 @@ fn gather_query(conn: &mut Connection, query: &str) -> Result<GraphData, Refusal
     Ok(c.finish())
 }
 
-/// Terminal size from `COLUMNS`/`LINES`, defaulting to 80x24. A set but
-/// unusable `COLUMNS` (not a number, or under [`MIN_COLS`]) is refused.
-fn terminal_size(env: &dyn Fn(&str) -> Option<String>) -> Result<(usize, usize), Refusal> {
-    let get = |k: &str, default: usize| match env(k).filter(|v| !v.is_empty()) {
-        None => Some(default),
-        Some(v) => v.trim().parse().ok(),
-    };
-    let cols = get("COLUMNS", DEFAULT_COLS)
-        .filter(|c| *c >= MIN_COLS)
-        .ok_or(Refusal::Usage(
+/// Terminal size: the width from the CLI's one probe ([`Ctx::columns`],
+/// 80 when it cannot be asked), the rows from `LINES` (24 when missing or
+/// unusable). A probed width under [`MIN_COLS`] is refused.
+fn terminal_size(
+    columns: Option<usize>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(usize, usize), Refusal> {
+    let cols = columns.unwrap_or(DEFAULT_COLS);
+    if cols < MIN_COLS {
+        return Err(Refusal::Usage(
             "terminal too narrow for .graph (need 40 columns)",
-        ))?;
-    let rows = get("LINES", DEFAULT_ROWS).unwrap_or(DEFAULT_ROWS);
+        ));
+    }
+    let rows = env("LINES")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_ROWS);
     Ok((cols, rows))
 }
 
@@ -231,12 +235,14 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
     if !ctx.caps.utf8 {
         return Err(Refusal::NotUtf8);
     }
-    let (cols, rows) = terminal_size(&|k| std::env::var(k).ok())?;
-    let query = args.join(" ");
-    let data = if args.is_empty() {
+    let (cols, rows) = terminal_size(ctx.columns, &|k| std::env::var(k).ok())?;
+    // The raw tail, never the re-joined words: whitespace inside a string
+    // literal is data.
+    let query = statement(ctx.raw_args);
+    let data = if query.is_empty() {
         gather_store(ctx.conn)?
     } else if args[0].eq_ignore_ascii_case("match") {
-        gather_query(ctx.conn, &query)?
+        gather_query(ctx.conn, query)?
     } else {
         return Err(Refusal::Usage(USAGE));
     };
@@ -284,6 +290,8 @@ mod tests {
                 conn,
                 out: &mut buf,
                 caps: caps(),
+                raw_args: &args.join(" "),
+                columns: None,
             },
             args,
         );
@@ -362,13 +370,39 @@ mod tests {
                     .map(|(_, v)| v.to_string())
             }
         };
-        assert_eq!(terminal_size(&env(&[])).unwrap(), (80, 24));
+        assert_eq!(terminal_size(None, &env(&[])).unwrap(), (80, 24));
         assert_eq!(
-            terminal_size(&env(&[("COLUMNS", "120"), ("LINES", "50")])).unwrap(),
+            terminal_size(Some(120), &env(&[("LINES", "50")])).unwrap(),
             (120, 50)
         );
-        assert!(terminal_size(&env(&[("COLUMNS", "20")])).is_err());
-        assert!(terminal_size(&env(&[("COLUMNS", "wide")])).is_err());
+        assert_eq!(
+            terminal_size(Some(40), &env(&[("LINES", "junk")])).unwrap(),
+            (40, 24)
+        );
+        assert!(terminal_size(Some(20), &env(&[])).is_err());
+    }
+
+    #[test]
+    fn the_raw_tail_keeps_whitespace_inside_literals() {
+        let (db, mut c) = conn();
+        c.query("CREATE (:T {name:'a   b'})").unwrap();
+        let raw = "MATCH (n:T) WHERE n.name = 'a   b' RETURN n;";
+        let words: Vec<&str> = raw.split_whitespace().collect();
+        let mut buf = Vec::new();
+        let r = run(
+            &mut Ctx {
+                db: &db,
+                conn: &mut c,
+                out: &mut buf,
+                caps: caps(),
+                raw_args: raw,
+                columns: None,
+            },
+            &words,
+        );
+        r.unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("showing 1 of 1 nodes"), "{out}");
     }
 
     #[test]
@@ -384,6 +418,8 @@ mod tests {
                     utf8: false,
                     truecolor: false,
                 },
+                raw_args: "",
+                columns: None,
             },
             &[],
         );

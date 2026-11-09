@@ -17,8 +17,7 @@ use crossterm::terminal::{
 };
 use crossterm::{cursor, execute};
 
-use crate::sprite::Rgb;
-use crate::{Caps, Ctx, Refusal};
+use crate::{Ctx, Refusal};
 
 /// A key press, with WASD folded into the arrows and letters lower-cased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,39 +49,6 @@ pub(crate) trait Game {
     fn key(&mut self, key: Key) -> Flow;
     /// One string per terminal row, each at most `min_size().0` columns.
     fn render(&self) -> Vec<String>;
-}
-
-/// How games colour a two-column cell: 24-bit background when the terminal
-/// offers it, an ASCII stand-in otherwise (`NO_COLOR`, dumb terminals).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Style {
-    pub color: bool,
-}
-
-impl Style {
-    pub fn from_caps(caps: Caps) -> Style {
-        Style {
-            color: caps.truecolor,
-        }
-    }
-
-    /// A two-column cell: coloured blanks, or `mono` (two ASCII columns).
-    pub fn cell(&self, rgb: Rgb, mono: &str) -> String {
-        if self.color {
-            format!("\x1b[48;2;{};{};{}m  \x1b[0m", rgb.0, rgb.1, rgb.2)
-        } else {
-            mono.to_string()
-        }
-    }
-}
-
-/// Linear blend of two colours; `t` in `0..=num` out of `den` (`den > 0`).
-pub(crate) fn lerp(a: Rgb, b: Rgb, num: usize, den: usize) -> Rgb {
-    let mix = |x: u8, y: u8| {
-        let (x, y, n, d) = (x as i64, y as i64, num as i64, den as i64);
-        (x + (y - x) * n / d) as u8
-    };
-    Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
 /// Cut a line to at most `cols` characters.
@@ -289,22 +255,6 @@ mod tests {
         assert!(f.contains('a') && f.contains('b') && !f.contains('c'));
         assert!(f.ends_with("\x1b[J"));
         assert!(frame_bytes(&lines, 3, true).starts_with("\x1b[2J"));
-    }
-
-    #[test]
-    fn lerp_hits_both_ends() {
-        let (a, b) = (Rgb(0, 100, 200), Rgb(100, 0, 100));
-        assert_eq!(lerp(a, b, 0, 4), a);
-        assert_eq!(lerp(a, b, 4, 4), b);
-        assert_eq!(lerp(a, b, 2, 4), Rgb(50, 50, 150));
-    }
-
-    #[test]
-    fn cells_fall_back_to_ascii_without_colour() {
-        let mono = Style { color: false };
-        assert_eq!(mono.cell(Rgb(1, 2, 3), "[]"), "[]");
-        let colour = Style { color: true };
-        assert!(colour.cell(Rgb(1, 2, 3), "[]").contains("48;2;1;2;3"));
     }
 
     #[test]

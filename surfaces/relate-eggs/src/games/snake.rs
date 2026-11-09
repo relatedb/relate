@@ -6,7 +6,8 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use super::term::{self, fit, lerp, Flow, Game, Key, Style};
+use super::style::{lerp, Glyphs, Style, WALL};
+use super::term::{self, fit, Flow, Game, Key};
 use crate::rng::Rng;
 use crate::sprite::{Rgb, BRAND_PALETTE};
 use crate::{Ctx, Refusal};
@@ -17,7 +18,6 @@ const H: i32 = 16;
 /// Two columns per cell, walls included; a status row, the walls.
 const MIN_SIZE: (u16, u16) = (((W + 2) * 2) as u16, (H + 3) as u16);
 const APPLE: Rgb = Rgb(0xdc, 0x3c, 0x3c);
-const WALL: Rgb = Rgb(0x58, 0x58, 0x58);
 /// Ticks the demo shows a dead snake before starting over.
 const DEMO_RESTART_TICKS: u32 = 15;
 
@@ -151,23 +151,23 @@ impl Board {
         let safe = |p: Pos| in_bounds(p) && !blocked[idx(p)];
         let step = |p: Pos, d: Dir| (p.0 + d.delta().0, p.1 + d.delta().1);
         if let Some(apple) = self.apple {
-            // First move that began each reached cell's shortest path.
-            let mut first: Vec<Option<Dir>> = vec![None; (W * H) as usize];
+            // Each queued cell carries the first move that began its
+            // shortest path; the start has none yet.
             let mut seen = vec![false; (W * H) as usize];
             seen[idx(start)] = true;
-            let mut queue = VecDeque::from([start]);
-            while let Some(p) = queue.pop_front() {
+            let mut queue: VecDeque<(Pos, Option<Dir>)> = VecDeque::from([(start, None)]);
+            while let Some((p, first)) = queue.pop_front() {
                 for d in Dir::ALL {
                     let n = step(p, d);
                     if !safe(n) || seen[idx(n)] || (p == start && d == self.dir.opposite()) {
                         continue;
                     }
                     seen[idx(n)] = true;
-                    first[idx(n)] = if p == start { Some(d) } else { first[idx(p)] };
+                    let first = first.or(Some(d));
                     if n == apple {
-                        return first[idx(n)].expect("a reached cell has a first move");
+                        return first.expect("a reached cell has a first move");
                     }
-                    queue.push_back(n);
+                    queue.push_back((n, first));
                 }
             }
         }
@@ -187,9 +187,9 @@ struct Snake {
 }
 
 impl Snake {
-    fn new(demo: bool, style: Style) -> Snake {
+    fn new(demo: bool, style: Style, rng: Rng) -> Snake {
         Snake {
-            board: Board::new(Rng::from_clock()),
+            board: Board::new(rng),
             best: 0,
             demo,
             dead_ticks: 0,
@@ -199,7 +199,9 @@ impl Snake {
 
     fn restart(&mut self) {
         self.best = self.best.max(self.board.score);
-        self.board = Board::new(Rng::from_clock());
+        // A fresh game; the generator carries on.
+        let seed = self.board.rng.next_u64();
+        self.board = Board::new(Rng::seeded(seed));
         self.dead_ticks = 0;
     }
 
@@ -297,8 +299,11 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
         ["demo"] => true,
         _ => return Err(Refusal::Usage(USAGE)),
     };
-    term::terminal_size(MIN_SIZE)?;
-    let mut game = Snake::new(demo, Style::from_caps(ctx.caps));
+    let mut game = Snake::new(
+        demo,
+        Style::for_game(ctx.caps, Glyphs::Ascii)?,
+        Rng::from_clock(),
+    );
     term::play(ctx, &mut game)
 }
 
@@ -427,10 +432,10 @@ mod tests {
     #[test]
     fn the_frame_fits_the_declared_size() {
         let style = Style { color: true };
-        let g = Snake::new(false, style);
+        let g = Snake::new(false, style, Rng::seeded(1));
         let lines = g.render();
         assert_eq!(lines.len(), MIN_SIZE.1 as usize);
-        let plain = Snake::new(false, Style { color: false });
+        let plain = Snake::new(false, Style { color: false }, Rng::seeded(1));
         let lines = plain.render();
         assert!(lines
             .iter()
@@ -441,7 +446,7 @@ mod tests {
     #[test]
     fn keys_steer_restart_and_quit() {
         let style = Style { color: false };
-        let mut g = Snake::new(false, style);
+        let mut g = Snake::new(false, style, Rng::seeded(1));
         assert_eq!(g.key(Key::Up), Flow::Continue);
         g.tick();
         assert_eq!(g.board.body[0].1, H / 2 - 1);
@@ -454,7 +459,7 @@ mod tests {
     #[test]
     fn the_demo_ignores_steering_and_restarts_after_dying() {
         let style = Style { color: false };
-        let mut g = Snake::new(true, style);
+        let mut g = Snake::new(true, style, Rng::seeded(1));
         g.key(Key::Left);
         assert!(g.board.queued.is_none());
         g.board.state = State::Dead;

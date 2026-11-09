@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use super::term::{self, fit, Flow, Game, Key, Style};
+use super::style::{Glyphs, Style};
+use super::term::{self, fit, Flow, Game, Key};
 use crate::rng::Rng;
 use crate::sprite::{Rgb, Sprite};
 use crate::{Ctx, Refusal};
@@ -314,8 +315,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
         ["demo"] => true,
         _ => return Err(Refusal::Usage(USAGE)),
     };
-    term::terminal_size(MIN_SIZE)?;
-    let mut game = Dash::new(demo, Style::from_caps(ctx.caps));
+    let mut game = Dash::new(demo, Style::for_game(ctx.caps, Glyphs::Ascii)?);
     term::play(ctx, &mut game)
 }
 

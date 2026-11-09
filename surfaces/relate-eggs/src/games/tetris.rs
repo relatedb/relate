@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use super::term::{self, fit, Flow, Game, Key, Style};
+use super::style::{Glyphs, Style, WALL};
+use super::term::{self, fit, Flow, Game, Key};
 use crate::rng::Rng;
 use crate::sprite::Rgb;
 use crate::{Ctx, Refusal};
@@ -16,9 +17,12 @@ const BH: usize = 20;
 /// Well with walls (two columns per cell) plus the side panel; the well's
 /// rows plus its floor.
 const MIN_SIZE: (u16, u16) = (42, BH as u16 + 1);
-const WALL: Rgb = Rgb(0x58, 0x58, 0x58);
 /// Points for 0 to 4 lines at once, times the level plus one.
 const LINE_POINTS: [u32; 5] = [0, 100, 300, 500, 800];
+
+/// A well cell: the kind of the piece that filled it, `None` when empty.
+type Cell = Option<usize>;
+type Row = [Cell; BW];
 
 /// One piece: its cells in an `n` by `n` box, and its colour.
 struct Piece {
@@ -106,8 +110,7 @@ pub(crate) enum State {
 
 /// The rules.
 pub(crate) struct Well {
-    /// 0 is empty, otherwise piece kind + 1.
-    rows: [[u8; BW]; BH],
+    rows: [Row; BH],
     active: Active,
     next: usize,
     bag: Vec<usize>,
@@ -123,7 +126,7 @@ impl Well {
         let first = draw(&mut bag, &mut rng);
         let next = draw(&mut bag, &mut rng);
         Well {
-            rows: [[0; BW]; BH],
+            rows: [[None; BW]; BH],
             active: Active::spawn(first),
             next,
             bag,
@@ -142,7 +145,7 @@ impl Well {
         a.cells().iter().all(|&(x, y)| {
             (0..BW as i32).contains(&x)
                 && y < BH as i32
-                && (y < 0 || self.rows[y as usize][x as usize] == 0)
+                && (y < 0 || self.rows[y as usize][x as usize].is_none())
         })
     }
 
@@ -209,14 +212,14 @@ impl Well {
     fn lock(&mut self) {
         stamp(&mut self.rows, &self.active);
         let before = self.level();
-        let kept: Vec<[u8; BW]> = self
+        let kept: Vec<Row> = self
             .rows
             .iter()
             .copied()
-            .filter(|r| r.contains(&0))
+            .filter(|r| r.contains(&None))
             .collect();
         let cleared = BH - kept.len();
-        let mut rows = [[0; BW]; BH];
+        let mut rows = [[None; BW]; BH];
         rows[cleared..].copy_from_slice(&kept);
         self.rows = rows;
         self.lines += cleared as u32;
@@ -233,19 +236,25 @@ impl Well {
         700u64.saturating_sub(self.level() as u64 * 60).max(100)
     }
 
-    /// The well with the falling piece drawn in (kind + 1 per cell).
-    fn with_active(&self) -> [[u8; BW]; BH] {
+    /// A fresh game; the generator carries on.
+    fn restart(&mut self) {
+        let seed = self.rng.next_u64();
+        *self = Well::new(Rng::seeded(seed));
+    }
+
+    /// The well with the falling piece drawn in.
+    fn with_active(&self) -> [Row; BH] {
         let mut rows = self.rows;
         stamp(&mut rows, &self.active);
         rows
     }
 }
 
-/// Write the piece's in-well cells into `rows` (kind + 1 per cell).
-fn stamp(rows: &mut [[u8; BW]; BH], a: &Active) {
+/// Write the piece's in-well cells into `rows`.
+fn stamp(rows: &mut [Row; BH], a: &Active) {
     for (x, y) in a.cells() {
         if (0..BH as i32).contains(&y) {
-            rows[y as usize][x as usize] = a.kind as u8 + 1;
+            rows[y as usize][x as usize] = Some(a.kind);
         }
     }
 }
@@ -267,13 +276,14 @@ struct Tetris {
 }
 
 impl Tetris {
-    fn cell(&self, v: u8) -> String {
-        match v {
-            0 => "  ".to_string(),
-            k => self.style.cell(PIECES[k as usize - 1].rgb, "[]"),
+    fn cell(&self, c: Cell) -> String {
+        match c {
+            None => "  ".to_string(),
+            Some(kind) => self.style.cell(PIECES[kind].rgb, "[]"),
         }
     }
 
+    /// One row of the next-piece box.
     fn preview(&self, row: i32) -> String {
         let p = &PIECES[self.well.next];
         (0..4)
@@ -285,6 +295,53 @@ impl Tetris {
                 }
             })
             .collect()
+    }
+}
+
+/// Columns the side panel may use beside the walled well.
+const PANEL_COLS: usize = MIN_SIZE.0 as usize - (BW + 2) * 2;
+/// Authored panel rows; the array type fixes the count, and the well has
+/// room for them all (the rest of its rows stay blank).
+const PANEL_ROWS: usize = 18;
+const _: () = assert!(PANEL_ROWS <= BH);
+
+impl Tetris {
+    /// The side panel, one entry per well row. Text rows are cut to
+    /// [`PANEL_COLS`]; the two next-piece rows carry colour escapes, which a
+    /// cut would count as columns, and are a fixed short width.
+    fn panel(&self) -> [String; BH] {
+        let w = &self.well;
+        let text = |s: String| fit(&s, PANEL_COLS);
+        let (state, restart) = match w.state {
+            State::Over => (" GAME OVER", " r restart"),
+            State::Paused => (" paused", ""),
+            State::Playing => ("", ""),
+        };
+        let lines: [String; PANEL_ROWS] = [
+            String::new(),
+            text(" TETRIS".into()),
+            String::new(),
+            text(format!(" score {}", w.score)),
+            text(format!(" lines {}", w.lines)),
+            text(format!(" level {}", w.level())),
+            String::new(),
+            text(" next".into()),
+            format!(" {}", self.preview(0)),
+            format!(" {}", self.preview(1)),
+            String::new(),
+            String::new(),
+            text(state.into()),
+            text(restart.into()),
+            String::new(),
+            text(" a/d move w turn".into()),
+            text(" s down space drop".into()),
+            text(" p pause  q quit".into()),
+        ];
+        let mut panel: [String; BH] = std::array::from_fn(|_| String::new());
+        for (slot, line) in panel.iter_mut().zip(lines) {
+            *slot = line;
+        }
+        panel
     }
 }
 
@@ -321,52 +378,16 @@ impl Game for Tetris {
     }
 
     fn render(&self) -> Vec<String> {
-        let w = &self.well;
         let wall = self.style.cell(WALL, "##");
-        let grid = w.with_active();
-        let panel = |i: usize| -> String {
-            match i {
-                1 => " TETRIS".to_string(),
-                3 => format!(" score {}", w.score),
-                4 => format!(" lines {}", w.lines),
-                5 => format!(" level {}", w.level()),
-                7 => " next".to_string(),
-                8 => format!(" {}", self.preview(0)),
-                9 => format!(" {}", self.preview(1)),
-                12 => match w.state {
-                    State::Over => " GAME OVER".to_string(),
-                    State::Paused => " paused".to_string(),
-                    State::Playing => String::new(),
-                },
-                13 if w.state == State::Over => " r restart".to_string(),
-                15 => " a/d move w turn".to_string(),
-                16 => " s down space drop".to_string(),
-                17 => " p pause  q quit".to_string(),
-                _ => String::new(),
-            }
-        };
+        let grid = self.well.with_active();
+        let panel = self.panel();
         let mut lines = Vec::with_capacity(BH + 1);
-        for (y, row) in grid.iter().enumerate() {
-            let cells: String = row.iter().map(|&v| self.cell(v)).collect();
-            // The two preview rows carry colour escapes, which `fit` would
-            // count as columns; they are a fixed short width and need no cut.
-            let side = if matches!(y, 8 | 9) {
-                panel(y)
-            } else {
-                fit(&panel(y), MIN_SIZE.0 as usize - (BW + 2) * 2)
-            };
+        for (row, side) in grid.iter().zip(&panel) {
+            let cells: String = row.iter().map(|&c| self.cell(c)).collect();
             lines.push(format!("{wall}{cells}{wall}{side}"));
         }
         lines.push(wall.repeat(BW + 2));
         lines
-    }
-}
-
-impl Well {
-    /// A fresh game; the generator carries on.
-    fn restart(&mut self) {
-        let seed = self.rng.next_u64();
-        *self = Well::new(Rng::seeded(seed));
     }
 }
 
@@ -375,10 +396,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
     if !args.is_empty() {
         return Err(Refusal::Usage(USAGE));
     }
-    term::terminal_size(MIN_SIZE)?;
     let mut game = Tetris {
         well: Well::new(Rng::from_clock()),
-        style: Style::from_caps(ctx.caps),
+        style: Style::for_game(ctx.caps, Glyphs::Ascii)?,
     };
     term::play(ctx, &mut game)
 }
@@ -397,7 +417,7 @@ mod tests {
 
     fn fill_row(w: &mut Well, y: usize, gap: Option<usize>) {
         for x in 0..BW {
-            w.rows[y][x] = if Some(x) == gap { 0 } else { 1 };
+            w.rows[y][x] = if Some(x) == gap { None } else { Some(0) };
         }
     }
 
@@ -468,7 +488,7 @@ mod tests {
     fn a_stacked_cell_blocks_the_piece() {
         let mut w = well();
         put(&mut w, 1);
-        w.rows[5][4] = 3;
+        w.rows[5][4] = Some(2);
         w.active.y = 3;
         assert!(!w.try_move(0, 1), "O at y=3 would overlap (4,5)");
         assert!(w.try_move(1, 0));
@@ -492,7 +512,7 @@ mod tests {
         fill_row(&mut w, BH - 1, Some(0));
         fill_row(&mut w, BH - 2, Some(0));
         fill_row(&mut w, BH - 3, Some(0));
-        w.rows[BH - 3][5] = 0;
+        w.rows[BH - 3][5] = None;
         // A vertical I into column 0 completes the two bottom rows.
         w.active = Active {
             kind: 0,
@@ -503,10 +523,13 @@ mod tests {
         w.hard_drop();
         assert_eq!(w.lines, 2);
         assert!(
-            w.rows[BH - 1].contains(&0),
+            w.rows[BH - 1].contains(&None),
             "the partial row fell to the floor"
         );
-        assert_eq!(w.rows[BH - 1].iter().filter(|&&c| c != 0).count(), BW - 1);
+        assert_eq!(
+            w.rows[BH - 1].iter().filter(|c| c.is_some()).count(),
+            BW - 1
+        );
         // 2 lines * 300 base is 300 at level 0, plus the drop points.
         assert!(w.score >= 300);
     }
@@ -528,7 +551,7 @@ mod tests {
         w.hard_drop();
         assert_eq!(w.lines, 14);
         assert_eq!(w.score - before - 2 * 16, 800 * 2);
-        assert!(w.rows.iter().all(|r| r.iter().all(|&c| c == 0)));
+        assert!(w.rows.iter().all(|r| r.iter().all(Option::is_none)));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use crate::rng::Rng;
+use crate::text_arg::text_arg;
 use crate::{Ctx, Refusal};
 
 const DEFAULT_TEXT: &str = "Relate: the graph database that lives in your process.";
@@ -27,16 +28,16 @@ const MAX_HEIGHT: usize = 12;
 const KATAKANA: &str = "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ";
 const ASCII_GLYPHS: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:+=*<>";
 
-/// Terminal columns and rows from `COLUMNS`/`LINES`, with a default where a
-/// variable is missing or unusable (shells often do not export them).
-fn term_size(env: &dyn Fn(&str) -> Option<String>) -> (usize, usize) {
-    let get = |k: &str, default: usize| {
-        env(k)
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|&n| n > 0)
-            .unwrap_or(default)
-    };
-    (get("COLUMNS", DEFAULT_SIZE.0), get("LINES", DEFAULT_SIZE.1))
+/// Terminal columns and rows: the width from the CLI's one probe
+/// ([`Ctx::columns`]), the rows from `LINES`, each defaulting where missing
+/// or unusable (shells often do not export them).
+fn term_size(columns: Option<usize>, env: &dyn Fn(&str) -> Option<String>) -> (usize, usize) {
+    let cols = columns.filter(|&n| n > 0).unwrap_or(DEFAULT_SIZE.0);
+    let rows = env("LINES")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_SIZE.1);
+    (cols, rows)
 }
 
 /// The animation block for a terminal of `cols` x `rows`: leaves room for
@@ -170,20 +171,6 @@ fn render(rain: &Rain, frame: usize, text: &[char], look: &Look, rng: &mut Rng) 
     lines
 }
 
-/// The text to decrypt: control characters dropped, cut to the cap.
-fn clean_text(args: &[&str]) -> Vec<char> {
-    let joined = args.join(" ");
-    let text = if joined.trim().is_empty() {
-        DEFAULT_TEXT
-    } else {
-        joined.trim()
-    };
-    text.chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_TEXT_CHARS)
-        .collect()
-}
-
 fn animate(
     out: &mut dyn Write,
     text: &[char],
@@ -211,12 +198,14 @@ fn animate(
 }
 
 pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
-    let text = clean_text(args);
+    let text: Vec<char> = text_arg(args, DEFAULT_TEXT, MAX_TEXT_CHARS)
+        .chars()
+        .collect();
     if !ctx.caps.utf8 && !text.iter().all(char::is_ascii) {
         return Err(Refusal::NotUtf8);
     }
     let env = |k: &str| std::env::var(k).ok();
-    let (cols, rows) = term_size(&env);
+    let (cols, rows) = term_size(ctx.columns, &env);
     let size = block_size(cols, rows);
     // The same clipped text the animation decrypts, so the final line
     // never wraps.
@@ -273,15 +262,15 @@ mod tests {
     }
 
     #[test]
-    fn size_comes_from_env_with_a_sane_default() {
+    fn size_comes_from_the_probe_and_lines_with_a_sane_default() {
         let env = |k: &str| match k {
-            "COLUMNS" => Some("120".to_string()),
             "LINES" => Some("junk".to_string()),
             _ => None,
         };
-        assert_eq!(term_size(&env), (120, DEFAULT_SIZE.1));
-        assert_eq!(term_size(&|_| None), DEFAULT_SIZE);
-        assert_eq!(term_size(&|_| Some("0".to_string())), DEFAULT_SIZE);
+        assert_eq!(term_size(Some(120), &env), (120, DEFAULT_SIZE.1));
+        assert_eq!(term_size(None, &|_| None), DEFAULT_SIZE);
+        assert_eq!(term_size(Some(0), &|_| Some("0".to_string())), DEFAULT_SIZE);
+        assert_eq!(term_size(None, &|_| Some("30".to_string())).1, 30);
     }
 
     #[test]
@@ -331,16 +320,6 @@ mod tests {
             rain.step(f, &mut rng);
             assert!(rain.drops.iter().all(|d| d.head - d.len <= 6));
         }
-    }
-
-    #[test]
-    fn text_is_cleaned_capped_and_defaulted() {
-        assert_eq!(clean_text(&[]).iter().collect::<String>(), DEFAULT_TEXT);
-        assert_eq!(
-            clean_text(&["a\x1b[0m", "b"]).iter().collect::<String>(),
-            "a[0m b"
-        );
-        assert_eq!(clean_text(&[&"z".repeat(500)]).len(), MAX_TEXT_CHARS);
     }
 
     #[test]

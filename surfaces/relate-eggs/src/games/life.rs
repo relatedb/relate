@@ -4,10 +4,11 @@
 
 use std::time::Duration;
 
-use super::term::{self, fit, Flow, Game, Key, Style};
+use super::style::{Glyphs, Style};
+use super::term::{self, fit, Flow, Game, Key};
 use crate::canvas::DOT_BITS;
 use crate::rng::Rng;
-use crate::sprite::BRAND_PALETTE;
+use crate::sprite::{fg, BRAND_PALETTE};
 use crate::{Ctx, Refusal};
 
 const USAGE: &str = "Usage: .life";
@@ -186,7 +187,7 @@ impl Game for Life {
         );
         let (on, off) = if self.style.color {
             let c = BRAND_PALETTE.hl;
-            (format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2), "\x1b[0m")
+            (fg(c), "\x1b[0m")
         } else {
             (String::new(), "")
         };
@@ -206,11 +207,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
     if !args.is_empty() {
         return Err(Refusal::Usage(USAGE));
     }
-    if !ctx.caps.utf8 {
-        return Err(Refusal::NotUtf8);
-    }
+    let style = Style::for_game(ctx.caps, Glyphs::Utf8)?;
     let (cols, rows) = term::terminal_size(MIN_SIZE)?;
-    let mut game = Life::new(cols, rows, Style::from_caps(ctx.caps), Rng::from_clock());
+    let mut game = Life::new(cols, rows, style, Rng::from_clock());
     term::play(ctx, &mut game)
 }
 

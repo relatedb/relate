@@ -10,7 +10,7 @@
 //! means. Operator times are inclusive; children that sum past their parent
 //! (shared work counted in both arms) are scaled down to fit under it.
 
-use crate::sprite::{Rgb, TONES};
+use crate::sprite::{bg, fg, Rgb, TONES};
 use crate::{Caps, Ctx, Refusal};
 
 const USAGE: &str = "Usage: .explain-art <read-only query>";
@@ -69,17 +69,15 @@ enum Metric {
 }
 
 impl Metric {
-    /// Time when the root registered any, else the first metric that did.
+    /// What the root measured, in precedence order: the first metric with a
+    /// non-zero root value, else the always-available leaf count.
+    const PRECEDENCE: [Metric; 3] = [Metric::Time, Metric::DbHits, Metric::Rows];
+
     fn pick(root: &Frame) -> Metric {
-        if root.time_ns > 0 {
-            Metric::Time
-        } else if root.db_hits > 0 {
-            Metric::DbHits
-        } else if root.rows > 0 {
-            Metric::Rows
-        } else {
-            Metric::Leaves
-        }
+        Metric::PRECEDENCE
+            .into_iter()
+            .find(|m| m.value(root) > 0)
+            .unwrap_or(Metric::Leaves)
     }
 
     fn value(self, f: &Frame) -> u128 {
@@ -218,73 +216,73 @@ fn fit(label: &str, span: usize, utf8: bool) -> Vec<char> {
 
 /// The plain fill for a tone: the brand shade glyphs, or ASCII off UTF-8.
 fn fill_char(tone: usize, utf8: bool) -> char {
+    let t = &TONES[tone];
     if utf8 {
-        TONES[tone].shade
+        t.shade
     } else {
-        ['#', '=', '-'][tone % 3]
+        t.ascii
     }
 }
 
-#[derive(Clone, Copy)]
-struct Cell {
-    ch: char,
-    tone: Option<usize>,
+/// The `span` columns of one bar: a leading pad cell, then the label cut to
+/// fit, the rest fill (blank under truecolour, where the background shows).
+fn bar_text(b: &Bar, caps: Caps) -> String {
+    let span = b.end - b.start;
+    let text = fit(&b.label, span, caps.utf8);
+    (0..span)
+        .map(|i| match i.checked_sub(1).and_then(|k| text.get(k)) {
+            Some(&c) => c,
+            None if caps.truecolor => ' ',
+            None => fill_char(b.tone, caps.utf8),
+        })
+        .collect()
 }
 
 /// Draw the bars as text lines: truecolour backgrounds with the Archie
 /// tones, or shade glyphs otherwise. Every coloured line ends in a reset.
+/// A row's bars are disjoint and ordered (the layout places left to right),
+/// so each row is written straight from them, blank where none is.
 fn render(bars: &[Bar], width: usize, caps: Caps) -> Vec<String> {
     let depth = bars.iter().map(|b| b.depth + 1).max().unwrap_or(0);
-    let mut grid = vec![
-        vec![
-            Cell {
-                ch: ' ',
-                tone: None
-            };
-            width
-        ];
-        depth
-    ];
-    for b in bars {
-        let row = &mut grid[b.depth];
-        let text = fit(&b.label, b.end - b.start, caps.utf8);
-        for (i, cell) in row[b.start..b.end].iter_mut().enumerate() {
-            let ch = match i.checked_sub(1).and_then(|k| text.get(k)) {
-                Some(&c) => c,
-                None if caps.truecolor => ' ',
-                None => fill_char(b.tone, caps.utf8),
-            };
-            *cell = Cell {
-                ch,
-                tone: Some(b.tone),
-            };
-        }
-    }
-    grid.iter().map(|row| row_text(row, caps)).collect()
-}
-
-fn row_text(row: &[Cell], caps: Caps) -> String {
-    let mut out = String::new();
-    let mut current: Option<usize> = None;
-    for c in row {
-        if caps.truecolor && c.tone != current {
-            match c.tone {
-                Some(t) => {
-                    let Rgb(r, g, b) = TONES[t].rgb;
-                    out.push_str(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;255;255;255m"));
+    (0..depth)
+        .map(|d| {
+            let mut out = String::new();
+            // The tone whose SGR is active; a change emits the new one.
+            let mut current: Option<usize> = None;
+            let mut at = 0;
+            let mut set = |out: &mut String, tone: Option<usize>| {
+                if caps.truecolor && tone != current {
+                    match tone {
+                        Some(t) => {
+                            out.push_str(&bg(TONES[t].rgb));
+                            out.push_str(&fg(Rgb(255, 255, 255)));
+                        }
+                        None => out.push_str("\x1b[0m"),
+                    }
+                    current = tone;
                 }
-                None => out.push_str("\x1b[0m"),
+            };
+            for b in bars.iter().filter(|b| b.depth == d) {
+                if b.start > at {
+                    set(&mut out, None);
+                    out.push_str(&" ".repeat(b.start - at));
+                }
+                set(&mut out, Some(b.tone));
+                out.push_str(&bar_text(b, caps));
+                at = b.end;
             }
-            current = c.tone;
-        }
-        out.push(c.ch);
-    }
-    if caps.truecolor {
-        out.push_str("\x1b[0m");
-        out
-    } else {
-        out.trim_end().to_string()
-    }
+            if width > at {
+                set(&mut out, None);
+                out.push_str(&" ".repeat(width - at));
+            }
+            if caps.truecolor {
+                out.push_str("\x1b[0m");
+                out
+            } else {
+                out.trim_end().to_string()
+            }
+        })
+        .collect()
 }
 
 /// The whole chart: a header line, then the rows.
@@ -303,30 +301,21 @@ fn chart(root: &Frame, width: usize, caps: Caps) -> String {
     out
 }
 
-/// The terminal's column count, clamped; `COLUMNS` then 80 when unasked.
-fn terminal_width() -> usize {
-    #[cfg(unix)]
-    {
-        // SAFETY: a TIOCGWINSZ probe on stdout with a valid out-parameter;
-        // the kernel fills it or fails.
-        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-        if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0
-            && ws.ws_col > 0
-        {
-            return usize::from(ws.ws_col).clamp(MIN_WIDTH, MAX_WIDTH);
-        }
-    }
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_WIDTH)
-        .clamp(MIN_WIDTH, MAX_WIDTH)
+/// The chart width: the terminal's columns as the CLI probed them, clamped;
+/// the default where it could not be asked.
+fn chart_width(columns: Option<usize>) -> usize {
+    columns.unwrap_or(DEFAULT_WIDTH).clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+/// The statement in the raw argument tail: trimmed of surrounding blanks
+/// and `;`, never re-joined, so whitespace inside a string literal survives.
+pub(crate) fn statement(raw: &str) -> &str {
+    raw.trim().trim_end_matches(';').trim()
 }
 
 /// `.explain-art <query>`.
-pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
-    let joined = args.join(" ");
-    let stmt = joined.trim().trim_end_matches(';').trim();
+pub(crate) fn run(ctx: &mut Ctx<'_>, _args: &[&str]) -> Result<(), Refusal> {
+    let stmt = statement(ctx.raw_args);
     if stmt.is_empty() {
         return Err(Refusal::Usage(USAGE));
     }
@@ -354,7 +343,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
             "the plan carries no PROFILE metrics to draw".into(),
         ));
     }
-    let text = chart(&Frame::from_plan(root), terminal_width(), ctx.caps);
+    let text = chart(&Frame::from_plan(root), chart_width(ctx.columns), ctx.caps);
     ctx.out
         .write_all(text.as_bytes())
         .and_then(|()| ctx.out.flush())
@@ -506,7 +495,7 @@ mod tests {
     fn drive(
         conn: &mut relate::Connection,
         db: &relate::Database,
-        args: &[&str],
+        raw: &str,
     ) -> (Result<(), Refusal>, String) {
         let mut out = Vec::new();
         let r = run(
@@ -515,8 +504,10 @@ mod tests {
                 conn,
                 out: &mut out,
                 caps: PLAIN,
+                raw_args: raw,
+                columns: Some(60),
             },
-            args,
+            &[],
         );
         (r, String::from_utf8(out).unwrap())
     }
@@ -525,7 +516,7 @@ mod tests {
     fn profiles_a_real_read_query() {
         let (db, mut conn) = session();
         conn.query("CREATE (:P {n: 1}), (:P {n: 2})").unwrap();
-        let (r, out) = drive(&mut conn, &db, &["MATCH", "(n:P)", "RETURN", "n.n;"]);
+        let (r, out) = drive(&mut conn, &db, " MATCH (n:P) RETURN n.n;");
         r.unwrap();
         assert!(out.starts_with("plan flame:"), "{out}");
         assert!(out.contains("ProduceResults"), "{out}");
@@ -535,8 +526,7 @@ mod tests {
     fn refuses_writes_without_running_them() {
         let (db, mut conn) = session();
         for q in ["CREATE (:X)", "CREATE (n:X) RETURN n"] {
-            let words: Vec<&str> = q.split(' ').collect();
-            let (r, out) = drive(&mut conn, &db, &words);
+            let (r, out) = drive(&mut conn, &db, q);
             assert!(matches!(r, Err(Refusal::Declined(_))), "{q}: {r:?}");
             assert!(out.is_empty());
         }
@@ -548,13 +538,29 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_tail_keeps_whitespace_inside_literals() {
+        assert_eq!(
+            statement("  RETURN 'a  b\tc'  AS s ;  "),
+            "RETURN 'a  b\tc'  AS s"
+        );
+        let (db, mut conn) = session();
+        let (r, out) = drive(&mut conn, &db, "RETURN 'a   b' AS s;");
+        r.unwrap();
+        assert!(out.starts_with("plan flame:"), "{out}");
+    }
+
+    #[test]
+    fn chart_width_clamps_and_defaults() {
+        assert_eq!(chart_width(None), DEFAULT_WIDTH);
+        assert_eq!(chart_width(Some(5)), MIN_WIDTH);
+        assert_eq!(chart_width(Some(9_999)), MAX_WIDTH);
+        assert_eq!(chart_width(Some(100)), 100);
+    }
+
+    #[test]
     fn union_queries_draw_despite_metricless_synthetic_nodes() {
         let (db, mut conn) = session();
-        let (r, out) = drive(
-            &mut conn,
-            &db,
-            &["RETURN", "1", "AS", "x", "UNION", "RETURN", "2", "AS", "x"],
-        );
+        let (r, out) = drive(&mut conn, &db, "RETURN 1 AS x UNION RETURN 2 AS x");
         r.unwrap();
         assert!(out.starts_with("plan flame:"), "{out}");
     }
@@ -563,15 +569,15 @@ mod tests {
     fn empty_and_broken_input_are_typed_refusals() {
         let (db, mut conn) = session();
         assert!(matches!(
-            drive(&mut conn, &db, &[]).0,
+            drive(&mut conn, &db, "").0,
             Err(Refusal::Usage(_))
         ));
         assert!(matches!(
-            drive(&mut conn, &db, &[";"]).0,
+            drive(&mut conn, &db, " ; ").0,
             Err(Refusal::Usage(_))
         ));
         assert!(matches!(
-            drive(&mut conn, &db, &["MATCH", "("]).0,
+            drive(&mut conn, &db, "MATCH (").0,
             Err(Refusal::Declined(_))
         ));
     }

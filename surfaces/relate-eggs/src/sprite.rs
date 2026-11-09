@@ -25,13 +25,14 @@ pub struct Palette {
     pub sh: Rgb,
 }
 
-/// One legend row: the file symbol, its true colour, and its plain-text
-/// shade glyph.
+/// One legend row: the file symbol, its true colour, its plain-text shade
+/// glyph, and the ASCII fill that stands in for the shade off UTF-8.
 #[derive(Debug)]
 pub struct Tone {
     pub symbol: char,
     pub rgb: Rgb,
     pub shade: char,
+    pub ascii: char,
 }
 
 /// The legend: every non-empty symbol a sprite file may use. Empty cells are
@@ -42,16 +43,19 @@ pub const TONES: &[Tone] = &[
         symbol: 'h',
         rgb: BRAND_PALETTE.hl,
         shade: '\u{2593}',
+        ascii: '#',
     },
     Tone {
         symbol: 'm',
         rgb: BRAND_PALETTE.md,
         shade: '\u{2592}',
+        ascii: '=',
     },
     Tone {
         symbol: 's',
         rgb: BRAND_PALETTE.sh,
         shade: '\u{2591}',
+        ascii: '-',
     },
 ];
 
@@ -190,11 +194,13 @@ impl Sprite {
     }
 }
 
-fn fg(c: Rgb) -> String {
+/// The 24-bit foreground SGR for `c`: the one spelling every egg shares.
+pub(crate) fn fg(c: Rgb) -> String {
     format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
-fn bg(c: Rgb) -> String {
+/// The 24-bit background SGR for `c`.
+pub(crate) fn bg(c: Rgb) -> String {
     format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
 }
 

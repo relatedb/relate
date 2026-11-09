@@ -33,14 +33,23 @@ pub(crate) fn effective_width(flag: Option<usize>) -> Option<usize> {
     flag.or_else(terminal_width)
 }
 
-/// The terminal's column count, asked from the terminal itself: a
+/// The terminal width a run lays out to: [`terminal_columns`], dropped when
+/// narrower than the floor (a terminal that small is not a grid worth
+/// laying out).
+fn terminal_width() -> Option<usize> {
+    terminal_columns().filter(|w| *w >= MIN_EFFECTIVE_WIDTH)
+}
+
+/// The terminal's raw column count, asked from the terminal itself: a
 /// `TIOCGWINSZ` probe on stdout. That is the one source that works by
 /// default — `COLUMNS` is a shell variable that a child process does not
 /// inherit — and it doubles as the TTY check (the probe fails on a pipe,
 /// which is exactly when the natural width should win). `COLUMNS` remains
-/// the fallback for a caller that exports it over a redirected stdout.
+/// the fallback for a caller that exports it over a redirected stdout. The
+/// one probe in the product: the hidden eggs get their width from here too,
+/// and apply their own clamp.
 #[cfg(unix)]
-fn terminal_width() -> Option<usize> {
+pub(crate) fn terminal_columns() -> Option<usize> {
     // SAFETY: a plain TIOCGWINSZ probe on the stdout descriptor with a
     // valid out-parameter; the kernel fills it or returns an error.
     let mut ws = libc::winsize {
@@ -51,7 +60,7 @@ fn terminal_width() -> Option<usize> {
     };
     if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0
     {
-        (ws.ws_col as usize >= MIN_EFFECTIVE_WIDTH).then_some(ws.ws_col as usize)
+        Some(usize::from(ws.ws_col))
     } else {
         columns_env()
     }
@@ -59,18 +68,14 @@ fn terminal_width() -> Option<usize> {
 
 /// The non-unix fallback: only an exported `COLUMNS` answers.
 #[cfg(not(unix))]
-fn terminal_width() -> Option<usize> {
+pub(crate) fn terminal_columns() -> Option<usize> {
     columns_env()
 }
 
-/// The exported `COLUMNS` fallback, floored — one spelling for both cfg
+/// The exported `COLUMNS` fallback, unfloored — one spelling for both cfg
 /// variants.
 fn columns_env() -> Option<usize> {
-    std::env::var("COLUMNS")
-        .ok()?
-        .parse::<usize>()
-        .ok()
-        .filter(|w| *w >= MIN_EFFECTIVE_WIDTH)
+    std::env::var("COLUMNS").ok()?.parse::<usize>().ok()
 }
 
 #[cfg(test)]

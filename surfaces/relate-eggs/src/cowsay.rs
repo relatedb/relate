@@ -2,6 +2,7 @@
 //! rendered by the shared sprite kit; the bubble is plain ASCII.
 
 use crate::sprite::Sprite;
+use crate::text_arg::text_arg;
 use crate::{Ctx, Refusal};
 
 const ARCHIE: &str = include_str!("../assets/cowsay-archie.txt");
@@ -73,24 +74,14 @@ fn compose(args: &[&str], caps: crate::Caps) -> Result<Vec<String>, Refusal> {
     if !caps.utf8 {
         return Err(Refusal::NotUtf8);
     }
-    let cleaned: String = args
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_CHARS)
-        .collect();
-    let text = if cleaned.trim().is_empty() {
-        DEFAULT_TEXT
-    } else {
-        &cleaned
-    };
+    let text = text_arg(args, DEFAULT_TEXT, MAX_CHARS);
     let sprite = Sprite::parse(ARCHIE).expect("embedded cowsay sprite parses");
     let art = if caps.truecolor {
         sprite.render_truecolor()
     } else {
         sprite.render_plain()
     };
-    let mut out = bubble(&wrap(text, BUBBLE_WIDTH));
+    let mut out = bubble(&wrap(&text, BUBBLE_WIDTH));
     out.extend(art.into_iter().map(|l| format!("{INDENT}{}", l.trim_end())));
     Ok(out)
 }
