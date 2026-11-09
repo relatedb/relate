@@ -87,15 +87,15 @@ legacy numeric ids (ADR-0506) — the values `id(n)` / `id(r)` /
 The same types bind as parameters, plus `List` and `Map` (nested to any
 depth); an unsupported Java type throws `IllegalArgumentException`.
 
-- `getQueryType()` — `"r"`, `"w"`, `"rw"` or `"s"` (plan-time; `EXPLAIN`
+- `getQueryType()` — `QueryType` enum `READ`, `WRITE`, `READ_WRITE` or `SCHEMA` (plan-time; `EXPLAIN`
   reports the wrapped statement's type without running it).
-- `getNamespace()` — the resolved namespace: `"neo4j"`, `"system"` or
-  `"system_ontologies"`.
+- `getNamespace()` — the resolved namespace: `Namespace` enum `NEO4J`, `SYSTEM` or
+  `SYSTEM_ONTOLOGIES`.
 - `getBookmark()` — `"relate:<n>"` after an auto-commit write, `null`
   when the statement committed nothing. Order bookmarks by the numeric
   `n`, not string order (`"relate:10"` sorts before `"relate:9"`).
 - `getNotifications()` — typed `Notification`s (code, GQLSTATUS,
-  severity, category, title, description, remedy, operator id); empty on a
+  `Severity`/`Category` enums, title, description, remedy, operator id); empty on a
   plain run, populated by `EXPLAIN` / `PROFILE`.
 - `getPlan()` — the `relate.plan/v1` document for `EXPLAIN` /
   `PROFILE`, `null` on a plain run.

@@ -11,8 +11,8 @@ try (Database db = Database.open(":memory:");        // AutoCloseable
     Result result = conn.query("RETURN $n AS n", java.util.Map.of("n", 1));
     result.columns();      // List<String>
     result.rows();         // List<List<Object>> — typed values (see below)
-    result.getQueryType(); // "r" | "w" | "rw" | "s"
-    result.getNamespace(); // "neo4j" | "system" | "system_ontologies"
+    result.getQueryType(); // QueryType: READ | WRITE | READ_WRITE | SCHEMA
+    result.getNamespace(); // Namespace: NEO4J | SYSTEM | SYSTEM_ONTOLOGIES
     result.getBookmark();  // "relate:<n>" after an auto-commit write, else null
     result.getNotifications(); // List<Notification>, [] on a plain run
 } // close() is real: a file store reopens in the same JVM afterwards
@@ -364,10 +364,15 @@ ADR-0363, joined by operator id), `PlanActual` (the PROFILE metrics) and
 `PlanStart` — or `null` on a plain run. Read from
 `relate_result_plan_json` while the result is alive. The plan family
 is a public-field struct the lenient plan mapper binds (unknown keys
-tolerated, LABS-836); `PlanActual` models a stated subset of the wire
-metrics — the engine also emits `total_time_ms`, `seek_ms`, `walk_ms`,
-`loops`, `expression_built_bytes`, `batched`, `zone_skips` and the
-`frontier` counters, which the Java type deliberately drops.
+tolerated, LABS-836); `PlanActual` models every key of the wire `actual` object:
+`rows`, `timeMs`, `totalTimeMs`, `dbHits`, `seekMs`, `walkMs`, `loops`
+(`Long`, null at the root), `memoryBytes`, `expressionBuiltBytes`, `hops`,
+`neighborWalks`, `nodeReads`, `batched`, `zoneSkips`, `frontier`
+(`PlanFrontier`: `edgeVisits`, `levels`, `endpoints`, `cells`, `memoHits`,
+`memoMisses`, `representativeProofs`, `searchProven`, `searchDisproven`,
+`declinedExhausted`, `budgetFraction`), `frontierDecline` (nullable
+`String`), `start` and `kernel` (`PlanKernel`: `rung`, `hops` — a `Long`, present for the chain
+rung only and null otherwise; nullable).
 
 ## Query notifications (ADR-0363)
 
@@ -386,8 +391,8 @@ same keys the JSON handle API's result envelope uses under `notifications`:
 | --- | --- | --- |
 | `getCode()` | `code` | the kind's code, e.g. `Neo.ClientNotification.Statement.CartesianProduct` |
 | `getGqlStatus()` | `gql_status` | the GQLSTATUS value, e.g. `03N90` |
-| `getSeverity()` | `severity` | `INFORMATION` or `WARNING` |
-| `getCategory()` | `category` | `PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT` |
+| `getSeverity()` | `severity` | `Severity` enum: `INFORMATION` or `WARNING` (wire name = constant name; any other value throws `RelateException`) |
+| `getCategory()` | `category` | `Category` enum: `PERFORMANCE`, `UNRECOGNIZED`, `DEPRECATION`, `SCHEMA` or `HINT` (any other value throws `RelateException`) |
 | `getTitle()` | `title` | the kind's short title, e.g. `Cartesian product` |
 | `getDescription()` | `description` | the instance diagnosis (unknown name, index text, …) |
 | `getRemedy()` | `remedy` | the action that clears the diagnostic |

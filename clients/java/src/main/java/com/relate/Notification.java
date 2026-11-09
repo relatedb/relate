@@ -12,26 +12,22 @@ import com.fasterxml.jackson.databind.JsonNode;
  * is always null — the plan projection deliberately drops the join key
  * the node itself already scopes.
  *
- * <p>{@code severity} and {@code category} stay open {@code String}s —
- * not closed enums like the error channel's
- * {@link RelateException.Stage} — as a stated decision: those two
- * vocabularies are shared surface metadata, and the cross-surface
- * alignment rule (every client surface gains a piece in the same change)
- * means closing them is a decision the Go, Swift and Java clients land
- * together, not one client unilaterally. The error stage closed exactly
- * that way, in the ABI v2 build.
+ * <p>{@code severity} and {@code category} are the closed {@link Severity}
+ * and {@link Category} enums, like the error channel's
+ * {@link RelateException.Stage}: a wire value outside the vocabulary is
+ * an ABI contract violation and throws at decode.
  */
 public final class Notification {
     private final String code;
     private final String gqlStatus;
-    private final String severity;
-    private final String category;
+    private final Severity severity;
+    private final Category category;
     private final String title;
     private final String description;
     private final String remedy;
     private final Long operatorId;
 
-    // Decode by wire key, not by position: seven consecutive
+    // Decode by wire key, not by position: consecutive
     // String fields make a positional constructor a silent
     // field-swap hazard. Delegating creator: Jackson hands the
     // whole object node here when it appears nested in a plan.
@@ -43,8 +39,8 @@ public final class Notification {
         String payload = node.toString();
         this.code = Json.requireText(node, "code", "notification entry", payload);
         this.gqlStatus = Json.requireText(node, "gql_status", "notification entry", payload);
-        this.severity = Json.requireText(node, "severity", "notification entry", payload);
-        this.category = Json.requireText(node, "category", "notification entry", payload);
+        this.severity = Json.requireWire(Severity.class, node, "severity", "notification entry", payload);
+        this.category = Json.requireWire(Category.class, node, "category", "notification entry", payload);
         this.title = Json.requireText(node, "title", "notification entry", payload);
         this.description = Json.requireText(node, "description", "notification entry", payload);
         this.remedy = Json.requireText(node, "remedy", "notification entry", payload);
@@ -55,10 +51,10 @@ public final class Notification {
     public String getCode() { return code; }
     /** The GQLSTATUS value (ADR-0363 decision 2), e.g. {@code 03N90}. */
     public String getGqlStatus() { return gqlStatus; }
-    /** {@code INFORMATION} or {@code WARNING}. */
-    public String getSeverity() { return severity; }
-    /** {@code PERFORMANCE}, {@code UNRECOGNIZED}, {@code DEPRECATION}, {@code SCHEMA} or {@code HINT}. */
-    public String getCategory() { return category; }
+    /** The notification severity. */
+    public Severity getSeverity() { return severity; }
+    /** The notification category. */
+    public Category getCategory() { return category; }
     /** The kind's short human-readable title, e.g. {@code Cartesian product}. */
     public String getTitle() { return title; }
     /** The instance diagnosis: the unknown name, index text, procedure name, ... */

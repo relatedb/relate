@@ -147,12 +147,14 @@ public class ErrorsTest {
 
     @Test
     void resultMetadataVocabulariesRefuseUnknownValues() {
-        for (String qt : new String[] {"r", "w", "rw", "s"}) {
-            assertEquals(qt, ResultReader.decodeQueryType(qt));
+        for (QueryType qt : QueryType.values()) {
+            assertEquals(qt, ResultReader.decodeQueryType(qt.wire()));
         }
-        for (String ns : new String[] {"neo4j", "system", "system_ontologies"}) {
-            assertEquals(ns, ResultReader.decodeNamespace(ns));
+        assertEquals(QueryType.READ_WRITE, ResultReader.decodeQueryType("rw"));
+        for (Namespace ns : Namespace.values()) {
+            assertEquals(ns, ResultReader.decodeNamespace(ns.wire()));
         }
+        assertEquals(Namespace.SYSTEM_ONTOLOGIES, ResultReader.decodeNamespace("system_ontologies"));
         for (String bad : new String[] {"", "R", "x", null}) {
             RelateException e = assertThrows(RelateException.class,
                     () -> ResultReader.decodeQueryType(bad));

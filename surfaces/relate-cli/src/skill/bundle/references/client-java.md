@@ -28,8 +28,8 @@ try (Database db = Database.open(":memory:");          // or "./mydata" / "./tas
     Database.Result result = conn.query("RETURN $n AS n", java.util.Map.of("n", 1));
     // result.columns(): List<String>        // ["n"]
     // result.rows(): List<List<Object>>     // [[1L]] — positional, typed values
-    // result.getQueryType(): "r" | "w" | "rw" | "s"   (ADR-0162)
-    // result.getNamespace(): "neo4j" | "system" | "system_ontologies" (resolved)
+    // result.getQueryType(): QueryType READ | WRITE | READ_WRITE | SCHEMA (ADR-0162)
+    // result.getNamespace(): Namespace NEO4J | SYSTEM | SYSTEM_ONTOLOGIES (resolved)
     // result.getBookmark(): "relate:<n>" after an auto-commit write, else null
     // result.getNotifications(): List<Notification> — [] on a plain run
     // result.getPlan(): PlanDocument | null — EXPLAIN / PROFILE only
@@ -51,8 +51,8 @@ exceptions — see gotchas.
 
 ## Gotchas
 
-- **Metadata vocabularies are closed** — a `getQueryType()` /
-  `getNamespace()` value outside the documented set throws
+- **Metadata vocabularies are closed enums** — a `getQueryType()` /
+  `getNamespace()` / `Notification` severity and category value outside the documented set throws
   `RelateException` (`ABI contract violated: ...`), like the Go client.
 - **Native library resolution** — the bundled resource
   `native/<key>/<library>` for the running platform is extracted once per

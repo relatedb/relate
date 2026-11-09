@@ -1,6 +1,10 @@
 package com.relate.examples;
 
+import com.relate.Category;
 import com.relate.Database;
+import com.relate.Namespace;
+import com.relate.QueryType;
+import com.relate.Severity;
 
 public class ResultMetadata {
     public static void main(String[] args) {
@@ -8,9 +12,9 @@ public class ResultMetadata {
         var conn = db.connect();
 
         // EXPLAIN reports the wrapped statement's query type without
-        // executing it (ADR-0162): "w" here, and no node is created.
+        // executing it (ADR-0162): WRITE here, and no node is created.
         var explained = conn.query("EXPLAIN CREATE (n)");
-        if (!"w".equals(explained.getQueryType())) {
+        if (explained.getQueryType() != QueryType.WRITE) {
             throw new IllegalStateException("unexpected");
         }
         if (!conn.query("MATCH (n) RETURN n").rows().isEmpty()) {
@@ -20,10 +24,10 @@ public class ResultMetadata {
         // A USE-routed statement reports its resolved namespace (ADR-0117);
         // the session namespace is unchanged for unrouted statements.
         var routed = conn.query("USE system SHOW DATABASES YIELD name RETURN name");
-        if (!"system".equals(routed.getNamespace())) {
+        if (routed.getNamespace() != Namespace.SYSTEM) {
             throw new IllegalStateException("unexpected");
         }
-        if (!"neo4j".equals(conn.query("RETURN 1 AS n").getNamespace())) {
+        if (conn.query("RETURN 1 AS n").getNamespace() != Namespace.NEO4J) {
             throw new IllegalStateException("unexpected");
         }
 
@@ -40,8 +44,8 @@ public class ResultMetadata {
                 .orElseThrow(() -> new IllegalStateException(
                         "expected CartesianProduct, saw " + explainedCartesian.getNotifications()));
         if (!"03N90".equals(cartesian.getGqlStatus())
-                || !"INFORMATION".equals(cartesian.getSeverity())
-                || !"PERFORMANCE".equals(cartesian.getCategory())
+                || cartesian.getSeverity() != Severity.INFORMATION
+                || cartesian.getCategory() != Category.PERFORMANCE
                 || !"Cartesian product".equals(cartesian.getTitle())
                 || cartesian.getRemedy().isEmpty()) {
             throw new IllegalStateException("unexpected");

@@ -16,8 +16,8 @@ Sessions live in one of the three fixed namespaces (`neo4j`, `system`,
 `Connection.setNamespace(String)`. See `examples/Namespace.java`.
 
 Every `Result` also reports two plan-time stamps (ADR-0285):
-`getQueryType()` — `"r"`, `"w"`, `"rw"` or `"s"` (ADR-0162) — and
-`getNamespace()`, the statement's resolved namespace (its `USE` target, or
+`getQueryType()` — the `QueryType` enum, `READ`, `WRITE`, `READ_WRITE` or `SCHEMA` (ADR-0162) — and
+`getNamespace()` (the `Namespace` enum), the statement's resolved namespace (its `USE` target, or
 the session namespace when unrouted). `getNotifications()` adds the
 statement's query notifications as typed `Notification` entries
 (ADR-0363): `EXPLAIN`/`PROFILE` populate the list with each code, GQLSTATUS,

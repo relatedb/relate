@@ -68,6 +68,23 @@ final class Json {
     }
 
     /**
+     * A required closed-vocabulary wire key: the {@link WireEnum} constant
+     * for the text, refused in the one message shape when the text is
+     * outside the vocabulary — never a lenient string.
+     */
+    static <E extends Enum<E> & WireEnum> E requireWire(Class<E> type, JsonNode node,
+                                                         String key, String what,
+                                                         String payload) {
+        String wire = requireText(node, key, what, payload);
+        E constant = WireEnum.fromWire(type, wire);
+        if (constant == null) {
+            throw new RelateException(
+                    what + " carries an unknown " + key + " \"" + wire + "\": " + payload);
+        }
+        return constant;
+    }
+
+    /**
      * A required JSON object — total: a null node (an empty document
      * parses to one) and any other shape refuse in the one message shape.
      */

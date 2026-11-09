@@ -225,8 +225,8 @@ public class Database implements AutoCloseable {
     public static class Result {
         private final List<String> columns;
         private final List<List<Object>> rows;
-        private final String queryType;
-        private final String namespace;
+        private final QueryType queryType;
+        private final Namespace namespace;
         private final String bookmark;
         private final List<Notification> notifications;
         private final PlanDocument plan;
@@ -240,8 +240,8 @@ public class Database implements AutoCloseable {
          * caller passing named locals; a second builder would force a
          * key-addressed form.
          */
-        Result(List<String> columns, List<List<Object>> rows, String queryType,
-               String namespace, String bookmark, List<Notification> notifications,
+        Result(List<String> columns, List<List<Object>> rows, QueryType queryType,
+               Namespace namespace, String bookmark, List<Notification> notifications,
                PlanDocument plan) {
             this.columns = columns;
             this.rows = rows;
@@ -256,19 +256,19 @@ public class Database implements AutoCloseable {
         public List<List<Object>> rows() { return rows; }
         /**
          * The statement's plan-time query type (ADR-0162, ADR-0285):
-         * "r" (read), "w" (a write with no returned columns), "rw" (a
-         * write with returned columns) or "s" (schema), the split per
+         * {@code READ}, {@code WRITE} (no returned columns), {@code
+         * READ_WRITE} (returned columns) or {@code SCHEMA}, the split per
          * ADR-0332. EXPLAIN and PROFILE report the wrapped statement's
          * type.
          */
-        public String getQueryType() { return queryType; }
+        public QueryType getQueryType() { return queryType; }
         /**
          * The statement's resolved namespace (ADR-0117, ADR-0285):
-         * "neo4j", "system" or "system_ontologies". This is the USE target
+         * {@code NEO4J}, {@code SYSTEM} or {@code SYSTEM_ONTOLOGIES}. This is the USE target
          * when the statement carries a USE clause, otherwise the session
          * namespace.
          */
-        public String getNamespace() { return namespace; }
+        public Namespace getNamespace() { return namespace; }
         /**
          * The auto-commit statement's bookmark — the engine's commit
          * sequence in the {@code "relate:<n>"} form (ADR-0310) — or

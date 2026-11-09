@@ -70,7 +70,7 @@ public class DatabaseTest {
         Database db = Database.open(":memory:");
         Database.Connection conn = db.connect();
         Database.Result r = conn.query("EXPLAIN CREATE (n)");
-        assertEquals("w", r.getQueryType());
+        assertEquals(QueryType.WRITE, r.getQueryType());
         // EXPLAIN must not have executed the CREATE.
         assertEquals(0, conn.query("MATCH (n) RETURN n").rows().size());
     }
@@ -80,11 +80,11 @@ public class DatabaseTest {
         Database db = Database.open(":memory:");
         Database.Connection conn = db.connect();
         Database.Result routed = conn.query("USE system SHOW DATABASES YIELD name RETURN name");
-        assertEquals("system", routed.getNamespace());
+        assertEquals(Namespace.SYSTEM, routed.getNamespace());
         // The session namespace is unchanged: an unrouted statement still
         // resolves to neo4j.
         Database.Result unrouted = conn.query("RETURN 1 AS n");
-        assertEquals("neo4j", unrouted.getNamespace());
+        assertEquals(Namespace.NEO4J, unrouted.getNamespace());
     }
 
     @Test
@@ -126,8 +126,8 @@ public class DatabaseTest {
                 .orElseThrow(() -> new AssertionError(
                         "expected a CartesianProduct notification, saw " + explained.getNotifications()));
         assertEquals("03N90", cartesian.getGqlStatus());
-        assertEquals("INFORMATION", cartesian.getSeverity());
-        assertEquals("PERFORMANCE", cartesian.getCategory());
+        assertEquals(Severity.INFORMATION, cartesian.getSeverity());
+        assertEquals(Category.PERFORMANCE, cartesian.getCategory());
         assertEquals("Cartesian product", cartesian.getTitle());
         assertFalse(cartesian.getDescription().isEmpty());
         assertFalse(cartesian.getRemedy().isEmpty());
@@ -174,6 +174,69 @@ public class DatabaseTest {
                 () -> Json.optionalLong(node, "operator_id", "notification entry",
                         node.toString()));
         assertTrue(e.getMessage().contains("operator_id"), "names the key: " + e.getMessage());
+    }
+
+    @Test
+    void profileReportsTheFullActualObject() {
+        Database db = Database.open(":memory:");
+        Database.Connection conn = db.connect();
+        conn.query("CREATE (:Person)-[:KNOWS]->(:Person)");
+        PlanDocument plan = conn.query("PROFILE MATCH (a:Person)-[:KNOWS]->(b) RETURN b").getPlan();
+        assertNotNull(plan);
+        assertTrue(plan.profiled);
+        PlanActual actual = plan.root.actual;
+        assertNotNull(actual, "PROFILE carries metrics");
+        assertTrue(actual.totalTimeMs >= actual.timeMs);
+        assertNotNull(actual.frontier, "the frontier counters are always present");
+        assertTrue(actual.seekMs >= 0 && actual.walkMs >= 0);
+    }
+
+    @Test
+    void planActualDecodesEveryWireKey() throws Exception {
+        PlanActual a = Json.PLAN.readValue("{\"rows\":1,\"time_ms\":1.5,\"total_time_ms\":2.5,"
+                + "\"db_hits\":3,\"seek_ms\":0.5,\"walk_ms\":0.25,\"loops\":null,"
+                + "\"memory_bytes\":4,\"expression_built_bytes\":5,\"hops\":6,"
+                + "\"neighbor_walks\":7,\"node_reads\":8,\"batched\":true,\"zone_skips\":9,"
+                + "\"frontier\":{\"edge_visits\":10,\"levels\":11,\"endpoints\":12,\"cells\":13,"
+                + "\"memo_hits\":14,\"memo_misses\":15,\"representative_proofs\":16,"
+                + "\"search_proven\":17,\"search_disproven\":18,\"declined_exhausted\":19,"
+                + "\"budget_fraction\":0.5},\"frontier_decline\":\"table-budget\",\"start\":null,"
+                + "\"kernel\":{\"rung\":\"nfa\",\"hops\":2}}", PlanActual.class);
+        assertEquals(2.5, a.totalTimeMs);
+        assertEquals(0.25, a.walkMs);
+        assertNull(a.loops);
+        assertEquals(5, a.expressionBuiltBytes);
+        assertTrue(a.batched);
+        assertEquals(9, a.zoneSkips);
+        assertEquals(10, a.frontier.edgeVisits);
+        assertEquals(19, a.frontier.declinedExhausted);
+        assertEquals(0.5, a.frontier.budgetFraction);
+        assertEquals("table-budget", a.frontierDecline);
+        assertEquals("nfa", a.kernel.rung);
+        assertNull(a.start);
+    }
+
+    @Test
+    void planKernelHopsAbsentOnNonChainRung() throws Exception {
+        PlanKernel k = Json.PLAN.readValue("{\"rung\":\"nfa\"}", PlanKernel.class);
+        assertEquals("nfa", k.rung);
+        assertNull(k.hops);
+        assertEquals(2L, Json.PLAN.readValue("{\"rung\":\"chain\",\"hops\":2}",
+                PlanKernel.class).hops);
+    }
+
+    @Test
+    void notificationRefusesUnknownSeverityAndCategory() throws Exception {
+        String base = "{\"code\":\"c\",\"gql_status\":\"g\",\"severity\":\"%s\","
+                + "\"category\":\"%s\",\"title\":\"t\",\"description\":\"d\",\"remedy\":\"r\"}";
+        Notification ok = Json.STRICT.readValue(String.format(base, "WARNING", "HINT"), Notification.class);
+        assertEquals(Severity.WARNING, ok.getSeverity());
+        assertEquals(Category.HINT, ok.getCategory());
+        for (String bad : new String[] {String.format(base, "FATAL", "HINT"),
+                String.format(base, "WARNING", "other")}) {
+            Exception e = assertThrows(Exception.class, () -> Json.STRICT.readValue(bad, Notification.class));
+            assertTrue(e.toString().contains("unknown"), e.toString());
+        }
     }
 
     private static List<Notification> planWarnings(PlanNode node) {

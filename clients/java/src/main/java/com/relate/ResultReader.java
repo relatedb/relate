@@ -37,8 +37,8 @@ final class ResultReader {
             // Result metadata (ADR-0285): result-owned strings; JNA
             // copies them during marshalling, and the copies are
             // decoded below while the handle is still alive.
-            String queryType = decodeQueryType(NativeLib.lib().relate_result_query_type(result));
-            String namespace = decodeNamespace(NativeLib.lib().relate_result_namespace(result));
+            QueryType queryType = decodeQueryType(NativeLib.lib().relate_result_query_type(result));
+            Namespace namespace = decodeNamespace(NativeLib.lib().relate_result_namespace(result));
             String bookmark = NativeLib.lib().relate_result_bookmark(result);
             // Notifications (ADR-0363): the C ABI always returns a JSON
             // array string, [] on a plain run.
@@ -74,34 +74,29 @@ final class ResultReader {
         return rows;
     }
 
-    /** The closed query-type vocabulary (ADR-0162, ADR-0332). */
-    private static final List<String> QUERY_TYPES = List.of("r", "w", "rw", "s");
-
-    /** The three fixed namespaces (ADR-0117). */
-    private static final List<String> NAMESPACES = List.of("neo4j", "system", "system_ontologies");
-
     /**
      * Check the ABI's query_type string against its closed vocabulary; any
      * other value (or NULL) is an ABI contract violation and surfaces as
      * {@link RelateException}, never a lenient string.
      */
-    static String decodeQueryType(String raw) {
-        if (raw == null || !QUERY_TYPES.contains(raw)) {
-            throw new RelateException("ABI contract violated: query type " + quoted(raw));
-        }
-        return raw;
+    static QueryType decodeQueryType(String raw) {
+        return decodeWire(QueryType.class, "query type", raw);
     }
 
     /** As {@link #decodeQueryType}, for the resolved namespace. */
-    static String decodeNamespace(String raw) {
-        if (raw == null || !NAMESPACES.contains(raw)) {
-            throw new RelateException("ABI contract violated: namespace " + quoted(raw));
-        }
-        return raw;
+    static Namespace decodeNamespace(String raw) {
+        return decodeWire(Namespace.class, "namespace", raw);
     }
 
-    private static String quoted(String raw) {
-        return raw == null ? "null" : "\"" + raw + "\"";
+    /** The one refusal policy for a closed-vocabulary ABI string. */
+    private static <E extends Enum<E> & WireEnum> E decodeWire(Class<E> type, String what,
+                                                               String raw) {
+        E constant = WireEnum.fromWire(type, raw);
+        if (constant == null) {
+            throw new RelateException("ABI contract violated: " + what + " "
+                    + (raw == null ? "null" : "\"" + raw + "\""));
+        }
+        return constant;
     }
 
     /**
