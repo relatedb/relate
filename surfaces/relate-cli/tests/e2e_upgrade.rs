@@ -197,10 +197,10 @@ fn test_upgrade_check_reads_releases_json_without_a_token() {
             .with_envs(&envs),
     );
     assert_eq!(status.code(), Some(0), "stderr: {stderr}");
-    // The fixture's latest tag (v0.10.0) predates every released build, so
+    // The fixture's latest tag (v0.0.9) predates every released build, so
     // --check reports both versions and stops before any download.
     assert!(
-        stdout.contains("latest release:  0.10.0"),
+        stdout.contains("latest release:  0.0.9"),
         "the fixture's latest tag must be reported: {stdout}"
     );
     assert!(
@@ -225,7 +225,7 @@ fn test_upgrade_check_reads_releases_json_without_a_token() {
 fn test_upgrade_check_parses_the_generator_expected_fixture() {
     // The publisher's committed expected output must parse through the real
     // fetch/parse path: the CLI consumes the generator's document (latest
-    // v0.10.1, a prerelease in the reserved slot), not a CLI-shaped copy of
+    // v0.0.11, a prerelease in the reserved slot), not a CLI-shaped copy of
     // it. Its latest stable release predates every released build, so
     // `--check` reports it and exits 0.
     let home = tempdir();
@@ -237,7 +237,7 @@ fn test_upgrade_check_parses_the_generator_expected_fixture() {
     );
     assert_eq!(status.code(), Some(0), "stderr: {stderr}");
     assert!(
-        stdout.contains("latest release:  0.10.1"),
+        stdout.contains("latest release:  0.0.11"),
         "the generator fixture's latest tag must be reported: {stdout}"
     );
     assert!(
@@ -267,7 +267,7 @@ fn test_upgrade_up_to_date_prints_the_rename_notice() {
     );
     assert_eq!(status.code(), Some(0), "stderr: {stderr}");
     assert!(
-        stdout.contains("is up to date (latest release: 0.10.0)"),
+        stdout.contains("is up to date (latest release: 0.0.9)"),
         "the plain up-to-date line must name the stale release: {stdout}"
     );
     assert_rename_notice(&stdout);

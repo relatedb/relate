@@ -354,9 +354,9 @@ mod tests {
     #[test]
     fn parse_releases_reads_the_committed_fixture() {
         let (release, version) = parse_releases(FIXTURE).unwrap();
-        assert_eq!(release.tag, "v0.10.0");
+        assert_eq!(release.tag, "v0.0.9");
         // The tag's version triple is proven at the parse boundary.
-        assert_eq!(version, (0, 10, 0));
+        assert_eq!(version, (0, 0, 9));
         // The notes body is required by the document contract and validated
         // at parse time, but never held on `Release` (the CLI never prints
         // it); assert its content directly from the fixture.
@@ -386,7 +386,9 @@ mod tests {
     fn parse_releases_accepts_a_null_latest_prerelease() {
         // ADR-0250 §2: `latest_prerelease` is nullable. `null` (no published
         // prerelease) is a valid document, not a malformed one — the
-        // committed fixture exercises the non-null variant.
+        // committed fixture exercises the non-null variant. The minimal
+        // doc's tag is parse-only data (no version comparison here), so it
+        // keeps its own v0.10.0.
         let (release, _) = parse_releases(&minimal_doc()).unwrap();
         assert_eq!(release.tag, "v0.10.0");
     }
@@ -411,7 +413,7 @@ mod tests {
             "the fixture must carry both mutation anchors"
         );
         let (release, _) = parse_releases(&with_unknown).unwrap();
-        assert_eq!(release.tag, "v0.10.0");
+        assert_eq!(release.tag, "v0.0.9");
         assert!(latest_notes(&with_unknown).starts_with("### Highlights"));
     }
 
@@ -595,8 +597,8 @@ mod tests {
         let (preview, preview_url) = serve_once(FIXTURE);
         let _seams = SeamGuard::set(&lander_url, &preview_url);
         let (release, version) = fetch_latest_release().unwrap();
-        assert_eq!(release.tag, "v0.10.0");
-        assert_eq!(version, (0, 10, 0));
+        assert_eq!(release.tag, "v0.0.9");
+        assert_eq!(version, (0, 0, 9));
         lander.join().unwrap();
         preview.join().unwrap();
     }
@@ -608,7 +610,7 @@ mod tests {
         // Port 9 (discard) refuses: the primary read never happens.
         let _seams = SeamGuard::set("http://127.0.0.1:9/releases.json", &preview_url);
         let (release, _) = fetch_latest_release().unwrap();
-        assert_eq!(release.tag, "v0.10.0");
+        assert_eq!(release.tag, "v0.0.9");
         preview.join().unwrap();
     }
 
@@ -619,7 +621,7 @@ mod tests {
         // The fallback refuses; a consult would fail the fetch.
         let _seams = SeamGuard::set(&primary_url, "http://127.0.0.1:9/releases.json");
         let (release, _) = fetch_latest_release().unwrap();
-        assert_eq!(release.tag, "v0.10.0");
+        assert_eq!(release.tag, "v0.0.9");
         primary.join().unwrap();
     }
 

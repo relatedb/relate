@@ -142,7 +142,7 @@ canonical() {
   [ "$status" -eq 0 ]
 
   run jq -r '.latest.tag' "${OUT}"
-  [ "$output" = "v0.10.1" ]
+  [ "$output" = "v0.0.11" ]
 
   run jq -e '.latest == .releases[0]' "${OUT}"
   [ "$status" -eq 0 ]
@@ -167,14 +167,14 @@ canonical() {
   [ "$output" -eq 10 ]
 
   run jq -r '[.releases[].tag] | join(",")' "${OUT}"
-  [ "$output" = "v0.10.1,v0.10.0,v0.9.4,v0.9.3,v0.9.2,v0.9.1,v0.9.0,v0.8.1,v0.8.0,v0.7.1" ]
+  [ "$output" = "v0.0.11,v0.0.10,v0.0.9,v0.0.8,v0.0.7,v0.0.6,v0.0.5,v0.0.4,v0.0.3,v0.0.2" ]
 
   # Newest first by publish time.
   run jq -e '[.releases[].published_at] | . == (sort | reverse)' "${OUT}"
   [ "$status" -eq 0 ]
 
   # The stable releases older than the window fell out of it.
-  run jq -r '[.releases[].tag] | index("v0.7.0") // "absent"' "${OUT}"
+  run jq -r '[.releases[].tag] | index("v0.0.1") // "absent"' "${OUT}"
   [ "$output" = "absent" ]
   run jq -r '[.releases[].tag] | index("v0.6.2") // "absent"' "${OUT}"
   [ "$output" = "absent" ]
@@ -189,7 +189,7 @@ canonical() {
   [ "$status" -eq 0 ]
 
   # No prerelease tag and no draft release anywhere in the document.
-  ! grep -qF '"v0.10.0-rc.1"' "${OUT}"
+  ! grep -qF '"v0.0.10-rc.1"' "${OUT}"
   ! grep -qF '"v0.12.0-draft"' "${OUT}"
   ! grep -qF "Draft body that must never be published." "${OUT}"
 }
@@ -210,15 +210,15 @@ canonical() {
   ! grep -qF 'relate-extensions' "${OUT}"
 
   run jq -r '.latest.tag' "${OUT}"
-  [ "$output" = "v0.10.1" ]
+  [ "$output" = "v0.0.11" ]
 
   run jq -r '[.releases[].tag] | join(",")' "${OUT}"
-  [ "$output" = "v0.10.1,v0.10.0,v0.9.4,v0.9.3,v0.9.2,v0.9.1,v0.9.0,v0.8.1,v0.8.0,v0.7.1" ]
+  [ "$output" = "v0.0.11,v0.0.10,v0.0.9,v0.0.8,v0.0.7,v0.0.6,v0.0.5,v0.0.4,v0.0.3,v0.0.2" ]
 
   # The plugin prerelease is newer than every core prerelease; the
   # reserved slot still names the newest CORE prerelease.
   run jq -r '.latest_prerelease.tag' "${OUT}"
-  [ "$output" = "v0.11.0-rc.1" ]
+  [ "$output" = "v0.0.12-rc.1" ]
 
   # Nothing from the extension namespace was ever hydrated.
   ! grep -q '^release view relate-extensions' "${GH_STUB_LOG}"
@@ -230,7 +230,7 @@ canonical() {
   [ "$status" -eq 0 ]
 
   run jq -r '.latest_prerelease.tag' "${OUT}"
-  [ "$output" = "v0.11.0-rc.1" ]
+  [ "$output" = "v0.0.12-rc.1" ]
 
   run jq -e '.latest_prerelease.prerelease == true' "${OUT}"
   [ "$status" -eq 0 ]
@@ -255,7 +255,7 @@ canonical() {
   grep -qF '## Release notes' <<< "$output"
   grep -qF 'stop hitting the 60/hour anonymous limit' <<< "$output"
   grep -qF '<!-- release-notes:end -->' <<< "$output"
-  grep -qF 'Full changelog: https://github.com/relatedb/relate/compare/v0.10.0...v0.10.1' <<< "$output"
+  grep -qF 'Full changelog: https://github.com/relatedb/relate/compare/v0.0.10...v0.0.11' <<< "$output"
 }
 
 @test "every notes field matches its release body (null body -> empty string)" {
@@ -276,9 +276,9 @@ canonical() {
 
   # The fixture has both flavours of "no body": an empty string and null.
   # Both must land as "" — never null.
-  run jq -r '.releases[] | select(.tag == "v0.9.3") | .notes' "${OUT}"
+  run jq -r '.releases[] | select(.tag == "v0.0.8") | .notes' "${OUT}"
   [ "$output" = "" ]
-  run jq -r '.releases[] | select(.tag == "v0.9.2") | .notes' "${OUT}"
+  run jq -r '.releases[] | select(.tag == "v0.0.7") | .notes' "${OUT}"
   [ "$output" = "" ]
 }
 
@@ -313,9 +313,9 @@ canonical() {
     fi
   done <<< "$output"
 
-  # ADR-0250 §3's worked example: the v0.10.1 darwin-arm64 binary.
+  # ADR-0250 §3's worked example: the v0.0.11 darwin-arm64 binary.
   run jq -r --arg tmpl "${DOWNLOAD_URL_TEMPLATE}" '.latest | "\($tmpl)/\(.tag)/relate-darwin-arm64"' "${OUT}"
-  [ "$output" = "https://github.com/relatedb/relate/releases/download/v0.10.1/relate-darwin-arm64" ]
+  [ "$output" = "https://github.com/relatedb/relate/releases/download/v0.0.11/relate-darwin-arm64" ]
 
   # The names the CLI requires in latest.assets (ADR-0250 §2/§3): the
   # platform binary, the manifest and its signature.

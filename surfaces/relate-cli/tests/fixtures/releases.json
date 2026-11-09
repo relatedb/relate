@@ -2,7 +2,7 @@
   "schema_version": 1,
   "generated_at": "2026-10-15T12:00:00Z",
   "latest": {
-    "tag": "v0.10.0",
+    "tag": "v0.0.9",
     "published_at": "2026-10-15T11:58:00Z",
     "notes": "### Highlights\n\n- Faster multi-hop aggregates\n- `--format` output-flag spelling\n",
     "prerelease": false,
@@ -17,7 +17,7 @@
     ]
   },
   "latest_prerelease": {
-    "tag": "v0.11.0-rc.1",
+    "tag": "v0.0.10-rc.1",
     "published_at": "2026-10-15T11:00:00Z",
     "notes": "### Release candidate\n\n- `releases.json` publisher, not stable yet\n",
     "prerelease": true,
@@ -27,7 +27,7 @@
   },
   "releases": [
     {
-      "tag": "v0.10.0",
+      "tag": "v0.0.9",
       "published_at": "2026-10-15T11:58:00Z",
       "notes": "### Highlights\n\n- Faster multi-hop aggregates\n- `--format` output-flag spelling\n",
       "prerelease": false,

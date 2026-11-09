@@ -161,13 +161,14 @@ stages:
         set -euo pipefail
         case "$shard" in
           engine) crates=(relate) ;;
-          storage) crates=(relate-storage relate-cli relate-ffi relate-load) ;;
+          storage) crates=(relate-storage relate-cli relate-ffi relate-load relate-write-local) ;;
           # The light mixed shard's load-balancing table
           # (docs/testing/runtime.md), one crate per line so every
           # rebalance or new-crate addition diffs as a single-line move.
           # Still named `planner` for the cache-key prefix it has always
           # had — the rename to `light` is tracked, not drifted.
           planner) crates=(
+            relate-engine-api
             relate-executor
             relate-model
             relate-parser
