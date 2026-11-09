@@ -1,8 +1,8 @@
 # Portable Linux lanes from .github/workflows/ci.yml.
 # Run from the Relate checkout:
-#   gosonic ci run smoke-test
-#   gosonic ci run full-test
-#   gosonic ci run clean
+#   bash scripts/gosonic-run.sh ci run smoke-test
+#   bash scripts/gosonic-run.sh ci run full-test
+#   bash scripts/gosonic-run.sh ci run clean
 version: "1"
 project:
   name: relate
@@ -56,12 +56,13 @@ actions:
     runner: docker-cli
     docker_socket: true
     once: true
-    # The image downloads cargo-nextest from a GitHub release. The
-    # docker CLI container only sees mapped vars; the Dockerfile reads
-    # the token from a BuildKit secret, not from the layer history.
-    environment: &github-download-env
-      GITHUB_TOKEN: GITHUB_TOKEN
-      GITHUB_ACTIONS: GITHUB_ACTIONS
+    # The image downloads cargo-nextest from a GitHub release. secrets
+    # copies those host variables into the container. The Dockerfile
+    # reads the token from a BuildKit secret, not from the layer history.
+    # scripts/gosonic-run.sh exports an empty value when the host has none.
+    secrets: &github-download-secrets
+      - GITHUB_TOKEN
+      - GITHUB_ACTIONS
     commands:
       - |
         set -eu
@@ -254,6 +255,8 @@ stages:
 
   python:
     runner: sonic-polyglot
+    # uv pip install --system writes outside the workspace.
+    user: root
     before: &before-polyglot
       - build-sonic-rust
       - build-sonic-polyglot
@@ -273,9 +276,10 @@ stages:
 
   link-check:
     runner: sonic-rust
+    # install-lychee.sh writes /usr/local/bin.
+    user: root
     before: *before-rust
-    environment:
-      <<: *github-download-env
+    secrets: *github-download-secrets
     commands:
       - bash scripts/install-lychee.sh
       - lychee --config lychee.toml --no-progress --root-dir "$(pwd)/docs" README.md docs/guides docs/reference
@@ -297,6 +301,8 @@ stages:
 
   notebook:
     runner: sonic-polyglot
+    # uv pip install --system writes outside the workspace.
+    user: root
     before: *before-polyglot
     environment:
       <<: *cargo-env
@@ -430,8 +436,9 @@ stages:
     shell: bash
     before: *before-polyglot
     environment:
-      <<: [ *cargo-env, *github-download-env ]
+      <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/npm-smoke
+    secrets: *github-download-secrets
       RELATE_LIB: /cargo-target/npm-smoke/debug/librelate_ffi.so
     volumes: *cargo-cache
     commands:
@@ -463,31 +470,28 @@ stages:
 
   loadtest-baselines:
     runner: sonic-rust
+    # install-docker-cli.sh writes /usr/local.
+    user: root
     docker_socket: true
     before: *before-rust
+    # Host values copied by name (LABS-627). Anchored once and reused by
+    # every Docker-baseline stage below. The workspace variable is the host
+    # checkout, so baseline-env.sh can bind-mount it through the host
+    # Docker daemon. The runner label is the ADR-0071 class the job
+    # sets. GITHUB_ACTIONS makes baseline-fingerprint stamp
+    # github-actions:ubuntu-24.04 and makes an in-stage compare hard-fail
+    # on a class mismatch. GITHUB_TOKEN feeds buildx's GitHub release
+    # download. CI_COMPARE turns the memory compares into hard failures.
+    # scripts/gosonic-run.sh exports each name as empty when the host has
+    # no value, which the stages treat as not provided.
+    secrets: &baseline-env-forwarding
+      - GITHUB_WORKSPACE
+      - BASELINE_RUNNER
+      - GITHUB_ACTIONS
+      - GITHUB_TOKEN
+      - CI_COMPARE
     environment:
-      # The baseline env-forwarding trio, the single home (LABS-627):
-      # merged into every Docker-baseline stage's environment below.
-      # The gosonic container only receives explicitly mapped vars, so
-      # each forwarded name must be declared here. Host checkout path,
-      # so baseline-env.sh can bind-mount it through the host Docker
-      # daemon; the ADR-0071 class label the job sets (without it the
-      # fingerprint's hardcoded ubuntu-24.04 fallback stamps the wrong
-      # class); the host Actions flag, so baseline-fingerprint stamps
-      # runner as github-actions:ubuntu-24.04 and the in-stage compares
-      # hard-fail on a class mismatch instead of soft-skipping. All
-      # unset locally; the literals are ignored.
-      # The spec-sanctioned sequence form merges both maps: the
-      # forwarding trio (anchored here, its contract comments the single
-      # home), the shared cargo env, and the GitHub-download token
-      # (anchored on build-sonic-rust). buildx is a GitHub release.
-      <<:
-        - &baseline-env-forwarding
-          GITHUB_WORKSPACE: GITHUB_WORKSPACE
-          BASELINE_RUNNER: BASELINE_RUNNER
-          GITHUB_ACTIONS: GITHUB_ACTIONS
-        - *cargo-env
-        - *github-download-env
+      <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/loadtest-baselines
     volumes: *cargo-cache
     commands:
@@ -505,12 +509,15 @@ stages:
   # ADR-0289).
   query-latency:
     runner: sonic-rust
+    # install-docker-cli.sh writes /usr/local.
+    user: root
     docker_socket: true
     before: *before-rust
+    # The baseline secrets and the Docker-baseline setup step, both
+    # anchored in loadtest-baselines (LABS-627).
+    secrets: *baseline-env-forwarding
     environment:
-      # The baseline env-forwarding trio and the Docker-baseline setup
-      # step, both anchored in loadtest-baselines (LABS-627).
-      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
+      <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/query-latency
     volumes: *cargo-cache
     commands:
@@ -522,12 +529,14 @@ stages:
   # calibration. The full three-repeat matrix is memory-controls-full.
   memory-controls:
     runner: sonic-rust
+    # install-docker-cli.sh writes /usr/local.
+    user: root
     docker_socket: true
     before: *before-rust
+    secrets: *baseline-env-forwarding
     environment:
-      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
+      <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/memory-controls
-      CI_COMPARE: CI_COMPARE
     volumes: *cargo-cache
     commands:
       - *baseline-docker-setup
@@ -536,12 +545,14 @@ stages:
 
   memory-controls-full:
     runner: sonic-rust
+    # install-docker-cli.sh writes /usr/local.
+    user: root
     docker_socket: true
     before: *before-rust
+    secrets: *baseline-env-forwarding
     environment:
-      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
+      <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/memory-controls-full
-      CI_COMPARE: CI_COMPARE
     volumes: *cargo-cache
     commands:
       - *baseline-docker-setup
@@ -552,24 +563,26 @@ stages:
   # matrix; the freeze repeats it.
   memory-shape:
     runner: sonic-rust
+    # install-docker-cli.sh writes /usr/local.
+    user: root
     docker_socket: true
     before: *before-rust
+    secrets: *baseline-env-forwarding
     environment:
-      <<: [ *baseline-env-forwarding, *cargo-env, *github-download-env ]
+      <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/memory-shape
-      CI_COMPARE: CI_COMPARE
     volumes: *cargo-cache
     commands:
       - *baseline-docker-setup
       - make memory-shape-loadtest
       - make compare-memory-shape
 
-  # `make clean` as root. Stage outputs are root-owned, and the cargo
-  # caches are Docker volumes. Run this on its own, after the other stages
-  # have finished:
-  #   gosonic ci run clean
+  # apk and make clean need root. The cargo caches are Docker volumes.
+  # Run this on its own, after the other stages have finished:
+  #   bash scripts/gosonic-run.sh ci run clean
   clean:
     runner: docker-cli
+    user: root
     docker_socket: true
     commands:
       - apk add --no-cache make

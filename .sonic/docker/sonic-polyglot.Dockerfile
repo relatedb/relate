@@ -2,7 +2,7 @@
 FROM localhost/relate-sonic-rust:1.88
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PATH=/usr/local/go/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     UV_BREAK_SYSTEM_PACKAGES=1
 

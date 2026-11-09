@@ -154,6 +154,13 @@ copy_in() {
   cid="$(docker create -v "${volume}:/vol" "$image")"
   docker cp "$host_path/." "$cid:/vol/$rel"
   docker rm "$cid" >/dev/null
+  # The copy lands as root. Compile stages run as the host uid.
+  docker run --rm --network none \
+    -e HOST_UID="$(id -u)" \
+    -e HOST_GID="$(id -g)" \
+    -v "${volume}:/vol" \
+    "$image" \
+    bash -c 'chown -R "$HOST_UID:$HOST_GID" "/vol/'"$rel"'"'
 }
 
 # docker cp chmods every destination path. A stage that writes the workspace

@@ -48,8 +48,8 @@ env:
   DO_NOT_TRACK: "1"
   # Release and raw GitHub downloads (sccache, nextest, lychee, the
   # Sonic image's nextest tarball, buildx inside baseline stages). The
-  # job token is not in the environment unless named here. Sonic only
-  # forwards variables a stage maps.
+  # job token is not in the environment unless named here. Sonic copies
+  # the names listed under secrets in .sonic/ci.yml.
   GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
@@ -79,11 +79,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: triha74/gosonic
-          ref: 5ef8494f0d805c31a667fc099e95561c153c26a8
+          ref: bb2f6de630eba91ab619be81d07161d65308b3b6
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.23.5"
+          go-version-file: go.mod
 
       - name: Build gosonic
         run: CGO_ENABLED=0 go build -o gosonic .

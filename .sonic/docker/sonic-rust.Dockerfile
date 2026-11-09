@@ -2,7 +2,9 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
@@ -23,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git config --system --add safe.directory /workspace
 
 # Rust 1.88.0 matches rust-toolchain.toml. nextest is the CI test runner.
+# The toolchain is installed outside /root so stages running as the host
+# uid can execute it. /cargo-home and /cargo-target are the cache mounts;
+# mode 1777 lets that uid write a volume Docker initialized as root.
 # get.nexte.st redirects to an anonymous GitHub release. The tarball is
 # fetched through scripts/github-download.sh (BuildKit secret when the
 # host has GITHUB_TOKEN; anonymous only outside GitHub Actions).
@@ -55,8 +60,11 @@ RUN --mount=type=bind,from=scripts,source=github-download.sh,target=/tmp/github-
     && [ -n "$expected" ] && [ "$expected" = "$actual" ] \
     && mkdir -p /tmp/nextest-unpack \
     && tar -xzf /tmp/nextest.tar.gz -C /tmp/nextest-unpack \
-    && install -m 0755 "$(find /tmp/nextest-unpack -type f -name cargo-nextest | head -n 1)" /root/.cargo/bin/cargo-nextest \
+    && install -m 0755 "$(find /tmp/nextest-unpack -type f -name cargo-nextest | head -n 1)" /usr/local/cargo/bin/cargo-nextest \
     && rm -rf /tmp/nextest.tar.gz /tmp/nextest.sha256 /tmp/nextest-unpack \
+    && chmod -R a+rX /usr/local/rustup /usr/local/cargo \
+    && mkdir -p /cargo-home /cargo-target \
+    && chmod 1777 /cargo-home /cargo-target \
     && rustc --version \
     && cargo nextest --version
 

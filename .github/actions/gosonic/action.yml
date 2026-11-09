@@ -92,9 +92,9 @@ runs:
     - name: Run Sonic stage
       shell: bash
       env:
-        # Stages that download a GitHub release map this into the
-        # container (.sonic/ci.yml). The public releases/download URL
-        # is anonymous even with a header, so the scripts use the API.
+        # Stages that download a GitHub release list this name under
+        # secrets (.sonic/ci.yml). The public releases/download URL is
+        # anonymous even with a header, so the scripts use the API.
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         install -m 0755 "${{ runner.temp }}/gosonic-bin/gosonic" /usr/local/bin/gosonic
@@ -103,7 +103,7 @@ runs:
           args+=(--matrix "${{ inputs.matrix }}")
         fi
         args+=("${{ inputs.stage }}")
-        gosonic "${args[@]}"
+        bash scripts/gosonic-run.sh "${args[@]}"
 
     - name: Copy Sonic cargo volumes back to rust-cache
       if: inputs.rust-cache == 'true' && success()
