@@ -94,3 +94,12 @@ fn test_explain_art_draws_a_flame_and_refuses_writes_on_a_terminal() {
     let binary = env!("CARGO_BIN_EXE_relate");
     support::assert_pty_driver_ok("pty_eggs_explain_art.py", &[binary]);
 }
+
+/// The real binary on a PTY: each game takes the alternate screen and gives
+/// the terminal back on `q` and on Ctrl-C; a small window is refused.
+#[cfg(all(feature = "eggs", unix))]
+#[test]
+fn test_games_restore_the_terminal_on_a_terminal() {
+    let binary = env!("CARGO_BIN_EXE_relate");
+    support::assert_pty_driver_ok("pty_games.py", &[binary]);
+}

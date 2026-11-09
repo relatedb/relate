@@ -22,6 +22,8 @@ pub mod canvas;
 mod cowsay;
 mod explain_art;
 mod fortune;
+#[cfg(feature = "games")]
+mod games;
 mod graph;
 mod layout;
 mod lolwut;
@@ -71,6 +73,10 @@ pub enum Refusal {
     NotUtf8,
     /// Wrong arguments; carries the usage line.
     Usage(&'static str),
+    /// stdin or stdout is not a terminal, so a full-screen egg cannot run.
+    NotATerminal,
+    /// The terminal is smaller than the egg's fixed layout (columns, rows).
+    TooSmall { need: (u16, u16), have: (u16, u16) },
     /// Writing to the terminal failed.
     Io(String),
     /// The egg declined the request, or the engine failed it; carries the
@@ -83,6 +89,12 @@ impl std::fmt::Display for Refusal {
         match self {
             Refusal::NotUtf8 => write!(f, "this terminal locale is not UTF-8"),
             Refusal::Usage(u) => write!(f, "{u}"),
+            Refusal::NotATerminal => write!(f, "this needs an interactive terminal"),
+            Refusal::TooSmall { need, have } => write!(
+                f,
+                "terminal too small: need {}x{}, have {}x{}",
+                need.0, need.1, have.0, have.1
+            ),
             Refusal::Io(e) | Refusal::Declined(e) => write!(f, "{e}"),
         }
     }
@@ -110,8 +122,14 @@ pub const EGGS: &[Entry] = &[
     (".explain-art", explain_art::run),
     (".fortune", fortune::run),
     (".graph", graph::run),
+    #[cfg(feature = "games")]
+    (".life", games::life::run),
     (".lolwut", lolwut::run),
     (".matrix", matrix::run),
+    #[cfg(feature = "games")]
+    (".snake", games::snake::run),
+    #[cfg(feature = "games")]
+    (".tetris", games::tetris::run),
 ];
 
 /// The interactive, non-agent REPL the session reports, on a terminal

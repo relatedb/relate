@@ -5,8 +5,14 @@ edition = "2021"
 license.workspace = true
 description = "Hidden REPL dot commands and the Archie banner and prompt glyph for the relate CLI (ADR-0543)"
 
+[features]
+# The playable terminal games (`.life`, `.snake`, `.tetris`; ADR-0547): the
+# one feature that links `crossterm`. Enabled by the CLI's `eggs` feature.
+games = ["dep:crossterm"]
+
 [dependencies]
 relate = { workspace = true }
+crossterm = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
