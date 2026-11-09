@@ -14,7 +14,12 @@ fn main() -> relate::Result<()> {
         .iter()
         .position(|c| c == "name")
         .unwrap();
-    assert_eq!(shown.rows[0][name_col].as_string(), Some("person_name"));
+    // The two default lookup indexes are always listed (SHOW-only rows),
+    // so the created index is found by name, not by position.
+    assert!(shown
+        .rows
+        .iter()
+        .any(|row| row[name_col].as_string() == Some("person_name")));
     let hit = conn.query("MATCH (n:Person {name: 'Ada'}) RETURN n.name AS name")?;
     assert_eq!(hit.rows[0][0].as_string(), Some("Ada"));
     conn.query("DROP INDEX person_name")?;

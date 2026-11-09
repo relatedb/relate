@@ -57,7 +57,9 @@ fn admitted_read_does_not_block_wal_barrier_and_keeps_its_snapshot() {
 fn admitted_show_uses_schema_before_concurrent_commit() {
     for (show, old_ddl, new_ddl) in [
         (
-            "SHOW INDEXES YIELD name RETURN name ORDER BY name",
+            // The two default lookup rows every store carries are not this
+            // test's subject.
+            "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name ORDER BY name",
             "CREATE INDEX old_schema FOR (n:N) ON (n.v)",
             "CREATE INDEX new_schema FOR (n:N) ON (n.w)",
         ),
@@ -72,8 +74,8 @@ fn admitted_show_uses_schema_before_concurrent_commit() {
         let lsn_before = db.inner.safe_lsn.load(Ordering::Acquire);
         let pause = pause_next_read(&db);
         let mut reader = db.connect().unwrap();
-        let show = show.to_string();
-        let read = std::thread::spawn(move || reader.query(&show).unwrap());
+        let read_show = show.to_string();
+        let read = std::thread::spawn(move || reader.query(&read_show).unwrap());
         pause.entered.wait();
 
         let mut writer = db.connect().unwrap();
@@ -93,15 +95,9 @@ fn admitted_show_uses_schema_before_concurrent_commit() {
             read.join().unwrap().rows,
             vec![vec![Value::String("old_schema".into())]]
         );
-        let later = db
-            .connect()
-            .unwrap()
-            .query(if new_ddl.contains("INDEX ") {
-                "SHOW INDEXES YIELD name RETURN name ORDER BY name"
-            } else {
-                "SHOW CONSTRAINTS YIELD name RETURN name ORDER BY name"
-            })
-            .unwrap();
+        // The case's own SHOW query is the follow-up read: no DDL-text
+        // sniff, no second spelling of the query.
+        let later = db.connect().unwrap().query(show).unwrap();
         assert_eq!(
             later.rows,
             vec![
@@ -117,7 +113,7 @@ fn admitted_show_keeps_dropped_schema_and_index_metadata() {
     for (ddl, show, drop_ddl, expected) in [
         (
             "CREATE TEXT INDEX old_schema FOR (n:N) ON (n.v)",
-            "SHOW INDEXES YIELD name, type RETURN name, type",
+            "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name, type",
             "DROP INDEX old_schema",
             vec![
                 Value::String("old_schema".into()),
@@ -197,7 +193,10 @@ fn uncommitted_index_metadata_is_private_and_rollback_preserves_committed_kind()
     let db = Database::open(":memory:").unwrap();
     let mut txn = db.connect().unwrap();
     let mut other = db.connect().unwrap();
-    let show = "SHOW INDEXES YIELD name, type RETURN name, type ORDER BY name";
+    // The two default lookup rows every store carries are not this test's
+    // subject.
+    let show =
+        "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name, type ORDER BY name";
 
     txn.begin().unwrap();
     txn.query("CREATE TEXT INDEX private_text FOR (n:N) ON (n.v)")
@@ -433,8 +432,12 @@ fn explicit_transaction_schema_is_captured_at_each_statement_admission() {
         .unwrap();
     let pause = pause_next_read(&db);
     let read = std::thread::spawn(move || {
-        let first = txn.query("SHOW INDEXES YIELD name RETURN name ORDER BY name");
-        let second = txn.query("SHOW INDEXES YIELD name RETURN name ORDER BY name");
+        let first = txn.query(
+            "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name ORDER BY name",
+        );
+        let second = txn.query(
+            "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name ORDER BY name",
+        );
         txn.rollback().unwrap();
         (first, second)
     });
@@ -470,7 +473,7 @@ fn schema_show_admitted_before_poison_stays_safe_and_late_show_fails() {
     for (ddl, show) in [
         (
             "CREATE INDEX safe_schema FOR (n:N) ON (n.v)",
-            "SHOW INDEXES YIELD name RETURN name",
+            "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name",
         ),
         (
             "CREATE CONSTRAINT safe_schema FOR (n:N) REQUIRE n.v IS UNIQUE",

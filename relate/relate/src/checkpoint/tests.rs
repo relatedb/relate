@@ -326,38 +326,40 @@ fn rematerialize_from_wal_matches_live() {
         .unwrap();
     assert_eq!(r.rows[0][0].as_string(), Some("Bob"));
 }
-#[test]
-fn named_index_checkpoint_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_str().unwrap();
+
+/// Close and reopen the directory store at `path` -- the named index in a
+/// checkpoint taken through the public API when `checkpoint` is set, only
+/// in the WAL otherwise -- and check that `SHOW INDEXES` still lists it.
+fn named_index_survives_reopen(path: &str, checkpoint: bool) {
     {
         let db = Database::open(path).unwrap();
         let mut c = db.connect().unwrap();
         c.query("CREATE INDEX person_name FOR (n:Person) ON (n.name)")
             .unwrap();
-        db.checkpoint().unwrap();
+        if checkpoint {
+            db.checkpoint().unwrap();
+        }
+        drop(c);
+        db.leak_without_checkpoint();
     }
     let db = Database::open(path).unwrap();
     let mut c = db.connect().unwrap();
-    let shown = c.query("SHOW INDEXES YIELD name RETURN name").unwrap();
+    let shown = c
+        .query("SHOW INDEXES YIELD name WHERE name = 'person_name' RETURN name")
+        .unwrap();
     assert_eq!(shown.rows[0][0].as_string(), Some("person_name"));
+}
+
+#[test]
+fn named_index_checkpoint_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    named_index_survives_reopen(dir.path().to_str().unwrap(), true);
 }
 
 #[test]
 fn named_index_wal_without_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_str().unwrap();
-    {
-        let db = Database::open(path).unwrap();
-        let mut c = db.connect().unwrap();
-        c.query("CREATE INDEX person_name FOR (n:Person) ON (n.name)")
-            .unwrap();
-        db.leak_without_checkpoint();
-    }
-    let db = Database::open(path).unwrap();
-    let mut c = db.connect().unwrap();
-    let shown = c.query("SHOW INDEXES YIELD name RETURN name").unwrap();
-    assert_eq!(shown.rows[0][0].as_string(), Some("person_name"));
+    named_index_survives_reopen(dir.path().to_str().unwrap(), false);
 }
 fn manifest_checkpoint_lsn(dir: &std::path::Path) -> Option<u64> {
     let bytes = std::fs::read(dir.join("manifest.json")).ok()?;

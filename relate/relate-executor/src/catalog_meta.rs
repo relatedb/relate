@@ -12,6 +12,8 @@
 //! `ProcSignature::parameters`/`return_columns`, never by naming the
 //! parameter type, so it needs no public path of its own.
 
+use relate_model::CypherValue;
+
 /// One formal parameter or return column of a built-in function or
 /// procedure: the `name`/`description`/`type`/`isDeprecated`/`default`
 /// shape CIP-84's `argumentDescription`/`returnDescription` maps carry
@@ -121,4 +123,11 @@ impl DeprecatedBy {
     pub fn form(self) -> DeprecationForm {
         self.form
     }
+}
+
+/// One row cell's list of strings -- the one spelling every catalog-style
+/// `CypherValue` renderer reads (the SHOW catalogs' role/argument cells,
+/// the graph-type view's properties/constraints cells).
+pub(crate) fn string_list(values: impl IntoIterator<Item = String>) -> CypherValue {
+    CypherValue::List(values.into_iter().map(CypherValue::Str).collect())
 }

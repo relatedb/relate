@@ -17,15 +17,23 @@ fn show_indexes_where_state_uses_the_default_columns() {
         .unwrap();
     // `state`/`id`/`populationPercent` are default columns: visible to a
     // bare WHERE and to the projection after the clause.
+    // The two default lookup indexes every store carries are ONLINE and
+    // carry the committed schema id too.
     let r = c
         .query("SHOW INDEXES YIELD name, state WHERE state = 'ONLINE' RETURN name")
         .unwrap();
-    assert_eq!(r.rows.len(), 1);
-    assert_eq!(r.rows[0][0].as_string(), Some("person_name"));
+    assert_eq!(r.rows.len(), 3);
+    assert!(
+        r.rows
+            .iter()
+            .any(|row| row[0].as_string() == Some("person_name")),
+        "{:?}",
+        r.rows
+    );
     let r = c
         .query("SHOW INDEXES YIELD name, id WHERE id IS NOT NULL RETURN name")
         .unwrap();
-    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows.len(), 3);
 }
 
 #[test]

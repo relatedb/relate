@@ -337,6 +337,38 @@ pub(crate) fn show_indexes_result(graph: &ExecGraph<'_>) -> Result<QueryResult> 
     ))
 }
 
+/// The two lookup indexes every store carries without a DDL statement:
+/// the engine-generated, stable names live Neo4j 2026.10.1 reports
+/// (`SHOW INDEXES` on a fresh database), relationship first, node second.
+/// They ride no stored catalog — SHOW synthesizes their rows, so this
+/// table is their one definition.
+///
+/// shortcut: a synthesized default cannot be `DROP`ped (there is no
+/// catalog row to remove); seed them into the catalog if a surface ever
+/// needs `DROP INDEX index_460996c0` without `IF EXISTS`.
+const DEFAULT_LOOKUP_INDEXES: [(&str, bool); 2] =
+    [("index_1b9dcc97", true), ("index_460996c0", false)];
+
+/// One default lookup index's `SHOW INDEXES` row, built through the same
+/// [`index_row`] as a stored index: a LOOKUP index carries no
+/// label/property tokens, so its detail is the entity kind alone.
+fn default_lookup_row(name: &str, relationship: bool, ctx: IndexRowContext<'_>) -> Row {
+    let detail = IndexDetailSpec {
+        kind: IndexKindSpec::Lookup,
+        relationship,
+        labels: Vec::new(),
+        properties: Vec::new(),
+        with_properties: Vec::new(),
+    };
+    let idx = relate_catalog::IndexDef {
+        name: name.to_string(),
+        label: String::new(),
+        property: String::new(),
+    };
+    let facts = IndexFacts::resolve(&idx, Some(&detail), None);
+    index_row(idx, Some(&detail), &facts, None, true, ctx)
+}
+
 pub(crate) fn show_indexes_rows(
     graph: &ExecGraph<'_>,
     c: &relate_parser::ShowIndexesClause,
@@ -352,7 +384,16 @@ pub(crate) fn show_indexes_rows(
         cypher5: qctx.is_cypher5(),
     };
     let constraints = graph.named_constraints();
-    Ok(graph
+    // One kind filter, one predicate, both streams: the defaults are
+    // LOOKUP rows, so a lookup-only SHOW renders exactly the two rows
+    // live does — and the defaults lead by construction.
+    let wanted = c.kind_filter.map(IndexKindSpec::from);
+    let passes = |kind: IndexKindSpec| wanted.is_none_or(|w| w == kind);
+    let default_rows = DEFAULT_LOOKUP_INDEXES
+        .iter()
+        .filter(|_| passes(IndexKindSpec::Lookup))
+        .map(|&(name, relationship)| default_lookup_row(name, relationship, ctx));
+    let named_rows = graph
         .named_indexes()
         .into_iter()
         .filter_map(|idx| {
@@ -363,10 +404,7 @@ pub(crate) fn show_indexes_rows(
             let detail = details.get(&idx.name);
             let backing = backing_constraint_by_name(&idx.name, &constraints);
             let facts = IndexFacts::resolve(&idx, detail, backing);
-            let passes_filter = c
-                .kind_filter
-                .is_none_or(|wanted| IndexKindSpec::from(wanted) == facts.kind);
-            passes_filter.then_some((idx, detail, facts, backing))
+            passes(facts.kind).then_some((idx, detail, facts, backing))
         })
         .map(|(idx, detail, facts, backing)| {
             // The committed catalog alone decides the schema id: a rule the
@@ -374,8 +412,9 @@ pub(crate) fn show_indexes_rows(
             // constraint row reports its twin.
             let committed = graph.base().named_index(&idx.name).is_some();
             index_row(idx, detail, &facts, backing, committed, ctx)
-        })
-        .collect())
+        });
+    let rows: Vec<Row> = default_rows.chain(named_rows).collect();
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -413,12 +452,10 @@ mod tests {
         );
     }
 
-    fn create_statements(g: &Graph) -> Vec<String> {
-        column(
-            &exec_cypher(g, "SHOW INDEXES YIELD createStatement"),
-            "createStatement",
-            string_cell,
-        )
+    /// The `createStatement` cells of one kind-filtered SHOW (the default
+    /// lookup rows every store carries are not part of these fixtures).
+    fn create_statements(g: &Graph, show: &str) -> Vec<String> {
+        column(&exec_cypher(g, show), "createStatement", string_cell)
     }
 
     /// A constraint's backing index shows the owning constraint's CREATE
@@ -433,7 +470,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            create_statements(&g),
+            create_statements(&g, "SHOW RANGE INDEXES YIELD createStatement"),
             vec!["CREATE CONSTRAINT `c1` FOR (n:`Label`) REQUIRE (n.`prop`) IS UNIQUE"]
         );
     }
@@ -449,7 +486,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            create_statements(&g),
+            create_statements(&g, "SHOW FULLTEXT INDEXES YIELD createStatement"),
             vec![
                 "CREATE FULLTEXT INDEX `f1` FOR (n:`Label`) ON EACH [n.`prop`] \
                  OPTIONS {indexConfig: {`fulltext.analyzer`: 'standard-no-stop-words',\
@@ -464,7 +501,7 @@ mod tests {
     fn point_create_statement_carries_the_spatial_bounds() {
         let g = Graph::default();
         exec_autocommit(&g, "CREATE POINT INDEX p1 FOR (n:Label) ON (n.prop)").unwrap();
-        let statements = create_statements(&g);
+        let statements = create_statements(&g, "SHOW POINT INDEXES YIELD createStatement");
         assert!(
             statements[0].starts_with(
                 "CREATE POINT INDEX `p1` FOR (n:`Label`) ON (n.`prop`) OPTIONS {indexConfig: {"
@@ -521,14 +558,21 @@ mod tests {
             "CREATE INDEX i1 FOR (n:Label) ON (n.prop)",
         )
         .unwrap();
-        let uncommitted =
-            crate::exec::test_support::exec_write(&g, &scratch, "SHOW INDEXES YIELD id").unwrap();
+        let uncommitted = crate::exec::test_support::exec_write(
+            &g,
+            &scratch,
+            "SHOW INDEXES YIELD name, id WHERE name = 'i1' RETURN id",
+        )
+        .unwrap();
         assert_eq!(
             column(&uncommitted, "id", |value| Some(value.clone())),
             vec![relate_core::Value::Null]
         );
         crate::exec::test_support::commit_scratch(&g, scratch);
-        let committed = exec_cypher(&g, "SHOW INDEXES YIELD id");
+        let committed = exec_cypher(
+            &g,
+            "SHOW INDEXES YIELD name, id WHERE name = 'i1' RETURN id",
+        );
         assert_eq!(
             column(&committed, "id", |value| Some(value.clone())),
             vec![relate_core::Value::Int(0)]

@@ -833,7 +833,7 @@ fn endpoint_matches(
 /// An endpoint's identity, keeping "the any type" distinct from a reference
 /// that names no declared type: collapsing both into `None` made a DROP spec
 /// whose alias does not resolve match the `()` wildcard.
-enum EndpointIdentity {
+pub(crate) enum EndpointIdentity {
     /// The any type (`()`).
     Any,
     /// An alias reference no declared node/edge type binds. Matching rejects
@@ -846,7 +846,7 @@ enum EndpointIdentity {
     Identified { label: SmallName, identifying: bool },
 }
 
-fn endpoint_identity(
+pub(crate) fn endpoint_identity(
     reference: &GraphTypeElementRef,
     alias_table: &HashMap<&SmallName, &SmallName>,
 ) -> EndpointIdentity {

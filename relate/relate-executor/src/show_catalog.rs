@@ -26,14 +26,10 @@ const PROCEDURE_ROLES_EXECUTION: &[&str] = &["PUBLIC", "admin"];
 const ADMIN_ROLES_EXECUTION: &[&str] = &["admin"];
 const PROCEDURE_ROLES_BOOSTED: &[&str] = &["admin"];
 
-/// One role column's list cell.
+/// One role column's list cell, through the one shared
+/// [`string_list`](crate::catalog_meta::string_list) spelling.
 fn role_list(roles: &[&str]) -> CypherValue {
-    CypherValue::List(
-        roles
-            .iter()
-            .map(|r| CypherValue::Str((*r).to_string()))
-            .collect(),
-    )
+    crate::catalog_meta::string_list(roles.iter().map(|r| r.to_string()))
 }
 
 /// One entry of a function's/procedure's `argumentDescription`/
@@ -142,10 +138,12 @@ pub fn function_catalog_rows(preview: PreviewFeatures) -> Vec<Row> {
             metas
         })
         .collect();
-    // Live Neo4j reports the catalog in case-sensitive name order (not in
-    // registration order), so a bare `SHOW FUNCTIONS`/a category filter
-    // returns the reference order; a stable sort keeps an overload name's
-    // registry rows in their own order (`coll.flatten`'s depth row first).
+    // Live Neo4j reports the catalog in the rendered name's byte order
+    // (`abs`, `acos`, … `sqrt`, `stDev`, `stDevP`, `startNode`…; 2026.10.1).
+    // `FunctionMeta::name` IS the rendered spelling (ADR-0497 §11) — the
+    // renderer reads it for the name cell — so sorting the metas sorts the
+    // rows; a stable sort keeps an overload name's registry rows in their
+    // own order (`coll.flatten`'s depth row first).
     metas.sort_by(|a, b| a.name.cmp(b.name));
     metas.into_iter().map(function_row).collect()
 }

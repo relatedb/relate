@@ -64,13 +64,31 @@ fn main() -> Result<()> {
         cancel: None,
         ontology_document: None,
     })?;
-    assert_eq!(result.rows, vec![vec![Value::String("old_index".into())]]);
+    // The two default lookup indexes are synthesized SHOW-only rows, so
+    // they list beside the redo-published user index (name order).
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Value::String("index_1b9dcc97".into())],
+            vec![Value::String("index_460996c0".into())],
+            vec![Value::String("old_index".into())],
+        ]
+    );
 
     // The public view constructors accept the same admitted schema. A write
     // view folds its private redo over that schema without changing the graph.
     let view = ExecGraph::read_at(&graph, pin.ts()).with_schema(&schema);
     let result = execute(&view, &ExecRequest::new(&logical, &BTreeMap::new(), query))?;
-    assert_eq!(result.rows, vec![vec![Value::String("old_index".into())]]);
+    // The two default lookup indexes are synthesized SHOW-only rows, so
+    // they list beside the redo-published user index (name order).
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Value::String("index_1b9dcc97".into())],
+            vec![Value::String("index_460996c0".into())],
+            vec![Value::String("old_index".into())],
+        ]
+    );
     let scratch = RefCell::new(WriteScratch::new(
         pin.ts(),
         Arc::new(AtomicU64::new(2)),
@@ -80,10 +98,14 @@ fn main() -> Result<()> {
         name: "old_index".into(),
     });
     let view = ExecGraph::write(&graph, &scratch).with_schema(&schema);
-    assert!(
-        execute(&view, &ExecRequest::new(&logical, &BTreeMap::new(), query),)?
-            .rows
-            .is_empty()
+    // The dropped user index is gone; the default lookup indexes remain
+    // — they are synthesized at SHOW time, never catalog rows.
+    assert_eq!(
+        execute(&view, &ExecRequest::new(&logical, &BTreeMap::new(), query),)?.rows,
+        vec![
+            vec![Value::String("index_1b9dcc97".into())],
+            vec![Value::String("index_460996c0".into())],
+        ]
     );
 
     // Derived SHOW metadata is a redo operation too: it is published with

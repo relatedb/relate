@@ -125,10 +125,13 @@ fn create_drop_show_index() {
             "readCount",
         ]
     );
-    assert_eq!(shown.rows.len(), 1);
+    // The created index plus the two default lookup indexes every store
+    // carries.
+    assert_eq!(shown.rows.len(), 3);
     let details = c
         .query(
             "SHOW INDEXES YIELD name, labelsOrTypes, properties, type \
+             WHERE name = 'person_name' \
              RETURN name, labelsOrTypes, properties, type",
         )
         .unwrap();
@@ -166,7 +169,7 @@ fn create_drop_show_index() {
         "{other}"
     );
     c.query("DROP INDEX person_name").unwrap();
-    assert!(c.query("SHOW INDEXES").unwrap().rows.is_empty());
+    assert_eq!(c.query("SHOW INDEXES").unwrap().rows.len(), 2);
     let missing = match c.query("DROP INDEX person_name") {
         Ok(_) => panic!("expected NoSuchIndex"),
         Err(e) => e.to_string(),
@@ -174,7 +177,9 @@ fn create_drop_show_index() {
     assert!(missing.contains("NoSuchIndex"), "{missing}");
     c.query("DROP INDEX IF EXISTS person_name").unwrap();
     c.query("CREATE INDEX ON :Person(name)").unwrap();
-    let auto = c.query("SHOW INDEXES YIELD name RETURN name").unwrap();
+    let auto = c
+        .query("SHOW INDEXES YIELD name WHERE name = 'Person_name' RETURN name")
+        .unwrap();
     assert_eq!(auto.rows[0][0].as_string(), Some("Person_name"));
     c.query("DROP INDEX ON :Person(name)").unwrap();
 }
@@ -184,7 +189,8 @@ fn match_seeks_without_create_index() {
     let db = Database::open(":memory:").unwrap();
     let mut c = db.connect().unwrap();
     c.query("CREATE (n:Person {name: 'Ada'})").unwrap();
-    assert!(c.query("SHOW INDEXES").unwrap().rows.is_empty());
+    // No user index: only the two default lookup rows every store carries.
+    assert_eq!(c.query("SHOW INDEXES").unwrap().rows.len(), 2);
     let r = c
         .query("MATCH (n:Person {name: 'Ada'}) RETURN n.name AS name")
         .unwrap();

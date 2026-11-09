@@ -300,8 +300,9 @@ fn explain_reports_the_wrapped_statements_query_type() {
     // Nothing executed: no nodes, no index.
     let count = conn.query("MATCH (n) RETURN count(n) AS c").unwrap();
     assert_eq!(count.rows[0][0], Value::Int(0));
+    // Only the two default lookup indexes every store carries.
     let indexes = conn.query("SHOW INDEXES").unwrap();
-    assert!(indexes.rows.is_empty(), "EXPLAIN created no index");
+    assert_eq!(indexes.rows.len(), 2, "EXPLAIN created no index");
 }
 
 #[test]

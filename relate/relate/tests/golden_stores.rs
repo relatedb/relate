@@ -329,8 +329,18 @@ fn run_golden(store: &GoldenStore) {
     assert_contents(&mut conn);
 }
 
-/// The exact graph and catalog every golden store holds after recovery.
+/// The exact graph and catalog every golden store holds after recovery:
+/// the graph's counts/labels/property kinds, the catalog rows (defaults
+/// included), and the fixed namespaces.
 fn assert_contents(conn: &mut Connection) {
+    assert_graph_contents(conn);
+    assert_catalog_rows(conn);
+    assert_fixed_namespaces(conn);
+}
+
+/// The graph itself: node/relationship counts, the WAL tail's absence,
+/// label sets, and one equality predicate per property kind.
+fn assert_graph_contents(conn: &mut Connection) {
     let r = conn.query("MATCH (n) RETURN count(n)").unwrap();
     assert_eq!(r.rows, vec![vec![Value::Int(2)]]);
     let r = conn.query("MATCH ()-[r]->() RETURN count(r)").unwrap();
@@ -376,7 +386,12 @@ fn assert_contents(conn: &mut Connection) {
         let r = conn.query(query).unwrap();
         assert_eq!(r.rows, vec![vec![Value::Bool(true)]], "{query}");
     }
+}
 
+/// The catalog rows: the pre-checkpoint schema with the tail's scratch
+/// index dropped again, led by the two default lookup indexes every store
+/// carries.
+fn assert_catalog_rows(conn: &mut Connection) {
     // Catalog rows: the pre-checkpoint schema, with the tail's scratch
     // index dropped again.
     let rows = schema_rows(
@@ -387,6 +402,21 @@ fn assert_contents(conn: &mut Connection) {
     assert_eq!(
         rows,
         vec![
+            // The two default lookup indexes every store carries (live
+            // Neo4j 2026.10.1's stable engine-generated names); a LOOKUP
+            // row has no label/property tokens.
+            (
+                "index_1b9dcc97".to_string(),
+                "LOOKUP".to_string(),
+                vec![],
+                vec![],
+            ),
+            (
+                "index_460996c0".to_string(),
+                "LOOKUP".to_string(),
+                vec![],
+                vec![],
+            ),
             (
                 "person_bio".to_string(),
                 "FULLTEXT".to_string(),
@@ -436,7 +466,12 @@ fn assert_contents(conn: &mut Connection) {
             ),
         ]
     );
+}
 
+/// ADR-0116 §1/§8: exactly the three fixed namespaces. The fixture's
+/// `CREATE DATABASE analytics`/`CREATE DATABASE staging` theater rows
+/// (snapshot and WAL tail) are ignored on load.
+fn assert_fixed_namespaces(conn: &mut Connection) {
     // ADR-0116 §1/§8: exactly the three fixed namespaces. The fixture's
     // `CREATE DATABASE analytics`/`CREATE DATABASE staging` theater rows
     // (snapshot and WAL tail) are ignored on load.
@@ -513,6 +548,8 @@ fn string_list(value: &Value) -> Vec<String> {
             .iter()
             .map(|item| item.as_string().unwrap().to_string())
             .collect(),
+        // A LOOKUP index row carries no label/property tokens (NULL).
+        Value::Null => Vec::new(),
         other => panic!("expected a string list, got {other:?}"),
     }
 }

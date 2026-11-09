@@ -23,6 +23,14 @@ fn lookup_index_create_statement_renders_the_each_form() {
         result.rows,
         vec![
             vec![
+                string("index_1b9dcc97"),
+                string("CREATE LOOKUP INDEX `index_1b9dcc97` FOR ()-[r]-() ON EACH type(r)"),
+            ],
+            vec![
+                string("index_460996c0"),
+                string("CREATE LOOKUP INDEX `index_460996c0` FOR (n) ON EACH labels(n)"),
+            ],
+            vec![
                 string("li"),
                 string("CREATE LOOKUP INDEX `li` FOR (n) ON EACH labels(n)"),
             ],

@@ -144,13 +144,15 @@ fn named_index_in_explicit_txn() {
     c.begin().unwrap();
     c.query("CREATE INDEX person_name FOR (n:Person) ON (n.name)")
         .unwrap();
-    let shown = c.query("SHOW INDEXES YIELD name RETURN name").unwrap();
+    let shown = c
+        .query("SHOW INDEXES YIELD name WHERE name = 'person_name' RETURN name")
+        .unwrap();
     assert_eq!(shown.rows[0][0].as_string(), Some("person_name"));
     c.commit().unwrap();
     let mut other = db.connect().unwrap();
     assert_eq!(
         other
-            .query("SHOW INDEXES YIELD name RETURN name")
+            .query("SHOW INDEXES YIELD name WHERE name = 'person_name' RETURN name")
             .unwrap()
             .rows[0][0]
             .as_string(),

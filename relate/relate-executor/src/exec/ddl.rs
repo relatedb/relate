@@ -935,7 +935,8 @@ mod index_shapes {
         exec_autocommit(&g, "CREATE RANGE INDEX r FOR (n:L) ON (n.p)").unwrap();
         exec_autocommit(&g, "CREATE RANGE INDEX IF NOT EXISTS r2 FOR (n:L) ON (n.p)").unwrap();
         let rows = exec_cypher(&g, "SHOW INDEXES YIELD name, type RETURN name, type");
-        assert_eq!(rows.rows.len(), 2, "{:?}", rows.rows);
+        // The two default lookup rows every store carries plus the pair.
+        assert_eq!(rows.rows.len(), 4, "{:?}", rows.rows);
     }
 
     /// An unnamed index's generated name encodes the whole schema identity
@@ -969,6 +970,7 @@ mod index_shapes {
         )
         .unwrap();
         let rows = exec_cypher(&g, "SHOW INDEXES YIELD name RETURN name");
-        assert_eq!(rows.rows.len(), 7, "{:?}", rows.rows);
+        // Seven created rows plus the two default lookup rows.
+        assert_eq!(rows.rows.len(), 9, "{:?}", rows.rows);
     }
 }

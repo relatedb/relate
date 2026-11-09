@@ -646,8 +646,15 @@ mod tests {
 
         // The SHOW columns, read through the SHOW row producers. Catalog
         // order is the name-keyed maps' order and the SHOW rows come from
-        // the same maps, so the two orders agree without sorting.
-        let show_indexes = exec_cypher(&g, "SHOW INDEXES YIELD createStatement");
+        // the same maps, so the two orders agree without sorting. The two
+        // default lookup rows are synthesized, not catalog entries, so the
+        // mirror omits them and so does this comparison (every catalog row
+        // is non-LOOKUP).
+        let show_indexes = exec_cypher(
+            &g,
+            "SHOW INDEXES YIELD name, type, createStatement \
+             WHERE type <> 'LOOKUP' RETURN createStatement",
+        );
         let index_statements = column(&show_indexes, "createStatement", string_cell);
         let show_constraints = exec_cypher(&g, "SHOW CONSTRAINTS YIELD createStatement");
         let constraint_statements = column(&show_constraints, "createStatement", string_cell);
