@@ -99,6 +99,16 @@ fn string_interp_renders_every_scalar_kind_in_order() {
 /// characters, so a byte-indexed cut would split a code point.
 const MB: &str = "añ😀bç";
 
+/// Typed equality, not just the rendered text: the variant, its kind and
+/// its detail are all pinned, so `ArgumentValue` cannot collapse into a
+/// bare `Semantic` behind an identical rendering.
+fn assert_number_out_of_range(err: Error, detail: &str) {
+    assert_eq!(
+        err,
+        Error::argument_value_kind(ErrorKind::NumberOutOfRange, detail)
+    );
+}
+
 #[test]
 fn substring_counts_characters_and_clamps_at_the_boundaries() {
     let g = Graph::default();
@@ -131,15 +141,8 @@ fn substring_counts_characters_and_clamps_at_the_boundaries() {
     assert_eq!(sub(vec![s(""), int(0), int(1)]), s(""));
     // ADR-0175: a negative or beyond-int32 position is NumberOutOfRange;
     // a float truncates; a missing or non-numeric position is ignored.
-    // The variant, not just the rendered text: `ArgumentValue` must not
-    // collapse into a bare `Semantic`.
     let assert_oor = |vals: Vec<Value>, detail: &str| {
-        let err = bi_substring(&graph, "substring", vals).unwrap_err();
-        assert!(matches!(&err, Error::ArgumentValue { .. }), "{err}");
-        assert_eq!(
-            err.to_string(),
-            Error::argument_value_kind(ErrorKind::NumberOutOfRange, detail).to_string()
-        );
+        assert_number_out_of_range(bi_substring(&graph, "substring", vals).unwrap_err(), detail);
     };
     assert_oor(vec![s(MB), int(-3), int(2)], "substring() start");
     assert_oor(vec![s(MB), int(1), int(-1)], "substring() length");
@@ -213,21 +216,9 @@ fn left_and_right_count_characters_and_clamp_at_the_boundaries() {
         Value::Null
     );
     // ADR-0175: a negative or beyond-int32 length is NumberOutOfRange.
-    // The variant, not just the rendered text: `ArgumentValue` must not
-    // collapse into a bare `Semantic`.
     for n in [int(-2), int(i64::MAX)] {
-        let err = left(vec![s(MB), n.clone()]).unwrap_err();
-        assert!(matches!(&err, Error::ArgumentValue { .. }), "{err}");
-        assert_eq!(
-            err.to_string(),
-            Error::argument_value_kind(ErrorKind::NumberOutOfRange, "left() length").to_string()
-        );
-        let err = right(vec![s(MB), n]).unwrap_err();
-        assert!(matches!(&err, Error::ArgumentValue { .. }), "{err}");
-        assert_eq!(
-            err.to_string(),
-            Error::argument_value_kind(ErrorKind::NumberOutOfRange, "right() length").to_string()
-        );
+        assert_number_out_of_range(left(vec![s(MB), n.clone()]).unwrap_err(), "left() length");
+        assert_number_out_of_range(right(vec![s(MB), n]).unwrap_err(), "right() length");
     }
     assert_eq!(left(vec![s(""), int(2)]).unwrap(), s(""));
     assert_eq!(right(vec![s(""), int(2)]).unwrap(), s(""));
