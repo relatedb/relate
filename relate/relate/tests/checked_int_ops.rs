@@ -26,7 +26,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use relate::{Database, Value};
+use relate::{binding_error_metadata, Database, Value};
 
 const OVERFLOW_QUERIES: &[&str] = &[
     // Contract repro: Mul on pure integers.
@@ -86,6 +86,14 @@ fn overflowing_integer_ops_error() {
         assert!(
             err.to_string().contains("integer out of range"),
             "query must fail with an honest range error: {query} (got: {err})"
+        );
+        // Overflow is Neo4j's 22N28 (`Neo.ClientError.Statement.
+        // ArithmeticError`), a `TypeError`-class failure — not the
+        // `NumberOutOfRange` detail `toInteger()` rejects with.
+        assert_eq!(
+            binding_error_metadata(&err).1,
+            "TypeError",
+            "integer overflow must carry the TypeError class: {query} (got: {err})"
         );
     }
 }

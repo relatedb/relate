@@ -389,5 +389,6 @@ errors.
   `Neo.ClientError.Statement.ArgumentError` at the runtime stage rather
   than the type class this ADR recorded. The migrated rows' rendered text
   keeps the `NumberOutOfRange` kind token; only the variant's class and
-  stage move. The `toInteger()` string rows above keep the type class
-  this ADR decided.
+  stage move. The `toInteger()` string rows above move with them: the same
+  kind carries the same class there, so the row that this ADR recorded on
+  the type class is superseded too.

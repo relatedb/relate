@@ -857,5 +857,6 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   classified as the `ArgumentError` class under
   `Neo.ClientError.Statement.ArgumentError` at the runtime stage. Their
   rendered text keeps the `NumberOutOfRange` kind token and moves from the
-  `type error: ` prefix to `semantic error: `. The `toInteger()` rows and
-  the `InvalidArgumentType` rows above are unchanged.
+  `type error: ` prefix to `semantic error: `. The `toInteger()` rows above
+  move with them for the same reason. The `InvalidArgumentType` rows are
+  unchanged.

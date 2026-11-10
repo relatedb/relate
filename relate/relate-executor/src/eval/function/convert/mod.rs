@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use relate_core::{Error, Result, Value};
+use relate_core::{Error, ErrorKind, Result, Value};
 
 use crate::ctx::is_cypher5;
 use crate::eval::numeric::float_to_i64;
@@ -305,13 +305,19 @@ fn to_integer_value(v: Option<&Value>) -> Result<Value> {
         Some(Value::String(s)) => match integer_from_string(s) {
             IntegerString::InRange(i) => Value::Int(i),
             IntegerString::OutOfRange => {
-                return Err(Error::ty(format!(
-                    "NumberOutOfRange: toInteger() expected 'input' to be of type INTEGER \
-                     and in the range {} to {} but found {}",
-                    i64::MIN,
-                    i64::MAX,
-                    string::trim_java(s)
-                )))
+                // ADR-0175's 22N03 mapping: NumberOutOfRange is the
+                // ArgumentError class (the official TCK's List11 detail),
+                // so the kind travels as data.
+                return Err(Error::argument_value_kind(
+                    ErrorKind::NumberOutOfRange,
+                    format!(
+                        "toInteger() expected 'input' to be of type INTEGER \
+                         and in the range {} to {} but found {}",
+                        i64::MIN,
+                        i64::MAX,
+                        string::trim_java(s)
+                    ),
+                ));
             }
             IntegerString::NotANumber => Value::Null,
         },
