@@ -18,8 +18,6 @@ const USAGE: &str = "Usage: .explain-art <read-only query>";
 /// Narrowest and widest chart drawn, in terminal columns.
 const MIN_WIDTH: usize = 20;
 const MAX_WIDTH: usize = 200;
-/// Width when the terminal cannot be asked.
-const DEFAULT_WIDTH: usize = 80;
 /// Deepest operator row drawn; deeper operators are cut, never wrapped.
 const MAX_ROWS: usize = 24;
 
@@ -302,9 +300,9 @@ fn chart(root: &Frame, width: usize, caps: Caps) -> String {
 }
 
 /// The chart width: the terminal's columns as the CLI probed them, clamped;
-/// the default where it could not be asked.
-fn chart_width(columns: Option<usize>) -> usize {
-    columns.unwrap_or(DEFAULT_WIDTH).clamp(MIN_WIDTH, MAX_WIDTH)
+/// the probe has already resolved an unknown width.
+fn chart_width(columns: usize) -> usize {
+    columns.clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
 /// The statement in the raw argument tail: trimmed of surrounding blanks
@@ -505,7 +503,7 @@ mod tests {
                 out: &mut out,
                 caps: PLAIN,
                 raw_args: raw,
-                columns: Some(60),
+                columns: 60,
             },
             &[],
         );
@@ -550,11 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn chart_width_clamps_and_defaults() {
-        assert_eq!(chart_width(None), DEFAULT_WIDTH);
-        assert_eq!(chart_width(Some(5)), MIN_WIDTH);
-        assert_eq!(chart_width(Some(9_999)), MAX_WIDTH);
-        assert_eq!(chart_width(Some(100)), 100);
+    fn chart_width_clamps() {
+        assert_eq!(chart_width(5), MIN_WIDTH);
+        assert_eq!(chart_width(9_999), MAX_WIDTH);
+        assert_eq!(chart_width(100), 100);
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub(crate) fn try_dispatch(
             db,
             conn,
             human_repl,
-            crate::width::terminal_columns(),
+            crate::width::egg_columns(),
         )? {
             Ok(()) => 0,
             Err(r) => {

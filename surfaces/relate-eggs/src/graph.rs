@@ -20,7 +20,6 @@ const MAX_ROWS: usize = 5_000;
 const MAX_DEPTH: usize = 8;
 const LABEL_CHARS: usize = 10;
 const MIN_COLS: usize = 40;
-const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
 const USAGE: &str = "Usage: .graph [MATCH ... query]";
 /// Properties tried, in order, for a node's short label.
@@ -178,14 +177,13 @@ fn gather_query(conn: &mut Connection, query: &str) -> Result<GraphData, Refusal
 }
 
 /// Terminal size: the width from the CLI's one probe ([`Ctx::columns`],
-/// 80 when it cannot be asked), the rows from `LINES` (24 when missing or
+/// already resolved), the rows from `LINES` (24 when missing or
 /// unusable). A probed width under [`MIN_COLS`] is refused.
 fn terminal_size(
-    columns: Option<usize>,
+    columns: usize,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(usize, usize), Refusal> {
-    let cols = columns.unwrap_or(DEFAULT_COLS);
-    if cols < MIN_COLS {
+    if columns < MIN_COLS {
         return Err(Refusal::Usage(
             "terminal too narrow for .graph (need 40 columns)",
         ));
@@ -193,7 +191,7 @@ fn terminal_size(
     let rows = env("LINES")
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(DEFAULT_ROWS);
-    Ok((cols, rows))
+    Ok((columns, rows))
 }
 
 /// Draw `data` on a canvas sized to the terminal.
@@ -291,7 +289,7 @@ mod tests {
                 out: &mut buf,
                 caps: caps(),
                 raw_args: &args.join(" "),
-                columns: None,
+                columns: 80,
             },
             args,
         );
@@ -370,16 +368,16 @@ mod tests {
                     .map(|(_, v)| v.to_string())
             }
         };
-        assert_eq!(terminal_size(None, &env(&[])).unwrap(), (80, 24));
+        assert_eq!(terminal_size(80, &env(&[])).unwrap(), (80, 24));
         assert_eq!(
-            terminal_size(Some(120), &env(&[("LINES", "50")])).unwrap(),
+            terminal_size(120, &env(&[("LINES", "50")])).unwrap(),
             (120, 50)
         );
         assert_eq!(
-            terminal_size(Some(40), &env(&[("LINES", "junk")])).unwrap(),
+            terminal_size(40, &env(&[("LINES", "junk")])).unwrap(),
             (40, 24)
         );
-        assert!(terminal_size(Some(20), &env(&[])).is_err());
+        assert!(terminal_size(20, &env(&[])).is_err());
     }
 
     #[test]
@@ -396,7 +394,7 @@ mod tests {
                 out: &mut buf,
                 caps: caps(),
                 raw_args: raw,
-                columns: None,
+                columns: 80,
             },
             &words,
         );
@@ -419,7 +417,7 @@ mod tests {
                     truecolor: false,
                 },
                 raw_args: "",
-                columns: None,
+                columns: 80,
             },
             &[],
         );

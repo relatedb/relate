@@ -113,9 +113,12 @@ pub struct Ctx<'a> {
     /// the whitespace inside a string literal is data. Handlers that take
     /// words read the split `args` instead.
     pub raw_args: &'a str,
-    /// The terminal's column count as the CLI's one width probe reported it,
-    /// unfloored; `None` when it cannot be asked (a pipe, no `COLUMNS`).
-    pub columns: Option<usize>,
+    /// The terminal's column count as the CLI's one width probe resolved
+    /// it, unfloored and never zero: the probe applies the 80-column default
+    /// itself when neither the terminal nor `COLUMNS` can tell, so no egg
+    /// applies a width default of its own. Each egg still floors or clamps
+    /// the number to what its layout needs.
+    pub columns: usize,
 }
 
 /// A handler: the arguments after the command name.
@@ -162,7 +165,7 @@ pub fn try_dispatch(
     db: &relate::Database,
     conn: &mut relate::Connection,
     human_repl: bool,
-    columns: Option<usize>,
+    columns: usize,
 ) -> Option<Result<(), Refusal>> {
     let stmt = stmt.trim_start();
     let name = stmt.split_whitespace().next()?;

@@ -21,23 +21,20 @@ const FRAME_MS: u64 = 40;
 /// frames later, leaving a short hold at the end.
 const REVEAL_START: usize = 30;
 const REVEAL_SPAN: usize = 60;
-const DEFAULT_SIZE: (usize, usize) = (80, 24);
+const DEFAULT_ROWS: usize = 24;
 const MAX_WIDTH: usize = 100;
 const MAX_HEIGHT: usize = 12;
 
 const KATAKANA: &str = "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ";
 const ASCII_GLYPHS: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:+=*<>";
 
-/// Terminal columns and rows: the width from the CLI's one probe
-/// ([`Ctx::columns`]), the rows from `LINES`, each defaulting where missing
-/// or unusable (shells often do not export them).
-fn term_size(columns: Option<usize>, env: &dyn Fn(&str) -> Option<String>) -> (usize, usize) {
-    let cols = columns.filter(|&n| n > 0).unwrap_or(DEFAULT_SIZE.0);
-    let rows = env("LINES")
+/// Terminal rows from `LINES`, defaulting where missing or unusable
+/// (shells often do not export it); the width is [`Ctx::columns`].
+fn term_rows(env: &dyn Fn(&str) -> Option<String>) -> usize {
+    env("LINES")
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_SIZE.1);
-    (cols, rows)
+        .unwrap_or(DEFAULT_ROWS)
 }
 
 /// The animation block for a terminal of `cols` x `rows`: leaves room for
@@ -205,8 +202,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
         return Err(Refusal::NotUtf8);
     }
     let env = |k: &str| std::env::var(k).ok();
-    let (cols, rows) = term_size(ctx.columns, &env);
-    let size = block_size(cols, rows);
+    let size = block_size(ctx.columns, term_rows(&env));
     // The same clipped text the animation decrypts, so the final line
     // never wraps.
     let text = &text[..text.len().min(size.0)];
@@ -262,15 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn size_comes_from_the_probe_and_lines_with_a_sane_default() {
+    fn rows_come_from_lines_with_a_sane_default() {
         let env = |k: &str| match k {
             "LINES" => Some("junk".to_string()),
             _ => None,
         };
-        assert_eq!(term_size(Some(120), &env), (120, DEFAULT_SIZE.1));
-        assert_eq!(term_size(None, &|_| None), DEFAULT_SIZE);
-        assert_eq!(term_size(Some(0), &|_| Some("0".to_string())), DEFAULT_SIZE);
-        assert_eq!(term_size(None, &|_| Some("30".to_string())).1, 30);
+        assert_eq!(term_rows(&env), DEFAULT_ROWS);
+        assert_eq!(term_rows(&|_| None), DEFAULT_ROWS);
+        assert_eq!(term_rows(&|_| Some("0".to_string())), DEFAULT_ROWS);
+        assert_eq!(term_rows(&|_| Some("30".to_string())), 30);
     }
 
     #[test]
