@@ -208,14 +208,12 @@ fn function_row(meta: &FunctionMeta) -> Row {
 
 /// `SHOW PROCEDURES` catalog rows, rendered from the canonical
 /// `procedure_registry` table (the same table the executor's `CALL`
-/// `SHOW PROCEDURES` catalog rows, rendered from the canonical
-/// `procedure_registry` table (the same table the executor's `CALL`
 /// dispatch and `Database::validate_calls` bind against), in name order
 /// (live Neo4j's own ordering, sorted over the registry). The
 /// `catalog-only` entries (`executable: false`) are inventory rows the
-/// corpus lists but never calls (`db.resampleIndex`, `dbms.setConfigValue`,
-/// the `cdc.*` family, the `dbms.cluster.*` and `fleetManagement.*`
-/// families, …): `SHOW PROCEDURES` reports them and a `CALL` refuses them.
+/// corpus lists but never calls (`db.clearQueryCaches`, `db.listLocks`,
+/// `db.prepareForReplanning`, …): `SHOW PROCEDURES` reports them and a
+/// `CALL` refuses them.
 ///
 /// `preview` is the store-level preview-feature set (ADR-0371, ADR-0378):
 /// a signature whose gating feature is disabled is omitted, so discovery
@@ -223,8 +221,8 @@ fn function_row(meta: &FunctionMeta) -> Row {
 /// is the executor's one [`procedure_preview_feature`](crate::procedure_preview_feature),
 /// and with the gate enabled every row is identical to the ungated table.
 pub fn procedure_catalog_rows(preview: PreviewFeatures) -> Vec<Row> {
-    // Neo4j reports the catalog in name order (`db.cdc.current` before
-    // `db.cdc.earliest` …, and `tx.getMetaData` before `tx.setMetaData`),
+    // Neo4j reports the catalog in name order (`db.info` before
+    // `db.labels` …, and `tx.getMetaData` before `tx.setMetaData`),
     // not in registration order.
     let mut listed: Vec<&'static crate::procedure_registry::ProcSignature> =
         BUILTIN_PROCEDURE_SIGNATURES

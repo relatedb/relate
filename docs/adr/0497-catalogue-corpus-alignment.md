@@ -975,3 +975,9 @@ reference's; only the display case differed.
   a name outside the corpus that works in every build but has no `SHOW
   FUNCTIONS` row. It is a recorded exception to the four rules in §2, not an
   amendment of them.
+
+- **ADR-0557** — the server-only procedure families (cluster, routing, fleet
+  management, change-data-capture, session/connection/lock administration,
+  usage statistics, server configuration), the vector-property setters and the
+  index-resampling pair left the registry, so the alignment table above has no
+  rows for them any more. The corpus-alignment rule itself is unchanged.
