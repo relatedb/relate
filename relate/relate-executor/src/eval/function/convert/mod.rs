@@ -322,7 +322,7 @@ fn to_integer_value(v: Option<&Value>) -> Result<Value> {
             IntegerString::NotANumber => Value::Null,
         },
         Some(Value::Null) | None => Value::Null,
-        _ => return Err(Error::ty("InvalidArgumentValue: toInteger()")),
+        _ => return Err(Error::invalid_argument_value("toInteger()")),
     })
 }
 
