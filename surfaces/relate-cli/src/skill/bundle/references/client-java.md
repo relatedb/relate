@@ -53,7 +53,9 @@ exceptions — see gotchas.
 
 - **Metadata vocabularies are closed enums** — a `getQueryType()` /
   `getNamespace()` / `Notification` severity and category value outside the documented set throws
-  `RelateException` (`ABI contract violated: ...`), like the Go client.
+  `RelateException` (`ABI contract violated: ...`), like the Go client. The
+  offending value echoed into the message is sanitized — non-printable
+  characters arrive escaped and the value is bounded.
 - **Native library resolution** — the bundled resource
   `native/<key>/<library>` for the running platform is extracted once per
   version into the user cache (`~/Library/Caches/relate`,

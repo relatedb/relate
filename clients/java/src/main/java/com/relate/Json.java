@@ -22,6 +22,14 @@ final class Json {
     static final ObjectMapper PLAN = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
+    /** The display bound for one offending wire value in a refusal message. */
+    static final int VALUE_MAX = 64;
+
+    /** The display bound for the echoed JSON payload in a refusal message. */
+    static final int PAYLOAD_MAX = 256;
+
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
+
     private Json() {
     }
 
@@ -36,7 +44,7 @@ final class Json {
         JsonNode value = node.get(key);
         if (value == null || !value.isTextual()) {
             throw new RelateException(
-                    what + " is missing the \"" + key + "\" string: " + payload);
+                    what + " is missing the \"" + key + "\" string: " + safe(payload, PAYLOAD_MAX));
         }
         return value.asText();
     }
@@ -46,7 +54,7 @@ final class Json {
         JsonNode value = node.get(key);
         if (value == null || !value.isBoolean()) {
             throw new RelateException(
-                    what + " is missing the \"" + key + "\" boolean: " + payload);
+                    what + " is missing the \"" + key + "\" boolean: " + safe(payload, PAYLOAD_MAX));
         }
         return value.asBoolean();
     }
@@ -62,7 +70,8 @@ final class Json {
         RelateException.Stage stage = RelateException.Stage.fromWire(wire);
         if (stage == null) {
             throw new RelateException(
-                    what + " carries an unknown stage \"" + wire + "\": " + payload);
+                    what + " carries an unknown stage " + quoted(wire) + ": "
+                            + safe(payload, PAYLOAD_MAX));
         }
         return stage;
     }
@@ -79,7 +88,8 @@ final class Json {
         E constant = WireEnum.fromWire(type, wire);
         if (constant == null) {
             throw new RelateException(
-                    what + " carries an unknown " + key + " \"" + wire + "\": " + payload);
+                    what + " carries an unknown " + key + " " + quoted(wire)
+                            + ": " + safe(payload, PAYLOAD_MAX));
         }
         return constant;
     }
@@ -90,7 +100,7 @@ final class Json {
      */
     static JsonNode requireObject(JsonNode node, String what, String payload) {
         if (node == null || !node.isObject()) {
-            throw new RelateException(what + " is not a JSON object: " + payload);
+            throw new RelateException(what + " is not a JSON object: " + safe(payload, PAYLOAD_MAX));
         }
         return node;
     }
@@ -110,8 +120,95 @@ final class Json {
         // yet does not fit a long
         if (!value.isIntegralNumber() || !value.canConvertToLong()) {
             throw new RelateException(
-                    what + " has a non-long \"" + key + "\": " + payload);
+                    what + " has a non-long \"" + key + "\": " + safe(payload, PAYLOAD_MAX));
         }
         return value.longValue();
+    }
+
+    /**
+     * Whether {@code codePoint} is a control or non-printable code point that
+     * must never appear raw in a refusal message (CWE-117 log injection):
+     * every ISO control (C0, C1 and DEL), the Unicode line/paragraph
+     * separators, and unassigned or format code points. This is the
+     * message-safety policy {@link #safe} and {@link #quoted} share; the
+     * delimiter clause (a value's own quote and backslash) is {@link #quoted}'s
+     * alone, because only a quoted value can break the message's own quoting.
+     */
+    static boolean isUnprintable(int codePoint) {
+        if (Character.isISOControl(codePoint) || codePoint == 0x2028 || codePoint == 0x2029) {
+            return true;
+        }
+        int type = Character.getType(codePoint);
+        return type == Character.UNASSIGNED || type == Character.FORMAT;
+    }
+
+    /**
+     * The echoed JSON payload of a refusal: a whole document appended bare
+     * after the message's own text, so only its non-printable code points are
+     * escaped (its structural quotes and backslashes stay legible) and the
+     * result is bounded to {@code max} characters with a {@code ...(truncated)}
+     * marker when cut. {@code null} renders as {@code null}.
+     */
+    static String safe(String s, int max) {
+        return escape(s, max, false);
+    }
+
+    /**
+     * The display form of an offending wire value: {@code null} renders as
+     * the unquoted {@code null} (a NULL pointer, distinct from the literal
+     * string {@code "null"}), any other value as its sanitized form wrapped
+     * in double quotes — the one place a refusal quotes a value, so the
+     * quoting (and the escape of the value's own quote and backslash) cannot
+     * drift between the decode sites.
+     */
+    static String quoted(String s) {
+        return s == null ? "null" : "\"" + escape(s, VALUE_MAX, true) + "\"";
+    }
+
+    /**
+     * Escape {@code s} for a refusal message: every non-printable code point
+     * — and, when {@code inQuotes} (the value sits inside the message's own
+     * quotes), the value's own quote and backslash — becomes its
+     * {@code \\uXXXX} escape (a supplementary code point as its surrogate
+     * pair), the escaped body is bounded to {@code max} characters, and a
+     * {@code ...(truncated)} marker is appended when the input is cut.
+     */
+    private static String escape(String s, int max, boolean inQuotes) {
+        if (s == null) {
+            return "null";
+        }
+        StringBuilder out = new StringBuilder(Math.min(s.length(), max) + 16);
+        int i = 0;
+        while (i < s.length()) {
+            int codePoint = s.codePointAt(i);
+            int units = Character.charCount(codePoint);
+            boolean mustEscape = isUnprintable(codePoint)
+                    || (inQuotes && (codePoint == '\\' || codePoint == '"'));
+            int width = mustEscape ? 6 * units : units;
+            if (out.length() + width > max) {
+                break;
+            }
+            if (mustEscape) {
+                for (char unit : Character.toChars(codePoint)) {
+                    appendEscaped(out, unit);
+                }
+            } else {
+                out.appendCodePoint(codePoint);
+            }
+            i += units;
+        }
+        if (i < s.length()) {
+            out.append("...(truncated)");
+        }
+        return out.toString();
+    }
+
+    /** Append {@code c} as a {@code \\uXXXX} escape. */
+    private static void appendEscaped(StringBuilder out, char c) {
+        out.append("\\u");
+        out.append(HEX[(c >> 12) & 0xF]);
+        out.append(HEX[(c >> 8) & 0xF]);
+        out.append(HEX[(c >> 4) & 0xF]);
+        out.append(HEX[c & 0xF]);
     }
 }

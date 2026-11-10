@@ -239,6 +239,34 @@ public class DatabaseTest {
         }
     }
 
+    @Test
+    void notificationRefusalSanitizesTheUnknownSeverity() throws Exception {
+        // Oplane OPLANE_REQ-00351534 (CWE-117): the untrusted severity value
+        // is echoed into the refusal — CR, LF and ESC must arrive escaped,
+        // never verbatim.
+        String base = "{\"code\":\"c\",\"gql_status\":\"g\",\"severity\":\"%s\","
+                + "\"category\":\"HINT\",\"title\":\"t\",\"description\":\"d\",\"remedy\":\"r\"}";
+        String json = String.format(base, "FATAL\\u000d\\u000a\\u001b");
+        Exception e = assertThrows(Exception.class,
+                () -> Json.STRICT.readValue(json, Notification.class));
+        RelateException refusal = refusalOf(e);
+        assertNotNull(refusal, e.toString());
+        assertTrue(refusal.getMessage().contains("unknown severity"), refusal.getMessage());
+        assertTrue(refusal.getMessage().contains("\\u000d"), refusal.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(refusal.getMessage());
+        assertTrue(refusal.getMessage().length() < 1000, refusal.getMessage());
+    }
+
+    /** The {@link RelateException} in the throwable chain, or null. */
+    private static RelateException refusalOf(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof RelateException re) {
+                return re;
+            }
+        }
+        return null;
+    }
+
     private static List<Notification> planWarnings(PlanNode node) {
         List<Notification> out = new ArrayList<>(node.warnings);
         for (PlanNode child : node.children) {

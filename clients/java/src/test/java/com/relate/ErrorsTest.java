@@ -1,6 +1,9 @@
 package com.relate;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -167,5 +170,131 @@ public class ErrorsTest {
             assertTrue(e.getMessage().startsWith("ABI contract violated: namespace"),
                     e.getMessage());
         }
+    }
+
+    @Test
+    void anUnknownStageWithControlCharactersIsSanitized() {
+        // Oplane OPLANE_REQ-00351534 (CWE-117): the untrusted stage value is
+        // echoed into the refusal — CR, LF, ESC, NUL and the Unicode
+        // separators must arrive escaped, never verbatim.
+        String[] hostile = {"a\\u000db", "a\\u000ab", "a\\u001bb", "a\\u0000b",
+                "a\\u2028b", "a\\u2029b", "a\\u200bb", "x".repeat(400)};
+        for (String value : hostile) {
+            RelateException e = assertThrows(RelateException.class,
+                    () -> RelateException.fromErrorJson(
+                            "{\"code\":\"c\",\"gql_status\":\"g\",\"stage\":\"" + value + "\","
+                                    + "\"retryable\":false,\"message\":\"m\"}", "test"));
+            assertTrue(e.getMessage().contains("unknown stage"), e.getMessage());
+            WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+            assertTrue(e.getMessage().length() < 2000, "bounded: " + e.getMessage().length());
+        }
+    }
+
+    @Test
+    void resultMetadataRefusalsSanitizeTheOffendingValue() {
+        // Oplane OPLANE_REQ-00351534 (CWE-117): decodeWire echoes the raw
+        // ABI string; a hostile native library must not smuggle control
+        // characters into the message.
+        String[] hostile = {"a\rb", "a\nb", "a\u001bb", "a\u0000b", "a\u2028b",
+                "a\u2029b", "a\u200bb", "a\"b\\c", "x".repeat(500)};
+        for (String bad : hostile) {
+            assertDecodeRefuses(() -> ResultReader.decodeQueryType(bad),
+                    "ABI contract violated: query type");
+            assertDecodeRefuses(() -> ResultReader.decodeNamespace(bad),
+                    "ABI contract violated: namespace");
+        }
+    }
+
+    /** One decode-refusal assertion: the prefix holds, no raw non-printable, bounded. */
+    private static void assertDecodeRefuses(Executable decode, String prefix) {
+        RelateException e = assertThrows(RelateException.class, decode);
+        assertTrue(e.getMessage().startsWith(prefix), e.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+        assertTrue(e.getMessage().length() < 200, "bounded: " + e.getMessage().length());
+    }
+
+    @Test
+    void aQuoteOrBackslashInAnUnknownValueCannotBreakTheMessageQuoting() {
+        RelateException e = assertThrows(RelateException.class,
+                () -> ResultReader.decodeQueryType("a\"b\\c"));
+        // The value's own quote and backslash arrive escaped, so the
+        // message's surrounding quotes stay its own.
+        assertTrue(e.getMessage().contains("\\u0022"), e.getMessage());
+        assertTrue(e.getMessage().contains("\\u005c"), e.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+    }
+
+    @Test
+    void theSharedRefusalSanitizesAndBoundsTheEchoedPayload() throws Exception {
+        // The payload side of requireStage/requireWire goes through the
+        // same sanitizer: control characters escaped, long payloads cut.
+        JsonNode node = Json.STRICT.readTree("{\"stage\":\"nope\"}");
+        String hostilePayload = WireSanitizeAssertions.HOSTILE_PAYLOAD;
+        RelateException e = assertThrows(RelateException.class,
+                () -> Json.requireStage(node, "stage", "error shape", hostilePayload));
+        assertTrue(e.getMessage().contains("unknown stage"), e.getMessage());
+        assertTrue(e.getMessage().contains("...(truncated)"), e.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+        assertTrue(e.getMessage().length() < 512, "bounded: " + e.getMessage().length());
+    }
+
+    @Test
+    void everyRequiredKeyRefusalSanitizesAndBoundsTheEchoedPayload() throws Exception {
+        // Oplane OPLANE_REQ-00351534 (CWE-117): every Json refusal echoes
+        // the raw payload — requireText/requireBool/requireObject/optionalLong
+        // must sanitize and bound it like the enum-decode sites.
+        String hostile = WireSanitizeAssertions.HOSTILE_PAYLOAD;
+        JsonNode empty = Json.STRICT.readTree("{}");
+        JsonNode array = Json.STRICT.readTree("[]");
+        JsonNode nonLong = Json.STRICT.readTree("{\"n\":1.5}");
+        List<Executable> refusals = List.of(
+                () -> Json.requireText(empty, "k", "error shape", hostile),
+                () -> Json.requireBool(empty, "k", "error shape", hostile),
+                () -> Json.requireObject(array, "error shape", hostile),
+                () -> Json.optionalLong(nonLong, "n", "error shape", hostile));
+        for (Executable refusal : refusals) {
+            RelateException e = assertThrows(RelateException.class, refusal);
+            WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+            assertTrue(e.getMessage().length() < 512, "bounded: " + e.getMessage().length());
+        }
+    }
+
+    @Test
+    void aWhitespaceOnlyErrorShapeIsSanitizedInTheRefusal() {
+        // Oplane OPLANE_REQ-00351534 (CWE-117): fromErrorJson passes the
+        // raw error JSON as the refusal payload, and CR/LF between JSON
+        // tokens is legal whitespace — a missing-key refusal must not echo
+        // it verbatim.
+        RelateException e = assertThrows(RelateException.class,
+                () -> RelateException.fromErrorJson("{\r\n}", "test"));
+        assertTrue(e.getMessage().contains("is missing"), e.getMessage());
+        assertTrue(e.getMessage().contains("\\u000d"), e.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+    }
+
+    @Test
+    void theEchoedPayloadKeepsItsStructuralQuotesAndBackslashes() throws Exception {
+        // The payload is a whole document appended bare (not inside the
+        // message's quotes), so only its non-printables escape — its own
+        // quotes and backslashes stay legible for a reader.
+        JsonNode node = Json.STRICT.readTree("{}");
+        RelateException e = assertThrows(RelateException.class,
+                () -> Json.requireText(node, "code", "error shape", "{\"a\":\"b\\c\"}"));
+        assertTrue(e.getMessage().contains("{\"a\":\"b\\c\"}"), e.getMessage());
+        assertFalse(e.getMessage().contains("\\u0022"), e.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
+    }
+
+    @Test
+    void aSupplementaryPlaneFormatCodePointIsEscaped() {
+        // U+E0001 (LANGUAGE TAG) is a supplementary-plane FORMAT code point:
+        // two UTF-16 code units, escaped as the surrogate pair rather than
+        // scanned as two unrelated chars.
+        String languageTag = new String(Character.toChars(0xE0001));
+        RelateException e = assertThrows(RelateException.class,
+                () -> ResultReader.decodeQueryType("a" + languageTag + "b"));
+        assertTrue(e.getMessage().contains("\\udb40"), e.getMessage());
+        assertTrue(e.getMessage().contains("\\udc01"), e.getMessage());
+        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
     }
 }

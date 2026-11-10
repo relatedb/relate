@@ -93,8 +93,11 @@ final class ResultReader {
                                                                String raw) {
         E constant = WireEnum.fromWire(type, raw);
         if (constant == null) {
+            // The untrusted ABI string is echoed through Json.quoted — a
+            // hostile native library cannot inject control characters into
+            // the message (CWE-117).
             throw new RelateException("ABI contract violated: " + what + " "
-                    + (raw == null ? "null" : "\"" + raw + "\""));
+                    + Json.quoted(raw));
         }
         return constant;
     }

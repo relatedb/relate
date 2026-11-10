@@ -349,6 +349,12 @@ native result is alive (`relate_result_query_type` /
   outside the three is a `RelateException` reading
   `ABI contract violated: namespace ...`.
 
+Both refusals echo the offending value sanitized: control and other
+non-printable characters appear as escapes and the value is bounded, so a
+hostile native library cannot inject log lines (CWE-117). The same holds for
+the notification severity/category and error-stage refusals, whose messages
+also echo the payload sanitized.
+
 See `examples/ResultMetadata.java`.
 
 **Byte arrays (ADR-0327).** The engine's statement-scoped byte array enters only through Bolt or a Rust `Value::Bytes` parameter, never through this surface's own parameters. A result value holding one hydrates as a `List` of `Long`s 0–255 (the typed walker crosses a byte array as a LIST of INT; there are no column type stamps to read); byte arrays cannot be stored as properties.
