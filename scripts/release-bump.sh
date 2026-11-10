@@ -243,6 +243,15 @@ stale_pins="$(toml_workspace_dep_versions "$cargo_toml" | awk -v v="$next" '$2 !
   echo "$stale_pins" >&2
   fail=1
 }
+# Workspace dependency pins: every relate* entry must read back at $next —
+# a stale pin would publish a crates.io dependency on a version that does
+# not exist.
+stale_pins="$(toml_workspace_dep_versions "$cargo_toml" | awk -v v="$next" '$2 != v { print $1 }')"
+[[ -z "$stale_pins" ]] || {
+  echo "release-bump: Cargo.toml [workspace.dependencies] pins not at $next:" >&2
+  echo "$stale_pins" >&2
+  fail=1
+}
 # The fallback-literal grammar has one spelling — `return "<digit...>"` —
 # shared by the step-1 sweep and this stale check, so they cannot disagree
 # about what a fallback literal is. The invariant is "no stale fallback
