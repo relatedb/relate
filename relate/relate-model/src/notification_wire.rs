@@ -92,6 +92,9 @@ pub enum NotificationKind {
     UnboundedVariableLengthPattern,
     /// A label-less node scan while a property index exists.
     AllNodesScan,
+    /// A static label disjunction no seek serves: the scan answers per
+    /// disjunct label (LABS-1083).
+    LabelDisjunctionScan,
     /// A label/property equality with no range index on the pair.
     MissingIndex,
     /// An aggregation whose input estimate reaches the eager threshold.
@@ -208,6 +211,18 @@ const ALL_NODES_SCAN_ROW: NotificationRow = NotificationRow {
     title: "All nodes scan",
     remedy: "Name the label the scan intends (`MATCH (n:<Label>)`); on the index's label the \
              scan becomes an index-backed lookup.",
+    plan_warning: true,
+    occurrence_scoped: false,
+};
+
+const LABEL_DISJUNCTION_SCAN_ROW: NotificationRow = NotificationRow {
+    code: "Relate.Notification.Statement.LabelDisjunctionScan",
+    gql_status: "03C94",
+    severity: NotificationSeverity::Information,
+    category: NotificationCategory::Performance,
+    title: "Label disjunction scan",
+    remedy: "Create a range index on each disjunct label's filtered property: the disjunction \
+             then serves as per-label keyed lookups instead of per-label scans.",
     plan_warning: true,
     occurrence_scoped: false,
 };
@@ -502,6 +517,7 @@ impl NotificationKind {
                 &UNBOUNDED_VARIABLE_LENGTH_PATTERN_ROW
             }
             NotificationKind::AllNodesScan => &ALL_NODES_SCAN_ROW,
+            NotificationKind::LabelDisjunctionScan => &LABEL_DISJUNCTION_SCAN_ROW,
             NotificationKind::MissingIndex => &MISSING_INDEX_ROW,
             NotificationKind::EagerAggregation => &EAGER_AGGREGATION_ROW,
             NotificationKind::EstimationMiss => &ESTIMATION_MISS_ROW,

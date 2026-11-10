@@ -37,6 +37,18 @@ pub(crate) trait PlanStats: PatternStats {
     /// relationship index contributes no node pair.
     fn range_indexed_properties(&self) -> Vec<RangeIndexedProperty>;
 
+    /// Whether the store carries a RANGE index serving an equality seek
+    /// on one `(label, property)` pair — the one spelling of the
+    /// predicate both the keyed-lookup narration (LABS-1083's
+    /// `NodeByLabelSeek`) and the `MissingIndex` notification test
+    /// against, defaulted over [`Self::range_indexed_properties`] so
+    /// every implementor answers it without a second table.
+    fn range_index_serves(&self, label: &str, property: &str) -> bool {
+        self.range_indexed_properties()
+            .iter()
+            .any(|pair| pair.label == label && pair.property == property)
+    }
+
     /// The store's active pattern-engine rung (LABS-1117), stamped on
     /// every `MATCH` plan node so EXPLAIN carries the one static fact
     /// about which rung governs the clause's gates. The live graph

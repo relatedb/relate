@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use relate_ir::{BinaryOp, Clause, Expr, LabelExpr, PathPattern};
+use relate_ir::{BinaryOp, Clause, Expr, LabelExpr, NodePattern, PathPattern};
 use relate_names::{NamedToken, SmallName, Token};
 
 use crate::order::order_patterns;
@@ -237,6 +237,25 @@ fn fold_where(
     // the kept conjuncts exactly as before.
     let mut conjuncts = Vec::new();
     flatten_into(expr, &mut conjuncts);
+    // The label-conjunction folds run before the disjunction folds: a
+    // companion label conjunct beside a disjunction must land in the
+    // node's conjunction FIRST — folded after the `Or`, its
+    // `static_labels` normalization declines the non-conjunction
+    // expression and the scan loses the conjunction's narrowing, so
+    // statement order must not decide whether `WHERE (p:A OR p:B) AND
+    // p:C` scans `:C` (LABS-1083 review: the fold is order-independent).
+    let defers_to_disjunction_pass = |conjunct: &Expr| {
+        or_label_predicates(conjunct).is_some()
+            || matches!(
+                conjunct,
+                Expr::LabelPredicate { label_expr, .. }
+                    if static_label_disjunction(label_expr).is_some()
+            )
+    };
+    conjuncts.retain(|conjunct| {
+        defers_to_disjunction_pass(conjunct)
+            || !fold_conjunct(patterns, conjunct, bound, introduced)
+    });
     conjuncts.retain(|conjunct| !fold_conjunct(patterns, conjunct, bound, introduced));
     combine_and(conjuncts)
 }
@@ -271,34 +290,200 @@ fn fold_conjunct(
     bound: &HashSet<String>,
     introduced: &[String],
 ) -> bool {
+    // The fold-eligibility gate, one spelling for every arm below: the
+    // variable is introduced by this clause's patterns and not bound
+    // earlier — the parenthesized, WHERE-spelled, and property folds
+    // consult the same predicate and can never disagree about it.
+    let introduced_unbound = |v: &SmallName| {
+        v.with_str(|text| introduced.iter().any(|name| name.as_str() == text))
+            && !v.with_str(|text| bound.contains(text))
+    };
     if let Expr::LabelPredicate {
         expr, label_expr, ..
     } = expr
     {
         if let Expr::Variable(v) = expr.as_ref() {
-            if v.with_str(|text| introduced.iter().any(|name| name.as_str() == text))
-                && !v.with_str(|text| bound.contains(text))
-            {
+            if introduced_unbound(v) {
                 if let Some(labels) = static_labels(label_expr).filter(|labels| !labels.is_empty())
                 {
                     return add_labels(patterns, v, &labels);
                 }
+                if let Some(disjuncts) = static_label_disjunction(label_expr) {
+                    return add_label_disjunction(patterns, v, &disjuncts);
+                }
             }
+        }
+        return false;
+    }
+    // The WHERE-spelled disjunction of plain label predicates on one
+    // introduced, unbound variable folds exactly like the parenthesized
+    // form above — the recognizer answers the one variable and its
+    // disjuncts (an `Or` tree of same-variable label predicates always
+    // carries at least two leaves), never a mixed bag the caller must
+    // re-validate.
+    if let Some((v, disjuncts)) = or_label_predicates(expr) {
+        if introduced_unbound(&v) {
+            return add_label_disjunction(patterns, &v, &disjuncts);
         }
         return false;
     }
     let Some((v, key, val)) = eq_prop(expr) else {
         return false;
     };
-    if !v.with_str(|text| introduced.iter().any(|name| name.as_str() == text))
-        || v.with_str(|text| bound.contains(text))
-    {
+    if !introduced_unbound(&v) {
         return false;
     }
     if !val.is_seek_const() {
         return false;
     }
     add_prop(patterns, &v, key, val)
+}
+
+/// The one variable and its disjunct labels of an `Or` tree whose every
+/// leaf is a plain label predicate on that same variable — the WHERE
+/// spelling `p:A OR p:B OR p:C` (the parenthesized `p:(A|B)` lowers to
+/// one LabelPredicate with an `Or` label expression instead, handled
+/// beside `static_labels`). A bare label predicate is never a
+/// disjunction of its own — it is the conjunction fold's conjunct — so
+/// only an `Or` tree answers, and it always carries at least two
+/// leaves: the caller never re-checks arity or variables.
+fn or_label_predicates(expr: &Expr) -> Option<(SmallName, Vec<SmallName>)> {
+    match expr {
+        Expr::Binary {
+            op: BinaryOp::Or, ..
+        } => collect_or_leaves(expr),
+        _ => None,
+    }
+}
+
+/// The recursive collector behind [`or_label_predicates`]: every leaf is
+/// a same-variable plain label predicate, nested `Or`s join, and any
+/// other shape declines the whole tree — validated at the leaf join.
+fn collect_or_leaves(expr: &Expr) -> Option<(SmallName, Vec<SmallName>)> {
+    match expr {
+        Expr::Binary {
+            op: BinaryOp::Or,
+            left,
+            right,
+        } => {
+            let (variable, mut disjuncts) = collect_or_leaves(left)?;
+            let (right_var, right_disjuncts) = collect_or_leaves(right)?;
+            if variable != right_var {
+                return None;
+            }
+            disjuncts.extend(right_disjuncts);
+            Some((variable, disjuncts))
+        }
+        Expr::LabelPredicate {
+            expr, label_expr, ..
+        } => {
+            let (Expr::Variable(v), LabelExpr::Label(label)) = (expr.as_ref(), label_expr) else {
+                return None;
+            };
+            Some((v.clone(), vec![label.clone()]))
+        }
+        _ => None,
+    }
+}
+
+/// The flat label set of a static disjunction of plain labels
+/// (`A|B`, `(A|B)|C` — the WHERE-spelled `n:A OR n:B OR n:C` lowers to the
+/// same tree), or `None` when the expression is anything else — any `And`
+/// node (the mixed And/Or tree would need DNF flattening under a shape
+/// cap, deliberately not attempted here), negation, wildcard or dynamic
+/// leaf makes the whole expression unfoldable. Derived from the IR's one
+/// arm classifier ([`LabelExpr::static_disjunction_arms`] — the same
+/// vocabulary the executor's union serve and the plan narration read)
+/// with the fold's own conservatism stated beside it: a conjunction base
+/// beside the `Or` is the pattern's post-fold shape, not a foldable
+/// predicate (folding its disjuncts alone would drop the base), and a
+/// one-arm `Or` is identity — both decline. The two classifiers are
+/// disjoint: `static_labels` answers conjunctions, this one answers
+/// disjunctions of plain labels only.
+fn static_label_disjunction(expr: &LabelExpr) -> Option<Vec<SmallName>> {
+    let arms = expr.static_disjunction_arms()?;
+    if !arms.base().is_empty() || arms.len() < 2 {
+        return None;
+    }
+    Some(
+        arms.disjuncts()
+            .iter()
+            .map(|label| (*label).clone())
+            .collect(),
+    )
+}
+
+/// The folds' node-targeting walk, the one spelling of the scaffolding
+/// every fold shares (the label conjunction, the label disjunction, the
+/// property map): compact-view-only — a GPM pattern's `nodes`/`rels` may
+/// be cleared or duplicated beside the `elements` the GPM engine walks,
+/// so a fold landing in `nodes` could desync from them; such patterns
+/// are skipped and the conjunct stays in the WHERE clause. The walk
+/// yields every node carrying the variable (a cyclic pattern spells one
+/// variable on several entries); the fold that lands decides, and what
+/// each fold builds from the node stays at the fold (the conjunction
+/// fold keeps the plan-resolved tokens, the disjunction fold composes
+/// label expressions) — the walk is the shared policy, never the
+/// payload.
+fn fold_target_nodes<'a>(
+    patterns: &'a mut [PathPattern],
+    var: &SmallName,
+) -> impl Iterator<Item = &'a mut NodePattern> {
+    // The variable is cloned into the filter so the returned iterator
+    // borrows nothing but the patterns (an `impl Iterator` return cannot
+    // carry the argument reference's lifetime).
+    let var = var.clone();
+    patterns
+        .iter_mut()
+        .filter(|p| !p.needs_gpm())
+        .flat_map(|p| p.nodes.iter_mut())
+        .filter(move |n| n.variable.as_ref() == Some(&var))
+}
+
+/// Fold a static label disjunction on an introduced, unbound variable
+/// into the pattern node's label expression: the node keeps its own
+/// static conjunction in `labels` (a disjunction is not a conjunction
+/// label) and its `label_expr` becomes that conjunction `AND` the folded
+/// `Or`. Semantics-preserving for every statement — the pattern matcher
+/// evaluates `label_expr` per candidate exactly as the WHERE predicate
+/// evaluated it per row — and it is what lets the seek arm later serve
+/// the disjunction from per-label indexes instead of a full scan.
+fn add_label_disjunction(
+    patterns: &mut [PathPattern],
+    var: &SmallName,
+    disjuncts: &[SmallName],
+) -> bool {
+    for n in fold_target_nodes(patterns, var) {
+        // Same faithfulness guard as `add_labels`: a non-static existing
+        // label expression is left alone (this candidate declines, a
+        // later one may still take the fold). The base stays names —
+        // one list the entailment test and the final expression both
+        // read, never wrapped in `LabelExpr::Label`s only to be
+        // re-discriminated below.
+        let base: Vec<SmallName> = match n.label_expr.as_ref() {
+            None => n.label_names().cloned().collect(),
+            Some(expr) => match static_labels(expr) {
+                Some(labels) => labels,
+                None => continue,
+            },
+        };
+        // One disjunct the node already carries as a conjunction
+        // label makes the whole `Or` always true under the node's own
+        // labels — the predicate folds away entirely (the polarity
+        // inverts from the conjunction fold's per-member drop).
+        let entailed = disjuncts.iter().any(|d| base.contains(d));
+        if entailed {
+            return true;
+        }
+        let or = LabelExpr::Or(disjuncts.iter().cloned().map(LabelExpr::Label).collect());
+        n.label_expr = Some(if base.is_empty() {
+            or
+        } else {
+            LabelExpr::And(base.into_iter().map(LabelExpr::Label).chain([or]).collect())
+        });
+        return true;
+    }
+    false
 }
 
 /// The flat label set of a static conjunction (`A`, `A&B`, `(A&B)&C`), or
@@ -346,59 +531,53 @@ fn eq_prop(expr: &Expr) -> Option<(SmallName, NamedToken, Expr)> {
 }
 
 fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName]) -> bool {
-    // Folding into a pattern is compact-view-only: a GPM pattern's
-    // `nodes`/`rels` may be cleared or duplicated beside the `elements`
-    // the GPM engine walks, so a label folded into `nodes` could desync
-    // from the elements. Such paths are skipped and the conjunct stays
-    // in the WHERE clause.
-    for p in patterns.iter_mut().filter(|p| !p.needs_gpm()) {
-        for n in &mut p.nodes {
-            if n.variable.as_ref() != Some(var) {
-                continue;
+    for n in fold_target_nodes(patterns, var) {
+        // The rebuild below replaces `label_expr` with the pattern's
+        // own static label set plus the folded conjunct, so it is only
+        // faithful when that set holds every label the pattern needs: a
+        // disjunction/negation/wildcard/dynamic expression
+        // (`MATCH (n:A|B) WHERE n:C`) would be narrowed to `{C}`.
+        let mut folded = match n.label_expr.as_ref() {
+            None => n.labels.clone(),
+            // A label the pattern already resolved keeps its token.
+            Some(expr) => match static_labels(expr) {
+                Some(labels) => labels
+                    .into_iter()
+                    .map(|label| {
+                        let token = n
+                            .labels
+                            .iter()
+                            .find(|(x, _)| *x == label)
+                            .map_or(Token::Unresolved, |(_, token)| *token);
+                        (label, token)
+                    })
+                    .collect(),
+                None => continue,
+            },
+        };
+        // A label folded in from the WHERE has no token yet: resolution
+        // ran before this rewrite and no resolver is in scope here, so
+        // consumers look it up by name (`Token::Unresolved`).
+        for l in labels {
+            if !folded.iter().any(|(x, _)| x == l) {
+                folded.push((l.clone(), Token::Unresolved));
             }
-            // The rebuild below replaces `label_expr` with the pattern's
-            // own static label set plus the folded conjunct, so it is only
-            // faithful when that set holds every label the pattern needs: a
-            // disjunction/negation/wildcard/dynamic expression
-            // (`MATCH (n:A|B) WHERE n:C`) would be narrowed to `{C}`.
-            let mut folded = match n.label_expr.as_ref() {
-                None => n.labels.clone(),
-                // A label the pattern already resolved keeps its token.
-                Some(expr) => match static_labels(expr) {
-                    Some(labels) => labels
-                        .into_iter()
-                        .map(|label| {
-                            let token = n
-                                .labels
-                                .iter()
-                                .find(|(x, _)| *x == label)
-                                .map_or(Token::Unresolved, |(_, token)| *token);
-                            (label, token)
-                        })
-                        .collect(),
-                    None => continue,
-                },
-            };
-            // A label folded in from the WHERE has no token yet: resolution
-            // ran before this rewrite and no resolver is in scope here, so
-            // consumers look it up by name (`Token::Unresolved`).
-            for l in labels {
-                if !folded.iter().any(|(x, _)| x == l) {
-                    folded.push((l.clone(), Token::Unresolved));
-                }
-            }
-            n.labels = folded;
-            n.label_expr = Some(LabelExpr::And(
-                n.label_names().cloned().map(LabelExpr::Label).collect(),
-            ));
-            return true;
         }
+        n.labels = folded;
+        n.label_expr = Some(LabelExpr::And(
+            n.label_names().cloned().map(LabelExpr::Label).collect(),
+        ));
+        return true;
     }
     false
 }
 
 fn add_prop(patterns: &mut [PathPattern], var: &SmallName, key: NamedToken, val: Expr) -> bool {
-    // Same compact-view-only scope as `add_labels` above.
+    // Same compact-view-only scope as the label folds
+    // ([`fold_target_nodes`]'s doc) — spelled here rather than shared,
+    // because this fold targets relationships too (a variable may name
+    // one), and a relationship's match inside its pattern comes after
+    // that pattern's nodes.
     for p in patterns.iter_mut().filter(|p| !p.needs_gpm()) {
         for n in &mut p.nodes {
             if n.variable.as_ref() == Some(var) {
@@ -454,6 +633,13 @@ mod tests {
     /// Lower `cypher`, run the MATCH rewrite, and return the first pattern
     /// node's flat label list plus the WHERE clause that survived.
     fn rewritten(cypher: &str) -> (Vec<String>, Option<Expr>) {
+        let (_, labels, where_clause) = rewritten_with_label_expr(cypher);
+        (labels, where_clause)
+    }
+
+    /// The same rewrite, also surfacing the node's complete label
+    /// expression (rendered) — the disjunction fold's target.
+    fn rewritten_with_label_expr(cypher: &str) -> (Option<String>, Vec<String>, Option<Expr>) {
         let mut query = relate_front::parse_and_lower(cypher).unwrap();
         rewrite_part(&mut query.parts[0].clauses, &crate::NoPatternStats);
         let Clause::Match {
@@ -464,10 +650,11 @@ mod tests {
         else {
             panic!("{cypher}: expected MATCH");
         };
+        let node = &patterns[0].nodes[0];
         // The test helper owns String lists; labels render once.
         (
-            patterns[0].nodes[0]
-                .label_names()
+            node.label_expr.as_ref().map(|expr| format!("{expr:?}")),
+            node.label_names()
                 .map(|label| label.to_string())
                 .collect::<Vec<_>>(),
             where_clause.clone(),
@@ -492,7 +679,6 @@ mod tests {
             "MATCH (n) WHERE n:(A&B)&!(B&C) RETURN n",
             "MATCH (n) WHERE n:(A&B)&!(C) RETURN n",
             "MATCH (n) WHERE n:(A|B)&!(C) RETURN n",
-            "MATCH (n) WHERE n:(A|B) RETURN n",
             "MATCH (n) WHERE n:!(A) RETURN n",
         ] {
             let (labels, where_clause) = rewritten(cypher);
@@ -556,5 +742,97 @@ mod tests {
         let clauses = clause_where_vars("MATCH (a) OPTIONAL MATCH (b) WHERE a.x > 1 RETURN a, b");
         assert_eq!(clauses[0], None);
         assert!(clauses[1].is_some());
+    }
+
+    /// A static label disjunction on an introduced, unbound variable folds
+    /// into the pattern node's label expression — the keyed-OR shape
+    /// (`(p:Model OR p:Source) AND p.id = $d`) stops being a plain WHERE
+    /// filter and becomes a pattern-carried label set the seek arm can
+    /// serve from per-label indexes.
+    #[test]
+    fn static_label_disjunction_folds_into_the_label_expression() {
+        let (label_expr, labels, where_clause) = rewritten_with_label_expr(
+            "MATCH (p) WHERE (p:Model OR p:Source) AND p.id = $d RETURN p",
+        );
+        assert_eq!(
+            label_expr.as_deref(),
+            Some("Or([Label(Model), Label(Source)])")
+        );
+        assert!(
+            labels.is_empty(),
+            "a disjunction is not a conjunction label: {labels:?}"
+        );
+        assert!(
+            where_clause.is_none(),
+            "the label predicate folded out of the WHERE clause"
+        );
+    }
+
+    /// The node's own labels conjoin with the folded disjunction:
+    /// `MATCH (p:C) WHERE p:A OR p:B` is `C AND (A|B)`, never `(C|A|B)`.
+    #[test]
+    fn folded_disjunction_conjoins_with_the_patterns_own_labels() {
+        let (label_expr, labels, where_clause) =
+            rewritten_with_label_expr("MATCH (p:C) WHERE p:A OR p:B RETURN p");
+        assert_eq!(
+            label_expr.as_deref(),
+            Some("And([Label(C), Or([Label(A), Label(B)])])")
+        );
+        assert_eq!(labels, vec!["C".to_string()]);
+        assert!(where_clause.is_none());
+    }
+
+    /// The fold is conjunct-order-independent (LABS-1083 review): a
+    /// label conjunct beside a label disjunction composes into the same
+    /// `And([C, Or([A, B])])` whether it reads before or after the
+    /// `Or` — folded after, the conjunction must still land in the
+    /// node, or the scan loses the `:C` narrowing.
+    #[test]
+    fn the_fold_is_conjunct_order_independent() {
+        for cypher in [
+            "MATCH (p) WHERE (p:A OR p:B) AND p:C RETURN p",
+            "MATCH (p) WHERE p:C AND (p:A OR p:B) RETURN p",
+        ] {
+            let (label_expr, labels, where_clause) = rewritten_with_label_expr(cypher);
+            assert_eq!(
+                label_expr.as_deref(),
+                Some("And([Label(C), Or([Label(A), Label(B)])])"),
+                "{cypher}: both orders compose the same shape"
+            );
+            assert_eq!(labels, vec!["C".to_string()], "{cypher}");
+            assert!(where_clause.is_none(), "{cypher}");
+        }
+    }
+
+    /// One entailed disjunct makes the whole `Or` always true under the
+    /// node's own labels: `MATCH (p:C) WHERE p:C OR p:D` matches every
+    /// `:C` node, so the predicate folds away entirely — never narrowed
+    /// to `:C:D`. Both spellings pin the fold-away.
+    #[test]
+    fn any_entailed_disjunction_folds_to_nothing() {
+        for cypher in [
+            "MATCH (p:C) WHERE p:C OR p:D RETURN p",
+            "MATCH (p:C) WHERE p:C OR p:C RETURN p",
+        ] {
+            let (label_expr, labels, where_clause) = rewritten_with_label_expr(cypher);
+            assert_eq!(
+                label_expr.as_deref(),
+                Some("Label(C)"),
+                "{cypher}: the pattern's own label expression stands"
+            );
+            assert_eq!(labels, vec!["C".to_string()], "{cypher}");
+            assert!(where_clause.is_none(), "{cypher}");
+        }
+    }
+
+    /// Mixed And/Or label trees do not fold (DNF flattening is not
+    /// attempted); the predicate stays in the WHERE clause.
+    #[test]
+    fn mixed_and_or_label_expression_is_not_folded() {
+        let (label_expr, _, where_clause) = rewritten_with_label_expr(
+            "MATCH (p) WHERE (p:A OR (p:B AND p:C)) AND p.id = $d RETURN p",
+        );
+        assert!(label_expr.is_none());
+        assert!(where_clause.is_some());
     }
 }

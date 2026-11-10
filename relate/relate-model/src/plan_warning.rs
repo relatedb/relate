@@ -22,6 +22,8 @@ pub(crate) const WARNING_ESTIMATION_MISS: &str = "EstimationMiss";
 pub(crate) const WARNING_CARTESIAN_PRODUCT: &str = "CartesianProduct";
 /// See [`WARNING_ESTIMATION_MISS`].
 pub(crate) const WARNING_ALL_NODES_SCAN: &str = "AllNodesScan";
+/// See [`WARNING_ESTIMATION_MISS`].
+pub(crate) const WARNING_LABEL_DISJUNCTION_SCAN: &str = "LabelDisjunctionScan";
 
 /// The `EstimationMiss` overshoot factor (ADR-0344): the estimate misses
 /// when it overshoots the actual rows by this many times or more — the
@@ -63,6 +65,17 @@ const ESTIMATION_MISS_FACTOR: u64 = 10;
 ///     scan.message(),
 ///     "the scan matches every node; consider the property index (:Person(name))"
 /// );
+/// // The label-disjunction scan carries the per-label pairs its own
+/// // predicate wants indexed (LABS-1083).
+/// let disjunction = PlanWarning::LabelDisjunctionScan {
+///     indexes: ":Model(id), :Source(id)".to_string(),
+/// };
+/// assert_eq!(disjunction.name(), "LabelDisjunctionScan");
+/// assert_eq!(
+///     disjunction.message(),
+///     "the disjunction scan answers per label; consider the property index \
+///      (:Model(id), :Source(id))"
+/// );
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanWarning {
@@ -80,6 +93,16 @@ pub enum PlanWarning {
     AllNodesScan {
         /// The existing property index the suggestion names.
         index: String,
+    },
+    /// A static label disjunction no seek serves (`MATCH (p) WHERE
+    /// p:Model OR p:Source` after the planner's fold, LABS-1083): the
+    /// scan answers per disjunct label, never every node — its own
+    /// warning shape, never the `AllNodesScan` text. The warning carries
+    /// the per-label `:Label(property)` pairs its equality predicate
+    /// wants indexed, comma-joined, as the suggestion.
+    LabelDisjunctionScan {
+        /// The per-label index pairs the suggestion names.
+        indexes: String,
     },
 }
 
@@ -123,6 +146,12 @@ impl PlanWarning {
                 text: "the scan matches every node; consider the property index".to_string(),
                 kind: NotificationKind::AllNodesScan,
             },
+            PlanWarning::LabelDisjunctionScan { .. } => VocabularyRow {
+                name: WARNING_LABEL_DISJUNCTION_SCAN,
+                text: "the disjunction scan answers per label; consider the property index"
+                    .to_string(),
+                kind: NotificationKind::LabelDisjunctionScan,
+            },
         }
     }
 
@@ -140,6 +169,7 @@ impl PlanWarning {
     pub fn suggested_index(&self) -> Option<&str> {
         match self {
             PlanWarning::AllNodesScan { index } => Some(index.as_str()),
+            PlanWarning::LabelDisjunctionScan { indexes } => Some(indexes.as_str()),
             PlanWarning::EstimationMiss | PlanWarning::CartesianProduct => None,
         }
     }
@@ -194,6 +224,11 @@ impl PlanWarning {
             (WARNING_ALL_NODES_SCAN, Some(index)) => Some(PlanWarning::AllNodesScan {
                 index: index.to_string(),
             }),
+            (WARNING_LABEL_DISJUNCTION_SCAN, Some(indexes)) => {
+                Some(PlanWarning::LabelDisjunctionScan {
+                    indexes: indexes.to_string(),
+                })
+            }
             _ => None,
         }
     }

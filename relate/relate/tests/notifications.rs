@@ -279,6 +279,77 @@ fn explain_all_nodes_scan_projects_the_warning_text_to_a_notification() {
     );
 }
 
+/// LABS-1083: the folded label disjunction that no seek serves carries
+/// its OWN typed `LabelDisjunctionScan` warning — the scan answers per
+/// disjunct label, never every node, so the `AllNodesScan` payload
+/// would misname the operator — suggesting the predicate's OWN
+/// `:Label(property)` pairs (the disjunct labels times the
+/// equality-filtered property), never an unrelated store index the
+/// predicate never mentions (the ticket's `:Column(id)` suggestion for
+/// a `:Model OR :Source` predicate). A store whose indexes serve the
+/// union suppresses the warning: no scan to warn about.
+#[test]
+fn the_disjunction_scan_suggests_the_predicates_own_labels() {
+    let mut conn = connection();
+    // The unrelated index the old suggestion named: first in the catalog.
+    conn.query("CREATE INDEX column_id FOR (n:Column) ON (n.id)")
+        .unwrap();
+    conn.query("CREATE (:Model {id: 1}), (:Source {id: 1}), (:Column {id: 1})")
+        .unwrap();
+    let statement = "EXPLAIN MATCH (p) WHERE (p:Model OR p:Source) AND p.id = 1 RETURN p";
+    let explained = conn.query(statement).unwrap();
+    // The payload read through the typed accessor — a positional index
+    // over a mixed-kind list checks whichever notification happens to
+    // land first.
+    assert_eq!(
+        notifications_of_kind(&explained, NotificationKind::LabelDisjunctionScan)[0].description(),
+        "the disjunction scan answers per label; consider the property index \
+         (:Model(id), :Source(id))"
+    );
+    // The indexes that serve the union: the keyed lookup narrates, the
+    // scan — and its warning — never happens.
+    conn.query("CREATE INDEX model_id FOR (n:Model) ON (n.id)")
+        .unwrap();
+    conn.query("CREATE INDEX source_id FOR (n:Source) ON (n.id)")
+        .unwrap();
+    let served = conn.query(statement).unwrap();
+    // The typed absence — whole-list emptiness would pass while any
+    // other kind rides along.
+    assert!(
+        !has_notification(&served, NotificationKind::LabelDisjunctionScan),
+        "a served union scans nothing: {:?}",
+        served.notifications()
+    );
+}
+
+/// LABS-1083 (review round 2): the base-carrying fold keeps its
+/// `MissingIndex` diagnostic. `MATCH (p:C) WHERE (p:A OR p:B) AND
+/// p.id = 1` folds to `And([C, Or([A, B])])` with the map's anchored
+/// equality — the `:C` population is still the scan the notification
+/// diagnoses, and the label-disjunction scan warning stays suppressed
+/// (a base-carrying shape keeps its labels and its scan narration).
+#[test]
+fn the_base_carrying_fold_keeps_its_missing_index_notification() {
+    let mut conn = connection();
+    conn.query("CREATE (:C {id: 1}), (:A {id: 2}), (:B {id: 3})")
+        .unwrap();
+    let explained = conn
+        .query("EXPLAIN MATCH (p:C) WHERE (p:A OR p:B) AND p.id = 1 RETURN p")
+        .unwrap();
+    assert!(
+        has_notification(&explained, NotificationKind::MissingIndex),
+        "the folded base keeps its MissingIndex diagnosis: {:?}",
+        explained.notifications()
+    );
+    assert!(
+        explained.notifications()[0]
+            .description()
+            .contains("the equality predicate on id filters :C"),
+        "the folded base keeps its MissingIndex diagnosis: {:?}",
+        explained.notifications()
+    );
+}
+
 /// ADR-0363: `EstimationMiss` is a PROFILE fact — the profiled statement's
 /// 25-row estimate against one actual row returns the notification, while
 /// the same statement under EXPLAIN (no actual rows) does not.

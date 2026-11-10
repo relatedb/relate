@@ -129,11 +129,15 @@ mod tests {
             PlanWarning::AllNodesScan {
                 index: ":Person(name)".to_string(),
             },
+            PlanWarning::LabelDisjunctionScan {
+                indexes: ":Model(id), :Source(id)".to_string(),
+            },
         ] {
             match &warning {
                 PlanWarning::EstimationMiss
                 | PlanWarning::CartesianProduct
-                | PlanWarning::AllNodesScan { .. } => {}
+                | PlanWarning::AllNodesScan { .. }
+                | PlanWarning::LabelDisjunctionScan { .. } => {}
             }
             let kind = warning.notification_kind();
             assert!(

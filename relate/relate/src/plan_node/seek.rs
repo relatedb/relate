@@ -2,7 +2,11 @@
 //! whether a MATCH's start element narrates as an index seek — the
 //! operator name, the `RANGE INDEX …` details line, and the seek's own
 //! count, one `Option` the subject rendering and the estimate both read
-//! so the narration and the estimate gate together.
+//! so the narration and the estimate gate together. LABS-1083 adds the
+//! per-row keyed lookup: an equality predicate whose bound the stats
+//! cannot price (a row-bound expression, `m.id = n.id`) still keys the
+//! runtime funnel one bound row at a time, and narrates as
+//! `NodeByLabelSeek` instead of the fused scan name that overstated it.
 //!
 //! The pick comes from the planner's order module — [`best_seek`], the
 //! one equality-before-window derivation the ladder's measured level
@@ -11,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use relate_ir::{BinaryOp, Expr, PathPattern};
+use relate_ir::{BinaryOp, DisjunctionArms, Expr, NodePattern, PathPattern};
 use relate_names::SmallName;
 use relate_planner::{best_seek, where_conjuncts_of, SeekPick};
 
@@ -26,21 +30,33 @@ const NODE_INDEX_SEEK: &str = "NodeIndexSeek";
 /// vocabulary for a seek over an indexed range.
 const NODE_INDEX_SEEK_BY_RANGE: &str = "NodeIndexSeekByRange";
 
+/// The per-row keyed lookup's operator name (LABS-1083): the funnel keys
+/// the start element's equality predicate into the label's RANGE index
+/// one bound row at a time — a seek, not the `NodeByLabelScan` the fused
+/// narration overstated. `pub(super)`: the warning tests thread a
+/// narrated seek through `match_warnings`' typed parameter.
+pub(super) const NODE_BY_LABEL_SEEK: &str = "NodeByLabelSeek";
+
 /// One index-backed start the plan tree narrates (ADR-0486): the seek
 /// operator's name, its details line, and its own count — the narration
 /// and the estimate gate together on the same `Option`, so the tree
-/// never prices a narrated seek at anything but the seek's count.
+/// never prices a narrated seek at anything but the seek's count. The
+/// count is `None` for the per-row keyed lookup (LABS-1083): a
+/// row-bound predicate has no pre-execution count, so the estimate
+/// keeps the fused path's.
 pub(super) struct IndexSeek {
-    /// [`NODE_INDEX_SEEK`] (the anchored-equality point read) or
-    /// [`NODE_INDEX_SEEK_BY_RANGE`] (the v1 comparison window).
+    /// [`NODE_INDEX_SEEK`] (the anchored-equality point read),
+    /// [`NODE_INDEX_SEEK_BY_RANGE`] (the v1 comparison window), or
+    /// [`NODE_BY_LABEL_SEEK`] (the per-row keyed lookup).
     pub(super) operator: &'static str,
     /// The `RANGE INDEX …` details line that leads the subject.
     pub(super) line: String,
     /// The seek's own count: the hit count for the point read, the
     /// posting-length window for the comparison — the tree's
     /// `estimated_rows` (a pre-execution, statistics-derived hint,
-    /// ADR-0344 phase 3 semantics).
-    pub(super) rows: u64,
+    /// ADR-0344 phase 3 semantics). `None` for the per-row keyed
+    /// lookup, whose bound no statistics read can price.
+    pub(super) rows: Option<u64>,
 }
 
 /// The index-backed start of a MATCH (ADR-0486): a single-pattern MATCH
@@ -53,11 +69,14 @@ pub(super) struct IndexSeek {
 /// conjunct's oriented op names `NodeIndexSeekByRange`; when an indexed
 /// equality and an indexed comparison both sit on the start element,
 /// the equality wins the pick — it outranks in the ladder, an ordering
-/// [`best_seek`] owns and the pick's own `op` carries. Everything else
-/// — multi-pattern clauses, no start element, dynamic label
-/// expressions, unindexed pairs, declined counts — answers `None` and
-/// keeps today's fused narration (ADR-0486's fallbacks: the plan never
-/// claims a seek the funnel would decline).
+/// [`best_seek`] owns and the pick's own `op` carries. A pick the stats
+/// cannot price (no countable bound) or a narration that cannot spell
+/// falls through to the per-row keyed lookup ([`keyed_label_seek`],
+/// LABS-1083). Everything else — multi-pattern clauses, no start
+/// element, dynamic label expressions, unindexed pairs, declined
+/// counts — answers `None` and keeps today's fused narration
+/// (ADR-0486's fallbacks: the plan never claims a seek the funnel would
+/// decline).
 pub(super) fn index_seek(
     patterns: &[PathPattern],
     where_clause: Option<&Expr>,
@@ -67,17 +86,113 @@ pub(super) fn index_seek(
         return None;
     };
     let node = single.nodes.first()?;
+    // The clause's own node variables: the bounds a keyed lookup cannot
+    // evaluate (they bind inside this clause's walk) — threaded to the
+    // keyed path's bound filter below, the one enumeration helper.
+    let pattern_vars = super::subject::clause_node_variables(patterns);
+    counted_seek(node, where_clause, stats)
+        .or_else(|| keyed_label_seek(node, &pattern_vars, where_clause, stats))
+}
+
+/// The counted start (ADR-0486): a single static label whose pick the
+/// stats price — the ladder's own pick (the winning identity the plan
+/// decorates, never a second spelling of the min policy or the
+/// equality-first ranking), rendered only when the narration can spell
+/// it. Everything else — no countable pick, an unspellable narration —
+/// declines to the per-row keyed lookup the composition above reads.
+fn counted_seek(
+    node: &NodePattern,
+    where_clause: Option<&Expr>,
+    stats: &dyn PlanStats,
+) -> Option<IndexSeek> {
     single_static_label(node)?;
-    // The ladder's own pick (ADR-0486): the winning identity the plan
-    // decorates — never a second spelling of the min policy or the
-    // equality-first ranking.
     let pick = best_seek(node, where_conjuncts_of(where_clause), stats)?;
-    // The plan narration renders text: the variable and the pick's names
-    // render once, here.
     seek_narration(
         node.variable.as_ref().map(|v| v.to_string()).as_deref(),
         pick,
     )
+}
+
+/// The per-row keyed lookup's narration (LABS-1083): the start element's
+/// equality predicate on a range-indexed (label, property) pair whose
+/// bound the stats cannot price — a per-row expression, `m.id = n.id` —
+/// still keys the runtime funnel one bound row at a time, so the
+/// operator is the seek's name, never the fused `NodeByLabelScan` that
+/// overstated a scan. The label arms the funnel's keyed path serves:
+/// the single static label, or the disjunction fold's per-arm
+/// conjunctions (LABS-1083's union arm). Every arm must carry the pair
+/// in the store's range indexes — ADR-0486's rule, the plan never
+/// claims a seek the funnel would decline; the bound itself stays the
+/// funnel's to decline at runtime (a null bound, a crossover-declined
+/// window), which falls to the scan without changing the narration. No
+/// rows: a per-row bound has no pre-execution count, so the estimate
+/// keeps the fused path's.
+fn keyed_label_seek(
+    node: &NodePattern,
+    pattern_vars: &[SmallName],
+    where_clause: Option<&Expr>,
+    stats: &dyn PlanStats,
+) -> Option<IndexSeek> {
+    // The label arms the funnel's keyed path serves, one view shape: the
+    // disjunction fold's per-arm conjunctions when the pattern carries
+    // them (they cover the base-carrying `And([C, Or(..)])` shape too —
+    // the same borrowed arm classification the executor's union serve
+    // and per-arm scan read, LABS-1083's review, so the narration and
+    // the funnel can never disagree about the arms), else the single
+    // static label's one-arm view.
+    let arms = match node.static_disjunction_arms() {
+        Some(arms) => arms,
+        None => DisjunctionArms::single(single_static_label(node)?),
+    };
+    let var = node.variable.as_ref().map(|v| v.to_string());
+    let keys = super::subject::keyed_equalities(node, where_clause, pattern_vars);
+    // The map's anchored equalities serve as one per-arm lookup: EVERY
+    // map key must be index-served on every arm before the narration
+    // claims the seek — one unserved key falls to the scan. A WHERE
+    // conjunct is its own `Seek`: any one served key narrates.
+    let every_arm_serves = |key: &str| {
+        arms.arms()
+            .all(|mut arm| arm.any(|label| label.with_str(|l| stats.range_index_serves(l, key))))
+    };
+    if !keys.map_keys.is_empty() && keys.map_keys.iter().all(|key| every_arm_serves(key)) {
+        let key = &keys.map_keys[0];
+        return Some(IndexSeek {
+            operator: NODE_BY_LABEL_SEEK,
+            line: keyed_seek_line(var.as_deref(), &arms, key),
+            rows: None,
+        });
+    }
+    for key in &keys.conjunct_keys {
+        if every_arm_serves(key) {
+            return Some(IndexSeek {
+                operator: NODE_BY_LABEL_SEEK,
+                line: keyed_seek_line(var.as_deref(), &arms, key),
+                rows: None,
+            });
+        }
+    }
+    None
+}
+
+/// The keyed lookup's details line: `RANGE INDEX
+/// <var>:<L1>:<L2>(<prop>)` — the serving index target per arm,
+/// comma-joined for a disjunction's union — with no `WHERE` clause: the
+/// bound is per-row (the statement's own `WHERE` filter, which the
+/// details already name), unlike the counted seeks' spelled bounds. An
+/// anonymous start element names no variable, the counted line's way.
+fn keyed_seek_line(var: Option<&str>, arms: &DisjunctionArms<'_>, key: &str) -> String {
+    let targets: Vec<String> = arms
+        .arms()
+        .map(|arm| {
+            let labels: Vec<String> = arm.map(|label| label.to_string()).collect();
+            let target = match var {
+                Some(var) => format!("{var}:{}", labels.join(":")),
+                None => format!(":{}", labels.join(":")),
+            };
+            format!("{target}({key})")
+        })
+        .collect();
+    format!("RANGE INDEX {}", targets.join(", "))
 }
 
 /// The pick's narration (ADR-0486): the operator the pick's op names,
@@ -122,7 +237,7 @@ fn seek_narration(var: Option<&str>, pick: SeekPick<'_>) -> Option<IndexSeek> {
     Some(IndexSeek {
         operator,
         line: seek_line(var, label, &prop, symbol, &bound),
-        rows,
+        rows: Some(rows),
     })
 }
 
@@ -166,7 +281,7 @@ fn bound_text(bound: &Expr) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{compact, comparison, node, predicated, seeking};
+    use super::super::fixtures::{compact, comparison, node, or_node, predicated, seeking};
     use super::*;
 
     /// The anchored-equality point read (ADR-0486): the folded map's
@@ -186,7 +301,7 @@ mod tests {
         let seek = index_seek(&patterns, None, &stats).expect("the indexed point read seeks");
         assert_eq!(seek.operator, "NodeIndexSeek");
         assert_eq!(seek.line, "RANGE INDEX n:Person(name) WHERE name = 'Ada'");
-        assert_eq!(seek.rows, 1);
+        assert_eq!(seek.rows, Some(1));
         // An anonymous point read names no variable in the line.
         let anon = predicated(None, "Person", "name", Expr::Int(7));
         let anon_patterns = [compact(vec![anon], Vec::new())];
@@ -216,7 +331,7 @@ mod tests {
             .expect("the range-indexed comparison seeks");
         assert_eq!(seek.operator, "NodeIndexSeekByRange");
         assert_eq!(seek.line, "RANGE INDEX n:User(age) WHERE age > 5");
-        assert_eq!(seek.rows, 5);
+        assert_eq!(seek.rows, Some(5));
         // `5 > n.age` mirrors: the property-side op the seek serves.
         let flipped = Expr::Binary {
             op: BinaryOp::Gt,
@@ -245,7 +360,7 @@ mod tests {
             right: Box::new(comparison("n", "score", BinaryOp::Lt, Expr::Int(90))),
         };
         let seek = index_seek(&patterns, Some(&both), &stats).expect("both conjuncts serve");
-        assert_eq!(seek.rows, 5, "the tighter window names the operator");
+        assert_eq!(seek.rows, Some(5), "the tighter window names the operator");
         assert_eq!(seek.line, "RANGE INDEX n:User(age) WHERE age > 5");
     }
 
@@ -360,5 +475,78 @@ mod tests {
         // keeps the fused narration.
         let neq = comparison("n", "age", BinaryOp::Neq, Expr::Int(5));
         assert!(index_seek(&user, Some(&neq), &stats).is_none());
+    }
+
+    /// A row-bound reference — `n.id` on the bound's side, the LABS-1083
+    /// repro's `m.id = n.id` shape — for the WHERE-conjunct fixtures.
+    fn row_bound(var: &str, prop: &str) -> Expr {
+        Expr::Property {
+            key_id: Default::default(),
+            expr: Box::new(Expr::Variable(SmallName::from_name(var))),
+            key: SmallName::from_name(prop),
+        }
+    }
+
+    /// LABS-1083: an equality predicate whose bound the stats cannot
+    /// price — a per-row expression — on a range-indexed pair narrates
+    /// `NodeByLabelSeek` (the funnel keys it one bound row at a time),
+    /// the line naming the serving index with no `WHERE` clause (the
+    /// bound is per-row), and no count (nothing prices a per-row bound),
+    /// in both spellings: the WHERE conjunct the fold leaves in place
+    /// and the pattern's own property map.
+    #[test]
+    fn the_per_row_keyed_lookup_narrates_node_by_label_seek() {
+        let stats = seeking(&[("Model", 4)], &[], &[], BTreeMap::new()).indexed(&[("Model", "id")]);
+        let patterns = [compact(vec![node(Some("m"), &["Model"])], Vec::new())];
+        let where_eq = comparison("m", "id", BinaryOp::Eq, row_bound("n", "id"));
+        let seek = index_seek(&patterns, Some(&where_eq), &stats)
+            .expect("the row-bound equality on an indexed pair keys");
+        assert_eq!(seek.operator, "NodeByLabelSeek");
+        assert_eq!(seek.line, "RANGE INDEX m:Model(id)");
+        assert_eq!(
+            seek.rows, None,
+            "a per-row bound has no pre-execution count"
+        );
+        // The pattern-map spelling: `MATCH (m:Model {id: n.id})`.
+        let map_bound = predicated(Some("m"), "Model", "id", row_bound("n", "id"));
+        let map_patterns = [compact(vec![map_bound], Vec::new())];
+        let seek = index_seek(&map_patterns, None, &stats)
+            .expect("the row-bound map entry on an indexed pair keys");
+        assert_eq!(seek.line, "RANGE INDEX m:Model(id)");
+        // The counted estimate keeps the fused path: the keyed lookup
+        // narrates without pricing, so the label count stays the hint.
+        assert_eq!(
+            super::super::subject::match_estimate(&map_patterns, &stats, seek.rows),
+            Some(4)
+        );
+        // An unindexed pair keeps the fused narration — the plan never
+        // claims a seek the funnel would decline.
+        let unindexed = seeking(&[("Model", 4)], &[], &[], BTreeMap::new());
+        assert!(index_seek(&patterns, Some(&where_eq), &unindexed).is_none());
+    }
+
+    /// LABS-1083: the disjunction fold's per-arm union narrates
+    /// `NodeByLabelSeek` with one target per arm — every arm's pair
+    /// indexed — and one unindexed arm declines the whole narration,
+    /// keeping the fused `NodeByLabelScan`.
+    #[test]
+    fn the_disjunction_union_narrates_node_by_label_seek_per_arm() {
+        let stats = seeking(&[("Model", 4), ("Source", 6)], &[], &[], BTreeMap::new())
+            .indexed(&[("Model", "id"), ("Source", "id")]);
+        let patterns = [compact(
+            vec![or_node(Some("p"), &["Model", "Source"])],
+            Vec::new(),
+        )];
+        let where_eq = comparison("p", "id", BinaryOp::Eq, row_bound("n", "id"));
+        let seek =
+            index_seek(&patterns, Some(&where_eq), &stats).expect("every arm's pair is indexed");
+        assert_eq!(seek.operator, "NodeByLabelSeek");
+        assert_eq!(seek.line, "RANGE INDEX p:Model(id), p:Source(id)");
+        assert_eq!(seek.rows, None);
+        // One unindexed arm declines the union — the funnel's
+        // every-arm-served rule, mirrored by the narration.
+        let one_arm = seeking(&[("Model", 4), ("Source", 6)], &[], &[], BTreeMap::new())
+            .indexed(&[("Model", "id")]);
+        assert!(index_seek(&patterns, Some(&where_eq), &one_arm).is_none());
     }
 }

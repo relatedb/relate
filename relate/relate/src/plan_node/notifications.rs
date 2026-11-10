@@ -128,7 +128,6 @@ fn missing_index_notifications(
     patterns: &[PathPattern],
     stats: &dyn PlanStats,
 ) -> Vec<Notification> {
-    let indexed = stats.range_indexed_properties();
     let mut notifications = Vec::new();
     for pattern in patterns {
         walk_pattern_payloads(pattern, &mut |payload| {
@@ -145,10 +144,7 @@ fn missing_index_notifications(
             };
             for (property, _) in pairs {
                 let property = property.to_string();
-                if indexed
-                    .iter()
-                    .any(|indexed| indexed.label == label && indexed.property == property)
-                {
+                if stats.range_index_serves(&label, &property) {
                     continue;
                 }
                 notifications.push(

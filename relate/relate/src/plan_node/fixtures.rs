@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use relate_ir::{BinaryOp, Direction, Expr, NodePattern, PathPattern, RelPattern};
+use relate_ir::{BinaryOp, Direction, Expr, LabelExpr, NodePattern, PathPattern, RelPattern};
 use relate_names::{NamedToken, SmallName};
 use relate_planner::PatternStats;
 
@@ -20,6 +20,26 @@ pub(super) fn node(variable: Option<&str>, labels: &[&str]) -> NodePattern {
             .map(|s| (SmallName::from_name(s), Default::default()))
             .collect(),
         label_expr: None,
+        properties: None,
+        prop_keys: Vec::new(),
+        where_clause: None,
+        force_scan: false,
+    }
+}
+
+/// The disjunction fold's plain-`Or` node shape (LABS-1083): no
+/// conjunction labels, the `Or` in the label expression — what
+/// `MATCH (p) WHERE p:Model OR p:Source` carries after the rewrite.
+pub(super) fn or_node(variable: Option<&str>, disjuncts: &[&str]) -> NodePattern {
+    NodePattern {
+        variable: variable.map(SmallName::from_name),
+        labels: Vec::new(),
+        label_expr: Some(LabelExpr::Or(
+            disjuncts
+                .iter()
+                .map(|l| LabelExpr::Label((*l).into()))
+                .collect(),
+        )),
         properties: None,
         prop_keys: Vec::new(),
         where_clause: None,
@@ -89,15 +109,18 @@ pub(super) fn comparison(var: &str, prop: &str, op: BinaryOp, bound: Expr) -> Ex
 }
 
 /// A seek-capable stats stub (ADR-0486's derivation tests): the label
-/// counts, the equality hit counts, and the range window counts,
-/// answered from tables. The indexed lookups model the live stats' bound
-/// resolution — `seek_value` through the stub's parameters — so a bound
-/// that does not resolve stays uncounted exactly the way the real index
-/// layer declines it.
+/// counts, the equality hit counts, the range window counts, and the
+/// range-indexed (label, property) pairs (LABS-1083's keyed-lookup
+/// narration), answered from tables. The indexed lookups model the live
+/// stats' bound resolution — `seek_value` through the stub's parameters —
+/// so a bound that does not resolve stays uncounted exactly the way the
+/// real index layer declines it.
+#[derive(Clone)]
 pub(super) struct Seeking {
     labels: Vec<(&'static str, u64)>,
     equalities: Vec<(&'static str, &'static str, u64)>,
     ranges: Vec<(&'static str, &'static str, u64)>,
+    indexed: Vec<(&'static str, &'static str)>,
     params: BTreeMap<String, crate::Value>,
 }
 
@@ -112,7 +135,17 @@ pub(super) fn seeking(
         labels: labels.to_vec(),
         equalities: equalities.to_vec(),
         ranges: ranges.to_vec(),
+        indexed: Vec::new(),
         params,
+    }
+}
+
+impl Seeking {
+    /// The range-indexed (label, property) pairs the keyed-lookup
+    /// narration reads (LABS-1083) — the store's typed index facts.
+    pub(super) fn indexed(mut self, pairs: &[(&'static str, &'static str)]) -> Self {
+        self.indexed = pairs.to_vec();
+        self
     }
 }
 
@@ -121,7 +154,13 @@ impl PlanStats for Seeking {
         Vec::new()
     }
     fn range_indexed_properties(&self) -> Vec<crate::stats::RangeIndexedProperty> {
-        Vec::new()
+        self.indexed
+            .iter()
+            .map(|(label, property)| crate::stats::RangeIndexedProperty {
+                label: (*label).to_string(),
+                property: (*property).to_string(),
+            })
+            .collect()
     }
 }
 

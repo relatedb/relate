@@ -239,6 +239,16 @@ impl NodePattern {
     pub fn label_names(&self) -> impl Iterator<Item = &SmallName> {
         self.labels.iter().map(|(name, _)| name)
     }
+
+    /// The disjunction arms of the pattern's label expression (LABS-1083)
+    /// — the one accessor every consumer of the folded shape reads (the
+    /// executor's union serve, the plan narration, the warning's scan
+    /// shape), so the derivation is spelled once at the type's home.
+    /// `None` for every other shape: no label expression, a plain
+    /// conjunction, or a shape the classifier declines.
+    pub fn static_disjunction_arms(&self) -> Option<DisjunctionArms<'_>> {
+        self.label_expr.as_ref()?.static_disjunction_arms()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,6 +381,151 @@ impl LabelExpr {
             _ => false,
         }
     }
+
+    /// The per-arm borrowed views of a disjunction-bearing label
+    /// expression (LABS-1083): the two shapes the planner's disjunction
+    /// fold and the parsed `(p:A|B)` produce. `Or([A, B])` answers one
+    /// view — empty base, disjuncts `[A, B]` — each disjunct its own arm;
+    /// `And([C, Or([A, B])])` (the pattern's own conjunction carried
+    /// beside the folded `Or`) answers base `[C]`, disjuncts `[A, B]` —
+    /// every arm the shared conjunction plus one disjunct. Every arm is a
+    /// static conjunction, and the union of the arms' conjunctions is
+    /// equivalent to the expression, so a consumer that serves each arm's
+    /// conjunction and unions the answers (deduplicated) serves the
+    /// expression. `None` for everything else: no disjunction (a plain
+    /// label or conjunction), a nested `Or`, an `And` of several `Or`s (a
+    /// DNF no producer builds), an empty `Or`, or any wildcard, dynamic,
+    /// or negated leaf. The arm-extraction twin of
+    /// [`is_static_conjunction`](Self::is_static_conjunction):
+    /// conjunction consumers read a node's retained `labels`, disjunction
+    /// consumers read this.
+    ///
+    /// The views borrow: arm *i* is
+    /// [`DisjunctionArms::arms`](DisjunctionArms::arm) — the base's names
+    /// plus one disjunct, iterated over the expression's own names —
+    /// never a per-disjunct `Vec` clone of the shared conjunction (the
+    /// O(n·k) copies an owned per-arm answer would pay for an O(n+k)
+    /// expression).
+    pub fn static_disjunction_arms(&self) -> Option<DisjunctionArms<'_>> {
+        // The shared conjunction every arm carries: empty under a bare
+        // `Or`, the `And`'s plain labels beside a folded one. Each arm
+        // of this match yields the `Or`'s own item slice directly — the
+        // shape is discriminated once here, never re-matched below.
+        let (base, items): (Vec<&SmallName>, &[LabelExpr]) = match self {
+            LabelExpr::Or(items) => (Vec::new(), items),
+            LabelExpr::And(items) => {
+                // A plain conjunction carries no `Or` — decline before
+                // building the base list, the per-funnel-call allocation
+                // the LABS-1083 review flags (the fold's shape always
+                // spells a non-conjunction `And`).
+                if self.is_static_conjunction() {
+                    return None;
+                }
+                // Two lists built in one pass: the plain labels, and the
+                // at-most-one `Or` (the fold appends exactly one; a second
+                // is a DNF this classification declines).
+                let mut base: Vec<&SmallName> = Vec::new();
+                let mut or = None;
+                for item in items {
+                    match item {
+                        LabelExpr::Label(label) => base.push(label),
+                        LabelExpr::Or(items) if or.is_none() => or = Some(items.as_slice()),
+                        _ => return None,
+                    }
+                }
+                (base, or?)
+            }
+            _ => return None,
+        };
+        // The degenerate empty `Or` is constructible (the conjunction
+        // classifier's twin decline) and answers no arm.
+        if items.is_empty() {
+            return None;
+        }
+        // Every disjunct a plain label — a nested `Or`, wildcard, dynamic,
+        // or negated leaf declines the whole classification. The disjuncts
+        // collect as borrowed names (never a per-disjunct `Vec` clone of
+        // the base); each arm is the base plus one of these, composed per
+        // consumer use by [`DisjunctionArms::arms`].
+        let disjuncts: Option<Vec<&SmallName>> = items
+            .iter()
+            .map(|item| match item {
+                LabelExpr::Label(label) => Some(label),
+                _ => None,
+            })
+            .collect();
+        Some(DisjunctionArms {
+            base,
+            disjuncts: disjuncts?,
+        })
+    }
+}
+
+/// The borrowed per-arm views of a disjunction-bearing label expression
+/// (LABS-1083): the shared conjunction base every arm carries (empty
+/// under a bare `Or`) and the disjunct labels — arm *i* is the base plus
+/// disjunct *i*. Constructed only by
+/// [`LabelExpr::static_disjunction_arms`](LabelExpr::static_disjunction_arms)
+/// and [`DisjunctionArms::single`](Self::single) (the single-label view
+/// the keyed narration unifies with the disjunction's arms); the arms
+/// borrow the expression's own names, so serving them costs no
+/// per-disjunct clone of the shared conjunction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisjunctionArms<'a> {
+    /// The shared conjunction labels every arm carries.
+    base: Vec<&'a SmallName>,
+    /// The disjunct labels — one per arm: arm *i* is `base` plus
+    /// `disjuncts[i]`.
+    disjuncts: Vec<&'a SmallName>,
+}
+
+impl<'a> DisjunctionArms<'a> {
+    /// The single-label arm: one arm, no shared base — the view shape a
+    /// lone static label and a disjunction's arms read through alike, so
+    /// a consumer that serves per arm serves both without a second
+    /// spelling (LABS-1083's keyed narration unifies them).
+    pub fn single(label: &'a SmallName) -> Self {
+        DisjunctionArms {
+            base: Vec::new(),
+            disjuncts: vec![label],
+        }
+    }
+
+    /// The shared conjunction labels every arm carries — empty under a
+    /// bare `Or`, the `And`'s plain labels beside a folded one.
+    pub fn base(&self) -> &[&'a SmallName] {
+        &self.base
+    }
+
+    /// The disjunct labels, statement order — arm *i* is
+    /// [`base`](Self::base) plus `disjuncts()[i]`.
+    pub fn disjuncts(&self) -> &[&'a SmallName] {
+        &self.disjuncts
+    }
+
+    /// The arm count — one per disjunct; a capacity hint, never an
+    /// iteration protocol (the arms are iterated, not indexed).
+    pub fn len(&self) -> usize {
+        self.disjuncts.len()
+    }
+
+    /// Whether the view answers no arm — no live construction does (the
+    /// classifier declines an empty `Or`); held beside [`len`](Self::len)
+    /// for the slice-shaped API.
+    pub fn is_empty(&self) -> bool {
+        self.disjuncts.is_empty()
+    }
+
+    /// Every arm's labels, one iterator per arm — each arm is the shared
+    /// base plus one disjunct, iterated over the expression's own
+    /// borrowed names, never a per-disjunct `Vec`. The natural
+    /// iteration protocol: no unchecked arm index for a consumer
+    /// pattern whose only shape is "every arm".
+    pub fn arms(&self) -> impl Iterator<Item = impl Iterator<Item = &'a SmallName> + '_> + '_ {
+        self.disjuncts
+            .iter()
+            .map(|disjunct| self.base.iter().copied().chain(std::iter::once(*disjunct)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -444,5 +599,107 @@ impl PredefinedType {
             PredefinedType::Map => "MAP",
             PredefinedType::Uuid => "UUID",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! LABS-1083's arm-classifier pins: the two fold shapes answer their
+    //! per-arm views (base plus one disjunct each, borrowed), and every
+    //! other shape declines — the same decline vocabulary
+    //! `is_static_conjunction` keeps for its shapes.
+
+    use super::{DisjunctionArms, LabelExpr, SmallName};
+
+    fn label(name: &str) -> LabelExpr {
+        LabelExpr::Label(SmallName::from_name(name))
+    }
+
+    /// One view's arms, each arm's names rendered and collected — the
+    /// readable form the assertions compare.
+    fn rendered(arms: &DisjunctionArms<'_>) -> Vec<Vec<String>> {
+        arms.arms()
+            .map(|arm| arm.map(|label| label.to_string()).collect())
+            .collect()
+    }
+
+    /// The two fold shapes answer their per-arm views: a bare `Or` is one
+    /// arm per disjunct over no shared base, and an `And` carrying the
+    /// pattern's own conjunction beside the folded `Or` is every arm that
+    /// base plus one disjunct — the union of the arms equivalent to the
+    /// expression.
+    #[test]
+    fn the_fold_shapes_answer_their_per_arm_views() {
+        let bare = LabelExpr::Or(vec![label("Model"), label("Source")]);
+        let arms = bare.static_disjunction_arms().expect("the bare Or folds");
+        assert_eq!(
+            rendered(&arms),
+            vec![vec!["Model".to_string()], vec!["Source".to_string()]]
+        );
+        assert!(arms.base().is_empty());
+        assert_eq!(arms.len(), 2);
+
+        let nested = LabelExpr::And(vec![
+            label("C"),
+            LabelExpr::Or(vec![label("A"), label("B")]),
+        ]);
+        let arms = nested.static_disjunction_arms().expect("the And folds");
+        assert_eq!(
+            rendered(&arms),
+            vec![
+                vec!["C".to_string(), "A".to_string()],
+                vec!["C".to_string(), "B".to_string()]
+            ]
+        );
+        assert_eq!(
+            arms.base(),
+            vec![&SmallName::from_name("C")],
+            "the shared conjunction every arm carries"
+        );
+    }
+
+    /// Everything else declines: no disjunction (a plain label or
+    /// conjunction), a nested `Or`, an `And` of several `Or`s, an empty
+    /// `Or`, and any wildcard, dynamic, or negated leaf.
+    #[test]
+    fn every_other_shape_declines() {
+        assert!(label("A").static_disjunction_arms().is_none());
+        assert!(LabelExpr::And(vec![label("A"), label("B")])
+            .static_disjunction_arms()
+            .is_none());
+        // A nested Or: the disjunct is not a plain label.
+        let nested = LabelExpr::Or(vec![
+            label("A"),
+            LabelExpr::Or(vec![label("B"), label("C")]),
+        ]);
+        assert!(nested.static_disjunction_arms().is_none());
+        // An And of two Ors: a DNF no producer builds.
+        let dnf = LabelExpr::And(vec![
+            LabelExpr::Or(vec![label("A"), label("B")]),
+            LabelExpr::Or(vec![label("C"), label("D")]),
+        ]);
+        assert!(dnf.static_disjunction_arms().is_none());
+        // An empty Or is constructible and answers no arm.
+        assert!(LabelExpr::Or(Vec::new())
+            .static_disjunction_arms()
+            .is_none());
+        // Wildcard and negated leaves decline the whole classification.
+        let wild = LabelExpr::Or(vec![label("A"), LabelExpr::Wildcard]);
+        assert!(wild.static_disjunction_arms().is_none());
+        let negated = LabelExpr::Or(vec![label("A"), LabelExpr::Not(Box::new(label("B")))]);
+        assert!(negated.static_disjunction_arms().is_none());
+        assert!(LabelExpr::Wildcard.static_disjunction_arms().is_none());
+    }
+
+    /// The single-label arm: one arm, no shared base — the same view shape
+    /// a lone label and a disjunction's arms read through.
+    #[test]
+    fn the_single_label_view_answers_one_arm() {
+        let name = SmallName::from_name("Model");
+        let arms = DisjunctionArms::single(&name);
+        assert_eq!(rendered(&arms), vec![vec!["Model".to_string()]]);
+        assert!(arms.base().is_empty());
+        assert_eq!(arms.disjuncts(), vec![&name]);
+        assert!(!arms.is_empty());
     }
 }

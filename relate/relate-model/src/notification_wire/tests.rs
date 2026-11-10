@@ -12,13 +12,14 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
     // forces every new variant to claim a row; this list forces that row
     // to carry an authored expectation below (a kind missing here also
     // misses its expectation, so the lengths differ and the pin fails).
-    const ALL_KINDS: [NotificationKind; 27] = [
+    const ALL_KINDS: [NotificationKind; 28] = [
         NotificationKind::CartesianProduct,
         NotificationKind::UnboundedVariableLengthPattern,
         NotificationKind::AllNodesScan,
         NotificationKind::MissingIndex,
         NotificationKind::EagerAggregation,
         NotificationKind::EstimationMiss,
+        NotificationKind::LabelDisjunctionScan,
         NotificationKind::UnknownLabelWarning,
         NotificationKind::UnknownRelationshipTypeWarning,
         NotificationKind::UnknownPropertyKeyWarning,
@@ -114,6 +115,16 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
                 "Rework the operator's input so the estimate can see the filter (add the \
                  selective predicate at the scan, or reorder the join); the estimate is a \
                  planner assumption, not a runtime fact.",
+            ),
+            (
+                "Relate.Notification.Statement.LabelDisjunctionScan",
+                "03C94",
+                "INFORMATION",
+                "PERFORMANCE",
+                "Label disjunction scan",
+                "Create a range index on each disjunct label's filtered property: the \
+                 disjunction then serves as per-label keyed lookups instead of per-label \
+                 scans.",
             ),
             (
                 "Neo.ClientNotification.Statement.UnknownLabelWarning",

@@ -13,6 +13,15 @@ pub struct IndexDef {
     pub property: String,
 }
 
+/// The `:Label(property)` schema text of one index pair — the one
+/// spelling every render of an index target reads ([`IndexDef::
+/// index_text`]'s own text, the plan tree's `AllNodesScan` suggestion,
+/// the `LabelDisjunctionScan` warning's per-label pairs), never a
+/// per-site `format!`.
+pub fn index_schema_text(label: &str, property: &str) -> String {
+    format!(":{label}({property})")
+}
+
 impl IndexDef {
     /// The index's `:Label(property)` schema text — the one spelling the
     /// schema-naming reads render (the plan tree's `AllNodesScan`
@@ -32,7 +41,7 @@ impl IndexDef {
             .split('#')
             .next()
             .expect("a split yields a head");
-        format!(":{}({})", self.label, property)
+        index_schema_text(&self.label, property)
     }
 }
 

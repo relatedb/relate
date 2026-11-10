@@ -1235,7 +1235,13 @@ text after the seek line (the hops the fused operator still walks); the
 `Estimated Rows` column carries the seek's own count (the hit count for
 the point read, the posting-length window for the range), and a start no
 index serves keeps the fused `NodeByLabelScan`/`Expand` narration with
-the label-count estimate.
+the label-count estimate. A per-row keyed lookup — an equality predicate
+on a range-indexed pair whose bound is a row expression (`m.id = n.id`),
+or a label disjunction served as the per-arm union of keyed postings
+(`p:Model OR p:Source`, LABS-1083) — narrates `NodeByLabelSeek`, the
+details reading `RANGE INDEX <var>:<Label>(<prop>)` (one target per arm,
+comma-joined, no `WHERE` clause: the bound is per row) with no count of
+its own, the label-count estimate staying.
 
 In the machine modes, an `EXPLAIN` statement emits the **structured plan**
 — the tree itself, in Neo4j's structured-plan field shape, the
@@ -1391,12 +1397,13 @@ noted):
 | --- | --- | --- |
 | `CartesianProduct` | a multi-pattern `MATCH` whose patterns share no join anchor (no node variable appears in more than one pattern) | `the MATCH patterns share no join anchor` |
 | `AllNodesScan` | a label-less scan (`MATCH (n)`) while the store carries a property index — the message names the existing index as the suggestion | `the scan matches every node; consider the property index (:Label(property))` |
+| `LabelDisjunctionScan` | a folded label disjunction no seek serves (LABS-1083) — the scan answers per disjunct label, never every node; the message names the predicate's own per-label `:Label(property)` pairs as the suggestion, never an unrelated store index | `the disjunction scan answers per label; consider the property index (:Model(id), :Source(id))` |
 | `EstimationMiss` | `PROFILE` only: an operator whose estimate overshoots its actual rows by 10x or more — the same policy that flags the `Est/Actual` cell with `!` | `estimated rows 10x or more above the actual rows` |
 
 The warning rides beside the affected operator's row (a node without one
 renders `-` in the column) and, in the machine modes, the structured
 plan's nodes carry a `warnings` list of the warning names — `EstimationMiss`,
-`CartesianProduct`, `AllNodesScan` — present only on the nodes that carry
+`CartesianProduct`, `AllNodesScan`, `LabelDisjunctionScan` — present only on the nodes that carry
 one.
 
 ### Query notifications (ADR-0363)

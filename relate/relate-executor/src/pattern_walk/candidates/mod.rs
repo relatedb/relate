@@ -13,13 +13,13 @@
 //! `seek.rs` beside this module keeps the seek vocabulary and its
 //! recognizers (the single-index lookups — TEXT contains/prefix, RANGE
 //! bounds, SPATIAL, `id()`/`elementId()`); this module keeps the funnel
-//! that ranks them, the OR-union pass, the served-set narrowing, and the
-//! scan tail.
+//! that ranks them, the OR-union pass, the served-set narrowing, the
+//! label-disjunction union arm (LABS-1083), and the scan tail.
 
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{NodeId, Result, Value};
-use relate_ir::{BinaryOp, Expr, NodePattern};
+use relate_ir::{BinaryOp, DisjunctionArms, Expr, NodePattern};
 use relate_names::SmallName;
 
 use crate::eval::expr_vars;
@@ -27,6 +27,7 @@ use crate::overlay::{intersect_ids, union_ids, ExecGraph};
 use crate::pattern_walk::PatternMapRole;
 use crate::pattern_walk::{binding, pattern_props, Binding, NodeBinding};
 use crate::row::Row;
+use crate::tiered_set::{TieredWordSet, WordHash};
 
 mod seek;
 #[cfg(test)]
@@ -41,6 +42,68 @@ pub(crate) fn label_index_seekable(node: &NodePattern) -> bool {
     node.label_expr
         .as_ref()
         .is_none_or(|expr| expr.is_static_conjunction())
+}
+
+/// The disjunction fold's union serve (LABS-1083): every arm's label set
+/// is a static conjunction, so the seek answers as the union of the
+/// per-arm keyed postings — consult each disjunct arm's index in turn,
+/// accumulate into one id set deduplicated by `NodeId` through
+/// [`union_dedup`] (a node carrying two disjunct labels yields ONE
+/// candidate; the `Or` predicate yields each node once). Every arm must
+/// pass the seek eligibility and be served by its index — one declined
+/// arm (a missing index, ADR-0493's crossover-declined window) declines
+/// the whole union, the OR-union pass's every-arm-served rule, and the
+/// funnel falls to the next seek or the scan tail. The union is a
+/// superset exactly as each arm's serve is (an indexed serve can
+/// over-answer); the per-candidate check — the label expression and every
+/// predicate re-applied — stays the exactness net, so the union arm
+/// bypasses [`ServedIds::narrowed`] whose label/property narrowing would
+/// key against the pattern's own (empty) label list and scan every node.
+fn seek_union(
+    graph: &ExecGraph<'_>,
+    seek: &Seek,
+    arms: &DisjunctionArms<'_>,
+) -> Result<Option<Vec<NodeId>>> {
+    let mut served: Vec<Vec<NodeId>> = Vec::with_capacity(arms.len());
+    for arm in arms.arms() {
+        // Map-bridge: the graph's label lookups stay String-keyed; one
+        // arm's labels render once per candidate selection, at the graph
+        // call itself — the arms stay the classifier's borrowed views.
+        let labels: Vec<String> = arm.map(|label| label.to_string()).collect();
+        // Each arm IS a static conjunction by construction of the arm
+        // classifier, so the arm's own label criterion passes; the
+        // crossover prices the arm's own scan population.
+        if !seek.servable(graph, &labels, true) {
+            return Ok(None);
+        }
+        let Some(ids) = seek.serve(graph, &labels) else {
+            return Ok(None);
+        };
+        served.push(ids.into_ids());
+    }
+    union_dedup(served.into_iter()).map(Some)
+}
+
+/// The union of the per-arm served answers, deduplicated by node id and
+/// ascending — the one per-arm union spelling every disjunction serve
+/// reads (the keyed seek union and the scan tail's per-arm property
+/// lookup alike). The dedup set is the tiered word set (ADR-0522): its
+/// inline tier holds the common keyed case's handful of ids
+/// allocation-free. `NodeId` is `i64` and the set knows raw `u64` words:
+/// the bit-pattern cast is injective over the whole `i64` range, so
+/// distinct ids stay distinct words whatever their sign.
+fn union_dedup(served: impl Iterator<Item = Vec<NodeId>>) -> Result<Vec<NodeId>> {
+    let mut seen = TieredWordSet::new(WordHash::Id);
+    let mut ids = Vec::new();
+    for arm_ids in served {
+        for id in arm_ids {
+            if seen.insert(id as u64)? {
+                ids.push(id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    Ok(ids)
 }
 
 /// Outcome of trying to answer one boolean node with indexes.
@@ -332,6 +395,9 @@ fn binding_arm(
         return scan_ids(graph, np, || Ok(BTreeMap::new()), cap);
     }
     let label_seekable = label_index_seekable(np);
+    // The disjunction fold's per-arm views (LABS-1083): `None` for every
+    // shape the single keyed arm or the scan tail already serves.
+    let disjunction_arms = np.static_disjunction_arms();
     // Every conjunct that is a seek on this variable, cheapest first.
     // The first one an index serves answers the pattern; an unserved
     // seek (no index, empty CONTAINS needle) yields to the next. The
@@ -345,6 +411,18 @@ fn binding_arm(
     // pattern's labels render once per candidate selection (not per row).
     let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
     for seek in &seeks {
+        // The disjunction fold: an indexed seek serves as the union of
+        // the per-arm postings. The ids seek never takes the union —
+        // it is label-blind (its serve never reads the labels), so the
+        // single serve below answers it unchanged.
+        if let Some(arms) = &disjunction_arms {
+            if seek.indexed() {
+                if let Some(ids) = seek_union(graph, seek, arms)? {
+                    return Ok(ids);
+                }
+                continue;
+            }
+        }
         // The one per-seek eligibility call: the label criterion and
         // ADR-0493's crossover, folded into `servable`.
         if !seek.servable(graph, &labels, label_seekable) {
@@ -387,19 +465,82 @@ fn binding_arm(
 /// property map stays a lazy thunk so a caller whose labels are not
 /// seekable never evaluates it — the error surface is unchanged. `cap`
 /// is [`ExecGraph::lookup_nodes_upto`]'s: a residual scan may stop at
-/// `cap + 1` matches.
+/// `cap + 1` matches. The disjunction fold's shapes (LABS-1083) answer
+/// through their own helper ([`scan_disjunction_arms`]), never a
+/// whole-store scan of their own spelling.
 fn scan_ids(
     graph: &ExecGraph<'_>,
     np: &NodePattern,
     props: impl FnOnce() -> Result<BTreeMap<String, Value>>,
     cap: Option<usize>,
 ) -> Result<Vec<NodeId>> {
+    // The two label shapes are exclusive — a static conjunction never
+    // carries the `Or` the disjunction arms read, and a disjunction is
+    // not a static conjunction — so the `FnOnce` map evaluates at most
+    // once, on the path its pattern's shape takes.
     if label_index_seekable(np) {
         // Same render-once bridge as the seek loop above.
         let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
         if let Some(ids) = graph.lookup_nodes_upto(&labels, &props()?, cap) {
             return Ok(ids);
         }
+        // The lookup's one decline is the both-empty shape (no labels, no
+        // equalities) — a pattern that carries no disjunction arms either,
+        // so the all-nodes scan below answers it.
+    } else if let Some(arms) = np.static_disjunction_arms() {
+        if let Some(ids) = scan_disjunction_arms(graph, &arms, &props()?, cap)? {
+            return Ok(ids);
+        }
     }
     Ok(graph.all_node_ids())
+}
+
+/// The disjunction fold's scan answer (LABS-1083) — the one spelling of
+/// the shape's scan policy, read by [`scan_ids`]'s dispatch: a pattern
+/// with property equalities answers as the union of the per-arm
+/// label/property lookups (each arm's `(label, property)` index
+/// consulted with the map's folded value, the per-arm analogue of the
+/// conjunction path's one `lookup_nodes` call; an arm whose pair no
+/// index serves falls to that arm's label scan inside the lookup,
+/// exactly the single-label path's decline — and the map evaluates at
+/// the funnel for these shapes, the single-label seekable path's own
+/// policy: the same typed [`pattern_props`] error, raised before the
+/// first candidate instead of at it). A pattern without equalities
+/// (`And([C, Or([A, B])])`, no map) scans the conjunction base — the
+/// pre-fold `:C` label scan, the `Or` arms left to the per-candidate
+/// check. `Ok(None)` is the all-nodes fallthrough: a bare `Or` over no
+/// conjunction labels, whose pre-fold form scanned the whole store.
+/// `cap` rides every lookup — [`ExecGraph::lookup_nodes_upto`]'s
+/// contract, per arm and per base scan alike.
+fn scan_disjunction_arms(
+    graph: &ExecGraph<'_>,
+    arms: &DisjunctionArms<'_>,
+    props: &BTreeMap<String, Value>,
+    cap: Option<usize>,
+) -> Result<Option<Vec<NodeId>>> {
+    if !props.is_empty() {
+        // The per-arm serve of the map's equalities: one arm's labels
+        // render once per arm (the map-bridge), each arm's lookup
+        // always serving — an arm's labels are non-empty, and a
+        // non-empty seek is the lookup's one `Some` shape.
+        return union_dedup(arms.arms().map(|arm| {
+            let labels: Vec<String> = arm.map(|label| label.to_string()).collect();
+            graph
+                .lookup_nodes_upto(&labels, props, cap)
+                .expect("an arm's labels are non-empty: lookup_nodes always serves")
+        }))
+        .map(Some);
+    }
+    // No equalities to key on: the fold's And-with-arms shape scans
+    // its conjunction base (the pre-fold label scan), the `Or` arms
+    // filtering per candidate — the base labels are non-empty, so
+    // the lookup's one decline (the both-empty shape) cannot fire:
+    // the same always-served expect the per-arm serve above states.
+    if !arms.base().is_empty() {
+        let labels: Vec<String> = arms.base().iter().map(|label| label.to_string()).collect();
+        return Ok(Some(graph.lookup_nodes_upto(&labels, props, cap).expect(
+            "the base labels are non-empty: lookup_nodes always serves",
+        )));
+    }
+    Ok(None)
 }

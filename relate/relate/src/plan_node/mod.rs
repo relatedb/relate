@@ -657,9 +657,14 @@ fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode {
                 estimated_rows: subject::match_estimate(
                     patterns,
                     stats,
-                    seek.as_ref().map(|seek| seek.rows),
+                    seek.as_ref().and_then(|seek| seek.rows),
                 ),
-                warnings: warning::match_warnings(patterns, stats),
+                warnings: warning::match_warnings(
+                    patterns,
+                    where_clause.as_ref(),
+                    stats,
+                    seek.as_ref(),
+                ),
                 notifications: notifications::match_notifications(patterns, stats),
                 pattern_engine: stats.pattern_engine(),
                 ..ClauseNode::new(subject_operator, details, Vec::new())

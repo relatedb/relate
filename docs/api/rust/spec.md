@@ -1280,7 +1280,13 @@ The plan representation is the `PlanNode` tree:
   pair, `NodeIndexSeekByRange` for a comparison window, the details
   reading `RANGE INDEX <var>:<Label>(<prop>) WHERE <prop> <op> <bound>`
   with a multi-element pattern's text after the line and the estimate
-  the seek's own count — an aggregation names its grouping keys, a
+  the seek's own count, and `NodeByLabelSeek` for a per-row keyed lookup
+  (LABS-1083) — an equality predicate on a range-indexed pair whose bound
+  is a row expression, or a label disjunction served as the per-arm union
+  of keyed postings, the details reading
+  `RANGE INDEX <var>:<Label>(<prop>)` (one target per arm, no `WHERE`
+  clause: the bound is per row) with no count of its own — an
+  aggregation names its grouping keys, a
   `Create`/`Merge` carries its
   pattern text. `estimated_rows` is filled at tree construction from the
   store's cardinality hints (ADR-0218) — what they offer honestly (a
@@ -1363,7 +1369,11 @@ The plan representation is the `PlanNode` tree:
   construction: `PlanWarning::CartesianProduct` (a multi-pattern `MATCH`
   whose patterns share no join anchor), `PlanWarning::AllNodesScan { index }`
   (a label-less scan while the store carries a property index — `index` names
-  the existing index, e.g. `:Person(name)`, as the suggestion), and —
+  the existing index, e.g. `:Person(name)`, as the suggestion),
+  `PlanWarning::LabelDisjunctionScan { indexes }` (a folded label
+  disjunction no seek serves, LABS-1083 — the scan answers per disjunct
+  label; `indexes` names the predicate's own per-label `:Label(property)`
+  pairs, e.g. `:Model(id), :Source(id)`, as the suggestion), and —
   `PROFILE` only — `PlanWarning::EstimationMiss` (an operator whose
   estimate overshoots its actual rows by 10x or more, the same policy that
   flags the `Est/Actual` cell with `!`). A hand-built tree attaches its
@@ -1445,7 +1455,8 @@ The plan representation is the `PlanNode` tree:
   (ADR-0501), and — on profiled nodes — `Rows`/`TimeNs`/`DbHits`/`MemoryBytes`/
   `ExpressionBuiltBytes` emitted together,
   `identifiers`, `children`, and — on warned nodes — a `warnings` list
-  of the warning names, `EstimationMiss`/`CartesianProduct`/`AllNodesScan`,
+  of the warning names, `EstimationMiss`/`CartesianProduct`/`AllNodesScan`/
+  `LabelDisjunctionScan`,
   serialized by name), numbered pre-order globally, the same ids the
   plan table's `Id` column shows — so consumers that already read
   Neo4j plans read this engine's plans unmodified. `PlanNode::is_profiled()`
@@ -1497,7 +1508,9 @@ The vocabulary is the one table in `relate_model::wire`
 `CartesianProduct` (`Neo.ClientNotification.Statement.CartesianProduct`,
 `03N90`), `UnboundedVariableLengthPattern` (`03N91`), `AllNodesScan`
 (`Relate.Notification.Statement.AllNodesScan`, `03C90`), `MissingIndex`
-(`03C91`), `EagerAggregation` (`03C92`) and `EstimationMiss` (`03C93`), plus
+(`03C91`), `EagerAggregation` (`03C92`), `EstimationMiss` (`03C93`) and
+`LabelDisjunctionScan` (`Relate.Notification.Statement.LabelDisjunctionScan`,
+`03C94`, LABS-1083), plus
 the statement-scoped `UnknownLabelWarning` (`01N50`),
 `UnknownRelationshipTypeWarning` (`01N51`), `UnknownPropertyKeyWarning`
 (`01N52`), `DeprecatedFunction`/`DeprecatedProcedure`
@@ -1565,7 +1578,8 @@ The three operator-scoped kinds that are **not** plan warnings (ADR-0363
 decisions 4 and 8) derive from the tree's pattern/operator/estimate facts at
 tree construction, carry their operator's `PlanNode.id`, and appear only in
 `QueryResult::notifications()` — the plan table's `Warnings` column and footer
-keep `CartesianProduct`, `AllNodesScan` and `EstimationMiss`, so no kind is
+keep `CartesianProduct`, `AllNodesScan`, `LabelDisjunctionScan` and
+`EstimationMiss`, so no kind is
 rendered twice:
 
 - `UnboundedVariableLengthPattern` (`Neo.ClientNotification.Statement.UnboundedVariableLengthPattern`,

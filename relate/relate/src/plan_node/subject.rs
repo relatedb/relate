@@ -17,8 +17,11 @@
 
 use std::borrow::Cow;
 
-use relate_ir::{Direction, LabelExpr, NodePattern, PathPattern, PatternElement, RelPattern};
+use relate_ir::{
+    BinaryOp, Direction, Expr, LabelExpr, NodePattern, PathPattern, PatternElement, RelPattern,
+};
 use relate_names::SmallName;
+use relate_planner::where_conjuncts_of;
 
 use super::seek::IndexSeek;
 use crate::stats::PlanStats;
@@ -54,7 +57,11 @@ pub(super) fn match_subject(
 
 /// The fused narration every unseekable MATCH keeps (ADR-0486's
 /// fallbacks): a scan naming its labels, an `Expand` over the pattern
-/// texts, the base operator the caller wraps.
+/// texts, the base operator the caller wraps. The every-node scan is
+/// decided by the one where-blind derivation the naming and the
+/// `AllNodesScan` warning share ([`is_all_nodes_scan`]) — the WHERE's
+/// refinements belong to the warning and the seek narration, never
+/// the fused operator.
 fn fused_subject(patterns: &[PathPattern]) -> (Cow<'static, str>, String) {
     let operator = match lone_node_of(patterns) {
         Some(node) if is_all_nodes_scan(node) => "AllNodesScan",
@@ -78,12 +85,143 @@ fn seek_subject(seek: &IndexSeek, patterns: &[PathPattern]) -> (Cow<'static, str
     (Cow::Borrowed(seek.operator), details)
 }
 
-/// Whether a lone node pattern scans every node — no labels, however they
-/// were spelled (`labels` retains the static conjunction; `label_expr` the
-/// non-static spelling). The one derivation the operator naming and the
-/// `AllNodesScan` warning detection share.
-pub(super) fn is_all_nodes_scan(node: &NodePattern) -> bool {
+/// The classic label-less scan — no retained labels, no label
+/// expression, whatever predicates filter it (ADR-0363's shape): the
+/// half of [`is_all_nodes_scan`] the warning reads on its own, because
+/// its WHERE-aware refinement must not touch the classic warning.
+pub(super) fn is_label_less(node: &NodePattern) -> bool {
     node.labels.is_empty() && node.label_expr.is_none()
+}
+
+/// Whether a lone node pattern's scan answers every node — the one
+/// where-blind derivation the operator naming reads (LABS-1083
+/// review: the warning adds its WHERE-aware refinement on top, never
+/// inside this fact). The classic label-less scan
+/// ([`is_label_less`]); or the disjunction fold's bare `Or` over no
+/// conjunction base with no map to key the per-arm lookups on — an
+/// absent map, or a literal empty one (`MATCH (p {})` keys nothing; a
+/// map that exists, a `$param` whole-map included, is never "no
+/// map"). A WHERE conjunct equality refines this in the warning alone
+/// ([`super::warning::match_warnings`] selects the disjunction
+/// suggestion from it), never in the naming: the fused operator is the
+/// where-blind approximation. Every other label shape — a conjunction,
+/// a base-carrying fold, a wildcard, a negation — is
+/// label-constrained, never every-node.
+pub(super) fn is_all_nodes_scan(node: &NodePattern) -> bool {
+    if is_label_less(node) {
+        return true;
+    }
+    if !node.labels.is_empty() {
+        return false;
+    }
+    match node.static_disjunction_arms() {
+        Some(arms) => arms.base().is_empty() && map_keys_nothing(node),
+        None => false,
+    }
+}
+
+/// Whether the pattern's own map can key a per-arm lookup: no map at
+/// all, or a literal empty one — a map that exists (a `$param`
+/// whole-map included) always keys something or silently declines, and
+/// is never the every-node shape's to claim.
+pub(super) fn map_keys_nothing(node: &NodePattern) -> bool {
+    match node.properties.as_ref() {
+        None => true,
+        Some(Expr::Map(pairs)) => pairs.is_empty(),
+        Some(_) => false,
+    }
+}
+
+/// The variables one clause's patterns introduce, through the IR's
+/// canonical per-pattern enumerator (every variable a pattern binds —
+/// node, relationship, and subpath — so a bound naming a relationship
+/// of this clause is filtered too) — the one spelling of "the variables
+/// that bind inside this clause" (the keyed-lookup narration's bound
+/// filter and the disjunction scan warning's suggestion both read it: a
+/// bound referencing one of them cannot be keyed at the start element,
+/// LABS-328).
+pub(super) fn clause_node_variables(patterns: &[PathPattern]) -> Vec<SmallName> {
+    patterns
+        .iter()
+        .flat_map(relate_ir::pattern_anchor_variables)
+        .collect()
+}
+
+/// The node pattern's equality-filtered property keys, kept as the two
+/// shapes the executor gates differently (LABS-1083): the pattern's own
+/// map keys (the fold's anchored equalities — the funnel serves the
+/// whole map per arm, so the narration requires every map key served on
+/// every arm) and the WHERE clause's `var.key = …` conjunct keys (each
+/// conjunct becomes its own `Seek` — one served key suffices). A key
+/// whose bound reads a variable the clause's own patterns introduce is
+/// skipped either way: the funnel cannot evaluate it when it keys the
+/// start element (the variable binds only inside this clause's walk,
+/// and the funnel's own `range_seek_expr` declines exactly these
+/// bounds, LABS-328) — the plan never claims a seek the funnel would
+/// decline (ADR-0486). The one recognition both keyed-seek consumers
+/// read: the narration's index-pair check and the scan warning's
+/// suggestion.
+pub(super) fn keyed_equalities(
+    node: &NodePattern,
+    where_clause: Option<&Expr>,
+    pattern_vars: &[SmallName],
+) -> KeyedEqualities {
+    let mut map_keys = Vec::new();
+    if let Some(Expr::Map(pairs)) = node.properties.as_ref() {
+        map_keys.extend(
+            pairs
+                .iter()
+                .filter(|(_, value)| !bound_reads_pattern_var(value, pattern_vars))
+                .map(|(key, _)| key.clone()),
+        );
+    }
+    let mut conjunct_keys = Vec::new();
+    if let Some(var) = node.variable.as_ref() {
+        for conjunct in where_conjuncts_of(where_clause) {
+            let Expr::Binary {
+                op: BinaryOp::Eq,
+                left,
+                right,
+            } = conjunct
+            else {
+                continue;
+            };
+            if let Some(((conjunct_var, key), bound)) =
+                relate_ir::orient_side(relate_ir::var_prop, left, right)
+            {
+                if conjunct_var == var && !bound_reads_pattern_var(bound, pattern_vars) {
+                    conjunct_keys.push(key.to_string());
+                }
+            }
+        }
+    }
+    KeyedEqualities {
+        map_keys,
+        conjunct_keys,
+    }
+}
+
+/// The two keyed-equality key shapes [`keyed_equalities`] answers —
+/// never one flattened list, because the executor gates them
+/// differently (the map serves per arm as a unit; each WHERE conjunct
+/// is its own `Seek`).
+pub(super) struct KeyedEqualities {
+    /// The pattern map's keys — every one must be index-served on every
+    /// arm before the narration claims the map's seek.
+    pub(super) map_keys: Vec<String>,
+    /// The WHERE conjuncts' keys — any one served key narrates.
+    pub(super) conjunct_keys: Vec<String>,
+}
+
+/// Whether an equality's bound side reads a variable the clause's own
+/// patterns introduce — a bound the keyed lookup cannot evaluate at the
+/// start element, however the funnel spells the decline.
+fn bound_reads_pattern_var(bound: &Expr, pattern_vars: &[SmallName]) -> bool {
+    let mut vars = std::collections::HashSet::new();
+    relate_ir::expr_vars(bound, &mut vars);
+    pattern_vars
+        .iter()
+        .any(|v| v.with_str(|name| vars.contains(name)))
 }
 
 /// A pattern set's lone node, when the set is a single pattern that is a
@@ -98,22 +236,31 @@ pub(super) fn lone_node_of(patterns: &[PathPattern]) -> Option<&NodePattern> {
     lone_node(single)
 }
 
-/// The node's one static label, when it has exactly one and no dynamic label
-/// expression beyond a static conjunction — the only shape a single
-/// `(label, property)` index can serve. The one derivation the estimate and
-/// the `MissingIndex` notification share.
+/// The node's one static scan label, when it has exactly one retained
+/// label and a label expression that either is a static conjunction or
+/// carries the disjunction fold's `Or` beside it (`And([C, Or([A, B])])`
+/// after the fold: the `:C` population is still the scan, LABS-1083) —
+/// the only shape a single `(label, property)` index serves, and the
+/// one derivation the estimate and the `MissingIndex` notification
+/// share. A bare `Or` over no base answers none: its scan is the whole
+/// store.
 pub(super) fn single_static_label(node: &NodePattern) -> Option<&SmallName> {
     let [(label, _)] = node.labels.as_slice() else {
         return None;
     };
-    if node
-        .label_expr
-        .as_ref()
-        .is_some_and(|expr| !expr.is_static_conjunction())
-    {
-        return None;
+    match node.label_expr.as_ref() {
+        None => Some(label),
+        Some(expr) => {
+            if expr.is_static_conjunction() {
+                return Some(label);
+            }
+            // The fold's base-carrying shape: the `Or` rides beside the
+            // retained conjunction, which stays the scan's population.
+            node.static_disjunction_arms()
+                .is_some_and(|arms| !arms.base().is_empty())
+                .then_some(label)
+        }
     }
-    Some(label)
 }
 
 /// Every pattern's text, statement order, comma-joined — the subject of a
@@ -130,7 +277,9 @@ pub(super) fn pattern_texts(patterns: &[PathPattern]) -> String {
 /// `PatternStats` — only what the stats offer honestly: an index-backed
 /// start's own count (`seek_rows`, ADR-0486 — the narration and the
 /// estimate gate together, so a narrated seek is never priced at
-/// anything but the seek's count), a single-label scan's label row count
+/// anything but the seek's count; the per-row keyed lookup of LABS-1083
+/// narrates without a count, so the estimate falls through to the
+/// fused paths below), a single-label scan's label row count
 /// — the scan-then-filter reality a fused operator without a serving
 /// index pays — and a single typed relationship's type row count when
 /// both endpoints are unfiltered. `None` everywhere else (a multi-pattern
@@ -207,10 +356,14 @@ pub(super) fn lone_node(pattern: &PathPattern) -> Option<&NodePattern> {
     }
 }
 
-/// A node endpoint the stats say nothing about (no labels, no
-/// properties, no predicates) — its count cannot narrow the estimate.
+/// A node endpoint the stats say nothing about — no labels, no label
+/// expression, no properties, no predicates: the estimate's own shape,
+/// deliberately narrower than [`is_all_nodes_scan`]'s classic arm (a
+/// label expression, however it spells, is a predicate the estimate
+/// must not ignore — the fold's bare `Or` never widens an endpoint's
+/// count, LABS-1083 review).
 fn node_is_unfiltered(node: &NodePattern) -> bool {
-    is_all_nodes_scan(node) && node.properties.is_none() && node.where_clause.is_none()
+    is_label_less(node) && node.properties.is_none() && node.where_clause.is_none()
 }
 
 /// One pattern as text: the named-path prefix, then the elements (the
@@ -610,7 +763,7 @@ mod tests {
                 "RANGE INDEX n:User(age) WHERE age > 5, (n:User)-[:LINKS]->(m:User)".to_string()
             )
         );
-        assert_eq!(match_estimate(&patterns, &stats, Some(seek.rows)), Some(5));
+        assert_eq!(match_estimate(&patterns, &stats, seek.rows), Some(5));
         // An OPTIONAL MATCH wraps the seek's name the fused form's way.
         assert_eq!(
             match_subject(&patterns, true, Some(&seek)).0,

@@ -161,7 +161,8 @@ also carries `KernelRung` — `chain` (with `KernelHops`), `hub-star`,
 `frontier-nfa`, or `walker` — the ADR-0538 traversal-rung fact),
 `identifiers` (list of strings, possibly empty), `children` (list of child
 dicts, absent when the operator has none), and `warnings` (list of warning
-names — `EstimationMiss`, `CartesianProduct`, `AllNodesScan` — on warned
+names — `EstimationMiss`, `CartesianProduct`, `AllNodesScan`,
+`LabelDisjunctionScan` — on warned
 nodes, absent otherwise).
 
 The plan root's `args` additionally carry the Neo4j-facing args
@@ -184,8 +185,12 @@ one set of names (`ProduceResults`, `Expand`, `NodeByLabelScan`,
 `AllNodesScan`, …) carried bare — `operatorType` adds no suffix here —
 including the index-seek starts (ADR-0486): `NodeIndexSeek` for an
 anchored-equality point read on a range-indexed `(label, property)` pair,
-`NodeIndexSeekByRange` for a comparison window, the `Details` string
-reading `RANGE INDEX <var>:<Label>(<prop>) WHERE <prop> <op> <bound>` and
+`NodeIndexSeekByRange` for a comparison window, and `NodeByLabelSeek`
+for a per-row keyed lookup (LABS-1083: an equality predicate whose bound
+is a row expression, or a label disjunction's per-arm union — the
+`Details` string reading `RANGE INDEX <var>:<Label>(<prop>)`, one target
+per arm, with no count of its own), the `Details` string of the counted
+seeks reading `RANGE INDEX <var>:<Label>(<prop>) WHERE <prop> <op> <bound>` and
 `EstimatedRows` carrying the seek's own count. A plain run (no
 `EXPLAIN`/`PROFILE` preamble) carries neither key. A statement whose plan
 tree nests past

@@ -160,7 +160,11 @@ pub(crate) enum ServedIds {
 impl ServedIds {
     /// The ids, narrowed to the pattern's exact label/property equality
     /// when (and only when) the serve is a superset — the ONE narrowing
-    /// site every served answer the funnel returns flows through. The
+    /// site every served answer the funnel returns flows through, the
+    /// label-disjunction union arm excepted (LABS-1083: its per-arm
+    /// serves over-answer only as each arm's serve does, the pattern's
+    /// own label list is empty, and the per-candidate check stays the
+    /// exactness net — see `seek_union`). The
     /// property map arrives as a lazy thunk so an exact serve never
     /// evaluates it (a malformed pattern-property expression keeps
     /// surfacing at the per-candidate check instead, exactly as before).
