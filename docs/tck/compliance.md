@@ -8,7 +8,8 @@ among them — against the engine through the Python binding: the wheel built
 from the PR's commit is the engine under test. The `spec-harness` lane
 (`.github/workflows/spec-harness.yml`) reports coverage on every
 ready-for-review PR with a traffic light in the job summary and a PR comment,
-and never gates the build on it.
+and on every merge to main (the run at the merge commit), and never gates the
+build on it.
 
 The engine's own TCK extension corpus and its CIP-derived evaluation suite
 moved to that harness on 2026-11-05 (ADR-0520). The in-repo Rust harness, its

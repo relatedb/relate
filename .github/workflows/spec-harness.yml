@@ -5,11 +5,12 @@ name: spec-harness
 # wheel installed in the venv IS the engine under test — and reports
 # coverage (passed / (passed + failed), @fails / nondeterministic /
 # skipped never counted) with a traffic light in the job summary and a PR
-# comment. The engine's TCK extension corpus and CIP evaluation suite run
-# in that harness too, as two of its own features/ suites — the engine no
-# longer vendors them (ADR-0520). Reporting, not gating: coverage below
-# 100% never fails the build; only a summary the report script cannot
-# read does.
+# comment. Every merge to main runs the same suite on the merge commit, so
+# the tree that actually landed carries its own number. The engine's TCK
+# extension corpus and CIP evaluation suite run in that harness too, as two
+# of its own features/ suites — the engine no longer vendors them
+# (ADR-0520). Reporting, not gating: coverage below 100% never fails the
+# build; only a summary the report script cannot read does.
 on:
   pull_request:
     branches: [main]
@@ -20,6 +21,13 @@ on:
     paths-ignore:
       - "docs/**"
       - "**.md"
+  # A merge to main produces its own coverage number. The squash-merge
+  # deletes the head branch, which cancels the PR's in-flight run before it
+  # posts — a merge once moved a report category's mismatches from 42 to
+  # 463 and no run ever reported it. This run keys on the pushed ref, so
+  # nothing about the merge's own number depends on the branch surviving.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -30,6 +38,12 @@ permissions:
 # in-flight draft run (a status change is not a new push); a new push in
 # the same state still cancels its predecessor, and merge-time
 # cancellation is cancel-on-merge.yml's.
+#
+# A push to main has no head_ref, so its group falls back to github.ref
+# (`spec-harness-refs/heads/main`): no PR group collides with it, and the
+# null draft suffix keeps it apart from the `-draft` variant. Two merges
+# closer together than one run cancel the older run — acceptable, the newer
+# merge commit supersedes it.
 concurrency:
   group: spec-harness-${{ github.head_ref || github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
   cancel-in-progress: true
@@ -38,7 +52,7 @@ jobs:
   harness:
     name: Spec harness (coverage traffic light)
     # The draft contract (AGENTS.md): drafts run the light fast gate only;
-    # this lane waits for ready-for-review. A dispatch run has no
+    # this lane waits for ready-for-review. A dispatch or push run has no
     # pull_request context and passes the guard.
     if: ${{ !github.event.pull_request.draft }}
     # The free tier is enough (measured, ADR-0482 Later references): the
@@ -176,6 +190,7 @@ jobs:
 
       # One upserted comment per PR, not one per push. Never fails the
       # lane: a comment-posting hiccup must not turn a green report red.
+      # A push run has no PR to comment on — its number is the job summary.
       - name: Post the coverage report as a PR comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
