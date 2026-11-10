@@ -68,3 +68,60 @@ pub(super) fn sorted(mut rows: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
     });
     rows
 }
+
+/// A routed selector: its text before and after the pattern, and whether it
+/// returns every shortest trail rather than one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Selector {
+    pub(super) open: &'static str,
+    pub(super) close: &'static str,
+    pub(super) all: bool,
+}
+
+#[rustfmt::skip]
+pub(super) const SELECTORS: [Selector; 6] = [
+    Selector { open: "shortestPath(", close: ")", all: false },
+    Selector { open: "allShortestPaths(", close: ")", all: true },
+    Selector { open: "ANY SHORTEST ", close: "", all: false },
+    Selector { open: "SHORTEST 1 ", close: "", all: false },
+    Selector { open: "SHORTEST 1 GROUP ", close: "", all: true },
+    Selector { open: "ALL SHORTEST ", close: "", all: true },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Dir {
+    Out,
+    In,
+    Both,
+}
+
+pub(super) const DIRS: [Dir; 3] = [Dir::Out, Dir::In, Dir::Both];
+
+impl Dir {
+    pub(super) fn arrows(self) -> (&'static str, &'static str) {
+        match self {
+            Dir::Out => ("-", "->"),
+            Dir::In => ("<-", "-"),
+            Dir::Both => ("-", "-"),
+        }
+    }
+
+    pub(super) fn rev(self) -> Dir {
+        match self {
+            Dir::Out => Dir::In,
+            Dir::In => Dir::Out,
+            Dir::Both => Dir::Both,
+        }
+    }
+
+    /// The node reached from `at` over relationship `from → to`, if this
+    /// direction may follow it from there.
+    pub(super) fn step(self, at: usize, (from, to): (usize, usize)) -> Option<usize> {
+        match self {
+            Dir::Out => (from == at).then_some(to),
+            Dir::In => (to == at).then_some(from),
+            Dir::Both if from == at => Some(to),
+            Dir::Both => (to == at).then_some(from),
+        }
+    }
+}

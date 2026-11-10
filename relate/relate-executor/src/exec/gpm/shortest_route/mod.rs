@@ -69,6 +69,8 @@ fn path_filter<'p>(path: &'p PathPattern, residual: &'p Residual<'_>) -> Option<
 }
 
 #[cfg(test)]
+mod anchor_tests;
+#[cfg(test)]
 mod bounded_tests;
 #[cfg(test)]
 mod fixtures;

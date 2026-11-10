@@ -14,7 +14,7 @@ use relate_core::{NodeId, Path, Value};
 
 use crate::exec::test_support::{build, Built};
 
-use super::fixtures::{run, Counts};
+use super::fixtures::{run, Counts, Dir, Selector, DIRS, SELECTORS};
 use super::with_forced_gpm;
 
 /// Corpus seed; a failure names it with the graph index.
@@ -28,25 +28,6 @@ const UNBOUNDED_MAX_RELS: usize = 8;
 /// `STRIDE`, so each combination runs on `GRAPHS / STRIDE` graphs. Fixed
 /// graphs run every combination.
 const STRIDE: usize = 12;
-
-/// A routed selector: its text before and after the pattern, and whether it
-/// returns every shortest trail rather than one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Selector {
-    open: &'static str,
-    close: &'static str,
-    all: bool,
-}
-
-#[rustfmt::skip]
-const SELECTORS: [Selector; 6] = [
-    Selector { open: "shortestPath(", close: ")", all: false },
-    Selector { open: "allShortestPaths(", close: ")", all: true },
-    Selector { open: "ANY SHORTEST ", close: "", all: false },
-    Selector { open: "SHORTEST 1 ", close: "", all: false },
-    Selector { open: "SHORTEST 1 GROUP ", close: "", all: true },
-    Selector { open: "ALL SHORTEST ", close: "", all: true },
-];
 
 /// A length suffix and its minimum and maximum hops (`None`: unbounded).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,44 +62,6 @@ const TYPES: [Types; 3] = [
 impl Types {
     fn admit(self, t: &str) -> bool {
         self.admits.is_empty() || self.admits.contains(&t)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Dir {
-    Out,
-    In,
-    Both,
-}
-
-const DIRS: [Dir; 3] = [Dir::Out, Dir::In, Dir::Both];
-
-impl Dir {
-    fn arrows(self) -> (&'static str, &'static str) {
-        match self {
-            Dir::Out => ("-", "->"),
-            Dir::In => ("<-", "-"),
-            Dir::Both => ("-", "-"),
-        }
-    }
-
-    fn rev(self) -> Dir {
-        match self {
-            Dir::Out => Dir::In,
-            Dir::In => Dir::Out,
-            Dir::Both => Dir::Both,
-        }
-    }
-
-    /// The node reached from `at` over relationship `from → to`, if this
-    /// direction may follow it from there.
-    fn step(self, at: usize, (from, to): (usize, usize)) -> Option<usize> {
-        match self {
-            Dir::Out => (from == at).then_some(to),
-            Dir::In => (to == at).then_some(from),
-            Dir::Both if from == at => Some(to),
-            Dir::Both => (to == at).then_some(from),
-        }
     }
 }
 
