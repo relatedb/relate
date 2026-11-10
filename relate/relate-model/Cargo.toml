@@ -1,8 +1,10 @@
 [package]
 name = "relate-model"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Data model types (CypherValue) for the Relate graph database"
 
 [dependencies]
 chrono = { workspace = true }

@@ -2,6 +2,7 @@
 name = "relate-python"
 version.workspace = true
 edition = "2021"
+publish = false
 license.workspace = true
 
 [lib]

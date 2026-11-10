@@ -57,20 +57,54 @@ artifact landed on that first release:
   install section links to), with its first line
   `# relate-release-version: vX.Y.Z` naming the release tag (ADR-0457).
 - [ ] `SHA256SUMS.sig` over those exact bytes (ADR-0115).
-- [ ] Python wheels (and sdist). PyPI publishing is intentionally not wired
-  up — the wheels ship as GitHub release assets only. When that changes:
-  register the **`relate-db`** project (not `relate`, which is already
-  taken), add a `pypi` job with trusted publishing for `relatedb/relate`,
-  and remove this note.
+- [ ] Python wheels (and sdist) publish to PyPI as **`relate-db`** (not
+  `relate`, which is taken) via trusted publishing (ADR-0560). The one-time
+  setup needs no first publish: on PyPI, add a *pending publisher* for
+  project `relate-db`, repository `relatedb/relate`, workflow
+  `publish-registries.yml` (the OIDC token names the *called* workflow,
+  even on a chained run); repeat on TestPyPI for dry runs. Validate with
+  `gh workflow run publish-registries.yml -f tag=<tag> -f npm=false
+  -f crates-io=false -f pypi-target=testpypi` before the first real
+  release.
+- [ ] crates.io (ADR-0560): the publishable set is the `relate` facade's
+  transitive workspace closure — 17 crates, all lockstep with the release
+  tag. The first publish is manual because a crate must exist before
+  trusted publishing can be configured on it. Create a **scoped,
+  short-lived** crates.io API token for the bootstrap (Account Settings →
+  API Tokens): scopes `publish-new` and `publish-update` only, crate
+  pattern `relate*` (or exactly the 17 names), expiry of a day — never an
+  unscoped token. With it (`cargo login`), publish in topological order,
+  waiting a few seconds between crates for the registry index to catch
+  up:
+
+  ```sh
+  for c in relate-model relate-names relate-splitter relate-core \
+           relate-parser relate-catalog relate-error relate-ir \
+           relate-markdown relate-ontology relate-front relate-planner \
+           relate-engine-api relate-executor relate-storage \
+           relate-write-local relate; do
+    cargo publish -p "$c" || break
+    sleep 30
+  done
+  ```
+
+  Then, per crate on crates.io (Settings → Trusted Publishing): GitHub
+  Actions, repository `relatedb/relate`, workflow `publish-registries.yml`
+  (the OIDC token names the *called* workflow, even on a chained run).
+  The `crates-io` job is fail-closed (`&& false` guard) until all 17 are
+  configured. Once they are, **revoke the bootstrap API token**
+  (crates.io → Account Settings → API Tokens, then `cargo logout`
+  locally): trusted publishing has taken over, and no long-lived token
+  should survive the bootstrap.
 - [ ] npm (ADR-0278): the `@relate` npm scope exists and the releaser has
   publish rights.
 - [ ] Licensing: the project's licensing decision is resolved and the
   `license` fields of all seven npm packages (`@relate/relate`,
   `@relate/relate-wasm`, and the five platform packages) match the
   decision in force at publish time (Apache-2.0 per ADR-0055 today).
-  Re-enabling npm publishing means removing the `if: false` guards from the
-  `npm-publish` and `npm-publish-main` jobs in `release.yml` — do both in
-  the same change.
+  Re-enabling npm publishing means dropping the `&& false` guards from the
+  `npm-platform-wasm` and `npm-main` jobs in `publish-registries.yml` —
+  do both in the same change.
 - [ ] npm: the first publish of `@relate/relate` and
   `@relate/relate-wasm` is done manually — npm trusted publishing
   needs the packages to exist before it can be configured.
@@ -81,9 +115,9 @@ artifact landed on that first release:
   package depending on `.package(url: …, exact: "<version>")` resolves and
   builds.
 - [ ] npm: trusted publishing is configured on npmjs.com for
-  `relatedb/relate`, workflow `release.yml`, for all seven packages
-  (main, wasm, and the five platform packages). The release workflow's npm
-  jobs are fail-closed until this is done.
+  `relatedb/relate`, workflow `publish-registries.yml`, for all seven
+  packages (main, wasm, and the five platform packages). The npm jobs are
+  fail-closed (`&& false` guards) until this is done.
 - [ ] Slack (optional): set the `SLACK_WEBHOOK_URL` repository secret to
   enable the release announcement — the release run's final job
   (`slack-announce`) posts it after the website deploy and the self-update

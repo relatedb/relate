@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Bolt protocol server for Relate"
+publish = false
 license.workspace = true
 
 # Scratch-image entrypoint (ADR-0128): seed-once-then-exec in one binary —

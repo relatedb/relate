@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Relate parser front-end lowered to planner IR"
-publish = false
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 relate-error = { workspace = true }

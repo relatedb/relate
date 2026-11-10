@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date as date_type
 from pathlib import Path
@@ -220,12 +221,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RotateError as exc:
         print(exc, file=sys.stderr)
         return 1
-    # Atomic update at the caller's declared sidecar name (the bump's
-    # rollback inventory already removes `<changelog>.tmp`), preserving the
-    # file's mode across the replace.
-    tmp = path.parent / (path.name + ".tmp")
+    # Atomic update through the shared sidecar shape (`<name>.tmp.XXXXXX`,
+    # the one scripts/lib/toml.sh's writers own and the bump's rollback
+    # removes through toml_remove_sidecars), preserving the file's mode
+    # across the replace.
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".tmp.", dir=path.parent)
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(rotated)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(rotated)
         shutil.copymode(path, tmp)
         os.replace(tmp, path)
     except BaseException:

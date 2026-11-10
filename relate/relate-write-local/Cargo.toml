@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Local write engine: the durable log, checkpoints, and follow for one process"
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 relate-core = { workspace = true }

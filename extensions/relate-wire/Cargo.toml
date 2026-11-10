@@ -2,6 +2,7 @@
 name = "relate-wire"
 version.workspace = true
 edition.workspace = true
+publish = false
 license.workspace = true
 
 # The extension mount's shared kit (ADR-0447): the bounded-read mechanism

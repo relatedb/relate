@@ -119,7 +119,9 @@ restore_touched() {
   echo "release-bump: $1; restoring touched files" >&2
   local f
   for f in "${touched[@]}"; do
-    rm -f "$f.tmp" "$f.bak"
+    # The sidecar shape is toml.sh's own fact; clean through its helper.
+    toml_remove_sidecars "$f"
+    rm -f "$f.bak"
   done
   if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     git checkout -- "${touched[@]}"
@@ -151,6 +153,10 @@ trap 'restore_touched "interrupted"' INT TERM HUP
 # --- 1. Version surfaces -----------------------------------------------------
 
 toml_section_set_version "$cargo_toml" "[workspace.package]" "$next"
+# The relate* entries in [workspace.dependencies] carry a version pin so the
+# publishable crates can reach crates.io (ADR-0560); the pins ride the
+# same lockstep version as every other surface.
+toml_workspace_deps_set_version "$cargo_toml" "$next"
 toml_section_set_version "$pyproject" "[project]" "$next"
 sedi "$pyinit" "s/return \"[0-9][^\"]*\"/return \"$next\"/g"
 # Prose and examples that quote the Relate version — the sweep's own
@@ -202,15 +208,46 @@ python3 scripts/changelog_rotate.py "$changelog" \
 # named before one non-zero exit (the EXIT trap does the restoring).
 fail=0
 
+# expect_eq <label> <expected> <actual> — the one spelling of the step-4
+# check block: compare, name the mismatch, set fail.
+expect_eq() {
+  [[ "$3" == "$2" ]] || {
+    echo "release-bump: $1 is '$3', expected '$2'" >&2
+    fail=1
+  }
+}
+
+# read_back_eq <label> <missing-message> <reader...> — for readers whose
+# non-zero status means the entry is absent or malformed, distinct from a
+# wrong value; both arms set fail.
+read_back_eq() {
+  local label="$1" missing="$2" value
+  shift 2
+  if value="$("$@")"; then
+    expect_eq "$label" "$next" "$value"
+  else
+    echo "release-bump: $missing" >&2
+    fail=1
+  fi
+}
+
 check_cargo="$(toml_section_version "$cargo_toml" "[workspace.package]")"
 check_pyproject="$(toml_section_version "$pyproject" "[project]")"
 
-[[ "$check_cargo" == "$next" ]] || {
-  echo "release-bump: Cargo.toml [workspace.package] version is '$check_cargo', expected '$next'" >&2
-  fail=1
-}
-[[ "$check_pyproject" == "$next" ]] || {
-  echo "release-bump: pyproject.toml [project] version is '$check_pyproject', expected '$next'" >&2
+expect_eq "Cargo.toml [workspace.package] version" "$next" "$check_cargo"
+expect_eq "pyproject.toml [project] version" "$next" "$check_pyproject"
+# Workspace dependency pins: every relate* entry must read back at $next —
+# a stale pin would publish a crates.io dependency on a version that does
+# not exist. The reader prints pinless entries as `-`, so an entry whose
+# pin drifted out of the grammar is caught here too. The one sanctioned
+# path-only entry (named once in toml.sh) is not skipped but shape-checked:
+# it must read back pinless.
+stale_pins="$(toml_workspace_dep_versions "$cargo_toml" | awk -v v="$next" -v exempt="$TOML_WORKSPACE_DEP_PATH_ONLY" '
+  $1 == exempt { if ($2 != "-") print $1; next }
+  $2 != v { print $1 }')"
+[[ -z "$stale_pins" ]] || {
+  echo "release-bump: Cargo.toml [workspace.dependencies] pins not at $next:" >&2
+  echo "$stale_pins" >&2
   fail=1
 }
 # The fallback-literal grammar has one spelling — `return "<digit...>"` —
@@ -227,29 +264,16 @@ grep -q "return \"$next\"" "$pyinit" || {
   fail=1
 }
 # toml_lock_package_version exits non-zero when the relate package is absent
-# from the lockfile; failure is a real exit status, so the check branches on
-# it rather than comparing an empty read against the expected version.
-if check_lock="$(toml_lock_package_version "$lockfile" relate)"; then
-  [[ "$check_lock" == "$next" ]] || {
-    echo "release-bump: Cargo.lock relate package version is '$check_lock', expected '$next'" >&2
-    fail=1
-  }
-else
-  echo "release-bump: Cargo.lock has no relate package entry" >&2
-  fail=1
-fi
+# from the lockfile; read_back_eq keeps absent distinct from wrong.
+read_back_eq "Cargo.lock relate package version" \
+  "Cargo.lock has no relate package entry" \
+  toml_lock_package_version "$lockfile" relate
 
 # Maven: read back through the same accessor; a non-zero status means the
 # entry is missing or the pom is malformed — distinct from a wrong value.
-if check_pom="$(python3 "$pom_py" get "$java_pom")"; then
-  [[ "$check_pom" == "$next" ]] || {
-    echo "release-bump: $java_pom project version is '$check_pom', expected '$next'" >&2
-    fail=1
-  }
-else
-  echo "release-bump: $java_pom has no readable project <version> entry" >&2
-  fail=1
-fi
+read_back_eq "$java_pom project version" \
+  "$java_pom has no readable project <version> entry" \
+  python3 "$pom_py" get "$java_pom"
 
 # npm manifests: the main package's "version" and its five platform pins, and
 # each platform package's "version". Both pin checks (here and in the
@@ -257,40 +281,22 @@ fi
 # the sweep above iterates, never a second copy of the number.
 js_pin_count="${#js_platform_pkgs[@]}"
 check_js_main="$(npm_json version "$js_main_pkg")"
-[[ "$check_js_main" == "$next" ]] || {
-  echo "release-bump: $js_main_pkg version is '$check_js_main', expected '$next'" >&2
-  fail=1
-}
+expect_eq "$js_main_pkg version" "$next" "$check_js_main"
 check_js_pins="$(npm_json pins "$js_main_pkg" "$next")"
-[[ "$check_js_pins" == "$js_pin_count" ]] || {
-  echo "release-bump: expected $js_pin_count optionalDependencies pins at $next in $js_main_pkg, found $check_js_pins" >&2
-  fail=1
-}
+expect_eq "$js_main_pkg optionalDependencies pins at $next" "$js_pin_count" "$check_js_pins"
 for f in "${js_platform_pkgs[@]}"; do
   check_platform="$(npm_json version "$f")"
-  [[ "$check_platform" == "$next" ]] || {
-    echo "release-bump: $f version is '$check_platform', expected '$next'" >&2
-    fail=1
-  }
+  expect_eq "$f version" "$next" "$check_platform"
 done
 
 # npm lockfile: the top-level "version", the packages[""] root entry's
 # "version", and the five platform pins.
 check_js_lock_root="$(npm_json version "$js_lockfile")"
-[[ "$check_js_lock_root" == "$next" ]] || {
-  echo "release-bump: $js_lockfile top-level version is '$check_js_lock_root', expected '$next'" >&2
-  fail=1
-}
+expect_eq "$js_lockfile top-level version" "$next" "$check_js_lock_root"
 check_js_lock_pkg="$(npm_json root-version "$js_lockfile")"
-[[ "$check_js_lock_pkg" == "$next" ]] || {
-  echo "release-bump: $js_lockfile root-entry version is '$check_js_lock_pkg', expected '$next'" >&2
-  fail=1
-}
+expect_eq "$js_lockfile root-entry version" "$next" "$check_js_lock_pkg"
 check_js_lock_pins="$(npm_json lock-pins "$js_lockfile" "$next")"
-[[ "$check_js_lock_pins" == "$js_pin_count" ]] || {
-  echo "release-bump: expected $js_pin_count optionalDependencies pins at $next in $js_lockfile, found $check_js_lock_pins" >&2
-  fail=1
-}
+expect_eq "$js_lockfile optionalDependencies pins at $next" "$js_pin_count" "$check_js_lock_pins"
 
 # Docs sweep: once the rewrite is done every version token in a listed file is
 # the product version. The check runs the same tokenizer the sweep used, so the

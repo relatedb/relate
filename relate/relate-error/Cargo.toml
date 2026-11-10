@@ -1,8 +1,10 @@
 [package]
 name = "relate-error"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Typed engine errors and error classification for the Relate graph database"
 
 [dependencies]
 relate-parser = { workspace = true }

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "WAL plus pluggable snapshot codecs (Relate JSON, Parquet behind the default-on parquet feature)"
 license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["parquet"]
@@ -75,7 +76,7 @@ libc = { workspace = true }
 
 [dev-dependencies]
 relate-executor = { workspace = true, features = ["test-hooks"] }
-tempfile = "3"
+tempfile = { workspace = true }
 # The graph-type mirror's re-parse assert (ADR-0481 §1): the vault's
 # `graph-type.cypher` must parse through the parser's own
 # `parse_graph_type_body` entry point. Dev-only, R2-legal engine dep.
