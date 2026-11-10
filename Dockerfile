@@ -71,7 +71,9 @@ ARG BINARY_SOURCE=build
 # cc-rs's compiler-family detection). build-base provides the C toolchain
 # ring's assembly glue needs.
 # --- chef base: toolchain + the two pinned build tools -----------------------
-FROM rust:1.88-alpine AS chef
+# Base images are pinned to their multi-arch index digest so a re-pushed tag
+# can't change what the release builds; bump the tag and digest together.
+FROM rust:1.88-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS chef
 RUN apk add --no-cache build-base ca-certificates curl python3
 # sccache wraps rustc and cache-keys on content hash — cargo's own
 # fingerprints are mtime-based and `COPY . .` refreshes every mtime, so
@@ -136,7 +138,7 @@ COPY target/docker-prebuilt/ /out/
 
 # --- certs: the CA bundle and the /data skeleton, decoupled from the chef
 #     build so the prebuilt path doesn't pull a Rust image for two files ---
-FROM alpine:3.21 AS certs
+FROM alpine:3.21@sha256:bc21487101ae47172509130ee1092cc273a831968d64b617776d1f69c81e42ab AS certs
 # The CA bundle is installed from the current repo index on every
 # build: the eMudhra CA break (2026-10) lands as a ca-certificates
 # package update, and `apk add --no-cache` pulls the current index --

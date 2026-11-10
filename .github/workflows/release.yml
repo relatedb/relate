@@ -798,19 +798,18 @@ jobs:
             -m "Release ${{ needs.version.outputs.tag }}"
           git push origin "${{ needs.version.outputs.tag }}"
 
-  # The server image (Dockerfile) for the tag this run just pushed, built,
-  # smoked and pushed to the DevRel production ECR. Offline releases skip
-  # it: ECR is outside GitHub. The IAM role (devrel-aws-infrastructure,
-  # terraform/modules/relatedb) trusts only this workflow running from main.
-  publish-image:
-    name: Publish server image to ECR
+  # The server image (Dockerfile) for the tag this run just pushed. Built and
+  # smoked in a job with no AWS access, so nothing the build installs or
+  # runs can request the OIDC token; publish-image only loads the tarball and
+  # pushes it. Offline releases skip both: ECR is outside GitHub.
+  build-image:
+    name: Build server image
     needs: [version, tag]
     if: ${{ !inputs.offline }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -832,12 +831,16 @@ jobs:
         with:
           ref: ${{ needs.version.outputs.sha }}
 
+      # docker_smoke.py connects to the running container over Bolt with the
+      # official Python driver, so a broken entrypoint, binary or auth setup
+      # fails here instead of reaching ECR. Same pin as scripts/bolt-smoke.sh.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install neo4j
+      - run: python -m pip install neo4j==5.28.8
 
-      # Docker Hub rate-limits anonymous pulls per runner IP (LABS-248).
+      # The build pulls its base images from Docker Hub, which rate-limits
+      # anonymous pulls per IP, and hosted runners share IPs (LABS-248).
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
@@ -853,20 +856,57 @@ jobs:
       - name: Build the image and smoke it
         env:
           BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           make docker DOCKER_BUILD_FLAGS="--load"
           python3 surfaces/relate-bolt/tests/docker_smoke.py
+          docker save "relate-bolt:$VERSION" -o server-image.tar
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      # create-release downloads every artifact in the run and attaches
+      # relate-* and *.tar.gz files, so the tarball's name must match neither.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-image
+          path: server-image.tar
+          retention-days: 7
+
+  # Version tags are immutable in the repository (only `latest` moves), so a
+  # re-run after the version tag landed skips that push and only retags.
+  publish-image:
+    name: Publish server image to ECR
+    needs: [version, build-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: server-image
+
+      - name: Load the image
+        run: docker load -i server-image.tar
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_ECR_PUSH_ROLE_ARN }}
           aws-region: us-east-1
 
-      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
         id: ecr
 
-      # The tag is always the newest vX.Y.Z (the version job bumps forward
-      # from the existing tags), so `latest` moves with every release.
+      # `latest` is set from the version tag's manifest, not pushed
+      # separately, so both tags always name the same digest.
       - name: Push to ECR
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -874,11 +914,23 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          image="$REGISTRY/$ECR_REPOSITORY"
-          for t in "$VERSION" latest; do
-            docker tag "relate-bolt:$VERSION" "$image:$t"
-            docker push "$image:$t"
-          done
+          lookup() {
+            aws ecr batch-get-image --repository-name "$ECR_REPOSITORY" \
+              --image-ids imageTag="$VERSION" --output json
+          }
+          if [ "$(lookup | jq '.images | length')" = 0 ]; then
+            docker tag "relate-bolt:$VERSION" "$REGISTRY/$ECR_REPOSITORY:$VERSION"
+            docker push "$REGISTRY/$ECR_REPOSITORY:$VERSION"
+          else
+            echo "::notice::$VERSION is already in ECR; leaving it as is"
+          fi
+          image="$(lookup | jq '.images[0]')"
+          if ! out="$(aws ecr put-image --repository-name "$ECR_REPOSITORY" --image-tag latest \
+              --image-manifest "$(jq -r .imageManifest <<<"$image")" \
+              --image-manifest-media-type "$(jq -r .imageManifestMediaType <<<"$image")" 2>&1)"; then
+            grep -q ImageAlreadyExistsException <<<"$out" || { echo "$out"; exit 1; }
+          fi
+          echo "latest -> $VERSION ($(jq -r .imageId.imageDigest <<<"$image"))"
 
   create-release:
     name: Create Release
