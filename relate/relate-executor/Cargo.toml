@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "In-memory graph and Cypher physical executor"
 license.workspace = true
+repository.workspace = true
 
 [features]
 # Research-only speed-of-light kernels (graph/sol.rs) and their

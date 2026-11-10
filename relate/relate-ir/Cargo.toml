@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Planner IR (lowered Cypher AST)"
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 relate-parser = { workspace = true }

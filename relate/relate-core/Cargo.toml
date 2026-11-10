@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Core values, errors, and IDs for Relate"
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 relate-model = { workspace = true }

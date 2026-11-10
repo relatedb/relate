@@ -2,6 +2,7 @@
 name = "relate-fs-to-graph"
 version.workspace = true
 edition.workspace = true
+publish = false
 license.workspace = true
 
 # The `fs-to-graph` importer as a first-party extension crate (ADR-0431

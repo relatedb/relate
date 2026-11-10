@@ -73,6 +73,67 @@ toml_section_set_version() {
   ' -v section="$2" -v v="$3"
 }
 
+# The workspace-dependency pin vocabulary (ADR-0560): every relate* entry
+# in [workspace.dependencies] carries a version pin so the publishable
+# crates can reach crates.io, with one sanctioned exemption — the shared
+# test-support crate stays path-only so the dev-dependencies on it strip
+# at package time. The entry predicate and the exemption live here, once,
+# shared by the reader and the writer below; both fail loudly on a relate*
+# entry head whose inline table wraps across lines (a grammar this
+# vocabulary does not rewrite), never silently half-reading it.
+TOML_WORKSPACE_DEP_PATH_ONLY="relate-test-support"
+_toml_ws_dep_re='^relate[a-z-]* = \{'
+
+# Print `name version` for every `relate*` entry in a
+# [workspace.dependencies] section; a pinless entry prints `name -`.
+# Exits non-zero on a wrapped (multi-line) entry.
+# Usage: toml_workspace_dep_versions <Cargo.toml>
+toml_workspace_dep_versions() {
+  awk -v re="$_toml_ws_dep_re" '
+    /^\[/ { in_sec = ($0 == "[workspace.dependencies]") }
+    in_sec && $0 ~ re {
+      if ($0 !~ /\}/) { bad = 1; next }
+      name = $1
+      if ($0 ~ /version = "/) {
+        line = $0
+        # The extraction regex is built from the shared entry predicate
+        # (re), never re-spelled: one grammar, one spelling.
+        sub(re "[^}]*version = \"", "", line)
+        sub(/".*$/, "", line)
+        print name, line
+      } else {
+        print name, "-"
+      }
+    }
+    END { if (bad) exit 1 }
+  ' "$1"
+}
+
+# Rewrite the version pin of every pinned `relate*` entry in a
+# [workspace.dependencies] section. Exits non-zero with the target
+# untouched when no pin was rewritten, when a non-exempt entry carries no
+# pin, or when an entry's inline table wraps — a silent pass-through would
+# hide a grammar drift.
+# Usage: toml_workspace_deps_set_version <Cargo.toml> <new-version>
+toml_workspace_deps_set_version() {
+  _toml_rewrite "$1" '
+    /^\[/ { in_sec = ($0 == "[workspace.dependencies]") }
+    in_sec && $0 ~ re {
+      if ($0 !~ /\}/) { drift = 1 }
+      else if ($1 == exempt) {
+        # Exempt means path-only, not ignored: a pin on the exempt entry
+        # is drift — it would survive the sweep stale and make crates.io
+        # reject the publish (ADR-0560).
+        if ($0 ~ /version = "/) { drift = 1 }
+      }
+      else if (sub(/version = "[^"]*"/, "version = \"" v "\"")) { hit = 1 }
+      else { drift = 1 }
+    }
+    { print }
+    END { if (drift || !hit) exit 1 }
+  ' -v re="$_toml_ws_dep_re" -v exempt="$TOML_WORKSPACE_DEP_PATH_ONLY" -v v="$2"
+}
+
 # Rewrite the version of one package entry in a Cargo.lock file. Exits
 # non-zero with the target untouched when the package is absent — the
 # reader's contract, mirrored.

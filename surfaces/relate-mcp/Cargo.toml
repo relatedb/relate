@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 license.workspace = true
 
 # The standalone `relate-mcp` binary is retired (LABS-381, ADR-0368): the

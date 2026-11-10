@@ -2,6 +2,7 @@
 name = "relate-dungeon"
 version.workspace = true
 edition.workspace = true
+publish = false
 license.workspace = true
 
 # The dungeon game as a first-party extension crate (ADR-0431 §11): a

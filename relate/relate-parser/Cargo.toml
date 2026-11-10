@@ -1,8 +1,10 @@
 [package]
 name = "relate-parser"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Cypher lexer, parser, and AST for the Relate graph database"
 
 [dependencies]
 relate-model = { workspace = true }

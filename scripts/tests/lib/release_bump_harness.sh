@@ -48,7 +48,10 @@ done
 	echo "stub npm: no --prefix" >&2
 	exit 2
 }
-v=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$prefix/package.json")
+# The manifest version read goes through the shared typed vocabulary
+# (scripts/lib is copied into every fixture; cwd is the fixture root
+# inside run_bump), never a layout-sniffing sed.
+v=$(python3 scripts/lib/npm_json.py version "$prefix/package.json")
 python3 - "$prefix/package-lock.json" "$v" <<'PY'
 import json
 import sys
@@ -87,6 +90,13 @@ version = "0.16.1"
 
 [workspace]
 members = []
+
+# Mirrors the real workspace: relate* entries carry a version pin the
+# sweep rewrites (ADR-0560); the path-only entry models
+# relate-test-support, which must survive the sweep untouched.
+[workspace.dependencies]
+relate-model = { path = "relate/relate-model", version = "0.16.1" }
+relate-test-support = { path = "testing/relate-test-support" }
 EOF
 	cat >"$fx/Cargo.lock" <<'EOF'
 version = 4

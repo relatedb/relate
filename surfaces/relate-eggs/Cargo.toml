@@ -2,6 +2,7 @@
 name = "relate-eggs"
 version.workspace = true
 edition = "2021"
+publish = false
 license.workspace = true
 description = "Hidden REPL dot commands and the Archie banner and prompt glyph for the relate CLI (ADR-0543)"
 
