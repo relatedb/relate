@@ -316,10 +316,6 @@ mod tests {
             builtin_procedure_deprecation("db.index.vector.queryNodes"),
             Some(DeprecatedBy::clause("SEARCH"))
         );
-        assert_eq!(
-            builtin_procedure_deprecation("cdc.current"),
-            Some(DeprecatedBy::identifier("db.cdc.current"))
-        );
         assert_eq!(builtin_procedure_deprecation("db.labels"), None);
         assert_eq!(builtin_procedure_deprecation("no.such.procedure"), None);
     }
@@ -466,8 +462,7 @@ mod tests {
                 "db.createLabel",
                 "db.ontology.apply",
                 "db.ontology.drop",
-                "db.ontology.set",
-                "dbms.setConfigValue"
+                "db.ontology.set"
             ]
         );
     }
@@ -503,65 +498,22 @@ mod tests {
 
     /// The policy's `add` rows are all registered with the mode the policy
     /// states: `db.stats.retrieve` is the one executable addition, the other
-    /// 53 are listed-only inventory rows.
+    /// five are listed-only inventory rows.
+    ///
+    /// The server-only families the policy originally added — cluster, routing,
+    /// fleet management, CDC, sessions/connections/locks/pools/JMX/security/
+    /// scheduler, usage statistics, server config, and the vector-property
+    /// setters — are gone: Relate is a single-process embedded engine, so those
+    /// rows advertised capabilities it cannot have (ADR-0557).
     #[test]
     fn added_procedures_are_registered_with_the_policys_mode() {
         let adds = [
-            "db.cdc.earliest",
-            "db.cdc.query",
-            "db.cdc.translateId",
             "db.clearQueryCaches",
-            "db.create.setNodeVectorProperty",
-            "db.create.setRelationshipVectorProperty",
             "db.createProperty",
             "db.createRelationshipType",
             "db.listLocks",
             "db.prepareForReplanning",
-            "db.resampleOutdatedIndexes",
-            "db.stats.clear",
-            "db.stats.retrieveAllAnonymized",
-            "db.stats.status",
-            "db.stats.stop",
-            "dbms.checkConfigValue",
-            "dbms.cluster.checkConnectivity",
-            "dbms.cluster.cordonServer",
-            "dbms.cluster.deallocateDatabaseFromServer",
-            "dbms.cluster.deallocateDatabaseFromServers",
-            "dbms.cluster.deallocateNumberOfDatabases",
-            "dbms.cluster.protocols",
-            "dbms.cluster.reallocateDatabase",
-            "dbms.cluster.reallocateNumberOfDatabases",
-            "dbms.cluster.secondaryReplicationDisable",
-            "dbms.cluster.setAutomaticallyEnableFreeServers",
-            "dbms.cluster.statusCheck",
-            "dbms.killConnection",
-            "dbms.killConnections",
-            "dbms.listActiveLocks",
-            "dbms.listCapabilities",
-            "dbms.listConnections",
-            "dbms.listPools",
-            "dbms.promoteReplicaDatabase",
-            "dbms.queryJmx",
-            "dbms.recreateDatabase",
-            "dbms.reloadProcedures",
-            "dbms.scheduler.failedJobs",
-            "dbms.scheduler.groups",
-            "dbms.scheduler.jobs",
-            "dbms.security.clearAuthCache",
-            "dbms.security.reloadTLS",
-            "dbms.setDefaultAllocationNumbers",
-            "dbms.setDefaultDatabase",
-            "dbms.showTopologyGraphConfig",
-            "dbms.unquarantineDatabase",
-            "fleetManagement.debugLogging",
-            "fleetManagement.disable",
-            "fleetManagement.inspectToken",
-            "fleetManagement.registerToken",
-            "fleetManagement.reportedData",
-            "fleetManagement.restart",
-            "fleetManagement.status",
         ];
-        assert_eq!(adds.len(), 53);
         for name in adds {
             let signature =
                 builtin_procedure_signature(name).unwrap_or_else(|| panic!("{name} missing"));

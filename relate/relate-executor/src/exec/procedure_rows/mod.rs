@@ -495,8 +495,15 @@ mod tests {
         let await_indexes = metadata("db.awaitIndexes");
         assert!(await_indexes.yield_names.is_empty() && await_indexes.rows.is_empty());
 
-        // A catalog-only row is not callable metadata at all.
-        assert!(executable_signature("db.stats.collect").is_none());
+        // A catalog-only row is listed but not callable: the registry carries
+        // it, `executable_signature` refuses it. Both halves are asserted,
+        // because `None` alone cannot tell a catalog-only row from a name the
+        // registry does not carry at all.
+        let catalog_only =
+            crate::procedure_registry::builtin_procedure_signature("db.clearQueryCaches")
+                .expect("the catalog-only row is registered");
+        assert!(catalog_only.listed && !catalog_only.executable);
+        assert!(executable_signature("db.clearQueryCaches").is_none());
     }
 
     /// A row-declaring signature without a producer arm is table/producer

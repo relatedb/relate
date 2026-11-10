@@ -43,46 +43,6 @@ const VECTOR_QUERY_ARGS: &[ProcArgMeta] = &[
     ProcArgMeta::described("query", "The query vector.", "LIST<FLOAT>"),
 ];
 
-/// The routing-table argument list `dbms.routing.getRoutingTable` and its
-/// cluster-prefixed predecessor share (ADR-0143), so the alias and its
-/// replacement cannot drift apart.
-const ROUTING_TABLE_ARGS: &[ProcArgMeta] = &[
-    ProcArgMeta::described("context", "Client-provided routing context.", "MAP"),
-    ProcArgMeta::with_default(
-        "database",
-        "The database to get a routing table for.",
-        "STRING",
-        "null",
-    ),
-];
-
-/// The routing-table return columns the two `getRoutingTable` entries share.
-const ROUTING_TABLE_RETURNS: &[ProcArgMeta] = &[
-    ProcArgMeta::described(
-        "ttl",
-        "The number of seconds this routing table is valid for.",
-        "INTEGER",
-    ),
-    ProcArgMeta::described(
-        "servers",
-        "The servers making up the routing table, grouped by their role.",
-        "LIST<MAP>",
-    ),
-];
-
-/// The routing-table description the two `getRoutingTable` entries share
-/// (ADR-0497 §6: the corpus lists the same text for both).
-const ROUTING_TABLE_DESCRIPTION: &str =
-    "Returns the advertised bolt capable endpoints for a given database, divided by each endpoint's capabilities. For example, an endpoint may serve read queries, write queries, and/or future `getRoutingTable` requests.";
-
-/// The change-identifier return column the `cdc.current`/`db.cdc.current`
-/// pair share.
-const CDC_CURRENT_RETURNS: &[ProcArgMeta] = &[ProcArgMeta::described(
-    "id",
-    "The current change identifier.",
-    "STRING",
-)];
-
 /// The `timeOutSeconds` argument `db.awaitIndex` and `db.awaitIndexes`
 /// share.
 const AWAIT_INDEX_TIMEOUT: ProcArgMeta = ProcArgMeta::with_default(
@@ -102,33 +62,6 @@ const AWAIT_INDEX_TIMEOUT: ProcArgMeta = ProcArgMeta::with_default(
 /// `catalog-only` entries below are inventory rows the corpus lists but
 /// never calls — listed, with no engine operation behind them.
 pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
-    // CIP-157: deprecated in favor of the `db.cdc.*` namespace.
-    ProcSignature::read("cdc.current")
-        .described("Returns the current change identifier that can be used to stream changes from.")
-        .returns(CDC_CURRENT_RETURNS)
-        .deprecated_by(DeprecatedBy::identifier("db.cdc.current"))
-        .executable(false),
-    ProcSignature::read("cdc.earliest")
-        .described("Returns the earliest change identifier that can be used to stream changes from.")
-        .returns(&[ProcArgMeta::described("id", "The earliest available change identifier.", "STRING")])
-        .deprecated_by(DeprecatedBy::identifier("db.cdc.earliest"))
-        .executable(false),
-    ProcSignature::read("cdc.query")
-        .admin()
-        .described("Query changes happened from the provided change identifier.")
-        .args(&[
-            ProcArgMeta::described("from", "The change identifier to query from.", "STRING"),
-            ProcArgMeta::with_default("selectors", "Selectors narrowing which changes to return.", "LIST<MAP>", "[]"),
-        ])
-        .returns(&[
-            ProcArgMeta::described("id", "The change identifier of this event.", "STRING"),
-            ProcArgMeta::described("txId", "The id of the transaction that produced this event.", "INTEGER"),
-            ProcArgMeta::described("seq", "The sequence number of this event within its transaction.", "INTEGER"),
-            ProcArgMeta::described("metadata", "Metadata about the transaction that produced this event.", "MAP"),
-            ProcArgMeta::described("event", "The change event itself.", "MAP"),
-        ])
-        .deprecated_by(DeprecatedBy::identifier("db.cdc.query"))
-        .executable(false),
     // CIP-123 boundaries[5]: Neo4j 2026.05 still lists the pre-CIP-79
     // singular `db.awaitIndex` alongside the current plural
     // `db.awaitIndexes` (see the CIP-123 doc's own worked "Combining all
@@ -147,21 +80,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .works_on_system()
         .described("Wait for all indexes to come online (for example: CALL db.awaitIndexes(300)).")
         .args(&[AWAIT_INDEX_TIMEOUT]),
-    ProcSignature::read("db.cdc.current")
-        .described("Returns the current change identifier and commit time that can be used to stream changes from.")
-        .returns(CDC_CURRENT_RETURNS)
-        .executable(false),
-    ProcSignature::read("db.cdc.earliest")
-        .described("Returns the earliest change identifier that can be used to stream changes from.")
-        .executable(false),
-    ProcSignature::read("db.cdc.query")
-        .admin()
-        .described("Query changes happened from the provided change identifier.")
-        .executable(false),
-    ProcSignature::read("db.cdc.translateId")
-        .admin()
-        .described("Translate any provided change identifier to match the queried database.")
-        .executable(false),
     ProcSignature::dbms("db.checkpoint")
         .works_on_system()
         .described("Initiate and wait for a new check point, or wait any already on-going check point to complete. Note that this temporarily disables the `db.checkpoint.iops.limit` setting in order to make the check point complete faster. This might cause transaction throughput to degrade slightly, due to increased IO load.")
@@ -174,12 +92,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .admin()
         .works_on_system()
         .described("Clears all query caches.")
-        .executable(false),
-    ProcSignature::write("db.create.setNodeVectorProperty")
-        .described("Set a vector property on a given node in a more space efficient representation than Cypher's SET.")
-        .executable(false),
-    ProcSignature::write("db.create.setRelationshipVectorProperty")
-        .described("Set a vector property on a given relationship in a more space efficient representation than Cypher's SET.")
         .executable(false),
     ProcSignature::write("db.createLabel")
         .described("Create a label")
@@ -344,15 +256,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("List all types attached to relationships within a database according to the user's access rights. The procedure returns empty results if the user is not authorized to view those relationship types.")
         .returns(&[ProcArgMeta::new("relationshipType", "STRING")])
         .rows(RowProducer::DbRelationshipTypes),
-    ProcSignature::read("db.resampleIndex")
-        .works_on_system()
-        .described("Schedule resampling of an index (for example: CALL db.resampleIndex(\"MyIndex\")).")
-        .args(&[ProcArgMeta::described("indexName", "The name of the index to resample.", "STRING")])
-        .executable(false),
-    ProcSignature::read("db.resampleOutdatedIndexes")
-        .works_on_system()
-        .described("Schedule resampling of all outdated indexes.")
-        .executable(false),
     ProcSignature::read("db.schema.nodeTypeProperties")
         .works_on_system()
         .described("Show the derived property schema of the nodes in tabular form.")
@@ -398,27 +301,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
             ProcArgMeta::described("relationships", "One virtual relationship per distinct (startLabel, relType, endLabel) triple.", "LIST<RELATIONSHIP>"),
         ])
         .rows(RowProducer::SchemaVisualization),
-    ProcSignature::read("db.stats.clear")
-        .admin()
-        .works_on_system()
-        .described("Clear collected data of a given data section. Valid sections are 'QUERIES'")
-        .executable(false),
-    // CIP-113 procedure-signatures.feature [1]: the doc's own literal
-    // worked example.
-    ProcSignature::read("db.stats.collect")
-        .admin()
-        .works_on_system()
-        .described("Start data collection of a given data section. Valid sections are 'QUERIES'")
-        .args(&[
-            ProcArgMeta::described("section", "The section of statistics to collect.", "STRING"),
-            ProcArgMeta::with_default("config", "Configuration for the collection.", "MAP", "{}"),
-        ])
-        .returns(&[
-            ProcArgMeta::described("section", "The section this row of statistics belongs to.", "STRING"),
-            ProcArgMeta::described("success", "Whether collection for this section succeeded.", "BOOLEAN"),
-            ProcArgMeta::described("message", "A human-readable status message.", "STRING"),
-        ])
-        .executable(false),
     // ADR-0497 §6: the one added procedure the corpus calls -- the GRAPH
     // COUNTS diagnostics section, derived from the live constraints,
     // indexes and graph type rather than catalogued alone.
@@ -432,86 +314,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
             ProcArgMeta::described("data", "The requested section's statistics.", "MAP"),
         ])
         .rows(RowProducer::DbStatsRetrieve),
-    ProcSignature::read("db.stats.retrieveAllAnonymized")
-        .admin()
-        .works_on_system()
-        .described("Retrieve all available statistical data about the current database, in an anonymized form.")
-        .executable(false),
-    ProcSignature::read("db.stats.status")
-        .admin()
-        .works_on_system()
-        .described("Retrieve the status of all available collector daemons, for this database.")
-        .executable(false),
-    ProcSignature::read("db.stats.stop")
-        .admin()
-        .works_on_system()
-        .described("Stop data collection of a given data section. Valid sections are 'QUERIES'")
-        .executable(false),
-    ProcSignature::dbms("dbms.checkConfigValue")
-        .admin()
-        .works_on_system()
-        .described("Check if a potential config setting value is valid.")
-        .executable(false),
-    ProcSignature::dbms("dbms.cluster.checkConnectivity")
-        .admin()
-        .works_on_system()
-        .described("Check the connectivity of this instance to other cluster members. Not all ports are relevant to all members. Valid values for 'port-name' are: []")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.cordonServer")
-        .works_on_system()
-        .described("Mark a server in the topology as not suitable for new allocations. It will not force current allocations off the server. This is useful when deallocating databases when you have multiple unavailable servers.")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.deallocateDatabaseFromServer")
-        .works_on_system()
-        .described("Deallocate a specific user database from a specific server.")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.deallocateDatabaseFromServers")
-        .works_on_system()
-        .described("Deallocate a specific user database from a list of servers.")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.deallocateNumberOfDatabases")
-        .works_on_system()
-        .described("Deallocate a number of user databases from a specific server.")
-        .executable(false),
-    ProcSignature::dbms("dbms.cluster.protocols")
-        .works_on_system()
-        .described("Overview of installed protocols")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.reallocateDatabase")
-        .works_on_system()
-        .described("Reallocate a specific database.")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.reallocateNumberOfDatabases")
-        .works_on_system()
-        .described("Reallocate a specified number of user databases.")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.recreateDatabase")
-        .works_on_system()
-        .described("Recreates a database while keeping all RBAC settings. The procedure initiates a process, which when complete, will have synchronized and started all database instances within the cluster.")
-        .args(&[ProcArgMeta::described("databaseName", "The name of the database to re-seed.", "STRING")])
-        .deprecated_by(DeprecatedBy::identifier("dbms.recreateDatabase"))
-        .executable(false),
-    ProcSignature::dbms("dbms.cluster.routing.getRoutingTable")
-        .works_on_system()
-        .described(ROUTING_TABLE_DESCRIPTION)
-        .args(ROUTING_TABLE_ARGS)
-        .returns(ROUTING_TABLE_RETURNS)
-        .deprecated_by(DeprecatedBy::identifier("dbms.routing.getRoutingTable"))
-        .executable(false),
-    ProcSignature::dbms("dbms.cluster.secondaryReplicationDisable")
-        .admin()
-        .works_on_system()
-        .described("The toggle can pause or resume the secondary replication process.")
-        .executable(false),
-    ProcSignature::write("dbms.cluster.setAutomaticallyEnableFreeServers")
-        .works_on_system()
-        .described("With this method you can set whether free servers are automatically enabled.")
-        .executable(false),
-    ProcSignature::dbms("dbms.cluster.statusCheck")
-        .admin()
-        .works_on_system()
-        .described("Performs a rafted status check.")
-        .executable(false),
     // ADR-0143: `dbms.clientConfig` and `dbms.listConfig` share the Neo4j
     // 5.x+ `ConfigResult` shape (`CONFIG_RESULT_RETURNS`) by design.
     // ADR-0497 §6: `dbms.clientConfig` stays callable but unlisted -- the
@@ -541,14 +343,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .described("Provides information regarding the DBMS.")
         .returns(DB_INFO_RETURNS)
         .rows(RowProducer::DbmsInfo),
-    ProcSignature::dbms("dbms.killConnection")
-        .works_on_system()
-        .described("Kill network connection with the given connection id.")
-        .executable(false),
-    ProcSignature::dbms("dbms.killConnections")
-        .works_on_system()
-        .described("Kill all network connections with the given connection ids.")
-        .executable(false),
     // ADR-0143: an honest constant row (Apache-2.0 has no agreement to
     // accept and no trial); ADR-0497 §6 keeps it callable but unlisted --
     // the corpus inventory has no row for it.
@@ -562,98 +356,12 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .listed(false)
         .rows(RowProducer::DbmsLicenseAgreementDetails),
-    ProcSignature::dbms("dbms.listActiveLocks")
-        .works_on_system()
-        .described("List the active lock requests granted for the transaction executing the query with the given query id.")
-        .executable(false),
-    ProcSignature::dbms("dbms.listCapabilities")
-        .works_on_system()
-        .described("List capabilities.")
-        .executable(false),
     ProcSignature::dbms("dbms.listConfig")
         .admin()
         .works_on_system()
         .described("List the currently active configuration settings of Neo4j.")
         .returns(CONFIG_RESULT_RETURNS)
         .rows(RowProducer::DbmsConfig),
-    ProcSignature::dbms("dbms.listConnections")
-        .works_on_system()
-        .described("List all accepted network connections at this instance that are visible to the user.")
-        .executable(false),
-    ProcSignature::dbms("dbms.listPools")
-        .works_on_system()
-        .described("List all memory pools, including sub pools, currently registered at this instance that are visible to the user.")
-        .executable(false),
-    ProcSignature::write("dbms.promoteReplicaDatabase")
-        .works_on_system()
-        .described("Convert a replica database to a standard database while keeping the data currently has. Optionally modify its topology.")
-        .executable(false),
-    ProcSignature::dbms("dbms.queryJmx")
-        .works_on_system()
-        .described("Query JMX management data by domain and name. For instance, use `*:*` to find all JMX beans.")
-        .executable(false),
-    ProcSignature::write("dbms.recreateDatabase")
-        .works_on_system()
-        .described("Recreates a database while keeping all RBAC settings. The procedure initiates a process, which when complete, will have synchronized and started all database instances within the cluster.")
-        .executable(false),
-    ProcSignature::dbms("dbms.reloadProcedures")
-        .admin()
-        .works_on_system()
-        .described("Reload procedures from disk.")
-        .executable(false),
-    // CIP-113 procedure-signatures.feature [2]/[9]: the doc's own
-    // literal worked example (an optional parameter defaulting to `null`).
-    ProcSignature::dbms("dbms.routing.getRoutingTable")
-        .works_on_system()
-        .described(ROUTING_TABLE_DESCRIPTION)
-        .args(ROUTING_TABLE_ARGS)
-        .returns(ROUTING_TABLE_RETURNS)
-        .executable(false),
-    ProcSignature::dbms("dbms.scheduler.failedJobs")
-        .admin()
-        .works_on_system()
-        .described("List failed job runs. There is a limit for amount of historical data.")
-        .executable(false),
-    ProcSignature::dbms("dbms.scheduler.groups")
-        .admin()
-        .works_on_system()
-        .described("List the job groups that are active in the database internal job scheduler.")
-        .executable(false),
-    ProcSignature::dbms("dbms.scheduler.jobs")
-        .admin()
-        .works_on_system()
-        .described("List all jobs that are active in the database internal job scheduler.")
-        .executable(false),
-    ProcSignature::dbms("dbms.security.clearAuthCache")
-        .admin()
-        .works_on_system()
-        .described("Clears authentication and authorization cache.")
-        .executable(false),
-    ProcSignature::dbms("dbms.security.reloadTLS")
-        .admin()
-        .works_on_system()
-        .described("Trigger the dynamic reloading of all TLS certificates and configuration.")
-        .executable(false),
-    ProcSignature::dbms("dbms.setConfigValue")
-        .works_on_system()
-        .described("Update a given setting value. Passing an empty value results in removing the configured value and falling back to the default value. Changes do not persist and are lost if the server is restarted. In a clustered environment, `dbms.setConfigValue` affects only the cluster member it is run against.")
-        .admin()
-        .writes()
-        .args(&[
-            ProcArgMeta::described("setting", "The name of the setting to update.", "STRING"),
-            ProcArgMeta::described("value", "The new value of the setting.", "STRING"),
-        ])
-        .executable(false),
-    ProcSignature::write("dbms.setDefaultAllocationNumbers")
-        .admin()
-        .works_on_system()
-        .described("With this method you can set the default number of primaries, secondaries and property shard replicas.")
-        .executable(false),
-    ProcSignature::write("dbms.setDefaultDatabase")
-        .admin()
-        .works_on_system()
-        .described("Change the default database to the provided value. The old default database must be stopped.")
-        .executable(false),
     // ADR-0143: Browser/Desktop-compat procedure (LABS-148). Fixed
     // documented-placeholder columns — the engine carries no session
     // identity beyond the connection principal (ADR-0273).
@@ -666,50 +374,6 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
             ProcArgMeta::new("flags", "LIST<STRING>"),
         ])
         .rows(RowProducer::DbmsShowCurrentUser),
-    ProcSignature::read("dbms.showTopologyGraphConfig")
-        .admin()
-        .works_on_system()
-        .described("With this method the configuration of the Topology Graph can be displayed.")
-        .executable(false),
-    ProcSignature::dbms("dbms.unquarantineDatabase")
-        .admin()
-        .works_on_system()
-        .described("Lift quarantine from a database on a given server.")
-        .executable(false),
-    ProcSignature::dbms("fleetManagement.debugLogging")
-        .admin()
-        .works_on_system()
-        .described("Enable debug or payload logging for Fleet Manager.")
-        .executable(false),
-    ProcSignature::dbms("fleetManagement.disable")
-        .admin()
-        .works_on_system()
-        .described("Disable Fleet Manager")
-        .executable(false),
-    ProcSignature::dbms("fleetManagement.inspectToken")
-        .admin()
-        .works_on_system()
-        .described("Inspect a Fleet Manager access token.")
-        .executable(false),
-    ProcSignature::dbms("fleetManagement.registerToken")
-        .admin()
-        .works_on_system()
-        .described("Add a token for authenticating to Fleet Manager")
-        .executable(false),
-    ProcSignature::read("fleetManagement.reportedData")
-        .works_on_system()
-        .described("Generate documentation for the data structures used in Fleet Manager messages.")
-        .executable(false),
-    ProcSignature::dbms("fleetManagement.restart")
-        .admin()
-        .works_on_system()
-        .described("Restart Fleet Manager.")
-        .executable(false),
-    ProcSignature::read("fleetManagement.status")
-        .admin()
-        .works_on_system()
-        .described("Check the status of Fleet Manager.")
-        .executable(false),
     ProcSignature::dbms("tx.getMetaData")
         .works_on_system()
         .described("Provides attached transaction metadata.")

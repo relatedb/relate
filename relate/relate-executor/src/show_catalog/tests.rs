@@ -464,9 +464,11 @@ fn function_catalog_renders_the_reference_name_order() {
 /// 2026.10.1: every built-in function is executable by PUBLIC plus the
 /// five roles with nothing boosted, and a procedure is admin-only
 /// exactly when its `admin` flag says so (boosted always `admin`). The
-/// role cell is derived from the flag, so the two cannot disagree; the
-/// registry's `admin` values are live-verified (`SHOW PROCEDURES YIELD
-/// name, admin`: 34 admin rows).
+/// role cell is derived from the flag, so the two cannot disagree. The
+/// registry's `admin` values are live-verified against 2026.10.1
+/// (`SHOW PROCEDURES YIELD name, admin`), but the inventory deliberately
+/// diverges: the server-only families are not listed, so the rows that
+/// remain are the five the body comment pins.
 #[test]
 fn role_cells_match_live_neo4j() {
     let rows = function_catalog_rows(Graph::default().preview());
@@ -493,16 +495,29 @@ fn role_cells_match_live_neo4j() {
     let procedures = procedure_catalog_rows(Graph::default().preview());
     assert!(!procedures.is_empty());
     // The admin inventory is pinned independently of the roles derivation
-    // below: live 2026.10.1 `SHOW PROCEDURES YIELD name, admin` lists 34
-    // admin rows, `db.clearQueryCaches` among them, `db.labels` not.
+    // below. It deliberately diverges from live 2026.10.1, whose
+    // `SHOW PROCEDURES YIELD name, admin` lists 34 admin rows: 29 of those
+    // belong to the server-only families Relate does not list (cluster,
+    // routing, fleet management, CDC, sessions/connections/locks/pools/JMX/
+    // security/scheduler, usage statistics, server config — see
+    // ADR-0557). What remains is the five
+    // admin rows an embedded engine can actually answer, `db.labels` still
+    // among the non-admin ones.
     let admin_names: Vec<&str> = procedures
         .iter()
         .filter(|row| flag(row, "admin"))
         .map(name_of)
         .collect();
-    assert_eq!(admin_names.len(), 34);
-    assert!(admin_names.contains(&"db.clearQueryCaches"));
-    assert!(!admin_names.contains(&"db.labels"));
+    assert_eq!(
+        admin_names,
+        [
+            "db.clearQueryCaches",
+            "db.listLocks",
+            "db.prepareForReplanning",
+            "db.stats.retrieve",
+            "dbms.listConfig",
+        ]
+    );
     for row in &procedures {
         let name = name_of(row);
         let admin = flag(row, "admin");
