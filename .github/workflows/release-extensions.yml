@@ -18,7 +18,7 @@ name: Release extension package
 # four build legs, no Windows.
 #
 # Flow: resolve the package row and its version (refuse an already
-# published tag) → run the three first-party child crates' suites on the
+# published tag) → run every first-party child crate's suite on the
 # resolved commit (a failed test stops the run before any tag) → build
 # the executable per platform (the darwin legs
 # sign + notarize, the CLI binary's own machinery) → pack the
@@ -174,8 +174,8 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "releasing ${name} ${version} as ${tag} from ${crate_dir}"
 
-  # The publish boundary's test gate: the three first-party child crates'
-  # suites must pass on the resolved commit — the exact tree the tarballs
+  # The publish boundary's test gate: every first-party child crate's
+  # suite must pass on the resolved commit — the exact tree the tarballs
   # carry — before any tag exists. `tag` needs this job, so a failed gate
   # leaves no tag, no release, and no index change (the PR boundary runs
   # the same suites in the ci.yml test lane's planner shard).
@@ -207,10 +207,12 @@ jobs:
       # @rev, including any components/targets.
       - uses: dtolnay/rust-toolchain@1.88.0
 
-      # Any test failure in the wire kit or either importer child fails
-      # the run here, before the tag.
+      # Any test failure in the wire kit or a first-party child fails the
+      # run here, before the tag. The crate list is every row of
+      # distribution/extension-packages.json plus relate-wire — a new
+      # package row without a suite here is a gate gap, not a choice.
       - name: Run the first-party child suites
-        run: cargo test -p relate-wire -p relate-git-to-graph -p relate-fs-to-graph
+        run: cargo test -p relate-wire -p relate-git-to-graph -p relate-fs-to-graph -p relate-dungeon -p relate-ideas
 
   build:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})

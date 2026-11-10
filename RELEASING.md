@@ -107,11 +107,13 @@ gh workflow run release-extensions.yml -f package=<name>
 The table of first-party packages is
 [`distribution/extension-packages.json`](distribution/extension-packages.json)
 (each row names the package, the crate directory that builds its
-executable, and its `extension.json` manifest). Its two current rows:
+executable, and its `extension.json` manifest). Its four current rows:
 
 ```sh
 gh workflow run release-extensions.yml -f package=git-to-graph
 gh workflow run release-extensions.yml -f package=fs-to-graph
+gh workflow run release-extensions.yml -f package=dungeon
+gh workflow run release-extensions.yml -f package=ideas
 ```
 
 Each dispatch builds the package for the four channel platforms, signs and
