@@ -1,5 +1,5 @@
 {
-  "name": "@relate/linux-x64",
+  "name": "@relate/relate-linux-x64",
   "version": "0.1.2",
   "description": "Linux x64 (glibc) native library for @relate/relate",
   "license": "Apache-2.0",

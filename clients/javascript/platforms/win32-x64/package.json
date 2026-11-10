@@ -1,5 +1,5 @@
 {
-  "name": "@relate/win32-x64",
+  "name": "@relate/relate-win32-x64",
   "version": "0.1.2",
   "description": "Windows x64 (MSVC) native library for @relate/relate",
   "license": "Apache-2.0",

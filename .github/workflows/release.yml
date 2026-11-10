@@ -418,7 +418,7 @@ jobs:
             surfaces/relate-python/dist/*.whl
             surfaces/relate-python/dist/*.tar.gz
 
-  # Assemble the five @relate/<platform>-<arch> packages
+  # Assemble the five @relate/relate-<platform>-<arch> packages
   # (ADR-0278) from the ffi job's artifacts: each package is its checked-in
   # package.json plus the target's dynamic library in lib/. Packing needs no
   # target toolchain, so every leg runs on ubuntu-latest.
@@ -936,7 +936,7 @@ jobs:
           RELATE_LIB: ${{ github.workspace }}/smoke/ffi/librelate_ffi.so
           NPM_SMOKE_MAIN_TGZ: ${{ github.workspace }}/smoke/main/relate-relate-${{ needs.version.outputs.version }}.tgz
           NPM_SMOKE_WASM_TGZ: ${{ github.workspace }}/smoke/wasm/relate-relate-wasm-${{ needs.version.outputs.version }}.tgz
-          NPM_SMOKE_PLATFORM_TGZ: ${{ github.workspace }}/smoke/platform/relate-linux-x64-${{ needs.version.outputs.version }}.tgz
+          NPM_SMOKE_PLATFORM_TGZ: ${{ github.workspace }}/smoke/platform/relate-relate-linux-x64-${{ needs.version.outputs.version }}.tgz
         run: |
           set -euo pipefail
           tar xzf smoke/ffi/relate-ffi-x86_64-unknown-linux-gnu.tar.gz -C smoke/ffi

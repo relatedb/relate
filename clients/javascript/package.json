@@ -25,11 +25,11 @@
     "koffi": "^2.9.0"
   },
   "optionalDependencies": {
-    "@relate/darwin-arm64": "0.1.2",
-    "@relate/darwin-x64": "0.1.2",
-    "@relate/linux-arm64": "0.1.2",
-    "@relate/linux-x64": "0.1.2",
-    "@relate/win32-x64": "0.1.2"
+    "@relate/relate-darwin-arm64": "0.1.2",
+    "@relate/relate-darwin-x64": "0.1.2",
+    "@relate/relate-linux-arm64": "0.1.2",
+    "@relate/relate-linux-x64": "0.1.2",
+    "@relate/relate-win32-x64": "0.1.2"
   },
   "scripts": {
     "test": "node test.js && node loadtest/test.js"
