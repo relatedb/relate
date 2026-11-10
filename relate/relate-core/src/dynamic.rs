@@ -52,6 +52,19 @@ impl DynamicNameToken {
         }
     }
 
+    /// The *type* half of [`Self::check`], against a statically known
+    /// operand's Cypher type class (`STRING`, `LIST`, … — a bare class, never
+    /// a parameterized list type): a property key takes a `STRING`; a
+    /// dynamic label/type a `STRING` or a `LIST`, whose elements the per-row
+    /// rule then checks. Content (a string's text, a list's elements) is the
+    /// other half, decided by [`Self::check`] per value.
+    pub fn accepts_type(self, type_name: &str) -> bool {
+        match self {
+            Self::PropertyKey => type_name == "STRING",
+            Self::Label => type_name == "STRING" || type_name == "LIST",
+        }
+    }
+
     /// The dynamic-operand rule for this namespace: a property key is one
     /// non-empty, NUL-free `STRING`; a label/type operand is a `STRING` or
     /// a `LIST<STRING>` of such names. Validation-only callers (the front's
@@ -275,6 +288,19 @@ mod tests {
                 .kind(),
             ErrorKind::SyntaxError
         );
+    }
+
+    /// The type half: the accepted class set is the one [`DynamicNameToken::check`]
+    /// enforces per value — a property key takes a `STRING`, a label also a
+    /// `LIST`.
+    #[test]
+    fn accepts_type_is_the_type_half_of_check() {
+        assert!(DynamicNameToken::PropertyKey.accepts_type("STRING"));
+        assert!(!DynamicNameToken::PropertyKey.accepts_type("LIST"));
+        assert!(!DynamicNameToken::PropertyKey.accepts_type("INTEGER"));
+        assert!(DynamicNameToken::Label.accepts_type("STRING"));
+        assert!(DynamicNameToken::Label.accepts_type("LIST"));
+        assert!(!DynamicNameToken::Label.accepts_type("MAP"));
     }
 
     /// The core `Error` channel classifies through `kind()`, so a runtime

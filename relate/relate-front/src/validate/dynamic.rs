@@ -4,8 +4,14 @@
 //!
 //! Neo4j folds constant dynamic operands at compile time, so a bad constant
 //! fails even when the driving `MATCH` matches zero rows; Relate's checks
-//! otherwise only run per row. The type and token-name rule itself lives in
-//! `relate_core::dynamic` and is shared with the executor's runtime
+//! otherwise only run per row. The fold is split the way Neo4j splits it:
+//! an inline literal's value *and* content are compile-time facts, while an
+//! operand reaching the site through a variable or parameter is typed
+//! statically (a wrong scalar type is a compile-time `SyntaxError`) but its
+//! value — `NULL`, a list's elements — is the executor's per-row
+//! `TypeError`. Label *predicates* (`n:$(…)` in WHERE or a projection) take
+//! no compile-time check at all. The type and token-name rule itself lives
+//! in `relate_core::dynamic` and is shared with the executor's runtime
 //! resolution (`relate-executor/src/eval/labels.rs`), so neither layer
 //! restates a message or a type rule.
 //!
@@ -41,7 +47,7 @@
 use crate::ident_hash::{IdentHashMap, IdentHashSet};
 use std::collections::BTreeMap;
 
-use relate_core::{DynamicAccessError, DynamicNameToken, Value};
+use relate_core::{bare_type_name, DynamicAccessError, DynamicNameToken, Value};
 use relate_error::EngineError;
 use relate_names::SmallName;
 use relate_parser::{
@@ -57,10 +63,48 @@ use crate::ast::tree::walk_label_expr;
 /// types are the core's own; the named form is the type spelling for an
 /// operand that is statically typed but has no materialized value (a map
 /// literal, a mixed-numeric or boolean expression, a constructor call).
+///
+/// [`StaticOperand::Bound`] is a value reaching the operand through a
+/// variable or a bound parameter. Neo4j types such an operand from its
+/// static type but does not fold its *value*: a wrong scalar type is a
+/// compile-time type mismatch (`SyntaxError`), while `NULL` and list
+/// elements are the executor's per-row `TypeError` (a null binding on a
+/// zero-row `MATCH` is not an error at all). The inline
+/// [`StaticOperand::Value`] is a literal the front folds itself, so its
+/// content is checked here exactly as Neo4j folds a literal.
 #[derive(Clone)]
 enum StaticOperand {
     Value(Value),
+    Bound(Value),
     Named(&'static str),
+}
+
+/// A binding's operand form: what a variable or parameter is once stored in
+/// the scope. Every stored operand is *bound* — an inline literal the front
+/// folded does not survive into a binding — so the conversion is a `From` at
+/// the map insert and a call site cannot forget it.
+#[derive(Clone)]
+enum BoundOperand {
+    Value(Value),
+    Named(&'static str),
+}
+
+impl From<StaticOperand> for BoundOperand {
+    fn from(operand: StaticOperand) -> Self {
+        match operand {
+            StaticOperand::Value(value) | StaticOperand::Bound(value) => Self::Value(value),
+            StaticOperand::Named(name) => Self::Named(name),
+        }
+    }
+}
+
+impl From<BoundOperand> for StaticOperand {
+    fn from(operand: BoundOperand) -> Self {
+        match operand {
+            BoundOperand::Value(value) => Self::Bound(value),
+            BoundOperand::Named(name) => Self::Named(name),
+        }
+    }
 }
 
 /// One statement body's admission-time operand environment: the operand
@@ -70,7 +114,7 @@ enum StaticOperand {
 /// no rows — the per-row runtime check would never run.
 #[derive(Clone)]
 struct OperandEnv<'a> {
-    vars: IdentHashMap<SmallName, StaticOperand>,
+    vars: IdentHashMap<SmallName, BoundOperand>,
     params: Option<&'a BTreeMap<String, Value>>,
 }
 
@@ -147,8 +191,9 @@ fn check_operand(
 ) -> Result<(), EngineError> {
     match static_operand(expr, env) {
         Some(StaticOperand::Value(value)) => token.check(&value).map_err(dynamic_access_error),
+        Some(StaticOperand::Bound(value)) => check_bound_operand(token, &value),
         Some(StaticOperand::Named(type_name)) => {
-            if accepts_type(token, type_name) {
+            if token.accepts_type(type_name) {
                 Ok(())
             } else {
                 Err(dynamic_access_error(DynamicAccessError::wrong_type(
@@ -162,17 +207,45 @@ fn check_operand(
     }
 }
 
+/// The admission rule for an operand reaching the write site through a
+/// variable or parameter. Neo4j types it statically (a wrong scalar type is
+/// a compile-time `SyntaxError`) but leaves its value to the per-row check:
+/// a `NULL` operand, and every list element, is the executor's `TypeError`.
+/// The accepted classes are the core token's own
+/// ([`DynamicNameToken::accepts_type`]); only the value's class and the
+/// content deferral live here.
+fn check_bound_operand(token: DynamicNameToken, value: &Value) -> Result<(), EngineError> {
+    let accepted = match value {
+        // NULL is statically assignable to the accepted classes, so only the
+        // executor can reject it (`SET n[c]` with a null key / label).
+        Value::Null => return Ok(()),
+        // A bound STRING's content (empty / NUL) and a bound list's elements
+        // are per-row facts; only the type class is decided here.
+        Value::String(_) => token.accepts_type(StaticLitType::String.name()),
+        Value::List(_) => token.accepts_type(StaticLitType::List.name()),
+        _ => false,
+    };
+    if accepted {
+        Ok(())
+    } else {
+        Err(dynamic_access_error(DynamicAccessError::wrong_type(
+            token,
+            bare_type_name(value),
+        )))
+    }
+}
+
 /// An expression's statically known operand value or type, resolved through
 /// `env` for a variable or parameter and from the expression itself
 /// otherwise.
 fn static_operand(expr: &Expr, env: &OperandEnv<'_>) -> Option<StaticOperand> {
     match expr {
         Expr::Paren(inner) => static_operand(inner, env),
-        Expr::Variable(name) => env.vars.get(name).cloned(),
+        Expr::Variable(name) => env.vars.get(name).map(|bound| bound.clone().into()),
         Expr::Parameter(name) => env
             .params
             .and_then(|params| params.get(name.as_str()))
-            .map(|value| StaticOperand::Value(value.clone())),
+            .map(|value| StaticOperand::Bound(value.clone())),
         _ => match constant_value(expr) {
             Some(FoldedConstant::Value(value)) => Some(StaticOperand::Value(value)),
             Some(FoldedConstant::Map) => Some(StaticOperand::Named(StaticLitType::Map.name())),
@@ -180,21 +253,6 @@ fn static_operand(expr: &Expr, env: &OperandEnv<'_>) -> Option<StaticOperand> {
                 .map(|ty| StaticOperand::Named(ty.name()))
                 .or_else(|| constant_function_type_name(expr).map(StaticOperand::Named)),
         },
-    }
-}
-
-/// The statically-known operand types each namespace accepts: the *type*
-/// half of the core rule ([`DynamicNameToken::expected`] is its authored
-/// text, [`DynamicNameToken::check`] its per-value/content half). A property
-/// key is a `STRING`; a dynamic label/type is a `STRING` or a `LIST` whose
-/// elements the core rule then checks. An operand with no statically known
-/// type never reaches here, so a runtime-bound key/label is unaffected.
-fn accepts_type(token: DynamicNameToken, type_name: &str) -> bool {
-    match token {
-        DynamicNameToken::PropertyKey => type_name == StaticLitType::String.name(),
-        DynamicNameToken::Label => {
-            type_name == StaticLitType::String.name() || type_name == StaticLitType::List.name()
-        }
     }
 }
 
@@ -296,7 +354,7 @@ fn walk_clause_operands(clauses: &[Clause], env: &mut OperandEnv<'_>) -> Result<
                     let Some(alias) = effective_name(item) else {
                         continue;
                     };
-                    if let Some(operand) = static_operand(&item.expr, env) {
+                    if let Some(operand) = static_operand(&item.expr, env).map(BoundOperand::from) {
                         next.insert(alias, operand);
                     }
                 }
@@ -426,492 +484,4 @@ fn rebind_paths(paths: &[PatternPath], env: &mut OperandEnv<'_>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::validate::validate_statement_tree;
-
-    /// Parse `query` and run the whole nested-statement validation battery.
-    fn check(query: &str) -> Result<(), EngineError> {
-        validate_statement_tree(&relate_parser::parse(query).expect("parse"))
-    }
-
-    fn error(query: &str) -> EngineError {
-        check(query).expect_err(query)
-    }
-
-    fn assert_error(query: &str, needles: &[&str]) {
-        let error = error(query);
-        let rendered = error.to_string();
-        for needle in needles {
-            assert!(
-                rendered.contains(needle),
-                "`{query}`: expected {needle:?} in {rendered:?}"
-            );
-        }
-    }
-
-    fn assert_ok(query: &str) {
-        check(query).unwrap_or_else(|error| panic!("`{query}`: {error}"));
-    }
-
-    #[test]
-    fn constant_wrong_type_property_keys_fail_at_compile_time() {
-        for query in [
-            "MATCH (n) SET n[1] = 2",
-            "MATCH (n) SET n[true] = 2",
-            "MATCH (n) SET n[1.5] = 2",
-            "MATCH (n) SET n[null] = 2",
-            "MATCH (n) SET n[['a']] = 2",
-            "MATCH (n) REMOVE n[1]",
-            "MATCH (n) SET n[1 + 1] = 2",
-        ] {
-            assert_error(
-                query,
-                &[
-                    "node or relationship property key",
-                    "Expected to be STRING.",
-                ],
-            );
-        }
-    }
-
-    /// The detail text reads the one core type spelling, so a union keeps
-    /// the CIP-100 order (`INTEGER` before `FLOAT`) rather than the
-    /// lexicographic order a third table would produce.
-    #[test]
-    fn list_property_key_detail_uses_the_cip100_type_order() {
-        assert_error(
-            "MATCH (n) SET n[[1, 1.5]] = 2",
-            &["Invalid input 'LIST<INTEGER | FLOAT>' for node or relationship property key"],
-        );
-    }
-
-    /// The family's core regression: Neo4j folds the constant at compile
-    /// time, so the zero-row MATCH never hides it. Relate's per-row check
-    /// would never run here.
-    #[test]
-    fn constant_wrong_type_property_key_fails_on_a_zero_row_match() {
-        assert_error(
-            "MATCH (n:NoSuchLabel) SET n[1] = 2",
-            &["node or relationship property key", "INTEGER"],
-        );
-    }
-
-    #[test]
-    fn constant_empty_and_nul_property_keys_fail_at_compile_time() {
-        for query in [
-            "MATCH (n) SET n[''] = 2",
-            "MATCH (n) SET n['a\u{0}b'] = 2",
-            "MATCH (n) REMOVE n['']",
-        ] {
-            assert_error(
-                query,
-                &["invalid name. A property key name cannot be empty or contain any null-bytes"],
-            );
-        }
-    }
-
-    #[test]
-    fn constant_dynamic_labels_must_be_string_or_string_list() {
-        for query in [
-            "MATCH (n) SET n:$(1)",
-            "MATCH (n) SET n:$(['A', 1])",
-            "MATCH (n) REMOVE n:$(true)",
-            "MATCH (n) CREATE (m:$(1))",
-            "MATCH (n) MERGE (m:$(1))",
-            "MATCH (n:$(1)) RETURN n",
-            "MATCH (n) WHERE n:$(1) RETURN n",
-            "MATCH (n) SET labels(n) = 1",
-            "MATCH (n) SET labels(n) = ['A', 1]",
-            "MATCH (n) WHERE (n)-[:$(1)]->() RETURN n",
-            "MATCH (n) RETURN [(n)-[:$(1)]->(m) | m] AS ms",
-            "MATCH (a), (b) RETURN shortestPath((a)-[:$(1)]->(b)) AS p",
-        ] {
-            assert_error(
-                query,
-                &["dynamic label", "Expected to be STRING or LIST<STRING>."],
-            );
-        }
-    }
-
-    #[test]
-    fn constant_dynamic_relationship_types_are_checked_too() {
-        assert_error(
-            "CREATE (:A)-[:$(1)]->(:B)",
-            &["dynamic label", "Expected to be STRING or LIST<STRING>."],
-        );
-    }
-
-    #[test]
-    fn constant_empty_and_nul_labels_fail_at_compile_time() {
-        for query in [
-            "MATCH (n) SET n:$('')",
-            "MATCH (n) SET n:$(['A', ''])",
-            "MATCH (n) SET n:$('a\u{0}b')",
-        ] {
-            assert_error(
-                query,
-                &["invalid name. A label name cannot be empty or contain any null-bytes"],
-            );
-        }
-    }
-
-    /// A map literal is a MAP by shape, whatever its entries evaluate to;
-    /// the fold rejects it without reading (or fabricating) a value.
-    #[test]
-    fn constant_map_operands_are_rejected_by_shape() {
-        for query in [
-            "MATCH (n) SET n[{a: 1}] = 2",
-            "MATCH (n) SET n[({a: $p})] = 2",
-        ] {
-            assert_error(
-                query,
-                &["Invalid input 'MAP' for node or relationship property key"],
-            );
-        }
-        assert_error(
-            "MATCH (n) SET n:$({a: 1})",
-            &["Invalid input 'MAP' for dynamic label"],
-        );
-    }
-
-    /// A map literal nested inside a constant list is declined by the value
-    /// fold (a list cannot materialize a map member) but is still
-    /// constant-typed: it must fail through the type half — at the operand or
-    /// as a list member, on a zero-row MATCH too.
-    #[test]
-    fn map_literals_nested_in_constant_lists_are_rejected_by_shape() {
-        for query in [
-            "MATCH (n) SET n[[{a: 1}]] = 2",
-            "MATCH (n:NoSuchLabel) SET n[[{a: $p}]] = 2",
-            "MATCH (n:NoSuchLabel) REMOVE n[[{a: 1}]]",
-        ] {
-            assert_error(
-                query,
-                &["Invalid input 'MAP' for node or relationship property key"],
-            );
-        }
-        for query in [
-            "MATCH (n) SET n:$(['A', {b: 1}])",
-            "MATCH (n:NoSuchLabel) SET n:$(['A', {b: $p}])",
-            "MATCH (n) WHERE n:$([{b: 1}]) RETURN n",
-            "MATCH (n) SET labels(n) = [{b: 1}]",
-        ] {
-            assert_error(query, &["Invalid input 'MAP' for dynamic label"]);
-        }
-    }
-
-    /// An operand whose constant expression the value fold declines for
-    /// content reasons still has a decided *type*, so the zero-row MATCH that
-    /// would never evaluate it cannot hide it.
-    #[test]
-    fn statically_typed_non_string_operands_fail_at_compile_time() {
-        for (query, type_name) in [
-            ("MATCH (n:NoSuchLabel) SET n[1 + 1.5] = 2", "FLOAT"),
-            ("MATCH (n:NoSuchLabel) SET n[2 / 1] = 2", "INTEGER"),
-            ("MATCH (n:NoSuchLabel) SET n[1 < 2] = 2", "BOOLEAN"),
-            ("MATCH (n:NoSuchLabel) SET n[NOT true] = 2", "BOOLEAN"),
-        ] {
-            let needle =
-                format!("Invalid input '{type_name}' for node or relationship property key");
-            assert_error(query, &[needle.as_str()]);
-        }
-        for (query, type_name) in [
-            ("MATCH (n) SET n:$(1 + 1.5)", "FLOAT"),
-            ("MATCH (n) SET n:$(1 < 2)", "BOOLEAN"),
-        ] {
-            let needle = format!("Invalid input '{type_name}' for dynamic label");
-            assert_error(query, &[needle.as_str()]);
-        }
-    }
-
-    #[test]
-    fn constant_string_keys_and_labels_are_accepted() {
-        for query in [
-            "MATCH (n) SET n['name'] = 2",
-            "MATCH (n) SET n['na' + 'me'] = 2",
-            "MATCH (n) REMOVE n['name']",
-            "MATCH (n) SET n:$('Person')",
-            "MATCH (n) SET n:$(['Person', 'Admin'])",
-            "MATCH (n) CREATE (m:$('Person'))",
-        ] {
-            assert_ok(query);
-        }
-    }
-
-    /// Parameters and runtime-computed expressions are not constant-foldable
-    /// here, so they stay runtime-checked: the compile-time pass must not
-    /// reject a legitimately dynamic key/label (no bound values were
-    /// supplied, so neither the fold nor the parameter rule has anything to
-    /// decide).
-    #[test]
-    fn parameters_and_runtime_expressions_are_left_to_runtime() {
-        for query in [
-            "MATCH (n) SET n[$key] = 2",
-            "MATCH (n) SET n[toString(n.x)] = 2",
-            "MATCH (n) SET n:$(label)",
-            "MATCH (n) SET n:$($labels)",
-            "MATCH (n) WHERE n:$(label) RETURN n",
-        ] {
-            assert_ok(query);
-        }
-    }
-
-    /// Parse, run the whole-tree battery, then the binding/parameter pass —
-    /// the same order lowering uses.
-    fn admit(query: &str, params: &[(&str, Value)]) -> Result<(), EngineError> {
-        let stmt = relate_parser::parse(query).expect("parse");
-        let params: BTreeMap<String, Value> = params
-            .iter()
-            .map(|(name, value)| ((*name).to_string(), value.clone()))
-            .collect();
-        validate_statement_tree(&stmt)?;
-        validate_scoped_operands(&stmt, &params)
-    }
-
-    fn assert_admit_error(query: &str, params: &[(&str, Value)], needles: &[&str]) {
-        let rendered = admit(query, params).expect_err(query).to_string();
-        for needle in needles {
-            assert!(
-                rendered.contains(needle),
-                "`{query}`: expected {needle:?} in {rendered:?}"
-            );
-        }
-    }
-
-    fn assert_admit_ok(query: &str, params: &[(&str, Value)]) {
-        admit(query, params).unwrap_or_else(|error| panic!("`{query}`: {error}"));
-    }
-
-    /// A constructor call over constant arguments is folded at admission by
-    /// Neo4j, so its fixed result type must be rejected even on a zero-row
-    /// `MATCH`: these are the shapes that used to slip through because the
-    /// fold decline on a function result was read as "not statically known".
-    #[test]
-    fn constant_constructor_calls_are_typed_for_property_keys() {
-        for (query, type_name) in [
-            (
-                "MATCH (n:NoSuchLabel) SET n[localdatetime(\"2024185T19:32:24\")] = 1",
-                "LOCAL DATETIME",
-            ),
-            ("MATCH (n:NoSuchLabel) SET n[point({x:3,y:0})] = 1", "POINT"),
-            (
-                "MATCH (n:NoSuchLabel) SET n[date(\"2020-01-01\")] = 1",
-                "DATE",
-            ),
-            (
-                "MATCH (n:NoSuchLabel) SET n[duration(\"P1D\")] = 1",
-                "DURATION",
-            ),
-            (
-                "MATCH (n:NoSuchLabel) SET n[toInteger(\"12\")] = 1",
-                "INTEGER",
-            ),
-            ("MATCH (n:NoSuchLabel) SET n[size(\"ab\")] = 1", "INTEGER"),
-            ("MATCH (n:NoSuchLabel) SET n[rand()] = 1", "FLOAT"),
-        ] {
-            let needle =
-                format!("Invalid input '{type_name}' for node or relationship property key");
-            assert_error(query, &[needle.as_str()]);
-        }
-        for (query, type_name) in [
-            (
-                "MATCH (n:NoSuchLabel) REMOVE n[localdatetime(\"2024185T19:32:24\")]",
-                "LOCAL DATETIME",
-            ),
-            ("MATCH (n:NoSuchLabel) REMOVE n[point({x:3,y:0})]", "POINT"),
-        ] {
-            let needle =
-                format!("Invalid input '{type_name}' for node or relationship property key");
-            assert_error(query, &[needle.as_str()]);
-        }
-    }
-
-    #[test]
-    fn constant_constructor_calls_are_typed_for_labels() {
-        for (query, type_name) in [
-            (
-                "MATCH (n:NoSuchLabel) SET n:$(localdatetime(\"2024185T19:32:24\"))",
-                "LOCAL DATETIME",
-            ),
-            ("MATCH (n:NoSuchLabel) SET n:$(point({x:3,y:0}))", "POINT"),
-            (
-                "MATCH (n:NoSuchLabel) REMOVE n:$(point({x:3,y:0}))",
-                "POINT",
-            ),
-            (
-                "MATCH (n:NoSuchLabel) REMOVE n:$(localdatetime(\"2024185T19:32:24\"))",
-                "LOCAL DATETIME",
-            ),
-        ] {
-            let needle = format!("Invalid input '{type_name}' for dynamic label");
-            assert_error(query, &[needle.as_str()]);
-        }
-    }
-
-    /// A call over runtime data keeps its per-row semantics: the type is not
-    /// statically decided, and Neo4j reports the call's own argument error
-    /// there rather than a dynamic-operand error.
-    #[test]
-    fn calls_over_runtime_data_stay_runtime() {
-        for query in [
-            "MATCH (n) SET n[point(n.p)] = 1",
-            "MATCH (n) SET n[localdatetime(n.p)] = 1",
-            "MATCH (n) SET n[toString(n.p)] = 1",
-        ] {
-            assert_ok(query);
-        }
-    }
-
-    /// `WITH <expr> AS a … SET n[a] = 1`: the operand is a variable, but its
-    /// binding is statically known, and Neo4j rejects on a zero-row MATCH.
-    #[test]
-    fn with_bound_variables_are_typed_for_property_keys() {
-        for (binding, type_name) in [
-            ("1 + 2", "INTEGER"),
-            ("true", "BOOLEAN"),
-            ("point({x: 2.3, y: 4.5})", "POINT"),
-            ("localdatetime(\"2024185T19:32:24\")", "LOCAL DATETIME"),
-            ("{x : 1}", "MAP"),
-        ] {
-            let needle =
-                format!("Invalid input '{type_name}' for node or relationship property key");
-            for query in [
-                format!("WITH {binding} AS a MATCH (n) SET n[a] = 1 RETURN n"),
-                format!("WITH {binding} AS a MATCH (n) REMOVE n[a] RETURN n"),
-            ] {
-                assert_admit_error(&query, &[], &[needle.as_str()]);
-            }
-        }
-    }
-
-    #[test]
-    fn with_bound_variables_are_typed_for_labels() {
-        for (binding, type_name) in [
-            ("1 + 2", "INTEGER"),
-            ("true", "BOOLEAN"),
-            ("point({x:3,y:0})", "POINT"),
-            ("localdatetime(\"2024185T19:32:24\")", "LOCAL DATETIME"),
-        ] {
-            let needle = format!("Invalid input '{type_name}' for dynamic label");
-            let query = format!("WITH {binding} AS a MATCH (n) REMOVE n:$(a) RETURN labels(n)");
-            assert_admit_error(&query, &[], &[needle.as_str()]);
-        }
-    }
-
-    /// A list binding is checked as a *value*, so the shared core rule runs
-    /// over its elements: the key side names the whole list type, the label
-    /// side names the offending element (the core rule's documented
-    /// per-element detail).
-    #[test]
-    fn with_bound_list_variables_are_checked_by_value() {
-        assert_admit_error(
-            "WITH [1, 2] AS a MATCH (n) SET n[a] = 1 RETURN n",
-            &[],
-            &["Invalid input 'LIST<INTEGER>' for node or relationship property key"],
-        );
-        assert_admit_error(
-            "WITH [1, 2] AS a MATCH (n) REMOVE n:$(a) RETURN labels(n)",
-            &[],
-            &["Invalid input 'INTEGER' for dynamic label"],
-        );
-    }
-
-    #[test]
-    fn bound_parameters_are_typed() {
-        for (value, type_name) in [
-            (Value::Int(1), "INTEGER"),
-            (Value::Bool(true), "BOOLEAN"),
-            (Value::Float(1.5), "FLOAT"),
-            (map_param(), "MAP"),
-        ] {
-            let needle =
-                format!("Invalid input '{type_name}' for node or relationship property key");
-            for query in [
-                "MATCH (n) SET n[$a] = 1 RETURN n",
-                "MATCH (n) REMOVE n[$a] RETURN n",
-            ] {
-                assert_admit_error(query, &[("a", value.clone())], &[needle.as_str()]);
-            }
-        }
-        for (value, type_name) in [(Value::Int(1), "INTEGER"), (map_param(), "MAP")] {
-            let needle = format!("Invalid input '{type_name}' for dynamic label");
-            for query in [
-                "MATCH (n) SET n:$($a) RETURN labels(n)",
-                "MATCH (n) REMOVE n:$($a) RETURN labels(n)",
-            ] {
-                assert_admit_error(query, &[("a", value.clone())], &[needle.as_str()]);
-            }
-        }
-    }
-
-    fn map_param() -> Value {
-        Value::Map(std::sync::Arc::new(BTreeMap::from([(
-            "x".to_string(),
-            Value::Int(1),
-        )])))
-    }
-
-    /// Only a *bad* binding is rejected: string bindings and bindings whose
-    /// value is only known at execution keep working, and a name rebound by
-    /// a later clause is typed by its new binding, not the old one.
-    #[test]
-    fn good_and_rebound_bindings_stay_accepted() {
-        for query in [
-            "WITH 'key' AS a MATCH (n) SET n[a] = 1 RETURN n",
-            "WITH 'Label' AS a MATCH (n) REMOVE n:$(a) RETURN labels(n)",
-            "MATCH (n) WITH n.name AS a SET n[a] = 1 RETURN n",
-            "WITH 1 AS a WITH 'key' AS a MATCH (n) SET n[a] = 1 RETURN n",
-            "WITH 1 AS a MATCH (n) WITH 'key' AS a SET n[a] = 1 RETURN n",
-            "MATCH (n) UNWIND [1] AS a SET n[a] = 1 RETURN n",
-        ] {
-            assert_admit_ok(query, &[]);
-        }
-        assert_admit_ok(
-            "MATCH (n) SET n[$a] = 1 RETURN n",
-            &[("a", Value::String("key".into()))],
-        );
-        assert_admit_ok(
-            "MATCH (n) SET n:$($a) RETURN labels(n)",
-            &[("a", Value::String("Label".into()))],
-        );
-        // A parameter that is not bound at admission has nothing to decide.
-        assert_admit_ok("MATCH (n) SET n[$a] = 1 RETURN n", &[]);
-    }
-
-    /// The scoped pass walks `FOREACH` bodies with the enclosing bindings,
-    /// so the same rule reaches a nested write site.
-    #[test]
-    fn scoped_bindings_reach_foreach_bodies() {
-        assert_admit_error(
-            "WITH 1 AS a MATCH (n) FOREACH (x IN [1] | SET n[a] = 1) RETURN n",
-            &[],
-            &["Invalid input 'INTEGER' for node or relationship property key"],
-        );
-    }
-
-    /// Every statement position the executor reaches is walked, not just the
-    /// head statement's own clauses: a write site inside a UNION arm, a
-    /// CIP-213 NEXT stage, or a CIP-135 WHEN/ELSE body is admitted by the
-    /// same rule. The scoped walk is called directly so the enclosing
-    /// statement battery (union-column and scope rules) does not pre-empt
-    /// the error under test.
-    #[test]
-    fn scoped_bindings_reach_union_next_and_conditional_positions() {
-        fn scoped_error(query: &str) -> EngineError {
-            let stmt = relate_parser::parse(query).expect("parse");
-            validate_scoped_operands(&stmt, &BTreeMap::new()).expect_err(query)
-        }
-        for query in [
-            "WITH 1 AS a MATCH (n) RETURN n AS x UNION MATCH (m) SET m[a] = 1 RETURN m AS x",
-            "WITH 1 AS a MATCH (n) RETURN n AS x NEXT MATCH (m) SET m[a] = 1 RETURN m AS x",
-            "WHEN true THEN WITH 1 AS a MATCH (n) SET n[a] = 1 RETURN n AS x ELSE RETURN 1 AS x",
-        ] {
-            let rendered = scoped_error(query).to_string();
-            assert!(
-                rendered.contains("Invalid input 'INTEGER' for node or relationship property key"),
-                "`{query}`: {rendered}"
-            );
-        }
-    }
-}
+mod tests;

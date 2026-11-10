@@ -13,7 +13,7 @@ use crate::show_columns::catalog_info;
 use super::{
     enter_substatement, walk_expr_at, walk_label_expr_tree, walk_page_stages_tree,
     walk_path_exprs_tree, walk_projection_exprs_tree, walk_property_access_tree,
-    walk_set_item_exprs_tree, Depths, TreeWalk,
+    walk_set_item_exprs_tree, Depths, LabelSite, TreeWalk,
 };
 
 pub(super) fn walk_clause_exprs_tree(
@@ -61,7 +61,7 @@ pub(super) fn walk_clause_exprs_tree(
                     walk_property_access_tree(p, depths, walk)?;
                 }
                 for label in &item.labels {
-                    walk_label_expr_tree(label, depths, walk)?;
+                    walk_label_expr_tree(label, depths, walk, LabelSite::PatternOrWrite)?;
                 }
             }
         }

@@ -131,6 +131,19 @@ pub(crate) enum SubqueryDescent {
     Enter,
 }
 
+/// Where a dynamic label/type atom sits, which decides whether the
+/// compile-time operand check fires.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelSite {
+    /// A pattern or write-site label/type atom: Neo4j type-checks its
+    /// operand at compile time.
+    PatternOrWrite,
+    /// A label predicate (`n:$(…)` in WHERE or a projection): Neo4j runs no
+    /// compile-time type check, so a wrong value is the executor's per-row
+    /// `TypeError`.
+    Predicate,
+}
+
 /// Unlike [`walk_expr`] (which treats subquery expressions as opaque
 /// leaves), this walk reaches *inside* every nested statement: UNION arms,
 /// CIP-213 NEXT stages, `CALL { }` and `WHEN`/`ELSE` bodies, FOREACH clause
@@ -212,11 +225,13 @@ pub(crate) fn walk_clause_expr_roots(
 }
 
 /// [`walk_statement_tree`] with the dynamic name-operand visit. The visit
-/// fires at every dynamic label/type atom's inner expression
-/// (`walk_label_expr_tree`) and at each write site's dynamic property key /
-/// `labels()` assignment value (`walk_set_item_exprs_tree` and the `REMOVE`
-/// arm), so a consumer validates exactly the operands the AST carries
-/// without re-deriving which fields those are.
+/// fires at every dynamic label/type atom's inner expression in a pattern or
+/// write site (`walk_label_expr_tree`) and at each write site's dynamic
+/// property key / `labels()` assignment value (`walk_set_item_exprs_tree`
+/// and the `REMOVE` arm), so a consumer validates exactly the operands the
+/// AST carries without re-deriving which fields those are. A label
+/// *predicate* (`n:$(…)` in WHERE or a projection) has no compile-time
+/// check to fire: its operand is the executor's per-row evaluation.
 pub(crate) fn walk_statement_tree_with_operands(
     stmt: &Statement,
     visit_stmt: &mut StmtVisit,
@@ -430,7 +445,7 @@ fn walk_set_item_exprs_tree(
         }
     }
     for label in &item.labels {
-        walk_label_expr_tree(label, depths, walk)?;
+        walk_label_expr_tree(label, depths, walk, LabelSite::PatternOrWrite)?;
     }
     if let Some(v) = &item.value {
         walk_expr_at(v, depths, walk)?;
@@ -465,7 +480,7 @@ fn walk_element_exprs_tree(
     match elem {
         PatternElement::Node(np) => {
             if let Some(le) = &np.label_expr {
-                walk_label_expr_tree(le, depths, walk)?;
+                walk_label_expr_tree(le, depths, walk, LabelSite::PatternOrWrite)?;
             }
             for (_, v) in &np.properties {
                 walk_expr_at(v, depths, walk)?;
@@ -479,7 +494,7 @@ fn walk_element_exprs_tree(
         }
         PatternElement::Relationship(rp) => {
             if let Some(te) = &rp.type_expr {
-                walk_label_expr_tree(te, depths, walk)?;
+                walk_label_expr_tree(te, depths, walk, LabelSite::PatternOrWrite)?;
             }
             for (_, v) in &rp.properties {
                 walk_expr_at(v, depths, walk)?;
@@ -534,27 +549,26 @@ where
 
 /// `depths.expr` follows the same convention as [`walk_path_exprs_tree`]:
 /// the depth a contained dynamic-label expression (`$(expr)`) sits at.
+/// `site` decides whether the operand admission fires (a pattern or
+/// write-site atom) or the operand is the executor's per-row evaluation (a
+/// label predicate).
 fn walk_label_expr_tree(
     label: &relate_parser::LabelExpr,
     depths: Depths,
     walk: &mut TreeWalk<'_, '_>,
+    site: LabelSite,
 ) -> Result<(), EngineError> {
-    match label {
-        relate_parser::LabelExpr::Dynamic(d) => {
-            (walk.operand)(&d.expr, DynamicNameToken::Label)?;
-            walk_expr_at(&d.expr, depths, walk)?;
+    // [`walk_label_expr`] owns the `Not`/`And`/`Or` fold; this leaf closure
+    // adds the operand admission and the expression descent.
+    walk_label_expr(label, &mut |le| {
+        let relate_parser::LabelExpr::Dynamic(dynamic) = le else {
+            return Ok(());
+        };
+        if site == LabelSite::PatternOrWrite {
+            (walk.operand)(&dynamic.expr, DynamicNameToken::Label)?;
         }
-        relate_parser::LabelExpr::Not(inner) => {
-            walk_label_expr_tree(inner, depths, walk)?;
-        }
-        relate_parser::LabelExpr::And(items) | relate_parser::LabelExpr::Or(items) => {
-            for item in items {
-                walk_label_expr_tree(item, depths, walk)?;
-            }
-        }
-        relate_parser::LabelExpr::Label(_) | relate_parser::LabelExpr::Wildcard => {}
-    }
-    Ok(())
+        walk_expr_at(&dynamic.expr, depths, walk)
+    })
 }
 
 /// The one expression-walker core: a pre-order walk where `walk.expr` runs
@@ -621,7 +635,9 @@ fn walk_expr_at(
         }
         Edge::Label(label) => {
             if enter {
-                walk_label_expr_tree(label, depths.deeper_expr(), walk)?;
+                // A label predicate: the operand is evaluated per row, never
+                // type-checked at compile time (Neo4j's `TypeError`).
+                walk_label_expr_tree(label, depths.deeper_expr(), walk, LabelSite::Predicate)?;
             }
             Ok(())
         }
