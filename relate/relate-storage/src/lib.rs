@@ -50,9 +50,7 @@ pub use vfs::{
 pub use vfs::{BundleVfs, NativeVfs};
 #[doc(hidden)]
 pub use wal::MAGIC;
-pub use wal::{
-    commit_payload_reservation_bytes, AppendCommitStats, Wal, WalCatchUp, WalPreflight, WalRecord,
-};
+pub use wal::{AppendCommitStats, EncodedOps, Wal, WalCatchUp, WalPreflight, WalRecord};
 
 /// Parquet snapshot + WAL on a [`Vfs`] (ADR-0072). `:memory:` is `MemoryVfs`.
 #[derive(Clone)]

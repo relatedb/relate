@@ -145,18 +145,17 @@ fn physical_uncertainty_fences_waiters_reads_cdc_checkpoint_and_drop() {
         }
         let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
         let batch: Vec<_> = (0..2)
-            .map(|i| CommitSlot {
-                snapshot_ts: 1,
-                txn_id: i + 2,
-                ops: vec![RedoOp::CreateNode {
-                    id: i as i64 + 1,
-                    labels: Arc::new(vec!["Uncertain".into()]),
-                    properties: relate_core::PropertyMap::share(BTreeMap::new()),
-                }],
-                parse_plan_ns: 0,
-                execute_ns: 0,
-                enqueued: Instant::now(),
-                waiter: Arc::clone(&waiters[i as usize]),
+            .map(|i| {
+                CommitSlot::for_test(
+                    1,
+                    i + 2,
+                    vec![RedoOp::CreateNode {
+                        id: i as i64 + 1,
+                        labels: Arc::new(vec!["Uncertain".into()]),
+                        properties: relate_core::PropertyMap::share(BTreeMap::new()),
+                    }],
+                    Arc::clone(&waiters[i as usize]),
+                )
             })
             .collect();
         let error = flush_group(&shared, batch).unwrap_err();
@@ -234,18 +233,17 @@ fn actual_vfs_write_and_barrier_faults_fence_shared_publication() {
         }
         let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
         let batch: Vec<_> = (0..2)
-            .map(|i| CommitSlot {
-                snapshot_ts: 1,
-                txn_id: i + 2,
-                ops: vec![RedoOp::CreateNode {
-                    id: i as i64 + 1,
-                    labels: Arc::new(vec!["Uncertain".into()]),
-                    properties: relate_core::PropertyMap::share(BTreeMap::new()),
-                }],
-                parse_plan_ns: 0,
-                execute_ns: 0,
-                enqueued: Instant::now(),
-                waiter: Arc::clone(&waiters[i as usize]),
+            .map(|i| {
+                CommitSlot::for_test(
+                    1,
+                    i + 2,
+                    vec![RedoOp::CreateNode {
+                        id: i as i64 + 1,
+                        labels: Arc::new(vec!["Uncertain".into()]),
+                        properties: relate_core::PropertyMap::share(BTreeMap::new()),
+                    }],
+                    Arc::clone(&waiters[i as usize]),
+                )
             })
             .collect();
         let error = flush_group(&shared, batch).unwrap_err();

@@ -204,15 +204,7 @@ pub(super) fn slot(
     snapshot_ts: u64,
     waiter: &Arc<CommitWaiter>,
 ) -> CommitSlot {
-    CommitSlot {
-        snapshot_ts,
-        txn_id,
-        ops: vec![node_op(id)],
-        parse_plan_ns: 0,
-        execute_ns: 0,
-        enqueued: Instant::now(),
-        waiter: Arc::clone(waiter),
-    }
+    CommitSlot::for_test(snapshot_ts, txn_id, vec![node_op(id)], Arc::clone(waiter))
 }
 
 pub(super) fn untimed_file_db(path: &str) -> Database {

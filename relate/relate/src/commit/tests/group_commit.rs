@@ -113,15 +113,12 @@ fn applicability_preflight_completes_all_waiters_in_batch() {
     let waiters: Vec<Arc<CommitWaiter>> = (0..3).map(|_| CommitWaiter::new()).collect();
     let mut batch = Vec::new();
     for (i, op) in [good.clone(), bad, good].into_iter().enumerate() {
-        batch.push(CommitSlot {
-            snapshot_ts: 0,
-            txn_id: (i + 1) as u64,
-            ops: vec![op],
-            parse_plan_ns: 0,
-            execute_ns: 0,
-            enqueued: Instant::now(),
-            waiter: Arc::clone(&waiters[i]),
-        });
+        batch.push(CommitSlot::for_test(
+            0,
+            (i + 1) as u64,
+            vec![op],
+            Arc::clone(&waiters[i]),
+        ));
     }
 
     let res = flush_group(&shared, batch);
@@ -137,58 +134,41 @@ fn applicability_preflight_completes_all_waiters_in_batch() {
 }
 
 #[test]
-fn oversized_second_candidate_leaves_wal_and_graph_intact_after_reopen() {
+fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let db = Database::open(path.to_str().unwrap()).unwrap();
     let shared = db.shared();
+    // The ops are encoded once at admission, so the payload cap refuses an
+    // oversized commit before it joins the queue: nothing reaches the WAL
+    // and the commit before it stays durable.
+    try_wal_commit(&shared, 0, 1, vec![node_op(0)], 0, 0).unwrap();
     let wal_file = path.join("wal/00000001.log");
     let before = std::fs::read(&wal_file).unwrap();
-    let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
-    let mut batch = Vec::new();
-    for (i, properties) in [
-        BTreeMap::new(),
-        BTreeMap::from([(
+    let big = RedoOp::CreateNode {
+        id: 1,
+        labels: Arc::new(vec!["N".into()]),
+        properties: relate_core::PropertyMap::share(BTreeMap::from([(
             "big".into(),
             Value::String(
                 "x".repeat(relate_core::Error::WAL_PAYLOAD_CAP_BYTES as usize)
                     .into(),
             ),
-        )]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        batch.push(CommitSlot {
-            snapshot_ts: 0,
-            txn_id: i as u64 + 1,
-            ops: vec![RedoOp::CreateNode {
-                id: i as i64,
-                labels: Arc::new(vec!["N".into()]),
-                properties: relate_core::PropertyMap::share(properties.clone()),
-            }],
-            parse_plan_ns: 0,
-            execute_ns: 0,
-            enqueued: Instant::now(),
-            waiter: Arc::clone(&waiters[i]),
-        });
-    }
-    let error = flush_group(&shared, batch).unwrap_err();
+        )])),
+    };
+    let error = try_wal_commit(&shared, 0, 2, vec![big], 0, 0).unwrap_err();
     // ADR-0494: the refusal is the capacity family's WalPayload kind, its
     // communicative line naming the WAL record and the cap (both figures
     // through the one byte-size renderer).
     assert!(error.to_string().contains("single WAL record"), "{error}");
     assert!(error.to_string().contains("64 MB"), "{error}");
-    for waiter in waiters {
-        assert_eq!(waiter.wait().unwrap_err(), error);
-    }
-    assert_eq!(shared.wal.lock().unwrap().lsn, 0);
+    assert_eq!(shared.wal.lock().unwrap().lsn, 1);
     assert_eq!(std::fs::read(&wal_file).unwrap(), before);
-    assert!(shared.graph.all_node_ids().is_empty());
+    assert_eq!(shared.graph.all_node_ids().len(), 1);
     drop(shared);
     db.leak_without_checkpoint();
     let reopened = Database::open(path.to_str().unwrap()).unwrap();
-    assert!(reopened.inner.graph.all_node_ids().is_empty());
+    assert_eq!(reopened.inner.graph.all_node_ids().len(), 1);
 }
 
 #[test]
@@ -199,18 +179,17 @@ fn two_valid_candidates_share_exactly_one_barrier_and_keep_order() {
     let shared = db.shared();
     let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
     let batch: Vec<_> = (0..2)
-        .map(|i| CommitSlot {
-            snapshot_ts: 0,
-            txn_id: i + 1,
-            ops: vec![RedoOp::CreateNode {
-                id: i as i64,
-                labels: Arc::new(vec!["N".into()]),
-                properties: relate_core::PropertyMap::share(BTreeMap::new()),
-            }],
-            parse_plan_ns: 0,
-            execute_ns: 0,
-            enqueued: Instant::now(),
-            waiter: Arc::clone(&waiters[i as usize]),
+        .map(|i| {
+            CommitSlot::for_test(
+                0,
+                i + 1,
+                vec![RedoOp::CreateNode {
+                    id: i as i64,
+                    labels: Arc::new(vec!["N".into()]),
+                    properties: relate_core::PropertyMap::share(BTreeMap::new()),
+                }],
+                Arc::clone(&waiters[i as usize]),
+            )
         })
         .collect();
     flush_group(&shared, batch).unwrap();
@@ -267,8 +246,7 @@ fn group_and_replica_share_safe_horizon_allocators_and_checkpoint_pin() {
             );
         } else {
             let waiter = CommitWaiter::new();
-            let mut candidate = slot(0, 7, 0, &waiter);
-            candidate.ops = ops;
+            let candidate = CommitSlot::for_test(0, 7, ops, Arc::clone(&waiter));
             flush_group(&shared, vec![candidate]).unwrap();
             waiter.wait().unwrap();
         }

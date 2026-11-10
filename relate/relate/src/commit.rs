@@ -11,7 +11,7 @@ use relate_executor::{
     result_rows_bytes, ConstraintAdmission, ExecGraph, ExecRequest, Graph,
     QueryResult as ExecResult, RedoOp, SlotPosition, SnapshotPin, WriteScratch,
 };
-use relate_storage::{Wal, WalRecord};
+use relate_storage::{EncodedOps, Wal, WalRecord};
 
 use crate::checkpoint::{begin_publication, lock_wal_checked, Publication};
 use crate::{CancelToken, DurabilityMode, Error, Result, Shared};
@@ -46,10 +46,35 @@ struct CommitSlot {
     snapshot_ts: u64,
     txn_id: u64,
     ops: Vec<RedoOp>,
+    /// The ops' one JSON encoding, made at admission on the caller's thread.
+    encoded: EncodedOps,
     parse_plan_ns: u64,
     execute_ns: u64,
     enqueued: Instant,
     waiter: Arc<CommitWaiter>,
+}
+
+#[cfg(test)]
+impl CommitSlot {
+    /// A slot with no timing facts whose ops are encoded here, as
+    /// admission does.
+    fn for_test(
+        snapshot_ts: u64,
+        txn_id: u64,
+        ops: Vec<RedoOp>,
+        waiter: Arc<CommitWaiter>,
+    ) -> Self {
+        Self {
+            snapshot_ts,
+            txn_id,
+            encoded: EncodedOps::encode(&ops).expect("test ops encode"),
+            ops,
+            parse_plan_ns: 0,
+            execute_ns: 0,
+            enqueued: Instant::now(),
+            waiter,
+        }
+    }
 }
 
 struct CommitWaiter {
@@ -66,6 +91,8 @@ struct CommitWaiter {
 /// error path.
 pub(crate) struct Accepted {
     ops: Vec<RedoOp>,
+    /// The ops' one encoding, handed to the append (taken once).
+    encoded: Option<EncodedOps>,
     commit_ts: u64,
     /// Recorded by the fused preflight/append loop in [`commit_preflighted`].
     encode_write_ns: u64,
@@ -76,9 +103,10 @@ pub(crate) struct Accepted {
 
 impl Accepted {
     /// A single replicated record: no group-commit timing fields.
-    pub(crate) fn replicated(ops: Vec<RedoOp>, commit_ts: u64) -> Self {
+    pub(crate) fn replicated(ops: Vec<RedoOp>, encoded: EncodedOps, commit_ts: u64) -> Self {
         Self {
             ops,
+            encoded: Some(encoded),
             commit_ts,
             encode_write_ns: 0,
             wal_lock_ns: 0,
@@ -330,19 +358,25 @@ pub(super) fn try_wal_commit(
             ));
         }
     }
-    // This reservation is intentionally taken before the request joins the
-    // group-commit queue and held until its waiter completes.  The group
-    // leader materializes one WAL payload per accepted slot; all callers
-    // retain their own charge while those buffers coexist. The final
-    // `Vec<RedoOp>` was reserved before its allocation when the scratch was
-    // converted. Consequently a later write is refused at admission instead
-    // of evicting a write that has already crossed the WAL boundary.
-    let _wal_workspace = WorkspaceCharge::retain(wal_payload_workspace_bytes(&ops)?)?;
+    // The ops are JSON-encoded exactly once, here, on the caller's thread
+    // and off the serial group path (ADR-0094 as amended): the leader only
+    // stamps the record header into this buffer. The WAL payload cap refuses
+    // an oversized record at this encode. The reservation is intentionally
+    // taken before the request joins the group-commit queue and held until
+    // its waiter completes: it is the buffer the slot retains for the
+    // leader, and all callers retain their own charge while those buffers
+    // coexist. The final `Vec<RedoOp>` was reserved before its allocation
+    // when the scratch was converted. Consequently a later write is refused
+    // at admission instead of evicting a write that has already crossed the
+    // WAL boundary.
+    let encoded = EncodedOps::encode(&ops)?;
+    let _wal_workspace = WorkspaceCharge::retain(encoded.reservation_bytes())?;
     let waiter = CommitWaiter::new();
     let slot = CommitSlot {
         snapshot_ts,
         txn_id,
         ops,
+        encoded,
         parse_plan_ns,
         execute_ns,
         enqueued: Instant::now(),
@@ -390,14 +424,6 @@ pub(super) fn try_wal_commit(
     let ts = waiter.wait()?;
     shared.check_healthy()?;
     Ok(ts)
-}
-
-/// Deterministic payload allocation made after a write leaves its scratch
-/// overlay and before WAL/apply completes. The estimate deliberately uses
-/// maximum-width LSN/timestamp fields, so it is a small safe upper bound
-/// before the group leader assigns the real values.
-fn wal_payload_workspace_bytes(ops: &[RedoOp]) -> Result<u64> {
-    relate_storage::commit_payload_reservation_bytes(ops)
 }
 
 impl CommitWaiter {
@@ -524,6 +550,8 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     // The canonical capacity admission and durability-fenced WAL acquire:
     // this path spells neither policy itself.
     shared.admit_redo_capacity(&record.ops, 0)?;
+    // The record's one encoding, before the WAL lock is taken.
+    let encoded = EncodedOps::encode(&record.ops)?;
     let wal = lock_wal_checked(shared)?;
     // The replicated path records no group-commit timing: it does not ask
     // the core to measure (`measure: false`), so it pays for no samples it
@@ -531,7 +559,11 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     let committed = commit_preflighted(
         shared,
         wal,
-        vec![Accepted::replicated(record.ops.clone(), record.commit_ts)],
+        vec![Accepted::replicated(
+            record.ops.clone(),
+            encoded,
+            record.commit_ts,
+        )],
         publication,
         false,
     )?;
@@ -595,6 +627,7 @@ fn admit_slot(
     constraint_admission.accept(pending);
     Ok(Accepted {
         ops: slot.ops,
+        encoded: Some(slot.encoded),
         commit_ts,
         encode_write_ns: 0,
         wal_lock_ns,
@@ -727,18 +760,21 @@ pub(crate) fn commit_preflighted(
 
     // Checkpoint admission was closed and any old worker fully drained before
     // the first frame. Keep the publication lock until every redo is applied.
-    // Each proof owns its encoded payload, so its element can be borrowed
-    // mutably and the write cost recorded directly in this single append
-    // loop, avoiding a parallel per-record vector and a second pass.
+    // Each record's encoding was made at admission; the append stamps the
+    // header into it, and the write cost is recorded directly in this
+    // single append loop, avoiding a parallel per-record vector.
     let appended = {
-        let records: Vec<relate_write_local::AssignedRecord<'_>> = accepted
-            .iter()
+        let records: Vec<relate_write_local::AssignedRecord> = accepted
+            .iter_mut()
             .map(|a| relate_write_local::AssignedRecord {
                 commit_ts: a.commit_ts,
-                ops: a.ops.as_slice(),
+                encoded: a
+                    .encoded
+                    .take()
+                    .expect("every accepted record carries its admission encoding"),
             })
             .collect();
-        match relate_write_local::append_assigned(&mut wal, &records) {
+        match relate_write_local::append_assigned(&mut wal, records) {
             Ok(appended) => appended,
             Err(cause) => return Err(shared.poison(&cause)),
         }
@@ -775,7 +811,7 @@ pub(crate) fn commit_preflighted(
     for a in accepted.iter_mut() {
         let t_apply = measure.then(Instant::now);
         // `apply_redo` consumes the ops: the WAL already encoded them
-        // (preflight encoded them, above), so apply moves them out instead
+        // (admission encoded them, above), so apply moves them out instead
         // of cloning the property maps. `mem::take` leaves the entry in place
         // so timing can still read its other fields.
         let ops = std::mem::take(&mut a.ops);

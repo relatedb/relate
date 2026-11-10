@@ -10,12 +10,13 @@ use std::sync::Mutex;
 
 use relate_core::{Error, Result};
 use relate_engine_api::{CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine};
-use relate_storage::{StoreTarget, Wal, WalCatchUp, WalRecord};
+use relate_storage::{EncodedOps, StoreTarget, Wal, WalCatchUp, WalRecord};
 
-/// One accepted group's timestamp and redo, borrowed for the append.
-pub struct AssignedRecord<'a> {
+/// One accepted group's timestamp and the redo's one encoding (made at
+/// admission, which validated the redo) that the append consumes.
+pub struct AssignedRecord {
     pub commit_ts: u64,
-    pub ops: &'a [relate_engine_api::RedoOp],
+    pub encoded: EncodedOps,
 }
 
 /// What one durable append wrote, in group order.
@@ -26,17 +27,14 @@ pub struct AppendedRecord {
 
 /// Preflight and append records the caller already timestamped. Does not
 /// `sync`. The caller holds the log lock and decides the durability barrier.
-pub fn append_assigned(
-    wal: &mut Wal,
-    records: &[AssignedRecord<'_>],
-) -> Result<Vec<AppendedRecord>> {
+pub fn append_assigned(wal: &mut Wal, records: Vec<AssignedRecord>) -> Result<Vec<AppendedRecord>> {
     let base = wal.lsn;
     let mut proofs = Vec::with_capacity(records.len());
-    for (index, record) in records.iter().enumerate() {
+    for (index, record) in records.into_iter().enumerate() {
         let lsn = base
             .checked_add(index as u64 + 1)
             .ok_or_else(|| Error::storage("WAL LSN overflow"))?;
-        proofs.push(wal.preflight_record(lsn, record.commit_ts, record.ops)?);
+        proofs.push(wal.preflight_encoded(lsn, record.commit_ts, record.encoded)?);
     }
     let mut appended = Vec::with_capacity(proofs.len());
     for proof in proofs {
@@ -78,18 +76,22 @@ impl Deref for LocalWriteEngine {
 
 impl WriteEngine for LocalWriteEngine {
     fn commit(&self, groups: &[CommitGroup]) -> Result<Vec<CommittedSlot>> {
+        // This trait path has no admission step: it encodes each group's
+        // redo once here, before the log lock, under the same shared encoder.
+        let borrowed: Vec<AssignedRecord> = groups
+            .iter()
+            .map(|group| {
+                Ok(AssignedRecord {
+                    commit_ts: group.commit_ts,
+                    encoded: EncodedOps::encode(&group.ops)?,
+                })
+            })
+            .collect::<Result<_>>()?;
         let mut wal = self
             .wal
             .lock()
             .map_err(|_| Error::storage("WAL lock poisoned"))?;
-        let borrowed: Vec<AssignedRecord<'_>> = groups
-            .iter()
-            .map(|group| AssignedRecord {
-                commit_ts: group.commit_ts,
-                ops: group.ops.as_slice(),
-            })
-            .collect();
-        let appended = append_assigned(&mut wal, &borrowed)?;
+        let appended = append_assigned(&mut wal, borrowed)?;
         wal.sync()?;
         Ok(appended
             .into_iter()

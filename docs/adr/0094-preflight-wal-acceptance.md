@@ -343,3 +343,6 @@ publication guard.
   re-checking their size. A group retains each candidate's encoded payload
   until its append consumes it, so pre-append encoded-payload memory scales
   with the eligible group; each payload keeps the 64 MiB bound.
+- ADR-0558 moves the single encoding of a commit's redo to
+  admission, so the group leader no longer serializes the ops: it stamps the
+  record header into the buffer the committing thread already produced.

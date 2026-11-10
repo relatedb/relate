@@ -5,11 +5,10 @@
 use std::sync::Arc;
 use web_time::Instant;
 
-use relate_core::{CapacityKind, Error, Result};
+use relate_core::{Error, Result};
 use relate_engine_api::RedoOp;
-use serde::Serialize;
 
-use crate::vfs::{BoundedSink, MemoryVfs, Refusal, Vfs, VfsFile, VfsOpen};
+use crate::vfs::{MemoryVfs, Vfs, VfsFile, VfsOpen};
 
 /// WAL segment identity header. Shared with native ownership admission so a
 /// segment is recognized by one byte string (ADR-0090). The marker lives in
@@ -23,78 +22,19 @@ pub const CHECKPOINT_COMMITS: u64 = 10_000;
 
 pub use relate_engine_api::CommitRecord as WalRecord;
 
-#[derive(Serialize)]
-struct WalRecordRef<'a> {
-    lsn: u64,
-    commit_ts: u64,
-    ops: &'a [RedoOp],
-}
-
-/// Serialize one record through the shared bounded sink, stopping at the
-/// 64 MiB payload limit, and return the counted bytes. The sink can count
-/// first without retaining bytes, then capture the one real payload. A
-/// record that crosses the limit is refused with the capacity family's
-/// WAL payload cap refusal — [`Error::Capacity`] in the
-/// [`CapacityKind::WalPayload`] kind (ADR-0494) — through
-/// [`BoundedSink::finish`], the one refusal channel; the serializer's io
-/// abort never surfaces.
-fn encode_record(
-    lsn: u64,
-    commit_ts: u64,
-    ops: &[RedoOp],
-    mut sink: BoundedSink<'_>,
-) -> Result<u64> {
-    let result = serde_json::to_writer(
-        &mut sink,
-        &WalRecordRef {
-            lsn,
-            commit_ts,
-            ops,
-        },
-    );
-    sink.finish(result, |e| {
-        Error::storage(format!("WAL serialization failed: {e}"))
-    })
-}
-
-/// The per-record WAL payload cap as one bounded-sink fact (ADR-0086,
-/// ADR-0494): the byte bound and the capacity kind its crossing refusal
-/// carries, spelled together exactly once so every bounded pass over a
-/// commit record refuses with the cap it actually consulted — no call
-/// site can pair the kind with a different limit.
-fn wal_payload_bound() -> (u64, Refusal) {
-    (
-        Error::WAL_PAYLOAD_CAP_BYTES,
-        Refusal::Capacity(CapacityKind::WalPayload),
-    )
-}
-
-/// Conservative payload bytes for a record whose final LSN and commit
-/// timestamp are not assigned yet. Both fields are unsigned decimal values,
-/// so serializing their maximum value reserves at most 38 bytes beyond the
-/// eventual record while preserving the exact encoding of every redo op.
-pub fn commit_payload_reservation_bytes(ops: &[RedoOp]) -> Result<u64> {
-    let (bound, refusal) = wal_payload_bound();
-    encode_record(u64::MAX, u64::MAX, ops, BoundedSink::count(bound, refusal))
-}
-
 /// Proof that one prospective WAL record was validated and encoded exactly
-/// once. The proof owns the encoded payload; [`Wal::append_preflighted`]
-/// writes those exact bytes as the record frame without re-encoding them.
+/// once. The proof owns the encoded ops with the record header stamped in;
+/// [`Wal::append_preflighted`] writes those exact bytes as the record frame
+/// without re-encoding them.
 pub struct WalPreflight {
     lsn: u64,
     commit_ts: u64,
-    payload: Vec<u8>,
-    /// Whether the record carries a store-level ontology op (ADR-0120 §3).
-    /// Decided at preflight, while the ops are still available, so
-    /// [`Wal::append_preflighted`] can apply the ADR-0120 §4 rule without
-    /// re-decoding the payload: the op never lands in an `MDBWAL01`
-    /// segment — the WAL first rotates to a fresh `MDBWAL02` segment.
-    ontology_op: bool,
-    /// Encoding time measured at preflight and folded into the append's
-    /// `encode_write_ns`, so that metric stays the record's encode + write
-    /// cost.
-    encode_ns: u64,
+    /// The record's encoding, header stamped in. It also carries whether the
+    /// record holds a store-level ontology op (ADR-0120 §3), so
+    /// [`Wal::append_preflighted`] applies the §4 rule without re-decoding
+    /// the payload: such an op never lands in an `MDBWAL01` segment — the
+    /// WAL first rotates to a fresh `MDBWAL02` segment.
+    encoded: EncodedOps,
 }
 
 /// Split of [`Wal::append_commit`]: JSON+write vs durable `sync_all`.
@@ -402,9 +342,7 @@ impl Wal {
         let WalPreflight {
             lsn,
             commit_ts,
-            payload,
-            ontology_op,
-            encode_ns,
+            encoded,
         } = proof;
         if self.lsn.checked_add(1) != Some(lsn)
             || commit_ts == 0
@@ -413,16 +351,21 @@ impl Wal {
         {
             return Err(Error::storage("stale WAL preflight proof"));
         }
-        if ontology_op && self.active_magic != *ONTOLOGY_MAGIC {
+        if encoded.ontology_op() && self.active_magic != *ONTOLOGY_MAGIC {
             self.rotate_for_ontology_op()?;
         }
         let t0 = Instant::now();
+        // The encoding time measured at admission folds into
+        // `encode_write_ns`, so that metric stays the record's encode + write
+        // cost.
+        let encode_ns = encoded.encode_ns();
+        let payload = encoded.payload();
         let len = payload.len() as u32;
-        let crc = crc32fast::hash(&payload);
+        let crc = crc32fast::hash(payload);
         if let Err(e) = (|| {
             self.inner.file.write_all(&crc.to_le_bytes())?;
             self.inner.file.write_all(&len.to_le_bytes())?;
-            self.inner.file.write_all(&payload)
+            self.inner.file.write_all(payload)
         })() {
             self.poisoned = true;
             return Err(e);
@@ -443,7 +386,9 @@ impl Wal {
 
     /// Validate and encode the exact prospective record once, returning an
     /// owned proof. Callers planning a group pass the assigned LSN for each
-    /// candidate.
+    /// candidate. A caller that already holds the ops' one encoding (the
+    /// commit path encodes at admission) uses [`Wal::preflight_encoded`];
+    /// this entry point encodes first and shares every other step.
     ///
     /// ```
     /// use relate_storage::Wal;
@@ -461,6 +406,28 @@ impl Wal {
         commit_ts: u64,
         ops: &[RedoOp],
     ) -> Result<WalPreflight> {
+        self.preflight_encoded(lsn, commit_ts, EncodedOps::encode(ops)?)
+    }
+
+    /// [`Wal::preflight_record`] over an existing encoding: checks the
+    /// prospective LSN and timestamp, stamps the header into `encoded` and
+    /// encodes nothing. The encoding carries its ops' validation and
+    /// ontology fact, established once by [`EncodedOps::encode`], so no
+    /// typed ops are taken and none can disagree with the body.
+    ///
+    /// ```
+    /// use relate_storage::{EncodedOps, Wal};
+    /// let mut wal = Wal::memory();
+    /// let encoded = EncodedOps::encode(&[]).unwrap();
+    /// let proof = wal.preflight_encoded(1, 1, encoded).unwrap();
+    /// assert_eq!(wal.append_preflighted(proof).unwrap().lsn, 1);
+    /// ```
+    pub fn preflight_encoded(
+        &self,
+        lsn: u64,
+        commit_ts: u64,
+        mut encoded: EncodedOps,
+    ) -> Result<WalPreflight> {
         self.ensure_writable()?;
         if lsn == 0 || lsn <= self.lsn {
             return Err(Error::storage("WAL LSN must advance"));
@@ -471,31 +438,11 @@ impl Wal {
                 self.last_commit_ts
             )));
         }
-        // The one validation pass per op: persisted-ID range plus the
-        // ADR-0120 §3 16 MiB ontology envelope (the ADR-0086 object
-        // bound), both inside `RedoOp::validate_ids`, before the commit is
-        // written.
-        Self::validate_redo_ids(ops)?;
-        let ontology_op = ops.iter().any(RedoOp::is_ontology_op);
-        // Allocate the one retained payload at the same bounded capacity used
-        // by commit admission. This avoids geometric growth creating an
-        // unaccounted transient buffer while serializing.
-        let payload_capacity = commit_payload_reservation_bytes(ops)? as usize;
-        let mut payload = Vec::with_capacity(payload_capacity);
-        let t_encode = Instant::now();
-        let (bound, refusal) = wal_payload_bound();
-        encode_record(
-            lsn,
-            commit_ts,
-            ops,
-            BoundedSink::capture(&mut payload, bound, refusal),
-        )?;
+        encoded.stamp(lsn, commit_ts);
         Ok(WalPreflight {
             lsn,
             commit_ts,
-            payload,
-            ontology_op,
-            encode_ns: t_encode.elapsed().as_nanos() as u64,
+            encoded,
         })
     }
 
@@ -776,10 +723,13 @@ impl Wal {
     }
 }
 
+mod encoded;
 mod rotation;
 mod scan;
 pub(crate) use scan::parse_seg_name;
 use scan::*;
+
+pub use encoded::EncodedOps;
 
 /// Segment count under `prefix` (ADR-0165). Checkpoint recycles every
 /// segment it covers, so each remaining segment may hold commits past the

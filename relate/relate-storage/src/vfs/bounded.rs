@@ -135,22 +135,13 @@ impl Write for CappedVfsWriter<'_> {
 /// carrying the typed refusal's rendering. The refusal itself — the
 /// [`Refusal`] the sink was constructed with — travels on one channel,
 /// [`BoundedSink::finish`], never as a separate (limit, message) pair.
-/// Where the admitted bytes go is the typed [`Output`] mode: counted and
-/// discarded, or captured into a caller-owned `Vec` — two modes in every
-/// build. The test-only capped capture — the same admission policy with
-/// the backing allocation also bounded — is its own type (`CappedSink`),
-/// never a third mode here.
+/// The admitted bytes are captured into a caller-owned `Vec`. The
+/// test-only capped capture — the same admission policy with the backing
+/// allocation also bounded — is its own type (`CappedSink`), so the
+/// production sink's shape is the same in every build.
 pub(crate) struct BoundedSink<'a> {
     core: BoundCore,
-    output: Output<'a>,
-}
-
-/// Where a bounded sink's admitted bytes go: counted and discarded, or
-/// captured into a caller-owned `Vec`. One typed mode, matched once in
-/// [`BoundedSink::write`]'s append step.
-enum Output<'a> {
-    Count,
-    Capture(&'a mut Vec<u8>),
+    output: &'a mut Vec<u8>,
 }
 
 /// The typed refusal a crossed bound produces — the one error channel
@@ -191,20 +182,14 @@ impl Refusal {
 }
 
 impl<'a> BoundedSink<'a> {
-    /// Count bytes without retaining the serialized payload.
-    pub(crate) fn count(limit: u64, refusal: Refusal) -> Self {
-        Self {
-            core: BoundCore::new(limit, refusal),
-            output: Output::Count,
-        }
-    }
-
-    /// Append captured bytes into `output`, up to `limit`.
+    /// Append captured bytes into `output`, up to `limit`. Bytes `output`
+    /// already holds count against the limit and in the crossing figure, so
+    /// a caller that reserves a fixed prefix in front of the serialized
+    /// bytes (the WAL record header slack) is bounded on the whole figure.
     pub(crate) fn capture(output: &'a mut Vec<u8>, limit: u64, refusal: Refusal) -> Self {
-        Self {
-            core: BoundCore::new(limit, refusal),
-            output: Output::Capture(output),
-        }
+        let mut core = BoundCore::new(limit, refusal);
+        core.commit(output.len() as u64);
+        Self { core, output }
     }
 
     /// Complete one bounded serialization — the one refusal channel: the
@@ -225,9 +210,8 @@ impl<'a> BoundedSink<'a> {
 
 /// The test-only capped capture: [`BoundedSink`]'s admission policy over
 /// a caller-owned buffer whose backing allocation is also bounded — the
-/// in-memory twin of [`CappedVfsWriter`]. Its own type rather than a
-/// third [`Output`] mode, so the production sink's shape is the same in
-/// every build. Growth is geometric but clamped to the bound
+/// in-memory twin of [`CappedVfsWriter`]. Its own type, so the production
+/// sink's shape is the same in every build. Growth is geometric but clamped to the bound
 /// ([`append_bounded`]).
 #[cfg(test)]
 pub(crate) struct CappedSink<'a> {
@@ -302,10 +286,7 @@ impl Write for CappedSink<'_> {
 impl Write for BoundedSink<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let total = self.core.admit(buf.len())?;
-        match &mut self.output {
-            Output::Count => {}
-            Output::Capture(out) => out.extend_from_slice(buf),
-        }
+        self.output.extend_from_slice(buf);
         self.core.commit(total);
         Ok(buf.len())
     }

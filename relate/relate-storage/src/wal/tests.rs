@@ -4,6 +4,8 @@ use std::io::SeekFrom;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+#[path = "tests/encoded.rs"]
+mod encoded;
 #[path = "tests/ontology_magic.rs"]
 mod ontology_magic;
 #[path = "tests/payload_cap.rs"]
