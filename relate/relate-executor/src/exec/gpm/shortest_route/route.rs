@@ -587,7 +587,7 @@ impl<'a> Route<'a> {
         origin: NodeId,
         way: Way,
         origin_row: Option<&Row>,
-        out: &mut RouteSink<'_>,
+        out: &mut MatchedSink<'_, '_>,
     ) -> Result<bool> {
         // The layer rides the route's one per-candidate loop.
         self.each_of(layer.nodes(), |far| {
