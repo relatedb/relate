@@ -89,6 +89,14 @@ from this repository; the old repository’s tags never came across.
    (the first release carrying the API-fallback route), which cannot
    self-update while the repository is internal
    ([ADR-0358](docs/adr/0358-upgrade-download-route.md)).
+9. **Server image** — the `publish-image` job builds the `relate-bolt`
+   image from the release commit (`make docker`), runs the docker smoke, and
+   pushes `X.Y.Z` and `latest` to the DevRel production ECR repository
+   (`715633473519.dkr.ecr.us-east-1.amazonaws.com/production-relatedb-repository`).
+   It authenticates through GitHub OIDC to an IAM role that trusts only
+   `release.yml` running from `main`; the role ARN and repository name come
+   from the `AWS_ECR_PUSH_ROLE_ARN` and `AWS_ECR_REPOSITORY` secrets. Offline
+   releases skip it.
 
 PyPI publishing is intentionally not wired up yet — the Python wheels and
 sdist ship as GitHub release assets only.
@@ -314,3 +322,8 @@ The first execution must run with no Gatekeeper warning, and `codesign --verify
 - **Failed after the tag was pushed:** do **not** delete or reuse the pushed
   tag. Re-dispatching computes the *next* version forward from the existing
   tag — bump forward and ship that instead.
+- **Server image push failed or was skipped:** the release itself is
+  unaffected. A failed `publish-image` job can be re-run from the release
+  run's page (it keeps the run's `main` ref, which the IAM role requires);
+  a skipped one (offline release) leaves that version without an image until
+  the next release.

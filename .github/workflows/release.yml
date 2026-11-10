@@ -798,6 +798,88 @@ jobs:
             -m "Release ${{ needs.version.outputs.tag }}"
           git push origin "${{ needs.version.outputs.tag }}"
 
+  # The server image (Dockerfile) for the tag this run just pushed, built,
+  # smoked and pushed to the DevRel production ECR. Offline releases skip
+  # it: ECR is outside GitHub. The IAM role (devrel-aws-infrastructure,
+  # terraform/modules/relatedb) trusts only this workflow running from main.
+  publish-image:
+    name: Publish server image to ECR
+    needs: [version, tag]
+    if: ${{ !inputs.offline }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install neo4j
+
+      # Docker Hub rate-limits anonymous pulls per runner IP (LABS-248).
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+        id: buildx
+
+      - name: Build the image and smoke it
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          make docker DOCKER_BUILD_FLAGS="--load"
+          python3 surfaces/relate-bolt/tests/docker_smoke.py
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # The tag is always the newest vX.Y.Z (the version job bumps forward
+      # from the existing tags), so `latest` moves with every release.
+      - name: Push to ECR
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPOSITORY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$ECR_REPOSITORY"
+          for t in "$VERSION" latest; do
+            docker tag "relate-bolt:$VERSION" "$image:$t"
+            docker push "$image:$t"
+          done
+
   create-release:
     name: Create Release
     needs: [version, tag]
