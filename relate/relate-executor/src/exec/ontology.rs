@@ -213,7 +213,7 @@ fn exec_ontology_apply(graph: &ExecGraph<'_>, ontology_document: Option<&str>) -
         .map_err(|err| Error::semantic(err.to_string()))?;
     let body = relate_ontology::to_graph_type_body(&doc)
         .map_err(|err| Error::semantic(err.to_string()))?;
-    super::catalog_schema::set_current_graph_type_validate_first(
+    super::graph_type_schema::set_current_graph_type_validate_first(
         graph,
         relate_parser::AlterGraphTypeVerb::Set,
         &body,

@@ -45,13 +45,27 @@ pub(crate) const INDEX_CONFIG_NOT_A_MAP: &str = "Invalid input for 'indexConfig'
 pub(crate) fn index_config(
     options: &BTreeMap<String, Value>,
 ) -> Result<Option<&BTreeMap<String, Value>>> {
-    match options.get(KEY_INDEX_CONFIG) {
-        None => Ok(None),
-        Some(Value::Map(map)) => Ok(Some(map.as_ref())),
+    Ok(index_config_or(options, &|_| {
         // ADR-0489: a rejected `indexConfig` value is the DDL argument
         // validator's failure (Neo4j `Neo.ClientError.General.
         // InvalidArguments`), not a statement-shape syntax error.
-        Some(_) => Err(Error::argument_error(INDEX_CONFIG_NOT_A_MAP)),
+        Error::argument_error(INDEX_CONFIG_NOT_A_MAP)
+    })?
+    .map(|(_, map)| map))
+}
+
+/// [`index_config`] with the caller's own non-map rejection: a surface whose
+/// authored text names the offending value builds it here rather than
+/// navigating the key a second time. The found value rides with the map, so
+/// a rejection naming the whole `indexConfig` value needs no re-rendering.
+pub(crate) fn index_config_or<'a>(
+    options: &'a BTreeMap<String, Value>,
+    rejected: &dyn Fn(&Value) -> Error,
+) -> Result<Option<(&'a Value, &'a BTreeMap<String, Value>)>> {
+    match options.get(KEY_INDEX_CONFIG) {
+        None => Ok(None),
+        Some(value @ Value::Map(map)) => Ok(Some((value, map.as_ref()))),
+        Some(value) => Err(rejected(value)),
     }
 }
 

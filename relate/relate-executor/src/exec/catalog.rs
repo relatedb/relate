@@ -1,5 +1,5 @@
 //! Catalog command execution: row shaping for `SHOW ...` and dispatch into
-//! `catalog_show` / `catalog_schema`.
+//! `catalog_show` / `catalog_schema` / `graph_type_schema`.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +16,7 @@ use crate::row::Row;
 
 use super::ddl_options::KEY_INDEX_CONFIG;
 use super::scope::visible_keys;
-use super::{catalog_schema, catalog_show, QueryResult};
+use super::{catalog_schema, catalog_show, graph_type_schema, QueryResult};
 use crate::ctx::QueryCtx;
 
 /// The engine's one user (ADR-0116's fixed namespace model has no user
@@ -128,6 +128,20 @@ pub(crate) fn imported_catalog(
                 .collect()
         })
         .collect()
+}
+
+/// The `SHOW FUNCTIONS` / `SHOW PROCEDURES` visibility policy: the imported
+/// catalogue rows when the `EXECUTABLE BY` filter admits the current user, the
+/// empty result otherwise.
+fn visible_catalog(
+    visible: bool,
+    rows: impl FnOnce() -> Vec<indexmap::IndexMap<String, relate_model::CypherValue>>,
+) -> Vec<Row> {
+    if visible {
+        imported_catalog(rows())
+    } else {
+        Vec::new()
+    }
 }
 
 /// The catalog descriptor of a catalog clause; a non-catalog clause reaching
@@ -477,26 +491,14 @@ pub(crate) fn execute_catalog(
 ) -> Result<Vec<Row>> {
     use relate_parser::{Clause as C, FunctionScope};
     let catalog = match clause {
-        C::ShowFunctions(c) => {
-            if matches!(c.scope, FunctionScope::UserDefined)
-                || !executable_by_user(c.executable.as_ref())
-            {
-                Vec::new()
-            } else {
-                imported_catalog(crate::show_catalog::function_catalog_rows(
-                    graph.base().preview(),
-                ))
-            }
-        }
-        C::ShowProcedures(c) => {
-            if executable_by_user(c.executable.as_ref()) {
-                imported_catalog(crate::show_catalog::procedure_catalog_rows(
-                    graph.base().preview(),
-                ))
-            } else {
-                Vec::new()
-            }
-        }
+        C::ShowFunctions(c) => visible_catalog(
+            !matches!(c.scope, FunctionScope::UserDefined)
+                && executable_by_user(c.executable.as_ref()),
+            || crate::show_catalog::function_catalog_rows(graph.base().preview()),
+        ),
+        C::ShowProcedures(c) => visible_catalog(executable_by_user(c.executable.as_ref()), || {
+            crate::show_catalog::procedure_catalog_rows(graph.base().preview())
+        }),
         C::ShowRoles(c) => catalog_show::show_roles_rows(c),
         C::ShowServers(_) => vec![catalog_row([(
             "name",
@@ -543,16 +545,10 @@ pub(crate) fn execute_catalog(
             return catalog_schema::catalog_alter_database(graph, c, rows, params)
         }
         C::CreateGraphType(c) => {
-            return catalog_schema::catalog_create_graph_type(
-                graph,
-                c,
-                rows,
-                params,
-                qctx.cypher_version,
-            )
+            return graph_type_schema::catalog_create_graph_type(graph, c, rows, params)
         }
         C::AlterCurrentGraphType(c) => {
-            return catalog_schema::alter_current_graph_type(
+            return graph_type_schema::alter_current_graph_type(
                 graph,
                 c,
                 rows,

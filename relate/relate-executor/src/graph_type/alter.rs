@@ -2,7 +2,7 @@
 //!
 //! Each op is a pure `GraphTypeBody -> GraphTypeBody` transformation with
 //! the verb's validation folded in; the executor's catalog handler
-//! (`exec::catalog_schema::alter_current_graph_type`) keeps only the
+//! (`exec::graph_type_schema::alter_current_graph_type`) keeps only the
 //! snapshot/redo orchestration and the derived-constraint catalog sync.
 //! Per ADR-0489 these are statement-shape rejections: every validation
 //! failure is `Error::syntax` (Neo4j's `SyntaxError` class, rendered under
