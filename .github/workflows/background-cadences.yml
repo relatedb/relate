@@ -109,6 +109,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check the Sonic socket policy
+        run: bash scripts/check-sonic-socket-policy.sh
+
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
@@ -177,6 +180,9 @@ jobs:
       CI_COMPARE: "1"
     steps:
       - uses: actions/checkout@v7
+
+      - name: Check the Sonic socket policy
+        run: bash scripts/check-sonic-socket-policy.sh
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''

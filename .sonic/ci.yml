@@ -489,7 +489,7 @@ stages:
 
   loadtest-baselines:
     runner: sonic-rust
-    # install-docker-cli.sh writes /usr/local.
+    # Docker Desktop exposes the socket as root:root 660.
     user: root
     docker_socket: true
     before: *before-rust
@@ -499,15 +499,16 @@ stages:
     # Docker daemon. The runner label is the ADR-0071 class the job
     # sets. GITHUB_ACTIONS makes baseline-fingerprint stamp
     # github-actions:ubuntu-24.04 and makes an in-stage compare hard-fail
-    # on a class mismatch. GITHUB_TOKEN feeds buildx's GitHub release
-    # download. CI_COMPARE turns the memory compares into hard failures.
-    # optional_secrets passes each name as empty when the host has
-    # no value, which the stages treat as not provided.
+    # on a class mismatch. CI_COMPARE turns the memory compares into hard
+    # failures. optional_secrets passes each name as empty when the host
+    # has no value, which the stages treat as not provided. These stages
+    # mount the Docker socket, so they do not receive GITHUB_TOKEN. The
+    # CLI and buildx are installed in the sonic-rust image, and the token
+    # stays on that image build.
     optional_secrets: &baseline-env-forwarding
       - GITHUB_WORKSPACE
       - BASELINE_RUNNER
       - GITHUB_ACTIONS
-      - GITHUB_TOKEN
       - CI_COMPARE
     environment:
       <<: *cargo-env
@@ -528,7 +529,7 @@ stages:
   # ADR-0289).
   query-latency:
     runner: sonic-rust
-    # install-docker-cli.sh writes /usr/local.
+    # Docker Desktop exposes the socket as root:root 660.
     user: root
     docker_socket: true
     before: *before-rust
@@ -548,7 +549,7 @@ stages:
   # calibration. The full three-repeat matrix is memory-controls-full.
   memory-controls:
     runner: sonic-rust
-    # install-docker-cli.sh writes /usr/local.
+    # Docker Desktop exposes the socket as root:root 660.
     user: root
     docker_socket: true
     before: *before-rust
@@ -564,7 +565,7 @@ stages:
 
   memory-controls-full:
     runner: sonic-rust
-    # install-docker-cli.sh writes /usr/local.
+    # Docker Desktop exposes the socket as root:root 660.
     user: root
     docker_socket: true
     before: *before-rust
@@ -582,7 +583,7 @@ stages:
   # matrix; the freeze repeats it.
   memory-shape:
     runner: sonic-rust
-    # install-docker-cli.sh writes /usr/local.
+    # Docker Desktop exposes the socket as root:root 660.
     user: root
     docker_socket: true
     before: *before-rust

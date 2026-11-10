@@ -73,7 +73,7 @@ wait "$listener_pid" 2>/dev/null
 
 # --- wrapper scripts: syntax ------------------------------------------------
 
-for script in install-wasm-toolchain.sh baseline-docker-setup.sh bolt-smoke.sh; do
+for script in install-wasm-toolchain.sh baseline-docker-setup.sh bolt-smoke.sh check-sonic-socket-policy.sh; do
   tap_run_success "$script passes bash -n" bash -n "$ROOT/scripts/$script"
 done
 
@@ -195,5 +195,49 @@ tap_run_failure \
   "github-download rejects a raw URL that is not raw.githubusercontent.com" \
   env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_ACTIONS \
   sh "$ROOT/scripts/github-download.sh" --raw https://example.com/file -o "$sandbox/out"
+
+# --- socket policy ----------------------------------------------------------
+
+# The committed config is the allowlist: the socket stages are the
+# reviewed set, and GITHUB_TOKEN stays on the image build alone.
+tap_run_success \
+  "the committed Sonic config passes the socket policy" \
+  bash "$ROOT/scripts/check-sonic-socket-policy.sh"
+
+cp "$ROOT/.sonic/ci.yml" "$sandbox/extra-socket.yml"
+printf '\n  policy-probe:\n    docker_socket: true\n' >> "$sandbox/extra-socket.yml"
+bash "$ROOT/scripts/check-sonic-socket-policy.sh" "$sandbox/extra-socket.yml" >"$sandbox/extra-socket.out" 2>&1
+extra_status=$?
+[ "$extra_status" -ne 0 ]
+tap_check "an unlisted docker_socket stage is refused" $?
+grep -q "stage policy-probe sets docker_socket" "$sandbox/extra-socket.out"
+tap_check "the refusal names the unlisted stage" $?
+
+cp "$ROOT/.sonic/ci.yml" "$sandbox/token-on-socket.yml"
+python3 - "$sandbox/token-on-socket.yml" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+old = "  build-sonic-polyglot:\n    runner: docker-cli\n    docker_socket: true\n"
+new = old + "    optional_secrets:\n      - GITHUB_TOKEN\n"
+file = path.read_text()
+if old not in file:
+    raise SystemExit("build-sonic-polyglot block not found")
+path.write_text(file.replace(old, new, 1))
+PY
+bash "$ROOT/scripts/check-sonic-socket-policy.sh" "$sandbox/token-on-socket.yml" >"$sandbox/token-on-socket.out" 2>&1
+token_status=$?
+[ "$token_status" -ne 0 ]
+tap_check "GITHUB_TOKEN on a socket stage other than the image build is refused" $?
+grep -q "stage build-sonic-polyglot mounts the Docker socket and forwards GITHUB_TOKEN" "$sandbox/token-on-socket.out"
+tap_check "the refusal names the stage that forwards the token" $?
+
+cp "$ROOT/.sonic/ci.yml" "$sandbox/raw-socket.yml"
+printf '\n  policy-probe-volume:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n' >> "$sandbox/raw-socket.yml"
+bash "$ROOT/scripts/check-sonic-socket-policy.sh" "$sandbox/raw-socket.yml" >"$sandbox/raw-socket.out" 2>&1
+raw_status=$?
+[ "$raw_status" -ne 0 ]
+tap_check "a volumes entry that mounts the Docker socket is refused" $?
+grep -q "stage policy-probe-volume mounts the Docker socket through volumes" "$sandbox/raw-socket.out"
+tap_check "the refusal names the stage that bind-mounts the socket" $?
 
 tap_done

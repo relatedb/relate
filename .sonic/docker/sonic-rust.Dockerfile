@@ -68,6 +68,20 @@ RUN --mount=type=bind,from=scripts,source=github-download.sh,target=/tmp/github-
     && rustc --version \
     && cargo nextest --version
 
+# The baseline stages drive the host daemon. The CLI and buildx live here
+# so those stages do not also receive GITHUB_TOKEN. buildx is a GitHub
+# release; the token is a BuildKit secret, the same way nextest is fetched.
+RUN --mount=type=bind,from=scripts,source=install-docker-cli.sh,target=/tmp/install-docker-cli.sh \
+    --mount=type=bind,from=scripts,source=github-download.sh,target=/tmp/github-download.sh \
+    --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    if [ -s /run/secrets/GITHUB_TOKEN ]; then export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; fi \
+    && export GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
+    && bash /tmp/install-docker-cli.sh \
+    && rm -rf /tmp/docker.tgz /tmp/docker /tmp/docker-buildx \
+    && chmod 0755 /usr/local/bin/docker /usr/local/lib/docker/cli-plugins/docker-buildx \
+    && docker --version \
+    && docker buildx version
+
 # ADR-0255: one-shot CI builds. Incremental debug artifacts are huge and
 # unused across container runs; line tables keep backtraces useful.
 ENV CARGO_INCREMENTAL=0 \

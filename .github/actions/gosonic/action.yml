@@ -64,6 +64,10 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check the Sonic socket policy
+      shell: bash
+      run: bash scripts/check-sonic-socket-policy.sh
+
     # Before the Sonic run so the restore lands on the host, and so the
     # rust-cache post step (the save) runs after the copy-back below.
     # Mold and sccache are passed through because both are hashed into the

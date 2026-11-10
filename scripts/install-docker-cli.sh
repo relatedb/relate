@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Install the static Docker CLI into the current container (the gosonic
-# stages that must drive the HOST daemon through its socket: the runner
-# image has no docker binary). One canonical copy — the stages that need
-# it (loadtest-baselines, query-latency, memory-controls) all call this
-# script. The baseline image build sets DOCKER_BUILDKIT=1 and uses cache
-# mounts, so the Buildx plugin is installed beside the CLI.
+# Install the static Docker CLI and the pinned buildx plugin.
+# sonic-rust.Dockerfile runs this while building the image, so the
+# baseline stages find both binaries already on PATH and do not receive
+# GITHUB_TOKEN. baseline-docker-setup.sh still calls it when the binaries
+# are absent. The baseline image build sets DOCKER_BUILDKIT=1 and uses
+# cache mounts, so buildx has to be installed beside the CLI.
 set -euo pipefail
 
 # The pinned digests (27.5.1): an unsigned tarball from a CDN is
@@ -31,6 +31,7 @@ curl -fsSL -o /tmp/docker.tgz "https://download.docker.com/linux/static/stable/$
 echo "${pinned}  /tmp/docker.tgz" | sha256sum --check --quiet
 tar --no-same-owner -xzf /tmp/docker.tgz -C /tmp
 mv /tmp/docker/docker /usr/local/bin/docker
+chmod 0755 /usr/local/bin/docker
 
 buildx_arch="$(uname -m)"
 case "$buildx_arch" in
