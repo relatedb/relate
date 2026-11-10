@@ -324,21 +324,6 @@ mod tests {
         );
     }
 
-    /// A rendered mismatch message carries compact serde_json on both
-    /// sides, never Rust Debug spellings.
-    #[test]
-    fn rendered_mismatch_has_no_rust_debug_spellings() {
-        let r = record(Outcome::Fail(
-            "neo4j row {\"c\":[\"a\",\"b\"]} has no relate match; relate rows: \
-                 [{\"c\":[\"x\"]}]"
-                .into(),
-        ));
-        let line = r.report_line().expect("a fail renders");
-        assert!(!line.contains("Array ["), "{line}");
-        assert!(!line.contains("String("), "{line}");
-        assert!(line.contains(r#"{"c":["a","b"]}"#), "{line}");
-    }
-
     /// F-1-4: a statement-less record (a dataset-level setup failure)
     /// renders its report entry as the dataset name plus the error — no
     /// fabricated line or statement.

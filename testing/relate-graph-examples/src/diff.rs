@@ -37,14 +37,24 @@ use serde_json::Value as Json;
 /// flood the report.
 pub(crate) const ELIDE_AT: usize = 240;
 
-/// Truncate `s` to [`ELIDE_AT`] chars, appending the elision marker `…`
-/// when cut.
+/// The head and tail shares of [`ELIDE_AT`] a cut payload keeps: the head
+/// shows the value's shape, the tail is where deep differences live (a
+/// different relationship at the end of a path). A head-only cut elides
+/// exactly the part that differs, which is how a shortestPath tie was
+/// misread as a projection-shape difference (LABS-1299).
+const ELIDE_HEAD: usize = 160;
+const ELIDE_TAIL: usize = ELIDE_AT - ELIDE_HEAD;
+
+/// Cut `s` to [`ELIDE_AT`] chars — [`ELIDE_HEAD`] head and [`ELIDE_TAIL`]
+/// tail — with a `…(+N chars)…` marker naming how much was removed.
 pub(crate) fn elide(s: &str) -> String {
-    if s.chars().count() <= ELIDE_AT {
+    let count = s.chars().count();
+    if count <= ELIDE_AT {
         return s.to_string();
     }
-    let cut: String = s.chars().take(ELIDE_AT).collect();
-    format!("{cut}…")
+    let head: String = s.chars().take(ELIDE_HEAD).collect();
+    let tail: String = s.chars().skip(count - ELIDE_TAIL).collect();
+    format!("{head}…(+{} chars)…{tail}", count - ELIDE_HEAD - ELIDE_TAIL)
 }
 
 /// Inside a schema-visualization entry map (a `:LABELS`/`:TYPE` + `name`
@@ -458,6 +468,21 @@ fn compare(
     )
 }
 
+/// The one bag-match policy: remove the first entry of `remaining` that
+/// `matches` accepts, reporting whether one was taken.
+/// [`compare_normalized`]'s bag arm, [`rows_subset`], and [`values_equal`]'s
+/// unordered-list arm are the same match-each-left-against-an-unused-right
+/// dance — each keeps only its own failure action.
+fn take_match<T>(remaining: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> bool {
+    match remaining.iter().position(matches) {
+        Some(pos) => {
+            remaining.remove(pos);
+            true
+        }
+        None => false,
+    }
+}
+
 /// The comparison on already-normalized rows (shared by [`compare`] and
 /// the viz entry point, F-1-3: one comparison implementation).
 fn compare_normalized(
@@ -475,42 +500,69 @@ fn compare_normalized(
     }
     if ordered {
         for (i, (l, r)) in left.iter().zip(right.iter()).enumerate() {
-            values_equal(l, r, lists_unordered)
-                .then_some(())
-                .ok_or_else(|| {
-                    format!(
-                        "row {i} differs: neo4j {} vs relate {}",
-                        elide(&l.to_string()),
-                        elide(&r.to_string())
-                    )
-                })?;
+            if !values_equal(l, r, lists_unordered) {
+                return Err(format!(
+                    "row {i} differs: neo4j {} vs relate {}",
+                    elide(&l.to_string()),
+                    elide(&r.to_string())
+                ));
+            }
         }
         return Ok(());
     }
-    // Bag comparison: match each left value against an unused right value.
-    // Both sides render as compact serde_json, elided at the report's cap —
-    // never Rust Debug, which spells strings as `String("…")`.
-    let mut remaining: Vec<&Json> = right.iter().collect();
-    for l in left {
-        let Some(pos) = remaining
-            .iter()
-            .position(|r| values_equal(l, r, lists_unordered))
-        else {
-            return Err(format!(
-                "neo4j row {} has no relate match; relate rows: {}",
-                elide(&l.to_string()),
-                elide(&rows_json(right))
-            ));
-        };
-        remaining.remove(pos);
+    // Bag comparison: match each left value against an unused right value,
+    // completing the whole pass before reporting — a mid-loop snapshot
+    // would frame relate rows that later left rows still consume. Both
+    // sides render as compact serde_json, elided at the report's cap —
+    // never Rust Debug, which spells strings as `String("…")` — and each
+    // row is framed by its result-set index, one row per frame, never one
+    // nested list: its outer brackets read as an extra value-nesting level
+    // once elided, which is how a shortestPath tie was misread as a
+    // projection bug (LABS-1299).
+    let mut remaining: Vec<(usize, &Json)> = right.iter().enumerate().collect();
+    let mut unmatched: Vec<(usize, &Json)> = Vec::new();
+    for (i, l) in left.iter().enumerate() {
+        if !take_match(&mut remaining, |(_, r)| values_equal(l, r, lists_unordered)) {
+            unmatched.push((i, l));
+        }
+    }
+    if !unmatched.is_empty() {
+        return Err(format!(
+            "neo4j rows with no relate match ({}): {}; relate rows left over ({}): {}",
+            unmatched.len(),
+            rows_preview(&unmatched),
+            remaining.len(),
+            rows_preview(&remaining),
+        ));
     }
     Ok(())
 }
 
-/// Compact serde_json of a row set; a `serde_json::Value` always
-/// serializes, so the error arm is unreachable in practice.
-fn rows_json(rows: &[Json]) -> String {
-    serde_json::to_string(rows).unwrap_or_else(|_| "<unserializable rows>".to_string())
+/// How many rows of a mismatch message's difference each side renders; the
+/// rest are named by count in the message.
+const ROWS_SHOWN: usize = 3;
+
+/// The one row frame: a row's index in its result set and its elided
+/// payload — the label every mismatch message in this module names a row
+/// by. Never one nested list: its outer brackets read as an extra
+/// value-nesting level once elided, which is how a shortestPath tie was
+/// misread as a projection bug (LABS-1299).
+fn row_frame(i: usize, row: &Json) -> String {
+    format!("row {i}: {}", elide(&row.to_string()))
+}
+
+/// Rows of one result set, each in its own [`row_frame`], up to
+/// [`ROWS_SHOWN`]; the rest are named by count.
+fn rows_preview(rows: &[(usize, &Json)]) -> String {
+    let mut shown: Vec<String> = rows
+        .iter()
+        .take(ROWS_SHOWN)
+        .map(|(i, r)| row_frame(*i, r))
+        .collect();
+    if shown.len() < rows.len() {
+        shown.push(format!("(+{} more)", rows.len() - shown.len()));
+    }
+    shown.join("; ")
 }
 
 /// Multiset containment: every relate row must have a matching row in
@@ -521,14 +573,13 @@ pub fn rows_subset(full: &[Json], subset: &[CypherValue]) -> Result<(), String> 
     let full = normalize_reference_rows(full);
     let subset = normalize_engine_rows(subset);
     let mut remaining: Vec<&Json> = full.iter().collect();
-    for s in &subset {
-        let Some(pos) = remaining.iter().position(|f| values_equal(f, s, false)) else {
+    for (i, s) in subset.iter().enumerate() {
+        if !take_match(&mut remaining, |f| values_equal(f, s, false)) {
             return Err(format!(
-                "relate row {} is not in the reference's full result set",
-                elide(&s.to_string())
+                "relate {} is not in the reference's full result set",
+                row_frame(i, s)
             ));
-        };
-        remaining.remove(pos);
+        }
     }
     Ok(())
 }
@@ -576,16 +627,8 @@ fn values_equal(l: &Json, r: &Json, lists_unordered: bool) -> bool {
                 return false;
             }
             let mut remaining: Vec<&Json> = b.iter().collect();
-            for x in a {
-                let Some(pos) = remaining
-                    .iter()
-                    .position(|y| values_equal(x, y, lists_unordered))
-                else {
-                    return false;
-                };
-                remaining.remove(pos);
-            }
-            true
+            a.iter()
+                .all(|x| take_match(&mut remaining, |y| values_equal(x, y, lists_unordered)))
         }
         (Json::Array(a), Json::Array(b)) => {
             a.len() == b.len()

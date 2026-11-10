@@ -9,6 +9,19 @@ fn row_cypher(v: CypherValue) -> Vec<CypherValue> {
         [("c".to_string(), v)].into_iter().collect(),
     )]
 }
+/// Several reference rows, one per value — the multi-row form of
+/// [`row_json`].
+fn rows_json(values: &[Json]) -> Vec<Json> {
+    values.iter().cloned().flat_map(row_json).collect()
+}
+/// Several relate rows, one per name — the multi-row form of
+/// [`row_cypher`].
+fn rows_cypher(names: &[&str]) -> Vec<CypherValue> {
+    names
+        .iter()
+        .flat_map(|s| row_cypher(CypherValue::Str((*s).into())))
+        .collect()
+}
 
 #[test]
 fn unordered_rows_compare_as_a_bag() {
@@ -206,7 +219,7 @@ fn list_order_only_difference_is_up_to_list_order() {
     ]));
     match compare_rows(&left, &right, false) {
         Relation::UpToListOrder(strict) => {
-            assert!(strict.contains("has no relate match"), "{strict}");
+            assert!(strict.contains("with no relate match"), "{strict}");
         }
         other => panic!("expected UpToListOrder, got {other:?}"),
     }
@@ -282,6 +295,100 @@ fn mismatch_messages_elide_long_rows() {
         Relation::Different(msg) => {
             assert!(msg.contains('…'), "{msg}");
             assert!(msg.len() < ELIDE_AT * 3, "{}", msg.len());
+        }
+        other => panic!("expected Different, got {other:?}"),
+    }
+}
+
+/// Both sides of a no-match message render row by row, each in a `row N:`
+/// frame naming the row's result-set index — never one nested list whose
+/// outer brackets read as an extra value-nesting level (the LABS-1299
+/// misdiagnosis) — and never more rows per side than [`ROWS_SHOWN`].
+#[test]
+fn no_match_message_frames_rows_one_by_one() {
+    let left = row_json(serde_json::json!(["a", "b"]));
+    let right = row_cypher(CypherValue::List(vec![CypherValue::Str("x".into())]));
+    match compare_rows(&left, &right, false) {
+        Relation::Different(msg) => {
+            assert!(msg.contains("with no relate match"), "{msg}");
+            assert!(
+                msg.contains("neo4j rows with no relate match (1): row 0:"),
+                "{msg}"
+            );
+            assert!(msg.contains("relate rows left over (1): row 0:"), "{msg}");
+            assert!(!msg.contains("relate rows: ["), "{msg}");
+        }
+        other => panic!("expected Different, got {other:?}"),
+    }
+}
+
+/// The difference the message reports is the completed bag match's, not a
+/// mid-loop snapshot: left rows that match consume their right rows even
+/// after an earlier left row failed, so the frames name exactly the rows
+/// left over at the end, by their true result-set indices.
+#[test]
+fn no_match_message_reports_the_completed_difference() {
+    // Left row 0 matches nothing; rows 1-4 consume relate rows 0-3, so
+    // the leftover is relate row 4 — not the five a snapshot would show.
+    let left = rows_json(&[
+        serde_json::json!(["a", "b"]),
+        serde_json::json!("x"),
+        serde_json::json!("y"),
+        serde_json::json!("z"),
+        serde_json::json!("w"),
+    ]);
+    let right = rows_cypher(&["x", "y", "z", "w", "v"]);
+    match compare_rows(&left, &right, false) {
+        Relation::Different(msg) => {
+            assert!(
+                msg.contains("neo4j rows with no relate match (1): row 0:"),
+                "{msg}"
+            );
+            assert!(msg.contains("relate rows left over (1): row 4:"), "{msg}");
+        }
+        other => panic!("expected Different, got {other:?}"),
+    }
+}
+
+/// With more rows on a side than [`ROWS_SHOWN`], the message names the
+/// rest by count instead of rendering them.
+#[test]
+fn no_match_message_names_the_unrendered_rows_by_count() {
+    // No left row matches any right row, so both sides of the difference
+    // hold all five rows.
+    let left = rows_json(&[
+        serde_json::json!(["a", "b"]),
+        serde_json::json!(["c", "d"]),
+        serde_json::json!(["e", "f"]),
+        serde_json::json!(["g", "h"]),
+        serde_json::json!(["i", "j"]),
+    ]);
+    let right = rows_cypher(&["x", "y", "z", "w", "v"]);
+    match compare_rows(&left, &right, false) {
+        Relation::Different(msg) => {
+            assert!(msg.contains("neo4j rows with no relate match (5)"), "{msg}");
+            assert!(msg.contains("relate rows left over (5)"), "{msg}");
+            assert!(msg.contains("row 2:"), "{msg}");
+            assert!(!msg.contains("row 3:"), "{msg}");
+            assert!(msg.contains("(+2 more)"), "{msg}");
+        }
+        other => panic!("expected Different, got {other:?}"),
+    }
+}
+
+/// A frame's `row N` is the row's index in its result set, not its
+/// position among the still-unmatched rows: after an earlier successful
+/// match removes an entry from the pool, the frame keeps naming the
+/// original index (the drift the round-1 review caught).
+#[test]
+fn no_match_message_names_true_result_indices() {
+    let left = rows_json(&[serde_json::json!("a"), serde_json::json!("c")]);
+    let right = rows_cypher(&["a", "b"]);
+    match compare_rows(&left, &right, false) {
+        Relation::Different(msg) => {
+            // Relate row 0 matched the first reference row; the row left
+            // over is result-set row 1, whatever the pool order is.
+            assert!(msg.contains("relate rows left over (1): row 1:"), "{msg}");
         }
         other => panic!("expected Different, got {other:?}"),
     }
@@ -545,15 +652,26 @@ fn non_path_rows_compare_as_before() {
     assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
 }
 
-/// A rendered JSON payload longer than the cap is truncated with the
-/// elision marker; a payload at the cap is left untouched.
+/// A rendered JSON payload at the cap is untouched; one past the cap is
+/// cut in the middle — head and tail kept, the cut size named — so a
+/// deep difference at either end stays visible (LABS-1299).
 #[test]
-fn elide_truncates_with_a_marker_at_the_cap() {
+fn elide_cuts_the_middle_and_names_the_cut() {
     let exact = "x".repeat(ELIDE_AT);
     assert_eq!(elide(&exact), exact);
     let out = elide(&"x".repeat(ELIDE_AT + 10));
-    assert_eq!(out.chars().count(), ELIDE_AT + 1);
-    assert!(out.ends_with('…'), "{out}");
+    assert!(out.contains("…(+10 chars)…"), "{out}");
+    // Only the head and tail shares survive the cut.
+    assert_eq!(out.chars().filter(|c| *c == 'x').count(), ELIDE_AT, "{out}");
+    let tagged = format!(
+        "{}{}{}",
+        "h".repeat(ELIDE_HEAD),
+        "…".repeat(50),
+        "t".repeat(ELIDE_TAIL)
+    );
+    let out = elide(&tagged);
+    assert!(out.starts_with(&"h".repeat(ELIDE_HEAD)), "{out}");
+    assert!(out.ends_with(&"t".repeat(ELIDE_TAIL)), "{out}");
 }
 
 // ---- db.schema.visualization normalization (LABS-257 follow-up) ----
