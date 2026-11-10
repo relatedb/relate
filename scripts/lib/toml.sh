@@ -73,6 +73,39 @@ toml_section_set_version() {
   ' -v section="$2" -v v="$3"
 }
 
+# Print `name version` for every `relate*` inline-table entry in a
+# [workspace.dependencies] section — the workspace's own crates carry a
+# version pin so the publishable ones can reach crates.io; the release
+# sweep keeps every pin at the workspace version.
+# Usage: toml_workspace_dep_versions <Cargo.toml>
+toml_workspace_dep_versions() {
+  awk '
+    /^\[/ { in_sec = ($0 == "[workspace.dependencies]") }
+    in_sec && /^relate[a-z-]* = \{/ && /version = "/ {
+      line = $0
+      sub(/^relate[a-z-]* = \{[^}]*version = "/, "", line)
+      sub(/".*$/, "", line)
+      print $1, line
+    }
+  ' "$1"
+}
+
+# Rewrite the version pin of every `relate*` inline-table entry in a
+# [workspace.dependencies] section. Exits non-zero with the target
+# untouched when no entry matched — a silent pass-through would hide a
+# grammar drift.
+# Usage: toml_workspace_deps_set_version <Cargo.toml> <new-version>
+toml_workspace_deps_set_version() {
+  _toml_rewrite "$1" '
+    /^\[/ { in_sec = ($0 == "[workspace.dependencies]") }
+    in_sec && /^relate[a-z-]* = \{/ {
+      sub(/version = "[^"]*"/, "version = \"" v "\""); hit = 1
+    }
+    { print }
+    END { if (!hit) exit 1 }
+  ' -v v="$2"
+}
+
 # Rewrite the version of one package entry in a Cargo.lock file. Exits
 # non-zero with the target untouched when the package is absent — the
 # reader's contract, mirrored.

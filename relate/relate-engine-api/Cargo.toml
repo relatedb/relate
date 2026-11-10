@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Shared contracts for swappable query and write engines"
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 relate-catalog = { workspace = true }

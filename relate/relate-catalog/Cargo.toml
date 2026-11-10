@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Label, relationship-type, and named-index catalog"
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 relate-core = { workspace = true }

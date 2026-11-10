@@ -93,6 +93,13 @@ from this repository; the old repository’s tags never came across.
 PyPI publishing is intentionally not wired up yet — the Python wheels and
 sdist ship as GitHub release assets only.
 
+crates.io publishing (ADR-0560) is prepared but not wired into the
+workflow yet either: the `relate` facade's 17-crate workspace closure is
+publishable (descriptions, repository metadata, workspace dependency
+pins), and the one-time manual bootstrap — token publishes in topological
+order, then trusted-publisher configuration per crate — is a runbook item
+in [docs/PUBLISHING.md](docs/PUBLISHING.md).
+
 ## Extension package releases
 
 First-party extension packages release through their own dispatch,

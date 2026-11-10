@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Bind OpenCypher AST to a logical plan"
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 # ADR-0509 §4: the planner reads IR name fields (SmallName).

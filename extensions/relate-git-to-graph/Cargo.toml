@@ -2,6 +2,7 @@
 name = "relate-git-to-graph"
 version.workspace = true
 edition.workspace = true
+publish = false
 license.workspace = true
 
 # The `git-to-graph` importer as a first-party extension crate (ADR-0431

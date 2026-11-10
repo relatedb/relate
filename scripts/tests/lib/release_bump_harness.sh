@@ -87,6 +87,13 @@ version = "0.16.1"
 
 [workspace]
 members = []
+
+# Mirrors the real workspace: relate* entries carry a version pin the
+# sweep rewrites (ADR-0560); the path-only entry models
+# relate-test-support, which must survive the sweep untouched.
+[workspace.dependencies]
+relate-model = { path = "relate/relate-model", version = "0.16.1" }
+relate-test-support = { path = "testing/relate-test-support" }
 EOF
 	cat >"$fx/Cargo.lock" <<'EOF'
 version = 4

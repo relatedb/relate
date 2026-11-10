@@ -3,6 +3,8 @@ name = "relate-ontology"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+repository.workspace = true
+description = "Ontology document parsing, validation, and serialization for the Relate graph database"
 
 [dependencies]
 # ADR-0509 §4: the converter builds SmallName graph-type AST fields.

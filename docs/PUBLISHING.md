@@ -62,6 +62,27 @@ artifact landed on that first release:
   register the **`relate-db`** project (not `relate`, which is already
   taken), add a `pypi` job with trusted publishing for `relatedb/relate`,
   and remove this note.
+- [ ] crates.io (ADR-0560): the publishable set is the `relate` facade's
+  transitive workspace closure — 17 crates, all lockstep with the release
+  tag. The first publish is manual because a crate must exist before
+  trusted publishing can be configured on it. With a crates.io API token
+  (`cargo login`), publish in topological order, waiting a few seconds
+  between crates for the registry index to catch up:
+
+  ```sh
+  for c in relate-model relate-names relate-splitter relate-core \
+           relate-parser relate-catalog relate-error relate-ir \
+           relate-markdown relate-ontology relate-front relate-planner \
+           relate-engine-api relate-executor relate-storage \
+           relate-write-local relate; do
+    cargo publish -p "$c" || break
+    sleep 30
+  done
+  ```
+
+  Then, per crate on crates.io (Settings → Trusted Publishing): GitHub
+  Actions, repository `relatedb/relate`, workflow `release.yml`. The
+  pipeline's crates.io job is fail-closed until all 17 are configured.
 - [ ] npm (ADR-0278): the `@relate` npm scope exists and the releaser has
   publish rights.
 - [ ] Licensing: the project's licensing decision is resolved and the

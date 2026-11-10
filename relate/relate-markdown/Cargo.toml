@@ -3,6 +3,8 @@ name = "relate-markdown"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Markdown vault document grammar (frontmatter, wikilinks, sanitization) for the Relate graph database"
 
 [dependencies]
 relate-core = { workspace = true }

@@ -3,5 +3,7 @@ name = "relate-splitter"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+repository.workspace = true
+description = "Shared Cypher statement splitting and input-completeness scanning for Relate"
 
 [dependencies]

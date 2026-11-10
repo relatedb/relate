@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "WAL plus pluggable snapshot codecs (Relate JSON, Parquet behind the default-on parquet feature)"
 license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["parquet"]

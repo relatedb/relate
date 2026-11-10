@@ -87,6 +87,16 @@ grep -qF '[0.1.1]: https://github.com/relatedb/relate/compare/v0.1.0...v0.1.1' \
 	"$fx2/CHANGELOG.md"
 tap_check "steady state: [0.1.1] ref compares against the previous tag" $?
 
+# ADR-0560: the relate* workspace dependency pins ride the same sweep; the
+# path-only entry (relate-test-support, never published) stays untouched.
+grep -qF 'relate-model = { path = "relate/relate-model", version = "0.1.1" }' \
+	"$fx2/Cargo.toml"
+tap_check "steady state: workspace dependency pin swept to the new version" $?
+
+grep -qF 'relate-test-support = { path = "testing/relate-test-support" }' \
+	"$fx2/Cargo.toml"
+tap_check "steady state: path-only dev-dependency entry untouched" $?
+
 # --- Case 3: refusal (no derivable version, no plain repo URL) -----------------
 
 cat >"$sandbox/changelog-bad.md" <<'EOF'

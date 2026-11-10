@@ -3,6 +3,8 @@ name = "relate-names"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+repository.workspace = true
+description = "SmallName, the Relate query front-end's interned name representation"
 
 # Engine leaf, dependency-free by contract (ADR-0509 §4): seven engine
 # crates consume it (parser, IR, front, ontology, planner, executor,
