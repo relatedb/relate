@@ -74,7 +74,7 @@ case "$ext" in
     ;;
   *)
     mkdir -p "$work/unpack"
-    tar -xzf "$work/$asset" -C "$work/unpack"
+    tar --no-same-owner -xzf "$work/$asset" -C "$work/unpack"
     ;;
 esac
 

@@ -29,7 +29,7 @@ case "$(uname -m)" in
 esac
 curl -fsSL -o /tmp/docker.tgz "https://download.docker.com/linux/static/stable/${docker_arch}/docker-27.5.1.tgz"
 echo "${pinned}  /tmp/docker.tgz" | sha256sum --check --quiet
-tar -xzf /tmp/docker.tgz -C /tmp
+tar --no-same-owner -xzf /tmp/docker.tgz -C /tmp
 mv /tmp/docker/docker /usr/local/bin/docker
 
 buildx_arch="$(uname -m)"

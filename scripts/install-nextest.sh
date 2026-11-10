@@ -42,7 +42,7 @@ if [[ -z "$expected" || "$expected" != "$actual" ]]; then
   exit 1
 fi
 
-tar -xzf "$work/$asset" -C "$work"
+tar --no-same-owner -xzf "$work/$asset" -C "$work"
 bin="$(find "$work" -type f -name cargo-nextest | head -n 1)"
 if [[ -z "$bin" ]]; then
   echo "install-nextest: archive did not contain cargo-nextest" >&2

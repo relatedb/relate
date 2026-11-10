@@ -160,7 +160,7 @@ copy_in() {
     -e HOST_GID="$(id -g)" \
     -v "${volume}:/vol" \
     "$image" \
-    bash -c 'chown -R "$HOST_UID:$HOST_GID" "/vol/'"$rel"'"'
+    bash -c 'chown -R "$HOST_UID:$HOST_GID" "/vol/'"$rel"'" && chmod -R a+rwX "/vol/'"$rel"'"'
 }
 
 # docker cp chmods every destination path. A stage that writes the workspace

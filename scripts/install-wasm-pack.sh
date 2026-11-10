@@ -24,7 +24,7 @@ sh "$here/github-download.sh" \
   --tag "v${VERSION}" \
   --asset "$asset" \
   -o "$work/$asset"
-tar -xzf "$work/$asset" -C "$work"
+tar --no-same-owner -xzf "$work/$asset" -C "$work"
 bin="$(find "$work" -type f -name 'wasm-pack*' | head -n 1)"
 if [[ -z "$bin" ]]; then
   echo "install-wasm-pack: archive did not contain wasm-pack" >&2

@@ -19,7 +19,7 @@ sh "$here/github-download.sh" \
   --tag lychee-v0.18.1 \
   --asset "$asset" \
   -o "$work/lychee.tar.gz"
-tar -xzf "$work/lychee.tar.gz" -C "$work"
+tar --no-same-owner -xzf "$work/lychee.tar.gz" -C "$work"
 bin="$(find "$work" -type f -name lychee | head -n 1)"
 if [[ -z "$bin" ]]; then
   echo "install-lychee: archive did not contain lychee" >&2

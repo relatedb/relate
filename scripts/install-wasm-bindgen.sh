@@ -45,7 +45,7 @@ install_prebuilt() {
   expected="$(awk '{print $1}' "$work/wbg.sha256sum")"
   actual="$(shasum -a 256 "$work/wbg.tar.gz" | awk '{print $1}')"
   [[ -n "$expected" && "$expected" == "$actual" ]] || return 1
-  tar -xzf "$work/wbg.tar.gz" -C "$work" || return 1
+  tar --no-same-owner -xzf "$work/wbg.tar.gz" -C "$work" || return 1
   install -m755 "$work/wasm-bindgen-${WBG}-${target}/wasm-bindgen" "$BIN_DIR/wasm-bindgen"
   install -m755 "$work/wasm-bindgen-${WBG}-${target}/wasm-bindgen-test-runner" \
     "$BIN_DIR/wasm-bindgen-test-runner"

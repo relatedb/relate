@@ -47,7 +47,7 @@ sh "$here/github-download.sh" \
   --asset "$TARBALL" \
   -o "$DIR/$TARBALL"
 echo "$SHA256  $DIR/$TARBALL" | sha256sum --check --quiet - >&2
-tar -xzf "$DIR/$TARBALL" -C "$DIR" --strip-components=1
+tar --no-same-owner -xzf "$DIR/$TARBALL" -C "$DIR" --strip-components=1
 rm "$DIR/$TARBALL"
 "$DIR/bin/wasm-opt" --version >&2
 echo "$DIR/bin"
