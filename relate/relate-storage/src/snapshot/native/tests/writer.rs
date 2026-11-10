@@ -1,7 +1,7 @@
 use super::super::*;
 use super::harness::checkpoint_at;
 use super::harness::*;
-use crate::codec::parquet::with_test_file_ceiling;
+use crate::codec::parquet::{with_test_file_ceiling, with_test_page_envelope_rows};
 use crate::{memory_store, open_store, Wal};
 use relate_executor::Graph;
 
@@ -176,41 +176,50 @@ fn a_seed_over_the_page_envelope_rows_is_cut_into_full_files() {
     // the ADR-0086 page envelope, so a seed of more live rows than one
     // file holds is cut into full files of that many rows by planning —
     // never written over the envelope and halved. Every part is wide
-    // (ADR-0553), so the plain store exercises it.
-    let store = memory_store();
-    let graph = Graph::default();
-    stage_nodes(&graph, 120_000, 24);
-    let ts = apply_commit(&graph);
-    checkpoint_at(&store, &graph, 0, ts, MAX_FILE).unwrap();
-    let parts = manifest(&store).node_parts;
-    let cap = Kind::Node.page_envelope_rows();
-    assert_eq!(parts.len(), 120_000usize.div_ceil(cap), "{parts:?}");
-    assert!(
-        parts[..parts.len() - 1]
-            .iter()
-            .all(|p| p.rows == cap as u64),
-        "{parts:?}"
-    );
-    assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 120_000);
-    let end = parts[parts.len() - 1].id_hi;
-    assert_eq!(
-        ranges(&parts),
-        [
-            (0, cap as i64),
-            (cap as i64, 2 * cap as i64),
-            (2 * cap as i64, end)
-        ]
-    );
-    assert_reopens_as(&store, &graph);
+    // (ADR-0553), so the plain store exercises it. The row cap is
+    // shrunk through the test override: the production cap (ADR-0563)
+    // needs ~1M rows to cross, more than a test wants to stage — the cut
+    // shape is under test, not the cap's value. The derivation itself is
+    // pinned by `page_envelope_rows_fill_max_pages_at_the_row_group_cap`.
+    with_test_page_envelope_rows(40_000, || {
+        let store = memory_store();
+        let graph = Graph::default();
+        stage_nodes(&graph, 120_000, 24);
+        let ts = apply_commit(&graph);
+        checkpoint_at(&store, &graph, 0, ts, MAX_FILE).unwrap();
+        let parts = manifest(&store).node_parts;
+        let cap = Kind::Node.page_envelope_rows();
+        assert_eq!(parts.len(), 120_000usize.div_ceil(cap), "{parts:?}");
+        assert!(
+            parts[..parts.len() - 1]
+                .iter()
+                .all(|p| p.rows == cap as u64),
+            "{parts:?}"
+        );
+        assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 120_000);
+        let end = parts[parts.len() - 1].id_hi;
+        assert_eq!(
+            ranges(&parts),
+            [
+                (0, cap as i64),
+                (cap as i64, 2 * cap as i64),
+                (2 * cap as i64, end)
+            ]
+        );
+        assert_reopens_as(&store, &graph);
+    });
 }
 
 #[test]
 fn shard_row_groups_stay_within_cap() {
     use crate::codec::parquet::ROW_GROUP_CAP;
+    // Two full groups and a tail, whatever the cap is: the test wants
+    // more than one group, never exactly `cap` rows.
+    let n = 2 * ROW_GROUP_CAP + 2;
     let store = memory_store();
     let graph = Graph::default();
     graph.begin_write().unwrap();
-    for i in 0..130 {
+    for i in 0..n {
         graph
             .create_node(vec![format!("N{i}")], Default::default())
             .unwrap();
@@ -230,7 +239,7 @@ fn shard_row_groups_stay_within_cap() {
             .unwrap()
             .0
             .live_node_count(),
-        130
+        n
     );
 }
 

@@ -567,7 +567,10 @@ where
     if rows != declared_rows {
         return Err(invalid("file/row group count mismatch"));
     }
-    Ok(builder.with_batch_size(1024))
+    // The one decode-batch bound (`docs/api/rust/spec.md`): the reader
+    // batches at it, and `DECODE_BATCH_ROWS` is asserted against the
+    // row-group cap so the two cannot drift apart.
+    Ok(builder.with_batch_size(DECODE_BATCH_ROWS))
 }
 
 #[cfg(test)]

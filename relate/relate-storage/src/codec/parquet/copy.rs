@@ -17,7 +17,7 @@ use crate::vfs::Vfs;
 
 use super::encode::{ShardError, ShardWriter};
 use super::wide::{self, ColumnType};
-use super::{preflight, source_error, ShardRules, VfsChunkReader, ROW_GROUP_CAP};
+use super::{preflight, source_error, ShardRules, VfsChunkReader, DECODE_BATCH_ROWS};
 
 /// A forward cursor over one previous shard's rows, in ascending id order.
 /// Every failure to read the shard is fatal: fewer rows do not avoid it.
@@ -99,7 +99,7 @@ impl ShardCursor {
         let previous = open_previous_shard(vfs, path, kind, range)?;
         let reader = previous
             .builder
-            .with_batch_size(ROW_GROUP_CAP)
+            .with_batch_size(DECODE_BATCH_ROWS)
             .build()
             .map_err(|e| fail(Error::storage(e.to_string())))?;
         Ok(Self {

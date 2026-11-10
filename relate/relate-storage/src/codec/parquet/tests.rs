@@ -502,8 +502,8 @@ fn nested_test_overrides_restore_the_outer_value() {
 fn page_envelope_rows_fill_max_pages_at_the_row_group_cap() {
     // The wide worst case (ADR-0534): reserved leaves + the column cap —
     // every written part is wide (ADR-0553).
-    assert_eq!(Kind::Node.page_envelope_rows(), 59_904);
-    assert_eq!(Kind::Rel.page_envelope_rows(), 56_640);
+    assert_eq!(Kind::Node.page_envelope_rows(), 958_464);
+    assert_eq!(Kind::Rel.page_envelope_rows(), 906_240);
 }
 
 #[test]

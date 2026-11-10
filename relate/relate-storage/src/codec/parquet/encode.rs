@@ -348,8 +348,11 @@ mod tests {
         assert!(matches!(missed, Err(ShardError::Envelope(_))), "{missed:?}");
 
         // Hex labels barely compress, so half the file passes the writer's
-        // buffer and the copy, not the close, meets the cap.
-        let ids: Vec<i64> = (0..1000).collect();
+        // buffer and the copy, not the close, meets the cap. Three full
+        // row groups and a tail, whatever the cap is: the refusal must
+        // land between chunks, not on the single close of one group.
+        let n = 3 * ROW_GROUP_CAP + 24;
+        let ids: Vec<i64> = (0..n as i64).collect();
         let mut seed = 1u64;
         let labels = ids
             .iter()
@@ -368,7 +371,7 @@ mod tests {
         let full = write_table(ids.clone(), labels, vec![Some("{}".into()); ids.len()]).unwrap();
         let half = full.len() as u64 / 2;
         let mut cursor =
-            ShardCursor::open_bytes("nodes/full.parquet", full, Kind::Node, 0..1000).unwrap();
+            ShardCursor::open_bytes("nodes/full.parquet", full, Kind::Node, 0..n as i64).unwrap();
         let mut copied = 0;
         let missed = with_wide_shard_writer(Kind::Node, &[], half, |writer| {
             for chunk in ids.chunks(ROW_GROUP_CAP) {

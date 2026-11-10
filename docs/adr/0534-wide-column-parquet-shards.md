@@ -148,3 +148,8 @@ a legacy-encoded store upgrades at its next checkpoint through the
 one-time transition defined here. The encoding design this ADR records —
 promotion policy, column caps, residual tail, layout and incrementality —
 stands unchanged, as does the readable-both-encodings rule.
+
+ADR-0563 raises the row-group cap, so the page-envelope row bound at the
+column cap is 958,464 node / 906,240 relationship rows, not ~60k;
+planning the row bound by a part's actual column count remains the
+refinement this ADR records.

@@ -74,3 +74,7 @@ ADR-0183 supersedes Decision 3's one part per clean run: a rewrite unit
 copies clean runs into its byte-budgeted files together with the encoded
 dirty rows, and absorbs undersized neighboring parts up to the target.
 Decisions 1 and 2 stand.
+
+ADR-0563 raises Decision 1's 64-row row-group cap to 1024 rows (the wide
+encoding's leaf count made the small group the dominant write tax); the
+streaming, byte-split and copy shape of all three decisions stands.

@@ -253,15 +253,20 @@ fn coalesce_respects_byte_target() {
 fn mixed_file_envelope_retry_recopies_behind_cursor() {
     // Every other row is dirty, so each file alternates copied and encoded
     // runs out of the one previous shard, and the whole unit misses the file
-    // ceiling. A row group flushes into the sink on its 64th row, an odd id:
-    // with the even ids dirty the overflow surfaces in a copy, whose failed
-    // run consumes the cursor; with the odd ids dirty it surfaces in an
-    // encode, and the cursor held past the first half's start is dropped
-    // when the file is halved.
+    // ceiling. A row group flushes into the sink every `ROW_GROUP_CAP` rows,
+    // so over four groups the flush that crosses the 60% ceiling is the
+    // third group's close — the last row of an odd count of groups, an odd
+    // id: with the even ids dirty the overflow surfaces in a copy, whose
+    // failed run consumes the cursor; with the odd ids dirty it surfaces in
+    // an encode, and the cursor held past the first half's start is dropped
+    // when the file is halved. Each group is a quarter of the part's bytes
+    // and each half is half, both under the ceiling, so exactly one file
+    // misses it — mid-write, not at the close.
+    let rows = 4 * ROW_GROUP_CAP;
     for dirty_parity in [0, 1] {
         let store = memory_store();
         let graph = Graph::default();
-        stage_nodes(&graph, 2000, 24);
+        stage_nodes(&graph, rows, 24);
         let ts = apply_commit(&graph);
         checkpoint_at(&store, &graph, 0, ts, MAX_FILE).unwrap();
         let [part] = &manifest(&store).node_parts[..] else {
@@ -277,7 +282,7 @@ fn mixed_file_envelope_retry_recopies_behind_cursor() {
         let parts = manifest(&store).node_parts;
         assert!(parts.len() > 1, "{parts:?}");
         assert!(parts.iter().all(|p| p.bytes <= ceiling), "{parts:?}");
-        assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 2000);
+        assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), rows as u64);
         // Three opens: the kept part's schema read (ADR-0534 carry), the
         // failed file, and the first half's reopen — the second half
         // starts ahead of the first half's cursor and reuses it.

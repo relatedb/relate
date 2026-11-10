@@ -363,3 +363,9 @@ part, and writes each unit as byte-budgeted files.
   part per run. ADR-0180's stream-and-split-on-compact-bytes rules
   (Decisions 1-2) stand. ADR-0180 is immutable; it gains a **Later
   references** note pointing here.
+
+## Later references
+
+ADR-0563 raises the `ROW_GROUP_CAP` this ADR's page-envelope arithmetic
+carries (64-row groups → 1024-row groups), so a part's row bound rises
+with it; the window, byte-budget and coalescing rules here are unchanged.

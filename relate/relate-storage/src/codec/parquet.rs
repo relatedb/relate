@@ -62,9 +62,19 @@ const MAX_ROWS: u64 = 1_000_000;
 const MAX_ROW_BYTES: u64 = 384 << 20;
 const MAX_DECODED: u64 = 2 << 30;
 
-/// Rows held and flushed together (ADR-0180). The old 64-row prefix sample
-/// used the same width; it is a row-group cap now, not a size estimate.
-pub(crate) const ROW_GROUP_CAP: usize = 64;
+/// Rows held and flushed together (ADR-0180). 1024 since ADR-0563: at 64
+/// rows the wide encoding's per-leaf, per-group page work multiplied part
+/// files 8-10x — the dominant term of its checkpoint write tax.
+pub(crate) const ROW_GROUP_CAP: usize = 1024;
+
+/// Rows one decode batch reads: the copy path's reader batch size, and
+/// the public bound on decode batches (`docs/api/rust/spec.md`).
+pub(crate) const DECODE_BATCH_ROWS: usize = 1024;
+
+/// A row group must not outgrow a decode batch, or a copied batch would
+/// exceed the public decode bound. Raising the cap past it is a contract
+/// change, not a constant edit.
+const _: () = assert!(ROW_GROUP_CAP <= DECODE_BATCH_ROWS);
 
 /// Pages a row group writes per leaf column while its values fit one data
 /// page: a dictionary page and a data page.
@@ -76,10 +86,14 @@ impl Kind {
     /// rows, each writing `PAGES_PER_LEAF` pages per leaf column. Every
     /// written part is wide (ADR-0553): the leaf count adds at most
     /// [`MAX_PROMOTED_COLUMNS`] promoted columns and the residual
-    /// (ADR-0534) — 59,904 node rows and 56,640 relationship rows at the
-    /// cap. A file holds fewer when its part promotes fewer columns or a
-    /// large value spills into more pages.
+    /// (ADR-0534) — 958,464 node rows and 906,240 relationship rows at
+    /// the cap (ADR-0563). A file holds fewer when its part promotes
+    /// fewer columns or a large value spills into more pages.
     pub(crate) fn page_envelope_rows(self) -> usize {
+        #[cfg(test)]
+        if let Some(rows) = TEST_PAGE_ENVELOPE_ROWS.get() {
+            return rows;
+        }
         let leaves = self.leaf_columns() + MAX_PROMOTED_COLUMNS as u64;
         let groups = MAX_PAGES / (PAGES_PER_LEAF * leaves);
         groups as usize * ROW_GROUP_CAP
@@ -133,6 +147,22 @@ pub(crate) fn file_ceiling() -> u64 {
 #[cfg(test)]
 pub(crate) fn with_test_file_ceiling<T>(limit: u64, f: impl FnOnce() -> T) -> T {
     with_test_override(&TEST_FILE_CEILING, limit, f)
+}
+
+// The row cap `Kind::page_envelope_rows` reports, overridable in tests
+// like `file_ceiling`. The derivation (ADR-0563: ~1M rows at the cap)
+// stays pinned by `page_envelope_rows_fill_max_pages_at_the_row_group_cap`;
+// the override is for tests that need a seed to cross the envelope
+// without staging a million rows.
+#[cfg(test)]
+thread_local! {
+    static TEST_PAGE_ENVELOPE_ROWS: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_page_envelope_rows<T>(rows: usize, f: impl FnOnce() -> T) -> T {
+    with_test_override(&TEST_PAGE_ENVELOPE_ROWS, rows, f)
 }
 
 /// Run `f` with the thread-local test override `cell` set to `value`, and
