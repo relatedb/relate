@@ -79,7 +79,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: triha74/gosonic
-          ref: ce543846822302193ad869c5c08a397bec9e284a
+          ref: 36b8e47f575c2436515e3ba5f4819771131e83ff
 
       - uses: actions/setup-go@v7
         with:

@@ -1,8 +1,8 @@
 # Portable Linux lanes from .github/workflows/ci.yml.
 # Run from the Relate checkout:
-#   gosonic --allow-docker-socket ci run smoke-test
-#   gosonic --allow-docker-socket ci run full-test
-#   gosonic --allow-docker-socket ci run clean
+#   gosonic ci run smoke-test
+#   gosonic ci run full-test
+#   gosonic ci run clean
 version: "1"
 project:
   name: relate
@@ -593,7 +593,7 @@ stages:
 
   # apk and make clean need root. The cargo caches are Docker volumes.
   # Run this on its own, after the other stages have finished:
-  #   gosonic --allow-docker-socket ci run clean
+  #   gosonic ci run clean
   clean:
     runner: docker-cli
     user: root

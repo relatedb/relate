@@ -122,7 +122,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: triha74/gosonic
-          ref: ce543846822302193ad869c5c08a397bec9e284a
+          ref: 36b8e47f575c2436515e3ba5f4819771131e83ff
           path: gosonic-src
 
       - uses: actions/setup-go@v7
@@ -137,7 +137,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run the full memory-controls stage
-        run: gosonic --allow-docker-socket ci run memory-controls-full
+        run: gosonic ci run memory-controls-full
 
       - name: Write the memory-controls summary
         if: always()
@@ -185,7 +185,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: triha74/gosonic
-          ref: ce543846822302193ad869c5c08a397bec9e284a
+          ref: 36b8e47f575c2436515e3ba5f4819771131e83ff
           path: gosonic-src
 
       - uses: actions/setup-go@v7
@@ -200,7 +200,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run the memory-shape stage
-        run: gosonic --allow-docker-socket ci run memory-shape
+        run: gosonic ci run memory-shape
 
       - name: Write the memory-shape summary
         if: always()

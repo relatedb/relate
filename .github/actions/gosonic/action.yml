@@ -98,7 +98,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         install -m 0755 "${{ runner.temp }}/gosonic-bin/gosonic" /usr/local/bin/gosonic
-        args=(--allow-docker-socket ci run --jobs "${{ inputs.jobs }}")
+        args=(ci run --jobs "${{ inputs.jobs }}")
         if [[ -n "${{ inputs.matrix }}" ]]; then
           args+=(--matrix "${{ inputs.matrix }}")
         fi
