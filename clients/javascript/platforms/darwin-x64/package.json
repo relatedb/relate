@@ -1,5 +1,5 @@
 {
-  "name": "@relate/darwin-x64",
+  "name": "@relate/relate-darwin-x64",
   "version": "0.1.2",
   "description": "macOS x64 native library for @relate/relate",
   "license": "Apache-2.0",

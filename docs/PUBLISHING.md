@@ -15,6 +15,22 @@ everything at the `relatedb/relate` repository (private for now) and turn it on.
 
 ## 0. Preconditions
 
+- [ ] Create the **`release` GitHub environment** (repo Settings →
+  Environments) with a deployment branch rule limited to `main` and **no
+  required reviewers** (the chained call from `release.yml` must not
+  block). Every publish job in `publish-registries.yml` runs in it. This
+  rule is **not optional**: the in-code `github.ref == 'refs/heads/main'`
+  guard lives in the workflow file itself, so it stops accidents, not an
+  adversary — a write-access collaborator can dispatch a branch copy with
+  the guard edited out. The environment and its branch rule are
+  repository settings, which a branch cannot rewrite. If the plan cannot
+  set branch rules on a private repository, do not configure the
+  registry publishers below (keep the `&& false` guards) until it can.
+  When configuring the registry-side trusted publishers, set their
+  **environment field to `release`** as well, so a token minted outside
+  the environment is rejected by the registry even if the repository
+  rule is ever weakened.
+
 - [ ] `main` is green: `make lint` and `make test` pass; the spec-harness lane (ADR-0482) reports language coverage on the release PR — reporting-only, never a gate.
 - [ ] The old repository’s `v*` tags did **not** come across with the move —
   the release workflow seeds the first tag at `v0.1.0`

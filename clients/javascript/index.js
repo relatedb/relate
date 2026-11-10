@@ -23,7 +23,7 @@ const path = require("path");
 // overrides the `librelate_ffi` filename stem the repo fallback probes
 // — cargo names the Windows DLL relate_ffi.dll (no lib prefix). The npm
 // platform package name is derived from the key:
-// `@relate/${key}`.
+// `@relate/relate-${key}` (ADR-0562).
 const PLATFORMS = {
   "linux-x64": { lib: "librelate_ffi.so", repoExts: ["so"] },
   "linux-arm64": { lib: "librelate_ffi.so", repoExts: ["so"] },
@@ -44,7 +44,7 @@ function findLib() {
   const { lib, repoBase = "librelate_ffi", repoExts } = PLATFORMS[key] ?? UNKNOWN_PLATFORM;
   // The platform package name; the placeholder form names the shape when
   // this platform/arch has no published package.
-  const pkg = lib ? `@relate/${key}` : "@relate/<platform>-<arch>";
+  const pkg = lib ? `@relate/relate-${key}` : "@relate/relate-<platform>-<arch>";
   // (b) The platform optionalDependency (published npm installs). A missing
   // package is not an error; keep looking. Only the shipped lib filename is
   // probed; the wider repo-fallback list lives in repoExts.

@@ -6,7 +6,7 @@
 #   embedded-fallback           @relate/relate tarball, native lib
 #                               via RELATE_LIB (repo target/ build)
 #   embedded-platform-package   same tarball plus a fabricated
-#                               @relate/<platform>-<arch>
+#                               @relate/relate-<platform>-<arch>
 #                               tarball carrying the repo-built lib in lib/;
 #                               no RELATE_LIB, so the optional-dependency
 #                               loader in index.js must resolve it
@@ -124,7 +124,7 @@ tgz_for() {
   fi
 }
 
-# Fabricate a @relate/<platform>-<arch> package around the
+# Fabricate a @relate/relate-<platform>-<arch> package around the
 # repo-built native library and pack it (smoke 2 producer).
 pack_platform_pkg() {
   local fab="$WORK/platform-pkg"

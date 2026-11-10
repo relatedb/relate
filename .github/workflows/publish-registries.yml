@@ -1,0 +1,424 @@
+name: Publish registries
+
+# One publisher for every package registry (ADR-0560, ADR-0278), kept out
+# of release.yml so it can also run by hand: release.yml calls it after
+# the GitHub release exists; a manual dispatch re-publishes (or dry-runs)
+# any subset of registries against an existing tag.
+#
+# Artifacts always come from the GitHub release's assets — never from
+# workflow artifacts — so the chained run and a manual re-publish a week
+# later share one code path. Registries are append-only: a partial
+# publish (say, crate 9 of 17 hits index lag) is recovered by
+# re-dispatching with only that registry enabled; already-published
+# versions are skipped by the registry itself.
+#
+# Dry runs: pypi-target=testpypi exercises the OIDC trusted publisher end
+# to end; npm-dry-run and crates-io-dry-run validate packaging only (npm
+# and crates.io have no staging registry).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to publish from, e.g. v0.14.1"
+        required: true
+        type: string
+      npm:
+        required: false
+        type: boolean
+        default: true
+      pypi:
+        required: false
+        type: boolean
+        default: true
+      crates-io:
+        required: false
+        type: boolean
+        default: true
+      pypi-target:
+        required: false
+        type: string
+        default: "pypi"
+      npm-dry-run:
+        required: false
+        type: boolean
+        default: false
+      crates-io-dry-run:
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish from, e.g. v0.14.1"
+        required: true
+        type: string
+      npm:
+        description: "Publish the seven @relate/* packages"
+        required: false
+        type: boolean
+        default: true
+      pypi:
+        description: "Publish the relate-db wheels and sdist"
+        required: false
+        type: boolean
+        default: true
+      crates-io:
+        description: "Publish the 17-crate facade closure"
+        required: false
+        type: boolean
+        default: true
+      pypi-target:
+        description: "PyPI for a real publish, TestPyPI for an auth/packaging dry run"
+        required: false
+        type: choice
+        default: "pypi"
+        options:
+          - pypi
+          - testpypi
+      npm-dry-run:
+        description: "npm publish --dry-run: validate the tarballs without publishing"
+        required: false
+        type: boolean
+        default: false
+      crates-io-dry-run:
+        description: "cargo publish --dry-run: validate packaging without publishing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: "1"
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  registry-owner:
+    name: Canonical registry owner
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Reject registry publishes outside the canonical repository
+        if: github.repository != 'relatedb/relate'
+        run: |
+          echo "Official Relate registry publishes are owned by relatedb/relate; refusing ${GITHUB_REPOSITORY}." >&2
+          exit 1
+
+      # Validate the tag before any job checks it out as a ref or feeds it
+      # to gh: every publish job needs this one, so a bad tag stops the
+      # workflow before the ref or the release lookup is touched.
+      - name: Validate the tag shape
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag '$TAG' is not vX.Y.Z" >&2; exit 1; }
+
+      # Shape is not provenance: a write-access collaborator could push
+      # their own vX.Y.Z tag with their own release assets and dispatch
+      # from main. release.yml only ever tags the version-bump commit on
+      # main, so the tag's commit must be an ancestor of origin/main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Require the tag to be on main
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main "refs/tags/$TAG:refs/tags/$TAG"
+          git merge-base --is-ancestor "$TAG^{commit}" origin/main \
+            || { echo "tag '$TAG' is not on main — refusing to publish from it" >&2; exit 1; }
+
+      # Resolve the tag to its commit exactly once: downstream jobs check
+      # out this SHA, so a tag force-push between the gate and a publish
+      # job cannot swap the tree an id-token: write job runs.
+      - name: Resolve the tag's commit
+        id: resolve
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "sha=$(git rev-parse "$TAG^{commit}")" >> "$GITHUB_OUTPUT"
+
+  # PyPI (ADR-0560): trusted publishing, id-token: write, no API token
+  # anywhere. The pending publisher for relate-db on PyPI — and on
+  # TestPyPI for dry runs — points at this workflow; docs/PUBLISHING.md
+  # is the runbook. Publishes the exact wheels and sdist attached to the
+  # release: five wheels plus one sdist.
+  pypi:
+    name: Publish relate-db to PyPI
+    needs: registry-owner
+    # Publishing only ever runs from main: the `release` environment's
+    # branch rule is repository config, this ref guard is the in-code half
+    # (chained release runs and post-merge manual dispatches both run on
+    # main; a branch dispatch stops here even before the environment).
+    if: github.ref == 'refs/heads/main' && inputs.pypi
+    runs-on: ubuntu-latest
+    # Publishes run in the `release` environment: its deployment branch
+    # rule (main only) stops a write-access collaborator from publishing
+    # with the registry's trust from a dispatched branch. No required
+    # reviewers — the chained release call must not block.
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      - name: Download the release's wheels and sdist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'relate_db-*.whl' --pattern 'relate_db-*.tar.gz' \
+            --dir dist --clobber
+
+      - name: Check artifact count
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          if [ "${#wheels[@]}" -ne 5 ] || [ "${#sdists[@]}" -ne 1 ]; then
+            echo "expected 5 wheels and 1 sdist, found ${#wheels[@]} wheel(s) and ${#sdists[@]} sdist(s)" >&2
+            exit 1
+          fi
+
+      # Count is not provenance: verify every asset against the release
+      # run's build attestation, so bytes attached to the release after
+      # the fact cannot ride the trusted publisher.
+      - name: Verify build provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist/*.whl dist/*.tar.gz; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          done
+
+      - name: Publish to PyPI
+        if: inputs.pypi-target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Publish to TestPyPI (dry run)
+        if: inputs.pypi-target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+
+  # npm (ADR-0278): trusted publishing (OIDC), no NODE_AUTH_TOKEN.
+  # Fail-closed by design — until the manual first publishes and the
+  # npmjs.com trusted-publishing setup in docs/PUBLISHING.md are done,
+  # the `&& false` below keeps these jobs off. Platform packages and the
+  # wasm bundle go first; the main package publishes last so its
+  # optionalDependencies already exist on the registry.
+  npm-platform-wasm:
+    name: Publish platform + wasm packages to npm
+    needs: registry-owner
+    # Main-only like every publish job (see pypi). Disabled until the
+    # manual npmjs.com setup lands (see the npm section of
+    # docs/PUBLISHING.md); re-enable by dropping the `&& false`.
+    if: github.ref == 'refs/heads/main' && inputs.npm && false
+    runs-on: ubuntu-latest
+    # Publishes run in the `release` environment: its deployment branch
+    # rule (main only) stops a write-access collaborator from publishing
+    # with the registry's trust from a dispatched branch. No required
+    # reviewers — the chained release call must not block.
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      # Local composite actions resolve from the checkout; the tag pins
+      # the action to the version the release shipped.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.registry-owner.outputs.sha }}
+
+      - name: Download the release's npm tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.tgz' --dir dist --clobber
+          # Provenance before publish: every tarball must verify against
+          # the release run's build attestation (see the pypi job).
+          for f in dist/*.tgz; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          done
+
+      # Everything except the main package: the five platform packages
+      # plus the wasm bundle.
+      - uses: ./.github/actions/npm-publish
+        with:
+          dir: dist
+          # The main package's tarball is relate-relate-<version>.tgz —
+          # the one tgz whose middle segment is not a platform or "wasm".
+          exclude: '^relate-relate-[0-9]'
+          expected-count: 6
+          dry-run: ${{ inputs.npm-dry-run }}
+
+  npm-main:
+    name: Publish @relate/relate to npm
+    needs: [registry-owner, npm-platform-wasm]
+    # Main-only like every publish job (see pypi). Same disable guard as
+    # npm-platform-wasm; drop both together.
+    if: github.ref == 'refs/heads/main' && inputs.npm && false
+    runs-on: ubuntu-latest
+    # Publishes run in the `release` environment: its deployment branch
+    # rule (main only) stops a write-access collaborator from publishing
+    # with the registry's trust from a dispatched branch. No required
+    # reviewers — the chained release call must not block.
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.registry-owner.outputs.sha }}
+
+      - name: Download the release's npm tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.tgz' --dir dist --clobber
+          # Provenance before publish: every tarball must verify against
+          # the release run's build attestation (see the pypi job).
+          for f in dist/*.tgz; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          done
+
+      - uses: ./.github/actions/npm-publish
+        with:
+          dir: dist
+          include: '^relate-relate-[0-9]'
+          expected-count: 1
+          dry-run: ${{ inputs.npm-dry-run }}
+
+  # crates.io (ADR-0560): the facade's 17-crate workspace closure, in
+  # topological dependency order, with a settle delay between crates
+  # because the registry index lags a fresh publish. Trusted publishing
+  # (OIDC) once each crate exists; the one-time manual bootstrap (token
+  # publishes, then per-crate trusted-publisher setup) is the runbook in
+  # docs/PUBLISHING.md. Publishing is not building: the job installs a
+  # current stable cargo for the OIDC exchange regardless of the MSRV
+  # pin in rust-toolchain.toml.
+  crates-io:
+    name: Publish the facade closure to crates.io
+    needs: registry-owner
+    # Main-only like every publish job (see pypi). Disabled until the
+    # manual bootstrap in docs/PUBLISHING.md lands; re-enable by dropping
+    # the `&& false`.
+    if: github.ref == 'refs/heads/main' && inputs.crates-io && false
+    runs-on: ubuntu-latest
+    # Publishes run in the `release` environment: its deployment branch
+    # rule (main only) stops a write-access collaborator from publishing
+    # with the registry's trust from a dispatched branch. No required
+    # reviewers — the chained release call must not block.
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.registry-owner.outputs.sha }}
+
+      - name: Install stable cargo for publishing
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Publish in topological order
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.crates-io-dry-run }}
+        run: |
+          set -euo pipefail
+          crates=(
+            relate-model relate-names relate-splitter relate-core
+            relate-parser relate-catalog relate-error relate-ir
+            relate-markdown relate-ontology relate-front relate-planner
+            relate-engine-api relate-executor relate-storage
+            relate-write-local relate
+          )
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          for c in "${crates[@]}"; do
+            # A re-run after a partial publish hits "already exists" on
+            # the crates that made it; the registry's own rejection is
+            # the skip, so retry only rides the index-lag failure.
+            for attempt in 1 2 3; do
+              if rustup run stable cargo publish -p "$c" "${args[@]}"; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "cargo publish -p $c failed after 3 attempts" >&2
+                exit 1
+              fi
+              echo "cargo publish -p $c failed (attempt $attempt); waiting for the index"
+              sleep 30
+            done
+            sleep 30
+          done

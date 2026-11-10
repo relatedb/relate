@@ -98,3 +98,5 @@ npmjs.com — are runbook items in `docs/PUBLISHING.md`, not automation.
 
 - ADR-0530 moves the playground to the relate-web repository, which
   serves a copy of `surfaces/relate-wasm/pkg/`; no in-tree mirror remains.
+- ADR-0562 renames the five platform packages to
+  `@relate/relate-<os>-<arch>`; the main and wasm names are unchanged.

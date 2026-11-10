@@ -135,11 +135,11 @@ EOF
   "name": "@relate/relate",
   "version": "0.16.1",
   "optionalDependencies": {
-    "@relate/linux-x64": "0.16.1",
-    "@relate/linux-arm64": "0.16.1",
-    "@relate/darwin-x64": "0.16.1",
-    "@relate/darwin-arm64": "0.16.1",
-    "@relate/win32-x64": "0.16.1"
+    "@relate/relate-linux-x64": "0.16.1",
+    "@relate/relate-linux-arm64": "0.16.1",
+    "@relate/relate-darwin-x64": "0.16.1",
+    "@relate/relate-darwin-arm64": "0.16.1",
+    "@relate/relate-win32-x64": "0.16.1"
   }
 }
 EOF
@@ -150,11 +150,11 @@ EOF
     "": {
       "version": "0.16.1",
       "optionalDependencies": {
-        "@relate/linux-x64": "0.16.1",
-        "@relate/linux-arm64": "0.16.1",
-        "@relate/darwin-x64": "0.16.1",
-        "@relate/darwin-arm64": "0.16.1",
-        "@relate/win32-x64": "0.16.1"
+        "@relate/relate-linux-x64": "0.16.1",
+        "@relate/relate-linux-arm64": "0.16.1",
+        "@relate/relate-darwin-x64": "0.16.1",
+        "@relate/relate-darwin-arm64": "0.16.1",
+        "@relate/relate-win32-x64": "0.16.1"
       }
     }
   }

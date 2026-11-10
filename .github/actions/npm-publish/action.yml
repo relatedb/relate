@@ -1,28 +1,42 @@
 name: npm publish
 description: >-
-  Download packed npm tarballs and publish them to the registry with
+  Publish npm tarballs from a local directory to the registry with
   provenance via trusted publishing (OIDC). Implements the publish half of
   ADR-0278: the calling job must grant `id-token: write` and carry no
-  NODE_AUTH_TOKEN. Shared by release.yml's npm-publish and npm-publish-main
-  jobs so the setup/download/count-check/publish body exists exactly once.
+  NODE_AUTH_TOKEN. Shared by publish-registries.yml's npm jobs so the
+  setup/count-check/publish body exists exactly once; the caller downloads
+  the tarballs (from the GitHub release's assets) into `dir` first.
 
 inputs:
-  pattern:
-    description: >-
-      download-artifact glob (minimatch) naming the artifact(s) that hold the
-      tarballs to publish; brace expansion is supported, e.g.
-      'npm-{platform-*,wasm}'
+  dir:
+    description: Directory holding the .tgz tarballs to publish
     required: true
   expected-count:
     description: >-
-      Exact number of .tgz tarballs the download must produce; the publish
-      fails closed on any other count
+      Exact number of .tgz tarballs the include/exclude filter must
+      select; the publish fails closed on any other count
     required: true
+  include:
+    description: >-
+      Extended-regex a tarball's basename must match to be selected;
+      empty selects everything
+    required: false
+    default: ''
+  exclude:
+    description: >-
+      Extended-regex a tarball's basename must NOT match to be selected;
+      empty excludes nothing
+    required: false
+    default: ''
+  dry-run:
+    description: Run npm publish with --dry-run (validate, publish nothing)
+    required: false
+    default: 'false'
 
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: '22'
 
@@ -33,25 +47,37 @@ runs:
       shell: bash
       run: npm install -g npm@11
 
-    - uses: actions/download-artifact@v4
-      with:
-        pattern: ${{ inputs.pattern }}
-        path: dist
-        merge-multiple: true
-
     - name: npm publish
       shell: bash
       env:
+        DIR: ${{ inputs.dir }}
         EXPECTED_COUNT: ${{ inputs.expected-count }}
-        PATTERN: ${{ inputs.pattern }}
+        INCLUDE: ${{ inputs.include }}
+        EXCLUDE: ${{ inputs.exclude }}
+        DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
         shopt -s nullglob
-        tarballs=(dist/*.tgz)
+        tarballs=()
+        for tgz in "$DIR"/*.tgz; do
+          base="$(basename "$tgz")"
+          if [ -n "$INCLUDE" ] && ! [[ "$base" =~ $INCLUDE ]]; then
+            continue
+          fi
+          if [ -n "$EXCLUDE" ] && [[ "$base" =~ $EXCLUDE ]]; then
+            continue
+          fi
+          tarballs+=("$tgz")
+        done
         if [ "${#tarballs[@]}" -ne "$EXPECTED_COUNT" ]; then
-          echo "expected $EXPECTED_COUNT npm tarball(s) matching '$PATTERN', found ${#tarballs[@]}" >&2
+          echo "expected $EXPECTED_COUNT npm tarball(s) in $DIR (include='$INCLUDE' exclude='$EXCLUDE'), found ${#tarballs[@]}" >&2
+          printf '%s\n' "${tarballs[@]}" >&2
           exit 1
         fi
+        args=(--provenance --access public)
+        if [ "$DRY_RUN" = "true" ]; then
+          args+=(--dry-run)
+        fi
         for tgz in "${tarballs[@]}"; do
-          npm publish "$tgz" --provenance --access public
+          npm publish "$tgz" "${args[@]}"
         done
