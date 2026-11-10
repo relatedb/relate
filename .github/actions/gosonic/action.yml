@@ -89,6 +89,14 @@ runs:
       shell: bash
       run: bash scripts/sonic-cache-sync.sh seed "${{ inputs.cache-target }}"
 
+    # Root stages run with every capability dropped, so they cannot create
+    # files in a directory the runner owns. The memory reports, the
+    # compare doc, and the verdict are written into target/, which is
+    # also what the upload reads. Mode 1777 lets the stage create them.
+    - name: Make target writable for the stage
+      shell: bash
+      run: mkdir -p target && chmod 1777 target
+
     - name: Run Sonic stage
       shell: bash
       env:

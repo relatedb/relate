@@ -136,6 +136,12 @@ jobs:
           CGO_ENABLED=0 go build -o "$HOME/.local/bin/gosonic" .
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # The gosonic action does this for the PR lanes. This job calls
+      # gosonic directly, and the root stage still cannot create files
+      # in a runner-owned target/.
+      - name: Make target writable for the stage
+        run: mkdir -p target && chmod 1777 target
+
       - name: Run the full memory-controls stage
         run: gosonic ci run memory-controls-full
 
@@ -198,6 +204,9 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           CGO_ENABLED=0 go build -o "$HOME/.local/bin/gosonic" .
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Make target writable for the stage
+        run: mkdir -p target && chmod 1777 target
 
       - name: Run the memory-shape stage
         run: gosonic ci run memory-shape

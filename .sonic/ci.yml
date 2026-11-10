@@ -560,12 +560,7 @@ stages:
     commands:
       - *baseline-docker-setup
       - make memory-controls-test MEMORY_CONTROLS_PROFILE=pr
-      - |
-        rc=0
-        make compare-memory-controls DOC_MEMORY_CONTROLS=/tmp/memory-controls.md VERDICT_MEMORY_CONTROLS=/tmp/memory-controls-verdict.json || rc=$?
-        docker cp "$(hostname):/tmp/memory-controls.md" target/memory-controls.md 2>/dev/null || true
-        docker cp "$(hostname):/tmp/memory-controls-verdict.json" target/memory-controls-verdict.json 2>/dev/null || true
-        exit $rc
+      - make compare-memory-controls
 
   memory-controls-full:
     runner: sonic-rust
@@ -581,12 +576,7 @@ stages:
     commands:
       - *baseline-docker-setup
       - make memory-controls-test MEMORY_CONTROLS_PROFILE=full
-      - |
-        rc=0
-        make compare-memory-controls DOC_MEMORY_CONTROLS=/tmp/memory-controls.md VERDICT_MEMORY_CONTROLS=/tmp/memory-controls-verdict.json || rc=$?
-        docker cp "$(hostname):/tmp/memory-controls.md" target/memory-controls.md 2>/dev/null || true
-        docker cp "$(hostname):/tmp/memory-controls-verdict.json" target/memory-controls-verdict.json 2>/dev/null || true
-        exit $rc
+      - make compare-memory-controls
 
   # Fixed graph shapes, then the min/max envelope. One run is the whole
   # matrix; the freeze repeats it.
@@ -604,12 +594,7 @@ stages:
     commands:
       - *baseline-docker-setup
       - make memory-shape-loadtest
-      - |
-        rc=0
-        make compare-memory-shape DOC_MEMORY_SHAPE=/tmp/memory-shape.md VERDICT_MEMORY_SHAPE=/tmp/memory-shape-verdict.json || rc=$?
-        docker cp "$(hostname):/tmp/memory-shape.md" target/memory-shape.md 2>/dev/null || true
-        docker cp "$(hostname):/tmp/memory-shape-verdict.json" target/memory-shape-verdict.json 2>/dev/null || true
-        exit $rc
+      - make compare-memory-shape
 
   # apk and make clean need root. The cargo caches are Docker volumes.
   # Run this on its own, after the other stages have finished:
