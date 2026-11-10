@@ -30,6 +30,7 @@ mod lolwut;
 mod matrix;
 mod rng;
 pub mod sprite;
+mod statement;
 mod text_arg;
 
 use std::io::{IsTerminal, Write};
@@ -119,6 +120,11 @@ pub struct Ctx<'a> {
     /// applies a width default of its own. Each egg still floors or clamps
     /// the number to what its layout needs.
     pub columns: usize,
+    /// The terminal's row count, resolved the same way: the CLI's one probe
+    /// applies the 24-row default itself (zero or unparsable `LINES` is
+    /// "cannot tell"), so no egg parses `LINES` or defaults a height. Each
+    /// egg still floors or clamps it.
+    pub rows: usize,
 }
 
 /// A handler: the arguments after the command name.
@@ -152,13 +158,18 @@ pub fn gate_open(human_repl: bool) -> bool {
     human_repl && std::io::stdout().is_terminal()
 }
 
+/// The words of a raw argument tail: what handlers receive as `args`.
+pub(crate) fn split_args(raw: &str) -> Vec<&str> {
+    raw.split_whitespace().collect()
+}
+
 /// The session hook: run `stmt` as an egg when its first word is registered
 /// (in `local`, the CLI's own first-party rows, or in [`EGGS`]) and the gate
 /// is open. `None` means "not an egg" — the caller's unknown command error
 /// stands, so a hidden command is indistinguishable from a missing one
 /// wherever it is unavailable. `Some(Err(_))` is a refusal for the caller to
 /// print. `columns` is the CLI's terminal-width probe, handed through as
-/// [`Ctx::columns`].
+/// [`Ctx::columns`]; `rows` likewise as [`Ctx::rows`].
 pub fn try_dispatch(
     local: &[Entry],
     stmt: &str,
@@ -166,6 +177,7 @@ pub fn try_dispatch(
     conn: &mut relate::Connection,
     human_repl: bool,
     columns: usize,
+    rows: usize,
 ) -> Option<Result<(), Refusal>> {
     let stmt = stmt.trim_start();
     let name = stmt.split_whitespace().next()?;
@@ -174,7 +186,7 @@ pub fn try_dispatch(
         return None;
     }
     let raw_args = &stmt[name.len()..];
-    let args: Vec<&str> = raw_args.split_whitespace().collect();
+    let args = split_args(raw_args);
     let mut stdout = std::io::stdout();
     let mut ctx = Ctx {
         db,
@@ -183,6 +195,7 @@ pub fn try_dispatch(
         caps: Caps::from_env(&|k| std::env::var(k).ok()),
         raw_args,
         columns,
+        rows,
     };
     Some(handler(&mut ctx, &args))
 }

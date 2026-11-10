@@ -32,15 +32,9 @@ pub(crate) fn try_dispatch(
     conn: &mut relate::Connection,
     human_repl: bool,
 ) -> Option<i32> {
+    let (columns, rows) = crate::width::egg_size();
     Some(
-        match relate_eggs::try_dispatch(
-            LOCAL,
-            stmt,
-            db,
-            conn,
-            human_repl,
-            crate::width::egg_columns(),
-        )? {
+        match relate_eggs::try_dispatch(LOCAL, stmt, db, conn, human_repl, columns, rows)? {
             Ok(()) => 0,
             Err(r) => {
                 crate::print_error(format_args!("Error: {r}"));

@@ -21,21 +21,11 @@ const FRAME_MS: u64 = 40;
 /// frames later, leaving a short hold at the end.
 const REVEAL_START: usize = 30;
 const REVEAL_SPAN: usize = 60;
-const DEFAULT_ROWS: usize = 24;
 const MAX_WIDTH: usize = 100;
 const MAX_HEIGHT: usize = 12;
 
 const KATAKANA: &str = "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ";
 const ASCII_GLYPHS: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:+=*<>";
-
-/// Terminal rows from `LINES`, defaulting where missing or unusable
-/// (shells often do not export it); the width is [`Ctx::columns`].
-fn term_rows(env: &dyn Fn(&str) -> Option<String>) -> usize {
-    env("LINES")
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_ROWS)
-}
 
 /// The animation block for a terminal of `cols` x `rows`: leaves room for
 /// the prompt, and at least a text row with rain above and below it.
@@ -201,8 +191,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
     if !ctx.caps.utf8 && !text.iter().all(char::is_ascii) {
         return Err(Refusal::NotUtf8);
     }
-    let env = |k: &str| std::env::var(k).ok();
-    let size = block_size(ctx.columns, term_rows(&env));
+    let size = block_size(ctx.columns, ctx.rows);
     // The same clipped text the animation decrypts, so the final line
     // never wraps.
     let text = &text[..text.len().min(size.0)];
@@ -255,18 +244,6 @@ mod tests {
             colour,
             glyphs: ASCII_GLYPHS.chars().collect(),
         }
-    }
-
-    #[test]
-    fn rows_come_from_lines_with_a_sane_default() {
-        let env = |k: &str| match k {
-            "LINES" => Some("junk".to_string()),
-            _ => None,
-        };
-        assert_eq!(term_rows(&env), DEFAULT_ROWS);
-        assert_eq!(term_rows(&|_| None), DEFAULT_ROWS);
-        assert_eq!(term_rows(&|_| Some("0".to_string())), DEFAULT_ROWS);
-        assert_eq!(term_rows(&|_| Some("30".to_string())), 30);
     }
 
     #[test]

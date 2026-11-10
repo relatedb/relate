@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use relate::{Connection, Node, QueryType, Relationship, Value};
 
 use crate::canvas::Canvas;
-use crate::explain_art::statement;
 use crate::layout::layout;
+use crate::statement::statement;
 use crate::{Ctx, Refusal};
 
 const MAX_NODES: usize = 50;
@@ -20,7 +20,6 @@ const MAX_ROWS: usize = 5_000;
 const MAX_DEPTH: usize = 8;
 const LABEL_CHARS: usize = 10;
 const MIN_COLS: usize = 40;
-const DEFAULT_ROWS: usize = 24;
 const USAGE: &str = "Usage: .graph [MATCH ... query]";
 /// Properties tried, in order, for a node's short label.
 const NAME_KEYS: [&str; 4] = ["name", "title", "id", "label"];
@@ -176,24 +175,6 @@ fn gather_query(conn: &mut Connection, query: &str) -> Result<GraphData, Refusal
     Ok(c.finish())
 }
 
-/// Terminal size: the width from the CLI's one probe ([`Ctx::columns`],
-/// already resolved), the rows from `LINES` (24 when missing or
-/// unusable). A probed width under [`MIN_COLS`] is refused.
-fn terminal_size(
-    columns: usize,
-    env: &dyn Fn(&str) -> Option<String>,
-) -> Result<(usize, usize), Refusal> {
-    if columns < MIN_COLS {
-        return Err(Refusal::Usage(
-            "terminal too narrow for .graph (need 40 columns)",
-        ));
-    }
-    let rows = env("LINES")
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(DEFAULT_ROWS);
-    Ok((columns, rows))
-}
-
 /// Draw `data` on a canvas sized to the terminal.
 fn draw(data: &GraphData, cols: usize, rows: usize) -> String {
     let mut canvas = Canvas::new(cols.min(100), rows.saturating_sub(4).clamp(8, 40));
@@ -233,7 +214,14 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[&str]) -> Result<(), Refusal> {
     if !ctx.caps.utf8 {
         return Err(Refusal::NotUtf8);
     }
-    let (cols, rows) = terminal_size(ctx.columns, &|k| std::env::var(k).ok())?;
+    // The width and rows are the CLI's one probe, already resolved; a
+    // width under `MIN_COLS` is refused.
+    if ctx.columns < MIN_COLS {
+        return Err(Refusal::Usage(
+            "terminal too narrow for .graph (need 40 columns)",
+        ));
+    }
+    let (cols, rows) = (ctx.columns, ctx.rows);
     // The raw tail, never the re-joined words: whitespace inside a string
     // literal is data.
     let query = statement(ctx.raw_args);
@@ -276,10 +264,12 @@ mod tests {
         }
     }
 
+    /// Drive `run` the way `try_dispatch` does: from the raw argument tail,
+    /// splitting the words with the same function.
     fn run_in(
         conn: &mut Connection,
         db: &relate::Database,
-        args: &[&str],
+        raw: &str,
     ) -> (Result<(), Refusal>, String) {
         let mut buf = Vec::new();
         let r = run(
@@ -288,10 +278,11 @@ mod tests {
                 conn,
                 out: &mut buf,
                 caps: caps(),
-                raw_args: &args.join(" "),
+                raw_args: raw,
                 columns: 80,
+                rows: 24,
             },
-            args,
+            &crate::split_args(raw),
         );
         (r, String::from_utf8(buf).expect("utf8"))
     }
@@ -301,7 +292,7 @@ mod tests {
         let (db, mut c) = conn();
         c.query("CREATE (:P {name:'Ada'})-[:KNOWS]->(:P {name:'Grace'})")
             .unwrap();
-        let (r, out) = run_in(&mut c, &db, &[]);
+        let (r, out) = run_in(&mut c, &db, "");
         r.unwrap();
         assert!(out.contains("Ada") && out.contains("Grace"), "{out}");
         assert!(
@@ -315,7 +306,7 @@ mod tests {
         let (db, mut c) = conn();
         c.query("UNWIND range(1,60) AS i CREATE (:N {id:i})")
             .unwrap();
-        let (r, out) = run_in(&mut c, &db, &[]);
+        let (r, out) = run_in(&mut c, &db, "");
         r.unwrap();
         assert!(out.contains("showing 50 of 60 nodes"), "{out}");
     }
@@ -325,11 +316,11 @@ mod tests {
         let (db, mut c) = conn();
         c.query("CREATE (:A {name:'x'})-[:R]->(:B {name:'y'}), (:C {name:'z'})")
             .unwrap();
-        let (r, out) = run_in(&mut c, &db, &["MATCH", "p=(:A)-[:R]->(:B)", "RETURN", "p"]);
+        let (r, out) = run_in(&mut c, &db, "MATCH p=(:A)-[:R]->(:B) RETURN p");
         r.unwrap();
         assert!(out.contains("showing 2 of 2 nodes, 1 of 1"), "{out}");
         assert!(!out.contains('z'));
-        let (r, _) = run_in(&mut c, &db, &["MATCH", "(n)", "DETACH", "DELETE", "n"]);
+        let (r, _) = run_in(&mut c, &db, "MATCH (n) DETACH DELETE n");
         assert!(r.is_err());
         let (_, rows) = (0, c.query("MATCH (n) RETURN count(n)").unwrap().rows);
         assert_eq!(rows[0][0], Value::Int(3));
@@ -338,12 +329,12 @@ mod tests {
     #[test]
     fn odd_arguments_and_empty_graphs_are_handled() {
         let (db, mut c) = conn();
-        let (r, out) = run_in(&mut c, &db, &[]);
+        let (r, out) = run_in(&mut c, &db, "");
         r.unwrap();
         assert!(out.contains("(no nodes to draw)") && out.contains("showing 0 of 0"));
-        let (r, _) = run_in(&mut c, &db, &["CREATE", "(n)"]);
+        let (r, _) = run_in(&mut c, &db, "CREATE (n)");
         assert_eq!(r, Err(Refusal::Usage(USAGE)));
-        let (r, _) = run_in(&mut c, &db, &["MATCH", "nonsense"]);
+        let (r, _) = run_in(&mut c, &db, "MATCH nonsense");
         assert!(matches!(r, Err(Refusal::Io(_))));
     }
 
@@ -352,54 +343,36 @@ mod tests {
         let (db, mut c) = conn();
         c.query("CREATE (:T {name:'\\u001b[31mevil-and-very-long-name'})")
             .unwrap();
-        let (r, out) = run_in(&mut c, &db, &[]);
+        let (r, out) = run_in(&mut c, &db, "");
         r.unwrap();
         assert!(!out.contains('\x1b'), "{out:?}");
         assert!(!out.contains("very-long-name"));
     }
 
     #[test]
-    fn terminal_size_refuses_unusable_widths() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| {
-                pairs
-                    .iter()
-                    .find(|(n, _)| *n == k)
-                    .map(|(_, v)| v.to_string())
-            }
+    fn a_narrow_terminal_is_refused() {
+        let (db, mut c) = conn();
+        let mut buf = Vec::new();
+        let mut ctx = Ctx {
+            db: &db,
+            conn: &mut c,
+            out: &mut buf,
+            caps: caps(),
+            raw_args: "",
+            columns: MIN_COLS - 1,
+            rows: 24,
         };
-        assert_eq!(terminal_size(80, &env(&[])).unwrap(), (80, 24));
-        assert_eq!(
-            terminal_size(120, &env(&[("LINES", "50")])).unwrap(),
-            (120, 50)
-        );
-        assert_eq!(
-            terminal_size(40, &env(&[("LINES", "junk")])).unwrap(),
-            (40, 24)
-        );
-        assert!(terminal_size(20, &env(&[])).is_err());
+        assert!(matches!(run(&mut ctx, &[]), Err(Refusal::Usage(_))));
+        ctx.columns = MIN_COLS;
+        assert_eq!(run(&mut ctx, &[]), Ok(()));
     }
 
     #[test]
     fn the_raw_tail_keeps_whitespace_inside_literals() {
         let (db, mut c) = conn();
         c.query("CREATE (:T {name:'a   b'})").unwrap();
-        let raw = "MATCH (n:T) WHERE n.name = 'a   b' RETURN n;";
-        let words: Vec<&str> = raw.split_whitespace().collect();
-        let mut buf = Vec::new();
-        let r = run(
-            &mut Ctx {
-                db: &db,
-                conn: &mut c,
-                out: &mut buf,
-                caps: caps(),
-                raw_args: raw,
-                columns: 80,
-            },
-            &words,
-        );
+        let (r, out) = run_in(&mut c, &db, "MATCH (n:T) WHERE n.name = 'a   b' RETURN n;");
         r.unwrap();
-        let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("showing 1 of 1 nodes"), "{out}");
     }
 
@@ -418,6 +391,7 @@ mod tests {
                 },
                 raw_args: "",
                 columns: 80,
+                rows: 24,
             },
             &[],
         );

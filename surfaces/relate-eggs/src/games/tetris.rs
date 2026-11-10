@@ -287,13 +287,7 @@ impl Tetris {
     fn preview(&self, row: i32) -> String {
         let p = &PIECES[self.well.next];
         (0..4)
-            .map(|x| {
-                if p.cells.contains(&(x, row)) {
-                    self.style.cell(p.rgb, "[]")
-                } else {
-                    "  ".to_string()
-                }
-            })
+            .map(|x| self.cell(p.cells.contains(&(x, row)).then_some(self.well.next)))
             .collect()
     }
 }
@@ -604,6 +598,24 @@ mod tests {
         assert!(lines
             .iter()
             .all(|l| l.matches("\x1b[0m").count() >= l.matches("\x1b[48;2;").count()));
+    }
+
+    #[test]
+    fn preview_cells_match_the_well_cell_text() {
+        let mut g = game();
+        g.style = Style { color: true };
+        let piece = &PIECES[g.well.next];
+        let filled = g.cell(Some(g.well.next));
+        let expected: String = (0..4)
+            .map(|x| {
+                if piece.cells.contains(&(x, 0)) {
+                    filled.clone()
+                } else {
+                    "  ".to_string()
+                }
+            })
+            .collect();
+        assert_eq!(g.preview(0), expected);
     }
 
     #[test]

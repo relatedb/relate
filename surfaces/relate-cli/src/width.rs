@@ -13,7 +13,12 @@ const MIN_EFFECTIVE_WIDTH: usize = 20;
 /// can tell: the classic 80-column terminal. The one such default; the
 /// human table is unaffected (a pipe keeps the natural width).
 #[cfg(feature = "eggs")]
-pub(crate) const DEFAULT_COLUMNS: usize = 80;
+const DEFAULT_COLUMNS: usize = 80;
+
+/// The row count the eggs lay out to when neither the terminal nor `LINES`
+/// can tell: the classic 24-row terminal. The one such default.
+#[cfg(feature = "eggs")]
+const DEFAULT_ROWS: usize = 24;
 
 /// Parse a `--width` value: a terminal width in columns. Below
 /// [`MIN_EFFECTIVE_WIDTH`] — like `0` — is rejected loudly with the
@@ -46,35 +51,54 @@ fn terminal_width() -> Option<usize> {
     terminal_columns().filter(|w| *w >= MIN_EFFECTIVE_WIDTH)
 }
 
-/// The width an egg lays out to: [`terminal_columns`], or
-/// [`DEFAULT_COLUMNS`] when neither the terminal nor `COLUMNS` can tell.
-/// The one home of that default — the eggs receive this resolved number and
-/// apply no default of their own (each still applies its own floor or
-/// clamp to a known width).
-#[cfg(feature = "eggs")]
-pub(crate) fn egg_columns() -> usize {
-    resolve_columns(terminal_columns())
+/// The terminal's size as probed: each axis `None` when neither the
+/// terminal nor its variable can tell. The one probe in the product — the
+/// human table reads [`terminal_columns`] from it, the hidden eggs resolve
+/// the whole of it through [`egg_size`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Size {
+    columns: Option<usize>,
+    #[cfg_attr(not(feature = "eggs"), allow(dead_code))]
+    rows: Option<usize>,
 }
 
-/// The policy half of [`egg_columns`], pure: a probed width stands, an
-/// unknown one (`None`) takes [`DEFAULT_COLUMNS`]. Zero never reaches here —
-/// the probe maps it to `None` ([`nonzero`]).
-#[cfg(feature = "eggs")]
-fn resolve_columns(probed: Option<usize>) -> usize {
-    probed.unwrap_or(DEFAULT_COLUMNS)
-}
-
-/// The terminal's raw column count, asked from the terminal itself: a
+/// The terminal's raw size, asked from the terminal itself: one
 /// `TIOCGWINSZ` probe on stdout. That is the one source that works by
-/// default — `COLUMNS` is a shell variable that a child process does not
+/// default — `COLUMNS`/`LINES` are shell variables a child process does not
 /// inherit — and it doubles as the TTY check (the probe fails on a pipe,
-/// which is exactly when the natural width should win). `COLUMNS` remains
-/// the fallback for a caller that exports it over a redirected stdout. The
-/// one probe in the product ([`egg_columns`] resolves it for the hidden
-/// eggs). A zero answer — `TIOCGWINSZ` reporting 0 columns, `COLUMNS=0` — is
-/// "cannot tell" (`None`), one policy for both sources.
-#[cfg(unix)]
+/// which is exactly when the natural width should win). `COLUMNS`/`LINES`
+/// remain the per-axis fallback for a caller that exports them over a
+/// redirected stdout. One zero policy for every source and both axes: a
+/// zero or unparsable answer is "cannot tell" (`None`), never a size.
+fn probe() -> Size {
+    size_from(ioctl_size(), &|k| std::env::var(k).ok())
+}
+
+/// The policy half of [`probe`], pure: per axis, the terminal's answer
+/// ([`nonzero`]) wins, then the exported variable (trimmed, [`nonzero`]).
+fn size_from(ws: Option<(usize, usize)>, env: &dyn Fn(&str) -> Option<String>) -> Size {
+    let axis = |from_tty: Option<usize>, var: &str| {
+        from_tty.and_then(nonzero).or_else(|| {
+            env(var)
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .and_then(nonzero)
+        })
+    };
+    Size {
+        columns: axis(ws.map(|w| w.0), "COLUMNS"),
+        rows: axis(ws.map(|w| w.1), "LINES"),
+    }
+}
+
+/// The terminal's raw column count ([`probe`]).
 pub(crate) fn terminal_columns() -> Option<usize> {
+    probe().columns
+}
+
+/// A `TIOCGWINSZ` probe on stdout as `(columns, rows)`; `None` when stdout
+/// is not a terminal.
+#[cfg(unix)]
+fn ioctl_size() -> Option<(usize, usize)> {
     // SAFETY: a plain TIOCGWINSZ probe on the stdout descriptor with a
     // valid out-parameter; the kernel fills it or returns an error.
     let mut ws = libc::winsize {
@@ -84,26 +108,32 @@ pub(crate) fn terminal_columns() -> Option<usize> {
         ws_ypixel: 0,
     };
     let asked = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
-    asked
-        .then(|| nonzero(usize::from(ws.ws_col)))
-        .flatten()
-        .or_else(columns_env)
+    asked.then(|| (usize::from(ws.ws_col), usize::from(ws.ws_row)))
 }
 
-/// The non-unix fallback: only an exported `COLUMNS` answers.
+/// The non-unix twin: only the exported variables answer.
 #[cfg(not(unix))]
-pub(crate) fn terminal_columns() -> Option<usize> {
-    columns_env()
+fn ioctl_size() -> Option<(usize, usize)> {
+    None
 }
 
-/// The exported `COLUMNS` fallback, unfloored but never zero — one spelling
-/// for both cfg variants.
-fn columns_env() -> Option<usize> {
-    std::env::var("COLUMNS")
-        .ok()?
-        .parse::<usize>()
-        .ok()
-        .and_then(nonzero)
+/// The size an egg lays out to, `(columns, rows)`: the [`probe`], each
+/// unknown axis taking its one default ([`DEFAULT_COLUMNS`],
+/// [`DEFAULT_ROWS`]). The one home of those defaults — the eggs receive
+/// these resolved numbers and apply no default of their own (each still
+/// applies its own floor or clamp).
+#[cfg(feature = "eggs")]
+pub(crate) fn egg_size() -> (usize, usize) {
+    resolve_size(probe())
+}
+
+/// The policy half of [`egg_size`], pure.
+#[cfg(feature = "eggs")]
+fn resolve_size(probed: Size) -> (usize, usize) {
+    (
+        probed.columns.unwrap_or(DEFAULT_COLUMNS),
+        probed.rows.unwrap_or(DEFAULT_ROWS),
+    )
 }
 
 /// The one zero policy: a zero column count is "cannot tell".
@@ -114,6 +144,7 @@ fn nonzero(n: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::env_of;
 
     #[test]
     fn parse_rejects_sub_floor_widths_loudly() {
@@ -138,10 +169,38 @@ mod tests {
         assert_eq!(nonzero(132), Some(132));
     }
 
+    #[test]
+    fn the_terminal_wins_then_the_trimmed_variable_and_zero_is_unknown() {
+        let both = size_from(
+            Some((132, 50)),
+            &env_of(&[("COLUMNS", "10"), ("LINES", "9")]),
+        );
+        assert_eq!((both.columns, both.rows), (Some(132), Some(50)));
+        let vars = size_from(None, &env_of(&[("COLUMNS", " 100 "), ("LINES", "\t30\n")]));
+        assert_eq!((vars.columns, vars.rows), (Some(100), Some(30)));
+        // A zero terminal axis falls to the variable; zero or junk variables
+        // are unknown.
+        let zero = size_from(
+            Some((0, 0)),
+            &env_of(&[("COLUMNS", "0"), ("LINES", "junk")]),
+        );
+        assert_eq!((zero.columns, zero.rows), (None, None));
+        let mixed = size_from(Some((0, 40)), &env_of(&[("COLUMNS", "90")]));
+        assert_eq!((mixed.columns, mixed.rows), (Some(90), Some(40)));
+    }
+
     #[cfg(feature = "eggs")]
     #[test]
-    fn eggs_take_the_probe_or_the_default() {
-        assert_eq!(resolve_columns(Some(132)), 132);
-        assert_eq!(resolve_columns(None), DEFAULT_COLUMNS);
+    fn eggs_take_the_probe_or_the_defaults() {
+        let known = Size {
+            columns: Some(132),
+            rows: Some(50),
+        };
+        assert_eq!(resolve_size(known), (132, 50));
+        let unknown = Size {
+            columns: None,
+            rows: None,
+        };
+        assert_eq!(resolve_size(unknown), (DEFAULT_COLUMNS, DEFAULT_ROWS));
     }
 }

@@ -11,6 +11,7 @@
 //! (shared work counted in both arms) are scaled down to fit under it.
 
 use crate::sprite::{bg, fg, Rgb, TONES};
+use crate::statement::statement;
 use crate::{Caps, Ctx, Refusal};
 
 const USAGE: &str = "Usage: .explain-art <read-only query>";
@@ -305,12 +306,6 @@ fn chart_width(columns: usize) -> usize {
     columns.clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
-/// The statement in the raw argument tail: trimmed of surrounding blanks
-/// and `;`, never re-joined, so whitespace inside a string literal survives.
-pub(crate) fn statement(raw: &str) -> &str {
-    raw.trim().trim_end_matches(';').trim()
-}
-
 /// `.explain-art <query>`.
 pub(crate) fn run(ctx: &mut Ctx<'_>, _args: &[&str]) -> Result<(), Refusal> {
     let stmt = statement(ctx.raw_args);
@@ -504,6 +499,7 @@ mod tests {
                 caps: PLAIN,
                 raw_args: raw,
                 columns: 60,
+                rows: 24,
             },
             &[],
         );
