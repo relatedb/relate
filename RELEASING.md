@@ -91,8 +91,8 @@ from this repository; the old repository’s tags never came across.
    ([ADR-0358](docs/adr/0358-upgrade-download-route.md)).
 9. **Server image** — the `build-image` job builds the `relate-bolt`
    image from the release commit (`make docker`) and runs the docker smoke;
-   it has no AWS access. The `publish-image` job then pushes `X.Y.Z` and
-   points `latest` at it in the DevRel production ECR repository
+   it has no AWS access. The `publish-image` job then pushes it as `X.Y.Z`
+   (no `latest` tag) to the DevRel production ECR repository
    (`715633473519.dkr.ecr.us-east-1.amazonaws.com/production-relatedb-repository`),
    where version tags are immutable. It authenticates through GitHub OIDC to
    an IAM role that trusts only `release.yml` running from `main`; the role

@@ -871,8 +871,8 @@ jobs:
           path: server-image.tar
           retention-days: 7
 
-  # Version tags are immutable in the repository (only `latest` moves), so a
-  # re-run after the version tag landed skips that push and only retags.
+  # Version tags are immutable in the repository, so a re-run after the tag
+  # landed skips the push and only checks that ECR holds this run's image.
   publish-image:
     name: Publish server image to ECR
     needs: [version, build-image]
@@ -906,8 +906,10 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
         id: ecr
 
-      # `latest` is set from the version tag's manifest, not pushed
-      # separately, so both tags always name the same digest.
+      # The image is identified by its config digest: it survives save/load
+      # and push unchanged, while the manifest digest and `docker inspect`'s
+      # Id differ by image store. `Config` in the saved manifest.json is
+      # `blobs/sha256/<hex>` or `<hex>.json` depending on the Docker version.
       - name: Push to ECR
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -915,23 +917,23 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          lookup() {
+          want="sha256:$(tar -xOf server-image.tar manifest.json | jq -r '.[0].Config' | sed -E 's|^.*/||; s|\.json$||')"
+          ecr_config_digest() {
             aws ecr batch-get-image --repository-name "$ECR_REPOSITORY" \
-              --image-ids imageTag="$VERSION" --output json
+              --image-ids imageTag="$VERSION" --output json \
+              | jq -r '.images[0].imageManifest // empty | fromjson | .config.digest'
           }
-          if [ "$(lookup | jq '.images | length')" = 0 ]; then
+          have="$(ecr_config_digest)"
+          if [ -z "$have" ]; then
             docker tag "relate-bolt:$VERSION" "$REGISTRY/$ECR_REPOSITORY:$VERSION"
             docker push "$REGISTRY/$ECR_REPOSITORY:$VERSION"
-          else
-            echo "::notice::$VERSION is already in ECR; leaving it as is"
+            have="$(ecr_config_digest)"
           fi
-          image="$(lookup | jq '.images[0]')"
-          if ! out="$(aws ecr put-image --repository-name "$ECR_REPOSITORY" --image-tag latest \
-              --image-manifest "$(jq -r .imageManifest <<<"$image")" \
-              --image-manifest-media-type "$(jq -r .imageManifestMediaType <<<"$image")" 2>&1)"; then
-            grep -q ImageAlreadyExistsException <<<"$out" || { echo "$out"; exit 1; }
+          if [ "$have" != "$want" ]; then
+            echo "::error::$VERSION in ECR is config $have, not this run's image ($want)"
+            exit 1
           fi
-          echo "latest -> $VERSION ($(jq -r .imageId.imageDigest <<<"$image"))"
+          echo "$VERSION in ECR is this run's image (config $want)"
 
   create-release:
     name: Create Release
