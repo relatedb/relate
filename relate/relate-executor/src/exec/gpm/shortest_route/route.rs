@@ -16,6 +16,7 @@ use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
 use crate::exec::pushdown::{conjunct_ready, expr_ready, Residual};
 use crate::pattern_walk::{
     bind_path_names, bind_rel_stub_list, bound_node, memoized_path_rung, node_candidates,
+    node_candidates_capped, Capped,
 };
 use crate::row::{Row, RowRung};
 use crate::shortest::layered::Dag;
@@ -28,6 +29,10 @@ use super::sink::RouteSink;
 /// bidirectional searches would out-count the fan's one ball per start,
 /// and the fan covers the shape.
 const SEEK_PAIR_LIMIT: usize = 16;
+
+/// `Probe::Over` is only ever produced for a seekable side, so the full
+/// seek answers `Some`.
+const OVER_IS_SEEKABLE: &str = "an over-bound side was probed as seekable";
 
 /// How the endpoints of one input row resolve, once per row.
 enum Anchor {
@@ -59,6 +64,17 @@ impl Side {
             Side::Many(ids) => ids.len(),
         }
     }
+}
+
+/// One endpoint's bounded resolution (see [`Route::probe`]).
+enum Probe {
+    /// No property map to seek: scan territory the fan answers itself.
+    Scan,
+    /// A bound node, or a seeked list of at most [`SEEK_PAIR_LIMIT`].
+    Listed(Side),
+    /// A seek matching more than [`SEEK_PAIR_LIMIT`] nodes; the list was
+    /// never built.
+    Over,
 }
 
 /// The endpoint a fan search starts from.
@@ -245,30 +261,38 @@ impl<'a> Route<'a> {
         {
             return Ok(Anchor::Loop);
         }
-        // Each endpoint resolves once: a row-bound node is a one-element
-        // side, a property map is the seeked list, anything else is scan
-        // territory for the fan.
-        let starts = self.resolve(start)?;
-        let ends = self.resolve(end)?;
-        Ok(match (starts, ends) {
-            (Some(starts), Some(ends)) => {
-                if starts.len().saturating_mul(ends.len()) <= SEEK_PAIR_LIMIT {
-                    Anchor::Pair { starts, ends }
-                } else if ends.len() < starts.len() {
-                    // Past the product bound, fan from the shorter side:
-                    // fewer full-depth balls.
-                    Anchor::Fan {
-                        origins: ends,
-                        way: Way::Backward,
-                    }
-                } else {
-                    Anchor::Fan {
-                        origins: starts,
-                        way: Way::Forward,
-                    }
-                }
-            }
-            (Some(starts), None) => Anchor::Fan {
+        // Each endpoint resolves once, bounded: a row-bound node is a
+        // one-element side, a property map is a seeked list of at most
+        // `SEEK_PAIR_LIMIT`, and a bigger match is `Over` — its list is
+        // built only where that side drives a fan (below).
+        Ok(match (self.probe(start)?, self.probe(end)?) {
+            (Probe::Listed(starts), Probe::Listed(ends)) => Self::listed(starts, ends),
+            // One side over the bound and the other a short list: the
+            // product is empty, or past the bound with the short side the
+            // shorter — the fan runs from it, the over side stays unbuilt.
+            (Probe::Listed(starts), Probe::Over) if starts.len() == 0 => Anchor::Pair {
+                starts,
+                ends: Side::Many(Vec::new()),
+            },
+            (Probe::Listed(starts), Probe::Over) => Anchor::Fan {
+                origins: starts,
+                way: Way::Forward,
+            },
+            (Probe::Over, Probe::Listed(ends)) if ends.len() == 0 => Anchor::Pair {
+                starts: Side::Many(Vec::new()),
+                ends,
+            },
+            (Probe::Over, Probe::Listed(ends)) => Anchor::Fan {
+                origins: ends,
+                way: Way::Backward,
+            },
+            // Both past the bound: the fan runs from the shorter side,
+            // which needs both lists in full.
+            (Probe::Over, Probe::Over) => Self::listed(
+                Side::Many(self.seek_candidates(start)?.expect(OVER_IS_SEEKABLE)),
+                Side::Many(self.seek_candidates(end)?.expect(OVER_IS_SEEKABLE)),
+            ),
+            (Probe::Listed(starts), Probe::Scan) => Anchor::Fan {
                 origins: starts,
                 way: Way::Forward,
             },
@@ -277,25 +301,54 @@ impl<'a> Route<'a> {
             // scan's one ball per start (a non-selective map makes the
             // backward fan pay |ends| balls). Past the bound the start
             // candidates fan forward.
-            (None, Some(ends)) if ends.len() <= SEEK_PAIR_LIMIT => Anchor::Fan {
+            (Probe::Scan, Probe::Listed(ends)) => Anchor::Fan {
                 origins: ends,
                 way: Way::Backward,
             },
-            (None, Some(_)) | (None, None) => Anchor::Fan {
+            (Probe::Over, Probe::Scan)
+            | (Probe::Scan, Probe::Over)
+            | (Probe::Scan, Probe::Scan) => Anchor::Fan {
                 origins: Side::Many(self.start_candidates()?),
                 way: Way::Forward,
             },
         })
     }
 
-    /// One endpoint's resolution, once: a row-bound node is `Side::One`;
-    /// a row-resolvable property map is the seeked `Side::Many`; anything
-    /// else is `None` — scan territory the fan answers itself.
-    fn resolve(&self, np: &NodePattern) -> Result<Option<Side>> {
-        match self.bound(np) {
-            Some(id) => Ok(Some(Side::One(id))),
-            None => Ok(self.seek_candidates(np)?.map(Side::Many)),
+    /// Both endpoints as real sides: the pair product while it is within
+    /// [`SEEK_PAIR_LIMIT`], else a fan from the shorter side (fewer
+    /// full-depth balls).
+    fn listed(starts: Side, ends: Side) -> Anchor {
+        if starts.len().saturating_mul(ends.len()) <= SEEK_PAIR_LIMIT {
+            Anchor::Pair { starts, ends }
+        } else if ends.len() < starts.len() {
+            Anchor::Fan {
+                origins: ends,
+                way: Way::Backward,
+            }
+        } else {
+            Anchor::Fan {
+                origins: starts,
+                way: Way::Forward,
+            }
         }
+    }
+
+    /// One endpoint's bounded resolution, once: a row-bound node is
+    /// listed; a row-resolvable property map is seeked through the capped
+    /// funnel — the scan stops at the first match past
+    /// [`SEEK_PAIR_LIMIT`], so a non-selective map never materializes
+    /// every match to learn the pair product is over the bound.
+    fn probe(&self, np: &NodePattern) -> Result<Probe> {
+        if let Some(id) = self.bound(np) {
+            return Ok(Probe::Listed(Side::One(id)));
+        }
+        if !self.seekable(np) {
+            return Ok(Probe::Scan);
+        }
+        Ok(match self.capped_candidates(np)? {
+            Capped::Within(ids) => Probe::Listed(Side::Many(ids)),
+            Capped::Over => Probe::Over,
+        })
     }
 
     /// One side's candidates through the one per-candidate loop.
@@ -306,22 +359,25 @@ impl<'a> Route<'a> {
         }
     }
 
-    /// The pattern's candidates when it is property-seekable: the map is
-    /// present and row-resolvable. `None` for a bare label or unbound
-    /// variable — scan territory, answered by the fan's own seek, not
-    /// materialized here. Uncapped by design: `anchor` applies
-    /// [`SEEK_PAIR_LIMIT`] where a product is formed, and a one-sided
-    /// answer fans its own list when that side drives.
-    fn seek_candidates(&self, np: &NodePattern) -> Result<Option<Vec<NodeId>>> {
-        let Some(props) = &np.properties else {
-            return Ok(None);
-        };
+    /// Whether `np` is property-seekable: the map is present and
+    /// row-resolvable. A bare label or unbound variable is scan
+    /// territory, answered by the fan's own seek.
+    fn seekable(&self, np: &NodePattern) -> bool {
         // The map must resolve from the input row: a variable the walk
         // binds later (the start's own `a` in `(a)-[*]->(b {id: a.id})`)
         // is fan territory — the fan resolves the start first, and the
         // partition's admission then reads the map with it bound. The
         // canonical readiness kernel (pushdown) answers it.
-        if !expr_ready(props, self.row) {
+        np.properties
+            .as_ref()
+            .is_some_and(|props| expr_ready(props, self.row))
+    }
+
+    /// The pattern's full candidate list when it is property-seekable,
+    /// `None` otherwise. Uncapped: only a side that drives a fan needs
+    /// its whole list ([`Route::anchor`] probes bounded first).
+    fn seek_candidates(&self, np: &NodePattern) -> Result<Option<Vec<NodeId>>> {
+        if !self.seekable(np) {
             return Ok(None);
         }
         // The funnel's contract is ascending and deduplicated
@@ -364,6 +420,27 @@ impl<'a> Route<'a> {
             params,
             cypher_version,
             residual.conjuncts,
+        )
+    }
+
+    /// [`Route::candidates`] stopped at the first match past
+    /// [`SEEK_PAIR_LIMIT`]: the pair bound's probe.
+    fn capped_candidates(&self, np: &NodePattern) -> Result<Capped> {
+        let ExecCtx {
+            graph,
+            params,
+            cypher_version,
+            ..
+        } = self.ctx;
+        let residual = Residual::empty();
+        node_candidates_capped(
+            graph,
+            np,
+            self.row,
+            params,
+            cypher_version,
+            residual.conjuncts,
+            SEEK_PAIR_LIMIT,
         )
     }
 

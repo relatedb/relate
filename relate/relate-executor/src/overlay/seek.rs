@@ -20,12 +20,28 @@ impl<'a> ExecGraph<'a> {
         labels: &[String],
         props: &BTreeMap<String, Value>,
     ) -> Option<Vec<NodeId>> {
+        self.lookup_nodes_upto(labels, props, None)
+    }
+
+    /// [`ExecGraph::lookup_nodes`] for a caller that only needs to know
+    /// whether more than `cap` nodes match ([`Graph::lookup_nodes_upto_at`]
+    /// carries the contract: at most `cap` ids is the complete answer, a
+    /// longer one only its length). A view with write scratch answers in
+    /// full: a truncated base subset could lose members to the scratch's
+    /// deletions and read as complete.
+    pub fn lookup_nodes_upto(
+        &self,
+        labels: &[String],
+        props: &BTreeMap<String, Value>,
+        cap: Option<usize>,
+    ) -> Option<Vec<NodeId>> {
+        let base_cap = if self.scratch.is_some() { None } else { cap };
         // The base's own answer carries the both-empty policy (its only
         // `None` is the `Unindexed` arm), so the overlay propagates it
         // instead of re-checking the fact beside a handled form of it.
-        let mut ids = self
-            .base
-            .lookup_nodes_at(labels, props, self.snapshot_ts())?;
+        let mut ids =
+            self.base
+                .lookup_nodes_upto_at(labels, props, self.snapshot_ts(), base_cap)?;
         // The base answer is already visibility-filtered at the snapshot;
         // only the scratch's deletions can hide more of it, so a
         // read-only view (no scratch) retains nothing — every candidate

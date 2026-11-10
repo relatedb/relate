@@ -55,7 +55,7 @@ struct Shape {
 }
 
 #[rustfmt::skip]
-const SHAPES: [Shape; 6] = [
+const SHAPES: [Shape; 10] = [
     // 1 x 1: the plain pair.
     Shape { arm: "pair 1x1", pair: true, start: "(a {id: '0'})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // 4 x 1: several starts, one end, product within the bound.
@@ -68,6 +68,16 @@ const SHAPES: [Shape; 6] = [
     Shape { arm: "fan 20x1", pair: false, start: "(a {g: 0})", end: "(b {id: '5'})", n: 40, groups: 2, rels: 44 },
     // bare start, end list past the bound: the start scan fans forward.
     Shape { arm: "scan x 20", pair: false, start: "(a)", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    // 1 x 20: the end list is past the bound and never built — the fan
+    // from the one start.
+    Shape { arm: "fan 1x20", pair: false, start: "(a {id: '0'})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    // 20 x 20: both lists past the bound — each built in full for the
+    // shorter-side choice.
+    Shape { arm: "fan 20x20", pair: false, start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    // start list past the bound, bare end: the start list fans forward.
+    Shape { arm: "20 x scan", pair: false, start: "(a {g: 0})", end: "(b)", n: 40, groups: 2, rels: 44 },
+    // bare start, one end: the end fans backward.
+    Shape { arm: "scan x 1", pair: false, start: "(a)", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
 ];
 
 /// The `MATCH` of `shape` under selector `sel`, direction `dir` and a bound
@@ -199,6 +209,66 @@ fn shortest_paths_see_the_write_views_uncommitted_graph() {
         "the route must take the hidden-rel form"
     );
     assert_eq!(sorted(rows), Vec::<Vec<Value>>::new());
+}
+
+/// The pair bound is probed, not enumerated: a seek past the bound is
+/// answered with the same rows, and the funnel stops at the first match
+/// past it — the node reads stay at the bound however many nodes match.
+/// An empty side beside an over-bound side is an empty product.
+#[test]
+fn an_over_bound_seek_is_not_materialized() {
+    let g = Graph::default();
+    exec_autocommit(
+        &g,
+        "UNWIND range(0, 199) AS i CREATE (:N {id: toString(i), g: i % 2})",
+    )
+    .unwrap();
+    exec_autocommit(
+        &g,
+        "MATCH (a:N {id: '0'}), (b:N) WHERE b.g = 1 CREATE (a)-[:R]->(b)",
+    )
+    .unwrap();
+    let q = "MATCH p = ANY SHORTEST (a {id: '0'})-[:R*..2]->(b {g: 1}) RETURN b.id, length(p)";
+    let _ = crate::ctx::take_node_reads();
+    let (rows, counts) = run(&g, q);
+    let reads = crate::ctx::take_node_reads();
+    assert!(counts.route_runs > 0, "the route must take {q}");
+    assert_eq!(rows.len(), 100);
+    assert_eq!(sorted(rows), gpm(&g, q));
+    // One read for the start, at most the bound plus one for the probe;
+    // the 100-node end list is never listed.
+    assert!(reads < 100, "the end seek was materialized: {reads} reads");
+
+    // An empty start beside an over-bound end: no pair, no row.
+    let none = "MATCH p = ANY SHORTEST (a {id: 'nope'})-[:R*..2]->(b {g: 1}) RETURN length(p)";
+    let (rows, counts) = run(&g, none);
+    assert!(counts.route_runs > 0, "the route must take {none}");
+    assert!(rows.is_empty());
+    let none = "MATCH p = ANY SHORTEST (a {g: 1})-[:R*..2]->(b {id: 'nope'}) RETURN length(p)";
+    assert!(run(&g, none).0.is_empty());
+}
+
+/// A write view's scratch deletions can hide base matches, so a probe
+/// that stops at the bound must not trust a truncated base answer: 20
+/// committed ends, 10 deleted earlier in the statement, leaves 10 — a
+/// within-bound list the pair arm answers in full.
+#[test]
+fn a_capped_seek_over_a_write_view_counts_what_survives_the_scratch() {
+    let g = Graph::default();
+    exec_autocommit(
+        &g,
+        "CREATE (s:N {id: 's'}) \
+         WITH s UNWIND range(0, 19) AS i \
+         CREATE (s)-[:R]->(:N {id: toString(i), g: 0, k: i})",
+    )
+    .unwrap();
+    let q = "MATCH (n:N {g: 0}) WHERE n.k < 10 DETACH DELETE n \
+             WITH count(*) AS gone \
+             MATCH p = ANY SHORTEST (a {id: 's'})-[:R*..2]->(b {g: 0}) \
+             RETURN b.id, length(p)";
+    let (rows, counts) = counting(|| exec_write_uncommitted(&g, q).rows);
+    assert!(counts.route_runs > 0, "the route must take the write form");
+    assert_eq!(rows.len(), 10, "{rows:?}");
 }
 
 /// The pair arm is identified, not just answered: within the bound the

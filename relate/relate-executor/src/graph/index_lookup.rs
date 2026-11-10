@@ -51,6 +51,23 @@ impl Graph {
         props: &BTreeMap<String, Value>,
         ts: u64,
     ) -> Option<Vec<NodeId>> {
+        self.lookup_nodes_upto_at(labels, props, ts, None)
+    }
+
+    /// [`Graph::lookup_nodes_at`] for a caller that only needs to know
+    /// whether more than `cap` nodes match: a residual scan stops once it
+    /// has `cap + 1` matches. An answer of at most `cap` ids is complete,
+    /// ascending and deduplicated; a longer one is an arbitrary
+    /// `cap + 1`-id subset of the matches, meaningful only by its length.
+    /// Index-served arms answer in full (their postings already exist);
+    /// `None` is the both-empty `Unindexed` arm, as for the uncapped form.
+    pub fn lookup_nodes_upto_at(
+        &self,
+        labels: &[String],
+        props: &BTreeMap<String, Value>,
+        ts: u64,
+        cap: Option<usize>,
+    ) -> Option<Vec<NodeId>> {
         // The label scan's hot shape — one label, no property equality —
         // is the one canonical label scan ([`node_ids_with_label_at`]):
         // the bucket's ids copied once under its guard, each probed for
@@ -60,7 +77,7 @@ impl Graph {
         if labels.len() == 1 && props.is_empty() {
             return Some(self.node_ids_with_label_at(&labels[0], ts));
         }
-        match self.node_candidates(labels, props, ts) {
+        match self.node_candidates(labels, props, ts, cap) {
             NodeCandidates::Unindexed => None,
             NodeCandidates::Final(ids) => Some(ids),
             NodeCandidates::Indexed(acc) => {
@@ -126,6 +143,7 @@ impl Graph {
         labels: &[String],
         props: &BTreeMap<String, Value>,
         ts: u64,
+        cap: Option<usize>,
     ) -> NodeCandidates {
         if labels.is_empty() && props.is_empty() {
             return NodeCandidates::Unindexed;
@@ -134,7 +152,7 @@ impl Graph {
             return NodeCandidates::Indexed(self.intersect_label_ids(labels));
         }
         if props.is_empty() || !self.range_serves_equality(labels, props) {
-            return NodeCandidates::Final(self.scan_match(labels, props, ts));
+            return NodeCandidates::Final(self.scan_match(labels, props, ts, cap));
         }
         let mut acc: Option<HashSet<NodeId>> = None;
         for (key, value) in props {
@@ -153,7 +171,7 @@ impl Graph {
                     continue;
                 }
                 let Some(ids) = self.range_equality_ids(lid, kid, value) else {
-                    return NodeCandidates::Final(self.scan_match(labels, props, ts));
+                    return NodeCandidates::Final(self.scan_match(labels, props, ts, cap));
                 };
                 intersect_acc(&mut next, ids);
             }
@@ -196,24 +214,35 @@ impl Graph {
     }
 
     /// Label scan (or a full scan when the pattern has no label) filtered by
-    /// equality. Used when no `RANGE` index serves the properties.
+    /// equality. Used when no `RANGE` index serves the properties. With
+    /// `cap`, the scan stops at the first `cap + 1` matches (see
+    /// [`Graph::lookup_nodes_upto_at`]).
     fn scan_match(
         &self,
         labels: &[String],
         props: &BTreeMap<String, Value>,
         ts: u64,
+        cap: Option<usize>,
     ) -> Vec<NodeId> {
-        let mut ids: Vec<NodeId> = if labels.is_empty() {
+        let ids: Vec<NodeId> = if labels.is_empty() {
             self.all_node_ids_at(ts)
         } else {
             self.intersect_label_ids(labels).into_iter().collect()
         };
-        ids.retain(|id| {
-            self.node_at(*id, ts)
-                .is_some_and(|n| Self::node_matches(&n, labels, props))
-        });
-        ids.sort();
-        ids
+        let mut matched = Vec::new();
+        for id in ids {
+            let hit = self
+                .node_at(id, ts)
+                .is_some_and(|n| Self::node_matches(&n, labels, props));
+            if hit {
+                matched.push(id);
+                if cap.is_some_and(|cap| matched.len() > cap) {
+                    break;
+                }
+            }
+        }
+        matched.sort();
+        matched
     }
 
     pub fn lookup_string_contains_at(

@@ -16,8 +16,8 @@ use crate::graph::Graph;
 use crate::overlay::{intersect_ids, union_ids, ExecGraph};
 use crate::row::Row;
 
-use super::node_candidates;
 use super::seek::ServedIds;
+use super::{node_candidates, node_candidates_capped, Capped};
 
 /// One node with `labels` and the name/age pair the fixtures filter on —
 /// the fixture shape every test here reads. Callers batch their fixture
@@ -202,4 +202,73 @@ fn label_and_property_filters_narrow_together() {
         ),
     );
     assert_eq!(ids, vec![bob]);
+}
+
+/// `n` nodes labeled `Person` sharing one property value, in one write.
+fn same_name(g: &Graph, n: usize) -> Vec<NodeId> {
+    g.begin_write().unwrap();
+    let ids = (0..n)
+        .map(|i| labeled_node(g, &["Person"], "Bob", i as i64))
+        .collect();
+    g.commit_write();
+    ids
+}
+
+/// The capped funnel answers the complete list up to its cap and `Over`
+/// from one match past it.
+#[test]
+fn a_capped_funnel_is_complete_at_the_cap_and_over_past_it() {
+    let g = Graph::default();
+    let np = pattern(
+        "p",
+        &["Person"],
+        Some(&[("name", Value::String("Bob".into()))]),
+    );
+    let capped = |g: &Graph, cap| {
+        node_candidates_capped(
+            &ExecGraph::read(g),
+            &np,
+            &Row::new(),
+            &BTreeMap::new(),
+            None,
+            &[],
+            cap,
+        )
+        .unwrap()
+    };
+    let mut ids = same_name(&g, 4);
+    ids.sort_unstable();
+    assert!(matches!(capped(&g, 4), Capped::Within(got) if got == ids));
+    assert!(matches!(capped(&g, 3), Capped::Over));
+    assert!(matches!(capped(&g, 0), Capped::Over));
+    assert_eq!(candidates(&g, &np), ids);
+}
+
+/// The scan stops at the first match past the cap: the node reads the
+/// funnel counts stay at `cap + 1` where the uncapped funnel reads every
+/// match.
+#[test]
+fn a_capped_funnel_stops_scanning_past_the_cap() {
+    let g = Graph::default();
+    same_name(&g, 200);
+    let np = pattern(
+        "p",
+        &["Person"],
+        Some(&[("name", Value::String("Bob".into()))]),
+    );
+    let _ = crate::ctx::take_node_reads();
+    let capped = node_candidates_capped(
+        &ExecGraph::read(&g),
+        &np,
+        &Row::new(),
+        &BTreeMap::new(),
+        None,
+        &[],
+        16,
+    )
+    .unwrap();
+    assert!(matches!(capped, Capped::Over));
+    assert_eq!(crate::ctx::take_node_reads(), 17);
+    assert_eq!(candidates(&g, &np).len(), 200);
+    assert_eq!(crate::ctx::take_node_reads(), 200);
 }

@@ -174,6 +174,68 @@ pub(crate) fn node_candidates(
     cypher_version: Option<u32>,
     conjuncts: &[Expr],
 ) -> Result<Vec<NodeId>> {
+    funnel(
+        graph,
+        np,
+        row,
+        params,
+        cypher_version,
+        Ask {
+            conjuncts,
+            cap: None,
+        },
+    )
+}
+
+/// What one funnel call asks of its seek strategy: the residual's bare
+/// conjuncts, and the most candidates the caller will use (`None`: all).
+#[derive(Clone, Copy)]
+struct Ask<'a> {
+    conjuncts: &'a [Expr],
+    cap: Option<usize>,
+}
+
+/// A capped funnel answer: the complete candidate list when at most
+/// `cap` nodes match, or `Over` — more than `cap` match — with no list.
+pub(crate) enum Capped {
+    Within(Vec<NodeId>),
+    Over,
+}
+
+/// [`node_candidates`] for a caller that only needs the candidates when
+/// there are at most `cap` of them (the shortest route's pair bound): the
+/// residual scan stops at `cap + 1` matches instead of listing every
+/// match first. Counted and phase-stamped exactly like the uncapped
+/// funnel — the node reads are the ones the scan returned.
+pub(crate) fn node_candidates_capped(
+    graph: &ExecGraph<'_>,
+    np: &NodePattern,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    conjuncts: &[Expr],
+    cap: usize,
+) -> Result<Capped> {
+    let ask = Ask {
+        conjuncts,
+        cap: Some(cap),
+    };
+    let ids = funnel(graph, np, row, params, cypher_version, ask)?;
+    Ok(if ids.len() > cap {
+        Capped::Over
+    } else {
+        Capped::Within(ids)
+    })
+}
+
+fn funnel(
+    graph: &ExecGraph<'_>,
+    np: &NodePattern,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    ask: Ask<'_>,
+) -> Result<Vec<NodeId>> {
     // One node-store read per candidate the match examines (LABS-375):
     // counted HERE, the one funnel every node-match path reads (match_node,
     // the cheapest-start expansion, gpm start nodes, the agg folds, the
@@ -190,7 +252,7 @@ pub(crate) fn node_candidates(
         binding_arm(
             binding(np, row),
             np,
-            conjuncts,
+            ask,
             graph,
             row,
             params,
@@ -236,12 +298,13 @@ pub(crate) fn node_candidates(
 fn binding_arm(
     class: NodeBinding<'_>,
     np: &NodePattern,
-    conjuncts: &[Expr],
+    ask: Ask<'_>,
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
 ) -> Result<Vec<NodeId>> {
+    let Ask { conjuncts, cap } = ask;
     // The pattern's property map, lazily and exactly once per arm that
     // needs it (binding the thunk itself derives nothing).
     let props = || {
@@ -257,7 +320,7 @@ fn binding_arm(
     let v = match class {
         Binding::Bound(id) => return Ok(vec![id]),
         Binding::Mismatch => return Ok(Vec::new()),
-        Binding::Anonymous => return scan_ids(graph, np, props),
+        Binding::Anonymous => return scan_ids(graph, np, props, cap),
         Binding::Unbound(v) => v,
     };
     if np.force_scan {
@@ -266,7 +329,7 @@ fn binding_arm(
         // `node_ok` and the residual conjuncts then apply `=` to every
         // candidate — for a zoned-datetime DST overlap that matches both
         // halves, which an index seek (instant plus zone) does not.
-        return scan_ids(graph, np, || Ok(BTreeMap::new()));
+        return scan_ids(graph, np, || Ok(BTreeMap::new()), cap);
     }
     let label_seekable = label_index_seekable(np);
     // Every conjunct that is a seek on this variable, cheapest first.
@@ -313,7 +376,7 @@ fn binding_arm(
         return served.narrowed(graph, &labels, props);
     }
     // No seek served the variable: the scan policy answers it.
-    scan_ids(graph, np, props)
+    scan_ids(graph, np, props, cap)
 }
 
 /// The one scan policy, every site that answers a node pattern with a
@@ -322,16 +385,19 @@ fn binding_arm(
 /// unserved-seek fallthrough pass the pattern's, the `USING SCAN` arm
 /// passes none), then the all-nodes scan when the lookup declines. The
 /// property map stays a lazy thunk so a caller whose labels are not
-/// seekable never evaluates it — the error surface is unchanged.
+/// seekable never evaluates it — the error surface is unchanged. `cap`
+/// is [`ExecGraph::lookup_nodes_upto`]'s: a residual scan may stop at
+/// `cap + 1` matches.
 fn scan_ids(
     graph: &ExecGraph<'_>,
     np: &NodePattern,
     props: impl FnOnce() -> Result<BTreeMap<String, Value>>,
+    cap: Option<usize>,
 ) -> Result<Vec<NodeId>> {
     if label_index_seekable(np) {
         // Same render-once bridge as the seek loop above.
         let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
-        if let Some(ids) = graph.lookup_nodes(&labels, &props()?) {
+        if let Some(ids) = graph.lookup_nodes_upto(&labels, &props()?, cap) {
             return Ok(ids);
         }
     }
