@@ -22,6 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG NODE_VERSION=22.20.0
 ARG GO_VERSION=1.22.12
 
+# --no-same-owner: the Node archive is owned by "iojs", and root-run tar
+# would hand that owner to /usr/local/bin, lib, include and share. Stages
+# run with all capabilities dropped, so root then cannot write /usr/local/bin
+# (uv pip install --system fails with "Permission denied").
 RUN arch="$(uname -m)" \
     && case "$arch" in \
         x86_64) node_arch=x64; go_arch=amd64 ;; \
@@ -29,9 +33,9 @@ RUN arch="$(uname -m)" \
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-        | tar -xJ -C /usr/local --strip-components=1 \
+        | tar --no-same-owner -xJ -C /usr/local --strip-components=1 \
     && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" \
-        | tar -xz -C /usr/local \
+        | tar --no-same-owner -xz -C /usr/local \
     && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
     && rustup target add wasm32-unknown-unknown \
     && node --version \
