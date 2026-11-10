@@ -214,7 +214,7 @@ baseline-memory-controls:
 
 ## compare-memory-controls: Judge target/memory-controls.json against the envelope
 compare-memory-controls:
-	$(PYTHON) $(CURDIR)/scripts/compare-memory-controls.py --baseline $(BASELINES)/memory-controls.json --report $(OUT_MEMORY_CONTROLS)
+	$(PYTHON) $(CURDIR)/scripts/compare-memory-controls.py --baseline $(BASELINES)/memory-controls.json --report $(OUT_MEMORY_CONTROLS) --doc $(DOC_MEMORY_CONTROLS) --verdict $(VERDICT_MEMORY_CONTROLS)
 
 ## memory-controls-gate: Run the suite, then compare
 memory-controls-gate: memory-controls-test compare-memory-controls
@@ -236,7 +236,7 @@ baseline-memory-shape:
 
 ## compare-memory-shape: Judge target/memory-shape-loadtest.json against the envelope
 compare-memory-shape:
-	$(PYTHON) $(CURDIR)/scripts/compare-memory-shape.py --baseline $(BASELINES)/memory-shape.json --report $(OUT_MEMORY_SHAPE)
+	$(PYTHON) $(CURDIR)/scripts/compare-memory-shape.py --baseline $(BASELINES)/memory-shape.json --report $(OUT_MEMORY_SHAPE) --doc $(DOC_MEMORY_SHAPE) --verdict $(VERDICT_MEMORY_SHAPE)
 
 ## memory-shape-gate: Run the suite, then compare
 memory-shape-gate: memory-shape-loadtest compare-memory-shape
@@ -296,6 +296,8 @@ CYCLE_LEN ?= 4
 URI_IDENTITY ?= :memory:
 OUT_IDENTITY ?= target/identity-loadtest.json
 OUT_MEMORY_SHAPE ?= target/memory-shape-loadtest.json
+DOC_MEMORY_SHAPE ?= target/memory-shape.md
+VERDICT_MEMORY_SHAPE ?= target/memory-shape-verdict.json
 # One directory per invocation. Each shape is stored at $(URI_MEMORY_SHAPE)/<shape>.
 MEMORY_SHAPE_RUN ?= $(shell date +%Y%m%dT%H%M%S)
 URI_MEMORY_SHAPE ?= /tmp/memory-shape-loadtest-$(MEMORY_SHAPE_RUN)
@@ -408,6 +410,8 @@ else
 endif
 
 OUT_MEMORY_CONTROLS ?= target/memory-controls.json
+DOC_MEMORY_CONTROLS ?= target/memory-controls.md
+VERDICT_MEMORY_CONTROLS ?= target/memory-controls-verdict.json
 MEMORY_CONTROLS_RUN ?= $(shell date +%Y%m%dT%H%M%S)
 URI_MEMORY_CONTROLS ?= /tmp/memory-controls-$(MEMORY_CONTROLS_RUN)
 GRAPH_SCALE ?= 10
