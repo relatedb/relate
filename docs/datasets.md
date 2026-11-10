@@ -149,7 +149,7 @@ CI runs a smaller mix (`tests/loadtest.rs`). Full graph: `--scale 1.0`.
 | `--workers <N>`         | `1`                          | Concurrent connections issuing ops (`1` = serial). Independent waiting writes share one WAL barrier in `full` mode (ADR-0019) |
 | `--write-fraction <F64>`        | `0.5`                        | Fraction of ops that are writes (`0.0` = reads only, `1.0` = writes only). Within each kind, catalog weights still apply |
 | `--logical-graph-size-limit <SIZE>` | unset (`RELATE_LOGICAL_GRAPH_SIZE_LIMIT`; `0` or omit is unlimited) | Live graph + index logical cap (ADR-0042). `SIZE` is an integer (bytes) or an integer plus `b`/`bytes`/`mb`/`mib`/`gb`/`gib`. `make fraud-loadtest` defaults to `MEMORY_LIMIT=20mib` |
-| `--durability-mode full\|everysecond\|snapshot` | `full` | WAL durability for persistent `--uri` (ADR-0077). Ignored for `:memory:`. `everysecond` can lose ~1s of acknowledged writes; `snapshot` can lose writes since the last checkpoint |
+| `--durability-mode full\|everysecond\|snapshot` | `full` | WAL durability for persistent `--uri` (ADR-0077). Ignored for `:memory:`. `everysecond` can lose ~1s of acknowledged writes; `snapshot` can lose writes since the last checkpoint. With the default `full`, each serial autocommit pays one WAL barrier (ADR-0019) — for one-off bulk loads, `everysecond` or `snapshot` removes the per-statement fsync floor; see [Bulk import](guides/import-csv.md#bulk-import-durability-and-batch-size) |
 
 
 | Env                          | Meaning                                                                                          |
@@ -414,7 +414,7 @@ CI runs a smaller mix (`tests/identity_loadtest.rs`). Full graph: `--scale 1.0`.
 | `--workers <N>`         | `1`                             | Concurrent connections issuing ops (`1` = serial). Independent waiting writes share one WAL barrier in `full` mode (ADR-0019) |
 | `--write-fraction <F64>`        | `0.5`                           | Fraction of ops that are writes (`0.0` = reads only, `1.0` = writes only). Within each kind, catalog weights still apply |
 | `--logical-graph-size-limit <SIZE>` | unset (`RELATE_LOGICAL_GRAPH_SIZE_LIMIT`; `0` or omit is unlimited) | Live graph + index logical cap (ADR-0042). `SIZE` is an integer (bytes) or an integer plus `b`/`bytes`/`mb`/`mib`/`gb`/`gib`. `make identity-loadtest` defaults to `MEMORY_LIMIT_IDENTITY=40mib` (ADR-0048) |
-| `--durability-mode full\|everysecond\|snapshot` | `full` | WAL durability for persistent `--uri` (ADR-0077). Ignored for `:memory:` |
+| `--durability-mode full\|everysecond\|snapshot` | `full` | WAL durability for persistent `--uri` (ADR-0077). Ignored for `:memory:`. With the default `full`, each serial autocommit pays one WAL barrier (ADR-0019) — for one-off bulk loads, `everysecond` or `snapshot` removes the per-statement fsync floor; see [Bulk import](guides/import-csv.md#bulk-import-durability-and-batch-size) |
 
 
 | Env                          | Meaning                                                                                          |

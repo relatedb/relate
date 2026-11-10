@@ -329,6 +329,14 @@ docker run -p 7687:7687 -p 7474:7474 -p 7475:7475 -v "$PWD/data:/data" \
 #   -e RELATE_PULL_FROM=/run/secrets/neo4j.env + -e RELATE_PULL_QUERY='MATCH (o:Organization)-[r]-() RETURN o, r LIMIT 500'
 ```
 
+For large seeds, two knobs matter (details:
+[Bulk import](docs/guides/import-csv.md#bulk-import-durability-and-batch-size)):
+batch the writes into few statements — one `UNWIND` per few thousand rows
+— because each autocommit statement pays one WAL fsync under the default
+`full` durability; and relax that barrier for the seed run with
+`-e RELATE_DURABILITY_MODE=everysecond` (a crash can lose ~1s of
+acknowledged writes — drop the variable when serving).
+
 `INSTANCES=N` runs a test fleet of N serve processes with stepped port
 ranges. The image is a dev/test image: `serve` is plaintext-only and warns
 loudly about it — for encrypted Bolt, front it with a TLS-terminating proxy.

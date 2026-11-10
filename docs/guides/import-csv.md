@@ -62,6 +62,74 @@ pipe a Cypher script into the shell:
 ./relate ./mydata < setup.cypher
 ```
 
+## Bulk import: durability and batch size
+
+Every write that autocommits pays one WAL durability barrier under the
+default `full` mode — the WAL is fsync'd before the statement is
+acknowledged (ADR-0077). Group commit shares that barrier between
+**concurrent** commits only (ADR-0019); a single sequential connection
+autocommitting statement-by-statement pays one barrier per statement. On
+a volume with real device barriers (5–15 ms per fsync, typical for cloud
+disks) that floor is 60–200 statements/s no matter how fast the engine
+is — the engine itself writes a node in ~0.06 ms.
+
+Measured on one volume, 30k single-node creates, one autocommit per
+statement:
+
+| Configuration | Nodes/s |
+| --- | --- |
+| `full`, fsync-lenient volume (~0.2 ms per barrier) | ~3,400 |
+| `full`, volume with ~12 ms barriers | ~80 |
+| `everysecond` (engine floor, disk-independent) | ~18,000 |
+
+Two levers fix this: fewer, larger commits — or a relaxed durability
+mode while loading.
+
+### Keep `full`: batch the writes
+
+One statement = one barrier, so put many rows in one statement:
+
+- A `LOAD CSV` over a whole file is **one statement** — one barrier for
+  the entire import, however many rows the file has. This is the
+  simplest fast path for CSV data.
+- For statement scripts and driver clients, batch rows into one
+  parameterized statement every few thousand rows:
+
+  ```cypher
+  UNWIND $rows AS row
+  CREATE (:Person {name: row.name, age: toInteger(row.age)})
+  ```
+
+  or wrap a batch in an explicit transaction — over Bolt, `BEGIN` …
+  `COMMIT` commits once per `COMMIT` (ADR-0028), so a driver's
+  transaction-per-batch has the same one-barrier economics.
+
+A few thousand rows per batch is the sweet spot: the barrier cost
+amortizes over the batch, while the commit's workspace — every row's
+redo, held until the commit lands — stays small. A single
+million-row statement pays the same one barrier but holds the whole
+million rows' redo in memory first.
+
+### Relax durability while loading
+
+```bash
+./relate --durability-mode everysecond ./mydata < import.cypher
+# or: RELATE_DURABILITY_MODE=everysecond ./relate ./mydata < import.cypher
+```
+
+- `everysecond` acknowledges after apply and barriers about once per
+  second — a crash can lose ~1 s of acknowledged writes. Write rate is
+  bounded by the engine floor, not the disk (~5× on fsync-lenient
+  volumes, ~200× on real-barrier volumes).
+- `snapshot` acknowledges after apply; only completed checkpoints are
+  durable. For a fresh store loaded from data you can re-import, this
+  is the fastest choice.
+
+The mode is an open-time setting (flag `--durability-mode`, environment
+`RELATE_DURABILITY_MODE`), not a per-statement one. After the load, take
+a checkpoint (`.checkpoint` in the interactive shell) and run or serve
+with the default `full` again.
+
 ## Export query results
 
 Use the output-format flags with shell redirection. CSV:
@@ -96,7 +164,7 @@ To export a whole database directory, copy the directory after a
   CREATE (:Person {name: row.name, age: toInteger(row.age)});
   ```
 
-- For large imports, consider using `FOREACH` with `UNWIND` for batch operations.
+- For large imports, few large statements beat many small autocommits — see [Bulk import](#bulk-import-durability-and-batch-size).
 
 - File paths in `LOAD CSV` are relative to where you launched Relate, or can be absolute paths.
 
