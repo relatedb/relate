@@ -38,6 +38,7 @@ pub(crate) enum RowProducer {
     DbmsShowCurrentUser,
     DbmsConfig,
     DbmsLicenseAgreementDetails,
+    DbmsListCapabilities,
     DbStatsRetrieve,
     SchemaNodeTypeProperties,
     SchemaRelTypeProperties,

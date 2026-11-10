@@ -129,6 +129,7 @@ impl crate::procedure_registry::RowProducer {
             Self::DbmsShowCurrentUser => Ok(dbms_show_current_user_rows(principal)),
             Self::DbmsConfig => Ok(dbms_config_rows()),
             Self::DbmsLicenseAgreementDetails => Ok(dbms_license_agreement_rows()),
+            Self::DbmsListCapabilities => Ok(dbms_list_capabilities_rows(graph)),
             Self::DbStatsRetrieve => stats::stats_retrieve_rows(
                 graph,
                 args.get("section")
@@ -168,6 +169,44 @@ fn distinct_string_rows(
 
 /// Row for `db.ping` (Neo4j Browser's connectivity probe): reaching this
 /// code means the database answered, so the row is a constant `true`.
+/// Rows for `dbms.listCapabilities` (ADR-0558): what this engine can do.
+///
+/// The name vocabulary is vendor-owned -- Neo4j's rows describe its Graph
+/// Engine and its JDBC drivers -- so these are Relate's own facts, each one
+/// something the engine can state truthfully rather than a row mirrored
+/// from a server it is not.
+fn dbms_list_capabilities_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Value>> {
+    fn row(name: &str, description: &str, value: Value) -> BTreeMap<String, Value> {
+        BTreeMap::from([
+            ("name".to_string(), Value::String(name.into())),
+            ("description".to_string(), Value::String(description.into())),
+            ("value".to_string(), value),
+        ])
+    }
+    vec![
+        row(
+            "cypher.version",
+            "The Cypher dialect version this engine implements.",
+            Value::String("25".into()),
+        ),
+        row(
+            "fulltext.index",
+            "Whether fulltext indexes and their query procedures are available.",
+            Value::Bool(true),
+        ),
+        row(
+            "vector.index",
+            "Whether vector indexes and their query procedures are available.",
+            Value::Bool(true),
+        ),
+        row(
+            "pattern.engine",
+            "The pattern-matching engine in force for this database.",
+            Value::String(graph.base().pattern_engine().as_str().into()),
+        ),
+    ]
+}
+
 fn ping_rows() -> Vec<BTreeMap<String, Value>> {
     vec![BTreeMap::from([("success".into(), Value::Bool(true))])]
 }
@@ -384,6 +423,43 @@ mod tests {
     /// A void call still binds and type-checks its arguments per driving
     /// row: a wrong-typed argument is `InvalidArgumentType`, never silently
     /// accepted by the unit fast path.
+    /// `dbms.listCapabilities` reports this engine's own facts, not rows
+    /// mirrored from a server it is not (ADR-0558). The pattern-engine row
+    /// reads the store's configured switch, so a diagnostic store reports
+    /// what it is actually running.
+    #[test]
+    fn dbms_list_capabilities_reports_the_engines_own_facts() {
+        let graph = Graph::default();
+        let rows = rows(&graph, "dbms.listCapabilities");
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|r| {
+                r["name"]
+                    .as_string()
+                    .expect("every capability row names itself")
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "cypher.version",
+                "fulltext.index",
+                "vector.index",
+                "pattern.engine"
+            ]
+        );
+        assert_eq!(rows[0]["value"], Value::String("25".into()));
+        assert_eq!(rows[1]["value"], Value::Bool(true));
+        assert_eq!(rows[2]["value"], Value::Bool(true));
+        assert_eq!(rows[3]["value"], Value::String("auto".into()));
+        for row in &rows {
+            assert!(!row["description"]
+                .as_string()
+                .expect("every capability row carries a description")
+                .is_empty());
+        }
+    }
+
     #[test]
     fn a_void_call_type_checks_its_arguments() {
         let graph = Graph::default();

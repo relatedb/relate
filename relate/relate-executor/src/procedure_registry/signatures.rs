@@ -356,6 +356,19 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         ])
         .listed(false)
         .rows(RowProducer::DbmsLicenseAgreementDetails),
+    // The capability-name vocabulary is vendor-owned: Neo4j's own rows
+    // describe its Graph Engine and its JDBC drivers, which Relate has none
+    // of. Rather than mirror rows it cannot honour, this procedure reports
+    // the capabilities this engine actually has (ADR-0558).
+    ProcSignature::dbms("dbms.listCapabilities")
+        .described("List capabilities.")
+        .returns(&[
+            ProcArgMeta::described("name", "The capability name.", "STRING"),
+            ProcArgMeta::described("description", "A description of the capability.", "STRING"),
+            ProcArgMeta::described("value", "The capability value.", "ANY"),
+        ])
+        .works_on_system()
+        .rows(RowProducer::DbmsListCapabilities),
     ProcSignature::dbms("dbms.listConfig")
         .admin()
         .works_on_system()

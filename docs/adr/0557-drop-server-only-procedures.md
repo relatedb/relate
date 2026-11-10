@@ -63,3 +63,10 @@ graph counts, and the embedded-relevant rows that become executable next:
   they do not do.
 - Restoring any dropped family — or adding a runtime settings surface — is a
   new decision, not a reversal of this one.
+
+## Later references
+
+- **ADR-0561** — `dbms.listCapabilities` returns, as an executable procedure
+  listing this engine's own capabilities. It is the one dropped name whose
+  answer is a fact about the engine rather than about a server it is not; the
+  removal stands for every other family.
