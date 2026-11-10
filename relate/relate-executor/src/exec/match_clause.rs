@@ -44,6 +44,31 @@ pub(crate) enum MatchOperator {
     Rung(KernelRung),
 }
 
+impl MatchOperator {
+    /// Whether the operator hands the dispatch layer a finished,
+    /// **uncharged** container (ADR-0463, LABS-1077): the batch chain and
+    /// the contracted chain/hub-star kernels build the whole container
+    /// before returning, so the dispatcher charges its rows at the
+    /// landing — while the walker (`match_clause.rs`) and the frontier
+    /// rung (`frontier_run.rs`) charge every row at their own emission
+    /// points and arrive charged. The one spelling of the
+    /// charge-ownership fact, spelled exhaustively — a later rung fails
+    /// compilation here until its charge owner is decided, never
+    /// inheriting a silent default.
+    pub(crate) fn hands_dispatch_a_finished_container(&self) -> bool {
+        match self {
+            MatchOperator::BatchChain
+            | MatchOperator::Rung(KernelRung::Chain { .. })
+            | MatchOperator::Rung(KernelRung::HubStar) => true,
+            // The self-charging rungs: their emission points charge
+            // every row before it lands, so their containers arrive
+            // already charged.
+            MatchOperator::Rung(KernelRung::FrontierNfa)
+            | MatchOperator::Rung(KernelRung::Walker) => false,
+        }
+    }
+}
+
 /// Run one `MATCH` clause the folds declined down the operator ladder:
 /// the frontier family (ADR-0478) first, then the batch scan/filter/
 /// project chain (ADR-0468), then the contracted kernels (ADR-0473),
@@ -166,9 +191,10 @@ pub(crate) fn match_clause(
     // ADR-0463 (LABS-781, OPLANE_REQ-00345609): the walker's output
     // container is a retaining container — each row charges the
     // expression budget through the one `add_row` spelling as it
-    // lands, ahead of the landing. The kernel and batch operators
-    // hand the dispatch layer a finished container, which charges
-    // there (see dispatch.rs); #763 owns their per-push form.
+    // lands, ahead of the landing. The frontier row rung charges its
+    // own emission points the same way (frontier_run.rs); the batch
+    // chain and the contracted kernels hand the dispatch layer a
+    // finished container, which charges there (see dispatch.rs).
     let mut out_retained = graph.retain_bytes(0)?;
     let conjuncts = where_clause.map(flatten_and_owned).unwrap_or_default();
     // The clause filter runs in the walk's sink — once per row, ahead

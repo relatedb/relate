@@ -82,6 +82,12 @@ pub(crate) mod frontier_emit;
 #[cfg(test)]
 mod frontier_emit_tests;
 
+// The frontier rung's per-push charge pins (LABS-1077): the emission
+// points' capped refusal while rows land, mirroring the dispatch layer's
+// aggregate-charge pins.
+#[cfg(test)]
+mod frontier_charge_tests;
+
 // The frontier family's rider wiring (ADR-0478 §2/§6): the executor
 // plug-in — the row rung on the MATCH operator ladder and the EXISTS arm
 // inside `try_exists_kernel`, the seeds, the PROFILE counters, the

@@ -326,12 +326,13 @@ fn run_clauses_mode(
                         trim_rows(&mut rows, &live);
                     }
                     // The same ADR-0463 (LABS-781) MATCH-container charge
-                    // as the ladder landing below: the SEARCH arm's rows
-                    // land at this dispatch point too.
-                    let mut match_retained = graph.retain_bytes(0)?;
-                    for row in &rows {
-                        match_retained.add_row(graph, row.values())?;
-                    }
+                    // as the ladder landing below, through the one bulk
+                    // spelling — the SEARCH arm's own ownership statement:
+                    // it reports the walker's rung, but its walker runs
+                    // are per-candidate, so the clause-level container is
+                    // only whole — and only chargeable — here, and this
+                    // arm charges it itself rather than arriving charged.
+                    charge_finished_container(graph, &rows)?;
                 } else {
                     let folded = if !*optional {
                         try_match_folds(
@@ -404,18 +405,17 @@ fn run_clauses_mode(
                             // ADR-0463 (LABS-781,
                             // OPLANE_REQ-00345609): the MATCH output
                             // container is a retaining container. The
-                            // walker charges its rows as they land inside
-                            // its own emission loop (match_clause.rs);
-                            // the kernel and batch operators hand this
-                            // layer a finished container, whose rows
-                            // charge here — #763 owns their per-push
-                            // form. The refusal fires at ~the cap with
-                            // the crossing row's honest figure.
-                            if !matches!(operator, MatchOperator::Rung(KernelRung::Walker)) {
-                                let mut match_retained = graph.retain_bytes(0)?;
-                                for row in &rows {
-                                    match_retained.add_row(graph, row.values())?;
-                                }
+                            // operators that charge at their own
+                            // emission points (the walker, the frontier
+                            // row rung) arrive charged; the rest hand
+                            // this layer a finished container, whose
+                            // rows charge here — the one ownership
+                            // predicate decides which, never an
+                            // exclusion list re-derived from operator
+                            // identity. The refusal fires at ~the cap
+                            // with the crossing row's honest figure.
+                            if operator.hands_dispatch_a_finished_container() {
+                                charge_finished_container(graph, &rows)?;
                             }
                         }
                     }
@@ -629,6 +629,23 @@ fn match_facts(operator: Option<MatchOperator>) -> (bool, Option<crate::ctx::Ker
         Some(MatchOperator::BatchChain) => (true, None),
         Some(MatchOperator::Rung(rung)) => (false, Some(rung)),
     }
+}
+
+/// The dispatch layer's finished-container charge (ADR-0463, LABS-781):
+/// the one bulk spelling both MATCH arms that land a finished container
+/// here read — the SEARCH arm (its walker runs are per-candidate, so
+/// the clause-level container is only whole — and only chargeable — at
+/// this landing, and that arm charges it itself) and the ladder arm for
+/// the operators whose containers arrive uncharged (the ownership
+/// predicate's `true` arms; the walker and the frontier rung charge at
+/// their own emission points and arrive charged). The refusal fires at
+/// ~the cap with the crossing row's honest figure.
+fn charge_finished_container(graph: &ExecGraph<'_>, rows: &[Row]) -> Result<()> {
+    let mut retained = graph.retain_bytes(0)?;
+    for row in rows {
+        retained.add_row(graph, row.values())?;
+    }
+    Ok(())
 }
 
 /// The PROFILE path's per-clause snapshot: the site's sink and its

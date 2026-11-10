@@ -37,6 +37,7 @@ use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 use crate::ctx::{ExecCtx, FrontierCounters, WalkStart};
 use crate::eval::{eval, expr_vars};
 use crate::graph::Graph;
+use crate::overlay::RetainedTotal;
 use crate::row::Row;
 
 use super::super::graph_stats::GraphStats;
@@ -115,6 +116,16 @@ pub(crate) fn try_frontier_rows(
         cypher_version: ctx.cypher_version,
     });
     let mut out: Vec<Row> = Vec::new();
+    // ADR-0463 (LABS-781, OPLANE_REQ-00345609 item 6): the rung's output
+    // container is a retaining container — each emitted row charges the
+    // expression budget through the one `add_row` spelling as it lands,
+    // ahead of the landing, at the rung's two emission points (the
+    // capped consumer's served loop and `endpoint_rows`), so a
+    // kernel-served MATCH refuses at ~the cap while the rows land, never
+    // after the whole container is built. The operators that still hand
+    // the dispatch layer a finished container (the batch chain, the
+    // contracted chain/hub-star kernels) keep their charge there.
+    let mut out_retained = ctx.graph.retain_bytes(0)?;
     match contract.consumer {
         Consumer::Capped { want } => {
             // The MatchCap rider's semantics (ADR-0475 over ADR-0478):
@@ -149,9 +160,13 @@ pub(crate) fn try_frontier_rows(
                 match answer {
                     CappedRun::Served { matched, run } => {
                         for (row, _used) in matched {
-                            if let Some(row) = reduce_row(ctx.graph, &row, reduce.as_ref())? {
-                                out.push(row);
-                            }
+                            emit_reduced_row(
+                                ctx,
+                                row,
+                                reduce.as_ref(),
+                                &mut out,
+                                &mut out_retained,
+                            )?;
                         }
                         tables = run.reclaim();
                     }
@@ -192,7 +207,13 @@ pub(crate) fn try_frontier_rows(
                     walked: &walked,
                     reduce: reduce.as_ref(),
                 };
-                endpoint_rows(ctx, Admission::of(&contract.target), &pass, &mut out)?;
+                endpoint_rows(
+                    ctx,
+                    Admission::of(&contract.target),
+                    &pass,
+                    &mut out,
+                    &mut out_retained,
+                )?;
                 tables = walked.reclaim();
             }
         }
@@ -486,24 +507,54 @@ fn for_each_admitted(
     Ok(false)
 }
 
+/// The rung's one row-emission spelling (LABS-1077): reduce the spent
+/// source row, drop it, then charge the landed row ahead of the push.
+/// The drop comes before the charge for the same reason the
+/// projection's output container drops its spent source first
+/// (`exec/project.rs`): `row_retained_heap` counts a payload only when
+/// every hold is the charged row's own, so a source row still alive
+/// lends the landed row its Arcs and the landing charges slot bytes
+/// only — the path payload a capped `RETURN p` emission retains would
+/// never count. Both the capped consumer's served loop and the
+/// distinct-endpoint consumer's row pass land through this one helper,
+/// so the drop-before-charge accounting and the charge-ahead-of-landing
+/// order have one spelling.
+fn emit_reduced_row(
+    ctx: ExecCtx<'_>,
+    source: Row,
+    reduce: Option<&MatchReduce<'_>>,
+    out: &mut Vec<Row>,
+    out_retained: &mut RetainedTotal,
+) -> Result<()> {
+    let landed = reduce_row(ctx.graph, &source, reduce)?;
+    drop(source);
+    if let Some(row) = landed {
+        out_retained.add_row(ctx.graph, row.values())?;
+        out.push(row);
+    }
+    Ok(())
+}
+
 /// The distinct-endpoint consumer's row pass: every endpoint the run
 /// admitted, through the target's admission, bound to its row (the
 /// boundary pair's full node values — the values the projection's stub
 /// refresh would produce) and the shared `reduce_row` tail — the same
 /// tail the cap rider and the materializing walk run, so an emitted row
-/// is the row the DFS's pipeline would keep.
+/// is the row the DFS's pipeline would keep. Each landing row charges
+/// the clause's retained running total ahead of the landing — the
+/// rung's second emission point (LABS-1077), threaded in from the
+/// rung's one container total so a refusal never leaves the row landed.
 fn endpoint_rows(
     ctx: ExecCtx<'_>,
     pred: Admission<'_>,
     pass: &SeedPass<'_>,
     out: &mut Vec<Row>,
+    out_retained: &mut RetainedTotal,
 ) -> Result<()> {
     for_each_admitted(ctx, pred, &pass.walked.endpoints, |ctx, endpoint| {
         let mut row = pass.entering.clone();
         bind_boundary(&mut row, ctx, pass.contract, pass.seed, endpoint);
-        if let Some(row) = reduce_row(ctx.graph, &row, pass.reduce)? {
-            out.push(row);
-        }
+        emit_reduced_row(ctx, row, pass.reduce, out, out_retained)?;
         Ok(false)
     })?;
     Ok(())
