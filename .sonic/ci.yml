@@ -269,8 +269,11 @@ stages:
 
   python:
     runner: sonic-polyglot
-    # uv pip install --system writes outside the workspace.
-    user: root
+    # Runs as the host uid, like the cargo stages. The cargo cache volumes
+    # belong to that uid and root has no capabilities to override that, so
+    # a root stage cannot write them. Python packages go into a venv under
+    # /tmp instead of the system site-packages. The notebook stage shares
+    # this anchor.
     before: &before-polyglot
       - build-sonic-rust
       - build-sonic-polyglot
@@ -280,12 +283,14 @@ stages:
       CARGO_TARGET_DIR: /cargo-target/python
     volumes: *cargo-cache
     commands:
+      # --seed puts pip in the venv: a notebook cell runs `python -m pip install`.
+      - &python-venv uv venv --seed /tmp/venv && export VIRTUAL_ENV=/tmp/venv PATH="/tmp/venv/bin:$PATH"
       - cargo test -p relate-python
       - cd surfaces/relate-python
-      - uv pip install --system pytest pyarrow neo4j-viz
+      - uv pip install pytest pyarrow neo4j-viz
       # The dev-profile bindings install the notebook stage shares
       # (LABS-622): the --profile dev flag lives on this anchor once.
-      - &python-dev-install uv pip install --system . --config-settings="build-args=--profile dev"
+      - &python-dev-install uv pip install . --config-settings="build-args=--profile dev"
       - python -m pytest python/tests/ -v
 
   link-check:
@@ -315,17 +320,17 @@ stages:
 
   notebook:
     runner: sonic-polyglot
-    # uv pip install --system writes outside the workspace.
-    user: root
+    # Host uid plus a venv, for the reason given on the python stage.
     before: *before-polyglot
     environment:
       <<: *cargo-env
       CARGO_TARGET_DIR: /cargo-target/notebook
     volumes: *cargo-cache
     commands:
+      - *python-venv
       - cd surfaces/relate-python
       # networkx + matplotlib: the obsidian vault demo's static-viz cell.
-      - uv pip install --system nbconvert ipykernel pyarrow pandas networkx matplotlib
+      - uv pip install nbconvert ipykernel pyarrow pandas networkx matplotlib
       - *python-dev-install
       - python -m ipykernel install --user --name python3
       - cd /workspace
