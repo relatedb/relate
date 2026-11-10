@@ -1,9 +1,12 @@
-//! Zero-argument scalar calls (LABS-667): a builtin whose row needs at
-//! least one argument is an arity error (Neo4j 42I13), not a null — and
-//! the nullary builtins keep returning values. The exhaustive guards are
-//! the executor's own tests (the nullary rows locked to the verified set,
-//! every row's contract behaviorally checked); this file is the
-//! engine-level smoke of representative names on each side.
+//! Scalar-function arity: a call outside its builtin row's argument window
+//! is the typed arity rejection (Neo4j 42I13), never a null or a downstream
+//! type error. The three sides here are zero-argument calls of a builtin
+//! that needs arguments (LABS-667), calls above an exact or capped contract,
+//! and named per-function windows (range's two-to-three, LABS-1307) — while
+//! the nullary builtins keep returning values. The exhaustive guards are the
+//! executor's own tests (the nullary rows locked to the verified set, every
+//! row's contract behaviorally checked); this file is the engine-level smoke
+//! of representative names.
 
 mod common;
 
@@ -55,6 +58,7 @@ fn every_other_zero_argument_call_is_an_arity_error() {
         "substring",
         "replace",
         "split",
+        "range",
         "reverse",
         "lTrim",
         "rTrim",
@@ -69,6 +73,40 @@ fn every_other_zero_argument_call_is_an_arity_error() {
     // its argument non-optional, so the refusal is a parse error.
     let text = common::err_text(conn.execute("RETURN trim()"));
     assert!(text.contains("parse error"), "{text}");
+}
+
+/// `range()` takes two or three arguments (verified live Neo4j 2026.10.1:
+/// one is "Insufficient parameters for function 'range'", four is "Too many
+/// parameters", both `Neo.ClientError.Statement.SyntaxError`), and the valid
+/// shapes keep their values. LABS-1307: the one-argument call used to reach
+/// the implementation and report a type error.
+#[test]
+fn range_takes_two_or_three_arguments() {
+    let mut conn = common::connection();
+    for query in ["RETURN range(1)", "RETURN range(1, 2, 3, 4)"] {
+        let text = common::err_text(conn.execute(query));
+        assert!(
+            text.contains("InvalidNumberOfArguments")
+                && text.contains("requires two to three arguments"),
+            "{query}: {text}"
+        );
+    }
+    assert_eq!(
+        common::scalar_one(&mut conn, "RETURN range(1, 3)"),
+        common::list(vec![
+            relate::Value::Int(1),
+            relate::Value::Int(2),
+            relate::Value::Int(3)
+        ])
+    );
+    assert_eq!(
+        common::scalar_one(&mut conn, "RETURN range(1, 5, 2)"),
+        common::list(vec![
+            relate::Value::Int(1),
+            relate::Value::Int(3),
+            relate::Value::Int(5)
+        ])
+    );
 }
 
 /// The high side of the same contracts (verified against Neo4j 2026.09):

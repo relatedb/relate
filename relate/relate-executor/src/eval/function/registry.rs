@@ -154,6 +154,16 @@ pub(super) const ARITY_ONE_TO_THREE: Arity = Arity {
         "time.truncate",
     ],
 };
+/// `range`: the start and end, with an optional step — one argument and four
+/// are both refused (verified live: `range(1)` is "Insufficient parameters"
+/// and `range(1, 2, 3, 4)` "Too many parameters", both SyntaxError).
+pub(super) const ARITY_TWO_TO_THREE: Arity = Arity {
+    min: 2,
+    max: Some(3),
+    requirement: "requires two to three arguments",
+
+    verified: &["range"],
+};
 /// `uuid`: no argument, the STRING/UUID echo, or CIP-246's two-integer
 /// construction — three refused (verified live).
 pub(super) const ARITY_AT_MOST_TWO: Arity = Arity {
@@ -508,7 +518,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
     row("radians", math::bi_radians, false, ARITY_AT_LEAST_ONE),
     row("rand", math::bi_rand, true, ARITY_EXACT_ZERO),
     row("randomuuid", entity::bi_randomuuid, true, ARITY_EXACT_ZERO),
-    row("range", list::bi_range, false, ARITY_AT_LEAST_ONE),
+    row("range", list::bi_range, false, ARITY_TWO_TO_THREE),
     row(
         "relationships",
         entity::bi_relationships,
