@@ -966,10 +966,16 @@ the encoded payload and records the prospective LSN and timestamp;
 proof still names the next record and writes its owned bytes as the frame
 without re-encoding or re-checking them. `Wal::append_record` is the direct
 one-call form (preflight, then append). A caller that already holds the ops'
-one encoding uses `EncodedOps::encode(ops) -> Result<EncodedOps>` (bounded by
-the per-record cap measured on the record with maximum-width header fields,
-refusing with the same `Error::Capacity` as a direct append;
-`reservation_bytes()` is the buffer's resident size) and
+one encoding uses `EncodedOps::encode(ops, &mut WorkspaceCharge) -> Result<EncodedOps>`
+(bounded by the per-record cap measured on the record with maximum-width
+header fields, refusing with the same `Error::Capacity` as a direct append;
+`reservation_bytes()` is the buffer's resident size, its capacity). The
+workspace charge is extended before each growth of the buffer (doubling from
+1 KiB, clamped to the cap, old and new buffer both charged during the copy),
+so a refused charge aborts the encoding with the workspace's typed error
+before the bytes are allocated; on success the charge equals the buffer's
+capacity on top of what it held, and the caller holds it for the encoding's
+life (a no-op with no workspace ledger installed) and
 `Wal::preflight_encoded(lsn, commit_ts, encoded)`, which checks the
 prospective LSN and timestamp, stamps the header into the buffer in place and
 encodes nothing. `EncodedOps::encode` runs the ID and ontology-envelope

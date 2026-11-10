@@ -4,6 +4,7 @@
 //! produced, and the payload cap must refuse at exactly the same figure.
 
 use super::*;
+use relate_core::tokens::WorkspaceCharge;
 use relate_core::{CapacityKind, Value};
 use serde::Serialize;
 use std::io::Write;
@@ -15,6 +16,11 @@ struct WalRecordRef<'a> {
     lsn: u64,
     commit_ts: u64,
     ops: &'a [RedoOp],
+}
+
+/// Encode with no workspace ledger installed: the charge is a no-op.
+fn encode(ops: &[RedoOp]) -> Result<EncodedOps> {
+    EncodedOps::encode(ops, &mut WorkspaceCharge::empty())
 }
 
 fn reference_payload(lsn: u64, commit_ts: u64, ops: &[RedoOp]) -> Vec<u8> {
@@ -156,7 +162,7 @@ const HEADERS: [(u64, u64); 5] = [
 fn stamped_payload_is_byte_identical_to_the_single_pass_record() {
     for (name, ops) in op_mixes() {
         for (lsn, ts) in HEADERS {
-            let mut encoded = EncodedOps::encode(&ops).unwrap();
+            let mut encoded = encode(&ops).unwrap();
             encoded.stamp(lsn, ts);
             assert_eq!(
                 encoded.payload(),
@@ -168,14 +174,15 @@ fn stamped_payload_is_byte_identical_to_the_single_pass_record() {
 }
 
 #[test]
-fn reservation_equals_the_maximum_width_record_size() {
+fn reservation_is_the_buffer_and_covers_the_maximum_width_record() {
     for (name, ops) in op_mixes() {
-        let encoded = EncodedOps::encode(&ops).unwrap();
-        assert_eq!(
-            encoded.reservation_bytes(),
-            reference_payload(u64::MAX, u64::MAX, &ops).len() as u64,
-            "{name}"
-        );
+        let mut encoded = encode(&ops).unwrap();
+        let max_record = reference_payload(u64::MAX, u64::MAX, &ops).len() as u64;
+        // Small records are trimmed to their length: the figure a record
+        // with maximum-width fields encodes to, exactly.
+        assert_eq!(encoded.reservation_bytes(), max_record, "{name}");
+        encoded.stamp(u64::MAX, u64::MAX);
+        assert_eq!(encoded.payload().len() as u64, max_record, "{name}");
     }
 }
 
@@ -190,9 +197,7 @@ fn preflight_encoded_proof_matches_preflight_record_and_writes_the_same_frame() 
         };
         let via_encoded = {
             let (dir, mut wal) = file_wal();
-            let proof = wal
-                .preflight_encoded(1, 1, EncodedOps::encode(&ops).unwrap())
-                .unwrap();
+            let proof = wal.preflight_encoded(1, 1, encode(&ops).unwrap()).unwrap();
             wal.append_preflighted(proof).unwrap();
             wal.sync().unwrap();
             newest_segment(dir.path())
@@ -235,7 +240,8 @@ fn payload_cap_boundary_matches_the_previous_count() {
     let fits = (cap - base) as usize;
 
     let ops = [big_string_op(fits)];
-    let encoded = EncodedOps::encode(&ops).unwrap();
+    let encoded = encode(&ops).unwrap();
+    // The charge's final settle is the buffer clamped to the cap.
     assert_eq!(encoded.reservation_bytes(), cap);
     assert_eq!(reference_count(u64::MAX, u64::MAX, &ops, cap), Ok(cap));
 
@@ -243,7 +249,7 @@ fn payload_cap_boundary_matches_the_previous_count() {
     // previous count pass recorded.
     let ops = [big_string_op(fits + 1)];
     let crossed = reference_count(u64::MAX, u64::MAX, &ops, cap).unwrap_err();
-    let err = EncodedOps::encode(&ops).unwrap_err();
+    let err = encode(&ops).unwrap_err();
     assert_eq!(
         err,
         Error::Capacity {
@@ -269,7 +275,7 @@ fn a_boundary_record_still_appends_with_real_header_widths() {
 fn encoding_carries_validation_and_the_ontology_fact() {
     // Invalid IDs are refused when the ops are encoded, so no body exists
     // for ops that failed validation.
-    let err = EncodedOps::encode(&[create_node(-1)]).unwrap_err();
+    let err = encode(&[create_node(-1)]).unwrap_err();
     assert!(matches!(err, Error::Storage(_)), "{err}");
     // The ontology fact travels with the encoding: the append rotates to an
     // MDBWAL02 segment without being handed the ops.
@@ -278,9 +284,104 @@ fn encoding_carries_validation_and_the_ontology_fact() {
     let ops = [RedoOp::OntologyDrop {
         database: "neo4j".into(),
     }];
-    let proof = wal
-        .preflight_encoded(1, 1, EncodedOps::encode(&ops).unwrap())
-        .unwrap();
+    let proof = wal.preflight_encoded(1, 1, encode(&ops).unwrap()).unwrap();
     wal.append_preflighted(proof).unwrap();
     assert_eq!(wal.active_magic, *ONTOLOGY_MAGIC);
+}
+
+/// A pool of `capacity` workspace bytes for the charge tests below.
+struct FixedPool {
+    capacity: u64,
+    reserved: std::sync::atomic::AtomicU64,
+}
+
+impl FixedPool {
+    fn new(capacity: u64) -> Arc<Self> {
+        Arc::new(Self {
+            capacity,
+            reserved: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    fn reserved(&self) -> u64 {
+        self.reserved.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl relate_core::tokens::PeakPool for FixedPool {
+    fn try_grow(&self, extra: u64) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.reserved
+            .fetch_update(SeqCst, SeqCst, |held| {
+                held.checked_add(extra)
+                    .filter(|next| *next <= self.capacity)
+            })
+            .is_ok()
+    }
+
+    fn release(&self, amount: u64) {
+        self.reserved
+            .fetch_sub(amount, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn the_charge_follows_the_buffer_and_is_released_with_it() {
+    let pool = FixedPool::new(64 * 1024 * 1024);
+    let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
+    let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
+    let ops = [big_string_op(300_000)];
+    let mut charge = WorkspaceCharge::empty();
+    let encoded = EncodedOps::encode(&ops, &mut charge).unwrap();
+    // Doubling from 64 KiB: 512 KiB holds the 300 kB record.
+    assert_eq!(encoded.reservation_bytes(), 512 * 1024);
+    assert_eq!(charge.bytes(), encoded.reservation_bytes());
+    assert_eq!(pool.reserved(), charge.bytes());
+    drop(charge);
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[test]
+fn a_refused_charge_aborts_the_encoding_and_releases_what_it_held() {
+    let pool = FixedPool::new(256 * 1024);
+    let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
+    let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
+    let mut charge = WorkspaceCharge::empty();
+    let err = EncodedOps::encode(&[big_string_op(1 << 20)], &mut charge).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::ResourceLimit { name, .. } if name == Error::CONCURRENT_LOGICAL_WORKSPACE_LIMIT
+        ),
+        "{err:?}"
+    );
+    // The refused growth never raised the charge past a step it was granted.
+    assert!(charge.bytes() <= pool.capacity, "{}", charge.bytes());
+    drop(charge);
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[test]
+fn the_payload_cap_refuses_before_any_charge_for_the_crossing_growth() {
+    // A budget that admits the whole cap still yields the cap's own
+    // refusal and figures, not a workspace refusal.
+    let cap = Error::WAL_PAYLOAD_CAP_BYTES;
+    let pool = FixedPool::new(4 * cap);
+    let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
+    let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
+    let base = reference_count(u64::MAX, u64::MAX, &[big_string_op(0)], u64::MAX).unwrap();
+    let ops = [big_string_op((cap - base) as usize + 1)];
+    let crossed = reference_count(u64::MAX, u64::MAX, &ops, cap).unwrap_err();
+    let mut charge = WorkspaceCharge::empty();
+    let err = EncodedOps::encode(&ops, &mut charge).unwrap_err();
+    assert_eq!(
+        err,
+        Error::Capacity {
+            used: crossed,
+            limit: cap,
+            kind: CapacityKind::WalPayload,
+        }
+    );
+    drop(charge);
+    assert_eq!(pool.reserved(), 0);
 }

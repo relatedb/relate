@@ -331,16 +331,20 @@ fn group_overlay_hold_from_an_earlier_slot_rejects_a_later_duplicate() {
     let waiters: Vec<_> = (0..SIDES).map(|_| CommitWaiter::new()).collect();
     let batch: Vec<_> = (0..SIDES)
         .map(|i| {
-            let mut candidate = slot(i as i64, i as u64 + 1, snapshot_ts, &waiters[i]);
-            candidate.ops = vec![RedoOp::CreateNode {
-                id: i as i64,
-                labels: Arc::new(vec!["Person".into()]),
-                properties: relate_core::PropertyMap::share(BTreeMap::from([(
-                    "email".into(),
-                    Value::String("dup".into()),
-                )])),
-            }];
-            candidate
+            // The slot encodes the ops it carries, as admission does.
+            CommitSlot::for_test(
+                snapshot_ts,
+                i as u64 + 1,
+                vec![RedoOp::CreateNode {
+                    id: i as i64,
+                    labels: Arc::new(vec!["Person".into()]),
+                    properties: relate_core::PropertyMap::share(BTreeMap::from([(
+                        "email".into(),
+                        Value::String("dup".into()),
+                    )])),
+                }],
+                Arc::clone(&waiters[i]),
+            )
         })
         .collect();
     flush_group(&shared, batch).unwrap();

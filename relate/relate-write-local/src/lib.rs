@@ -8,6 +8,7 @@
 use std::ops::Deref;
 use std::sync::Mutex;
 
+use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, Result};
 use relate_engine_api::{CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine};
 use relate_storage::{EncodedOps, StoreTarget, Wal, WalCatchUp, WalRecord};
@@ -77,13 +78,16 @@ impl Deref for LocalWriteEngine {
 impl WriteEngine for LocalWriteEngine {
     fn commit(&self, groups: &[CommitGroup]) -> Result<Vec<CommittedSlot>> {
         // This trait path has no admission step: it encodes each group's
-        // redo once here, before the log lock, under the same shared encoder.
+        // redo once here, before the log lock, under the same shared encoder,
+        // charging the encodings to one workspace charge held until the
+        // append has consumed them.
+        let mut charge = WorkspaceCharge::empty();
         let borrowed: Vec<AssignedRecord> = groups
             .iter()
             .map(|group| {
                 Ok(AssignedRecord {
                     commit_ts: group.commit_ts,
-                    encoded: EncodedOps::encode(&group.ops)?,
+                    encoded: EncodedOps::encode(&group.ops, &mut charge)?,
                 })
             })
             .collect::<Result<_>>()?;
@@ -93,6 +97,7 @@ impl WriteEngine for LocalWriteEngine {
             .map_err(|_| Error::storage("WAL lock poisoned"))?;
         let appended = append_assigned(&mut wal, borrowed)?;
         wal.sync()?;
+        drop(charge);
         Ok(appended
             .into_iter()
             .zip(groups)

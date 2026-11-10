@@ -24,10 +24,13 @@ byte-identical and nothing is serialized again. The same example runs as the
 `Wal::preflight_encoded` doctest:
 
 ```rust
+use relate_core::tokens::WorkspaceCharge;
 use relate_storage::{EncodedOps, Wal};
 
 let mut wal = Wal::memory();
-let encoded = EncodedOps::encode(&[]).unwrap();
+// The charge follows the encoding's buffer; a no-op with no ledger installed.
+let mut charge = WorkspaceCharge::empty();
+let encoded = EncodedOps::encode(&[], &mut charge).unwrap();
 let proof = wal.preflight_encoded(1, 1, encoded).unwrap();
 assert_eq!(wal.append_preflighted(proof).unwrap().lsn, 1);
 ```

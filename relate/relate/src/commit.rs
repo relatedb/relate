@@ -67,7 +67,8 @@ impl CommitSlot {
         Self {
             snapshot_ts,
             txn_id,
-            encoded: EncodedOps::encode(&ops).expect("test ops encode"),
+            encoded: EncodedOps::encode(&ops, &mut WorkspaceCharge::empty())
+                .expect("test ops encode"),
             ops,
             parse_plan_ns: 0,
             execute_ns: 0,
@@ -361,16 +362,18 @@ pub(super) fn try_wal_commit(
     // The ops are JSON-encoded exactly once, here, on the caller's thread
     // and off the serial group path (ADR-0094 as amended): the leader only
     // stamps the record header into this buffer. The WAL payload cap refuses
-    // an oversized record at this encode. The reservation is intentionally
-    // taken before the request joins the group-commit queue and held until
-    // its waiter completes: it is the buffer the slot retains for the
-    // leader, and all callers retain their own charge while those buffers
-    // coexist. The final `Vec<RedoOp>` was reserved before its allocation
-    // when the scratch was converted. Consequently a later write is refused
-    // at admission instead of evicting a write that has already crossed the
+    // an oversized record at this encode. The workspace is charged as the
+    // buffer grows (ADR-0558, refined): each growth step is reserved before
+    // it is allocated, so concurrent large writers are refused by the budget
+    // instead of allocating past it. The charge ends equal to the buffer the
+    // slot retains for the leader and is held until its waiter completes,
+    // and all callers retain their own charge while those buffers coexist.
+    // The final `Vec<RedoOp>` was reserved before its allocation when the
+    // scratch was converted. Consequently a later write is refused at
+    // admission instead of evicting a write that has already crossed the
     // WAL boundary.
-    let encoded = EncodedOps::encode(&ops)?;
-    let _wal_workspace = WorkspaceCharge::retain(encoded.reservation_bytes())?;
+    let mut wal_workspace = WorkspaceCharge::empty();
+    let encoded = EncodedOps::encode(&ops, &mut wal_workspace)?;
     let waiter = CommitWaiter::new();
     let slot = CommitSlot {
         snapshot_ts,
@@ -551,7 +554,10 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     // this path spells neither policy itself.
     shared.admit_redo_capacity(&record.ops, 0)?;
     // The record's one encoding, before the WAL lock is taken.
-    let encoded = EncodedOps::encode(&record.ops)?;
+    // Charged to this thread's workspace like an admitted commit's, and held
+    // until the record is appended.
+    let mut wal_workspace = WorkspaceCharge::empty();
+    let encoded = EncodedOps::encode(&record.ops, &mut wal_workspace)?;
     let wal = lock_wal_checked(shared)?;
     // The replicated path records no group-commit timing: it does not ask
     // the core to measure (`measure: false`), so it pays for no samples it

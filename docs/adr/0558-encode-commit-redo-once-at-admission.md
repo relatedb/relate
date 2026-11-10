@@ -79,3 +79,8 @@ ADR-0070 baseline environment.
   replaced by the encoded-ops type and a preflight taking it.
 - Whether apply could run from the encoded form, dropping the typed redo
   held in the commit slot, is left open for a later decision.
+
+## Later references
+
+- ADR-0564 charges the workspace as the redo is encoded, replacing the
+  charge-after-encode and trim steps of decision 4.

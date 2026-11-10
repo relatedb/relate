@@ -8,6 +8,7 @@
 
 use std::io::{self, Write};
 
+use relate_core::tokens::WorkspaceCharge;
 use relate_core::{CapacityKind, Error, Result};
 use relate_engine_api::RedoOp;
 use web_time::Instant;
@@ -20,6 +21,10 @@ const U64_DECIMAL_MAX: usize = 20;
 const LSN_KEY: &str = "{\"lsn\":";
 const COMMIT_TS_KEY: &str = ",\"commit_ts\":";
 const OPS_KEY: &str = ",\"ops\":";
+
+/// Records whose buffer is no larger than this are trimmed to their
+/// length after encoding (see [`EncodedOps::encode`]).
+const SMALL_RECORD_BYTES: usize = 64 * 1024;
 
 /// Largest header the record can carry: the three fixed key spellings and
 /// two maximum-width unsigned decimals. It is the slack in front of the
@@ -51,7 +56,18 @@ impl EncodedOps {
     /// the refusal — [`Error::Capacity`] in [`CapacityKind::WalPayload`]
     /// (ADR-0494) — and its figures are exactly those of encoding the
     /// record with maximum-width LSN and timestamp.
-    pub fn encode(ops: &[RedoOp]) -> Result<Self> {
+    ///
+    /// The buffer is charged as it is built: `charge` is extended before
+    /// each growth of the buffer (doubling from 1 KiB, clamped to the cap,
+    /// the old and new buffer both charged during the copy), so concurrent
+    /// large commits are refused by the workspace budget before they
+    /// allocate past it. A refused charge aborts the encoding at once with
+    /// the budget's own typed error and leaves nothing allocated beyond the
+    /// charge. On success `charge` holds exactly the buffer's capacity (on
+    /// top of whatever it held before) and the caller keeps it for as long
+    /// as the encoding lives. A commit whose buffer stayed within 64 KiB
+    /// is trimmed to its length and charged for that.
+    pub fn encode(ops: &[RedoOp], charge: &mut WorkspaceCharge) -> Result<Self> {
         let t0 = Instant::now();
         // The one validation pass per op: persisted-ID range plus the
         // ADR-0120 §3 16 MiB ontology envelope (the ADR-0086 object
@@ -62,10 +78,12 @@ impl EncodedOps {
         // The per-record WAL payload cap (ADR-0086) and the capacity kind
         // its crossing refusal carries (ADR-0494), spelled together here —
         // the one bounded pass over a commit record.
-        let mut sink = BoundedSink::capture(
+        let held = charge.bytes();
+        let mut sink = BoundedSink::capture_charged(
             &mut buf,
             Error::WAL_PAYLOAD_CAP_BYTES,
             Refusal::Capacity(CapacityKind::WalPayload),
+            charge,
         );
         let result: io::Result<()> = serde_json::to_writer(&mut sink, ops)
             .map_err(io::Error::from)
@@ -73,9 +91,14 @@ impl EncodedOps {
         sink.finish(result, |e| {
             Error::storage(format!("WAL serialization failed: {e}"))
         })?;
-        // The growth slack of the serializer's buffer is not part of the
-        // reserved figure; hand it back.
-        buf.shrink_to_fit();
+        // A record within 64 KiB is small enough that
+        // trimming its slack is a cheap copy: hand the slack back. A
+        // larger buffer keeps its capacity (and its charge) — it is never
+        // copied again.
+        if buf.capacity() <= SMALL_RECORD_BYTES {
+            buf.shrink_to_fit();
+            charge.resize(held.saturating_add(buf.capacity() as u64))?;
+        }
         Ok(Self {
             buf,
             start: HEADER_MAX,
@@ -84,11 +107,12 @@ impl EncodedOps {
         })
     }
 
-    /// The bytes this encoding holds resident, which is also the commit's
-    /// workspace reservation: maximum-width header slack, body and closing
-    /// brace — the figure a record with maximum-width fields encodes to.
+    /// The bytes this encoding holds resident — the buffer's capacity,
+    /// which is what the charge passed to [`Self::encode`] was extended
+    /// to: maximum-width header slack, body and closing brace, plus any
+    /// growth slack of a large record.
     pub fn reservation_bytes(&self) -> u64 {
-        self.buf.len() as u64
+        self.buf.capacity() as u64
     }
 
     pub(super) fn ontology_op(&self) -> bool {

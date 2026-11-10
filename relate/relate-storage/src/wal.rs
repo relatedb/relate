@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use web_time::Instant;
 
+use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, Result};
 use relate_engine_api::RedoOp;
 
@@ -406,7 +407,10 @@ impl Wal {
         commit_ts: u64,
         ops: &[RedoOp],
     ) -> Result<WalPreflight> {
-        self.preflight_encoded(lsn, commit_ts, EncodedOps::encode(ops)?)
+        // This form has no caller-held budget: the charge is local and
+        // released once the proof owns the stamped bytes.
+        let mut charge = WorkspaceCharge::empty();
+        self.preflight_encoded(lsn, commit_ts, EncodedOps::encode(ops, &mut charge)?)
     }
 
     /// [`Wal::preflight_record`] over an existing encoding: checks the
@@ -416,9 +420,11 @@ impl Wal {
     /// typed ops are taken and none can disagree with the body.
     ///
     /// ```
+    /// use relate_core::tokens::WorkspaceCharge;
     /// use relate_storage::{EncodedOps, Wal};
     /// let mut wal = Wal::memory();
-    /// let encoded = EncodedOps::encode(&[]).unwrap();
+    /// let mut charge = WorkspaceCharge::empty();
+    /// let encoded = EncodedOps::encode(&[], &mut charge).unwrap();
     /// let proof = wal.preflight_encoded(1, 1, encoded).unwrap();
     /// assert_eq!(wal.append_preflighted(proof).unwrap().lsn, 1);
     /// ```
