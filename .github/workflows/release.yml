@@ -15,7 +15,7 @@ on:
           - minor
           - major
       offline:
-        description: "GitHub-only release: build, tag, and publish the GitHub release with every asset and the generated notes — skip the relate-web poke, the Slack announcement, and the self-update canary"
+        description: "GitHub-only release: build, tag, and publish the GitHub release with every asset and the generated notes — skip the relate-web poke, the Slack announcement, the self-update canary, and the registry publish"
         required: false
         default: false
         type: boolean
@@ -946,90 +946,25 @@ jobs:
           test -f "$NPM_SMOKE_PLATFORM_TGZ"
           bash scripts/npm-smoke-test.sh
 
-  # Publish via npm trusted publishing (OIDC): id-token: write, no
-  # NODE_AUTH_TOKEN anywhere (ADR-0278). Fail-closed by design — until the
-  # npmjs.com trusted-publishing setup in docs/PUBLISHING.md is done, these
-  # jobs fail loudly. Platform packages and the wasm bundle go first; the
-  # main package publishes last so its optionalDependencies already exist on
-  # the registry. The shared publish body (setup-node, pinned npm upgrade,
-  # download, count-check, publish loop) lives in the npm-publish composite
-  # action; npm >= 11.5.1 is required for trusted publishing.
-  npm-publish:
-    name: Publish platform + wasm packages to npm
-    needs: [version, tag, npm-smoke-gate]
-    # Disabled until the project licensing decision lands (see the npm
-    # section of docs/PUBLISHING.md); re-enable by removing this line.
-    if: false
-    runs-on: ubuntu-latest
+  # Registry publishing (npm, PyPI, crates.io) lives in its own workflow
+  # (ADR-0560, ADR-0278): called here once the GitHub release and its
+  # assets exist, and dispatchable by hand with a tag plus per-registry
+  # toggles for dry runs and partial-failure recovery. An offline release
+  # touches nothing outside GitHub, so it skips the call.
+  publish-registries:
+    name: Publish to registries
+    needs: [version, create-release, npm-smoke-gate]
+    if: ${{ !inputs.offline }}
+    # The caller's permissions cap the called workflow's: without
+    # id-token: write here, the called jobs' trusted-publishing token
+    # request cannot be honored on the chained path. No secrets: inherit —
+    # the called workflow runs on OIDC alone and needs none.
     permissions:
       id-token: write
       contents: read
-    steps:
-      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
-          # Post-condition (remediation assurance): the compromised root
-          # must be absent from the rebuilt store -- an on-path attacker
-          # replaying validly-signed metadata could otherwise make the
-          # upgrade a silent no-op behind a green check. A fixed runner
-          # image satisfies this too, so it never false-fails the lane.
-          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
-            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
-            exit 1
-          fi
-          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      # Local composite actions resolve from the checkout; use the versioned
-      # commit so the published release runs the action it shipped with.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.version.outputs.sha }}
-
-      # One minimatch pattern (brace expansion) matches the five platform
-      # artifacts plus the wasm bundle — but not npm-main, which publishes
-      # only after its optionalDependencies exist on the registry.
-      - uses: ./.github/actions/npm-publish
-        with:
-          pattern: npm-{platform-*,wasm}
-          expected-count: 6
-
-  npm-publish-main:
-    name: Publish @relate/relate to npm
-    needs: [version, tag, npm-smoke-gate, npm-publish]
-    # Disabled until the project licensing decision lands (see the npm
-    # section of docs/PUBLISHING.md); re-enable by removing this line.
-    if: false
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
-          # Post-condition (remediation assurance): the compromised root
-          # must be absent from the rebuilt store -- an on-path attacker
-          # replaying validly-signed metadata could otherwise make the
-          # upgrade a silent no-op behind a green check. A fixed runner
-          # image satisfies this too, so it never false-fails the lane.
-          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
-            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
-            exit 1
-          fi
-          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.version.outputs.sha }}
-
-      - uses: ./.github/actions/npm-publish
-        with:
-          pattern: npm-main
-          expected-count: 1
+    uses: ./.github/workflows/publish-registries.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
 
   # Chained explicitly because the `release: published` event fired by
   # action-gh-release (GITHUB_TOKEN) never triggers downstream workflows

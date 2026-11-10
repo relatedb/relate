@@ -90,15 +90,32 @@ from this repository; the old repository’s tags never came across.
    self-update while the repository is internal
    ([ADR-0358](docs/adr/0358-upgrade-download-route.md)).
 
-PyPI publishing is intentionally not wired up yet — the Python wheels and
-sdist ship as GitHub release assets only.
+## Registry publishing
 
-crates.io publishing (ADR-0560) is prepared but not wired into the
-workflow yet either: the `relate` facade's 17-crate workspace closure is
-publishable (descriptions, repository metadata, workspace dependency
-pins), and the one-time manual bootstrap — token publishes in topological
-order, then trusted-publisher configuration per crate — is a runbook item
-in [docs/PUBLISHING.md](docs/PUBLISHING.md).
+npm (ADR-0278), PyPI, and crates.io (ADR-0560) publish from one workflow,
+[`.github/workflows/publish-registries.yml`](.github/workflows/publish-registries.yml),
+which the release run calls once the GitHub release and its assets exist
+(skipped by `offline=true`). All three use OIDC trusted publishing — no
+API tokens in CI.
+
+The workflow also dispatches by hand with a release tag, per-registry
+toggles (`npm`, `pypi`, `crates-io`), and dry-run knobs
+(`pypi-target=testpypi`, `npm-dry-run`, `crates-io-dry-run`), so a
+partial publish is recovered — and auth is smoke-tested — without
+re-cutting a release:
+
+```sh
+gh workflow run publish-registries.yml -f tag=v0.1.0 \
+  -f pypi=true -f npm=false -f crates-io=false -f pypi-target=testpypi
+```
+
+Artifacts always come from the release's assets (wheels/sdist, npm
+tarballs); crates.io publishes from a checkout of the tag. Each
+registry's one-time setup — the npm placeholder publishes and trusted
+publishers, the PyPI/TestPyPI pending publisher, the crates.io bootstrap
+— is a runbook item in
+[docs/PUBLISHING.md](docs/PUBLISHING.md); the npm and crates.io jobs are
+fail-closed (`&& false` guards) until theirs is done.
 
 ## Extension package releases
 

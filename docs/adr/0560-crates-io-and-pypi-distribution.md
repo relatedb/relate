@@ -27,16 +27,22 @@ extensions, testing) is `publish = false`.
 
 ## Decision
 
-Publish to both registries from `release.yml`, lockstep with the release
-tag, both fail-closed until their runbook setup is done:
+Publish to both registries from a dedicated `publish-registries.yml`
+workflow — called by `release.yml` once the GitHub release exists, and
+dispatchable by hand with a tag and per-registry toggles so dry runs and
+partial-failure recovery never require re-cutting a release. npm's jobs
+(ADR-0278) move into the same workflow; artifacts always come from the
+release's assets, so the chained run and a manual re-publish share one
+code path. Everything is lockstep with the release tag and fail-closed
+until its runbook setup is done:
 
 - **crates.io** — the 17-crate closure publishes in topological
   dependency order. The first publish of each crate is a manual
   token publish (a crate must exist before trusted publishing can be
   configured on it); afterwards each crate gets a GitHub Actions trusted
-  publisher for `release.yml` and the pipeline takes over with OIDC, no
-  stored token. A short settle delay or retry rides between crates
-  because the registry index lags a fresh publish.
+  publisher for `publish-registries.yml` and the pipeline takes over with
+  OIDC, no stored token. A short settle delay or retry rides between
+  crates because the registry index lags a fresh publish.
 - **PyPI** — the `relate-db` wheels and sdist the `python` job already
   builds publish via the official publish action with trusted publishing
   (`id-token: write`, no token). PyPI's pending-publisher mechanism

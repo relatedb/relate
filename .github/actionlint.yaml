@@ -2,13 +2,14 @@
 # workflows it lints (schema:
 # https://github.com/rhysd/actionlint/blob/main/docs/config.md).
 #
-# The npm publish jobs in release.yml are deliberately disabled pending the
-# project licensing decision (the npm section of docs/PUBLISHING.md,
-# ADR-0278): their `if: false` switches are the documented "re-enable by
-# removing this line" mechanism. The constant-condition finding they raise
-# is acknowledged here, scoped to that one file and message — removing the
-# switches to satisfy the linter would enable publishing.
+# The npm and crates.io jobs in publish-registries.yml are deliberately
+# disabled pending their manual registry-side setup (the npm and crates.io
+# sections of docs/PUBLISHING.md, ADR-0278 and ADR-0560): the `&& false`
+# guards are the documented "re-enable by dropping the guard" mechanism.
+# The constant-condition finding they raise is acknowledged here, scoped
+# to that one file and message — removing the guards to satisfy the
+# linter would enable publishing.
 paths:
-  .github/workflows/release.yml:
+  .github/workflows/publish-registries.yml:
     ignore:
       - 'constant expression "false" in condition\. remove the if: section'
