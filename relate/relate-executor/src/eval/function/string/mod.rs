@@ -4,7 +4,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use relate_core::{Error, ErrorKind, Result, Value};
+use relate_core::{
+    integer_args::{self, IntegerArgSite},
+    Error, ErrorKind, Result, Value,
+};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::overlay::ExecGraph;
@@ -575,22 +578,30 @@ fn expand_java_replacement(
 /// an integer passes through; a float converts with Java `(long)`-cast
 /// semantics (truncate toward zero, NaN → 0, saturate at the i64 limits);
 /// the result must lie in [0, 2147483647] — a negative or beyond-int32
-/// value (±Infinity included) raises NumberOutOfRange. A missing or
-/// non-numeric argument keeps the historical `default`; a null one never
-/// reaches here ([`null_index_arg`] returns the call's null first).
-fn string_index_arg(v: Option<&Value>, default: i64, what: &str) -> Result<i64> {
-    let Some(n) = super::super::numeric::int_arg(v) else {
-        return Ok(default);
+/// value (±Infinity included) raises NumberOutOfRange. `None` is a
+/// genuinely *absent* argument, which each caller fills with its own
+/// default; a present argument that is not a number is the call's own
+/// type rejection (`site`, [`relate_core::integer_args`]), never the
+/// absent-argument default. A null one never reaches here
+/// ([`null_index_arg`] returns the call's null first).
+fn string_index_arg(v: Option<&Value>, site: &IntegerArgSite) -> Result<Option<usize>> {
+    let Some(present) = v else {
+        return Ok(None);
+    };
+    let Some(n) = super::super::numeric::int_arg(present) else {
+        return Err(Error::invalid_argument_type(site.type_error));
     };
     if !(0..=i64::from(i32::MAX)).contains(&n) {
         // ADR-0175's 22N03 mapping: NumberOutOfRange is the ArgumentError
         // class (live 2026.10.1: Neo.ClientError.Statement.ArgumentError).
+        // Every caller of this function passes a `coercion_site`.
         return Err(Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
-            what,
+            site.range
+                .expect("a string-index site states its out-of-range label"),
         ));
     }
-    Ok(n)
+    Ok(Some(n as usize))
 }
 
 /// A null start/length argument nulls the whole call *before* a sibling
@@ -622,11 +633,15 @@ fn string_call_arg<'a>(vals: &'a [Value], what: &str) -> Result<Option<&'a str>>
 /// `left()`/`right()`'s shared prefix: the prologue (their string type
 /// error is the shared `expected string argument` text) plus the length
 /// argument's parse. `Ok(None)` is the nulled call.
-fn string_and_length<'a>(vals: &'a [Value], fn_name: &str) -> Result<Option<(&'a str, usize)>> {
+fn string_and_length<'a>(
+    vals: &'a [Value],
+    site: &IntegerArgSite,
+) -> Result<Option<(&'a str, usize)>> {
     let Some(s) = string_call_arg(vals, "expected string argument")? else {
         return Ok(None);
     };
-    let n = string_index_arg(vals.get(1), 0, &format!("{fn_name} length"))? as usize;
+    // A missing length is 0.
+    let n = string_index_arg(vals.get(1), site)?.unwrap_or(0);
     Ok(Some((s, n)))
 }
 
@@ -634,21 +649,21 @@ pub(super) fn bi_substring(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -
     let Some(s) = string_call_arg(&vals, "substring() needs a string")? else {
         return Ok(Value::Null);
     };
-    let start = string_index_arg(vals.get(1), 0, "substring() start")? as usize;
+    let start = string_index_arg(vals.get(1), &integer_args::SUBSTRING_START)?.unwrap_or(0);
     // Without an integer length the substring runs to the end of the string.
-    let len = string_index_arg(vals.get(2), i64::MAX, "substring() length")? as usize;
+    let len = string_index_arg(vals.get(2), &integer_args::SUBSTRING_LENGTH)?.unwrap_or(usize::MAX);
     Ok(Value::String(
         char_range(s, start..start.saturating_add(len)).into(),
     ))
 }
 pub(super) fn bi_left(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    let Some((s, n)) = string_and_length(&vals, "left()")? else {
+    let Some((s, n)) = string_and_length(&vals, &integer_args::LEFT_LENGTH)? else {
         return Ok(Value::Null);
     };
     Ok(Value::String(char_range(s, 0..n).into()))
 }
 pub(super) fn bi_right(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    let Some((s, n)) = string_and_length(&vals, "right()")? else {
+    let Some((s, n)) = string_and_length(&vals, &integer_args::RIGHT_LENGTH)? else {
         return Ok(Value::Null);
     };
     Ok(Value::String(

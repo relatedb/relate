@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use relate_core::{temporal, ArithmeticFailure, Error, ErrorKind, Result, Value};
+use relate_core::{integer_args, temporal, ArithmeticFailure, Error, ErrorKind, Result, Value};
 use relate_ir::{BinaryOp, Expr, UnaryOp};
 use relate_names::{NamedToken, SmallName, Token};
 
@@ -531,7 +531,7 @@ pub(crate) fn subscript(graph: &ExecGraph<'_>, v: &Value, index: Value) -> Resul
                 Value::Int(i) => i,
                 _ => {
                     return Err(Error::invalid_argument_type(
-                        "list index must be an integer",
+                        integer_args::LIST_INDEX.type_error,
                     ))
                 }
             };
@@ -608,7 +608,7 @@ fn slice_bounds(
         let i = match b {
             None => missing,
             Some(v) => {
-                let i = super::numeric::int_arg(Some(v)).ok_or_else(|| Error::ty(what))?;
+                let i = super::numeric::int_arg(v).ok_or_else(|| Error::ty(what))?;
                 // Only the FLOAT coercion is int32-exact; an INTEGER bound
                 // is a long that clamps.
                 if matches!(v, Value::Float(_))

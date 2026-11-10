@@ -21,9 +21,12 @@ use crate::pattern::{check_path_exprs, check_pattern_pred_vars};
 use crate::validate::{clause_is_write, validate_part_with_env};
 
 mod function_meta;
+mod literal;
 pub(crate) mod shadowing;
 
 use function_meta::apply_function_meta;
+pub(crate) use literal::float_integer_site;
+use literal::{is_non_integer_literal, is_static_non_bool};
 use shadowing::{reject_binding_shadowing, reject_projection_shadowing};
 
 pub(crate) fn check_expr(
@@ -69,35 +72,6 @@ pub(crate) fn is_delete_target(expr: &Expr) -> bool {
     )
 }
 
-fn is_static_non_bool(expr: &Expr) -> bool {
-    if matches!(
-        expr,
-        Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::String(_)
-            | Expr::List(_)
-            | Expr::Map(_)
-            | Expr::CountStar
-    ) {
-        return true;
-    }
-    // A plan-cache placeholder is the literal it replaced. Bool and null
-    // stay legal boolean operands; a caller's parameter is not looked up.
-    let Expr::Parameter(name) = expr else {
-        return false;
-    };
-    matches!(
-        relate_core::auto_literal(name),
-        Some(
-            relate_core::Value::Int(_)
-                | relate_core::Value::Float(_)
-                | relate_core::Value::String(_)
-                | relate_core::Value::List(_)
-                | relate_core::Value::Map(_)
-        )
-    )
-}
-
 /// The one property-access-on-non-map rejection: a variable bound to a
 /// path, scalar, or list has no properties to read. Shared by the
 /// `Expr::Property` arm and the map projection's `.key` shorthand (which
@@ -130,54 +104,6 @@ pub(crate) fn check_nonneg_int_arg(expr: &Expr) -> Result<()> {
     }
 }
 
-/// ADR-0175 (statically-known floats): a float *literal*, sign included —
-/// the parser splits `-1.5` into a unary minus over the literal, and both
-/// spellings are the same float-literal mistake Neo4j's static FLOAT gate
-/// rejects at compile time (22N27 / 22NB1). Constant float *expressions*
-/// (`0.0/0.0`, `head([1.0, 'x'])`, …) are not literals and are handled at
-/// runtime — the ADR's recorded compile-vs-runtime deviation.
-fn is_float_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Float(_) => true,
-        // The float a plan-cache placeholder replaced (ADR-0503).
-        Expr::Parameter(name) => {
-            matches!(
-                relate_core::auto_literal(name),
-                Some(relate_core::Value::Float(_))
-            )
-        }
-        Expr::Unary {
-            op: UnaryOp::Minus,
-            expr,
-        } => is_float_literal(expr),
-        _ => false,
-    }
-}
-
-/// Whether `expr` is a float literal, including a plan-cache placeholder
-/// for one. `pub(crate)` so the plan walk can share this predicate.
-pub(crate) fn is_bound_float_literal(expr: &Expr) -> bool {
-    is_float_literal(expr)
-}
-
-/// ADR-0175: reject a float literal at an integer-argument site with the
-/// same `InvalidArgumentType` kind the site raises at runtime
-/// (`Error::invalid_argument_type`); `what` names the site ("range()
-/// start", "list index must be an integer", …). For `range()` the rendered
-/// message matches the runtime failure; for `substring()`/`left()`/
-/// `right()`/slice the wording is plan-time-only — at runtime those sites
-/// coerce floats (truncate toward zero, NaN → 0, saturate) and only raise
-/// `NumberOutOfRange` with different wording. Relate has no static
-/// float typing, so every non-literal float is still handled by the runtime
-/// rules. The sites themselves are rows in the `function_meta`
-/// module's rule table.
-fn reject_float_literal(expr: &Expr, what: &str) -> Result<()> {
-    if is_float_literal(expr) {
-        return Err(Error::invalid_argument_type(what));
-    }
-    Ok(())
-}
-
 pub(crate) fn check_positive_int_arg(expr: &Expr, what: &str) -> Result<()> {
     match expr {
         Expr::Int(i) if *i <= 0 => Err(Error::syntax(format!(
@@ -189,9 +115,9 @@ pub(crate) fn check_positive_int_arg(expr: &Expr, what: &str) -> Result<()> {
         } if matches!(expr.as_ref(), Expr::Int(_) | Expr::Float(_)) => Err(Error::syntax(format!(
             "InvalidArgument: {what} must be a positive integer"
         ))),
-        Expr::Float(_) | Expr::String(_) | Expr::Bool(_) | Expr::List(_) | Expr::Map(_) => Err(
-            Error::syntax(format!("InvalidArgumentType: {what} must be an integer")),
-        ),
+        _ if is_non_integer_literal(expr) => Err(Error::syntax(format!(
+            "InvalidArgumentType: {what} must be an integer"
+        ))),
         _ => Ok(()),
     }
 }
@@ -291,6 +217,16 @@ fn check_subquery_expression(
         )?;
     }
     query_output_names_with_seed(&scoped_query, imported, &std::collections::HashSet::new())
+}
+
+/// ADR-0175: reject a float literal at the integer site `expr` carries,
+/// naming that site's authored detail ([`float_integer_site`] owns the
+/// list).
+fn reject_float_integer_site(expr: &Expr) -> Result<()> {
+    match float_integer_site(expr) {
+        Some(site) => Err(Error::invalid_argument_type(site.type_error)),
+        None => Ok(()),
+    }
 }
 
 fn check_expr_ctx(
@@ -577,17 +513,12 @@ fn check_expr_ctx(
         // runtime (Neo4j's 22N27/22NB1 static gate fires at the same phase);
         // non-literal floats are handled at runtime.
         Expr::Subscript { expr: inner, index } => {
-            reject_float_literal(index, "list index must be an integer")?;
+            reject_float_integer_site(expr)?;
             check_expr(env, is_write_procedure, inner)?;
             check_expr(env, is_write_procedure, index)?;
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(s) = start {
-                reject_float_literal(s, "slice start must be an integer")?;
-            }
-            if let Some(e) = end {
-                reject_float_literal(e, "slice end must be an integer")?;
-            }
+        Expr::Slice { .. } => {
+            reject_float_integer_site(expr)?;
             expr.try_each_child(&mut |child| check_expr(env, &mut *is_write_procedure, child))?;
         }
         // Every other variant (literals, parameters, label predicates,

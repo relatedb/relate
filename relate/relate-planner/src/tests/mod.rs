@@ -1,6 +1,7 @@
 //! The planner's test modules (split out of `lib.rs`, LABS-311 size gate).
 //! The helpers they share (`plan_of`, `rejection`) live in the crate root.
 
+mod function_args;
 mod semantic_error_corpus;
 
 use relate_front::parse_and_lower;
@@ -638,93 +639,5 @@ fn does_not_fold_rel_inequality() {
             assert!(patterns[0].rels[0].properties.is_none());
         }
         _ => unreachable!(),
-    }
-}
-
-// ADR-0175 (statically-known floats): a float *literal* at an
-// integer-argument site — range(), substring()/left()/right(), list
-// index, slice bounds — fails at plan time with the same
-// InvalidArgumentType kind the site raises at runtime (Neo4j's 22N27 /
-// 22NB1 static gate fires at the same phase). The planner raises
-// `Error::ty`: for range() and list index the rendered message matches
-// the runtime failure; for substring()/left()/right()/slice the wording
-// is plan-time-only — at runtime those sites coerce floats (truncate
-// toward zero, NaN → 0, saturate) and only raise NumberOutOfRange with
-// different wording, per ADR-0175. `parse_and_lower` must succeed (the
-// rejection is the planner's, not the front-end's).
-#[test]
-fn float_literals_at_integer_argument_sites_fail_at_plan_time() {
-    for (src, want) in [
-        (
-            "RETURN range(1.5, 5)",
-            "type error: InvalidArgumentType: range() start",
-        ),
-        (
-            "RETURN range(1, 5.9)",
-            "type error: InvalidArgumentType: range() end",
-        ),
-        (
-            "RETURN range(1, 10, 2.5)",
-            "type error: InvalidArgumentType: range() step",
-        ),
-        // The parser splits the sign into a unary minus; a signed float
-        // literal is the same mistake.
-        (
-            "RETURN range(-1.1, 1, 1)",
-            "type error: InvalidArgumentType: range() start",
-        ),
-        (
-            "RETURN substring('abcdef', 1.5)",
-            "type error: InvalidArgumentType: substring() start must be an integer",
-        ),
-        (
-            "RETURN substring('abcdef', 1, 2.5)",
-            "type error: InvalidArgumentType: substring() length must be an integer",
-        ),
-        (
-            "RETURN left('abcdef', 2.9)",
-            "type error: InvalidArgumentType: left() length must be an integer",
-        ),
-        (
-            "RETURN right('abcdef', 2.9)",
-            "type error: InvalidArgumentType: right() length must be an integer",
-        ),
-        (
-            "RETURN [1,2,3][1.0]",
-            "type error: InvalidArgumentType: list index must be an integer",
-        ),
-        (
-            "RETURN [1,2,3][1.0..2]",
-            "type error: InvalidArgumentType: slice start must be an integer",
-        ),
-        (
-            "RETURN [1,2,3][1..2.9]",
-            "type error: InvalidArgumentType: slice end must be an integer",
-        ),
-    ] {
-        let q = parse_and_lower(src)
-            .unwrap_or_else(|e| panic!("`{src}` must survive the front-end: {e}"));
-        let error = plan(q, &mut |_| false).expect_err(&format!("`{src}` must fail at plan time"));
-        assert_eq!(error.to_string(), want, "`{src}`");
-    }
-}
-
-#[test]
-fn non_literal_floats_at_integer_argument_sites_plan_fine() {
-    // Every non-literal float — a constant expression, a function call,
-    // a parameter, a variable — is handled at runtime (ADR-0175's
-    // recorded compile-vs-runtime deviation); planning must not reject
-    // it.
-    for src in [
-        "RETURN range(0.0/0.0, 5)",
-        "RETURN range(head([1.5, 'x']), 5)",
-        "RETURN substring('abcdef', head([1.5, 'x']))",
-        "RETURN left('abcdef', $n)",
-        "RETURN [1,2,3][head([1.0, 'x'])]",
-        "RETURN [1,2,3][head([1.5, 'x'])..2]",
-        "UNWIND [1.5] AS n RETURN range(n, 5)",
-    ] {
-        let q = parse_and_lower(src).unwrap();
-        assert!(plan(q, &mut |_| false).is_ok(), "`{src}` must plan");
     }
 }

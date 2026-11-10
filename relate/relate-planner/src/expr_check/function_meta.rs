@@ -5,10 +5,10 @@
 //! (`shadowing` sets the split precedent) so the checker file is the
 //! traversal/predicate policy and this file is the table machinery.
 
-use relate_core::{Error, Result, FUNCTION_REQUIRES_ONE_ARGUMENT};
+use relate_core::{integer_args, Error, Result, FUNCTION_REQUIRES_ONE_ARGUMENT};
 use relate_ir::Expr;
 
-use super::reject_float_literal;
+use super::literal::reject_non_integer_literal;
 use crate::binding::{Binding, Env, EnvBridge};
 
 /// Env-free per-name call rules: a rule judges the call's argument list and
@@ -33,7 +33,8 @@ struct FunctionMeta {
     arity: Option<(usize, &'static str)>,
     /// The call's argument-list shape rule.
     rule: Option<CallRule>,
-    /// ADR-0175 integer-argument sites: (argument index, site name).
+    /// ADR-0175 integer-argument sites: (argument index, authored detail
+    /// from [`relate_core::integer_args`]).
     int_sites: &'static [(usize, &'static str)],
     /// The binding kinds the first argument's variable may not be bound to,
     /// with the authored message — the `type`/`length`/`properties` family.
@@ -111,7 +112,7 @@ const FUNCTION_META: &[FunctionMeta] = &[
     arity_row("head", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
     arity_row("isempty", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
     arity_row("last", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    int_sites_row("left", &[(1, "left() length must be an integer")]),
+    int_sites_row("left", &[(1, integer_args::LEFT_LENGTH.type_error)]),
     kind_row(
         "length",
         &[Binding::Node, Binding::Rel, Binding::Scalar],
@@ -128,13 +129,13 @@ const FUNCTION_META: &[FunctionMeta] = &[
     int_sites_row(
         "range",
         &[
-            (0, "range() start"),
-            (1, "range() end"),
-            (2, "range() step"),
+            (0, integer_args::RANGE_START.type_error),
+            (1, integer_args::RANGE_END.type_error),
+            (2, integer_args::RANGE_STEP.type_error),
         ],
     ),
     arity_row("reverse", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    int_sites_row("right", &[(1, "right() length must be an integer")]),
+    int_sites_row("right", &[(1, integer_args::RIGHT_LENGTH.type_error)]),
     arity_row("sinh", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
     FunctionMeta {
         name: "size",
@@ -147,8 +148,8 @@ const FUNCTION_META: &[FunctionMeta] = &[
     int_sites_row(
         "substring",
         &[
-            (1, "substring() start must be an integer"),
-            (2, "substring() length must be an integer"),
+            (1, integer_args::SUBSTRING_START.type_error),
+            (2, integer_args::SUBSTRING_LENGTH.type_error),
         ],
     ),
     arity_row("tail", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
@@ -180,12 +181,12 @@ const FUNCTION_META: &[FunctionMeta] = &[
 /// Apply the [`FUNCTION_META`] row for `name`, if any.
 ///
 /// The column order is the historical one: the argument-list shape rule,
-/// then the ADR-0175 integer-argument sites (float literals fail at plan
-/// time; non-literal floats are handled at runtime), then the 42I13 arity
-/// contract, then the binding-kind gate, then the env-dependent rule. No
-/// name carries two columns whose relative order would matter today, but
-/// the sequence is stated once so a future row cannot reorder it by
-/// accident.
+/// then the ADR-0175 integer-argument sites (a non-INTEGER literal fails
+/// at plan time; a non-literal value is handled at runtime), then the
+/// 42I13 arity contract, then the binding-kind gate, then the env-dependent
+/// rule. No name carries two columns whose relative order would matter
+/// today, but the sequence is stated once so a future row cannot reorder
+/// it by accident.
 pub(super) fn apply_function_meta(env: &Env, name: &str, args: &[Expr]) -> Result<()> {
     let Some(meta) = FUNCTION_META.iter().find(|meta| meta.name == name) else {
         return Ok(());
@@ -195,7 +196,7 @@ pub(super) fn apply_function_meta(env: &Env, name: &str, args: &[Expr]) -> Resul
     }
     for &(index, what) in meta.int_sites {
         if let Some(arg) = args.get(index) {
-            reject_float_literal(arg, what)?;
+            reject_non_integer_literal(arg, what)?;
         }
     }
     if let Some((expected, message)) = meta.arity {

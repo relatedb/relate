@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use relate_core::{
-    expected_type_detail, value_type_name, Error, ErrorKind, Result, Value,
+    expected_type_detail, integer_args, value_type_name, Error, ErrorKind, Result, Value,
     FUNCTION_REQUIRES_ONE_ARGUMENT,
 };
 use relate_ir::QuantifierKind;
@@ -212,14 +212,14 @@ pub(crate) fn range_plan(vals: &[Value]) -> Result<RangePlan> {
     // semantics (truncate toward zero, NaN → 0, ±Infinity and
     // out-of-range saturate at the i64 limits); every non-numeric
     // argument stays a type error.
-    let int_arg_or_type_error = |v: Option<&Value>, what: &str| {
-        super::super::numeric::int_arg(v)
-            .ok_or_else(|| Error::invalid_argument_type(format!("range() {what}")))
+    let int_arg_or_type_error = |v: Option<&Value>, detail: &str| {
+        v.and_then(super::super::numeric::int_arg)
+            .ok_or_else(|| Error::invalid_argument_type(detail))
     };
-    let start = int_arg_or_type_error(vals.first(), "start")?;
-    let end = int_arg_or_type_error(vals.get(1), "end")?;
+    let start = int_arg_or_type_error(vals.first(), integer_args::RANGE_START.type_error)?;
+    let end = int_arg_or_type_error(vals.get(1), integer_args::RANGE_END.type_error)?;
     let step = if vals.len() >= 3 {
-        int_arg_or_type_error(vals.get(2), "step")?
+        int_arg_or_type_error(vals.get(2), integer_args::RANGE_STEP.type_error)?
     } else {
         1
     };

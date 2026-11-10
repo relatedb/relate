@@ -16,10 +16,14 @@
 //!   raises `integer out of range`.
 //! - `SKIP` / `LIMIT` and the list index reject every runtime float
 //!   (including 1.0, NaN, ±Infinity) with InvalidArgumentType.
-//! - Float *literals* at those sites fail at plan time with the same
-//!   InvalidArgumentType kind (the `†` rows — the planner raises them, so
-//!   they surface as `type error:` before execution; the planner unit
-//!   tests in relate-planner pin the plan-time phase).
+//! - A non-INTEGER *literal* at the `range()` / `substring()` / `left()` /
+//!   `right()` sites (and a float literal at list index / slice) fails at
+//!   plan time with the same InvalidArgumentType kind (the `†` rows — the
+//!   planner raises them, so they surface as `type error:` before
+//!   execution; the planner unit tests in relate-planner pin the phase).
+//!   A non-numeric runtime value (`head(['x', '1'])`, a parameter) takes
+//!   that rejection from the executor's argument coercion, and only a
+//!   genuinely absent argument keeps the historical default.
 //! - `(-9223372036854775808) / -1` wraps to -9223372036854775808 and
 //!   `% -1` is 0 (Neo4j's plain Java operators); `+` / `-` / `*` / unary
 //!   `-` keep raising `integer out of range`.
@@ -457,6 +461,74 @@ fn adr0175_other_sites_probe_rows() {
     assert_eq!(rows.len(), 83, "one row per ADR-0175 other-sites probe row");
     for (query, expect) in &rows {
         check(&g, query, expect);
+    }
+}
+
+/// LABS-1306: a *present* start/length that is not a number is the call's
+/// type rejection, never the absent-argument default. Live Neo4j
+/// 2026.10.1 (probed 2026-11-10) reports a `SyntaxError` type mismatch for
+/// the literal spellings and a `TypeError` for the runtime-typed ones;
+/// Relate rejects the literal at plan time and the runtime value from the
+/// argument coercion. A null still nulls the call first, and an absent
+/// argument keeps the documented default.
+#[test]
+fn non_numeric_index_args_are_type_rejections() {
+    let g = Graph::default();
+    for (query, expect) in [
+        // Literals: plan-time rejection.
+        (
+            "RETURN substring('abcdef', 'x') AS v",
+            Expect::Err("type error: InvalidArgumentType: substring() start must be an integer"),
+        ),
+        (
+            "RETURN substring('abcdef', 1, 'x') AS v",
+            Expect::Err("type error: InvalidArgumentType: substring() length must be an integer"),
+        ),
+        (
+            "RETURN left('abcdef', 'x') AS v",
+            Expect::Err("type error: InvalidArgumentType: left() length must be an integer"),
+        ),
+        (
+            "RETURN right('abcdef', 'x') AS v",
+            Expect::Err("type error: InvalidArgumentType: right() length must be an integer"),
+        ),
+        (
+            "RETURN substring('abcdef', true) AS v",
+            Expect::Err("type error: InvalidArgumentType: substring() start must be an integer"),
+        ),
+        // A temporal constructor call the front end folds to an eager
+        // value is a literal too, not an INTEGER one.
+        (
+            "RETURN substring('abcdef', date('2020-01-01')) AS v",
+            Expect::Err("type error: InvalidArgumentType: substring() start must be an integer"),
+        ),
+        // Runtime-typed values: the coercion's rejection.
+        (
+            "RETURN substring('abcdef', head(['x', '1'])) AS v",
+            Expect::Err("type error: InvalidArgumentType: substring() start must be an integer"),
+        ),
+        (
+            "RETURN substring('abcdef', 1, head(['x', '2'])) AS v",
+            Expect::Err("type error: InvalidArgumentType: substring() length must be an integer"),
+        ),
+        (
+            "RETURN left('abcdef', head(['x', '1'])) AS v",
+            Expect::Err("type error: InvalidArgumentType: left() length must be an integer"),
+        ),
+        (
+            "RETURN right('abcdef', head(['x', '1'])) AS v",
+            Expect::Err("type error: InvalidArgumentType: right() length must be an integer"),
+        ),
+        // A null still nulls the call, and a missing argument keeps the
+        // historical default rather than erroring.
+        (
+            "RETURN substring('abcdef', head([null, 'x'])) AS v",
+            Expect::V(Value::Null),
+        ),
+        ("RETURN substring('abcdef') AS v", Expect::V(s("abcdef"))),
+        ("RETURN left('abcdef') AS v", Expect::V(s(""))),
+    ] {
+        check(&g, query, &expect);
     }
 }
 

@@ -1,8 +1,18 @@
-use relate_core::ErrorKind;
+use relate_core::{integer_args, ErrorKind};
 
 use super::super::render_scalar;
 use super::*;
 use crate::graph::Graph;
+
+/// The type rejection's two pins: the typed `InvalidArgumentType` variant
+/// and the site's authored detail text.
+fn assert_type_rejection(err: &Error, detail: &str) {
+    assert!(matches!(err, Error::InvalidArgumentType(_)), "{err}");
+    assert_eq!(
+        err.to_string(),
+        Error::invalid_argument_type(detail).to_string()
+    );
+}
 
 #[test]
 fn string_interp_concatenates_every_coerced_part() {
@@ -140,7 +150,7 @@ fn substring_counts_characters_and_clamps_at_the_boundaries() {
     assert_eq!(sub(vec![s(MB), int(9), int(2)]), s(""));
     assert_eq!(sub(vec![s(""), int(0), int(1)]), s(""));
     // ADR-0175: a negative or beyond-int32 position is NumberOutOfRange;
-    // a float truncates; a missing or non-numeric position is ignored.
+    // a float truncates.
     let assert_oor = |vals: Vec<Value>, detail: &str| {
         assert_number_out_of_range(bi_substring(&graph, "substring", vals).unwrap_err(), detail);
     };
@@ -179,6 +189,40 @@ fn substring_counts_characters_and_clamps_at_the_boundaries() {
             .to_string(),
         Error::ty("substring() needs a string").to_string()
     );
+}
+
+/// A *present* non-numeric start/length is the call's own type rejection,
+/// never the absent-argument default (live Neo4j 2026.10.1:
+/// `substring('abcdef','x')` is a type mismatch, not `'abcdef'`).
+#[test]
+fn substring_rejects_non_numeric_start_and_length() {
+    let g = Graph::default();
+    let graph = ExecGraph::read(&g);
+    let s = |v: &str| Value::String(v.into());
+    let int = Value::Int;
+    let sub = |vals: Vec<Value>| bi_substring(&graph, "substring", vals);
+
+    // A missing start keeps the documented default.
+    assert_eq!(sub(vec![s(MB)]).unwrap(), s(MB));
+    for (vals, site) in [
+        (vec![s(MB), s("x")], &integer_args::SUBSTRING_START),
+        (vec![s(MB), int(0), s("x")], &integer_args::SUBSTRING_LENGTH),
+        (
+            vec![s(MB), Value::Bool(true)],
+            &integer_args::SUBSTRING_START,
+        ),
+        (
+            vec![s(MB), Value::List(vec![int(1)].into())],
+            &integer_args::SUBSTRING_START,
+        ),
+        (
+            vec![s(MB), int(0), Value::Map(Default::default())],
+            &integer_args::SUBSTRING_LENGTH,
+        ),
+    ] {
+        let err = sub(vals).unwrap_err();
+        assert_type_rejection(&err, site.type_error);
+    }
 }
 
 #[test]
@@ -228,6 +272,21 @@ fn left_and_right_count_characters_and_clamp_at_the_boundaries() {
     let ty = Error::ty("expected string argument").to_string();
     assert_eq!(left(vec![int(1), int(2)]).unwrap_err().to_string(), ty);
     assert_eq!(right(vec![int(1), int(2)]).unwrap_err().to_string(), ty);
+}
+
+/// A *present* non-numeric length is the type rejection (live Neo4j
+/// 2026.10.1: `left('abcdef','x')` is a type mismatch), never the
+/// missing-length default.
+#[test]
+fn left_and_right_reject_non_numeric_length() {
+    let g = Graph::default();
+    let graph = ExecGraph::read(&g);
+    let s = |v: &str| Value::String(v.into());
+
+    let left = bi_left(&graph, "left", vec![s(MB), s("x")]).unwrap_err();
+    assert_type_rejection(&left, integer_args::LEFT_LENGTH.type_error);
+    let right = bi_right(&graph, "right", vec![s(MB), s("x")]).unwrap_err();
+    assert_type_rejection(&right, integer_args::RIGHT_LENGTH.type_error);
 }
 
 /// Neo4j counts code points, not bytes: `string.indexOf('a😀b','b')` is 2

@@ -307,12 +307,13 @@ pub(crate) fn float_to_i64(f: f64) -> i64 {
 /// ADR-0175's shared integer-argument coercion (`range()`,
 /// `substring()` / `left()` / `right()`, list-slice bounds): an INTEGER
 /// passes through, a FLOAT converts via [`float_to_i64`], and anything
-/// else — null, missing, or non-numeric — is `None` so the call site
-/// applies its own policy (type error, range gate, or default fallback).
-pub(crate) fn int_arg(v: Option<&Value>) -> Option<i64> {
+/// else — null or non-numeric — is `None` so the call site applies its
+/// own policy (type error, range gate, or default fallback). An absent
+/// argument is the caller's `None`, never this function's.
+pub(crate) fn int_arg(v: &Value) -> Option<i64> {
     match v {
-        Some(Value::Int(i)) => Some(*i),
-        Some(Value::Float(f)) => Some(float_to_i64(*f)),
+        Value::Int(i) => Some(*i),
+        Value::Float(f) => Some(float_to_i64(*f)),
         _ => None,
     }
 }

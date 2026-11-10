@@ -89,7 +89,14 @@ it or below 0 raises `NumberOutOfRange`
 `left('abcdef', head([-1.0, 'x']))` → error
 `NumberOutOfRange: left() length`). A float *literal* is rejected before
 execution (`substring('abcdef', 1.5)` → error
-`InvalidArgumentType: substring() start must be an integer`).
+`InvalidArgumentType: substring() start must be an integer`). Any other
+non-numeric `start`/`length` — a string, boolean, list or map, whether a
+literal or a runtime value — is the same type rejection rather than the
+absent-argument default (`substring('abcdef', 'x')` and
+`left('abcdef', head(['x', '1']))` → error
+`InvalidArgumentType: substring() start must be an integer` /
+`left() length must be an integer`); only a genuinely absent argument
+keeps the default, and a null one nulls the call.
 
 ### Numeric functions
 

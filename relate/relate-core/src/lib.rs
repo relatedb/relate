@@ -18,6 +18,7 @@ mod error;
 /// helpers both error channels render through.
 mod error_kinds;
 pub mod file_identity;
+pub mod integer_args;
 mod memory_limit;
 mod namespace;
 mod preview;

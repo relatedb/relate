@@ -129,29 +129,9 @@ pub fn plan_has_bound_float_integer_site(
     params: &std::collections::BTreeMap<String, relate_core::Value>,
 ) -> bool {
     let _auto = relate_core::AutoLiteralGuard::install(params);
-    let mut found = false;
-    walk_plan_exprs(plan, &mut |expr| {
-        if found {
-            return;
-        }
-        match expr {
-            Expr::Subscript { index, .. } if crate::expr_check::is_bound_float_literal(index) => {
-                found = true;
-            }
-            Expr::Slice { start, end, .. }
-                if start
-                    .as_deref()
-                    .is_some_and(crate::expr_check::is_bound_float_literal)
-                    || end
-                        .as_deref()
-                        .is_some_and(crate::expr_check::is_bound_float_literal) =>
-            {
-                found = true;
-            }
-            _ => {}
-        }
-    });
-    found
+    plan_any_expr(plan, &mut |expr| {
+        crate::expr_check::float_integer_site(expr).is_some()
+    })
 }
 
 /// The parameter names `plan` references (`$name`), each once, in the
