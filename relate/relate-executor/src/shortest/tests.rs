@@ -1,7 +1,7 @@
 //! The shared searches called directly: trails as relationship ids, the
 //! pair search's dispatch, and the followable-pattern check.
 
-use relate_core::RelId;
+use relate_core::{NodeId, RelId};
 use relate_front::parse_and_lower;
 use relate_ir::{Clause, Direction, PatternElement};
 
@@ -9,6 +9,7 @@ use crate::exec::test_support::{build, Built};
 use crate::overlay::ExecGraph;
 use crate::store::RelTypes;
 
+use super::layered::Dag;
 use super::test_support::counting_expands;
 use super::{followable, pair, path_from_trail, Search};
 
@@ -76,10 +77,14 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
     );
     let view = ExecGraph::read(&g);
     let s = search(&view, Direction::Outgoing, 8);
-    let all = s.dag(n[0], true, None, |_, _| Ok(false)).unwrap();
+    let (all, layers) = layers_of(&s, n[0], true);
     // Newest-first expansion (ADR-0203): node 0's out-chunk walks r[2]
-    // (0→2) before r[0] (0→1), so the BFS order visits 2 before 1.
-    assert_eq!(all.order(), &[n[2], n[1], n[3], n[4]]);
+    // (0→2) before r[0] (0→1), so the BFS order visits 2 before 1. The
+    // layers arrive as they complete: the origin alone, then each depth.
+    assert_eq!(
+        layers,
+        vec![vec![n[0]], vec![n[2], n[1]], vec![n[3]], vec![n[4]]]
+    );
     assert_eq!(
         sorted(all.trails(&view, n[4]).unwrap()),
         vec![vec![r[0], r[1], r[4]], vec![r[2], r[3], r[4]]]
@@ -90,10 +95,46 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
     let stopped = s.dag(n[0], true, None, |id, _| Ok(id == n[3])).unwrap();
     assert_eq!(stopped.trails(&view, n[3]).unwrap().len(), 2);
     assert!(stopped.trails(&view, n[4]).unwrap().is_empty());
-    let shallow = search(&view, Direction::Outgoing, 1)
-        .dag(n[0], true, None, |_, _| Ok(false))
+    let (_, shallow) = layers_of(&search(&view, Direction::Outgoing, 1), n[0], true);
+    assert_eq!(shallow, vec![vec![n[0]], vec![n[2], n[1]]]);
+
+    // A consumer that halts after the first layer stops the search there:
+    // only the origin's two relationships were followed, nothing deeper.
+    let mut seen = 0;
+    let ((), expands) = counting_expands(|| {
+        s.dag_layers(
+            n[0],
+            true,
+            None,
+            |_, _| Ok(false),
+            |_, _| {
+                seen += 1;
+                Ok(seen == 2)
+            },
+        )
         .unwrap();
-    assert_eq!(shallow.order(), &[n[2], n[1]]);
+    });
+    assert_eq!(seen, 2, "the origin layer, then the first depth");
+    assert_eq!(expands, 2);
+}
+
+/// The layered search of `s` from `origin`, with every layer the consumer
+/// was handed, in order: the origin alone, then each depth's new nodes.
+fn layers_of(s: &Search<'_, '_>, origin: NodeId, all: bool) -> (Dag, Vec<Vec<NodeId>>) {
+    let mut layers = Vec::new();
+    let dag = s
+        .dag_layers(
+            origin,
+            all,
+            None,
+            |_, _| Ok(false),
+            |_, layer| {
+                layers.push(layer.to_vec());
+                Ok(false)
+            },
+        )
+        .unwrap();
+    (dag, layers)
 }
 
 #[test]

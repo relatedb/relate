@@ -15,19 +15,15 @@ use super::Search;
 /// it reached.
 pub(crate) struct Dag {
     origin: NodeId,
-    /// First predecessor of each reached node other than the origin.
-    first: FxMap<NodeId, (NodeId, RelId)>,
+    /// Depth and first predecessor of each reached node other than the
+    /// origin. The origin is never a member: a hop back to it is ignored
+    /// at admission, so every entry carries a real first predecessor.
+    first: FxMap<NodeId, (u32, (NodeId, RelId))>,
     /// Later same-depth predecessors; all-path searches only.
     more: FxMap<NodeId, Vec<(NodeId, RelId)>>,
-    /// Reached nodes other than the origin, in discovery order.
-    order: Vec<NodeId>,
 }
 
 impl Dag {
-    pub(crate) fn order(&self) -> &[NodeId] {
-        &self.order
-    }
-
     /// Every trail the search holds from its origin to `target`, origin
     /// first: all predecessor chains of an all-path search, the first chain
     /// otherwise. Empty when `target` was not reached.
@@ -39,7 +35,7 @@ impl Dag {
         let mut stack = vec![(target, Vec::new())];
         while let Some((at, mut rev)) = stack.pop() {
             graph.cancel_tick()?;
-            let Some(&(prev, rid)) = self.first.get(&at) else {
+            let Some(&(_, (prev, rid))) = self.first.get(&at) else {
                 rev.reverse();
                 out.push(rev);
                 continue;
@@ -73,21 +69,39 @@ impl Search<'_, '_> {
         origin: NodeId,
         all: bool,
         skip: Option<RelId>,
-        mut stop: impl FnMut(NodeId, u32) -> Result<bool>,
+        stop: impl FnMut(NodeId, u32) -> Result<bool>,
     ) -> Result<Dag> {
-        // Depth and first predecessor of each reached node. The origin is
-        // never a member: it is carried by the `Dag` itself, and a hop
-        // back to it is ignored at admission below — so every entry
-        // carries a real first predecessor and no `Option` is needed.
+        self.dag_layers(origin, all, skip, stop, |_, _| Ok(false))
+    }
+
+    /// [`Self::dag`] reporting each layer as it completes (ADR-0555): after
+    /// the origin (depth 0, alone) and after every layer of newly reached
+    /// nodes, `on_layer` gets the search so far and that layer's nodes in
+    /// discovery order (the search keeps no list of every reached node). A node's
+    /// predecessors are final once its layer completes (later arrivals are
+    /// one layer deeper), so the layer's trails can be read and emitted at
+    /// once; the deeper layers are never expanded when `on_layer` returns
+    /// true, which is how a halted consumer stops the search itself.
+    pub(crate) fn dag_layers(
+        &self,
+        origin: NodeId,
+        all: bool,
+        skip: Option<RelId>,
+        mut stop: impl FnMut(NodeId, u32) -> Result<bool>,
+        mut on_layer: impl FnMut(&Dag, &[NodeId]) -> Result<bool>,
+    ) -> Result<Dag> {
         // Dense engine-id keys: the dense-id hasher rule (ADR-0355,
         // LABS-337), `hash_seed::FxMap`.
-        let mut reach: FxMap<NodeId, (u32, (NodeId, RelId))> = FxMap::default();
-        let mut more: FxMap<NodeId, Vec<(NodeId, RelId)>> = FxMap::default();
-        let mut order = Vec::new();
+        let mut dag = Dag {
+            origin,
+            first: FxMap::default(),
+            more: FxMap::default(),
+        };
         let mut stopped = stop(origin, 0)?;
+        let mut halted = on_layer(&dag, &[origin])?;
         let mut frontier = vec![origin];
         let mut depth = 0;
-        while !stopped && !frontier.is_empty() && depth < self.max {
+        while !stopped && !halted && !frontier.is_empty() && depth < self.max {
             let next_depth = depth + 1;
             let mut next = Vec::new();
             for &cur in &frontier {
@@ -96,15 +110,14 @@ impl Search<'_, '_> {
                     if Some(rid) == skip || n == origin {
                         return Ok(());
                     }
-                    match reach.entry(n) {
+                    match dag.first.entry(n) {
                         Entry::Vacant(v) => {
                             v.insert((next_depth, (cur, rid)));
-                            order.push(n);
                             next.push(n);
                             stopped |= stop(n, next_depth)?;
                         }
                         Entry::Occupied(o) if all && o.get().0 == next_depth => {
-                            more.entry(n).or_default().push((cur, rid));
+                            dag.more.entry(n).or_default().push((cur, rid));
                         }
                         Entry::Occupied(_) => {}
                     }
@@ -114,19 +127,16 @@ impl Search<'_, '_> {
                     break;
                 }
             }
+            // The layer is complete (or, for a first-predecessor search
+            // stopped inside it, final for every node it reached).
+            // An empty layer reports nothing: the search simply ends.
+            if !next.is_empty() {
+                halted = on_layer(&dag, &next)?;
+            }
             frontier = next;
             depth = next_depth;
         }
-        // Depth only served the search; the result keeps predecessors,
-        // in the one hasher family.
-        let first: FxMap<NodeId, (NodeId, RelId)> =
-            reach.into_iter().map(|(n, (_, pred))| (n, pred)).collect();
-        Ok(Dag {
-            origin,
-            first,
-            more,
-            order,
-        })
+        Ok(dag)
     }
 
     /// The shortest closed trails through `s`, of length 1 to `max`: a first

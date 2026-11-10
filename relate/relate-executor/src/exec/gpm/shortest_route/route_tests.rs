@@ -551,3 +551,40 @@ fn exists_probe_halts_the_filtered_trail_walk() {
     assert!(counts.route_runs > 0, "the probe must ride the route");
     assert_eq!(sorted(rows), expect(&[&[Bool(true)]]));
 }
+
+/// A halted probe stops the search itself (ADR-0555): the fan emits each
+/// layer's partitions as the layer completes, so an EXISTS probe that the
+/// first layer answers never expands the deeper layers. The same pattern
+/// counted in full walks the whole ball, so the probe follows strictly
+/// fewer relationships.
+#[test]
+fn an_exists_probe_stops_the_fan_after_its_first_answering_layer() {
+    let b = Builder::new();
+    // 0 -> 1..=5, and each of 1..=5 fans out to 20 leaves: a ball whose
+    // second layer is far larger than its first.
+    let root = b.node("0", &["N"]);
+    for i in 1..=5 {
+        let mid = b.node(&i.to_string(), &["N"]);
+        b.rel(root, mid, "R", &[]);
+        for j in 0..20 {
+            let leaf = b.node(&format!("{i}_{j}"), &["N"]);
+            b.rel(mid, leaf, "R", &[]);
+        }
+    }
+    let g = b.done();
+    // One pattern, two wrappers: the runs drive the identical search, so
+    // their expansion counts are comparable.
+    let pattern = "p = ANY SHORTEST (a {id: '0'})-[:R*..3]->(b)";
+    let probe = format!("RETURN EXISTS {{ MATCH {pattern} }} AS found");
+    let full = format!("MATCH {pattern} RETURN count(*) AS n");
+    let (rows, probe_counts) = run(&g, &probe);
+    assert!(probe_counts.route_runs > 0, "the probe must ride the route");
+    assert_eq!(sorted(rows), vec![vec![Value::Bool(true)]]);
+    let (_, full_counts) = run(&g, &full);
+    assert!(
+        probe_counts.expands < full_counts.expands,
+        "the probe must not expand the deeper layers: {} vs {}",
+        probe_counts.expands,
+        full_counts.expands
+    );
+}

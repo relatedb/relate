@@ -410,17 +410,6 @@ impl<'a> Route<'a> {
         Ok(gpm_bind_node(self.ctx.graph, self.shape.start, id, &mut row).then_some(row))
     }
 
-    /// A layered search from `origin`; an all-path selector keeps every
-    /// shortest predecessor.
-    fn dag(
-        &self,
-        search: Search<'_, '_>,
-        origin: NodeId,
-        stop: impl FnMut(NodeId, u32) -> Result<bool>,
-    ) -> Result<Dag> {
-        search.dag(origin, self.shape.all, None, stop)
-    }
-
     /// Both endpoints fixed: the pair search for single-path selectors, the
     /// layered search stopped at `e` for all-path ones.
     fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut RouteSink<'_>) -> Result<()> {
@@ -429,7 +418,8 @@ impl<'a> Route<'a> {
         };
         self.partition(s, e, &srow, out, || {
             if self.shape.all {
-                self.dag(self.search.clone(), s, |n, _| Ok(n == e))?
+                self.search
+                    .dag(s, self.shape.all, None, |n, _| Ok(n == e))?
                     .trails(self.ctx.graph, e)
             } else {
                 Ok(pair(&self.search, s, e)?.into_iter().collect())
@@ -439,7 +429,9 @@ impl<'a> Route<'a> {
 
     /// One endpoint fixed: one layered search from it, `way` saying which,
     /// reaches every node at the other end. Each reached node, and the
-    /// origin itself, is one partition.
+    /// origin itself, is one partition — emitted as its layer of the search
+    /// completes (ADR-0555), so a halted consumer stops the search before
+    /// its deeper layers are expanded.
     fn fan(&self, origin: NodeId, way: Way, out: &mut RouteSink<'_>) -> Result<()> {
         // Forward, the origin is the start, bound once; backward, each
         // reached node is a start, bound in its own partition.
@@ -452,25 +444,46 @@ impl<'a> Route<'a> {
             }
             Way::Backward => (self.search.reversed(), None),
         };
-        let dag = self.dag(search, origin, |_, _| Ok(false))?;
-        for &far in std::iter::once(&origin).chain(dag.order()) {
-            if self.halted() {
-                break;
-            }
-            self.ctx.graph.cancel_tick()?;
-            let (s, e) = way.ends(origin, far);
-            let srow = match &origin_row {
-                Some(row) => Cow::Borrowed(row),
-                None => match self.bind_start(s)? {
-                    Some(row) => Cow::Owned(row),
-                    None => continue,
-                },
-            };
-            self.partition(s, e, &srow, out, || {
-                Ok(way.orient(dag.trails(self.ctx.graph, far)?))
-            })?;
-        }
+        search.dag_layers(
+            origin,
+            self.shape.all,
+            None,
+            |_, _| Ok(false),
+            |dag, layer| {
+                // The layer rides the route's one per-candidate loop.
+                self.each_of(layer, |far| {
+                    self.fan_partition(dag, origin, far, way, origin_row.as_ref(), out)
+                })?;
+                Ok(self.halted())
+            },
+        )?;
         Ok(())
+    }
+
+    /// The partition of `far`, a node a fan search reached from `origin`:
+    /// the start row (the forward fan's one bound origin row, or the
+    /// reached node's own binding for a backward fan), then the trails the
+    /// search holds to `far`.
+    fn fan_partition(
+        &self,
+        dag: &Dag,
+        origin: NodeId,
+        far: NodeId,
+        way: Way,
+        origin_row: Option<&Row>,
+        out: &mut RouteSink<'_>,
+    ) -> Result<()> {
+        let (s, e) = way.ends(origin, far);
+        let srow = match origin_row {
+            Some(row) => Cow::Borrowed(row),
+            None => match self.bind_start(s)? {
+                Some(row) => Cow::Owned(row),
+                None => return Ok(()),
+            },
+        };
+        self.partition(s, e, &srow, out, || {
+            Ok(way.orient(dag.trails(self.ctx.graph, far)?))
+        })
     }
 
     /// Emit the (s, e) partition of a row with the start bound: nothing
