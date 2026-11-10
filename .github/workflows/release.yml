@@ -833,11 +833,12 @@ jobs:
 
       # docker_smoke.py connects to the running container over Bolt with the
       # official Python driver, so a broken entrypoint, binary or auth setup
-      # fails here instead of reaching ECR. Same pin as scripts/bolt-smoke.sh.
+      # fails here instead of reaching ECR. 6.x, because the 5.x driver
+      # rejects any server agent that doesn't start with Neo4j/.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install neo4j==5.28.8
+      - run: python -m pip install neo4j==6.4.1
 
       # The build pulls its base images from Docker Hub, which rate-limits
       # anonymous pulls per IP, and hosted runners share IPs (LABS-248).
