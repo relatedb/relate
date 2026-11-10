@@ -20,7 +20,7 @@
 
 use super::qpp_hops;
 use crate::exec::kernels::with_frontier_disabled;
-use crate::exec::test_support::{column, exec_cypher, path_value, Builder};
+use crate::exec::test_support::{column, exec_cypher, fan_in, path_value, Builder};
 use crate::graph::Graph;
 
 /// A small undirected `LINK` ring around a hub: the var-length walks from
@@ -286,4 +286,37 @@ fn exists_probe_answers_what_the_engine_answers() {
             "EXISTS vs the engine's count on n{k}"
         );
     }
+}
+
+/// The GPM selector path's half of the cap charge (LABS-1301): a selector
+/// the route declines (`SHORTEST 2` — the route takes only the count-1
+/// shapes) enumerates through the selector tail, and a `LIMIT` over it
+/// used to leave the cap uncharged, so the caller's input-row loop ran
+/// every row. The observable is the funnel's node-read count: the capped
+/// run resolves the unbound `:B` candidates once, the eager run once per
+/// input row.
+#[test]
+fn selector_limit_stops_the_input_row_loop_on_the_gpm_path() {
+    let graph = fan_in(20);
+
+    let q =
+        |limit: &str| format!("MATCH (a:A) MATCH p = SHORTEST 2 (a)-[:R*]-(b:B) RETURN p{limit}");
+    let _ = crate::ctx::take_node_reads();
+    let limited = exec_cypher(&graph, &q(" LIMIT 1"));
+    let limited_reads = crate::ctx::take_node_reads();
+    let _ = crate::ctx::take_node_reads();
+    let eager = exec_cypher(&graph, &q(""));
+    let eager_reads = crate::ctx::take_node_reads();
+    assert_eq!(limited.rows.len(), 1);
+    assert_eq!(eager.rows.len(), 20);
+    // Both runs pay the same one-off `:A` scan; the difference is the
+    // unbound `:B` resolution, which the capped run performs for one input
+    // row and the eager run for all twenty — the 19 rows the cap never
+    // reached.
+    assert_eq!(
+        eager_reads - limited_reads,
+        19,
+        "the cap must stop the loop after the first row: \
+         {limited_reads} reads vs eager {eager_reads}"
+    );
 }

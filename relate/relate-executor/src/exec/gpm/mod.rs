@@ -25,6 +25,7 @@ mod emit;
 mod qpp;
 mod selector;
 mod shortest_route;
+mod sink;
 mod walk;
 
 use crate::exec::rider::Rider;
@@ -33,6 +34,7 @@ use emit::GpmEmit;
 use qpp::gpm_expand_quantified;
 pub(crate) use selector::apply_gpm_selector;
 use shortest_route::match_shortest_route;
+use sink::MatchedSink;
 use walk::gpm_walk_elements;
 
 // The family-neutral pattern policies the GPM engine and the frontier
@@ -410,11 +412,20 @@ pub(crate) fn match_gpm_path(
     // below); the walk itself carries no residual (it checks inline
     // pattern predicates per element and the caller applies the WHERE
     // afterwards).
-    // The route pushes its rows through the rider/tail sink as it binds
-    // them (a probe answers and halts in place; a cap does not ride the
-    // route — the caller's projection keeps the LIMIT).
+    // The route pushes its rows through the sink as it binds them: a probe
+    // answers and halts in place, and a cap rides the sink's `finish_row`
+    // (LABS-1301 — the caller's row loop reads `MatchCap::full` to stop, so
+    // a routed `LIMIT` whose cap no path ever charges enumerates every
+    // input row for a prefix).
+    let route_halt = Cell::new(false);
     let mut routed = Matched::new();
-    let sink = shortest_route::RouteSink::new(rider.as_deref(), where_clause, tail, &mut routed);
+    let sink = MatchedSink::new(
+        rider.as_deref_mut(),
+        &route_halt,
+        where_clause,
+        tail,
+        &mut routed,
+    );
     if match_shortest_route(sink, ctx, path, rel_filters, &row, &used, match_mode)? {
         return Ok(routed);
     }
@@ -547,17 +558,24 @@ pub(crate) fn match_gpm_path(
     // candidates): answer from the selector's chosen rows instead — no
     // early exit, and the same filter policy (the residual pass the
     // riding spelling applies per offered row), so the verdict is the
-    // same by construction.
-    emit::answer_or_reduce(
-        ctx,
-        rider.as_deref(),
-        where_clause,
-        candidates
-            .into_iter()
-            .map(|state| (state.row, state.used))
-            .collect(),
-        tail,
-    )
+    // same by construction. A selector keeps the materializing walk
+    // (`mount_rider` declines every rider for one: the choice is
+    // cross-candidate, so the walk cannot halt mid-enumeration), and the
+    // cap that would otherwise ride it is charged here instead — through
+    // the same sink the route pushes through, so the count and the
+    // stopping rule are one spelling for both materializing tails. An
+    // uncharged cap never fills, so the caller's row loop never breaks
+    // and a `LIMIT` prefix costs the whole input enumeration (LABS-1301).
+    let selector_halt = Cell::new(false);
+    let mut out = Matched::new();
+    let mut sink = MatchedSink::new(rider, &selector_halt, where_clause, tail, &mut out);
+    for state in candidates {
+        if sink.halted() {
+            break;
+        }
+        sink.offer(ctx, state.row, || state.used)?;
+    }
+    Ok(out)
 }
 
 /// The per-candidate completion pipeline every complete state runs — the
@@ -648,30 +666,6 @@ fn bind_path_value(
     bind_path_names(row, path, rung, || {
         Value::from_path(materialize_path(graph, nodes, rels))
     });
-}
-
-/// The materializing tail over whole row sets — the enum's state model
-/// makes the two tails structural (F-1-5): a carry passes the rows
-/// through untouched (the used-set rides), and the finish arm routes
-/// each row through the one fused tail step (`finish_row`, cap `None` —
-/// the materializing tail owns no cap: a reduce's checks and projection
-/// under a reduce, the row moved straight through without one) and
-/// stores through the one per-row carry spelling (`store_row` — a
-/// finish tail's rows never carry: the closure is dropped unrun, the
-/// shared empty set is stored instead, LABS-822).
-fn apply_reduce(graph: &ExecGraph<'_>, rows: Matched, tail: MatchTail<'_>) -> Result<Matched> {
-    match tail {
-        MatchTail::Carry => Ok(rows),
-        MatchTail::Finish { .. } => {
-            let mut out = Vec::with_capacity(rows.len());
-            for (row, used) in rows {
-                if let Some(row) = tail.finish_row(graph, row, None)? {
-                    tail.store_row(row, || used, &mut out);
-                }
-            }
-            Ok(out)
-        }
-    }
 }
 
 /// The slice-entry policy every GpmState builder rides (one spelling):

@@ -22,8 +22,8 @@ use crate::row::{Row, RowRung};
 use crate::shortest::layered::Dag;
 use crate::shortest::{pair, path_from_trail, Search};
 
+use super::super::sink::MatchedSink;
 use super::guard::Shape;
-use super::sink::RouteSink;
 
 /// The pair product's candidate bound: past it, the product's
 /// bidirectional searches would out-count the fan's one ball per start,
@@ -137,9 +137,10 @@ pub(super) struct Route<'a> {
     /// trail's row (every trail binds the same names against the one
     /// input row), one per route, stamped by every later trail.
     path_rung: Cell<Option<RowRung>>,
-    /// The consumer's halt cell (a probe's verdict): raised once it needs no
-    /// more rows, read only through [`Self::halted`].
-    halt: Option<&'a Cell<bool>>,
+    /// The consumer's halt cell — a probe's verdict, or the collecting
+    /// sink's cap-full cell: raised once it needs no more rows, read only
+    /// through [`Self::halted`]. Every sink has one, so it is not optional.
+    halt: &'a Cell<bool>,
 }
 
 impl<'a> Route<'a> {
@@ -149,7 +150,7 @@ impl<'a> Route<'a> {
         row: &'a Row,
         shape: Shape<'a>,
         filter: Option<PathFilter<'a>>,
-        halt: Option<&'a Cell<bool>>,
+        halt: &'a Cell<bool>,
     ) -> Self {
         let rel = shape.rel;
         let search = Search {
@@ -192,7 +193,7 @@ impl<'a> Route<'a> {
     /// cannot decide declines (`false`) before any search runs or row is
     /// pushed, and the pattern enumerates instead. The run stops early once
     /// the sink is halted.
-    pub(super) fn run(&self, out: &mut RouteSink<'_>) -> Result<bool> {
+    pub(super) fn run(&self, out: &mut MatchedSink<'_, '_>) -> Result<bool> {
         if self.search.min > self.search.max {
             return Ok(true);
         }
@@ -474,7 +475,7 @@ impl<'a> Route<'a> {
     /// Whether the consumer needs no more rows — the one reader of the
     /// halt cell, consulted at the loop heads that fan out.
     fn halted(&self) -> bool {
-        self.halt.is_some_and(Cell::get)
+        self.halt.get()
     }
 
     /// The input row with the start node bound, or `None` when `id` fails
@@ -489,7 +490,7 @@ impl<'a> Route<'a> {
 
     /// Both endpoints fixed: the pair search for single-path selectors, the
     /// layered search stopped at `e` for all-path ones.
-    fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut RouteSink<'_>) -> Result<()> {
+    fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut MatchedSink<'_, '_>) -> Result<()> {
         let Some(srow) = self.bind_start(s)? else {
             return Ok(());
         };
@@ -509,7 +510,7 @@ impl<'a> Route<'a> {
     /// origin itself, is one partition — emitted as its layer of the search
     /// completes (ADR-0555), so a halted consumer stops the search before
     /// its deeper layers are expanded.
-    fn fan(&self, origin: NodeId, way: Way, out: &mut RouteSink<'_>) -> Result<()> {
+    fn fan(&self, origin: NodeId, way: Way, out: &mut MatchedSink<'_, '_>) -> Result<()> {
         // Forward, the origin is the start, bound once; backward, each
         // reached node is a start, bound in its own partition.
         let (search, origin_row) = match way {
@@ -548,7 +549,7 @@ impl<'a> Route<'a> {
         far: NodeId,
         way: Way,
         origin_row: Option<&Row>,
-        out: &mut RouteSink<'_>,
+        out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
         let (s, e) = way.ends(origin, far);
         let srow = match origin_row {
@@ -572,7 +573,7 @@ impl<'a> Route<'a> {
         s: NodeId,
         e: NodeId,
         srow: &Row,
-        out: &mut RouteSink<'_>,
+        out: &mut MatchedSink<'_, '_>,
         trails: impl FnOnce() -> Result<Vec<Vec<RelId>>>,
     ) -> Result<()> {
         if !self.node_ok(e, self.shape.end, srow)? {
@@ -610,7 +611,7 @@ impl<'a> Route<'a> {
         e: NodeId,
         srow: &Row,
         filter: &PathFilter<'_>,
-        out: &mut RouteSink<'_>,
+        out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
         // The one GPM bound policy: a bounded pattern keeps its written
         // bound, an unbounded one takes the engine's unbounded DFS cap
@@ -714,13 +715,13 @@ impl<'a> Route<'a> {
         e: NodeId,
         trail: &[RelId],
         srow: &Row,
-        out: &mut RouteSink<'_>,
+        out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
         self.ctx.graph.cancel_tick()?;
         let Some(row) = self.bind_trail(s, e, trail, srow) else {
             return Ok(());
         };
-        out.offer(self.ctx, row, trail)
+        out.offer(self.ctx, row, || trail.iter().copied().collect())
     }
 }
 
@@ -750,7 +751,12 @@ impl TrailWalk<'_, '_, '_> {
     /// Every frame ticks the statement's cancellation window (ADR-0111), so a
     /// dense graph stays interruptible *inside* one length's enumeration
     /// instead of only at the next length's boundary.
-    fn any_of_length(&mut self, at: NodeId, length: u32, out: &mut RouteSink<'_>) -> Result<bool> {
+    fn any_of_length(
+        &mut self,
+        at: NodeId,
+        length: u32,
+        out: &mut MatchedSink<'_, '_>,
+    ) -> Result<bool> {
         self.route.ctx.graph.cancel_tick()?;
         if self.trail.len() == length as usize {
             if at != self.end {
@@ -765,7 +771,7 @@ impl TrailWalk<'_, '_, '_> {
             if !self.route.filter_ok(&row, self.filter)? {
                 return Ok(false);
             }
-            out.offer(self.route.ctx, row, &self.trail)?;
+            out.offer(self.route.ctx, row, || self.trail.iter().copied().collect())?;
             return Ok(true);
         }
         // Accumulate the satisfied flag across frames and return it after

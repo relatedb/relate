@@ -17,7 +17,7 @@
 //!   the frontier matcher arm's hard decline both read;
 //! - [`reduce_row`] — the per-row reduce tail every complete candidate
 //!   runs (the reduce's deferred inline predicates, its WHERE, then its
-//!   projection), the one spelling the GPM engine's `apply_reduce`, its
+//!   projection), the one spelling the GPM engine's materializing sink, its
 //!   cap rider's Cap arm, the walk's own `CollectSink`, and the
 //!   frontier family's rider wiring share — with its spec bundle
 //!   [`MatchReduce`], the tail-as-one-state-model [`MatchTail`], and
@@ -419,12 +419,12 @@ pub(crate) type Matched = Vec<(Row, UsedSet)>;
 /// carries — is unrepresentable, and the carry decision has the one
 /// [`MatchTail::store_row`] spelling: every consumer routes through it
 /// (the classic collector's fused step, the GPM Cap arm, and
-/// `apply_reduce`'s whole-set arms). Built where its values are
+/// the materializing sink's whole-set arm). Built where its values are
 /// decided — `match_paths`'s last-pattern arm and the plain-side
 /// enumeration (match_clause.rs) and `exists_probe::seek`'s probe
 /// dispatch — and threaded from there through `match_one_path`'s fork
 /// into both engines: the GPM chain (`match_gpm_path`, `mount_rider`,
-/// the emit pipeline's Cap arm, `answer_or_reduce`, `apply_reduce`) and
+/// the emit pipeline's Cap arm and the materializing sink) and
 /// the classic walk's `CollectSink`. The rider never rides in it: the
 /// rider is a separate vocabulary (a cap or a probe, `rider::Rider`)
 /// alongside the tail, not a member of it — bundling them would be one
@@ -448,7 +448,7 @@ impl MatchTail<'_> {
     /// One accepted row into a collector's output — the shared back half
     /// of both cap arms (`CollectSink::offer` for the classic walk, the
     /// GPM `Cap` arm) and the one spelling of the carry decision every
-    /// consumer routes through (whole row sets too: `apply_reduce`'s
+    /// consumer routes through (whole row sets too: the materializing sink's
     /// arms): a carry tail keeps the set, built lazily so the drop arm
     /// never pays for it; a finish tail drops it and the closure never
     /// runs, storing the empty carry (`UsedSet::default()`, LABS-822)
@@ -469,7 +469,7 @@ impl MatchTail<'_> {
     /// of the pipeline both engines' collectors read (`CollectSink::offer`
     /// for the classic walk, the GPM `Cap` arm for the GPM walk) and the
     /// GPM materializing tail's whole-set loop reads row by row
-    /// (`apply_reduce`, cap `None`), so the ordering policy and its
+    /// (the collecting sink's, cap `None`), so the ordering policy and its
     /// rationale live in one place: the reduce's
     /// checks and projection (`reduce_row`), the cap's count on the
     /// pre-projection row the checks accepted (a Distinct cap evaluates
@@ -519,7 +519,7 @@ impl MatchTail<'_> {
 /// row; `Some` returns the row to keep — the projected row under a
 /// reduce, the row itself without one (a pass-through clone, cheap:
 /// every `Value` payload is `Arc`-shared). The one spelling of this
-/// tail: `apply_reduce` (exec/gpm/mod.rs) loops it, the cap rider's Cap
+/// tail: the collecting sink loops it, the cap rider's Cap
 /// arm (exec/gpm/emit.rs) calls it, the walk's own sink
 /// `CollectSink::offer` (exec/expand.rs) fuses its offered rows through
 /// it — its cap's count reading the pre-projection row after the tail

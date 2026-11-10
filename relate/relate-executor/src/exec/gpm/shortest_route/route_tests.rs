@@ -3,7 +3,7 @@
 
 use relate_core::Value::{self, Bool, Int, Null};
 
-use crate::exec::test_support::{build, Builder};
+use crate::exec::test_support::{build, fan_in, Builder};
 use crate::graph::Graph;
 use crate::test_support::ints;
 
@@ -585,6 +585,99 @@ fn an_exists_probe_stops_the_fan_after_its_first_answering_layer() {
         probe_counts.expands < full_counts.expands,
         "the probe must not expand the deeper layers: {} vs {}",
         probe_counts.expands,
+        full_counts.expands
+    );
+}
+
+/// The routed `allShortestPaths` under a `LIMIT` charges the MATCH cap on
+/// the rows it pushes, so the caller's input-row loop stops once the cap
+/// is full. Before the cap was charged the route ran once per input row
+/// whatever the `LIMIT` asked for, which is how a ten-row answer over a
+/// 30k-pair input enumerated every pair — the shape that hit the
+/// expression-memory limit (LABS-1301).
+#[test]
+fn all_shortest_paths_limit_stops_the_input_row_loop() {
+    // Twenty `:A` starts, each one hop from the single `:B`, so every input
+    // row has a shortest path and the eager run drives the route 20 times.
+    let g = fan_in(20);
+
+    let q = "MATCH (a:A) MATCH p = allShortestPaths((a)-[:R*]-(b:B)) \
+             RETURN p LIMIT 1";
+    let (rows, counts) = run(&g, q);
+    assert_eq!(rows.len(), 1, "the LIMIT answer is one row");
+    assert_eq!(
+        counts.route_runs, 1,
+        "the cap must stop the loop after the first row: {} runs",
+        counts.route_runs
+    );
+
+    // The eager run is the oracle for the work the cap avoids.
+    let (eager_rows, eager) = run(
+        &g,
+        "MATCH (a:A) MATCH p = allShortestPaths((a)-[:R*]-(b:B)) RETURN p",
+    );
+    assert_eq!(eager_rows.len(), 20);
+    assert_eq!(eager.route_runs, 20, "one route run per input row");
+}
+
+/// A `DISTINCT` cap evaluates its RETURN expressions on the row it counts,
+/// so the cap has to be charged at `finish_row` — the pre-projection seam
+/// every other tail uses — and never on the projected rows the sink
+/// stores: `b.id` is gone from a row that already carries only `id`, and
+/// charging after the projection turns a valid query into
+/// `UndefinedVariable: variable 'b' not defined` (LABS-1301 review).
+#[test]
+fn distinct_limit_over_a_routed_shortest_path_charges_the_pre_projection_row() {
+    let g = fan_in(20);
+    let (rows, counts) = run(
+        &g,
+        "MATCH (a:A) MATCH p = allShortestPaths((a)-[:R*]-(b:B)) \
+         RETURN DISTINCT b.id AS id LIMIT 1",
+    );
+    assert_eq!(rows.len(), 1);
+    assert!(counts.route_runs > 0, "the pattern must ride the route");
+    assert_eq!(
+        counts.route_runs, 1,
+        "the distinct cap fills on the first row: {} runs",
+        counts.route_runs
+    );
+}
+
+/// The collecting sink's halt contract: once the cap is full the route's
+/// own search stops, so a `LIMIT` that one input row already satisfies
+/// does not enumerate and store that row's remaining paths (LABS-1301
+/// review). The observable is the search's expansion count.
+#[test]
+fn a_full_cap_stops_the_route_search_mid_row() {
+    // One `:A` start fanning through `k` `:M` middles to a single `:B`, so
+    // the single input row has `k` equal-length shortest paths.
+    let a: &[&str] = &["A"];
+    let m: &[&str] = &["M"];
+    let b: &[&str] = &["B"];
+    let k = 12usize;
+    let mut labels = vec![a];
+    labels.extend(std::iter::repeat_n(m, k));
+    labels.push(b);
+    let hub = k + 1;
+    let mut rels: Vec<(usize, usize, &str)> = Vec::new();
+    for i in 1..=k {
+        rels.push((0, i, "R"));
+        rels.push((i, hub, "R"));
+    }
+    let g = build(&labels, &rels).graph;
+
+    let q = |limit: &str| {
+        format!("MATCH (a:A) MATCH p = allShortestPaths((a)-[:R*]-(b:B)) RETURN p{limit}")
+    };
+    let (limited, counts) = run(&g, &q(" LIMIT 1"));
+    let (full, full_counts) = run(&g, &q(""));
+    assert_eq!(limited.len(), 1);
+    assert_eq!(full.len(), k);
+    assert!(counts.route_runs > 0, "the pattern must ride the route");
+    assert!(
+        counts.expands < full_counts.expands,
+        "a full cap must stop the search: {} expands vs eager {}",
+        counts.expands,
         full_counts.expands
     );
 }

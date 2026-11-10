@@ -17,6 +17,19 @@ pub(crate) fn hub_ts_out(degree: i64) -> Graph {
     hub_fan(degree, true)
 }
 
+/// The fan-in shape the LIMIT-cap tests read: `degree` `:A` starts, each
+/// one `R` hop from a single shared `:B` hub. One definition, so the
+/// routed and GPM halves of the cap charge are pinned against the same
+/// graph rather than two hand-kept copies.
+pub(crate) fn fan_in(degree: usize) -> Graph {
+    let a: &[&str] = &["A"];
+    let b: &[&str] = &["B"];
+    let mut labels = vec![a; degree];
+    labels.push(b);
+    let rels: Vec<(usize, usize, &str)> = (0..degree).map(|i| (i, degree, "R")).collect();
+    build(&labels, &rels).graph
+}
+
 /// The pushdown/limit-cap tests' hub-and-fan graph: a hub `(:A {id: 0})`
 /// with `degree` `(:B {k: i})` leaves on `E` rels. `rel_ts` adds the
 /// `ts = i` relationship property the ordered cap's shapes read — the

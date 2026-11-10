@@ -17,8 +17,6 @@ use std::cell::Cell;
 use relate_core::Result;
 use relate_ir::PathPattern;
 
-use crate::ctx::ExecCtx;
-
 use super::super::pattern_policies::{MatchTail, Matched};
 use super::super::pushdown::{MatchCap, Residual};
 use super::super::rider::{PathProbe, Rider};
@@ -36,7 +34,7 @@ use super::{complete_state, GpmCtx};
 pub(super) enum GpmEmit<'a, 'data> {
     /// A MATCH cap on the clause's last pattern: the shared `reduce_row`
     /// tail (the reduce checks and the projection, the same spelling
-    /// `apply_reduce` loops), the cap's count on the pre-projection row
+    /// the collecting sink runs), the cap's count on the pre-projection row
     /// the tail accepted, and a halt once the cap is full —
     /// `CollectSink::offer`'s pipeline for the GPM walk.
     Cap {
@@ -213,44 +211,5 @@ where
             }),
             probe.halt,
         ),
-    }
-}
-
-/// The answer-from-materialized policy — the one spelling both
-/// materialized-row sites read (the shortest-route rows and the
-/// selector's chosen candidates): a probe answers from the rows through
-/// the shared accept policy ([`PathProbe::accept_row`] — the deferred
-/// element predicates, the residual pass, the predicate, the halt cell;
-/// the riding spelling's own verdict), cancelling the tick per row and
-/// yielding zero rows (the verdict is the probe's halt cell, the
-/// caller's read); anything else (a cap, which never answers, or no
-/// rider) reduces them.
-pub(super) fn answer_or_reduce(
-    ctx: ExecCtx<'_>,
-    rider: Option<&Rider<'_, '_>>,
-    where_clause: &Residual<'_>,
-    rows: Matched,
-    tail: MatchTail<'_>,
-) -> Result<Matched> {
-    match rider {
-        Some(Rider::Probe(probe)) => {
-            for (row, used) in rows {
-                ctx.graph.cancel_tick()?;
-                if probe.accept_row(
-                    ctx.graph,
-                    row,
-                    used,
-                    where_clause,
-                    ctx.params,
-                    ctx.cypher_version,
-                )? {
-                    break;
-                }
-            }
-            Ok(Vec::new())
-        }
-        // spelled exhaustively, not `_`: a new Rider variant must force a
-        // decision here too, exactly as mount_rider does
-        Some(Rider::Cap(_)) | None => super::apply_reduce(ctx.graph, rows, tail),
     }
 }
