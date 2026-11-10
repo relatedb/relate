@@ -302,6 +302,14 @@ fn transaction_error_message_keeps_the_pinned_uniqueness_wrapper() {
         super::transaction_error_message(&error),
         "TypeError: schema name must be STRING"
     );
+    // The run-time argument rejection hands over its bare `Kind: detail`
+    // text too — no `semantic error: ` prefix (it had none before the
+    // variant split).
+    let error = Error::argument_value_kind(relate_core::ErrorKind::NumberOutOfRange, "percentile");
+    assert_eq!(
+        super::transaction_error_message(&error),
+        "NumberOutOfRange: percentile"
+    );
     let error = Error::ty("anything");
     assert_eq!(super::transaction_error_message(&error), "anything");
 }

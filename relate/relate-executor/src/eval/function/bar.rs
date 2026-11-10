@@ -26,7 +26,7 @@ fn finite_number(arg: &Value, what: &str) -> Result<f64> {
     if number.is_finite() {
         Ok(number)
     } else {
-        Err(Error::argument_error_kind(
+        Err(Error::argument_value_kind(
             ErrorKind::InvalidArgumentValue,
             format!("bar() {what} must be finite"),
         ))
@@ -51,14 +51,14 @@ pub(super) fn bi_bar(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Resu
         ));
     };
     if !(0..=BAR_MAX_WIDTH).contains(&width) {
-        return Err(Error::argument_error_kind(
+        return Err(Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
             format!("bar() width must be between 0 and {BAR_MAX_WIDTH}"),
         ));
     }
     let span = max - min;
     if min >= max || !span.is_finite() {
-        return Err(Error::argument_error_kind(
+        return Err(Error::argument_value_kind(
             ErrorKind::InvalidArgumentValue,
             "bar() min must be less than max, and their span finite",
         ));

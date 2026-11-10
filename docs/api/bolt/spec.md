@@ -438,6 +438,7 @@ engine's own text, verbatim. An engine error maps by its typed
 | `ParameterMissing` (ADR-0308) | `Neo.ClientError.Statement.ParameterMissing` |
 | `Type`, `TypeError`, `InvalidArgumentType` | `Neo.ClientError.Statement.TypeError` |
 | `ArgumentError` (a DDL `OPTIONS`/`indexConfig` value rejection, ADR-0489) | `Neo.ClientError.General.InvalidArguments` |
+| `ArgumentValue` (a run-time function-argument value rejection — `range()`'s zero step, the `substring()`/`left()`/`right()` range checks, list-slice bounds, `point()`'s in-map values, `bar()`'s width, the percentile aggregates' argument; ADR-0559) | `Neo.ClientError.Statement.ArgumentError` |
 | `Arithmetic` (`/ by zero`, `% by zero`, `ArithmeticError: rounding necessary`) | `Neo.ClientError.Statement.ArithmeticError` |
 | `DatabaseNotFound` (unknown `db` extra or `USE` target) | `Neo.ClientError.Database.DatabaseNotFound` |
 | `UniquenessViolation` | `Neo.ClientError.Schema.ConstraintValidationFailed` |

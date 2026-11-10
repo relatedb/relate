@@ -295,6 +295,30 @@ fn stdev_and_percentiles_reject_non_numeric_operands() {
     );
 }
 
+/// The percentile argument's two failures are distinct: a non-numeric value
+/// is the wrong-type class, a number outside [0, 1] the `NumberOutOfRange`
+/// kind on the run-time `ArgumentValue` variant.
+#[test]
+fn percentile_argument_splits_wrong_type_from_out_of_range() {
+    let group = group_with_vals(&[Value::Int(1), Value::Int(2)]);
+    let non_numeric = Expr::Function {
+        name: "percentileCont".into(),
+        distinct: false,
+        args: vec![Expr::Variable("x".into()), Expr::String("0.5".into())],
+    };
+    let error = run_result(&group, &non_numeric).unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidArgumentType(detail) if detail == "percentile must be a number"),
+        "{error}"
+    );
+    let error = run_result(&group, &percentile_fn("percentileCont", 2.0)).unwrap_err();
+    assert!(matches!(&error, Error::ArgumentValue { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "semantic error: NumberOutOfRange: percentile"
+    );
+}
+
 /// LABS-709: an empty group has no percentile to report — and no row for the
 /// second argument to be evaluated against. The `AggScope` seed policy
 /// (`group.first().or(import)`) never fabricates a row, so the percentile

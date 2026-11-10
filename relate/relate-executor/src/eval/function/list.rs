@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use relate_core::{
-    expected_type_detail, value_type_name, Error, Result, Value, FUNCTION_REQUIRES_ONE_ARGUMENT,
+    expected_type_detail, value_type_name, Error, ErrorKind, Result, Value,
+    FUNCTION_REQUIRES_ONE_ARGUMENT,
 };
 use relate_ir::QuantifierKind;
 
@@ -211,19 +212,25 @@ pub(crate) fn range_plan(vals: &[Value]) -> Result<RangePlan> {
     // semantics (truncate toward zero, NaN → 0, ±Infinity and
     // out-of-range saturate at the i64 limits); every non-numeric
     // argument stays a type error.
-    let int_arg = |v: Option<&Value>, what: &str| {
+    let int_arg_or_type_error = |v: Option<&Value>, what: &str| {
         super::super::numeric::int_arg(v)
             .ok_or_else(|| Error::invalid_argument_type(format!("range() {what}")))
     };
-    let start = int_arg(vals.first(), "start")?;
-    let end = int_arg(vals.get(1), "end")?;
+    let start = int_arg_or_type_error(vals.first(), "start")?;
+    let end = int_arg_or_type_error(vals.get(1), "end")?;
     let step = if vals.len() >= 3 {
-        int_arg(vals.get(2), "step")?
+        int_arg_or_type_error(vals.get(2), "step")?
     } else {
         1
     };
     if step == 0 {
-        return Err(Error::ty("NumberOutOfRange: range() step cannot be 0"));
+        // ADR-0175's 22N03 mapping: NumberOutOfRange is the ArgumentError
+        // class, so the kind travels as data (live 2026.10.1 reports
+        // Neo.ClientError.Statement.ArgumentError).
+        return Err(Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "range() step cannot be 0",
+        ));
     }
     // ADR-0175: a size computation overflowing i64 is the
     // arithmetic-overflow error (Neo4j 22N28, IntegralRangeListValue's

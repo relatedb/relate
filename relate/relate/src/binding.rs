@@ -338,8 +338,10 @@ pub fn binding_error_metadata(error: &Error) -> (&'static str, &'static str) {
         }
         // ADR-0489: the DDL option/index-config argument rejections carry
         // Neo4j's `ArgumentError` class (its `Neo.ClientError.General.
-        // InvalidArguments`).
-        Error::ArgumentError(_) => ("ArgumentError", "ArgumentError"),
+        // InvalidArguments`). The run-time argument rejections carry the
+        // same class under its `Statement.ArgumentError` code, so the
+        // bindings' class name is one for both.
+        Error::ArgumentError(_) | Error::ArgumentValue { .. } => ("ArgumentError", "ArgumentError"),
         Error::ParameterMissing(_) => ("ParameterMissing", "ParameterMissing"),
         // The ADR-0307 typed variants keep the classes their legacy
         // renderings had: division/modulo by zero were `Type`, rounding was

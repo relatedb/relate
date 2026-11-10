@@ -81,6 +81,24 @@ pub enum Error {
     /// moves, never the detail text.
     #[error("semantic error: {0}")]
     ArgumentError(String),
+    /// An argument-value rejection discovered while producing rows — the
+    /// function-argument validator's, carrying Neo4j's `ArgumentError` class
+    /// under its `Neo.ClientError.Statement.ArgumentError` code (22N03). The
+    /// class matches [`Self::ArgumentError`]'s; the stage does not — live
+    /// fails the PULL, not the RUN, so the two cannot share one variant.
+    /// The kind and the detail travel as data, so a consumer reads the
+    /// token ([`Error::typed_detail`]) instead of parsing the rendered
+    /// message. Covers the kind-carrying PULL-time validator sites only:
+    /// `range()`'s zero step, the `substring()`/`left()`/`right()` range
+    /// rejections, list-slice bounds, `point()`'s in-map values, `bar()`'s
+    /// width and the percentile aggregates' argument. The plain-detail
+    /// PULL-time [`Self::ArgumentError`] sites (the temporal constructors,
+    /// `point_component()`, the regex compile failures and the fulltext
+    /// analyzer option) are not migrated here: they carry ADR-0489's
+    /// `InvalidArguments` class today, and moving them would change the
+    /// Neo4j code they report. They stay a separate decision (ADR-0559).
+    #[error("semantic error: {}", kind_prefixed(*kind, detail.as_str()))]
+    ArgumentValue { kind: ErrorKind, detail: String },
     /// A uniqueness-constraint violation raised by constraint validation,
     /// carrying the violated constraint's name typed, so consumers match the
     /// class and read the name without parsing the rendered message. The
@@ -221,8 +239,8 @@ impl Error {
         Self::ArgumentError(detail.into())
     }
 
-    /// An argument rejection in the `ArgumentError` class whose detail
-    /// carries `kind`'s token — live Neo4j reports `point()`'s in-map
+    /// A run-time argument rejection in the `ArgumentError` class whose
+    /// detail carries `kind`'s token — live Neo4j reports `point()`'s in-map
     /// rejections this way, with the token naming the *kind* of argument
     /// fault (`InvalidArgumentValue` for a value domain, 22N20/22N21/22N23;
     /// `InvalidArgumentType` for a wrong type, 22N27 → 22G03; verified
@@ -231,9 +249,13 @@ impl Error {
     /// states the class and whose token is data — the class can no longer
     /// be picked by word order, which is the hazard
     /// [`Self::invalid_argument_type`] (TypeError class) shares a spelling
-    /// with.
-    pub fn argument_error_kind(kind: ErrorKind, detail: impl Into<String>) -> Self {
-        Self::argument_error(kind_prefixed(kind, detail))
+    /// with. Distinct from [`Self::argument_error`] by *stage*: this one is
+    /// discovered while producing rows.
+    pub fn argument_value_kind(kind: ErrorKind, detail: impl Into<String>) -> Self {
+        Self::ArgumentValue {
+            kind,
+            detail: detail.into(),
+        }
     }
 
     /// A uniqueness violation naming the violated constraint — the typed
@@ -457,16 +479,20 @@ impl Error {
         Self::Internal(msg.into())
     }
 
-    /// The pinned class token and detail payload of the six typed detail
+    /// The pinned class token and detail payload of the seven typed detail
     /// variants ([`Error::UniquenessViolation`],
     /// [`Error::ProcedureNotFound`], [`Error::InvalidArgumentType`],
     /// [`Error::TypeError`], [`Error::ParameterMissing`],
-    /// [`Error::DatabaseNotFound`]), single-sourced
+    /// [`Error::DatabaseNotFound`], [`Error::ArgumentValue`]), single-sourced
     /// beside the Display attributes that own the same tokens so consumers
     /// classify and re-render the legacy bare text without re-spelling
     /// them. The detail borrows where the variant stores it verbatim and is
     /// owned where Display composes it (the uniqueness violation's
     /// `` `<name>` uniqueness ``, the CE `Graph not found: <name>`).
+    /// [`Error::ArgumentValue`] is the one exception to the first element
+    /// being a class: its token is the argument-fault *kind* the variant
+    /// carries, so a consumer that wants that variant's class reads the
+    /// engine's error classification instead.
     /// `None` for every other class.
     pub fn typed_detail(&self) -> Option<(&'static str, Cow<'_, str>)> {
         match self {
@@ -474,6 +500,9 @@ impl Error {
                 CONSTRAINT_VALIDATION_FAILED,
                 Cow::Owned(uniqueness_detail(name)),
             )),
+            Error::ArgumentValue { kind, detail } => {
+                Some((kind.as_str(), Cow::Borrowed(detail.as_str())))
+            }
             Error::DatabaseNotFound { name } => Some((
                 ErrorKind::DatabaseNotFound.as_str(),
                 Cow::Owned(graph_not_found_text(name)),

@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use relate_core::{Error, Result, Value};
+use relate_core::{Error, ErrorKind, Result, Value};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::overlay::ExecGraph;
@@ -583,7 +583,12 @@ fn string_index_arg(v: Option<&Value>, default: i64, what: &str) -> Result<i64> 
         return Ok(default);
     };
     if !(0..=i64::from(i32::MAX)).contains(&n) {
-        return Err(Error::ty(format!("NumberOutOfRange: {what}")));
+        // ADR-0175's 22N03 mapping: NumberOutOfRange is the ArgumentError
+        // class (live 2026.10.1: Neo.ClientError.Statement.ArgumentError).
+        return Err(Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            what,
+        ));
     }
     Ok(n)
 }

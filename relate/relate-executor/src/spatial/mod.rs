@@ -81,7 +81,7 @@ fn family_from_map(map: &BTreeMap<String, Value>) -> Result<Family> {
     // The geographic pair is written latitude-first, matching Neo4j's own
     // wording ("must contain 'latitude' and 'longitude'"), not the axis
     // table's x/y order the probe above used.
-    Err(Error::argument_error_kind(
+    Err(Error::argument_value_kind(
         ErrorKind::InvalidArgumentValue,
         format!(
             "point() requires either '{}' and '{}', or '{}' and '{}'",
@@ -123,7 +123,7 @@ impl Srid {
             .ok()
             .and_then(Srid::from_code)
             .ok_or_else(|| {
-                Error::argument_error_kind(
+                Error::argument_value_kind(
                     ErrorKind::InvalidArgumentValue,
                     format!(
                         "point() unknown srid {i}: expected one of {}",
@@ -176,7 +176,7 @@ impl Srid {
             .into_iter()
             .find(|srid| srid.name().eq_ignore_ascii_case(name))
             .ok_or_else(|| {
-                Error::argument_error_kind(
+                Error::argument_value_kind(
                     ErrorKind::InvalidArgumentValue,
                     format!(
                         "point() unknown crs '{name}': expected one of {}",
@@ -260,7 +260,7 @@ fn point_from_map(map: &BTreeMap<String, Value>) -> Result<Value> {
     let srid = resolve_srid(map, family, z)?;
     if family == Family::Geographic {
         if !(-90.0..=90.0).contains(&y) {
-            return Err(Error::argument_error_kind(
+            return Err(Error::argument_value_kind(
                 ErrorKind::InvalidArgumentValue,
                 "point() latitude must be in the range [-90, 90]",
             ));
@@ -287,7 +287,7 @@ fn resolve_srid(map: &BTreeMap<String, Value>, family: Family, z: Option<f64>) -
         None => None,
         Some(Value::String(name)) => Some((Srid::from_name(name)?, &**name)),
         Some(_) => {
-            return Err(Error::argument_error_kind(
+            return Err(Error::argument_value_kind(
                 ErrorKind::InvalidArgumentType,
                 "point() 'crs' must be a string",
             ))
@@ -302,7 +302,7 @@ fn resolve_srid(map: &BTreeMap<String, Value>, family: Family, z: Option<f64>) -
             let srid = Srid::from_i64(*i)?;
             if let Some((named_srid, name)) = named {
                 if named_srid != srid {
-                    return Err(Error::argument_error_kind(
+                    return Err(Error::argument_value_kind(
                         ErrorKind::InvalidArgumentValue,
                         format!("point() crs '{name}' conflicts with srid {}", srid.code()),
                     ));
@@ -311,14 +311,14 @@ fn resolve_srid(map: &BTreeMap<String, Value>, family: Family, z: Option<f64>) -
             srid
         }
         Some(_) => {
-            return Err(Error::argument_error_kind(
+            return Err(Error::argument_value_kind(
                 ErrorKind::InvalidArgumentType,
                 "point() 'srid' must be an integer",
             ))
         }
     };
     if srid.is_3d() != z.is_some() {
-        return Err(Error::argument_error_kind(
+        return Err(Error::argument_value_kind(
             ErrorKind::InvalidArgumentValue,
             format!(
                 "point() srid {} does not match the coordinate dimension",
@@ -327,7 +327,7 @@ fn resolve_srid(map: &BTreeMap<String, Value>, family: Family, z: Option<f64>) -
         ));
     }
     if family == Family::Geographic && srid.family() == Family::Cartesian {
-        return Err(Error::argument_error_kind(
+        return Err(Error::argument_value_kind(
             ErrorKind::InvalidArgumentValue,
             "point() geographic coordinates require srid 4326 or 4979",
         ));
@@ -346,7 +346,7 @@ fn coordinate(map: &BTreeMap<String, Value>, key: &str) -> Result<Option<f64>> {
         Some(_) => return Err(coordinate_type_error(key)),
     };
     if !value.is_finite() {
-        return Err(Error::argument_error_kind(
+        return Err(Error::argument_value_kind(
             ErrorKind::InvalidArgumentValue,
             format!("point() coordinate '{key}' must be finite"),
         ));
@@ -360,7 +360,7 @@ fn coordinate(map: &BTreeMap<String, Value>, key: &str) -> Result<Option<f64>> {
 /// proved present (unreachable there; see that function). ArgumentError
 /// like every other `point()` argument rejection (see the module doc).
 fn coordinate_type_error(key: &str) -> Error {
-    Error::argument_error_kind(
+    Error::argument_value_kind(
         ErrorKind::InvalidArgumentType,
         format!("point() coordinate '{key}' must be a float or integer"),
     )

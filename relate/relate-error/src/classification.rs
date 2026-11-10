@@ -44,6 +44,12 @@ pub const TYPE_ERROR_CODE: &str = "Neo.ClientError.Statement.TypeError";
 /// (ADR-0489).
 pub const ARGUMENT_ERROR_CODE: &str = "Neo.ClientError.General.InvalidArguments";
 
+/// The `code` of a run-time argument rejection (`ArgumentValue`): what Neo4j
+/// 2026.10.1 sends for `range()`'s zero step and for the
+/// `substring()`/`left()`/`right()` int32-range rejections — the same
+/// `ArgumentError` class as [`ARGUMENT_ERROR_CODE`], a different stage.
+pub const ARGUMENT_VALUE_ERROR_CODE: &str = "Neo.ClientError.Statement.ArgumentError";
+
 /// The `code` of an arithmetic failure (`Arithmetic`: division or modulo by
 /// zero, rounding necessary).
 pub const ARITHMETIC_ERROR_CODE: &str = "Neo.ClientError.Statement.ArithmeticError";
@@ -421,6 +427,15 @@ pub fn error_info(e: &Error) -> ErrorInfo {
             retryable: false,
         },
         // --- Runtime class: discovered while producing rows. ---
+        // The function-argument validator's rejections share the DDL
+        // argument class but are discovered while rows are produced, so live
+        // fails the PULL — its own code and stage, not the DDL one's.
+        Error::ArgumentValue { .. } => ErrorInfo {
+            neo4j_code: ARGUMENT_VALUE_ERROR_CODE,
+            gql_status: GQLSTATUS_GENERAL,
+            stage: Runtime,
+            retryable: false,
+        },
         Error::Type(_) | Error::TypeError(_) | Error::InvalidArgumentType(_) => ErrorInfo {
             neo4j_code: TYPE_ERROR_CODE,
             gql_status: GQLSTATUS_TYPE,
@@ -512,6 +527,7 @@ pub fn error_info(e: &Error) -> ErrorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use relate_core::ErrorKind;
     use ErrorStage::{Compile, Internal, Runtime};
 
     /// The published internal row is exactly the row `error_info`
@@ -552,6 +568,11 @@ mod tests {
                 Error::argument_error("bad options"),
                 ARGUMENT_ERROR_CODE,
                 Compile,
+            ),
+            (
+                Error::argument_value_kind(ErrorKind::NumberOutOfRange, "range() step"),
+                ARGUMENT_VALUE_ERROR_CODE,
+                Runtime,
             ),
             (Error::ty("expected number"), TYPE_ERROR_CODE, Runtime),
             (Error::type_error("x"), TYPE_ERROR_CODE, Runtime),
@@ -678,6 +699,10 @@ mod tests {
             ),
             (
                 Error::argument_error("InvalidIndexConfig"),
+                GQLSTATUS_GENERAL,
+            ),
+            (
+                Error::argument_value_kind(ErrorKind::NumberOutOfRange, "range() step"),
                 GQLSTATUS_GENERAL,
             ),
             (Error::ty("x"), GQLSTATUS_TYPE),

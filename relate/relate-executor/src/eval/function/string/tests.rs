@@ -1,3 +1,5 @@
+use relate_core::ErrorKind;
+
 use super::super::render_scalar;
 use super::*;
 use crate::graph::Graph;
@@ -129,23 +131,19 @@ fn substring_counts_characters_and_clamps_at_the_boundaries() {
     assert_eq!(sub(vec![s(""), int(0), int(1)]), s(""));
     // ADR-0175: a negative or beyond-int32 position is NumberOutOfRange;
     // a float truncates; a missing or non-numeric position is ignored.
-    let oor = |vals: Vec<Value>| {
-        bi_substring(&graph, "substring", vals)
-            .unwrap_err()
-            .to_string()
+    // The variant, not just the rendered text: `ArgumentValue` must not
+    // collapse into a bare `Semantic`.
+    let assert_oor = |vals: Vec<Value>, detail: &str| {
+        let err = bi_substring(&graph, "substring", vals).unwrap_err();
+        assert!(matches!(&err, Error::ArgumentValue { .. }), "{err}");
+        assert_eq!(
+            err.to_string(),
+            Error::argument_value_kind(ErrorKind::NumberOutOfRange, detail).to_string()
+        );
     };
-    assert_eq!(
-        oor(vec![s(MB), int(-3), int(2)]),
-        Error::ty("NumberOutOfRange: substring() start").to_string()
-    );
-    assert_eq!(
-        oor(vec![s(MB), int(1), int(-1)]),
-        Error::ty("NumberOutOfRange: substring() length").to_string()
-    );
-    assert_eq!(
-        oor(vec![s(MB), int(i64::MAX)]),
-        Error::ty("NumberOutOfRange: substring() start").to_string()
-    );
+    assert_oor(vec![s(MB), int(-3), int(2)], "substring() start");
+    assert_oor(vec![s(MB), int(1), int(-1)], "substring() length");
+    assert_oor(vec![s(MB), int(i64::MAX)], "substring() start");
     assert_eq!(
         sub(vec![s(MB), Value::Float(1.0), Value::Float(1.0)]),
         s("ñ")
@@ -215,14 +213,20 @@ fn left_and_right_count_characters_and_clamp_at_the_boundaries() {
         Value::Null
     );
     // ADR-0175: a negative or beyond-int32 length is NumberOutOfRange.
+    // The variant, not just the rendered text: `ArgumentValue` must not
+    // collapse into a bare `Semantic`.
     for n in [int(-2), int(i64::MAX)] {
+        let err = left(vec![s(MB), n.clone()]).unwrap_err();
+        assert!(matches!(&err, Error::ArgumentValue { .. }), "{err}");
         assert_eq!(
-            left(vec![s(MB), n.clone()]).unwrap_err().to_string(),
-            Error::ty("NumberOutOfRange: left() length").to_string()
+            err.to_string(),
+            Error::argument_value_kind(ErrorKind::NumberOutOfRange, "left() length").to_string()
         );
+        let err = right(vec![s(MB), n]).unwrap_err();
+        assert!(matches!(&err, Error::ArgumentValue { .. }), "{err}");
         assert_eq!(
-            right(vec![s(MB), n]).unwrap_err().to_string(),
-            Error::ty("NumberOutOfRange: right() length").to_string()
+            err.to_string(),
+            Error::argument_value_kind(ErrorKind::NumberOutOfRange, "right() length").to_string()
         );
     }
     assert_eq!(left(vec![s(""), int(2)]).unwrap(), s(""));

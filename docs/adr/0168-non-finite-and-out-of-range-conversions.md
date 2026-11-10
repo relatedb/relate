@@ -383,3 +383,11 @@ errors.
   absent from its table; ADR-0175's table carries them. ADR-0175 also
   re-evaluates this ADR's deliberate `'1e3000000000'` deviation: with the
   literal fallback in scope, CypherLite aligns with Neo4j and saturates.
+- ADR-0559 supersedes this ADR's error mapping for `range()`'s zero step:
+  the 22N03 rejections discovered while producing rows now carry a
+  run-time argument variant, classified as the `ArgumentError` class under
+  `Neo.ClientError.Statement.ArgumentError` at the runtime stage rather
+  than the type class this ADR recorded. The migrated rows' rendered text
+  keeps the `NumberOutOfRange` kind token; only the variant's class and
+  stage move. The `toInteger()` string rows above keep the type class
+  this ADR decided.

@@ -143,7 +143,7 @@ fn adr0175_other_sites_probe_rows() {
         // A zero step — NaN included — is NumberOutOfRange.
         (
             "RETURN range(1, 5, head([0.0/0.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: range() step cannot be 0"),
+            Expect::Err("semantic error: NumberOutOfRange: range() step cannot be 0"),
         ),
         // ±Infinity saturate at the i64 limits.
         (
@@ -189,23 +189,23 @@ fn adr0175_other_sites_probe_rows() {
         // below 0 raises NumberOutOfRange.
         (
             "RETURN substring('abcdef', head([1.0/0.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: substring() start"),
+            Expect::Err("semantic error: NumberOutOfRange: substring() start"),
         ),
         (
             "RETURN substring('abcdef', head([-1.0/0.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: substring() start"),
+            Expect::Err("semantic error: NumberOutOfRange: substring() start"),
         ),
         (
             "RETURN substring('abcdef', head([-1.5, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: substring() start"),
+            Expect::Err("semantic error: NumberOutOfRange: substring() start"),
         ),
         (
             "RETURN substring('abcdef', head([2147483648.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: substring() start"),
+            Expect::Err("semantic error: NumberOutOfRange: substring() start"),
         ),
         (
             "RETURN substring('abcdef', head([9.3e18, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: substring() start"),
+            Expect::Err("semantic error: NumberOutOfRange: substring() start"),
         ),
         (
             "RETURN substring('abcdef', 1, head([2.5, 'x'])) AS v",
@@ -217,7 +217,7 @@ fn adr0175_other_sites_probe_rows() {
         ),
         (
             "RETURN substring('abcdef', 1, head([1.0/0.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: substring() length"),
+            Expect::Err("semantic error: NumberOutOfRange: substring() length"),
         ),
         // --- left() / right() ---
         (
@@ -230,11 +230,11 @@ fn adr0175_other_sites_probe_rows() {
         ),
         (
             "RETURN left('abcdef', head([1.0/0.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: left() length"),
+            Expect::Err("semantic error: NumberOutOfRange: left() length"),
         ),
         (
             "RETURN left('abcdef', head([-1.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: left() length"),
+            Expect::Err("semantic error: NumberOutOfRange: left() length"),
         ),
         (
             "RETURN right('abcdef', head([2.9, 'x'])) AS v",
@@ -246,7 +246,7 @@ fn adr0175_other_sites_probe_rows() {
         ),
         (
             "RETURN right('abcdef', head([1.0/0.0, 'x'])) AS v",
-            Expect::Err("type error: NumberOutOfRange: right() length"),
+            Expect::Err("semantic error: NumberOutOfRange: right() length"),
         ),
         // --- SKIP / LIMIT ---
         ("UNWIND [1,2,3] AS x RETURN x SKIP 1", Expect::Xs(&[2, 3])),
@@ -375,7 +375,7 @@ fn adr0175_other_sites_probe_rows() {
         // A FLOAT bound is int32-exact: beyond it raises NumberOutOfRange.
         (
             "RETURN [1,2,3][head([1.0/0.0, 'x'])..2] AS v",
-            Expect::Err("type error: NumberOutOfRange: slice start"),
+            Expect::Err("semantic error: NumberOutOfRange: slice start"),
         ),
         // Negative bounds keep the negative-index semantics.
         (
@@ -384,7 +384,7 @@ fn adr0175_other_sites_probe_rows() {
         ),
         (
             "RETURN [1,2,3][head([2147483648.0, 'x'])..] AS v",
-            Expect::Err("type error: NumberOutOfRange: slice start"),
+            Expect::Err("semantic error: NumberOutOfRange: slice start"),
         ),
         // An INTEGER bound is a long: it clamps across the whole i64 range
         // (the harness pins 2147483648, Long.MAX and Long.MIN).

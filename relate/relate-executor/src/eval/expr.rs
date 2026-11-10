@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use relate_core::{temporal, ArithmeticFailure, Error, Result, Value};
+use relate_core::{temporal, ArithmeticFailure, Error, ErrorKind, Result, Value};
 use relate_ir::{BinaryOp, Expr, UnaryOp};
 use relate_names::{NamedToken, SmallName, Token};
 
@@ -614,7 +614,13 @@ fn slice_bounds(
                 if matches!(v, Value::Float(_))
                     && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&i)
                 {
-                    return Err(Error::ty(format!("NumberOutOfRange: {what}")));
+                    // ADR-0175's 22N03 mapping: NumberOutOfRange is the
+                    // ArgumentError class (live 2026.10.1:
+                    // Neo.ClientError.Statement.ArgumentError).
+                    return Err(Error::argument_value_kind(
+                        ErrorKind::NumberOutOfRange,
+                        what,
+                    ));
                 }
                 i
             }

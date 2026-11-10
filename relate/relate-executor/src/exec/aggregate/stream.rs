@@ -15,7 +15,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use relate_core::{Error, Result, Value};
+use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::{classify_aggregate, AggregateArity, AggregateKind, Expr};
 use relate_names::SmallName;
 
@@ -349,9 +349,18 @@ fn finish_retained(
                 return Ok(Value::Null);
             };
             let p = eval(graph, first, percentile, params, cypher_version)?;
-            let Some(p) = p.as_number().filter(|p| (0.0..=1.0).contains(p)) else {
-                return Err(Error::ty("NumberOutOfRange: percentile"));
+            // Two distinct rejections: a non-numeric percentile is the
+            // wrong-type class, an out-of-[0, 1] one the NumberOutOfRange
+            // kind (ADR-0175's 22N03 mapping).
+            let Some(p) = p.as_number() else {
+                return Err(Error::invalid_argument_type("percentile must be a number"));
             };
+            if !(0.0..=1.0).contains(&p) {
+                return Err(Error::argument_value_kind(
+                    ErrorKind::NumberOutOfRange,
+                    "percentile",
+                ));
+            }
             call.name
                 .with_str(|text| FoldInput::percentile(call.kind, p, text))?
         }

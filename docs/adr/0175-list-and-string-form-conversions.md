@@ -847,3 +847,15 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   here, and its `'1e3000000000'` deviation is superseded by this ADR.
 - TCK: no pinned scenario covers these conversions; the code change
   verifies the allowlist is unchanged.
+
+## Later references
+
+- ADR-0559 supersedes this ADR's error-mapping note and the probe-table
+  cells for the 22N03 rejections discovered while producing rows:
+  `range()`'s zero step, the `substring()` / `left()` / `right()` range
+  checks and the list-slice bounds now carry a run-time argument variant,
+  classified as the `ArgumentError` class under
+  `Neo.ClientError.Statement.ArgumentError` at the runtime stage. Their
+  rendered text keeps the `NumberOutOfRange` kind token and moves from the
+  `type error: ` prefix to `semantic error: `. The `toInteger()` rows and
+  the `InvalidArgumentType` rows above are unchanged.

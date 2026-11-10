@@ -143,6 +143,25 @@ fn typed_detail_variants_display_matches_the_legacy_renderings() {
         "semantic error: ParameterMissing: parameter $n was not supplied"
     );
     assert!(matches!(&typed, Error::ParameterMissing(d) if d == "parameter $n was not supplied"));
+
+    // The run-time argument rejection keeps the legacy bare rendering; the
+    // kind travels as data, not as a prefix inside the detail string.
+    let typed = Error::argument_value_kind(ErrorKind::NumberOutOfRange, "percentile");
+    assert_eq!(
+        typed.to_string(),
+        Error::semantic("NumberOutOfRange: percentile").to_string()
+    );
+    assert_eq!(
+        typed.to_string(),
+        "semantic error: NumberOutOfRange: percentile"
+    );
+    assert!(matches!(
+        &typed,
+        Error::ArgumentValue {
+            kind: ErrorKind::NumberOutOfRange,
+            detail,
+        } if detail == "percentile"
+    ));
 }
 
 /// ADR-0511: the boolean-requiring family's one constructor builds the
@@ -319,6 +338,17 @@ fn typed_detail_single_sources_the_class_tokens() {
     assert_eq!(
         typed.typed_detail_text().as_deref(),
         Some("ParameterMissing: parameter $n was not supplied")
+    );
+    // The kind answers the accessor as the token, so no consumer parses the
+    // rendered `semantic error: <Kind>: <detail>` text.
+    let typed = Error::argument_value_kind(ErrorKind::NumberOutOfRange, "percentile");
+    assert_eq!(
+        detail_text(&typed),
+        Some(("NumberOutOfRange".to_string(), "percentile".to_string()))
+    );
+    assert_eq!(
+        typed.typed_detail_text().as_deref(),
+        Some("NumberOutOfRange: percentile")
     );
     // The two structured-field variants fit the same (token, detail)
     // shape; the uniqueness detail is the owned `` `<name>` uniqueness ``

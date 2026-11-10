@@ -157,8 +157,9 @@ fn classify(e: &relate::Error) -> Classified {
         | E::ParameterMissing(_)
         | E::DatabaseNotFound { .. } => (Validation, ErrorFamily::Semantic),
         // ADR-0489: a DDL option/index-config argument rejection is a
-        // statement rejection like the other validation classes.
-        E::ArgumentError(_) => (Validation, ErrorFamily::Argument),
+        // statement rejection like the other validation classes; the
+        // run-time argument rejection carries the same class.
+        E::ArgumentError(_) | E::ArgumentValue { .. } => (Validation, ErrorFamily::Argument),
         // The typed argument-type/type-error details classify as type
         // errors; the legacy spellings were `Error::ty("InvalidArgumentType:
         // …")` / `Error::ty("TypeError: …")` (a handful reached the CLI as
