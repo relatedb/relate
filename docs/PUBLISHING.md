@@ -57,11 +57,12 @@ artifact landed on that first release:
   install section links to), with its first line
   `# relate-release-version: vX.Y.Z` naming the release tag (ADR-0457).
 - [ ] `SHA256SUMS.sig` over those exact bytes (ADR-0115).
-- [ ] Python wheels (and sdist). PyPI publishing is intentionally not wired
-  up — the wheels ship as GitHub release assets only. When that changes:
-  register the **`relate-db`** project (not `relate`, which is already
-  taken), add a `pypi` job with trusted publishing for `relatedb/relate`,
-  and remove this note.
+- [ ] Python wheels (and sdist) publish to PyPI as **`relate-db`** (not
+  `relate`, which is taken) via trusted publishing (ADR-0560). The one-time
+  setup needs no first publish: on PyPI, add a *pending publisher* for
+  project `relate-db`, repository `relatedb/relate`, workflow
+  `release.yml`; repeat on TestPyPI for dry runs. Validate with a
+  `pypi=testpypi` dispatch before the first real release.
 - [ ] crates.io (ADR-0560): the publishable set is the `relate` facade's
   transitive workspace closure — 17 crates, all lockstep with the release
   tag. The first publish is manual because a crate must exist before

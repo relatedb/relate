@@ -90,8 +90,14 @@ from this repository; the old repository’s tags never came across.
    self-update while the repository is internal
    ([ADR-0358](docs/adr/0358-upgrade-download-route.md)).
 
-PyPI publishing is intentionally not wired up yet — the Python wheels and
-sdist ship as GitHub release assets only.
+PyPI publishing (ADR-0560) rides the release: the `pypi` job publishes the
+`relate-db` wheels and sdist the `python` job built, via trusted
+publishing (OIDC, no token). The dispatch input `pypi` selects the target:
+`pypi` (default), `testpypi` for an auth/packaging dry run, or `skip` to
+ship the wheels as GitHub release assets only. The one-time setup — the
+pending publisher for `relate-db` on PyPI and TestPyPI — is a runbook item
+in [docs/PUBLISHING.md](docs/PUBLISHING.md); the job fails closed until it
+is done.
 
 crates.io publishing (ADR-0560) is prepared but not wired into the
 workflow yet either: the `relate` facade's 17-crate workspace closure is

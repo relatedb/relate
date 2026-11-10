@@ -19,6 +19,15 @@ on:
         required: false
         default: false
         type: boolean
+      pypi:
+        description: "relate-db registry target: PyPI for a real release, TestPyPI for an auth/packaging dry run, skip to leave the wheels as GitHub release assets only"
+        required: false
+        default: "pypi"
+        type: choice
+        options:
+          - pypi
+          - testpypi
+          - skip
 
 permissions:
   contents: read
@@ -1030,6 +1039,68 @@ jobs:
         with:
           pattern: npm-main
           expected-count: 1
+
+  # PyPI (ADR-0560): trusted publishing, id-token: write, no API token
+  # anywhere. The pending publisher for relate-db on PyPI — and on
+  # TestPyPI for dry runs — points at this workflow; docs/PUBLISHING.md
+  # is the runbook. Publishes the exact wheels and sdist the python job
+  # built from the versioned commit: five wheels plus one sdist.
+  pypi:
+    name: Publish relate-db to PyPI
+    needs: [version, tag, python]
+    if: inputs.pypi != 'skip'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check artifact count
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          if [ "${#wheels[@]}" -ne 5 ] || [ "${#sdists[@]}" -ne 1 ]; then
+            echo "expected 5 wheels and 1 sdist, found ${#wheels[@]} wheel(s) and ${#sdists[@]} sdist(s)" >&2
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        if: inputs.pypi == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Publish to TestPyPI (dry run)
+        if: inputs.pypi == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
 
   # Chained explicitly because the `release: published` event fired by
   # action-gh-release (GITHUB_TOKEN) never triggers downstream workflows
