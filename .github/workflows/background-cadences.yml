@@ -137,7 +137,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run the full memory-controls stage
-        run: gosonic ci run memory-controls-full
+        run: gosonic --allow-docker-socket ci run memory-controls-full
 
       - name: Write the memory-controls summary
         if: always()
@@ -200,7 +200,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run the memory-shape stage
-        run: gosonic ci run memory-shape
+        run: gosonic --allow-docker-socket ci run memory-shape
 
       - name: Write the memory-shape summary
         if: always()
