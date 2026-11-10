@@ -8,6 +8,7 @@
 # repo, so host-side edits take effect on the next run with no rebuild.
 FROM clojure:temurin-21-bookworm
 
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gnuplot graphviz docker.io \
     && rm -rf /var/lib/apt/lists/*

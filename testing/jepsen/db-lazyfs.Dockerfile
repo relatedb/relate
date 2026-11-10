@@ -31,6 +31,8 @@ FROM ubuntu:24.04 AS lazyfs
 # Unix Makefiles generator needs it and nothing else in the list pulls
 # it); user_allow_other enabled exactly as the verified probe recipe
 # does (lazyfs mounts with allow_other).
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries \
+    && sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         g++ make cmake libfuse3-dev libfuse3-3 fuse3 git ca-certificates \
@@ -67,6 +69,8 @@ FROM relate-bolt:latest AS product
 FROM ubuntu:24.04
 # fuse3 (fusermount3 + the mount helper), procps (pkill for the probe),
 # coreutils' timeout for the nemesis's guarded FIFO write.
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries \
+    && sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
 RUN apt-get update \
     && apt-get install -y --no-install-recommends fuse3 procps \
     && sed -i 's/^#\s*user_allow_other/user_allow_other/' /etc/fuse.conf \
