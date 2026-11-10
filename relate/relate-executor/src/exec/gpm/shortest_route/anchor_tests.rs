@@ -9,11 +9,13 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use relate_core::Value;
+use relate_ir::Direction;
 
 use crate::exec::test_support::{exec_autocommit, exec_write_uncommitted, Builder};
 use crate::graph::Graph;
 
-use super::fixtures::{counting, gpm, run, sorted, Dir, Selector, DIRS, SELECTORS};
+use super::fixtures::{counting, gpm, run, sorted, DirectionExt, Selector, DIRS, SELECTORS};
+use super::route::AnchorArm;
 
 /// Corpus seed; a failure names it with the graph index.
 const SEED: u64 = 0x0556_0001;
@@ -39,14 +41,31 @@ fn graph(rng: &mut StdRng, n: usize, groups: usize, rels: usize) -> Graph {
     b.done()
 }
 
-/// One endpoint shape: the pattern's two node patterns, with the arm of
-/// `Route::anchor` it exercises (named in a failure) and the node count and
-/// group count of the graph that puts it there.
+/// The arm's display text, leading a shape's failure label. The arm
+/// vocabulary is [`AnchorArm`], the one home of `Route::anchor`'s arms; a
+/// shape names its row with the typed variant, never a display string, so
+/// the pair-arm identification test selects with
+/// `shape.arm == AnchorArm::Pair` and a reworded label cannot shrink
+/// coverage.
+fn arm_label(arm: AnchorArm) -> &'static str {
+    match arm {
+        AnchorArm::Pair => "pair",
+        AnchorArm::FanForward => "fan forward",
+        AnchorArm::FanBackward => "fan backward",
+        AnchorArm::Loop => "loop",
+    }
+}
+
+/// One endpoint shape: the pattern's two node patterns, the `RETURN`
+/// columns naming its endpoints, the arm of `Route::anchor` it exercises
+/// and the node count and group count of the graph that puts it there.
 struct Shape {
-    arm: &'static str,
-    /// Whether the candidate product is within the pair bound — the shapes
-    /// the pair arm answers (the others fall back to a fan).
-    pair: bool,
+    arm: AnchorArm,
+    /// The row's short name within its arm's family, for failure messages.
+    name: &'static str,
+    /// The `RETURN` columns before the trail, naming the pattern's
+    /// endpoints (one name for the loop, two otherwise).
+    cols: &'static str,
     start: &'static str,
     end: &'static str,
     n: usize,
@@ -54,41 +73,51 @@ struct Shape {
     rels: usize,
 }
 
+impl Shape {
+    /// The shape's failure label: its arm's family plus its row name.
+    fn label(&self) -> String {
+        format!("{} {}", arm_label(self.arm), self.name)
+    }
+}
+
 #[rustfmt::skip]
-const SHAPES: [Shape; 10] = [
+const SHAPES: [Shape; 11] = [
     // 1 x 1: the plain pair.
-    Shape { arm: "pair 1x1", pair: true, start: "(a {id: '0'})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::Pair, name: "1x1", cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // 4 x 1: several starts, one end, product within the bound.
-    Shape { arm: "pair 4x1", pair: true, start: "(a {g: 0})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::Pair, name: "4x1", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // 4 x 4 = 16: exactly the bound, still the pair product.
-    Shape { arm: "pair 4x4", pair: true, start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::Pair, name: "4x4", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 3, rels: 26 },
     // 6 x 6 = 36: past the bound, equal sides — the fan from the start.
-    Shape { arm: "fan 6x6", pair: false, start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 2, rels: 26 },
+    Shape { arm: AnchorArm::FanForward, name: "6x6", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 2, rels: 26 },
     // 20 x 1: past the bound with the end the shorter side — the fan from the end.
-    Shape { arm: "fan 20x1", pair: false, start: "(a {g: 0})", end: "(b {id: '5'})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanBackward, name: "20x1", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {id: '5'})", n: 40, groups: 2, rels: 44 },
     // bare start, end list past the bound: the start scan fans forward.
-    Shape { arm: "scan x 20", pair: false, start: "(a)", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "start scan", cols: "a.id, b.id, length(p)", start: "(a)", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
     // 1 x 20: the end list is past the bound and never built — the fan
     // from the one start.
-    Shape { arm: "fan 1x20", pair: false, start: "(a {id: '0'})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "fan 1x20", cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
     // 20 x 20: both lists past the bound — each built in full for the
     // shorter-side choice.
-    Shape { arm: "fan 20x20", pair: false, start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "fan 20x20", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
     // start list past the bound, bare end: the start list fans forward.
-    Shape { arm: "20 x scan", pair: false, start: "(a {g: 0})", end: "(b)", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "20 x scan", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b)", n: 40, groups: 2, rels: 44 },
     // bare start, one end: the end fans backward.
-    Shape { arm: "scan x 1", pair: false, start: "(a)", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::FanBackward, name: "scan x 1", cols: "a.id, b.id, length(p)", start: "(a)", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    // one unbound variable at both ends: the loop anchor, even though the
+    // map is property-seekable.
+    Shape { arm: AnchorArm::Loop, name: "same variable", cols: "a.id, length(p)", start: "(a {g: 0})", end: "(a)", n: 12, groups: 3, rels: 24 },
 ];
 
 /// The `MATCH` of `shape` under selector `sel`, direction `dir` and a bound
 /// of four hops, projecting the endpoints, the length and the node ids.
-fn query(shape: &Shape, sel: Selector, dir: Dir) -> String {
+fn query(shape: &Shape, sel: Selector, dir: Direction) -> String {
     let Selector { open, close, .. } = sel;
     let (l, r) = dir.arrows();
     format!(
         "MATCH p = {open}{}{l}[:R*..4]{r}{}{close} \
-         RETURN a.id, b.id, length(p), [n IN nodes(p) | n.id]",
-        shape.start, shape.end
+         RETURN {}, [n IN nodes(p) | n.id]",
+        shape.start, shape.end, shape.cols
     )
 }
 
@@ -111,8 +140,8 @@ fn comparable(rows: Vec<Vec<Value>>, sel: Selector) -> Vec<Vec<Value>> {
 }
 
 /// Every anchor shape × selector × direction on a handful of seeded graphs:
-/// the route answers what the enumerating GPM walk answers, and the route
-/// took the pattern.
+/// the route answers what the enumerating GPM walk answers, the route took
+/// the pattern, and `Route::anchor` took the arm the shape names.
 #[test]
 fn property_endpoint_anchors_agree_with_the_gpm_walk() {
     let mut rng = StdRng::seed_from_u64(SEED);
@@ -126,43 +155,22 @@ fn property_endpoint_anchors_agree_with_the_gpm_walk() {
                     assert!(
                         counts.route_runs > 0,
                         "{} graph {index}: the route must take {q}",
-                        shape.arm
+                        shape.label()
+                    );
+                    assert_eq!(
+                        counts.arms,
+                        vec![shape.arm],
+                        "{} graph {index}: Route::anchor took the wrong arm for {q}",
+                        shape.label()
                     );
                     assert_eq!(
                         comparable(rows, sel),
                         comparable(gpm(&g, &q), sel),
                         "{} graph {index}: route and GPM disagree on {q}",
-                        shape.arm
+                        shape.label()
                     );
                 }
             }
-        }
-    }
-}
-
-/// `(a {g: 0})-[*]-(a)`: one unbound variable at both ends keeps the loop
-/// anchor even when the map is property-seekable.
-#[test]
-fn property_map_loop_anchor_agrees_with_the_gpm_walk() {
-    let mut rng = StdRng::seed_from_u64(SEED ^ 1);
-    for index in 0..4 {
-        let g = graph(&mut rng, 12, 3, 24);
-        for sel in SELECTORS {
-            let Selector { open, close, .. } = sel;
-            let q = format!(
-                "MATCH p = {open}(a {{g: 0}})-[:R*..4]-(a){close} \
-                 RETURN a.id, length(p), [n IN nodes(p) | n.id]"
-            );
-            let (rows, counts) = run(&g, &q);
-            assert!(
-                counts.route_runs > 0,
-                "graph {index}: the route must take {q}"
-            );
-            assert_eq!(
-                comparable(rows, sel),
-                comparable(gpm(&g, &q), sel),
-                "graph {index}: route and GPM disagree on {q}"
-            );
         }
     }
 }
@@ -273,13 +281,18 @@ fn a_capped_seek_over_a_write_view_counts_what_survives_the_scratch() {
 
 /// The pair arm is identified, not just answered: within the bound the
 /// property-map form takes exactly the pair partitions the row-bound form
-/// takes, so the two follow the same relationships. Driven by the `pair`
+/// takes, so the two follow the same relationships. Driven by the `AnchorArm::Pair`
 /// rows of [`SHAPES`] — one table, one set of graph parameters. (Past the
 /// bound the fan answers; the parity test above pins its rows.)
 #[test]
 fn pair_arms_follow_the_row_bound_forms_expansions() {
     let mut rng = StdRng::seed_from_u64(SEED ^ 2);
-    for shape in SHAPES.iter().filter(|s| s.pair) {
+    let pairs: Vec<&Shape> = SHAPES.iter().filter(|s| s.arm == AnchorArm::Pair).collect();
+    assert!(
+        !pairs.is_empty(),
+        "the pair arm must have shapes to identify"
+    );
+    for shape in pairs {
         let g = graph(&mut rng, shape.n, shape.groups, shape.rels);
         let (start, end) = (shape.start, shape.end);
         let seek = format!("MATCH p = ANY SHORTEST {start}-[:R*..4]->{end} RETURN length(p)");
@@ -293,11 +306,25 @@ fn pair_arms_follow_the_row_bound_forms_expansions() {
             seek_counts.route_runs > 0 && bound_counts.route_runs > 0,
             "both forms must ride the route: {seek}"
         );
+        // The property form's plan may feed one route run per bound
+        // endpoint row; every such run must take the pair arm, never a fan.
+        assert!(
+            !seek_counts.arms.is_empty() && seek_counts.arms.iter().all(|a| *a == AnchorArm::Pair),
+            "the property form must take the pair arm: {seek} (got {:?})",
+            seek_counts.arms
+        );
+        assert!(
+            !bound_counts.arms.is_empty()
+                && bound_counts.arms.iter().all(|a| *a == AnchorArm::Pair),
+            "the bound form must take the pair arm: {seek} (got {:?})",
+            bound_counts.arms
+        );
         assert_eq!(sorted(seek_rows), sorted(bound_rows), "{seek}");
         assert_eq!(
-            seek_counts.expands, bound_counts.expands,
+            seek_counts.expands,
+            bound_counts.expands,
             "the {} property form must take the pair partitions the bound form takes: {seek}",
-            shape.arm
+            shape.label()
         );
     }
 }

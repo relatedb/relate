@@ -102,16 +102,10 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
     // only the origin's two relationships were followed, nothing deeper.
     let mut seen = 0;
     let ((), expands) = counting_expands(|| {
-        s.dag_layers(
-            n[0],
-            true,
-            None,
-            |_, _| Ok(false),
-            |_, _| {
-                seen += 1;
-                Ok(seen == 2)
-            },
-        )
+        s.dag_layers(n[0], true, None, |_| {
+            seen += 1;
+            Ok(seen == 2)
+        })
         .unwrap();
     });
     assert_eq!(seen, 2, "the origin layer, then the first depth");
@@ -123,16 +117,10 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
 fn layers_of(s: &Search<'_, '_>, origin: NodeId, all: bool) -> (Dag, Vec<Vec<NodeId>>) {
     let mut layers = Vec::new();
     let dag = s
-        .dag_layers(
-            origin,
-            all,
-            None,
-            |_, _| Ok(false),
-            |_, layer| {
-                layers.push(layer.to_vec());
-                Ok(false)
-            },
-        )
+        .dag_layers(origin, all, None, |layer| {
+            layers.push(layer.nodes().to_vec());
+            Ok(false)
+        })
         .unwrap();
     (dag, layers)
 }

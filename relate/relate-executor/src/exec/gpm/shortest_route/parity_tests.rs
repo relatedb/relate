@@ -11,10 +11,11 @@ use std::collections::HashSet;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use relate_core::{NodeId, Path, Value};
+use relate_ir::Direction;
 
 use crate::exec::test_support::{build, Built};
 
-use super::fixtures::{run, Counts, Dir, Selector, DIRS, SELECTORS};
+use super::fixtures::{run, Counts, DirectionExt, Selector, DIRS, SELECTORS};
 use super::with_forced_gpm;
 
 /// Corpus seed; a failure names it with the graph index.
@@ -128,7 +129,7 @@ impl Ends {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Combo {
     sel: Selector,
-    dir: Dir,
+    dir: Direction,
     bound: Bound,
     ends: Ends,
     types: Types,
@@ -185,7 +186,7 @@ impl Combo {
     }
 
     /// Whether `n` has a relationship this pattern may follow along `dir`.
-    fn adj(self, spec: &Spec, n: usize, dir: Dir) -> bool {
+    fn adj(self, spec: &Spec, n: usize, dir: Direction) -> bool {
         spec.rels
             .iter()
             .any(|&(a, b, t)| self.types.admit(t) && dir.step(n, (a, b)).is_some())
@@ -196,7 +197,7 @@ impl Combo {
     /// Searches whose answer is fixed without looking (a pair whose end
     /// cannot be entered, a zero-length partition) do not count.
     fn expansion_required(self, spec: &Spec) -> bool {
-        let (d, back) = (self.dir, self.dir.rev());
+        let (d, back) = (self.dir, self.dir.flip());
         let (xs, ys) = (spec.with("X"), spec.with("Y"));
         let closed =
             |s: usize| self.bound.min == 1 && self.adj(spec, s, d) && self.adj(spec, s, back);

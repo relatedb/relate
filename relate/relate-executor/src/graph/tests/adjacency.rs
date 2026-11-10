@@ -295,16 +295,9 @@ fn hop_walk_matches_literal_expectations() {
 /// first hops as history — the `pair_counts_skip_a_reused_rel_ids_stale_hop`
 /// precedent): rel 6 lives (1→2), dies, and its id is re-created (1→3).
 /// Node 1's out-adjacency then carries TWO hops named 6 and node 2's
-/// in-adjacency a stale one. The `Both` walk must key dedup on the rel
-/// id — an endpoint check would double-emit — and a stale hop whose
-/// resolved endpoints no longer touch the walked node drops via
-/// `hop_other`.
-#[test]
-fn hop_walk_dedups_a_reused_rel_ids_stale_hops() {
-    use relate_ir::Direction;
-
+/// in-adjacency a stale one.
+fn reused_rel_id_graph() -> Graph {
     use crate::graph::RedoOp;
-    use crate::store::RelTypes;
 
     let g = Graph::default();
     g.apply_redo(
@@ -343,6 +336,20 @@ fn hop_walk_dedups_a_reused_rel_ids_stale_hops() {
         4,
     )
     .unwrap();
+    g
+}
+
+/// The reused-rel-id fixture at the hop spelling: the `Both` walk must key
+/// dedup on the rel id — an endpoint check would double-emit — and a stale
+/// hop whose resolved endpoints no longer touch the walked node drops via
+/// `hop_other`.
+#[test]
+fn hop_walk_dedups_a_reused_rel_ids_stale_hops() {
+    use relate_ir::Direction;
+
+    use crate::store::RelTypes;
+
+    let g = reused_rel_id_graph();
 
     let walk = |at, dir| hop_pairs(&g, at, dir, g.commit_ts(), &RelTypes::Any);
 
@@ -366,4 +373,57 @@ fn hop_walk_dedups_a_reused_rel_ids_stale_hops() {
     // not an endpoint, so the hop drops.
     assert_eq!(walk(2, Direction::Both), vec![]);
     assert_eq!(walk(3, Direction::Both), vec![(6, 1)]);
+}
+
+/// The same reused-rel-id fixture at the kernel's other call sites: the
+/// rid-only spelling (`try_for_each_neighbor_resolved_at`) and the
+/// name-keyed boundary walk (`for_each_neighbor_at`) ride the one hop walk,
+/// so they drop the stale hop and dedup the reused id exactly as it does.
+#[test]
+fn neighbor_walk_drops_a_reused_rel_ids_stale_hops() {
+    use relate_ir::Direction;
+
+    use crate::store::RelTypes;
+
+    let g = reused_rel_id_graph();
+
+    // The rid-only kernel spelling: the hop walk projected to rids.
+    let rids = |at, dir| {
+        let mut out = Vec::new();
+        g.try_for_each_neighbor_resolved_at(at, dir, g.commit_ts(), &RelTypes::Any, |rid| {
+            out.push(rid);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        out
+    };
+    assert_eq!(
+        rids(1, Direction::Both),
+        vec![6],
+        "Both dedups the reused id"
+    );
+    assert_eq!(
+        rids(1, Direction::Outgoing),
+        vec![6, 6],
+        "the directed arm keeps both repeat entries"
+    );
+    assert_eq!(
+        rids(2, Direction::Both),
+        Vec::<relate_core::RelId>::new(),
+        "the stale hop drops: node 2 is not an endpoint"
+    );
+    assert_eq!(rids(3, Direction::Both), vec![6]);
+
+    // The name-keyed boundary walk agrees with the rid-only spelling.
+    let named = |at, dir| {
+        let mut out = Vec::new();
+        g.for_each_neighbor_at(at, dir, g.commit_ts(), &["R".to_string()], |rid| {
+            out.push(rid)
+        });
+        out
+    };
+    assert_eq!(named(1, Direction::Both), vec![6]);
+    assert_eq!(named(1, Direction::Outgoing), vec![6, 6]);
+    assert_eq!(named(2, Direction::Both), Vec::<relate_core::RelId>::new());
+    assert_eq!(named(3, Direction::Both), vec![6]);
 }

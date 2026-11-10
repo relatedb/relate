@@ -19,7 +19,7 @@ use crate::pattern_walk::{
     node_candidates_capped, Capped,
 };
 use crate::row::{Row, RowRung};
-use crate::shortest::layered::Dag;
+use crate::shortest::layered::Layer;
 use crate::shortest::{pair, path_from_trail, Search};
 
 use super::guard::Shape;
@@ -33,6 +33,36 @@ const SEEK_PAIR_LIMIT: usize = 16;
 /// `Probe::Over` is only ever produced for a seekable side, so the full
 /// seek answers `Some`.
 const OVER_IS_SEEKABLE: &str = "an over-bound side was probed as seekable";
+
+/// Which arm of [`Route::anchor`] answered one route run — the value the
+/// anchor tests assert against (the `take_route_runs` precedent). The
+/// variants mirror [`Anchor`]; the construction sites are the arm branches
+/// of [`Route::run`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AnchorArm {
+    Pair,
+    FanForward,
+    FanBackward,
+    Loop,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ANCHOR_ARMS: std::cell::RefCell<Vec<AnchorArm>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record the anchor arm one route run took; a no-op outside test builds.
+fn note_anchor(_arm: AnchorArm) {
+    #[cfg(test)]
+    ANCHOR_ARMS.with(|c| c.borrow_mut().push(_arm));
+}
+
+/// Take and reset this thread's recorded anchor arms.
+#[cfg(test)]
+pub(super) fn take_anchor_arms() -> Vec<AnchorArm> {
+    ANCHOR_ARMS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
 
 /// How the endpoints of one input row resolve, once per row.
 enum Anchor {
@@ -87,6 +117,16 @@ enum Way {
 }
 
 impl Way {
+    /// The fan search along this way: forward follows the pattern's own
+    /// direction from the start, backward runs the reversed search from the
+    /// end.
+    fn search<'a, 'g>(self, base: &Search<'a, 'g>) -> Search<'a, 'g> {
+        match self {
+            Way::Forward => base.clone(),
+            Way::Backward => base.reversed(),
+        }
+    }
+
     /// The (start, end) partition of `far`, a node reached from `origin`.
     fn ends(self, origin: NodeId, far: NodeId) -> (NodeId, NodeId) {
         match self {
@@ -202,13 +242,23 @@ impl<'a> Route<'a> {
             }
         }
         match self.anchor()? {
-            Anchor::Pair { starts, ends } => self.each_side(&starts, |s| {
-                self.each_side(&ends, |e| self.pair_partition(s, e, out))
-            })?,
-            Anchor::Fan { origins, way } => {
-                self.each_side(&origins, |origin| self.fan(origin, way, out))?
+            Anchor::Pair { starts, ends } => {
+                note_anchor(AnchorArm::Pair);
+                self.each_side(&starts, |s| {
+                    self.each_side(&ends, |e| self.pair_partition(s, e, out))
+                })?;
             }
-            Anchor::Loop => self.each_start(|s| self.pair_partition(s, s, out))?,
+            Anchor::Fan { origins, way } => {
+                note_anchor(match way {
+                    Way::Forward => AnchorArm::FanForward,
+                    Way::Backward => AnchorArm::FanBackward,
+                });
+                self.each_side(&origins, |origin| self.fan(origin, way, out))?;
+            }
+            Anchor::Loop => {
+                note_anchor(AnchorArm::Loop);
+                self.each_start(|s| self.pair_partition(s, s, out))?;
+            }
         };
         Ok(true)
     }
@@ -512,38 +562,46 @@ impl<'a> Route<'a> {
     fn fan(&self, origin: NodeId, way: Way, out: &mut RouteSink<'_>) -> Result<()> {
         // Forward, the origin is the start, bound once; backward, each
         // reached node is a start, bound in its own partition.
-        let (search, origin_row) = match way {
-            Way::Forward => {
-                let Some(row) = self.bind_start(origin)? else {
-                    return Ok(());
-                };
-                (self.search.clone(), Some(row))
-            }
-            Way::Backward => (self.search.reversed(), None),
-        };
-        search.dag_layers(
-            origin,
-            self.shape.all,
-            None,
-            |_, _| Ok(false),
-            |dag, layer| {
-                // The layer rides the route's one per-candidate loop.
-                self.each_of(layer, |far| {
-                    self.fan_partition(dag, origin, far, way, origin_row.as_ref(), out)
-                })?;
-                Ok(self.halted())
+        let origin_row = match way {
+            Way::Forward => match self.bind_start(origin)? {
+                Some(row) => Some(row),
+                None => return Ok(()),
             },
-        )?;
+            Way::Backward => None,
+        };
+        way.search(&self.search)
+            .dag_layers(origin, self.shape.all, None, |layer| {
+                self.fan_layer(&layer, origin, way, origin_row.as_ref(), out)
+            })?;
         Ok(())
     }
 
+    /// Drive one completed fan layer: each reached node is one partition,
+    /// and the layer is emitted as the search completes it (ADR-0555), so a
+    /// halted consumer stops the search before its deeper layers expand.
+    /// Returns whether the consumer halted.
+    fn fan_layer(
+        &self,
+        layer: &Layer<'_>,
+        origin: NodeId,
+        way: Way,
+        origin_row: Option<&Row>,
+        out: &mut RouteSink<'_>,
+    ) -> Result<bool> {
+        // The layer rides the route's one per-candidate loop.
+        self.each_of(layer.nodes(), |far| {
+            self.fan_partition(layer, origin, far, way, origin_row, out)
+        })?;
+        Ok(self.halted())
+    }
+
     /// The partition of `far`, a node a fan search reached from `origin`:
-    /// the start row (the forward fan's one bound origin row, or the
-    /// reached node's own binding for a backward fan), then the trails the
-    /// search holds to `far`.
+    /// the start row (the forward fan's one bound origin row, or the reached
+    /// node's own binding for a backward fan), then the trails the search
+    /// holds to `far`.
     fn fan_partition(
         &self,
-        dag: &Dag,
+        layer: &Layer<'_>,
         origin: NodeId,
         far: NodeId,
         way: Way,
@@ -559,7 +617,7 @@ impl<'a> Route<'a> {
             },
         };
         self.partition(s, e, &srow, out, || {
-            Ok(way.orient(dag.trails(self.ctx.graph, far)?))
+            Ok(way.orient(layer.trails(self.ctx.graph, far)?))
         })
     }
 

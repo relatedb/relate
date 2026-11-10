@@ -3,28 +3,35 @@
 //! order-insensitive rows.
 
 use relate_core::Value;
+use relate_ir::Direction;
 
 use crate::exec::test_support::{build, exec_cypher};
 use crate::graph::Graph;
 use crate::shortest::test_support::counting_expands;
 
+use super::route::{take_anchor_arms, AnchorArm};
 use super::{take_route_runs, with_forced_gpm};
 
-/// Relationships shortest-path searches followed, and (pattern, input row)
-/// evaluations the shortest-path route accepted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Relationships shortest-path searches followed, (pattern, input row)
+/// evaluations the shortest-path route accepted, and the anchor arms those
+/// runs took.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Counts {
     pub expands: u64,
     pub route_runs: u64,
+    /// The [`AnchorArm`] each route run took, in order.
+    pub arms: Vec<AnchorArm>,
 }
 
 /// `f`'s result and the [`Counts`] it caused.
 pub(super) fn counting<T>(f: impl FnOnce() -> T) -> (T, Counts) {
     let _ = take_route_runs();
+    let _ = take_anchor_arms();
     let (out, expands) = counting_expands(f);
     let counts = Counts {
         expands,
         route_runs: take_route_runs(),
+        arms: take_anchor_arms(),
     };
     (out, counts)
 }
@@ -88,40 +95,37 @@ pub(super) const SELECTORS: [Selector; 6] = [
     Selector { open: "ALL SHORTEST ", close: "", all: true },
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum Dir {
-    Out,
-    In,
-    Both,
+/// The three directions the matrix runs.
+pub(super) const DIRS: [Direction; 3] = [Direction::Outgoing, Direction::Incoming, Direction::Both];
+
+/// The query builders' direction spelling helpers, over the canonical
+/// [`Direction`] vocabulary: the arrow pair a direction renders as, and
+/// whether it may follow a relationship `from → to` from `at`. `step` is
+/// deliberately independent of the production hop arithmetic
+/// (`crate::store::hop_other`) so the oracle cannot inherit a kernel bug.
+pub(super) trait DirectionExt {
+    fn arrows(self) -> (&'static str, &'static str);
+    fn step(self, at: usize, rel: (usize, usize)) -> Option<usize>;
 }
 
-pub(super) const DIRS: [Dir; 3] = [Dir::Out, Dir::In, Dir::Both];
-
-impl Dir {
-    pub(super) fn arrows(self) -> (&'static str, &'static str) {
+impl DirectionExt for Direction {
+    fn arrows(self) -> (&'static str, &'static str) {
         match self {
-            Dir::Out => ("-", "->"),
-            Dir::In => ("<-", "-"),
-            Dir::Both => ("-", "-"),
-        }
-    }
-
-    pub(super) fn rev(self) -> Dir {
-        match self {
-            Dir::Out => Dir::In,
-            Dir::In => Dir::Out,
-            Dir::Both => Dir::Both,
+            Direction::Outgoing => ("-", "->"),
+            Direction::Incoming => ("<-", "-"),
+            Direction::Both => ("-", "-"),
         }
     }
 
     /// The node reached from `at` over relationship `from → to`, if this
     /// direction may follow it from there.
-    pub(super) fn step(self, at: usize, (from, to): (usize, usize)) -> Option<usize> {
+    fn step(self, at: usize, rel: (usize, usize)) -> Option<usize> {
+        let (from, to) = rel;
         match self {
-            Dir::Out => (from == at).then_some(to),
-            Dir::In => (to == at).then_some(from),
-            Dir::Both if from == at => Some(to),
-            Dir::Both => (to == at).then_some(from),
+            Direction::Outgoing => (from == at).then_some(to),
+            Direction::Incoming => (to == at).then_some(from),
+            Direction::Both if from == at => Some(to),
+            Direction::Both => (to == at).then_some(from),
         }
     }
 }

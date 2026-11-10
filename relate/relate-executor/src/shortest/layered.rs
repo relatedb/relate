@@ -23,6 +23,36 @@ pub(crate) struct Dag {
     more: FxMap<NodeId, Vec<(NodeId, RelId)>>,
 }
 
+/// One completed layer of a layered search, handed to the `on_layer`
+/// consumer of [`Search::dag_layers`]: the nodes just reached, in discovery
+/// order, over the search's settled predecessors. Its [`Layer::trails`]
+/// reads only the reported nodes — a node's predecessors are final once its
+/// layer completes, so a caller can read and emit the layer's trails at
+/// once, before the deeper layers expand.
+pub(crate) struct Layer<'a> {
+    dag: &'a Dag,
+    nodes: &'a [NodeId],
+}
+
+impl Layer<'_> {
+    /// This layer's nodes, in discovery order.
+    pub(crate) fn nodes(&self) -> &[NodeId] {
+        self.nodes
+    }
+
+    /// Every trail the search holds from its origin to `target`, origin
+    /// first: all predecessor chains of an all-path search, the first chain
+    /// otherwise. Empty when `target` was not reached. `target` must be one
+    /// of this layer's nodes, whose predecessors are settled.
+    pub(crate) fn trails(&self, graph: &ExecGraph<'_>, target: NodeId) -> Result<Vec<Vec<RelId>>> {
+        debug_assert!(
+            self.nodes.contains(&target),
+            "Layer::trails: {target} is not a node of this layer"
+        );
+        self.dag.trails(graph, target)
+    }
+}
+
 impl Dag {
     /// Every trail the search holds from its origin to `target`, origin
     /// first: all predecessor chains of an all-path search, the first chain
@@ -71,24 +101,39 @@ impl Search<'_, '_> {
         skip: Option<RelId>,
         stop: impl FnMut(NodeId, u32) -> Result<bool>,
     ) -> Result<Dag> {
-        self.dag_layers(origin, all, skip, stop, |_, _| Ok(false))
+        self.walk(origin, all, skip, stop, |_| Ok(false))
     }
 
     /// [`Self::dag`] reporting each layer as it completes (ADR-0555): after
     /// the origin (depth 0, alone) and after every layer of newly reached
-    /// nodes, `on_layer` gets the search so far and that layer's nodes in
-    /// discovery order (the search keeps no list of every reached node). A node's
+    /// nodes, `on_layer` gets that layer as a [`Layer`]. A node's
     /// predecessors are final once its layer completes (later arrivals are
     /// one layer deeper), so the layer's trails can be read and emitted at
     /// once; the deeper layers are never expanded when `on_layer` returns
-    /// true, which is how a halted consumer stops the search itself.
+    /// true, which is how a halted consumer stops the search itself. An
+    /// empty layer is never reported: a search whose frontier empties simply
+    /// ends.
     pub(crate) fn dag_layers(
         &self,
         origin: NodeId,
         all: bool,
         skip: Option<RelId>,
+        on_layer: impl FnMut(Layer<'_>) -> Result<bool>,
+    ) -> Result<Dag> {
+        self.walk(origin, all, skip, |_, _| Ok(false), on_layer)
+    }
+
+    /// The layered search's one body. [`Self::dag`] passes its per-node
+    /// `stop` and a no-op layer channel; [`Self::dag_layers`] passes a no-op
+    /// `stop` and its layer channel — each entry point carries exactly one
+    /// stopping protocol.
+    fn walk(
+        &self,
+        origin: NodeId,
+        all: bool,
+        skip: Option<RelId>,
         mut stop: impl FnMut(NodeId, u32) -> Result<bool>,
-        mut on_layer: impl FnMut(&Dag, &[NodeId]) -> Result<bool>,
+        mut on_layer: impl FnMut(Layer<'_>) -> Result<bool>,
     ) -> Result<Dag> {
         // Dense engine-id keys: the dense-id hasher rule (ADR-0355,
         // LABS-337), `hash_seed::FxMap`.
@@ -98,7 +143,10 @@ impl Search<'_, '_> {
             more: FxMap::default(),
         };
         let mut stopped = stop(origin, 0)?;
-        let mut halted = on_layer(&dag, &[origin])?;
+        let mut halted = on_layer(Layer {
+            dag: &dag,
+            nodes: &[origin],
+        })?;
         let mut frontier = vec![origin];
         let mut depth = 0;
         while !stopped && !halted && !frontier.is_empty() && depth < self.max {
@@ -131,7 +179,10 @@ impl Search<'_, '_> {
             // stopped inside it, final for every node it reached).
             // An empty layer reports nothing: the search simply ends.
             if !next.is_empty() {
-                halted = on_layer(&dag, &next)?;
+                halted = on_layer(Layer {
+                    dag: &dag,
+                    nodes: &next,
+                })?;
             }
             frontier = next;
             depth = next_depth;
