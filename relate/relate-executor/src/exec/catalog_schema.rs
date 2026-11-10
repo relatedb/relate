@@ -16,7 +16,8 @@ use crate::row::Row;
 use super::catalog::schema_name_value;
 use super::ddl::{index_conflict_gate, skip_existing, ExistingRule, Gate, IndexFacts};
 use super::ddl_options::{
-    parameter_map, resolve_index_options, validate_constraint_options, KEY_INDEX_CONFIG,
+    parameter_map, resolve_index_options, validate_constraint_options, ADMITTED_OPTION_KEYS,
+    KEY_INDEX_CONFIG,
 };
 
 pub(crate) fn catalog_create_index(
@@ -482,20 +483,21 @@ fn graph_type_admitted_option_keys(
 ) -> &'static [&'static str] {
     match constraint.kind {
         relate_parser::GraphTypeConstraintVerb::Key
-        | relate_parser::GraphTypeConstraintVerb::Unique => &[KEY_INDEX_CONFIG],
+        | relate_parser::GraphTypeConstraintVerb::Unique => ADMITTED_OPTION_KEYS,
         relate_parser::GraphTypeConstraintVerb::Exists
         | relate_parser::GraphTypeConstraintVerb::PropertyType => &[],
     }
 }
 
 /// The one graph-type OPTIONS foreign-key rejection, per constraint kind
-/// (both spellings raise it, see the caller).
+/// (both spellings raise it, see the caller). An index-backed kind shares
+/// the schema DDL resolvers' pinned text — the one spelling of it.
 fn graph_type_option_key_error(kind: &relate_parser::GraphTypeConstraintVerb, key: &str) -> Error {
     match kind {
         relate_parser::GraphTypeConstraintVerb::Key
-        | relate_parser::GraphTypeConstraintVerb::Unique => Error::argument_error(format!(
-            "Invalid input '{key}' for 'OPTIONS'. Expected 'indexConfig'."
-        )),
+        | relate_parser::GraphTypeConstraintVerb::Unique => {
+            Error::argument_error(crate::exec::ddl_options::rejected_option_key_message(key))
+        }
         relate_parser::GraphTypeConstraintVerb::Exists
         | relate_parser::GraphTypeConstraintVerb::PropertyType => Error::argument_error(format!(
             "Invalid input: 'OPTIONS' is not supported in graph type {} constraints.",

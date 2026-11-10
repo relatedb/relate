@@ -66,7 +66,48 @@ pub(crate) fn index_config(
 /// slot must not change the class); a whole-map parameter carrying a foreign
 /// key is the argument validator's rejection after resolution — the same
 /// allowlist, the class differing by provenance.
-const ADMITTED_OPTION_KEYS: &[&str] = &[KEY_INDEX_CONFIG];
+pub(crate) const ADMITTED_OPTION_KEYS: &[&str] = &[KEY_INDEX_CONFIG];
+
+/// Live's rejection text for a non-admitted `OPTIONS` key: name the key and
+/// the admitted spelling(s), rendered from [`ADMITTED_OPTION_KEYS`] so the
+/// text and the allowlist cannot drift. `indexProvider` was deprecated and
+/// then removed upstream, so the schema DDL resolvers read the same text
+/// for every non-admitted key. The *class* stays by provenance — a literal
+/// key is the front end's `SyntaxError`, a whole-map parameter's is the
+/// argument validator's `ArgumentError` — matching live 2026.10.1's driver
+/// codes; the GQL status (22N04) rides inside live's message, which is why
+/// this text names no code of its own.
+pub(crate) fn rejected_option_key_message(key: &str) -> String {
+    let expected = ADMITTED_OPTION_KEYS
+        .iter()
+        .map(|admitted| format!("'{admitted}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Invalid input '{key}' for 'OPTIONS'. Expected {expected}.")
+}
+
+/// The literal-spelling rejection the schema DDL resolvers share: the front
+/// end's syntax class carrying the pinned text.
+fn literal_option_key(key: &str) -> Error {
+    Error::syntax(rejected_option_key_message(key))
+}
+
+/// The parameter-spelling twin: the argument validator's class, its message
+/// key lowercased as live does.
+fn parameter_option_key(key: &str) -> Error {
+    Error::argument_error(rejected_option_key_message(&key.to_lowercase()))
+}
+
+/// The schema DDL resolvers' one key policy (the index and constraint
+/// twins): the shared allowlist, the syntax class for a literal foreign
+/// key, the argument class for a whole-map parameter's.
+fn ddl_option_key_policy() -> OptionKeyPolicy<'static> {
+    OptionKeyPolicy {
+        admitted: ADMITTED_OPTION_KEYS,
+        literal: &literal_option_key,
+        parameter: &parameter_option_key,
+    }
+}
 
 /// The one whole-map `OPTIONS $param` → map invariant: an absent parameter
 /// is `ParameterMissing` (ADR-0308), a non-MAP is the run-time argument
@@ -176,18 +217,12 @@ pub(crate) fn validate_constraint_options(
     params: &BTreeMap<String, Value>,
     cypher_version: Option<u32>,
 ) -> Result<()> {
-    let literal = |_: &str| Error::syntax("InvalidOptionsMap");
-    let parameter = |_: &str| Error::argument_error("InvalidOptionsMap");
     let options = resolve_options(
         graph,
         &c.options,
         params,
         cypher_version,
-        &OptionKeyPolicy {
-            admitted: ADMITTED_OPTION_KEYS,
-            literal: &literal,
-            parameter: &parameter,
-        },
+        &ddl_option_key_policy(),
         "Could not create constraint with options: expected a map value.",
     )?;
     // EXISTENCE and PROPERTY TYPE constraints admit no options at all
@@ -204,11 +239,9 @@ pub(crate) fn validate_constraint_options(
             ))
         };
     }
-    // The one admitted value shape: an empty `indexConfig` map.
-    if options
-        .values()
-        .any(|value| !matches!(value, Value::Map(map) if map.is_empty()))
-    {
+    // The one admitted value shape: an empty `indexConfig` map, navigated
+    // through the module's one accessor.
+    if index_config(&options)?.is_some_and(|config| !config.is_empty()) {
         return Err(Error::argument_error("InvalidOptionsMap"));
     }
     Ok(())
@@ -270,18 +303,12 @@ pub(crate) fn resolve_index_options(
     cypher_version: Option<u32>,
 ) -> Result<BTreeMap<String, Value>> {
     validate_index_target(c)?;
-    let literal = |_: &str| Error::syntax("InvalidIndexOption");
-    let parameter = |_: &str| Error::argument_error("InvalidIndexOption");
     let mut options = resolve_options(
         graph,
         &c.options,
         params,
         cypher_version,
-        &OptionKeyPolicy {
-            admitted: ADMITTED_OPTION_KEYS,
-            literal: &literal,
-            parameter: &parameter,
-        },
+        &ddl_option_key_policy(),
         "InvalidInputValue: OPTIONS parameter must be a MAP",
     )?;
     validate_index_config(c.kind, &mut options)?;

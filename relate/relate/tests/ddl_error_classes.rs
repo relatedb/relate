@@ -23,6 +23,12 @@ use relate::Value;
 
 use common::{connection, empty_map, error_class_literal, map, params};
 
+/// Live's pinned key-rejection text, byte-for-byte: `key` as the rejecting
+/// spelling renders it (the parameter spelling lowercases it).
+fn key_rejection(key: &str) -> String {
+    format!("Invalid input '{key}' for 'OPTIONS'. Expected 'indexConfig'.")
+}
+
 #[test]
 fn property_type_constraint_shape_rules_are_syntax_errors() {
     let mut conn = connection();
@@ -42,17 +48,22 @@ fn property_type_constraint_shape_rules_are_syntax_errors() {
 }
 
 #[test]
-fn constraint_options_shape_is_a_syntax_error() {
+fn constraint_options_key_is_a_syntax_error() {
     let mut conn = connection();
     // Cypher 25 admits only `indexConfig`; a literal invalid key is the
-    // front end's rejection.
-    assert_eq!(
-        error_class_literal(
-            &mut conn,
+    // front end's rejection, carrying live 2026.10.1's message text (its
+    // driver code stays SyntaxError — the 22N04 GQL status rides inside
+    // the message).
+    let error = conn
+        .query(
             "CREATE CONSTRAINT c FOR (n:Person) REQUIRE n.name IS UNIQUE \
-             OPTIONS {indexProvider: 'text-1.0'}"
-        ),
-        "SyntaxError"
+             OPTIONS {indexProvider: 'text-1.0'}",
+        )
+        .unwrap_err();
+    common::assert_syntax_error(&error);
+    assert!(
+        error.to_string().contains(&key_rejection("indexProvider")),
+        "{error}"
     );
 }
 
@@ -63,13 +74,18 @@ fn constraint_options_shape_is_a_syntax_error() {
 #[test]
 fn constraint_options_parameter_rejections_are_argument_errors() {
     let mut conn = connection();
-    for options in [
+    for (options, rejected_key) in [
         // The whole map is not a MAP.
-        Value::Int(23),
-        // A key the constraint does not admit.
-        map(&[("indexProvider", Value::String("range-1.0".into()))]),
+        (Value::Int(23), None),
         // An admitted key with a rejected value shape.
-        map(&[("indexConfig", Value::Int(2))]),
+        (map(&[("indexConfig", Value::Int(2))]), None),
+        // A key the constraint does not admit keeps the argument validator's
+        // class in the parameter spelling, with live's message text (its key
+        // lowercased, as live does).
+        (
+            map(&[("indexProvider", Value::String("range-1.0".into()))]),
+            Some("indexprovider"),
+        ),
     ] {
         let error = conn
             .query_with_params(
@@ -78,6 +94,9 @@ fn constraint_options_parameter_rejections_are_argument_errors() {
             )
             .unwrap_err();
         common::assert_argument_error(&error);
+        if let Some(key) = rejected_key {
+            assert!(error.to_string().contains(&key_rejection(key)), "{error}");
+        }
     }
 }
 
@@ -192,21 +211,50 @@ fn index_shape_rules_are_syntax_errors() {
         // A single-property index kind given two properties.
         "CREATE TEXT INDEX i1 FOR (n:Label) ON (n.a, n.b)",
         "CREATE POINT INDEX i2 FOR (n:Label) ON (n.a, n.b)",
-        // Literal OPTIONS: an unknown key and a rejected provider.
-        "CREATE RANGE INDEX i3 FOR (n:Label) ON (n.prop) OPTIONS {bogus: 1}",
-        "CREATE RANGE INDEX i4 FOR (n:Label) ON (n.prop) OPTIONS {indexProvider: 'native-btree-1.0'}",
-        "CREATE LOOKUP INDEX i5 FOR (n) ON EACH labels(n) OPTIONS {indexProvider: 'vector-2026.08'}",
         // An `ON EACH [...]` bracket list is the parser's own duplicate rule.
         "CREATE FULLTEXT INDEX i6 FOR (n:Label) ON EACH [n.p, n.p]",
     ] {
-        assert_eq!(error_class_literal(&mut conn, statement), "SyntaxError", "{statement}");
+        assert_eq!(
+            error_class_literal(&mut conn, statement),
+            "SyntaxError",
+            "{statement}"
+        );
+    }
+}
+
+/// Literal OPTIONS key rejections keep the syntax class and carry live
+/// 2026.10.1's message text — pinned byte-for-byte for an unknown key and
+/// for the removed `indexProvider` alike.
+#[test]
+fn index_options_key_rejections_name_the_key() {
+    let mut conn = connection();
+    for (statement, key) in [
+        (
+            "CREATE RANGE INDEX i3 FOR (n:Label) ON (n.prop) OPTIONS {bogus: 1}",
+            "bogus",
+        ),
+        (
+            "CREATE RANGE INDEX i4 FOR (n:Label) ON (n.prop) \
+             OPTIONS {indexProvider: 'native-btree-1.0'}",
+            "indexProvider",
+        ),
+        (
+            "CREATE LOOKUP INDEX i5 FOR (n) ON EACH labels(n) \
+             OPTIONS {indexProvider: 'vector-2026.08'}",
+            "indexProvider",
+        ),
+    ] {
+        let error = conn.query(statement).unwrap_err();
+        common::assert_syntax_error(&error);
+        assert!(error.to_string().contains(&key_rejection(key)), "{error}");
     }
 }
 
 /// The same rejections reached through a whole-map `OPTIONS $param` are the
 /// run-time argument validator's, not the parser's: the removed
 /// `indexProvider` key (whatever its payload — the key alone is the
-/// rejection) and a non-map parameter.
+/// rejection, its message key lowercased as live does) and a non-map
+/// parameter.
 #[test]
 fn index_options_parameter_rejections_are_argument_errors() {
     let mut conn = connection();
@@ -218,7 +266,14 @@ fn index_options_parameter_rejections_are_argument_errors() {
             )
             .unwrap_err();
         common::assert_argument_error(&error);
+        assert!(
+            error.to_string().contains(&key_rejection("indexprovider")),
+            "{error}"
+        );
     }
+    // A non-map parameter stays the argument validator's rejection (live
+    // 2026.10.1 words it 22N27 with a different message — a documented
+    // divergence, error-class wave backlog).
     let error = conn
         .query_with_params(
             "CREATE TEXT INDEX i2 FOR (n:Label) ON (n.prop) OPTIONS $options",
