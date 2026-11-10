@@ -1152,6 +1152,33 @@ load step and per-label and per-type counts, or `{"origin": "reused",
 `engine` and `wall` statistics (`min_ns`, `p50_ns`, `mean_ns`, `p99_ns`,
 `max_ns`, nearest-rank) and the diff or error as `detail`.
 
+## Pokec expansion profiling: `pokec_profile` (LABS-1116)
+
+A dev tool (not CI-gated) in `relate-query-latency`: it runs the
+traverse-bench pokec query groups against the synthetic pokec fixture as one
+self-terminating process, printing wall time, total rows and a checksum per
+group. The fixture is deterministic, so identical checksums before and after
+a change are the correctness cross-check for a perf edit.
+
+```bash
+cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- medium
+cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- medium \
+  --group expansion_3 --sample target/pokec-prof
+cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- small \
+  --group expansion_3 --profile
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `small` \| `medium` (required, first) | Fixture shape: `small` = 10,000 users / 121,716 friendships (opens in seconds); `medium` = 100,000 users / 1,768,164 friendships. No default. |
+| `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `scan_expand_2hop_filter`. All groups when omitted; an unknown name is a usage error before the fixture opens. |
+| `--sample DIR` | Run the selected groups under the in-process sampler (997 Hz, ADR-0244) and write `DIR/<group>/folded.txt` and `flame.svg`, one directory per group. Conflicts with `--profile`. |
+| `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
+| `--help` | The generated usage and flag list. |
+
+No environment variables beyond cargo's own. A bad argument exits 2 with the
+generated usage error.
+
 ## QPP/LDBC corpus: PathDB, SNB BI, fraud-qpp, the UK railway graph and agg-stress (ADR-0479)
 
 `query-latency corpus` (LABS-646) runs the corpora that live beside the
