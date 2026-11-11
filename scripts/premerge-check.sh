@@ -43,10 +43,12 @@
 
 set -euo pipefail
 
-# The usage text is the leading comment block itself, printed by content —
-# a line-numbered slice would drift the moment the header grows or shrinks.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The usage text is the leading comment block itself; scripts/lib/usage.sh
+# owns the one printer.
 usage() {
-    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" >&2
+    usage_text "${BASH_SOURCE[0]}" >&2
     exit 2
 }
 
@@ -69,6 +71,15 @@ fail() {
     [ $# -lt 2 ] || log_head "$2"
     exit 2
 }
+
+# Loaded after `fail`, per the loading contract stated once in
+# scripts/lib/usage.sh's header (existence check included). `fail` reports a
+# missing helper through the environment status (2) — never 1, which this
+# gate reserves for "do not merge".
+usage_lib="$REPO/scripts/lib/usage.sh"
+[ -f "$usage_lib" ] && [ -r "$usage_lib" ] || fail "cannot load scripts/lib/usage.sh (incomplete checkout?)"
+# shellcheck source=lib/usage.sh
+source "$usage_lib"
 
 # The scratch export is the first thing acquired and the first thing
 # released: the trap is installed with it, above every path that can exit.

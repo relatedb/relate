@@ -33,6 +33,13 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Loaded per the contract stated once in scripts/lib/usage.sh's header
+# (existence check included).
+usage_lib="$REPO/scripts/lib/usage.sh"
+[ -f "$usage_lib" ] && [ -r "$usage_lib" ] || { echo "prebuilt-bin: cannot load scripts/lib/usage.sh (incomplete checkout?)" >&2; exit 2; }
+# shellcheck source=lib/usage.sh
+source "$usage_lib"
+
 PROFILE="debug"
 CARGO_PROFILE_ARGS=()
 WITH_BOLT=0
@@ -42,10 +49,9 @@ for arg in "$@"; do
     --bolt) WITH_BOLT=1 ;;
     -h | --help)
       # The header comment block at the top of this script is the single
-      # source of the usage prose; --help prints it verbatim (strip the
-      # shebang and the `# ` prefixes, stop at the first non-comment line).
-      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
-        "${BASH_SOURCE[0]}"
+      # source of the usage prose; --help prints it verbatim via
+      # scripts/lib/usage.sh's one printer.
+      usage_text "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
