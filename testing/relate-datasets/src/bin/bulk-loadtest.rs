@@ -9,9 +9,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use relate_datasets::bulk::{parse_ops, parse_sizes, run, BulkConfig, BulkOp, DEFAULT_SIZES};
-use relate_datasets::loadtest::parse_cli_size;
+use relate_datasets::bulk::{parse_size, run, BulkConfig, BulkOp, DEFAULT_SIZES};
+use relate_datasets::loadtest::StorageArgs;
 use relate_datasets::memory::format_bytes;
+use relate_datasets::report::nanos_to_millis;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -20,11 +21,11 @@ use relate_datasets::memory::format_bytes;
 )]
 struct Args {
     /// Operations to measure, comma-separated (`create`, `merge-with-constraint`, `update`, `delete`)
-    #[arg(long, value_name = "LIST")]
-    ops: Option<String>,
+    #[arg(long, value_name = "LIST", value_delimiter = ',', value_parser = BulkOp::parse, default_values_t = BulkOp::all())]
+    ops: Vec<BulkOp>,
     /// Batch sizes, comma-separated (`5000`, `50_000`, `50k`)
-    #[arg(long, value_name = "LIST")]
-    sizes: Option<String>,
+    #[arg(long, value_name = "LIST", value_delimiter = ',', value_parser = parse_size, default_values_t = DEFAULT_SIZES)]
+    sizes: Vec<usize>,
     /// Measured repetitions per (operation, size); each rep re-creates its base data, untimed
     #[arg(long, default_value_t = 1)]
     reps: usize,
@@ -34,38 +35,29 @@ struct Args {
     /// Directory for the per-measurement databases, or `:memory:` for a fresh in-memory database per measurement
     #[arg(long, default_value = "target/bulk-loadtest-data")]
     dir: String,
-    /// Live graph + index cap: integer bytes, or a size with mb/mib/gb/gib (RELATE_LOGICAL_GRAPH_SIZE_LIMIT; 0 or omit is unlimited)
-    #[arg(long, value_name = "SIZE", value_parser = parse_cli_size)]
-    logical_graph_size_limit: Option<u64>,
+    /// Open-time storage flags ([`StorageArgs`])
+    #[command(flatten)]
+    storage: StorageArgs,
     /// Report JSON path
     #[arg(long, default_value = "target/bulk-loadtest.json")]
     out: PathBuf,
-}
-
-/// Bad `--ops` / `--sizes` element: message on stderr, usage exit code.
-fn usage_error(msg: &str) -> ! {
-    eprintln!("error: {msg}");
-    std::process::exit(2);
+    /// Record the engine's commit-timing report (parse+plan, overlay execute, wal_lock wait, encode+write, sync_all, apply_redo) into each report entry
+    #[arg(long)]
+    commit_timing: bool,
 }
 
 fn main() {
     let args = Args::parse();
-    let ops = match &args.ops {
-        Some(list) => parse_ops(list).unwrap_or_else(|e| usage_error(&e)),
-        None => BulkOp::all(),
-    };
-    let sizes = match &args.sizes {
-        Some(list) => parse_sizes(list).unwrap_or_else(|e| usage_error(&e)),
-        None => DEFAULT_SIZES.to_vec(),
-    };
     let cfg = BulkConfig {
         dir: args.dir.clone(),
-        sizes,
-        ops,
+        sizes: args.sizes,
+        ops: args.ops,
         reps: args.reps,
         warmup: args.warmup,
         out: Some(args.out.clone()),
-        logical_graph_size_limit: args.logical_graph_size_limit,
+        logical_graph_size_limit: args.storage.logical_graph_size_limit,
+        durability_mode: args.storage.durability_mode,
+        commit_timing: args.commit_timing,
     };
     println!(
         "bulk-loadtest: {} ops x {} sizes x {} rep(s) into {}",
@@ -89,9 +81,9 @@ fn main() {
             for e in &report.results {
                 let (p50, p95, p99) = match &e.latency_ns {
                     Some(l) => (
-                        format!("{:.1}ms", l.p50 as f64 / 1e6),
-                        format!("{:.1}ms", l.p95 as f64 / 1e6),
-                        format!("{:.1}ms", l.p99 as f64 / 1e6),
+                        format!("{:.1}ms", nanos_to_millis(l.p50)),
+                        format!("{:.1}ms", nanos_to_millis(l.p95)),
+                        format!("{:.1}ms", nanos_to_millis(l.p99)),
                     ),
                     None => ("-".into(), "-".into(), "-".into()),
                 };
@@ -130,5 +122,48 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The list flags are clap's: omitted means the documented defaults,
+    /// given means split on commas with each element parsed (or refused)
+    /// by the shared element parsers.
+    #[test]
+    fn list_flags_default_and_split() {
+        let args = Args::try_parse_from(["bulk-loadtest"]).unwrap();
+        assert_eq!(args.ops, BulkOp::all());
+        assert_eq!(args.sizes, DEFAULT_SIZES.to_vec());
+
+        let args = Args::try_parse_from([
+            "bulk-loadtest",
+            "--ops",
+            "create, merge",
+            "--sizes",
+            "1,10_000,50k",
+        ])
+        .unwrap();
+        assert_eq!(args.ops, vec![BulkOp::Create, BulkOp::MergeWithConstraint]);
+        assert_eq!(args.sizes, vec![1, 10_000, 50_000]);
+
+        // Both list flags share one whitespace policy: the chunks clap
+        // hands the element parsers are trimmed.
+        let args = Args::try_parse_from([
+            "bulk-loadtest",
+            "--ops",
+            "create, merge",
+            "--sizes",
+            "1, 5000",
+        ])
+        .unwrap();
+        assert_eq!(args.sizes, vec![1, 5000]);
+
+        assert!(Args::try_parse_from(["bulk-loadtest", "--ops", "bogus"]).is_err());
+        assert!(Args::try_parse_from(["bulk-loadtest", "--sizes", "18446744073709552k"]).is_err());
+        assert!(Args::try_parse_from(["bulk-loadtest", "--sizes", "0"]).is_err());
+        assert!(Args::try_parse_from(["bulk-loadtest", "--sizes", "abc"]).is_err());
     }
 }

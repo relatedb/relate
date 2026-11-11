@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
-use relate::{Database, Error, OpenOptions, Result, Value};
+use relate::{Database, DurabilityMode, Error, OpenOptions, Result, Value};
 use relate_test_support::sampling::process_rss_bytes;
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,8 @@ use crate::loadtest::{scalar, unix_ms};
 use crate::report::{LatencyNs, Rank};
 
 /// Schema version of [`BulkReport`]. Bump when the JSON shape changes.
-pub const BULK_REPORT_SCHEMA_VERSION: u32 = 1;
+/// 2 adds `config.durability_mode` and per-entry `commit_timing`.
+pub const BULK_REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// `create`: one statement, one commit.
 pub const CREATE_CYPHER: &str =
@@ -145,47 +146,35 @@ impl BulkOp {
     }
 }
 
-/// Comma-separated `--ops` list.
-pub fn parse_ops(s: &str) -> std::result::Result<Vec<BulkOp>, String> {
-    let ops: Vec<BulkOp> = s
-        .split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(BulkOp::parse)
-        .collect::<std::result::Result<_, _>>()?;
-    if ops.is_empty() {
-        return Err("--ops is empty (expected a comma-separated list)".into());
+/// The report/CLI spelling — the same string [`BulkOp::id`] and serde use,
+/// so clap can render a default list.
+impl std::fmt::Display for BulkOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
     }
-    Ok(ops)
 }
 
-/// Comma-separated `--sizes` list (also accepts `_` and `k` suffixes).
-pub fn parse_sizes(s: &str) -> std::result::Result<Vec<usize>, String> {
-    let mut sizes = Vec::new();
-    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        let n = parse_size(part)?;
-        if n == 0 {
-            return Err("--sizes entries must be >= 1".into());
-        }
-        sizes.push(n);
-    }
-    if sizes.is_empty() {
-        return Err("--sizes is empty (expected a comma-separated list)".into());
-    }
-    Ok(sizes)
-}
-
-/// `50000`, `50_000`, or `50k` → 50000.
-fn parse_size(part: &str) -> std::result::Result<usize, String> {
+/// One `--sizes` element: `50000`, `50_000`, or `50k` → 50000. Trimmed like
+/// [`BulkOp::parse`], since clap's comma splitter hands the chunks through
+/// raw; `0` and an out-of-range value are rejected here so clap's own error
+/// carries them.
+pub fn parse_size(part: &str) -> std::result::Result<usize, String> {
+    let part = part.trim();
     let cleaned = part.replace('_', "");
     let (digits, mult) = match cleaned.strip_suffix(['k', 'K']) {
         Some(d) => (d, 1_000usize),
         None => (cleaned.as_str(), 1),
     };
-    digits
+    let n = digits
         .parse::<usize>()
-        .map(|n| n * mult)
-        .map_err(|_| format!("invalid size {part:?}"))
+        .map_err(|_| format!("invalid size {part:?}"))?
+        .checked_mul(mult)
+        .ok_or_else(|| format!("invalid size {part:?}"))?;
+    if n == 0 {
+        Err("--sizes entries must be >= 1".into())
+    } else {
+        Ok(n)
+    }
 }
 
 /// What [`run`] measures.
@@ -207,6 +196,10 @@ pub struct BulkConfig {
     pub out: Option<PathBuf>,
     /// Live graph + index cap in bytes. `None` uses `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`.
     pub logical_graph_size_limit: Option<u64>,
+    /// WAL durability for persistent databases. Ignored for `:memory:`.
+    pub durability_mode: DurabilityMode,
+    /// Record per-commit step histograms (the `--commit-timing` flag).
+    pub commit_timing: bool,
 }
 
 impl Default for BulkConfig {
@@ -219,6 +212,8 @@ impl Default for BulkConfig {
             warmup: 0,
             out: None,
             logical_graph_size_limit: None,
+            durability_mode: DurabilityMode::Full,
+            commit_timing: false,
         }
     }
 }
@@ -286,6 +281,21 @@ pub struct BulkEntry {
     pub logical_used_bytes: u64,
     /// Database path used for this measurement (`:memory:` for in-memory).
     pub uri: String,
+    /// The engine's rendered commit-timing report — aggregate per-step
+    /// percentiles (parse+plan, overlay execute, wal_lock wait,
+    /// encode+write, `sync_all`, apply_redo) over every commit in the
+    /// measurement, each rep's untimed setup statements included. `None`
+    /// when `--commit-timing` is off, and for an entry whose measurement
+    /// failed before running ([`Self::failed`]); presence is owned by the
+    /// flag, never inferred from what the engine returned. This is a rendered
+    /// diagnostics dump for reading, not a schema-modeled structure: the row
+    /// vocabulary is pinned by
+    /// [`tests::commit_timing_flag_is_recorded_only_when_asked_for`], so an
+    /// engine-side rename fails that test instead of silently reshaping
+    /// reports. An in-memory database still records (its `sync_all` is ~0),
+    /// which isolates engine cost from the barrier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_timing: Option<String>,
 }
 
 impl BulkEntry {
@@ -312,6 +322,7 @@ impl BulkEntry {
             rss_bytes: 0,
             logical_used_bytes: 0,
             uri,
+            commit_timing: None,
         }
     }
 }
@@ -325,6 +336,13 @@ pub struct BulkReportConfig {
     pub warmup: usize,
     #[serde(default)]
     pub logical_graph_size_limit: Option<u64>,
+    /// WAL durability mode. Omitted in older reports (treat as `full`).
+    #[serde(default)]
+    pub durability_mode: DurabilityMode,
+    /// Whether the run captured commit-timing diagnostics
+    /// (`--commit-timing`). Omitted in older reports (treat as `false`).
+    #[serde(default)]
+    pub commit_timing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +428,8 @@ pub fn run(cfg: &BulkConfig) -> Result<BulkReport> {
             reps: cfg.reps,
             warmup: cfg.warmup,
             logical_graph_size_limit: cfg.logical_graph_size_limit,
+            durability_mode: cfg.durability_mode,
+            commit_timing: cfg.commit_timing,
         },
         results,
     };
@@ -449,9 +469,13 @@ fn measure(cfg: &BulkConfig, op: BulkOp, size: usize, uri: &str) -> Result<BulkE
             // The checkpoint timer would otherwise fire mid-measurement.
             checkpoint_interval: Some(Duration::ZERO),
             logical_graph_size_limit: cfg.logical_graph_size_limit,
+            durability_mode: Some(cfg.durability_mode),
             ..OpenOptions::default()
         },
     )?;
+    if cfg.commit_timing {
+        db.enable_commit_timing();
+    }
     let mut conn = db.connect()?;
 
     if op.needs_constraint() {
@@ -499,6 +523,11 @@ fn measure(cfg: &BulkConfig, op: BulkOp, size: usize, uri: &str) -> Result<BulkE
     let secs = timed_ns as f64 / 1e9;
     let ops = latencies.len();
     let rows = ops * size;
+    // Presence is owned by the flag, never inferred from what the engine
+    // returned: the env-seeded engine switch must not leak a `Some` into a
+    // flag-off run, and an engine that produced nothing despite the flag
+    // stays visible as an empty dump rather than reading as "off".
+    let timing = cfg.commit_timing.then(|| db.commit_timing_report());
 
     Ok(BulkEntry {
         op,
@@ -520,6 +549,7 @@ fn measure(cfg: &BulkConfig, op: BulkOp, size: usize, uri: &str) -> Result<BulkE
         rss_bytes: process_rss_bytes().expect("RSS sampling availability is checked at run start"),
         logical_used_bytes,
         uri: uri.to_string(),
+        commit_timing: timing,
     })
 }
 
@@ -533,161 +563,4 @@ pub fn run_bulk(cfg: &BulkConfig) -> Result<BulkReport> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::format_bytes;
-
-    #[test]
-    fn op_ids_match_serde_names() {
-        for op in BulkOp::all() {
-            let json = serde_json::to_value(op).unwrap();
-            assert_eq!(json, serde_json::json!(op.id()));
-            assert_eq!(BulkOp::parse(op.id()).unwrap(), op);
-        }
-        assert_eq!(BulkOp::parse("merge").unwrap(), BulkOp::MergeWithConstraint);
-    }
-
-    #[test]
-    fn op_statements_are_the_documented_batch_cypher() {
-        assert!(CREATE_CYPHER.contains("CREATE (p:Person"));
-        assert!(MERGE_CYPHER.contains("MERGE (p:Person {id: id})"));
-        assert!(UPDATE_CYPHER.contains("SET p.age = p.age + 1"));
-        assert!(DELETE_CYPHER.contains("DETACH DELETE p"));
-        assert!(CONSTRAINT_CYPHER.contains("REQUIRE p.id IS UNIQUE"));
-        for op in BulkOp::all() {
-            assert!(op.cypher().starts_with("UNWIND range(1,$n) AS id"));
-        }
-        assert!(!BulkOp::Create.needs_base());
-        assert!(!BulkOp::Create.needs_constraint());
-        assert!(BulkOp::Update.needs_constraint());
-    }
-
-    #[test]
-    fn parse_ops_and_sizes() {
-        assert_eq!(
-            parse_ops("create, update").unwrap(),
-            vec![BulkOp::Create, BulkOp::Update]
-        );
-        assert!(parse_ops("bogus").is_err());
-        assert!(parse_ops(" ").is_err());
-        assert_eq!(
-            parse_sizes("5000,10_000,50k").unwrap(),
-            vec![5000, 10_000, 50_000]
-        );
-        assert!(parse_sizes("0").is_err());
-        assert!(parse_sizes("abc").is_err());
-    }
-
-    #[test]
-    fn measurement_uri_is_per_op_and_size() {
-        assert_eq!(
-            measurement_uri(":memory:", BulkOp::Create, 5000),
-            ":memory:"
-        );
-        assert_eq!(measurement_uri("", BulkOp::Create, 5000), ":memory:");
-        assert_eq!(
-            measurement_uri("/tmp/bulk/", BulkOp::Delete, 50_000),
-            "/tmp/bulk/delete-50000"
-        );
-        assert_eq!(
-            measurement_uri("target/d", BulkOp::MergeWithConstraint, 10_000),
-            "target/d/merge-with-constraint-10000"
-        );
-    }
-
-    #[test]
-    fn default_sizes_match_the_documented_batch_ladder() {
-        assert_eq!(DEFAULT_SIZES, [5_000, 10_000, 50_000, 100_000]);
-        assert_eq!(BulkConfig::default().ops.len(), 4);
-        assert_eq!(BulkConfig::default().reps, 1);
-    }
-
-    #[test]
-    fn config_validation_rejects_empty_inputs() {
-        let bad = BulkConfig {
-            ops: Vec::new(),
-            ..BulkConfig::default()
-        };
-        assert!(bad.validate().is_err());
-        let bad = BulkConfig {
-            sizes: Vec::new(),
-            ..BulkConfig::default()
-        };
-        assert!(bad.validate().is_err());
-        let bad = BulkConfig {
-            reps: 0,
-            ..BulkConfig::default()
-        };
-        assert!(bad.validate().is_err());
-        assert!(BulkConfig::default().validate().is_ok());
-    }
-
-    /// End-to-end on a small size (in-memory): every op runs, the node counts
-    /// move the right way, and the report round-trips through JSON.
-    #[test]
-    fn small_bulk_run_covers_every_op() {
-        let cfg = BulkConfig {
-            dir: ":memory:".into(),
-            sizes: vec![200],
-            ..BulkConfig::default()
-        };
-        let report = run(&cfg).unwrap();
-        assert_eq!(report.results.len(), 4);
-        assert_eq!(report.total_rows(), 800);
-
-        let create = report.entry(BulkOp::Create, 200).unwrap();
-        assert_eq!((create.nodes_before, create.nodes_after), (0, 200));
-        assert!(!create.constraint);
-        assert_eq!(create.errors, 0, "{:?}", create.error);
-        assert_eq!(create.reps, 1);
-        assert!(create.latency_ns.is_some());
-
-        let merge = report.entry(BulkOp::MergeWithConstraint, 200).unwrap();
-        assert_eq!((merge.nodes_before, merge.nodes_after), (200, 200));
-        assert!(merge.constraint);
-        assert_eq!(merge.errors, 0, "{:?}", merge.error);
-
-        let update = report.entry(BulkOp::Update, 200).unwrap();
-        assert_eq!((update.nodes_before, update.nodes_after), (200, 200));
-        assert_eq!(update.errors, 0, "{:?}", update.error);
-
-        let delete = report.entry(BulkOp::Delete, 200).unwrap();
-        assert_eq!((delete.nodes_before, delete.nodes_after), (200, 0));
-        assert_eq!(delete.errors, 0, "{:?}", delete.error);
-
-        let json = serde_json::to_string(&report).unwrap();
-        let back: BulkReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.schema_version, BULK_REPORT_SCHEMA_VERSION);
-        assert_eq!(back.results.len(), 4);
-        assert_eq!(back.config.sizes, vec![200]);
-        assert!(
-            format_bytes(back.results[0].logical_used_bytes).ends_with('B')
-                || !back.results[0].uri.is_empty()
-        );
-    }
-
-    /// A failed measurement is reported as an entry, not an aborted run.
-    #[test]
-    fn failed_measurement_keeps_one_entry_per_op_and_size() {
-        // A filesystem path that cannot be created (a file where a dir is
-        // needed) makes the open fail.
-        let tmp = std::env::temp_dir().join(format!("bulk-bad-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let blocker = tmp.join("blocker");
-        std::fs::write(&blocker, b"not a directory").unwrap();
-        let cfg = BulkConfig {
-            dir: blocker.to_string_lossy().into_owned(),
-            sizes: vec![10],
-            ops: vec![BulkOp::Create],
-            ..BulkConfig::default()
-        };
-        let report = run(&cfg).unwrap();
-        assert_eq!(report.results.len(), 1);
-        let e = &report.results[0];
-        assert_eq!(e.errors, 1);
-        assert!(e.error.is_some());
-        assert_eq!(e.rows, 0);
-        assert!(e.latency_ns.is_none());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-}
+mod tests;

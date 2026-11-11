@@ -46,7 +46,7 @@ fn omitted_durability_mode_flag_defaults_to_full() {
         common: CommonArgs,
     }
     let probe = Probe::try_parse_from(["fraud-loadtest"]).unwrap();
-    assert_eq!(probe.common.durability_mode, DurabilityMode::Full);
+    assert_eq!(probe.common.storage.durability_mode, DurabilityMode::Full);
     assert_eq!(
         LoadtestConfig::default().durability_mode,
         DurabilityMode::Full

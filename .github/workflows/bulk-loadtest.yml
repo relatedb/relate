@@ -1,0 +1,125 @@
+name: Bulk loadtest (autocommit ladder)
+
+# One-off / keepable measurement lane: the bulk-loadtest ladder
+# (rows-per-statement, one autocommit statement per rep) across every
+# durability mode, in the pinned ADR-0070 Docker baseline environment,
+# with per-commit step histograms recorded into each report entry
+# (`--commit-timing`). The data this captures — the `sync_all`
+# distribution and rows/s vs rows-per-statement, per mode — is the
+# empirical basis for commit-batching decisions (group-commit hold
+# windows, bulk-import guidance).
+#
+# Not a gate and not freezeable: it uploads its reports as artifacts
+# only. The measurement databases live on the runner's real disk (not
+# the recipe's tmpfs /tmp), so the `sync_all` numbers are device
+# barriers, not memory writes.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Bare runner label (empty = vars.LOADTEST_RUNNER)"
+        required: false
+        default: ""
+      ops:
+        description: "Comma-separated ops (bulk-loadtest --ops)"
+        required: false
+        default: "create"
+      sizes:
+        description: "Comma-separated rows-per-statement ladder (--sizes)"
+        required: false
+        default: "1,100,1000,5000,50000"
+      reps:
+        description: "Measured reps per (op, size) — use a high value at small sizes"
+        required: false
+        default: "2000"
+      warmup:
+        description: "Unmeasured reps run first"
+        required: false
+        default: "100"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bulk-loadtest
+  cancel-in-progress: false
+
+# Same anonymous-metrics opt-out as the freeze workflow (ADR-0079).
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  bulk-loadtest:
+    name: Autocommit ladder (per durability mode)
+    runs-on: ${{ inputs.runner || vars.LOADTEST_RUNNER }}
+    env:
+      BASELINE_ENV: docker
+      # The recipe's /tmp is tmpfs; /work is the bind-mounted checkout on
+      # the runner's disk, so the WAL barriers hit a real device.
+      URI_BULK: /work/bulk-loadtest-data
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same rate-limit relief as the CI loadtest gate (LABS-248).
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull baseline images
+        run: bash scripts/baseline-env.sh pull
+
+      # Dispatch inputs are untrusted text that ends up in a command line
+      # twice over: once here, and again when make expands `$(ARGS)` into
+      # the recipe's shell. Both paths are closed: the values arrive through
+      # `env` (never substituted into the script text by the expression
+      # engine), and this step refuses anything outside the character sets
+      # the flags accept, so no value that reaches make can carry shell
+      # syntax. The runner holds the Docker Hub credential and a live
+      # GITHUB_TOKEN, so a crafted input would be a real execution surface.
+      - name: Validate the dispatch inputs
+        env:
+          OPS: ${{ inputs.ops }}
+          SIZES: ${{ inputs.sizes }}
+          REPS: ${{ inputs.reps }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::invalid dispatch input: $1" >&2; exit 1; }
+          [[ "${OPS}" =~ ^[a-z,-]+$ ]] || fail "ops must match [a-z,-]+ (got: ${OPS})"
+          [[ "${SIZES}" =~ ^[0-9,_kK]+$ ]] || fail "sizes must match [0-9,_kK]+ (got: ${SIZES})"
+          [[ "${REPS}" =~ ^[0-9]+$ ]] || fail "reps must be a non-negative integer (got: ${REPS})"
+          [[ "${WARMUP}" =~ ^[0-9]+$ ]] || fail "warmup must be a non-negative integer (got: ${WARMUP})"
+
+      # One build (warm /work/target across the loop), then one ladder per
+      # durability mode. The first mode also pays the cold build.
+      - name: Run the ladder per durability mode
+        env:
+          OPS: ${{ inputs.ops }}
+          SIZES: ${{ inputs.sizes }}
+          REPS: ${{ inputs.reps }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          set -euo pipefail
+          for mode in full everysecond snapshot; do
+            echo "=== durability: ${mode} ==="
+            make bulk-loadtest \
+              OUT_BULK="target/bulk-loadtest-${mode}.json" \
+              ARGS="--ops ${OPS} --sizes ${SIZES} --reps ${REPS} --warmup ${WARMUP} --durability-mode ${mode} --commit-timing"
+          done
+
+      - name: Clean the measurement databases off the checkout
+        if: always()
+        run: rm -rf bulk-loadtest-data
+
+      - name: Upload ladder reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bulk-loadtest-reports
+          path: target/bulk-loadtest-*.json
+          if-no-files-found: error

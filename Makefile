@@ -330,7 +330,9 @@ IDENTITY_LOADTEST_ARGS = --uri $(URI_IDENTITY) --reset \
 
 # Bulk create/merge/update/delete per batch size. No --workers: the harness is
 # single-threaded. --dir is a filesystem URI; the Docker run env mounts
-# /tmp as tmpfs, so the default URI lives there. No memory limit: the bulk
+# /tmp as tmpfs, so the default URI lives there — a WAL barrier on tmpfs is
+# a memory write, so fsync-floor runs (the bulk-loadtest workflow) point
+# URI_BULK at a disk-backed /work path instead. No memory limit: the bulk
 # working set grows with batch size, and a fixed cap (the fraud/identity one)
 # fails the 50k/100k sizes with capacity-exceeded.
 BULK_LOADTEST_ARGS = --dir $(URI_BULK) \

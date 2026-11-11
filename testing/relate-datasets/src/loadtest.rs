@@ -21,24 +21,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::report::{LatencyNs, Rank};
 
+mod args;
 pub mod fraud;
 pub mod identity;
 mod memory;
+mod report;
 
+pub use args::{parse_cli_size, CommonArgs, StorageArgs};
 pub use fraud::{planned_cypher, FraudKnobsArgs, FraudLoadtest, Planned, Workload, CATALOG};
 pub use identity::{IdentityKnobsArgs, IdentityLoadtest};
 pub use memory::{
     build_memory_report, sample_rss, GraphMemory, MemoryPoint, MemoryReport, MemoryWorkloadDelta,
 };
+pub use report::{
+    throughput_from, workload_section, DatasetSizes, GraphSnapshot, LoadtestReport, OpKind,
+    OpRecord, Phase, ReportConfig, Throughput, UsecaseSummary, WorkloadSection,
+    REPORT_SCHEMA_VERSION,
+};
 
-/// Schema version of [`LoadtestReport`]. Bump when the JSON shape changes.
-///
-/// 6: one honest schema for every workload. Workload-specific config knobs,
-/// planted patterns, and dataset counts moved into the nested `workload`
-/// object; `fraud_related` / `iam_related` unified to `related`;
-/// `rss_per_account` / `rss_per_user` unified to `rss_per_unit` (the unit is
-/// named by `workload.unit`).
-pub const REPORT_SCHEMA_VERSION: u32 = 6;
+/// `--write-fraction` must be in `[0.0, 1.0]`.
+pub fn validate_write_fraction(write_fraction: f64) -> Result<f64> {
+    if !(0.0..=1.0).contains(&write_fraction) {
+        return Err(Error::semantic(format!(
+            "--write-fraction must be between 0.0 and 1.0 (got {write_fraction})"
+        )));
+    }
+    Ok(write_fraction)
+}
 
 /// Dataset-specific generator knobs carried by [`LoadtestConfig`].
 ///
@@ -114,338 +123,6 @@ impl LoadtestConfig {
             ..Self::default()
         }
     }
-}
-
-/// CLI flags shared by every `*-loadtest` binary in this crate. Bins flatten
-/// this plus their dataset's knob struct (`FraudKnobsArgs` /
-/// `IdentityKnobsArgs`) and a per-binary `--out` default.
-#[derive(clap::Args, Debug, Clone)]
-pub struct CommonArgs {
-    /// Database URI (`:memory:`, path, or `file://`)
-    #[arg(long, default_value = ":memory:")]
-    pub uri: String,
-    /// Graph size vs full generator (`1.0` = 10,000 accounts or users)
-    #[arg(long, default_value_t = 0.05)]
-    pub scale: f64,
-    /// RNG for the synthetic graph
-    #[arg(long, default_value_t = 42)]
-    pub graph_seed: u64,
-    /// RNG for use-case mix and entity picks
-    #[arg(long, default_value_t = 7)]
-    pub workload_seed: u64,
-    /// Measured operations (after warmup)
-    #[arg(long, default_value_t = 80)]
-    pub ops: usize,
-    /// Unmeasured operations run first (omitted from latency summaries)
-    #[arg(long, default_value_t = 8)]
-    pub warmup: usize,
-    /// Local WAL directory when `--uri` is persistent
-    #[arg(long)]
-    pub wal_dir: Option<PathBuf>,
-    /// Delete the existing database at `--uri` (and `--wal-dir` if set) before load. No-op for `:memory:`
-    #[arg(long)]
-    pub reset: bool,
-    /// Concurrent connections issuing ops (`1` = serial). Independent waiting writes share one WAL barrier in `full` mode
-    #[arg(long, default_value_t = 1)]
-    pub workers: usize,
-    /// Fraction of ops that are writes (`0.0` = reads only, `1.0` = writes only)
-    #[arg(long, default_value_t = 0.5)]
-    pub write_fraction: f64,
-    /// Live graph + index cap: integer bytes, or a size with mb/mib/gb/gib (RELATE_LOGICAL_GRAPH_SIZE_LIMIT; 0 or omit is unlimited)
-    #[arg(long, value_name = "SIZE", value_parser = parse_cli_size)]
-    pub logical_graph_size_limit: Option<u64>,
-    /// WAL durability: full, everysecond, or snapshot (ignored for `:memory:`; default full)
-    #[arg(long, default_value_t = DurabilityMode::Full)]
-    pub durability_mode: DurabilityMode,
-}
-
-impl CommonArgs {
-    /// Assemble the library config from the shared flags, the dataset knobs
-    /// (flattened into the bin), and the bin's resolved `--out` path.
-    pub fn config(self, knobs: Knobs, out: PathBuf) -> LoadtestConfig {
-        LoadtestConfig {
-            uri: self.uri,
-            scale: self.scale,
-            graph_seed: self.graph_seed,
-            workload_seed: self.workload_seed,
-            knobs,
-            ops: self.ops,
-            warmup: self.warmup,
-            out: Some(out),
-            wal_dir: self.wal_dir,
-            reset: self.reset,
-            workers: self.workers,
-            write_fraction: self.write_fraction,
-            logical_graph_size_limit: self.logical_graph_size_limit,
-            durability_mode: self.durability_mode,
-        }
-    }
-}
-
-/// clap value parser for `--logical-graph-size-limit` (integer bytes or mb/mib/gb/gib).
-pub fn parse_cli_size(s: &str) -> std::result::Result<u64, String> {
-    relate::parse_memory_limit(s).map_err(|e| e.to_string())
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OpKind {
-    Read,
-    Write,
-}
-
-/// Whether an op ran before or after the measurement window.
-///
-/// Serializes as `warmup` / `measured`, the report JSON's published spelling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Phase {
-    Warmup,
-    Measured,
-}
-
-/// Whole-graph counts plus per-dataset scalars (fraud: `accounts`,
-/// `customers`, `transfers`; identity: `users`, `groups`, `roles`,
-/// `memberships`). Scalars flatten into the same JSON object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphSnapshot {
-    pub nodes: i64,
-    pub relationships: i64,
-    #[serde(flatten)]
-    pub scalars: BTreeMap<String, i64>,
-}
-
-impl GraphSnapshot {
-    /// One dataset-specific count (`"accounts"`, `"users"`, …). 0 when absent.
-    pub fn scalar(&self, key: &str) -> i64 {
-        self.scalars.get(key).copied().unwrap_or(0)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UsecaseSummary {
-    pub id: String,
-    pub kind: OpKind,
-    /// Tied to the workload's planted theme (AML/fraud or IAM).
-    pub related: bool,
-    pub description: String,
-    pub ops: usize,
-    pub errors: usize,
-    pub statements: usize,
-    pub latency_ns: Option<LatencyNs>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpRecord {
-    pub seq: u64,
-    pub phase: Phase,
-    pub usecase: String,
-    pub kind: OpKind,
-    /// Tied to the workload's planted theme (AML/fraud or IAM).
-    pub related: bool,
-    pub statements: u32,
-    pub ok: bool,
-    pub error: Option<String>,
-    pub latency_ns: u64,
-    pub rows: usize,
-    /// Worker index that ran this op (`0` when `--workers 1`).
-    #[serde(default)]
-    pub worker: u32,
-}
-
-impl OpRecord {
-    /// A record for an op that ran to completion: the catalog row's metadata
-    /// (`id`, `kind`, `related`) plus the outcome's statement count and
-    /// summed read rows. Generic over the catalog's picker/planned types and
-    /// the outcome's update type so both harnesses (the in-crate runner and
-    /// the Aura reference) build records through the one constructor.
-    pub fn succeeded<W, P, U>(
-        uc: &Catalog<W, P>,
-        seq: u64,
-        phase: Phase,
-        worker: u32,
-        done: &ExecOutcome<U>,
-        latency_ns: u64,
-    ) -> Self {
-        Self {
-            seq,
-            phase,
-            usecase: uc.id.into(),
-            kind: uc.kind,
-            related: uc.related,
-            statements: done.statements,
-            ok: true,
-            error: None,
-            latency_ns,
-            rows: done.rows,
-            worker,
-        }
-    }
-
-    /// A record for an op that failed: the catalog row's metadata plus the
-    /// error text. No statement completed, so `statements` and `rows` are 0.
-    pub fn failed<W, P>(
-        uc: &Catalog<W, P>,
-        seq: u64,
-        phase: Phase,
-        worker: u32,
-        error: &Error,
-        latency_ns: u64,
-    ) -> Self {
-        Self {
-            seq,
-            phase,
-            usecase: uc.id.into(),
-            kind: uc.kind,
-            related: uc.related,
-            statements: 0,
-            ok: false,
-            error: Some(error.to_string()),
-            latency_ns,
-            rows: 0,
-            worker,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReportConfig {
-    pub uri: String,
-    pub scale: f64,
-    pub graph_seed: u64,
-    pub workload_seed: u64,
-    pub ops: usize,
-    pub warmup: usize,
-    /// Concurrent connections. Omitted in older reports (treat as 1).
-    #[serde(default = "default_workers")]
-    pub workers: usize,
-    /// Fraction of ops that are writes. Omitted in older reports (treat as 0.5).
-    #[serde(default = "default_write_fraction")]
-    pub write_fraction: f64,
-    /// WAL durability mode. Omitted in older reports (treat as `full`).
-    #[serde(default)]
-    pub durability_mode: DurabilityMode,
-}
-
-fn default_workers() -> usize {
-    1
-}
-
-fn default_write_fraction() -> f64 {
-    0.5
-}
-
-/// Workload-specific report fields. One nested object keeps the rest of the
-/// report schema identical across workloads.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkloadSection {
-    /// Workload id (`fraud` / `identity`).
-    pub kind: String,
-    /// Memory ratio denominator: the snapshot scalar RSS/graph bytes are
-    /// divided by (`accounts` / `users`).
-    pub unit: String,
-    /// Generator knobs (`fanout_k`/`cycle_len` or `nest_depth`/`group_k`).
-    pub config: serde_json::Value,
-    /// Planted pattern ids from the generator.
-    pub planted: serde_json::Value,
-    pub dataset: DatasetSizes,
-}
-
-/// Assemble the nested per-workload report object. Shared by the in-crate
-/// harness and the reference runner (Aura).
-pub fn workload_section<D: LoadtestDataset>(
-    dataset: D,
-    cfg: &LoadtestConfig,
-    graph: &D::Graph,
-    start: GraphSnapshot,
-    finish: GraphSnapshot,
-) -> WorkloadSection {
-    WorkloadSection {
-        kind: dataset.kind().into(),
-        unit: dataset.unit().into(),
-        config: serde_json::to_value(cfg.knobs)
-            .expect("knobs serialize infallibly: both variants are plain usize-field structs"),
-        planted: dataset.planted_value(graph),
-        dataset: DatasetSizes { start, finish },
-    }
-}
-
-/// `--write-fraction` must be in `[0.0, 1.0]`.
-pub fn validate_write_fraction(write_fraction: f64) -> Result<f64> {
-    if !(0.0..=1.0).contains(&write_fraction) {
-        return Err(Error::semantic(format!(
-            "--write-fraction must be between 0.0 and 1.0 (got {write_fraction})"
-        )));
-    }
-    Ok(write_fraction)
-}
-
-/// Measured use-case ops per **worker** wall-clock second (warmup excluded
-/// from the count; load/generate is not in the denominator).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct Throughput {
-    pub ops_per_sec: f64,
-    pub reads_per_sec: f64,
-    pub writes_per_sec: f64,
-    pub read_ops: usize,
-    pub write_ops: usize,
-}
-
-pub fn throughput_from(records: &[OpRecord], duration_ms: u64) -> Throughput {
-    let secs = (duration_ms.max(1) as f64) / 1000.0;
-    let mut read_ops = 0usize;
-    let mut write_ops = 0usize;
-    for o in records.iter().filter(|o| o.phase == Phase::Measured) {
-        match o.kind {
-            OpKind::Read => read_ops += 1,
-            OpKind::Write => write_ops += 1,
-        }
-    }
-    let ops = read_ops + write_ops;
-    Throughput {
-        ops_per_sec: ops as f64 / secs,
-        reads_per_sec: read_ops as f64 / secs,
-        writes_per_sec: write_ops as f64 / secs,
-        read_ops,
-        write_ops,
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoadtestReport {
-    pub schema_version: u32,
-    pub name: String,
-    pub started_at: String,
-    pub finished_at: String,
-    pub started_at_unix_ms: u64,
-    pub finished_at_unix_ms: u64,
-    /// Whole `run()` wall (generate + load + workers + finish snapshot).
-    pub duration_ms: u64,
-    /// Generate, reset, open, and graph load (schema 4).
-    #[serde(default)]
-    pub load_duration_ms: u64,
-    /// Warmup + measured worker ops (schema 4). Throughput uses this.
-    #[serde(default)]
-    pub worker_duration_ms: u64,
-    pub engine: String,
-    pub engine_version: String,
-    pub config: ReportConfig,
-    /// Per-workload fields: kind, unit, knobs, planted patterns, dataset counts.
-    pub workload: WorkloadSection,
-    /// Measured ops / `worker_duration_ms` (warmup and load excluded).
-    #[serde(default)]
-    pub throughput: Throughput,
-    /// Process RSS and per-entity cost (schema 3).
-    #[serde(default)]
-    pub memory: MemoryReport,
-    pub usecases: Vec<UsecaseSummary>,
-    pub ops: Vec<OpRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatasetSizes {
-    pub start: GraphSnapshot,
-    pub finish: GraphSnapshot,
 }
 
 /// One weighted use case: report metadata plus the function that plans it.

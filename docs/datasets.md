@@ -526,6 +526,47 @@ differences live in the `workload` object:
 - `workload.dataset.start` / `workload.dataset.finish` — node, relationship, user, group, role, membership counts
 - `related` on `usecases[]` / `ops[]` flags IAM-related ops (the identity planted theme)
 
+## Bulk load tests
+
+`bulk-loadtest` measures whole-graph bulk operations — one Cypher
+statement, hence one commit, per repetition — across a ladder of batch
+sizes (`--sizes`). `--sizes 1` is the statement-by-statement autocommit
+import pattern: one row, one statement, one WAL barrier under the
+default `full` durability, which is the fsync floor a bulk import pays
+on real disks (the [bulk-import guide](guides/import-csv.md#bulk-import-durability-and-batch-size)
+covers the user-facing recipes). Runs single-threaded by design; the
+concurrent group-commit shape is the fraud/identity `--workers` lanes.
+
+```bash
+cargo run -p relate-datasets --release --bin bulk-loadtest -- --ops create --sizes 1,5000 --reps 2000
+```
+
+| Flag                    | Default                      | Meaning                                                                                            |
+| ----------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `--ops <LIST>`          | every op                     | Comma-separated: `create`, `merge-with-constraint` (`merge`), `update` (`set`), `delete`           |
+| `--sizes <LIST>`        | `5000,10000,50000,100000`    | Rows per statement (also `_` separators and a `k` suffix). `1` = the single-row autocommit pattern  |
+| `--reps <N>`            | `1`                          | Measured repetitions per (operation, size); use a high value at small sizes for stable percentiles |
+| `--warmup <N>`          | `0`                          | Unmeasured repetitions run first (each still gets its untimed setup)                               |
+| `--dir <PATH>`          | `target/bulk-loadtest-data`  | Directory for the per-measurement databases (a fresh one per op and size), or `:memory:`           |
+| `--logical-graph-size-limit <SIZE>` | unset (`RELATE_LOGICAL_GRAPH_SIZE_LIMIT`; `0` or omit is unlimited) | Live graph + index cap (ADR-0042). No cap by default: the bulk working set grows with batch size |
+| `--durability-mode full\|everysecond\|snapshot` | `full` | WAL durability for persistent databases (ADR-0077). Ignored for `:memory:`. Under `full` every rep pays one WAL barrier — `everysecond` isolates the engine floor, `snapshot` the checkpoint-bound floor |
+| `--commit-timing`       | off                          | Record the engine's rendered commit-timing report — aggregate per-step percentiles (parse+plan, overlay execute, wal_lock wait, encode+write, `sync_all`, `apply_redo`) over every commit in the measurement, each rep's untimed setup statements included — into each report entry. A diagnostics dump for reading, not a schema-modeled structure (the row vocabulary is pinned by test). An in-memory database still records, with `sync_all` ≈ 0 |
+| `--out <PATH>`          | `target/bulk-loadtest.json`  | Report JSON path (schema 2)                                                                        |
+
+Report JSON: schema 2 — `config.durability_mode`, and a per-entry
+`commit_timing` string (omitted when `--commit-timing` is off).
+
+The `bulk-loadtest` workflow dispatch (Actions tab) runs the ladder
+across all three durability modes in the pinned ADR-0070 Docker
+environment on the loadtest runner class and uploads the per-mode
+reports as artifacts. Its dispatch inputs are validated against the
+flags' character sets before use — they reach a command line twice
+(once in the step, again through the Makefile's argument expansion). Its measurement databases live on the runner's
+real disk: the Docker recipe mounts `/tmp` as tmpfs, where a WAL
+barrier is a memory write — a local `make bulk-loadtest` with the
+default `--dir /tmp/...` therefore measures **no real fsync cost**;
+point `--dir` at a disk-backed path when the barrier is the question.
+
 ## Benchmark harness: topology bytes + expansion throughput
 
 Per-dataset baseline for the topology-compression experiments: **topology
