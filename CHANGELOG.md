@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SECURITY.md` at the repository root: the vulnerability reporting
+  channel, the supported-surface scope, and the security allowances the
+  project accepts.
+
 ## [1.0.0] — 2026-11-11
 
 ### Changed
