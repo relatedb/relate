@@ -28,6 +28,15 @@ standard Relate wire envelope as a JSON string. `paramsJson` is a JSON
 object string, or `null`/blank for none. Engine errors (parse, planning,
 execution) flow through `error` in the envelope; they do not throw.
 
+### TypeScript
+
+The generated `relate.d.ts` declares `Symbol.dispose` (wasm-bindgen's
+Disposable support) and the browser globals `init()` accepts
+(`RequestInfo`, `Response`, `WebAssembly`), so a tsconfig that checks
+declaration files (`skipLibCheck` off) needs `"lib": ["esnext", "dom"]`.
+With `skipLibCheck` on — the common default — the types resolve under any
+modern lib set.
+
 ### Bundlers: passing the .wasm URL
 
 `await init()` fetches `relate_bg.wasm` relative to the module, which

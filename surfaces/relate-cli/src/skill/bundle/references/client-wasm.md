@@ -42,6 +42,11 @@ runs several and returns one envelope per statement.
   `import wasmUrl from "@relate/relate-wasm/relate_bg.wasm?url"`
   then `await init(wasmUrl)`. In Node, `fetch` has no `file:` scheme — read
   the `.wasm` from disk and pass the bytes to `init()`.
+- **TypeScript lib set** — the generated `relate.d.ts` declares
+  `Symbol.dispose` (wasm-bindgen's Disposable support) and the browser
+  globals `init()` accepts, so checking it without `skipLibCheck` needs
+  `"lib": ["esnext", "dom"]`; with `skipLibCheck` on, the types resolve
+  under any modern lib set.
 - **Wire-JSON envelope** — `execute` returns a **string**; always
   `JSON.parse` it. Rows are column-keyed objects (`[{ n: 1 }]`), not
   positional arrays. Engine errors (parse, planning, execution) flow through
