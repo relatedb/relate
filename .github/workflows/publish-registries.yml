@@ -359,8 +359,10 @@ jobs:
   # (OIDC) once each crate exists; the one-time manual bootstrap (token
   # publishes, then per-crate trusted-publisher setup) is the runbook in
   # docs/PUBLISHING.md. Publishing is not building: the job installs a
-  # current stable cargo for the OIDC exchange regardless of the MSRV
-  # pin in rust-toolchain.toml.
+  # current stable cargo regardless of the MSRV pin in
+  # rust-toolchain.toml. Cargo has no OIDC credential provider of its
+  # own (rust-lang/cargo#15743) — the crates-io-auth step below performs
+  # the trusted-publishing token exchange.
   crates-io:
     name: Publish the facade closure to crates.io
     needs: registry-owner
@@ -399,12 +401,30 @@ jobs:
       - name: Install stable cargo for publishing
         run: rustup toolchain install stable --profile minimal
 
+      # Trusted publishing's token exchange (RFC 3691): cargo cannot do
+      # it itself (rust-lang/cargo#15743), so the action — the same one
+      # rust-lang/cargo's release workflow uses — swaps the job's OIDC
+      # token for a 30-minute registry token. Skipped on dry runs: they
+      # validate packaging only and authenticate against nothing.
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: crates-io-auth
+        if: ${{ !inputs.crates-io-dry-run }}
+
       - name: Publish in topological order
         shell: bash
         env:
           DRY_RUN: ${{ inputs.crates-io-dry-run }}
+          # Empty when the auth step was skipped; exported below only
+          # when set, so a dry run behaves exactly as before.
+          CRATES_IO_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         run: |
           set -euo pipefail
+          if [ -n "$CRATES_IO_TOKEN" ]; then
+            export CARGO_REGISTRY_TOKEN="$CRATES_IO_TOKEN"
+          elif [ "$DRY_RUN" != "true" ]; then
+            echo "::error::crates-io-auth produced no token and this is not a dry run" >&2
+            exit 1
+          fi
           crates=(
             relate-model relate-names relate-splitter relate-core
             relate-parser relate-catalog relate-error relate-ir

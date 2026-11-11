@@ -78,8 +78,11 @@ artifact landed on that first release:
   `relate`, which is taken) via trusted publishing (ADR-0560). The one-time
   setup needs no first publish: on PyPI, add a *pending publisher* for
   project `relate-db`, repository `relatedb/relate`, workflow
-  `publish-registries.yml` (the OIDC token names the *called* workflow,
-  even on a chained run); repeat on TestPyPI for dry runs. Validate with
+  `publish-registries.yml` (the OIDC token names the *top-level*
+  workflow — `publish-registries.yml` on a direct dispatch, but
+  `release.yml` on the chained release call, where it does not match
+  this registration and the publish fails closed; run the publish legs
+  by direct dispatch); repeat on TestPyPI for dry runs. Validate with
   `gh workflow run publish-registries.yml -f tag=<tag> -f npm=false
   -f crates-io=false -f pypi-target=testpypi` before the first real
   release.
@@ -101,9 +104,12 @@ artifact landed on that first release:
 
   Then, per crate on crates.io (Settings → Trusted Publishing): GitHub
   Actions, repository `relatedb/relate`, workflow `publish-registries.yml`
-  (the OIDC token names the *called* workflow, even on a chained run).
-  The `crates-io` job is enabled but fails closed at authentication
-  until all 17 are configured, and its publish loop skips crates whose
+  (direct dispatch only — the chained call's OIDC token names
+  `release.yml`, the mismatch the v1.0.0 run exposed). The `crates-io`
+  job exchanges the OIDC token for a 30-minute registry token via
+  `rust-lang/crates-io-auth-action` (cargo has no OIDC credential
+  provider of its own) and fails closed at authentication until all 17
+  are configured; its publish loop skips crates whose
   versions are already on the registry, so an interrupted run can be
   re-dispatched to finish. Once the publishers are in, **revoke the
   bootstrap API token** (crates.io → Account Settings → API Tokens, then
