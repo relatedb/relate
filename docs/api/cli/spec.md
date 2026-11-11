@@ -1330,8 +1330,9 @@ derive from the one `never_executed_node` predicate, never two policies.
 An all-executed plan gains no such column.
 `Db Hits` is the operator's store-access count: the hop expansions and
 neighbor walks its clause performed **plus the node-store reads a scan or
-index seek made** (LABS-375 — before the node reads were counted,
-`MATCH (n)` reported 0); The kinds behind that total render as their own columns in plain words
+index seek made** — every node a scan examines and every index posting
+read counts, not only those that match (ADR-0567; LABS-375 — before the node
+reads were counted, `MATCH (n)` reported 0); The kinds behind that total render as their own columns in plain words
 (ADR-0397): **`Nodes`** (node-record reads — a scan, label-match or
 index-seek candidate each), **`Rels`** (relationships followed to their
 other endpoint), **`Degree`** (adjacency entries enumerated — "who is

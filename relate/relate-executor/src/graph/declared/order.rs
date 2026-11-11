@@ -1,7 +1,7 @@
 //! RANGE index order keys and postings.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ops::Bound;
+use std::ops::{Bound, ControlFlow};
 use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDateTime, NaiveTime, Timelike};
@@ -73,13 +73,29 @@ impl Postings {
         }
     }
 
-    fn extend_into(&self, out: &mut HashSet<NodeId>) {
+    /// The one posting walk: each id in turn until `visit` breaks. A
+    /// consumer that needs only some of the postings stops pulling and the
+    /// rest are never read.
+    fn each(&self, mut visit: impl FnMut(NodeId) -> ControlFlow<()>) {
         match self {
             Postings::One(id) => {
-                out.insert(*id);
+                let _ = visit(*id);
             }
-            Postings::Many(set) => out.extend(set.iter().copied()),
+            Postings::Many(set) => {
+                for id in set {
+                    if visit(*id).is_break() {
+                        break;
+                    }
+                }
+            }
         }
+    }
+
+    fn extend_into(&self, out: &mut HashSet<NodeId>) {
+        self.each(|id| {
+            out.insert(id);
+            ControlFlow::Continue(())
+        });
     }
 }
 
@@ -423,10 +439,25 @@ pub(super) fn order_remove_node(st: &mut RangeIndex, id: NodeId) {
 /// the integer key, so this is a point lookup for `1` and `1.0`.
 pub(super) fn equality_ids(st: &RangeIndex, value: &Value) -> HashSet<NodeId> {
     let mut out = HashSet::new();
-    if let Some(postings) = equality_postings(st, value) {
-        postings.extend_into(&mut out);
-    }
+    equality_each(st, value, |id| {
+        out.insert(id);
+        ControlFlow::Continue(())
+    });
     out
+}
+
+/// The equality postings of `value` as a stream: `visit` is called per id
+/// until it breaks, so a consumer that needs only the first few (the capped
+/// funnel) stops without the id set ever being built. [`equality_ids`] is
+/// this stream collected — the one equality read.
+pub(super) fn equality_each(
+    st: &RangeIndex,
+    value: &Value,
+    visit: impl FnMut(NodeId) -> ControlFlow<()>,
+) {
+    if let Some(postings) = equality_postings(st, value) {
+        postings.each(visit);
+    }
 }
 
 /// Posting length for one equality value. Zero when the value is not posted.

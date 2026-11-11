@@ -532,3 +532,75 @@ fn a_bare_disjunction_without_equalities_keeps_the_all_nodes_scan() {
     expected.sort_unstable();
     assert_eq!(ids, expected);
 }
+
+/// The pair-bound probe is bounded for every scan-served endpoint shape
+/// (ADR-0567): over a graph far larger than the bound, each shape's funnel
+/// reads stay at `cap + 1` per scanned arm, and the counter the PROFILE
+/// Db Hits column reads equals the reads performed. The index-served shape
+/// streams its posting and stops at the bound too.
+#[test]
+fn a_capped_probe_reads_cap_plus_one_for_every_scan_shape() {
+    use crate::exec::test_support::exec_autocommit;
+    const CAP: usize = 16;
+    let g = Graph::default();
+    exec_autocommit(
+        &g,
+        "UNWIND range(0, 999) AS i CREATE (:Person {name: 'Bob'}), (:Robot {name: 'Bob'}), \
+         (:Other {name: 'Bob'})",
+    )
+    .unwrap();
+    let probe = |np: &NodePattern| {
+        let _ = crate::ctx::take_node_reads();
+        let got = node_candidates_capped(
+            &ExecGraph::read(&g),
+            np,
+            &Row::new(),
+            &BTreeMap::new(),
+            None,
+            &[],
+            CAP,
+        )
+        .unwrap();
+        assert!(matches!(got, Capped::Over));
+        crate::ctx::take_node_reads()
+    };
+    let name = [("name", Value::String("Bob".into()))];
+    // A label and a map, no index.
+    assert_eq!(probe(&pattern("p", &["Person"], Some(&name))), 17);
+    // A map alone: the all-nodes scan, stopped at the bound.
+    let mut bare = pattern("p", &[], Some(&name));
+    bare.label_expr = None;
+    assert_eq!(probe(&bare), 17);
+    // A label and a map under a declared index: the posting is streamed and
+    // stops at the bound, not read in full (1000 postings).
+    exec_autocommit(&g, "CREATE INDEX person_name FOR (n:Person) ON (n.name)").unwrap();
+    assert_eq!(probe(&pattern("p", &["Person"], Some(&name))), 17);
+    // A label disjunction: one capped scan per arm.
+    let mut either = pattern("p", &[], Some(&name));
+    either.label_expr = Some(LabelExpr::Or(vec![
+        LabelExpr::Label("Person".into()),
+        LabelExpr::Label("Robot".into()),
+    ]));
+    assert_eq!(probe(&either), 34);
+}
+
+/// A negated label has no keyed scan: the funnel's all-nodes tail is a
+/// superset, which the route must not read as a match count.
+#[test]
+fn only_exact_scan_shapes_answer_a_capped_probe() {
+    let name = [("name", Value::String("Bob".into()))];
+    assert!(super::scan_answers_exactly(&pattern(
+        "p",
+        &["Person"],
+        Some(&name)
+    )));
+    let mut either = pattern("p", &[], Some(&name));
+    either.label_expr = Some(LabelExpr::Or(vec![
+        LabelExpr::Label("A".into()),
+        LabelExpr::Label("B".into()),
+    ]));
+    assert!(super::scan_answers_exactly(&either));
+    let mut not = pattern("p", &[], Some(&name));
+    not.label_expr = Some(LabelExpr::Not(Box::new(LabelExpr::Label("A".into()))));
+    assert!(!super::scan_answers_exactly(&not));
+}

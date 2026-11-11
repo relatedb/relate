@@ -16,7 +16,7 @@ use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
 use crate::exec::pushdown::{conjunct_ready, expr_ready, Residual};
 use crate::pattern_walk::{
     bind_path_names, bind_rel_stub_list, bound_node, memoized_path_rung, node_candidates,
-    node_candidates_capped, Capped,
+    node_candidates_capped, scan_answers_exactly, Capped,
 };
 use crate::row::{Row, RowRung};
 use crate::shortest::layered::Layer;
@@ -30,9 +30,39 @@ use super::guard::Shape;
 /// and the fan covers the shape.
 const SEEK_PAIR_LIMIT: usize = 16;
 
-/// `Probe::Over` is only ever produced for a seekable side, so the full
-/// seek answers `Some`.
-const OVER_IS_SEEKABLE: &str = "an over-bound side was probed as seekable";
+/// The most candidates one over-bound side is listed in full — the
+/// both-sides-over fan needs both lists to pick the shorter (ADR-0567).
+/// Past it the route refuses with a typed capacity error rather than
+/// materializing every match.
+const SEEK_LIST_LIMIT: usize = 1 << 20;
+
+#[cfg(test)]
+thread_local! {
+    static LIST_LIMIT: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// [`SEEK_LIST_LIMIT`], or the test override that lets a small graph
+/// reach the refusal; the override is absent outside test builds.
+fn list_limit() -> usize {
+    #[cfg(test)]
+    if let Some(limit) = LIST_LIMIT.with(Cell::get) {
+        return limit;
+    }
+    SEEK_LIST_LIMIT
+}
+
+/// Run `f` with the listing limit lowered to `limit` on this thread.
+#[cfg(test)]
+pub(super) fn with_list_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LIST_LIMIT.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(LIST_LIMIT.with(|c| c.replace(Some(limit))));
+    f()
+}
 
 /// Which arm of [`Route::anchor`] answered one route run — the value the
 /// anchor tests assert against (the `take_route_runs` precedent). The
@@ -339,10 +369,9 @@ impl<'a> Route<'a> {
             },
             // Both past the bound: the fan runs from the shorter side,
             // which needs both lists in full.
-            (Probe::Over, Probe::Over) => Self::listed(
-                Side::Many(self.seek_candidates(start)?.expect(OVER_IS_SEEKABLE)),
-                Side::Many(self.seek_candidates(end)?.expect(OVER_IS_SEEKABLE)),
-            ),
+            (Probe::Over, Probe::Over) => {
+                Self::listed(self.listed_side(start)?, self.listed_side(end)?)
+            }
             (Probe::Listed(starts), Probe::Scan) => Anchor::Fan {
                 origins: starts,
                 way: Way::Forward,
@@ -396,7 +425,7 @@ impl<'a> Route<'a> {
         if !self.seekable(np) {
             return Ok(Probe::Scan);
         }
-        Ok(match self.capped_candidates(np)? {
+        Ok(match self.capped_candidates(np, SEEK_PAIR_LIMIT)? {
             Capped::Within(ids) => Probe::Listed(Side::Many(ids)),
             Capped::Over => Probe::Over,
         })
@@ -411,7 +440,10 @@ impl<'a> Route<'a> {
     }
 
     /// Whether `np` is property-seekable: the map is present and
-    /// row-resolvable. A bare label or unbound variable is scan
+    /// row-resolvable, and the funnel's scan answers its label shape with
+    /// exact matches ([`scan_answers_exactly`]; a negated label's
+    /// all-nodes superset would read as a match count and could trip the
+    /// listing refusal on a handful of real matches). A bare label or unbound variable is scan
     /// territory, answered by the fan's own seek.
     fn seekable(&self, np: &NodePattern) -> bool {
         // The map must resolve from the input row: a variable the walk
@@ -419,21 +451,27 @@ impl<'a> Route<'a> {
         // is fan territory — the fan resolves the start first, and the
         // partition's admission then reads the map with it bound. The
         // canonical readiness kernel (pushdown) answers it.
-        np.properties
-            .as_ref()
-            .is_some_and(|props| expr_ready(props, self.row))
+        scan_answers_exactly(np)
+            && np
+                .properties
+                .as_ref()
+                .is_some_and(|props| expr_ready(props, self.row))
     }
 
-    /// The pattern's full candidate list when it is property-seekable,
-    /// `None` otherwise. Uncapped: only a side that drives a fan needs
-    /// its whole list ([`Route::anchor`] probes bounded first).
-    fn seek_candidates(&self, np: &NodePattern) -> Result<Option<Vec<NodeId>>> {
-        if !self.seekable(np) {
-            return Ok(None);
+    /// A probed-`Over` side's full list, through the capped funnel: a side
+    /// matching more than `limit` nodes is refused with the typed capacity
+    /// error (ADR-0567) — never truncated, never listed unbounded. The
+    /// funnel's contract is ascending and deduplicated, so the list needs
+    /// no re-sorting.
+    fn listed_side(&self, np: &NodePattern) -> Result<Side> {
+        let limit = list_limit();
+        match self.capped_candidates(np, limit)? {
+            Capped::Within(ids) => Ok(Side::Many(ids)),
+            Capped::Over => Err(Error::capacity_seek_candidates(
+                limit as u64 + 1,
+                limit as u64,
+            )),
         }
-        // The funnel's contract is ascending and deduplicated
-        // (overlay/idlists.rs), so the seek's list needs no re-sorting.
-        Ok(Some(self.candidates(np)?))
     }
 
     /// The node `np`'s variable is bound to in the input row. The guard
@@ -474,9 +512,10 @@ impl<'a> Route<'a> {
         )
     }
 
-    /// [`Route::candidates`] stopped at the first match past
-    /// [`SEEK_PAIR_LIMIT`]: the pair bound's probe.
-    fn capped_candidates(&self, np: &NodePattern) -> Result<Capped> {
+    /// [`Route::candidates`] stopped at the first match past `cap`: the
+    /// pair bound's probe ([`SEEK_PAIR_LIMIT`]) and the full listing's
+    /// bound ([`SEEK_LIST_LIMIT`]).
+    fn capped_candidates(&self, np: &NodePattern, cap: usize) -> Result<Capped> {
         let ExecCtx {
             graph,
             params,
@@ -491,7 +530,7 @@ impl<'a> Route<'a> {
             params,
             cypher_version,
             residual.conjuncts,
-            SEEK_PAIR_LIMIT,
+            cap,
         )
     }
 

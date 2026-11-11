@@ -24,6 +24,11 @@ pub enum CapacityKind {
     /// the bounded serializer stopped — a lower bound of the record the
     /// statement tried to commit, never its final size.
     WalPayload,
+    /// A shortest-path endpoint pattern matched more nodes than the route
+    /// will list to pick its search side (ADR-0556, ADR-0567). `used` is
+    /// the match count at which the bounded scan stopped — a lower bound,
+    /// never the full match count — and `limit` the cap it consulted.
+    SeekCandidates,
 }
 
 /// The one rendering of the three capacity contracts: the graph line is
@@ -47,6 +52,12 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              data in smaller transactions.",
             human_bytes(used),
             human_bytes(limit)
+        ),
+        CapacityKind::SeekCandidates => format!(
+            "A shortest-path endpoint pattern matches at least {used} nodes; \
+             the search lists at most {limit} to choose its side. This is a \
+             safety limit protecting against memory exhaustion — bind the \
+             endpoint or narrow it with an indexed property."
         ),
     }
 }
@@ -467,6 +478,17 @@ impl Error {
             used: counted,
             limit,
             kind: CapacityKind::WalPayload,
+        }
+    }
+
+    /// The shortest-path endpoint refusal: the bounded candidate scan
+    /// stopped at `counted` matches (a lower bound) against the `limit` it
+    /// consulted.
+    pub fn capacity_seek_candidates(counted: u64, limit: u64) -> Self {
+        Self::Capacity {
+            used: counted,
+            limit,
+            kind: CapacityKind::SeekCandidates,
         }
     }
 

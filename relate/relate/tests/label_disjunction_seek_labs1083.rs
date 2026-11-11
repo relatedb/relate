@@ -192,9 +192,13 @@ fn the_folded_map_equality_serves_per_arm_as_narrated() {
     let tree = plan(&profiled);
     let seek = find_node(tree, "NodeByLabelSeek").expect("the narrated seek");
     let metrics = seek.metrics.expect("PROFILE stamps the seek's metrics");
+    // Index postings read, per arm (ADR-0567): the both-labels node is
+    // posted under both arms, so four postings are read for the union's
+    // three distinct candidates (it was 3 when only returned candidates
+    // counted) — still never the store's ten nodes.
     assert_eq!(
-        metrics.db_hits, 3,
-        "the union's three candidates, never the store's ten nodes: {metrics:?}"
+        metrics.db_hits, 4,
+        "the arms' four postings, never the store's ten nodes: {metrics:?}"
     );
 }
 

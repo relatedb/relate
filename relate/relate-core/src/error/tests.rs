@@ -88,6 +88,27 @@ fn wal_payload_cap_renders_the_capacity_memory_limit_line() {
     ));
 }
 
+/// ADR-0567: the shortest-route endpoint listing refusal is the capacity
+/// family's `SeekCandidates` kind and names the bound and the remedy.
+#[test]
+fn seek_candidates_cap_renders_the_capacity_line() {
+    let error = Error::capacity_seek_candidates(1_048_577, 1_048_576);
+    assert_eq!(
+        error.to_string(),
+        "A shortest-path endpoint pattern matches at least 1048577 nodes; \
+         the search lists at most 1048576 to choose its side. This is a \
+         safety limit protecting against memory exhaustion — bind the \
+         endpoint or narrow it with an indexed property."
+    );
+    assert!(matches!(
+        &error,
+        Error::Capacity {
+            kind: CapacityKind::SeekCandidates,
+            ..
+        }
+    ));
+}
+
 #[test]
 fn uniqueness_violation_display_matches_the_legacy_semantic_rendering() {
     let typed = Error::uniqueness_violation("p_id");

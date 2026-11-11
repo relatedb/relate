@@ -237,7 +237,7 @@ impl Graph {
     /// short read guard, and whether that copy took the whole set
     /// (`len <= cap`). A label with no set copies nothing, and that copy is
     /// whole.
-    fn label_index_copy(&self, lid: u32, cap: usize) -> (Vec<NodeId>, bool) {
+    pub(super) fn label_index_copy(&self, lid: u32, cap: usize) -> (Vec<NodeId>, bool) {
         match self.indexes.label_index.get(&lid) {
             Some(set) => (set.iter().take(cap).copied().collect(), set.len() <= cap),
             None => (Vec::new(), true),

@@ -8,14 +8,16 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use relate_core::Value;
+use relate_core::{CapacityKind, Error, Value};
 use relate_ir::Direction;
 
-use crate::exec::test_support::{exec_autocommit, exec_write_uncommitted, Builder};
+use crate::exec::test_support::{
+    exec_autocommit, exec_write_uncommitted, try_exec_cypher, Builder,
+};
 use crate::graph::Graph;
 
 use super::fixtures::{counting, gpm, run, sorted, DirectionExt, Selector, DIRS, SELECTORS};
-use super::route::AnchorArm;
+use super::route::{with_list_limit, AnchorArm};
 
 /// Corpus seed; a failure names it with the graph index.
 const SEED: u64 = 0x0556_0001;
@@ -243,9 +245,12 @@ fn an_over_bound_seek_is_not_materialized() {
     assert!(counts.route_runs > 0, "the route must take {q}");
     assert_eq!(rows.len(), 100);
     assert_eq!(sorted(rows), gpm(&g, q));
-    // One read for the start, at most the bound plus one for the probe;
-    // the 100-node end list is never listed.
-    assert!(reads < 100, "the end seek was materialized: {reads} reads");
+    // Db Hits count the nodes a scan examines (ADR-0567): the unlabeled
+    // start map reads all 200 nodes to find its one match, and the end
+    // probe examines 34 to find its 17 (every other node matches `g = 1`)
+    // and stops; the 100-node end list is never listed. Before examined
+    // nodes counted, this was 1 + 17 reads.
+    assert_eq!(reads, 200 + 34, "the end seek was materialized");
 
     // An empty start beside an over-bound end: no pair, no row.
     let none = "MATCH p = ANY SHORTEST (a {id: 'nope'})-[:R*..2]->(b {g: 1}) RETURN length(p)";
@@ -327,4 +332,67 @@ fn pair_arms_follow_the_row_bound_forms_expansions() {
             shape.label()
         );
     }
+}
+
+/// ADR-0567: both sides past the pair bound are listed in full for the
+/// shorter-side choice, through the capped funnel. A side past the listing
+/// limit is the typed capacity refusal — no truncation, no unbounded
+/// fallback — and the funnel's node reads stay at the limit plus one per
+/// side instead of every match. Within the limit the rows are unchanged.
+#[test]
+fn an_over_limit_listing_is_a_typed_capacity_refusal() {
+    let g = Graph::default();
+    exec_autocommit(
+        &g,
+        "UNWIND range(0, 199) AS i CREATE (:N {id: toString(i), g: i % 2})",
+    )
+    .unwrap();
+    let q = "MATCH p = ANY SHORTEST (a {g: 0})-[:R*..2]->(b {g: 1}) RETURN length(p)";
+    let _ = crate::ctx::take_node_reads();
+    let err = with_list_limit(40, || try_exec_cypher(&g, q))
+        .err()
+        .expect("100 matches past a 40-node listing limit must refuse");
+    assert!(
+        matches!(
+            err,
+            Error::Capacity {
+                used: 41,
+                limit: 40,
+                kind: CapacityKind::SeekCandidates,
+            }
+        ),
+        "{err}"
+    );
+    // Examined nodes: the two pair probes, each stopped at 17 matches among
+    // alternating nodes, then the first side's listing stopped at 41; the
+    // refusal comes before the second side is listed, so 200 are never all
+    // read per side. Before examined nodes counted: 75.
+    assert_eq!(crate::ctx::take_node_reads(), 148);
+    // The same shape within the limit answers.
+    assert!(with_list_limit(200, || try_exec_cypher(&g, q)).is_ok());
+}
+
+/// A negated-label endpoint is not probed: the funnel answers it with the
+/// all-nodes superset, which would read as an over-limit match count. Even
+/// with the listing limit lowered under the node count, the statement
+/// answers, with the rows of the GPM oracle (ADR-0567).
+#[test]
+fn a_negated_label_endpoint_is_never_refused_by_the_listing_limit() {
+    let g = Graph::default();
+    exec_autocommit(
+        &g,
+        "UNWIND range(0, 99) AS i CREATE (:N {id: toString(i), g: i % 50}), (:M {id: 'm', g: 1})",
+    )
+    .unwrap();
+    exec_autocommit(
+        &g,
+        "MATCH (a:N {id: '0'}), (b:N {g: 1}) CREATE (a)-[:R]->(b)",
+    )
+    .unwrap();
+    let q =
+        "MATCH p = ANY SHORTEST (a:!M {g: 0})-[:R*..2]->(b:!M {g: 1}) RETURN a.id, b.id, length(p)";
+    let rows = with_list_limit(4, || try_exec_cypher(&g, q))
+        .expect("a superset list must not trip the listing refusal")
+        .rows;
+    assert_eq!(sorted(rows), gpm(&g, q));
 }

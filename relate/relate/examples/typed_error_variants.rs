@@ -70,4 +70,17 @@ fn main() {
     assert!(err
         .to_string()
         .contains("per-record WAL payload cap is 64 MB"));
+    // ADR-0567: a shortest-path statement whose two endpoint maps each match
+    // more than the listing limit is refused, never truncated. Reaching the
+    // limit needs over a million nodes, so the example builds the refusal
+    // with its public constructor and checks its kind and message.
+    let capped = Error::capacity_seek_candidates(1_048_577, 1_048_576);
+    assert!(matches!(
+        &capped,
+        Error::Capacity {
+            kind: CapacityKind::SeekCandidates,
+            ..
+        }
+    ));
+    assert!(capped.to_string().contains("lists at most 1048576"));
 }

@@ -1443,7 +1443,8 @@ The plan representation is the `PlanNode` tree:
   the structured tree (ADR-0344 phase 2 + metric fields: the PROFILE tree
   carries per-operator metrics
   — `rows` produced, `time_ns` elapsed, `db_hits` store accesses (hop
-  expansions + neighbor walks + node-store reads, LABS-375),
+  expansions + neighbor walks + node-store reads — every node a scan examines or
+  index posting read, ADR-0567; LABS-375),
   `memory_bytes` row-materialization bytes, `expression_built_bytes` the
   ADR-0463 construction-work telemetry (bytes the clause built, never an
   enforcement total; one over-cap allocation is refused) — on every

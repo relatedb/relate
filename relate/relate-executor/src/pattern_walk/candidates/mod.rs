@@ -44,6 +44,16 @@ pub(crate) fn label_index_seekable(node: &NodePattern) -> bool {
         .is_none_or(|expr| expr.is_static_conjunction())
 }
 
+/// Whether the funnel's scan answers `node` with its exact matches: a
+/// static label conjunction or a disjunction fold both key the label
+/// scan on the property map. Any other label expression (a negation, a
+/// dynamic label) falls to the all-nodes tail, a superset the per-candidate
+/// check filters later — its length says nothing about how many nodes
+/// match, so a capped caller must not read it as a match count.
+pub(crate) fn scan_answers_exactly(node: &NodePattern) -> bool {
+    label_index_seekable(node) || node.static_disjunction_arms().is_some()
+}
+
 /// The disjunction fold's union serve (LABS-1083): every arm's label set
 /// is a static conjunction, so the seek answers as the union of the
 /// per-arm keyed postings — consult each disjunct arm's index in turn,
@@ -311,6 +321,7 @@ fn funnel(
     // is [`binding_arm`] — the classification dispatch, the unbound seek
     // strategy, and the scan tail, one exhaustive match off the received
     // classification per the rule its doc comment states.
+    let reads_before = crate::ctx::node_reads();
     let candidates = crate::ctx::phase_seek(|| {
         binding_arm(
             binding(np, row),
@@ -322,7 +333,11 @@ fn funnel(
             cypher_version,
         )
     })?;
-    crate::ctx::count_node_reads(candidates.len() as u64);
+    // A scan counts the nodes it examined as it reads them; an answer
+    // served whole from postings has examined exactly what it returns.
+    if crate::ctx::node_reads() == reads_before {
+        crate::ctx::count_node_reads(candidates.len() as u64);
+    }
     Ok(candidates)
 }
 

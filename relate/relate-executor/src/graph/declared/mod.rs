@@ -5,6 +5,7 @@
 //! caller scans the label and evaluates the predicate.
 
 use std::collections::{BTreeMap, HashSet};
+use std::ops::ControlFlow;
 
 use relate_core::{NodeId, Value};
 
@@ -414,6 +415,66 @@ impl Graph {
         Some(self.finish_ids(matched, labels, key, ts, |v| {
             values.iter().any(|b| v.eq_non_null(b))
         }))
+    }
+
+    /// The capped form of the declared equality seek: the matches of
+    /// `labels` and `props` among the postings of the shortest-posting
+    /// `(label, property)` pair, stopping at `cap + 1` matches. No id set
+    /// is built and no posting is read past the stop; each posting read
+    /// is one node read, counted as examined. Every candidate is checked
+    /// against the snapshot at `ts` with [`Graph::node_matches`], the
+    /// predicate the unbounded seek's re-check applies. `None` when a pair
+    /// vanished (a concurrent `DROP INDEX`): the caller scans instead.
+    pub(super) fn range_equality_upto(
+        &self,
+        labels: &[String],
+        props: &BTreeMap<String, Value>,
+        ts: u64,
+        cap: usize,
+    ) -> Option<Vec<NodeId>> {
+        let mut best: Option<(usize, u32, u32, &Value)> = None;
+        for (key, value) in props {
+            if GroupKey::for_property_index(value).is_none() {
+                return Some(Vec::new());
+            }
+            let Some(kid) = self.interner.get_id(key) else {
+                return Some(Vec::new());
+            };
+            for label in labels {
+                let Some(lid) = self.interner.get_id(label) else {
+                    continue;
+                };
+                if !self.indexes.range_pairs.contains_key(&(lid, kid)) {
+                    continue;
+                }
+                self.drain_pair(&self.indexes.range_pairs, lid, kid);
+                let st = self.indexes.range_pairs.get(&(lid, kid))?;
+                let count = order::equality_count(&st, value);
+                if best.is_none_or(|(least, ..)| count < least) {
+                    best = Some((count, lid, kid, value));
+                }
+            }
+        }
+        let (_, lid, kid, value) = best?;
+        let st = self.indexes.range_pairs.get(&(lid, kid))?;
+        let (mut matched, mut examined) = (Vec::new(), 0u64);
+        order::equality_each(&st, value, |id| {
+            examined += 1;
+            let hit = self
+                .node_at(id, ts)
+                .is_some_and(|n| Self::node_matches(&n, labels, props));
+            if hit {
+                matched.push(id);
+            }
+            if matched.len() > cap {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        crate::ctx::count_node_reads(examined);
+        matched.sort_unstable();
+        Some(matched)
     }
 
     /// Drain the range pair and read its equality postings. `None` when the

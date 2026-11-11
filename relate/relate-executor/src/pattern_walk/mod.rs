@@ -124,7 +124,7 @@ pub(crate) use binds::{
 };
 pub(crate) use candidates::{
     id_fn_conversion, label_index_seekable, leaf_seek, node_candidates, node_candidates_capped,
-    Capped, IdConversion, Seek, ServedIds,
+    scan_answers_exactly, Capped, IdConversion, Seek, ServedIds,
 };
 pub(crate) use ladder::{Selection, WalkLadder};
 pub(crate) use probe::resolved_endpoints_exist;

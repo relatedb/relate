@@ -81,6 +81,8 @@ impl Graph {
             NodeCandidates::Unindexed => None,
             NodeCandidates::Final(ids) => Some(ids),
             NodeCandidates::Indexed(acc) => {
+                // Each posting is examined by the re-check below.
+                crate::ctx::count_node_reads(acc.len() as u64);
                 // A label-only lookup needs no materialized node: the
                 // id-based label probes answer it, the labels interned
                 // once here instead of per candidate. (The materialized
@@ -154,6 +156,15 @@ impl Graph {
         if props.is_empty() || !self.range_serves_equality(labels, props) {
             return NodeCandidates::Final(self.scan_match(labels, props, ts, cap));
         }
+        // A capped caller streams the shortest posting instead of
+        // building every posting's id set; a vanished pair (a concurrent
+        // `DROP INDEX`) falls to the scan below.
+        if let Some(cap) = cap {
+            return match self.range_equality_upto(labels, props, ts, cap) {
+                Some(ids) => NodeCandidates::Final(ids),
+                None => NodeCandidates::Final(self.scan_match(labels, props, ts, Some(cap))),
+            };
+        }
         let mut acc: Option<HashSet<NodeId>> = None;
         for (key, value) in props {
             if GroupKey::for_property_index(value).is_none() {
@@ -224,23 +235,47 @@ impl Graph {
         ts: u64,
         cap: Option<usize>,
     ) -> Vec<NodeId> {
-        let ids: Vec<NodeId> = if labels.is_empty() {
-            self.all_node_ids_at(ts)
-        } else {
-            self.intersect_label_ids(labels).into_iter().collect()
-        };
-        let mut matched = Vec::new();
-        for id in ids {
+        let (mut matched, mut examined) = (Vec::new(), 0u64);
+        // One probe per examined node: counted, so a scan that finds few
+        // matches in a large bucket reports the reads it performed.
+        let mut visit = |id: NodeId| {
+            examined += 1;
             let hit = self
                 .node_at(id, ts)
                 .is_some_and(|n| Self::node_matches(&n, labels, props));
             if hit {
                 matched.push(id);
-                if cap.is_some_and(|cap| matched.len() > cap) {
+            }
+            cap.is_none_or(|cap| matched.len() <= cap)
+        };
+        if labels.is_empty() {
+            for id in self.all_node_ids_at(ts) {
+                if !visit(id) {
                     break;
                 }
             }
+        } else {
+            // The shortest label bucket: its ids are copied under one short
+            // guard and visited outside it, so the label-index guard is never
+            // held across a node read (the lock order every writer takes is
+            // nodes, then label index). Every pattern label is still checked
+            // per node; a label the store never interned matches nothing.
+            let buckets: Option<Vec<u32>> =
+                labels.iter().map(|l| self.interner.get_id(l)).collect();
+            let shortest = buckets.and_then(|lids| {
+                lids.into_iter()
+                    .min_by_key(|lid| self.label_count_by_id(*lid))
+            });
+            if let Some(lid) = shortest {
+                let (ids, _) = self.label_index_copy(lid, usize::MAX);
+                for id in ids {
+                    if !visit(id) {
+                        break;
+                    }
+                }
+            }
         }
+        crate::ctx::count_node_reads(examined);
         matched.sort();
         matched
     }
