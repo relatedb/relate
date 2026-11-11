@@ -490,3 +490,18 @@ fn recorded_fixture_ends_without_an_error_on_a_clean_close() {
     // The server logs and closes; the join is the deterministic wait.
     assert_eq!(handle.join().unwrap(), None);
 }
+
+/// The `Some` side of the recording fixture: a connection that opens with
+/// the Bolt first byte but then sends a wrong magic fails the handshake,
+/// which `serve_conn` returns as an error, so the join yields its text.
+#[test]
+fn recorded_fixture_reports_the_error_text_of_a_failed_handshake() {
+    use std::io::Write;
+    let db = Arc::new(Database::open(":memory:").unwrap());
+    let (addr, handle) = crate::testutil::spawn_handler_recorded(db, ConnConfig::default());
+    let mut client = connect(addr);
+    // 0x60 passes the first-byte classifier; the rest is not the magic.
+    client.write_all(&[0x60, 0x60, 0xB0, 0x00]).unwrap();
+    let error = handle.join().unwrap().expect("a handshake error");
+    assert!(error.contains("bad bolt magic"), "{error}");
+}
