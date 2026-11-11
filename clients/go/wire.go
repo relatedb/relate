@@ -1,6 +1,7 @@
 package relate
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -81,15 +82,43 @@ func hex4(r rune) string {
 	return `\u` + strings.Repeat("0", 4-len(h)) + h
 }
 
-// decodeClosed is the one closed-vocabulary check: the constant of known
-// whose value is raw, or an ABI contract violation naming what was being
-// decoded and the sanitized offending value. Query type, namespace, error
-// stage, severity and category all refuse through it.
-func decodeClosed[E ~string](what, raw string, known ...E) (E, error) {
-	for _, k := range known {
+// vocabulary is a closed wire vocabulary: the noun a refusal names and the
+// constants a value may take. Each vocabulary is declared once, beside its
+// type, so no call site spells the noun as a free string.
+type vocabulary[E ~string] struct {
+	what  string
+	known []E
+}
+
+// decodeClosed is the one closed-vocabulary check: the constant of v whose
+// value is raw, or an ABI contract violation naming v's noun and the
+// sanitized offending value. Query type, namespace, error stage, severity
+// and category all refuse through it.
+func decodeClosed[E ~string](v vocabulary[E], raw string) (E, error) {
+	for _, k := range v.known {
 		if string(k) == raw {
 			return k, nil
 		}
 	}
-	return "", fmt.Errorf("ABI contract violated: %s %s", what, quotedWire(raw))
+	return "", fmt.Errorf("ABI contract violated: %s %s", v.what, quotedWire(raw))
+}
+
+// missingKey is the one required-key check for a JSON object: the first of
+// keys that is absent or null in data (null is absent: a zero value must
+// never stand in for it), as an ABI contract violation naming subject and
+// the key. A payload that is not an object is a violation too.
+func missingKey(subject string, data []byte, keys ...string) error {
+	var present map[string]*json.RawMessage
+	if err := json.Unmarshal(data, &present); err != nil {
+		return fmt.Errorf("ABI contract violated: decoding %s: %w", subject, err)
+	}
+	if present == nil {
+		return fmt.Errorf("ABI contract violated: %s is JSON null, expected an object: %s", subject, safeWire(string(data)))
+	}
+	for _, k := range keys {
+		if value, ok := present[k]; !ok || value == nil {
+			return fmt.Errorf("ABI contract violated: %s is missing %q", subject, k)
+		}
+	}
+	return nil
 }

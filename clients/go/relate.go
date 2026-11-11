@@ -23,6 +23,9 @@ type Connection struct {
 	ptr C.relate_connection
 }
 
+// stageVocabulary is Stage's closed vocabulary.
+var stageVocabulary = vocabulary[Stage]{"error stage", []Stage{StageCompile, StageRuntime, StageInternal}}
+
 // Stage says where a failure arose (ADR-0502 §2).
 type Stage string
 
@@ -65,44 +68,25 @@ func (e *Error) Error() string { return e.Message }
 // decode as false and a retry loop would decline to retry). An unknown
 // stage is a violation too.
 func decodeError(raw string) (*Error, error) {
-	// Pointer fields make a missing key detectable: into Error itself,
-	// json.Unmarshal leaves absent fields at their zero values.
+	if err := missingKey("error shape", []byte(raw), "code", "gql_status", "stage", "retryable", "message"); err != nil {
+		return nil, err
+	}
+	// Every key is present, so zero values cannot stand in for a missing one;
+	// the stage is read as text and typed through its closed vocabulary.
 	var shape struct {
-		Code      *string `json:"code"`
-		GQLStatus *string `json:"gql_status"`
-		Stage     *string `json:"stage"`
-		Retryable *bool   `json:"retryable"`
-		Message   *string `json:"message"`
+		Error
+		Stage string `json:"stage"`
 	}
 	if err := json.Unmarshal([]byte(raw), &shape); err != nil {
 		return nil, fmt.Errorf("ABI contract violated: decoding error shape: %w", err)
 	}
-	required := []struct {
-		name    string
-		present bool
-	}{
-		{"code", shape.Code != nil},
-		{"gql_status", shape.GQLStatus != nil},
-		{"stage", shape.Stage != nil},
-		{"retryable", shape.Retryable != nil},
-		{"message", shape.Message != nil},
-	}
-	for _, field := range required {
-		if !field.present {
-			return nil, fmt.Errorf("ABI contract violated: error shape is missing %q", field.name)
-		}
-	}
-	stage, err := decodeClosed("error stage", *shape.Stage, StageCompile, StageRuntime, StageInternal)
+	stage, err := decodeClosed(stageVocabulary, shape.Stage)
 	if err != nil {
 		return nil, err
 	}
-	return &Error{
-		Code:      *shape.Code,
-		GQLStatus: *shape.GQLStatus,
-		Stage:     stage,
-		Retryable: *shape.Retryable,
-		Message:   *shape.Message,
-	}, nil
+	e := shape.Error
+	e.Stage = stage
+	return &e, nil
 }
 
 // takeError copies and frees a caller-owned error_json out-param. The out-param

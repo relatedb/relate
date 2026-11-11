@@ -34,6 +34,15 @@ const (
 	CategoryHint Category = "HINT"
 )
 
+// The notification keys' closed vocabularies. The noun names the entry too,
+// so a refusal says which payload carried the unknown value.
+var (
+	severityVocabulary = vocabulary[Severity]{"notification entry carries an unknown severity",
+		[]Severity{SeverityInformation, SeverityWarning}}
+	categoryVocabulary = vocabulary[Category]{"notification entry carries an unknown category",
+		[]Category{CategoryPerformance, CategoryUnrecognized, CategoryDeprecation, CategorySchema, CategoryHint}}
+)
+
 // Notification is one query notification (ADR-0363) in the engine-native
 // shape. Operator-scoped kinds carry the raising operator's plan id as
 // OperatorID; statement-scoped kinds leave it nil. Severity and Category
@@ -52,48 +61,33 @@ type Notification struct {
 	OperatorID  *int64   `json:"operator_id,omitempty"`
 }
 
-// UnmarshalJSON decodes one notification entry strictly. Pointer fields
-// make a missing key detectable (json.Unmarshal would leave a plain string
-// at its zero value), and the two closed keys are typed through the one
-// vocabulary check below.
+// UnmarshalJSON decodes one notification entry strictly: the two closed
+// keys must be present (the one required-key check, missingKey) and are
+// typed through their vocabularies (decodeClosed).
 func (n *Notification) UnmarshalJSON(data []byte) error {
 	type plain Notification // the method-free shape, so no recursion
+	if err := missingKey("notification entry", data, "severity", "category"); err != nil {
+		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
+	}
 	var shape struct {
 		plain
-		Severity *string `json:"severity"`
-		Category *string `json:"category"`
+		Severity string `json:"severity"`
+		Category string `json:"category"`
 	}
 	if err := json.Unmarshal(data, &shape); err != nil {
 		return err
 	}
-	severity, err := notificationKey("severity", shape.Severity, data, SeverityInformation, SeverityWarning)
+	severity, err := decodeClosed(severityVocabulary, shape.Severity)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
 	}
-	category, err := notificationKey("category", shape.Category, data,
-		CategoryPerformance, CategoryUnrecognized, CategoryDeprecation, CategorySchema, CategoryHint)
+	category, err := decodeClosed(categoryVocabulary, shape.Category)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
 	}
 	*n = Notification(shape.plain)
 	n.Severity, n.Category = severity, category
 	return nil
-}
-
-// notificationKey is one closed notification key's decode: the constant of
-// known for *raw, or an ABI contract violation naming the key — and the
-// sanitized offending value and entry payload — when the key is missing,
-// null or outside the vocabulary.
-func notificationKey[E ~string](key string, raw *string, payload []byte, known ...E) (E, error) {
-	if raw == nil {
-		return "", fmt.Errorf("ABI contract violated: notification entry is missing %q: %s",
-			key, safeWire(string(payload)))
-	}
-	v, err := decodeClosed("notification entry carries an unknown "+key, *raw, known...)
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, safeWire(string(payload)))
-	}
-	return v, nil
 }
 
 // decodeNotifications decodes the C ABI's engine-native notification array

@@ -31,11 +31,15 @@ const (
 	QueryTypeSchema QueryType = "s"
 )
 
+// queryTypeVocabulary is QueryType's closed vocabulary.
+var queryTypeVocabulary = vocabulary[QueryType]{"query type",
+	[]QueryType{QueryTypeRead, QueryTypeWrite, QueryTypeReadWrite, QueryTypeSchema}}
+
 // decodeQueryType types the C ABI's query_type accessor (ADR-0162). The
 // accessor's contract is the four-value vocabulary above; any other value
 // is an ABI contract violation and an error.
 func decodeQueryType(raw string) (QueryType, error) {
-	return decodeClosed("query type", raw, QueryTypeRead, QueryTypeWrite, QueryTypeReadWrite, QueryTypeSchema)
+	return decodeClosed(queryTypeVocabulary, raw)
 }
 
 // Namespace is a statement's resolved session namespace (ADR-0117): one
@@ -53,12 +57,16 @@ const (
 	NamespaceSystemOntologies Namespace = "system_ontologies"
 )
 
+// namespaceVocabulary is Namespace's closed vocabulary.
+var namespaceVocabulary = vocabulary[Namespace]{"namespace",
+	[]Namespace{NamespaceNeo4j, NamespaceSystem, NamespaceSystemOntologies}}
+
 // decodeNamespace types the C ABI's namespace accessor (ADR-0117). The
 // contract is the three fixed namespaces; any other value is an ABI
 // contract violation and an error, so every closed-vocabulary accessor in
 // readResult fails loudly on a wire break.
 func decodeNamespace(raw string) (Namespace, error) {
-	return decodeClosed("namespace", raw, NamespaceNeo4j, NamespaceSystem, NamespaceSystemOntologies)
+	return decodeClosed(namespaceVocabulary, raw)
 }
 
 type Result struct {
@@ -206,25 +214,12 @@ func statsWireKeys() []string {
 // missing shape field. Keys outside the canonical set are ignored,
 // whatever shape they carry — the tolerance the engine's own stats
 // decoder documents, so a reader must not fail on an entry it does not
-// know. The two passes own one concern each: the presence pass is
-// deliberately untyped (arrays and scalars fail its unmarshal, and a JSON
-// null payload yields a nil key map, which carries its own shape error),
-// and its map values are pointers so a present-but-null counter stays
-// distinguishable from an absent one — the `value == nil` check is that
-// rejection. The value decode into Stats owns the counter types and
-// reports a mistyped counter by its field name.
+// know. Presence is missingKey's (the one required-key check; a JSON null
+// payload or counter is refused there); the value decode into Stats owns
+// the counter types and reports a mistyped counter by its field name.
 func decodeStats(raw string) (Stats, error) {
-	var present map[string]*json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &present); err != nil {
-		return Stats{}, fmt.Errorf("ABI contract violated: decoding stats payload: %w", err)
-	}
-	if present == nil {
-		return Stats{}, fmt.Errorf("ABI contract violated: stats payload is JSON null, expected an object: %s", raw)
-	}
-	for _, key := range statsKeys {
-		if value, ok := present[key]; !ok || value == nil {
-			return Stats{}, fmt.Errorf("ABI contract violated: stats are missing %q", key)
-		}
+	if err := missingKey("stats payload", []byte(raw), statsKeys...); err != nil {
+		return Stats{}, err
 	}
 	var stats Stats
 	if err := json.Unmarshal([]byte(raw), &stats); err != nil {
