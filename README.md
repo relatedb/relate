@@ -94,7 +94,7 @@ relate query --database ./friends
 relate --json ./friends "MATCH (p:Person) RETURN p.name"
 
 # Run a file of statements
-relate ./friends < setup.cypher
+relate -d ./friends < setup.cypher
 ```
 
 `relate skill install` is optional — it teaches supported agents the CLI
@@ -452,10 +452,10 @@ chosen by the path:
 
 | Store | What it is | Open with |
 | --- | --- | --- |
-| In-memory | RAM only, gone at exit | `relate :memory:` |
-| Directory (default) | WAL + Parquet shards under a directory | `relate ./friends` |
-| Directory, JSON codec | WAL + a readable `graph.json` | `relate --snapshot-format json ./friends` |
-| Single file (`.rl`) | WAL, snapshot, and catalog inside one host file | `relate ./friends.rl` |
+| In-memory | RAM only, gone at exit | `relate` |
+| Directory (default) | WAL + Parquet shards under a directory | `relate -d ./friends` |
+| Directory, JSON codec | WAL + a readable `graph.json` | `relate -d ./friends --snapshot-format json` |
+| Single file (`.rl`) | WAL, snapshot, and catalog inside one host file | `relate -d ./friends.rl` |
 
 Durability defaults to `full` (acknowledge after the WAL barrier);
 `everysecond` can lose ~1 s of acknowledged writes, `snapshot` everything

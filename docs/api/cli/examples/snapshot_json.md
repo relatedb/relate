@@ -7,7 +7,7 @@ is optional:
 
 ```bash
 printf "CREATE (:Person {name: 'Ada'});\n.checkpoint\n" | \
-  cargo run -p relate-cli -- --snapshot-format json ./graph-json
+  cargo run -p relate-cli -- -d ./graph-json --snapshot-format json
 ```
 
 `./graph-json/graph.json` now holds the graph, e.g.:
@@ -20,13 +20,13 @@ Equivalent env for empty directories (CLI, C ABI, PyO3 Python):
 
 ```bash
 printf "CREATE (:Person {name: 'Ada'});\n.checkpoint\n" | \
-  RELATE_SNAPSHOT_FORMAT=json cargo run -p relate-cli -- ./graph-json
+  RELATE_SNAPSHOT_FORMAT=json cargo run -p relate-cli -- -d ./graph-json
 ```
 
 Product shell:
 
 ```bash
-cargo run -p relate-cli -- --snapshot-format json ./graph-json
+cargo run -p relate-cli -- -d ./graph-json --snapshot-format json
 ```
 
 Reopen without the flag. Passing `--snapshot-format parquet` on this

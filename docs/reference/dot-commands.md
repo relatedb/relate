@@ -237,7 +237,7 @@ shell surface reduction (ADR-0058). Entering any of them fails with
   (`UNWIND labels(n) AS l RETURN DISTINCT l`, `type(r)`, `count(...)`)
   or `relate --version`.
 - Data management: `.dump`, `.read`, `.backup`, `.restore`, `.import`,
-  `.export` — use piped stdin (`relate ./db < script.cypher`),
+  `.export` — use piped stdin (`relate -d ./db < script.cypher`),
   `LOAD CSV`, and output flags with redirection. For durable backup, copy
   the database directory after a `.checkpoint` (see
   [Backup and Restore](../guides/backup-restore.md)).

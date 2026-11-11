@@ -25,7 +25,7 @@ Flags work in one-shot query mode, pipe mode, and the interactive shell.
 ## Table
 
 ```bash
-relate ./mydata "MATCH (p:Person) RETURN p.name, p.age"
+relate -d ./mydata "MATCH (p:Person) RETURN p.name, p.age"
 ```
 
 ```

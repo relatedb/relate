@@ -59,7 +59,7 @@ the interactive shell surface reduction (ADR-0058) — entering it errors
 pipe a Cypher script into the shell:
 
 ```bash
-./relate ./mydata < setup.cypher
+./relate -d ./mydata < setup.cypher
 ```
 
 ## Bulk import: durability and batch size
@@ -114,7 +114,7 @@ million rows' redo in memory first.
 
 ```bash
 ./relate --durability-mode everysecond ./mydata < import.cypher
-# or: RELATE_DURABILITY_MODE=everysecond ./relate ./mydata < import.cypher
+# or: RELATE_DURABILITY_MODE=everysecond ./relate -d ./mydata < import.cypher
 ```
 
 - `everysecond` acknowledges after apply and barriers about once per

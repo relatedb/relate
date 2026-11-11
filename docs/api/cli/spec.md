@@ -796,7 +796,7 @@ no silent fallback.
 A `--fetch-params` example — fetch a JSON API response and bind it as `$value`:
 
 ```bash
-relate ./so.rl \
+relate -d ./so.rl \
   --fetch-params 'value=https://api.stackexchange.com/2.3/questions?tagged=neo4j&site=stackoverflow' \
   -c 'UNWIND $value.items AS q MERGE (:Question {id: q.question_id})'
 ```
@@ -1190,8 +1190,8 @@ and SIGINTs the server to check the clean shutdown.
 
 A database directory literally named `clone`, `skill`, `upgrade`,
 `update`, `telemetry`, `pull`, `info`, or `serve` stays reachable
-via a `./` prefix (`relate ./skill`) or after `--`
-(`relate -- skill`).
+via `--database` (`relate --database skill`); after `--` the word is a
+statement, not a path.
 
 ## EXPLAIN and PROFILE output (ADR-0344/0345)
 
@@ -2043,7 +2043,7 @@ plus the `pull` usage line and a `--help` hint, rather than being silently
 ignored. Example:
 
 ```sh
-relate ./store.rl --namespace system -c 'SHOW DATABASES'
+relate -d ./store.rl --namespace system -c 'SHOW DATABASES'
 ```
 
 > **INFO — argv visibility.** The positional `QUERY` argument and `--param`

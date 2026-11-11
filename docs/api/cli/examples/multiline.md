@@ -24,7 +24,7 @@ runs unchanged as a script:
 
 ```bash
 printf 'MATCH (p:Person)-[r:FRIENDS_WITH]->(friend)\nRETURN p.name, friend.name, r.since;\n' | \
-  cargo run -p relate-cli -- ./graph-json
+  cargo run -p relate-cli -- -d ./graph-json
 ```
 
 On `./graph-json` as the JSON snapshot example leaves it (one `Person`

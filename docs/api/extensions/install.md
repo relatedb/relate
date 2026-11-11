@@ -68,7 +68,7 @@ One directory per package under `$XDG_CONFIG_HOME/relate/extensions/`
 is unset, empty or relative). That is the only discovery root — never the
 working directory — so cloning a repository can never add commands to your
 `relate`. A store named like a command stays reachable as
-`relate ./run`.
+`relate --database run`.
 
 ## The walkthrough
 

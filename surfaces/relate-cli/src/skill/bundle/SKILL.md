@@ -264,7 +264,7 @@ docs/api/python/spec.md#visualization-relateviz-optional).
 1. Run `relate --version` first and trust it over remembered behavior.
 2. Use `:memory:` only for disposable work — it vanishes on exit.
 3. Prefer a **new `.rl` database per experimental task**
-   (`relate ./task-<slug>.rl`); copy an existing one instead of
+   (`relate -d ./task-<slug>.rl`); copy an existing one instead of
    experimenting in place.
 4. Load the ontology before generating Cypher from a natural-language
    request — `CALL db.ontology.get()` returns the stored ontology document

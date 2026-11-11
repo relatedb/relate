@@ -16,7 +16,7 @@ directory, including `wal/`.** A checkpoint (timed, on last-handle close, or
 checkpoint live only in the WAL.
 
 ```bash
-relate ./mydata "CREATE (:Person {name: 'Alice'})"
+relate -d ./mydata "CREATE (:Person {name: 'Alice'})"
 cp -a ./mydata ./mydata-backup
 ```
 
@@ -30,7 +30,7 @@ A `.rl` path keeps the WAL, snapshot objects, and catalog in one host file, so
 the backup is that file alone:
 
 ```bash
-relate ./mydata.rl "CREATE (:Person {name: 'Alice'})"
+relate -d ./mydata.rl "CREATE (:Person {name: 'Alice'})"
 cp ./mydata.rl ./mydata-backup.rl
 ```
 
@@ -51,10 +51,10 @@ above) — the WAL plus the last checkpoint is a complete, replayable state.
 
 ```bash
 cp -a ./mydata-backup ./restored
-relate ./restored
+relate -d ./restored
 
 cp ./mydata-backup.rl ./restored.rl
-relate ./restored.rl
+relate -d ./restored.rl
 ```
 
 ### Legacy GraphStore JSON
@@ -66,7 +66,7 @@ the JSON codec, copy it to `graph.json` in an empty directory and open with
 ```bash
 mkdir -p ./imported
 cp old-graph.db ./imported/graph.json
-relate --snapshot-format json ./imported
+relate -d ./imported --snapshot-format json
 ```
 
 ## Exporting rows as Cypher text
@@ -77,7 +77,7 @@ no Cypher literal form and is omitted with a comment. Export the properties
 you want explicitly:
 
 ```bash
-relate ./mydata --mode cypher \
+relate -d ./mydata --mode cypher \
   "MATCH (p:Person) RETURN p.name AS name, p.age AS age"
 # CREATE ({name: 'Alice', age: 30})
 ```
