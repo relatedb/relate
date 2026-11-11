@@ -78,6 +78,11 @@ def config_int(report: dict[str, Any], key: str) -> int | None:
         raw = controls.get("warmup_ops" if key == "warmup" else key)
     if raw is None:
         return None
+    if isinstance(raw, list):
+        # The bulk harness keeps `config.ops` as the list of op ids it
+        # measured, not a count, so there is no scalar ops knob to stamp
+        # (the class model already allows an absent one).
+        return None
     return int(raw)
 
 
