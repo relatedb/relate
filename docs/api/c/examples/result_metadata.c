@@ -18,21 +18,21 @@ static void take_error(const char *what, char *err) {
  * take_error / return ladder, once. A transport-level failure is a
  * RELATE_ERROR status; a statement failure rides the result
  * (RELATE_OK with is_error 1). Either way the caller sees one
- * refusal, not a half-run example. */
-static int run(relate_connection conn, const char *cypher,
-               relate_query_result *out) {
+ * refusal (NULL), not a half-run example; on success the caller owns
+ * the returned result. */
+static relate_query_result run(relate_connection conn, const char *cypher) {
+    relate_query_result out = NULL;
     char *err = NULL;
-    if (relate_query_params(conn, cypher, NULL, out, &err) != RELATE_OK) {
+    if (relate_query_params(conn, cypher, NULL, &out, &err) != RELATE_OK) {
         take_error("query_params", err);
-        return 0;
+        return NULL;
     }
-    if (relate_result_is_error(*out)) {
-        fprintf(stderr, "statement failed: %s\n", relate_result_error_json(*out));
-        relate_destroy_result(*out);
-        *out = NULL;
-        return 0;
+    if (relate_result_is_error(out)) {
+        fprintf(stderr, "statement failed: %s\n", relate_result_error_json(out));
+        relate_destroy_result(out);
+        return NULL;
     }
-    return 1;
+    return out;
 }
 
 int main(void) {
@@ -55,7 +55,8 @@ int main(void) {
      * (schema), classified from the plan. EXPLAIN reports the wrapped
      * statement's type without executing it, so this prints "w" and no
      * node is created. */
-    if (!run(conn, "EXPLAIN CREATE (n)", &result)) return 1;
+    result = run(conn, "EXPLAIN CREATE (n)");
+    if (!result) return 1;
     printf("query_type=%s\n", relate_result_query_type(result));
     relate_destroy_result(result);
     result = NULL;
@@ -63,14 +64,16 @@ int main(void) {
     /* Resolved namespace: the USE target when the statement carries one,
      * otherwise the session namespace. This prints "system". A USE clause
      * routes one statement only; it never changes the session namespace. */
-    if (!run(conn, "USE system SHOW DATABASES YIELD name RETURN name", &result)) return 1;
+    result = run(conn, "USE system SHOW DATABASES YIELD name RETURN name");
+    if (!result) return 1;
     printf("namespace=%s\n", relate_result_namespace(result));
     relate_destroy_result(result);
     result = NULL;
 
     /* The session namespace is still neo4j: an unrouted statement resolves
      * to it, printing "neo4j" / "r". */
-    if (!run(conn, "MATCH (n) RETURN count(n) AS n", &result)) return 1;
+    result = run(conn, "MATCH (n) RETURN count(n) AS n");
+    if (!result) return 1;
     printf("namespace=%s query_type=%s\n",
            relate_result_namespace(result),
            relate_result_query_type(result));
@@ -80,7 +83,8 @@ int main(void) {
     /* Mutation counters (ADR-0216): a JSON object string with the canonical
      * 11, snake_case, zeros included. This prints the counters object for a
      * one-node CREATE. Same ownership rule: result-owned, do not free. */
-    if (!run(conn, "CREATE (n:Person {name: 'Alice'})", &result)) return 1;
+    result = run(conn, "CREATE (n:Person {name: 'Alice'})");
+    if (!result) return 1;
     printf("stats=%s\n", relate_result_stats(result));
     relate_destroy_result(result);
     result = NULL;
@@ -88,8 +92,9 @@ int main(void) {
     /* Per-value types come from the walker's kind, structural at every
      * depth: this prints name=STRING age=INTEGER node=NODE. An out-of-range
      * cell has no handle at all (relate_value_at returns NULL). */
-    if (!run(conn, "CREATE (n:Person {name: 'Bob', age: 42}) "
-                "RETURN n.name AS name, n.age AS age, n AS node", &result)) return 1;
+    result = run(conn, "CREATE (n:Person {name: 'Bob', age: 42}) "
+                "RETURN n.name AS name, n.age AS age, n AS node");
+    if (!result) return 1;
     printf("name=%d age=%d node=%d\n",
            relate_value_kind(relate_value_at(result, 0, 0)),
            relate_value_kind(relate_value_at(result, 0, 1)),
@@ -108,7 +113,8 @@ int main(void) {
      * measured at this client edge. The phase split (ADR-0491) breaks that
      * total into its PARSE / PLAN / EXECUTE windows: disjoint sub-windows
      * whose sum never exceeds the elapsed. */
-    if (!run(conn, "RETURN 1 AS n", &result)) return 1;
+    result = run(conn, "RETURN 1 AS n");
+    if (!result) return 1;
     printf("elapsed_ms=%.3f (parse %.3f / plan %.3f / execute %.3f)\n",
            relate_result_elapsed_ms(result),
            relate_result_parse_ms(result),

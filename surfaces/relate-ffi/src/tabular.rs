@@ -66,6 +66,49 @@ pub struct relate_connection {
     poisoned: AtomicBool,
 }
 
+/// What the one handle guard needs from a handle type: its poison flag and
+/// the refusal text for a null pointer.
+trait Guarded {
+    const NULL_MESSAGE: &'static str;
+    fn poisoned(&self) -> &AtomicBool;
+}
+
+impl Guarded for relate_database {
+    const NULL_MESSAGE: &'static str = "null database";
+    fn poisoned(&self) -> &AtomicBool {
+        &self.poisoned
+    }
+}
+
+impl Guarded for relate_connection {
+    const NULL_MESSAGE: &'static str = "null connection";
+    fn poisoned(&self) -> &AtomicBool {
+        &self.poisoned
+    }
+}
+
+/// The one null/poison gate over both handle types: reject a null or
+/// poisoned handle, then run `op` on it under the shared containment
+/// ([`contain`]), which poisons the handle on unwind.
+///
+/// # Safety
+/// `ptr` must be null or a valid pointer previously returned by the
+/// handle's constructor.
+unsafe fn guard<H: Guarded>(
+    ptr: *mut H,
+    op: impl FnOnce(&H) -> Result<(), RenderedError>,
+) -> Result<(), RenderedError> {
+    if ptr.is_null() {
+        return Err(boundary_error_json(H::NULL_MESSAGE));
+    }
+    // SAFETY: `ptr` is non-null and valid per this function's contract.
+    let handle = unsafe { &*ptr };
+    if handle.poisoned().load(Ordering::SeqCst) {
+        return Err(boundary_error_json(POISONED_MESSAGE));
+    }
+    contain(handle.poisoned(), || op(handle))
+}
+
 /// Run a database operation under `catch_unwind`, rejecting null or poisoned
 /// handles and poisoning the handle if `op` unwinds. The `Err` half is the
 /// rendered ADR-0502 §2 error shape ([`RenderedError`]), ready for the
@@ -78,16 +121,8 @@ pub(crate) unsafe fn guard_db<F>(db: *mut relate_database, op: F) -> Result<(), 
 where
     F: FnOnce(&Database) -> Result<(), RenderedError>,
 {
-    if db.is_null() {
-        return Err(boundary_error_json("null database"));
-    }
-    // SAFETY: `db` is non-null and valid per this function's contract.
-    let handle = unsafe { &*db };
-    if handle.poisoned.load(Ordering::SeqCst) {
-        return Err(boundary_error_json(POISONED_MESSAGE));
-    }
-    // `op` runs under the shared containment, which poisons on unwind.
-    contain(&handle.poisoned, || op(&handle.db))
+    // SAFETY: forwarded contract.
+    unsafe { guard(db, |handle| op(&handle.db)) }
 }
 
 /// Run a connection operation under `catch_unwind` with the connection mutex
@@ -102,22 +137,16 @@ pub(crate) unsafe fn guard_conn<F>(conn: *mut relate_connection, op: F) -> Resul
 where
     F: FnOnce(&mut Connection) -> Result<(), RenderedError>,
 {
-    if conn.is_null() {
-        return Err(boundary_error_json("null connection"));
+    // SAFETY: forwarded contract.
+    unsafe {
+        guard(conn, |handle| {
+            let mut c = handle
+                .conn
+                .lock()
+                .map_err(|e| boundary_error_json(&format!("connection mutex poisoned: {e}")))?;
+            op(&mut c)
+        })
     }
-    // SAFETY: `conn` is non-null and valid per this function's contract.
-    let handle = unsafe { &*conn };
-    if handle.poisoned.load(Ordering::SeqCst) {
-        return Err(boundary_error_json(POISONED_MESSAGE));
-    }
-    // `op` runs under the shared containment, which poisons on unwind.
-    contain(&handle.poisoned, || {
-        let mut c = handle
-            .conn
-            .lock()
-            .map_err(|e| boundary_error_json(&format!("connection mutex poisoned: {e}")))?;
-        op(&mut c)
-    })
 }
 
 /// The containment skeleton every handle guard shares (ADR-0502 §2):
