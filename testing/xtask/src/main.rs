@@ -1,4 +1,5 @@
 mod boundaries;
+mod fixture_sync;
 mod row_vec;
 
 use std::process::{Command, ExitCode};
@@ -42,6 +43,13 @@ relate/relate-executor/src returning `Vec<Row>` or `Result<Vec<Row>>` must
 be listed, with a reason, in testing/xtask/row_vec_allowlist.txt; a listed
 fn that no longer exists fails too. Violations print as
 `<file>::<fn>: <reason>` and exit 1.
+
+Also runs the facade fixture-copy guard (LABS-1414): the crate-local tree
+at relate/relate/tests/fixtures/pre_adr0084_default_wal/ must be
+byte-identical, file for file, to the tree relate-storage owns at
+relate/relate-storage/tests/fixtures/pre_adr0084_default_wal/. A file
+missing, extra, or drifted on either side prints as
+`<tree>/<rel-path>: <reason>` and exits 1; an unreadable tree exits 2.
 ";
 
 fn main() -> ExitCode {
@@ -72,9 +80,10 @@ fn usage_error(message: &str) -> ExitCode {
 fn check_boundaries() -> ExitCode {
     let dependencies = check_dependencies();
     let row_vec = check_row_vec();
-    // Both checks always run and print; exit 2 (I/O or metadata failure)
+    let fixture_sync = check_fixture_sync();
+    // All checks always run and print; exit 2 (I/O or metadata failure)
     // outranks a plain violation failure.
-    [dependencies, row_vec]
+    [dependencies, row_vec, fixture_sync]
         .into_iter()
         .max()
         .map_or(ExitCode::SUCCESS, Outcome::exit_code)
@@ -125,17 +134,22 @@ fn check_dependencies() -> Outcome {
     Outcome::Violations
 }
 
-/// The executor `Vec<Row>` guard (ADR-0555); runs beside the dependency checks.
-fn check_row_vec() -> Outcome {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    match row_vec::check(&root) {
+/// The workspace root, from this crate's directory at `testing/xtask`.
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The one guard-report shape: clean on stdout under the check's label,
+/// each violation on stderr, and an I/O or metadata failure as exit 2.
+fn report_guard(label: &str, result: Result<Vec<String>, String>) -> Outcome {
+    match result {
         Ok(violations) if violations.is_empty() => {
-            println!("check-boundaries: executor Vec<Row> guard clean");
+            println!("check-boundaries: {label} clean");
             Outcome::Clean
         }
         Ok(violations) => {
-            for v in &violations {
-                eprintln!("{v}");
+            for violation in &violations {
+                eprintln!("{violation}");
             }
             Outcome::Violations
         }
@@ -144,6 +158,17 @@ fn check_row_vec() -> Outcome {
             Outcome::Error
         }
     }
+}
+
+/// The executor `Vec<Row>` guard (ADR-0555); runs beside the dependency checks.
+fn check_row_vec() -> Outcome {
+    report_guard("executor Vec<Row> guard", row_vec::check(&workspace_root()))
+}
+
+/// The facade fixture-copy guard (LABS-1414); runs beside the dependency
+/// checks.
+fn check_fixture_sync() -> Outcome {
+    report_guard("fixture copy guard", fixture_sync::check(&workspace_root()))
 }
 
 fn load_metadata() -> Result<serde_json::Value, String> {

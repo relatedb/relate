@@ -51,3 +51,11 @@ The three generated files have SHA-256 hashes (no trailing newline in
 | `manifest.json` | `60d30020722f47559e07799f4190e4d1123899664be3c3f6af416620f0b8307e` |
 | `graph.json` | `a0d298e730f7b2642a7216a941cb9942707f65ddc1ce120df28920712029a1b3` |
 | `wal/00000001.log` | `8f04a007abe1c84c3e4841f284ecc764c6a864f95a5b95cb4c905bc0351e953c` |
+
+A byte-identical copy of this fixture ships in
+`relate/relate/tests/fixtures/pre_adr0084_default_wal/` for the facade
+example `adopt_legacy_wal` — `cargo package` cannot include files outside
+the crate root, and the published crate must build its examples standalone.
+If the fixture is regenerated, recopy the tree there — the fixture-copy
+guard in `cargo xtask check-boundaries` compares the two trees and fails
+until they match.
