@@ -77,17 +77,15 @@ pub(crate) fn invalid_request_body(e: serde_json::Error) -> Reply {
     error_envelope(400, GQLSTATUS_SYNTAX, &format!("invalid request body: {e}"))
 }
 
-/// The error-envelope reply for a transport-level rejection (the browser
-/// guard's 403/415, the pre-body 401, a malformed request): 401s carry the
-/// unauthorized code, everything else the GQL general code.
-/// [`crate::serve_handler`] maps the shared gate outcome onto it.
-pub(crate) fn error_reply(status: u16, message: &str) -> Reply {
-    let code = if status == 401 {
-        UNAUTHORIZED_CODE
-    } else {
-        GQLSTATUS_GENERAL
-    };
-    error_envelope(status, code, message)
+/// The GQLSTATUS code an authentication failure answers with: the
+/// unauthorized code for a rejected credential, the general code when the
+/// auth backend is unavailable. The one mapping the admission gate and the
+/// Query API's auth reply both consult.
+pub(crate) fn auth_error_code(error: relate_auth::AuthError) -> &'static str {
+    match error {
+        relate_auth::AuthError::Rejected => UNAUTHORIZED_CODE,
+        relate_auth::AuthError::Unavailable => GQLSTATUS_GENERAL,
+    }
 }
 
 /// The error envelope `{"errors":[{"code","message"}]}` (ADR-0232 §3),

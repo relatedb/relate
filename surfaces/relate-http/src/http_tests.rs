@@ -204,10 +204,12 @@ fn an_http_1_0_request_is_a_parsed_400_rejection() {
         head,
         public,
         status,
+        code,
         message,
         extra_headers,
     } = rejection;
     assert_eq!(status, 400);
+    assert_eq!(code, relate_error::GQLSTATUS_GENERAL);
     assert!(message.contains("HTTP/1.0"), "{message}");
     assert!(message.contains("HTTP/1.1"), "{message}");
     assert!(

@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use crate::http::{HttpVersion, RequestHead, MAX_HEADERS, MAX_HEADER_BYTES};
 use crate::origin::{browser_guard, OriginAllowlist};
+use crate::reply::auth_error_code;
+use relate_error::GQLSTATUS_GENERAL;
 
 /// Why an admission read stopped before producing a request. The class is
 /// carried in the type so a surface matches variants instead of sniffing
@@ -133,6 +135,8 @@ pub struct Rejection {
     pub public: bool,
     /// The HTTP status (400 for the version floor, 401, 403, 415).
     pub status: u16,
+    /// The GQLSTATUS code the error envelope carries.
+    pub code: &'static str,
     /// The human-readable reason.
     pub message: String,
     /// Extra response headers (`WWW-Authenticate` on a 401).
@@ -392,6 +396,7 @@ impl GatedHead {
                             head,
                             public,
                             status: 400,
+                            code: GQLSTATUS_GENERAL,
                             message: malformed_reply(&message),
                             extra_headers: Vec::new(),
                         };
@@ -523,6 +528,7 @@ fn gate_head(
             head,
             public,
             status: 400,
+            code: GQLSTATUS_GENERAL,
             message: "unsupported HTTP version HTTP/1.0: this surface answers HTTP/1.1".to_string(),
             extra_headers: Vec::new(),
         });
@@ -537,6 +543,7 @@ fn gate_head(
             head,
             public,
             status: rejection.status,
+            code: GQLSTATUS_GENERAL,
             message: rejection.message.to_string(),
             extra_headers: Vec::new(),
         });
@@ -555,6 +562,7 @@ fn gate_head(
                 head,
                 public,
                 status: failure.status,
+                code: auth_error_code(err),
                 message: failure.message.to_string(),
                 extra_headers: failure.challenge.into_iter().collect(),
             });

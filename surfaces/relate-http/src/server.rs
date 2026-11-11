@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use relate::Database;
 use relate_auth::AuthConfig;
+use relate_error::GQLSTATUS_GENERAL;
 
 use crate::content_encoding::{self, BodyEncoding, ReplyEncodingPolicy, VARY_ACCEPT_ENCODING};
 use crate::http::{
@@ -435,7 +436,7 @@ fn dispatch<S: Read>(
         // A malformed head never produced a request head to read
         // `Accept-Encoding` from: identity, but still on the seam.
         AdmissionOutcome::BadRequest { message, drain } => (
-            crate::reply::error_reply(400, &message),
+            crate::reply::error_envelope(400, GQLSTATUS_GENERAL, &message),
             drain,
             ReplyEncodingPolicy::for_unparsed_head(),
         ),
@@ -444,10 +445,11 @@ fn dispatch<S: Read>(
                 head,
                 public,
                 status,
+                code,
                 message,
                 extra_headers,
             } = rejection;
-            let mut reply = crate::reply::error_reply(status, &message);
+            let mut reply = crate::reply::error_envelope(status, code, &message);
             reply.extra_headers = extra_headers;
             let encoding = ReplyEncodingPolicy::for_head(&head, public);
             (reply, drain, encoding)
