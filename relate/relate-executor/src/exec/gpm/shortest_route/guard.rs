@@ -1,18 +1,18 @@
 //! The route's one guard: the patterns ADR-0186's Decision sends to BFS.
 
 use crate::UsedSet;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use relate_core::Value;
 use relate_ir::{
-    MatchMode, NodePattern, PathCount, PathMode, PathPattern, PathSelector, PatternElement,
-    RelPattern,
+    MatchMode, NodePattern, PathMode, PathPattern, PathSelector, PatternElement, RelPattern,
 };
 
 use crate::eval::expr_vars;
 use crate::row::Row;
 use crate::shortest::followable;
 
+use super::super::selector::resolve_gpm_count;
 use super::super::{ElementFilter, GpmFilters};
 use crate::pattern_walk::RelFilter;
 
@@ -48,6 +48,7 @@ pub(super) fn route_shape<'p>(
     match_mode: MatchMode,
     used: &UsedSet,
     row: &Row,
+    params: &BTreeMap<String, Value>,
 ) -> Option<Shape<'p>> {
     if match_mode != MatchMode::DifferentRelationships
         || !used.is_empty()
@@ -58,10 +59,15 @@ pub(super) fn route_shape<'p>(
     let all = match path.selector.as_ref()? {
         PathSelector::AnyShortest => false,
         PathSelector::AllShortest => true,
+        // The count may arrive as a parameter: the plan cache's
+        // auto-parameterization turns a literal `SHORTEST 1` into one, so
+        // it resolves through the canonical count helper. A count that
+        // does not resolve to 1 (or does not resolve at all) stays on GPM,
+        // which owns the selector's count errors.
         PathSelector::Shortest {
-            count: Some(PathCount::Literal(1)),
+            count: Some(count),
             group,
-        } => *group,
+        } if resolve_gpm_count(Some(count), 1, params).is_ok_and(|n| n == 1) => *group,
         PathSelector::Shortest { .. } | PathSelector::Any(_) | PathSelector::All => return None,
     };
     let hop = routed_hop(path, filters, all)?;

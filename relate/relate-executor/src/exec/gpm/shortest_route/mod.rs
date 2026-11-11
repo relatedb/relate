@@ -145,7 +145,7 @@ pub(super) fn match_shortest_route(
     }
     // The guard decodes the shape and carries its resolved filter from the
     // pattern-level table (LABS-801) — one pass, no second shape sniffing.
-    let Some(shape) = route_shape(path, filters, match_mode, used, row) else {
+    let Some(shape) = route_shape(path, filters, match_mode, used, row, ctx.params) else {
         return Ok(false);
     };
     let residual = sink.residual();

@@ -36,11 +36,17 @@ fn last_match(cypher: &str) -> (MatchMode, PathPattern) {
 }
 
 fn guard_accepts(cypher: &str) -> bool {
+    guard_accepts_with(cypher, &UsedSet::default(), &Row::new())
+}
+
+/// Whether the guard routes `cypher`'s last `MATCH` pattern for this input
+/// row and used set, with no statement parameters.
+fn guard_accepts_with(cypher: &str, used: &UsedSet, row: &Row) -> bool {
     let (mode, path) = last_match(cypher);
     let g = Graph::default();
     let view = crate::overlay::ExecGraph::read(&g);
     let filters = GpmFilters::resolve(&view, &path);
-    route_shape(&path, &filters, mode, &UsedSet::default(), &Row::new()).is_some()
+    route_shape(&path, &filters, mode, used, row, &BTreeMap::new()).is_some()
 }
 
 /// `q` is rejected by the guard, neither runs nor expands on the route, and
@@ -76,17 +82,49 @@ fn shortest_k_greater_than_one_stays_on_gpm() {
     assert_stays_on_gpm(&g, q, &[2, 3]);
 }
 
-#[test]
-fn parameter_count_stays_on_gpm() {
+/// One `SHORTEST $k` run: the route's rows and counters, and the rows of
+/// the same statement forced onto GPM.
+struct CountRun {
+    rows: Vec<Vec<Value>>,
+    counts: Counts,
+    gpm_rows: Vec<Vec<Value>>,
+}
+
+/// `SHORTEST $k` over [`shortcut`] with `k` bound: the route's rows and
+/// counters, and the rows of the same statement forced onto GPM.
+fn run_count_param(k: i64) -> CountRun {
     let g = shortcut();
     let q = "MATCH p = SHORTEST $k (a {id: 0})-[*]->(b {id: 3}) RETURN length(p)";
-    assert!(!guard_accepts(q));
-    let params = BTreeMap::from([("k".to_string(), Value::Int(1))]);
+    let params = BTreeMap::from([("k".to_string(), Value::Int(k))]);
     let exec = || try_exec_cypher_params(&g, q, &params).unwrap().rows;
     let (rows, counts) = counting(exec);
-    assert_eq!(counts, Counts::default());
-    assert_eq!(sorted(rows.clone()), sorted(with_forced_gpm(exec)));
-    assert_eq!(rows, vec![vec![Value::Int(2)]]);
+    CountRun {
+        rows: sorted(rows),
+        counts,
+        gpm_rows: sorted(with_forced_gpm(exec)),
+    }
+}
+
+/// The plan cache's auto-parameterization hands the guard `SHORTEST $k`
+/// for a literal `SHORTEST 1`: a count parameter of 1 takes the route and
+/// answers what GPM answers.
+#[test]
+fn parameter_count_of_one_takes_the_route() {
+    let run = run_count_param(1);
+    assert!(
+        run.counts.route_runs > 0,
+        "expected the BFS route for $k = 1"
+    );
+    assert_eq!(run.rows, run.gpm_rows);
+    assert_eq!(run.rows, vec![vec![Value::Int(2)]]);
+}
+
+/// A count parameter other than 1 keeps GPM's enumerate-then-select.
+#[test]
+fn parameter_count_above_one_stays_on_gpm() {
+    let run = run_count_param(2);
+    assert_eq!(run.counts, Counts::default());
+    assert_eq!(run.rows, run.gpm_rows);
 }
 
 /// [`shortcut`] without its 3→1 cycle: exactly two trails from 0 to 3, so
@@ -154,13 +192,13 @@ fn repeatable_elements_stays_on_gpm() {
 #[test]
 fn non_empty_used_set_or_bound_variables_reject() {
     let q = "MATCH p = ANY SHORTEST (a)-[r*]->(b) RETURN p";
-    let (mode, path) = last_match(q);
-    assert_eq!(mode, MatchMode::DifferentRelationships);
-    let g = Graph::default();
-    let view = crate::overlay::ExecGraph::read(&g);
-    let filters = GpmFilters::resolve(&view, &path);
-    assert!(route_shape(&path, &filters, mode, &UsedSet::default(), &Row::new()).is_some());
-    assert!(route_shape(&path, &filters, mode, &UsedSet::from_iter([7]), &Row::new()).is_none());
+    assert_eq!(last_match(q).0, MatchMode::DifferentRelationships);
+    assert!(guard_accepts_with(q, &UsedSet::default(), &Row::new()));
+    assert!(!guard_accepts_with(
+        q,
+        &UsedSet::from_iter([7]),
+        &Row::new()
+    ));
     assert!(!guard_accepts(
         "MATCH p = SHORTEST GROUP (a)-[r*]->(b) RETURN p"
     ));
@@ -173,9 +211,6 @@ fn non_empty_used_set_or_bound_variables_reject() {
         ("b", Value::Int(1)),
     ] {
         let row = Row::from([(var.to_string(), value)]);
-        assert!(
-            route_shape(&path, &filters, mode, &UsedSet::default(), &row).is_none(),
-            "{var}"
-        );
+        assert!(!guard_accepts_with(q, &UsedSet::default(), &row), "{var}");
     }
 }
