@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use relate_core::NodeId;
 
+use super::shard;
 use super::{Graph, LabelCache, RelRow};
 
 /// One count-map mutation's direction: every caller
@@ -34,22 +35,11 @@ pub(super) enum CountDelta {
 /// lands inside the bundle instead of as another sibling lock. The
 /// degree histograms stay beside it, not inside it — estimate state the
 /// counting operator never reads, charged and rebuilt on its own seams.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(super) struct CountStats {
-    /// Live relationships per interned relationship type, maintained
-    /// beside install and delete and rebuilt with adjacency after abort
-    /// or restore. Planning uses it as the numerator of average degree;
-    /// the counting operator's `RelType`/`AllRels` arms read it. It
-    /// rides no `used_bytes` charge — bounded by the type vocabulary,
-    /// not the data (nothing a query can grow without bound).
-    pub(super) rel_type_counts: HashMap<u32, u64>,
-    /// LABS-370: exact (start-label, rel-type, end-label) rel counts —
-    /// the directional pair the counting operator answers from, and the
-    /// estimate the ADR-0218 ladder and the LABS-348 gate can consult.
-    /// Charged to `used_bytes` on entry creation (the LABS-351 security
-    /// discipline: an uncharged query-controlled map is a memory-limit
-    /// bypass).
-    pub(super) pair_counts: HashMap<(u32, u32, u32), u64>,
+    /// The bundle's rel side — the two maps one rel fold fills, grouped so
+    /// a rebuild shard can carry exactly them and nothing else.
+    pub(super) rel: RelCounts,
     /// LABS-370 (v1 follow-up): the exact per-label live node counts —
     /// the counting operator's single-node answer. Unlike the label
     /// index (an upper bound that keeps deleted ids until checkpoint
@@ -66,6 +56,58 @@ pub(super) struct CountStats {
     /// it rides no `used_bytes` charge (the `rel_type_counts`
     /// precedent).
     pub(super) node_total: u64,
+}
+
+/// The count bundle's rel side: the per-type live counts and the exact
+/// (start-label, rel-type, end-label) pair counts, which
+/// [`Graph::fold_rel_stats`] fills together and which the wholesale
+/// rebuild's shards carry as their whole result. A named pair rather than
+/// a partly-populated [`CountStats`], so the caller's "merge exactly these
+/// two maps" is the type instead of a comment — and a field later added to
+/// the node side cannot be silently neither filled by a shard nor merged.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(super) struct RelCounts {
+    /// Live relationships per interned relationship type, maintained
+    /// beside install and delete and rebuilt with adjacency after abort
+    /// or restore. Planning uses it as the numerator of average degree;
+    /// the counting operator's `RelType`/`AllRels` arms read it. It
+    /// rides no `used_bytes` charge — bounded by the type vocabulary,
+    /// not the data (nothing a query can grow without bound).
+    pub(super) rel_type_counts: HashMap<u32, u64>,
+    /// LABS-370: exact (start-label, rel-type, end-label) rel counts —
+    /// the directional pair the counting operator answers from, and the
+    /// estimate the ADR-0218 ladder and the LABS-348 gate can consult.
+    /// Charged to `used_bytes` on entry creation (the LABS-351 security
+    /// discipline: an uncharged query-controlled map is a memory-limit
+    /// bypass).
+    pub(super) pair_counts: HashMap<(u32, u32, u32), u64>,
+}
+
+impl RelCounts {
+    /// Merge a wholesale-rebuild shard's counts into this one by
+    /// summing. Owned by the type whose two maps it merges, so a third
+    /// map added to the rel side lands in this one method rather than
+    /// as another caller loop — the same reason the type exists at
+    /// all. The sum itself is [`sum_counts`], the module's loud-sum
+    /// contract in one spelling.
+    fn merge(&mut self, part: RelCounts) {
+        sum_counts(&mut self.rel_type_counts, part.rel_type_counts);
+        sum_counts(&mut self.pair_counts, part.pair_counts);
+    }
+}
+
+/// The count maps' one loud sum: fold `part` into `into` by checked
+/// addition. The module's contract at every summing site (`count_entry`,
+/// `fold_node_total`): a wrapped sum means the store is broken, and the
+/// failure says so. One spelling so the third map the bundle later
+/// grows is a one-line call, not a third copy of the loop.
+fn sum_counts<K: std::hash::Hash + Eq>(into: &mut HashMap<K, u64>, part: HashMap<K, u64>) {
+    for (key, count) in part {
+        let slot = into.entry(key).or_insert(0);
+        *slot = slot
+            .checked_add(count)
+            .expect("count overflow: a merge sum past u64 is a broken store");
+    }
 }
 
 /// The count probe the counting operator answers from: the exact per-label
@@ -127,7 +169,7 @@ impl Graph {
     /// (the old keys-only seed priced charges but could not price a
     /// delete's drain-to-zero refund).
     pub(super) fn pair_counts(&self) -> HashMap<(u32, u32, u32), u64> {
-        self.count_stats.lock().unwrap().pair_counts.clone()
+        self.count_stats.lock().unwrap().rel.pair_counts.clone()
     }
 
     /// The endpoint cross-product charge loop the pair-count family
@@ -242,7 +284,7 @@ impl Graph {
         let start_labels = self.live_label_ids(start);
         let end_labels = self.live_label_ids(end);
         self.bump_counts(|stats| {
-            Self::fold_rel_stats(stats, &start_labels, type_id, &end_labels, delta)
+            Self::fold_rel_stats(&mut stats.rel, &start_labels, type_id, &end_labels, delta)
         });
     }
 
@@ -308,15 +350,15 @@ impl Graph {
     /// type map rides no entry charge (vocabulary-bounded); the pair
     /// map's cross product carries the LABS-351 charge.
     fn fold_rel_stats(
-        stats: &mut CountStats,
+        counts: &mut RelCounts,
         start_labels: &[u32],
         type_id: u32,
         end_labels: &[u32],
         delta: CountDelta,
     ) -> i64 {
-        let type_charge = Self::count_entry(&mut stats.rel_type_counts, type_id, delta, 0);
+        let type_charge = Self::count_entry(&mut counts.rel_type_counts, type_id, delta, 0);
         let pair_charge = Self::charge_pair_cross(
-            &mut stats.pair_counts,
+            &mut counts.pair_counts,
             start_labels,
             type_id,
             end_labels,
@@ -353,7 +395,7 @@ impl Graph {
     /// beside the histogram family.
     pub(super) fn count_state_structure_bytes(&self) -> u64 {
         let stats = self.count_stats.lock().unwrap();
-        (stats.pair_counts.len() as u64)
+        (stats.rel.pair_counts.len() as u64)
             .saturating_mul(Self::PAIR_COUNT_ENTRY_BYTES)
             .saturating_add(
                 (stats.label_counts.len() as u64).saturating_mul(Self::LABEL_COUNT_ENTRY_BYTES),
@@ -372,8 +414,18 @@ impl Graph {
     /// bump seams' own folds with their charges discarded — the
     /// wholesale rebuild's one exception to the no-discarded-return
     /// rule: its caller runs `recompute_used`, which re-tallies
-    /// wholesale.
-    pub(super) fn rebuild_count_stats<'a>(&self, rows: impl Iterator<Item = &'a RelRow>) {
+    /// wholesale. The rel side rides the start-keyed partition
+    /// `rebuild_adj` computes once and is merged by summing: a shard's
+    /// nodes are exclusive to it, but a (start-label, type, end-label)
+    /// triple spans nodes, so its two maps accumulate rather than
+    /// extend. Both are bounded by the label and type vocabulary, not
+    /// the data, so the merge is small however many shards there are.
+    pub(super) fn rebuild_count_stats(
+        &self,
+        rows: &[RelRow],
+        labels: &LabelCache,
+        shards: &[Vec<usize>],
+    ) {
         // Built whole outside the guard, published in one store: the
         // bundle's wholesale rebuild owns all four fields — one
         // bundle, one guard, one publish, so a reader can never see
@@ -392,19 +444,33 @@ impl Graph {
         // The rel side rides `rebuild_adj`'s materialized `RelRow`s —
         // the same rows `adj_build` installs (both paired rebuild sites
         // pass them on); charges discarded — see the doc's rebuild note.
-        let mut label_cache = LabelCache::default();
-        for row in rows {
-            label_cache.ensure(self, row.start);
-            label_cache.ensure(self, row.end);
+        let parts = shard::run_shards(shards, |shard| Self::count_rel_part(rows, labels, shard));
+        // Only the rel side rides the shards, so only its two maps merge —
+        // the node walk above owns the label counts and the node total.
+        for part in parts {
+            stats.rel.merge(part);
+        }
+        *self.count_stats.lock().unwrap() = stats;
+    }
+
+    /// One shard's share of the count bundle's rel side: its rows' per-type
+    /// counts and endpoint-label pair counts, which the caller merges by
+    /// summing. The shard reuses [`Graph::fold_rel_stats`] rather than
+    /// re-spelling it, which is why its result is that fold's own two-map
+    /// [`RelCounts`] and not a bundle.
+    fn count_rel_part(rows: &[RelRow], labels: &LabelCache, shard: &[usize]) -> RelCounts {
+        let mut counts = RelCounts::default();
+        for &index in shard {
+            let row = &rows[index];
             let _ = Self::fold_rel_stats(
-                &mut stats,
-                label_cache.get(row.start),
+                &mut counts,
+                labels.get(row.start),
                 row.type_id,
-                label_cache.get(row.end),
+                labels.get(row.end),
                 CountDelta::Add,
             );
         }
-        *self.count_stats.lock().unwrap() = stats;
+        counts
     }
 
     /// LABS-370: the exact count of rels between a (start-label,
@@ -425,7 +491,7 @@ impl Graph {
         let s = self.interner.get_id(start_label)?;
         let t = self.interner.get_id(rel_type)?;
         let e = self.interner.get_id(end_label)?;
-        stats.pair_counts.get(&(s, t, e)).copied()
+        stats.rel.pair_counts.get(&(s, t, e)).copied()
     }
 
     /// Test-seam reader (the production count path is
@@ -538,9 +604,10 @@ impl Graph {
             // (or unknown-name) type is a hard 0, and every type summed
             // is the directed total.
             CountProbe::AllNodes => stats.node_total,
-            CountProbe::RelType(t) => self.interned_count(&stats.rel_type_counts, t.as_str()),
-            CountProbe::RelTypeId(id) => stats.rel_type_counts.get(&id).copied().unwrap_or(0),
+            CountProbe::RelType(t) => self.interned_count(&stats.rel.rel_type_counts, t.as_str()),
+            CountProbe::RelTypeId(id) => stats.rel.rel_type_counts.get(&id).copied().unwrap_or(0),
             CountProbe::AllRels => stats
+                .rel
                 .rel_type_counts
                 .values()
                 .copied()

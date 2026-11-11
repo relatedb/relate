@@ -47,10 +47,12 @@ mod label_mutation;
 mod label_probe;
 mod prop_read;
 mod query_stats;
+mod rebuild;
 mod redo_preflight;
 mod rel_postings;
 mod restore;
 mod services;
+mod shard;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): absent from every
 // default build and every bundle.
@@ -382,7 +384,7 @@ pub struct Graph {
     /// adjacency rebuild recomputes it from the live rels in one pass.
     /// Estimate state the counting operator never reads — it stays
     /// beside the count bundle, not inside it.
-    degree_histograms: Mutex<HashMap<(u32, u32), [u64; Self::DEGREE_BUCKETS]>>,
+    degree_histograms: Mutex<degree_stats::DegreeHistograms>,
     /// ADR-0439: the maintained, single-version per-constraint committed
     /// tuple map (`unique`/`key` constraints, node and relationship). Unlike
     /// the lazily built postings in [`Indexes`], this map is eagerly current;
@@ -443,7 +445,7 @@ impl Default for Graph {
             sealed_out: IdVec::default(),
             sealed_in: IdVec::default(),
             count_stats: Mutex::new(CountStats::default()),
-            degree_histograms: Mutex::new(HashMap::new()),
+            degree_histograms: Mutex::new(degree_stats::DegreeHistograms::default()),
             constraint_keys: Mutex::new(ConstraintKeyIndex::default()),
             interner,
             catalog: Mutex::new(Catalog::default()),

@@ -6,6 +6,7 @@
 //! the fold between them.
 use super::hop_counts;
 use super::id_vec::IdVec;
+use super::shard;
 use super::*;
 use crate::adjacency::AdjHop;
 
@@ -26,6 +27,7 @@ pub(super) fn adj_insert(
 }
 
 /// Which endpoint of a [`RelRow`] one direction's grouping pass keys on.
+#[derive(Clone, Copy)]
 enum Side {
     Start,
     End,
@@ -45,46 +47,84 @@ impl Side {
 /// no per-hop binary search or memmove, and the chunk order and hop order
 /// are the store tier's, the order an id-ordered load's incremental
 /// [`adj_insert`]s leave (the wholesale build's pinned contract).
-fn build_side(map: &IdVec<TypedAdj>, rows: &mut [RelRow], side: Side) {
+///
+/// Sharded on that same endpoint (the partition its caller hands it), so
+/// a shard owns every row of every node it carries and builds those
+/// nodes whole. The install is the only writer, and the per-node result
+/// is shard-independent: `from_runs` derives a node's chunk order from
+/// each run's first rel id and sorts its hops `cmp_ts_desc`, both total
+/// orders over a node's own hops.
+fn build_side(map: &IdVec<TypedAdj>, rows: &[RelRow], side: Side, shards: &[Vec<usize>]) {
+    let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side));
+    for (node, adj) in parts.into_iter().flatten() {
+        map.insert(node, adj);
+    }
+}
+
+/// One shard's whole build: sort its row indices by `(endpoint, type)`,
+/// then one [`TypedAdj`] per node from that node's runs. The sort works
+/// a local copy of the caller's shard — the partition is shared
+/// read-only across the rebuild's consumers, so this pass never
+/// reorders it.
+fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, TypedAdj)> {
     let endpoint = |row: &RelRow| side.endpoint(row);
-    rows.sort_unstable_by(|a, b| {
+    let mut order = shard.to_vec();
+    order.sort_unstable_by(|&a, &b| {
+        let (a, b) = (&rows[a], &rows[b]);
         endpoint(a)
             .cmp(&endpoint(b))
             .then(a.type_id.cmp(&b.type_id))
     });
-    for node_run in rows.chunk_by_mut(|a, b| endpoint(a) == endpoint(b)) {
-        let node = endpoint(&node_run[0]);
+    let mut built = Vec::new();
+    for node_run in order.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
+        let node = endpoint(&rows[node_run[0]]);
         // One run per type: its type id and its hops, unsorted and keyless —
         // `TypedAdj::from_runs` derives the chunk-order key from the hops.
         let runs = node_run
-            .chunk_by_mut(|a, b| a.type_id == b.type_id)
+            .chunk_by(|&a, &b| rows[a].type_id == rows[b].type_id)
             .map(|run| {
                 let hops: Vec<AdjHop> = run
                     .iter()
-                    .map(|row| AdjHop {
-                        ts: row.ts,
-                        id: row.id,
+                    .map(|&index| {
+                        let row = &rows[index];
+                        AdjHop {
+                            ts: row.ts,
+                            id: row.id,
+                        }
                     })
                     .collect();
-                (run[0].type_id, hops)
+                (rows[run[0]].type_id, hops)
             });
-        map.insert(node, TypedAdj::from_runs(runs));
+        built.push((node, TypedAdj::from_runs(runs)));
     }
+    built
 }
 
 /// Install both adjacency maps wholesale from the live rel rows: `out_map`
 /// keyed by each row's start, `in_map` by its end. Both maps must be empty:
-/// this is the whole build, not a merge. `rows` is left grouped by
-/// `(end, type)`; the folds that follow a rebuild are order-independent
-/// aggregates, so reusing the buffer under a second grouping order is
-/// sound.
-pub(super) fn adj_build(out_map: &IdVec<TypedAdj>, in_map: &IdVec<TypedAdj>, rows: &mut [RelRow]) {
+/// this is the whole build, not a merge. `rows` is read-only — the start
+/// side reads the start-keyed partition `rebuild_adj` computed for every
+/// start-keyed consumer, the end side partitions by its own endpoint here,
+/// and no fold that follows a rebuild depends on the buffer's order.
+///
+/// Memory shape: the shard parts and the maps they fill coexist at
+/// peak, but each node's `TypedAdj` is **moved** from its part into
+/// the map, never copied — the build materializes one adjacency, not
+/// two. Above it sit the rebuild's declared transients: the row buffer
+/// and the index partitions (8 bytes per row per partition).
+pub(super) fn adj_build(
+    out_map: &IdVec<TypedAdj>,
+    in_map: &IdVec<TypedAdj>,
+    rows: &[RelRow],
+    start_shards: &[Vec<usize>],
+) {
     debug_assert!(
         out_map.is_empty() && in_map.is_empty(),
         "adj_build is a wholesale build, not a merge"
     );
-    build_side(out_map, rows, Side::Start);
-    build_side(in_map, rows, Side::End);
+    build_side(out_map, rows, Side::Start, start_shards);
+    let end_shards = shard::shard_rows(rows, |row| row.end);
+    build_side(in_map, rows, Side::End, &end_shards);
 }
 
 pub(super) fn adj_reposition(

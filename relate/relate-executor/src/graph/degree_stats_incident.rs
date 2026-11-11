@@ -239,7 +239,7 @@ impl Graph {
         // The count bundle's one guard and the charge after it drops —
         // the bump seams' shared scaffold (LABS-851).
         self.bump_counts(|stats| {
-            let pairs = &mut stats.pair_counts;
+            let pairs = &mut stats.rel.pair_counts;
             let mut charge = 0i64;
             // Pass 1 — the far-node rels: the pair the stats hold is
             // (start, type, end) in the rel's own direction — the

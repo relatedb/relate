@@ -18,7 +18,84 @@ use std::sync::atomic::Ordering;
 use relate_core::NodeId;
 
 use super::count_state::CountDelta;
+use super::shard;
 use super::{Graph, LabelCache, RelRow};
+
+/// The histogram family's map: per-(label, rel-type) out-degree bucket
+/// counts, [`Graph::DEGREE_BUCKETS`] each. A type rather than a bare
+/// map so the bucket policy lives with the map it applies to — the one
+/// get-or-create ([`Self::slot`], which is where a bump charges its
+/// entry) and the one shard merge ([`Self::merge`]) — instead of being
+/// re-spelled at every bump and fold site.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(super) struct DegreeHistograms(HashMap<(u32, u32), [u64; Graph::DEGREE_BUCKETS]>);
+
+impl DegreeHistograms {
+    /// One entry's get-or-create. `on_create` runs only when the entry
+    /// is minted — the bump sites charge their `used_bytes` entry there,
+    /// and the rebuild's folds pass a no-op because its charges are
+    /// recomputed wholesale by the caller's `recompute_used`.
+    fn slot(
+        &mut self,
+        key: (u32, u32),
+        on_create: impl FnOnce(),
+    ) -> &mut [u64; Graph::DEGREE_BUCKETS] {
+        match self.0.entry(key) {
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                on_create();
+                vacant.insert([0; Graph::DEGREE_BUCKETS])
+            }
+            std::collections::hash_map::Entry::Occupied(occupied) => occupied.into_mut(),
+        }
+    }
+
+    /// Sum a shard's part into the whole, element-wise. Bucket sums are
+    /// **saturating** — the histogram family's convention at every
+    /// bucket mutation (`bump_degree_histograms`, the rebucket pair): a
+    /// bucket counts nodes, so saturation is the honest ceiling, where
+    /// the count family's twin sums are checked-and-loud instead.
+    fn merge(&mut self, part: DegreeHistograms) {
+        for (key, buckets) in part.0 {
+            let slot = self.slot(key, || {});
+            for (sum, count) in slot.iter_mut().zip(buckets) {
+                *sum = sum.saturating_add(count);
+            }
+        }
+    }
+
+    /// Decrement one bucket of an entry that exists — the removal
+    /// direction, which **never** mints: a label leaving a node has no
+    /// histogram of its own to create, and minting one here would
+    /// insert an entry without the `HISTOGRAM_ENTRY_BYTES` charge
+    /// `slot` owns. Saturating, like every other bucket mutation.
+    ///
+    /// Every release is paired with the `slot` that minted its entry
+    /// (the label-mutation seams pair 1:1, and the wholesale rebuild
+    /// mints none of them), so a vacant key here is unrepresentable in
+    /// the paired contract — a broken pairing fails at the seam that
+    /// broke it, not as a silently drifting histogram. The count
+    /// family's twin removal (`count_entry`) fails the same way.
+    fn release(&mut self, key: (u32, u32), bucket: usize) {
+        let buckets = self
+            .0
+            .get_mut(&key)
+            .expect("histogram release without its paired bump");
+        buckets[bucket] = buckets[bucket].saturating_sub(1);
+    }
+}
+
+/// Read-through to the map for the estimate family's lookups (`.get`,
+/// `.keys`, `.iter`, `.len`). Immutable on purpose: every *write* has a
+/// named home on the type ([`DegreeHistograms::slot`],
+/// [`DegreeHistograms::merge`], [`DegreeHistograms::release`]), so a
+/// mutable handle to the raw map would let a later site mint an entry
+/// the `HISTOGRAM_ENTRY_BYTES` charge never sees.
+impl std::ops::Deref for DegreeHistograms {
+    type Target = HashMap<(u32, u32), [u64; Graph::DEGREE_BUCKETS]>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl Graph {
     /// The histogram's bucket count (LABS-311: one constant, consulted at
@@ -105,18 +182,14 @@ impl Graph {
     /// at the caller's tail, so charging there would double-count.
     fn histogram_entry<'m>(
         &self,
-        histograms: &'m mut HashMap<(u32, u32), [u64; Self::DEGREE_BUCKETS]>,
+        histograms: &'m mut DegreeHistograms,
         label: u32,
         type_id: u32,
     ) -> &'m mut [u64; Self::DEGREE_BUCKETS] {
-        match histograms.entry((label, type_id)) {
-            std::collections::hash_map::Entry::Vacant(v) => {
-                self.used_bytes
-                    .fetch_add(Self::HISTOGRAM_ENTRY_BYTES, Ordering::Relaxed);
-                v.insert([0; Self::DEGREE_BUCKETS])
-            }
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-        }
+        histograms.slot((label, type_id), || {
+            self.used_bytes
+                .fetch_add(Self::HISTOGRAM_ENTRY_BYTES, Ordering::Relaxed);
+        })
     }
 
     /// The node's out-degree buckets enter the histograms of every
@@ -149,9 +222,7 @@ impl Graph {
         for (type_id, degree) in self.out_chunks(node) {
             let bucket = Self::degree_bucket(degree);
             for label in removed_ids {
-                if let Some(entry) = histograms.get_mut(&(*label, type_id)) {
-                    entry[bucket] = entry[bucket].saturating_sub(1);
-                }
+                histograms.release((*label, type_id), bucket);
             }
         }
     }
@@ -235,55 +306,77 @@ impl Graph {
     /// live in this file, the rebuild's folds included — the
     /// label-mutation incident walk lives in the family's incident
     /// sibling, `degree_stats_incident.rs`). Called by `rebuild_adj`
-    /// (graph/index.rs) with the rebuild's materialized [`RelRow`]s —
-    /// the same rows `adjacency::adj_build` installs, `id` and `ts`
-    /// included though these folds read neither. A pure fold over its
-    /// input:
+    /// (graph/rebuild.rs) with the rebuild's materialized [`RelRow`]s
+    /// and their start-keyed partition — the same rows
+    /// `adjacency::adj_build` installs, `id` and `ts` included though
+    /// these folds read neither. A pure fold over its input:
     /// the (label, rel-type) histograms come from the same rows (a
     /// node's per-type out-degree is the count of its rows of that
     /// type), not from the adjacency the caller built, so no
     /// call-ordering precondition rides the seam.
     ///
+    /// Sharded by the row's start (the partition `rebuild_adj` computes
+    /// once for every start-keyed consumer), which is what keeps it a
+    /// pure per-node fold: a shard carries every row of every node it
+    /// owns, so each node's out-degree there is the node's whole
+    /// out-degree and the shards' bucket counts merge by summing.
+    /// Nothing per-node crosses a shard boundary.
+    ///
     /// The estimate family's wholesale rebuild: the histograms (the
     /// count bundle's rel-side and node-side fields publish wholesale
     /// through the count family's own [`Graph::rebuild_count_stats`] —
     /// one bundle, one guard, one publish).
-    pub(super) fn rebuild_degree_stats<'a>(&self, rows: impl Iterator<Item = &'a RelRow>) {
-        let mut label_cache = LabelCache::default();
-        // LABS-351: the per-(node, type) out-degrees counted off the
-        // rows — the same number the out-adjacency chunk holds once
-        // `adj_build` installed it. A fold-local map rather than an out_adj
-        // read: it keeps this seam a pure function of its rows (no
-        // call-ordering precondition rides it), at the cost of one
-        // transient per-rebuild map. Bucket counts are
-        // order-independent, so the map's iteration order does not
-        // matter. Recomputed so the high-water mark recalibrates to the
-        // honest live state after a restore.
-        let mut out_degrees: HashMap<(NodeId, u32), u64> = HashMap::new();
-        for row in rows {
-            // One label read per distinct node, the family's shared
-            // cache seam.
-            label_cache.ensure(self, row.start);
-            *out_degrees.entry((row.start, row.type_id)).or_insert(0) += 1;
-        }
-        let mut histograms: HashMap<(u32, u32), [u64; Graph::DEGREE_BUCKETS]> = HashMap::new();
-        for ((start, type_id), degree) in &out_degrees {
-            let bucket = Self::degree_bucket(*degree);
-            let labels = label_cache.get(*start);
-            for label in labels.iter() {
-                // Uncharged on purpose: the caller's tail runs
-                // `recompute_used`, which retallies the entry charges
-                // wholesale — charging here would double-count.
-                let slot = histograms
-                    .entry((*label, *type_id))
-                    .or_insert([0; Graph::DEGREE_BUCKETS]);
-                slot[bucket] += 1;
-            }
+    pub(super) fn rebuild_degree_stats(
+        &self,
+        rows: &[RelRow],
+        labels: &LabelCache,
+        shards: &[Vec<usize>],
+    ) {
+        let parts = shard::run_shards(shards, |shard| {
+            Self::degree_histogram_part(rows, labels, shard)
+        });
+        let mut histograms = DegreeHistograms::default();
+        for part in parts {
+            histograms.merge(part);
         }
         // One publish for the histogram map — the estimate family's
         // own state; every other site takes exactly this one lock, so
         // no ordering cycle exists and a reader never sees one
         // rebuild's histograms mixed with the previous rebuild's.
         *self.degree_histograms.lock().unwrap() = histograms;
+    }
+
+    /// One shard's share of the histograms. LABS-351: the per-(node, type)
+    /// out-degrees counted off the shard's rows — the same number the
+    /// out-adjacency chunk holds once `adj_build` installed it. A
+    /// shard-local map rather than an out_adj read: it keeps this fold a
+    /// pure function of its rows (no call-ordering precondition rides it),
+    /// at the cost of one transient map per shard. Bucket counts are
+    /// order-independent, so the map's iteration order does not matter.
+    /// Recomputed so the high-water mark recalibrates to the honest live
+    /// state after a restore.
+    fn degree_histogram_part(
+        rows: &[RelRow],
+        labels: &LabelCache,
+        shard: &[usize],
+    ) -> DegreeHistograms {
+        let mut out_degrees: HashMap<(NodeId, u32), u64> = HashMap::new();
+        for &index in shard {
+            let row = &rows[index];
+            *out_degrees.entry((row.start, row.type_id)).or_insert(0) += 1;
+        }
+        let mut histograms = DegreeHistograms::default();
+        for ((start, type_id), degree) in &out_degrees {
+            let bucket = Self::degree_bucket(*degree);
+            let node_labels = labels.get(*start);
+            for label in node_labels.iter() {
+                // Uncharged on purpose: the caller's tail runs
+                // `recompute_used`, which retallies the entry charges
+                // wholesale — charging here would double-count.
+                let slot = histograms.slot((*label, *type_id), || {});
+                slot[bucket] = slot[bucket].saturating_add(1);
+            }
+        }
+        histograms
     }
 }

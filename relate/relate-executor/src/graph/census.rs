@@ -216,8 +216,8 @@ impl Graph {
         // Count state and degree histograms.
         {
             let stats = self.count_stats.lock().unwrap();
-            c.count_rel_types = stats.rel_type_counts.len();
-            c.count_pair_entries = stats.pair_counts.len();
+            c.count_rel_types = stats.rel.rel_type_counts.len();
+            c.count_pair_entries = stats.rel.pair_counts.len();
             c.count_label_entries = stats.label_counts.len();
             c.count_node_total = stats.node_total;
         }

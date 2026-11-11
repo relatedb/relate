@@ -1,6 +1,6 @@
 use relate_ir::BinaryOp;
 
-use super::adjacency::{adj_build, adj_remove};
+use super::adjacency::adj_remove;
 use super::*;
 
 /// Lazily materialized equality postings for one `(class, key)` pair
@@ -154,22 +154,12 @@ impl Graph {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Whole-graph adjacency builds (`rebuild_adj`) on this thread.
-    static ADJ_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(super) fn take_adj_builds() -> u64 {
-    ADJ_BUILDS.with(|n| n.replace(0))
-}
-
 #[cfg(feature = "test-hooks")]
 thread_local! {
     /// Whole-graph index rebuilds (`rebuild_indexes`) on this thread. Behind
     /// the off-by-default `test-hooks` feature, unlike the cfg(test)-only
-    /// `ADJ_BUILDS` seam above: the facade's reopen tests read it across the
+    /// `ADJ_BUILDS` seam in `rebuild.rs`: the facade's reopen tests read it
+    /// across the
     /// crate boundary to pin that a clean close's open skips the wholesale
     /// rebuild (LABS-1112) — behavior with no other observable surface.
     static INDEX_REBUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -183,51 +173,6 @@ pub fn take_index_rebuilds() -> u64 {
 }
 
 impl Graph {
-    /// Derive adjacency from each relationship's live version. Each map is
-    /// built group-and-sort — one sort per (node, type) run instead of a
-    /// binary-search insert per hop — and a node's type chunks follow their
-    /// first rel id, as an id-ordered load leaves them, not the map's hash
-    /// order: `TypedAdj::from_runs` derives that order from each run's
-    /// hops. The degree-statistic half of the rebuild (rel-type/pair
-    /// counts, histograms) lives behind the family seam:
-    /// [`Graph::rebuild_degree_stats`].
-    pub(super) fn rebuild_adj(&self) {
-        #[cfg(test)]
-        ADJ_BUILDS.with(|n| n.set(n.get() + 1));
-        let mut rows: Vec<RelRow> = Vec::new();
-        self.rels.for_each(|id, vers| {
-            let Some(ver) = live_version(vers) else {
-                return;
-            };
-            let live = &ver.live;
-            let ts = live.payload.ts(&self.interner);
-            rows.push(RelRow {
-                id,
-                start: live.start,
-                type_id: live.type_id,
-                end: live.end,
-                ts,
-            });
-        });
-        self.out_adj.clear();
-        self.in_adj.clear();
-        self.sealed_out.clear();
-        self.sealed_in.clear();
-        adj_build(&self.out_adj, &self.in_adj, &mut rows);
-        // Both wholesale folds ride the same rows the build grouped — no
-        // second materialization: the histograms here, the count bundle's
-        // rel side through rebuild_count_stats (its node side walks nodes
-        // itself). Both are order-independent aggregates, so the rows
-        // carrying the in_adj grouping order rather than rel-id order is
-        // sound.
-        self.rebuild_degree_stats(rows.iter());
-        self.rebuild_count_stats(rows.iter());
-        // The wholesale rebuild replaces the histogram map: recompute the
-        // incremental `used_bytes` so it tracks the new entry count (the
-        // recount oracle includes the histogram term).
-        self.recompute_used();
-    }
-
     /// Rebuild the indexes from the live versions. Adjacency is left as it
     /// is: writes and replayed redo keep it current, and
     /// `Graph::finish_restore` builds it after a checkpoint load. The open
