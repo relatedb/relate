@@ -226,18 +226,15 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   # npm (ADR-0278): trusted publishing (OIDC), no NODE_AUTH_TOKEN.
-  # Fail-closed by design — until the manual first publishes and the
-  # npmjs.com trusted-publishing setup in docs/PUBLISHING.md are done,
-  # the `&& false` below keeps these jobs off. Platform packages and the
+  # Live: the manual first publishes and the npmjs.com trusted-publishing
+  # setup in docs/PUBLISHING.md are done. Platform packages and the
   # wasm bundle go first; the main package publishes last so its
   # optionalDependencies already exist on the registry.
   npm-platform-wasm:
     name: Publish platform + wasm packages to npm
     needs: registry-owner
-    # Main-only like every publish job (see pypi). Disabled until the
-    # manual npmjs.com setup lands (see the npm section of
-    # docs/PUBLISHING.md); re-enable by dropping the `&& false`.
-    if: github.ref == 'refs/heads/main' && inputs.npm && false
+    # Main-only like every publish job (see pypi).
+    if: github.ref == 'refs/heads/main' && inputs.npm
     runs-on: ubuntu-latest
     # Publishes run in the `release` environment: its deployment branch
     # rule (main only) stops a write-access collaborator from publishing
@@ -296,9 +293,8 @@ jobs:
   npm-main:
     name: Publish @relate/relate to npm
     needs: [registry-owner, npm-platform-wasm]
-    # Main-only like every publish job (see pypi). Same disable guard as
-    # npm-platform-wasm; drop both together.
-    if: github.ref == 'refs/heads/main' && inputs.npm && false
+    # Main-only like every publish job (see pypi).
+    if: github.ref == 'refs/heads/main' && inputs.npm
     runs-on: ubuntu-latest
     # Publishes run in the `release` environment: its deployment branch
     # rule (main only) stops a write-access collaborator from publishing

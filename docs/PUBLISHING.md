@@ -122,19 +122,20 @@ artifact landed on that first release:
   Re-enabling npm publishing means dropping the `&& false` guards from the
   `npm-platform-wasm` and `npm-main` jobs in `publish-registries.yml` —
   do both in the same change.
-- [ ] npm: the first publish of `@relate/relate` and
-  `@relate/relate-wasm` is done manually — npm trusted publishing
-  needs the packages to exist before it can be configured.
+- [x] npm: the packages exist on the registry — all seven names were
+  bootstrapped with manual `0.0.1` placeholder publishes (npm trusted
+  publishing needs a package to exist before it can be configured).
 - [ ] Swift (ADR-0433): `RelateFFI.xcframework.zip` is attached to the
   release, and the tagged `Package.swift` carries `releaseTag` = the tag and
   `releaseChecksum` = `swift package compute-checksum` of that zip (the
   `version` job stamps both into the release commit). A smoke: a fresh
   package depending on `.package(url: …, exact: "<version>")` resolves and
   builds.
-- [ ] npm: trusted publishing is configured on npmjs.com for
+- [x] npm: trusted publishing is configured on npmjs.com for
   `relatedb/relate`, workflow `publish-registries.yml`, for all seven
-  packages (main, wasm, and the five platform packages). The npm jobs are
-  fail-closed (`&& false` guards) until this is done.
+  packages (main, wasm, and the five platform packages), with the
+  environment `release`. The `&& false` guards on the npm jobs were
+  dropped once this was done.
 - [ ] Slack (optional): set the `SLACK_WEBHOOK_URL` repository secret to
   enable the release announcement — the release run's final job
   (`slack-announce`) posts it after the website deploy and the self-update
