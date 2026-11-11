@@ -68,20 +68,53 @@ if ! git -C "$REPO" diff --quiet HEAD -- 2>/dev/null; then
 fi
 DEST="$REPO/target/.prebuilt/$SHA$DIRTY/$PROFILE"
 BIN="$DEST/relate"
+# cargo writes under CARGO_TARGET_DIR when the environment sets one (the
+# ramdisk and shared-cache lanes do); a relative value resolves against the
+# directory the build runs in, which is $REPO. Stated here beside the
+# staging dir: the script's two path facts, in one place.
+TARGET_ROOT="${CARGO_TARGET_DIR:-$REPO/target}"
+[[ "$TARGET_ROOT" = /* ]] || TARGET_ROOT="$REPO/$TARGET_ROOT"
 
 stage() {
   # $1 = binary name in target/<profile>/, $2 = package to build.
   # A clean tree at the same SHA reuses the staged binary; a dirty tree
   # always lets cargo decide (incremental no-op when nothing changed) and
   # re-stages when the build output is newer.
-  local src="$REPO/target/$PROFILE/$1"
+  local src="$TARGET_ROOT/$PROFILE/$1"
+  # The build decision, recorded once: the publish gate below reads this
+  # instead of re-spelling the same two-clause test.
+  local built=0
   if [[ -n "$DIRTY" || ! -x "$DEST/$1" ]]; then
     mkdir -p "$DEST"
     (cd "$REPO" && cargo build ${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"} -p "$2" --bin "$1")
+    # Fail loud when a build that was supposed to produce the binary did not
+    # (the reuse path below is untouched: no build, no expectation).
+    [[ -f "$src" ]] || {
+      echo "prebuilt-bin: cargo produced no $src" >&2
+      exit 2
+    }
+    built=1
   fi
-  if [[ "$src" -nt "$DEST/$1" ]]; then
-    cp "$src" "$DEST/$1"
-    chmod +x "$DEST/$1"
+  # Publish when a build just ran, or when the source is newer than the
+  # staged copy. `cp` does not preserve mtime, so a staged file that is not
+  # executable (the residue an interrupted publish leaves) would otherwise
+  # stay newer than $src and never be republished — the caller would get a
+  # path its own -x probe rejects.
+  if ((built)) || [[ "$src" -nt "$DEST/$1" ]]; then
+    # Publish by rename, never in place: a lane exec'ing the staged path
+    # meanwhile would otherwise hit ETXTBSY or read a truncated binary. The
+    # temp follows the repo's writer contract (scripts/lib/toml.sh): mktemp
+    # beside the target, removed when the publish does not complete.
+    local tmp
+    tmp=$(mktemp "$DEST/.$1.tmp.XXXXXX") || {
+      echo "prebuilt-bin: cannot create a temp file beside $DEST/$1" >&2
+      exit 2
+    }
+    cp "$src" "$tmp" && chmod +x "$tmp" && mv -f "$tmp" "$DEST/$1" || {
+      rm -f "$tmp"
+      echo "prebuilt-bin: could not publish $1" >&2
+      exit 2
+    }
     echo "prebuilt-bin: staged $1 -> $DEST/$1" >&2
   fi
 }

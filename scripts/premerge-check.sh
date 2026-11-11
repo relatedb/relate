@@ -56,19 +56,14 @@ usage() {
 # code, so the script's prefix, stream and exit contract are stated once
 # rather than at each of the guards that enforce it. The conflict and
 # compile verdicts do not come through here: they exit 1, a different fact.
-# The head of a captured producer log — the one truncation spelling, shared
-# by `fail` and by `resolve_base` (which returns a status rather than
-# exiting, and so cannot call `fail`).
-log_head() {
-    [ -f "$1" ] || return 0
-    sed -n "1,${2:-10}p" "$1" >&2
-}
-
 # `fail <message> [log]`: the message, then the head of the producer's own
-# log when one was captured.
+# log when one was captured. The conflict report is not a producer log — it
+# is merge-tree's own output, sliced where it is printed.
 fail() {
     echo "premerge-check: $1" >&2
-    [ $# -lt 2 ] || log_head "$2"
+    if [ $# -ge 2 ] && [ -f "$2" ]; then
+        sed -n '1,10p' "$2" >&2
+    fi
     exit 2
 }
 
@@ -83,7 +78,10 @@ source "$usage_lib"
 
 # The scratch export is the first thing acquired and the first thing
 # released: the trap is installed with it, above every path that can exit.
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/premerge-check.XXXXXX")
+# Guarded like every other environment fault: an unguarded failure under
+# `set -e` would exit 1, the status this gate reserves for "do not merge".
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/premerge-check.XXXXXX") \
+    || fail "cannot create a scratch directory under ${TMPDIR:-/tmp}"
 cleanup() {
     if [ "${PREMERGE_KEEP:-0}" = "1" ]; then
         echo "premerge-check: kept $scratch" >&2
@@ -92,6 +90,19 @@ cleanup() {
     rm -rf "$scratch"
 }
 trap cleanup EXIT
+
+# One anchor for every git call: the script's own repository, never the
+# caller's cwd — a run from a subdirectory or from another clone must not
+# resolve refs against the wrong repository. First, so its message is the
+# one that surfaces when $REPO is not a repository at all.
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || fail "not a git repository: $REPO"
+
+# The one "does this name resolve to a commit in $REPO" predicate: the
+# anchor, the `^{commit}` peel and the redirection are stated here, so the
+# four sites that ask the question cannot drift apart.
+is_commit() {
+    git -C "$REPO" rev-parse --verify --quiet "$1^{commit}" >/dev/null
+}
 
 # 1 or 2 positionals; a third is a typo, not a silently ignored argument.
 [ $# -ge 1 ] && [ $# -le 2 ] || usage
@@ -106,10 +117,20 @@ trap cleanup EXIT
 explicit_base=${2:-}
 if [[ $1 =~ ^[0-9]+$ ]]; then
     command -v gh >/dev/null || fail "gh is not on PATH — pass the head rev explicitly"
-    if resolved=$(gh pr view "$1" --json headRefOid,baseRefName \
-            --jq '.headRefOid + " " + .baseRefName' 2>"$scratch/gh.err"); then
-        set -- "${resolved%% *}" "${explicit_base:-${resolved#* }}"
-    elif ! git rev-parse --verify --quiet "$1^{commit}" >/dev/null; then
+    # Anchored like every git call: gh resolves its repository by walking
+    # up from the cwd, so an unanchored lookup run from another clone would
+    # read that clone's PR while every git call below runs against $REPO.
+    if resolved=$(cd "$REPO" && gh pr view "$1" --json headRefOid,baseRefName \
+            --jq '.headRefOid, .baseRefName' 2>"$scratch/gh.err"); then
+        # One field per line: the head/base boundary is the newline, not an
+        # unwritten no-whitespace assumption parsed back out. A response
+        # that does not carry both is an environment error (2), never the
+        # exit-1 "do not merge" verdict a bare failing `read` would give.
+        { read -r pr_head; read -r pr_base; } <<<"$resolved" || true
+        [ -n "$pr_head" ] && [ -n "$pr_base" ] \
+            || fail "gh returned an unexpected response for PR $1:" "$scratch/gh.err"
+        set -- "$pr_head" "${explicit_base:-$pr_base}"
+    elif ! is_commit "$1"; then
         fail "gh could not read PR $1:" "$scratch/gh.err"
     fi
 fi
@@ -119,8 +140,7 @@ fi
 head_rev=$1
 base_rev=${2:-main}
 
-git rev-parse --verify --quiet "$head_rev^{commit}" >/dev/null \
-    || fail "$head_rev is not a commit (fetch it first)"
+is_commit "$head_rev" || fail "$head_rev is not a commit (fetch it first)"
 
 # Resolve the base to the ref the merge runs against. A branch name is
 # fetched once, by its bare name, and answered through the ref that fetch
@@ -141,26 +161,25 @@ resolve_base() {
     # like any other — a branch or tag can be spelled in hex — so it is
     # fetched and verified rather than trusted as a pinned commit.
     if [[ $given =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
-            && git rev-parse --verify --quiet "$given^{commit}" >/dev/null; then
+            && is_commit "$given"; then
         printf '%s\n' "$given"
         return 0
     fi
-    if ! git fetch origin "$given" >/dev/null 2>"$scratch/fetch.err"; then
-        echo "premerge-check: cannot fetch base branch $given:" >&2
-        log_head "$scratch/fetch.err"
-        return 1
+    if ! git -C "$REPO" fetch origin "$given" >/dev/null 2>"$scratch/fetch.err"; then
+        fail "cannot fetch base branch $given:" "$scratch/fetch.err"
     fi
     ref="refs/remotes/origin/$given"
-    if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
-        echo "premerge-check: fetching $given did not produce $ref — this clone's refspec does not map it, refusing to merge against an unverified base" >&2
-        return 1
+    if ! is_commit "$ref"; then
+        fail "fetching $given did not produce $ref — this clone's refspec does not map it, refusing to merge against an unverified base"
     fi
     printf '%s\n' "$ref"
 }
-# resolve_base owns the failure text; this arm only carries the status.
+# resolve_base prints the ref or fails. `fail` runs in the substitution's
+# subshell, so its exit status is what `|| exit 2` carries into this shell —
+# the message still reaches stderr, and the status is still the
+# environment one.
 base_ref=$(resolve_base "$base_rev") || exit 2
 
-toplevel=$(git rev-parse --show-toplevel) || fail "not inside a git work tree"
 
 # A relative target dir is resolved against the caller's cwd, not the
 # export's — the export is removed on the way out, and a cache pointed
@@ -184,7 +203,7 @@ mkdir -p "$target_dir" 2>"$scratch/mkdir.err" \
 # report a broken environment as a conflict.
 echo "premerge-check: merging $head_rev onto $base_rev"
 merge_status=0
-git -C "$toplevel" merge-tree --write-tree "$base_ref" "$head_rev" \
+git -C "$REPO" merge-tree --write-tree "$base_ref" "$head_rev" \
     >"$scratch/tree" 2>"$scratch/tree.err" || merge_status=$?
 case $merge_status in
     0) ;;
@@ -206,7 +225,7 @@ echo "premerge-check: merged tree $tree"
 # wants a commit-ish, so the tree is exported instead: the bytes checked
 # here are the merge's own, not a second merge's.
 { mkdir -p "$scratch/wt" \
-    && git -C "$toplevel" archive "$tree" | tar -x -C "$scratch/wt"; } \
+    && git -C "$REPO" archive "$tree" | tar -x -C "$scratch/wt"; } \
     || fail "could not materialize the merged tree"
 
 echo "premerge-check: type-checking the merged tree (target dir $target_dir)"
