@@ -378,6 +378,74 @@ jobs:
         run: |
           cargo clippy -p relate-core -p relate-catalog             -p relate-model -p relate-parser -p relate-error             -p relate-splitter -p relate-front -p relate-formatter             --all-targets -- -D warnings
 
+  # The merge bar is the merged tree, not the head (AGENTS.md): PR CI builds
+  # the head, the squash merge lands the head applied to main as it is at
+  # merge time, and a rename makes the two differ silently — the branch's
+  # hunks rename what it forked with, main's newer copy of the file keeps
+  # mentions the hunks never reach, nothing conflicts, and the definition
+  # the branch deleted is gone (#150 over #132; repaired in #155). GitHub's
+  # `refs/pull/N/merge` is not the answer either: it is not refreshed when
+  # the base branch moves, so a stale merge-ref run is exactly this failure
+  # wearing a green badge. The script fetches current origin/main, decides
+  # the merge itself, and type-checks that exact tree.
+  merge-compiles:
+    name: Merge compiles (the tree that lands)
+    needs: [changes]
+    # Deliberately NOT gated on `changes.code`: the break this exists for
+    # rode in on a docs-only merge, whose path filter skips every code lane
+    # (#129 skipped them, so nothing was red while main did not compile).
+    # A gate that inherits that filter would skip the very case it is for.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.full_ci == 'true'
+    runs-on: linux-4-core-x86
+    steps:
+      # Full history: the merge needs its merge base, and a depth-1
+      # checkout does not have one.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          free-disk: "false"
+          cache-shared-key: dev-v2
+          cache-save-if-cold-only: "true"
+          cache-workspace-crates: "true"
+
+      # Head and base arrive as explicit revs, not a PR number: no token
+      # needed, and a stacked PR is checked against the branch it actually
+      # merges into rather than against main.
+      - name: Compile the merged tree
+        env:
+          PREMERGE_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          scripts/premerge-check.sh \
+            "${{ github.event.pull_request.head.sha }}" \
+            "${{ github.event.pull_request.base.ref }}"
+
+  # The same bar on the commit that already landed. The lane above checks
+  # before the merge; this one checks after it, so a merge that slipped
+  # past (a web-UI merge, a cancelled run, a stack cascade) turns main red
+  # within minutes instead of waiting for whoever rebases next.
+  # cancel-on-merge cancels runs on the merged PR's head branch, never on
+  # main, so this run survives the merge that triggers it.
+  main-compiles:
+    name: Main compiles
+    needs: [changes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: linux-4-core-x86
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          free-disk: "false"
+          cache-shared-key: dev-v2
+          cache-save-if-cold-only: "true"
+          cache-workspace-crates: "true"
+
+      - name: Type-check main
+        run: cargo check --workspace --exclude relate-python
+
   # macOS and Windows skip the query-integration suite (planner, executor,
   # and `cargo test -p relate`). They run storage depth plus one
   # smoke per surface. Linux keeps the full `test` and `feature-bundles` jobs.
