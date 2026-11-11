@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 struct DecodeAllocationGuard;
 static COUNT_DECODE_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
 static REQUESTED_DECODE_BYTES: AtomicUsize = AtomicUsize::new(0);
+// What an over-budget decode reports through `decode`.
+const OVER_BUDGET: &str = "packstream decode budget exceeded";
 const MAX_REQUESTED_DECODE_BYTES: usize = 128 * 1024 * 1024;
 
 #[global_allocator]
@@ -302,36 +304,76 @@ fn impossible_container_lengths_are_rejected() {
 }
 
 #[test]
-fn aggregate_value_budget_rejects_wire_sized_list_before_allocating() {
+fn aggregate_decode_budget_rejects_wire_sized_list_before_allocating() {
     // The pre-existing 16 MiB wire cap alone allowed this 16 MiB list to
     // reserve hundreds of MiB for Pack values before handling a query.
     let n = (16 * 1024 * 1024 - 5) as u32;
     let mut bomb = vec![0xD6];
     bomb.extend_from_slice(&n.to_be_bytes());
     bomb.resize(16 * 1024 * 1024, 0xC0);
-    assert_eq!(decode(&bomb), Err("packstream value limit exceeded".into()));
+    assert_eq!(decode(&bomb), Err(OVER_BUDGET.into()));
 
-    // Count the container itself, both map halves, and siblings, not just
-    // the declared size of one top-level list.
-    let accepted = Pack::List(vec![Pack::Null; MAX_DECODE_VALUES - 1]);
+    // The budget counts one node per value: the root, the container itself,
+    // both map halves, and siblings, not just one top-level declared size.
+    let fits = MAX_DECODE_BYTES / NODE_BYTES;
+    let accepted = Pack::List(vec![Pack::Null; fits - 1]);
     assert_eq!(decode(&encode(&accepted).unwrap()).unwrap(), accepted);
-    let rejected = Pack::List(vec![Pack::Null; MAX_DECODE_VALUES]);
-    assert_eq!(
-        decode(&encode(&rejected).unwrap()),
-        Err("packstream value limit exceeded".into())
-    );
+    let rejected = Pack::List(vec![Pack::Null; fits]);
+    assert_eq!(decode(&encode(&rejected).unwrap()), Err(OVER_BUDGET.into()));
     let siblings = Pack::List(vec![
-        Pack::List(vec![Pack::Null; MAX_DECODE_VALUES / 2]),
-        Pack::List(vec![Pack::Null; MAX_DECODE_VALUES / 2]),
+        Pack::List(vec![Pack::Null; fits / 2]),
+        Pack::List(vec![Pack::Null; fits / 2]),
     ]);
-    assert_eq!(
-        decode(&encode(&siblings).unwrap()),
-        Err("packstream value limit exceeded".into())
+    assert_eq!(decode(&encode(&siblings).unwrap()), Err(OVER_BUDGET.into()));
+    let map = Pack::Map(vec![(Pack::Null, Pack::Null); fits / 2]);
+    assert_eq!(decode(&encode(&map).unwrap()), Err(OVER_BUDGET.into()));
+}
+
+#[test]
+fn string_and_byte_payloads_are_charged_beyond_their_node() {
+    // One 1 MiB string per element: a few dozen of them exhaust the budget
+    // even though the node count stays tiny.
+    let big = Pack::String("x".repeat(1024 * 1024));
+    let over = Pack::List(vec![big.clone(); MAX_DECODE_BYTES / (1024 * 1024) + 1]);
+    assert_eq!(decode(&encode(&over).unwrap()), Err(OVER_BUDGET.into()));
+    let under = Pack::List(vec![big; MAX_DECODE_BYTES / (1024 * 1024) / 2]);
+    assert_eq!(decode(&encode(&under).unwrap()).unwrap(), under);
+}
+
+#[test]
+fn a_dense_row_batch_far_past_the_old_count_cap_decodes() {
+    // The LABS-1412 notebook shape: 133k rows of 3 integer fields, about
+    // 930k values — over the former 262,144-value count, ~30 MB decoded.
+    let row = Pack::Map(
+        ["a", "b", "c"]
+            .into_iter()
+            .map(|k| (Pack::String(k.into()), Pack::Int(1)))
+            .collect(),
     );
-    let map = Pack::Map(vec![(Pack::Null, Pack::Null); MAX_DECODE_VALUES / 2]);
-    assert_eq!(
-        decode(&encode(&map).unwrap()),
-        Err("packstream value limit exceeded".into())
+    let rows = Pack::List(vec![row; 133_000]);
+    assert_eq!(decode(&encode(&rows).unwrap()).unwrap(), rows);
+}
+
+#[test]
+fn a_hostile_scalar_list_is_refused_within_twice_the_budget_of_allocation() {
+    isolated_decode_test(
+        "RELATE_PACKSTREAM_HOSTILE_SCALARS_CHILD",
+        "packstream::tests::a_hostile_scalar_list_is_refused_within_twice_the_budget_of_allocation",
+        || {
+            // 16 MiB of one-byte scalars would decode to ~512 MiB of nodes;
+            // the budget stops the decode after at most ~2x its size in
+            // pushed slots (Vec doubling), independent of the message size.
+            let n = (16 * 1024 * 1024 - 5) as u32;
+            let mut bomb = vec![0xD6];
+            bomb.extend_from_slice(&n.to_be_bytes());
+            bomb.resize(16 * 1024 * 1024, 0xC0);
+            let (decoded, requested) = decode_counting_allocations(&bomb);
+            assert_eq!(decoded, Err(OVER_BUDGET.into()));
+            assert!(
+                requested <= 2 * MAX_DECODE_BYTES + 1024 * 1024,
+                "decode requested {requested} bytes before refusing"
+            );
+        },
     );
 }
 
@@ -341,18 +383,21 @@ fn nested_declared_lengths_do_not_preallocate_children() {
         "RELATE_PACKSTREAM_NESTED_ALLOCATION_CHILD",
         "packstream::tests::nested_declared_lengths_do_not_preallocate_children",
         || {
-            // 128 list32 headers each declare almost the full shared value
+            // 128 list32 headers each declare almost the full shared decode
             // budget. The innermost list has enough bytes and values to pass
             // both guards; the outer list fails only after decoding its child.
             // Old Vec::with_capacity(n) reserved roughly 1 GiB across frames.
-            let n = MAX_DECODE_VALUES - MAX_DEPTH - 1;
+            // A quarter of the budget per frame: the innermost legitimate decode
+            // stays well under the allocation guard, while preallocating each
+            // declared size across 128 frames would be gigabytes.
+            let n = MAX_DECODE_BYTES / NODE_BYTES / 4 - MAX_DEPTH - 1;
             let mut bomb = Vec::with_capacity(5 * MAX_DEPTH + n);
             for _ in 0..MAX_DEPTH {
                 bomb.push(0xD6);
                 bomb.extend_from_slice(&(n as u32).to_be_bytes());
             }
             bomb.resize(bomb.len() + n, 0xC0);
-            assert!(bomb.len() < 258 * 1024);
+            assert!(bomb.len() < 3 * 1024 * 1024);
 
             let (decoded, requested) = decode_counting_allocations(&bomb);
             assert_eq!(decoded, Err("eof".into()));

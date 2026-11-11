@@ -171,13 +171,13 @@ impl std::fmt::Display for Undecodable {
     }
 }
 
-/// A well-formed message over the decoded-value budget (ADR-0577): the
-/// decoder stopped at the limit, so `at_least` is a lower bound on its
-/// value count. `message` is the request the payload's structure tag names
+/// A well-formed message over the decode budget (ADR-0577, ADR-0579): the
+/// decoder stopped at the limit, so `at_least_bytes` is a lower bound on
+/// the size it decodes to. `message` is the request the payload's structure tag names
 /// at this connection's version, when it names one — read without
 /// decoding, so the session's ignore classifications still apply.
 pub(crate) struct OverBudget {
-    pub(crate) at_least: usize,
+    pub(crate) at_least_bytes: usize,
     pub(crate) bytes: usize,
     pub(crate) message: Option<Message>,
 }
@@ -185,7 +185,7 @@ pub(crate) struct OverBudget {
 impl OverBudget {
     /// The FAILURE text naming what was measured, the limit and the remedy.
     pub(crate) fn failure_text(&self) -> String {
-        crate::failures::value_limit_message(self.at_least, self.bytes)
+        crate::failures::decode_budget_message(self.at_least_bytes, self.bytes)
     }
 
     /// Whether queued ahead of a batch's last RESET this message answers

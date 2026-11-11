@@ -1,9 +1,9 @@
-//! A well-formed message over the decoded-value budget (ADR-0082) fails
+//! A well-formed message over the decoded-size budget fails
 //! its request with an actionable FAILURE and leaves the connection open,
 //! instead of closing it (which a driver retries as a transient failure).
 
-use crate::failures::{value_limit_message, REQUEST_INVALID_CODE};
-use crate::packstream::{decode_message, encode, DecodeError, Pack, MAX_DECODE_VALUES};
+use crate::failures::{decode_budget_message, REQUEST_INVALID_CODE};
+use crate::packstream::{decode_message, encode, DecodeError, Pack};
 use crate::protocol::ConnConfig;
 use crate::requests::Message;
 use crate::testutil::{
@@ -13,8 +13,8 @@ use crate::testutil::{
 use crate::version::BoltVersion;
 use std::io::Write;
 
-/// A RUN whose `rows` parameter is a list of 3-field maps: 7 decoded values
-/// per row, the shape the LABS-1412 notebook sends.
+/// A RUN whose `rows` parameter is a list of 3-field maps (about 230 decoded
+/// bytes per row), the shape the LABS-1412 notebook sends.
 fn run_with_rows(rows: usize) -> Vec<Pack> {
     let row = Pack::Map(
         ["a", "b", "c"]
@@ -35,13 +35,17 @@ fn run_with_rows(rows: usize) -> Vec<Pack> {
 #[test]
 fn an_over_budget_run_fails_with_an_actionable_message_and_the_session_continues() {
     let mut client = connected_client();
-    send_struct(&mut client, Message::Run.signature(), run_with_rows(40_000));
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(320_000),
+    );
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     let message = field(&failure, "message");
     for needle in [
-        "decoded values",
-        "262144",
+        "MiB of values",
+        "limit of 64 MiB",
         "per-message limit",
         "Send fewer rows per request",
     ] {
@@ -64,19 +68,27 @@ fn an_over_budget_run_fails_with_an_actionable_message_and_the_session_continues
 }
 
 #[test]
-fn a_batch_just_under_the_budget_still_runs() {
-    // 262_144 / 7 = 37_449 rows fit; 20_000 rows (the documented chunk) do.
+fn the_notebook_batch_shape_runs() {
+    // 133k rows of 3 fields in one RUN — about 930k values, the batch the
+    // former 262,144-value count refused — now fits the byte budget.
     let mut client = connected_client();
-    send_struct(&mut client, Message::Run.signature(), run_with_rows(20_000));
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(133_000),
+    );
     success_map(read_msg(&mut client));
 }
 
 #[test]
 fn the_decoder_reports_the_budget_as_its_own_typed_error() {
-    let over = encode(&Pack::List(vec![Pack::Null; MAX_DECODE_VALUES])).unwrap();
+    let fits = DecodeError::BUDGET_BYTES / std::mem::size_of::<Pack>();
+    let over = encode(&Pack::List(vec![Pack::Null; fits])).unwrap();
     match decode_message(&over) {
-        Err(DecodeError::ValueLimit { at_least }) => assert!(at_least > MAX_DECODE_VALUES),
-        other => panic!("expected the value limit, got {other:?}"),
+        Err(DecodeError::BudgetExceeded { at_least_bytes }) => {
+            assert!(at_least_bytes > DecodeError::BUDGET_BYTES)
+        }
+        other => panic!("expected the decode budget, got {other:?}"),
     }
     assert!(matches!(
         decode_message(&[0xC4]),
@@ -86,10 +98,10 @@ fn the_decoder_reports_the_budget_as_its_own_typed_error() {
 
 #[test]
 fn the_message_names_the_measured_size_the_limit_and_the_remedy() {
-    let text = value_limit_message(930_000, 6_201_334);
+    let text = decode_budget_message(70 * 1024 * 1024 + 1, 6_201_334);
     assert!(text.contains("6201334 bytes"), "{text}");
-    assert!(text.contains("at least 930000"), "{text}");
-    assert!(text.contains("limit of 262144"), "{text}");
+    assert!(text.contains("at least 71 MiB"), "{text}");
+    assert!(text.contains("limit of 64 MiB"), "{text}");
     assert!(text.contains("UNWIND"), "{text}");
 }
 
@@ -98,7 +110,11 @@ fn before_hello_an_over_budget_message_is_the_unauthorized_close() {
     // ADR-0126: the pre-HELLO gate (at 5.4 it is always armed, ADR-0484) answers every message but HELLO with the
     // unauthorized FAILURE, an over-budget one included.
     let mut client = handshaken_at(ConnConfig::default(), BoltVersion::V5_4);
-    send_struct(&mut client, Message::Run.signature(), run_with_rows(40_000));
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(320_000),
+    );
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), crate::failures::UNAUTHORIZED_CODE);
     assert_closes(&mut client, "closes after the pre-HELLO refusal");
@@ -109,7 +125,11 @@ fn in_the_authentication_state_an_over_budget_message_fails_and_closes() {
     // ADR-0484 decision 4: only LOGON is accepted, anything else is this
     // gate's breach; the over-budget text names the limit.
     let mut client = awaiting_logon_client(ConnConfig::default());
-    send_struct(&mut client, Message::Run.signature(), run_with_rows(40_000));
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(320_000),
+    );
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     assert!(field(&failure, "message").contains("per-message limit"));
@@ -122,7 +142,8 @@ fn an_over_budget_message_queued_ahead_of_a_reset_is_ignored() {
     // then the RESET's SUCCESS, and the session is not failed.
     let mut client = connected_client();
     let mut batch =
-        crate::packstream::try_struct_msg(Message::Run.signature(), run_with_rows(40_000)).unwrap();
+        crate::packstream::try_struct_msg(Message::Run.signature(), run_with_rows(320_000))
+            .unwrap();
     batch.extend(crate::packstream::try_struct_msg(Message::Reset.signature(), vec![]).unwrap());
     client.write_all(&batch).unwrap();
     assert_ignored(&mut client, "the oversize RUN queued ahead of RESET");

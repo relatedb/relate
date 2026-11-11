@@ -407,17 +407,20 @@ during long requests ([HELLO](#hello-adr-0293-adr-0312-adr-0313)), so a raw
 client must skip them between messages. Malformed PackStream input
 also terminates its connection without aborting the server; other clients
 can keep connecting. PackStream decoding is bounded to 128 nested levels and
-262,144 total decoded values per incoming message (including containers,
-map keys, and map values; ADR-0082). A well-formed message beyond the
-decoded-value limit does not close the connection (ADR-0577): the request
-fails with a `Neo.ClientError.Request.Invalid` FAILURE whose message gives
-the message size, a lower bound on its decoded values, the limit, and the
-remedy (send fewer rows per request, for example `UNWIND` over chunks of
-about 20,000 three-field rows); messages pipelined behind it answer IGNORED
-until RESET, and the same connection then serves the next request. Before the
-session is open each gate answers in its own policy: the pre-HELLO gate sends
-the unauthorized FAILURE and closes, the rejected-HELLO state answers IGNORED,
-and the 5.x AUTHENTICATION gate sends the limit FAILURE and closes.
+a 64 MiB per-message decode budget (ADR-0579): every decoded value is charged
+one node, string and byte payloads are charged their length on top, and a
+declared container size that cannot fit is refused before its children are
+decoded. A 3-integer-field row costs about 230 bytes, so batches of 100,000+
+rows decode. A well-formed message beyond the budget does not close the
+connection (ADR-0577): the request fails with a `Neo.ClientError.Request.Invalid`
+FAILURE whose message gives the message size, a lower bound on its decoded
+size, the limit, and the remedy (send fewer rows per request, for example
+`UNWIND` over chunks of about 100,000 three-field rows); messages pipelined
+behind it answer IGNORED until RESET, and the same connection then serves the
+next request. Before the session is open each gate answers in its own policy:
+the pre-HELLO gate sends the unauthorized FAILURE and closes, the
+rejected-HELLO state answers IGNORED, and the 5.x AUTHENTICATION gate sends the
+limit FAILURE and closes.
 
 Per ADR-0259 and ADR-0504, every `RUN` query executes on a 64 MiB stack:
 the served connection's own thread carries that budget explicitly

@@ -53,3 +53,5 @@ stream (LABS-71/80/88); Bolt PULL governance belongs to the server stream
 
 - ADR-0577: an over-budget message fails its request with a FAILURE and keeps
   the connection open instead of closing it.
+- ADR-0579: the budget counts decoded bytes instead of values, superseding the
+  counting rule here.

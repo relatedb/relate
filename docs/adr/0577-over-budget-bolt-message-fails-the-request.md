@@ -64,3 +64,8 @@ rather than scanning the rest of the message.
   changes to this behavior.
 - ADR-0082's "ends only its Bolt connection" no longer applies to the value
   budget; its counting rule and limit stand.
+
+## Later references
+
+- ADR-0579: the budget the failure reports is a decoded-byte size, so the
+  message states MiB instead of a value count.

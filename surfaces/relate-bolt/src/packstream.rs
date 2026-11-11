@@ -179,30 +179,34 @@ fn enc_int(i: i64, o: &mut Vec<u8>) {
 /// error is a fatal protocol breach (ADR-0315).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DecodeError {
-    /// The message holds more than [`MAX_DECODE_VALUES`] decoded values;
-    /// `at_least` is a lower bound on how many it holds.
-    ValueLimit { at_least: usize },
+    /// The message decodes to more than [`MAX_DECODE_BYTES`] of values;
+    /// `at_least_bytes` is a lower bound on the size it decodes to.
+    BudgetExceeded { at_least_bytes: usize },
     /// Any other malformed PackStream input.
     Malformed(String),
 }
 
 impl DecodeError {
     /// Whether the error ends the connection (ADR-0315): every malformed
-    /// input does; the value budget alone is a recoverable request
+    /// input does; the decode budget alone is a recoverable request
     /// failure (ADR-0577). The one classification, beside the enum, so a
     /// new variant declares its class once.
     pub(crate) fn is_fatal(&self) -> bool {
         match self {
-            DecodeError::ValueLimit { .. } => false,
+            DecodeError::BudgetExceeded { .. } => false,
             DecodeError::Malformed(_) => true,
         }
     }
+
+    /// The per-message decoded-size budget, in bytes, the error was
+    /// measured against.
+    pub const BUDGET_BYTES: usize = MAX_DECODE_BYTES;
 }
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DecodeError::ValueLimit { .. } => f.write_str("packstream value limit exceeded"),
+            DecodeError::BudgetExceeded { .. } => f.write_str("packstream decode budget exceeded"),
             DecodeError::Malformed(m) => f.write_str(m),
         }
     }
@@ -226,8 +230,8 @@ impl From<&str> for DecodeError {
 /// string-error spelling the sibling test and tooling crates use.
 pub(crate) fn decode_message(data: &[u8]) -> Result<Pack, DecodeError> {
     let mut buf = data;
-    let mut remaining_values = MAX_DECODE_VALUES;
-    dec(&mut buf, 0, &mut remaining_values)
+    let mut remaining_bytes = MAX_DECODE_BYTES;
+    dec(&mut buf, 0, &mut remaining_bytes)
 }
 
 pub fn decode(data: &[u8]) -> Result<Pack, String> {
@@ -258,8 +262,17 @@ pub(crate) fn struct_tag(data: &[u8]) -> Option<u8> {
 /// [`child_depth`], the engine-value conversion in `value_codec`.
 pub(crate) const MAX_DEPTH: usize = 128;
 // Wire bytes alone do not bound the heap occupied by millions of one-byte
-// scalar values. Include the root, containers, and both halves of each map.
-pub(crate) const MAX_DECODE_VALUES: usize = 262_144;
+// scalar values: each decodes to a whole `Pack` node. The budget counts what
+// the decoded message occupies — one `Pack` node per value (the root,
+// containers, both halves of each map, which also covers the slot a value
+// takes in its parent) plus string and byte payloads — so a dense message of
+// small rows fits while a hostile message of millions of scalars does not.
+// Lists and maps grow by pushing, so the real allocation can reach twice the
+// charged slots; the worst-case heap is therefore about twice this budget.
+const MAX_DECODE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The charge for one decoded value's own node.
+const NODE_BYTES: usize = std::mem::size_of::<Pack>();
 
 /// The one container-depth counting rule, shared by encode and decode so
 /// a message built from a `Value` can always be decoded by the peer;
@@ -308,9 +321,8 @@ fn read_u32(buf: &mut &[u8]) -> Result<usize, String> {
     Ok(u32::from_be_bytes(read_fixed(buf)?) as usize)
 }
 
-fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pack, DecodeError> {
-    check_values(1, 1, remaining_values)?;
-    *remaining_values -= 1;
+fn dec(buf: &mut &[u8], depth: usize, remaining_bytes: &mut usize) -> Result<Pack, DecodeError> {
+    charge(remaining_bytes, NODE_BYTES)?;
     let marker = consume(buf, 1, "eof")?[0];
     match marker {
         0xC0 => Ok(Pack::Null),
@@ -325,58 +337,56 @@ fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pa
         0xCB => Ok(Pack::Int(i64::from_be_bytes(read_fixed(buf)?))),
         0xCC => {
             let n = read_u8(buf)? as usize;
-            dec_bytes(buf, n)
+            dec_bytes(buf, n, remaining_bytes)
         }
         0xCD => {
             let n = read_u16(buf)?;
-            dec_bytes(buf, n)
+            dec_bytes(buf, n, remaining_bytes)
         }
         0xCE => {
             let n = read_u32(buf)?;
-            dec_bytes(buf, n)
+            dec_bytes(buf, n, remaining_bytes)
         }
-        n if (0x80..0x90).contains(&n) => dec_str(buf, (n & 0x0F) as usize),
+        n if (0x80..0x90).contains(&n) => dec_str(buf, (n & 0x0F) as usize, remaining_bytes),
         0xD0 => {
             let n = read_u8(buf)? as usize;
-            dec_str(buf, n)
+            dec_str(buf, n, remaining_bytes)
         }
         0xD1 => {
             let n = read_u16(buf)?;
-            dec_str(buf, n)
+            dec_str(buf, n, remaining_bytes)
         }
         0xD2 => {
             let n = read_u32(buf)?;
-            dec_str(buf, n)
+            dec_str(buf, n, remaining_bytes)
         }
         n if (0x90..0xA0).contains(&n) => {
-            dec_list(buf, (n & 0x0F) as usize, depth, remaining_values)
+            dec_list(buf, (n & 0x0F) as usize, depth, remaining_bytes)
         }
         0xD4 => {
             let n = read_u8(buf)? as usize;
-            dec_list(buf, n, depth, remaining_values)
+            dec_list(buf, n, depth, remaining_bytes)
         }
         0xD5 => {
             let n = read_u16(buf)?;
-            dec_list(buf, n, depth, remaining_values)
+            dec_list(buf, n, depth, remaining_bytes)
         }
         0xD6 => {
             let n = read_u32(buf)?;
-            dec_list(buf, n, depth, remaining_values)
+            dec_list(buf, n, depth, remaining_bytes)
         }
-        n if (0xA0..0xB0).contains(&n) => {
-            dec_map(buf, (n & 0x0F) as usize, depth, remaining_values)
-        }
+        n if (0xA0..0xB0).contains(&n) => dec_map(buf, (n & 0x0F) as usize, depth, remaining_bytes),
         0xD8 => {
             let n = read_u8(buf)? as usize;
-            dec_map(buf, n, depth, remaining_values)
+            dec_map(buf, n, depth, remaining_bytes)
         }
         0xD9 => {
             let n = read_u16(buf)?;
-            dec_map(buf, n, depth, remaining_values)
+            dec_map(buf, n, depth, remaining_bytes)
         }
         0xDA => {
             let n = read_u32(buf)?;
-            dec_map(buf, n, depth, remaining_values)
+            dec_map(buf, n, depth, remaining_bytes)
         }
         n if is_struct_marker(n) => {
             let nfields = (n & 0x0F) as usize;
@@ -385,11 +395,11 @@ fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pa
             if nfields > buf.len() {
                 return Err("short packstream struct".into());
             }
-            check_values(nfields, 1, remaining_values)?;
+            check_slots(nfields, 1, remaining_bytes)?;
             // A field count is wire data: allocate only after a field decodes.
             let mut fields = Vec::new();
             for _ in 0..nfields {
-                fields.push(dec(buf, next_depth, remaining_values)?);
+                fields.push(dec(buf, next_depth, remaining_bytes)?);
             }
             Ok(Pack::Struct { tag, fields })
         }
@@ -397,8 +407,9 @@ fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pa
     }
 }
 
-fn dec_str(buf: &mut &[u8], n: usize) -> Result<Pack, DecodeError> {
+fn dec_str(buf: &mut &[u8], n: usize, remaining_bytes: &mut usize) -> Result<Pack, DecodeError> {
     let s = consume(buf, n, "short string")?;
+    charge(remaining_bytes, n)?;
     Ok(Pack::String(
         std::str::from_utf8(s)
             .map_err(|e| e.to_string())?
@@ -406,19 +417,38 @@ fn dec_str(buf: &mut &[u8], n: usize) -> Result<Pack, DecodeError> {
     ))
 }
 
-fn dec_bytes(buf: &mut &[u8], n: usize) -> Result<Pack, DecodeError> {
-    Ok(Pack::Bytes(consume(buf, n, "short bytes")?.to_vec()))
+fn dec_bytes(buf: &mut &[u8], n: usize, remaining_bytes: &mut usize) -> Result<Pack, DecodeError> {
+    let b = consume(buf, n, "short bytes")?;
+    charge(remaining_bytes, n)?;
+    Ok(Pack::Bytes(b.to_vec()))
 }
 
-fn check_values(
+/// Take `cost` bytes from the message budget, or report the smallest size
+/// the message is now known to decode to.
+fn charge(remaining_bytes: &mut usize, cost: usize) -> Result<(), DecodeError> {
+    if cost > *remaining_bytes {
+        return Err(DecodeError::BudgetExceeded {
+            at_least_bytes: (MAX_DECODE_BYTES - *remaining_bytes).saturating_add(cost),
+        });
+    }
+    *remaining_bytes -= cost;
+    Ok(())
+}
+
+/// Refuse a declared container size whose bare nodes cannot fit the
+/// remaining budget, before any child is decoded: `slots_per_element` is 1
+/// for a list or struct field and 2 for a map entry.
+fn check_slots(
     n: usize,
-    values_per_element: usize,
-    remaining_values: &usize,
+    slots_per_element: usize,
+    remaining_bytes: &usize,
 ) -> Result<(), DecodeError> {
-    if n > *remaining_values / values_per_element {
-        return Err(DecodeError::ValueLimit {
-            at_least: (MAX_DECODE_VALUES - *remaining_values)
-                .saturating_add(n.saturating_mul(values_per_element)),
+    let needed = n
+        .saturating_mul(slots_per_element)
+        .saturating_mul(NODE_BYTES);
+    if needed > *remaining_bytes {
+        return Err(DecodeError::BudgetExceeded {
+            at_least_bytes: (MAX_DECODE_BYTES - *remaining_bytes).saturating_add(needed),
         });
     }
     Ok(())
@@ -428,17 +458,17 @@ fn dec_list(
     buf: &mut &[u8],
     n: usize,
     depth: usize,
-    remaining_values: &mut usize,
+    remaining_bytes: &mut usize,
 ) -> Result<Pack, DecodeError> {
     let next_depth = child_depth(depth)?;
     if n > buf.len() {
         return Err("short packstream list".into());
     }
-    check_values(n, 1, remaining_values)?;
+    check_slots(n, 1, remaining_bytes)?;
     // The declared count can be large even when a nested child later fails.
     let mut xs = Vec::new();
     for _ in 0..n {
-        xs.push(dec(buf, next_depth, remaining_values)?);
+        xs.push(dec(buf, next_depth, remaining_bytes)?);
     }
     Ok(Pack::List(xs))
 }
@@ -447,17 +477,17 @@ fn dec_map(
     buf: &mut &[u8],
     n: usize,
     depth: usize,
-    remaining_values: &mut usize,
+    remaining_bytes: &mut usize,
 ) -> Result<Pack, DecodeError> {
     let next_depth = child_depth(depth)?;
     if n > buf.len() / 2 {
         return Err("short packstream map".into());
     }
-    check_values(n, 2, remaining_values)?;
+    check_slots(n, 2, remaining_bytes)?;
     let mut m = Vec::new();
     for _ in 0..n {
-        let k = dec(buf, next_depth, remaining_values)?;
-        let v = dec(buf, next_depth, remaining_values)?;
+        let k = dec(buf, next_depth, remaining_bytes)?;
+        let v = dec(buf, next_depth, remaining_bytes)?;
         m.push((k, v));
     }
     Ok(Pack::Map(m))

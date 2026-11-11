@@ -25,16 +25,20 @@ pub(crate) const REQUEST_INVALID_CODE: &str = "Neo.ClientError.Request.Invalid";
 /// per connection per second. A successful HELLO is answered immediately.
 pub(crate) const FAILED_HELLO_DELAY_MS: u64 = 1000;
 
-/// The FAILURE text for a message over the decoded-value budget: what was
-/// measured, the limit, how values are counted, and what to do. `at_least`
-/// is a lower bound — the decoder stops at the limit — so the text says so.
-pub(crate) fn value_limit_message(at_least: usize, bytes: usize) -> String {
-    let limit = crate::packstream::MAX_DECODE_VALUES;
+/// The FAILURE text for a message over the decode budget: what was
+/// measured, the limit, how the cost is counted, and what to do.
+/// `at_least_bytes` is a lower bound — the decoder stops at the limit — so
+/// the text says so.
+pub(crate) fn decode_budget_message(at_least_bytes: usize, wire_bytes: usize) -> String {
+    const MIB: usize = 1024 * 1024;
+    let limit_mib = crate::packstream::DecodeError::BUDGET_BYTES / MIB;
+    let at_least_mib = at_least_bytes.div_ceil(MIB);
     format!(
-        "Bolt message of {bytes} bytes holds at least {at_least} decoded values, over the \
-         per-message limit of {limit} (every list element, map key and map value counts one: a \
-         map row with k fields counts 2k+1). Send fewer rows per request: split the batch into \
-         smaller UNWIND chunks, for example 20000 rows of 3 fields is about 140000 values."
+        "Bolt message of {wire_bytes} bytes decodes to at least {at_least_mib} MiB of values, \
+         over the per-message limit of {limit_mib} MiB (every value costs a fixed node plus its \
+         string bytes: a row of 3 integer fields is about 230 bytes). Send fewer rows per \
+         request: split the batch into smaller UNWIND chunks, for example 100000 rows of 3 \
+         fields is about 22 MiB."
     )
 }
 

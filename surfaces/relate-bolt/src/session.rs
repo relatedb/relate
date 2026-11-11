@@ -172,12 +172,14 @@ impl Session {
             let queued_ahead_of_reset = last_reset.is_some_and(|reset| index < reset);
             let decoded = match decode_message(payload) {
                 Ok(pack) => request(pack, self.dialect.version).map_err(Refused::Undecodable),
-                Err(DecodeError::ValueLimit { at_least }) => Err(Refused::OverBudget(OverBudget {
-                    at_least,
-                    bytes: payload.len(),
-                    message: struct_tag(payload)
-                        .and_then(|tag| Message::from_signature(tag, self.dialect.version)),
-                })),
+                Err(DecodeError::BudgetExceeded { at_least_bytes }) => {
+                    Err(Refused::OverBudget(OverBudget {
+                        at_least_bytes,
+                        bytes: payload.len(),
+                        message: struct_tag(payload)
+                            .and_then(|tag| Message::from_signature(tag, self.dialect.version)),
+                    }))
+                }
                 Err(fatal) => return Err(fatal.into()),
             };
             if let Flow::Close = self.dispatch(stream, decoded, queued_ahead_of_reset, config)? {
