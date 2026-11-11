@@ -144,9 +144,10 @@ artifact landed on that first release:
   canary (ADR-0465); without the secret that job logs a skip and the
   release stays green.
 
-  If a publish job dies mid-loop, re-running it hits E403 on the
-  already-published tarballs — publish the remaining tarballs manually
-  instead.
+  If a publish job dies mid-loop, re-dispatch with that registry
+  enabled: the npm-publish action skips tarballs whose versions are
+  already on the registry (the same arm the crates.io loop carries), so
+  the re-run finishes the remainder.
 
 The release payload is the CLI binaries and their checksums, the Python wheels,
 the FFI archives, the npm tarballs, and the Swift XCFramework zip. The

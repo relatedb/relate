@@ -95,5 +95,21 @@ runs:
           # shorthand and tries git ls-remote on it; ./ pins the spec to
           # a local file. The release's npm smoke gate never hit this
           # because its dir makes every glob already start with ./.
-          npm publish "./$tgz" "${args[@]}"
+          #
+          # A re-dispatch after an interrupted run must be able to finish
+          # the loop: a tarball whose version already landed in an
+          # earlier attempt is done, not a failure — skip it on the
+          # registry's own republish rejection instead of failing the
+          # job (the same arm the crates.io loop carries). The pattern
+          # must stay narrow: an auth 403 shares the error code but not
+          # the message, and it must still fail closed.
+          if out="$(npm publish "./$tgz" "${args[@]}" 2>&1)"; then
+            printf '%s\n' "$out"
+          elif printf '%s\n' "$out" | grep -qiE 'cannot publish over|EPUBLISHCONFLICT'; then
+            echo "$(basename "$tgz"): version already on the registry — skipping"
+          else
+            printf '%s\n' "$out" >&2
+            echo "npm publish $(basename "$tgz") failed" >&2
+            exit 1
+          fi
         done
