@@ -211,6 +211,10 @@ pub(super) struct Route<'a> {
     /// sink's cap-full cell: raised once it needs no more rows, read only
     /// through [`Self::halted`]. Every sink has one, so it is not optional.
     halt: &'a Cell<bool>,
+    /// Stop each fan search after the first layer that yields a row: the
+    /// expression form keeps only the global shortest, and an origin's
+    /// deeper layers are longer than its own shortest, so they cannot win.
+    first_layer_only: bool,
 }
 
 impl<'a> Route<'a> {
@@ -242,6 +246,7 @@ impl<'a> Route<'a> {
             halt,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
+            first_layer_only: false,
         }
     }
 
@@ -255,6 +260,13 @@ impl<'a> Route<'a> {
         *self
             .unbounded_cap
             .get_or_init(|| unbounded_dfs_cap(self.ctx.graph, MatchMode::DifferentRelationships))
+    }
+
+    /// This route stopping each fan after its first productive layer (see
+    /// the field).
+    pub(super) fn first_layer_only(mut self) -> Self {
+        self.first_layer_only = true;
+        self
     }
 
     /// Push every selected row into `out` as it is bound: the row's
@@ -636,10 +648,20 @@ impl<'a> Route<'a> {
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<bool> {
         // The layer rides the route's one per-candidate loop.
+        let before = out.folded();
         self.each_of(layer.nodes(), |far| {
             self.fan_partition(layer, origin, far, way, origin_row, out)
         })?;
-        Ok(self.halted())
+        // The origin's own layer (depth 0) carries its closed trails or
+        // zero-length path, which a shorter open trail still beats: it
+        // never ends the fan.
+        // A filtered partition answers the shortest *satisfying* trail,
+        // which can be longer than its layer's depth, so a deeper layer may
+        // still hold a shorter answer: the stop applies to unfiltered
+        // routes only.
+        let productive =
+            self.filter.is_none() && layer.nodes() != [origin] && out.folded() > before;
+        Ok(self.halted() || (self.first_layer_only && productive))
     }
 
     /// The partition of `far`, a node a fan search reached from `origin`:

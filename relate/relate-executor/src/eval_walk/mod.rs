@@ -2,8 +2,8 @@
 //! comprehensions (`[p = (a)-[r]->(b) | …]`), pattern predicates
 //! (`WHERE (a)-[r]->(b)`, the anchored probe and the limit-1 walk), and
 //! the expression-form `shortestPath`/`allShortestPaths`: pattern.rs is
-//! the walk itself, shortest.rs the shortest-path arm over the shared
-//! searches (`crate::shortest`). The anchored existence probe
+//! the walk itself, shortest.rs the shortest-path arm: the shortest route's
+//! rows folded to one value, with this walker as its enumeration fallback. The anchored existence probe
 //! (LABS-193/LABS-249) is not this engine's — it is cross-engine code
 //! answering for this engine's `pattern_exists` and the exec exists
 //! probe alike, so it sits at the shared tier with the rest of the

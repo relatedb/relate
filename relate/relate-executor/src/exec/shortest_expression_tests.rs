@@ -1,7 +1,7 @@
 //! The expression form on the shared searches (ADR-0189): closed trails,
 //! `min_hops` > 1 on enumeration, the unbound-end stop and its merge with
 //! closed trails, a bound end that fails its pattern, and how start
-//! candidates combine.
+//! candidates combine (the global shortest, ADR-0568).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -126,10 +126,13 @@ fn unbound_end_stops_after_the_first_matching_layer() {
 }
 
 #[test]
-fn start_candidates_combine_in_candidate_order() {
+fn start_candidates_take_the_global_shortest() {
     // Starts s1, s2, s3 in creation (candidate) order: s1 reaches t and t1
     // in 3 hops; s2 reaches t and t2 in 1 hop and again in 3, and t3 in 3;
-    // s3 reaches t in 3.
+    // s3 reaches t in 3. The expression takes the shortest over every
+    // start candidate, as the clause's selector does (ADR-0568), so the
+    // first candidate's longer trail never wins and no length cap carries
+    // from one candidate to the next.
     let b = Builder::new();
     let starts = ["s1", "s2", "s3"].map(|id| b.node(id, &["S"]));
     let t = b.node("t", &["N"]);
@@ -149,22 +152,14 @@ fn start_candidates_combine_in_candidate_order() {
         (
             "MATCH (t:N {id: 't'}) ",
             "(:S)-[*]->(t)",
-            names(&[&["s1", "x", "y", "t"], &["s3", "u", "v", "t"]]),
+            names(&[&["s2", "t"]]),
         ),
-        (
-            "",
-            "(:S)-[*]->(:T)",
-            names(&[&["s1", "a", "b", "t1"], &["s2", "c", "d", "t3"]]),
-        ),
+        ("", "(:S)-[*]->(:T)", names(&[&["s2", "t2"]])),
     ] {
-        // shortestPath: the first start with any trail, not the shortest
-        // over all starts (s2's 1 hop).
+        // shortestPath: the shortest over all starts (s2's 1 hop).
         let (hops, _) = value(&g, &format!("{bind}RETURN length(shortestPath({pattern}))"));
-        assert_eq!(hops, Value::Int(3), "{pattern}");
-        // allShortestPaths: s1 sets the length, 3. Later starts add their
-        // shortest trails of exactly that length. s2's 1-hop trails are
-        // dropped, and so are its 3-hop trails to the same ends, which are
-        // not shortest (s2→e→f→t, s2→g→h→t2; ADR-0189 Consequences).
+        assert_eq!(hops, Value::Int(1), "{pattern}");
+        // allShortestPaths: every trail of the global minimum length.
         let q = format!("{bind}RETURN {}", ids.replace("{pattern}", pattern));
         assert_eq!(value(&g, &q).0, all, "{q}");
     }

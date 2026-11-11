@@ -1,6 +1,6 @@
-//! Shortest-path graph search shared by the expression form
-//! (`eval_walk/shortest.rs`) and the `MATCH`-clause route (ADR-0186,
-//! ADR-0189).
+//! Shortest-path graph search behind the one shortest route (ADR-0186,
+//! ADR-0189), which serves the `MATCH` clause and, lowered to the same
+//! selector form, the expression form (ADR-0568).
 //!
 //! - [`pair`]: one shortest trail between two distinct nodes, by the
 //!   ADR-0037 shallow intersection or the ADR-0034 bidirectional BFS.

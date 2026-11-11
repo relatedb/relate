@@ -177,6 +177,23 @@ pub(super) fn lower_path_count(count: &cl::PathCount) -> mdb::PathCount {
     }
 }
 
+/// The expression form `shortestPath(...)` / `allShortestPaths(...)` as the
+/// pattern plus selector the `MATCH` clause lowers to (ADR-0568): the
+/// expression's pattern carries the `ANY SHORTEST` / `ALL SHORTEST` selector,
+/// so the evaluator hands it to the one shortest route instead of a private
+/// search. The relationship bounds stay as written — the expression's
+/// unbounded default hop ceiling is the evaluator's, and the
+/// unbounded-pattern notification reads the written bounds.
+pub(super) fn lower_shortest_expr_path(s: &cl::ShortestPathExpr) -> Result<mdb::PathPattern> {
+    let mut path = lower_path(&s.pattern)?;
+    path.selector = Some(if s.all {
+        mdb::PathSelector::AllShortest
+    } else {
+        mdb::PathSelector::AnyShortest
+    });
+    Ok(path)
+}
+
 pub(super) fn lower_path_selector(selector: &cl::PathSelector) -> mdb::PathSelector {
     match selector {
         cl::PathSelector::All => mdb::PathSelector::All,

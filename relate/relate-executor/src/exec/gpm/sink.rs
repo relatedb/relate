@@ -28,6 +28,8 @@ use crate::UsedSet;
 pub(crate) struct MatchedSink<'r, 'a> {
     residual: &'r Residual<'r>,
     kind: SinkKind<'r, 'a>,
+    /// Rows a fold sink has accepted (the fold ran to completion on them).
+    folded: usize,
 }
 
 enum SinkKind<'r, 'a> {
@@ -51,6 +53,14 @@ enum SinkKind<'r, 'a> {
         /// stops exactly as a probe's accept stops it. The cell lives
         /// outside the sink because the search holds a reference to it
         /// while the sink is borrowed mutably.
+        halt: &'r Cell<bool>,
+    },
+    /// An expression consumer's fold (the expression-form shortest path):
+    /// each bound row goes straight into the caller's reducer, so memory
+    /// follows what the reducer keeps, never the row count. No tail, no
+    /// cap: the fold sees every bound row.
+    Fold {
+        fold: &'r mut dyn FnMut(Row) -> Result<()>,
         halt: &'r Cell<bool>,
     },
 }
@@ -83,7 +93,25 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
                 halt: collect_halt,
             },
         };
-        Self { residual, kind }
+        Self {
+            residual,
+            kind,
+            folded: 0,
+        }
+    }
+
+    /// A sink that folds each row into `fold` as the search binds it. The
+    /// halt cell is never raised by the sink: the fold consumes every row.
+    pub(crate) fn fold(
+        residual: &'r Residual<'r>,
+        halt: &'r Cell<bool>,
+        fold: &'r mut dyn FnMut(Row) -> Result<()>,
+    ) -> Self {
+        Self {
+            residual,
+            kind: SinkKind::Fold { fold, halt },
+            folded: 0,
+        }
     }
 
     /// The MATCH-level residual the sink was built with.
@@ -98,8 +126,14 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
     pub(super) fn halt_cell(&self) -> &'r Cell<bool> {
         match &self.kind {
             SinkKind::Probe(probe) => probe.halt,
-            SinkKind::Collect { halt, .. } => halt,
+            SinkKind::Collect { halt, .. } | SinkKind::Fold { halt, .. } => halt,
         }
+    }
+
+    /// Rows the fold has accepted so far (always 0 for a non-fold sink): a
+    /// caller comparing two reads learns whether a step produced any.
+    pub(super) fn folded(&self) -> usize {
+        self.folded
     }
 
     /// Whether the consumer is answered — the one halt query, over both
@@ -144,6 +178,11 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
                 if cap.as_ref().is_some_and(|cap| cap.full()) {
                     halt.set(true);
                 }
+            }
+            SinkKind::Fold { fold, .. } => {
+                ctx.graph.cancel_tick()?;
+                fold(row)?;
+                self.folded += 1;
             }
         }
         Ok(())

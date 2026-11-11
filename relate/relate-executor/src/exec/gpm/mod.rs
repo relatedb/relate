@@ -33,6 +33,7 @@ use early::{early_predicates, EarlyPredicates};
 use emit::GpmEmit;
 use qpp::gpm_expand_quantified;
 pub(crate) use selector::apply_gpm_selector;
+pub(crate) use shortest_route::fold_shortest_route;
 use shortest_route::match_shortest_route;
 use sink::MatchedSink;
 use walk::gpm_walk_elements;

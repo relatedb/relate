@@ -329,7 +329,7 @@ pub fn lower_expr(e: &cl::Expr) -> Result<mdb::Expr> {
         },
         cl::Expr::ShortestPath(s) => mdb::Expr::ShortestPath {
             all: s.all,
-            path: lower_path(&s.pattern)?,
+            path: lower_shortest_expr_path(s)?,
         },
         cl::Expr::Subscript(s) => {
             if s.slice {

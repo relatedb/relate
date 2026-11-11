@@ -10,6 +10,7 @@
 //! walker binds them; `MATCH ... WHERE` still filters them afterwards.
 
 use crate::UsedSet;
+use std::cell::Cell;
 use std::collections::HashSet;
 
 use relate_core::Result;
@@ -71,6 +72,8 @@ fn path_filter<'p>(path: &'p PathPattern, residual: &'p Residual<'_>) -> Option<
 mod anchor_tests;
 #[cfg(test)]
 mod bounded_tests;
+#[cfg(test)]
+mod expr_parity_tests;
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]
@@ -151,6 +154,54 @@ pub(super) fn match_shortest_route(
     let residual = sink.residual();
     let halt = sink.halt_cell();
     if !Route::new(ctx, path, row, shape, path_filter(path, residual), halt).run(&mut sink)? {
+        return Ok(false);
+    }
+    note_route_run();
+    Ok(true)
+}
+
+/// The expression form's entry (ADR-0568): run `path` (named, carrying the
+/// `ANY SHORTEST` / `ALL SHORTEST` selector the front end lowered) on the
+/// route for one input row, folding each bound row into `fold` as the
+/// search finds it (ADR-0555) — the caller keeps what it needs, never the
+/// rows. Returns whether the route took the pattern (`false`: it declined
+/// before any row was folded, and the caller falls back to enumeration).
+///
+/// The route answers per (start, end) partition, exactly as the `MATCH`
+/// clause does; collapsing the partitions to the expression's one value is
+/// the fold's job. An unbounded relationship takes the expression form's
+/// [`DEFAULT_MAX_HOPS`](crate::pattern_walk::DEFAULT_MAX_HOPS) ceiling.
+pub(crate) fn fold_shortest_route(
+    ctx: ExecCtx<'_>,
+    path: &PathPattern,
+    row: &Row,
+    fold: &mut dyn FnMut(Row) -> Result<()>,
+) -> Result<bool> {
+    #[cfg(test)]
+    if FORCE_GPM.with(|c| c.get()) {
+        return Ok(false);
+    }
+    let filters = GpmFilters::resolve(ctx.graph, path);
+    let used = UsedSet::default();
+    let Some(mut shape) = route_shape(
+        path,
+        &filters,
+        MatchMode::DifferentRelationships,
+        &used,
+        row,
+        ctx.params,
+    ) else {
+        return Ok(false);
+    };
+    shape.max = shape.max.or(Some(crate::pattern_walk::DEFAULT_MAX_HOPS));
+    let residual = Residual::empty();
+    let halt = Cell::new(false);
+    let mut sink = MatchedSink::fold(&residual, &halt, fold);
+    let filter = path_filter(path, &residual);
+    if !Route::new(ctx, path, row, shape, filter, &halt)
+        .first_layer_only()
+        .run(&mut sink)?
+    {
         return Ok(false);
     }
     note_route_run();
