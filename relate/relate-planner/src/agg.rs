@@ -778,7 +778,55 @@ pub(crate) fn reject_order_by_agg(
         if !is_agg_expr(&o.expr) {
             continue;
         }
+        reject_shadowed_aggregate_argument(items, &o.expr)?;
         check_subclause_agg_leaves(items, group_by, imports, &o.expr, "ORDER BY aggregation")?;
+    }
+    Ok(())
+}
+
+/// An ORDER BY aggregation whose argument names another item's *aggregate*
+/// output (`RETURN sum(a) AS a … ORDER BY sum(a) + 1`) reads a projected
+/// aggregate as its own input — Neo4j rejects the same-clause shadowing with
+/// 42001 SyntaxError. Only variables inside the aggregate calls are tested:
+/// a projected aggregate referenced elsewhere in the key (`ORDER BY a + 1`)
+/// is an ordinary read of that column.
+fn reject_shadowed_aggregate_argument(items: &[Projection], expr: &Expr) -> Result<()> {
+    // A subclause expression that *is* a projection item is that item, not a
+    // same-clause reference (`RETURN sum(a) AS a ORDER BY sum(a)` is legal;
+    // live 2026.10 rejects only an aggregate embedded in a larger key).
+    if is_projected_item(items, expr) {
+        return Ok(());
+    }
+    let aggregate_aliases: Vec<String> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| is_agg_expr(&item.expr))
+        .map(|(index, item)| item.output_name(index))
+        .collect();
+    if aggregate_aliases.is_empty() {
+        return Ok(());
+    }
+    let mut calls = Vec::new();
+    expr.visit(&mut |e| {
+        if matches!(e, Expr::CountStar)
+            || matches!(e, Expr::Function { name, .. } if name.with_str(is_agg_fn))
+        {
+            calls.push(e.clone());
+        }
+    });
+    for call in calls {
+        let mut shadowed = false;
+        call.visit(&mut |e| {
+            if let Expr::Variable(v) = e {
+                shadowed |= v.with_str(|t| aggregate_aliases.iter().any(|a| a == t));
+            }
+        });
+        if shadowed {
+            return Err(Error::syntax(
+                "InvalidAggregation: ORDER BY aggregation references an aggregate \
+                 projected in the same clause",
+            ));
+        }
     }
     Ok(())
 }

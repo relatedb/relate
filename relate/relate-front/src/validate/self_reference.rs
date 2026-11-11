@@ -74,7 +74,7 @@ pub(crate) fn validate_create_self_reference(
     enclosing: &IdentHashSet<SmallName>,
     cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
-    validate_create_self_reference_with(clauses, enclosing, |_| true, cypher_version)
+    validate_create_self_reference_with(clauses, enclosing, |_| true, true, cypher_version)
 }
 
 /// The scope-free battery's tier: the caller cannot see a nested body's
@@ -85,10 +85,15 @@ pub(crate) fn validate_create_self_reference_conservative(
     clauses: &[Clause],
     cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
+    // MERGE is excluded: in a body whose correlated outer bindings this
+    // tier cannot see, a merged element with a label/property map may be a
+    // reference to an imported entity rather than a declaration, so only the
+    // exact tier can decide it.
     validate_create_self_reference_with(
         clauses,
         &IdentHashSet::default(),
         declares_shape,
+        false,
         cypher_version,
     )
 }
@@ -104,6 +109,7 @@ fn validate_create_self_reference_with(
     clauses: &[Clause],
     enclosing: &IdentHashSet<SmallName>,
     declares_node: fn(&NodePattern) -> bool,
+    include_merge: bool,
     cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     // Cypher 5 only warns (01N00) and binds the earlier pattern element; the
@@ -113,18 +119,27 @@ fn validate_create_self_reference_with(
     }
     let mut introduced: IdentHashSet<SmallName> = IdentHashSet::default();
     for clause in clauses {
-        // Names bound before each CREATE: a CREATE pattern variable that is
+        // Names bound before each CREATE/MERGE: a pattern variable that is
         // already bound is a *reference* to the existing entity, not a new
         // one (`MATCH (a) … CREATE (a)-[:R]->(b)`), and reading it in a
         // property value is legal.
-        let Clause::Create(create) = clause else {
-            introduced.extend(clause_introduced_names(clause));
-            continue;
+        let patterns: Vec<&relate_parser::PatternPath> = match clause {
+            Clause::Create(create) => create.pattern.iter().collect(),
+            // MERGE's pattern property maps are the same-clause reads the
+            // rule rejects when the merged entity is a fresh declaration
+            // (`MATCH (a) WITH a AS b MERGE (a {prop: a.prop})`, live
+            // 2026.10 42I58). Its ON CREATE/ON MATCH SET values read the
+            // merged entity after the merge, which live allows.
+            Clause::Merge(merge) if include_merge => vec![&merge.pattern],
+            _ => {
+                introduced.extend(clause_introduced_names(clause));
+                continue;
+            }
         };
         let mut created: IdentHashSet<SmallName> = IdentHashSet::default();
         let mut collector = ReadCollector::default();
-        for path in &create.pattern {
-            // A CREATE path name is always a fresh binding.
+        for path in patterns {
+            // A CREATE/MERGE path name is always a fresh binding.
             created.extend(path.path_names().cloned());
             for element in &path.elements {
                 collect_new_element_vars(
@@ -510,6 +525,26 @@ mod tests {
         ] {
             assert_no_self_reference(query);
         }
+    }
+
+    /// A MERGE's `ON CREATE`/`ON MATCH SET` values read the merged entity
+    /// after the merge, the canonical idiom live 2026.10 accepts -- unlike
+    /// the MERGE pattern's own property map, which is the 42I58
+    /// same-clause reference.
+    #[test]
+    fn merge_on_create_and_on_match_may_reference_the_merged_entity() {
+        for query in [
+            "MERGE (person:Person {email: 'x'}) \
+             ON CREATE SET person.identifier = 1",
+            "MERGE (person:Person {email: 'x'}) \
+             ON MATCH SET person.roles = [r IN person.roles WHERE r <> 'gone']",
+        ] {
+            assert_no_self_reference(query);
+        }
+        assert!(
+            self_reference("MERGE (person:Person {email: person.email})")
+                .contains("cannot be created and referenced")
+        );
     }
 
     /// A plain property read of an entity the clause itself creates is the

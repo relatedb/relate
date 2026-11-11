@@ -687,8 +687,10 @@ fn transaction_ddl_schema_names_survive_checkpoint_reopen() {
 #[test]
 fn merge_self_reference_is_a_deprecation_notification() {
     let mut conn = connection();
+    // The rule is an error under Cypher 25; the Cypher 5 preamble keeps
+    // the deprecated shape and raises this warning.
     let explained = conn
-        .query("EXPLAIN MERGE (a {prop: a.prop}) RETURN a")
+        .query("CYPHER 5 EXPLAIN MERGE (a {prop: a.prop}) RETURN a")
         .unwrap();
     assert_eq!(kinds(&explained), [NotificationKind::MergeSelfReference]);
     let notification = &explained.notifications()[0];

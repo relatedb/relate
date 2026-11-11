@@ -16,10 +16,11 @@ use super::writes::{walk_write_elements, WriteClause};
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{
     bind_node_name_refs, check_expr_vars_defined, check_name_defined, check_pattern_vars_allowed,
-    clause_introduced_names, collect_pattern_element_vars, has_relationship, interp_embeds,
-    projected_names, projected_node_scope, search_score_var,
+    clause_introduced_names, collect_expr_variables, collect_pattern_element_vars,
+    has_relationship, interp_embeds, projected_names, projected_node_scope, search_score_var,
+    union_chain, walk_expr_scoped, ScopedExprVisitor,
 };
-use crate::ast::tree::{is_boolean_operator, walk_expr, walk_expr_with};
+use crate::ast::tree::{is_boolean_operator, walk_clause_expr_roots, walk_expr, walk_expr_with};
 
 /// Validate expression-position constraints:
 /// - Pattern predicates in WHERE must not introduce new (unbound) variables for relationships
@@ -43,41 +44,73 @@ pub fn validate_expression_constraints(stmt: &Statement) -> Result<(), EngineErr
     // projection) — the set the `type()`-on-node rule reads, checked in
     // this same walk so the WITH projection actually scopes it.
     let mut node_vars: IdentHashSet<SmallName> = IdentHashSet::default();
+    validate_expression_constraints_in_clauses(
+        &stmt.clauses,
+        &mut scope,
+        &mut path_vars,
+        &mut node_vars,
+        None,
+    )
+}
 
-    for clause in &stmt.clauses {
+/// The clause-list walk behind [`validate_expression_constraints`], factored
+/// out so a CALL-subquery body and an expression subquery (`COUNT`/`EXISTS`/
+/// `COLLECT`) are checked against their own enclosing scope with the same
+/// rules — a reference to an outer variable the body does not import is the
+/// front end's `UndefinedVariable`, not a silently bound null.
+fn validate_expression_constraints_in_clauses(
+    clauses: &[Clause],
+    scope: &mut IdentHashSet<SmallName>,
+    path_vars: &mut IdentHashSet<SmallName>,
+    node_vars: &mut IdentHashSet<SmallName>,
+    outer_visibility: Option<&IdentHashSet<SmallName>>,
+) -> Result<(), EngineError> {
+    for clause in clauses {
+        // Expression subqueries and expression-form `shortestPath()` read the
+        // clause's *input* scope (a WITH/RETURN projects after its items are
+        // evaluated); a MATCH's own pattern names are visible to its WHERE,
+        // so they join the snapshot for that clause.
+        let mut expr_scope = scope.clone();
+        if matches!(clause, Clause::Match(_)) {
+            expr_scope.extend(clause_introduced_names(clause));
+        }
+        validate_subquery_expressions(clause, &expr_scope)?;
         match clause {
             Clause::Match(mc) => {
                 // This clause's own pattern nodes are in the set for its
                 // WHERE check, which runs inside the arm below.
-                bind_node_name_refs(clause, &mut node_vars);
-                validate_match_clause(mc, &mut scope, &mut path_vars, &node_vars)?;
+                bind_node_name_refs(clause, node_vars);
+                validate_match_clause(mc, scope, path_vars, node_vars)?;
             }
             Clause::With(wc) => {
-                validate_with_clause(wc, &mut scope, &mut path_vars, &mut node_vars)?;
+                validate_with_clause(wc, scope, path_vars, node_vars, outer_visibility)?;
             }
             Clause::Return(rc) => {
-                validate_return_clause(rc, &mut scope, &mut path_vars, &node_vars)?;
+                validate_return_clause(rc, scope, path_vars, node_vars, outer_visibility)?;
             }
             Clause::Unwind(uw) => {
-                validate_unwind_clause(uw, &mut scope)?;
+                validate_unwind_clause(uw, scope)?;
             }
             Clause::LoadCSV(lc) => {
-                validate_loadcsv_clause(lc, &mut scope)?;
+                validate_loadcsv_clause(lc, scope)?;
             }
             Clause::Create(cc) => {
-                validate_create_clause(cc, &mut scope)?;
+                validate_create_clause(cc, scope)?;
                 // The created node variables are nodes for every later
                 // clause's `type()` check.
-                bind_node_name_refs(clause, &mut node_vars);
+                bind_node_name_refs(clause, node_vars);
             }
             Clause::Set(sc) => {
-                validate_set_clause(sc, &mut scope)?;
+                validate_set_clause(sc, scope)?;
+            }
+            Clause::Remove(rc) => {
+                validate_remove_clause(rc, scope)?;
             }
             Clause::Delete(dc) => {
-                validate_delete_clause(dc, &mut scope)?;
+                validate_delete_clause(dc, scope)?;
             }
             Clause::CallProcedure(cp) => {
-                validate_callprocedure_clause(cp, &mut scope)?;
+                validate_callprocedure_clause(cp, scope)?;
             }
             // The row-producing catalog commands, through the one catalog
             // classification (the same guard the scope walkers use): each
@@ -86,15 +119,132 @@ pub fn validate_expression_constraints(stmt: &Statement) -> Result<(), EngineErr
                 scope.extend(clause_introduced_names(c));
             }
             Clause::CallSubquery(csq) => {
-                validate_callsubquery_clause(csq, &mut scope)?;
+                // The body is checked against the scope *before* the CALL's
+                // own exports join it.
+                validate_call_body(csq, scope)?;
+                validate_callsubquery_clause(csq, scope)?;
             }
             Clause::Merge(mc) => {
-                validate_merge_clause(mc, &mut scope)?;
+                validate_merge_clause(mc, scope)?;
                 // The merged node variables are nodes for every later
                 // clause's `type()` check.
-                bind_node_name_refs(clause, &mut node_vars);
+                bind_node_name_refs(clause, node_vars);
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The scope-aware expression visitor behind [`validate_subquery_expressions`]:
+/// it collects the subquery bodies to recurse into. The binder events carry
+/// no rule here, so they are no-ops.
+struct SubqueryExprVisitor {
+    bodies: Vec<Statement>,
+}
+
+impl ScopedExprVisitor for SubqueryExprVisitor {
+    fn enter_expr(&mut self, _expr: &Expr) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn read_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn bind_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn unbind_name(&mut self) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn subquery_body(&mut self, statement: &Statement) -> Result<(), EngineError> {
+        self.bodies.push(statement.clone());
+        Ok(())
+    }
+}
+
+/// Walk one clause's expression roots with the scope-aware visitor: every
+/// subquery body recursed into with the scope at that clause.
+fn validate_subquery_expressions(
+    clause: &Clause,
+    scope: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    let mut visitor = SubqueryExprVisitor { bodies: Vec::new() };
+    let mut roots =
+        |expr: &Expr| -> Result<(), EngineError> { walk_expr_scoped(expr, &mut visitor) };
+    walk_clause_expr_roots(clause, &mut roots)?;
+    for body in visitor.bodies {
+        let mut inner_scope = scope.clone();
+        let mut path_vars = IdentHashSet::default();
+        let mut node_vars = IdentHashSet::default();
+        validate_expression_constraints_in_clauses(
+            &body.clauses,
+            &mut inner_scope,
+            &mut path_vars,
+            &mut node_vars,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+/// The CALL-subquery body's expression rules under live 2026.10's import
+/// semantics: a scope-clause body sees exactly its imported names; a naked
+/// `CALL { … }` body sees only what each UNION arm's leading importing
+/// `WITH` names (nothing at all when the arm has none). Without this, an
+/// outer name the body never imported resolved to the outer row and a query
+/// live Neo4j rejects (`Variable `x` not defined`) ran silently.
+fn validate_call_body(
+    csq: &relate_parser::CallSubqueryClause,
+    outer_scope: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    use relate_parser::CallScope;
+    for arm in union_chain(&csq.statement) {
+        let (mut scope, leak_scope): (IdentHashSet<SmallName>, Option<&IdentHashSet<SmallName>>) =
+            match &csq.scope {
+                // A scope clause's imports stay visible for the whole body
+                // (CIP-141 Rule 7), so a later WITH dropping one is not a
+                // leak; the planner's binder owns unimported names there.
+                CallScope::Vars(vars) => (vars.iter().cloned().collect(), None),
+                CallScope::Wildcard => (outer_scope.clone(), None),
+                // The importing WITH is evaluated against the outer row and
+                // then replaces the scope; an arm without one imports
+                // nothing, and an outer name read past either boundary is
+                // the leak this pass must reject.
+                CallScope::None => {
+                    // A leading run of `USE` clauses routes the body; the
+                    // importing WITH after it is the one that names the
+                    // imports.
+                    let imports = arm
+                        .clauses
+                        .iter()
+                        .find(|clause| !matches!(clause, Clause::Use(_)));
+                    let seed = if matches!(imports, Some(Clause::With(_))) {
+                        outer_scope.clone()
+                    } else {
+                        IdentHashSet::default()
+                    };
+                    (seed, Some(outer_scope))
+                }
+            };
+        let mut stage = arm;
+        loop {
+            let mut path_vars = IdentHashSet::default();
+            let mut node_vars = IdentHashSet::default();
+            validate_expression_constraints_in_clauses(
+                &stage.clauses,
+                &mut scope,
+                &mut path_vars,
+                &mut node_vars,
+                leak_scope,
+            )?;
+            match &stage.next {
+                Some(next) => stage = next,
+                None => break,
+            }
         }
     }
     Ok(())
@@ -195,11 +345,15 @@ fn validate_with_clause(
     scope: &mut IdentHashSet<SmallName>,
     path_vars: &mut IdentHashSet<SmallName>,
     node_vars: &mut IdentHashSet<SmallName>,
+    outer_visibility: Option<&IdentHashSet<SmallName>>,
 ) -> Result<(), EngineError> {
     // Check for patterns in WITH projection items
     for item in &wc.items {
         if !item.all {
             check_no_pattern_in_projection(&item.expr, "WITH")?;
+            // Inside a CALL-subquery body, an outer name the body never
+            // imported must not fall through to the enclosing row.
+            reject_unimported_outer_refs(&item.expr, scope, outer_visibility)?;
             // labels() on a named-path variable (Graph3 [8]).
             check_labels_on_paths(&item.expr, path_vars)?;
             // `type()` on a statically-known node variable — the node set
@@ -229,11 +383,15 @@ fn validate_return_clause(
     scope: &mut IdentHashSet<SmallName>,
     path_vars: &mut IdentHashSet<SmallName>,
     node_vars: &IdentHashSet<SmallName>,
+    outer_visibility: Option<&IdentHashSet<SmallName>>,
 ) -> Result<(), EngineError> {
     // Check for patterns in RETURN projection items
     for item in &rc.items {
         if !item.all {
             check_no_pattern_in_projection(&item.expr, "RETURN")?;
+            // Inside a CALL-subquery body, an outer name the body never
+            // imported must not fall through to the enclosing row.
+            reject_unimported_outer_refs(&item.expr, scope, outer_visibility)?;
             // Check for size() on paths/patterns in RETURN
             check_size_constraints(&item.expr, scope)?;
             // labels() on a named-path variable (Graph3 [8]).
@@ -376,6 +534,7 @@ fn validate_merge_clause(
     mc: &relate_parser::MergeClause,
     scope: &mut IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
+    reject_merge_subquery_expressions(mc)?;
     // Add MERGE pattern variables to scope
     if let Some(pv) = &mc.pattern.variable {
         scope.insert(pv.clone());
@@ -385,6 +544,53 @@ fn validate_merge_clause(
     // over two item lists (the clause's own two fields).
     check_set_items(&mc.on_create, scope)?;
     check_set_items(&mc.on_match, scope)?;
+    Ok(())
+}
+
+/// 42001: a MERGE clause admits no subquery expression — neither in a
+/// pattern element's property map nor in an `ON CREATE`/`ON MATCH SET` value
+/// (live 2026.10: "Subquery expressions are not allowed in a MERGE clause.").
+/// One walk over both value positions, so the rule cannot drift between them.
+fn reject_merge_subquery_expressions(mc: &relate_parser::MergeClause) -> Result<(), EngineError> {
+    // A pattern comprehension is a legal property value inside a MERGE
+    // pattern (live 2026.10 evaluates it before the merge), but not inside
+    // an ON CREATE/ON MATCH SET value; an EXISTS/COUNT/COLLECT subquery is
+    // rejected in both positions.
+    let check = |expr: &Expr, set_value: bool| -> Result<(), EngineError> {
+        let mut found = false;
+        walk_expr(expr, &mut |node| {
+            found |= matches!(
+                node,
+                Expr::ExistsSubquery(_) | Expr::CountSubquery(_) | Expr::CollectSubquery(_)
+            ) || (set_value && matches!(node, Expr::PatternComprehension(_)));
+            Ok(())
+        })?;
+        if found {
+            return Err(EngineError::semantic(
+                ErrorKind::UnexpectedSyntax,
+                "Subquery expressions are not allowed in a MERGE clause.".to_string(),
+            ));
+        }
+        Ok(())
+    };
+    for elem in &mc.pattern.elements {
+        let (properties, properties_param) = match elem {
+            PatternElement::Node(np) => (&np.properties, np.properties_param.as_ref()),
+            PatternElement::Relationship(rp) => (&rp.properties, rp.properties_param.as_ref()),
+            PatternElement::Quantified(_) => continue,
+        };
+        for (_, value) in properties {
+            check(value, false)?;
+        }
+        if let Some(param) = properties_param {
+            check(param, false)?;
+        }
+    }
+    for item in mc.on_create.iter().chain(&mc.on_match) {
+        if let Some(value) = &item.value {
+            check(value, true)?;
+        }
+    }
     Ok(())
 }
 
@@ -401,12 +607,73 @@ fn check_set_items(
             check_no_pattern_in_set_value(val)?;
             check_expr_vars_defined(val, scope)?;
         }
+        check_dynamic_label_expressions(&item.labels, scope)?;
         if let Some(prop) = &item.property {
             if let Expr::Variable(var_name) = &prop.expr {
                 check_name_defined(var_name, scope)?;
             }
         } else if let Some(var_name) = &item.variable {
             check_name_defined(var_name, scope)?;
+        }
+    }
+    Ok(())
+}
+
+/// The CALL-subquery import boundary: a name the enclosing statement bound
+/// but the body never imported is `UndefinedVariable`, not a silent read of
+/// the enclosing row (live 2026.10: a naked `CALL { … }` body sees only what
+/// its leading importing `WITH` names). A name bound *nowhere* is left to
+/// the planner's binder, which owns its own diagnostic.
+fn reject_unimported_outer_refs(
+    expr: &Expr,
+    scope: &IdentHashSet<SmallName>,
+    outer_visibility: Option<&IdentHashSet<SmallName>>,
+) -> Result<(), EngineError> {
+    let Some(outer) = outer_visibility else {
+        return Ok(());
+    };
+    let mut vars = IdentHashSet::default();
+    collect_expr_variables(expr, &mut vars);
+    let mut leaked: Vec<&SmallName> = vars
+        .iter()
+        .filter(|name| !scope.contains(*name) && outer.contains(*name))
+        .collect();
+    leaked.sort();
+    match leaked.first() {
+        Some(name) => Err(name.with_str(EngineError::undefined_variable)),
+        None => Ok(()),
+    }
+}
+
+/// A REMOVE item's own rules: its dynamic label/type expressions and its
+/// property root must be bound (the SET policy's mirror for `REMOVE n:$(x)`).
+fn validate_remove_clause(
+    rc: &relate_parser::RemoveClause,
+    scope: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    for item in &rc.items {
+        check_dynamic_label_expressions(&item.labels, scope)?;
+        if let Some(prop) = &item.property {
+            if let Expr::Variable(var_name) = &prop.expr {
+                check_name_defined(var_name, scope)?;
+            }
+        } else if let Some(var_name) = &item.variable {
+            check_name_defined(var_name, scope)?;
+        }
+    }
+    Ok(())
+}
+
+/// The CIP-162 dynamic label/type atom (`SET n:$(expr)`) resolves its
+/// expression against the clause's scope: an unbound name is the front
+/// end's `UndefinedVariable` (live 2026.10: "Variable `expr` not defined").
+fn check_dynamic_label_expressions(
+    labels: &[relate_parser::LabelExpr],
+    scope: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    for label in labels {
+        if let relate_parser::LabelExpr::Dynamic(dynamic) = label {
+            check_expr_vars_defined(&dynamic.expr, scope)?;
         }
     }
     Ok(())

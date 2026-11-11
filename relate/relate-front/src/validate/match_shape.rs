@@ -56,6 +56,7 @@ pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
                     reject_own_path_variable_in_group_where(path)?;
                     reject_shortest_path_properties(path)?;
                     reject_shortest_path_function_shape(path)?;
+                    reject_legacy_var_length_type_expression(path)?;
                 }
                 if mc.match_mode == MatchMode::RepeatableElements {
                     reject_repeatable_elements_violations(mc)?;
@@ -199,6 +200,17 @@ fn reject_update_path_shape(clause: &str, patterns: &[PatternPath]) -> Result<()
                 ),
             ));
         }
+        // A path selector is MATCH-only (live 2026.10: `CREATE ANY (a)-[:R]->(b)`
+        // reports 42001 "Path selectors such as `ANY 1 PATHS` cannot be used
+        // in a CREATE clause, but only in a MATCH clause").
+        if path.selector.is_some() {
+            return Err(EngineError::semantic(
+                ErrorKind::InvalidPatternCharacter,
+                format!(
+                    "invalid expression: path selectors such as `ANY 1 PATHS` cannot be used in a {clause} clause, but only in a MATCH clause"
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -212,6 +224,47 @@ fn path_mode_name(mode: &relate_parser::PathMode) -> &'static str {
         PathMode::Acyclic => "ACYCLIC",
         PathMode::Simple => "SIMPLE",
     }
+}
+
+/// A legacy bracket-syntax variable-length relationship (`[r*1..5]`,
+/// `[:!A*]`) admits neither a GPM relationship-type expression nor an
+/// inline `WHERE` — live 2026.10 rejects both with 42001
+/// ("Variable length relationships must not use relationship type
+/// expressions." / "Relationship pattern predicates are not supported for
+/// variable-length relationships."). The GPM postfix form
+/// (`-[r WHERE …]->{1,5}`, `()-[:!A&!B]->*()`) carries `quantified` and is
+/// the legal spelling of the same shape.
+fn reject_legacy_var_length_type_expression(path: &PatternPath) -> Result<(), EngineError> {
+    fn walk(elements: &[PatternElement]) -> Result<(), EngineError> {
+        for element in elements {
+            match element {
+                PatternElement::Relationship(rp) if !rp.quantified && rp.min_hops.is_some() => {
+                    if rp
+                        .type_expr
+                        .as_ref()
+                        .is_some_and(|expr| expr.contains_not_or_wildcard())
+                    {
+                        return Err(EngineError::semantic(
+                            ErrorKind::InvalidPatternCharacter,
+                            "Variable length relationships must not use relationship type expressions."
+                                .to_string(),
+                        ));
+                    }
+                    if rp.where_expr.is_some() {
+                        return Err(EngineError::semantic(
+                            ErrorKind::InvalidPatternCharacter,
+                            "Relationship pattern predicates are not supported for variable-length relationships."
+                                .to_string(),
+                        ));
+                    }
+                }
+                PatternElement::Quantified(quantified) => walk(&quantified.elements)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    walk(&path.elements)
 }
 
 /// 42N56: `shortestPath()`/`allShortestPaths()` patterns support no

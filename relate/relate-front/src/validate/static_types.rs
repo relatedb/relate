@@ -317,6 +317,29 @@ pub(super) fn constant_binary(op: &str, left: Value, right: Value) -> Option<Val
     }
 }
 
+/// `||` admits strings and lists, plus NULL. Its rejection carries the
+/// `TypeError` class Neo4j reports for the concatenation mismatch (CIP-144),
+/// not the `SyntaxError` the other static operand checks use.
+fn require_string_or_list_literal_operand(operand: &Expr) -> Result<(), EngineError> {
+    if let Some(ty) = static_type_outside(
+        operand,
+        &[
+            StaticLitType::String,
+            StaticLitType::List,
+            StaticLitType::Null,
+        ],
+    ) {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidConcatenationOperand,
+            format!(
+                "Type mismatch: expected String or List but was {}",
+                ty.name()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// The types a boolean operand admits: BOOLEAN, plus NULL (three-valued
 /// logic). One list, consulted by the operator gate and
 /// [`is_statically_non_boolean`].
@@ -407,9 +430,32 @@ pub fn validate_static_operator_types(
 fn check_static_operator_types(e: &Expr, cypher_version: Option<u32>) -> Result<(), EngineError> {
     match e {
         Expr::Unary(u) if is_boolean_operator(u.op) => require_boolean_literal_operand(&u.expr)?,
+        // `||` concatenates strings or lists; any other statically-known
+        // literal operand is the compile-time type mismatch live Neo4j
+        // reports (42001 with cause 22NB1: "expected to be STRING or LIST
+        // but was 'INTEGER'").
+        Expr::Binary(b) if b.op == "||" => {
+            require_string_or_list_literal_operand(&b.left)?;
+            require_string_or_list_literal_operand(&b.right)?;
+        }
         Expr::Binary(b) if is_boolean_operator(b.op) => {
             require_boolean_literal_operand(&b.left)?;
             require_boolean_literal_operand(&b.right)?;
+        }
+        // `=~` compares strings; a statically-known non-string operand is
+        // the compile-time 42001 live Neo4j reports
+        // (`WHERE a.age =~ 13`, cause 22NB1).
+        Expr::Comparison(c) if c.op == "=~" => {
+            for operand in [&c.left, &c.right] {
+                if let Some(ty) =
+                    static_type_outside(operand, &[StaticLitType::String, StaticLitType::Null])
+                {
+                    return Err(EngineError::semantic(
+                        ErrorKind::UnexpectedSyntax,
+                        format!("Type mismatch: expected String but was {}", ty.name()),
+                    ));
+                }
+            }
         }
         Expr::In(ie) => {
             require_static_type(

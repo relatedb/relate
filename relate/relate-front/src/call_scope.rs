@@ -605,7 +605,29 @@ pub fn validate_call_scope_clauses(stmt: &Statement) -> Result<(), EngineError> 
 /// and `RETURN 1 + 1` are rejected. The rule is CALL-subquery-only — a
 /// `COUNT { RETURN 5 }` body keeps its unaliased item.
 fn check_call_return_items_aliased(stmt: &Statement) -> Result<(), EngineError> {
-    fn check_return(rc: &ReturnClause) -> Result<(), EngineError> {
+    check_return_items_aliased(
+        stmt,
+        "Expression in CALL { RETURN ... } must be aliased (use AS).",
+    )
+}
+
+/// 42N21 in the CIP-146 brace form: a brace-wrapped statement
+/// (`{ MATCH (n) RETURN n.age }`) projects its columns the same way a CALL
+/// body does, under the brace wording live 2026.10 reports.
+fn check_brace_return_items_aliased(stmt: &Statement) -> Result<(), EngineError> {
+    if !stmt.brace_wrapped {
+        return Ok(());
+    }
+    check_return_items_aliased(
+        stmt,
+        "Expression in { RETURN ... } must be aliased (use AS).",
+    )
+}
+
+/// The one item rule behind both 42N21 wordings: every RETURN item must
+/// carry a name — an alias, a bare variable, or a map projection over one.
+fn check_return_items_aliased(stmt: &Statement, message: &str) -> Result<(), EngineError> {
+    fn check_return(rc: &ReturnClause, message: &str) -> Result<(), EngineError> {
         for item in &rc.items {
             if item.all {
                 continue;
@@ -616,7 +638,7 @@ fn check_call_return_items_aliased(stmt: &Statement) -> Result<(), EngineError> 
             if !named {
                 return Err(EngineError::semantic(
                     ErrorKind::NoExpressionAlias,
-                    "Expression in CALL { RETURN ... } must be aliased (use AS).".to_string(),
+                    message.to_string(),
                 ));
             }
         }
@@ -625,18 +647,60 @@ fn check_call_return_items_aliased(stmt: &Statement) -> Result<(), EngineError> 
     for arm in union_chain(stmt) {
         for clause in &arm.clauses {
             match clause {
-                Clause::Return(rc) => check_return(rc)?,
+                Clause::Return(rc) => check_return(rc, message)?,
                 Clause::Conditional(cc) => {
                     for branch in &cc.branches {
-                        check_call_return_items_aliased(&branch.body)?;
+                        check_return_items_aliased(&branch.body, message)?;
                     }
                     if let Some(else_body) = &cc.else_body {
-                        check_call_return_items_aliased(else_body)?;
+                        check_return_items_aliased(else_body, message)?;
                     }
                 }
                 _ => {}
             }
         }
+    }
+    Ok(())
+}
+
+/// 42N3C: a naked `CALL { … }` (no scope clause) cannot directly enclose a
+/// brace-wrapped SingleQuery or a `WHEN`/`ELSE` conditional query — live
+/// 2026.10 reports "Not possible to enclose { ... } in 'CALL { ... }'. Use
+/// 'CALL () { ... }' instead." for both; the scope-clause form accepts them.
+fn reject_naked_call_shape(csq: &CallSubqueryClause) -> Result<(), EngineError> {
+    if !matches!(csq.scope, CallScope::None) {
+        return Ok(());
+    }
+    let conditional = union_chain(&csq.statement).any(|arm| {
+        arm.clauses
+            .iter()
+            .any(|c| matches!(c, Clause::Conditional(_)))
+    });
+    // A composite brace arm (`CALL { { … UNION … } UNION { … } }`) arrives
+    // through the parser's synthetic arm wrapper
+    // (`CALL (*) { <braced arm> } RETURN *`), which resets the wrapper's own
+    // `brace_wrapped`; the braced statement is the nested CALL's body.
+    let braced = union_chain(&csq.statement).any(|arm| {
+        arm.brace_wrapped
+            || matches!(
+                arm.clauses.as_slice(),
+                [Clause::CallSubquery(inner), Clause::Return(_)]
+                    if matches!(inner.scope, CallScope::Wildcard)
+                        && inner.statement.brace_wrapped
+                        && inner.statement.union.is_some()
+            )
+    });
+    if conditional {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidClauseComposition,
+            "InvalidClauseComposition: 42N3C Not possible to enclose WHEN ... THEN ... in 'CALL { ... }'. Use 'CALL () { ... }' instead.".to_string(),
+        ));
+    }
+    if braced {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidClauseComposition,
+            "InvalidClauseComposition: 42N3C Not possible to enclose { ... } in 'CALL { ... }'. Use 'CALL () { ... }' instead.".to_string(),
+        ));
     }
     Ok(())
 }
@@ -661,10 +725,12 @@ fn walk_top_level(
     base_scope: IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
     let mut scope = base_scope.clone();
+    check_brace_return_items_aliased(stmt)?;
     for clause in &stmt.clauses {
         match clause {
             Clause::CallSubquery(csq) => {
                 check_call_return_items_aliased(&csq.statement)?;
+                reject_naked_call_shape(csq)?;
                 match &csq.scope {
                     CallScope::None => {
                         // Naked call: no new *whole-row visibility* restrictions

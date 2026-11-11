@@ -515,7 +515,10 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
                 stages: &c.stages,
                 prefill: false,
                 validate_columns: true,
-                composable: false,
+                // Live 2026.10 composes it like every other catalog command
+                // (22N94 for `YIELD *` beside MATCH/UNION, 22N92 for two
+                // composed SHOWs without a trailing RETURN).
+                composable: true,
                 graph_schema_catalog: false,
                 defaults: columns,
                 full: columns.iter().map(|s| s.to_string()).collect(),

@@ -312,10 +312,24 @@ pub(crate) fn reject_null_merge_props(
                     "MergeReadOwnWrites: cannot MERGE with null properties",
                 ));
             }
+            // NaN never equals itself, so a MERGE onto it could never match
+            // (live 2026.10: SemanticError "Cannot merge … because of NaN
+            // property value for '<key>'").
+            Value::Map(m) if m.values().any(is_nan_float) => {
+                return Err(Error::execution(
+                    "MergeReadOwnWrites: cannot MERGE with NaN properties",
+                ));
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Whether `value` is the NaN float — the one predicate both MERGE property
+/// prechecks read (a NaN property value can never match itself).
+fn is_nan_float(value: &Value) -> bool {
+    matches!(value, Value::Float(f) if f.is_nan())
 }
 
 pub(crate) fn create_or_bind_node(

@@ -237,16 +237,35 @@ fn show_yield_state(clause: &Clause) -> Option<YieldMode> {
 /// so leaving it unchecked here matches the canonical-standalone case
 /// anyway.
 pub fn validate_show_composability(stmt: &Statement) -> Result<(), EngineError> {
-    validate_show_composability_clauses(&stmt.clauses, stmt.brace_wrapped)?;
+    // A UNION arm — the head included — is never the canonical standalone
+    // shape (live 2026.10: `SHOW CONSTRAINTS YIELD * RETURN name UNION …`
+    // reports 22N94), so the leniency is off for the whole chain.
+    let has_union = stmt.union.is_some();
+    validate_show_composability_clauses(&stmt.clauses, stmt.brace_wrapped || has_union)?;
     let mut current = stmt;
     while let Some(union) = &current.union {
-        validate_show_composability_clauses(
-            &union.statement.clauses,
-            union.statement.brace_wrapped,
-        )?;
+        validate_show_composability_clauses(&union.statement.clauses, true)?;
         current = &union.statement;
     }
     Ok(())
+}
+
+/// The composability rules for a SHOW/TERMINATE clause inside a subquery
+/// body (`CALL { … }`, `COUNT`/`EXISTS`/`COLLECT { … }`, `WHEN` branches):
+/// such a clause is never the canonical standalone shape either, so a body
+/// that is a bare `SHOW SETTINGS` is the 22N93 missing YIELD, a bare
+/// `SHOW SETTINGS YIELD name` is the 42N71 conclusion error and
+/// `YIELD *` is the 22N94 invalid star — live-verified 2026.10. The body's
+/// own UNION arms are checked like top-level arms.
+pub(crate) fn validate_nested_show_composability(stmt: &Statement) -> Result<(), EngineError> {
+    let mut current = stmt;
+    loop {
+        validate_show_composability_clauses(&current.clauses, true)?;
+        match &current.union {
+            Some(union) => current = &union.statement,
+            None => return Ok(()),
+        }
+    }
 }
 
 /// Any `SHOW`/`TERMINATE` clause followed by a `RETURN` must carry an

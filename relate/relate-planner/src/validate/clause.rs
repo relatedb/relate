@@ -431,7 +431,9 @@ pub(super) fn check_return_clause(
     else {
         unreachable!("clause arm");
     };
-    if items.len() == 1 && matches!(items[0].expr, Expr::Star) && env.is_empty() {
+    // 42I37: `RETURN *` expands the incoming scope, so it needs one --
+    // alone (`RETURN *`) or beside other items (`RETURN *, 1 AS x`).
+    if items.iter().any(|item| matches!(item.expr, Expr::Star)) && env.is_empty() {
         return Err(Error::syntax(
             "NoVariablesInScope: RETURN * requires variables in scope",
         ));

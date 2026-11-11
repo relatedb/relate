@@ -123,7 +123,7 @@ fn validate_variable_types_in_clauses(
                 bound_vars.insert(lc.alias.clone());
             }
             Clause::Create(cc) => apply_create(clause, cc, bound_vars, shadowable, cypher_version)?,
-            Clause::Merge(mc) => apply_merge(mc, bound_vars, shadowable)?,
+            Clause::Merge(mc) => apply_merge(clause, mc, bound_vars, shadowable, cypher_version)?,
             Clause::CallProcedure(cp) => apply_call_procedure(cp, clauses, bound_vars)?,
             Clause::CallSubquery(csq) => apply_call_subquery(csq, bound_vars)?,
             // A SHOW/TERMINATE clause's output columns are new bindings,
@@ -285,9 +285,11 @@ fn apply_create(
 /// The MERGE policy: the same binding and dynamic-label gates as CREATE
 /// (see `apply_create`), then the pattern's names become bound.
 fn apply_merge(
+    clause: &Clause,
     mc: &MergeClause,
     bound_vars: &mut IdentHashSet<SmallName>,
     shadowable: &IdentHashSet<SmallName>,
+    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     // Check for VariableAlreadyBound in MERGE: node/rel variables that
     // are already bound should not be redefined
@@ -296,6 +298,10 @@ fn apply_merge(
     let merge_pattern = std::slice::from_ref(&mc.pattern);
     validate_dynamic_label_no_any(merge_pattern)?;
     validate_dynamic_label_scope(merge_pattern, bound_vars)?;
+    // 42I58 (Cypher 25): the same-clause reference rule CREATE applies --
+    // the merged entity's own property map and ON CREATE/ON MATCH SET values
+    // may not read it when the clause declares it.
+    validate_create_self_reference(std::slice::from_ref(clause), bound_vars, cypher_version)?;
     // Track new variables from MERGE
     bind_pattern_vars(merge_pattern, bound_vars);
     Ok(())

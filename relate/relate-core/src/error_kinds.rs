@@ -213,6 +213,12 @@ error_kinds! {
     // --- Type errors ---
     TypeError => TypeError,
     InvalidArgumentType => TypeError,
+    // A `||` operand that is statically known to be neither a string nor a
+    // list (CIP-144). Unlike the other static type checks — which openCypher
+    // surfaces as `SyntaxError: InvalidArgumentType` — Neo4j reports this
+    // one as a `TypeError`, matching its runtime twin, so the class travels
+    // apart from `InvalidArgumentType`.
+    InvalidConcatenationOperand => TypeError,
     ParameterWrongTypeException => TypeError,
     InvalidPropertyType => TypeError,
     InvalidPropertyValueType => TypeError,

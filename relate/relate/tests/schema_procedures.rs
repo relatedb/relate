@@ -213,18 +213,18 @@ fn schema_visualization_accepts_an_options_map() {
     assert_eq!(result.rows.len(), 1);
 }
 
-/// LABS-389 (the paren-less follow-up): a procedure whose parameters all
-/// carry defaults is callable paren-less in-query -- the implicit-pass
-/// guard keys on required args, not declared ones.
+/// A paren-less procedure call is legal only as the standalone single-clause
+/// query; inside a query it is the missing-parentheses syntax error (live
+/// 2026.10), even for a procedure whose parameters all carry defaults.
 #[test]
 fn schema_visualization_is_callable_parenless_in_query() {
     let mut c = connection();
     c.execute("CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})")
         .unwrap();
-    let result = c
+    let error = c
         .query("CALL db.schema.visualization YIELD nodes RETURN count(nodes) AS n")
-        .unwrap();
-    assert_eq!(result.rows, vec![vec![Value::Int(1)]]);
+        .unwrap_err();
+    assert!(error.to_string().contains("missing parentheses"), "{error}");
 }
 
 /// Multi-label, multi-rel-type fixture for `db.schema.visualization`:

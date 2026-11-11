@@ -50,7 +50,58 @@ pub(crate) fn validate_calls(
             result = validate_call_clause(graph, clause, params);
         }
     });
+    if result.is_ok() {
+        validate_call_positions(graph, logical, &mut result);
+    }
     result
+}
+
+/// 42N25: a *non-void* procedure called from inside a query (a UNION arm
+/// with more than one clause, so the call cannot be the standalone
+/// `CALL proc()` form) must name its columns with `YIELD`. A void procedure
+/// (`db.awaitIndexes()`) is callable either way, which is why the process
+/// registry decides — never the call shape alone. Part-granular so the
+/// clause list's position is visible; nested `CALL { … }` bodies are not
+/// covered by the plan walk's part view.
+fn validate_call_positions(graph: &Graph, logical: &LogicalPlan, result: &mut Result<()>) {
+    relate_planner::walk_plan_parts(logical, &mut |part| {
+        // A leading `USE` is routing, not a query clause: `USE system CALL
+        // db.info()` is still the standalone-call form.
+        let query_clauses = part
+            .iter()
+            .filter(|clause| !matches!(clause, Clause::Use { .. }))
+            .count();
+        if result.is_err() || query_clauses < 2 {
+            return;
+        }
+        for clause in part {
+            let Clause::Call {
+                name,
+                explicit: true,
+                yield_items,
+                ..
+            } = clause
+            else {
+                continue;
+            };
+            if !yield_items.has_yield() && !is_void_procedure(graph, name) {
+                *result = Err(Error::syntax(
+                    "MissingYield: 42N25 a procedure call inside a query must name its results with YIELD",
+                ));
+                return;
+            }
+        }
+    });
+}
+
+/// Whether the procedure behind `name` declares no return columns — the
+/// registry's own answer, from the same table the CALL contract reads.
+fn is_void_procedure(graph: &Graph, name: &relate_names::SmallName) -> bool {
+    if let Some(proc) = name.with_str(|text| graph.procedure(text)) {
+        return proc.yield_names.is_empty();
+    }
+    name.with_str(relate_executor::builtin_procedure_signature)
+        .is_some_and(|signature| signature.return_columns().next().is_none())
 }
 
 /// The per-clause validation body of [`validate_calls`]: a no-op for

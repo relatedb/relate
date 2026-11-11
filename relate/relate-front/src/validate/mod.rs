@@ -548,6 +548,10 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
     policy: StatementPolicy,
 ) -> Result<(), EngineError> {
     validate_nesting_depth(stmt)?;
+    // The CALL composition rules apply to a statement body and to every
+    // CALL-subquery body (below), never to an expression subquery: a
+    // `CALL … YIELD` may legitimately conclude an `EXISTS`/`COUNT` body.
+    validate_call_composition(&stmt.clauses)?;
     // LABS-709: constant dynamic property-key/label operands are rejected
     // here, before execution, so a bad constant cannot hide behind a
     // zero-row MATCH. The walk owns the operand positions and fires the
@@ -567,7 +571,23 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
         // only inside those bodies (CIP-40 path-selector-mixing [11]/[13]/
         // [18] keep separate top-level MATCH clauses legal).
         &mut |clause| match clause {
-            Clause::CallSubquery(csq) => validate_subquery_body(&csq.statement, false),
+            Clause::CallSubquery(csq) => {
+                validate_subquery_body(&csq.statement, false)?;
+                validate_call_composition(&csq.statement.clauses)?;
+                // A scoped `CALL (…) { … }` body is never a canonical
+                // standalone SHOW/TERMINATE statement, so the composability
+                // rules apply (live 2026.10: `CALL () { SHOW SETTINGS }` is
+                // the 22N93 missing YIELD). A naked `CALL { … }` body keeps
+                // the legacy leniency (`CALL { SHOW CONSTRAINTS }` runs).
+                if matches!(
+                    csq.scope,
+                    relate_parser::CallScope::Vars(_) | relate_parser::CallScope::Wildcard
+                ) {
+                    show::validate_nested_show_composability(&csq.statement)
+                } else {
+                    Ok(())
+                }
+            }
             _ => Ok(()),
         },
         &mut |expr| {
@@ -661,6 +681,51 @@ fn validate_statement_node(
     // clause-list body); a RETURN anywhere else is a projection.
     if let StmtRef::Body(foreach_clauses) = stmt {
         validate_foreach_body(foreach_clauses)?;
+    }
+    Ok(())
+}
+
+/// The `CALL` composition rules the parser and the per-clause validators
+/// cannot decide alone (live 2026.10):
+///
+/// - parentheses are mandatory in a `CALL` that is not the standalone
+///   single-clause query (`MATCH (n) CALL db.labels` /
+///   `CALL db.labels YIELD … RETURN …` are 42001);
+/// - a standalone call cannot carry its `YIELD … WHERE` filter;
+/// - a query cannot conclude with `CALL … YIELD` unless the call is the
+///   whole query (42N71) — the missing-RETURN half of the procedure rules.
+///
+/// The separate 42N25 rule (a non-void in-query call must name its columns)
+/// needs the procedure registry and lives in the facade's `validate_calls`.
+fn validate_call_composition(clauses: &[Clause]) -> Result<(), EngineError> {
+    for clause in clauses {
+        let Clause::CallProcedure(cp) = clause else {
+            continue;
+        };
+        if !cp.explicit_args && (clauses.len() > 1 || cp.where_expr.is_some()) {
+            return Err(EngineError::semantic(
+                ErrorKind::UnexpectedSyntax,
+                "InvalidArgumentPassingMode: a procedure call is missing parentheses".to_string(),
+            ));
+        }
+        if clauses.len() == 1 && cp.where_expr.is_some() {
+            return Err(EngineError::semantic(
+                ErrorKind::InvalidClauseComposition,
+                "InvalidClauseComposition: a standalone call cannot carry a WHERE clause"
+                    .to_string(),
+            ));
+        }
+    }
+    if clauses.len() > 1 {
+        if let Some(Clause::CallProcedure(cp)) = clauses.last() {
+            if cp.yields.present() {
+                return Err(EngineError::semantic(
+                    ErrorKind::IncompleteQuery,
+                    "incomplete query: a query cannot conclude with CALL together with YIELD"
+                        .to_string(),
+                ));
+            }
+        }
     }
     Ok(())
 }

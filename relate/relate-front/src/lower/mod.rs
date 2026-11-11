@@ -57,6 +57,23 @@ pub(crate) fn lower_statement_with_options_and_policy(
     lower_statement_impl(stmt)
 }
 
+/// One front-validation rejection as the engine's typed [`Error`]: the
+/// class the validator's [`ErrorKind`](relate_error::ErrorKind) carries is
+/// preserved for the type/argument classes (so a statically-known type
+/// mismatch surfaces as `TypeError`, matching its runtime twin), while every
+/// other kind keeps the historical `Syntax` rendering.
+fn front_validation_error(error: relate_error::EngineError) -> Error {
+    let text = error.to_string();
+    // The concatenation operand mismatch is the one front check whose class
+    // differs from the historical `SyntaxError` flattening (CIP-144 expects
+    // `TypeError`); every other kind keeps its rendered syntax error.
+    if error.kind() == relate_error::ErrorKind::InvalidConcatenationOperand {
+        Error::ty(text)
+    } else {
+        Error::syntax(text)
+    }
+}
+
 /// The validation sequence the boundary runs before lowering.
 fn validate_statement(
     stmt: &cl::Statement,
@@ -79,7 +96,7 @@ fn validate_statement(
     //    admission limit (LABS-610) and the safe-mode shape rules (LABS-680)
     //    ride the same battery.
     crate::validate::validate_statement_tree_with_options_and_policy(stmt, options, policy)
-        .map_err(|error| Error::syntax(error.to_string()))?;
+        .map_err(front_validation_error)?;
     // 2. The scope-sensitive validators -- they track bindings across the
     //    clauses of one linear statement body, which a nested body cannot do
     //    soundly without its enclosing (correlated) scope -- and the
@@ -87,8 +104,7 @@ fn validate_statement(
     //    admission gate run on the top-level statement; each covers nested
     //    bodies in its own way (FOREACH bodies share the enclosing scope and
     //    are reached by `validate_variable_types`'s own recursion).
-    crate::validate::validate_show_column_names(stmt)
-        .map_err(|error| Error::syntax(error.to_string()))?;
+    crate::validate::validate_show_column_names(stmt).map_err(front_validation_error)?;
     for validation in [
         crate::call_scope::validate_call_scope_clauses(stmt),
         crate::validate::validate_show_composability(stmt),
@@ -108,7 +124,7 @@ fn validate_statement(
         crate::validate::validate_scoped_dynamic_operands(stmt, params),
     ] {
         if let Err(error) = validation {
-            return Err(Error::syntax(error.to_string()));
+            return Err(front_validation_error(error));
         }
     }
     Ok(())
