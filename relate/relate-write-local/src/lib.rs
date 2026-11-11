@@ -20,28 +20,33 @@ pub struct AssignedRecord {
     pub encoded: EncodedOps,
 }
 
-/// What one durable append wrote, in group order.
+/// What one durable append wrote, in group order. It names the record by
+/// the timestamp it was assigned, so a caller reads each record's outcome
+/// off the record itself rather than pairing positions.
 pub struct AppendedRecord {
     pub lsn: u64,
+    pub commit_ts: u64,
     pub encode_write_ns: u64,
 }
 
 /// Preflight and append records the caller already timestamped. Does not
 /// `sync`. The caller holds the log lock and decides the durability barrier.
 pub fn append_assigned(wal: &mut Wal, records: Vec<AssignedRecord>) -> Result<Vec<AppendedRecord>> {
-    let base = wal.lsn;
-    let mut proofs = Vec::with_capacity(records.len());
-    for (index, record) in records.into_iter().enumerate() {
-        let lsn = base
-            .checked_add(index as u64 + 1)
-            .ok_or_else(|| Error::storage("WAL LSN overflow"))?;
-        proofs.push(wal.preflight_encoded(lsn, record.commit_ts, record.encoded)?);
-    }
+    // One group preflight: each record is checked against its predecessor in
+    // the group, so a batch whose timestamps do not advance is refused
+    // before the first frame is written.
+    let proofs = wal.preflight_group(
+        records
+            .into_iter()
+            .map(|record| (record.commit_ts, record.encoded)),
+    )?;
     let mut appended = Vec::with_capacity(proofs.len());
     for proof in proofs {
+        let commit_ts = proof.commit_ts();
         let written = wal.append_preflighted(proof)?;
         appended.push(AppendedRecord {
             lsn: written.lsn,
+            commit_ts,
             encode_write_ns: written.encode_write_ns,
         });
     }
@@ -100,10 +105,9 @@ impl WriteEngine for LocalWriteEngine {
         drop(charge);
         Ok(appended
             .into_iter()
-            .zip(groups)
-            .map(|(written, group)| CommittedSlot {
+            .map(|written| CommittedSlot {
                 lsn: written.lsn,
-                commit_ts: group.commit_ts,
+                commit_ts: written.commit_ts,
             })
             .collect())
     }

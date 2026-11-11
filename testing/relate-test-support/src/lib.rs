@@ -20,6 +20,7 @@ pub mod graph;
 pub mod loopback;
 #[cfg(feature = "nested_eval")]
 pub mod nested_eval;
+pub mod peak_pool;
 pub mod plan_rung;
 #[cfg(feature = "pokec")]
 pub mod pokec;

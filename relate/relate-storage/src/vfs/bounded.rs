@@ -24,14 +24,42 @@ struct BoundCore {
     /// the destination accepted them.
     bytes: u64,
     limit: u64,
+    /// Why the sink refused, the one refusal slot every path records into
+    /// and every consumer reads — `None` while the bound held, never
+    /// re-derived at the refusal's consumer.
+    refused: Option<Refused>,
+    refusal: Refusal,
+}
+
+/// The one recorded refusal of a bounded serializer.
+enum Refused {
     /// The counted byte total at the moment the bound was crossed: the
     /// crossing write's running total when the byte bound refused it, the
     /// saturating maximum when the counter itself overflowed, or the
-    /// bytes counted so far when the capped allocation refused. The sole
-    /// crossing fact — `None` while the bound held, set by every refusal
-    /// path, never re-derived at the refusal's consumer.
-    crossed_at: Option<u64>,
-    refusal: Refusal,
+    /// bytes counted so far when the capped allocation refused.
+    Crossed(u64),
+    /// A charged capture could not grow its buffer.
+    Growth(GrowthFailure),
+}
+
+/// Why a charged capture could not grow: the charge was refused (the
+/// ledger's own typed error, carried verbatim) or the allocator declined
+/// the granted bytes. Neutral facts — the caller renders its own text.
+enum GrowthFailure {
+    Charge(Error),
+    Allocation { bytes: usize },
+}
+
+impl GrowthFailure {
+    /// The rendering the in-flight serializer is aborted with.
+    fn abort(&self) -> io::Error {
+        match self {
+            GrowthFailure::Charge(error) => io::Error::other(error.to_string()),
+            GrowthFailure::Allocation { bytes } => {
+                io::Error::other(format!("buffer allocation of {bytes} bytes failed"))
+            }
+        }
+    }
 }
 
 impl BoundCore {
@@ -39,7 +67,7 @@ impl BoundCore {
         Self {
             bytes: 0,
             limit,
-            crossed_at: None,
+            refused: None,
             refusal,
         }
     }
@@ -65,8 +93,15 @@ impl BoundCore {
     /// it, so the crossing fact and the abort's rendering can never
     /// drift apart.
     fn refuse_at(&mut self, crossed_at: u64) -> io::Error {
-        self.crossed_at = Some(crossed_at);
+        self.refused = Some(Refused::Crossed(crossed_at));
         bound_refusal(&self.refusal.error(crossed_at, self.limit))
+    }
+
+    /// Record a growth failure in the same slot and render its abort.
+    fn refuse_growth(&mut self, failure: GrowthFailure) -> io::Error {
+        let abort = failure.abort();
+        self.refused = Some(Refused::Growth(failure));
+        abort
     }
 
     /// Advance the counter to an admitted total — after the destination
@@ -79,7 +114,10 @@ impl BoundCore {
     /// surfaces as; `None` while the bound held, so the serializer's io
     /// abort never re-stringifies into it.
     fn crossed_refusal(&self) -> Option<Error> {
-        Some(self.refusal.error(self.crossed_at?, self.limit))
+        match self.refused {
+            Some(Refused::Crossed(crossed_at)) => Some(self.refusal.error(crossed_at, self.limit)),
+            _ => None,
+        }
     }
 }
 
@@ -161,39 +199,47 @@ const CHARGED_FIRST_STEP_BYTES: usize = 1024;
 /// transient (the old and the new buffer coexist) is charged in full for
 /// the duration of the reallocation and then settled at the new capacity.
 struct ChargedGrowth<'a> {
-    charge: &'a mut WorkspaceCharge,
+    /// The charge the steps are accounted to; `None` is the same growth
+    /// policy with nothing accounted (a throwaway capture).
+    charge: Option<&'a mut WorkspaceCharge>,
     /// Bytes the charge held before the capture: the buffer's own share is
-    /// charged on top of it.
+    /// charged on top of it. Supplied once by the caller, who also settles
+    /// the charge against it.
     base: u64,
-    /// The typed refusal of a failed charge or allocation, surfaced by
-    /// [`BoundedSink::finish`] — the io abort that stopped the serializer
-    /// carries only its rendering.
-    refusal: Option<Error>,
+    /// The sink's bound in allocation space, narrowed once at construction.
+    limit: usize,
 }
 
 impl ChargedGrowth<'_> {
     /// Make `output` able to hold `needed` bytes, charging first.
-    fn ensure(&mut self, output: &mut Vec<u8>, needed: usize, limit: u64) -> Result<()> {
+    fn ensure(
+        &mut self,
+        output: &mut Vec<u8>,
+        needed: usize,
+    ) -> std::result::Result<(), GrowthFailure> {
         if needed <= output.capacity() {
             return Ok(());
         }
         let old = output.capacity();
-        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let target = old
             .saturating_mul(2)
             .max(CHARGED_FIRST_STEP_BYTES)
             .max(needed.checked_next_power_of_two().unwrap_or(needed))
-            .min(limit);
-        let held = |bytes: usize| self.base.saturating_add(bytes as u64);
+            .min(self.limit);
+        let base = self.base;
+        let mut settle = |bytes: usize| match self.charge.as_deref_mut() {
+            Some(charge) => charge
+                .resize(base.saturating_add(bytes as u64))
+                .map_err(GrowthFailure::Charge),
+            None => Ok(()),
+        };
         // Old and new buffers are both resident during the copy.
-        self.charge.resize(held(old.saturating_add(target)))?;
+        settle(old.saturating_add(target))?;
         if output.try_reserve_exact(target - output.len()).is_err() {
-            self.charge.resize(held(old))?;
-            return Err(Error::storage(format!(
-                "WAL encode buffer allocation of {target} bytes failed"
-            )));
+            settle(old)?;
+            return Err(GrowthFailure::Allocation { bytes: target });
         }
-        self.charge.resize(held(output.capacity()))
+        settle(output.capacity())
     }
 }
 
@@ -254,38 +300,57 @@ impl<'a> BoundedSink<'a> {
     /// charge aborts the serialization at once with its typed error
     /// ([`Self::finish`]). The byte bound is admitted first, so the bound's
     /// refusal and its figures fire at the same write as without a charge.
+    /// `base` is what `charge` held before the capture; the buffer's share
+    /// is charged on top of it. With no `charge` the buffer grows by the
+    /// same steps and nothing is accounted. A `limit` beyond allocation space is a
+    /// typed error: it could bound no buffer.
     pub(crate) fn capture_charged(
         output: &'a mut Vec<u8>,
         limit: u64,
         refusal: Refusal,
-        charge: &'a mut WorkspaceCharge,
-    ) -> Self {
+        charge: Option<&'a mut WorkspaceCharge>,
+        base: u64,
+    ) -> Result<Self> {
+        let limit_bytes = usize::try_from(limit).map_err(|_| {
+            Error::storage(format!(
+                "a charged capture bound of {limit} bytes exceeds the allocation space"
+            ))
+        })?;
         let mut sink = Self::capture(output, limit, refusal);
-        let base = charge.bytes();
         sink.growth = Some(ChargedGrowth {
             charge,
             base,
-            refusal: None,
+            limit: limit_bytes,
         });
-        sink
+        Ok(sink)
     }
 
     /// Complete one bounded serialization — the one refusal channel: the
-    /// counted bytes when the bound held; the typed `refusal` when it was
-    /// crossed (the serializer's abort is discarded, the refusal is the
-    /// truth); or the serializer's own failure mapped by `serde_error`.
+    /// counted bytes when nothing refused; the typed refusal when the bound
+    /// was crossed (the serializer's abort is discarded, the refusal is the
+    /// truth), the ledger's own error when a charge was refused, or
+    /// `allocation_error(bytes)` when the allocator declined granted bytes;
+    /// otherwise the serializer's own failure mapped by `serde_error`. The
+    /// sink mints no subsystem-named error: the caller words what it owns.
     pub(crate) fn finish<E>(
         self,
         result: std::result::Result<(), E>,
         serde_error: impl FnOnce(E) -> Error,
+        allocation_error: impl FnOnce(usize) -> Error,
     ) -> Result<u64> {
         if let Some(error) = self.core.crossed_refusal() {
             return Err(error);
         }
-        if let Some(error) = self.growth.and_then(|growth| growth.refusal) {
-            return Err(error);
+        match self.core.refused {
+            // Handled above; kept so the match stays exhaustive.
+            Some(Refused::Crossed(_)) | None => {
+                result.map_err(serde_error).map(|()| self.core.bytes)
+            }
+            Some(Refused::Growth(GrowthFailure::Charge(error))) => Err(error),
+            Some(Refused::Growth(GrowthFailure::Allocation { bytes })) => {
+                Err(allocation_error(bytes))
+            }
         }
-        result.map_err(serde_error).map(|()| self.core.bytes)
     }
 }
 
@@ -368,13 +433,12 @@ impl Write for BoundedSink<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let total = self.core.admit(buf.len())?;
         if let Some(growth) = self.growth.as_mut() {
-            // `total` is bounded by `limit`, which a caller measures in
-            // usize space; a figure past it could not be allocated anyway.
-            let needed = usize::try_from(total).unwrap_or(usize::MAX);
-            if let Err(error) = growth.ensure(self.output, needed, self.core.limit) {
-                let abort = bound_refusal(&error);
-                growth.refusal = Some(error);
-                return Err(abort);
+            // `total` is admitted, so at most the bound, which
+            // `capture_charged` checked fits allocation space.
+            let needed = usize::try_from(total)
+                .expect("an admitted total is within the bound, which fits usize");
+            if let Err(failure) = growth.ensure(self.output, needed) {
+                return Err(self.core.refuse_growth(failure));
             }
         }
         self.output.extend_from_slice(buf);

@@ -18,9 +18,9 @@ struct WalRecordRef<'a> {
     ops: &'a [RedoOp],
 }
 
-/// Encode with no workspace ledger installed: the charge is a no-op.
+/// Encode with no workspace charge.
 fn encode(ops: &[RedoOp]) -> Result<EncodedOps> {
-    EncodedOps::encode(ops, &mut WorkspaceCharge::empty())
+    EncodedOps::encode_unmetered(ops)
 }
 
 fn reference_payload(lsn: u64, commit_ts: u64, ops: &[RedoOp]) -> Vec<u8> {
@@ -289,45 +289,11 @@ fn encoding_carries_validation_and_the_ontology_fact() {
     assert_eq!(wal.active_magic, *ONTOLOGY_MAGIC);
 }
 
-/// A pool of `capacity` workspace bytes for the charge tests below.
-struct FixedPool {
-    capacity: u64,
-    reserved: std::sync::atomic::AtomicU64,
-}
-
-impl FixedPool {
-    fn new(capacity: u64) -> Arc<Self> {
-        Arc::new(Self {
-            capacity,
-            reserved: std::sync::atomic::AtomicU64::new(0),
-        })
-    }
-
-    fn reserved(&self) -> u64 {
-        self.reserved.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-impl relate_core::tokens::PeakPool for FixedPool {
-    fn try_grow(&self, extra: u64) -> bool {
-        use std::sync::atomic::Ordering::SeqCst;
-        self.reserved
-            .fetch_update(SeqCst, SeqCst, |held| {
-                held.checked_add(extra)
-                    .filter(|next| *next <= self.capacity)
-            })
-            .is_ok()
-    }
-
-    fn release(&self, amount: u64) {
-        self.reserved
-            .fetch_sub(amount, std::sync::atomic::Ordering::SeqCst);
-    }
-}
+use relate_test_support::peak_pool::FixedPool;
 
 #[test]
 fn the_charge_follows_the_buffer_and_is_released_with_it() {
-    let pool = FixedPool::new(64 * 1024 * 1024);
+    let pool = Arc::new(FixedPool::new(64 * 1024 * 1024));
     let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
     let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
     let ops = [big_string_op(300_000)];
@@ -343,7 +309,7 @@ fn the_charge_follows_the_buffer_and_is_released_with_it() {
 
 #[test]
 fn a_refused_charge_aborts_the_encoding_and_releases_what_it_held() {
-    let pool = FixedPool::new(256 * 1024);
+    let pool = Arc::new(FixedPool::new(256 * 1024));
     let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
     let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
     let mut charge = WorkspaceCharge::empty();
@@ -366,7 +332,7 @@ fn the_payload_cap_refuses_before_any_charge_for_the_crossing_growth() {
     // A budget that admits the whole cap still yields the cap's own
     // refusal and figures, not a workspace refusal.
     let cap = Error::WAL_PAYLOAD_CAP_BYTES;
-    let pool = FixedPool::new(4 * cap);
+    let pool = Arc::new(FixedPool::new(4 * cap));
     let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
     let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
     let base = reference_count(u64::MAX, u64::MAX, &[big_string_op(0)], u64::MAX).unwrap();
@@ -384,4 +350,26 @@ fn the_payload_cap_refuses_before_any_charge_for_the_crossing_growth() {
     );
     drop(charge);
     assert_eq!(pool.reserved(), 0);
+}
+
+#[test]
+fn a_group_preflight_checks_each_record_against_its_predecessor() {
+    let wal = Wal::memory();
+    let group = |stamps: &[u64]| {
+        stamps
+            .iter()
+            .map(|ts| (*ts, encode(&[]).unwrap()))
+            .collect::<Vec<_>>()
+    };
+    // Each timestamp advances only past the log's tip, but the group's own
+    // second record does not advance past its first.
+    let err = wal.preflight_group(group(&[5, 5])).err().unwrap();
+    assert!(
+        err.to_string().contains("must advance past 5"),
+        "the group's second record is checked against the first: {err}"
+    );
+    assert_eq!(wal.lsn, 0);
+    let proofs = wal.preflight_group(group(&[5, 6, 9])).unwrap();
+    assert_eq!(proofs.len(), 3);
+    assert_eq!(proofs[2].commit_ts(), 9);
 }

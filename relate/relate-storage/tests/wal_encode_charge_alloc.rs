@@ -6,13 +6,14 @@
 //! the process's allocator counters.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
-use relate_core::tokens::{LedgerGuard, PeakPool, TokenLedger, WorkspaceCharge};
+use relate_core::tokens::{LedgerGuard, TokenLedger, WorkspaceCharge};
 use relate_core::{Error, Value};
 use relate_executor::RedoOp;
 use relate_storage::EncodedOps;
+use relate_test_support::peak_pool::FixedPool;
 
 struct CountingAllocator;
 
@@ -65,27 +66,6 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 }
 
-/// A fixed-size pool of workspace bytes shared by every thread's ledger.
-struct Pool {
-    capacity: u64,
-    reserved: AtomicU64,
-}
-
-impl PeakPool for Pool {
-    fn try_grow(&self, extra: u64) -> bool {
-        self.reserved
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
-                held.checked_add(extra)
-                    .filter(|next| *next <= self.capacity)
-            })
-            .is_ok()
-    }
-
-    fn release(&self, amount: u64) {
-        self.reserved.fetch_sub(amount, Ordering::SeqCst);
-    }
-}
-
 const MIB: usize = 1024 * 1024;
 const WRITERS: usize = 8;
 /// Each commit's body: its buffer grows through the doubling steps to 4 MiB.
@@ -106,10 +86,7 @@ fn big_op() -> RedoOp {
 
 #[test]
 fn concurrent_oversized_commits_peak_within_the_limit_plus_one_step() {
-    let pool = Arc::new(Pool {
-        capacity: LIMIT,
-        reserved: AtomicU64::new(0),
-    });
+    let pool = Arc::new(FixedPool::new(LIMIT));
     // Every commit's ops exist before the measurement: the figure is the
     // encoders' own allocation.
     let commits: Vec<Vec<RedoOp>> = (0..WRITERS).map(|_| vec![big_op()]).collect();
@@ -168,5 +145,5 @@ fn concurrent_oversized_commits_peak_within_the_limit_plus_one_step() {
         "encoders peaked at {measured} bytes, past the limit {LIMIT} plus one step {STEP}"
     );
     // Completion and failure both released: the pool is whole again.
-    assert_eq!(pool.reserved.load(Ordering::SeqCst), 0);
+    assert_eq!(pool.reserved(), 0);
 }

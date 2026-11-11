@@ -10,27 +10,22 @@ use std::io::{self, Write};
 
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::{CapacityKind, Error, Result};
-use relate_engine_api::RedoOp;
+use relate_engine_api::{CommitRecord, RedoOp};
 use web_time::Instant;
 
 use crate::vfs::{BoundedSink, Refusal};
-use crate::Wal;
 
-/// Decimal digits of `u64::MAX`.
-const U64_DECIMAL_MAX: usize = 20;
-const LSN_KEY: &str = "{\"lsn\":";
-const COMMIT_TS_KEY: &str = ",\"commit_ts\":";
-const OPS_KEY: &str = ",\"ops\":";
+use super::validate_redo_ids;
 
 /// Records whose buffer is no larger than this are trimmed to their
 /// length after encoding (see [`EncodedOps::encode`]).
 const SMALL_RECORD_BYTES: usize = 64 * 1024;
 
-/// Largest header the record can carry: the three fixed key spellings and
-/// two maximum-width unsigned decimals. It is the slack in front of the
-/// ops body, so every real header fits and the admission figure (slack +
-/// body + closing brace) is a safe upper bound of the final payload.
-const HEADER_MAX: usize = LSN_KEY.len() + COMMIT_TS_KEY.len() + OPS_KEY.len() + 2 * U64_DECIMAL_MAX;
+/// Largest header the record can carry — the slack in front of the ops
+/// body, so every real header fits and the admission figure (slack + body +
+/// closing brace) is a safe upper bound of the final payload. The spellings
+/// and width belong to the record type, [`CommitRecord`].
+const HEADER_MAX: usize = CommitRecord::HEADER_MAX;
 
 /// A commit's redo ops, encoded once, with room for the record header in
 /// front. Owned by the commit slot from admission to append, then by the
@@ -68,36 +63,57 @@ impl EncodedOps {
     /// as the encoding lives. A commit whose buffer stayed within 64 KiB
     /// is trimmed to its length and charged for that.
     pub fn encode(ops: &[RedoOp], charge: &mut WorkspaceCharge) -> Result<Self> {
+        Self::encode_with(ops, Some(charge))
+    }
+
+    /// [`Self::encode`] with no workspace charge at all, for a throwaway
+    /// encoding no admission holds a budget for (a direct append, a test):
+    /// nothing is charged, so no charge can be released while the buffer
+    /// it covered is still alive. The payload, the cap and its refusal are
+    /// exactly those of [`Self::encode`].
+    pub fn encode_unmetered(ops: &[RedoOp]) -> Result<Self> {
+        Self::encode_with(ops, None)
+    }
+
+    fn encode_with(ops: &[RedoOp], mut meter: Option<&mut WorkspaceCharge>) -> Result<Self> {
         let t0 = Instant::now();
         // The one validation pass per op: persisted-ID range plus the
         // ADR-0120 §3 16 MiB ontology envelope (the ADR-0086 object
         // bound), before the commit is encoded or written.
-        Wal::validate_redo_ids(ops)?;
+        validate_redo_ids(ops)?;
         let ontology_op = ops.iter().any(RedoOp::is_ontology_op);
         let mut buf = vec![0u8; HEADER_MAX];
         // The per-record WAL payload cap (ADR-0086) and the capacity kind
         // its crossing refusal carries (ADR-0494), spelled together here —
         // the one bounded pass over a commit record.
-        let held = charge.bytes();
-        let mut sink = BoundedSink::capture_charged(
-            &mut buf,
-            Error::WAL_PAYLOAD_CAP_BYTES,
-            Refusal::Capacity(CapacityKind::WalPayload),
-            charge,
-        );
+        let cap = Error::WAL_PAYLOAD_CAP_BYTES;
+        let refusal = Refusal::Capacity(CapacityKind::WalPayload);
+        // What the charge held before this encoding, read once: the sink
+        // charges the buffer on top of it and the trim settles against it.
+        let held = meter.as_deref().map_or(0, WorkspaceCharge::bytes);
+        let mut sink =
+            BoundedSink::capture_charged(&mut buf, cap, refusal, meter.as_deref_mut(), held)?;
         let result: io::Result<()> = serde_json::to_writer(&mut sink, ops)
             .map_err(io::Error::from)
             .and_then(|()| sink.write_all(b"}"));
-        sink.finish(result, |e| {
-            Error::storage(format!("WAL serialization failed: {e}"))
-        })?;
+        sink.finish(
+            result,
+            |e| Error::storage(format!("WAL serialization failed: {e}")),
+            |bytes| {
+                Error::storage(format!(
+                    "WAL encode buffer allocation of {bytes} bytes failed"
+                ))
+            },
+        )?;
         // A record within 64 KiB is small enough that
         // trimming its slack is a cheap copy: hand the slack back. A
         // larger buffer keeps its capacity (and its charge) — it is never
         // copied again.
         if buf.capacity() <= SMALL_RECORD_BYTES {
             buf.shrink_to_fit();
-            charge.resize(held.saturating_add(buf.capacity() as u64))?;
+            if let Some(charge) = meter {
+                charge.resize(held.saturating_add(buf.capacity() as u64))?;
+            }
         }
         Ok(Self {
             buf,
@@ -127,8 +143,14 @@ impl EncodedOps {
     pub(super) fn stamp(&mut self, lsn: u64, commit_ts: u64) {
         let mut header = [0u8; HEADER_MAX];
         let mut out = &mut header[..];
-        write!(out, "{LSN_KEY}{lsn}{COMMIT_TS_KEY}{commit_ts}{OPS_KEY}")
-            .expect("a header of maximum-width fields fits its slack");
+        write!(
+            out,
+            "{}{lsn}{}{commit_ts}{}",
+            CommitRecord::LSN_KEY,
+            CommitRecord::COMMIT_TS_KEY,
+            CommitRecord::OPS_KEY
+        )
+        .expect("a header of maximum-width fields fits its slack");
         // The header is right-aligned against the body: the unwritten tail
         // of `header` is the slack left in front of it.
         self.start = out.len();

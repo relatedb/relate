@@ -5,7 +5,6 @@
 use std::sync::Arc;
 use web_time::Instant;
 
-use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, Result};
 use relate_engine_api::RedoOp;
 
@@ -23,6 +22,56 @@ pub const CHECKPOINT_COMMITS: u64 = 10_000;
 
 pub use relate_engine_api::CommitRecord as WalRecord;
 
+/// The one commit-timestamp advance rule: a record's timestamp is a real
+/// one (neither `0` nor the `u64::MAX` sentinel) strictly after the last the
+/// log holds. Preflight, append and the segment scan all consult it, each
+/// rendering its own refusal.
+pub(crate) fn commit_ts_advances(last: u64, commit_ts: u64) -> bool {
+    commit_ts != 0 && commit_ts != u64::MAX && commit_ts > last
+}
+
+/// Check every redo node/relationship ID, relationship endpoint and pull
+/// identity local ID is in `0..i64::MAX` — the one validation, shared by
+/// the encoder, the segment scan and [`Wal::validate_redo_ids`].
+pub(crate) fn validate_redo_ids(ops: &[RedoOp]) -> Result<()> {
+    for op in ops {
+        op.validate_ids()?;
+    }
+    Ok(())
+}
+
+/// Where the log stands: the position the next record must advance. A
+/// group preflight carries one forward record by record, so each record is
+/// checked against its predecessor in the group rather than only against
+/// the log's own tip, which only the append moves.
+#[derive(Clone, Copy)]
+struct Tip {
+    lsn: u64,
+    commit_ts: u64,
+}
+
+impl Tip {
+    /// The tip after a record at `lsn` and `commit_ts`.
+    fn after(lsn: u64, commit_ts: u64) -> Self {
+        Self { lsn, commit_ts }
+    }
+
+    /// The LSN the next record takes.
+    fn next_lsn(self) -> Result<u64> {
+        self.lsn
+            .checked_add(1)
+            .ok_or_else(|| Error::storage("WAL LSN overflow"))
+    }
+
+    fn admits_lsn(self, lsn: u64) -> bool {
+        self.lsn.checked_add(1) == Some(lsn)
+    }
+
+    fn admits_commit_ts(self, commit_ts: u64) -> bool {
+        commit_ts_advances(self.commit_ts, commit_ts)
+    }
+}
+
 /// Proof that one prospective WAL record was validated and encoded exactly
 /// once. The proof owns the encoded ops with the record header stamped in;
 /// [`Wal::append_preflighted`] writes those exact bytes as the record frame
@@ -36,6 +85,13 @@ pub struct WalPreflight {
     /// the payload: such an op never lands in an `MDBWAL01` segment — the
     /// WAL first rotates to a fresh `MDBWAL02` segment.
     encoded: EncodedOps,
+}
+
+impl WalPreflight {
+    /// The commit timestamp this proof was stamped with.
+    pub fn commit_ts(&self) -> u64 {
+        self.commit_ts
+    }
 }
 
 /// Split of [`Wal::append_commit`]: JSON+write vs durable `sync_all`.
@@ -142,10 +198,12 @@ impl Wal {
     /// assert!(Wal::validate_redo_ids(&ops).is_err());
     /// ```
     pub fn validate_redo_ids(ops: &[RedoOp]) -> Result<()> {
-        for op in ops {
-            op.validate_ids()?;
-        }
-        Ok(())
+        validate_redo_ids(ops)
+    }
+
+    /// The log's current position, which a record must advance.
+    fn tip(&self) -> Tip {
+        Tip::after(self.lsn, self.last_commit_ts)
     }
 
     pub fn open(vfs: Arc<dyn Vfs>, prefix: &str, checkpoint_lsn: u64) -> Result<Self> {
@@ -323,11 +381,7 @@ impl Wal {
     /// group-commit path pays no deep clone (ADR-0063).
     pub fn append_record(&mut self, commit_ts: u64, ops: &[RedoOp]) -> Result<AppendCommitStats> {
         self.ensure_writable()?;
-        let next_lsn = self
-            .lsn
-            .checked_add(1)
-            .ok_or_else(|| Error::storage("WAL LSN overflow"))?;
-        let proof = self.preflight_record(next_lsn, commit_ts, ops)?;
+        let proof = self.preflight_record(self.tip().next_lsn()?, commit_ts, ops)?;
         self.append_preflighted(proof)
     }
 
@@ -345,11 +399,8 @@ impl Wal {
             commit_ts,
             encoded,
         } = proof;
-        if self.lsn.checked_add(1) != Some(lsn)
-            || commit_ts == 0
-            || commit_ts == u64::MAX
-            || commit_ts <= self.last_commit_ts
-        {
+        let tip = self.tip();
+        if !tip.admits_lsn(lsn) || !tip.admits_commit_ts(commit_ts) {
             return Err(Error::storage("stale WAL preflight proof"));
         }
         if encoded.ontology_op() && self.active_magic != *ONTOLOGY_MAGIC {
@@ -407,10 +458,7 @@ impl Wal {
         commit_ts: u64,
         ops: &[RedoOp],
     ) -> Result<WalPreflight> {
-        // This form has no caller-held budget: the charge is local and
-        // released once the proof owns the stamped bytes.
-        let mut charge = WorkspaceCharge::empty();
-        self.preflight_encoded(lsn, commit_ts, EncodedOps::encode(ops, &mut charge)?)
+        self.preflight_encoded(lsn, commit_ts, EncodedOps::encode_unmetered(ops)?)
     }
 
     /// [`Wal::preflight_record`] over an existing encoding: checks the
@@ -432,16 +480,56 @@ impl Wal {
         &self,
         lsn: u64,
         commit_ts: u64,
+        encoded: EncodedOps,
+    ) -> Result<WalPreflight> {
+        self.preflight_after(self.tip(), lsn, commit_ts, encoded)
+    }
+
+    /// Preflight a group of encodings in order, numbering them from the
+    /// log's tip: each record is checked against the one before it in the
+    /// group (not only against the log's tip, which only the append moves),
+    /// so a group whose own timestamps do not advance is refused before any
+    /// of it is appended. `records` pairs each commit timestamp with its
+    /// encoding, and the proofs come back in the same order.
+    ///
+    /// ```
+    /// use relate_storage::{EncodedOps, Wal};
+    /// let wal = Wal::memory();
+    /// let encode = || EncodedOps::encode_unmetered(&[]).unwrap();
+    /// // The second timestamp does not advance past the first.
+    /// assert!(wal.preflight_group([(5, encode()), (5, encode())]).is_err());
+    /// assert_eq!(wal.preflight_group([(5, encode()), (6, encode())]).unwrap().len(), 2);
+    /// ```
+    pub fn preflight_group(
+        &self,
+        records: impl IntoIterator<Item = (u64, EncodedOps)>,
+    ) -> Result<Vec<WalPreflight>> {
+        let mut tip = self.tip();
+        let records = records.into_iter();
+        let mut proofs = Vec::with_capacity(records.size_hint().0);
+        for (commit_ts, encoded) in records {
+            let lsn = tip.next_lsn()?;
+            proofs.push(self.preflight_after(tip, lsn, commit_ts, encoded)?);
+            tip = Tip::after(lsn, commit_ts);
+        }
+        Ok(proofs)
+    }
+
+    fn preflight_after(
+        &self,
+        tip: Tip,
+        lsn: u64,
+        commit_ts: u64,
         mut encoded: EncodedOps,
     ) -> Result<WalPreflight> {
         self.ensure_writable()?;
-        if lsn == 0 || lsn <= self.lsn {
+        if !tip.admits_lsn(lsn) {
             return Err(Error::storage("WAL LSN must advance"));
         }
-        if commit_ts == 0 || commit_ts == u64::MAX || commit_ts <= self.last_commit_ts {
+        if !tip.admits_commit_ts(commit_ts) {
             return Err(Error::storage(format!(
                 "WAL commit timestamp {commit_ts} must advance past {} and be below u64::MAX",
-                self.last_commit_ts
+                tip.commit_ts
             )));
         }
         encoded.stamp(lsn, commit_ts);

@@ -49,41 +49,6 @@ pub(crate) fn config_with_floor(floor: u32) -> ProptestConfig {
     ProptestConfig::with_cases(base.cases.max(floor))
 }
 
-/// A counting in-memory [`relate_core::tokens::PeakPool`] shared by the
-/// workspace/overlay peak tests, so the test double has one definition.
-pub(crate) struct PeakPoolDouble {
-    reserved: std::sync::atomic::AtomicU64,
-    capacity: u64,
-}
-
-impl PeakPoolDouble {
-    pub(crate) fn new(capacity: u64) -> Self {
-        Self {
-            reserved: std::sync::atomic::AtomicU64::new(0),
-            capacity,
-        }
-    }
-
-    pub(crate) fn reserved(&self) -> u64 {
-        self.reserved.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-impl relate_core::tokens::PeakPool for PeakPoolDouble {
-    fn try_grow(&self, extra: u64) -> bool {
-        let now = self.reserved();
-        if now + extra > self.capacity {
-            return false;
-        }
-        self.reserved
-            .fetch_add(extra, std::sync::atomic::Ordering::SeqCst);
-        true
-    }
-
-    fn release(&self, amount: u64) {
-        if amount > 0 {
-            self.reserved
-                .fetch_sub(amount, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
+/// The workspace/overlay peak tests' counting pool: the workspace's one
+/// shared fake, under this forest's historical name.
+pub(crate) use relate_test_support::peak_pool::FixedPool as PeakPoolDouble;

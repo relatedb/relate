@@ -146,7 +146,12 @@ fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
             Refusal::Fixed(manifest_too_large()),
         );
         let result = serde_json::to_writer_pretty(&mut writer, manifest);
-        writer.finish(result, |e| Error::storage(e.to_string()))?;
+        writer.finish(
+            result,
+            |e| Error::storage(e.to_string()),
+            // An uncharged capture never refuses an allocation.
+            |bytes| Error::storage(format!("buffer allocation of {bytes} bytes failed")),
+        )?;
     }
     Ok(bytes)
 }

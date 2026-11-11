@@ -67,8 +67,7 @@ impl CommitSlot {
         Self {
             snapshot_ts,
             txn_id,
-            encoded: EncodedOps::encode(&ops, &mut WorkspaceCharge::empty())
-                .expect("test ops encode"),
+            encoded: EncodedOps::encode_unmetered(&ops).expect("test ops encode"),
             ops,
             parse_plan_ns: 0,
             execute_ns: 0,
@@ -89,11 +88,10 @@ struct CommitWaiter {
 /// A record accepted into a commit batch: the redo to append/apply, the
 /// commit timestamp assigned at admission, and the timing fields recorded by
 /// the group path. `apply_redo` consumes `ops`; the rest stay readable on the
-/// error path.
+/// error path. The ops' encoding travels beside it in [`Admitted`], so the
+/// append takes it by move and this record never holds a moved-out slot.
 pub(crate) struct Accepted {
     ops: Vec<RedoOp>,
-    /// The ops' one encoding, handed to the append (taken once).
-    encoded: Option<EncodedOps>,
     commit_ts: u64,
     /// Recorded by the fused preflight/append loop in [`commit_preflighted`].
     encode_write_ns: u64,
@@ -102,17 +100,25 @@ pub(crate) struct Accepted {
     execute_ns: u64,
 }
 
-impl Accepted {
+/// An [`Accepted`] record with the one encoding its append consumes.
+pub(crate) struct Admitted {
+    record: Accepted,
+    encoded: EncodedOps,
+}
+
+impl Admitted {
     /// A single replicated record: no group-commit timing fields.
     pub(crate) fn replicated(ops: Vec<RedoOp>, encoded: EncodedOps, commit_ts: u64) -> Self {
         Self {
-            ops,
-            encoded: Some(encoded),
-            commit_ts,
-            encode_write_ns: 0,
-            wal_lock_ns: 0,
-            parse_plan_ns: 0,
-            execute_ns: 0,
+            record: Accepted {
+                ops,
+                commit_ts,
+                encode_write_ns: 0,
+                wal_lock_ns: 0,
+                parse_plan_ns: 0,
+                execute_ns: 0,
+            },
+            encoded,
         }
     }
 }
@@ -565,7 +571,7 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     let committed = commit_preflighted(
         shared,
         wal,
-        vec![Accepted::replicated(
+        vec![Admitted::replicated(
             record.ops.clone(),
             encoded,
             record.commit_ts,
@@ -593,12 +599,12 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
 fn admit_slot(
     shared: &Shared,
     slot: CommitSlot,
-    accepted: &[(usize, Accepted)],
+    accepted: &[(usize, Admitted)],
     reserved: &mut u64,
     constraint_admission: &mut ConstraintAdmission<'_>,
     position: SlotPosition,
     batch_start: Instant,
-) -> Result<Accepted> {
+) -> Result<Admitted> {
     let wal_lock_ns = batch_start
         .saturating_duration_since(slot.enqueued)
         .as_nanos() as u64;
@@ -609,18 +615,18 @@ fn admit_slot(
         .write_set_conflicts(slot.snapshot_ts, &slot.ops)
         || accepted
             .iter()
-            .any(|(_, a)| Graph::redo_conflicts_with_later(&slot.ops, &a.ops));
+            .any(|(_, a)| Graph::redo_conflicts_with_later(&slot.ops, &a.record.ops));
     if conflict {
         return Err(Error::conflict());
     }
-    let mut earlier_ops = accepted.iter().map(|(_, a)| a.ops.as_slice());
+    let mut earlier_ops = accepted.iter().map(|(_, a)| a.record.ops.as_slice());
     let (pending, constraint_growth) =
         constraint_admission.check_with_earlier(&slot.ops, &mut earlier_ops, position)?;
     *reserved = shared.admit_redo_capacity_with(&slot.ops, *reserved, Some(constraint_growth))?;
     let commit_ts = {
         let last = accepted
             .last()
-            .map(|(_, a)| a.commit_ts)
+            .map(|(_, a)| a.record.commit_ts)
             .unwrap_or_else(|| shared.graph.commit_ts());
         last.checked_add(1).map(|next| next.max(slot.txn_id))
     };
@@ -631,14 +637,16 @@ fn admit_slot(
         return Err(Error::storage("commit timestamp overflow"));
     };
     constraint_admission.accept(pending);
-    Ok(Accepted {
-        ops: slot.ops,
-        encoded: Some(slot.encoded),
-        commit_ts,
-        encode_write_ns: 0,
-        wal_lock_ns,
-        parse_plan_ns: slot.parse_plan_ns,
-        execute_ns: slot.execute_ns,
+    Ok(Admitted {
+        record: Accepted {
+            ops: slot.ops,
+            commit_ts,
+            encode_write_ns: 0,
+            wal_lock_ns,
+            parse_plan_ns: slot.parse_plan_ns,
+            execute_ns: slot.execute_ns,
+        },
+        encoded: slot.encoded,
     })
 }
 
@@ -655,7 +663,7 @@ fn flush_group(shared: &Arc<Shared>, batch: Vec<CommitSlot>) -> Result<()> {
         // The batch index travels with the accepted record, so the
         // completion list below derives from this one source instead of a
         // parallel vector.
-        let mut accepted: Vec<(usize, Accepted)> = Vec::new();
+        let mut accepted: Vec<(usize, Admitted)> = Vec::new();
         let mut reserved = 0u64;
         // ADR-0439: the group's constraint-key admission state — the
         // committed map plus the delta earlier accepted slots establish.
@@ -682,9 +690,9 @@ fn flush_group(shared: &Arc<Shared>, batch: Vec<CommitSlot>) -> Result<()> {
         // core is shared with the replicated path, which never sees them —
         // deriving each accepted waiter's success value from the same
         // records, just before the move.
-        let (assigned, records): (Vec<(usize, u64)>, Vec<Accepted>) = accepted
+        let (assigned, records): (Vec<(usize, u64)>, Vec<Admitted>) = accepted
             .into_iter()
-            .map(|(index, a)| ((index, a.commit_ts), a))
+            .map(|(index, a)| ((index, a.record.commit_ts), a))
             .unzip();
 
         if records.is_empty() {
@@ -749,10 +757,22 @@ pub(crate) struct Committed {
 pub(crate) fn commit_preflighted(
     shared: &Arc<Shared>,
     mut wal: MutexGuard<'_, Wal>,
-    mut accepted: Vec<Accepted>,
+    admitted: Vec<Admitted>,
     publication: Publication<'_>,
     measure: bool,
 ) -> Result<Committed> {
+    // Split each admitted record into what the append consumes (its
+    // timestamp and encoding) and what apply and timing keep, in one pass
+    // over one source.
+    let mut records = Vec::with_capacity(admitted.len());
+    let mut accepted = Vec::with_capacity(admitted.len());
+    for Admitted { record, encoded } in admitted {
+        records.push(relate_write_local::AssignedRecord {
+            commit_ts: record.commit_ts,
+            encoded,
+        });
+        accepted.push(record);
+    }
     shared.graph.validate_redo_group_applicability(
         accepted.iter().map(|a| (a.ops.as_slice(), a.commit_ts)),
     )?;
@@ -769,23 +789,15 @@ pub(crate) fn commit_preflighted(
     // Each record's encoding was made at admission; the append stamps the
     // header into it, and the write cost is recorded directly in this
     // single append loop, avoiding a parallel per-record vector.
-    let appended = {
-        let records: Vec<relate_write_local::AssignedRecord> = accepted
-            .iter_mut()
-            .map(|a| relate_write_local::AssignedRecord {
-                commit_ts: a.commit_ts,
-                encoded: a
-                    .encoded
-                    .take()
-                    .expect("every accepted record carries its admission encoding"),
-            })
-            .collect();
-        match relate_write_local::append_assigned(&mut wal, records) {
-            Ok(appended) => appended,
-            Err(cause) => return Err(shared.poison(&cause)),
-        }
+    let appended = match relate_write_local::append_assigned(&mut wal, records) {
+        Ok(appended) => appended,
+        Err(cause) => return Err(shared.poison(&cause)),
     };
     for (a, written) in accepted.iter_mut().zip(appended) {
+        debug_assert_eq!(
+            a.commit_ts, written.commit_ts,
+            "the append reports records in group order"
+        );
         a.encode_write_ns = written.encode_write_ns;
     }
     #[cfg(test)]

@@ -6,7 +6,7 @@ use relate_engine_api::RedoOp;
 
 use crate::vfs::{atomic_write_stream, virt_join, Vfs, VfsFile, VfsOpen};
 
-use super::{FileWal, Wal, WalCursor, WalRecord, MAGIC, ONTOLOGY_MAGIC};
+use super::{FileWal, WalCursor, WalRecord, MAGIC, ONTOLOGY_MAGIC};
 
 /// The id of a brand-new WAL's first segment — the one name for the fact
 /// `write_empty_segment` writes, `Wal::open`'s no-segment branch pushes,
@@ -388,14 +388,14 @@ pub(super) fn scan_seg(
                 "ontology op in non-MDBWAL02 WAL segment {path} at offset {frame_start}"
             )));
         }
-        if rec.commit_ts == 0 || rec.commit_ts == u64::MAX || rec.commit_ts <= *window.last_ts {
+        if !super::commit_ts_advances(*window.last_ts, rec.commit_ts) {
             return Err(Error::storage(format!(
                 "non-increasing or unsupported WAL commit timestamp {} after {} in {path}",
                 rec.commit_ts, *window.last_ts
             )));
         }
         *window.last_ts = rec.commit_ts;
-        Wal::validate_redo_ids(&rec.ops)?;
+        super::validate_redo_ids(&rec.ops)?;
         if rec.lsn > window.from_lsn {
             end = Some(WalCursor {
                 lsn: rec.lsn,
