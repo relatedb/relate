@@ -20,9 +20,9 @@ on:
         default: false
         type: boolean
       registries:
-        description: "Chain the registry publish (npm/PyPI/crates.io via publish-registries.yml) after the GitHub release; turn off to release without touching any registry (e.g. while a registry's trusted-publishing setup is pending)"
+        description: "Chain the registry publish (npm/PyPI/crates.io via publish-registries.yml) after the GitHub release — off by default: the chained run's OIDC identity is release.yml's, which the registries' trusted publishers do not accept, so publishes run by direct dispatch of publish-registries.yml against the tag (docs/PUBLISHING.md)"
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -967,11 +967,16 @@ jobs:
           bash scripts/npm-smoke-test.sh
 
   # Registry publishing (npm, PyPI, crates.io) lives in its own workflow
-  # (ADR-0560, ADR-0278): called here once the GitHub release and its
-  # assets exist, and dispatchable by hand with a tag plus per-registry
-  # toggles for dry runs and partial-failure recovery. An offline release
-  # touches nothing outside GitHub, so it skips the call; registries=false
-  # skips only the registries (website, Slack, and the canary still run).
+  # (ADR-0560, ADR-0278): dispatchable by hand with a tag plus per-registry
+  # toggles for dry runs and partial-failure recovery, and callable here
+  # once the GitHub release and its assets exist. The call defaults OFF:
+  # the chained run's OIDC token names release.yml, and the registries'
+  # trusted publishers register publish-registries.yml — the v1.0.0 PyPI
+  # leg failed on exactly this mismatch (run 43065962701). Publish by
+  # direct dispatch against the tag; opt in with registries=true only
+  # after registering release.yml on every registry (docs/PUBLISHING.md).
+  # An offline release also skips the call; the website, Slack, and
+  # canary jobs are unaffected by this input.
   publish-registries:
     name: Publish to registries
     needs: [version, create-release, npm-smoke-gate]

@@ -2,7 +2,8 @@
 
 Releases are cut manually via the **Release** GitHub Actions workflow
 (`.github/workflows/release.yml`). There are no tag pushes by hand — the
-workflow computes the version, builds everything, tags, and publishes.
+workflow computes the version, builds everything, tags, and publishes the
+GitHub release.
 The versioning and process policy is recorded in
 [ADR-0067](docs/adr/0067-release-versioning-and-process.md).
 
@@ -26,12 +27,16 @@ a later backfill), no Slack announcement, no self-update canary. Use it
 while the website and announcement channels are being stood up; a later
 non-offline release-notes dispatch can still announce the tag.
 
-**Skipping only the registries**: dispatch with `registries=false` —
-`gh workflow run release.yml -f bump=patch -f registries=false` — for a
-full release (website poke, Slack, canary) that does not chain the
-registry publish. Use it while a registry's trusted-publishing setup is
-pending; a later manual `publish-registries.yml` dispatch against the
-tag publishes the registries after the fact.
+**Registry publishes are not chained by default**: the `registries` input
+defaults to `false` — a plain release dispatch runs the full pipeline
+(website poke, Slack, canary) but does not touch any registry. The
+chained call's OIDC token names `release.yml`, and the registries'
+trusted publishers register `publish-registries.yml` — the v1.0.0 PyPI
+publish failed on exactly this mismatch — so publishing runs by a direct
+`publish-registries.yml` dispatch against the tag (see
+[Registry publishing](#registry-publishing)). Opt back into the chain
+with `-f registries=true` only after registering `release.yml` on every
+registry ([docs/PUBLISHING.md](docs/PUBLISHING.md)).
 
 The version is derived from the existing `v*` git tags plus the chosen bump,
 not from the workspace version. The first ever run (no `v*` tags yet)
@@ -101,9 +106,11 @@ from this repository; the old repository’s tags never came across.
 
 npm (ADR-0278), PyPI, and crates.io (ADR-0560) publish from one workflow,
 [`.github/workflows/publish-registries.yml`](.github/workflows/publish-registries.yml),
-which the release run calls once the GitHub release and its assets exist
-(skipped by `offline=true`). All three use OIDC trusted publishing — no
-API tokens in CI.
+run by direct dispatch against a release tag. The release run can also
+chain it (`registries=true`, off by default — the chained OIDC identity
+is the release workflow's, which the registries' publishers do not
+accept; skipped by `offline=true`). All three use OIDC trusted
+publishing — no API tokens in CI.
 
 The workflow also dispatches by hand with a release tag, per-registry
 toggles (`npm`, `pypi`, `crates-io`), and dry-run knobs
@@ -125,8 +132,7 @@ attestation step landed; older tags fail verification by design. Each
 registry's one-time setup — the npm placeholder publishes and trusted
 publishers, the PyPI/TestPyPI pending publisher, the crates.io bootstrap
 — is a runbook item in
-[docs/PUBLISHING.md](docs/PUBLISHING.md); the npm and crates.io jobs are
-fail-closed (`&& false` guards) until theirs is done.
+[docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## Extension package releases
 
