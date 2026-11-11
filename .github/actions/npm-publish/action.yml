@@ -79,5 +79,10 @@ runs:
           args+=(--dry-run)
         fi
         for tgz in "${tarballs[@]}"; do
-          npm publish "$tgz" "${args[@]}"
+          # The ./ prefix is load-bearing: npm 11's spec parser reads a
+          # bare `dir/file.tgz` (one slash) as a GitHub user/repo
+          # shorthand and tries git ls-remote on it; ./ pins the spec to
+          # a local file. The release's npm smoke gate never hit this
+          # because its dir makes every glob already start with ./.
+          npm publish "./$tgz" "${args[@]}"
         done
