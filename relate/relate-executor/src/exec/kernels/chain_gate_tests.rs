@@ -8,7 +8,6 @@
 use relate_core::Value;
 
 use crate::exec::test_support::{build, exec_cypher, Built};
-use crate::graph::Graph;
 
 use super::{take_kernel_engagements, with_kernels_disabled};
 
@@ -26,12 +25,6 @@ fn chain_with_hub(hub_leaves: usize) -> Built {
     build(&labels, &rels)
 }
 
-fn count(g: &Graph, cypher: &str) -> Value {
-    let result = exec_cypher(g, cypher);
-    assert_eq!(result.rows.len(), 1, "{cypher}: one row");
-    result.rows[0][0].clone()
-}
-
 /// Every spelling the walk model leaves unpriced: untyped, typed through
 /// unlabeled interior nodes, and untyped through labeled ones.
 const SHAPES: [&str; 3] = [
@@ -42,13 +35,17 @@ const SHAPES: [&str; 3] = [
 
 #[test]
 fn a_high_degree_node_declines_the_unpriced_chain_to_the_walker() {
+    // `LIMIT` spellings: a plain `RETURN count` rides the count fold
+    // (LABS-1293), which never lands the last stage and so prices one hop
+    // fewer — the rows kernel's gate is what this pins.
     let built = chain_with_hub(64);
     for cypher in SHAPES {
+        let cypher = cypher.replace("RETURN count(n)", "RETURN count(n) AS c LIMIT 5");
         let _ = take_kernel_engagements();
-        let answer = count(&built.graph, cypher);
+        let answer = exec_cypher(&built.graph, &cypher).rows;
         assert_eq!(take_kernel_engagements(), 0, "declined: {cypher}");
-        assert_eq!(answer, Value::Int(1), "{cypher}");
-        let walker = with_kernels_disabled(|| count(&built.graph, cypher));
+        assert_eq!(answer, vec![vec![Value::Int(1)]], "{cypher}");
+        let walker = with_kernels_disabled(|| exec_cypher(&built.graph, &cypher).rows);
         assert_eq!(answer, walker, "{cypher}");
     }
 }
@@ -59,9 +56,12 @@ fn a_thin_graph_keeps_the_kernel_on_the_unpriced_chain() {
     // never grows, and the kernel stays engaged.
     let built = chain_with_hub(0);
     for cypher in SHAPES {
+        // `LIMIT` keeps the count fold out, so the rows kernel's gate (under
+        // the count rider) is what is pinned.
+        let cypher = cypher.replace("RETURN count(n)", "RETURN count(n) AS c LIMIT 5");
         let _ = take_kernel_engagements();
-        let answer = count(&built.graph, cypher);
+        let answer = exec_cypher(&built.graph, &cypher).rows;
         assert_eq!(take_kernel_engagements(), 1, "engaged: {cypher}");
-        assert_eq!(answer, Value::Int(1), "{cypher}");
+        assert_eq!(answer, vec![vec![Value::Int(1)]], "{cypher}");
     }
 }

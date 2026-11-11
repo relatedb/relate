@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use relate_core::{Error, NodeId, Result, Value};
 
 use crate::hash_seed::FxMap;
-use relate_ir::{classify_aggregate, AggregateKind, Clause, Expr, MatchMode, Projection};
+use relate_ir::{Clause, MatchMode};
 
 use crate::ctx::{ExecCtx, FrontierCounters};
 use crate::overlay::ExecGraph;
@@ -45,7 +45,7 @@ use super::super::agg_fold::FoldedReturn;
 use super::super::graph_stats::GraphStats;
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
 use super::frontier::arms;
-use super::frontier_match::{boundary, boundary_vars, compile_frontier, Consumer};
+use super::frontier_match::{compile_frontier, Consumer};
 use super::frontier_run::{seeds, single_quantified};
 use super::nfa::FrontierNfa;
 
@@ -77,7 +77,7 @@ pub(crate) fn try_fold_walk_count(
     let Some(pattern) = single_quantified(graph.base(), patterns) else {
         return Ok(None);
     };
-    let Some(item) = counted_return(clauses.get(1), pattern) else {
+    let Some(item) = super::counted_return(clauses.get(1), pattern) else {
         return Ok(None);
     };
     let conjuncts = where_clause
@@ -122,65 +122,9 @@ pub(crate) fn try_fold_walk_count(
         };
         total = sum;
     }
-    let Ok(count) = i64::try_from(total) else {
-        return Ok(None);
-    };
     #[cfg(test)]
     super::kernel_engaged();
-    let name = item.output_name(0);
-    let mut out = Row::new();
-    out.insert(name.clone(), Value::Int(count));
-    Ok(Some(FoldedReturn {
-        result: super::super::QueryResult::intermediate(
-            vec![name],
-            vec![vec![Value::Int(count)]],
-            graph.stats(),
-        ),
-        rows: vec![out],
-        consumed_after: 1,
-    }))
-}
-
-/// The one projection item when the suffix is exactly `RETURN
-/// count(*)` / `RETURN count(<boundary var>)` — non-DISTINCT, one item,
-/// no grouping, ordering, or paging: the answer is the walk count.
-fn counted_return<'c>(
-    clause: Option<&'c Clause>,
-    pattern: &relate_ir::PathPattern,
-) -> Option<&'c Projection> {
-    let Some(Clause::Return {
-        distinct: false,
-        group_by: None,
-        items,
-        order,
-        skip: None,
-        limit: None,
-    }) = clause
-    else {
-        return None;
-    };
-    let ([item], true) = (items.as_slice(), order.is_empty()) else {
-        return None;
-    };
-    match &item.expr {
-        Expr::CountStar => Some(item),
-        Expr::Function {
-            name,
-            distinct: false,
-            args,
-        } if name.with_str(classify_aggregate) == Some(AggregateKind::Count) => {
-            let [Expr::Variable(var)] = args.as_slice() else {
-                return None;
-            };
-            let (start, target) = boundary(pattern)?;
-            boundary_vars(start, target)
-                .into_iter()
-                .flatten()
-                .any(|name| name == var)
-                .then_some(item)
-        }
-        _ => None,
-    }
+    Ok(super::count_fold_tail(graph, total, item))
 }
 
 /// Whether every walk maps to exactly one state run: no epsilon skips,

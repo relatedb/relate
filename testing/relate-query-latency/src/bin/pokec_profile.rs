@@ -17,7 +17,7 @@
 //! * `medium` — 100,000 users / 1,768,164 friendships; the open cost is
 //!   the population cost.
 //! * `--group NAME` runs one group (`count`, `scan_agg_global`,
-//!   `expansion_3`, `scan_expand_2hop_filter`).
+//!   `expansion_3`, `expansion_3_unrolled`, `scan_expand_2hop_filter`).
 //! * `--sample DIR` runs the selected groups under the in-process profiler
 //!   and writes `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`; no
 //!   samply needed.
@@ -66,7 +66,7 @@ impl Group {
 
 /// Start ids 1.. are the fixture's hub-heavy head (i^-0.4 weights), the
 /// shape multi-hop expansion cost hangs on.
-const GROUPS: [Group; 4] = [
+const GROUPS: [Group; 5] = [
     Group {
         name: "count",
         query: "MATCH (n:User) RETURN count(*)",
@@ -82,6 +82,12 @@ const GROUPS: [Group; 4] = [
     Group {
         name: "expansion_3",
         query: "MATCH (a:User {id:$id})-[:Friend*3]->(b:User) RETURN count(b)",
+        rounds: 2,
+        starts: Some(64),
+    },
+    Group {
+        name: "expansion_3_unrolled",
+        query: "MATCH (a:User {id:$id})-[:Friend]->()-[:Friend]->()-[:Friend]->(b:User) RETURN count(b)",
         rounds: 2,
         starts: Some(64),
     },
@@ -121,7 +127,7 @@ struct Args {
     #[arg(value_enum)]
     shape: Shape,
     /// Run only this group (`count`, `scan_agg_global`, `expansion_3`,
-    /// `scan_expand_2hop_filter`); every group when omitted.
+    /// `expansion_3_unrolled`, `scan_expand_2hop_filter`); every group when omitted.
     #[arg(long, value_parser = group_by_name)]
     group: Option<&'static Group>,
     /// Run the selected groups under the in-process sampler and write

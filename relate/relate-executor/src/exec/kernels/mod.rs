@@ -131,25 +131,97 @@ mod chain_gate_tests;
 mod rung_tests;
 
 mod chain;
+mod chain_count;
+#[cfg(test)]
+mod chain_count_tests;
 mod hub_star;
 
-use relate_core::{NodeId, Result};
-use relate_ir::{Expr, MatchMode, PathPattern};
+// The chain count fold's entry, lifted the way the aggregate folds lift
+// theirs (`agg_fold`): the module stays private to the kernels, the one
+// entry is the public path.
+pub(crate) use chain_count::try_fold_chain_count;
+
+use relate_core::{NodeId, Result, Value};
+use relate_ir::{
+    classify_aggregate, AggregateKind, Clause, Expr, MatchMode, PathPattern, Projection,
+};
 use relate_planner::seed_on_rel_start;
 use relate_planner::{endpoint_estimate, seed_rows};
 
 use crate::ctx::{ExecCtx, StartReason, WalkStart};
 use crate::graph::Graph;
+use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
 use crate::pattern_walk::node_candidates;
 use crate::row::Row;
 
+use super::agg_fold::FoldedReturn;
 use super::graph_stats::GraphStats;
 use super::pushdown::{flatten_and_owned, match_scope, Residual};
 use super::record_walk_start;
 
+use frontier_match::{boundary, boundary_vars};
 use matcher::Contract;
 use program::{Admission, NodePred, NodeTarget};
+
+/// The one projection item when the suffix is exactly `RETURN count(*)`
+/// / `RETURN count(<boundary var>)` — non-DISTINCT, one item, no
+/// grouping, ordering, or paging: the answer is the walk count. The
+/// RETURN-shape gate both count folds consult (the frontier walk count
+/// and the chain count), so it lives beside them in the shared parent.
+fn counted_return<'c>(clause: Option<&'c Clause>, pattern: &PathPattern) -> Option<&'c Projection> {
+    let Some(Clause::Return {
+        distinct: false,
+        group_by: None,
+        items,
+        order,
+        skip: None,
+        limit: None,
+    }) = clause
+    else {
+        return None;
+    };
+    let ([item], true) = (items.as_slice(), order.is_empty()) else {
+        return None;
+    };
+    match &item.expr {
+        Expr::CountStar => Some(item),
+        Expr::Function {
+            name,
+            distinct: false,
+            args,
+        } if name.with_str(classify_aggregate) == Some(AggregateKind::Count) => {
+            let [Expr::Variable(var)] = args.as_slice() else {
+                return None;
+            };
+            let (start, target) = boundary(pattern)?;
+            boundary_vars(start, target)
+                .into_iter()
+                .flatten()
+                .any(|name| name == var)
+                .then_some(item)
+        }
+        _ => None,
+    }
+}
+
+/// The count folds' one-row answer tail: the `i64` conversion decline,
+/// the item's output name, and the single `(name → count)` cell spelled
+/// once for both the row and the result's data, so the two cannot drift.
+fn count_fold_tail(graph: &ExecGraph<'_>, count: u128, item: &Projection) -> Option<FoldedReturn> {
+    let Ok(count) = i64::try_from(count) else {
+        return None;
+    };
+    let name = item.output_name(0);
+    let cell = Value::Int(count);
+    let mut out = Row::new();
+    out.insert(name.clone(), cell.clone());
+    Some(FoldedReturn {
+        result: super::QueryResult::intermediate(vec![name], vec![vec![cell]], graph.stats()),
+        rows: vec![out],
+        consumed_after: 1,
+    })
+}
 
 /// What a caller wants from a contracted kernel.
 pub(crate) enum KernelMode<'a> {
@@ -434,6 +506,30 @@ const MAX_ESTIMATED_STAGE_ROWS: u128 = 1 << 20;
 /// alternative while the early exit still makes it the right plan.
 const EXISTS_EARLY_EXIT_SLOP: u128 = 2;
 
+/// The chain's stage ceiling over the `priced` hops: a count-only run
+/// never lands the last stage, so it prices one hop fewer.
+fn chain_stages_fit(
+    stats: &GraphStats<'_>,
+    conjuncts: &[Expr],
+    chain: &matcher::Chain<'_>,
+    priced: &[matcher::Hop<'_>],
+) -> bool {
+    let unbound = |_: &str| false;
+    let mut rows = seed_rows(endpoint_estimate(
+        chain.start.pattern,
+        &unbound,
+        conjuncts.iter(),
+        stats,
+    ));
+    for hop in priced {
+        rows = hop.scaled_from_seed(rows, stats);
+        if rows > MAX_ESTIMATED_STAGE_ROWS {
+            return false;
+        }
+    }
+    true
+}
+
 /// The cost gate (ADR-0473): engage only when the kernel's plan is
 /// estimated to pay. All estimates come from the planner's own machinery
 /// (ADR-0218's endpoint ladder and degree tails over the live
@@ -465,22 +561,7 @@ fn engages(
 ) -> bool {
     let unbound = |_: &str| false;
     match contract {
-        Contract::Chain(chain) => {
-            let start = seed_rows(endpoint_estimate(
-                chain.start.pattern,
-                &unbound,
-                conjuncts.iter(),
-                stats,
-            ));
-            let mut rows = start;
-            for hop in &chain.hops {
-                rows = hop.scaled_from_seed(rows, stats);
-                if rows > MAX_ESTIMATED_STAGE_ROWS {
-                    return false;
-                }
-            }
-            true
-        }
+        Contract::Chain(chain) => chain_stages_fit(stats, conjuncts, chain, &chain.hops),
         Contract::HubStar(star) => {
             // Hub-driven work: the hub candidates plus both sides walked
             // hub → terminal.

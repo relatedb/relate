@@ -32,6 +32,7 @@ use super::count_stats::count_only_stats_result;
 use super::ddl::{exec_create_index, exec_drop_index};
 use super::exists_probe::try_fold_boolean_count;
 use super::foreach::exec_foreach;
+use super::kernels::try_fold_chain_count;
 use super::match_clause::{run_match_operator_ladder, MatchOperator};
 use super::order::OrderKeys;
 use super::pattern_policies::RowFold;
@@ -938,9 +939,9 @@ fn try_match_folds(
         return Ok(None);
     }
     // The path fold first: it compiles the full hop plan once and serves the
-    // widest coverage. The one-hop fold follows and serves exactly the
-    // queries the path fold declined — no coverage gate between them, so
-    // no query compiles the plan twice.
+    // widest coverage. The chain count and one-hop folds follow, each
+    // serving exactly the queries the path fold declined — no coverage
+    // gate between the rungs, so no query compiles the plan twice.
     if let Some(folded) = try_fold_path_aggs(
         graph,
         rows,
@@ -950,6 +951,11 @@ fn try_match_folds(
         params,
         cypher_version,
     )? {
+        return Ok(Some(folded));
+    }
+    // The plain fixed-hop and exact `*k` counts the path fold declines —
+    // the chain kernel's own gates own what it accepts.
+    if let Some(folded) = try_fold_chain_count(graph, rows, clauses, params, cypher_version)? {
         return Ok(Some(folded));
     }
     try_fold_one_hop_aggs(

@@ -58,8 +58,8 @@ pub(super) struct Stage<'s> {
     /// The stage's halt (LABS-990, ADR-0524): the complete-binding count
     /// this stage stops landing rows at — `None` for every uncapped hop,
     /// the rows mode's `want` for the final one. The one spelling of the
-    /// halt: [`Stage::full`] is its reader, the hop expansion's two
-    /// checks the only places it is read.
+    /// halt: [`Landing::full`] on the stage is its reader, the hop
+    /// expansion's two checks the only places it is read.
     cap: Option<usize>,
 }
 
@@ -93,12 +93,6 @@ impl<'s> Stage<'s> {
     /// Rows in the stage.
     fn rows(&self) -> usize {
         self.origin.len()
-    }
-
-    /// The halt's reader: whether the stage already holds its cap's
-    /// complete-binding count (a capless stage is never full).
-    fn full(&self) -> bool {
-        self.cap.is_some_and(|at| self.origin.len() >= at)
     }
 
     /// The node the walk is currently at in row `r` — the last live
@@ -149,6 +143,77 @@ pub(super) fn run(
     }
 }
 
+/// The count-only run (LABS-1293): the same hops as [`run`], but the
+/// **last** hop tallies its admitted arrivals instead of landing them —
+/// no leaf columns, no rows. Every check the landing hop applies (lineage,
+/// resolution, admission) is applied per candidate, so the tally equals the
+/// row count of the rows mode exactly.
+pub(super) fn count(ctx: ExecCtx<'_>, chain: &Chain<'_>, starts: Vec<NodeId>) -> Result<u64> {
+    let mut stage = Stage::from_starts(&starts);
+    let (tallied, landed) = chain
+        .hops
+        .split_last()
+        .expect("a chain has at least one hop");
+    for hop in landed {
+        if stage.rows() == 0 {
+            return Ok(0);
+        }
+        stage = hop_stage(ctx, &stage, hop, None)?;
+    }
+    let mut tally = Tally(0);
+    expand_hop(
+        ctx,
+        &stage,
+        tallied,
+        Admission::of(&tallied.target),
+        &mut tally,
+    )?;
+    Ok(tally.0)
+}
+
+/// Where an admitted arrival goes: the one expansion ([`expand_hop`])
+/// walks, checks and admits identically for both modes, and the landing
+/// policy is the only thing that differs — a stage's columns (rows mode)
+/// or a bare counter (count mode, so the tally equals the rows mode's row
+/// count by construction).
+trait Landing {
+    /// The halt's reader (ADR-0524): a full landing stops the expansion.
+    fn full(&self) -> bool;
+    /// Land one admitted arrival of row `r` over relationship `rid`.
+    fn land(&mut self, prev: &Stage<'_>, r: usize, j: usize, rid: RelId, arrival: NodeId);
+}
+
+impl Landing for Stage<'_> {
+    /// The halt's reader: whether the stage already holds its cap's
+    /// complete-binding count (a capless stage is never full).
+    fn full(&self) -> bool {
+        self.cap.is_some_and(|at| self.origin.len() >= at)
+    }
+
+    fn land(&mut self, prev: &Stage<'_>, r: usize, j: usize, rid: RelId, arrival: NodeId) {
+        self.origin.push(prev.origin[r]);
+        for taken in 0..j {
+            self.rels[taken].push(prev.rels[taken][r]);
+            self.nodes[taken].push(prev.nodes[taken][r]);
+        }
+        self.rels[j].push(rid);
+        self.nodes[j].push(arrival);
+    }
+}
+
+/// The count mode's landing: a counter, never a column.
+struct Tally(u64);
+
+impl Landing for Tally {
+    fn full(&self) -> bool {
+        false
+    }
+
+    fn land(&mut self, _: &Stage<'_>, _: usize, _: usize, _: RelId, _: NodeId) {
+        self.0 += 1;
+    }
+}
+
 /// One hop as a stage transition: every row's current node expands over
 /// the hop's typed adjacency, each candidate rel checked against the
 /// lineage, resolved, and admitted by the hop's monomorphic program. The
@@ -161,13 +226,12 @@ fn hop_stage<'s>(
     cap: Option<usize>,
 ) -> Result<Stage<'s>> {
     let mut next = prev.successor(cap);
-    let j = prev.len;
-    expand_hop(ctx, prev, hop, j, Admission::of(&hop.target), &mut next)?;
+    expand_hop(ctx, prev, hop, Admission::of(&hop.target), &mut next)?;
     Ok(next)
 }
 
 /// The monomorphic hop expansion — the per-candidate checks below are
-/// static calls, inlined (ADR-0473). The stage's own `full()` is the
+/// static calls, inlined (ADR-0473). The landing's `full()` is the
 /// halt's one spelling, derived from the container the landing pushes
 /// into — never a second counter: checked ahead of the row and ahead of
 /// each candidate, so `want == 0` halts before the first landing and the
@@ -178,11 +242,15 @@ fn expand_hop<P: NodePred>(
     ctx: ExecCtx<'_>,
     prev: &Stage<'_>,
     hop: &Hop<'_>,
-    j: usize,
     pred: P,
-    next: &mut Stage<'_>,
+    next: &mut impl Landing,
 ) -> Result<()> {
     let graph = ctx.graph;
+    // The hop index every landing receives: the predecessor stage's
+    // completed-hop count — `hop_stage`'s caller and the count mode's
+    // tallied hop both hand the stage in with exactly this many hops
+    // landed, so the index is read here, never re-derived per call site.
+    let j = prev.len;
     // The hop's written type list resolves once per stage hop (LABS-801);
     // the per-candidate adjacency walk compares interned ids.
     let types = graph.rel_types_of(hop.rel);
@@ -215,13 +283,7 @@ fn expand_hop<P: NodePred>(
             }
             tallies.walk();
             tallies.expansion_hop(j);
-            next.origin.push(prev.origin[r]);
-            for taken in 0..j {
-                next.rels[taken].push(prev.rels[taken][r]);
-                next.nodes[taken].push(prev.nodes[taken][r]);
-            }
-            next.rels[j].push(rid);
-            next.nodes[j].push(arrival);
+            next.land(prev, r, j, rid, arrival);
             Ok(())
         })?;
     }

@@ -1216,7 +1216,7 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 | Argument | Meaning |
 | --- | --- |
 | `small` \| `medium` (required, first) | Fixture shape: `small` = 10,000 users / 121,716 friendships (opens in seconds); `medium` = 100,000 users / 1,768,164 friendships. No default. |
-| `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `scan_expand_2hop_filter`. All groups when omitted; an unknown name is a usage error before the fixture opens. |
+| `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `expansion_3_unrolled`, `scan_expand_2hop_filter`. All groups when omitted; an unknown name is a usage error before the fixture opens. |
 | `--sample DIR` | Run the selected groups under the in-process profiler (997 Hz, ADR-0244) and write `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`, one directory per group. Conflicts with `--profile`; a failed round keeps its stacks. |
 | `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
 | `--help` | The generated usage and flag list. |
