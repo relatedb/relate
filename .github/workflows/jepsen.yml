@@ -117,15 +117,33 @@ jobs:
           rc=0
           ./run.sh || rc=$?
           if [[ "$rc" -ne 0 ]]; then
-            echo "::error::Jepsen harness exit $rc (0 = all checks passed, 1 = a check failed, 2 = unknown, 254 = bad arguments); the run log and jepsen store are attached as the jepsen-run artifact"
+            echo "::error::Jepsen harness exit $rc (0 = all checks passed, 1 = a check failed, 2 = unknown, 254 = bad arguments); the report is in the run summary; the run log is the jepsen-run-log artifact and the store the jepsen-run artifact"
             exit "$rc"
           fi
 
-      # Forensics on failure only: the full run log (analysis + verdict)
-      # and the jepsen store dir (history, serialized test,
-      # db_container.log — the DB node's serve stderr, the only forensic
-      # output a scratch image has). A green run uploads nothing.
-      - name: Upload run log and jepsen store (failure forensics)
+      # The report: verdict, headline counts and the harness's results map,
+      # appended to the run's step summary so it reads on the workflow-run
+      # page (green or red) without opening an artifact. The full run log
+      # is attached below.
+      - name: Report (step summary)
+        if: always()
+        working-directory: testing/jepsen
+        run: ./report.sh >> "$GITHUB_STEP_SUMMARY" || echo "::warning::no Jepsen run log to report"
+
+      # The run log (analysis + verdict) on every run, so a green
+      # nightly's evidence is downloadable too.
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jepsen-run-log
+          path: testing/jepsen/runs/[0-9]*T[0-9]*Z-*.log
+          if-no-files-found: ignore
+
+      # Forensics on failure only: the jepsen store dir (history,
+      # serialized test, db_container.log — the DB node's serve stderr,
+      # the only forensic output a scratch image has).
+      - name: Upload jepsen store (failure forensics)
         if: failure()
         uses: actions/upload-artifact@v7
         with:

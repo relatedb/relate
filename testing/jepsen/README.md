@@ -404,6 +404,11 @@ validation of the topology.
 
 ## Run evidence and store layout
 
+`./report.sh [RUNS_DIR]` renders the newest timestamped run log as a markdown report
+(verdict, headline counts, the harness's results map). The Jepsen workflow appends it to
+the run's step summary — on the workflow-run page, green or red — and attaches the log as
+the `jepsen-run-log` artifact; a failed run also uploads the store as `jepsen-run`.
+
 Output lands here in the repo (the control container bind-mounts it):
 
 - `runs/<timestamp>-<lane>.log` — the full run log (analysis, verdict); timestamped logs
