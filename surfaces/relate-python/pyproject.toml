@@ -43,3 +43,11 @@ module-name = "relate._native"
 python-source = "python"
 features = ["pyo3/extension-module"]
 manifest-path = "Cargo.toml"
+# maturin 1.16.0's sdist walk (ignore crate defaults) silently drops
+# dot-directories, omitting the bundled library skill from the sdist — and
+# from the wheel the --sdist lane builds off the staged tree (LABS-1413).
+# Wheel builds are unaffected: the wheel walk sets hidden(false) and already
+# carries the skill, so this include is scoped to sdist only.
+include = [
+  { path = "python/relate/.agents/**/*", format = "sdist" },
+]

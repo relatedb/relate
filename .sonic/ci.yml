@@ -288,7 +288,9 @@ stages:
       - &python-venv uv venv --seed /tmp/venv && export VIRTUAL_ENV=/tmp/venv PATH="/tmp/venv/bin:$PATH"
       - cargo test -p relate-python
       - cd surfaces/relate-python
-      - uv pip install pytest pyarrow neo4j-viz
+      # maturin rides the venv so the sdist packaging test (LABS-1413)
+      # builds the source distribution in-suite.
+      - uv pip install pytest pyarrow neo4j-viz maturin
       # The dev-profile bindings install the notebook stage shares
       # (LABS-622): the --profile dev flag lives on this anchor once.
       - &python-dev-install uv pip install . --config-settings="build-args=--profile dev"
