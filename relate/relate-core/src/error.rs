@@ -625,6 +625,12 @@ const TYPE_ERROR_PREFIX: &str = "type error";
 /// ([`Error::invalid_number_of_arguments`], or the typed channel).
 pub const FUNCTION_REQUIRES_ONE_ARGUMENT: &str = "function requires one argument";
 
+/// The one spelling of `length()`'s non-path argument rejection, shared by
+/// the planner's static rules and the executor's runtime backstop — the
+/// bare detail, without the `InvalidArgumentType` class token, which each
+/// layer composes (the [`FUNCTION_REQUIRES_ONE_ARGUMENT`] precedent).
+pub const LENGTH_REQUIRES_A_PATH: &str = "length() needs a path";
+
 /// The one spelling of `nullif()`'s two-argument arity requirement: the
 /// front-end static-argument check and the executor's implementation both
 /// state it from here, so the compile-time and runtime halves cannot drift

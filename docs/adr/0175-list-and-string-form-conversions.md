@@ -864,3 +864,6 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   its type exception for an out-of-range numeric string (22003, the
   `TypeError` class), so the site keeps the type-class prefix while the
   integer-argument range sites keep the run-time argument class.
+- ADR-0569 supersedes the `MIN / -1` half of the consequence above: live
+  Neo4j 2026.10.1 raises 22003 for `i64::MIN / -1`, so integer division is
+  checked like the other integer arithmetic. `MIN % -1` still answers 0.

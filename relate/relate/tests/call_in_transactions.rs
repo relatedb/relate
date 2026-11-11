@@ -140,60 +140,31 @@ fn failed_batch_leaves_earlier_batches_committed() {
     );
 }
 
-/// Inside an explicit transaction the batches do NOT commit independently
-/// (ADR-0210 Consequences): they accumulate in the statement's overlay and
-/// become visible only when the enclosing transaction commits — a second
-/// connection sees nothing before then.
+/// Inside an open explicit transaction the statement is refused outright
+/// (ADR-0210 as amended by ADR-0570): it owns its batch commits, so live
+/// Neo4j 2026.10.1 raises GQLSTATUS 25N17 rather than running the batches
+/// in the enclosing transaction. The refused statement leaves the
+/// transaction open and rollback-able.
 #[test]
-fn explicit_transaction_batches_are_invisible_until_commit() {
+fn explicit_transaction_refuses_batched_statement() {
     let db = relate::Database::open(":memory:").unwrap();
     let mut writer = db.connect().unwrap();
     let mut reader = db.connect().unwrap();
     writer.begin().unwrap();
-    writer
-        .query(
-            "UNWIND range(1, 10) AS i CALL { WITH i CREATE (:T {v: i}) } \
-             IN TRANSACTIONS OF 2 ROWS",
-        )
-        .unwrap();
-    assert_eq!(
-        scalar(&mut reader, "MATCH (n:T) RETURN count(n)"),
-        Value::Int(0),
-        "batches accumulated in the transaction overlay, not committed"
+    let error = err_text(writer.query(
+        "UNWIND range(1, 10) AS i CALL { WITH i CREATE (:T {v: i}) } \
+         IN TRANSACTIONS OF 2 ROWS",
+    ));
+    assert!(
+        error.contains("can only be executed in an implicit transaction"),
+        "unexpected error: {error}"
     );
-    writer.commit().unwrap();
-    assert_eq!(
-        scalar(&mut reader, "MATCH (n:T) RETURN count(n)"),
-        Value::Int(10)
-    );
-}
-
-/// The explicit-transaction corollary of `ON ERROR FAIL`: with no
-/// per-batch commits, a failing batch rolls the whole statement back —
-/// nothing from earlier "batches" survives either.
-#[test]
-fn explicit_transaction_failed_batch_rolls_back_everything() {
-    let db = relate::Database::open(":memory:").unwrap();
-    let mut writer = db.connect().unwrap();
-    let mut reader = db.connect().unwrap();
-    writer
-        .query("CREATE CONSTRAINT uniq_t FOR (n:T) REQUIRE n.v IS UNIQUE")
-        .unwrap();
-    writer.begin().unwrap();
-    let error =
-        err_text(writer.query(
-            "UNWIND [1, 2] AS i CALL { WITH i CREATE (:T {v: 7}) } IN TRANSACTIONS OF 1 ROWS",
-        ));
-    assert!(error.contains("uniqueness"), "unexpected: {error}");
-    // The failed statement leaves the explicit transaction open; roll it
-    // back unconditionally — a conditional cleanup would hedge the very
-    // contract under test.
     assert!(writer.in_transaction());
     writer.rollback().unwrap();
     assert_eq!(
         scalar(&mut reader, "MATCH (n:T) RETURN count(n)"),
         Value::Int(0),
-        "no batch committed inside the failed explicit transaction"
+        "the refused statement wrote nothing"
     );
 }
 

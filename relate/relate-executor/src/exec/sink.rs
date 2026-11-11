@@ -151,7 +151,7 @@ pub(crate) fn finish_match_row(
         }
         parked_values(&projection.order, &scope, |expr, scope| {
             eval(graph, scope, expr, params, cypher_version)
-        })
+        })?
     };
     values.extend(parked);
     debug_assert_eq!(values.len(), values.capacity());

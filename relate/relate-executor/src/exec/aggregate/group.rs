@@ -368,8 +368,9 @@ impl<'a> Aggregation<'a> {
             // A key reads `n`, the projected row, so an aggregate call in it
             // reads this group's resolved value and the deprecated
             // implicit-grouping shapes still answer from their item; a key
-            // that cannot be evaluated orders as null rather than failing
-            // the statement — the documented `ORDER BY` policy.
+            // that cannot be resolved orders as null, while an ill-typed
+            // read of a present value fails — the documented `ORDER BY`
+            // policy.
             park_order_keys(order, &mut n, |expr, scope| {
                 agg_eval(
                     graph,
@@ -378,7 +379,7 @@ impl<'a> Aggregation<'a> {
                     params,
                     cypher_version,
                 )
-            });
+            })?;
             // HAVING (ADR-0453): the aggregating WHERE, answered per group
             // with the same scope an ORDER BY key gets. Not-true drops the
             // group — the retain's verdict for a failing row; a non-boolean

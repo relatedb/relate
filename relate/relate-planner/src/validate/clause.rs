@@ -351,17 +351,7 @@ pub(super) fn check_with_clause(
         let name = item.output_name(i);
         let b = match &item.expr {
             Expr::Variable(v) => env.get_name(v).copied().unwrap_or(Binding::Value),
-            Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::String(_) => Binding::Scalar,
-            Expr::List(_) => Binding::List,
-            Expr::Map(_) => Binding::Map,
-            // The literal a plan-cache placeholder replaced.
-            Expr::Parameter(name) => match relate_core::auto_literal(name) {
-                Some(relate_core::Value::List(_)) => Binding::List,
-                Some(relate_core::Value::Map(_)) => Binding::Map,
-                Some(relate_core::Value::Null) | None => Binding::Value,
-                Some(_) => Binding::Scalar,
-            },
-            _ => Binding::Value,
+            other => Binding::of_static_expr(other).unwrap_or(Binding::Value),
         };
         next.insert(name, b);
     }

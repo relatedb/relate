@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use relate_core::{
     expected_type_detail, integer_args, value_type_name, Error, ErrorKind, Result, Value,
-    FUNCTION_REQUIRES_ONE_ARGUMENT,
+    FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
 };
 use relate_ir::QuantifierKind;
 
@@ -19,13 +19,13 @@ use super::super::collection::{
 use super::super::{into_items, Extreme};
 
 pub(super) fn bi_length(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
+    // `length()` accepts only a path (or null): live Neo4j 2026.10.1
+    // resolves the signature at compile time, so a string or list is
+    // rejected like any other non-path value. Same message as the planner
+    // rule (`function_meta::rule_length_non_path_literal`).
     unary_arg(vals, |value| match value {
         Value::Path(p) => Ok(Value::Int(p.rels.len() as i64)),
-        Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
-        Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
-        _ => Err(Error::invalid_argument_type(
-            "length() needs a path, string, or list",
-        )),
+        _ => Err(Error::invalid_argument_type(LENGTH_REQUIRES_A_PATH)),
     })
 }
 
@@ -624,11 +624,14 @@ mod tests {
                 builtin(&graph, name, vec![Value::Null]).unwrap(),
                 Value::Null
             );
-            assert_eq!(
-                builtin(&graph, name, vec![ints(&[1, 2])]).unwrap(),
-                Value::Int(2)
-            );
         }
+        // `cardinality` counts a list; `length` accepts a path only (live
+        // Neo4j 2026.10.1 rejects a list at the signature check).
+        assert_eq!(
+            bi_cardinality(&graph, "cardinality", vec![ints(&[1, 2])]).unwrap(),
+            Value::Int(2)
+        );
+        assert!(bi_length(&graph, "length", vec![ints(&[1, 2])]).is_err());
     }
 
     /// `coll.min`/`coll.max` use the one openCypher ORDER BY rank

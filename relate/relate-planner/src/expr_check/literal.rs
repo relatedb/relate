@@ -10,15 +10,18 @@ use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, UnaryOp};
 
 /// The literal an expression spells, bucketed by the kind each caller
-/// tests for — `Other` carries every value that is neither null, boolean,
-/// nor numeric.
+/// tests for — `Other` carries every value that is none of the named kinds.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LiteralKind {
+pub(crate) enum LiteralKind {
     Null,
     Bool,
     Int,
     Float,
-    /// Every other value: string, collection, temporal, entity, …
+    /// A list literal, whatever its elements' dynamism.
+    List,
+    /// A map literal, whatever its values' dynamism.
+    Map,
+    /// Every other value: string, temporal, entity, …
     Other,
 }
 
@@ -71,12 +74,15 @@ pub(super) fn static_arg_value(expr: &Expr) -> Option<Value> {
 }
 
 /// The literal an expression spells, bucketed by the kind each caller tests
-/// for. A collection literal is `Other` even when an element is dynamic: the
-/// kind a site tests for is the collection. A sign is transparent whatever
-/// its operand's kind (a nonsense `-'x'` is still a non-numeric literal).
-fn static_literal(expr: &Expr) -> Option<LiteralKind> {
+/// for. A collection literal is `List`/`Map` even when an element is dynamic:
+/// the kind a site tests for is the collection. A sign is transparent
+/// whatever its operand's kind (a nonsense `-'x'` is still a non-numeric
+/// literal). The one classification of this vocabulary, shared by the
+/// argument-type rules and [`crate::binding::Binding::of_static_expr`].
+pub(crate) fn static_literal(expr: &Expr) -> Option<LiteralKind> {
     match expr {
-        Expr::List(_) | Expr::Map(_) => Some(LiteralKind::Other),
+        Expr::List(_) => Some(LiteralKind::List),
+        Expr::Map(_) => Some(LiteralKind::Map),
         Expr::Unary {
             op: UnaryOp::Minus | UnaryOp::Plus,
             expr,
@@ -91,11 +97,11 @@ fn literal_kind(value: &Value) -> LiteralKind {
         Value::Bool(_) => LiteralKind::Bool,
         Value::Int(_) => LiteralKind::Int,
         Value::Float(_) => LiteralKind::Float,
+        Value::List(_) => LiteralKind::List,
+        Value::Map(_) => LiteralKind::Map,
         // Every other value is a non-numeric literal; an unknown one is
         // rejected at an integer-argument site (it fails closed).
         Value::String(_)
-        | Value::List(_)
-        | Value::Map(_)
         | Value::Node(_)
         | Value::Relationship(_)
         | Value::Path(_)

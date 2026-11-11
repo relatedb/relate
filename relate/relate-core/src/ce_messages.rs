@@ -232,6 +232,20 @@ pub fn ontology_implicit_transaction_only(procedure: &str) -> Error {
     ))
 }
 
+/// ADR-0570: a statement carrying `CALL { … } IN TRANSACTIONS` owns its own
+/// batches, so it can only run in an implicit (auto-commit) transaction.
+/// Live Neo4j 2026.10.1 rejects it inside an open explicit transaction with
+/// GQLSTATUS 25N17 (`TransactionStartFailed`); the wording is Neo4j's own
+/// and covers the `IN CONCURRENT TRANSACTIONS` spelling too (the batch forms
+/// share one message).
+pub fn call_in_transactions_implicit_only() -> Error {
+    Error::semantic(format!(
+        "{}: A query with 'CALL {{ ... }} IN TRANSACTIONS' can only be executed \
+         in an implicit transaction, but tried to execute in an explicit transaction.",
+        ErrorKind::TransactionError.as_str()
+    ))
+}
+
 /// ADR-0121 §3: a statement that calls `db.ontology.set` or
 /// `db.ontology.drop` may not write anything else (Neo4j's 42N03 text).
 pub fn cross_database_write() -> Error {

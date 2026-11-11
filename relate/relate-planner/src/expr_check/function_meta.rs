@@ -11,7 +11,7 @@
 
 use relate_core::{
     builtin_arity, integer_args, ArityContract, Error, Result, Value,
-    FUNCTION_REQUIRES_ONE_ARGUMENT,
+    FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
 };
 use relate_ir::Expr;
 
@@ -44,7 +44,9 @@ struct FunctionMeta {
     /// from [`relate_core::integer_args`]).
     int_sites: &'static [(usize, &'static str)],
     /// The binding kinds the first argument's variable may not be bound to,
-    /// with the authored message — the `type`/`length`/`properties` family.
+    /// with the authored rejection *detail* (bare, without the
+    /// `InvalidArgumentType` token the consumer composes) — the
+    /// `type`/`length`/`properties` family.
     rejected_kinds: Option<(&'static [Binding], &'static str)>,
     /// The env-dependent rule for shapes the kind gate cannot express.
     env_rule: Option<EnvCallRule>,
@@ -103,6 +105,23 @@ const fn kind_row(
 
 const LIST_CONVERSION_ARITY: &str = "list conversion requires one argument";
 
+/// The four `to*List()` rows: the one-argument arity contract plus the
+/// statically-known entity rejection. Live Neo4j resolves the signature at
+/// compile time, so `toStringList(n)` over a node or `toStringList(r)` over
+/// a relationship is GQLSTATUS 22G03 even on an empty graph — both
+/// statically-known entity kinds are refused here; a dynamic argument keeps
+/// the runtime check.
+const fn list_conversion_row(name: &'static str, detail: &'static str) -> FunctionMeta {
+    FunctionMeta {
+        name,
+        arity: Some(ArityContract::exact(1, LIST_CONVERSION_ARITY)),
+        rule: None,
+        int_sites: &[],
+        rejected_kinds: Some((&[Binding::Node, Binding::Rel], detail)),
+        env_rule: None,
+    }
+}
+
 /// The shared one-argument contract the planner-only rows below reuse.
 const ONE_ARGUMENT: ArityContract = ArityContract::exact(1, FUNCTION_REQUIRES_ONE_ARGUMENT);
 
@@ -118,20 +137,27 @@ const FUNCTION_META: &[FunctionMeta] = &[
     arity_row("haversin", ONE_ARGUMENT),
     arity_row("head", ONE_ARGUMENT),
     arity_row("isempty", ONE_ARGUMENT),
+    kind_row("labels", &[Binding::Rel], "labels() needs a node"),
     arity_row("last", ONE_ARGUMENT),
     int_sites_row("left", &[(1, integer_args::LEFT_LENGTH.type_error)]),
-    kind_row(
-        "length",
-        &[Binding::Node, Binding::Rel, Binding::Scalar],
-        "InvalidArgumentType: length() needs a path, string, or list",
-    ),
+    FunctionMeta {
+        name: "length",
+        arity: None,
+        rule: Some(rule_length_non_path_literal),
+        int_sites: &[],
+        rejected_kinds: Some((
+            &[Binding::Node, Binding::Rel, Binding::Scalar, Binding::List],
+            LENGTH_REQUIRES_A_PATH,
+        )),
+        env_rule: None,
+    },
     arity_row("lower", ONE_ARGUMENT),
     arity_row("octet_length", ONE_ARGUMENT),
     shape_rule("point", reject_invalid_point_literals),
     kind_row(
         "properties",
         &[Binding::Scalar, Binding::List, Binding::Path],
-        "InvalidArgumentType: properties() needs a node, relationship, or map",
+        "properties() needs a node, relationship, or map",
     ),
     int_sites_row(
         "range",
@@ -165,29 +191,13 @@ const FUNCTION_META: &[FunctionMeta] = &[
         "timestamp",
         ArityContract::exact(0, "timestamp() takes no arguments"),
     ),
-    arity_row(
-        "tobooleanlist",
-        ArityContract::exact(1, LIST_CONVERSION_ARITY),
-    ),
-    arity_row(
-        "tofloatlist",
-        ArityContract::exact(1, LIST_CONVERSION_ARITY),
-    ),
-    arity_row(
-        "tointegerlist",
-        ArityContract::exact(1, LIST_CONVERSION_ARITY),
-    ),
+    list_conversion_row("tobooleanlist", "toBooleanList() needs a list or vector"),
+    list_conversion_row("tofloatlist", "toFloatList() needs a list or vector"),
+    list_conversion_row("tointegerlist", "toIntegerList() needs a list or vector"),
     arity_row("tolower", ONE_ARGUMENT),
-    arity_row(
-        "tostringlist",
-        ArityContract::exact(1, LIST_CONVERSION_ARITY),
-    ),
+    list_conversion_row("tostringlist", "toStringList() needs a list or vector"),
     arity_row("toupper", ONE_ARGUMENT),
-    kind_row(
-        "type",
-        &[Binding::Node],
-        "InvalidArgumentType: type() needs a relationship",
-    ),
+    kind_row("type", &[Binding::Node], "type() needs a relationship"),
     arity_row("upper", ONE_ARGUMENT),
     arity_row(
         "valuetype",
@@ -233,13 +243,13 @@ pub(super) fn apply_function_meta(env: &Env, name: &str, args: &[Expr]) -> Resul
     if let Some(contract) = meta.arity {
         check_arity_contract(contract, args.len())?;
     }
-    if let Some((rejected, message)) = meta.rejected_kinds {
+    if let Some((rejected, detail)) = meta.rejected_kinds {
         if let Some(Expr::Variable(variable)) = args.first() {
             if env
                 .get_name(variable)
                 .is_some_and(|binding| rejected.contains(binding))
             {
-                return Err(Error::syntax(message));
+                return Err(Error::syntax(format!("InvalidArgumentType: {detail}")));
             }
         }
     }
@@ -256,6 +266,28 @@ fn check_arity_contract(contract: ArityContract, count: usize) -> Result<()> {
     match contract.violation(count) {
         Some(detail) => Err(Error::invalid_number_of_arguments(detail)),
         None => Ok(()),
+    }
+}
+
+/// `length()` accepts only a path (or null). Live Neo4j resolves the
+/// signature at compile time, so a string or list literal fails with
+/// GQLSTATUS 22G03 before any row is produced (`length([1, 2, 3])`,
+/// `length('a string')`, probed 2026-11-11). The `rejected_kinds` column
+/// refuses the same kinds (and the entity kinds) when they arrive bound to
+/// a variable; any other value keeps the runtime backstop (`bi_length`,
+/// same message).
+///
+/// A number or boolean literal is deliberately left to the runtime
+/// backstop: live resolves it the same way, but the corpus's
+/// `length of an integer raises a type error` row pins the runtime
+/// `TypeError` class, so the plan-time rejection stays limited to the
+/// string/list shapes whose corpus rows pin the compile-time class.
+fn rule_length_non_path_literal(args: &[Expr]) -> Result<()> {
+    match args.first() {
+        Some(Expr::String(_) | Expr::List(_)) => Err(Error::syntax(format!(
+            "InvalidArgumentType: {LENGTH_REQUIRES_A_PATH}"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -404,5 +436,70 @@ mod tests {
         );
 
         assert!(apply_function_meta(&env, "toString", args).is_ok());
+    }
+
+    /// The statically-known type faults live Neo4j reports as GQLSTATUS
+    /// 22G03 resolve at compile time, so they fail even when the driving
+    /// pattern matches no row: a relationship argument to `labels()`, an
+    /// entity argument of either kind to a list conversion, and a
+    /// string/list literal or bound list to `length()`.
+    #[test]
+    fn static_type_faults_are_rejected_at_plan_time() {
+        let mut env = Env::new();
+        env.insert_name(SmallName::from_name("r"), Binding::Rel);
+        env.insert_name(SmallName::from_name("n"), Binding::Node);
+        env.insert_name(SmallName::from_name("l"), Binding::List);
+        env.insert_name(SmallName::from_name("m"), Binding::Map);
+        let rel = vec![Expr::Variable(SmallName::from_name("r"))];
+        let node = vec![Expr::Variable(SmallName::from_name("n"))];
+        let list = vec![Expr::Variable(SmallName::from_name("l"))];
+        let map = vec![Expr::Variable(SmallName::from_name("m"))];
+
+        assert!(apply_function_meta(&env, "labels", &rel).is_err());
+        assert!(apply_function_meta(&env, "labels", &node).is_ok());
+        for name in [
+            "tostringlist",
+            "tointegerlist",
+            "tofloatlist",
+            "tobooleanlist",
+        ] {
+            assert!(
+                apply_function_meta(&env, name, &node).is_err(),
+                "{name} / node"
+            );
+            assert!(
+                apply_function_meta(&env, name, &rel).is_err(),
+                "{name} / rel"
+            );
+        }
+        assert!(apply_function_meta(&env, "tostringlist", &[Expr::List(Vec::new())]).is_ok());
+        // length(): a string/list literal and a bound list agree on the
+        // plan-time rejection; the number/boolean/map shapes keep the
+        // runtime backstop (same class live reports there).
+        for args in [
+            vec![Expr::String("s".into())],
+            vec![Expr::List(Vec::new())],
+            list,
+        ] {
+            assert!(
+                apply_function_meta(&env, "length", &args).is_err(),
+                "{args:?}"
+            );
+        }
+        for args in [
+            vec![Expr::Map(Vec::new())],
+            vec![Expr::Int(1)],
+            vec![Expr::Float(1.0)],
+            vec![Expr::Bool(true)],
+            map,
+        ] {
+            assert!(
+                apply_function_meta(&env, "length", &args).is_ok(),
+                "{args:?}"
+            );
+        }
+        // A dynamic argument keeps the runtime backstop.
+        assert!(apply_function_meta(&env, "length", &[Expr::Parameter("p".into())]).is_ok());
+        assert!(apply_function_meta(&env, "length", &[Expr::Null]).is_ok());
     }
 }

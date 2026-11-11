@@ -59,6 +59,28 @@ fn explicit_txn_uncommitted_not_durable() {
     assert_eq!(r.rows[0][0], Value::Int(0));
 }
 
+/// ADR-0570: a statement carrying `CALL { … } IN TRANSACTIONS` owns its
+/// batch commits, so an open explicit transaction refuses it — live Neo4j
+/// 2026.10.1 raises GQLSTATUS 25N17 (`TransactionStartFailed`). The same
+/// statement runs in an implicit transaction.
+#[test]
+fn call_in_transactions_is_refused_inside_an_explicit_transaction() {
+    let db = Database::open(":memory:").unwrap();
+    let mut c = db.connect().unwrap();
+    let statement = "UNWIND range(1, 3) AS i WITH [toString(i)] AS line \
+                     CALL { CREATE (n) RETURN n } IN TRANSACTIONS RETURN n";
+    c.query(statement).unwrap();
+    c.begin().unwrap();
+    let err = c.query(statement).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("can only be executed in an implicit transaction"),
+        "{err}"
+    );
+    // The refused statement leaves the transaction open and rollback-able.
+    c.rollback().unwrap();
+}
+
 #[test]
 fn explicit_txn_nested_begin_and_commit_without_begin() {
     let db = Database::open(":memory:").unwrap();

@@ -275,6 +275,46 @@ pub(crate) fn open_match_fold<'a>(
         .map(|aggregation| Some(MatchFold::new(aggregation)))
 }
 
+/// The projection's payload-inflation policy: identity, or a materializing
+/// refresh through the projection's one cache. One value carries both the
+/// per-value policy and whether the post-projection row sweep runs, so the
+/// two cannot disagree.
+enum Refresh<'a> {
+    Identity,
+    Materialize(&'a mut MaterializeCache),
+}
+
+impl Refresh<'_> {
+    /// The policy applied to one value.
+    fn apply(&mut self, graph: &ExecGraph<'_>, value: Value) -> Value {
+        match self {
+            Refresh::Identity => value,
+            Refresh::Materialize(cache) => graph.materialize_cached(value, cache),
+        }
+    }
+
+    /// The post-projection sweep: refresh every visible column of every row.
+    /// The parked `__ord*` sort keys keep the values the group or sink
+    /// produced — they are compared, not returned, so they are not inflation
+    /// surface.
+    fn rows(&mut self, graph: &ExecGraph<'_>, rows: &mut [Row]) {
+        if matches!(self, Refresh::Identity) {
+            return;
+        }
+        for row in rows {
+            let keys: Vec<String> = row
+                .keys()
+                .filter(|key| !is_internal_column(key))
+                .cloned()
+                .collect();
+            for key in keys {
+                let value = row.shift_remove(&key).expect("key from row.keys()");
+                row.insert(key, self.apply(graph, value));
+            }
+        }
+    }
+}
+
 pub(crate) fn project_rows(
     ctx: ExecCtx<'_>,
     feed: RowFeed<'_>,
@@ -368,7 +408,7 @@ pub(crate) fn project_rows(
             (rows, None)
         }
     };
-    let mut rows = if eager_paged {
+    let rows = if eager_paged {
         let (skip_n, limit_n) =
             resolve_page_bounds(graph, params, cypher_version, skip.as_ref(), limit.as_ref())?;
         page(rows, skip_n, limit_n)
@@ -378,181 +418,47 @@ pub(crate) fn project_rows(
     // One cache for the whole projection: its expressions never write, so
     // the graph state, and with it each payload's refresh, is fixed here.
     let mut cache = MaterializeCache::default();
-    let mut refresh = |v: Value| {
-        if inflate {
-            graph.materialize_cached(v, &mut cache)
-        } else {
-            v
-        }
+    let mut refresh = if inflate {
+        Refresh::Materialize(&mut cache)
+    } else {
+        Refresh::Identity
     };
     let mut merged = if preprojected {
-        // ADR-0463 (LABS-781): the pass-through's output container is as
-        // retaining as the plain branch's — refreshed payloads under
-        // inflate, and every row's buffers — so its landings grow the
-        // same running total (one policy, every merge path).
-        let mut retained = graph.retain_bytes(0)?;
-        if inflate {
-            for row in &mut rows {
-                let keys: Vec<String> = row
-                    .keys()
-                    .filter(|key| !is_internal_column(key))
-                    .cloned()
-                    .collect();
-                for key in keys {
-                    let Some(value) = row.get(&key).cloned() else {
-                        continue;
-                    };
-                    let fresh = refresh(value);
-                    if let Some(slot) = row.get_mut(&key) {
-                        *slot = fresh;
-                    }
-                }
-            }
-        }
-        for row in &rows {
-            retained.add_row(graph, row.values())?;
-        }
-        rows
+        preprojected_rows(graph, rows, &mut refresh)?
     } else if star && !has_agg {
-        // ADR-0463 (LABS-781): the star branch's output rows are as
-        // retaining as the plain branch's — same guard, same landing
-        // charge, after the spent source row is dropped so `owned_heap`
-        // sees the output container's real ownership.
-        let mut retained = graph.retain_bytes(0)?;
-        rows.into_iter()
-            .map(|r| -> Result<Row> {
-                let mut n = Row::new();
-                for (k, v) in &r {
-                    if !is_internal_column(k) {
-                        n.insert(k.clone(), refresh(v.clone()));
-                    }
-                }
-                for (index, projection) in items.iter().enumerate() {
-                    if is_star_item(projection) {
-                        continue;
-                    }
-                    let value = eval(graph, &r, &projection.expr, params, cypher_version)?;
-                    n.insert(projection.output_name(index), refresh(value));
-                }
-                drop(r);
-                park_order_keys(&order_keys, &mut n, |expr, scope| {
-                    eval(graph, scope, expr, params, cypher_version)
-                });
-                // The star branch's output row landing in its final
-                // shape, through the same one `add_row` charge.
-                retained.add_row(graph, n.values())?;
-                Ok(n)
-            })
-            .collect::<Result<Vec<_>>>()?
+        star_rows(
+            graph,
+            params,
+            cypher_version,
+            rows,
+            items,
+            &order_keys,
+            &mut refresh,
+        )?
     } else if has_agg {
-        // ADR-0453: the split above routed the aggregate-call WHERE here
-        // as HAVING — the aggregation path evaluates it per group
-        // (aggregate calls fold the group, non-aggregate leaves read the
-        // projected row) and filters there; the plain filter below would
-        // evaluate the aggregates against the aggregated row and fail.
-        let mut agg = match stream {
-            Some(RowFeed::Folded(aggregation)) => aggregation.finish(graph)?,
-            stream => aggregate_ex(
-                graph,
-                stream.unwrap_or(RowFeed::Held(rows)),
-                items,
-                group_by,
-                params,
-                cypher_version,
-                &GroupSubclauses {
-                    order: &order_keys,
-                    having,
-                    import_scope: scope,
-                },
-            )?,
-        };
-        if inflate {
-            for row in &mut agg {
-                // The parked `__ord*` sort keys keep the values the group
-                // produced: they are compared, not returned, so they are not
-                // inflation surface.
-                let keys: Vec<String> = row
-                    .keys()
-                    .filter(|key| !is_internal_column(key))
-                    .cloned()
-                    .collect();
-                for k in keys {
-                    if let Some(v) = row.shift_remove(&k) {
-                        row.insert(k, refresh(v));
-                    }
-                }
-            }
-        }
-        // The rows were charged inside aggregate_ex's emission loop, as
-        // each group row landed; the inflate refresh above materializes
-        // graph-cached payloads into row-owned copies whose delta rides
-        // uncharged (a bounded approximation: the subquery-scope
-        // materialization path, its payloads already counted once at
-        // their construction or borrowed from the store).
-        agg
+        aggregate_rows(
+            graph,
+            params,
+            cypher_version,
+            stream.unwrap_or(RowFeed::Held(rows)),
+            items,
+            group_by,
+            &order_keys,
+            having,
+            scope,
+            &mut refresh,
+        )?
     } else {
-        let mut keep = HashSet::new();
-        if let Some(w) = where_clause {
-            expr_vars(w, &mut keep);
-        }
-        for o in order {
-            expr_vars(&o.expr, &mut keep);
-        }
-        let mut out = Vec::new();
-        // ADR-0463: the projected rows are one retaining container. Each
-        // output row's payloads plus its buffers grow the running total; the
-        // per-allocation checks alone cannot see a many-row result whose
-        // rows each build a large but under-cap value.
-        let mut retained = graph.retain_bytes(0)?;
-        for mut row in rows {
-            // The item values first, against the incoming row, then the kept
-            // bindings (a `WITH` filter or an `ORDER BY` key may name one the
-            // projection does not produce), then the items over them — the
-            // projected row a key is evaluated against.
-            let projected: Vec<(String, Value)> = items
-                .iter()
-                .enumerate()
-                .filter(|(_, projection)| !is_star_item(projection))
-                .map(|(i, projection)| {
-                    let name = projection.output_name(i);
-                    let val = eval(graph, &row, &projection.expr, params, cypher_version)?;
-                    Ok((name, refresh(val)))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let mut row2 = Row::new();
-            let kept: Vec<String> = row
-                .keys()
-                .filter(|name| keep.contains(name.as_str()))
-                .cloned()
-                .collect();
-            for name in kept {
-                if let Some(value) = row.take_value(&name) {
-                    row2.insert(name, value);
-                }
-            }
-            for (name, value) in projected {
-                row2.insert(name, value);
-            }
-            // The source row is spent — its kept bindings moved, the rest
-            // dropped — so the built row's values are the output
-            // container's own and `owned_heap` sees their real ownership:
-            // a projected variable read is a clone that shared the source
-            // row's `Arc` while it lived, and charging before the drop
-            // would skip its payload.
-            drop(row);
-            park_order_keys(&order_keys, &mut row2, |expr, scope| {
-                eval(graph, scope, expr, params, cypher_version)
-            });
-            // The built row landing in the output container, in its
-            // final shape: the identity rule counts each distinct
-            // payload once however many slots reference it (a projected
-            // alias and its parked ORDER BY clone count the payload
-            // once, a fresh constructed key its own), and the buffer
-            // figure carries the parked columns' slots.
-            retained.add_row(graph, row2.values())?;
-            out.push(row2);
-        }
-        out
+        plain_rows(
+            graph,
+            params,
+            cypher_version,
+            rows,
+            items,
+            &order_keys,
+            where_clause,
+            &mut refresh,
+        )?
     };
 
     // The WHERE stage: whatever the split above left as the plain
@@ -619,5 +525,192 @@ pub(crate) fn project_rows(
         retained_rows.resize_with(|| crate::workspace::row_buffer_bytes(&out))?;
     }
     drop(retained_rows);
+    Ok(out)
+}
+
+/// The pass-through mode: the match sink already evaluated the items, so
+/// only the inflate refresh and the one landing charge remain.
+fn preprojected_rows(
+    graph: &ExecGraph<'_>,
+    mut rows: Vec<Row>,
+    refresh: &mut Refresh<'_>,
+) -> Result<Vec<Row>> {
+    // ADR-0463 (LABS-781): the pass-through's output container is as
+    // retaining as the plain branch's — refreshed payloads under inflate,
+    // and every row's buffers — so its landings grow the same running
+    // total (one policy, every merge path).
+    let mut retained = graph.retain_bytes(0)?;
+    refresh.rows(graph, &mut rows);
+    for row in &rows {
+        retained.add_row(graph, row.values())?;
+    }
+    Ok(rows)
+}
+
+/// The `RETURN *` mode: the visible incoming bindings plus the explicit
+/// items, with every output row charged as it lands.
+fn star_rows(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    rows: Vec<Row>,
+    items: &[Projection],
+    order_keys: &OrderKeys<'_>,
+    refresh: &mut Refresh<'_>,
+) -> Result<Vec<Row>> {
+    // ADR-0463 (LABS-781): the star branch's output rows are as retaining
+    // as the plain branch's — same guard, same landing charge, after the
+    // spent source row is dropped so `owned_heap` sees the output
+    // container's real ownership.
+    let mut retained = graph.retain_bytes(0)?;
+    rows.into_iter()
+        .map(|r| -> Result<Row> {
+            let mut n = Row::new();
+            for (k, v) in &r {
+                if !is_internal_column(k) {
+                    n.insert(k.clone(), refresh.apply(graph, v.clone()));
+                }
+            }
+            for (index, projection) in items.iter().enumerate() {
+                if is_star_item(projection) {
+                    continue;
+                }
+                let value = eval(graph, &r, &projection.expr, params, cypher_version)?;
+                n.insert(projection.output_name(index), refresh.apply(graph, value));
+            }
+            drop(r);
+            park_order_keys(order_keys, &mut n, |expr, scope| {
+                eval(graph, scope, expr, params, cypher_version)
+            })?;
+            // The star branch's output row landing in its final shape,
+            // through the same one `add_row` charge.
+            retained.add_row(graph, n.values())?;
+            Ok(n)
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+/// The aggregation mode: HAVING (the aggregate-call WHERE) is evaluated per
+/// group inside the aggregation, and the group rows were charged in the
+/// emission loop.
+#[allow(clippy::too_many_arguments)]
+fn aggregate_rows<'a>(
+    graph: &ExecGraph<'_>,
+    params: &'a BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    feed: RowFeed<'_>,
+    items: &'a [Projection],
+    group_by: Option<&'a [Expr]>,
+    order_keys: &'a OrderKeys<'a>,
+    having: Option<&'a Expr>,
+    scope: Option<&'a Row>,
+    refresh: &mut Refresh<'_>,
+) -> Result<Vec<Row>> {
+    // ADR-0453: the caller routed the aggregate-call WHERE here as HAVING —
+    // the aggregation path evaluates it per group (aggregate calls fold the
+    // group, non-aggregate leaves read the projected row) and filters
+    // there; the plain filter would evaluate the aggregates against the
+    // aggregated row and fail.
+    let mut agg = match feed {
+        RowFeed::Folded(aggregation) => aggregation.finish(graph)?,
+        feed => aggregate_ex(
+            graph,
+            feed,
+            items,
+            group_by,
+            params,
+            cypher_version,
+            &GroupSubclauses {
+                order: order_keys,
+                having,
+                import_scope: scope,
+            },
+        )?,
+    };
+    refresh.rows(graph, &mut agg);
+    // The rows were charged inside aggregate_ex's emission loop, as each
+    // group row landed; the inflate refresh above materializes graph-cached
+    // payloads into row-owned copies whose delta rides uncharged (a bounded
+    // approximation: the subquery-scope materialization path, its payloads
+    // already counted once at their construction or borrowed from the
+    // store).
+    Ok(agg)
+}
+
+/// The plain projection mode: each item over the incoming row, the kept
+/// bindings the subclauses may name, then the parked order keys — one
+/// landing charge per output row.
+#[allow(clippy::too_many_arguments)]
+fn plain_rows(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    rows: Vec<Row>,
+    items: &[Projection],
+    order_keys: &OrderKeys<'_>,
+    where_clause: Option<&Expr>,
+    refresh: &mut Refresh<'_>,
+) -> Result<Vec<Row>> {
+    let mut keep = HashSet::new();
+    if let Some(w) = where_clause {
+        expr_vars(w, &mut keep);
+    }
+    for expr in order_keys.exprs() {
+        expr_vars(expr, &mut keep);
+    }
+    let mut out = Vec::new();
+    // ADR-0463: the projected rows are one retaining container. Each output
+    // row's payloads plus its buffers grow the running total; the
+    // per-allocation checks alone cannot see a many-row result whose rows
+    // each build a large but under-cap value.
+    let mut retained = graph.retain_bytes(0)?;
+    for mut row in rows {
+        // The item values first, against the incoming row, then the kept
+        // bindings (a `WITH` filter or an `ORDER BY` key may name one the
+        // projection does not produce), then the items over them — the
+        // projected row a key is evaluated against.
+        let projected: Vec<(String, Value)> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, projection)| !is_star_item(projection))
+            .map(|(i, projection)| {
+                let name = projection.output_name(i);
+                let val = eval(graph, &row, &projection.expr, params, cypher_version)?;
+                Ok((name, refresh.apply(graph, val)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut row2 = Row::new();
+        let kept: Vec<String> = row
+            .keys()
+            .filter(|name| keep.contains(name.as_str()))
+            .cloned()
+            .collect();
+        for name in kept {
+            if let Some(value) = row.take_value(&name) {
+                row2.insert(name, value);
+            }
+        }
+        for (name, value) in projected {
+            row2.insert(name, value);
+        }
+        // The source row is spent — its kept bindings moved, the rest
+        // dropped — so the built row's values are the output container's
+        // own and `owned_heap` sees their real ownership: a projected
+        // variable read is a clone that shared the source row's `Arc`
+        // while it lived, and charging before the drop would skip its
+        // payload.
+        drop(row);
+        park_order_keys(order_keys, &mut row2, |expr, scope| {
+            eval(graph, scope, expr, params, cypher_version)
+        })?;
+        // The built row landing in the output container, in its final
+        // shape: the identity rule counts each distinct payload once
+        // however many slots reference it (a projected alias and its
+        // parked ORDER BY clone count the payload once, a fresh constructed
+        // key its own), and the buffer figure carries the parked columns'
+        // slots.
+        retained.add_row(graph, row2.values())?;
+        out.push(row2);
+    }
     Ok(out)
 }

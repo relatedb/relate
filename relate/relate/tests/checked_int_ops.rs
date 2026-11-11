@@ -9,14 +9,15 @@
 //! "integer out of range" query error — Neo4j errors on integer overflow
 //! (never wraps), and node 03 established that phrasing for unary minus.
 //!
-//! ADR-0175 (LABS-178) carved out the two cases where Neo4j uses plain
-//! Java operators with no overflow check: `i64::MIN / -1` wraps to
-//! `i64::MIN` and `i64::MIN % -1` is 0 — replicated here deliberately for
-//! cross-engine portability (they live in `in_range_integer_arithmetic_
-//! still_works` below). range()'s size computation still errors on i64
-//! overflow, but a range whose size is representable no longer errors just
-//! because the *last* step would leave i64 (Neo4j returns it: e.g.
-//! `range(i64::MAX, i64::MAX)` is `[i64::MAX]`).
+//! ADR-0569 (superseding ADR-0175's carve-out) makes division checked too:
+//! `i64::MIN / -1` raises "integer out of range" like every other
+//! overflowing operator (live Neo4j 2026.10.1 raises 22003), while
+//! `i64::MIN % -1` keeps its exact 0 result (in
+//! `in_range_integer_arithmetic_still_works` below). range()'s size
+//! computation still errors on i64 overflow, but a range whose size is
+//! representable no longer errors just because the *last* step would leave
+//! i64 (Neo4j returns it: e.g. `range(i64::MAX, i64::MAX)` is
+//! `[i64::MAX]`).
 //!
 //! Every OVERFLOW_QUERIES entry panicked in a debug build before the fix.
 //!
@@ -47,6 +48,10 @@ const OVERFLOW_QUERIES: &[&str] = &[
     // leaves i64 — Neo4j raises 22N28 from its subtractExact/addExact.
     r#"RETURN range(-9223372036854775807 - 1, 9223372036854775807)"#,
     r#"RETURN range(0, 9223372036854775807)"#,
+    // Division is checked like the other operators since ADR-0569 (live
+    // Neo4j 2026.10.1 raises 22003 for the one overflowing integer
+    // division); ADR-0175's plain-Java wrap is superseded.
+    r#"RETURN (-9223372036854775807 - 1) / -1"#,
 ];
 
 /// The historical Sub/abs repro derived `i64::MIN` months through
@@ -121,10 +126,8 @@ fn in_range_integer_arithmetic_still_works() {
         ("RETURN 7 / 2", 3),
         ("RETURN -7 / 2", -3),
         ("RETURN (-9223372036854775807 - 1) / 1", i64::MIN),
-        // ADR-0175: Neo4j's plain Java `/` and `%` carry no overflow check,
-        // so MIN / -1 wraps to MIN and MIN % -1 is 0 (a deliberate,
-        // mathematically wrong wrap replicated for cross-engine parity).
-        ("RETURN (-9223372036854775807 - 1) / -1", i64::MIN),
+        // ADR-0569: MIN / -1 is a checked overflow (see OVERFLOW_QUERIES);
+        // MIN % -1 keeps its exact 0 result.
         ("RETURN (-9223372036854775807 - 1) % -1", 0),
         ("RETURN 7 % 3", 1),
         ("RETURN (-9223372036854775807 - 1) % 1", 0),

@@ -21,7 +21,7 @@ use crate::pattern::{check_path_exprs, check_pattern_pred_vars};
 use crate::validate::{clause_is_write, validate_part_with_env};
 
 mod function_meta;
-mod literal;
+pub(crate) mod literal;
 pub(crate) mod shadowing;
 
 use function_meta::apply_function_meta;

@@ -414,11 +414,14 @@ pub(crate) fn div(l: Value, r: Value) -> Result<Value> {
             if *b == 0 {
                 return Err(Error::arithmetic(ArithmeticFailure::DivisionByZero));
             }
-            // ADR-0175: i64::MIN / -1 wraps to i64::MIN, matching
-            // Neo4j's plain Java `/`, which carries no overflow check
-            // (unlike +, -, * and unary minus, which keep raising
-            // `integer out of range`).
-            Value::Int(a.wrapping_div(*b))
+            // Checked like +, -, * and unary minus: live Neo4j 2026.10.1
+            // raises 22003 for `i64::MIN / -1` ("long overflow"), the one
+            // checked-division overflow, so do not wrap. (ADR-0175 had
+            // recorded the plain-Java wrap; superseded by ADR-0569.)
+            Value::Int(
+                a.checked_div(*b)
+                    .ok_or_else(|| Error::ty("integer out of range"))?,
+            )
         }
         _ => {
             let a = l.as_number().ok_or_else(|| Error::ty("/ needs numbers"))?;
@@ -668,6 +671,17 @@ mod tests {
 
     fn ty_err(msg: &str) -> String {
         Error::ty(msg).to_string()
+    }
+
+    /// Live Neo4j 2026.10.1 raises 22003 for `i64::MIN / -1`; modulo keeps
+    /// answering 0 (the exact result, ADR-0569).
+    #[test]
+    fn integer_division_overflow_is_rejected_and_modulo_wraps() {
+        assert_eq!(
+            div(int(i64::MIN), int(-1)).unwrap_err().to_string(),
+            ty_err("integer out of range")
+        );
+        assert_eq!(mod_op(int(i64::MIN), int(-1)).unwrap(), int(0));
     }
 
     /// Five characters of 1, 2, 4, 1 and 2 bytes: slice bounds count

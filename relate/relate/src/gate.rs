@@ -14,7 +14,7 @@ use relate_core::{ce_messages, Namespace};
 use relate_executor::{is_ontology_store_op, is_ontology_write_procedure};
 use relate_ir::{Clause, Query};
 use relate_planner::{
-    admin_command_heads_statement, composed_admin_disallowed_clause, is_database_admin_command,
+    admin_command_heads_statement, composed_show_disallowed_clause, is_database_admin_command,
     is_write, plan_with_tokens, query_type, unsupported_system_clause_names, LogicalPlan,
     QueryType,
 };
@@ -154,6 +154,9 @@ impl Connection {
             return Err(e);
         }
         validate_calls(&self.inner.graph, logical, params)?;
+        if let Some(e) = self.transaction_gate_error(logical) {
+            return Err(e);
+        }
         // ADR-0116 §2 (2026-11-04): the 42N79 auto-routing gate — after
         // CALL validation (a doubly-invalid statement reports the
         // procedure error, the ordering the namespace gates below keep)
@@ -212,6 +215,16 @@ impl Connection {
             qtype,
             write_route,
         })
+    }
+
+    /// ADR-0570: a statement carrying `CALL { … } IN TRANSACTIONS` owns its
+    /// own batch commits, so it is an implicit-transaction-only shape — the
+    /// same plan-time rule the ontology store ops follow below (live Neo4j
+    /// 2026.10.1 raises GQLSTATUS 25N17 inside an open explicit
+    /// transaction).
+    fn transaction_gate_error(&self, logical: &LogicalPlan) -> Option<Error> {
+        (self.txn.is_some() && relate_planner::plan_contains_in_transactions(logical))
+            .then(ce_messages::call_in_transactions_implicit_only)
     }
 
     /// The preview gate (ADR-0371, ADR-0378), enforced at compile time under
@@ -328,14 +341,13 @@ impl Connection {
             return None;
         }
         match namespace {
-            // ADR-0116 §4, completed 2026-11-04: a `WITH` composing a
-            // database-administration command is rejected first, with CE's
-            // composability text — CE's front-end composability check
-            // precedes its plan-level clause whitelist, and live CE
-            // reports the combined `… WITH … MATCH …` shape with the
-            // composability text too. Every other offender keeps the
-            // 42N17 text.
-            Namespace::System => composed_admin_disallowed_clause(logical)
+            // ADR-0116 §4: a `WITH` composing a SHOW command is rejected
+            // first, with CE's composability text — CE's front-end
+            // composability check precedes its plan-level clause whitelist,
+            // and live CE reports the combined `… WITH … MATCH …` shape
+            // with the composability text too. Every other offender keeps
+            // the 42N17 text.
+            Namespace::System => composed_show_disallowed_clause(logical)
                 .map(ce_messages::clauses_not_allowed_on_system_database)
                 .or_else(|| {
                     unsupported_system_clause_names(logical)

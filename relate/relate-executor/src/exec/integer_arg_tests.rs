@@ -24,9 +24,9 @@
 //!   A non-numeric runtime value (`head(['x', '1'])`, a parameter) takes
 //!   that rejection from the executor's argument coercion, and only a
 //!   genuinely absent argument keeps the historical default.
-//! - `(-9223372036854775808) / -1` wraps to -9223372036854775808 and
-//!   `% -1` is 0 (Neo4j's plain Java operators); `+` / `-` / `*` / unary
-//!   `-` keep raising `integer out of range`.
+//! - `(-9223372036854775808) / -1` raises `integer out of range` like the
+//!   other checked operators (ADR-0569, superseding ADR-0175's wrap);
+//!   `% -1` keeps its exact 0 result.
 //!
 //! The six `‡` deviation rows (`SKIP` / `LIMIT` of `0.0/0.0`, `1.0/0.0`
 //! and `head([1.0/0.0, 'x'])`) fail at compile time in Neo4j (22NB1 /
@@ -430,11 +430,11 @@ fn adr0175_other_sites_probe_rows() {
             "RETURN -(-9223372036854775807 - 1) AS v",
             Expect::Err("type error: integer out of range"),
         ),
-        // MIN / -1 wraps to MIN and MIN % -1 is 0 (Neo4j's plain Java
-        // operators carry no overflow check on those two).
+        // MIN / -1 overflows (ADR-0569, checked like +, -, * and unary
+        // minus); MIN % -1 keeps its exact 0 result.
         (
             "RETURN (-9223372036854775807 - 1) / -1 AS v",
-            Expect::V(Value::Int(i64::MIN)),
+            Expect::Err("type error: integer out of range"),
         ),
         (
             "RETURN (-9223372036854775807 - 1) % -1 AS v",

@@ -1,12 +1,56 @@
 //! The W5 semantic-error corpus rules the planner owns.
 
 use relate_front::parse_and_lower;
+use relate_ir::Clause;
 
 use super::*;
+use crate::binding::Binding;
 
 fn accepted(src: &str) {
     let q = parse_and_lower(src).unwrap_or_else(|e| panic!("{src}: {e}"));
     plan(q, &mut |_| false).unwrap_or_else(|e| panic!("{src}: {e}"));
+}
+
+/// The static binding a projected expression carries into the next stage,
+/// from its lowered IR.
+fn static_binding(expr_src: &str) -> Option<Binding> {
+    let q = parse_and_lower(&format!("RETURN {expr_src} AS n")).unwrap();
+    match q.parts[0].clauses.last() {
+        Some(Clause::Return { items, .. }) => Binding::of_static_expr(&items[0].expr),
+        other => panic!("expected a RETURN, got {other:?}"),
+    }
+}
+
+/// A projected subquery expression carries its static result type into the
+/// enclosing scope (`EXISTS` → BOOLEAN, `COUNT` → INTEGER, `COLLECT` →
+/// LIST), so a *following-clause* pattern that reuses the name as a node is
+/// the authored `VariableTypeConflict` — live Neo4j 2026.10.1 raises it at
+/// compile time. (A pattern inside an expression-subquery body is not this
+/// rule: those non-entity imports are shadowable by design, and live reports
+/// a value-level fault there instead.)
+#[test]
+fn a_projected_subquery_expression_keeps_its_static_type() {
+    // The classification itself, per case: a wrong mapping (e.g. `COLLECT`
+    // read as a scalar) must fail here, not merely produce some conflict.
+    for (expr, expected) in [
+        ("exists{ RETURN true }", Binding::Scalar),
+        ("count{ RETURN 1 }", Binding::Scalar),
+        ("collect{ RETURN 1 }", Binding::List),
+    ] {
+        assert_eq!(static_binding(expr), Some(expected), "{expr}");
+    }
+    // Each reused as a following-clause pattern node is the authored
+    // VariableTypeConflict.
+    for src in [
+        "WITH exists{ RETURN true } AS n MATCH (n) RETURN n",
+        "WITH count{ RETURN 1 } AS n MATCH (n) RETURN n",
+        "WITH collect{ RETURN 1 } AS n MATCH (n) RETURN n",
+    ] {
+        let error = rejection(src);
+        assert!(error.contains("VariableTypeConflict"), "{src}: {error}");
+    }
+    // The same result used as a plain value stays legal.
+    accepted("WITH count{ RETURN 1 } AS n RETURN n");
 }
 
 #[test]

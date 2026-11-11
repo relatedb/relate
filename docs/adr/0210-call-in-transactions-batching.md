@@ -173,3 +173,11 @@ facade commit entry; it does not alter global-bulk detection.
   commit-time checks.
 - `IN TRANSACTIONS` inside an explicit transaction retains the previous
   single-overlay semantics (no per-batch durable commits).
+
+## Later references
+
+- ADR-0570 supersedes the last consequence above: live Neo4j 2026.10.1
+  refuses a `CALL { … } IN TRANSACTIONS` statement inside an open explicit
+  transaction (GQLSTATUS 25N17) rather than batching into the transaction's
+  overlay, and the engine now refuses it at admission. The
+  implicit-transaction batch contract recorded here is unchanged.

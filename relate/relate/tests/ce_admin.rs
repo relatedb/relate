@@ -260,15 +260,15 @@ fn start_stop_alias_stay_usable_as_identifiers() {
     assert_eq!(result.rows, vec![vec![Value::String("stop".into())]]);
 }
 
-/// ADR-0116 §4, completed 2026-11-04: a `WITH` in a query part that
-/// composes a database-administration command is rejected when the
-/// statement is routed to `system` — by a `USE system` clause from any
-/// session, or by the session namespace itself without a `USE` clause.
-/// Position within the part is not part of the rule (live CE rejects the
-/// `WITH … <command> …` spelling with the same text), and every §2
-/// command with a `YIELD` is covered.
+/// ADR-0116 §4: a `WITH` in a query part that composes a SHOW command is
+/// rejected when the statement is routed to `system` — by a `USE system`
+/// clause from any session, or by the session namespace itself without a
+/// `USE` clause. Position within the part is not part of the rule (live CE
+/// rejects the `WITH … <command> …` spelling with the same text), and every
+/// catalog command the `system` namespace admits is covered, not only the
+/// §2 administration commands (live Neo4j 2026.10.1: 42NA9).
 #[test]
-fn with_composing_an_administration_command_is_rejected_on_system() {
+fn with_composing_a_show_command_is_rejected_on_system() {
     let mut conn = connection();
     for src in [
         "USE system SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
@@ -276,6 +276,10 @@ fn with_composing_an_administration_command_is_rejected_on_system() {
         "USE system SHOW HOME DATABASE YIELD name WITH 1 AS n RETURN n",
         "USE system SHOW DATABASE neo4j YIELD name WITH 1 AS n RETURN n",
         "USE system WITH 1 AS n SHOW DATABASES YIELD name RETURN name",
+        "USE system SHOW PROCEDURES YIELD name AS p1 WITH 1 AS n RETURN n",
+        "USE system SHOW FUNCTIONS YIELD name AS f1 WITH 1 AS n RETURN n",
+        "USE system SHOW SETTINGS YIELD name AS s1 WITH 1 AS n RETURN n",
+        "USE system SHOW CURRENT GRAPH TYPE YIELD specification AS spec1 WITH 1 AS n RETURN n",
     ] {
         let err = err_text(conn.query(src));
         assert!(
@@ -305,6 +309,9 @@ fn with_composing_an_administration_command_is_rejected_on_system() {
         err.ends_with(&format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}")),
         "{err:?}"
     );
+    // Off the `system` namespace the same composition is legal.
+    conn.query("SHOW SETTINGS YIELD name AS s1 WITH 1 AS n RETURN n")
+        .expect("SHOW … WITH … RETURN composes off-system");
 }
 
 /// ADR-0116 §2, amended 2026-11-04: a `USE` clause targeting any

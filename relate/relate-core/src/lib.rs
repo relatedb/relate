@@ -37,7 +37,7 @@ pub use dynamic::{
 pub use error::{
     builtin_arity, expected_type_detail, negative_page_bound_text, uniqueness_violation_detail,
     ArithmeticFailure, ArityContract, CapacityKind, Error, Result, CHAR_LENGTH_ARITY, FORMAT_ARITY,
-    FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS, FUNCTION_REQUIRES_ONE_ARGUMENT,
+    FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS, FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
     NEGATIVE_PAGE_BOUND_DETAIL, NULLIF_ARITY, NULLIF_REQUIRES_TWO_ARGUMENTS, VECTOR_ARITY,
     VECTOR_REQUIRES_THREE_ARGUMENTS,
 };

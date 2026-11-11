@@ -469,6 +469,13 @@ impl Value {
 /// component names is the same typed rejection the temporal reader answers,
 /// never a silently null read. The coordinate aliases (`x` is `longitude`)
 /// are the shared axis vocabulary beside [`PointValue`].
+///
+/// Which axis spellings a point exposes is live Neo4j 2026.10.1's rule
+/// (probed 2026-11-11): a cartesian point has only the cartesian
+/// spellings (`x`/`y`/`z`), a geographic point accepts both (`x` and
+/// `longitude`, …), and the third axis exists only on a 3D point. An
+/// unavailable spelling is `ArgumentError` "Field: <key> is not
+/// available", not a null read.
 pub fn point_component(p: &PointValue, key: &str) -> Result<Value, Error> {
     let name = key.to_ascii_lowercase();
     Ok(match name.as_str() {
@@ -488,10 +495,20 @@ pub fn point_component(p: &PointValue, key: &str) -> Result<Value, Error> {
                     "no such component '{key}' on a point value"
                 )));
             };
+            // A cartesian point has no geographic spelling; any point has
+            // the third axis only when it is 3D (`p.z` is its presence).
+            let cartesian = !relate_model::point::is_geographic(p.srid);
+            let unavailable =
+                (cartesian && axis.key(true) == name) || (axis.index == 2 && p.z.is_none());
+            if unavailable {
+                return Err(Error::argument_error(format!(
+                    "Field: {key} is not available on a point value"
+                )));
+            }
             match axis.index {
                 0 => Value::Float(p.x),
                 1 => Value::Float(p.y),
-                _ => p.z.map(Value::Float).unwrap_or(Value::Null),
+                _ => Value::Float(p.z.expect("the 3D check admitted only a present z")),
             }
         }
     })
@@ -744,5 +761,7 @@ pub fn uuid_parse(s: &str) -> Option<u128> {
 
 #[cfg(test)]
 mod depth_tests;
+#[cfg(test)]
+mod point_tests;
 #[cfg(test)]
 mod tests;

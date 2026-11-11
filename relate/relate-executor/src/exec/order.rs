@@ -6,7 +6,7 @@
 //! not a section of it).
 
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, Projection};
@@ -65,6 +65,10 @@ struct KeyPlan<'a> {
     /// The projected column a verbatim, non-alias-scoped key answers from;
     /// `None` means the key is evaluated. Resolved once here, never per row.
     verbatim: Option<String>,
+    /// Whether a failed evaluation of this key is a null sort key: true for
+    /// the deprecated implicit-grouping resolution — a key that reads a name
+    /// the projection does not output. Decided once here, never per row.
+    null_on_failure: bool,
     parked: String,
 }
 
@@ -90,7 +94,9 @@ impl<'a> OrderKeys<'a> {
     /// Parked names only, no verbatim table: the folded-aggregate path
     /// resolves each key's value statically (an aggregate item's expression
     /// cannot be re-evaluated on the folded row), so it must never consult
-    /// the per-row resolver.
+    /// the per-row resolver. This constructor owns the per-key
+    /// `null_on_failure` decision for every plan it builds; [`Self::new`]
+    /// inherits it rather than recomputing the same value.
     pub(crate) fn parked_only(
         keys: impl IntoIterator<Item = &'a relate_ir::OrderItem>,
         items: &'a [Projection],
@@ -103,6 +109,7 @@ impl<'a> OrderKeys<'a> {
                 .map(|(index, key)| KeyPlan {
                     key,
                     verbatim: None,
+                    null_on_failure: reads_unprojected_name(&key.expr, items),
                     parked: format!("{parked_prefix}{index}"),
                 })
                 .collect(),
@@ -136,16 +143,27 @@ impl<'a> OrderKeys<'a> {
     /// the evaluated expression. The one key policy [`park_order_keys`] and
     /// [`parked_values`] share. A verbatim key's column is a projection
     /// output the scope row carries by contract, so a miss is a bug, not a
-    /// reason to sort on a re-evaluated value; an expression that cannot be
-    /// evaluated is a null sort key, not a statement failure.
-    fn value<F>(&self, index: usize, scope: &Row, key_value: &F) -> Value
+    /// reason to sort on a re-evaluated value.
+    ///
+    /// A key in the deprecated implicit-grouping resolution — one that reads
+    /// a name the projection does not output — sorts null when it cannot be
+    /// evaluated, not failing the statement. A key that reads only projected
+    /// columns is alias-scoped, so a failed evaluation is the statement
+    /// failure live Neo4j raises (22G03, e.g. a property access on a
+    /// projected integer alias under an explicit `GROUP BY`).
+    fn value<F>(&self, index: usize, scope: &Row, key_value: &F) -> Result<Value>
     where
         F: Fn(&Expr, &Row) -> Result<Value>,
     {
-        if let Some(name) = &self.plan[index].verbatim {
-            return result_column(scope, name).clone();
+        let plan = &self.plan[index];
+        if let Some(name) = &plan.verbatim {
+            return Ok(result_column(scope, name).clone());
         }
-        key_value(&self.plan[index].key.expr, scope).unwrap_or(Value::Null)
+        match key_value(&plan.key.expr, scope) {
+            Ok(value) => Ok(value),
+            Err(_) if plan.null_on_failure => Ok(Value::Null),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -161,15 +179,17 @@ impl<'a> OrderKeys<'a> {
 /// `a.p AS k` keeps the incoming `a.p`, while `ORDER BY n + 2` beside
 /// `n.num AS n` reads the projected `n`, as the TCK pins).
 ///
-/// `key_value` evaluates one key against the projected row; a key it cannot
-/// evaluate becomes a null sort key ([`OrderKeys::value`]).
+/// `key_value` evaluates one key against the projected row; a deprecated
+/// key it cannot evaluate becomes a null sort key, while an alias-scoped
+/// key's failure propagates ([`OrderKeys::value`]).
 pub(crate) fn park_order_keys(
     keys: &OrderKeys<'_>,
     projected: &mut Row,
     key_value: impl Fn(&Expr, &Row) -> Result<Value>,
-) {
-    let parked = parked_values(keys, projected, key_value);
+) -> Result<()> {
+    let parked = parked_values(keys, projected, key_value)?;
     park_values(keys, projected, parked);
+    Ok(())
 }
 
 /// Every key's parked value against `scope`, computed together and returned
@@ -181,7 +201,7 @@ pub(crate) fn parked_values(
     keys: &OrderKeys<'_>,
     scope: &Row,
     key_value: impl Fn(&Expr, &Row) -> Result<Value>,
-) -> Vec<Value> {
+) -> Result<Vec<Value>> {
     (0..keys.len())
         .map(|index| keys.value(index, scope, &key_value))
         .collect()
@@ -213,6 +233,20 @@ fn verbatim_column(items: &[Projection], expr: &Expr) -> Option<String> {
     items.iter().enumerate().find_map(|(index, item)| {
         (!is_star_item(item) && item.expr == *expr).then(|| item.output_name(index))
     })
+}
+
+/// Whether `expr` reads a name the projection does not output — the
+/// deprecated implicit-grouping resolution whose failure sorts null.
+/// Comprehension- and reduce-bound identifiers are excluded
+/// ([`relate_ir::expr_vars`]); a subquery body over-approximates its outer
+/// reads, which only widens the null-on-failure set toward the deprecated
+/// behaviour.
+fn reads_unprojected_name(expr: &Expr, items: &[Projection]) -> bool {
+    let mut vars = HashSet::new();
+    relate_ir::expr_vars(expr, &mut vars);
+    let outputs = projection_names(items);
+    vars.iter()
+        .any(|name| !outputs.iter().any(|output| output == name))
 }
 
 /// The projection item each folded `ORDER BY` key answers from, or `None`
@@ -284,30 +318,28 @@ pub(crate) fn apply_yield_page_stages(
                 for row in output.iter_mut() {
                     park_order_keys(&keys, row, |expr, scope| {
                         eval(graph, scope, expr, params, cypher_version)
-                    });
+                    })?;
                 }
                 sort_rows_by_parked_keys(&keys, output, None)?;
                 unpark_order_keys(&keys, output);
             }
             relate_parser::PageStage::Skip(expr) => {
-                let count = skip_limit_count(&eval(
+                let count = resolve_page_bound(
                     graph,
-                    &Row::new(),
-                    &relate_front::lower_expr(expr)?,
                     params,
                     cypher_version,
-                )?)?;
-                *output = std::mem::take(output).into_iter().skip(count).collect();
+                    &relate_front::lower_expr(expr)?,
+                )?;
+                *output = page(std::mem::take(output), count, None);
             }
             relate_parser::PageStage::Limit(expr) => {
-                let count = skip_limit_count(&eval(
+                let count = resolve_page_bound(
                     graph,
-                    &Row::new(),
-                    &relate_front::lower_expr(expr)?,
                     params,
                     cypher_version,
-                )?)?;
-                output.truncate(count);
+                    &relate_front::lower_expr(expr)?,
+                )?;
+                *output = page(std::mem::take(output), 0, Some(count));
             }
         }
     }
@@ -432,10 +464,22 @@ pub(crate) fn resolve_page_bounds(
 ) -> Result<(usize, Option<usize>)> {
     let bound = |exprs: Option<&Expr>| -> Result<Option<usize>> {
         exprs
-            .map(|expr| skip_limit_count(&eval(graph, &Row::new(), expr, params, cypher_version)?))
+            .map(|expr| resolve_page_bound(graph, params, cypher_version, expr))
             .transpose()
     };
     Ok((bound(skip)?.unwrap_or(0), bound(limit)?))
+}
+
+/// Resolve one `SKIP`/`LIMIT` bound expression against the empty row. The
+/// one bound spelling [`resolve_page_bounds`] and the catalog stage
+/// interpreter share; the caller applies it through [`page`].
+pub(crate) fn resolve_page_bound(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    cypher_version: Option<u32>,
+    expr: &Expr,
+) -> Result<usize> {
+    skip_limit_count(&eval(graph, &Row::new(), expr, params, cypher_version)?)
 }
 
 /// Whether a projection takes the eager pre-projection page: `SKIP`/`LIMIT`

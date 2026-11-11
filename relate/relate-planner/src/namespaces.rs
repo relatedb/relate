@@ -180,11 +180,8 @@ fn collect_system_offenders(clauses: &[Clause], out: &mut Vec<&'static str>) {
     // `is_system_head`, so the two can never drift apart. `Use` is
     // deliberately absent — it is allowed on `system` but does not anchor
     // a tail.
-    let is_system_head = |clause: &Clause| match clause {
-        Clause::Catalog(command) => catalog_allowed_on_system(command.as_ref()),
-        Clause::Call { .. } | Clause::ShowIndexes => true,
-        _ => false,
-    };
+    let is_system_head =
+        |clause: &Clause| is_system_show(clause) || matches!(clause, Clause::Call { .. });
     let has_show_or_call = clauses.iter().any(&is_system_head);
     let is_tail = |clause: &Clause| SYSTEM_TAIL_KEYWORDS.contains(&ir_clause_keyword(clause));
     let allowed = |clause: &Clause| {
@@ -232,32 +229,47 @@ fn catalog_allowed_on_system(command: &relate_parser::Clause) -> bool {
     )
 }
 
-/// ADR-0116 §4, completed 2026-11-04: the clause kind CE forbids in a
-/// query part that composes a database-administration command — `WITH`,
-/// the one tail clause the §4 whitelist (`collect_system_offenders`)
-/// still allowed after an administration command's `YIELD`. Live CE
-/// 2026.09 rejects the composed command with
+/// The clauses a `system` query part treats as its SHOW head: every catalog
+/// command the namespace admits, plus `SHOW INDEXES` (its own IR variant).
+/// The one predicate both the §4 valid-head set (`collect_system_offenders`,
+/// which ORs in `Call`) and `composed_show_disallowed_clause`'s composition
+/// test read.
+fn is_system_show(clause: &Clause) -> bool {
+    match clause {
+        Clause::Catalog(command) => catalog_allowed_on_system(command.as_ref()),
+        Clause::ShowIndexes => true,
+        _ => false,
+    }
+}
+
+/// ADR-0116 §4: the clause kind CE forbids in a query part that composes a
+/// SHOW command on the `system` namespace — `WITH`, the one tail clause the
+/// §4 whitelist (`collect_system_offenders`) still allows after a SHOW's
+/// `YIELD`. The composition test is [`is_system_show`], the same predicate
+/// the whitelist's head set reads. Live CE 2026.09/2026.10 rejects the
+/// composed command with
 /// `The following clauses are not allowed on a system database: WITH.`
-/// for both the `… YIELD … WITH …` and the `WITH … <command> …` spelling
-/// (position within the part is not part of the rule); the other §4
-/// offenders keep CE's 42N17 text. Scope is the §2 administration
-/// commands (the `admin_command_clause` vocabulary): composing the
-/// other catalog SHOW commands (`SHOW SETTINGS`, `SHOW PROCEDURES`, …)
-/// with `WITH` stays allowed — a recorded divergence, not this rule's
-/// business. Returns the offending clause's keyword, or `None` when no
-/// part composes an administration command with a `WITH`.
+/// (GQLSTATUS 42NA9) for both the `… YIELD … WITH …` and the
+/// `WITH … <command> …` spelling (position within the part is not part of
+/// the rule); the other §4 offenders keep CE's 42N17 text. Scope is every
+/// catalog command the `system` namespace admits (`SHOW PROCEDURES`,
+/// `SHOW FUNCTIONS`, `SHOW SETTINGS`, `SHOW CURRENT GRAPH TYPE`,
+/// `SHOW TRANSACTIONS`, …), not only the §2 administration commands.
+/// Returns the offending clause's keyword, or `None` when no part composes
+/// a SHOW with a `WITH`.
 ///
-/// The engine's 42N17 text still lists an `UNWIND`/`MATCH` tail after an
-/// administration command's `YIELD` (the whitelist above rejects it);
-/// live CE words those with this family's text instead — same outcome,
-/// different message, recorded in ADR-0116 §4's Later references.
-pub fn composed_admin_disallowed_clause(plan: &LogicalPlan) -> Option<&'static str> {
+/// The caller applies this only under `Namespace::System`; off-system
+/// namespaces compose `SHOW … WITH … RETURN` freely.
+///
+/// The engine's 42N17 text still lists an `UNWIND`/`MATCH` tail after a
+/// SHOW's `YIELD` (the whitelist above rejects it); live CE words those
+/// with this family's text instead — same outcome, different message,
+/// recorded in ADR-0116 §4's Later references.
+pub fn composed_show_disallowed_clause(plan: &LogicalPlan) -> Option<&'static str> {
     let mut offending = None;
     crate::walk_plan_parts(plan, &mut |clauses| {
-        let composes_admin_command = clauses
-            .iter()
-            .any(|clause| admin_command_clause(clause).is_some());
-        if !composes_admin_command {
+        let composes_show = clauses.iter().any(is_system_show);
+        if !composes_show {
             return;
         }
         for clause in clauses {
@@ -454,13 +466,13 @@ mod tests {
         }
     }
 
-    /// ADR-0116 §4 completion (2026-11-04): a `WITH` in a part that
-    /// composes a database-administration command — the classifier is
-    /// namespace-blind (the facade gate applies it to `system` only), and
-    /// position within the part is not part of the rule (live CE rejects
-    /// the `WITH … <command> …` spelling with the same text).
+    /// ADR-0116 §4: a `WITH` in a part that composes any SHOW command — the
+    /// classifier is namespace-blind (the facade gate applies it to
+    /// `system` only), and position within the part is not part of the rule
+    /// (live CE rejects the `WITH … <command> …` spelling with the same
+    /// text).
     #[test]
-    fn composed_admin_disallowed_clause_flags_with_around_admin_commands() {
+    fn composed_show_disallowed_clause_flags_with_around_show_commands() {
         for cypher in [
             "SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
             "USE system SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
@@ -468,22 +480,24 @@ mod tests {
             "SHOW DEFAULT DATABASE YIELD name WITH 1 AS n RETURN n",
             "SHOW HOME DATABASE YIELD name WITH 1 AS n RETURN n",
             "SHOW DATABASE neo4j YIELD name WITH 1 AS n RETURN n",
+            "SHOW PROCEDURES YIELD name AS p1 WITH 1 AS n RETURN n",
+            "SHOW FUNCTIONS YIELD name AS f1 WITH 1 AS n RETURN n",
+            "SHOW SETTINGS YIELD name AS s1 WITH 1 AS n RETURN n",
+            "SHOW CURRENT GRAPH TYPE YIELD specification AS spec1 WITH 1 AS n RETURN n",
         ] {
             assert_eq!(
-                composed_admin_disallowed_clause(&plan_of(cypher)),
+                composed_show_disallowed_clause(&plan_of(cypher)),
                 Some("WITH"),
                 "{cypher}"
             );
         }
-        // No administration command composed: the catalog SHOW commands
-        // keep their `WITH` composability (out of the 2026-11-04 scope).
+        // No SHOW composed: the tail keeps its `WITH` composability.
         for cypher in [
-            "SHOW SETTINGS YIELD name WITH 1 AS n RETURN n",
             "CALL db.labels() YIELD label WITH 1 AS n RETURN n",
             "WITH 1 AS n RETURN n",
         ] {
             assert_eq!(
-                composed_admin_disallowed_clause(&plan_of(cypher)),
+                composed_show_disallowed_clause(&plan_of(cypher)),
                 None,
                 "{cypher}"
             );
@@ -497,7 +511,7 @@ mod tests {
             "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25",
         ] {
             assert_eq!(
-                composed_admin_disallowed_clause(&plan_of(cypher)),
+                composed_show_disallowed_clause(&plan_of(cypher)),
                 None,
                 "{cypher}"
             );

@@ -4,21 +4,26 @@
 use std::collections::HashMap;
 
 use relate_core::{Error, Result};
-use relate_ir::{PathPattern, PatternElement};
+use relate_ir::{Expr, PathPattern, PatternElement};
 use relate_names::SmallName;
+
+use crate::expr_check::literal::{static_literal, LiteralKind};
 
 /// What kind of value a name in scope is bound to. The binder tracks only
 /// what later checks need: entity-ness and literal-ness for type-conflict
 /// and argument-type errors.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Binding {
     Node,
     Rel,
     Path,
     Value,
-    /// Non-null literal (int/bool/string/float). MATCH as a node/rel is a type conflict.
+    /// Statically known scalar: a non-null literal (int/bool/string/float)
+    /// or a scalar-typed subquery expression (`EXISTS {…}`, `COUNT {…}`).
+    /// MATCH as a node/rel is a type conflict.
     Scalar,
-    /// Literal list. Property access is InvalidArgumentType.
+    /// Statically known list: a list literal or a `COLLECT {…}` result.
+    /// Property access is InvalidArgumentType.
     List,
     /// Literal map. MATCH as a node/rel is a type conflict.
     Map,
@@ -30,6 +35,37 @@ impl Binding {
     /// subquery-expression body's pattern may shadow.
     pub(crate) fn is_non_entity(self) -> bool {
         matches!(self, Binding::Scalar | Binding::List | Binding::Map)
+    }
+
+    /// The binding an expression's static result type implies, when the
+    /// expression is a literal or a typed subquery expression — the one
+    /// classifier behind a projection's next-stage scope. A variable's kind
+    /// comes from the environment (the caller's arm); an expression whose
+    /// type is only known per row returns `None` (the caller binds `Value`).
+    ///
+    /// The literal kinds are [`static_literal`]'s, so this classifier and
+    /// the argument-type rules cannot disagree. `EXISTS {…}` is a BOOLEAN,
+    /// `COUNT {…}` an INTEGER, and `COLLECT {…}` a LIST, so reusing a
+    /// projected subquery expression as a pattern element is the same type
+    /// conflict a literal reuse is (live Neo4j 2026.10.1:
+    /// VariableTypeConflict).
+    pub(crate) fn of_static_expr(expr: &Expr) -> Option<Binding> {
+        match expr {
+            Expr::ExistsSubquery { .. } | Expr::CountSubquery { .. } => Some(Binding::Scalar),
+            Expr::CollectSubquery { .. } => Some(Binding::List),
+            // A folded temporal constructor carries no static binding kind
+            // here: the projection's name stays `Value` so component access
+            // on it remains legal (`WITH date('…') AS d RETURN d.year`).
+            Expr::RuntimeValue(_) => None,
+            expr => match static_literal(expr)? {
+                LiteralKind::List => Some(Binding::List),
+                LiteralKind::Map => Some(Binding::Map),
+                LiteralKind::Null => None,
+                LiteralKind::Bool | LiteralKind::Int | LiteralKind::Float | LiteralKind::Other => {
+                    Some(Binding::Scalar)
+                }
+            },
+        }
     }
 }
 

@@ -6,12 +6,13 @@ use relate_ir::VectorMetric;
 use crate::vector_config::{vector_dimension, VECTOR_DIMENSIONS_MAX, VECTOR_DIMENSIONS_MIN};
 use crate::vector_similarity::value_coords;
 
-/// Why a list/VECTOR argument has no numeric coordinates. The two faults
-/// stay distinct because live Neo4j 2026.10.1 classes them differently: a
-/// null coordinate is an `ArgumentError`-class invalid vector, a
+/// Why a list/VECTOR argument is not a valid vector. The faults stay
+/// distinct because live Neo4j 2026.10.1 classes them differently: a null
+/// or non-finite coordinate is an `ArgumentError`-class invalid vector, a
 /// wrong-typed argument keeps the `TypeError` class.
 enum CoordFault {
     NullCoordinate,
+    NonFinite,
     NotNumeric,
 }
 
@@ -24,21 +25,31 @@ fn as_floats(v: &Value) -> std::result::Result<Vec<f64>, CoordFault> {
         return Err(CoordFault::NotNumeric);
     };
     let mut out = Vec::with_capacity(values.len());
-    // A null anywhere wins over a wrong-typed entry, matching live's
-    // invalid-vector classification.
-    let mut fault = None;
+    // A null anywhere wins over every other fault, and a wrong-typed entry
+    // over a non-finite one, matching live's invalid-vector classification.
+    let (mut null, mut not_numeric, mut non_finite) = (false, false, false);
     for value in values {
         match value {
             Value::Int(i) => out.push(*i as f64),
-            Value::Float(f) => out.push(*f),
-            Value::Null => fault = Some(CoordFault::NullCoordinate),
-            _ => {
-                if fault.is_none() {
-                    fault = Some(CoordFault::NotNumeric);
-                }
+            // A NaN or infinite coordinate is not a valid vector (live
+            // 2026.10.1: 22N38, the `ArgumentError` class).
+            Value::Float(f) => {
+                non_finite |= !f.is_finite();
+                out.push(*f);
             }
+            Value::Null => null = true,
+            _ => not_numeric = true,
         }
     }
+    let fault = if null {
+        Some(CoordFault::NullCoordinate)
+    } else if not_numeric {
+        Some(CoordFault::NotNumeric)
+    } else if non_finite {
+        Some(CoordFault::NonFinite)
+    } else {
+        None
+    };
     match fault {
         Some(fault) => Err(fault),
         None => Ok(out),
@@ -236,8 +247,8 @@ pub(crate) fn vector_norm_metric(vals: &[Value], metric: VectorMetric) -> Result
 
 /// The `ArgumentError` class of a similarity/distance argument fault
 /// (`InvalidArgumentValue`): live Neo4j 2026.10.1 reports an empty or
-/// zero vector, a NaN coordinate, a null coordinate and a dimension
-/// mismatch under 22N38, while a wrong-typed argument stays the
+/// zero vector, a NaN or infinite coordinate, a null coordinate and a
+/// dimension mismatch under 22N38, while a wrong-typed argument stays the
 /// `TypeError` class.
 fn invalid_vector(detail: &str) -> Error {
     Error::argument_value_kind(ErrorKind::InvalidArgumentValue, detail)
@@ -248,13 +259,14 @@ fn dimension_mismatch() -> Error {
 }
 
 /// The numeric coordinates of a similarity call's two arguments, or its
-/// classed rejection: a null coordinate is the `ArgumentError`-class
-/// invalid vector, a wrong-typed argument keeps the `TypeError` class.
-/// `wrong_type` is the caller's message for the latter.
+/// classed rejection: a null or non-finite coordinate is the
+/// `ArgumentError`-class invalid vector, a wrong-typed argument keeps the
+/// `TypeError` class. `wrong_type` is the caller's message for the latter.
 fn similarity_coords(a: &Value, b: &Value, wrong_type: &str) -> Result<(Vec<f64>, Vec<f64>)> {
     match (as_floats(a), as_floats(b)) {
         (Ok(x), Ok(y)) => Ok((x, y)),
-        (Err(CoordFault::NullCoordinate), _) | (_, Err(CoordFault::NullCoordinate)) => {
+        (Err(CoordFault::NullCoordinate | CoordFault::NonFinite), _)
+        | (_, Err(CoordFault::NullCoordinate | CoordFault::NonFinite)) => {
             Err(invalid_vector("not a valid vector"))
         }
         _ => Err(Error::ty(wrong_type)),
@@ -272,10 +284,9 @@ pub(crate) fn vector_cosine(vals: &[Value]) -> Result<Value> {
     if x.len() != y.len() || x.is_empty() {
         return Err(dimension_mismatch());
     }
-    if x.iter().chain(&y).any(|f| f.is_nan())
-        || x.iter().all(|f| *f == 0.0)
-        || y.iter().all(|f| *f == 0.0)
-    {
+    // A non-finite coordinate was already rejected as a `CoordFault`;
+    // cosine keeps only its zero-vector rule.
+    if x.iter().all(|f| *f == 0.0) || y.iter().all(|f| *f == 0.0) {
         return Err(invalid_vector("not a valid vector"));
     }
     let dot: f64 = x.iter().zip(&y).map(|(a, b)| a * b).sum();
@@ -299,7 +310,7 @@ pub(crate) fn vector_euclidean(vals: &[Value]) -> Result<Value> {
     if x.len() != y.len() {
         return Err(dimension_mismatch());
     }
-    if x.is_empty() || x.iter().chain(&y).any(|f| f.is_nan()) {
+    if x.is_empty() {
         return Err(invalid_vector("not a valid vector"));
     }
     let d2: f64 = x.iter().zip(&y).map(|(a, b)| (a - b) * (a - b)).sum();
@@ -368,6 +379,29 @@ mod tests {
         );
         assert!(construct(list(&[f64::NAN]), 1, "FLOAT64").is_err());
         assert!(construct(list(&[f64::NEG_INFINITY]), 1, "FLOAT64").is_err());
+    }
+
+    /// Live Neo4j 2026.10.1 rejects an infinite coordinate as an invalid
+    /// vector (22N38, the `ArgumentError` class) exactly like a NaN one.
+    #[test]
+    fn similarity_rejects_non_finite_coordinates() {
+        let finite = list(&[1.0, 2.0]);
+        for bad in [f64::INFINITY, f64::NEG_INFINITY] {
+            let with_bad = Value::List(vec![Value::Float(bad), Value::Float(2.0)].into());
+            for (name, f) in [
+                (
+                    "euclidean",
+                    vector_euclidean as fn(&[Value]) -> Result<Value>,
+                ),
+                ("cosine", vector_cosine),
+            ] {
+                let err = f(&[finite.clone(), with_bad.clone()]).unwrap_err();
+                assert!(
+                    matches!(err, Error::ArgumentValue { .. }),
+                    "{name} / {bad}: {err:?}"
+                );
+            }
+        }
     }
 
     #[test]

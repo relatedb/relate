@@ -8,6 +8,29 @@ use super::*;
 use crate::graph::Graph;
 use relate_core::VectorCoordKind;
 
+/// CIP-272: a map comprehension's key must be a non-null string. Live
+/// Neo4j 2026.10.1 rejects a null key with 22G03/22N01; it does not drop
+/// the entry from the produced map.
+#[test]
+fn map_comprehension_rejects_a_null_key() {
+    let g = Graph::default();
+    for cypher in [
+        "RETURN { i: j IN {a: 1} | null : i } AS result",
+        "RETURN { i IN range(0, 3) | null : i } AS result",
+        "WITH [\"name\"] AS keys, [\"Pelle\", date(\"2024-05-10\")] AS values \
+         RETURN { i IN range(0, size(values) - 1) | keys[i] : values[i] } AS result",
+    ] {
+        let err = match crate::exec::test_support::try_exec_cypher(&g, cypher) {
+            Ok(_) => panic!("{cypher}: expected an error"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, relate_core::Error::Type(_)),
+            "{cypher}: {err:?}"
+        );
+    }
+}
+
 /// The scalar-eval backstop for an aggregate that reached evaluation
 /// outside an aggregation context is a `Syntax` error, not a semantic
 /// one: Neo4j classifies it 42I24 under 42001 (`SyntaxError`), and the

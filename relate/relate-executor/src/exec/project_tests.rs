@@ -102,6 +102,51 @@ fn order_by_resolves_a_grouped_projection_alias_over_the_incoming_binding() {
     assert_eq!(r.rows[1][2], Value::Int(100));
 }
 
+/// The corpus's SemanticError family: a projected subquery expression
+/// (`EXISTS`/`COUNT` → scalar, `COLLECT` → list) reused as a node inside a
+/// later expression subquery is the invalid-entity fault live Neo4j
+/// 2026.10.1 raises (22G03), not an accepted statement. The body's pattern
+/// shadows the non-entity import by design, so the rejection is the
+/// executor's pre-bound entity check.
+#[test]
+fn subquery_expression_reused_as_a_pattern_node_is_rejected() {
+    for cypher in [
+        "RETURN exists{ RETURN 1 } AS n ORDER BY exists{ (n) }",
+        "RETURN count{ RETURN 1 } AS n ORDER BY count{ (n) }",
+        "RETURN collect{ RETURN 1 } AS n ORDER BY collect{ MATCH (n) RETURN n }",
+    ] {
+        let err = match try_exec_cypher(&Graph::default(), cypher) {
+            Ok(_) => panic!("{cypher}: expected an error"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, relate_core::Error::InvalidArgumentType(_)),
+            "{cypher}: {err:?}"
+        );
+    }
+}
+
+/// The type-mismatched twin of the alias-scoped resolution above: the
+/// projected alias `a` is an integer, so reading `.p` off it is a genuine
+/// statement failure live Neo4j 2026.10.1 raises (22G03), not a null sort
+/// key — while the deprecated unbound-reference shapes still sort as null.
+#[test]
+fn order_by_property_read_of_a_projected_scalar_alias_fails() {
+    let err = match try_exec_cypher(
+        &Graph::default(),
+        "UNWIND [{a: {p: 1}, b: 20, c: 100}, {a: {p: 2}, b: 20, c: 200}] AS _row \
+         WITH _row.a AS a, _row.b AS b, _row.c AS c \
+         RETURN a.p AS k, b AS a, sum(c) AS s GROUP BY ALL ORDER BY a.p",
+    ) {
+        Ok(_) => panic!("expected the ill-typed ORDER BY key to fail"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, relate_core::Error::InvalidArgumentType(_)),
+        "{err:?}"
+    );
+}
+
 /// Implicit grouping keeps the deprecated resolution on a `WITH` that pages
 /// with `LIMIT` (the top-k selection path): `a.p` names a variable the
 /// projection also re-binds (`{p: b} AS a`), so it keeps the incoming

@@ -900,34 +900,3 @@ fn maps_compare_by_size_then_sorted_keys_then_values() {
     // Across types a map stays incomparable.
     assert_eq!(m(&[("k", Value::Int(1))]).compare(&Value::Int(1)), None);
 }
-
-/// C7: the point accessor answers the same typed `no such component`
-/// rejection as the temporal accessor (never a silently null read), and both
-/// coordinate spellings of one axis read the same coordinate — the shared
-/// axis vocabulary beside `PointValue`.
-#[test]
-fn point_component_reads_axis_aliases_and_rejects_unknown_keys() {
-    let p = PointValue::wgs84_3d(-73.9857, 40.7484, 8.0);
-    assert_eq!(point_component(&p, "x").unwrap(), Value::Float(-73.9857));
-    assert_eq!(
-        point_component(&p, "longitude").unwrap(),
-        Value::Float(-73.9857)
-    );
-    assert_eq!(point_component(&p, "y").unwrap(), Value::Float(40.7484));
-    assert_eq!(
-        point_component(&p, "latitude").unwrap(),
-        Value::Float(40.7484)
-    );
-    assert_eq!(point_component(&p, "z").unwrap(), Value::Float(8.0));
-    assert_eq!(point_component(&p, "height").unwrap(), Value::Float(8.0));
-    assert_eq!(
-        point_component(&p, "crs").unwrap(),
-        Value::String("wgs-84-3d".into())
-    );
-    assert_eq!(point_component(&p, "srid").unwrap(), Value::Int(4979));
-    // 22G03: an unknown component is an invalid-argument rejection.
-    assert_eq!(
-        point_component(&p, "foo").unwrap_err(),
-        Error::argument_error("no such component 'foo' on a point value")
-    );
-}

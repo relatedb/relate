@@ -663,7 +663,14 @@ fn eval_map_comp(
         let key_v = eval(graph, &r, key_expr, params, cypher_version)?;
         let key = match key_v {
             Value::String(s) => String::from(&*s),
-            Value::Null => continue,
+            // CIP-272: a map key must be a non-null string. Live Neo4j
+            // 2026.10.1 rejects a null key (22G03/22N01), it does not
+            // drop the entry.
+            Value::Null => {
+                return Err(Error::ty(
+                    "map comprehension key expression must not be NULL",
+                ))
+            }
             _ => {
                 return Err(Error::ty(
                     "map comprehension key expression must be a STRING",
