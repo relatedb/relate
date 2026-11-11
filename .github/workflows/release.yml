@@ -978,11 +978,16 @@ jobs:
     if: ${{ !inputs.offline && inputs.registries }}
     # The caller's permissions cap the called workflow's: without
     # id-token: write here, the called jobs' trusted-publishing token
-    # request cannot be honored on the chained path. No secrets: inherit —
-    # the called workflow runs on OIDC alone and needs none.
+    # request cannot be honored on the chained path — and any scope a
+    # nested job requests but the caller does not grant (attestations:
+    # read, added to the nested verify jobs by #180) invalidates the
+    # whole workflow file at dispatch (startup failure, run 43064659136).
+    # No secrets: inherit — the called workflow runs on OIDC alone and
+    # needs none.
     permissions:
       id-token: write
       contents: read
+      attestations: read
     uses: ./.github/workflows/publish-registries.yml
     with:
       tag: ${{ needs.version.outputs.tag }}
