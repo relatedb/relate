@@ -1,4 +1,5 @@
-//! The sampled-stack model behind `query-latency profile` (ADR-0244):
+//! The sampled-stack model behind the profiling harnesses' `--sample`
+//! (ADR-0244; query-latency profile and bulk-loadtest):
 //! frames attributed to a group (a crate, `std/core/alloc`, the allocator),
 //! collapsed stacks, and the `top.txt` rendering.
 //!

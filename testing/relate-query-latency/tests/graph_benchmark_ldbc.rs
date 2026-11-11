@@ -20,12 +20,11 @@
 use std::time::Duration;
 
 use relate_query_latency::fetch::data_root;
-use relate_query_latency::profile::{
-    profile, ProfileOptions, Sampler, DEFAULT_FREQUENCY, IN_PROCESS_SAMPLER,
-};
+use relate_query_latency::profile::{profile, ProfileOptions, Sampler};
 use relate_query_latency::run::{RunConfig, Status};
 use relate_query_latency::suite::{run_suite, GraphOptions, SuiteOptions};
 use relate_query_latency::workload::{IndexProfile, ScaleFactor, QIDS};
+use relate_test_support::profiler::{DEFAULT_FREQUENCY, IN_PROCESS_SAMPLER};
 use relate_test_support::sampling::SAMPLING_SUPPORTED;
 
 mod common;

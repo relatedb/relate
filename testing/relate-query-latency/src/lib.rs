@@ -19,7 +19,8 @@
 //! - [`report`] is the JSON report and the console table;
 //! - [`suite`] ties them into one run;
 //! - [`profile`] loops one query under a sampling profiler (ADR-0244),
-//!   and [`stacks`] attributes and renders what it sampled;
+//!   and the sampled-stack model — `relate_test_support::stacks`, shared
+//!   with the bulk harness — attributes and renders what it sampled;
 //! - [`corpus`] runs the QPP/LDBC workloads (ADR-0479): the translated
 //!   PathDB RPQ corpus over the same data, and the in-house fraud QPP
 //!   suite — run-and-report with an ok-set ratchet, no latency gate.
@@ -40,7 +41,6 @@ pub mod profile;
 pub mod report;
 pub mod run;
 pub mod schema;
-pub mod stacks;
 pub mod suite;
 pub mod workload;
 

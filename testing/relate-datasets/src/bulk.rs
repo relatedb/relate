@@ -45,10 +45,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::loadtest::{scalar, unix_ms};
 use crate::report::{LatencyNs, Rank};
+use relate_test_support::profiler::{sample, DEFAULT_FREQUENCY};
 
 /// Schema version of [`BulkReport`]. Bump when the JSON shape changes.
-/// 2 adds `config.durability_mode` and per-entry `commit_timing`.
-pub const BULK_REPORT_SCHEMA_VERSION: u32 = 2;
+/// 2 adds `config.durability_mode` and per-entry `commit_timing`; 3 adds
+/// `config.sample_dir`.
+pub const BULK_REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// `create`: one statement, one commit.
 pub const CREATE_CYPHER: &str =
@@ -76,7 +78,7 @@ pub const CLEAR_CYPHER: &str = "MATCH (n) DETACH DELETE n";
 pub const DEFAULT_SIZES: [usize; 4] = [5_000, 10_000, 50_000, 100_000];
 
 /// One bulk operation type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BulkOp {
     Create,
@@ -200,6 +202,10 @@ pub struct BulkConfig {
     pub durability_mode: DurabilityMode,
     /// Record per-commit step histograms (the `--commit-timing` flag).
     pub commit_timing: bool,
+    /// Run every measurement's repetition loop under the in-process sampler
+    /// and write `top.txt` / `folded.txt` / `flame.svg` per (op, size) under
+    /// this directory (the `--sample` flag).
+    pub sample_dir: Option<PathBuf>,
 }
 
 impl Default for BulkConfig {
@@ -214,6 +220,7 @@ impl Default for BulkConfig {
             logical_graph_size_limit: None,
             durability_mode: DurabilityMode::Full,
             commit_timing: false,
+            sample_dir: None,
         }
     }
 }
@@ -239,6 +246,19 @@ impl BulkConfig {
         }
         if self.reps == 0 {
             return Err(Error::semantic("bulk config: --reps must be >= 1"));
+        }
+        if let Some(dir) = &self.sample_dir {
+            // The report records the path as a string like every other
+            // recorded path; a non-UTF-8 path is refused here rather than
+            // silently mangled by a lossy conversion later.
+            if dir.to_str().is_none() {
+                return Err(Error::semantic(
+                    "bulk config: --sample must be a UTF-8 path (the report records it as text)",
+                ));
+            }
+        }
+        if self.sample_dir.is_some() {
+            relate_test_support::profiler::require_available().map_err(Error::semantic)?;
         }
         Ok(())
     }
@@ -343,6 +363,11 @@ pub struct BulkReportConfig {
     /// (`--commit-timing`). Omitted in older reports (treat as `false`).
     #[serde(default)]
     pub commit_timing: bool,
+    /// Where the run wrote per-(op, size) stack profiles (`--sample`), as a
+    /// string like every other recorded path. Omitted in older reports
+    /// (treat as off).
+    #[serde(default)]
+    pub sample_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,13 +407,31 @@ pub fn run(cfg: &BulkConfig) -> Result<BulkReport> {
     let started_ms = unix_ms();
     let wall = Instant::now();
 
+    // A bad `--sample` path must fail the run before any measurement, not
+    // discard measurements as failed entries with an exit code of 0: the
+    // root and every per-(op, size) profile directory are created up front.
+    // Nothing is stored — the measurement loop recomputes the same
+    // `measurement_key` path, so the flag and the directory can never
+    // disagree.
+    if let Some(root) = &cfg.sample_dir {
+        fs::create_dir_all(root)?;
+        for &op in &cfg.ops {
+            for &size in &cfg.sizes {
+                fs::create_dir_all(root.join(measurement_key(op, size)))?;
+            }
+        }
+    }
     let mut results = Vec::with_capacity(cfg.ops.len() * cfg.sizes.len());
     for &op in &cfg.ops {
         for &size in &cfg.sizes {
             let uri = measurement_uri(&cfg.dir, op, size);
-            let entry =
+            let profile_dir = cfg
+                .sample_dir
+                .as_ref()
+                .map(|root| root.join(measurement_key(op, size)));
+            let (entry, outputs) =
                 match measure(cfg, op, size, &uri) {
-                    Ok(e) => {
+                    Ok((e, outputs)) => {
                         println!(
                         "  {:<21} {:>7} rows  {:>8.1} ms  {:>10.1} rows/s  p50={:.1}ms  errors={}",
                         op.id(),
@@ -398,14 +441,21 @@ pub fn run(cfg: &BulkConfig) -> Result<BulkReport> {
                         e.latency_ns.as_ref().map(|l| l.p50 as f64 / 1e6).unwrap_or(0.0),
                         e.errors
                     );
-                        e
+                        (e, outputs)
                     }
-                    Err(e) => {
-                        let msg = e.to_string();
+                    Err((msg, outputs)) => {
                         eprintln!("  {:<21} {:>7} rows  FAILED: {msg}", op.id(), size);
-                        BulkEntry::failed(cfg, op, size, uri, msg)
+                        (BulkEntry::failed(cfg, op, size, uri, msg), outputs)
                     }
                 };
+            // Profile emission is the run's artifact, like `--out`: one
+            // guard for both outcomes (the fault carries whatever profile
+            // the run already recorded — the failure case is the one the
+            // stacks are most useful for), and a write failure fails the
+            // run, not the entry.
+            if let (Some(dir), Some(sampled)) = (&profile_dir, &outputs) {
+                emit_profile(dir, cfg, op, size, sampled)?;
+            }
             results.push(entry);
         }
     }
@@ -430,6 +480,11 @@ pub fn run(cfg: &BulkConfig) -> Result<BulkReport> {
             logical_graph_size_limit: cfg.logical_graph_size_limit,
             durability_mode: cfg.durability_mode,
             commit_timing: cfg.commit_timing,
+            sample_dir: cfg
+                .sample_dir
+                .as_deref()
+                .and_then(Path::to_str)
+                .map(String::from),
         },
         results,
     };
@@ -443,6 +498,12 @@ fn entry_ms(e: &BulkEntry) -> f64 {
     e.duration_ms as f64
 }
 
+/// The per-(op, size) key every per-measurement path is built from — the
+/// database subdirectory and the `--sample` profile directory stay in step.
+fn measurement_key(op: BulkOp, size: usize) -> String {
+    format!("{}-{size}", op.id())
+}
+
 /// Per-measurement database URI: a fresh subdirectory per (op, size) so no
 /// measurement inherits another's graph. `:memory:` stays in memory.
 pub fn measurement_uri(base: &str, op: BulkOp, size: usize) -> String {
@@ -450,18 +511,118 @@ pub fn measurement_uri(base: &str, op: BulkOp, size: usize) -> String {
     if base.is_empty() || base == ":memory:" {
         ":memory:".into()
     } else {
-        format!("{base}/{}-{size}", op.id())
+        format!("{base}/{}", measurement_key(op, size))
     }
 }
 
-fn measure(cfg: &BulkConfig, op: BulkOp, size: usize, uri: &str) -> Result<BulkEntry> {
+/// What one measurement's repetition loop accumulated. Exists so the loop
+/// can run inside the sampler's closure (or straight, when `--sample` is
+/// off) without threading six locals through it.
+struct Reps {
+    setup_ms: u64,
+    timed_ns: u64,
+    latencies: Vec<u64>,
+    errors: usize,
+    first_error: Option<String>,
+    nodes_before: i64,
+}
+
+/// The repetition loop: per rep, the untimed setup (clear + base data)
+/// then the one timed statement. Note that under `--sample` the sampler
+/// sees the setup statements too — the folded stacks show both shapes.
+fn rep_loop(
+    conn: &mut relate::Connection,
+    cfg: &BulkConfig,
+    op: BulkOp,
+    params: &BTreeMap<String, Value>,
+) -> Result<Reps> {
+    let mut reps = Reps {
+        setup_ms: 0,
+        timed_ns: 0,
+        latencies: Vec::new(),
+        errors: 0,
+        first_error: None,
+        nodes_before: 0,
+    };
+    for rep in 0..(cfg.warmup + cfg.reps) {
+        // Untimed: every repetition starts from the same starting graph.
+        let t_setup = Instant::now();
+        conn.query(CLEAR_CYPHER)?;
+        if op.needs_base() {
+            conn.query_with_params(CREATE_CYPHER, params.clone())?;
+        }
+        reps.setup_ms += t_setup.elapsed().as_millis() as u64;
+        reps.nodes_before = scalar(conn, "MATCH (n) RETURN count(n) AS n")?;
+
+        let t0 = Instant::now();
+        let outcome = conn.query_with_params(op.cypher(), params.clone());
+        let dt = t0.elapsed().as_nanos() as u64;
+        if rep >= cfg.warmup {
+            reps.timed_ns += dt;
+            match outcome {
+                Ok(_) => reps.latencies.push(dt),
+                Err(e) => {
+                    reps.errors += 1;
+                    if reps.first_error.is_none() {
+                        reps.first_error = Some(e.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(reps)
+}
+
+/// Emit one measurement's stack profile under `dir`. Emission is the
+/// run's, like `--out`'s report: a write failure fails the run instead of
+/// becoming a failed entry.
+fn emit_profile(
+    dir: &Path,
+    cfg: &BulkConfig,
+    op: BulkOp,
+    size: usize,
+    sampled: &relate_test_support::profiler::Sampled<()>,
+) -> Result<()> {
+    let header = vec![
+        format!(
+            "bulk-loadtest {} size={} reps={} warmup={} durability={}",
+            op.id(),
+            size,
+            cfg.reps,
+            cfg.warmup,
+            cfg.durability_mode
+        ),
+        format!("{} samples", sampled.stacks.total()),
+    ];
+    relate_test_support::profiler::write_stack_outputs(
+        dir,
+        &sampled.stacks,
+        &sampled.flamegraph_svg,
+        &header,
+    )
+    .map_err(Error::internal)
+}
+
+/// A measurement's failure: the message, and the profile the run already
+/// recorded before failing (the rounds ran under the profiler, so a
+/// post-loop failure keeps its stacks — the case they are most useful for).
+type MeasureFault = (String, Option<relate_test_support::profiler::Sampled<()>>);
+
+/// Open the measurement's fresh store: reset the URI, open with the
+/// measurement's options (checkpoint timer off), and connect. The one
+/// place the setup-fault adapter (`None` — no profile exists yet) is
+/// written.
+fn open_measurement(
+    cfg: &BulkConfig,
+    uri: &str,
+) -> std::result::Result<(Database, relate::Connection), String> {
     if uri != ":memory:" {
         if let Some(parent) = Path::new(uri).parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-        relate_storage::reset_uri(uri, None)?;
+        relate_storage::reset_uri(uri, None).map_err(|e| e.to_string())?;
     }
     let db = Database::open_with(
         uri,
@@ -472,56 +633,80 @@ fn measure(cfg: &BulkConfig, op: BulkOp, size: usize, uri: &str) -> Result<BulkE
             durability_mode: Some(cfg.durability_mode),
             ..OpenOptions::default()
         },
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
+    let conn = db.connect().map_err(|e| e.to_string())?;
+    Ok((db, conn))
+}
+
+/// Run one (op, size) measurement. The entry and, when `--sample` is on,
+/// the profile it produced (`Sampled`'s stacks and flame graph, the shared
+/// kit's own name for the pair) — emission is [`run`]'s, so a profile
+/// write failure fails the run instead of becoming a failed entry. A
+/// failed measurement still returns its profile alongside a failed entry:
+/// the rounds already ran under the profiler.
+fn measure(
+    cfg: &BulkConfig,
+    op: BulkOp,
+    size: usize,
+    uri: &str,
+) -> std::result::Result<
+    (
+        BulkEntry,
+        Option<relate_test_support::profiler::Sampled<()>>,
+    ),
+    MeasureFault,
+> {
+    let (db, mut conn) = open_measurement(cfg, uri).map_err(|e| (e, None))?;
     if cfg.commit_timing {
         db.enable_commit_timing();
     }
-    let mut conn = db.connect()?;
 
     if op.needs_constraint() {
-        conn.query(CONSTRAINT_CYPHER)?;
+        conn.query(CONSTRAINT_CYPHER)
+            .map_err(|e| (e.to_string(), None))?;
     }
     let params: BTreeMap<String, Value> =
         BTreeMap::from([("n".to_string(), Value::Int(size as i64))]);
 
-    let mut setup_ms = 0u64;
-    let mut timed_ns = 0u64;
-    let mut latencies: Vec<u64> = Vec::new();
-    let mut errors = 0usize;
-    let mut first_error: Option<String> = None;
-    let mut nodes_before = 0i64;
-
-    for rep in 0..(cfg.warmup + cfg.reps) {
-        // Untimed: every repetition starts from the same starting graph.
-        let t_setup = Instant::now();
-        conn.query(CLEAR_CYPHER)?;
-        if op.needs_base() {
-            conn.query_with_params(CREATE_CYPHER, params.clone())?;
-        }
-        setup_ms += t_setup.elapsed().as_millis() as u64;
-        nodes_before = scalar(&mut conn, "MATCH (n) RETURN count(n) AS n")?;
-
-        let t0 = Instant::now();
-        let outcome = conn.query_with_params(op.cypher(), params.clone());
-        let dt = t0.elapsed().as_nanos() as u64;
-        if rep >= cfg.warmup {
-            timed_ns += dt;
-            match outcome {
-                Ok(_) => latencies.push(dt),
-                Err(e) => {
-                    errors += 1;
-                    if first_error.is_none() {
-                        first_error = Some(e.to_string());
-                    }
-                }
+    // The repetition loop, straight or under the in-process profiler. A
+    // failed loop still yields its profile — the rounds already ran under
+    // the profiler, and the failure case is the one the stacks are most
+    // useful for — so the profile is taken out before the error propagates.
+    let (reps, outputs) = match &cfg.sample_dir {
+        Some(_) => {
+            let sampled = sample(DEFAULT_FREQUENCY, || rep_loop(&mut conn, cfg, op, &params))
+                .map_err(|e| (e, None))?;
+            let profile = Some(relate_test_support::profiler::Sampled {
+                value: (),
+                stacks: sampled.stacks,
+                flamegraph_svg: sampled.flamegraph_svg,
+            });
+            match sampled.value {
+                Ok(reps) => (reps, profile),
+                Err(msg) => return Err((msg.to_string(), profile)),
             }
         }
-    }
+        None => (
+            rep_loop(&mut conn, cfg, op, &params).map_err(|e| (e.to_string(), None))?,
+            None,
+        ),
+    };
 
-    let nodes_after = scalar(&mut conn, "MATCH (n) RETURN count(n) AS n")?;
-    let (logical_used_bytes, _) = db.memory_usage()?;
-    let secs = timed_ns as f64 / 1e9;
-    let ops = latencies.len();
+    // The fallible post-loop reads keep the profile on failure: it is
+    // moved into the fault only on that arm, so the success path still
+    // owns it for the return.
+    let post = (|| -> Result<(i64, u64)> {
+        let nodes_after = scalar(&mut conn, "MATCH (n) RETURN count(n) AS n")?;
+        let (logical_used_bytes, _) = db.memory_usage()?;
+        Ok((nodes_after, logical_used_bytes))
+    })();
+    let (nodes_after, logical_used_bytes) = match post {
+        Ok(v) => v,
+        Err(e) => return Err((e.to_string(), outputs)),
+    };
+    let secs = reps.timed_ns as f64 / 1e9;
+    let ops = reps.latencies.len();
     let rows = ops * size;
     // Presence is owned by the flag, never inferred from what the engine
     // returned: the env-seeded engine switch must not leak a `Some` into a
@@ -529,28 +714,32 @@ fn measure(cfg: &BulkConfig, op: BulkOp, size: usize, uri: &str) -> Result<BulkE
     // stays visible as an empty dump rather than reading as "off".
     let timing = cfg.commit_timing.then(|| db.commit_timing_report());
 
-    Ok(BulkEntry {
-        op,
-        size,
-        reps: cfg.reps,
-        warmup: cfg.warmup,
-        constraint: op.needs_constraint(),
-        statements: 1,
-        errors,
-        error: first_error,
-        rows,
-        setup_ms,
-        duration_ms: timed_ns / 1_000_000,
-        ops_per_sec: if secs > 0.0 { ops as f64 / secs } else { 0.0 },
-        rows_per_sec: if secs > 0.0 { rows as f64 / secs } else { 0.0 },
-        latency_ns: LatencyNs::from_samples(&latencies, Rank::Canonical),
-        nodes_before,
-        nodes_after,
-        rss_bytes: process_rss_bytes().expect("RSS sampling availability is checked at run start"),
-        logical_used_bytes,
-        uri: uri.to_string(),
-        commit_timing: timing,
-    })
+    Ok((
+        BulkEntry {
+            op,
+            size,
+            reps: cfg.reps,
+            warmup: cfg.warmup,
+            constraint: op.needs_constraint(),
+            statements: 1,
+            errors: reps.errors,
+            error: reps.first_error,
+            rows,
+            setup_ms: reps.setup_ms,
+            duration_ms: reps.timed_ns / 1_000_000,
+            ops_per_sec: if secs > 0.0 { ops as f64 / secs } else { 0.0 },
+            rows_per_sec: if secs > 0.0 { rows as f64 / secs } else { 0.0 },
+            latency_ns: LatencyNs::from_samples(&reps.latencies, Rank::Canonical),
+            nodes_before: reps.nodes_before,
+            nodes_after,
+            rss_bytes: process_rss_bytes()
+                .expect("RSS sampling availability is checked at run start"),
+            logical_used_bytes,
+            uri: uri.to_string(),
+            commit_timing: timing,
+        },
+        outputs,
+    ))
 }
 
 pub fn write_report(path: &Path, report: &BulkReport) -> Result<()> {

@@ -44,6 +44,9 @@ struct Args {
     /// Record the engine's commit-timing report (parse+plan, overlay execute, wal_lock wait, encode+write, sync_all, apply_redo) into each report entry
     #[arg(long)]
     commit_timing: bool,
+    /// Run every measurement's repetition loop under the in-process sampler; writes top.txt / folded.txt / flame.svg per (op, size) under DIR
+    #[arg(long, value_name = "DIR")]
+    sample: Option<PathBuf>,
 }
 
 fn main() {
@@ -58,6 +61,7 @@ fn main() {
         logical_graph_size_limit: args.storage.logical_graph_size_limit,
         durability_mode: args.storage.durability_mode,
         commit_timing: args.commit_timing,
+        sample_dir: args.sample,
     };
     println!(
         "bulk-loadtest: {} ops x {} sizes x {} rep(s) into {}",

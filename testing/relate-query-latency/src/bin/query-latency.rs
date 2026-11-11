@@ -9,11 +9,12 @@ use clap::{
 use relate_datasets::fraud::FraudConfig;
 use relate_query_latency::corpus::{run_corpus, CorpusConfig, Lane, SeedPolicy, Workload};
 use relate_query_latency::fetch::{data_root, ensure_dataset};
-use relate_query_latency::profile::{profile, ProfileOptions, Sampler, DEFAULT_FREQUENCY};
+use relate_query_latency::profile::{profile, ProfileOptions, Sampler};
 use relate_query_latency::run::RunConfig;
 use relate_query_latency::suite::{report_name, run_suite, GraphOptions, SuiteOptions};
 use relate_query_latency::work_root;
 use relate_query_latency::workload::{IndexProfile, ScaleFactor, QIDS};
+use relate_test_support::profiler::DEFAULT_FREQUENCY;
 
 #[derive(Parser, Debug)]
 #[command(

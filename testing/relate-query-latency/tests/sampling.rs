@@ -7,10 +7,11 @@
 use std::time::Duration;
 
 use relate::Database;
-use relate_query_latency::profile::{query_loop, sample};
+use relate_query_latency::profile::query_loop;
 use relate_query_latency::run::Watchdog;
-use relate_query_latency::stacks::top_text;
 use relate_query_latency::workload::Query;
+use relate_test_support::profiler::sample;
+use relate_test_support::stacks::top_text;
 
 #[test]
 fn sampling_a_cpu_bound_query_records_engine_stacks() {

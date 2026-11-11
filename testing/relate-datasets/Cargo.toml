@@ -33,3 +33,12 @@ relate-test-support = { workspace = true, features = ["bolt"] }
 # matches its file); no [[bin]] table — a partial one would be a second,
 # drifting inventory of the same fact.
 
+[features]
+# The in-process profiler behind `bulk-loadtest --sample` (ADR-0244):
+# forwards to relate-test-support's `profiler` feature (same name here, so
+# the switch does not collide with the crate's use of relate-test-support's
+# `sampling` module — the platform RSS samplers). A --no-default-features
+# build refuses --sample loudly at validation instead of silently lacking
+# the profiler. Default on, so the documented invocation just works.
+default = ["profiler"]
+profiler = ["relate-test-support/profiler"]

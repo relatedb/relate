@@ -49,12 +49,19 @@ tempfile = { workspace = true }
 # The platform samplers in `sampling` (`getrusage`, `task_info`).
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+# The in-process CPU-time profiler behind the profiling harnesses' `--sample`
+# (ADR-0244), optional so non-profiling builds skip the pprof tree.
+pprof = { version = "0.15", default-features = false, features = ["flamegraph", "large-depth"], optional = true }
 
 [dev-dependencies]
 relate-storage = { workspace = true }
 
 [features]
 bolt = ["dep:relate-bolt"]
+# The in-process profiler (`profiler.rs`): query-latency's `sampling`
+# feature and `bulk-loadtest --sample` forward it. Named for the module it
+# gates, not the crate's `sampling` module (the platform RSS samplers).
+profiler = ["dep:pprof"]
 # The durability-mode table (`durability`, ADR-0470): the one
 # (spelling, mode) enumeration the engine, CLI and Bolt durability pins
 # iterate.

@@ -254,3 +254,51 @@ fn failed_measurement_keeps_one_entry_per_op_and_size() {
     assert_eq!(e.rows, 0);
     assert!(e.latency_ns.is_none());
 }
+
+/// `--sample` writes the three stack outputs per (op, size) and the report
+/// records where. The availability guard is asserted on every platform
+/// (its outcome must equal the support constant); only the file outputs
+/// need a sampler build, and their loop is long enough that the CPU-time
+/// timer is guaranteed samples.
+#[test]
+fn sample_dir_writes_stack_outputs() {
+    use relate_test_support::profiler::IN_PROCESS_SAMPLER;
+    let dir = tempfile::tempdir().unwrap();
+    let sample_dir = dir.path().join("profiles");
+    // The guard's outcome is pinned cross-platform: ok exactly when a
+    // sampler is built.
+    assert_eq!(
+        BulkConfig {
+            sample_dir: Some(sample_dir.clone()),
+            ..BulkConfig::default()
+        }
+        .validate()
+        .is_ok(),
+        IN_PROCESS_SAMPLER
+    );
+    if !IN_PROCESS_SAMPLER {
+        return;
+    }
+    let report = run(&BulkConfig {
+        dir: ":memory:".into(),
+        ops: vec![BulkOp::Create],
+        sizes: vec![100],
+        reps: 100,
+        commit_timing: false,
+        sample_dir: Some(sample_dir.clone()),
+        ..BulkConfig::default()
+    })
+    .unwrap();
+    let recorded = sample_dir.to_string_lossy().into_owned();
+    assert_eq!(report.config.sample_dir.as_deref(), Some(recorded.as_str()));
+    let out = sample_dir.join("create-100");
+    let top = std::fs::read_to_string(out.join("top.txt")).unwrap();
+    assert!(
+        top.contains("bulk-loadtest create size=100"),
+        "header: {top}"
+    );
+    assert!(std::fs::read_to_string(out.join("folded.txt"))
+        .unwrap()
+        .contains(';'));
+    assert!(std::fs::metadata(out.join("flame.svg")).unwrap().len() > 0);
+}

@@ -36,6 +36,10 @@ on:
         description: "Unmeasured reps run first"
         required: false
         default: "20"
+      sample:
+        description: "Run every measurement under the in-process sampler and upload the stack profiles (on or empty)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -87,6 +91,7 @@ jobs:
           SIZES: ${{ inputs.sizes }}
           REPS: ${{ inputs.reps }}
           WARMUP: ${{ inputs.warmup }}
+          SAMPLE: ${{ inputs.sample }}
         run: |
           set -euo pipefail
           fail() { echo "::error::invalid dispatch input: $1" >&2; exit 1; }
@@ -94,6 +99,7 @@ jobs:
           [[ "${SIZES}" =~ ^[0-9,_kK]+$ ]] || fail "sizes must match [0-9,_kK]+ (got: ${SIZES})"
           [[ "${REPS}" =~ ^[0-9]+$ ]] || fail "reps must be a non-negative integer (got: ${REPS})"
           [[ "${WARMUP}" =~ ^[0-9]+$ ]] || fail "warmup must be a non-negative integer (got: ${WARMUP})"
+          [[ "${SAMPLE}" =~ ^(on)?$ ]] || fail "sample must be on or empty (got: ${SAMPLE})"
 
       # One build (warm /work/target across the loop), then one ladder per
       # durability mode. The first mode also pays the cold build.
@@ -103,18 +109,27 @@ jobs:
           SIZES: ${{ inputs.sizes }}
           REPS: ${{ inputs.reps }}
           WARMUP: ${{ inputs.warmup }}
+          SAMPLE: ${{ inputs.sample }}
         run: |
           set -euo pipefail
+          # `--sample` adds per-sample overhead: the profiles exist to answer
+          # a specific question, not to run by default. Each durability mode
+          # gets its own profile root — the per-(op, size) directory names
+          # would otherwise overwrite each other across modes.
+          sample_on=""
+          if [ "${SAMPLE}" = "on" ]; then
+            sample_on=1
+          fi
           for mode in full everysecond snapshot; do
             echo "=== durability: ${mode} ==="
+            sample_args=""
+            if [ -n "${sample_on}" ]; then
+              sample_args="--sample /work/bulk-loadtest-samples/${mode}"
+            fi
             make bulk-loadtest \
               OUT_BULK="target/bulk-loadtest-${mode}.json" \
-              ARGS="--ops ${OPS} --sizes ${SIZES} --reps ${REPS} --warmup ${WARMUP} --durability-mode ${mode} --commit-timing"
+              ARGS="--ops ${OPS} --sizes ${SIZES} --reps ${REPS} --warmup ${WARMUP} --durability-mode ${mode} --commit-timing ${sample_args}"
           done
-
-      - name: Clean the measurement databases off the checkout
-        if: always()
-        run: rm -rf bulk-loadtest-data
 
       - name: Upload ladder reports
         if: always()
@@ -123,3 +138,17 @@ jobs:
           name: bulk-loadtest-reports
           path: target/bulk-loadtest-*.json
           if-no-files-found: error
+
+      - name: Upload stack profiles
+        if: always() && inputs.sample == 'on'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bulk-loadtest-samples
+          path: bulk-loadtest-samples/
+          if-no-files-found: error
+
+      # After the uploads: the profiles are artifacts before the checkout is
+      # cleaned.
+      - name: Clean the measurement databases off the checkout
+        if: always()
+        run: rm -rf bulk-loadtest-data bulk-loadtest-samples

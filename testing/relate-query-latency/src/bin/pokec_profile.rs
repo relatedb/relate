@@ -18,8 +18,9 @@
 //!   the population cost.
 //! * `--group NAME` runs one group (`count`, `scan_agg_global`,
 //!   `expansion_3`, `scan_expand_2hop_filter`).
-//! * `--sample DIR` runs the selected groups under the in-process sampler
-//!   and writes `DIR/<group>/folded.txt` and `flame.svg`; no samply needed.
+//! * `--sample DIR` runs the selected groups under the in-process profiler
+//!   and writes `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`; no
+//!   samply needed.
 //! * `--profile` (needs `--group`) prints the `PROFILE` result of the
 //!   group's query at start id 1 instead of timing it.
 //! * No env vars beyond cargo's own.
@@ -33,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use relate::{Connection, Result, Value};
-use relate_query_latency::profile::DEFAULT_FREQUENCY;
 use relate_test_support::pokec::{open, PokecShape};
+use relate_test_support::profiler::{sample, DEFAULT_FREQUENCY};
 
 /// One measured group: its query, how many start ids (`1..=starts`) feed
 /// the `$id` parameter, and how many rounds each start id runs. `None`
@@ -124,7 +125,7 @@ struct Args {
     #[arg(long, value_parser = group_by_name)]
     group: Option<&'static Group>,
     /// Run the selected groups under the in-process sampler and write
-    /// `<DIR>/<group>/folded.txt` and `flame.svg`.
+    /// `<DIR>/<group>/top.txt`, `folded.txt` and `flame.svg`.
     #[arg(long, value_name = "DIR", conflicts_with = "profile")]
     sample: Option<PathBuf>,
     /// Print the `PROFILE` result of the group's query at start id 1
@@ -153,6 +154,15 @@ impl Args {
             (false, None) => Mode::Timed,
         }
     }
+
+    /// Refuse `--sample` before the fixture opens: the kit's one authored
+    /// refusal, mapped into this binary's error type.
+    fn require_sampler(&self) -> Result<()> {
+        if self.sample.is_some() {
+            relate_test_support::profiler::require_available().map_err(relate::Error::internal)?;
+        }
+        Ok(())
+    }
 }
 
 /// Resolve `--group` against the table at parse time, before the fixture
@@ -166,6 +176,7 @@ fn group_by_name(name: &str) -> std::result::Result<&'static Group, String> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    args.require_sampler()?;
     let selected: Vec<&Group> = match args.group {
         Some(g) => vec![g],
         None => GROUPS.iter().collect(),
@@ -213,17 +224,27 @@ fn run_timed(conn: &mut Connection, g: &Group, sample_dir: Option<&Path>) -> Res
     Ok(())
 }
 
-/// [`measure`] under the in-process sampler, writing `folded.txt` and
-/// `flame.svg` into `dir` (one directory per group).
+/// [`measure`] under the in-process profiler, writing the shared
+/// `top.txt` / `folded.txt` / `flame.svg` trio into `dir` (one directory
+/// per group).
 fn run_sampled(conn: &mut Connection, g: &Group, dir: &Path) -> Result<Measured> {
     // Create (and so validate) the directory before the sampled run, so an
     // unwritable `--sample DIR` fails fast, not after the whole measurement.
     std::fs::create_dir_all(dir)?;
-    let sampled = relate_query_latency::profile::sample(DEFAULT_FREQUENCY, || measure(conn, g))
-        .map_err(relate::Error::internal)?;
+    let sampled =
+        sample(DEFAULT_FREQUENCY, || measure(conn, g)).map_err(relate::Error::internal)?;
+    // The rounds have already run: write the profile before propagating a
+    // failed round's error, so the failure case keeps its stacks — the
+    // case they are most useful for.
+    let header = vec![format!("pokec_profile {} ({} rounds)", g.name, g.rounds)];
+    let written = relate_test_support::profiler::write_stack_outputs(
+        dir,
+        &sampled.stacks,
+        &sampled.flamegraph_svg,
+        &header,
+    );
     let measured = sampled.value?;
-    std::fs::write(dir.join("folded.txt"), sampled.stacks.to_folded())?;
-    std::fs::write(dir.join("flame.svg"), &sampled.flamegraph_svg)?;
+    written.map_err(relate::Error::internal)?;
     Ok(measured)
 }
 

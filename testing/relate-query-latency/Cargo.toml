@@ -28,17 +28,14 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tar = "0.4"
 
-# In-process sampling profiler for `query-latency profile` (ADR-0244):
-# timer-signal based, so unix only. Default features off (they add a C++
-# demangler); `large-depth` keeps 1024 frames instead of 32, which the
-# engine's executor stacks exceed.
-[target.'cfg(unix)'.dependencies]
-pprof = { version = "0.15", default-features = false, features = ["flamegraph", "large-depth"], optional = true }
-
 [features]
 default = ["sampling"]
-# `query-latency profile`'s in-process sampler (ADR-0244).
-sampling = ["dep:pprof"]
+# `query-latency profile`'s in-process profiler (ADR-0244): forwards to
+# relate-test-support's `profiler` feature, which owns the pprof dependency
+# (timer-signal based, so unix only; default features off — they add a C++
+# demangler — and `large-depth` keeps 1024 frames instead of 32, which the
+# engine's executor stacks exceed).
+sampling = ["relate-test-support/profiler"]
 # The research-only kernel harness example (examples/sol.rs): forwards
 # the engine's quarantine feature (ADR-0476). Non-default — the example
 # carries `required-features = ["research"]`, so a plain

@@ -550,18 +550,22 @@ cargo run -p relate-datasets --release --bin bulk-loadtest -- --ops create --siz
 | `--dir <PATH>`          | `target/bulk-loadtest-data`  | Directory for the per-measurement databases (a fresh one per op and size), or `:memory:`           |
 | `--logical-graph-size-limit <SIZE>` | unset (`RELATE_LOGICAL_GRAPH_SIZE_LIMIT`; `0` or omit is unlimited) | Live graph + index cap (ADR-0042). No cap by default: the bulk working set grows with batch size |
 | `--durability-mode full\|everysecond\|snapshot` | `full` | WAL durability for persistent databases (ADR-0077). Ignored for `:memory:`. Under `full` every rep pays one WAL barrier — `everysecond` isolates the engine floor, `snapshot` the checkpoint-bound floor |
+| `--sample <DIR>`        | off                          | Run every measurement's repetition loop under the in-process profiler (relate-test-support's, ADR-0244) and write `top.txt` / `folded.txt` / `flame.svg` per (op, size) under DIR. The profiler sees each rep's untimed setup statements too. Needs a unix build with this crate's `profiler` feature (default on); a build without it refuses the flag loudly |
 | `--commit-timing`       | off                          | Record the engine's rendered commit-timing report — aggregate per-step percentiles (parse+plan, overlay execute, wal_lock wait, encode+write, `sync_all`, `apply_redo`) over every commit in the measurement, each rep's untimed setup statements included — into each report entry. A diagnostics dump for reading, not a schema-modeled structure (the row vocabulary is pinned by test). An in-memory database still records, with `sync_all` ≈ 0 |
-| `--out <PATH>`          | `target/bulk-loadtest.json`  | Report JSON path (schema 2)                                                                        |
+| `--out <PATH>`          | `target/bulk-loadtest.json`  | Report JSON path (schema 3)                                                                        |
 
-Report JSON: schema 2 — `config.durability_mode`, and a per-entry
-`commit_timing` string (omitted when `--commit-timing` is off).
+Report JSON: schema 3 — `config.durability_mode`, `config.commit_timing`,
+`config.sample_dir`, and a per-entry `commit_timing` string (omitted when
+`--commit-timing` is off).
 
 The `bulk-loadtest` workflow dispatch (Actions tab) runs the ladder
 across all three durability modes in the pinned ADR-0070 Docker
 environment on the loadtest runner class and uploads the per-mode
 reports as artifacts. Its dispatch inputs are validated against the
 flags' character sets before use — they reach a command line twice
-(once in the step, again through the Makefile's argument expansion). Its measurement databases live on the runner's
+(once in the step, again through the Makefile's argument expansion). The
+`sample` input runs the ladder under the in-process sampler and uploads
+the stack profiles as a second artifact. Its measurement databases live on the runner's
 real disk: the Docker recipe mounts `/tmp` as tmpfs, where a WAL
 barrier is a memory write — a local `make bulk-loadtest` with the
 default `--dir /tmp/...` therefore measures **no real fsync cost**;
@@ -1213,7 +1217,7 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 | --- | --- |
 | `small` \| `medium` (required, first) | Fixture shape: `small` = 10,000 users / 121,716 friendships (opens in seconds); `medium` = 100,000 users / 1,768,164 friendships. No default. |
 | `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `scan_expand_2hop_filter`. All groups when omitted; an unknown name is a usage error before the fixture opens. |
-| `--sample DIR` | Run the selected groups under the in-process sampler (997 Hz, ADR-0244) and write `DIR/<group>/folded.txt` and `flame.svg`, one directory per group. Conflicts with `--profile`. |
+| `--sample DIR` | Run the selected groups under the in-process profiler (997 Hz, ADR-0244) and write `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`, one directory per group. Conflicts with `--profile`; a failed round keeps its stacks. |
 | `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
 | `--help` | The generated usage and flag list. |
 
