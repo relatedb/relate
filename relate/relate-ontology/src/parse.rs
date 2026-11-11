@@ -9,30 +9,8 @@ use saphyr::{LoadableYamlNode, Scalar, Yaml};
 use saphyr_parser::{Event, Parser};
 
 use crate::error::OntologyError;
+use crate::format::DocumentFormat;
 use crate::value::Value;
-
-/// The syntax of an ontology document, detected by a strict JSON parse
-/// (ADR-0227 §3: a document that parses as JSON counts as JSON, anything
-/// else as YAML).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocumentFormat {
-    /// The document parses as strict JSON.
-    Json,
-    /// Anything else (parsed as YAML 1.2).
-    Yaml,
-}
-
-impl DocumentFormat {
-    /// The `db.ontology.get` format argument naming this format
-    /// (CIP-287: `"json"` or `"yaml"`).
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            DocumentFormat::Json => "json",
-            DocumentFormat::Yaml => "yaml",
-        }
-    }
-}
 
 /// Detect the stored format of a document by a strict JSON parse
 /// (ADR-0227 §3).
@@ -75,7 +53,7 @@ pub fn parse_document_value(bytes: &[u8]) -> Result<(Value, DocumentFormat), Ont
                     }
                 } else {
                     OntologyError::Syntax {
-                        syntax: "JSON",
+                        syntax: DocumentFormat::Json,
                         message: e.to_string(),
                     }
                 }
@@ -185,12 +163,12 @@ fn anchors_and_aliases_not_supported() -> OntologyError {
 fn parse_yaml(text: &str) -> Result<Value, OntologyError> {
     screen_yaml_events(text)?;
     let docs = Yaml::load_from_str(text).map_err(|e| OntologyError::Syntax {
-        syntax: "YAML",
+        syntax: DocumentFormat::Yaml,
         message: e.to_string(),
     })?;
     match docs.len() {
         0 => Err(OntologyError::Syntax {
-            syntax: "YAML",
+            syntax: DocumentFormat::Yaml,
             message: "the document is empty".to_owned(),
         }),
         1 => yaml_to_value(&docs[0]),
@@ -263,8 +241,27 @@ fn yaml_to_value(node: &Yaml<'_>) -> Result<Value, OntologyError> {
             "anchors and aliases are not supported (unresolved alias, anchor id {id})"
         ))),
         Yaml::Representation(..) | Yaml::BadValue => Err(OntologyError::Syntax {
-            syntax: "YAML",
+            syntax: DocumentFormat::Yaml,
             message: "unresolvable scalar representation".to_owned(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn syntax_errors_name_the_format_in_uppercase() {
+        let yaml = parse_document_value(b"").unwrap_err();
+        assert!(matches!(
+            yaml,
+            OntologyError::Syntax {
+                syntax: DocumentFormat::Yaml,
+                ..
+            }
+        ));
+        assert!(yaml.to_string().contains("(YAML)"), "{yaml}");
+        assert_eq!(DocumentFormat::Json.to_string(), "JSON");
     }
 }

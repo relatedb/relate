@@ -59,6 +59,7 @@
 mod error;
 #[cfg(test)]
 mod fixtures;
+mod format;
 mod graph_type;
 mod model;
 mod parse;
@@ -69,12 +70,13 @@ mod validate;
 mod value;
 
 pub use error::{OntologyError, MAX_SUPPORTED_SPEC_VERSION, PINNED_SCHEMA_URI};
+pub use format::DocumentFormat;
 pub use graph_type::to_graph_type_body;
 pub use model::{
     Constraint, ConstraintType, Labels, Neo4jType, NodeType, OntologyDocument, Property,
     RelationshipTarget, RelationshipType,
 };
-pub use parse::{detect_format, parse_document_value, DocumentFormat};
+pub use parse::{detect_format, parse_document_value};
 pub use serialize::{to_json_sorted_string, to_json_string, to_yaml_string};
 pub use value::Value;
 

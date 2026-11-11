@@ -1,6 +1,8 @@
 //! Typed errors for ontology document parsing and validation (ADR-0227,
 //! ADR-0364, ADR-0487).
 
+use crate::format::DocumentFormat;
+
 /// The one spelling of the supported Ontology Graph Spec version. Both
 /// gate constants below derive from it, so the URI and the version the
 /// error messages name cannot drift apart (ADR-0487 §1).
@@ -37,11 +39,11 @@ pub enum OntologyError {
     InvalidUtf8(#[from] std::str::Utf8Error),
 
     /// The document is not syntactically valid in its detected syntax
-    /// (`"JSON"` or `"YAML"`).
+    /// (rendered as `JSON` or `YAML`).
     #[error("invalid ontology document syntax ({syntax}): {message}")]
     Syntax {
         /// The syntax the input was parsed as.
-        syntax: &'static str,
+        syntax: DocumentFormat,
         /// The parser's message.
         message: String,
     },
