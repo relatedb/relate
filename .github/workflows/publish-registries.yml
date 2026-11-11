@@ -257,11 +257,18 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
 
-      # Local composite actions resolve from the checkout; the tag pins
-      # the action to the version the release shipped.
+      # Local composite actions resolve from the checkout, so it must
+      # provide the action from the same tree the workflow file itself
+      # runs on (github.sha: the dispatch ref on manual runs, the
+      # caller's ref on chained ones). A tag-pinned checkout would
+      # freeze the publish machinery at the release tag — a fix landed
+      # after the tag could never run for that tag's dispatches (found
+      # by run 43020568298 re-failing on the pre-fix action). The
+      # artifacts still come from the tag: the release's assets,
+      # attestation-verified below.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.registry-owner.outputs.sha }}
+          ref: ${{ github.sha }}
 
       - name: Download the release's npm tarballs
         env:
@@ -317,9 +324,11 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
 
+      # Action from the dispatch ref like npm-platform-wasm above; the
+      # artifacts still come from the tag's release assets.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.registry-owner.outputs.sha }}
+          ref: ${{ github.sha }}
 
       - name: Download the release's npm tarballs
         env:
