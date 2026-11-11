@@ -190,6 +190,16 @@ not, and `relate-load` enables it only for its own tests (a
 dev-dependency). A consumer outside the workspace that depends on
 `relate` directly gets the crate defaults, so Parquet stays on.
 
+## Package contents (crates.io)
+
+The published crate ships its `src/`, `examples/` and `tests/` sources
+plus a crate-level `README.md` and the Apache-2.0 `LICENSE` text. The
+`tests/` are the source-of-record for behavior, not a standalone test
+suite: they reference `relate-test-support`, a workspace-internal crate
+that is deliberately never published, so `cargo test` runs inside this
+repository's workspace — from an extracted package tarball the tests do
+not compile, while the `examples/` build and run standalone.
+
 ## `QueryResult`
 
 - `header: ResultHeader` — the statement's result metadata (ADR-0319, ADR-0343), one struct shared with `ExecutionFailure`:
