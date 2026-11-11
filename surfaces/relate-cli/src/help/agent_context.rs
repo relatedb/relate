@@ -9,8 +9,8 @@ pub(super) fn agent_context_help() -> String {
     format!(
         "{AGENT_CONTEXT_USAGE}
 
-agent-context prints the compact discovery readout for agent harnesses
-(ADR-0242), rendered from the same command table as --help, so the two
+agent-context prints the compact discovery readout for agent harnesses,
+rendered from the same command table as --help, so the two
 cannot drift. With no COMMAND it prints the command index, the query-run
 flag names, and the exit-code table; with a COMMAND word it prints that
 command's synopsis, flags and examples. Output is always compact text.

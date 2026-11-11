@@ -90,7 +90,7 @@ pub(crate) fn plan(uri: &str, safe_mode: bool) -> Result<Option<RemoteDb>, Strin
     if safe_mode {
         return Err(
             "--safe refuses a remote --load source — a downloaded store is untrusted input, \
-             so safe mode introduces none (LABS-680, ADR-0477)"
+             so safe mode introduces none"
                 .into(),
         );
     }

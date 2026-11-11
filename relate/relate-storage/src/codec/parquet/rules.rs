@@ -32,10 +32,6 @@ pub(super) struct ShardRules {
     columns: Vec<(String, ColumnType)>,
 }
 
-fn broken(what: &str) -> Error {
-    Error::storage(format!("{what} (ADR-0183)"))
-}
-
 /// The id column of `batch`, the first, when it is Int64.
 pub(super) fn id_column(batch: &RecordBatch) -> Option<Int64Array> {
     batch
@@ -57,7 +53,7 @@ impl ShardRules {
         range: Range<i64>,
     ) -> Result<Self> {
         let columns = wide::recover_columns(kind, builder.schema())
-            .ok_or_else(|| broken("schema differs from the shard schema"))?;
+            .ok_or_else(|| Error::storage("schema differs from the shard schema"))?;
         Ok(Self {
             range,
             last: None,
@@ -75,9 +71,9 @@ impl ShardRules {
     /// return them. They ascend, so the batch's first and last ids bound
     /// the rest within the range.
     pub(super) fn ids(&mut self, batch: &RecordBatch) -> Result<Int64Array> {
-        let ids = id_column(batch).ok_or_else(|| broken("id column"))?;
+        let ids = id_column(batch).ok_or_else(|| Error::storage("id column"))?;
         if ids.null_count() > 0 {
-            return Err(broken("null id"));
+            return Err(Error::storage("null id"));
         }
         if !self
             .last
@@ -85,11 +81,11 @@ impl ShardRules {
             .chain(ids.values())
             .is_sorted_by(|a, b| a < b)
         {
-            return Err(broken("ids are not strictly ascending"));
+            return Err(Error::storage("ids are not strictly ascending"));
         }
         let ends = ids.values().first().into_iter().chain(ids.values().last());
         if let Some(outside) = ends.copied().find(|id| !self.range.contains(id)) {
-            return Err(broken(&format!(
+            return Err(Error::storage(format!(
                 "id {outside} is outside the part range [{}, {})",
                 self.range.start, self.range.end
             )));
@@ -155,7 +151,7 @@ mod tests {
         // loader and the copy cursor reject both by the one range rule, the
         // cursor even when the rows it copies lie inside the range.
         for (ids, outside) in [(vec![3, 5], 3), (vec![4, 8], 8)] {
-            let rule = format!("id {outside} is outside the part range [4, 8) (ADR-0183)");
+            let rule = format!("id {outside} is outside the part range [4, 8)");
             let bytes = write_bare_table(ids).unwrap();
             let err = load_nodes(&Graph::default(), bytes.clone(), Origin::Part(4..8)).unwrap_err();
             assert!(matches!(err, Error::Storage(_)), "{err}");

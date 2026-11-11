@@ -267,7 +267,7 @@ fn resolve_deadline(
 pub fn validate_admission_deadline(phase: &str, configured: Duration) -> Result<(), String> {
     if configured > MAX_ADMISSION_DEADLINE {
         return Err(format!(
-            "{phase} deadline {configured:?} exceeds the maximum of {MAX_ADMISSION_DEADLINE:?} (ADR-0451)"
+            "{phase} deadline {configured:?} exceeds the maximum of {MAX_ADMISSION_DEADLINE:?}"
         ));
     }
     Ok(())
@@ -307,7 +307,7 @@ pub fn unlimited_cap_warning(
     Some(format!(
         "WARNING: --max-connections is unlimited on non-loopback {bind_description}. \
          Each accepted connection takes a thread before authentication. \
-         Set --max-connections to bound it (ADR-0333)."
+         Set --max-connections to bound it."
     ))
 }
 
@@ -400,7 +400,7 @@ pub fn accept_resilient(listener: &TcpListener, surface: &str) -> TcpStream {
                 if let Err(e) = stream.set_nodelay(true) {
                     eprintln!(
                         "{surface}: set_nodelay failed: {e}; \
-                         small responses may be delayed (LABS-911)"
+                         small responses may be delayed"
                     );
                 }
                 return stream;
@@ -671,7 +671,7 @@ mod tests {
             Some(
                 "WARNING: --max-connections is unlimited on non-loopback --host 0.0.0.0. \
                  Each accepted connection takes a thread before authentication. \
-                 Set --max-connections to bound it (ADR-0333)."
+                 Set --max-connections to bound it."
                     .to_string()
             ),
             "the CLI's rendered line"
@@ -681,7 +681,7 @@ mod tests {
             Some(
                 "WARNING: --max-connections is unlimited on non-loopback bind 0.0.0.0:7687. \
                  Each accepted connection takes a thread before authentication. \
-                 Set --max-connections to bound it (ADR-0333)."
+                 Set --max-connections to bound it."
                     .to_string()
             ),
             "bolt's rendered line"

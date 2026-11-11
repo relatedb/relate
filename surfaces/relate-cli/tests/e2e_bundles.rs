@@ -95,7 +95,7 @@ fn test_command_help_pages_follow_the_build() {
     // command fails loudly here instead of being silently skipped.
     let needle = |word: &str| -> &'static str {
         match word {
-            "query" => "ADR-0200",
+            "query" => "runs a statement session",
             "clone" => "--to-snapshot-format",
             "info" => "--json",
             "pull" => "--allow-plaintext",

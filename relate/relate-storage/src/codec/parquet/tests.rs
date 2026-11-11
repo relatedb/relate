@@ -166,7 +166,7 @@ fn max_id_shards_fail_checkpoint_recovery_before_graph_install() {
         assert!(matches!(err, Error::Storage(_)), "{err}");
         // The part's range rule meets the row before the persisted-id check.
         let expected = format!(
-            "manifest part {path}: id {} is outside the part range [0, 4096) (ADR-0183)",
+            "manifest part {path}: id {} is outside the part range [0, 4096)",
             i64::MAX
         );
         assert!(err.to_string().contains(&expected), "{err}");

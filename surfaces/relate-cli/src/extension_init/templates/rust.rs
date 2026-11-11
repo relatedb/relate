@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 
 # A first-party extension crate lives at `extensions/<name>/` in this
-# workspace (ADR-0431 §11), so its dependencies are the workspace's. From
+# workspace, so its dependencies are the workspace's. From
 # outside a checkout, point these at a checkout by path or at a released
 # version instead — nothing else in the crate changes.
 [dependencies]
@@ -125,7 +125,7 @@ the wire kit (`relate-wire`), the same kit both sides of the mount share
 ## Build and run it
 
 The crate is laid out as a first-party child of this workspace
-(`extensions/<name>/`, ADR-0431 §11), whose dependencies are the workspace's;
+(`extensions/<name>/`), whose dependencies are the workspace's;
 from outside a checkout, point `relate-wire`'s dependency at one by path
 or version.
 

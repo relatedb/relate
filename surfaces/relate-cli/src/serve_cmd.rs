@@ -102,17 +102,17 @@ fn access_banner_line(access: relate::OpenMode) -> Option<&'static str> {
     match access {
         relate::OpenMode::Writable => None,
         relate::OpenMode::ReadOnly => Some(
-            "serve: opened the store read-only (ADR-0306) — no writer lease and \
+            "serve: opened the store read-only — no writer lease and \
              never creates the store; every write fails",
         ),
         relate::OpenMode::Follow => Some(
-            "serve: opened the store read-only and following the WAL (ADR-0306) — \
+            "serve: opened the store read-only and following the WAL — \
              the writer's committed frames appear as they land",
         ),
         // LABS-903 (ADR-0500): the `--load` memory turn-into — the source
         // loaded into the in-memory store, released after the load.
         relate::OpenMode::Ephemeral => Some(
-            "serve: loaded the store into memory (ADR-0500) — read-only, the source \
+            "serve: loaded the store into memory — read-only, the source \
              released after the load; every write fails",
         ),
     }
@@ -129,7 +129,7 @@ fn non_loopback_warning(host: &str) -> Option<String> {
     Some(format!(
         "serve: WARNING: --host {host} exposes the PLAINTEXT HTTP/MCP/Bolt surfaces to the network — \
          serve has no TLS; anyone who can reach the ports can present credentials. \
-         Keep 127.0.0.1 or front the server with TLS (ADR-0248)."
+         Keep 127.0.0.1 or front the server with TLS."
     ))
 }
 

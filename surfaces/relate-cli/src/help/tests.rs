@@ -58,24 +58,34 @@ fn the_query_page_documents_the_session_vocabulary() {
     }
 }
 
-#[test]
-fn every_help_page_carries_one_or_two_runnable_looking_examples() {
-    // The top level and every compiled-in command: an `Examples:` section
-    // with at most two entries, each a `# comment` above a `relate`
-    // command line. Few on purpose; the e2e suite runs the safe ones.
+/// Every help page this build renders, one row per page: its name, the
+/// page with examples on, and the examples slice that page carries (the
+/// top level's own for the top row). The one inventory every page-level
+/// test iterates — the examples contract and the no-internal-ids guard
+/// walk the same list, so a page renderer added anywhere else sits
+/// outside every guard until it joins this one.
+fn every_help_page() -> Vec<(&'static str, String, &'static [crate::examples::Example])> {
     let mut pages = vec![(
-        "top level".to_string(),
+        "top level",
         top_level_with(true),
         crate::examples::TOP_LEVEL,
     )];
     for spec in commands() {
         pages.push((
-            spec.word.to_string(),
+            spec.word,
             command_help_with(spec.topic, true),
             spec.examples,
         ));
     }
-    for (name, page, examples) in pages {
+    pages
+}
+
+#[test]
+fn every_help_page_carries_one_or_two_runnable_looking_examples() {
+    // The top level and every compiled-in command: an `Examples:` section
+    // with at most two entries, each a `# comment` above a `relate`
+    // command line. Few on purpose; the e2e suite runs the safe ones.
+    for (name, page, examples) in every_help_page() {
         assert!(
             (1..=2).contains(&examples.len()),
             "{name}: {} examples, want 1-2",
@@ -331,4 +341,21 @@ fn hints_name_the_canonical_command() {
         HelpScope::Command(HelpTopic::Clone).hint(),
         "Run 'relate clone --help' for more information."
     );
+}
+
+/// No internal record identifier (an `ADR-*` decision record or a `LABS-*`
+/// tracker card) rides any help page: the pages ship inside the public
+/// binary, and those identifiers resolve only inside the repository, so a
+/// user reading them is noise that erodes trust in the rest of the text.
+/// The reasoning the identifiers pointed at stays in the repo, where the
+/// links actually resolve. Walks the shared page inventory (examples
+/// included) — a page carrying one fails here.
+#[test]
+fn no_help_page_carries_internal_record_ids() {
+    for (name, page, _) in every_help_page() {
+        assert!(
+            !page.contains("ADR-") && !page.contains("LABS-"),
+            "{name}: internal record id on the page:\n{page}"
+        );
+    }
 }

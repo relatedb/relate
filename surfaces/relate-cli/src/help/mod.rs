@@ -536,7 +536,7 @@ fn top_level_with(examples: bool) -> String {
     s.push_str(
         "--database is a directory (WAL + snapshot), a .rl bundle, or :memory: (the default).\n",
     );
-    s.push_str("With no QUERY, the interactive shell opens on a terminal (ADR-0231); on piped\n");
+    s.push_str("With no QUERY, the interactive shell opens on a terminal; on piped\n");
     s.push_str(
         "or redirected stdin this help is printed. `query` with no STATEMENT reads a script\n",
     );

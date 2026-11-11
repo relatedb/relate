@@ -8,7 +8,7 @@ pub(super) fn skill_help() -> String {
     format!(
         "{SKILL_USAGE}
 
-skill manages the embedded agent skill bundle (ADR-0242 for list/check).
+skill manages the embedded agent skill bundle.
   install   Copy the bundle into every target agent's skills dir
   remove    Remove the installed bundle (marker-owned dirs only)
   list      Print each target agent's install state and path

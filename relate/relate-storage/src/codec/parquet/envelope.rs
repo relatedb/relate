@@ -10,7 +10,7 @@ use parquet::file::reader::{ChunkReader, Length};
 use crate::vfs::{Vfs, VfsFile, VfsOpen};
 
 pub(super) fn invalid(what: &str) -> Error {
-    Error::storage(format!("invalid or out-of-bounds {what} (ADR-0086)"))
+    Error::storage(format!("invalid or out-of-bounds {what}"))
 }
 
 pub(super) struct Compact<'a> {

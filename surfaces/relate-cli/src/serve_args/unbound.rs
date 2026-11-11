@@ -208,7 +208,7 @@ fn unbound_http_phase(flag: &str, phase: &str) -> String {
 #[cfg(feature = "mcp")]
 fn auth_unbound_message(flag: &str) -> String {
     format!(
-        "serve --mcp stdio skips auth (the host spawned the process, ADR-0232); \
+        "serve --mcp stdio skips auth (the host spawned the process); \
          {flag} applies to the {} listeners only",
         listener_flag_spellings().join("/")
     )

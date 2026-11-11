@@ -13,7 +13,7 @@ pub(super) fn upgrade_help() -> String {
 {UPGRADE_ALIAS_USAGE}
 
 upgrade checks the latest release listed by the website's releases.json
-(ADR-0250) and replaces the running binary (macOS and Linux only);
+and replaces the running binary (macOS and Linux only);
 `update` is an alias.
   --yes    Auto-accept the post-upgrade skill refresh
   --check  Report current-vs-latest only; download and modify nothing

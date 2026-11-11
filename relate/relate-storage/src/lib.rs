@@ -264,7 +264,7 @@ fn parse_filesystem_uri(
     if is_bundle_path(&path) {
         if wal_dir.is_some() {
             return Err(Error::storage(
-                "wal_dir is not supported for .rl single-file databases (ADR-0074)",
+                "wal_dir is not supported for .rl single-file databases",
             ));
         }
         // A bundle this open will create resolves the requested codec or
@@ -574,7 +574,7 @@ fn valid_scheme(scheme: &str) -> Option<&str> {
 
 fn unsupported_remote_uri(scheme: &str) -> String {
     if scheme.eq_ignore_ascii_case("s3") {
-        "s3:// is not an engine URI (ADR-0044); object storage lives in memorydb-cloud".into()
+        "s3:// is not an engine URI; object storage lives in memorydb-cloud".into()
     } else {
         format!(
             "unsupported URI scheme {scheme}:// (engine URIs are :memory:, a filesystem path, or file://)"

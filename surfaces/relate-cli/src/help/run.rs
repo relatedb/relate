@@ -30,9 +30,9 @@ pub(super) fn run_help() -> String {
 /// the registry's visible extension rows, in the walk's sorted order.
 pub(super) fn run_help_with(registry: &ActionRegistry) -> String {
     let mut page = format!("{RUN_USAGE}\n\n");
-    page.push_str("Run an installed command-kind extension (ADR-0429): the child walks its\n");
+    page.push_str("Run an installed command-kind extension: the child walks its\n");
     page.push_str("source and emits rows over the wire; the host alone owns the store, the\n");
-    page.push_str("caps and the exit codes (ADR-0430).\n\n");
+    page.push_str("caps and the exit codes.\n\n");
     // The dynamic section (ADR-0429 §1): installed names live here and
     // nowhere else above the action's own page — the top-level page
     // stays byte-stable across installs. Every fragment is manifest
@@ -57,7 +57,7 @@ pub(super) fn run_help_with(registry: &ActionRegistry) -> String {
     }
     page.push('\n');
     page.push_str("An uninstalled name fails closed with the discovery error — nothing is\n");
-    page.push_str("fetched (ADR-0429 §7); the flags an action accepts are its own\n");
+    page.push_str("fetched; the flags an action accepts are its own\n");
     page.push_str("manifest's flag table.\n");
     page
 }
@@ -101,7 +101,7 @@ mod tests {
         }
         // The discovery contract is stated on the page.
         assert!(
-            page.contains("nothing is\nfetched (ADR-0429 §7)"),
+            page.contains("nothing is\nfetched; the flags an action accepts"),
             "the discovery note:\n{page}"
         );
     }

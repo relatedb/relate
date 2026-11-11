@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "storage error: previous Parquet shard nodes/g.parquet: \
-             invalid or out-of-bounds footer magic (ADR-0086)"
+             invalid or out-of-bounds footer magic"
         );
     }
 }

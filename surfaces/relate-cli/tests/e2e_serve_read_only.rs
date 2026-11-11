@@ -162,7 +162,7 @@ fn test_read_only_serve_sigint_is_clean_and_writes_nothing() {
     assert!(stderr.contains("serve: shutting down"), "{stderr}");
     assert!(
         stderr.contains(
-            "serve: opened the store read-only (ADR-0306) — no writer lease \
+            "serve: opened the store read-only — no writer lease \
              and never creates the store; every write fails"
         ),
         "{stderr}"
@@ -283,7 +283,7 @@ fn test_follow_serve_shows_the_writers_commits() {
     assert!(stderr.contains("serve: shutting down"), "{stderr}");
     assert!(
         stderr.contains(
-            "serve: opened the store read-only and following the WAL (ADR-0306) — \
+            "serve: opened the store read-only and following the WAL — \
              the writer's committed frames appear as they land"
         ),
         "{stderr}"
@@ -418,7 +418,7 @@ fn test_load_serves_the_store_from_memory_after_the_source_is_deleted() {
     assert!(status.success(), "serve exit on SIGINT: {status}");
     assert!(
         stderr.contains(
-            "serve: loaded the store into memory (ADR-0500) — read-only, the source \
+            "serve: loaded the store into memory — read-only, the source \
              released after the load; every write fails"
         ),
         "{stderr}"

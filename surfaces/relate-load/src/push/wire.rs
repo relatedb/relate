@@ -142,7 +142,7 @@ pub(crate) fn encode_value(value: &Value) -> Result<Json, LoadError> {
             ))
         }
         Value::Bytes(_) => Err(LoadError::Push(
-            "a byte array property (the engine's byte array is statement-scoped and cannot be pushed as a property, ADR-0327)"
+            "a byte array property (the engine's byte array is statement-scoped and cannot be pushed as a property)"
                 .to_string(),
         )),
         Value::Node(_) | Value::Relationship(_) | Value::Path(_) => Err(LoadError::Push(format!(

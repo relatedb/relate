@@ -474,7 +474,7 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "  run            Run an installed extension action into a store the host owns",
             "  extension      Scaffold, install, check, list, or remove command extensions",
             "                       The store to open — never a URL: a remote store is a --load",
-            "                       source (LABS-903, ADR-0500)",
+            "                       source",
             gained_codec_row.as_str(),
             "  --markdown-body-properties LIST  Markdown vault body properties (LIST or",
             "                       Label=LIST; entries separated by ';'; first bare, rest as",
@@ -488,12 +488,12 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "                       it can be deleted or opened writable underneath). With a",
             "                       --database path the source is cloned there and the store opens",
             "                       normally (the target must not exist yet). --read-only=live is",
-            "                       refused (LABS-903, ADR-0500)",
+            "                       refused",
             "                       An https URL is fetched to a private temp copy — a GitHub blob",
             "                       or raw link is rewritten to its raw form; a remote folder store",
             "                       is not supported. Nothing is kept: the memory target releases",
             "                       the copy after the load, a path target removes it after the",
-            "                       clone (LABS-872, ADR-0496)",
+            "                       clone",
         ],
         "the final build's help must gain exactly the run, extension, --database \
          target-axis (LABS-903, ADR-0500), markdown-codec snapshot-format, \

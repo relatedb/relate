@@ -25,9 +25,7 @@ pub enum LoadError {
     /// a typed parameter, an unresolvable scope, a batch the remote rejected.
     #[error("push failed: {0}")]
     Push(String),
-    #[error(
-        "destination database is not empty; pull writes into an empty database only (ADR-0158)"
-    )]
+    #[error("destination database is not empty; pull writes into an empty database only")]
     NonEmpty,
 }
 

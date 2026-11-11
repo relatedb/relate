@@ -226,8 +226,8 @@ pub(super) fn extension_help() -> String {
     page.push_str(
         "\n\
          \n\
-         extension manages the command-kind extensions that mount as `relate run <name>`\n\
-         (ADR-0431). Packages live under $XDG_CONFIG_HOME/relate/extensions/<name>/.\n\
+         extension manages the command-kind extensions that mount as `relate run <name>`.\n\
+         Packages live under $XDG_CONFIG_HOME/relate/extensions/<name>/.\n\
          \n\
          Actions:\n",
     );

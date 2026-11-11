@@ -62,7 +62,7 @@ pub(crate) fn action_help(entry: &ExtensionEntry) -> String {
     )));
     page.push('\n');
     page.push_str("The child walks its source and drives the import as an MCP client; the\n");
-    page.push_str("host alone owns the store, the caps and the exit codes (ADR-0447).\n\n");
+    page.push_str("host alone owns the store, the caps and the exit codes.\n\n");
     if let Some(declared) = &command.positional {
         page.push_str(&help_entry(
             &sanitize_error_text(&declared.name),

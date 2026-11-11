@@ -94,14 +94,14 @@ fn the_banner_names_a_nonwritable_mode_and_nothing_for_writable() {
     assert_eq!(
         access_banner_line(relate::OpenMode::ReadOnly),
         Some(
-            "serve: opened the store read-only (ADR-0306) — no writer lease and \
+            "serve: opened the store read-only — no writer lease and \
              never creates the store; every write fails"
         )
     );
     assert_eq!(
         access_banner_line(relate::OpenMode::Follow),
         Some(
-            "serve: opened the store read-only and following the WAL (ADR-0306) — \
+            "serve: opened the store read-only and following the WAL — \
              the writer's committed frames appear as they land"
         )
     );

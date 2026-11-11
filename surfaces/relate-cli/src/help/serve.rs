@@ -31,11 +31,11 @@ const HTTP: ServeSurface = ServeSurface {
                    an exact URL or * for any). Default: loopback origins plus
                    https://browser.neo4j.io and https://console.neo4j.io
   --tx-idle-timeout-secs N
-                   Expire an HTTP managed transaction after N seconds idle
-                   (ADR-0435); the next registry operation sweeps it. Default:
+                   Expire an HTTP managed transaction after N seconds idle; the
+                   next registry operation sweeps it. Default:
                    RELATE_TX_IDLE_TIMEOUT_SECS, else 60. 0 disables expiry
   --max-open-transactions N
-                   Cap on open HTTP managed transactions (ADR-0435). Over cap
+                   Cap on open HTTP managed transactions. Over cap
                    is a typed 429 naming this flag. Default:
                    RELATE_MAX_OPEN_TRANSACTIONS, else 128. 0 is unlimited",
 };
@@ -49,7 +49,7 @@ const MCP: ServeSurface = ServeSurface {
                    on --host:PORT; the `stdio` keyword serves the stdio
                    transport in the foreground (newline-delimited JSON-RPC
                    on stdin/stdout, for MCP hosts) until the host closes
-                   stdin — no auth challenge (ADR-0232, LABS-381, ADR-0368)",
+                   stdin — no auth challenge",
 };
 
 #[cfg(feature = "bolt")]
@@ -64,7 +64,7 @@ const BOLT: ServeSurface = ServeSurface {
     rows: "  --bolt PORT    Bolt server (Bolt + Bolt-over-WebSocket) on --host:PORT.
                    WebSocket Origins default to loopback (any port) plus the
                    hosted Neo4j Browser and Neo4j Console; another Origin
-                   needs --ws-allow-origin (ADR-0266, ADR-0459)
+                   needs --ws-allow-origin
   --ws-allow-origin ORIGIN
                    Allow this Origin on Bolt-over-WebSocket upgrades
                    (repeatable; an exact http(s) URL or * for any). Overrides
@@ -72,13 +72,13 @@ const BOLT: ServeSurface = ServeSurface {
                    https://console.neo4j.io with auth on, loopback only with
                    --auth none
   --bolt-identity STRING
-                   HELLO `server` agent string for the Bolt surface
-                   (ADR-0293). Default: RELATE_IDENTITY, else
+                   HELLO `server` agent string for the Bolt surface.
+                   Default: RELATE_IDENTITY, else
                    Relate/<version>. Sent verbatim — a Neo4j-shaped
                    value (Neo4j/5.26.0) admits strict tooling like
                    cypher-shell without claiming feature parity
   --ws-max-connections N
-                   Opt-in cap on concurrent WebSocket sessions (ADR-0459).
+                   Opt-in cap on concurrent WebSocket sessions.
                    Default: RELATE_WS_MAX_CONNECTIONS, else unlimited —
                    bulk data transfers legitimately run many sessions. The
                    process-wide --max-connections cap still applies",
@@ -123,10 +123,10 @@ fn common_segments() -> Vec<CommonSegment> {
     segments.push(CommonSegment {
         usage: " [--read-only[=FRESHNESS]]",
         flags: &["--read-only"],
-        rows: "  --read-only[=FRESHNESS]  Open the existing store read-only
-                   (ADR-0306): no writer lease, never creates it; every
+        rows: "  --read-only[=FRESHNESS]  Open the existing store read-only:
+                   no writer lease, never creates it; every
                    write fails. FRESHNESS is snapshot (default: a frozen
-                   snapshot at open) or live (ADR-0480): tail the WAL and
+                   snapshot at open) or live: tail the WAL and
                    follow the writer's commits; refuses .rl and :memory:.
                    Attach the value; once per run"
             .to_string(),
@@ -135,8 +135,8 @@ fn common_segments() -> Vec<CommonSegment> {
         usage: " [--load SOURCE]",
         flags: &["--load"],
         rows: "  --load SOURCE   Load the served store's content from SOURCE — a
-                   .rl bundle, a store directory, or an https URL
-                   (LABS-872/903, ADR-0500) — into --database. A :memory:
+                   .rl bundle, a store directory, or an https URL — into
+                   --database. A :memory:
                    target (the default) turns the source into the
                    in-memory store: read-only, nothing held open or
                    locked, a fetched copy released after the load. A path
@@ -157,8 +157,8 @@ fn common_segments() -> Vec<CommonSegment> {
         usage: "",
         flags: &["--max-connections"],
         rows: format!(
-            "  --max-connections N  Process-wide session cap shared by every surface
-                       (ADR-0333). Over cap is accept-then-close. Default:
+            "  --max-connections N  Process-wide session cap shared by every surface.
+                       Over cap is accept-then-close. Default:
                        RELATE_MAX_CONNECTIONS, else {}",
             relate_serve::DEFAULT_MAX_CONNECTIONS
         ),
@@ -173,11 +173,11 @@ fn common_segments() -> Vec<CommonSegment> {
         rows: format!(
             "  --header-deadline-secs N
                    Absolute deadline for a complete HTTP/MCP request header
-                   block (ADR-0451). Trickled headers are dropped at the
+                   block. Trickled headers are dropped at the
                    deadline. Default: RELATE_HEADER_DEADLINE_SECS, else {}. 0 disables the deadline
   --body-deadline-secs N
-                   Absolute deadline for a complete HTTP/MCP request body
-                   (ADR-0451). Trickled bodies are dropped at the deadline.
+                   Absolute deadline for a complete HTTP/MCP request body.
+                   Trickled bodies are dropped at the deadline.
                    Default: RELATE_BODY_DEADLINE_SECS, else {}. 0 disables the deadline",
             relate_serve::DEFAULT_HEADER_DEADLINE.as_secs(),
             relate_serve::DEFAULT_BODY_DEADLINE.as_secs()
@@ -188,7 +188,7 @@ fn common_segments() -> Vec<CommonSegment> {
         flags: &["--concurrent-logical-workspace-limit"],
         rows: "  --concurrent-logical-workspace-limit SIZE
                        Admit queries against a shared logical-workspace
-                       pool (bytes or mb/mib/gb/gib; ADR-0452). A positive
+                       pool (bytes or mb/mib/gb/gib). A positive
                        value turns admission on. Omit, or an unset
                        RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT, leaves
                        it off. 0 is rejected. Same resolution as the query
@@ -198,13 +198,18 @@ fn common_segments() -> Vec<CommonSegment> {
     segments.push(CommonSegment {
         usage: " [--max-traversal-depth N]",
         flags: &["--max-traversal-depth"],
-        rows: "  --max-traversal-depth N
+        // The bounds render from the engine's own constants — the row can
+        // never drift from the admission limit it documents.
+        rows: format!(
+            "  --max-traversal-depth N
                        Largest explicit traversal hop bound a served
-                       statement may ask for (1 through 2000; LABS-610,
-                       ADR-0466). Default: RELATE_MAX_TRAVERSAL_DEPTH,
-                       else 500. An *1..N or {1,N} bound above it fails at
-                       admission with TraversalDepthExceeded"
-            .to_string(),
+                       statement may ask for (1 through {}). Default:
+                       RELATE_MAX_TRAVERSAL_DEPTH, else {}. An *1..N or
+                       {{1,N}} bound above it fails at admission with
+                       TraversalDepthExceeded",
+            relate::MAX_TRAVERSAL_DEPTH_CEILING,
+            relate::MAX_TRAVERSAL_DEPTH
+        ),
     });
     segments.push(CommonSegment {
         usage: " [--expression-memory-limit SIZE]",
@@ -212,7 +217,7 @@ fn common_segments() -> Vec<CommonSegment> {
         rows: format!(
             "  --expression-memory-limit SIZE
                        Per-value expression build cap for the served store
-                       (bytes, mb/mib/gb/gib, or none; ADR-0463). Default:
+                       (bytes, mb/mib/gb/gib, or none). Default:
                        {} MiB, or raise/lower it here; none disables the
                        cap for known bulk pipelines",
             relate::EXPRESSION_BUDGET_BYTES >> 20
@@ -223,7 +228,7 @@ fn common_segments() -> Vec<CommonSegment> {
         flags: &["--safe", "--no-safe"],
         rows: "  --safe, --no-safe
                        Refuse agent-typical dangerous statement shapes on
-                       the served store (LABS-680, ADR-0477). Default:
+                       the served store. Default:
                        RELATE_SAFE_MODE=1/0, else off. --no-safe
                        negates an enabled environment default"
             .to_string(),
@@ -233,7 +238,7 @@ fn common_segments() -> Vec<CommonSegment> {
         flags: &["--logical-graph-size-limit"],
         rows: "  --logical-graph-size-limit SIZE
                        Live graph + index cap for the served store (bytes
-                       or mb/mib/gb/gib; ADR-0390). Default:
+                       or mb/mib/gb/gib). Default:
                        RELATE_LOGICAL_GRAPH_SIZE_LIMIT, else unlimited —
                        the same resolution as the query session's flag"
             .to_string(),
@@ -245,10 +250,10 @@ fn common_segments() -> Vec<CommonSegment> {
         // help cannot drift from the resolution it documents.
         rows: format!(
             "  --durability-mode MODE
-                       Commit durability policy for the served store
-                       (ADR-0077): full, everysecond, or snapshot. Default:
+                       Commit durability policy for the served store:
+                       full, everysecond, or snapshot. Default:
                        RELATE_DURABILITY_MODE, else {} — the same
-                       resolution as the query session's flag (ADR-0470)",
+                       resolution as the query session's flag",
             relate::DurabilityMode::default()
         ),
     });
@@ -323,10 +328,10 @@ pub(super) fn serve_help() -> String {
         "{usage}
 
 serve hosts Relate's network surfaces on one open database until
-SIGINT/SIGTERM (ADR-0232). At least one surface flag is required; ports
+SIGINT/SIGTERM. At least one surface flag is required; ports
 have no defaults, and a taken port is a startup error.
   -d, --database PATH  The store to serve (directory, .rl bundle, or :memory:)
-  --host HOST    Bind host for every served surface (ADR-0248). Default
+  --host HOST    Bind host for every served surface. Default
                        127.0.0.1 (loopback only). Any other host deliberately
                        exposes the PLAINTEXT surfaces to the network — serve
                        has no TLS — and a loud WARNING prints at startup
@@ -346,7 +351,7 @@ mod tests {
         for present in [
             "--database PATH",
             "--auth USER:PASSWORD",
-            "ADR-0232",
+            "At least one surface flag is required",
             "SIGINT",
         ] {
             assert!(help.contains(present), "{present:?} missing:\n{help}");
@@ -387,8 +392,9 @@ mod tests {
         }
     }
 
-    /// The admission defaults (ADR-0451) are rendered from the shared
-    /// constants the surfaces enforce: a changed cap or deadline fails here.
+    /// The admission defaults (ADR-0451) and the traversal bounds are
+    /// rendered from the shared constants the surfaces and the engine
+    /// enforce: a changed cap, deadline, or bound fails here.
     #[cfg(any(feature = "http", feature = "mcp"))]
     #[test]
     fn serve_help_renders_the_admission_defaults_from_the_shared_constants() {
@@ -397,6 +403,8 @@ mod tests {
             relate_serve::DEFAULT_MAX_CONNECTIONS.to_string(),
             format!("else {}.", relate_serve::DEFAULT_HEADER_DEADLINE.as_secs()),
             format!("else {}.", relate_serve::DEFAULT_BODY_DEADLINE.as_secs()),
+            format!("(1 through {}).", relate::MAX_TRAVERSAL_DEPTH_CEILING),
+            format!("else {}. An", relate::MAX_TRAVERSAL_DEPTH),
         ] {
             assert!(help.contains(&expected), "{expected:?} missing:\n{help}");
         }
@@ -411,6 +419,6 @@ mod tests {
         assert!(help.contains("frozen"), "{help}");
         assert!(help.contains("refuses .rl"), "{help}");
         assert!(help.contains(":memory:"), "{help}");
-        assert!(help.contains("ADR-0306"), "{help}");
+        assert!(help.contains("no writer lease"), "{help}");
     }
 }

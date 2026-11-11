@@ -26,7 +26,7 @@ Options:
   --noheader    Disable column headers
   --mode MODE   Set output mode (table, csv, json, jsonl, envelope, markdown, cypher, toon, speedscope)
                 default: table on a terminal, jsonl when stdout is piped or redirected
-                (toon instead of jsonl when agent mode is on — ADR-0426)
+                (toon instead of jsonl when agent mode is on)
   --format MODE Alias of --mode
   --pretty      Indent JSON output even when stdout is not a terminal
   --param N=V   Bind a Cypher parameter (repeatable; V parsed as JSON scalar, bare words are strings)
@@ -39,29 +39,28 @@ Options:
   --expression-memory-limit SIZE  Per-value expression build cap (bytes, mb/mib/gb/gib, or none)
                        Default: 256 MiB. Guards against one statement
                        building a pathological single value; raise it, or
-                       pass none for known bulk pipelines (ADR-0463)
+                       pass none for known bulk pipelines
   --concurrent-logical-workspace-limit SIZE  Shared logical-workspace pool (bytes or mb/mib/gb/gib)
                        A positive value turns admission on. Omit, or an
                        unset RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT,
-                       leaves it off. 0 is rejected (ADR-0452)
+                       leaves it off. 0 is rejected
   --max-traversal-depth N  Largest explicit traversal hop bound (1-2000; default 500)
                        A query whose explicit hop bound exceeds this fails at
                        admission with TraversalDepthExceeded. This is a safety
                        limit, not a database limit: raising it risks a stack
                        overflow on small-stack platforms.
                        RELATE_MAX_TRAVERSAL_DEPTH sets the default
-                       (LABS-610, ADR-0466).
   --safe               Refuse agent-typical dangerous statement shapes; --no-safe
                        negates it. Refuses a new named node without a label, and
                        a MATCH read without LIMIT or a reducing aggregate
                        (collect() does not count). A policy, not a database
                        limit. RELATE_SAFE_MODE=1/0 sets the default; off
-                       unless asked (LABS-680, ADR-0477).
+                       unless asked.
   --agent-mode         Force agent ergonomics on (the row cap's default and the
-                       toon piped default, ADR-0426); pairs with --max-rows.
+                       toon piped default); pairs with --max-rows.
                        --no-agent-mode turns them off (the -mode suffix stays
                        clear of the skill-install harness selector).
-                       ADR-0407's ladder: the flag, then RELATE_AGENT_MODE=1/0,
+                       Precedence: the flag, then RELATE_AGENT_MODE=1/0,
                        then harness detection (piped runs only). The explicit
                        acts print a one-line announcement; detection stays silent
   --max-rows N         Print at most N rows per statement; 0 = unlimited.
@@ -88,7 +87,7 @@ Options:
 On a TTY, the interactive shell supports readline-style editing (arrow keys, Home/End).
 
 --database is a directory (WAL + snapshot), a .rl bundle, or :memory: (the default).
-With no QUERY, the interactive shell opens on a terminal (ADR-0231); on piped
+With no QUERY, the interactive shell opens on a terminal; on piped
 or redirected stdin this help is printed. `query` with no STATEMENT reads a script
 from stdin, or opens the same shell on a terminal.
 

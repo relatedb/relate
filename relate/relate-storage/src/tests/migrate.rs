@@ -168,7 +168,7 @@ fn corrupt_legacy_store_error_names_the_detected_version() {
     assert_eq!(
         err.to_string(),
         "storage error: legacy shard nodes.parquet: invalid or out-of-bounds \
-         footer magic (ADR-0086) (store snapshot is at manifest version 2)"
+         footer magic (store snapshot is at manifest version 2)"
     );
 }
 

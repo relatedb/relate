@@ -13,7 +13,7 @@ pull copies a Neo4j/Aura subgraph (HTTP Query API v2) into --database.
                 omitted: use those process environment variables
   --query Q     Cypher statement, `;`-separated statement list, file path, or `-` (stdin);
                every statement must RETURN graph elements; all run in one process,
-               one checkpoint at the end (ADR-0158)
+               one checkpoint at the end
   -d, --database PATH  Destination directory or .rl bundle (required; not :memory:)
   --param N=V   Bind a source query parameter (repeatable)
   --allow-plaintext  Permit Basic auth to a non-loopback http:// Query API

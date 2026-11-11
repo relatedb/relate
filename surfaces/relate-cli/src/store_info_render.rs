@@ -21,12 +21,12 @@ pub(crate) const UNAVAILABLE: &str = "unavailable";
 /// Why a JSON-codec store reports envelope-only fields; selected from
 /// the codec at the one construction boundary (`from_store_info`) and
 /// printed after the store block on every human surface.
-const NOTE_JSON_CODEC: &str = "a JSON-codec store keeps the format version, counts and the index/constraint catalog in graph.json, which a cold info read never parses (ADR-0165)";
+const NOTE_JSON_CODEC: &str = "a JSON-codec store keeps the format version, counts and the index/constraint catalog in graph.json, which a cold info read never parses";
 
 /// Why a markdown-codec store reports envelope-only fields; selected
 /// from the codec at the one construction boundary (`from_store_info`)
 /// and printed after the store block on every human surface.
-const NOTE_MARKDOWN_CODEC: &str = "a markdown-codec store keeps the format version, counts and the index/constraint catalog in the .cypherlite sidecar manifest, which a cold info read never uses to walk the vault (ADR-0406)";
+const NOTE_MARKDOWN_CODEC: &str = "a markdown-codec store keeps the format version, counts and the index/constraint catalog in the .cypherlite sidecar manifest, which a cold info read never uses to walk the vault";
 
 /// Why an experimental-codec store (rkyv) reports envelope-only fields:
 /// its image differs in container but not in what a cold read skips.

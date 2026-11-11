@@ -13,7 +13,7 @@ pub(super) fn push_help() -> String {
         "{PUSH_USAGE}
 
 push copies a scoped subgraph of --database into a Neo4j/Aura remote over
-HTTP Query API v2 (ADR-0401) — pull's mirror, over the same client.
+HTTP Query API v2 — pull's mirror, over the same client.
   --to CREDS   Env file (NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, optional
                NEO4J_DATABASE), or a Query API URI (username/password then
                come from the process environment)

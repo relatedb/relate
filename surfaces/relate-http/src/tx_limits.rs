@@ -214,7 +214,7 @@ pub fn unguarded_tx_registry_warning(
         "WARNING: --tx-idle-timeout-secs and --max-open-transactions are both 0 on \
          non-loopback {bind_description}. An abandoned transaction never expires and \
          the registry is unbounded, so it holds a snapshot pin until restart. \
-         Set one of the two to bound it (ADR-0435)."
+         Set one of the two to bound it."
     ))
 }
 
@@ -402,7 +402,7 @@ mod tests {
                 "WARNING: --tx-idle-timeout-secs and --max-open-transactions are both 0 on \
                  non-loopback --host 0.0.0.0. An abandoned transaction never expires and \
                  the registry is unbounded, so it holds a snapshot pin until restart. \
-                 Set one of the two to bound it (ADR-0435)."
+                 Set one of the two to bound it."
                     .to_string()
             )
         );

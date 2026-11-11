@@ -9,11 +9,11 @@ pub(super) fn query_help() -> String {
     s.push_str(QUERY_USAGE);
     s.push('\n');
     s.push('\n');
-    s.push_str("query runs a statement session (ADR-0200): a positional STATEMENT or\n");
+    s.push_str("query runs a statement session: a positional STATEMENT or\n");
     s.push_str("-c/--command (one statement or a `;`-separated list). With no\n");
     s.push_str("STATEMENT, a script is read from stdin, or the interactive shell opens\n");
     s.push_str("on a terminal. The path-first form with no QUERY opens the same shell on a\n");
-    s.push_str("terminal (ADR-0231); on piped or redirected stdin it prints help instead.\n");
+    s.push_str("terminal; on piped or redirected stdin it prints help instead.\n");
     s.push_str("-d / --database sets\n");
     s.push_str("the store; omitted, it is :memory:. The same flag is the store on\n");
     s.push_str("the path-first form, on pull, and on info.\n");
@@ -33,7 +33,7 @@ mod tests {
         crate::help::assert_single_usage(&help, QUERY_USAGE);
         for present in [
             "-d, --database PATH",
-            "ADR-0200",
+            "runs a statement session",
             "-c, --command Q",
             "`;`-separated list",
             "--json",

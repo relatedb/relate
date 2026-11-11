@@ -29,7 +29,7 @@ pub(crate) struct OptionEntry {
 /// wherever the flag is listed.
 const DATABASE_TARGET_LINES: &[&str] = &[
     "                       The store to open — never a URL: a remote store is a --load",
-    "                       source (LABS-903, ADR-0500)",
+    "                       source",
 ];
 
 /// The `--load` entry's continuation lines (LABS-903, ADR-0500): the
@@ -46,12 +46,12 @@ const LOAD_LINES: &[&str] = &[
     "                       it can be deleted or opened writable underneath). With a",
     "                       --database path the source is cloned there and the store opens",
     "                       normally (the target must not exist yet). --read-only=live is",
-    "                       refused (LABS-903, ADR-0500)",
+    "                       refused",
     "                       An https URL is fetched to a private temp copy — a GitHub blob",
     "                       or raw link is rewritten to its raw form; a remote folder store",
     "                       is not supported. Nothing is kept: the memory target releases",
     "                       the copy after the load, a path target removes it after the",
-    "                       clone (LABS-872, ADR-0496)",
+    "                       clone",
 ];
 #[cfg(not(feature = "remote-database"))]
 const LOAD_LINES: &[&str] = &[
@@ -61,9 +61,9 @@ const LOAD_LINES: &[&str] = &[
     "                       it can be deleted or opened writable underneath). With a",
     "                       --database path the source is cloned there and the store opens",
     "                       normally (the target must not exist yet). --read-only=live is",
-    "                       refused (LABS-903, ADR-0500)",
+    "                       refused",
     "                       An https URL parses here and fails closed at the fetch — enable",
-    "                       the remote-database feature to fetch one (LABS-872)",
+    "                       the remote-database feature to fetch one",
 ];
 
 /// The query-run options block, one atomic entry per flag (ADR-0200).
@@ -120,7 +120,7 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         headline: "  --mode MODE   Set output mode ({modes})",
         continuation: &[
             "                default: table on a terminal, jsonl when stdout is piped or redirected",
-            "                (toon instead of jsonl when agent mode is on — ADR-0426)",
+            "                (toon instead of jsonl when agent mode is on)",
         ],
         flags: &["--mode"],
     },
@@ -186,7 +186,7 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         continuation: &[
             "                       Default: 256 MiB. Guards against one statement",
             "                       building a pathological single value; raise it, or",
-            "                       pass none for known bulk pipelines (ADR-0463)",
+            "                       pass none for known bulk pipelines",
         ],
         flags: &["--expression-memory-limit"],
     },
@@ -195,7 +195,7 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         continuation: &[
             "                       A positive value turns admission on. Omit, or an",
             "                       unset RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT,",
-            "                       leaves it off. 0 is rejected (ADR-0452)",
+            "                       leaves it off. 0 is rejected",
         ],
         flags: &["--concurrent-logical-workspace-limit"],
     },
@@ -207,7 +207,6 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
             "                       limit, not a database limit: raising it risks a stack",
             "                       overflow on small-stack platforms.",
             "                       RELATE_MAX_TRAVERSAL_DEPTH sets the default",
-            "                       (LABS-610, ADR-0466).",
         ],
         flags: &["--max-traversal-depth"],
     },
@@ -218,17 +217,17 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
             "                       a MATCH read without LIMIT or a reducing aggregate",
             "                       (collect() does not count). A policy, not a database",
             "                       limit. RELATE_SAFE_MODE=1/0 sets the default; off",
-            "                       unless asked (LABS-680, ADR-0477).",
+            "                       unless asked.",
         ],
         flags: &["--safe", "--no-safe"],
     },
     OptionEntry {
         headline: "  --agent-mode         Force agent ergonomics on (the row cap's default and the",
         continuation: &[
-            "                       toon piped default, ADR-0426); pairs with --max-rows.",
+            "                       toon piped default); pairs with --max-rows.",
             "                       --no-agent-mode turns them off (the -mode suffix stays",
             "                       clear of the skill-install harness selector).",
-            "                       ADR-0407's ladder: the flag, then RELATE_AGENT_MODE=1/0,",
+            "                       Precedence: the flag, then RELATE_AGENT_MODE=1/0,",
             "                       then harness detection (piped runs only). The explicit",
             "                       acts print a one-line announcement; detection stays silent",
         ],

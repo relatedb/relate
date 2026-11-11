@@ -160,7 +160,7 @@ fn test_each_compiled_in_command_has_its_own_help() {
             synopsis: "Usage: relate query",
             needles: &[
                 "--database",
-                "ADR-0200",
+                "runs a statement session",
                 "--durability-mode",
                 "-c, --command",
             ],
@@ -231,7 +231,11 @@ fn test_each_compiled_in_command_has_its_own_help() {
             // A resolved action's page is the e2e_run suite's.
             word: "run",
             synopsis: "Usage: relate run",
-            needles: &["Installed actions", "-d, --database", "ADR-0429"],
+            needles: &[
+                "Installed actions",
+                "-d, --database",
+                "manifest's flag table",
+            ],
             aliases: &[],
         },
         HelpCase {
