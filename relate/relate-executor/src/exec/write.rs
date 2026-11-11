@@ -634,7 +634,8 @@ mod tests {
         assert_eq!(path_error.to_string(), node_error.to_string());
         assert!(
             path_error.to_string().contains(
-                "DeleteConnectedNode: Cannot delete node with relationships unless DETACH"
+                "ConstraintVerificationFailed: DeleteConnectedNode: Cannot delete node with \
+                 relationships unless DETACH"
             ),
             "unexpected error: {path_error}"
         );

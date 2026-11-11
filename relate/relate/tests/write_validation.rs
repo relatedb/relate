@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{connection, err_text, run, scalar_one};
+use common::{connection, err_text, error_class_literal, run, scalar_one};
 use relate::Value;
 
 fn assert_rejected(conn: &mut relate::Connection, query: &str, needle: &str) {
@@ -17,12 +17,13 @@ fn assert_rejected(conn: &mut relate::Connection, query: &str, needle: &str) {
 
 // ---- 22N01: a CREATE/MERGE endpoint the row binds to null ----
 
-/// Neo4j 2026.10.1 under Cypher 25 raises 22N01 (`Expected the value NULL to
-/// be of type NODE`) for a relationship pattern whose node position is
-/// already bound to null — in CREATE and in MERGE alike. Neither spelling may
-/// silently create a fresh node (and, for MERGE, a relationship) instead.
+/// Neo4j 2026.10.1 under Cypher 25 raises 22G03 under the ArgumentError
+/// class ("Failed to create relationship …, node … is missing") for a
+/// relationship pattern whose node position is already bound to null — in
+/// CREATE and in MERGE alike. Neither spelling may silently create a fresh
+/// node (and, for MERGE, a relationship) instead. Probed 2026-11-10.
 #[test]
-fn null_bound_create_and_merge_endpoints_is_a_type_error() {
+fn null_bound_create_and_merge_endpoints_is_an_argument_error() {
     let mut conn = connection();
     run(&mut conn, "CREATE ({uid: 'a'})");
     run(&mut conn, "CREATE ({uid: 'b'})");
@@ -43,6 +44,11 @@ fn null_bound_create_and_merge_endpoints_is_a_type_error() {
             &mut conn,
             query,
             "Expected the value NULL to be of type NODE",
+        );
+        assert_eq!(
+            error_class_literal(&mut conn, query),
+            "ArgumentError",
+            "{query}"
         );
     }
     // Nothing was created by the failed statements.

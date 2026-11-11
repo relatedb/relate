@@ -6,19 +6,31 @@
 mod common;
 
 use relate::{Error, Value};
+use relate_core::ErrorKind;
 
-use common::{connection, row, rows};
+use common::{connection, error_class_literal, row, rows};
 
 #[test]
-fn round_precision_bounds_are_typed_errors() {
+fn round_precision_bounds_are_argument_errors() {
     let mut conn = connection();
     assert_eq!(
         conn.query("RETURN round(2.5, 400) AS r").unwrap_err(),
-        Error::execution("NumericValueOutOfRange: round precision must be at most 15")
+        Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "round precision must be at most 15"
+        )
     );
     assert_eq!(
         conn.query("RETURN round(2.5, -1) AS r").unwrap_err(),
-        Error::execution("NumericValueOutOfRange: round precision must be non-negative")
+        Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "round precision must be non-negative"
+        )
+    );
+    // Live Neo4j 2026.10.1 reports both under the ArgumentError class.
+    assert_eq!(
+        error_class_literal(&mut conn, "RETURN round(2.5, -1) AS r"),
+        "ArgumentError"
     );
     assert_eq!(
         conn.query("RETURN round(2.5, 2) AS r").unwrap().rows,

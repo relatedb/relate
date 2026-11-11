@@ -824,7 +824,7 @@ checks both a Map and an incompatible `Int`/`Str` column in CI.
 
 - `Syntax` — parser
 - `Syntax("UndefinedVariable: variable '<name>' not defined")` — a variable with no binding in the evaluated row, raised for the expressions the plan-time binding walks cannot see (a `SHOW … WHERE` predicate lowered at run time, ADR-0335); an unbound variable never evaluates to `null`.
-- `Execution("NumericValueOutOfRange: round precision must be at most 15")` — `round()`'s precision is bounded to `0..=15`, symmetric with its `must be non-negative` bound (ADR-0336).
+- `ArgumentValue { kind: NumberOutOfRange, detail: "round precision must be at most 15" }` — `round()`'s precision is bounded to `0..=15`, symmetric with its `must be non-negative` bound (ADR-0336); the rejection carries the run-time `ArgumentError` class (ADR-0565).
 - `Semantic` — unknown variable, type mismatch
 - `Semantic("LOAD CSV invalid configuration")` — at database open for an invalid/missing CSV root or byte limit outside `1..=67_108_864`; does not include the path or OS error.
 - `Execution("LOAD CSV file unavailable")` — local file disabled, unavailable, outside the root, non-regular, malformed source, or I/O failure; `Execution("LOAD CSV file exceeds byte limit")` — source exceeds the configured per-file byte cap. Neither error reveals the source path or OS error.

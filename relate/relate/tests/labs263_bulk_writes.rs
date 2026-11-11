@@ -143,6 +143,11 @@ fn non_detach_delete_error_is_preflighted_atomically() {
         error.contains("DeleteConnectedNode"),
         "unexpected error: {error}"
     );
+    // ADR-0565: live Neo4j reports the ConstraintVerificationFailed class.
+    assert_eq!(
+        common::error_class_literal(&mut conn, "MATCH (n:N) DELETE n"),
+        "ConstraintVerificationFailed"
+    );
     // The preflight raised before any batch committed.
     assert_eq!(
         scalar_one(&mut conn, "MATCH (n) RETURN count(n)"),

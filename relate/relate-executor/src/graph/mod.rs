@@ -212,11 +212,17 @@ impl ExhaustibleIdCounter for AtomicU64 {
 }
 
 /// The `DeleteConnectedNode` execution error, shared by every node-delete
-/// path so the message never drifts between them.
+/// path so the message never drifts between them. The class token leads the
+/// payload: live Neo4j 2026.10.1 reports the
+/// `ConstraintVerificationFailed` class (G1001), and the bindings recover
+/// it through the one nested-class scan of still-stringly payloads. The
+/// token composes from the typed class vocabulary, so its spelling cannot
+/// drift from the scan's.
 pub(crate) fn delete_connected_node_error() -> relate_core::Error {
-    relate_core::Error::execution(
-        "DeleteConnectedNode: Cannot delete node with relationships unless DETACH",
-    )
+    relate_core::Error::execution(format!(
+        "{}: DeleteConnectedNode: Cannot delete node with relationships unless DETACH",
+        relate_error::NestedErrorClass::ConstraintVerificationFailed.as_str(),
+    ))
 }
 
 /// The one typed reply for a relationship whose endpoint is not a live node:

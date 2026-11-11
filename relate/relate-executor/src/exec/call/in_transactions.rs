@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{Error, Result, Value};
+use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::Query;
 
 use super::{call_subquery_row, empty_body_row, null_pad_call_row, scope_seed, SubquerySpec};
@@ -34,33 +34,7 @@ pub(crate) fn exec_call_in_transactions(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let first = &rows[0];
-    let batch_size = match tx.batch_size.as_ref() {
-        Some(expr) => {
-            let size = eval(graph, first, expr, params, qctx.cypher_version)?
-                .as_int()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| Error::ty("batch size must be a positive integer"))?;
-            // A narrowing cast is not a range guard: on a 32-bit target a
-            // value above u32::MAX would truncate (to 0, panicking
-            // `chunks(0)`). Reject what does not fit instead.
-            usize::try_from(size).map_err(|_| Error::ty("batch size must be a positive integer"))?
-        }
-        None => 1000,
-    };
-    if let relate_ir::Concurrency::Value(expr) = &tx.concurrency {
-        // Execution stays sequential — the CIP-260 concurrency hint is
-        // validated, not applied. Unlike the batch size beside it, a
-        // non-positive value is deliberately NOT rejected here: CIP-34
-        // (neo4j-verified scenarios 17-19) gives a parameter `0` the
-        // default concurrency and a negative value a default-derived one,
-        // while only the *literal* forms are rejected — at plan time, by
-        // `check_positive_int_arg`. The runtime contract is type-only.
-        let value = eval(graph, first, expr, params, qctx.cypher_version)?;
-        if value.as_int().is_none() {
-            return Err(Error::ty("concurrency must be an integer"));
-        }
-    }
+    let batch_size = resolve_batch_options(graph, &rows[0], tx, params, qctx)?;
     // The `REPORT STATUS AS <name>` column, resolved once: every status
     // value below is written through `BatchOutcome::stamp`, so "the call
     // reports a status" has a single spelling.
@@ -148,6 +122,51 @@ pub(crate) fn exec_call_in_transactions(
         }
     }
     Ok(out)
+}
+
+/// Resolve the call's batch size (rows per transaction) and validate the
+/// concurrency hint. The argument-class rules live in this one unit: a
+/// non-integer is the `TypeError` class, an integer outside the positive
+/// range is the `ArgumentError` class (live Neo4j 2026.10.1 reports 0
+/// under 22003). The concurrency hint is validated, never applied —
+/// execution stays sequential.
+fn resolve_batch_options(
+    graph: &ExecGraph<'_>,
+    first: &Row,
+    tx: &relate_ir::InTransactions,
+    params: &BTreeMap<String, Value>,
+    qctx: QueryCtx<'_>,
+) -> Result<usize> {
+    const MSG: &str = "batch size must be a positive integer";
+    let batch_size = match tx.batch_size.as_ref() {
+        None => 1000,
+        Some(expr) => {
+            let size = eval(graph, first, expr, params, qctx.cypher_version)?
+                .as_int()
+                .ok_or_else(|| Error::ty(MSG))?;
+            // A narrowing cast is not a range guard: on a 32-bit target a
+            // value above u32::MAX would truncate (to 0, panicking
+            // `chunks(0)`), so the conversion and the positive range are one
+            // rejection.
+            usize::try_from(size)
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| Error::argument_value_kind(ErrorKind::NumberOutOfRange, MSG))?
+        }
+    };
+    // The CIP-260 concurrency hint is validated, not applied. Unlike the
+    // batch size, a non-positive value is deliberately NOT rejected here:
+    // CIP-34 (neo4j-verified scenarios 17-19) gives a parameter `0` the
+    // default concurrency and a negative value a default-derived one, while
+    // only the *literal* forms are rejected — at plan time, by
+    // `check_positive_int_arg`. The runtime contract is type-only.
+    if let relate_ir::Concurrency::Value(expr) = &tx.concurrency {
+        let value = eval(graph, first, expr, params, qctx.cypher_version)?;
+        if value.as_int().is_none() {
+            return Err(Error::ty("concurrency must be an integer"));
+        }
+    }
+    Ok(batch_size)
 }
 
 /// The outcome of one `CALL { … } IN TRANSACTIONS` batch, as the

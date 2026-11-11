@@ -129,45 +129,49 @@ pub(super) fn bi_rtrim(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Re
     trim_function(&vals, TrimMode::Trailing, false)
 }
 
+/// The `replace()` occurrence limit: `None` when the argument is null (the
+/// call yields null), `Some(usize::MAX)` when absent, and the argument's
+/// value otherwise. A non-integer is the `TypeError` class; an integer
+/// outside the non-negative range is the `ArgumentError` class (live Neo4j
+/// 2026.10.1 reports 22N38).
+fn replace_limit(arg: Option<&Value>) -> Result<Option<usize>> {
+    match arg {
+        None => Ok(Some(usize::MAX)),
+        Some(Value::Null) => Ok(None),
+        Some(Value::Int(value)) if *value >= 0 => usize::try_from(*value).map(Some).map_err(|_| {
+            Error::argument_value_kind(ErrorKind::NumberOutOfRange, "replace limit out of range")
+        }),
+        Some(Value::Int(_)) => Err(Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "replace limit must be non-negative",
+        )),
+        Some(_) => Err(Error::invalid_argument_type(
+            "replace limit must be INTEGER",
+        )),
+    }
+}
+
 pub(super) fn bi_replace(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    Ok({
-        let s = string_arg(&vals, 0)?;
-        let from = string_arg(&vals, 1)?;
-        let to = string_arg(&vals, 2)?;
-        match (s, from, to) {
-            (Some(s), Some(f), Some(t)) => {
-                let limit = match vals.get(3) {
-                    Some(Value::Int(value)) if *value >= 0 => {
-                        usize::try_from(*value).map_err(|_| {
-                            Error::execution("InvalidArgumentValue: replace limit out of range")
-                        })?
-                    }
-                    Some(Value::Null) => return Ok(Value::Null),
-                    Some(Value::Int(_)) => {
-                        return Err(Error::execution(
-                            "InvalidArgumentValue: replace limit must be non-negative",
-                        ))
-                    }
-                    Some(_) => {
-                        return Err(Error::invalid_argument_type(
-                            "replace limit must be INTEGER",
-                        ))
-                    }
-                    None => usize::MAX,
-                };
-                // ADR-0463: count the non-overlapping occurrences first (the
-                // O(n) pre-scan), then charge the result string's upper bound
-                // — the input plus one replacement's worth per occurrence —
-                // before `replace`/`replacen` allocates it.
-                let occurrences = s.matches(f).count().min(limit);
-                graph.charge_expression(relate_core::str_logical_bytes(s).saturating_add(
-                    (occurrences as u64).saturating_mul(t.len().max(f.len()) as u64),
-                ))?;
-                Value::String(s.replacen(f, t, limit).into())
-            }
-            _ => Value::Null,
-        }
-    })
+    let (Some(s), Some(f), Some(t)) = (
+        string_arg(&vals, 0)?,
+        string_arg(&vals, 1)?,
+        string_arg(&vals, 2)?,
+    ) else {
+        return Ok(Value::Null);
+    };
+    let Some(limit) = replace_limit(vals.get(3))? else {
+        return Ok(Value::Null);
+    };
+    // ADR-0463: count the non-overlapping occurrences first (the O(n)
+    // pre-scan), then charge the result string's upper bound — the input
+    // plus one replacement's worth per occurrence — before
+    // `replace`/`replacen` allocates it.
+    let occurrences = s.matches(f).count().min(limit);
+    graph.charge_expression(
+        relate_core::str_logical_bytes(s)
+            .saturating_add((occurrences as u64).saturating_mul(t.len().max(f.len()) as u64)),
+    )?;
+    Ok(Value::String(s.replacen(f, t, limit).into()))
 }
 /// The split result's pre-allocation charge (ADR-0463): the input's logical
 /// string bytes plus a value buffer of one slot per byte plus one — the

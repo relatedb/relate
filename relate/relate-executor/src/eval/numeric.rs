@@ -1,6 +1,6 @@
 //! Numeric function helpers (`round`, unary int/float adapters).
 
-use relate_core::{ArithmeticFailure, Error, Result, Value};
+use relate_core::{ArithmeticFailure, Error, ErrorKind, Result, Value};
 
 /// The largest `round()` precision the f64-backed engine supports: an f64
 /// carries at most ~15–17 significant decimal digits, so a larger decimal
@@ -43,7 +43,13 @@ impl RoundingMode {
             "HALF_DOWN" => RoundingMode::HalfDown,
             "HALF_EVEN" => RoundingMode::HalfEven,
             "UNNECESSARY" => RoundingMode::Unnecessary,
-            _ => return Err(Error::execution("UnsupportedRoundingMode")),
+            // Live Neo4j 2026.10.1: the ArgumentError class (22000).
+            _ => {
+                return Err(Error::argument_value_kind(
+                    ErrorKind::InvalidArgumentValue,
+                    "UnsupportedRoundingMode",
+                ))
+            }
         })
     }
 
@@ -101,15 +107,19 @@ fn round_precision(v: &Value) -> Result<usize> {
         ));
     }
     let n = n.trunc();
+    // Live Neo4j 2026.10.1: both precision faults are the ArgumentError
+    // class (22N38 negative, 22003 above the integer range).
     if n < 0.0 {
-        return Err(Error::execution(
-            "NumericValueOutOfRange: round precision must be non-negative",
+        return Err(Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "round precision must be non-negative",
         ));
     }
     if n > MAX_ROUND_PRECISION as f64 {
-        return Err(Error::execution(format!(
-            "NumericValueOutOfRange: round precision must be at most {MAX_ROUND_PRECISION}"
-        )));
+        return Err(Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            format!("round precision must be at most {MAX_ROUND_PRECISION}"),
+        ));
     }
     // The range gate above bounds n to 0..=15, so this is the one checked
     // conversion — callers carry a plain `usize` with nothing to cast.
@@ -327,8 +337,10 @@ mod tests {
     /// NaN the overflow-prone scale computation used to produce.
     #[test]
     fn round_precision_is_bounded() {
-        let too_large =
-            Error::execution("NumericValueOutOfRange: round precision must be at most 15");
+        let too_large = Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "round precision must be at most 15",
+        );
         for precision in [16, 400, i64::MAX] {
             assert_eq!(
                 round_function(&[Value::Float(2.5), Value::Int(precision)]).unwrap_err(),
@@ -340,8 +352,10 @@ mod tests {
         // both the negative and the upper-bound class (`round(x, -1)` and
         // `round(x, -1.0)` used to diverge into "non-negative" vs "must be
         // INTEGER").
-        let negative =
-            Error::execution("NumericValueOutOfRange: round precision must be non-negative");
+        let negative = Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            "round precision must be non-negative",
+        );
         for precision in [Value::Int(-1), Value::Float(-1.0), Value::Float(-1.5)] {
             assert_eq!(
                 round_function(&[Value::Float(2.5), precision.clone()]).unwrap_err(),
@@ -497,7 +511,7 @@ mod tests {
                 Value::String("half_up".into())
             ])
             .unwrap_err(),
-            Error::execution("UnsupportedRoundingMode")
+            Error::argument_value_kind(ErrorKind::InvalidArgumentValue, "UnsupportedRoundingMode")
         );
     }
 }

@@ -242,7 +242,7 @@ enum Want {
 
 const NULL: Want = Want::Is(Value::Null);
 const OUT: Want = Want::OutOfRange;
-const OUT_OF_RANGE: &str = "semantic error: NumberOutOfRange: toInteger()";
+const OUT_OF_RANGE: &str = "type error: InvalidArgumentValue: toInteger()";
 
 fn int(i: i64) -> Want {
     Want::Is(Value::Int(i))

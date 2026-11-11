@@ -75,12 +75,12 @@ fn non_finite_and_out_of_range_conversions_follow_adr_0168() {
         ]]
     );
     let err = match c.query("RETURN toInteger('1e300') AS v") {
-        Ok(_) => panic!("expected NumberOutOfRange"),
+        Ok(_) => panic!("expected InvalidArgumentValue"),
         Err(e) => e.to_string(),
     };
     assert!(
-        err.contains("NumberOutOfRange: toInteger()"),
-        "expected NumberOutOfRange, got {err}"
+        err.contains("InvalidArgumentValue: toInteger()"),
+        "expected InvalidArgumentValue, got {err}"
     );
 }
 

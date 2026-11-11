@@ -362,10 +362,10 @@ pub fn binding_error_metadata(error: &Error) -> (&'static str, &'static str) {
         Error::ResourceLimit { .. } => ("ResourceLimitExceeded", "ClientError"),
         Error::Storage(_) | Error::Io(_) | Error::Locked(_) => ("StorageError", "SemanticError"),
         Error::Internal(_) => ("InternalError", "InternalError"),
-        // The typed procedure-not-found (ADR-0138) keeps the class its
-        // legacy `Syntax("ProcedureNotFound: <name>")` rendering classified
-        // as below.
-        Error::ProcedureNotFound { .. } => ("SyntaxError", "SyntaxError"),
+        // The typed procedure-not-found (ADR-0138) carries the fine kind and
+        // the `ProcedureError` TCK class live Neo4j reports for an
+        // unregistered procedure (ADR-0565); its Bolt code is unchanged.
+        Error::ProcedureNotFound { .. } => ("ProcedureNotFound", "ProcedureError"),
         // The still-stringly variants resolve their nested class through the
         // one canonical scan (ADR-0502 §2) — the same helper the engine's
         // `error_info` reads — falling back to the variant's own class.
@@ -470,6 +470,12 @@ mod tests {
         assert_eq!(
             binding_error_metadata(&Error::parameter_missing("x")),
             ("ParameterMissing", "ParameterMissing")
+        );
+        // ADR-0565: an unregistered procedure is the `ProcedureError` class
+        // live reports; the fine kind names the missing procedure.
+        assert_eq!(
+            binding_error_metadata(&Error::procedure_not_found("dbms.noSuchProc")),
+            ("ProcedureNotFound", "ProcedureError")
         );
         assert_eq!(
             binding_error_metadata(&Error::execution("ConstraintVerificationFailed: duplicate")),

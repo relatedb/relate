@@ -1,11 +1,8 @@
 //! `toInteger()`'s out-of-range string rejection carries the error *class*
-//! the openCypher TCK pins for `NumberOutOfRange`: `ArgumentError` (List11),
-//! the class `ErrorKind::NumberOutOfRange` maps to — so the kind travels as
-//! data through `Error::argument_value_kind`, never as a message prefix a
-//! binding would have to scan. Live Neo4j 2026.10.1 (probed 2026-11-10 via
-//! the 6.4.1 Python driver) reports `Neo.ClientError.Statement.TypeError`
-//! under GQLSTATUS 22003, a code both exception classes construct; the TCK
-//! class for the `NumberOutOfRange` detail is `ArgumentError`.
+//! live Neo4j reports: the type exception under GQLSTATUS 22003 (ADR-0565),
+//! not the run-time argument class the integer-argument range sites carry.
+//! The rejection is a value outside the argument's domain, so it renders
+//! through `Error::invalid_argument_value` (the `TypeError` class).
 //!
 //! This file owns the `toInteger()` conversion only: the class and message
 //! fragment of its out-of-range string site, plus the `OrNull` and list
@@ -20,26 +17,23 @@ use common::{connection, list, rows};
 use relate::Value;
 
 /// `toInteger()`'s out-of-range string site: an exact decimal outside the
-/// INTEGER range is `ArgumentError: NumberOutOfRange`, while the `OrNull`
-/// variant and the list projection turn it into null.
+/// INTEGER range is the `TypeError` class, while the `OrNull` variant and
+/// the list projection turn it into null.
 #[test]
-fn to_integer_out_of_range_strings_are_argument_errors() {
+fn to_integer_out_of_range_strings_are_type_errors() {
     let mut conn = connection();
     for input in ["1e300", "9223372036854775808", "9223372036854775807.5"] {
         let query = format!("RETURN toInteger('{input}') AS v");
         // One run: the class and the message describe the same error.
         let error = conn.query(&query).unwrap_err();
-        common::assert_argument_error(&error);
-        // The kind travels as data, not as a prefix a binding would scan:
-        // assert the typed variant, so the two variants that share a class
-        // and a rendering cannot be swapped for one another.
-        assert!(
-            matches!(&error, relate::Error::ArgumentValue { .. }),
-            "{query}: {error:?}"
+        assert_eq!(
+            relate::binding_error_metadata(&error).1,
+            "TypeError",
+            "{query}: {error}"
         );
         assert!(
             error.to_string().starts_with(
-                "semantic error: NumberOutOfRange: toInteger() expected 'input' to be \
+                "type error: InvalidArgumentValue: toInteger() expected 'input' to be \
                  of type INTEGER and in the range -9223372036854775808 to \
                  9223372036854775807 but found "
             ),

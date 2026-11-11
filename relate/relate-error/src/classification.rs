@@ -399,8 +399,9 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         },
         Error::ProcedureNotFound { .. } => ErrorInfo {
             neo4j_code: PROCEDURE_NOT_FOUND_CODE,
-            // The bindings file procedure-not-found under the SyntaxError
-            // class, so its GQLSTATUS is the syntax code.
+            // Live Neo4j sends 42001 for an unregistered procedure, so its
+            // GQLSTATUS is the syntax code even though the binding class is
+            // `ProcedureError` (ADR-0565).
             gql_status: GQLSTATUS_SYNTAX,
             stage: Compile,
             retryable: false,
@@ -490,21 +491,15 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         // transient memory refusal: drivers retry it, and the message stays
         // the engine's. A non-retryable cap is the same client memory code
         // as `Capacity`.
-        Error::ResourceLimit {
-            retryable: true, ..
-        } => ErrorInfo {
-            neo4j_code: MEMORY_POOL_OUT_OF_MEMORY_CODE,
+        Error::ResourceLimit { retryable, .. } => ErrorInfo {
+            neo4j_code: if *retryable {
+                MEMORY_POOL_OUT_OF_MEMORY_CODE
+            } else {
+                TRANSACTION_OUT_OF_MEMORY_CODE
+            },
             gql_status: GQLSTATUS_GENERAL,
             stage: Runtime,
-            retryable: true,
-        },
-        Error::ResourceLimit {
-            retryable: false, ..
-        } => ErrorInfo {
-            neo4j_code: TRANSACTION_OUT_OF_MEMORY_CODE,
-            gql_status: GQLSTATUS_GENERAL,
-            stage: Runtime,
-            retryable: false,
+            retryable: *retryable,
         },
         Error::Semantic(payload) | Error::Execution(payload) => ErrorInfo {
             neo4j_code: SEMANTIC_ERROR_CODE,

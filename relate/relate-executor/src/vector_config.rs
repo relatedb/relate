@@ -147,16 +147,18 @@ const CONFIG_KEYS: [(&str, KeyRule); 7] = [
     (KEY_SEARCH_EXPANSION, KeyRule::Shape(KeyShape::Number)),
 ];
 
-/// The DDL bound on `vector.dimensions`.
-const VECTOR_DIMENSIONS_MAX: usize = 4096;
+/// The DDL bound on `vector.dimensions` and a `vector()` call's dimension.
+pub(crate) const VECTOR_DIMENSIONS_MIN: usize = 1;
+pub(crate) const VECTOR_DIMENSIONS_MAX: usize = 4096;
 
-/// The dimension a `vector.dimensions` leaf may carry: within the DDL
-/// bound, as a `usize` — the bound and the type travel together, so no
-/// caller casts a separately-checked `i64` (stellar round 3, std-5).
-/// `None` outside the bound.
-fn vector_dimension(value: i64) -> Option<usize> {
+/// The dimension a `vector.dimensions` leaf or a `vector()` call's
+/// dimension argument may carry: within the bound, as a `usize` — the
+/// bound and the type travel together, so no caller casts a
+/// separately-checked `i64` (stellar round 3, std-5). `None` outside the
+/// bound.
+pub(crate) fn vector_dimension(value: i64) -> Option<usize> {
     let dimension = usize::try_from(value).ok()?;
-    (1..=VECTOR_DIMENSIONS_MAX)
+    (VECTOR_DIMENSIONS_MIN..=VECTOR_DIMENSIONS_MAX)
         .contains(&dimension)
         .then_some(dimension)
 }

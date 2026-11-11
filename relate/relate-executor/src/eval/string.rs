@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use relate_core::{Error, Result, Value};
+use relate_core::{Error, ErrorKind, Result, Value};
 use unicode_normalization::UnicodeNormalization;
 
 pub(crate) fn string_arg(vals: &[Value], i: usize) -> Result<Option<&str>> {
@@ -78,6 +78,24 @@ pub(crate) fn java_whitespace(c: char) -> bool {
     }
 }
 
+/// What a trim call matches: the Unicode whitespace set, or the explicit
+/// characters the optional second argument names. An empty set contains no
+/// character, so the empty-string trim returns its input unchanged without
+/// a branch.
+enum TrimChars {
+    Whitespace,
+    Set(HashSet<char>),
+}
+
+impl TrimChars {
+    fn contains(&self, c: char) -> bool {
+        match self {
+            Self::Whitespace => java_whitespace(c),
+            Self::Set(set) => set.contains(&c),
+        }
+    }
+}
+
 pub(crate) fn trim_function(vals: &[Value], mode: TrimMode, strict_single: bool) -> Result<Value> {
     let Some(input) = vals.first() else {
         return Err(Error::semantic("trim function requires an argument"));
@@ -88,34 +106,28 @@ pub(crate) fn trim_function(vals: &[Value], mode: TrimMode, strict_single: bool)
     let Value::String(input) = input else {
         return Err(Error::invalid_argument_type("trim input must be a string"));
     };
-    let out = match vals.get(1) {
-        None => match mode {
-            TrimMode::Both => input.trim_matches(java_whitespace),
-            TrimMode::Leading => input.trim_start_matches(java_whitespace),
-            TrimMode::Trailing => input.trim_end_matches(java_whitespace),
-        },
+    let chars = match vals.get(1) {
+        None => TrimChars::Whitespace,
         Some(Value::String(chars)) => {
             if strict_single && chars.chars().count() != 1 {
-                return Err(Error::ty(
-                    "InvalidArgumentValue: trim character string must contain one character",
+                // Live Neo4j 2026.10.1: the ArgumentError class (ADR-0565).
+                return Err(Error::argument_value_kind(
+                    ErrorKind::InvalidArgumentValue,
+                    "trim character string must contain one character",
                 ));
             }
-            if chars.is_empty() {
-                input
-            } else {
-                let set: HashSet<char> = chars.chars().collect();
-                match mode {
-                    TrimMode::Both => input.trim_matches(|c| set.contains(&c)),
-                    TrimMode::Leading => input.trim_start_matches(|c| set.contains(&c)),
-                    TrimMode::Trailing => input.trim_end_matches(|c| set.contains(&c)),
-                }
-            }
+            TrimChars::Set(chars.chars().collect())
         }
         Some(_) => {
             return Err(Error::invalid_argument_type(
                 "trim character string must be a string",
             ))
         }
+    };
+    let out = match mode {
+        TrimMode::Both => input.trim_matches(|c| chars.contains(c)),
+        TrimMode::Leading => input.trim_start_matches(|c| chars.contains(c)),
+        TrimMode::Trailing => input.trim_end_matches(|c| chars.contains(c)),
     };
     Ok(Value::String(out.into()))
 }

@@ -1,27 +1,47 @@
 //! Vector value helpers: construction, arithmetic, norms, and distances.
 
-use relate_core::{Error, Result, Value, VectorCoordKind};
+use relate_core::{Error, ErrorKind, Result, Value, VectorCoordKind};
 use relate_ir::VectorMetric;
 
-pub(crate) fn as_floats(v: &Value) -> Option<Vec<f64>> {
-    match v {
-        Value::Vector { values, .. } => values
-            .iter()
-            .map(|x| match x {
-                Value::Int(i) => Some(*i as f64),
-                Value::Float(f) => Some(*f),
-                _ => None,
-            })
-            .collect(),
-        Value::List(xs) => xs
-            .iter()
-            .map(|x| match x {
-                Value::Int(i) => Some(*i as f64),
-                Value::Float(f) => Some(*f),
-                _ => None,
-            })
-            .collect(),
-        _ => None,
+use crate::vector_config::{vector_dimension, VECTOR_DIMENSIONS_MAX, VECTOR_DIMENSIONS_MIN};
+use crate::vector_similarity::value_coords;
+
+/// Why a list/VECTOR argument has no numeric coordinates. The two faults
+/// stay distinct because live Neo4j 2026.10.1 classes them differently: a
+/// null coordinate is an `ArgumentError`-class invalid vector, a
+/// wrong-typed argument keeps the `TypeError` class.
+enum CoordFault {
+    NullCoordinate,
+    NotNumeric,
+}
+
+/// The coordinate list as floats, in one pass over the canonical
+/// [`value_coords`] accessor. The fault is reported as a typed
+/// [`CoordFault`] rather than a bare `None`, so a caller never re-scans the
+/// value to recover which class the rejection carries.
+fn as_floats(v: &Value) -> std::result::Result<Vec<f64>, CoordFault> {
+    let Some(values) = value_coords(v) else {
+        return Err(CoordFault::NotNumeric);
+    };
+    let mut out = Vec::with_capacity(values.len());
+    // A null anywhere wins over a wrong-typed entry, matching live's
+    // invalid-vector classification.
+    let mut fault = None;
+    for value in values {
+        match value {
+            Value::Int(i) => out.push(*i as f64),
+            Value::Float(f) => out.push(*f),
+            Value::Null => fault = Some(CoordFault::NullCoordinate),
+            _ => {
+                if fault.is_none() {
+                    fault = Some(CoordFault::NotNumeric);
+                }
+            }
+        }
+    }
+    match fault {
+        Some(fault) => Err(fault),
+        None => Ok(out),
     }
 }
 
@@ -62,7 +82,20 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     let dim = vals[1]
         .as_int()
         .ok_or_else(|| Error::ty("vector() dimension must be an integer"))?;
-    if dim < 0 || dim as usize != items.len() {
+    // Live Neo4j 2026.10.1 splits the two dimension faults: a dimension
+    // outside the vector bound is the ArgumentError class (22N38), an
+    // in-bound dimension that disagrees with the coordinate count is the
+    // TypeError class (22G03).
+    let Some(dimension) = vector_dimension(dim) else {
+        return Err(Error::argument_value_kind(
+            ErrorKind::NumberOutOfRange,
+            format!(
+                "vector() dimension is outside the range {VECTOR_DIMENSIONS_MIN} to \
+                 {VECTOR_DIMENSIONS_MAX}"
+            ),
+        ));
+    };
+    if dimension != items.len() {
         return Err(Error::ty("vector() dimension does not match list"));
     }
     let coord_name = vals[2]
@@ -156,7 +189,7 @@ pub(crate) fn vector_dimension_count(vals: &[Value]) -> Result<Value> {
 pub(crate) fn plain_vector(value: &Value) -> Result<Option<Vec<f64>>> {
     match value {
         Value::Null => Ok(None),
-        Value::Vector { .. } => Ok(as_floats(value)),
+        Value::Vector { .. } => Ok(as_floats(value).ok()),
         _ => Err(Error::invalid_argument_type("expected a VECTOR")),
     }
 }
@@ -187,16 +220,14 @@ pub(crate) fn vector_metric(a: &[f64], b: &[f64], metric: VectorMetric) -> Resul
 }
 
 pub(crate) fn vector_distance_metric(vals: &[Value], metric: VectorMetric) -> Result<Value> {
-    if vals.len() != 2 {
-        return Err(Error::syntax(
-            "InvalidNumberOfArguments: vector_distance() requires three arguments",
-        ));
-    }
+    // The arity is `MetricForm`'s contract alone (it strips the metric
+    // literal before calling here), so this target carries no second
+    // user-facing arity error.
     match (plain_vector(&vals[0])?, plain_vector(&vals[1])?) {
         (None, _) | (_, None) => Ok(Value::Null),
         (Some(a), Some(b)) => {
             if a.len() != b.len() {
-                return Err(Error::ty("InvalidArgumentValue: vector dimensions differ"));
+                return Err(dimension_mismatch());
             }
             Ok(Value::Float(vector_metric(&a, &b, metric)?))
         }
@@ -204,11 +235,8 @@ pub(crate) fn vector_distance_metric(vals: &[Value], metric: VectorMetric) -> Re
 }
 
 pub(crate) fn vector_norm_metric(vals: &[Value], metric: VectorMetric) -> Result<Value> {
-    if vals.len() != 1 {
-        return Err(Error::syntax(
-            "InvalidNumberOfArguments: vector_norm() requires two arguments",
-        ));
-    }
+    // The arity is `MetricForm`'s contract alone (see
+    // [`vector_distance_metric`]).
     if !matches!(metric, VectorMetric::Euclidean | VectorMetric::Manhattan) {
         return Err(Error::syntax("UnknownDistanceMetric"));
     }
@@ -221,6 +249,33 @@ pub(crate) fn vector_norm_metric(vals: &[Value], metric: VectorMetric) -> Result
     }
 }
 
+/// The `ArgumentError` class of a similarity/distance argument fault
+/// (`InvalidArgumentValue`): live Neo4j 2026.10.1 reports an empty or
+/// zero vector, a NaN coordinate, a null coordinate and a dimension
+/// mismatch under 22N38, while a wrong-typed argument stays the
+/// `TypeError` class.
+fn invalid_vector(detail: &str) -> Error {
+    Error::argument_value_kind(ErrorKind::InvalidArgumentValue, detail)
+}
+
+fn dimension_mismatch() -> Error {
+    invalid_vector("vectors must have same dimensions")
+}
+
+/// The numeric coordinates of a similarity call's two arguments, or its
+/// classed rejection: a null coordinate is the `ArgumentError`-class
+/// invalid vector, a wrong-typed argument keeps the `TypeError` class.
+/// `wrong_type` is the caller's message for the latter.
+fn similarity_coords(a: &Value, b: &Value, wrong_type: &str) -> Result<(Vec<f64>, Vec<f64>)> {
+    match (as_floats(a), as_floats(b)) {
+        (Ok(x), Ok(y)) => Ok((x, y)),
+        (Err(CoordFault::NullCoordinate), _) | (_, Err(CoordFault::NullCoordinate)) => {
+            Err(invalid_vector("not a valid vector"))
+        }
+        _ => Err(Error::ty(wrong_type)),
+    }
+}
+
 pub(crate) fn vector_cosine(vals: &[Value]) -> Result<Value> {
     let (Some(a), Some(b)) = (vals.first(), vals.get(1)) else {
         return Err(Error::ty("vector.similarity.cosine needs two lists"));
@@ -228,19 +283,15 @@ pub(crate) fn vector_cosine(vals: &[Value]) -> Result<Value> {
     if a.is_null() || b.is_null() {
         return Ok(Value::Null);
     }
-    let (Some(x), Some(y)) = (as_floats(a), as_floats(b)) else {
-        return Err(Error::ty("vector.similarity.cosine needs numeric lists"));
-    };
+    let (x, y) = similarity_coords(a, b, "vector.similarity.cosine needs numeric lists")?;
     if x.len() != y.len() || x.is_empty() {
-        return Err(Error::ty(
-            "InvalidArgumentValue: vectors must have same dimensions",
-        ));
+        return Err(dimension_mismatch());
     }
     if x.iter().chain(&y).any(|f| f.is_nan())
         || x.iter().all(|f| *f == 0.0)
         || y.iter().all(|f| *f == 0.0)
     {
-        return Err(Error::ty("InvalidArgumentValue: not a valid vector"));
+        return Err(invalid_vector("not a valid vector"));
     }
     let dot: f64 = x.iter().zip(&y).map(|(a, b)| a * b).sum();
     let nx: f64 = x.iter().map(|a| a * a).sum::<f64>().sqrt();
@@ -259,16 +310,12 @@ pub(crate) fn vector_euclidean(vals: &[Value]) -> Result<Value> {
     if a.is_null() || b.is_null() {
         return Ok(Value::Null);
     }
-    let (Some(x), Some(y)) = (as_floats(a), as_floats(b)) else {
-        return Err(Error::ty("vector.similarity.euclidean needs numeric lists"));
-    };
+    let (x, y) = similarity_coords(a, b, "vector.similarity.euclidean needs numeric lists")?;
     if x.len() != y.len() {
-        return Err(Error::ty(
-            "InvalidArgumentValue: vectors must have same dimensions",
-        ));
+        return Err(dimension_mismatch());
     }
     if x.is_empty() || x.iter().chain(&y).any(|f| f.is_nan()) {
-        return Err(Error::ty("InvalidArgumentValue: not a valid vector"));
+        return Err(invalid_vector("not a valid vector"));
     }
     let d2: f64 = x.iter().zip(&y).map(|(a, b)| (a - b) * (a - b)).sum();
     Ok(Value::Float((1.0 / (1.0 + d2)) as f32 as f64))

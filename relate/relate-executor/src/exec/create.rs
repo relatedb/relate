@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{Error, NodeId, Path, RelId, Result, Value};
+use relate_core::{Error, ErrorKind, NodeId, Path, RelId, Result, Value};
 use relate_ir::{
     Direction, DynamicLabelQuantifier, Expr, LabelExpr, NodePattern, PathPattern, PatternElement,
     RelPattern,
@@ -338,15 +338,18 @@ pub(crate) fn create_or_bind_node(
     )?;
     if let Some((variable, value)) = reusable_binding(np, row, fresh) {
         // A relationship pattern's node position reuses the row's binding, so
-        // it must *be* a node: a null left by an `OPTIONAL MATCH` (or any
-        // other non-node value) is Neo4j 2026's 22N01 data-exception
-        // TypeError, not a silently created fresh node. Live-verified on
-        // Neo4j 2026.10.1 under Cypher 25 for both the CREATE and the MERGE
-        // spelling.
+        // it must *be* a node: a null left by an `OPTIONAL MATCH` is Neo4j
+        // 2026.10.1's 22G03 ArgumentError ("node `a` is missing"), while any
+        // other runtime non-node is its 22G03 TypeError. Neither spelling
+        // may silently create a fresh node. Live-verified on 2026.10.1 under
+        // Cypher 25 for both the CREATE and the MERGE spelling.
         let Value::Node(node) = value else {
-            return Err(Error::ty(relate_core::expected_value_type_detail(
-                "NODE", value,
-            )));
+            let detail = relate_core::expected_value_type_detail("NODE", value);
+            return Err(if matches!(value, Value::Null) {
+                Error::argument_value_kind(ErrorKind::InvalidArgumentValue, detail)
+            } else {
+                Error::ty(detail)
+            });
         };
         let id = node.id;
         graph.add_labels(id, &labels);

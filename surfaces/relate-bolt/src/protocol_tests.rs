@@ -188,7 +188,7 @@ fn result_over_cap_fails_naming_the_limit() {
 
 /// Rows sharing one large payload (ADR-0170) are small in memory but large
 /// in logical bytes. The cap check stops once the total passes the limit, so
-/// 20,000 rows × a 100,000-element vector (~16 GB logical) fail fast instead
+/// 20,000 rows × a 100,000-element list (~16 GB logical) fail fast instead
 /// of being summed in full, with and without a query timeout (the
 /// watchdog in `keepalive::run_statement`). A full sum takes ~20 s per RUN
 /// in a debug build; the bound is wall-clock.
@@ -211,7 +211,7 @@ fn shared_payload_over_cap_fails_fast() {
         send_run_at(
             &mut client,
             BoltVersion::V4_4,
-            "WITH vector(range(1, 100000), 100000, FLOAT64) AS v \
+            "WITH range(1, 100000) AS v \
              UNWIND range(1, 20000) AS i RETURN v",
             None,
         );

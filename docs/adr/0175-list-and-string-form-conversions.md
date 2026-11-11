@@ -860,3 +860,7 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   `type error: ` prefix to `semantic error: `. The `toInteger()` rows above
   move with them for the same reason. The `InvalidArgumentType` rows are
   unchanged.
+- ADR-0565 corrects the `toInteger()` part of that note: live Neo4j raises
+  its type exception for an out-of-range numeric string (22003, the
+  `TypeError` class), so the site keeps the type-class prefix while the
+  integer-argument range sites keep the run-time argument class.
