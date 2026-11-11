@@ -1,6 +1,6 @@
 #!/bin/sh
 # relate installer:
-#   curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash
+#   curl -sSfL https://relatedb.ai/install.sh | bash
 set -eu
 
 REPO=relatedb/relate
@@ -117,7 +117,7 @@ asset_id_for() {
 # relate-<os>-<arch>.
 asset="${ASSET_PREFIX}-${os}-${arch}"
 
-resolve_fail_msg="could not resolve latest release for $REPO. If the repo is private, set GITHUB_TOKEN (e.g. GITHUB_TOKEN=\$(gh auth token))."
+resolve_fail_msg="could not resolve latest release for $REPO. If the repo is private, set GITHUB_TOKEN."
 
 # The repository is internal, so an unauthenticated request 404s. Fetch the
 # latest release JSON once: it carries both tag_name and the asset ids.

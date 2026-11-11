@@ -1,15 +1,17 @@
 //! The `releases.json` document contract (ADR-0250 §2): the static release
 //! metadata published on the project website — its validation, the
 //! asset-membership check on a parsed [`Release`], its URL selection, and the
-//! fetch path that reads it. Everything here is pure except the fetch path
-//! ([`read_releases_json`] and its caller [`fetch_latest_release`]); the
-//! SHA256SUMS/signature/platform machinery, the
+//! one fetch that reads it. Everything here is pure except
+//! [`fetch_latest_release`]; the SHA256SUMS/signature/platform machinery, the
 //! route probe, and the upgrade orchestration live in the parent module.
 
 use serde::Deserialize;
 
-use super::{parse_version_triple, UpgradeError, INSTALL_ONE_LINER};
-use crate::release_channel::{seam, REPO};
+use super::{parse_version_triple, UpgradeError};
+use crate::release_channel::{
+    http::{download_asset, AssetRequest, DownloadError},
+    seam, REPO,
+};
 
 /// Canonical release-metadata URL: the static `releases.json` published to
 /// the project website (ADR-0250 §1).
@@ -18,16 +20,6 @@ const RELEASES_JSON_URL: &str = "https://relatedb.ai/releases.json";
 /// Environment override for the metadata URL (a documented dev/test seam):
 /// the one way a test can point release discovery at a fixture or mirror.
 const RELEASES_JSON_URL_ENV: &str = "RELATE_RELEASES_JSON_URL";
-
-/// Temporary fallback host (ADR-0550): the relate-web preview site, read
-/// when the canonical URL does not yield a valid document — pre-launch,
-/// the canonical host serves no `releases.json`. Removed with the preview
-/// host after launch.
-const RELEASES_JSON_FALLBACK_URL: &str = "https://r31473.relatedb.ai/releases.json";
-
-/// Environment override for the fallback URL (the same dev/test seam as
-/// the primary's); an empty value means the default fallback host.
-const RELEASES_JSON_FALLBACK_URL_ENV: &str = "RELATE_RELEASES_JSON_FALLBACK_URL";
 
 /// A `releases.json` release object (ADR-0250 §2), reduced to the fields
 /// `upgrade` consumes. The `notes` body is validated at parse time but never
@@ -67,17 +59,24 @@ fn malformed(detail: impl std::fmt::Display) -> UpgradeError {
     UpgradeError::new(format!("releases.json is malformed: {detail}"))
 }
 
-/// A release-discovery failure (ADR-0250 §4, ADR-0550): one line naming
-/// both metadata URLs with each one's failure detail, and pointing at the
-/// documented reinstall one-liner.
-fn discovery_err(
-    url: &str,
-    primary: impl std::fmt::Display,
-    fallback_url: &str,
-    fallback: impl std::fmt::Display,
-) -> UpgradeError {
-    UpgradeError::new(format!(
-        "could not read the release list from {url} ({primary}) or the fallback {fallback_url} ({fallback}); reinstall manually instead: {INSTALL_ONE_LINER}"
+/// A release-discovery failure (ADR-0250 §4): one line naming the metadata
+/// URL and pointing at the documented reinstall one-liner. Reserved for the
+/// document-shape failures (UTF-8 and parse), whose detail names no URL;
+/// the read failure carries the shared client's own URL-naming text
+/// through [`read_err`], so each wrapper owns exactly one detail shape.
+fn discovery_err(url: &str, detail: impl std::fmt::Display) -> UpgradeError {
+    UpgradeError::reinstall(format!(
+        "could not read the release list from {url}: {detail}"
+    ))
+}
+
+/// A release-discovery read failure (ADR-0250 §4): one line carrying the
+/// shared client's pinned failure text — every [`DownloadError`] arm names
+/// the request URL — and pointing at the documented reinstall one-liner.
+fn read_err(e: DownloadError) -> UpgradeError {
+    UpgradeError::reinstall(format!(
+        "could not read the release list: {}",
+        e.into_channel_error()
     ))
 }
 
@@ -274,57 +273,39 @@ pub(super) fn parse_releases(json: &str) -> Result<(Release, (u64, u64, u64)), U
 
 /// The metadata URL to read: `RELATE_RELEASES_JSON_URL` when set and
 /// non-empty (the documented dev/test seam), else the canonical website URL
-/// (ADR-0250 §1). A set but non-UTF-8 value is a typed error naming the
-/// variable.
+/// (ADR-0250 §1). There is no fallback between the two; a set but non-UTF-8
+/// value is a typed error naming the variable.
 fn releases_json_url() -> Result<String, UpgradeError> {
     Ok(seam(RELEASES_JSON_URL_ENV, RELEASES_JSON_URL)?)
 }
 
-/// The fallback metadata URL (ADR-0550): `RELATE_RELEASES_JSON_FALLBACK_URL`
-/// when set and non-empty, else the preview host.
-fn releases_json_fallback_url() -> Result<String, UpgradeError> {
-    Ok(seam(
-        RELEASES_JSON_FALLBACK_URL_ENV,
-        RELEASES_JSON_FALLBACK_URL,
-    )?)
-}
-
-/// Fetch and parse one host's `releases.json`. The error is the bare
-/// failure detail; the caller owns naming the URL.
-fn read_releases_json(url: &str) -> Result<(Release, (u64, u64, u64)), UpgradeError> {
-    let mut body = ureq::get(url)
-        .call()
-        .map_err(|e| UpgradeError::new(format!("GET failed: {e}")))?
-        .into_body();
-    let json = body
-        .read_to_string()
-        .map_err(|e| UpgradeError::new(format!("reading the response failed: {e}")))?;
-    parse_releases(&json)
-}
-
 /// Fetch and parse the release metadata from the website's `releases.json`
-/// (ADR-0250), falling back to the temporary preview host when the
-/// canonical URL does not yield a valid document (ADR-0550 — any primary
-/// failure: transport, read, or a malformed document such as the
-/// pre-launch lander page). The request never carries an `Authorization`
-/// header — the file is public and lives on a different origin than the
-/// asset downloads (ADR-0250 §5) — and there is no retry, cache, or
-/// GitHub API fallback.
+/// (ADR-0250). The read rides the channel's one HTTP client
+/// ([`download_asset`] — its transport pins and body cap apply — with no
+/// `Authorization` header: the file is public and lives on a different
+/// origin than the asset downloads, ADR-0250 §5) and there is no retry,
+/// cache, or GitHub API fallback.
 pub(super) fn fetch_latest_release() -> Result<(Release, (u64, u64, u64)), UpgradeError> {
     let url = releases_json_url()?;
-    match read_releases_json(&url) {
-        Ok(found) => Ok(found),
-        Err(primary) => {
-            let fallback_url = releases_json_fallback_url()?;
-            read_releases_json(&fallback_url)
-                .map_err(|fallback| discovery_err(&url, &primary, &fallback_url, &fallback))
-        }
-    }
+    let bytes = download_asset(AssetRequest {
+        url: &url,
+        name: "releases.json",
+        token: None,
+        accept: None,
+    })
+    .map_err(read_err)?;
+    std::str::from_utf8(&bytes)
+        .map_err(|e| malformed(format!("the document is not UTF-8: {e}")))
+        .and_then(parse_releases)
+        .map_err(|e| discovery_err(&url, e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only pin from its owning module: the reinstall one-liner,
+    // present in every abort the constructor renders.
+    use super::super::INSTALL_ONE_LINER;
 
     /// The committed `releases.json` fixture (ADR-0250 §2): the same shape
     /// the website publisher writes. The parser tests below read this file,
@@ -531,15 +512,12 @@ mod tests {
     }
 
     #[test]
-    fn discovery_error_names_both_urls_and_the_reinstall_one_liner() {
-        // ADR-0250 §4 + ADR-0550: with both hosts failing, the abort is one
-        // line naming the primary and the fallback URL with each one's
-        // detail, and pointing at the documented reinstall one-liner.
+    fn discovery_error_names_the_url_and_the_reinstall_one_liner() {
+        // ADR-0250 §4: missing or malformed aborts with one line naming the
+        // URL and pointing at the documented reinstall one-liner.
         let err = discovery_err(
             "https://example.test/releases.json",
             "GET failed: connection refused",
-            "https://preview.example.test/releases.json",
-            "releases.json is malformed: invalid JSON",
         )
         .stderr_message();
         assert_eq!(err.lines().count(), 1, "one line: {err:?}");
@@ -548,94 +526,56 @@ mod tests {
             err.contains("https://example.test/releases.json"),
             "{err:?}"
         );
-        assert!(
-            err.contains("https://preview.example.test/releases.json"),
-            "{err:?}"
-        );
-        assert!(err.contains("connection refused"), "{err:?}");
-        assert!(err.contains("invalid JSON"), "{err:?}");
         assert!(err.contains(INSTALL_ONE_LINER), "{err:?}");
     }
 
-    /// Serializes the env-mutating fetch tests (one process, one
-    /// environment).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// One fetch test's environment: the two seam guards (captured before
-    /// the sets, restored on drop) behind the serializing lock.
-    struct SeamGuard {
-        _primary: relate_test_support::EnvRestore,
-        _fallback: relate_test_support::EnvRestore,
-    }
-
-    impl SeamGuard {
-        fn set(primary: &str, fallback: &str) -> SeamGuard {
-            let guard = SeamGuard {
-                _primary: relate_test_support::EnvRestore::new(RELEASES_JSON_URL_ENV),
-                _fallback: relate_test_support::EnvRestore::new(RELEASES_JSON_FALLBACK_URL_ENV),
-            };
-            std::env::set_var(RELEASES_JSON_URL_ENV, primary);
-            std::env::set_var(RELEASES_JSON_FALLBACK_URL_ENV, fallback);
-            guard
+    #[test]
+    fn read_error_carries_the_channel_text_and_the_reinstall_one_liner() {
+        // ADR-0250 §4: the read failure is one line carrying the shared
+        // client's pinned text — which names the URL, whatever the arm —
+        // plus the reinstall one-liner; the URL-naming discovery_err is
+        // not layered on top of it. The status refusal, the transport
+        // failure, and the body-read failure are the three arm shapes
+        // read_err meets, each produced through the client's own
+        // construction forms so the fixtures cannot drift from the
+        // producer's text.
+        let cases = [
+            (
+                "status refusal",
+                DownloadError::Status {
+                    url: "https://example.test/releases.json".to_string(),
+                    code: 404,
+                },
+                "http status: 404",
+            ),
+            (
+                "transport failure",
+                DownloadError::transport(
+                    "https://example.test/releases.json",
+                    "connection refused",
+                ),
+                "connection refused",
+            ),
+            (
+                "body-read failure",
+                DownloadError::body_read(
+                    "https://example.test/releases.json",
+                    "releases.json",
+                    "connection closed",
+                ),
+                "downloading releases.json",
+            ),
+        ];
+        for (name, error, needle) in cases {
+            let err = read_err(error).stderr_message();
+            assert_eq!(err.lines().count(), 1, "{name}: one line: {err:?}");
+            assert!(err.starts_with("Error: upgrade: "), "{name}: {err:?}");
+            assert!(
+                err.contains("https://example.test/releases.json"),
+                "{name}: {err:?}"
+            );
+            assert!(err.contains(needle), "{name}: {err:?}");
+            assert!(err.contains(INSTALL_ONE_LINER), "{name}: {err:?}");
         }
-    }
-
-    /// Serve one body once on loopback; returns the join handle (joined by
-    /// the caller so a server-side panic propagates) and the URL to GET.
-    fn serve_once(body: &'static str) -> (std::thread::JoinHandle<Vec<String>>, String) {
-        let (server, port) = relate_test_support::loopback::spawn_single_response("200 OK", body);
-        (server, format!("http://127.0.0.1:{port}/releases.json"))
-    }
-
-    #[test]
-    fn fetch_falls_back_when_the_primary_document_is_invalid() {
-        // ADR-0550: the pre-launch case — the canonical host serves the
-        // lander page (not a releases.json), the preview host serves the
-        // document.
-        let _lock = ENV_LOCK.lock().unwrap();
-        let (lander, lander_url) = serve_once("<!DOCTYPE html><html><head></head></html>");
-        let (preview, preview_url) = serve_once(FIXTURE);
-        let _seams = SeamGuard::set(&lander_url, &preview_url);
-        let (release, version) = fetch_latest_release().unwrap();
-        assert_eq!(release.tag, "v0.0.9");
-        assert_eq!(version, (0, 0, 9));
-        lander.join().unwrap();
-        preview.join().unwrap();
-    }
-
-    #[test]
-    fn fetch_falls_back_on_a_primary_transport_failure() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let (preview, preview_url) = serve_once(FIXTURE);
-        // Port 9 (discard) refuses: the primary read never happens.
-        let _seams = SeamGuard::set("http://127.0.0.1:9/releases.json", &preview_url);
-        let (release, _) = fetch_latest_release().unwrap();
-        assert_eq!(release.tag, "v0.0.9");
-        preview.join().unwrap();
-    }
-
-    #[test]
-    fn fetch_does_not_consult_the_fallback_when_the_primary_is_valid() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let (primary, primary_url) = serve_once(FIXTURE);
-        // The fallback refuses; a consult would fail the fetch.
-        let _seams = SeamGuard::set(&primary_url, "http://127.0.0.1:9/releases.json");
-        let (release, _) = fetch_latest_release().unwrap();
-        assert_eq!(release.tag, "v0.0.9");
-        primary.join().unwrap();
-    }
-
-    #[test]
-    fn fetch_reports_both_urls_when_both_fail() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _seams = SeamGuard::set(
-            "http://127.0.0.1:9/releases.json",
-            "http://127.0.0.1:9/releases.json",
-        );
-        let err = fetch_latest_release().unwrap_err().stderr_message();
-        assert_eq!(err.lines().count(), 1, "one line: {err:?}");
-        assert!(err.contains("http://127.0.0.1:9/releases.json"), "{err:?}");
-        assert!(err.contains("or the fallback"), "{err:?}");
-        assert!(err.contains(INSTALL_ONE_LINER), "{err:?}");
     }
 }

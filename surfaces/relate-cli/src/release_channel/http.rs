@@ -8,7 +8,10 @@
 //! [`super::download_route`] and the API route in [`super::api_assets`]
 //! download through this module; neither builds a request of its own.
 //! `extension install --url` (ADR-0431 §6) fetches its tarball here too —
-//! the same cap and the same client, no token involved.
+//! the same cap and the same client, no token involved — as do the two
+//! website metadata reads: the `releases.json` document (`upgrade`,
+//! ADR-0250 §1) and the `extensions.json` channel index (ADR-0431 §4),
+//! both public origins that take no token (ADR-0250 §5).
 
 use ureq::config::RedirectAuthHeaders;
 
@@ -37,6 +40,23 @@ pub(crate) enum DownloadError {
 }
 
 impl DownloadError {
+    /// The transport-failure arm of [`download_asset`] (the request itself
+    /// failed: connection refused, DNS, TLS). Labeled with the request URL,
+    /// like every arm — the premise a consumer's one-line renderer rests on.
+    /// An associated constructor, not an inline closure, so a test produces
+    /// the error the client produces instead of copying its text.
+    pub(crate) fn transport(url: &str, e: impl std::fmt::Display) -> DownloadError {
+        DownloadError::Other(ChannelError::new(format!("GET {url}: {e}")))
+    }
+
+    /// The body-read failure arm of [`download_asset`] (the response body
+    /// failed mid-read). Same URL-labeling contract as [`Self::transport`].
+    pub(crate) fn body_read(url: &str, name: &str, e: impl std::fmt::Display) -> DownloadError {
+        DownloadError::Other(ChannelError::new(format!(
+            "GET {url}: downloading {name}: {e}"
+        )))
+    }
+
     /// The user-facing [`ChannelError`]: a status keeps the exact
     /// `GET {url}: http status: {code}` text the direct route always
     /// printed. This is the one source of that pinned line; callers append
@@ -164,14 +184,14 @@ pub(crate) fn download_asset(request: AssetRequest<'_>) -> Result<Vec<u8>, Downl
                 code,
             },
             // http: the asset download request failed.
-            other => DownloadError::Other(ChannelError::new(format!("GET {url}: {other}"))),
+            other => DownloadError::transport(url, other),
         })?
         .into_body();
     body.with_config()
         .limit(MAX_ASSET_BYTES)
         .read_to_vec()
         // http: the asset download failed.
-        .map_err(|e| DownloadError::Other(ChannelError::new(format!("downloading {name}: {e}"))))
+        .map_err(|e| DownloadError::body_read(url, name, e))
 }
 
 #[cfg(test)]

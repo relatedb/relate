@@ -60,8 +60,7 @@ const SUMS_SIG_ASSET: &str = "SHA256SUMS.sig";
 /// whenever `upgrade` cannot proceed: release discovery failed (ADR-0250 §4),
 /// the signed manifest's version did not bind to the requested release
 /// (ADR-0457 §2), or the in-place replace failed.
-const INSTALL_ONE_LINER: &str =
-    "curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash";
+const INSTALL_ONE_LINER: &str = "curl -sSfL https://relatedb.ai/install.sh | bash";
 
 /// Options for `relate upgrade`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +230,16 @@ impl UpgradeError {
         Self(msg.into())
     }
 
+    /// The one cannot-proceed pointer (ADR-0250 §4, ADR-0457 §2): the
+    /// failure detail plus the documented reinstall one-liner, in the
+    /// pinned sentence shape every abort shares — the single source of
+    /// the `; reinstall manually instead: …` suffix.
+    fn reinstall(detail: impl std::fmt::Display) -> Self {
+        Self::new(format!(
+            "{detail}; reinstall manually instead: {INSTALL_ONE_LINER}"
+        ))
+    }
+
     /// The exact text `run` writes to stderr before returning exit code 1.
     fn stderr_message(&self) -> String {
         format!("Error: upgrade: {}", self.0)
@@ -383,10 +392,7 @@ fn replace_current_exe(bytes: &[u8]) -> Result<PathBuf, UpgradeError> {
 /// directory; point at the documented reinstall path.
 fn replace_err(what: &str, path: &Path, e: std::io::Error) -> UpgradeError {
     // replace: staging or renaming over the running binary failed.
-    UpgradeError::new(format!(
-        "{what} {}: {e}\nReinstall manually instead: {INSTALL_ONE_LINER}",
-        path.display()
-    ))
+    UpgradeError::reinstall(format!("{what} {}: {e}", path.display()))
 }
 
 #[cfg(test)]

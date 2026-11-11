@@ -337,3 +337,9 @@ repositories regardless of token, so the download route becomes a
 probe-then-fallback pair: the direct route first, and on a 404 the
 authenticated API asset route for token holders. Metadata discovery, the
 schema and the publisher contract stand unchanged.
+
+§5's recorded transition is complete: the reinstall one-liner, the README's
+install and self-update commands, and the installer's own header no longer
+carry the `GITHUB_TOKEN=$(gh auth token)` prefix — no documented invocation
+does. The token is still accepted and harmless, and still selects ADR-0358's
+API asset route on a direct-route 404.

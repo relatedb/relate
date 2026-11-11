@@ -53,3 +53,13 @@ offered, never which bytes run.
   the both-hosts error shape all go away together.
 - `releases.json` stays unsigned discovery metadata; the signed-manifest
   boundary (ADR-0115) is the integrity boundary, unchanged.
+
+## Later references
+
+The removal this ADR scheduled has landed: the website serves the published
+document at the canonical URL, and the preview host is gone. The fallback
+constant, the `RELATE_RELEASES_JSON_FALLBACK_URL` seam, and the both-hosts
+error shape were removed together in the change that recorded this note;
+release discovery is single-URL again, exactly the ADR-0250 §4 shape. The
+primary seam (`RELATE_RELEASES_JSON_URL`) and the reinstall one-liner are
+unchanged.

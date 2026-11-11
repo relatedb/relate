@@ -48,10 +48,11 @@ official artifacts from any other repository
 
 - [ ] Ensure the repository lives at `github.com/relatedb/relate`.
 - [ ] While the repository is **private**, release-asset downloads need a
-  GitHub token: the install one-liner and `relate upgrade` are run as
-  `curl -sSfL https://relatedb.ai/install.sh | GITHUB_TOKEN=$(gh auth token) bash`
-  and `GITHUB_TOKEN=$(gh auth token) relate upgrade` (the README shows
-  both). Making the repository public later removes that requirement with
+  GitHub token: prefix the documented invocations with
+  `GITHUB_TOKEN=$(gh auth token)` (before `bash` in the install pipe,
+  before `relate` for self-update). The README, the installer header, and
+  the CLI's reinstall one-liner ship the tokenless forms for the public
+  repository; making the repository public removes the requirement with
   no pipeline change.
 - [ ] Confirm the `origin` remote used for pushing tags points at
   `relatedb/relate` (a fork's tags cannot publish official artifacts).

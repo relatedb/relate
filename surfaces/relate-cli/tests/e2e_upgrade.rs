@@ -137,20 +137,10 @@ impl ReleasesFixture {
         }
     }
 
-    /// The upgrade env pairs every release-discovery test runs with: the
-    /// metadata fixture as the primary, and a refused loopback port as the
-    /// fallback (ADR-0550) — the two seams stay distinguishable, so a run
-    /// that read the fallback where the primary was meant shows up as a
-    /// failed fetch, the fail-closed cases stay fail-closed, and no test
-    /// ever leaves loopback. Everything else stays at the harness default.
-    fn envs(&self) -> [(&str, &str); 2] {
-        [
-            ("RELATE_RELEASES_JSON_URL", &self.url),
-            (
-                "RELATE_RELEASES_JSON_FALLBACK_URL",
-                "http://127.0.0.1:9/releases.json",
-            ),
-        ]
+    /// The upgrade env pairs every release-discovery test runs with: the one
+    /// loopback base. Everything else stays at the harness default.
+    fn envs(&self) -> Vec<(&str, &str)> {
+        vec![("RELATE_RELEASES_JSON_URL", self.url.as_str())]
     }
 
     /// Wait for the metadata fixture to serve its one response and return the
@@ -166,7 +156,7 @@ fn test_upgrade_check_reads_releases_json_without_a_token() {
     let fixture = ReleasesFixture::spawn(RELEASES_JSON);
     // ADR-0250 §5: even with a token set, the metadata request must not
     // carry an Authorization header.
-    let mut envs = fixture.envs().to_vec();
+    let mut envs = fixture.envs();
     envs.push(("GITHUB_TOKEN", "ghp_test_token"));
     let (status, stdout, stderr) = run_cli(
         Opts::new(&["upgrade", "--check"])
@@ -268,6 +258,10 @@ fn test_upgrade_fails_closed_when_releases_json_is_missing() {
     assert!(
         stderr.contains(&fixture.url),
         "the error must name the metadata URL: {stderr}"
+    );
+    assert!(
+        stderr.contains("http status: 404"),
+        "the error must carry the typed status detail from the shared channel client: {stderr}"
     );
     assert!(
         stderr.contains("install.sh"),
@@ -497,19 +491,17 @@ struct RouteFixture {
 
 #[cfg(unix)]
 impl RouteFixture {
-    /// The five upgrade env pairs every route test runs with: the two
-    /// discovery pairs [`ReleasesFixture::envs`] seeds (ADR-0550), plus the
-    /// two loopback bases and the token. Everything else stays at the
-    /// harness default.
-    fn envs(&self) -> [(&str, &str); 5] {
-        let [(releases_key, releases_url), (fallback_key, fallback_url)] = self.releases.envs();
-        [
-            (releases_key, releases_url),
-            (fallback_key, fallback_url),
-            ("RELATE_RELEASE_DOWNLOAD_URL", &self.direct_base),
-            ("RELATE_GITHUB_API_URL", &self.api_base),
-            ("GITHUB_TOKEN", &self.token),
-        ]
+    /// The four upgrade env pairs every route test runs with: the metadata
+    /// pair [`ReleasesFixture::envs`] seeds, plus the two loopback bases and
+    /// the token. Everything else stays at the harness default.
+    fn envs(&self) -> Vec<(&str, &str)> {
+        let mut envs = self.releases.envs();
+        envs.extend([
+            ("RELATE_RELEASE_DOWNLOAD_URL", self.direct_base.as_str()),
+            ("RELATE_GITHUB_API_URL", self.api_base.as_str()),
+            ("GITHUB_TOKEN", self.token.as_str()),
+        ]);
+        envs
     }
 }
 

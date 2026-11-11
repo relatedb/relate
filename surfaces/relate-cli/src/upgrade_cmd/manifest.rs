@@ -4,7 +4,7 @@
 //! and the checksum entry lookup. Everything here is pure; the upgrade flow
 //! owns the network, the pinned-key verification, and the console output.
 
-use super::{UpgradeError, INSTALL_ONE_LINER};
+use super::UpgradeError;
 
 /// The first line of a signed `SHA256SUMS` names the release it belongs to
 /// (ADR-0457 §1). The exact spelling is load-bearing: `install.sh` matches
@@ -67,26 +67,24 @@ pub(super) fn bind_signed_version(
     match signed_manifest_version(sums).map(str::trim) {
         // Checked before equality so an empty header can never match a caller
         // that passed an empty tag: it is a publish bug, not a release.
-        Some("") => Err(UpgradeError::new(format!(
-            "SHA256SUMS from {requested_tag} carries an empty version header; not upgrading; \
-             reinstall manually instead: {INSTALL_ONE_LINER}"
+        Some("") => Err(UpgradeError::reinstall(format!(
+            "SHA256SUMS from {requested_tag} carries an empty version header; not upgrading"
         ))),
         Some(version) if version == requested_tag => Ok(ManifestBinding::Authenticated),
         // version_binding: the signed manifest names a different release than
         // the metadata requested (a replay or a mismatched publish).
-        Some(version) => Err(UpgradeError::new(format!(
-            "SHA256SUMS is for {version}, not the requested release {requested_tag}; not \
-             upgrading; reinstall manually instead: {INSTALL_ONE_LINER}"
+        Some(version) => Err(UpgradeError::reinstall(format!(
+            "SHA256SUMS is for {version}, not the requested release {requested_tag}; not upgrading"
         ))),
         // Legacy manifests predate the header; accept one only for a release
         // old enough to have shipped without it (ADR-0457 §3).
         None if requested_version <= LEGACY_MANIFEST_CEILING => Ok(ManifestBinding::Legacy),
         // version_binding: a requested release above the legacy ceiling came
         // with a headerless manifest, so its version is unauthenticated.
-        None => Err(UpgradeError::new(format!(
+        None => Err(UpgradeError::reinstall(format!(
             "SHA256SUMS from {requested_tag} has no signed version header; refusing to install a \
              manifest whose version is not authenticated (legacy manifests are accepted only at \
-             or below {}); reinstall manually instead: {INSTALL_ONE_LINER}",
+             or below {})",
             legacy_ceiling_label()
         ))),
     }
@@ -124,6 +122,9 @@ pub(super) fn sha256sums_entry(sums: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The one-liner is pinned from its one source, the parent module: every
+    // abort the `reinstall` constructor renders must carry it.
+    use super::super::INSTALL_ONE_LINER;
 
     #[test]
     fn signed_manifest_version_reads_the_first_line_header() {

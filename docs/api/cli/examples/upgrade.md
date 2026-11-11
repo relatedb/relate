@@ -11,9 +11,7 @@ notice ([Lifecycle commands](../spec.md#lifecycle-commands)). The run is
 read-only: it changes nothing on disk and exits 0.
 
 Point the metadata URL at a local fixture with `RELATE_RELEASES_JSON_URL`
-(the documented test seam; `RELATE_RELEASES_JSON_FALLBACK_URL` overrides the
-fallback host consulted when the primary read fails — ADR-0550, temporary
-until launch):
+(the documented test seam):
 
 ```bash
 RELATE_RELEASES_JSON_URL=http://127.0.0.1:8000/releases.json \

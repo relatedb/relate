@@ -287,8 +287,7 @@ fn direct_route_unavailable(status: DownloadError, manual: Option<&str>) -> Chan
         .map(|advice| format!(", or {advice}"))
         .unwrap_or_default();
     ChannelError::new(format!(
-        "{}; the release assets may require authentication — set GITHUB_TOKEN \
-         (e.g. GITHUB_TOKEN=$(gh auth token)) and retry{manual}",
+        "{}; the release assets may require authentication — set GITHUB_TOKEN and retry{manual}",
         status.into_channel_error()
     ))
 }

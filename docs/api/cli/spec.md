@@ -454,8 +454,8 @@ resolves the three asset ids, then each asset is downloaded from
 `GET https://api.github.com/repos/relatedb/relate/releases/assets/{id}`
 with `Accept: application/octet-stream` and the bearer token. A 404 on the
 probe **without** a token aborts with one `Error: upgrade: …` line that keeps
-the `GET {url}: http status: 404` text and names `GITHUB_TOKEN` (e.g.
-`GITHUB_TOKEN=$(gh auth token)`) plus the documented reinstall one-liner
+the `GET {url}: http status: 404` text and names `GITHUB_TOKEN` plus the
+documented reinstall one-liner
 (exit 1, nothing downloaded, nothing modified); any other probe failure —
 403, 5xx, a network or read error — aborts exactly as the direct route always
 did, because only the typed 404 status triggers the fallback. Both route bases
@@ -1914,8 +1914,7 @@ See the [executable help example](examples/help.md).
 | Variable | Used by | Meaning |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | `upgrade`, `extension install` | Optional bearer token for the release-asset downloads (ADR-0068/0069): sent as `Authorization: Bearer $GITHUB_TOKEN` on the direct release-asset requests, and — when the direct probe answers 404 — it is what selects the authenticated GitHub API asset route (ADR-0358 §3). Never sent on the `releases.json` metadata request, nor on the `extensions.json` channel-index or signature requests. While the repository is internal the direct route 404s, so the token is required; once the repository is public the direct route serves tokenless upgrades and the token is unnecessary |
-| `RELATE_RELEASES_JSON_URL` | `upgrade` | Override the release-metadata URL (dev/test); the default is the canonical website URL `https://relatedb.ai/releases.json` (ADR-0250 §1). An empty value means the default. When the read does not yield a valid document, the temporary fallback host is consulted (ADR-0550) |
-| `RELATE_RELEASES_JSON_FALLBACK_URL` | `upgrade` | Override the fallback release-metadata URL (dev/test; ADR-0550); the default is the temporary preview host `https://r31473.relatedb.ai/releases.json`, consulted only when the primary read fails or yields an invalid document. An empty value means the default. Removed with the preview host at launch |
+| `RELATE_RELEASES_JSON_URL` | `upgrade` | Override the release-metadata URL (dev/test); the default is the canonical website URL `https://relatedb.ai/releases.json` (ADR-0250 §1). An empty value means the default, and the named URL is the only source consulted — there is no fallback |
 | `RELATE_EXTENSIONS_JSON_URL` | `extension install`, `extension list --available` | Override the extension channel-index URL (dev/test; ADR-0431's consequences — the ADR-0250 §1 pattern); the default is `https://relatedb.ai/extensions.json`, and the signature URL derives from it (`<index>.sig`). An empty value means the default; the named URL is the only source consulted — there is no fallback, and no token is ever sent |
 | `RELATE_RELEASE_DOWNLOAD_URL` | `upgrade`, `extension install` | Override the base of the direct release-download route (dev/test seam only); the default is the canonical `https://github.com/relatedb/relate/releases/download` (ADR-0250 §3, ADR-0358 §8). An empty value means the default, and the named base is the only direct-route base consulted — there is no fallback. The extension tarball download rides the same route (ADR-0431 §1) |
 | `RELATE_GITHUB_API_URL` | `upgrade`, `extension install` | Override the base of the GitHub API asset route (dev/test seam only); the default is the canonical `https://api.github.com` (ADR-0358 §8). An empty value means the default, and the named base is the only API base consulted — there is no fallback. The extension tarball's API fallback rides the same route (ADR-0431 §1) |
