@@ -416,6 +416,20 @@ Process, not code shape:
   a green head over a moved base merges cleanly (trial: `git merge-tree
   <base-of-head> origin/main <head>`). Skip docs-only /
   `AGENTS.md`-only advances
+- **The merge bar is the merged tree, not the head.** CI on a pull
+  request builds the head commit; the commit that lands is the head
+  applied to `main` as it is at merge time, and the two differ whenever
+  the branch and `main` have both touched a file. A rename is the sharp
+  case: the branch's hunks rename every occurrence it forked with,
+  `main`'s newer copy of the file keeps mentions in regions the hunks
+  never reach, the merge is textually clean, and the definition the
+  branch deleted is gone — nothing conflicts, nothing compiles, and the
+  head's green checks say nothing. Before merging, run
+  `scripts/premerge-check.sh <PR>`: it decides the merge with
+  `merge-tree`, exports that exact tree, and type-checks it. A conflict
+  is reported as a conflict; a tree that merges and does not compile is
+  the case it exists for. Rebase onto current `main` first when it pays
+  (above), so the checked tree is the merged one
 - **Safety capabilities are declarative.** Resource caps,
   statement-shape guardrails, read-only scope are selected through one
   registry (LABS-703; the `PreviewFeatures` seam,
