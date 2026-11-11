@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
 RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries \
-    && sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+    && sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#http://mirror.init7.net/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \

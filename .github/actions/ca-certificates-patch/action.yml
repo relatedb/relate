@@ -27,6 +27,9 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
+        if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
+          printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+        fi
         sudo apt-get update
         sudo apt-get install --only-upgrade -y ca-certificates
         sudo update-ca-certificates --fresh
