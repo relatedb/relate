@@ -46,6 +46,10 @@ on:
         required: false
         type: boolean
         default: false
+      maven:
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       tag:
@@ -82,6 +86,11 @@ on:
         default: false
       crates-io-dry-run:
         description: "cargo publish --dry-run: validate packaging without publishing"
+        required: false
+        type: boolean
+        default: false
+      maven:
+        description: "Publish the Java client jars to Maven Central (dormant: default off)"
         required: false
         type: boolean
         default: false
@@ -461,3 +470,106 @@ jobs:
             done
             sleep 30
           done
+
+  # Maven Central (dormant). Off unless the dispatch opts in (maven=true,
+  # the input's default on both trigger paths); until then this job is
+  # skipped and the jars land only on the GitHub release. Unlike the OIDC
+  # registries above, Maven Central publishes with static credentials —
+  # the secrets below are available to manual dispatches; a chained
+  # release call would additionally need the caller to pass them. The
+  # pom's `central-publish` profile does the real work (sources,
+  # javadoc, GPG, upload with autoPublish=false); see
+  # clients/java/README.md, "Publishing to Maven Central".
+  maven-central:
+    name: Publish the Java client to Maven Central (dormant)
+    needs: registry-owner
+    if: github.ref == 'refs/heads/main' && inputs.maven
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      # The tag's tree: mvn builds and deploys from the same source the
+      # release shipped. In release.yml this job consumed the ffi job's
+      # workflow artifacts; a separate workflow run cannot see those, so
+      # the natives come from the release's own assets — the same five
+      # FFI archives the release attached.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.registry-owner.outputs.sha }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Download the release's FFI archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p ffi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'relate-ffi-*.tar.gz' --dir ffi --clobber
+          # Provenance before publish: every archive must verify against
+          # the release run's build attestation (see the pypi job) —
+          # bytes swapped onto the release after the fact cannot ride
+          # this job into Maven Central.
+          for f in ffi/relate-ffi-*.tar.gz; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          done
+
+      - name: Stage natives, import the signing key, deploy
+        env:
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p natives
+          for triple in \
+            "relate-ffi-aarch64-apple-darwin.tar.gz:darwin-arm64:librelate_ffi.dylib" \
+            "relate-ffi-x86_64-apple-darwin.tar.gz:darwin-x64:librelate_ffi.dylib" \
+            "relate-ffi-aarch64-unknown-linux-gnu.tar.gz:linux-arm64:librelate_ffi.so" \
+            "relate-ffi-x86_64-unknown-linux-gnu.tar.gz:linux-x64:librelate_ffi.so" \
+            "relate-ffi-x86_64-pc-windows-msvc.tar.gz:win32-x64:relate_ffi.dll"; do
+            IFS=: read -r asset key lib <<< "$triple"
+            mkdir -p "ffi/$key" "natives/$key"
+            tar xzf "ffi/$asset" -C "ffi/$key"
+            cp "ffi/$key/$lib" "natives/$key/$lib"
+            test -s "natives/$key/$lib"
+          done
+          # The Central Portal credentials ride a settings.xml server entry
+          # (the pom's publishingServerId is `central`); the GPG key is
+          # imported into the runner's keyring for maven-gpg-plugin.
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<SETTINGS
+          <settings>
+            <servers>
+              <server>
+                <id>central</id>
+                <username>\${MAVEN_CENTRAL_USERNAME}</username>
+                <password>\${MAVEN_CENTRAL_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          SETTINGS
+          echo "$MAVEN_GPG_KEY" | base64 --decode | gpg --batch --import
+          mvn -B -f clients/java/pom.xml deploy -Pcentral-publish \
+            -Drelate.natives.dir="$PWD/natives"

@@ -503,101 +503,6 @@ jobs:
           name: java-jars
           path: clients/java/target/*.jar
 
-  # Maven Central publication (dormant). Off unless the repository variable
-  # MAVEN_CENTRAL_ENABLED is 'true'; until then this job is skipped and the
-  # jars land only on the GitHub release. When enabled it needs the secrets
-  # MAVEN_GPG_KEY (base64 armored), MAVEN_GPG_PASSPHRASE, and
-  # MAVEN_CENTRAL_USERNAME / MAVEN_CENTRAL_TOKEN (the Central Portal
-  # credentials for the settings.xml server id `central` - the pom's
-  # central-publishing-maven-plugin publishingServerId). The pom's
-  # `central-publish` profile does the real work (sources, javadoc, GPG,
-  # upload with autoPublish=false); see clients/java/README.md,
-  # "Publishing to Maven Central".
-  java-central:
-    name: Maven Central publish (dormant until MAVEN_CENTRAL_ENABLED)
-    needs: [release-owner, version, ffi]
-    if: vars.MAVEN_CENTRAL_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
-        run: |
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
-          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
-            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
-            exit 1
-          fi
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.version.outputs.sha }}
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: relate-ffi-aarch64-apple-darwin
-          path: ffi/darwin-arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: relate-ffi-x86_64-apple-darwin
-          path: ffi/darwin-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: relate-ffi-aarch64-unknown-linux-gnu
-          path: ffi/linux-arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: relate-ffi-x86_64-unknown-linux-gnu
-          path: ffi/linux-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: relate-ffi-x86_64-pc-windows-msvc
-          path: ffi/win32-x64
-
-      - name: Stage natives, import the signing key, deploy
-        env:
-          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
-        run: |
-          set -euo pipefail
-          mkdir -p natives
-          for pair in \
-            "darwin-arm64:librelate_ffi.dylib" \
-            "darwin-x64:librelate_ffi.dylib" \
-            "linux-arm64:librelate_ffi.so" \
-            "linux-x64:librelate_ffi.so" \
-            "win32-x64:relate_ffi.dll"; do
-            key="${pair%%:*}"; lib="${pair##*:}"
-            tar xzf "ffi/$key/relate-ffi-"*.tar.gz -C "ffi/$key"
-            mkdir -p "natives/$key"
-            cp "ffi/$key/$lib" "natives/$key/$lib"
-            test -s "natives/$key/$lib"
-          done
-          # The Central Portal credentials ride a settings.xml server entry
-          # (the pom's publishingServerId is `central`); the GPG key is
-          # imported into the runner's keyring for maven-gpg-plugin.
-          mkdir -p ~/.m2
-          cat > ~/.m2/settings.xml <<SETTINGS
-          <settings>
-            <servers>
-              <server>
-                <id>central</id>
-                <username>\${MAVEN_CENTRAL_USERNAME}</username>
-                <password>\${MAVEN_CENTRAL_TOKEN}</password>
-              </server>
-            </servers>
-          </settings>
-          SETTINGS
-          echo "$MAVEN_GPG_KEY" | base64 --decode | gpg --batch --import
-          mvn -B -f clients/java/pom.xml deploy -Pcentral-publish \
-            -Drelate.natives.dir="$PWD/natives"
-
   npm-platform:
     name: npm platform package (${{ matrix.npm_name }})
     needs: [release-owner, version, ffi]
@@ -834,6 +739,8 @@ jobs:
       # Bind the registry-bound assets to this run: publish-registries.yml
       # verifies the attestation before uploading anything, so bytes swapped
       # onto the release after the fact cannot ride the trusted publishers.
+      # The FFI archives are registry-bound too: the maven-central job
+      # stages its natives from them.
       - name: Attest registry-bound assets
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
@@ -841,6 +748,7 @@ jobs:
             release/relate_db-*.whl
             release/relate_db-*.tar.gz
             release/relate-*.tgz
+            release/relate-ffi-*.tar.gz
 
       # Publish SHA256 checksums for the downloadable CLI binaries so users can
       # verify downloads against the SHA256SUMS asset referenced from the README.
