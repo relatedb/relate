@@ -491,7 +491,7 @@ impl StoreTarget {
         self.vfs.durable() && !self.wal_is_memory()
     }
 
-    /// Filesystem database directory (`<data>/cdc/slots.json` lives here).
+    /// Filesystem database directory, when this store is a native directory.
     pub fn filesystem_dir(&self) -> Option<&Path> {
         self.native_root.as_deref()
     }
@@ -504,7 +504,7 @@ impl StoreTarget {
         (Arc::clone(&self.wal_vfs), self.wal_prefix.as_str())
     }
 
-    /// The directory holding engine state (CDC slots) — the codec's
+    /// The directory holding engine state — the codec's
     /// one typed layout fact ([`SnapshotCodecKind::engine_dir`]).
     pub fn engine_dir(&self) -> Option<&'static str> {
         self.codec.engine_dir()

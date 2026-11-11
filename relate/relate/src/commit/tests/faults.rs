@@ -125,7 +125,7 @@ fn admitted_read_finishes_while_replica_rotation_poison_is_published() {
 }
 
 #[test]
-fn physical_uncertainty_fences_waiters_reads_cdc_checkpoint_and_drop() {
+fn physical_uncertainty_fences_waiters_reads_checkpoint_and_drop() {
     for after_sync in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("db");
@@ -175,8 +175,6 @@ fn physical_uncertainty_fences_waiters_reads_cdc_checkpoint_and_drop() {
         );
         assert!(shared.poisoned.load(Ordering::Acquire));
         assert!(db.connect().is_err());
-        assert!(db.cdc_records_after(0, 1).is_err());
-        assert!(db.register_cdc_slot("s").is_err());
         assert!(db.checkpoint().is_err());
         assert!(db
             .apply_replicated(&crate::WalRecord {
@@ -265,7 +263,6 @@ fn actual_vfs_write_and_barrier_faults_fence_shared_publication() {
         let mut c = raw_connection(&shared);
         assert!(c.query("MATCH (n) RETURN count(n)").is_err());
         assert!(c.query("CREATE (:Retry)").is_err());
-        assert!(db.cdc_records_after(0, 10).is_err());
         assert!(db.checkpoint().is_err());
         crate::checkpoint::timed_checkpoint(&shared);
         assert!(!try_begin_checkpoint(&shared));

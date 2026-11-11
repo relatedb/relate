@@ -61,9 +61,9 @@ checkpoint publishes the next generation. The bundle does not.
    Migrate-on-open, orphan sweep, checkpoint timers, the durability
    timer, and persist-on-drop do not run. Legacy snapshots are served
    through the legacy reader and are not rewritten (ADR-0127).
-4. **Mutations fail.** `try_wal_commit`, `checkpoint`, CDC slot updates,
-   and `apply_replicated` return `Error::Semantic` (`database is read-only`).
-   Reads, including `cdc_records_after`, stay available.
+4. **Mutations fail.** `try_wal_commit`, `checkpoint`, and
+   `apply_replicated` return `Error::Semantic` (`database is read-only`).
+   Reads stay available.
 
 ## Alternatives considered
 

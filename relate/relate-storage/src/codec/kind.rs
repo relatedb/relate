@@ -148,8 +148,8 @@ impl SnapshotCodecKind {
         }
     }
 
-    /// The store-relative directory holding this codec's engine state
-    /// (CDC slots): the markdown codec's hidden `.cypherlite/`, or
+    /// The store-relative directory holding this codec's engine state:
+    /// the markdown codec's hidden `.cypherlite/`, or
     /// `None` — never a sentinel string — for the snapshot-file codecs,
     /// whose engine state lives at the store root. Beside
     /// [`wal_dir`](Self::wal_dir) and [`checkpoint_image`](Self::checkpoint_image):

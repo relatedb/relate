@@ -12,8 +12,7 @@ The engine is memory-first: opening any store — a native directory or a
 *writable* lifecycle: the writer lease, checkpoints, demote. A read-only
 open touches none of that, yet it keeps the source open and locked for the
 store's whole life: the `.cl` host file (and its exclusive lock,
-ADR-0074), the WAL's open segment handle, and the CDC state's persist vfs
-all hold it.
+ADR-0074) and the WAL's open segment handle hold it.
 
 LABS-903 (user direction, 2026-11-03) asked for the other shape, with the
 wording that settled the design: **"not copy — turn into"**. A read-only
@@ -64,8 +63,8 @@ target, `--load` is the source**.
 3. **The release is a swap, not a teardown.** After the load, every holder
    of the source lets go — the store target, the WAL's open segment handle
    (`Wal::release_source`: the replayed LSN/counters/magic stay, a fresh
-   in-process WAL takes the source's place), and the CDC state's persist
-   vfs — and the store holds a `MemoryVfs` stand-in in its place. Any path
+   in-process WAL takes the source's place), and the store holds a
+   `MemoryVfs` stand-in in its place. Any path
    that should never run on a read-only store behaves like `:memory:`'s,
    never like a released file's.
 4. **Ephemeral is read-only by definition** — it is a mode variant beside

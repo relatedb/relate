@@ -71,6 +71,6 @@ ADR-0041: a background timer (default 300 s, `0` disables) also
 rotates and dumps when the WAL has uncheckpointed work. Size and
 commit-count triggers are unchanged. `:memory:` has no timer.
 
-ADR-0045: optional CDC slots can raise the recycle cut to
-`min(checkpoint_lsn, min(acked_lsn))`. Zero slots keep this ADR’s
-recycle unchanged.
+ADR-0045 let optional CDC slots raise the recycle cut. ADR-0574
+withdraws those slots. Recycle stays `checkpoint_lsn`, as this ADR
+decided.

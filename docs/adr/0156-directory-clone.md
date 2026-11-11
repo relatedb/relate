@@ -37,7 +37,7 @@ can read.
    codec, then creates an empty WAL segment there so a later read-only
    open succeeds. The next commit on the clone is `lsn + 1`. The
    destination WAL is always `<dest>/wal`, even when the source WAL is
-   external. `cdc/slots.json` is not copied.
+   external.
 4. **A failed clone removes the destination it created**, while it still
    holds the destination writer lease. A failure before the destination
    exists leaves nothing behind.

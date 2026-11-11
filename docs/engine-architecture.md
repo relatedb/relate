@@ -189,18 +189,8 @@ segment is waiting (ADR-0041). Writers continue on the next number.
 Dump uses the same snapshot visibility as readers. Local checkpoints
 use tmp + rename. Persistent URIs also checkpoint on close. `:memory:`
 has no timer, and its rotation and close checkpoints recycle without
-a dump. Closed segments with `max_lsn <= recycle_cut` are
-deleted. `recycle_cut` is `checkpoint_lsn` when no CDC slot is
-registered, otherwise `min(checkpoint_lsn, min(acked_lsn))`
-(ADR-0045).
-
-**CDC slots and replicas (ADR-0045).** A named slot (`cdc/slots.json`
-on disk; in-process for `:memory:`) holds WAL recycle until the
-consumer acks an LSN. `Database::cdc_records_after` copies records
-with `lsn >` cursor under a brief WAL lock; caught-up polls do no
-I/O. Cypher commits do **not** wait on publish or ack. An apply-only
-replica fences Cypher writes; `apply_replicated` appends the source
-ops to this WAL (new LSN) and `apply_redo`.
+a dump. Closed segments with `max_lsn <= checkpoint_lsn` are
+deleted (ADR-0020).
 
 **Memory cap.** Optional logical limit on the live graph and
 data-dependent indexes (ADR-0042), not process RSS. Growing writes
@@ -222,7 +212,6 @@ memory-first (superseded in part by 0012),
 [0022](adr/0022-id-window-checkpoint-shards.md) shards,
 [0041](adr/0041-timed-checkpoint.md) timed dump,
 [0042](adr/0042-graph-memory-limit.md) logical cap,
-[0045](adr/0045-cdc-replication-slots.md) slots + recycle cut,
 [0050](adr/0050-snapshot-codecs.md) snapshot codecs.
 
 ## Writes

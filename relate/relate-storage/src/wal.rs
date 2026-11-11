@@ -109,12 +109,20 @@ pub(super) struct FileWal {
     pub(super) file: Box<dyn VfsFile>,
     /// Closed segments still on disk: (id, max_lsn, commit_ts).
     pub(super) closed: Vec<(u32, u64, u64)>,
-    /// After the last record returned by [`Wal::records_after`].
-    /// The next call with the same `from_lsn` seeks here instead of rescanning the prefix.
-    pub(super) cdc_hint: Option<WalCursor>,
+    /// A paging cache for [`Wal::records_after`]: after the last record that
+    /// read returned, keyed by its `from_lsn`. The next read with the same
+    /// `from_lsn` seeks here instead of rescanning the prefix. It advances
+    /// when records are returned, not applied, so it is deliberately not the
+    /// follower's applied position (`follow_cursor` below).
+    pub(super) page_hint: Option<WalCursor>,
+    /// The follower's applied position: after the last record a follower
+    /// applied (ADR-0137). Seeded by the read-only open and advanced by
+    /// [`Wal::commit_follow_cursor`] once a batch is applied — a poll that
+    /// returned records their caller did not apply leaves it untouched.
+    pub(super) follow_cursor: Option<WalCursor>,
 }
 
-/// Position after the last WAL frame a follower or CDC reader has consumed.
+/// Position after the last WAL frame a follower or record reader has consumed.
 #[derive(Clone, Copy, Debug)]
 pub struct WalCursor {
     pub lsn: u64,
@@ -172,8 +180,8 @@ pub struct Wal {
     /// inventory and handles left with it, replaced by one fresh empty
     /// segment. A [`Wal::records_after`] that would need the released
     /// segments (anything below the loaded LSN) refuses instead of
-    /// silently answering empty: the loaded history is gone, and a CDC
-    /// consumer must hear that, not infer "no records" from it.
+    /// silently answering empty: the loaded history is gone, and a reader
+    /// must hear that, not infer "no records" from it.
     /// Caught-up polls (`from_lsn >= lsn`) still answer empty — nothing
     /// can ever be appended to a released WAL.
     source_released: bool,
@@ -233,7 +241,8 @@ impl Wal {
                 seg_id: current_id,
                 file,
                 closed: scan.closed,
-                cdc_hint: None,
+                page_hint: None,
+                follow_cursor: None,
             },
             lsn: scan.lsn,
             bytes: scan.current_bytes,
@@ -287,7 +296,8 @@ impl Wal {
                 seg_id: current_id,
                 file,
                 closed: scan.closed,
-                cdc_hint: Some(cursor),
+                page_hint: None,
+                follow_cursor: Some(cursor),
             },
             lsn: scan.lsn,
             bytes: scan.current_bytes,
@@ -320,7 +330,7 @@ impl Wal {
     /// handle and the id below are built from. A
     /// [`records_after`](Self::records_after) that would need the released
     /// segments refuses — the loaded history left with the source, and a
-    /// CDC consumer must hear that rather than read "no records" off the
+    /// reader must hear that rather than read "no records" off the
     /// fresh empty segment; only its caught-up polls still answer empty.
     /// This WAL keeps refusing appends exactly as the read-only open that
     /// loaded it set; only a read-only WAL may release (an appender needs
@@ -348,7 +358,8 @@ impl Wal {
             file,
             // A fresh segment has no closed predecessors.
             closed: Vec::new(),
-            cdc_hint: None,
+            page_hint: None,
+            follow_cursor: None,
         };
         self.source_released = true;
         Ok(())
@@ -580,8 +591,8 @@ impl Wal {
     /// record reader passes. After [`Wal::release_source`] the segment
     /// inventory is gone — a read that would touch segments would
     /// silently answer from the fresh empty one, so it refuses, naming
-    /// the release (the same fail-closed posture as the CDC state's
-    /// released-persist refusal). [`records_after`](Self::records_after)
+    /// the release (the same fail-closed posture as every other record
+    /// reader). [`records_after`](Self::records_after)
     /// keeps its caught-up carve-out above the guard (a poll at or past
     /// the loaded LSN is genuine: nothing can be appended post-release),
     /// and [`poll_follow`](Self::poll_follow)'s `Idle` answer stays, for
@@ -615,11 +626,12 @@ impl Wal {
         scan_dir(&*self.inner.vfs, &self.inner.prefix, from_lsn, &mut apply)
     }
 
-    /// Records with `lsn > from_lsn`, at most `limit` (ADR-0045).
+    /// Records with `lsn > from_lsn`, at most `limit`.
     ///
     /// Caught-up polls (`from_lsn >=` current LSN) and `limit == 0` return
     /// empty without opening files. File WAL skips closed segments whose
-    /// `max_lsn` is already acked and seeks past the last delivered record.
+    /// `max_lsn` is already behind the cursor and seeks past the last
+    /// delivered record.
     pub fn records_after(&mut self, from_lsn: u64, limit: usize) -> Result<Vec<WalRecord>> {
         if limit == 0 || from_lsn >= self.lsn {
             return Ok(Vec::new());
@@ -646,7 +658,7 @@ impl Wal {
         if ids.is_empty() {
             return Ok(WalCatchUp::Gap);
         }
-        let cursor = self.inner.cdc_hint.unwrap_or(WalCursor {
+        let cursor = self.inner.follow_cursor.unwrap_or(WalCursor {
             lsn: self.lsn,
             seg_id: self.inner.seg_id,
             offset: MAGIC.len() as u64,
@@ -724,7 +736,7 @@ impl Wal {
                 let path = segment_path(&self.inner.prefix, active_id);
                 let len = self.inner.vfs.metadata(&path)?.len;
                 self.inner.seg_id = active_id;
-                self.inner.cdc_hint = Some(WalCursor {
+                self.inner.follow_cursor = Some(WalCursor {
                     lsn: self.lsn,
                     seg_id: active_id,
                     offset: len.max(MAGIC.len() as u64),
@@ -748,7 +760,7 @@ impl Wal {
         self.lsn = cursor.lsn;
         self.last_commit_ts = cursor.commit_ts;
         self.inner.seg_id = cursor.seg_id;
-        self.inner.cdc_hint = Some(cursor);
+        self.inner.follow_cursor = Some(cursor);
     }
 
     pub fn should_checkpoint(&self) -> bool {
@@ -807,12 +819,15 @@ impl Wal {
             }
         }
         f.closed.retain(|(_, max_lsn, _)| *max_lsn > checkpoint_lsn);
-        if let Some(hint) = f.cdc_hint {
-            let hid = hint.seg_id;
-            if hid != f.seg_id && !f.closed.iter().any(|(id, _, _)| *id == hid) {
-                f.cdc_hint = None;
-            }
-        }
+        // A cursor survives only while its segment is the active one or is
+        // still closed. Only the page hint is ever set on an append handle
+        // (the follower cursor lives on read-only handles), but both fields
+        // answer the same rule.
+        let live = |c: &WalCursor| {
+            c.seg_id == f.seg_id || f.closed.iter().any(|(id, _, _)| *id == c.seg_id)
+        };
+        f.page_hint = f.page_hint.filter(live);
+        f.follow_cursor = f.follow_cursor.filter(live);
         Ok(())
     }
 }

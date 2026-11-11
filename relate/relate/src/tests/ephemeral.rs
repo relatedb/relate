@@ -134,34 +134,3 @@ fn an_ephemeral_open_of_a_missing_store_leaves_nothing_behind() {
     );
     assert!(!missing.exists(), "nothing was created");
 }
-
-#[test]
-fn a_released_wal_refuses_cdc_reads_that_need_the_source_history() {
-    let dir = tempfile::tempdir().unwrap();
-    // A native directory store whose WAL still holds the committed
-    // record — no checkpoint, so the history lives in the segments.
-    let store = dir.path().join("seed");
-    {
-        let db = Database::open_with(store.to_str().unwrap(), writable()).unwrap();
-        let mut conn = db.connect().unwrap();
-        conn.execute("CREATE (:Person {name: 'Alice'})").unwrap();
-        // Leak without the clean-close checkpoint, so the committed record
-        // is still IN the WAL segments a later open reads.
-        db.leak_without_checkpoint();
-    }
-    // Control: a plain read-only open still reads the loaded history.
-    let plain =
-        Database::open_with(store.to_str().unwrap(), crate::test_opts::read_only()).unwrap();
-    assert_eq!(plain.cdc_records_after(0, 10).unwrap().len(), 1);
-    drop(plain);
-
-    // The ephemeral open released the source: a CDC read that would need
-    // the released segments refuses, naming the release — never the
-    // silent empty answer a consumer would read as "no records".
-    let db = Database::open_ephemeral(store.to_str().unwrap()).unwrap();
-    let err = db.cdc_records_after(0, 10).unwrap_err().to_string();
-    assert!(err.contains("the WAL source was released"), "{err}");
-    // A caught-up poll still answers empty: nothing can ever be appended
-    // to a released WAL, so `after` at or past the loaded LSN is genuine.
-    assert!(db.cdc_records_after(u64::MAX, 10).unwrap().is_empty());
-}

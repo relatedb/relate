@@ -100,6 +100,17 @@ pub fn wait_count(db: &Database, label: &str, expect: i64) {
     }
 }
 
+/// The store's current WAL LSN: the count of committed records, each commit
+/// advancing it by one. The bulk-write batching tests (ADR-0209) count
+/// batches as LSN deltas through this seam. Like every other `Database`
+/// durable-state read it takes the publication read guard first, so a
+/// poisoned store answers `Error::Storage` rather than a stale LSN.
+#[doc(hidden)]
+pub fn wal_lsn(db: &Database) -> crate::Result<u64> {
+    let _read = db.inner.read_guard()?;
+    Ok(db.inner.wal.lock()?.lsn)
+}
+
 #[cfg(test)]
 mod tests {
     use std::env::VarError;

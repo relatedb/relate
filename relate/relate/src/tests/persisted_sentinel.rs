@@ -193,7 +193,12 @@ fn valid_replicated_create_survives_reopen_but_not_the_identity_map() {
         .unwrap(),
         1
     );
-    assert_eq!(db.cdc_records_after(0, 10).unwrap()[0].ops.len(), ops.len());
+    assert_eq!(
+        db.inner.wal.lock().unwrap().records_after(0, 10).unwrap()[0]
+            .ops
+            .len(),
+        ops.len()
+    );
     drop(db);
 
     let reopened = Database::open(uri.to_str().unwrap()).unwrap();
@@ -306,7 +311,6 @@ fn replicated_post_sync_apply_failure_fences_and_replays_on_reopen() {
         .unwrap_err();
     assert!(err.to_string().contains("uncertain WAL outcome"), "{err}");
     assert_eq!(db.inner.safe_lsn.load(Ordering::Acquire), 0);
-    assert!(db.cdc_records_after(0, 1).is_err());
     assert!(db.checkpoint().is_err());
     drop(db);
     assert!(!uri.join("manifest.json").exists());

@@ -212,13 +212,9 @@ fn checkpoint_pinned(shared: &Shared, trigger: Trigger, lsn: u64, pin_ts: u64) -
 }
 
 fn recycle_and_gc(shared: &Shared, lsn: u64) -> Result<()> {
-    let cut = {
-        let cdc = shared.cdc.lock()?;
-        cdc.recycle_cut(lsn)
-    };
     {
         let mut wal = shared.wal.lock()?;
-        wal.recycle(cut)?;
+        wal.recycle(lsn)?;
     }
     shared.graph.gc_versions();
     Ok(())

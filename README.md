@@ -211,7 +211,7 @@ fn main() -> relate::Result<()> {
 }
 ```
 
-Explicit transactions, cancellation tokens, CDC slots, and read-only,
+Explicit transactions, cancellation tokens, and read-only,
 follow, and ephemeral opens. Spec: [`docs/api/rust/`](docs/api/rust/).
 
 ### C

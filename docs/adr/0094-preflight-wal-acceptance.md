@@ -165,7 +165,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
    precedes a confirmed barrier and full application.
 
    While poisoned, refuse new query admission (reads as well as writes),
-   replication, CDC/WAL reads, explicit checkpoint, timed/scheduled checkpoint,
+   replication, explicit checkpoint, timed/scheduled checkpoint,
    WAL rotation/recycling and persist-on-drop. Admit read-only queries under a
    short shared publication guard: check health and pin the graph's commit
     timestamp **and snapshot the named indexes and constraints and all
@@ -318,7 +318,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
   partial append, failed barrier, and post-sync apply errors must assert the
   distinguishable uncertain outcome, completed waiters, unchanged safe horizon
   and a sticky shared fence against new writes, replication, queries/reads,
-  CDC, explicit/timed/scheduled checkpoints, rotation, and drop persistence.
+  explicit/timed/scheduled checkpoints, rotation, and drop persistence.
   Race a pre-existing checkpoint against an attempted append: it must finish
   before any frame write, or the write must wait; after poisoning, manifest and
   recycle cut must not advance. Verify reopen/replay recovers the surviving

@@ -1,4 +1,4 @@
-# 0072. Synchronous virtual filesystem for WAL, snapshots, and CDC
+# 0072. Synchronous virtual filesystem for WAL and snapshots
 
 - **Status**: Accepted
 - **Date**: 2026-09-20
@@ -7,10 +7,9 @@
 ## Context
 
 Durable CypherLite state is a fsync’d WAL plus codec-owned snapshot files
-(ADR-0012, ADR-0014, ADR-0050) and optional CDC slot metadata (ADR-0045).
-Those bytes were written through three stacks: `std::fs` in the WAL, Apache
-`object_store` (plus a local `fs_dir` bypass) for checkpoints, and more
-`std::fs` for `cdc/slots.json`.
+(ADR-0012, ADR-0014, ADR-0050). Those bytes were written through
+`std::fs` in the WAL and Apache `object_store` (plus a local `fs_dir`
+bypass) for checkpoints.
 
 The product wants the same engine to run on several storage backings
 selected by database URI: native OS directories (today’s default), OPFS
@@ -24,8 +23,8 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
 
 ## Decision
 
-1. **One synchronous `Vfs`.** WAL segments, snapshot objects, and
-   `cdc/slots.json` go through `Vfs` / `VfsFile` in `cypherlite-storage`.
+1. **One synchronous `Vfs`.** WAL segments and snapshot objects go through
+   `Vfs` / `VfsFile` in `cypherlite-storage`.
    Paths are virtual `/` strings. The commit path stays synchronous
    (ADR-0014, ADR-0019). Future WASM OPFS uses
    `FileSystemSyncAccessHandle`, not an async `Database::open`.
@@ -56,7 +55,7 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
 ## Alternatives considered
 
 - **Keep `object_store` for snapshots and VFS for WAL only** — rejected:
-  CDC and atomic checkpoint writes would still bypass the abstraction.
+  atomic checkpoint writes would still bypass the abstraction.
 - **Async `Vfs` trait** — rejected: group commit and `Database::open` are
   sync; an async trait would rewrite the engine for backends that can
   expose sync handles (native, OPFS sync access).
@@ -82,6 +81,8 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
 ADR-0074 packs this virtual tree into one host file when the URI path
 ends with `.cl`. Native directories remain the default for every other
 filesystem path.
+
+ADR-0574 withdraws CDC slots. The VFS no longer carries `cdc/slots.json`.
 
 ADR-0098 proposes to supersede the fixed `{path}.tmp` spelling implied by the
 Native tmp+close+rename description: atomic replacement uses an unpredictable,

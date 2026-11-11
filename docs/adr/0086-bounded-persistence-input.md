@@ -36,7 +36,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
 1. **WAL framing and tail.** A frame is an eight-byte CRC/length header plus
    **1..=64 MiB (67,108,864 bytes)** of JSON payload. Reject zero, greater
    than 64 MiB, or otherwise unrepresentable lengths before allocation on
-   open, replay, and CDC `records_after`; check the length against the
+   open, replay, and `records_after`; check the length against the
    remaining physical segment bytes using checked arithmetic. Refuse an
    oversized encoded commit *before* writing any frame bytes or advancing the
    published LSN. There is no 64 MiB cap on an entire WAL segment or on the
@@ -67,7 +67,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
     with a complete magic. Use the observed file length and checked offsets to
    recognize a physical incomplete tail *before* reading; an actual VFS
    read/seek/length error, including an unexpected short read inside a range
-   known to exist, always propagates. The same rules apply to CDC reads; a
+   known to exist, always propagates. The same rules apply to `records_after`; a
    stale offset hint may be discarded and rescanned, but a real read error
    must not be retried as if it were a stale hint. Before any later append,
    remove or bypass the tolerated partial suffix without deleting the intact
@@ -245,7 +245,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    the graph one at a time during `open_store`/`load_with_wal`; never retain
    the entire valid log in memory just because every frame is in bounds.
    Preserve ordering and commit/identity operations from ADR-0080, CRC
-   failures that are not a tolerated tail, CDC's `records_after` limit/hint
+   failures that are not a tolerated tail, `records_after`'s limit/hint
    semantics, and the any-segment torn-tail / active bad-EOF policy. Keep the
    `Wal::replay(from_lsn) -> Result<Vec<WalRecord>>` API for callers that
    explicitly request materialized records; only internal startup/recovery
@@ -309,7 +309,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
 
 ## Consequences
 
-- WAL replay and CDC share one finite frame/tail contract. Recovery may
+- WAL replay and `records_after` share one finite frame/tail contract. Recovery may
   return the intact committed prefix before an incomplete tail on any segment
   or a corrupt final active frame, while interior corruption and genuine I/O
   faults fail explicitly.

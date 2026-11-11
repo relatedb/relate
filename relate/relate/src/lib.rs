@@ -1,7 +1,6 @@
 //! Embedded Relate: OpenCypher on an in-memory property graph.
 
 mod binding;
-mod cdc;
 mod checkpoint;
 mod clone;
 mod commit;
@@ -54,7 +53,6 @@ pub use binding::{
     plan_wire_json, query_result_to_cypher_rows, query_result_to_wire, query_stats_to_wire,
     run_script_wire, timing_stamp_ms,
 };
-pub use cdc::CdcSlot;
 pub use clone::CloneOptions;
 pub use connection::{Connection, Executed, ExecutionFailure};
 /// A cooperative cancellation flag for a running query (ADR-0111).
@@ -592,86 +590,11 @@ impl Database {
         drop(self);
     }
 
-    /// Register a CDC slot at the current WAL LSN (ADR-0045). Idempotent.
-    ///
-    /// ```
-    /// # use relate::Database;
-    /// let db = Database::open(":memory:").unwrap();
-    /// let slot = db.register_cdc_slot("primary").unwrap();
-    /// assert_eq!(slot.name, "primary");
-    /// assert_eq!(slot.acked_lsn, 0);
-    /// ```
-    pub fn register_cdc_slot(&self, name: &str) -> Result<CdcSlot> {
-        let (_read, wal_lsn) = self.cdc_slot_admission()?;
-        let mut cdc = self.inner.cdc.lock()?;
-        cdc.register(name, wal_lsn)
-    }
-
-    /// Advance a slot's acked LSN after the consumer has persisted the batch.
-    pub fn ack_cdc_slot(&self, name: &str, lsn: u64) -> Result<CdcSlot> {
-        let (_read, wal_lsn) = self.cdc_slot_admission()?;
-        let mut cdc = self.inner.cdc.lock()?;
-        cdc.ack(name, lsn, wal_lsn)
-    }
-
-    /// The one admission protocol for a slot mutation that stamps a WAL LSN:
-    /// the writable check, then a publication read guard that is held across
-    /// the LSN snapshot and the caller's `cdc` lock, so the stamp cannot race
-    /// a concurrent commit or a poison publication (ADR-0045).
-    fn cdc_slot_admission(&self) -> Result<(crate::shared::ReadGuard<'_>, u64)> {
-        ensure_writable(&self.inner)?;
-        let read = self.inner.read_guard()?;
-        // Re-check under the publication read guard. `demote` flips
-        // `writable` while holding the publication write lock, so a slot
-        // mutation that passed the check above cannot run after the lease
-        // is released.
-        ensure_writable(&self.inner)?;
-        let wal_lsn = self.inner.wal.lock()?.lsn;
-        Ok((read, wal_lsn))
-    }
-
-    /// Drop a slot so the next checkpoint can recycle as today.
-    pub fn drop_cdc_slot(&self, name: &str) -> Result<bool> {
-        ensure_writable(&self.inner)?;
-        let _read = self.inner.read_guard()?;
-        ensure_writable(&self.inner)?;
-        let mut cdc = self.inner.cdc.lock()?;
-        cdc.drop_slot(name)
-    }
-
-    pub fn cdc_slots(&self) -> Result<Vec<CdcSlot>> {
-        let _read = self.inner.read_guard()?;
-        let cdc = self.inner.cdc.lock()?;
-        Ok(cdc.list())
-    }
-
-    /// WAL records with `lsn > after`, at most `limit` (ADR-0045).
-    pub fn cdc_records_after(&self, after: u64, limit: usize) -> Result<Vec<WalRecord>> {
-        let _read = self.inner.read_guard()?;
-        let mut wal = self.inner.wal.lock()?;
-        wal.records_after(after, limit)
-    }
-
-    /// Fence Cypher writes in `try_wal_commit`. Persisted on disk (ADR-0045).
-    pub fn set_apply_only(&self, on: bool) -> Result<()> {
-        ensure_writable(&self.inner)?;
-        let _read = self.inner.read_guard()?;
-        ensure_writable(&self.inner)?;
-        let mut cdc = self.inner.cdc.lock()?;
-        cdc.set_apply_only(on)
-    }
-
-    pub fn apply_only(&self) -> Result<bool> {
-        let _read = self.inner.read_guard()?;
-        let cdc = self.inner.cdc.lock()?;
-        Ok(cdc.apply_only())
-    }
-
     /// Replica write path: validate redo IDs and complete named label-existence
-    /// enforcement metadata, append to this WAL, then
-    /// `apply_redo` (ADR-0045). Assigns a new LSN; keeps the source `commit_ts`
-    /// and graph IDs. Created IDs and relationship endpoints outside
-    /// `0..i64::MAX` return `Error::Storage` without appending.
+    /// enforcement metadata, append to this WAL, then `apply_redo`. Assigns a
+    /// new LSN; keeps the source `commit_ts` and graph IDs. Created IDs and
+    /// relationship endpoints outside `0..i64::MAX` return `Error::Storage`
+    /// without appending.
     pub fn apply_replicated(&self, record: &WalRecord) -> Result<u64> {
         commit::commit_replicated(&self.inner, record)
     }

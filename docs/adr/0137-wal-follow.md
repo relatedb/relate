@@ -9,7 +9,8 @@
 ADR-0136 opens a frozen snapshot. A reader that should see later commits
 without taking a second copy of the files has to watch the WAL the writer
 appends. ADR-0045 rejected an uncoordinated tail that pins WAL recycle:
-a dead consumer would hold closed segments forever. Checkpoint deletes
+a dead consumer would hold closed segments forever. ADR-0574 later
+removes the slots; follow still does not pin recycle. Checkpoint deletes
 segments whose `max_lsn` is covered by the published manifest
 (ADR-0020). A follower that has not applied those records loses them.
 
@@ -26,16 +27,16 @@ its writer rewrites pages (ADR-0136).
 1. **`--follow` is read-only plus a tail.** `OpenMode::Follow` is the
    read-only tail. CLI `--follow` selects it. The mode is refused for
    `:memory:` and `.cl` with `Error::Semantic`. The handle still never
-   appends, checkpoints, migrates, trims, sweeps, or writes
-   `cdc/slots.json`. A mid-batch apply failure reloads the graph, and if
+   appends, checkpoints, migrates, trims, or sweeps. A mid-batch apply
+   failure reloads the graph, and if
    that reload fails the follower stays failed until the process reopens
    it; a snapshot pin that blocks reload past a short bound is reported
    as a follow error until the pin drops and the swap completes.
 2. **Poll the WAL; do not pin recycle.** A thread on the follower lists
    native segments and reads the active segment length. It applies only
    complete CRC-valid frames with `lsn` greater than the applied LSN,
-   via `Graph::apply_redo`, and it does not append. There is no inotify
-   and no CDC slot. Statement snapshots keep the pins they already hold.
+   via `Graph::apply_redo`, and it does not append. There is no inotify.
+   Statement snapshots keep the pins they already hold.
 3. **Reload only across a gap.** Caught up means the applied LSN is at
    least the manifest `checkpoint_lsn` before recycled segments
    disappear. The follower keeps tailing whatever WAL remains. If a
@@ -54,7 +55,7 @@ its writer rewrites pages (ADR-0136).
 
 - **Register a CDC slot from the follower.** Rejected: the slot write
   breaks read-only, and a dead follower would hold WAL recycle
-  (ADR-0045).
+  (ADR-0045). ADR-0574 removes the slot API entirely.
 - **Reload on every checkpoint.** Rejected: a follower that already
   applied the recycled LSN has nothing to rebuild.
 - **Publish a durable LSN before a frame may be applied.** Rejected for

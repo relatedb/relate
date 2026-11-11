@@ -79,9 +79,9 @@ durability point, and commit points align with it.
 ## Consequences
 
 - `full` preserves the original host-return guarantee and group commit.
-- `everysecond` and `snapshot` can acknowledge records that CDC consumers
-  observe but recovery later loses. Consumers using relaxed source databases
-  must reconcile to the recovered LSN after a crash.
+- `everysecond` and `snapshot` can acknowledge records that a crash later
+  loses. A caller that observed those records must reconcile to the
+  recovered LSN after a crash.
 - Recovery trims an incomplete torn tail on any WAL segment and a corrupt
   final frame on the active segment. Corruption before the tail, or a corrupt
   final frame in a closed segment, remains fatal.

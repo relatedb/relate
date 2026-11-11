@@ -235,9 +235,8 @@ fn demote_inner(shared: &Arc<Shared>) -> Result<()> {
     stop_and_join(&shared.timer);
     stop_and_join(&shared.durability_timer);
     // Hold the publication write lock across the WAL swap and the lease
-    // release. `commit_replicated` and CDC slot mutations re-check
-    // `ensure_writable` under that lock, so they either finish first or
-    // observe the follower.
+    // release. `commit_replicated` re-checks `ensure_writable` under that
+    // lock, so it either finishes first or observes the follower.
     let publication = match begin_publication(shared) {
         Ok(publication) => publication,
         Err(err) => {

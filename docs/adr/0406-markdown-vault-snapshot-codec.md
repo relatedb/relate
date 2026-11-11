@@ -226,9 +226,8 @@ the codec arms; the engine and surfaces see only `SnapshotCodecKind`.
   not lost source data. Restored onto the nodes at load. Published
   last, atomically, like every codec's manifest.
 - `wal/` — the WAL (the default WAL directory for a markdown store is
-  `<vault>/.cypherlite/wal`, not `<vault>/wal`), and `cdc/slots.json`
-  lands under `.cypherlite/` too, so nothing engine-owned but hidden
-  clutter appears at vault root.
+  `<vault>/.cypherlite/wal`, not `<vault>/wal`), so nothing engine-owned
+  but hidden clutter appears at vault root.
 - **Namespaces: one vault is one database** — the vault files are the
   user database (`neo4j`); the `system` and `system_ontologies`
   namespaces (ADR-0116) are engine state and live entirely in the

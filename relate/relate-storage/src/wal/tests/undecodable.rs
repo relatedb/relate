@@ -63,7 +63,8 @@ fn crc_valid_undecodable_active_tail_fails_open_without_touching_bytes() {
 }
 
 #[test]
-fn crc_valid_undecodable_frame_fails_open_replay_and_cdc_in_closed_and_interior_positions() {
+fn crc_valid_undecodable_frame_fails_open_replay_and_record_read_in_closed_and_interior_positions()
+{
     // Final frame of a closed segment.
     let vfs = Arc::new(MemoryVfs::new());
     let mut wal = Wal::open(Arc::clone(&vfs) as Arc<dyn Vfs>, "wal", 0).unwrap();
@@ -112,7 +113,7 @@ fn crc_valid_undecodable_frame_fails_open_replay_and_cdc_in_closed_and_interior_
 
 #[test]
 fn records_after_on_open_handle_rejects_undecodable_tail_but_tolerates_bad_crc_tail() {
-    // CRC-valid undecodable final frame: CDC read fails with the phrase.
+    // CRC-valid undecodable final frame: a record read fails with the phrase.
     let vfs = Arc::new(MemoryVfs::new());
     let mut wal = Wal::open(Arc::clone(&vfs) as Arc<dyn Vfs>, "wal", 0).unwrap();
     wal.append_commit(1, &[]).unwrap();

@@ -4,7 +4,6 @@
 
 mod bookmarks;
 mod catalog;
-mod cdc;
 mod ephemeral;
 mod follow;
 mod label_stats;

@@ -1,4 +1,4 @@
-//! Synchronous virtual filesystem for WAL, snapshots, and CDC (ADR-0072).
+//! Synchronous virtual filesystem for WAL and snapshots (ADR-0072).
 
 mod bounded;
 #[cfg(not(target_arch = "wasm32"))]

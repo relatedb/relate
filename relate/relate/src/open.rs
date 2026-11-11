@@ -14,7 +14,6 @@ use relate_storage::{
     CodecOpenConfig, SnapshotCodecKind, StoreTarget, Vfs, Wal,
 };
 
-use super::cdc;
 use super::commit::commit_timing_env;
 use super::ontology;
 use super::open_config::{
@@ -285,17 +284,16 @@ impl Database {
             checkpoint_interval,
             follow_gap: opts.follow_gap,
         };
-        let cdc = cdc::CdcState::load(store.vfs(), store.engine_dir())?;
         // LABS-903's turn-into, at the seam the memory-first load created:
-        // everything above materialized the graph, the replayed WAL, and
-        // the CDC state into memory from `store` — so an ephemeral open has
-        // nothing left to read from it. One named operation releases the
-        // source; a `:memory:` open is its own stand-in already (the
-        // release is the no-op it never takes).
-        let (store, wal, cdc) = if opts.mode == OpenMode::Ephemeral && store.vfs().durable() {
-            release_durable_source(store, wal, cdc)?
+        // everything above materialized the graph and the replayed WAL into
+        // memory from `store` — so an ephemeral open has nothing left to
+        // read from it. One named operation releases the source; a
+        // `:memory:` open is its own stand-in already (the release is the
+        // no-op it never takes).
+        let (store, wal) = if opts.mode == OpenMode::Ephemeral && store.vfs().durable() {
+            release_durable_source(store, wal)?
         } else {
-            (store, wal, cdc)
+            (store, wal)
         };
         let commit_timing = commit_timing_env();
         let db = Self {
@@ -305,7 +303,6 @@ impl Database {
                 wal,
                 SharedOpenState {
                     resolved,
-                    cdc,
                     ontology,
                     commit_timing,
                 },
@@ -327,22 +324,16 @@ impl Database {
 }
 
 /// LABS-903's turn-into, one named operation: release a loaded durable
-/// source and hand the store, WAL, and CDC state a single shared
-/// `:memory:`-shaped stand-in — the same one-VFS shape `:memory:` opens
-/// with, so every holder reads the same in-process store afterwards. The
-/// source (the `.rl` host file or the store directory) is closed and
-/// unlocked the moment it drops: nothing holds it open, and another
-/// process can open it writable immediately.
-fn release_durable_source(
-    store: StoreTarget,
-    mut wal: Wal,
-    mut cdc: cdc::CdcState,
-) -> Result<(StoreTarget, Wal, cdc::CdcState)> {
+/// source and hand the store and WAL a single shared `:memory:`-shaped
+/// stand-in — the same one-VFS shape `:memory:` opens with, so every
+/// holder reads the same in-process store afterwards. The source (the
+/// `.rl` host file or the store directory) is closed and unlocked the
+/// moment it drops: nothing holds it open, and another process can open
+/// it writable immediately.
+fn release_durable_source(store: StoreTarget, mut wal: Wal) -> Result<(StoreTarget, Wal)> {
     let released = relate_storage::memory_store_with_codec(store.snapshot_codec())?;
     // The store and the WAL share the released target's one vfs — exactly
-    // the `:memory:` shape — and the CDC state's persist path becomes a
-    // typed refusal (its slot state is in-memory only from here on).
+    // the `:memory:` shape.
     wal.release_source(released.vfs())?;
-    cdc.release_source();
-    Ok((released, wal, cdc))
+    Ok((released, wal))
 }

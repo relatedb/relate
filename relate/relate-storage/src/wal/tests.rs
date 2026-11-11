@@ -121,7 +121,7 @@ fn scan_rejects_zero_or_nonforward_commits_even_below_checkpoint_and_across_segm
 }
 
 #[test]
-fn cdc_hint_rejects_nonforward_timestamp_in_later_frame() {
+fn read_cursor_rejects_nonforward_timestamp_in_later_frame() {
     let vfs = Arc::new(MemoryVfs::new());
     let mut wal = Wal::open(Arc::clone(&vfs) as Arc<dyn Vfs>, "", 0).unwrap();
     wal.append_commit(2, &[]).unwrap();
@@ -318,7 +318,7 @@ fn wal_in_range_truncated_closed_payload_trims_suffix_and_preserves_prefix() {
     assert!(corrupted.len() > committed.len());
 
     // The existing handle neither errors nor treats the torn suffix as a
-    // commit: replay and CDC both return the intact committed prefix.
+    // commit: replay and a bounded record read both return the intact committed prefix.
     assert_eq!(
         wal.replay(0)
             .unwrap()
@@ -962,7 +962,7 @@ fn wal_magic_header_and_payload_read_errors_are_not_eof_or_torn_tail() {
             "read {read}"
         );
     }
-    // CDC must not rescan from zero on a genuine read failure at a hint.
+    // A hinted read must not rescan from zero on a genuine read failure.
     let vfs = Arc::new(ReadFaultVfs::new(usize::MAX, false));
     let payload = br#"{"lsn":1,"commit_ts":1,"ops":[]}"#;
     write_magic(&vfs.inner, "00000001.log", MAGIC, true).unwrap();
@@ -977,7 +977,7 @@ fn wal_magic_header_and_payload_read_errors_are_not_eof_or_torn_tail() {
         br#"{"lsn":2,"commit_ts":2,"ops":[]}"#,
     );
     wal.lsn = 2;
-    wal.inner.cdc_hint = Some(super::WalCursor {
+    wal.inner.page_hint = Some(super::WalCursor {
         lsn: 1,
         seg_id: 1,
         offset: MAGIC.len() as u64 + 8 + payload.len() as u64,
@@ -1236,7 +1236,7 @@ fn readonly_open_on_short_highest_segment_polls_after_repair() {
     std::fs::write(&short, &MAGIC[..3]).unwrap();
 
     let mut follower = Wal::open_readonly(Arc::new(NativeVfs::new(dir.path())), "", 0).unwrap();
-    let cursor = follower.inner.cdc_hint.unwrap();
+    let cursor = follower.inner.follow_cursor.unwrap();
     assert_eq!(cursor.seg_id, 2);
     assert_eq!(cursor.offset, MAGIC.len() as u64);
     assert!(matches!(follower.poll_follow(0).unwrap(), WalCatchUp::Idle));
@@ -1484,13 +1484,13 @@ fn a_writable_wal_refuses_to_release_its_source() {
     assert!(err.to_string().contains("only a read-only WAL"), "{err}");
 }
 
-/// LABS-903: a released WAL refuses a CDC read that would need the
-/// released segments — the history left with the source, and a consumer
+/// LABS-903: a released WAL refuses a record read that would need the
+/// released segments — the history left with the source, and a reader
 /// must hear that, not a silent empty answer read off the fresh empty
 /// segment. Caught-up polls still answer empty: nothing can ever be
 /// appended to a released WAL.
 #[test]
-fn a_released_wal_refuses_cdc_reads_below_the_loaded_lsn() {
+fn a_released_wal_refuses_record_reads_below_the_loaded_lsn() {
     let source = Arc::new(MemoryVfs::new());
     {
         let mut wal = Wal::open(source.clone(), "wal", 0).unwrap();

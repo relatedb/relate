@@ -177,7 +177,7 @@ user-facing API or log line exists yet.
 Redo is **physical graph ops** (create/delete node and rel, set/remove
 property, add/remove label), not Cypher text.
 
-WAL, snapshot files, and `cdc/slots.json` go through a synchronous
+WAL and snapshot files go through a synchronous
 [virtual filesystem](https://github.com/relatedb/relate/blob/main/docs/adr/0072-virtual-filesystem.md)
 (`NativeVfs` for a directory path/`file://`, `BundleVfs` when the path
 ends with `.rl` — [ADR-0074](https://github.com/relatedb/relate/blob/main/docs/adr/0074-single-file-bundle-vfs.md) —
@@ -212,7 +212,7 @@ is a native directory, or a single-file bundle when its path ends in `.rl`.
 The
 source is not written and the clone does not follow later commits. The
 destination is a new store at the loaded LSN, with an empty WAL (under
-`<dest>/wal` for a directory destination) and without `cdc/slots.json`.
+`<dest>/wal` for a directory destination).
 `:memory:` is refused. A failed clone removes the destination file or
 directory it created.
 
@@ -261,10 +261,6 @@ recycle the WAL (nothing can recover from that snapshot); an explicit
 In `snapshot` mode, use `--checkpoint-interval-secs N` to set the normal
 time-based loss window. `0` disables only timed checkpoints; size/count,
 explicit, and clean-close checkpoints still run.
-
-CDC slots, if registered, hold WAL recycle until the consumer acks an LSN
-([ADR-0045](https://github.com/relatedb/relate/blob/main/docs/adr/0045-cdc-replication-slots.md)). Cypher commits do not
-wait on publish.
 
 ## Autocommit vs explicit transactions
 

@@ -12,7 +12,7 @@ ADR-0005, ADR-0022). Callers want other snapshot encodings (CypherLite
 GraphData JSON, later Markdown) without changing commit durability.
 
 WAL format, append/fsync, rotate, LSN pin, recycle, timed/close
-checkpoint, and CDC `recycle_cut` must stay unchanged. Incremental vs
+checkpoint, and recycle must stay unchanged. Incremental vs
 full rewrite is a property of the snapshot encoding, not of the engine.
 
 ## Decision

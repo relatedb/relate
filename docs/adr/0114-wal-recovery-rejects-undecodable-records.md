@@ -40,8 +40,8 @@ the two reader rules that every later format change depends on.
    append (ADR-0086 §1, ADR-0077). A complete frame whose CRC matches but whose
    payload does not decode is corruption in every segment and position. Open
    fails with a storage error that names the segment and says the record may
-   have been written by a newer CypherLite. Nothing is trimmed. CDC reads
-   (`records_after`) apply the same rule.
+   have been written by a newer CypherLite. Nothing is trimmed.
+   `records_after` applies the same rule.
 2. **Check the version before WAL recovery.** `open_store` reads and validates
    the snapshot's format marker before `Wal::open`: the Parquet manifest's
    `format_version`, and the JSON `graph.json` `value_encoding` and `read_only`

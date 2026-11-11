@@ -9,7 +9,7 @@ use super::*;
 use relate_core::CapacityKind;
 
 #[test]
-fn wal_rejects_bogus_lengths_before_allocation_in_open_replay_and_cdc() {
+fn wal_rejects_bogus_lengths_before_allocation_in_open_replay_and_record_read() {
     for len in [0, Error::WAL_PAYLOAD_CAP_BYTES as u32 + 1, u32::MAX] {
         let vfs = Arc::new(MemoryVfs::new());
         write_magic(&*vfs, "00000001.log", MAGIC, true).unwrap();

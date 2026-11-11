@@ -95,7 +95,7 @@ notes at the destination); the command does not take
 `--markdown-body-properties LIST` (ADR-0460, the query command's flag
 grammar); without it a markdown→markdown clone keeps the source's
 recorded body-property layout, and the destination sidecar records the
-configuration either way. CDC slots are not copied.
+configuration either way.
 `:memory:` is refused on both sides. A query or an access flag
 (`--read-only`) is not part of the command.
 

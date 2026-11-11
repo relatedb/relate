@@ -3,7 +3,7 @@
 //! `RELATE_BULK_BATCH_THRESHOLD` / `RELATE_BULK_BATCH_BUDGET` and
 //! assert both the semantics (final state, write stats, atomicity of the
 //! preflighted error) and the batching itself (one WAL record per batch,
-//! counted through the CDC tail).
+//! counted as the WAL LSN delta).
 
 mod common;
 
@@ -44,9 +44,9 @@ impl Drop for BatchEnv {
     }
 }
 
-/// WAL records committed since LSN 0 (one per committed transaction).
-fn committed_records(db: &relate::Database) -> usize {
-    db.cdc_records_after(0, usize::MAX).unwrap().len()
+/// WAL records committed so far. Each commit advances the LSN by one.
+fn committed_records(db: &relate::Database) -> u64 {
+    relate::test_opts::wal_lsn(db).unwrap()
 }
 
 #[test]

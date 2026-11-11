@@ -6,7 +6,7 @@
 
 ## Context
 
-ADR-0072 routes the WAL, snapshots, and CDC through a synchronous VFS.
+ADR-0072 routes the WAL and snapshots through a synchronous VFS.
 ADR-0074 packs the same virtual tree into **one host file** for `.cl` paths.
 Today independent `Database::open` calls can initialize or recover the same
 persistent store concurrently. In particular, URI parsing initializes a
@@ -29,7 +29,7 @@ to compare actual filesystem objects, including directories.
    `Database::open`/`open_with` (and storage URI parse used to open a store)
    takes nonblocking exclusive OS ownership during URI parsing, before
    `BundleVfs::open_or_create` can initialize or load a bundle, before codec
-   resolution, and before Native manifest, WAL, snapshot, or CDC access.
+   resolution, and before Native manifest, WAL, or snapshot access.
    Only the minimal creation of missing directory components and the lock
    target itself may precede acquisition; no WAL or bundle bytes may be
    initialized, truncated, or recovered first. A failed acquisition must
@@ -63,8 +63,8 @@ to compare actual filesystem objects, including directories.
     writers. Do not use path-string-only ownership checks. For both default
     and overridden Native WAL, root WAL file operations (open, list, and
     rotate) at the canonical directory returned by the WAL lease, using an
-    empty VFS prefix. The database root VFS continues to serve snapshots and
-    CDC. A supported `root/wal` symlink alias may resolve to an external WAL
+    empty VFS prefix. The database root VFS continues to serve snapshots.
+    A supported `root/wal` symlink alias may resolve to an external WAL
     directory at open, but later retargeting that alias must not redirect WAL
     I/O to an unleased directory. This is an identity-bound path choice for
     cooperative ownership, not a guarantee against hostile same-user
@@ -223,9 +223,9 @@ to compare actual filesystem objects, including directories.
     Pre-existing nested children are rejected before creating the marker.
 
 5. **Private new paths, unchanged existing paths.** On Unix create every
-   newly made Native database directory (root, `wal`, shard/CDC directories,
+   newly made Native database directory (root, `wal`, shard directories,
    and any new parent components made for the database) with mode `0700`;
-   create new Native database files (including `.cypherlite.lock`, WAL, snapshot, CDC,
+   create new Native database files (including `.cypherlite.lock`, WAL, snapshot,
    and temporary files) and the `.cl` host file with mode `0600`. Apply the
    explicit creation mode even with a permissive umask; a restrictive umask
    may remove permissions, and such an open may then fail. Do not silently
@@ -320,7 +320,7 @@ to compare actual filesystem objects, including directories.
   stable files for Native databases, including an overridden WAL directory;
   the `.cl` layout remains one host file under ADR-0074. Native WAL I/O uses
   its leased canonical directory even when the default WAL path is an alias;
-  snapshots and CDC continue to use the root directory.
+  snapshots continue to use the root directory.
 - Opening a locked database fails promptly with the new typed core error;
   failed opens and process crashes release acquired OS locks. A retained
   `Connection`, `StoreTarget`, or VFS handle keeps ownership until it can no

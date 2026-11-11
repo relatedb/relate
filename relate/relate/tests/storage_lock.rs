@@ -55,7 +55,6 @@ fn storage_lock_child() {
             let db = Database::open(uri(&path)).unwrap();
             let mut conn = db.connect().unwrap();
             conn.query("CREATE (:Person {name: 'Private'})").unwrap();
-            db.register_cdc_slot("reader").unwrap();
             db.checkpoint().unwrap();
             drop((conn, db));
             if mode == "modes" {

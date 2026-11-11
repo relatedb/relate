@@ -58,7 +58,7 @@ Four existing behaviours constrain the design:
    - on an explicit `Database::checkpoint()`.
 
    wasm32 skips the dump in `schedule_checkpoint` and only recycles the WAL
-   (honouring the CDC cut) and GCs versions (ADR-0085). Without Parquet,
+   (up to the checkpoint LSN) and GCs versions (ADR-0085). Without Parquet,
    the native rotation dump would become a full `graph.json` rewrite in
    RAM: more CPU and memory spent on bytes nobody reads.
 4. **Workspace dependency plumbing.** A workspace member's
@@ -166,7 +166,7 @@ This applies on every target and in every build, with or without
 - **What skips the dump.** An automatic checkpoint of a store whose
   snapshot storage is not durable (`:memory:`, where the snapshot VFS
   reports `durable() == false`) writes no snapshot. It only recycles the
-  WAL up to the CDC `recycle_cut` and GCs versions. The two automatic
+  WAL up to the checkpoint LSN and GCs versions. The two automatic
   checkpoints are the WAL-rotation checkpoint and the close
   (persist-on-drop) checkpoint.
 - **One code path.** This generalises wasm32's current `schedule_checkpoint`
@@ -258,8 +258,8 @@ This applies on every target and in every build, with or without
   encoded copy of the graph in RAM on WAL rotation or close.
   - This is a behaviour change for default native builds too, so it needs
     tests: a rotation-triggered checkpoint on `:memory:` leaves
-    `snapshot_data_bytes() == 0` while the WAL is recycled; CDC slots still
-    bound the cut; an explicit `checkpoint()` still produces a snapshot.
+    `snapshot_data_bytes() == 0` while the WAL is recycled; an explicit
+    `checkpoint()` still produces a snapshot.
   - The TCK is re-run to confirm no regression.
   - The fraud and identity loadtests default to `--uri :memory:`, so their
     frozen envelopes (ADR-0046, ADR-0070) will shift: ops/s and p99 should

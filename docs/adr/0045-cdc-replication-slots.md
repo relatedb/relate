@@ -1,6 +1,6 @@
 # 0045. Optional CDC slots hold WAL recycle; apply-only replicas
 
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0574](0574-withdraw-cdc-replication-slots.md)
 - **Date**: 2026-09-09
 - **Deciders**: MemoryDB maintainers
 
@@ -60,3 +60,7 @@ writes. The only mutation is applying physical redo.
 
 Cloud ADR-0047 (ManagedStream) and ADR-0048 (CDC source/sink on
 `mdb-db-api`) consume this API.
+
+ADR-0574 withdraws the slots, the poll, the apply-only flag, and
+`cdc/slots.json`. Recycle is `checkpoint_lsn` again. `apply_replicated`
+stays.

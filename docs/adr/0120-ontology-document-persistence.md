@@ -100,7 +100,7 @@ persisted change needed it.
 - Upgrading CypherLite re-derives the ontology graph with the new mapping, so
   a mapping change needs no data migration. Queries written against the old
   graph shape may need updating.
-- CDC consumers and replicas (ADR-0045) see the two new ops in `WalRecord`.
+- Replicas and WAL followers see the two new ops in `WalRecord`.
   Code that matches `RedoOp` exhaustively must add them.
 - Docs that say the WAL is always `MDBWAL01` (`docs/reference/rust-library.md`,
   `docs/guides/storage-engine.md`, `docs/api/rust/spec.md`) change with the

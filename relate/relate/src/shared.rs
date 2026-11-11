@@ -19,7 +19,7 @@ use crate::engines::{self, LiveQuery, LiveWrite};
 #[cfg(test)]
 use crate::follow;
 use crate::plan_cache;
-use crate::{cdc, ontology, token_budget, DurabilityMode, Error, Result, ThreadStop};
+use crate::{ontology, token_budget, DurabilityMode, Error, Result, ThreadStop};
 
 /// The publication guard `Shared::read_guard` hands out — named so a
 /// caller can take it as a parameter (the ADR-0137 guard-or-live-pin
@@ -278,8 +278,6 @@ pub(crate) struct Shared {
     /// as `timer`.
     pub(crate) durability_timer: BgWorker,
     pub(crate) durability_error: Mutex<Option<Error>>,
-    /// CDC slots + apply-only flag (ADR-0045).
-    pub(crate) cdc: Mutex<cdc::CdcState>,
     /// ADR-0503: the per-store plan cache. Shared by every connection of
     /// the store; entries are template-keyed and stats-generation-coupled
     /// (see `plan_cache`). The mutex is taken only for short data
@@ -342,23 +340,6 @@ pub(crate) fn check_loaded_graph(graph: &Graph) -> Result<()> {
     Ok(())
 }
 
-/// The replica write path's CDC fence (ADR-0045): a database with a CDC
-/// source slot never applies replicated records. The check-then-act is
-/// race-free because the caller holds the publication write guard across
-/// it and `finish_applied_commit` — a slot registration takes the
-/// publication read guard (`cdc_slot_admission`), which cannot cross the
-/// write guard, so a registration can never interleave between the check
-/// and the applied commit.
-pub(crate) fn ensure_no_cdc_source_slot(shared: &Shared) -> Result<()> {
-    let cdc = shared.cdc.lock()?;
-    if cdc.has_source_slot() {
-        return Err(Error::semantic(
-            "database has a CDC source slot; cannot apply replicated records",
-        ));
-    }
-    Ok(())
-}
-
 /// The single write-admission gate every commit path calls before it
 /// enqueues anything (ADR-0042, ADR-0440): draining refuses retryably, a
 /// non-writable handle (frozen read-only, or a follower that was never
@@ -381,7 +362,6 @@ pub(crate) struct SharedOpenState {
     /// The resolved open-time knob cluster, built once by the open path —
     /// the knob vocabulary is stated there, not re-spelled here.
     pub(crate) resolved: OpenResolved,
-    pub(crate) cdc: cdc::CdcState,
     pub(crate) ontology: Option<String>,
     pub(crate) commit_timing: bool,
 }
@@ -444,7 +424,6 @@ impl Shared {
             timer: Mutex::new(None),
             durability_timer: Mutex::new(None),
             durability_error: Mutex::new(None),
-            cdc: Mutex::new(open.cdc),
             plan_cache: Mutex::new(plan_cache::PlanCache::default()),
             stats_generation: plan_cache::StatsGeneration::default(),
             ontology: ontology::OntologySlot::new(open.ontology),
@@ -515,7 +494,7 @@ impl Shared {
     /// failed WAL lock aborts the swap with the previous graph, WAL,
     /// services, and horizon intact, never a half-swapped store. The
     /// publication-write → WAL nesting matches every other taker
-    /// (`flush_group`, `apply_replicated`, the CDC readers); no path takes
+    /// (`flush_group`, `apply_replicated`); no path takes
     /// the two locks in the other order.
     ///
     /// Owning the bundle carry here keeps the swap atomic across modules:

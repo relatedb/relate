@@ -102,7 +102,6 @@ fn clone_beside_a_writer_is_a_frozen_cut() {
     assert_eq!(count(&cloned, "Clone"), 1);
     assert_eq!(count(&writer, "Clone"), 0);
     assert!(dst.join("wal").join("00000001.log").is_file());
-    assert!(!dst.join("cdc").join("slots.json").exists());
 }
 
 #[test]

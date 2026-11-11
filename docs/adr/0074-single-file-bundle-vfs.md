@@ -6,11 +6,11 @@
 
 ## Context
 
-ADR-0072 introduced a synchronous `Vfs` so WAL, snapshots, and CDC share
+ADR-0072 introduced a synchronous `Vfs` so WAL and snapshots share
 one I/O boundary. Native directories and in-process `MemoryVfs` shipped
 first. The remaining product need is **one host file** that still presents
 the existing virtual tree (`wal/00000001.log`, `manifest.json`,
-`nodes/…`, `cdc/slots.json`).
+`nodes/…`).
 
 ADR-0050 rejected a single-file *snapshot codec* (`.db` as GraphData).
 This decision is a container VFS, not a codec. ADR-0072 listed a

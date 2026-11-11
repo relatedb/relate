@@ -108,7 +108,7 @@ fn ontology_op_commit_on_an_empty_mdbwal01_segment_still_rotates() {
 }
 
 #[test]
-fn ontology_op_in_mdbwal01_segment_is_corruption_at_open_replay_and_cdc() {
+fn ontology_op_in_mdbwal01_segment_is_corruption_at_open_replay_and_record_read() {
     let payload = |lsn: u64, ts: u64| {
         serde_json::to_vec(&WalRecord {
             lsn,

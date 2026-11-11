@@ -22,7 +22,7 @@ use crate::vfs::{atomic_write, read_to_vec, Vfs};
 use crate::StoreTarget;
 
 /// The hidden engine directory inside the vault (the `.obsidian/`
-/// convention): WAL, CDC, journal, and the sidecar manifest.
+/// convention): WAL, journal, and the sidecar manifest.
 pub(crate) const ENGINE_DIR: &str = ".cypherlite";
 /// The sidecar manifest, published last (the manifest-last rule).
 pub(crate) const MANIFEST: &str = ".cypherlite/manifest.json";

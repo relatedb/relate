@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- CDC replication slots. `register_cdc_slot`, `ack_cdc_slot`,
+  `drop_cdc_slot`, `cdc_slots`, `cdc_records_after`, and
+  `set_apply_only` / `apply_only` are gone, along with `cdc/slots.json`.
+  Checkpoint recycle no longer waits on a consumer ack (ADR-0574).
+
 ## [0.1.3] — 2026-11-11
 
 ## [0.1.2] — 2026-11-09

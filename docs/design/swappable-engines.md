@@ -223,12 +223,12 @@ these gaps first:
   method, or must move into the engine.
 - **Write path.** Commit appends go through
   `relate_write_local::append_assigned`. Checkpoint scheduling, follow,
-  CDC slots, and the writer lease are still facade code. `checkpoint.rs`
-  and `follow.rs` use the log handle directly, and CDC slots take their
-  log position from the facade. They need to move behind `WriteEngine`.
+  and the writer lease are still facade code. `checkpoint.rs` and
+  `follow.rs` use the log handle directly. They need to move behind
+  `WriteEngine`.
 - **Recording engine coverage.** The recording engine is tested on its
-  own. It is not yet installed under the facade's commit, transaction,
-  and CDC suites. That waits on the write-path move above.
+  own. It is not yet installed under the facade's commit and transaction
+  suites. That waits on the write-path move above.
 - **Shared evaluation.** Expression evaluation and the function and
   procedure registries live inside `relate-executor`. A second query
   engine needs them in a shared crate, as ADR-0548 records.

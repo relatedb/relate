@@ -41,7 +41,7 @@ that barrier and ordered graph application (ADR-0019). Each proposed record is
 size-counted by the same bounded JSON encoder used for append, and the entire
 eligible group is checked for ordered graph applicability before any frame is
 written. This adds serialization CPU, but does not buffer an encoded group.
-Physical WAL uncertainty fences new read admission, replication, CDC and
+Physical WAL uncertainty fences new read admission, replication, and
 checkpoints on the current handle until reopen (ADR-0094). A read already
 admitted with a pinned safe graph timestamp and schema snapshot can complete
 after a later fence, without waiting for the WAL barrier. SHOW INDEXES,
@@ -86,8 +86,7 @@ It never falls back to JSON. A manifest without a `codec` field still means
 Parquet. See [Cargo features](spec.md#cargo-features).
 
 `:memory:` has no restart to recover from, so its automatic checkpoints (WAL
-rotation and close) write no snapshot; they only recycle closed WAL, still
-honouring CDC slots, and GC old versions (ADR-0105). An explicit
+rotation and close) write no snapshot; they only recycle closed WAL and GC old versions (ADR-0105). An explicit
 `Database::checkpoint()` writes a snapshot on every store.
 
 Entity IDs use `i64::MAX` as an unsupported persisted sentinel (ADR-0086).
@@ -160,7 +159,7 @@ as an empty database (ADR-0086). WAL frames are limited to 64 MiB of payload;
 a torn tail on any segment, or a final frame on the active segment that fails
 its checksum, is omitted after replaying the intact prefix, while interior
 corruption still fails recovery. A checksum-valid frame that does not decode
-fails WAL open, replay and CDC reads with `Error::Storage` naming the segment
+fails WAL open, replay and record reads with `Error::Storage` naming the segment
 (`may have been written by a newer Relate`); tolerated-tail trims are
 applied only after every segment has been scanned, and the highest segment's
 short magic is repaired only after every earlier segment has validated
@@ -175,8 +174,8 @@ time for LSN and timestamp summaries; valid commits after the snapshot's
 checkpoint LSN are applied directly to the new graph in order, including
 pull-identity operations. A genuine (non-tail) recovery error fails open
 before that graph is exposed or WAL is recycled. Callers explicitly using the storage crate's
-`Wal::replay` receive a materialized `Vec` instead; bounded CDC polls return at
-most their requested record limit. `.rl` catalogs are limited to 16 MiB and
+`Wal::replay` receive a materialized `Vec` instead; `Wal::records_after` returns at
+most its requested record limit. `.rl` catalogs are limited to 16 MiB and
 their page ownership is checked against the host file before reclamation.
 Parquet shard metadata and page headers are checked before Arrow page
 decompression; actual decoded row/byte totals are counted across batches
@@ -383,14 +382,6 @@ The executor's `CsvPolicy::new` validates the same root and limit before a
 opening storage, so invalid settings do not create a WAL or bundle. The
 [example](examples/load_csv.md) exercises both the embedded open and the
 executor's validated graph configuration.
-
-Optional CDC slots (ADR-0045) hold **recycle** until a consumer acks an
-LSN. Cypher commits do not wait for a consumer to poll or ack; publish
-is entirely out-of-band. With no slot, checkpoint deletes closed WAL as
-before. `cdc_records_after` is a non-blocking poll: caught-up cursors
-and `limit == 0` return empty without I/O. `set_apply_only(true)`
-makes Cypher writes fail in the engine; `apply_replicated` is the only
-mutation (read replica) and bypasses group commit.
 
 `CREATE` / `DROP` / `SHOW INDEX` name a `(label, property)` pair in the
 catalog (ADR-0040). MATCH still seeks without them.

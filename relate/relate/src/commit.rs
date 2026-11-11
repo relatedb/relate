@@ -357,14 +357,6 @@ pub(super) fn try_wal_commit(
 ) -> Result<u64> {
     shared.check_healthy()?;
     crate::ensure_writable(shared)?;
-    {
-        let cdc = shared.cdc.lock()?;
-        if cdc.apply_only() {
-            return Err(Error::semantic(
-                "database is a CDC replica; writes are not accepted",
-            ));
-        }
-    }
     // The ops are JSON-encoded exactly once, here, on the caller's thread
     // and off the serial group path (ADR-0094 as amended): the leader only
     // stamps the record header into this buffer. The WAL payload cap refuses
@@ -543,9 +535,8 @@ struct FlushOutcome {
 /// Apply one replicated record through the shared commit core — the replica
 /// write path's whole choreography, every step delegated to its named
 /// canonical helper (`ensure_writable`, `begin_publication`,
-/// `ensure_no_cdc_source_slot`, `admit_redo_capacity`, `lock_wal_checked`)
-/// beside the group-commit leader, so the entry is self-fencing like
-/// `try_wal_commit`.
+/// `admit_redo_capacity`, `lock_wal_checked`) beside the group-commit
+/// leader, so the entry is self-fencing like `try_wal_commit`.
 pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Result<u64> {
     crate::ensure_writable(shared)?;
     let publication = begin_publication(shared)?;
@@ -555,7 +546,6 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     // lease, so a commit that passed the check above either finishes before
     // that release or is refused here.
     crate::ensure_writable(shared)?;
-    crate::shared::ensure_no_cdc_source_slot(shared)?;
     // The canonical capacity admission and durability-fenced WAL acquire:
     // this path spells neither policy itself.
     shared.admit_redo_capacity(&record.ops, 0)?;

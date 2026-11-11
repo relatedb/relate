@@ -21,8 +21,9 @@ or `Follow`, fixed for a handle's life. `Shared::new`
 (`cypherlite/cypherlite/src/shared.rs`) resolves whether the checkpoint
 timer, the durability timer, and the follow thread run from that mode
 once, at construction. `ensure_writable` is the single admission gate
-every commit path calls (`commit.rs::try_wal_commit`, `cdc_slot_admission`,
-`set_apply_only`) before it enqueues into `Shared::group`, a
+every commit path calls (`commit.rs::try_wal_commit` before it
+enqueues into `Shared::group`, and `commit_replicated`) before a write
+is admitted. `Shared::group` is a
 `Mutex<GroupCommit>` with a plain `queue: Vec<CommitSlot>` and
 `has_leader: bool` that only ever shrinks once the gate refuses new
 admissions.

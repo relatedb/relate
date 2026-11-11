@@ -528,36 +528,6 @@ fn memory_automatic_run_checkpoint_recycles_without_snapshot() {
 }
 
 #[test]
-fn memory_rotation_checkpoint_keeps_cdc_records_after_slot() {
-    let db = Database::open(":memory:").unwrap();
-    let shared = db.shared();
-    db.register_cdc_slot("primary").unwrap();
-    let mut c = db.connect().unwrap();
-    for _ in 0..3 {
-        c.query("CREATE (:N)").unwrap();
-    }
-    let slot = db.ack_cdc_slot("primary", 1).unwrap().acked_lsn;
-    // Close the open segment as the WAL threshold would; the next commit
-    // schedules the rotation checkpoint.
-    shared.wal.lock().unwrap().rotate().unwrap();
-    c.query("CREATE (:N)").unwrap();
-    assert_checkpoint_idle(&shared);
-    assert_eq!(db.snapshot_data_bytes().unwrap(), 0);
-    let lsns: Vec<u64> = db
-        .cdc_records_after(slot, 100)
-        .unwrap()
-        .iter()
-        .map(|r| r.lsn)
-        .collect();
-    assert_eq!(lsns, vec![2, 3, 4]);
-
-    db.ack_cdc_slot("primary", 4).unwrap();
-    shared.wal.lock().unwrap().rotate().unwrap();
-    c.query("CREATE (:N)").unwrap();
-    assert!(!shared.wal.lock().unwrap().has_closed_segments());
-    assert_eq!(memory_wal_segments(&db), vec!["00000003.log".to_string()]);
-}
-#[test]
 fn vector_index_metadata_survives_wal_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_str().unwrap();

@@ -154,15 +154,12 @@ pub(super) fn records_after_file(
     from_lsn: u64,
     limit: usize,
 ) -> Result<Vec<WalRecord>> {
-    let (hint_seg, hint_off, hint_ts) = match f.cdc_hint {
-        Some(hint) if hint.lsn == from_lsn => (Some(hint.seg_id), hint.offset, hint.commit_ts),
-        _ => (None, 0, 0),
-    };
+    let hint = f.page_hint.filter(|h| h.lsn == from_lsn);
 
     let mut segs = Vec::new();
     for (id, max_lsn, _) in &f.closed {
-        if let Some(h) = hint_seg {
-            if *id < h {
+        if let Some(h) = hint {
+            if *id < h.seg_id {
                 continue;
             }
         } else if *max_lsn <= from_lsn {
@@ -170,7 +167,7 @@ pub(super) fn records_after_file(
         }
         segs.push(*id);
     }
-    if hint_seg.map(|h| f.seg_id >= h).unwrap_or(true) && !segs.contains(&f.seg_id) {
+    if hint.map(|h| f.seg_id >= h.seg_id).unwrap_or(true) && !segs.contains(&f.seg_id) {
         segs.push(f.seg_id);
     }
     segs.sort_unstable();
@@ -178,7 +175,7 @@ pub(super) fn records_after_file(
 
     let mut out = Vec::new();
     let mut last_hint = None;
-    // Segments skipped for CDC were checked on open; their final timestamp
+    // Segments skipped by the cursor were checked on open; their final timestamp
     // still bounds the first record in a later segment.
     let mut last_ts = segs
         .first()
@@ -194,20 +191,28 @@ pub(super) fn records_after_file(
         if out.len() >= limit {
             break;
         }
-        let start = if hint_seg == Some(seg) { hint_off } else { 0 };
         let path = segment_path(&f.prefix, seg);
         let remaining = limit - out.len();
         // Only an offset past the physical file end is a stale hint. Never
         // retry an actual read/seek failure as if it were a stale offset.
-        let start = if start > 0 && start > f.vfs.metadata(&path)?.len {
-            f.cdc_hint = None;
-            0
-        } else {
-            start
+        let start = match hint.filter(|h| h.seg_id == seg) {
+            Some(h) => {
+                let len = f.vfs.metadata(&path)?.len;
+                if h.offset <= len {
+                    // Resume this segment at the hinted offset; its commit
+                    // timestamp still bounds the first record read.
+                    last_ts = h.commit_ts;
+                    h.offset
+                } else {
+                    // Past the file end: the hint is stale. Drop it and
+                    // rescan this segment from the start.
+                    f.page_hint = None;
+                    0
+                }
+            }
+            // No hint for this segment: scan from the start.
+            None => 0,
         };
-        if hint_seg == Some(seg) && start > 0 {
-            last_ts = hint_ts;
-        }
         let (recs, end) = read_seg_limited(
             &*f.vfs,
             &path,
@@ -228,12 +233,12 @@ pub(super) fn records_after_file(
         out.extend(recs);
     }
     if let Some(h) = last_hint {
-        f.cdc_hint = Some(h);
+        f.page_hint = Some(h);
     }
     Ok(out)
 }
 
-/// Records and CDC hint.
+/// Records and the read cursor after the last delivered frame.
 pub(super) type SegRead = (Vec<WalRecord>, Option<WalCursor>);
 
 pub(super) struct SegScan {
@@ -282,7 +287,7 @@ pub(super) fn read_seg_limited(
 }
 
 // Shared framing/CRC/JSON decoder for summaries, startup replay, explicit
-// materializing replay and bounded CDC polling. No Vec of records is needed
+// materializing replay and bounded record reads. No Vec of records is needed
 // until a caller explicitly requests one.
 //
 // A tolerated tail is reported via `tail_at`. An incomplete frame at EOF is
