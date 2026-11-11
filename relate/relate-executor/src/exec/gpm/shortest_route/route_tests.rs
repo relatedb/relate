@@ -25,7 +25,7 @@ fn both_endpoints_bound() {
 #[test]
 fn only_start_bound() {
     let g = shortcut();
-    let q = "MATCH (a {id: 0}) MATCH p = shortestPath((a)-[*]->(b)) RETURN b.id, length(p)";
+    let q = "MATCH (a {id: 0}) MATCH p = ANY SHORTEST (a)-[*]->(b) RETURN b.id, length(p)";
     assert_eq!(
         on_route(&g, q),
         expect(&[
@@ -40,7 +40,7 @@ fn only_start_bound() {
 #[test]
 fn only_end_bound_reports_start_to_end() {
     let g = shortcut();
-    let q = "MATCH (b {id: 3}) MATCH p = shortestPath((a)-[*]->(b)) \
+    let q = "MATCH (b {id: 3}) MATCH p = ANY SHORTEST (a)-[*]->(b) \
              RETURN a.id, [n IN nodes(p) | n.id]";
     assert_eq!(
         on_route(&g, q),
@@ -79,7 +79,7 @@ fn endpoint_maps_read_row_and_start_variables() {
             expect(&[&[Int(3), Int(2)]]),
         ),
         (
-            "MATCH p = shortestPath((a)-[*]->(b {id: a.id})) RETURN a.id, length(p)",
+            "MATCH p = ANY SHORTEST (a)-[*]->(b {id: a.id}) RETURN a.id, length(p)",
             expect(&[&[Int(1), Int(3)], &[Int(2), Int(3)], &[Int(3), Int(3)]]),
         ),
     ] {
@@ -91,9 +91,9 @@ fn endpoint_maps_read_row_and_start_variables() {
 #[test]
 fn same_variable_directed_two_cycle() {
     let g = plain(4, &[(0, 1), (1, 0), (0, 2), (2, 3), (3, 0)]);
-    let q = "MATCH (a {id: 0}) MATCH p = shortestPath((a)-[*]->(a)) RETURN length(p)";
+    let q = "MATCH (a {id: 0}) MATCH p = ANY SHORTEST (a)-[*]->(a) RETURN length(p)";
     assert_eq!(on_route(&g, q), expect(&[&[Int(2)]]));
-    let q = "MATCH p = shortestPath((a)-[*]->(a)) RETURN a.id, length(p)";
+    let q = "MATCH p = ANY SHORTEST (a)-[*]->(a) RETURN a.id, length(p)";
     let want = expect(&[
         &[Int(0), Int(2)],
         &[Int(1), Int(2)],
@@ -107,9 +107,9 @@ fn same_variable_directed_two_cycle() {
 #[test]
 fn undirected_closed_trail_on_triangle_and_single_edge() {
     let triangle = plain(3, &[(0, 1), (1, 2), (2, 0)]);
-    let q = "MATCH (a {id: 0}) MATCH p = shortestPath((a)-[*]-(a)) RETURN length(p)";
+    let q = "MATCH (a {id: 0}) MATCH p = ANY SHORTEST (a)-[*]-(a) RETURN length(p)";
     assert_eq!(on_route(&triangle, q), expect(&[&[Int(3)]]));
-    let all = "MATCH (a {id: 0}) MATCH p = allShortestPaths((a)-[*]-(a)) \
+    let all = "MATCH (a {id: 0}) MATCH p = ALL SHORTEST (a)-[*]-(a) \
                RETURN [r IN relationships(p) | r.k]";
     let want = expect(&[&[ints(&[0, 1, 2])], &[ints(&[2, 1, 0])]]);
     assert_eq!(on_route(&triangle, all), want);
@@ -126,8 +126,8 @@ fn undirected_closed_trail_on_triangle_and_single_edge() {
 fn self_loop_closes_at_length_one() {
     let g = plain(2, &[(0, 1), (1, 0), (0, 0)]);
     for q in [
-        "MATCH (a {id: 0}) MATCH p = shortestPath((a)-[*]->(a)) RETURN length(p)",
-        "MATCH (a {id: 0}) MATCH p = shortestPath((a)-[*]-(a)) RETURN length(p)",
+        "MATCH (a {id: 0}) MATCH p = ANY SHORTEST (a)-[*]->(a) RETURN length(p)",
+        "MATCH (a {id: 0}) MATCH p = ANY SHORTEST (a)-[*]-(a) RETURN length(p)",
     ] {
         assert_eq!(on_route(&g, q), expect(&[&[Int(1)]]), "{q}");
     }
@@ -136,7 +136,7 @@ fn self_loop_closes_at_length_one() {
 #[test]
 fn zero_min_hops_on_same_node_is_length_zero() {
     let g = plain(2, &[(0, 1), (1, 0)]);
-    let q = "MATCH (a {id: 0}) MATCH p = shortestPath((a)-[*0..2]->(a)) RETURN length(p)";
+    let q = "MATCH (a {id: 0}) MATCH p = ANY SHORTEST (a)-[*0..2]->(a) RETURN length(p)";
     let (rows, counts) = run(&g, q);
     assert_eq!(rows, vec![vec![Int(0)]]);
     assert_eq!(
@@ -201,11 +201,14 @@ fn all_shortest_paths_on_diamond_gives_both_routes() {
 fn gql_selectors_match_function_forms() {
     let g = diamond();
     let count = |q: &str| on_route(&g, q).len();
+    // Both endpoints bound: a shortest-path function rejects an open
+    // endpoint (51N23 when the same node answers, and the expression form
+    // requires bound nodes), so the function forms run on the distinct pair.
+    let pair = "MATCH (a {id: 0}), (b {id: 3}) ";
     for (endpoints, prefix) in [
-        ("(a {id: 0})-[*]->(b {id: 3})", ""),
-        ("(a)-[*]->(b)", ""),
-        ("(a)-[*]-(b)", ""),
-        ("(a)-[*1..2]-(b {id: 3})", "MATCH (b {id: 3}) "),
+        ("(a)-[*]->(b)", pair),
+        ("(a)-[*]-(b)", pair),
+        ("(a)-[*1..2]-(b)", pair),
     ] {
         let single = count(&format!(
             "{prefix}MATCH p = shortestPath({endpoints}) RETURN p"
@@ -262,7 +265,7 @@ fn bound_end_runs_one_search_not_one_per_start_candidate() {
 #[test]
 fn forced_gpm_switch_bypasses_the_route() {
     let g = shortcut();
-    let q = "MATCH p = allShortestPaths((a)-[*]->(b)) \
+    let q = "MATCH p = ALL SHORTEST (a)-[*]->(b) \
              RETURN a.id, b.id, [r IN relationships(p) | r.k]";
     let route = on_route(&g, q);
     let (forced, counts) = with_forced_gpm(|| run(&g, q));
@@ -312,7 +315,7 @@ fn where_predicate_that_no_path_satisfies_yields_nothing() {
 #[test]
 fn where_predicate_on_a_closed_path_keeps_the_zero_length_trail() {
     let g = shortcut();
-    let q = "MATCH p = shortestPath((a {id: 0})-[*0..3]->(a)) \
+    let q = "MATCH p = ANY SHORTEST (a {id: 0})-[*0..3]->(a) \
              WHERE length(p) <= 3 RETURN length(p)";
     let (rows, counts) = run(&g, q);
     assert_eq!(rows, vec![vec![Int(0)]]);

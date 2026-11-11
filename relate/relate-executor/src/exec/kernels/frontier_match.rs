@@ -550,12 +550,7 @@ fn spine_unrolls(qpp: &QuantifiedPathPattern) -> bool {
 /// compile itself requires and declines). `pub(crate)`: the emission's
 /// test suite builds its boundary node targets through it.
 pub(crate) fn boundary(pattern: &PathPattern) -> Option<(&NodePattern, &NodePattern)> {
-    match (pattern.elements.first(), pattern.elements.last()) {
-        (Some(PatternElement::Node(start)), Some(PatternElement::Node(target))) => {
-            Some((start, target))
-        }
-        _ => None,
-    }
+    pattern.boundary_nodes()
 }
 
 /// The boundary pair's variable names, seed side first — the one

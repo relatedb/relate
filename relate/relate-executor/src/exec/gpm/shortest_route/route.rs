@@ -211,10 +211,6 @@ pub(super) struct Route<'a> {
     /// sink's cap-full cell: raised once it needs no more rows, read only
     /// through [`Self::halted`]. Every sink has one, so it is not optional.
     halt: &'a Cell<bool>,
-    /// Stop each fan search after the first layer that yields a row: the
-    /// expression form keeps only the global shortest, and an origin's
-    /// deeper layers are longer than its own shortest, so they cannot win.
-    first_layer_only: bool,
 }
 
 impl<'a> Route<'a> {
@@ -246,7 +242,6 @@ impl<'a> Route<'a> {
             halt,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
-            first_layer_only: false,
         }
     }
 
@@ -260,13 +255,6 @@ impl<'a> Route<'a> {
         *self
             .unbounded_cap
             .get_or_init(|| unbounded_dfs_cap(self.ctx.graph, MatchMode::DifferentRelationships))
-    }
-
-    /// This route stopping each fan after its first productive layer (see
-    /// the field).
-    pub(super) fn first_layer_only(mut self) -> Self {
-        self.first_layer_only = true;
-        self
     }
 
     /// Push every selected row into `out` as it is bound: the row's
@@ -661,7 +649,7 @@ impl<'a> Route<'a> {
         // routes only.
         let productive =
             self.filter.is_none() && layer.nodes() != [origin] && out.folded() > before;
-        Ok(self.halted() || (self.first_layer_only && productive))
+        Ok(self.halted() || (self.shape.spelling.first_layer_only() && productive))
     }
 
     /// The partition of `far`, a node a fan search reached from `origin`:
@@ -705,6 +693,13 @@ impl<'a> Route<'a> {
         if !self.node_ok(e, self.shape.end, srow)? {
             return Ok(());
         }
+        // 51N23: the spelling's runtime policy (a positive lower bound
+        // rejects a pair that resolves to one node; the zero-length path
+        // answers it when the bound is 0).
+        self.shape
+            .spelling
+            .common_end_nodes()
+            .reject(s, e, self.search.min)?;
         if let Some(filter) = &self.filter {
             return self.feasible_partition(s, e, srow, filter, out);
         }

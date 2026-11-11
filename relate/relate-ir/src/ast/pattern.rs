@@ -57,6 +57,19 @@ impl PathPattern {
             .flatten()
     }
 
+    /// The pattern's boundary node patterns: the first and last elements,
+    /// when both are nodes. The one endpoint read every boundary consumer
+    /// (the frontier compile, the shortest-path static common-end rule)
+    /// consults; `None` for any other element sequence.
+    pub fn boundary_nodes(&self) -> Option<(&NodePattern, &NodePattern)> {
+        match (self.elements.first(), self.elements.last()) {
+            (Some(PatternElement::Node(start)), Some(PatternElement::Node(end))) => {
+                Some((start, end))
+            }
+            _ => None,
+        }
+    }
+
     /// Every relationship variable the pattern binds, in element order,
     /// recursing into quantified groups. Both views are consulted: the
     /// compact `rels` view retains a var-length relationship's name, while

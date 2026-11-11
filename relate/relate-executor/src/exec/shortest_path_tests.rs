@@ -5,9 +5,105 @@
 use relate_core::Value;
 
 use crate::graph::Graph;
-use crate::shortest::test_support::{counting_expands, min_hops_counterexample, TernaryTree};
+use crate::shortest::test_support::{assert_common_end_nodes, counting_expands, TernaryTree};
 
-use super::test_support::{exec_cypher, Builder};
+use super::test_support::{exec_cypher, try_exec_cypher, Builder};
+
+/// The three-node chain `a-[:KNOWS]->b-[:KNOWS]->c` the acceptance fixture
+/// uses.
+fn knows_chain() -> Graph {
+    let g = Builder::new();
+    let (a, b) = (g.node("a", &[]), g.node("b", &[]));
+    let c = g.node("c", &[]);
+    g.edge(a, b);
+    g.edge(b, c);
+    g.done()
+}
+
+/// 51N23 (live Neo4j 2026.10.1): a `shortestPath()`/`allShortestPaths()`
+/// pattern that names the same node variable at both ends is rejected even
+/// when the graph is empty; a pair of distinct endpoints that resolve to
+/// one node is rejected at run time unless the lower bound is 0, and the
+/// keyword selectors keep their closed walks.
+#[test]
+fn shortest_path_function_rejects_common_end_nodes() {
+    // Static: the same variable at both ends rejects before any row (live
+    // raises on an empty graph), whatever the lower bound.
+    let empty = Graph::default();
+    for query in [
+        "MATCH p = shortestPath((a)-[*]-(a)) RETURN p",
+        "MATCH p = shortestPath((a)-[*0..]-(a)) RETURN p",
+        "MATCH p = allShortestPaths((a)-[*]-(a)) RETURN p",
+        "MATCH p = allShortestPaths((a)-[*0..]-(a)) RETURN p",
+    ] {
+        let err = try_exec_cypher(&empty, query)
+            .err()
+            .expect("expected 51N23");
+        assert_common_end_nodes(&err, query);
+    }
+
+    // Runtime: distinct endpoint variables that bind one node reject the
+    // pair; a lower bound of 0 answers the zero-length path instead.
+    let g = knows_chain();
+    let query = "MATCH (a), (b) MATCH p = shortestPath((a)-[*]-(b)) RETURN p";
+    let err = try_exec_cypher(&g, query).err().expect("expected 51N23");
+    assert_common_end_nodes(&err, query);
+    assert_eq!(
+        exec_cypher(
+            &g,
+            "MATCH (a), (b) MATCH p = shortestPath((a)-[*0..]-(b)) RETURN p"
+        )
+        .rows
+        .len(),
+        9,
+        "the min-length-zero pairs answer their zero-length paths"
+    );
+
+    // The keyword spellings keep the closed walks the function forms reject.
+    assert!(try_exec_cypher(&g, "MATCH p = ANY SHORTEST (a)-[*]-(a) RETURN p").is_ok());
+    assert!(try_exec_cypher(&g, "MATCH p = ALL SHORTEST (a)-[*]-(a) RETURN p").is_ok());
+
+    // The rejection is per input row, as live evaluates it: a statement
+    // whose preceding clause answers no row answers zero rows, not 51N23.
+    assert_eq!(
+        exec_cypher(
+            &g,
+            "MATCH (x) WHERE false MATCH p = shortestPath((a)-[*]-(a)) RETURN p"
+        )
+        .rows
+        .len(),
+        0
+    );
+}
+
+/// The expression form's runtime half of 51N23: a bound start and end that
+/// resolve to the same node reject the pair, and a lower bound of 0 answers
+/// the zero-length path.
+#[test]
+fn shortest_path_expression_rejects_common_end_nodes() {
+    let g = knows_chain();
+    let query = "MATCH (a) RETURN shortestPath((a)-[*]-(a)) AS p";
+    let err = try_exec_cypher(&g, query).err().expect("expected 51N23");
+    assert_common_end_nodes(&err, query);
+    let query = "MATCH (a), (b) RETURN shortestPath((a)-[*]-(b)) AS p";
+    let err = try_exec_cypher(&g, query).err().expect("expected 51N23");
+    assert_common_end_nodes(&err, query);
+    assert_eq!(
+        exec_cypher(&g, "MATCH (a) RETURN shortestPath((a)-[*0..]-(a)) AS p")
+            .rows
+            .len(),
+        3
+    );
+    assert_eq!(
+        exec_cypher(
+            &g,
+            "MATCH (a), (b) RETURN shortestPath((a)-[*0..]-(b)) AS p"
+        )
+        .rows
+        .len(),
+        9
+    );
+}
 
 #[test]
 fn shortest_path_miss_does_not_walk_two_max_hop_balls() {
@@ -134,49 +230,6 @@ fn labs196_undirected_shortest_path_stops_after_meet() {
     for query in [LABS196_EXPRESSION, LABS196_MATCH] {
         assert_labs196_stops_after_meet(query, "(s)-[*1..{max}]-(t)");
     }
-}
-
-/// The ADR-0189 counterexample. With min_hops > 1 the expression form runs
-/// on enumeration, which finds the only 4-hop trail s→p→x→y→t. A
-/// bidirectional search that stops at df + db + 1 ≥ L returns 5: it meets
-/// on s→q1→q2→q3→q4→t while the front (s plus 50 dead ends) is still at
-/// depth 1, since s→p→x→t splits at 3 hops, below min_hops.
-#[test]
-fn bidir_min_hops_above_one_keeps_searching_after_meet() {
-    let g = min_hops_counterexample();
-    let bound = "MATCH (s:N {id: 's'}), (t:N {id: 't'}) ";
-    let every = exec_cypher(
-        &g,
-        &format!("{bound}MATCH p = (s)-[*4..8]->(t) RETURN min(length(p)) AS hops"),
-    );
-    assert_eq!(every.rows[0][0], Value::Int(4));
-    let shortest = exec_cypher(
-        &g,
-        &format!("{bound}RETURN length(shortestPath((s)-[*4..8]->(t))) AS hops"),
-    );
-    assert_eq!(shortest.rows[0][0], Value::Int(4));
-}
-
-/// Closed shortest paths (start = end) run on the closed-trail search
-/// (ADR-0189): one search back to the start per first relationship, never
-/// over that relationship, so an undirected edge walked back and forth is
-/// no trail. Pins the lengths returned before LABS-196.
-#[test]
-fn bidir_closed_shortest_path_keeps_per_side_stop() {
-    let closed = |edges: &[(usize, usize)], pattern: &str| {
-        let g = Builder::new();
-        let nodes = [g.node("a", &["N"]), g.anon(&["M"]), g.anon(&["M"])];
-        for &(from, to) in edges {
-            g.edge(nodes[from], nodes[to]);
-        }
-        let g = g.done();
-        let q = format!("MATCH (s:N {{id: 'a'}}) RETURN length(shortestPath({pattern})) AS hops");
-        exec_cypher(&g, &q).rows[0][0].clone()
-    };
-    let triangle = [(0, 1), (1, 2), (2, 0)];
-    assert_eq!(closed(&triangle, "(s)-[*1..8]-(s)"), Value::Int(3));
-    assert_eq!(closed(&[(0, 1), (1, 0)], "(s)-[*1..8]->(s)"), Value::Int(2));
-    assert_eq!(closed(&[(0, 1)], "(s)-[*1..8]-(s)"), Value::Null);
 }
 
 /// A predicate on a `shortestPath()` variable written on a *later* MATCH

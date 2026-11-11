@@ -1,18 +1,16 @@
-//! The expression form on the shared searches (ADR-0189): closed trails,
-//! `min_hops` > 1 on enumeration, the unbound-end stop and its merge with
-//! closed trails, a bound end that fails its pattern, and how start
-//! candidates combine (the global shortest, ADR-0568).
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! The expression form on the shared searches (ADR-0189, ADR-0568): a bound
+//! end that fails its pattern, and a relationship property map that falls
+//! back to enumeration. The open-endpoint, same-node closed-trail, and
+//! `min_hops` > 1 shapes are not expressible: live Neo4j 2026.10.1 rejects an
+//! unbound endpoint (a shortest-path expression requires bound nodes), a
+//! same-node pair (51N23), and a minimum length above 1 (42I08).
 
 use relate_core::Value;
 
 use crate::graph::Graph;
-use crate::shortest::test_support::{counting_expands, min_hops_counterexample, TernaryTree};
+use crate::shortest::test_support::counting_expands;
 
 use super::test_support::{exec_cypher, Builder};
-use crate::test_support::ints;
 
 /// The single value of a one-row, one-column result, and the expansions
 /// it took.
@@ -20,149 +18,6 @@ fn value(g: &Graph, q: &str) -> (Value, u64) {
     let (rows, expands) = counting_expands(|| exec_cypher(g, q).rows);
     assert_eq!(rows.len(), 1, "{q}");
     (rows[0][0].clone(), expands)
-}
-
-fn names(paths: &[&[&str]]) -> Value {
-    let path = |ids: &&[&str]| {
-        Value::List(
-            ids.iter()
-                .map(|&id| Value::String(id.into()))
-                .collect::<Vec<_>>()
-                .into(),
-        )
-    };
-    Value::List(paths.iter().map(path).collect::<Vec<_>>().into())
-}
-
-/// `routes`, a list, in a fixed order.
-fn sorted(routes: Value) -> Value {
-    let Value::List(mut routes) = routes else {
-        panic!("expected a list, got {routes:?}");
-    };
-    Arc::make_mut(&mut routes).sort_by(Value::order_by_cmp);
-    Value::List(routes)
-}
-
-#[test]
-fn all_shortest_closed_trails_on_an_undirected_triangle() {
-    let b = Builder::new();
-    let a = b.node("a", &["N"]);
-    let (x, y) = (b.node("x", &[]), b.node("y", &[]));
-    b.chain(&[a, x, y, a]);
-    let g = b.done();
-    let (lengths, expands) = value(
-        &g,
-        "MATCH (s:N {id: 'a'}) \
-         RETURN [p IN allShortestPaths((s)-[*1..8]-(s)) | length(p)] AS ls",
-    );
-    assert_eq!(lengths, ints(&[3, 3]));
-    assert!(expands > 0, "the closed-trail search did not run");
-    let (routes, _) = value(
-        &g,
-        "MATCH (s:N {id: 'a'}) \
-         RETURN [p IN allShortestPaths((s)-[*1..8]-(s)) | [n IN nodes(p) | n.id]] AS ps",
-    );
-    assert_eq!(
-        sorted(routes),
-        names(&[&["a", "x", "y", "a"], &["a", "y", "x", "a"]])
-    );
-}
-
-#[test]
-fn min_hops_above_one_runs_on_enumeration() {
-    // s→p→x→y→t is the only 4-hop trail; s→p→x→t (3 hops) is below the
-    // minimum and s→q1→…→t takes 5. 50 dead ends hang off s and a fan-in
-    // tree under t, the counterexample of
-    // `bidir_min_hops_above_one_keeps_searching_after_meet`.
-    let g = min_hops_counterexample();
-    let bound = "MATCH (s:N {id: 's'}), (t:N {id: 't'}) ";
-    let (hops, expands) = value(
-        &g,
-        &format!("{bound}RETURN length(shortestPath((s)-[*4..8]->(t))) AS hops"),
-    );
-    assert_eq!(hops, Value::Int(4));
-    assert_eq!(expands, 0, "min_hops > 1 ran a BFS");
-    let (routes, _) = value(
-        &g,
-        &format!(
-            "{bound}RETURN [p IN allShortestPaths((s)-[*4..8]->(t)) | \
-             [n IN nodes(p) | n.id]] AS ps"
-        ),
-    );
-    assert_eq!(routes, names(&[&["s", "p", "x", "y", "t"]]));
-}
-
-#[test]
-fn unbound_end_stops_after_the_first_matching_layer() {
-    // s→t with t:T, and a fan-out tree of 1,092 nodes behind t.
-    let b = Builder::new();
-    let (s, t) = (b.node("s", &["N"]), b.node("t", &["T"]));
-    b.edge(s, t);
-    b.fan_out_tree(t, 6);
-    let g = b.done();
-    let start = "MATCH (s:N {id: 's'}) ";
-    for (q, want) in [
-        ("RETURN length(shortestPath((s)-[*]->(:T)))", Value::Int(1)),
-        (
-            "RETURN size(allShortestPaths((s)-[*]->(:T)))",
-            Value::Int(1),
-        ),
-    ] {
-        let (got, expands) = value(&g, &format!("{start}{q}"));
-        assert_eq!(got, want, "{q}");
-        assert!(expands > 0, "{q} did not run the BFS");
-        assert!(
-            expands < 10,
-            "{q} walked the ball behind t: expands={expands}"
-        );
-    }
-    // The same search with no matching end walks the whole ball.
-    let (got, expands) = value(
-        &g,
-        &format!("{start}RETURN shortestPath((s)-[*]->(:Missing))"),
-    );
-    assert_eq!(got, Value::Null);
-    assert!(expands > 1000, "expands={expands}");
-}
-
-#[test]
-fn start_candidates_take_the_global_shortest() {
-    // Starts s1, s2, s3 in creation (candidate) order: s1 reaches t and t1
-    // in 3 hops; s2 reaches t and t2 in 1 hop and again in 3, and t3 in 3;
-    // s3 reaches t in 3. The expression takes the shortest over every
-    // start candidate, as the clause's selector does (ADR-0568), so the
-    // first candidate's longer trail never wins and no length cap carries
-    // from one candidate to the next.
-    let b = Builder::new();
-    let starts = ["s1", "s2", "s3"].map(|id| b.node(id, &["S"]));
-    let t = b.node("t", &["N"]);
-    let ends = ["t1", "t2", "t3"].map(|id| b.node(id, &["T"]));
-    let mid = |id: &str| b.node(id, &[]);
-    b.chain(&[starts[0], mid("x"), mid("y"), t]);
-    b.chain(&[starts[1], t]);
-    b.chain(&[starts[1], mid("e"), mid("f"), t]);
-    b.chain(&[starts[2], mid("u"), mid("v"), t]);
-    b.chain(&[starts[0], mid("a"), mid("b"), ends[0]]);
-    b.chain(&[starts[1], ends[1]]);
-    b.chain(&[starts[1], mid("g"), mid("h"), ends[1]]);
-    b.chain(&[starts[1], mid("c"), mid("d"), ends[2]]);
-    let g = b.done();
-    let ids = "[p IN allShortestPaths({pattern}) | [n IN nodes(p) | n.id]]";
-    for (bind, pattern, all) in [
-        (
-            "MATCH (t:N {id: 't'}) ",
-            "(:S)-[*]->(t)",
-            names(&[&["s2", "t"]]),
-        ),
-        ("", "(:S)-[*]->(:T)", names(&[&["s2", "t2"]])),
-    ] {
-        // shortestPath: the shortest over all starts (s2's 1 hop).
-        let (hops, _) = value(&g, &format!("{bind}RETURN length(shortestPath({pattern}))"));
-        assert_eq!(hops, Value::Int(1), "{pattern}");
-        // allShortestPaths: every trail of the global minimum length.
-        let q = format!("{bind}RETURN {}", ids.replace("{pattern}", pattern));
-        assert_eq!(value(&g, &q).0, all, "{q}");
-    }
 }
 
 #[test]
@@ -198,8 +53,8 @@ fn null_bound_end_matches_nothing_on_both_engines() {
     // a→m→b: b is reachable in 2 hops, so an unbound end would find a
     // trail. An end bound to null (or any non-node) instead matches
     // nothing — the walk's zero-row semantics for a `Binding::Mismatch`
-    // (LABS-711) — and both shortest engines answer from that binding:
-    // null, with no search run.
+    // (LABS-711) — and the classic walk and the shortest BFS both answer
+    // from that binding: null, with no search run.
     let b = Builder::new();
     let (a, end) = (b.node("a", &["N"]), b.node("b", &["N"]));
     b.chain(&[a, b.node("m", &[]), end]);
@@ -229,25 +84,23 @@ fn null_bound_end_matches_nothing_on_both_engines() {
             vec![vec![Value::List(Vec::new().into())]],
             "{bound}: the walk matched a null-bound end"
         );
-        // Enumeration (min_hops > 1) and the fast path (min_hops ≤ 1,
-        // followable — LABS-811: it used to read the null binding as
-        // unbound and return the 1-hop trail to m): the same null, no
-        // search, whichever hop spelling reaches the engine.
-        assert_shortest_null_bound(&g, bound, "*2..2", "enumeration");
-        assert_shortest_null_bound(&g, bound, "*", "the fast path");
+        // The fast path (min_hops ≤ 1, followable — LABS-811: it used to
+        // read the null binding as unbound and return the 1-hop trail to
+        // m): the same null, no search.
+        assert_shortest_null_bound(&g, bound);
     }
 }
 
-/// Both shortest engines answer `null, no search` for an end bound to a
-/// null or non-node value, whichever hop spelling reaches them.
-fn assert_shortest_null_bound(g: &Graph, bound: &str, hops: &str, engine: &str) {
+/// The shortest-path expression answers `null, no search` for an end bound
+/// to a null or non-node value (LABS-811).
+fn assert_shortest_null_bound(g: &Graph, bound: &str) {
     let (rows, expands) = counting_expands(|| {
         exec_cypher(
             g,
             &format!(
                 "MATCH (a:N {{id: 'a'}}) WITH a, {bound} AS b \
-                 RETURN length(shortestPath((a)-[{hops}]->(b))), \
-                 size(allShortestPaths((a)-[{hops}]->(b)))"
+                 RETURN length(shortestPath((a)-[*]->(b))), \
+                 size(allShortestPaths((a)-[*]->(b)))"
             ),
         )
         .rows
@@ -255,80 +108,11 @@ fn assert_shortest_null_bound(g: &Graph, bound: &str, hops: &str, engine: &str) 
     assert_eq!(
         rows,
         vec![vec![Value::Null, Value::Null]],
-        "{bound}: {engine} matched a null-bound end"
+        "{bound}: the fast path matched a null-bound end"
     );
     assert_eq!(
         expands, 0,
-        "{bound}: {engine} searched for a null-bound end"
-    );
-}
-
-/// A graph of `E` relationships between nodes created on first mention,
-/// carrying their name as `id`; `s` and `t` are `:N`.
-fn named_graph(edges: &[(&str, &str)]) -> Graph {
-    let b = Builder::new();
-    let mut ids = HashMap::new();
-    for &(from, to) in edges {
-        let [from, to] = [from, to].map(|id| {
-            *ids.entry(id).or_insert_with(|| {
-                let labels: &[&str] = if matches!(id, "s" | "t") { &["N"] } else { &[] };
-                b.node(id, labels)
-            })
-        });
-        b.edge(from, to);
-    }
-    b.done()
-}
-
-/// On the graph of `edges`, `allShortestPaths((s){rel}(:N))` from `s`
-/// returns `routes` (in any order) and `shortestPath` their length.
-fn assert_unbound_end_routes(edges: &[(&str, &str)], rel: &str, routes: &[&[&str]]) {
-    let g = named_graph(edges);
-    let pattern = format!("(s){rel}(:N)");
-    let start = "MATCH (s:N {id: 's'}) ";
-    let (got, expands) = value(
-        &g,
-        &format!(
-            "{start}RETURN [p IN allShortestPaths({pattern}) | \
-             [n IN nodes(p) | n.id]]"
-        ),
-    );
-    assert_eq!(sorted(got), sorted(names(routes)), "{edges:?} {pattern}");
-    assert!(expands > 0, "{edges:?} {pattern} did not run the BFS");
-    let (hops, _) = value(
-        &g,
-        &format!("{start}RETURN length(shortestPath({pattern}))"),
-    );
-    let want = routes[0].len() as i64 - 1;
-    assert_eq!(hops, Value::Int(want), "{edges:?} {pattern}");
-}
-
-#[test]
-fn start_matching_the_unbound_end_merges_its_closed_trails() {
-    // The end pattern (:N) matches the start s, and t where there is one.
-    // An undirected triangle with only s :N: the closed trails alone.
-    assert_unbound_end_routes(
-        &[("s", "x"), ("x", "y"), ("y", "s")],
-        "-[*]-",
-        &[&["s", "x", "y", "s"], &["s", "y", "x", "s"]],
-    );
-    // The shorter closed trail wins.
-    assert_unbound_end_routes(
-        &[("s", "x"), ("x", "s"), ("s", "a"), ("a", "b"), ("b", "t")],
-        "-[*]->",
-        &[&["s", "x", "s"]],
-    );
-    // A closed and an open trail of one length merge.
-    assert_unbound_end_routes(
-        &[("s", "x"), ("x", "s"), ("s", "a"), ("a", "t")],
-        "-[*]->",
-        &[&["s", "a", "t"], &["s", "x", "s"]],
-    );
-    // The shorter open trail wins.
-    assert_unbound_end_routes(
-        &[("s", "x"), ("x", "s"), ("s", "t")],
-        "-[*]->",
-        &[&["s", "t"]],
+        "{bound}: the fast path searched for a null-bound end"
     );
 }
 

@@ -119,7 +119,7 @@ pub(crate) fn validate_create_bindings(
                         ));
                     }
                     // CREATE relationships cannot be variable-length
-                    if rp.min_hops.is_some() || rp.max_hops.is_some() {
+                    if rp.is_variable_length() {
                         return Err(EngineError::semantic(
                             ErrorKind::CreatingVarLength,
                             "variable length relationships cannot be used in CREATE".to_string(),
@@ -395,7 +395,7 @@ pub(crate) fn validate_merge_bindings(
                     }
                 }
                 // Check for variable-length relationships in MERGE
-                if rp.min_hops.is_some() || rp.max_hops.is_some() {
+                if rp.is_variable_length() {
                     return Err(EngineError::semantic(
                         ErrorKind::CreatingVarLength,
                         "variable length relationships cannot be used in MERGE".to_string(),

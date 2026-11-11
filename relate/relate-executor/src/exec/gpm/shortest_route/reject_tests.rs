@@ -9,9 +9,10 @@ use relate_core::Value;
 use relate_front::parse_and_lower;
 use relate_ir::{Clause, MatchMode, PathPattern};
 
-use crate::exec::test_support::try_exec_cypher_params;
+use crate::exec::test_support::{try_exec_cypher, try_exec_cypher_params};
 use crate::graph::Graph;
 use crate::row::Row;
+use crate::shortest::test_support::assert_common_end_nodes;
 
 use super::super::GpmFilters;
 use super::fixtures::{counting, gpm, on_route, plain, run, shortcut, sorted, Counts};
@@ -154,7 +155,9 @@ fn acyclic_and_simple_modes_stay_on_gpm() {
 #[test]
 fn min_hops_above_one_stays_on_gpm() {
     let g = shortcut();
-    let q = "MATCH p = shortestPath((a {id: 0})-[*2..5]->(b {id: 3})) RETURN length(p)";
+    // The keyword selector: the `shortestPath()` function rejects a lower
+    // bound above 1 at validation (42I08).
+    let q = "MATCH p = ANY SHORTEST (a {id: 0})-[*2..5]->(b {id: 3}) RETURN length(p)";
     assert_stays_on_gpm(&g, q, &[2]);
 }
 
@@ -181,8 +184,10 @@ fn postfix_quantified_relationship_with_outer_path_where_agrees_with_gpm() {
 #[test]
 fn dynamic_relationship_type_stays_on_gpm() {
     let g = shortcut();
+    // The CIP-28 postfix quantifier keeps the type expression legal, and
+    // the route declines a quantified element.
     let q = "WITH 'R' AS t MATCH (a {id: 0}), (b {id: 3}) \
-             MATCH p = shortestPath((a)-[:$(t)*]->(b)) RETURN length(p)";
+             MATCH p = ANY SHORTEST (a)-[:$(t)]->*(b) RETURN length(p)";
     assert_stays_on_gpm(&g, q, &[2]);
 }
 
@@ -235,5 +240,29 @@ fn non_empty_used_set_or_bound_variables_reject() {
     ] {
         let row = Row::from([(var.to_string(), value)]);
         assert!(!guard_accepts_with(q, &UsedSet::default(), &row), "{var}");
+    }
+}
+
+/// 51N23 (live Neo4j 2026.10.1) is a per-input-row rejection, not a route
+/// fact: a shape the guard declines and the forced-GPM enumeration reject
+/// exactly as the route does.
+#[test]
+fn same_variable_function_pattern_rejects_off_the_route() {
+    let g = plain(3, &[(0, 1), (1, 2)]);
+    // A label expression is not followable, so the guard declines it.
+    let declined = "MATCH p = shortestPath((a:R|S)-[:R]-(a)) RETURN p";
+    assert!(!guard_accepts(declined));
+    let err = try_exec_cypher(&g, declined)
+        .err()
+        .unwrap_or_else(|| panic!("{declined}: expected 51N23"));
+    assert_common_end_nodes(&err, declined);
+    for q in [
+        "MATCH p = shortestPath((a)-[*]-(a)) RETURN p",
+        "MATCH p = allShortestPaths((a)-[*]-(a)) RETURN p",
+    ] {
+        let err = with_forced_gpm(|| try_exec_cypher(&g, q))
+            .err()
+            .unwrap_or_else(|| panic!("{q}: expected 51N23"));
+        assert_common_end_nodes(&err, q);
     }
 }

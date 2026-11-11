@@ -507,7 +507,7 @@ fn collect_element_usages(
         }
         PatternElement::Relationship(rp) => {
             if let Some(var) = &rp.variable {
-                let is_varlen = !qpp_inner && (rp.min_hops.is_some() || rp.max_hops.is_some());
+                let is_varlen = !qpp_inner && rp.is_variable_length();
                 usages.push(PatternUsage {
                     name: var.clone(),
                     var_type: VarType::Relationship,

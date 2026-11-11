@@ -839,7 +839,7 @@ impl<'a> Parser<'a> {
             self.peek_type(),
             TokenType::Star | TokenType::Plus | TokenType::LeftBrace
         ) {
-            if rel.min_hops.is_some() || rel.max_hops.is_some() {
+            if rel.is_variable_length() {
                 return Err(self.error(
                     "NestedQuantification: a relationship pattern cannot be quantified twice",
                 ));

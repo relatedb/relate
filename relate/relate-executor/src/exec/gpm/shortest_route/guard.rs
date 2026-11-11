@@ -15,6 +15,46 @@ use crate::shortest::followable;
 use super::super::selector::resolve_gpm_count;
 use super::super::{ElementFilter, GpmFilters};
 use crate::pattern_walk::RelFilter;
+use crate::shortest::CommonEndNodes;
+
+/// Which shortest-path spelling a routed pattern is: the one fact the
+/// element decode cannot read off the lowered pattern. The function and
+/// expression forms reject a same-node pair, the keyword selectors keep
+/// their closed trails (51N23), and only the expression form stops a fan
+/// at its first productive layer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Spelling {
+    KeywordSelector,
+    Function,
+    Expression,
+}
+
+impl Spelling {
+    /// The `MATCH`-clause spelling: the function forms carry the flag, a
+    /// keyword selector does not. The expression form is stamped by its
+    /// own entry ([`super::fold_shortest_route`]).
+    fn of(path: &PathPattern) -> Self {
+        if path.is_shortest_path_function {
+            Spelling::Function
+        } else {
+            Spelling::KeywordSelector
+        }
+    }
+
+    /// 51N23's runtime policy.
+    pub(super) fn common_end_nodes(self) -> CommonEndNodes {
+        match self {
+            Spelling::KeywordSelector => CommonEndNodes::Allowed,
+            Spelling::Function | Spelling::Expression => CommonEndNodes::Forbidden,
+        }
+    }
+
+    /// The expression form keeps only the global shortest: an origin's
+    /// deeper layers are longer than its own shortest, so they cannot win.
+    pub(super) fn first_layer_only(self) -> bool {
+        self == Spelling::Expression
+    }
+}
 
 /// The three elements of a routed pattern and its selector kind.
 pub(super) struct Shape<'p> {
@@ -32,6 +72,8 @@ pub(super) struct Shape<'p> {
     pub max: Option<u32>,
     /// All-path selector (every shortest trail) rather than single-path.
     pub all: bool,
+    /// The shortest-path spelling this pattern was written with.
+    pub spelling: Spelling,
 }
 
 /// The one guard: the selectors, match and path modes, and pattern shape of
@@ -147,6 +189,7 @@ fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> 
                 min: qpp.min,
                 max: qpp.max,
                 all,
+                spelling: Spelling::of(path),
             })
         }
         (PatternElement::Relationship(rel), ElementFilter::Rel(filter)) => {
@@ -161,6 +204,7 @@ fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> 
                 min: rel.min_hops,
                 max: rel.max_hops,
                 all,
+                spelling: Spelling::of(path),
             })
         }
         _ => None,

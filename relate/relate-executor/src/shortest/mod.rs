@@ -15,14 +15,68 @@
 
 use std::collections::HashSet;
 
-use relate_core::{NodeId, Path, RelId, Result};
-use relate_ir::{Direction, NodePattern, RelPattern};
+use relate_core::{Error, NodeId, Path, RelId, Result};
+use relate_ir::{Direction, NodePattern, PathPattern, RelPattern};
 
 use crate::overlay::ExecGraph;
 use crate::store::RelTypes;
 
 pub(crate) mod layered;
 mod pair;
+
+/// 51N23: what a shortest-path route does when a start and end pair
+/// resolves to one node.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommonEndNodes {
+    /// The keyword selectors keep their closed trails.
+    Allowed,
+    /// The `shortestPath()`/`allShortestPaths()` function and expression
+    /// forms reject the pair, unless the lower bound is 0: the zero-length
+    /// path then answers it.
+    Forbidden,
+}
+
+impl CommonEndNodes {
+    /// The runtime half of 51N23 — the one predicate every engine arm that
+    /// resolves a pair reads, beside the static half
+    /// ([`reject_static_common_end_nodes`]).
+    pub(crate) fn reject(self, start: NodeId, end: NodeId, min: u32) -> Result<()> {
+        match self {
+            CommonEndNodes::Allowed => Ok(()),
+            CommonEndNodes::Forbidden if start == end && min > 0 => {
+                Err(common_end_nodes_forbidden())
+            }
+            CommonEndNodes::Forbidden => Ok(()),
+        }
+    }
+}
+
+/// 51N23: the common-end-node rejection text (Neo4j's
+/// `ShortestPathCommonEndNodesForbiddenException`, live Neo4j 2026.10.1).
+pub(crate) fn common_end_nodes_forbidden() -> Error {
+    Error::execution(
+        "ShortestPathCommonEndNodes: The shortest path algorithm does not work when the start and end nodes are the same.",
+    )
+}
+
+/// 51N23, statically: a `shortestPath()`/`allShortestPaths()` pattern that
+/// names one node variable at both ends is rejected on every input row —
+/// whatever the lower bound, before either engine looks at the graph (live
+/// Neo4j 2026.10.1 raises on an empty graph). With no input row there is no
+/// rejection, as live evaluates per row. A pair that distinct bindings
+/// resolve to one node at run time is the other half
+/// ([`CommonEndNodes::reject`]).
+pub(crate) fn reject_static_common_end_nodes(path: &PathPattern) -> Result<()> {
+    let same = path.is_shortest_path_function
+        && path
+            .boundary_nodes()
+            .is_some_and(|(start, end)| start.variable.is_some() && start.variable == end.variable);
+    if same {
+        Err(common_end_nodes_forbidden())
+    } else {
+        Ok(())
+    }
+}
 
 pub(crate) use pair::pair;
 

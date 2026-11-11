@@ -241,12 +241,13 @@ fn eval_terminal_binds_path_names_through_both_binding_paths() {
         Value::List(vec![classic.rows[0][0].clone()].into())
     );
 
-    // The expression shortest path enumerates through the same walker
-    // under its internal `__shortest_path` name — the stamped terminal
-    // binds it per candidate — and answers the classic row's value.
+    // The expression shortest path answers the same row. Both endpoints are
+    // bound variables: live rejects an unbound endpoint in the expression
+    // form ("requires bound nodes when not part of a MATCH clause").
     let enumerated = exec_cypher(
         &g,
-        "MATCH (a:X {n: 0}) RETURN shortestPath((a)-[:R*1..2]->(:X)) AS sp",
+        "MATCH (a:X {n: 0}), (b:X {n: 1}) \
+         RETURN shortestPath((a)-[:R*1..2]->(b)) AS sp",
     );
     assert_eq!(enumerated.rows, classic.rows);
 }

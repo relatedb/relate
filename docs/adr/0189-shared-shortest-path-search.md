@@ -216,3 +216,11 @@ walking the parent chain.
 - No public API change. ADR-0186 is corrected in place to name the
   shared module. ADR-0025 gains a Later references note.
   `docs/engine-architecture.md` names `shortest/`.
+
+## Later references
+
+- ADR-0575 narrows the expression form's endpoint contract: a
+  shortest-path expression requires both endpoint node patterns to name a
+  bound variable, so the unbound-end and open-start shapes in the Callers
+  section are rejected at compile time. The clause route and the shared
+  search module are unchanged.

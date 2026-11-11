@@ -51,11 +51,8 @@ pub fn validate_expr_traversal_bounds(
     expr: &Expr,
     max_traversal_depth: u32,
 ) -> Result<(), EngineError> {
-    let path = match expr {
-        Expr::ShortestPath(sp) => &sp.pattern,
-        Expr::PatternPredicate(pp) => &pp.pattern,
-        Expr::PatternComprehension(pc) => &pc.pattern,
-        _ => return Ok(()),
+    let Some(path) = crate::ast::collect::pattern_of_expr(expr) else {
+        return Ok(());
     };
     check_path_traversal_bounds(path, max_traversal_depth)
 }

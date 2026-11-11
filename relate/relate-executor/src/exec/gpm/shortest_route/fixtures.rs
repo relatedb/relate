@@ -85,10 +85,13 @@ pub(super) struct Selector {
     pub(super) all: bool,
 }
 
+/// The keyword selectors only: the legacy `shortestPath()`/`allShortestPaths()`
+/// functions reject a pattern whose start and end can be the same node
+/// (51N23) and one whose endpoints are not both bound variables in an
+/// expression, so the open-endpoint matrices below run the keyword
+/// spellings, which keep closed walks.
 #[rustfmt::skip]
-pub(super) const SELECTORS: [Selector; 6] = [
-    Selector { open: "shortestPath(", close: ")", all: false },
-    Selector { open: "allShortestPaths(", close: ")", all: true },
+pub(super) const SELECTORS: [Selector; 4] = [
     Selector { open: "ANY SHORTEST ", close: "", all: false },
     Selector { open: "SHORTEST 1 ", close: "", all: false },
     Selector { open: "SHORTEST 1 GROUP ", close: "", all: true },

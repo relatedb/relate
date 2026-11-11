@@ -1,261 +1,156 @@
 //! The expression form on the one shortest route (ADR-0568). The front end
-//! lowers `shortestPath(...)` / `allShortestPaths(...)` to the selector
-//! form the `MATCH` clause uses, so the expression takes the global
-//! shortest over every start and end candidate: the clause's rows
-//! collapsed to one value per input row. These tests pin that contract
-//! against the clause (the expression is the minimum of the clause's
-//! rows), that the route and the enumeration fallback agree, and the row
-//! contract the lowering must keep: one value per row, `null` when nothing
-//! qualifies, a list for `allShortestPaths`, the zero-length path, closed
-//! trails, and the 32-hop default for an unbounded relationship.
+//! lowers `shortestPath(...)` / `allShortestPaths(...)` to the selector form
+//! the `MATCH` clause uses; live Neo4j 2026.10.1 requires both endpoint node
+//! patterns to name a bound variable, so the expression answers one value per
+//! input row for that bound pair. These tests pin the bound-pair contract
+//! against the clause, the route/enumeration parity, the zero-length path,
+//! the 51N23 same-node rejection, and the 32-hop default ceiling.
 
 use relate_core::Value;
 
-use crate::exec::test_support::{exec_cypher, Builder};
+use crate::exec::test_support::{exec_cypher, try_exec_cypher, Builder};
 use crate::graph::Graph;
+use crate::shortest::test_support::assert_common_end_nodes;
 
-use super::fixtures::{run, shortcut, sorted};
+use super::fixtures::{plain, run, shortcut, sorted};
 use super::with_forced_gpm;
-
-/// Starts in creation order `starts`, ends t1 and t2: s1 reaches t1 in 3
-/// hops, s2 reaches t1 in 1 hop and t2 in 2.
-fn two_starts(starts: [&str; 2]) -> Graph {
-    let b = Builder::new();
-    let s: Vec<_> = starts.iter().map(|id| (*id, b.node(id, &["S"]))).collect();
-    let t1 = b.node("t1", &["T"]);
-    let t2 = b.node("t2", &["T"]);
-    let mid = |id: &str| b.node(id, &[]);
-    let at = |name: &str| s.iter().find(|(id, _)| *id == name).unwrap().1;
-    b.chain(&[at("s1"), mid("a"), mid("b"), t1]);
-    b.edge(at("s2"), t1);
-    b.chain(&[at("s2"), mid("c"), t2]);
-    b.done()
-}
-
-fn text(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Null => "null".into(),
-        other => panic!("unexpected {other:?}"),
-    }
-}
 
 /// `rows` as sorted `a>b>c` strings.
 fn lines(rows: &[Vec<Value>]) -> Vec<String> {
     let mut out: Vec<String> = rows
         .iter()
-        .map(|r| r.iter().map(text).collect::<Vec<_>>().join(">"))
+        .map(|r| {
+            r.iter()
+                .map(|v| match v {
+                    Value::String(s) => s.to_string(),
+                    Value::Int(i) => i.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".into(),
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(">")
+        })
         .collect();
     out.sort();
     out
 }
 
-/// The clause's (start, end, length) rows for `selector` over `pattern`.
-fn clause(g: &Graph, selector: &str, pattern: &str) -> Vec<String> {
-    let q = format!(
-        "MATCH p = {selector}({pattern}) \
-         RETURN nodes(p)[0].id, last(nodes(p)).id, length(p)"
+/// Every pair `a < b` of an undirected chain, all reachable.
+fn chain() -> Graph {
+    plain(4, &[(0, 1), (1, 2), (2, 3)])
+}
+
+#[test]
+fn bound_pair_agrees_with_the_clause() {
+    let g = chain();
+    let clause = sorted(
+        exec_cypher(
+            &g,
+            "MATCH (a), (b) WHERE a.id < b.id \
+             MATCH p = shortestPath((a)-[*..3]-(b)) \
+             RETURN a.id, b.id, length(p)",
+        )
+        .rows,
     );
-    lines(&exec_cypher(g, &q).rows)
-}
-
-/// The expression form's (start, end, length) rows for `selector` over
-/// `pattern`: one row, or one `null` row.
-fn expression(g: &Graph, selector: &str, pattern: &str) -> Vec<String> {
-    let q = if selector == "shortestPath" {
-        format!(
-            "WITH {selector}({pattern}) AS p \
-             RETURN nodes(p)[0].id, last(nodes(p)).id, length(p)"
+    let expr = sorted(
+        exec_cypher(
+            &g,
+            "MATCH (a), (b) WHERE a.id < b.id \
+             RETURN a.id, b.id, length(shortestPath((a)-[*..3]-(b)))",
         )
-    } else {
-        format!(
-            "UNWIND coalesce({selector}({pattern}), [null]) AS p \
-             RETURN nodes(p)[0].id, last(nodes(p)).id, length(p)"
+        .rows,
+    );
+    assert_eq!(expr, clause);
+
+    let clause_all = sorted(
+        exec_cypher(
+            &g,
+            "MATCH (a), (b) WHERE a.id < b.id \
+             MATCH p = allShortestPaths((a)-[*..3]-(b)) \
+             RETURN a.id, b.id, count(*)",
         )
-    };
-    lines(&exec_cypher(g, &q).rows)
-}
-
-/// The length (last field) of a `start>end>length` line.
-fn length(line: &str) -> i64 {
-    line.rsplit('>').next().unwrap().parse().unwrap()
-}
-
-const OPEN: &str = "(:S)-[*]->(:T)";
-const BOUND_END: &str = "(:S)-[*]->(:T {id: 't1'})";
-const MIN_TWO: &str = "(:S)-[*2..]->(:T)";
-const SHORT: &str = "(:S)-[*..2]->(:T)";
-
-#[test]
-fn expression_is_the_minimum_of_the_clause_rows() {
-    for order in [["s1", "s2"], ["s2", "s1"]] {
-        let g = two_starts(order);
-        for pattern in [OPEN, BOUND_END, SHORT] {
-            let rows = clause(&g, "shortestPath", pattern);
-            let min = rows.iter().map(|r| length(r)).min().unwrap();
-            let at_min: Vec<String> = rows.iter().filter(|r| length(r) == min).cloned().collect();
-            // Single path: one row, one of the shortest clause rows (the
-            // witness among equals is unspecified).
-            let single = expression(&g, "shortestPath", pattern);
-            assert_eq!(single.len(), 1, "{pattern} {order:?}");
-            assert!(
-                at_min.contains(&single[0]),
-                "{pattern} {order:?}: {single:?}"
-            );
-            // All paths: exactly the clause's rows at the global minimum.
-            let every = clause(&g, "allShortestPaths", pattern);
-            let every_min = every.iter().map(|r| length(r)).min().unwrap();
-            let expected: Vec<String> = every
-                .into_iter()
-                .filter(|r| length(r) == every_min)
-                .collect();
-            assert_eq!(
-                expression(&g, "allShortestPaths", pattern),
-                expected,
-                "{pattern} {order:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn candidate_order_does_not_change_the_answer() {
-    // s1 reaches t1 in 3 hops, s2 in 1: whichever start is created first,
-    // the expression returns the 1-hop trail (the first-candidate early
-    // exit and the allShortestPaths length cap are gone).
-    for order in [["s1", "s2"], ["s2", "s1"]] {
-        let g = two_starts(order);
-        assert_eq!(
-            expression(&g, "shortestPath", OPEN),
-            ["s2>t1>1"],
-            "{order:?}"
-        );
-        assert_eq!(
-            expression(&g, "allShortestPaths", OPEN),
-            ["s2>t1>1"],
-            "{order:?}"
-        );
-        assert_eq!(
-            expression(&g, "shortestPath", BOUND_END),
-            ["s2>t1>1"],
-            "{order:?}"
-        );
-        assert_eq!(
-            expression(&g, "allShortestPaths", BOUND_END),
-            ["s2>t1>1"],
-            "{order:?}"
-        );
-        // min_hops above one enumerates and was always order independent.
-        let rows = exec_cypher(&g, &format!("RETURN length(shortestPath({MIN_TWO}))")).rows;
-        assert_eq!(lines(&rows), ["2"], "{order:?}");
-    }
+        .rows,
+    );
+    let expr_all = sorted(
+        exec_cypher(
+            &g,
+            "MATCH (a), (b) WHERE a.id < b.id \
+             RETURN a.id, b.id, size(allShortestPaths((a)-[*..3]-(b)))",
+        )
+        .rows,
+    );
+    assert_eq!(expr_all, clause_all);
 }
 
 #[test]
 fn expression_runs_on_the_route() {
-    let g = two_starts(["s1", "s2"]);
-    let (rows, counts) = run(&g, &format!("RETURN length(shortestPath({OPEN}))"));
-    assert_eq!(lines(&rows), ["1"]);
+    let (rows, counts) = run(
+        &chain(),
+        "MATCH (a {id: 0}), (b {id: 3}) \
+         RETURN length(shortestPath((a)-[*..3]-(b)))",
+    );
+    assert_eq!(lines(&rows), ["3"]);
     assert!(
         counts.route_runs > 0,
         "the expression did not take the route"
     );
     assert!(counts.expands > 0);
-    // min_hops above one declines the route and enumerates.
-    let (rows, counts) = run(&g, &format!("RETURN length(shortestPath({MIN_TWO}))"));
-    assert_eq!(lines(&rows), ["2"]);
-    assert_eq!(counts.route_runs, 0);
 }
 
 #[test]
 fn one_value_per_row_and_null_when_nothing_qualifies() {
-    let g = two_starts(["s1", "s2"]);
-    // A start with no way to the end: null, never a dropped row.
+    // 0 reaches 2 but not 3: the expression keeps the row and answers null.
+    let g = plain(4, &[(0, 1), (1, 2)]);
     let rows = exec_cypher(
         &g,
-        "MATCH (t:T) RETURN t.id, length(shortestPath((t)-[*]->(:S)))",
+        "MATCH (a {id: 0}), (b {id: 3}) \
+         RETURN length(shortestPath((a)-[*]->(b))), \
+         allShortestPaths((a)-[*]->(b)) IS NULL",
     )
     .rows;
-    assert_eq!(lines(&rows), ["t1>null", "t2>null"]);
-    let rows = exec_cypher(
-        &g,
-        "MATCH (s:S) RETURN s.id, allShortestPaths((s)-[*]->(:Missing)) IS NULL",
-    )
-    .rows;
-    assert_eq!(rows.len(), 2);
+    assert_eq!(lines(&rows), ["null>true"]);
 }
 
 #[test]
 fn zero_length_path_when_start_matches_end() {
-    let b = Builder::new();
-    let (s1, s2) = (b.node("s1", &["S"]), b.node("s2", &["S"]));
-    let m = b.node("m", &[]);
-    b.chain(&[s1, m, s2]);
-    let g = b.done();
-    let pat = "(:S)-[*0..]->(:S)";
-    // The global minimum is the zero-length path of either start; which
-    // one shortestPath returns is unspecified.
-    let single = expression(&g, "shortestPath", pat);
-    assert!(
-        ["s1>s1>0", "s2>s2>0"].contains(&single[0].as_str()),
-        "{single:?}"
-    );
-    // allShortestPaths: every zero-length path.
-    assert_eq!(
-        expression(&g, "allShortestPaths", pat),
-        ["s1>s1>0", "s2>s2>0"]
-    );
+    // The min-length-zero pair keeps its zero-length path, whether the
+    // endpoints share a variable or two variables bind one node (live).
+    let g = chain();
+    for q in [
+        "MATCH (a {id: 0}) RETURN length(shortestPath((a)-[*0..2]-(a)))",
+        "MATCH (a {id: 0}), (b {id: 0}) RETURN length(shortestPath((a)-[*0..2]-(b)))",
+    ] {
+        assert_eq!(lines(&exec_cypher(&g, q).rows), ["0"], "{q}");
+    }
 }
 
 #[test]
-fn closed_trails_per_input_row() {
-    let b = Builder::new();
-    let (s1, s2) = (b.node("s1", &["S"]), b.node("s2", &["S"]));
-    let [x, y, z] = ["x", "y", "z"].map(|id| b.node(id, &[]));
-    b.chain(&[s1, x, y, s1]);
-    b.chain(&[s2, z, s2]);
-    let g = b.done();
-    let expr = exec_cypher(
-        &g,
-        "MATCH (s:S) RETURN s.id, length(shortestPath((s)-[*1..]->(s)))",
-    )
-    .rows;
-    assert_eq!(lines(&expr), ["s1>3", "s2>2"]);
-    let via_clause = exec_cypher(
-        &g,
-        "MATCH (s:S) MATCH p = shortestPath((s)-[*1..]->(s)) RETURN s.id, length(p)",
-    )
-    .rows;
-    assert_eq!(lines(&via_clause), lines(&expr));
-}
-
-#[test]
-fn bound_start_agrees_with_the_clause_per_end() {
-    // The expression collapses a start's ends to the shallowest layer; the
-    // clause answers one row per (start, end).
-    let g = two_starts(["s1", "s2"]);
-    let via_clause = exec_cypher(
-        &g,
-        "MATCH (s:S) MATCH p = shortestPath((s)-[*]->(:T)) RETURN s.id, length(p)",
-    )
-    .rows;
-    let via_expr = exec_cypher(
-        &g,
-        "MATCH (s:S) RETURN s.id, length(shortestPath((s)-[*]->(:T)))",
-    )
-    .rows;
-    assert_eq!(lines(&via_clause), ["s1>3", "s2>1", "s2>2"]);
-    assert_eq!(lines(&via_expr), ["s1>3", "s2>1"]);
+fn same_node_pair_with_a_positive_bound_raises_51n23() {
+    let g = chain();
+    for q in [
+        // One variable at both ends.
+        "MATCH (a {id: 0}) RETURN length(shortestPath((a)-[*]-(a)))",
+        // Two variables the row binds to one node.
+        "MATCH (a {id: 0}), (b {id: 0}) RETURN length(shortestPath((a)-[*]-(b)))",
+    ] {
+        let err = try_exec_cypher(&g, q)
+            .err()
+            .unwrap_or_else(|| panic!("{q}: expected 51N23"));
+        assert_common_end_nodes(&err, q);
+    }
 }
 
 #[test]
 fn route_and_enumeration_agree_on_every_bound_pair() {
     let g = shortcut();
     for q in [
-        "MATCH (a), (b) RETURN a.id, b.id, length(shortestPath((a)-[*..4]->(b)))",
-        "MATCH (a), (b) RETURN a.id, b.id, size(allShortestPaths((a)-[*..4]-(b)))",
-        "MATCH (a), (b) RETURN a.id, b.id, length(shortestPath((a)-[*0..3]->(b)))",
+        "MATCH (a), (b) WHERE a.id < b.id \
+         RETURN a.id, b.id, length(shortestPath((a)-[*..4]-(b)))",
+        "MATCH (a), (b) WHERE a.id < b.id \
+         RETURN a.id, b.id, size(allShortestPaths((a)-[*..4]-(b)))",
+        "MATCH (a), (b) WHERE a.id < b.id \
+         RETURN a.id, b.id, length(shortestPath((a)-[*0..3]->(b)))",
     ] {
         let routed = sorted(exec_cypher(&g, q).rows);
         let enumerated = sorted(with_forced_gpm(|| exec_cypher(&g, q).rows));

@@ -26,7 +26,7 @@ mod route;
 
 use super::sink::MatchedSink;
 use super::GpmFilters;
-use guard::route_shape;
+use guard::{route_shape, Spelling};
 use route::{PathFilter, Route};
 
 /// The predicates a routed shortest path must satisfy **during** the
@@ -153,7 +153,8 @@ pub(super) fn match_shortest_route(
     };
     let residual = sink.residual();
     let halt = sink.halt_cell();
-    if !Route::new(ctx, path, row, shape, path_filter(path, residual), halt).run(&mut sink)? {
+    let route = Route::new(ctx, path, row, shape, path_filter(path, residual), halt);
+    if !route.run(&mut sink)? {
         return Ok(false);
     }
     note_route_run();
@@ -194,14 +195,14 @@ pub(crate) fn fold_shortest_route(
         return Ok(false);
     };
     shape.max = shape.max.or(Some(crate::pattern_walk::DEFAULT_MAX_HOPS));
+    // The expression form is the function spelling: its lowered pattern
+    // carries no function flag, so the caller stamps it here.
+    shape.spelling = Spelling::Expression;
     let residual = Residual::empty();
     let halt = Cell::new(false);
     let mut sink = MatchedSink::fold(&residual, &halt, fold);
     let filter = path_filter(path, &residual);
-    if !Route::new(ctx, path, row, shape, filter, &halt)
-        .first_layer_only()
-        .run(&mut sink)?
-    {
+    if !Route::new(ctx, path, row, shape, filter, &halt).run(&mut sink)? {
         return Ok(false);
     }
     note_route_run();

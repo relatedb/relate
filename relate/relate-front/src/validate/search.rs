@@ -279,7 +279,7 @@ pub(crate) fn search_pattern_shape(pattern: &[PatternPath]) -> SearchPatternShap
     match path.elements.as_slice() {
         [PatternElement::Node(_)] => SearchPatternShape::Plain,
         [PatternElement::Node(n0), PatternElement::Relationship(rp), PatternElement::Node(n1)] => {
-            if rp.min_hops.is_some() || rp.max_hops.is_some() || rp.quantified {
+            if rp.is_variable_length() || rp.quantified {
                 return SearchPatternShape::Complex(
                     "SearchClauseTooComplexPattern: a SEARCH clause's MATCH statement cannot use a variable-length relationship",
                 );

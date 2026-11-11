@@ -3,7 +3,7 @@
 //! Neo4j 2026 enforces at compile time but Relate accepted (the V1
 //! harness wave's MATCH-shape cluster).
 //!
-//! Five rules live here:
+//! Seven rules live here:
 //!
 //! - **42N34** — a path variable cannot be bound inside a quantified path
 //!   pattern (`MATCH (p = (:A)--(:B))+`). CIP-28 permits the spelling; the
@@ -21,6 +21,10 @@
 //!   relationship properties.
 //! - **42I04** — a `CREATE`/`MERGE` pattern admits neither a
 //!   `shortestPath()`/`allShortestPaths()` pattern nor an explicit path mode.
+//! - **42N40 / 42I08** — a `shortestPath()`/`allShortestPaths()` pattern
+//!   must contain exactly one relationship, and its lower bound is 0 or 1.
+//! - **42001** — a shortest-path *expression* (outside a `MATCH` clause)
+//!   requires both endpoint node patterns to bind a variable.
 //!
 //! The parser owns the shape rules that must fire before the AST loses the
 //! information (a named group under a non-selective selector, and a path /
@@ -33,10 +37,11 @@ use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{
-    selector_is_selective, Clause, MatchClause, MatchMode, PatternElement, PatternPath,
+    selector_is_selective, Clause, Expr, MatchClause, MatchMode, NodePattern, PathSelector,
+    PatternElement, PatternPath, RelPattern,
 };
 
-use crate::ast::collect::collect_expr_variables;
+use crate::ast::collect::{collect_expr_variables, pattern_of_expr};
 
 /// The `MATCH`-shape rule battery, one pass per `MATCH` clause.
 pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
@@ -50,6 +55,7 @@ pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
                     reject_path_bound_in_qpp(path)?;
                     reject_own_path_variable_in_group_where(path)?;
                     reject_shortest_path_properties(path)?;
+                    reject_shortest_path_function_shape(path)?;
                 }
                 if mc.match_mode == MatchMode::RepeatableElements {
                     reject_repeatable_elements_violations(mc)?;
@@ -63,6 +69,112 @@ pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
         }
     }
     Ok(())
+}
+
+/// The expression-embedded half: a shortest-path expression's own shape and
+/// its bound endpoints. Rides the whole-tree walk's expression visitor.
+pub(crate) fn validate_expr_pattern_shape(expr: &Expr) -> Result<(), EngineError> {
+    let Some(path) = pattern_of_expr(expr) else {
+        return Ok(());
+    };
+    let Expr::ShortestPath(shortest) = expr else {
+        return Ok(());
+    };
+    let name = shortest_path_function_name(shortest.all);
+    reject_shortest_path_shape(name, path)?;
+    reject_unbound_shortest_path_endpoints(name, path)
+}
+
+/// 42N40 / 42I08: a `shortestPath()`/`allShortestPaths()` pattern contains
+/// exactly one relationship, and that relationship's lower bound is 0 or 1.
+/// Live Neo4j 2026.10.1 reports both as `42001` `SyntaxError`, for the
+/// `MATCH` sugar and the expression form alike.
+fn reject_shortest_path_function_shape(path: &PatternPath) -> Result<(), EngineError> {
+    if !path.is_shortest_path_function {
+        return Ok(());
+    }
+    let all = matches!(path.selector.as_ref(), Some(PathSelector::AllShortest));
+    reject_shortest_path_shape(shortest_path_function_name(all), path)
+}
+
+/// The one rule body both shortest-path spellings share; `name` is the
+/// function as written, for the rejection text.
+fn reject_shortest_path_shape(name: &str, path: &PatternPath) -> Result<(), EngineError> {
+    let Some(rel) = single_relationship(&path.elements) else {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidPatternCharacter,
+            format!("{name}(...) requires a pattern containing a single relationship"),
+        ));
+    };
+    if rel.min_hops.is_some_and(|min| min > 1) {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidPatternCharacter,
+            format!("{name}(...) does not support a minimal length different from 0 or 1"),
+        ));
+    }
+    Ok(())
+}
+
+/// The pattern's one relationship element, or `None` when it has zero or
+/// more than one (a quantified element is its own rejection, but counts as
+/// "not a single relationship" here).
+fn single_relationship(elements: &[PatternElement]) -> Option<&RelPattern> {
+    let mut found = None;
+    for element in elements {
+        match element {
+            PatternElement::Relationship(rel) if found.is_none() => found = Some(rel),
+            PatternElement::Relationship(_) | PatternElement::Quantified(_) => return None,
+            PatternElement::Node(_) => {}
+        }
+    }
+    found
+}
+
+/// The function name a shortest-path pattern was written with, for the
+/// rejection text — both spellings' one name table.
+fn shortest_path_function_name(all: bool) -> &'static str {
+    if all {
+        "allShortestPaths"
+    } else {
+        "shortestPath"
+    }
+}
+
+/// 42001: outside a `MATCH` clause a `shortestPath()`/`allShortestPaths()`
+/// expression cannot bind its endpoints — both endpoint node patterns must
+/// name a variable already in scope (live Neo4j 2026.10.1).
+fn reject_unbound_shortest_path_endpoints(
+    name: &str,
+    path: &PatternPath,
+) -> Result<(), EngineError> {
+    let endpoints = [
+        path.elements.iter().find_map(node_of),
+        path.elements.iter().rev().find_map(node_of),
+    ];
+    for endpoint in endpoints.into_iter().flatten() {
+        if endpoint.variable.is_none() {
+            return Err(unbound_shortest_path_endpoint(name));
+        }
+    }
+    Ok(())
+}
+
+/// One pattern element's node pattern, if it is one.
+fn node_of(element: &PatternElement) -> Option<&NodePattern> {
+    match element {
+        PatternElement::Node(node) => Some(node),
+        PatternElement::Relationship(_) | PatternElement::Quantified(_) => None,
+    }
+}
+
+/// The one 42001 text for an endpoint a shortest-path expression cannot
+/// bind; `name` is the written function name (live echoes it, "A
+/// allShortestPaths(...) …" included).
+fn unbound_shortest_path_endpoint(name: &str) -> EngineError {
+    EngineError::semantic(
+        ErrorKind::InvalidPatternCharacter,
+        format!("A {name}(...) requires bound nodes when not part of a MATCH clause."),
+    )
 }
 
 /// 42I04: `shortestPath()`/`allShortestPaths()` and explicit path modes are
@@ -355,5 +467,102 @@ mod tests {
             assert!(err.contains("properties"), "{query}: {err}");
         }
         assert!(validate("MATCH (a), (b), shortestPath((a)-[*]->(b)) RETURN *").is_ok());
+    }
+
+    /// 42N40 / 42I08: a `shortestPath()`/`allShortestPaths()` pattern has
+    /// exactly one relationship, and its lower bound is 0 or 1 (live Neo4j
+    /// 2026.10.1, `42001` `SyntaxError`).
+    #[test]
+    fn shortest_path_function_pattern_shape_is_rejected() {
+        for (query, message) in [
+            (
+                "MATCH p = shortestPath((n)) RETURN p",
+                "shortestPath(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH p = allShortestPaths((n)) RETURN p",
+                "allShortestPaths(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH p = shortestPath((a)--()--(b)) RETURN p",
+                "shortestPath(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH p = allShortestPaths((a)--()--(b)) RETURN p",
+                "allShortestPaths(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH p = shortestPath((a)-[*2..3]->(b)) RETURN p",
+                "shortestPath(...) does not support a minimal length different from 0 or 1",
+            ),
+            (
+                "MATCH p = allShortestPaths((a)-[*2..3]->(b)) RETURN p",
+                "allShortestPaths(...) does not support a minimal length different from 0 or 1",
+            ),
+        ] {
+            let err = validate(query).unwrap_err();
+            assert!(err.contains(message), "{query}: {err}");
+        }
+        // A zero lower bound and a fixed one-relationship pattern stay legal.
+        assert!(validate("MATCH p = shortestPath((a)-[*0..3]->(b)) RETURN p").is_ok());
+        assert!(validate("MATCH p = allShortestPaths((a)-[:T]->(b)) RETURN p").is_ok());
+
+        // The expression form carries the same rule (live Neo4j 2026.10.1).
+        for (query, message) in [
+            (
+                "MATCH (a) RETURN shortestPath((a)) AS p",
+                "shortestPath(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH (a) RETURN allShortestPaths((a)) AS p",
+                "allShortestPaths(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH (a), (b), (c) RETURN shortestPath((a)-[:T]-(b)-[:T]-(c)) AS p",
+                "shortestPath(...) requires a pattern containing a single relationship",
+            ),
+            (
+                "MATCH (a), (b) RETURN shortestPath((a)-[:T*2..3]-(b)) AS p",
+                "shortestPath(...) does not support a minimal length different from 0 or 1",
+            ),
+        ] {
+            let err = crate::validate::parse_and_validate_tree(query).unwrap_err();
+            assert!(err.contains(message), "{query}: {err}");
+        }
+        assert!(crate::validate::parse_and_validate_tree(
+            "MATCH (a), (b) RETURN shortestPath((a)-[:T*0..3]-(b)) AS p"
+        )
+        .is_ok());
+    }
+
+    /// 42001: outside a `MATCH` clause both endpoint node patterns of a
+    /// shortest-path expression must name a variable (live Neo4j 2026.10.1).
+    #[test]
+    fn shortest_path_expression_requires_bound_endpoints() {
+        for query in [
+            "MATCH (bound:A) RETURN length(shortestpath((bound)-[*1..3]-(:B))) AS dist",
+            "MATCH (bound:A) WHERE length(shortestpath((bound)-[*1..3]-(:B))) < 3 RETURN bound",
+            "MATCH (bound:A) WITH shortestpath((bound)-[*1..3]-(:B)) AS p RETURN length(p)",
+        ] {
+            let err = crate::validate::parse_and_validate_tree(query).unwrap_err();
+            assert!(
+                err.contains("requires bound nodes when not part of a MATCH clause"),
+                "{query}: {err}"
+            );
+        }
+        // The all-shortest spelling echoes its own name (live's text).
+        let err = crate::validate::parse_and_validate_tree(
+            "MATCH (bound:A) RETURN length(allshortestpaths((bound)-[*1..3]-(:B))) AS dist",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("A allShortestPaths(...) requires bound nodes"),
+            "{err}"
+        );
+        // Both endpoints bound: legal, wherever the expression sits.
+        assert!(crate::validate::parse_and_validate_tree(
+            "MATCH (a:A), (b:B) RETURN length(shortestpath((a)-[*1..3]-(b))) AS dist"
+        )
+        .is_ok());
     }
 }

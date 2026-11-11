@@ -29,6 +29,7 @@ mod sink;
 mod walk;
 
 use crate::exec::rider::Rider;
+use crate::shortest::reject_static_common_end_nodes;
 use early::{early_predicates, EarlyPredicates};
 use emit::GpmEmit;
 use qpp::gpm_expand_quantified;
@@ -407,6 +408,11 @@ pub(crate) fn match_gpm_path(
     let graph = ctx.graph;
     let params = ctx.params;
     let cypher_version = ctx.cypher_version;
+    // 51N23: a function-form shortestPath/allShortestPaths naming one node
+    // variable at both ends rejects each input row before either engine
+    // runs — the GPM enumeration reached here answers closed walks the
+    // route rejects, and live rejects them on an empty graph too.
+    reject_static_common_end_nodes(path)?;
     // The MATCH-level residual rides along for the shortest-path route,
     // which must choose its path *against* the WHERE predicate, and for
     // the start-point selection (index seeks on the start variable, see

@@ -1878,6 +1878,16 @@ pub struct RelPattern {
     pub quantified: bool,
 }
 
+impl RelPattern {
+    /// Whether the relationship is variable-length: either hop bound was
+    /// written (`*m..n`, or a CIP-28 quantifier lowered onto the bounds).
+    /// The one predicate every consumer consults instead of re-spelling
+    /// the two `is_some` checks.
+    pub fn is_variable_length(&self) -> bool {
+        self.min_hops.is_some() || self.max_hops.is_some()
+    }
+}
+
 /// A GQL label/relationship-type expression (CIP-14): `&` (conjunction),
 /// `|` (disjunction), `!` (negation), `%` (wildcard -- matches any non-empty
 /// label set, or any relationship since every relationship has exactly one

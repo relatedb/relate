@@ -416,13 +416,13 @@ fn named_subpath_length_forces_exhaustive_shortest_path() {
     );
 }
 
-/// A multi-relationship shortest path can carry its quantifier on any
-/// relationship, not just the first: a `[*]` on a later relationship
-/// variable forces the exhaustive evaluation too.
+/// A quantifier over the shortest path's relationship variable forces the
+/// exhaustive evaluation too (the single-relationship shape is the only one
+/// a `shortestPath()` pattern admits).
 #[test]
-fn later_relationship_quantifier_forces_exhaustive_shortest_path() {
+fn relationship_quantifier_forces_exhaustive_shortest_path() {
     let query = relate_front::parse_and_lower(
-        "MATCH p = shortestPath((a)-[r]->(b)<-[s*]-(c)) WHERE any(x IN s WHERE x IS NOT NULL) RETURN p",
+        "MATCH p = shortestPath((a)-[r*]-(b)) WHERE any(x IN r WHERE x IS NOT NULL) RETURN p",
     )
     .unwrap();
     let Clause::Match {

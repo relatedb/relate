@@ -36,6 +36,19 @@ pub(crate) fn clause_patterns(clause: &Clause) -> Option<&[PatternPath]> {
     }
 }
 
+/// The pattern a pattern-carrying expression embeds: a `shortestPath()` /
+/// `allShortestPaths()` expression, a pattern predicate, or a pattern
+/// comprehension. The one expression→pattern mapping the shape rules and
+/// the traversal-bound scan read instead of re-spelling the match.
+pub(crate) fn pattern_of_expr(expr: &Expr) -> Option<&PatternPath> {
+    match expr {
+        Expr::ShortestPath(shortest) => Some(&shortest.pattern),
+        Expr::PatternPredicate(predicate) => Some(&predicate.pattern),
+        Expr::PatternComprehension(comprehension) => Some(&comprehension.pattern),
+        _ => None,
+    }
+}
+
 /// Whether a clause mutates the graph: the updating clauses plus a nested
 /// `FOREACH` (its body is writes only). This is the one positive
 /// classification — `LOAD CSV` is a read, a procedure call is not statically

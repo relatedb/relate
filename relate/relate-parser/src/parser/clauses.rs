@@ -540,8 +540,7 @@ impl<'a> Parser<'a> {
                     let unbounded = path.elements.iter().any(|e| match e {
                         PatternElement::Quantified(qpp) => qpp.quantifier.max.is_none(),
                         PatternElement::Relationship(rp) => {
-                            (rp.min_hops.is_some() || rp.max_hops.is_some())
-                                && rp.max_hops.is_none()
+                            rp.is_variable_length() && rp.max_hops.is_none()
                         }
                         PatternElement::Node(_) => false,
                     });

@@ -269,7 +269,7 @@ pub(super) fn lower_rel(r: &cl::RelPattern) -> Result<mdb::RelPattern> {
     );
     let properties =
         lower_element_properties(r.properties_param.as_ref(), r.has_properties, &r.properties)?;
-    let var_length = r.min_hops.is_some() || r.max_hops.is_some();
+    let var_length = r.is_variable_length();
     let max_hops = if var_length { r.max_hops } else { Some(1) };
     Ok(mdb::RelPattern {
         variable: r.variable.clone(),

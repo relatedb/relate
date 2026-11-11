@@ -1753,7 +1753,7 @@ mod tests;
 fn contains_quantification(elements: &[PatternElement]) -> bool {
     elements.iter().any(|e| match e {
         PatternElement::Quantified(_) => true,
-        PatternElement::Relationship(rp) => rp.min_hops.is_some() || rp.max_hops.is_some(),
+        PatternElement::Relationship(rp) => rp.is_variable_length(),
         PatternElement::Node(_) => false,
     })
 }
