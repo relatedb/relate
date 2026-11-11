@@ -55,6 +55,7 @@ runs:
         INCLUDE: ${{ inputs.include }}
         EXCLUDE: ${{ inputs.exclude }}
         DRY_RUN: ${{ inputs.dry-run }}
+        REPO_VISIBILITY: ${{ github.event.repository.visibility }}
       run: |
         set -euo pipefail
         shopt -s nullglob
@@ -74,7 +75,17 @@ runs:
           printf '%s\n' "${tarballs[@]}" >&2
           exit 1
         fi
-        args=(--provenance --access public)
+        args=(--access public)
+        # npm rejects provenance-backed publishes from non-public source
+        # repositories (422 "Unsupported GitHub Actions source repository
+        # visibility"; run 43022331128): attach the sigstore bundle only
+        # when the repository is public — it resumes automatically when
+        # the repo flips. Empty visibility fails safe (no provenance,
+        # never a 422). The assets' own build-provenance attestation
+        # (release.yml's, verified before this action runs) is unaffected.
+        if [ "$REPO_VISIBILITY" = "public" ]; then
+          args+=(--provenance)
+        fi
         if [ "$DRY_RUN" = "true" ]; then
           args+=(--dry-run)
         fi
