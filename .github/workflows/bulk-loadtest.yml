@@ -27,15 +27,15 @@ on:
       sizes:
         description: "Comma-separated rows-per-statement ladder (--sizes)"
         required: false
-        default: "1,100,1000,5000,50000"
+        default: "1,100,1000,5000"
       reps:
-        description: "Measured reps per (op, size) — use a high value at small sizes"
+        description: "Measured reps per (op, size) — total work is sizes x reps x modes, so use a high value only at small sizes"
         required: false
-        default: "2000"
+        default: "200"
       warmup:
         description: "Unmeasured reps run first"
         required: false
-        default: "100"
+        default: "20"
 
 permissions:
   contents: read
