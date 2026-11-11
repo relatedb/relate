@@ -46,9 +46,8 @@ fn as_floats(v: &Value) -> std::result::Result<Vec<f64>, CoordFault> {
 }
 
 pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
-    if vals.len() != 3 {
-        return Err(Error::semantic("vector() requires three arguments"));
-    }
+    // The three-argument count is the registry row's contract, enforced
+    // before any argument is evaluated.
     if vals.iter().any(Value::is_null) {
         return Ok(Value::Null);
     }
@@ -56,25 +55,11 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     let items: &[Value] = match &vals[0] {
         Value::List(items) => items,
         Value::String(s) => {
-            let body = s
-                .trim()
-                .strip_prefix('[')
-                .and_then(|s| s.strip_suffix(']'))
-                .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))?;
-            parsed = if body.trim().is_empty() {
-                Vec::new()
-            } else {
-                body.split(',')
-                    .map(|token| {
-                        token
-                            .trim()
-                            .replace('_', "")
-                            .parse::<f64>()
-                            .map(Value::Float)
-                            .map_err(|_| Error::ty("InvalidVectorCoordinates"))
-                    })
-                    .collect::<Result<Vec<_>>>()?
-            };
+            parsed = VectorCoordKind::parse_coordinates(s)
+                .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))?
+                .into_iter()
+                .map(Value::Float)
+                .collect::<Vec<_>>();
             &parsed
         }
         _ => return Err(Error::ty("vector() requires a numeric list")),

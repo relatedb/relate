@@ -4,7 +4,9 @@
 //! dispatch that reads this table.
 
 use relate_core::temporal::{clock_spelling_rows, BetweenUnit, ClockKind, ClockMode};
-use relate_core::{Result, Value};
+use relate_core::{
+    ArityContract, Result, Value, CHAR_LENGTH_ARITY, FORMAT_ARITY, NULLIF_ARITY, VECTOR_ARITY,
+};
 
 use crate::overlay::ExecGraph;
 
@@ -248,6 +250,41 @@ impl Arity {
     }
 }
 
+/// A row whose argument count `relate_core`'s [`ArityContract`] owns: the
+/// front end, the planner and this pre-evaluation gate read one count, and
+/// this row only states the layer's 42I13 wording. The contract's own
+/// `verified` names live on [`Arity`].
+const fn shared_arity(
+    contract: ArityContract,
+    requirement: &'static str,
+    verified: &'static [&'static str],
+) -> Arity {
+    Arity {
+        min: contract.min(),
+        max: Some(contract.max()),
+        requirement,
+        verified,
+    }
+}
+
+/// `nullif()`: exactly two, from the shared contract.
+const ARITY_NULLIF: Arity =
+    shared_arity(NULLIF_ARITY, "requires exactly two arguments", &["nullif"]);
+
+/// `format()`: one or two, from the shared contract.
+const ARITY_FORMAT: Arity =
+    shared_arity(FORMAT_ARITY, "requires one or two arguments", &["format"]);
+
+/// `vector()`: exactly three, from the shared contract.
+const ARITY_VECTOR: Arity = shared_arity(VECTOR_ARITY, "requires three arguments", &["vector"]);
+
+/// `char_length()`/`character_length()`: exactly one, from the shared contract.
+const ARITY_CHAR_LENGTH: Arity = shared_arity(
+    CHAR_LENGTH_ARITY,
+    "requires one argument",
+    &["char_length", "character_length"],
+);
+
 /// The one spelling of the row-driven arity rejection (LABS-667): it names
 /// the function, the requirement, and the count — the Neo4j 42I13 shape.
 pub(super) fn arity_rejection(name: &str, requirement: &str, got: usize) -> String {
@@ -334,13 +371,13 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         "char_length",
         string::bi_char_length,
         false,
-        ARITY_AT_LEAST_ONE,
+        ARITY_CHAR_LENGTH,
     ),
     row(
         "character_length",
         string::bi_char_length,
         false,
-        ARITY_AT_LEAST_ONE,
+        ARITY_CHAR_LENGTH,
     ),
     row("coalesce", scalar::bi_coalesce, false, ARITY_AT_LEAST_ONE),
     row(
@@ -438,7 +475,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
     row("exists", scalar::bi_exists, false, ARITY_AT_LEAST_ONE),
     row("exp", math::bi_exp, false, ARITY_AT_LEAST_ONE),
     row("floor", math::bi_floor, false, ARITY_AT_LEAST_ONE),
-    row("format", temporal::bi_format, false, ARITY_AT_LEAST_ONE),
+    row("format", temporal::bi_format, false, ARITY_FORMAT),
     row("haversin", math::bi_haversin, false, ARITY_AT_LEAST_ONE),
     row("head", list::bi_head, false, ARITY_AT_LEAST_ONE),
     row("id", entity::bi_id, false, ARITY_AT_LEAST_ONE),
@@ -488,7 +525,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
     row("ltrim", string::bi_ltrim, false, ARITY_AT_LEAST_ONE),
     row("nodes", entity::bi_nodes, false, ARITY_AT_LEAST_ONE),
     row("normalize", string::bi_normalize, false, ARITY_AT_LEAST_ONE),
-    row("nullif", scalar::bi_nullif, false, ARITY_AT_LEAST_ONE),
+    row("nullif", scalar::bi_nullif, false, ARITY_NULLIF),
     row(
         "octet_length",
         string::bi_octet_length,
@@ -656,7 +693,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         ARITY_AT_LEAST_ONE,
     ),
     row("valuetype", scalar::bi_valuetype, false, ARITY_AT_LEAST_ONE),
-    row("vector", vector::bi_vector, false, ARITY_AT_LEAST_ONE),
+    row("vector", vector::bi_vector, false, ARITY_VECTOR),
     row(
         "vector.similarity.cosine",
         vector::bi_vector_cosinesimilarity,

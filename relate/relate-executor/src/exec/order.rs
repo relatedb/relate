@@ -463,9 +463,9 @@ pub(crate) fn skip_limit_count(v: &Value) -> Result<usize> {
         }
     };
     if n < 0 {
-        return Err(Error::execution(
-            "NegativeIntegerArgument: SKIP/LIMIT must be non-negative",
-        ));
+        // The shared negative-bound wording; this runtime guard keeps its
+        // `Execution` class.
+        return Err(Error::execution(relate_core::negative_page_bound_text()));
     }
     // The width boundary the negative guard already spells for the low
     // end: the wasm32 surface's 32-bit `usize` would silently truncate a

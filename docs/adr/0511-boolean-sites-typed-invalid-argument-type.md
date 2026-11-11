@@ -179,3 +179,11 @@ checks. Their convergence, if any, is a separate decision.
   the existing message-substring tests in
   `cypherlite/tests/misc_tail_forms.rs` and
   `exec/conditional_tests.rs` keep passing unchanged.
+
+## Later references
+
+ADR-0566 supersedes this ADR's conclusion for the *static* sites: a
+statically non-boolean predicate or operator operand is Neo4j's
+compile-time SyntaxError class (probed on the exception class, where this
+ADR's table read the GQLSTATUS cause code). The runtime `bool_or_null`
+site keeps the TypeError class this ADR chose.

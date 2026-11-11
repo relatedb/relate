@@ -1,6 +1,6 @@
 //! Generic scalar builtins: `coalesce`, `nullif`, `exists`, and `valueType`.
 
-use relate_core::{value_type_name, Error, Result, Value};
+use relate_core::{value_type_name, Result, Value};
 
 use crate::overlay::ExecGraph;
 
@@ -20,17 +20,14 @@ pub(super) fn bi_coalesce(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) ->
 }
 
 pub(super) fn bi_nullif(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    Ok({
-        if vals.len() != 2 {
-            return Err(Error::semantic("nullif() requires two arguments"));
-        }
-        if vals[0].is_null() || vals[1].is_null() {
-            vals[0].clone()
-        } else if vals[0].eq_non_null(&vals[1]) {
-            Value::Null
-        } else {
-            vals[0].clone()
-        }
+    // The two-argument count is the registry row's contract, enforced before
+    // any argument is evaluated.
+    Ok(if vals[0].is_null() || vals[1].is_null() {
+        vals[0].clone()
+    } else if vals[0].eq_non_null(&vals[1]) {
+        Value::Null
+    } else {
+        vals[0].clone()
     })
 }
 

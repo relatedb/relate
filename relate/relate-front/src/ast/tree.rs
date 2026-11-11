@@ -167,17 +167,22 @@ pub(crate) fn walk_statement_tree(
     })
 }
 
-/// Walk one clause list's expressions with whole-tree semantics (nested
-/// statement bodies are entered), but without following the enclosing
-/// statement's UNION/NEXT chain. A validator whose rule is decided per UNION
-/// arm — the SHOW system-routing rules — walks each arm's own list, so one
-/// arm's routing is never applied to a sibling arm's expressions. The
-/// statement-nesting cap is enforced separately by
+/// Walk one clause list's expressions with expression-internal descent, but
+/// without following the enclosing statement's UNION/NEXT chain. `descend`
+/// chooses whether nested statement bodies are entered
+/// ([`SubqueryDescent::Enter`], the SHOW system-routing rules' per-arm walk)
+/// or are opaque leaves ([`SubqueryDescent::Opaque`], a per-statement-node
+/// validator whose statement visitor already visits every nested body as its
+/// own node — entering them here would re-validate each body once per
+/// ancestor). A validator whose rule is decided per UNION arm walks each
+/// arm's own list, so one arm's routing is never applied to a sibling arm's
+/// expressions. The statement-nesting cap is enforced separately by
 /// [`validate_nesting_depth`](crate::validate::validate_nesting_depth), which
 /// runs before every such validator, so the per-arm entry depth of zero is
 /// safe.
 pub(crate) fn walk_clause_list_tree(
     clauses: &[Clause],
+    descend: SubqueryDescent,
     visit_expr: &mut ExprVisit,
 ) -> Result<(), EngineError> {
     let mut skip_stmt = |_: StmtRef<'_>| Ok(());
@@ -189,7 +194,7 @@ pub(crate) fn walk_clause_list_tree(
         clause: &mut skip_clause,
         expr: visit_expr,
         operand: &mut skip_operand,
-        descend: SubqueryDescent::Enter,
+        descend,
         enter_expr_child: &enter_all,
     };
     walk_clauses_tree(clauses, Depths::ZERO, &mut walk)
@@ -716,6 +721,19 @@ pub(crate) fn expr_contains(
     enter_child: impl Fn(&Expr, &Expr) -> bool,
     admit: impl Fn(&Expr) -> bool,
 ) -> bool {
+    try_expr_contains(expr, enter_child, admit)
+        .expect("the depth cap is rejected before validation")
+}
+
+/// [`expr_contains`] for a caller that still propagates the depth-cap error:
+/// a public validator entry point not guaranteed to run after
+/// [`validate_nesting_depth`](crate::validate::validate_nesting_depth). The
+/// same visited-flag scaffolding, one home.
+pub(crate) fn try_expr_contains(
+    expr: &Expr,
+    enter_child: impl Fn(&Expr, &Expr) -> bool,
+    admit: impl Fn(&Expr) -> bool,
+) -> Result<bool, EngineError> {
     let mut found = false;
     let mut visit = |node: &Expr| {
         if admit(node) {
@@ -723,9 +741,8 @@ pub(crate) fn expr_contains(
         }
         Ok(())
     };
-    walk_expr_with(expr, &mut visit, enter_child)
-        .expect("the depth cap is rejected before validation");
-    found
+    walk_expr_with(expr, &mut visit, enter_child)?;
+    Ok(found)
 }
 
 /// [`walk_expr`] with an [`ExprChildFilter`]: the walk recurses from an

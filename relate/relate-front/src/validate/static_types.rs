@@ -1,176 +1,18 @@
-//! Compile-time checks decidable from *literal* operand types: LIMIT/SKIP
-//! literal shape, boolean-operator operands, `IN` list operands,
-//! `properties()` argument types, CIP-271's `toString()` argument-type
-//! rejection, and quantifier-variable arithmetic over a statically
-//! non-numeric list literal. Everything whose type depends on runtime data
-//! is deliberately left to the runtime evaluator.
+//! Compile-time checks decidable from *literal* operand types, and the
+//! literal-type vocabulary they share: boolean-operator operands, `IN` list
+//! operands, `properties()` argument types, CIP-271's `toString()`
+//! argument-type rejection, and quantifier-variable arithmetic over a
+//! statically non-numeric list literal. Page bounds live in
+//! [`super::page_bounds`]; the builtin-call families live in
+//! [`super::static_calls`]. Everything whose type depends on runtime data is
+//! deliberately left to the runtime evaluator.
 
 use relate_core::Value;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, Expr, LiteralValue};
 
-use crate::ast::collect::interp_embeds;
 use crate::ast::tree::{expr_contains, is_boolean_operator, walk_expr};
 
-/// Check if an expression references any variables (not parameters).
-fn expr_references_variables(expr: &Expr) -> bool {
-    match expr {
-        Expr::Variable(_) => true,
-        Expr::Property(p) => expr_references_variables(&p.expr),
-        Expr::Binary(b) => {
-            expr_references_variables(&b.left) || expr_references_variables(&b.right)
-        }
-        Expr::Comparison(c) => {
-            expr_references_variables(&c.left) || expr_references_variables(&c.right)
-        }
-        Expr::Unary(u) => expr_references_variables(&u.expr),
-        Expr::FunctionCall(fc) => fc.args.iter().any(expr_references_variables),
-        Expr::List(items) => items.iter().any(expr_references_variables),
-        Expr::Paren(inner) => expr_references_variables(inner),
-        Expr::Subscript(s) => {
-            expr_references_variables(&s.expr)
-                || s.index.as_ref().is_some_and(expr_references_variables)
-                || s.from.as_ref().is_some_and(expr_references_variables)
-                || s.to.as_ref().is_some_and(expr_references_variables)
-        }
-        Expr::StringInterp(parts) => interp_embeds(parts).any(expr_references_variables),
-        _ => false,
-    }
-}
-/// Whether an expression contains a graph pattern (a pattern comprehension,
-/// a pattern predicate, or `shortestPath()`), which Neo4j rejects in
-/// LIMIT/SKIP as "not statically inferrable" (42N28).
-fn expr_contains_graph_pattern(expr: &Expr) -> Result<bool, EngineError> {
-    let mut found = false;
-    let mut visit = |candidate: &Expr| {
-        if matches!(
-            candidate,
-            Expr::PatternComprehension(_) | Expr::PatternPredicate(_) | Expr::ShortestPath(_)
-        ) {
-            found = true;
-        }
-        Ok(())
-    };
-    // The walker's own failure (the ADR-0257 depth cap) is a rejection,
-    // never a silent `false`: a capped walk proves nothing about the
-    // expression.
-    walk_expr(expr, &mut visit)?;
-    Ok(found)
-}
-
-/// Validate LIMIT/SKIP expressions: reject negative literals, float literals,
-/// expressions that reference variables, and expressions containing graph
-/// patterns (42N28).
-pub fn validate_limit_skip(clauses: &[Clause]) -> Result<(), EngineError> {
-    for clause in clauses {
-        let (limit, skip) = match clause {
-            Clause::Return(rc) => (rc.limit.as_ref(), rc.skip.as_ref()),
-            Clause::With(wc) => (wc.limit.as_ref(), wc.skip.as_ref()),
-            _ => (None, None),
-        };
-        if let Some(limit_expr) = limit {
-            // Check for variable references
-            if expr_references_variables(limit_expr) {
-                return Err(EngineError::semantic(
-                    ErrorKind::NonConstantExpression,
-                    "LIMIT must be a non-negative integer constant".to_string(),
-                ));
-            }
-            if expr_contains_graph_pattern(limit_expr)? {
-                return Err(EngineError::semantic(
-                    ErrorKind::NonConstantExpression,
-                    "Only statically inferrable patterns and variables are allowed in 'LIMIT'"
-                        .to_string(),
-                ));
-            }
-            // Check for negative literal
-            if let Expr::Unary(u) = limit_expr {
-                if u.op == "-" {
-                    if let Expr::Literal(LiteralValue::Integer(_)) = &u.expr {
-                        return Err(EngineError::semantic(
-                            ErrorKind::NegativeIntegerArgument,
-                            "LIMIT must not be negative".to_string(),
-                        ));
-                    }
-                }
-            }
-            // Check for float literal
-            if let Expr::Literal(LiteralValue::Float(_)) = limit_expr {
-                return Err(EngineError::semantic(
-                    ErrorKind::InvalidArgumentType,
-                    "LIMIT requires an integer value".to_string(),
-                ));
-            }
-            reject_bound_limit_skip(limit_expr, "LIMIT")?;
-        }
-        if let Some(skip_expr) = skip {
-            if expr_references_variables(skip_expr) {
-                return Err(EngineError::semantic(
-                    ErrorKind::NonConstantExpression,
-                    "SKIP must be a non-negative integer constant".to_string(),
-                ));
-            }
-            if expr_contains_graph_pattern(skip_expr)? {
-                return Err(EngineError::semantic(
-                    ErrorKind::NonConstantExpression,
-                    "Only statically inferrable patterns and variables are allowed in 'SKIP'"
-                        .to_string(),
-                ));
-            }
-            if let Expr::Unary(u) = skip_expr {
-                if u.op == "-" {
-                    if let Expr::Literal(LiteralValue::Integer(_)) = &u.expr {
-                        return Err(EngineError::semantic(
-                            ErrorKind::NegativeIntegerArgument,
-                            "SKIP must not be negative".to_string(),
-                        ));
-                    }
-                }
-            }
-            if let Expr::Literal(LiteralValue::Float(_)) = skip_expr {
-                return Err(EngineError::semantic(
-                    ErrorKind::InvalidArgumentType,
-                    "SKIP requires an integer value".to_string(),
-                ));
-            }
-            reject_bound_limit_skip(skip_expr, "SKIP")?;
-        }
-    }
-    Ok(())
-}
-
-/// A plan-cache placeholder in SKIP/LIMIT is the literal it replaced.
-/// The same rejections the literal arms above raise, so a parameterized
-/// compile fails and the original statement reports the compile error.
-fn reject_bound_limit_skip(expr: &Expr, what: &str) -> Result<(), EngineError> {
-    let Some(value) = bound_limit_value(expr) else {
-        return Ok(());
-    };
-    match value {
-        Value::Float(_) => Err(EngineError::semantic(
-            ErrorKind::InvalidArgumentType,
-            format!("{what} requires an integer value"),
-        )),
-        Value::Int(value) if value < 0 => Err(EngineError::semantic(
-            ErrorKind::NegativeIntegerArgument,
-            format!("{what} must not be negative"),
-        )),
-        _ => Ok(()),
-    }
-}
-
-fn bound_limit_value(expr: &Expr) -> Option<Value> {
-    match expr {
-        Expr::Paren(inner) => bound_limit_value(inner),
-        Expr::Parameter(name) => relate_core::auto_literal(name),
-        Expr::Unary(unary) if unary.op == "-" => match bound_limit_value(&unary.expr)? {
-            Value::Int(value) => value.checked_neg().map(Value::Int),
-            Value::Float(value) => Some(Value::Float(-value)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 /// The statically-known type of an expression Relate can decide without
 /// evaluating it: a literal (list and map literals included), arithmetic and
 /// unary operators over such operands, comparisons, and boolean operators.
@@ -198,8 +40,25 @@ impl StaticLitType {
         }
     }
 
-    fn is_numeric(self) -> bool {
+    pub(super) fn is_numeric(self) -> bool {
         matches!(self, StaticLitType::Integer | StaticLitType::Float)
+    }
+
+    /// The static type of a statically-known [`Value`], or `None` for a value
+    /// no literal spelling produces (an entity, a path, a temporal). The one
+    /// value→type table; the parameter/placeholder arm of
+    /// [`static_literal_type`] reads it.
+    pub(super) fn of_value(value: &Value) -> Option<StaticLitType> {
+        Some(match value {
+            Value::Null => StaticLitType::Null,
+            Value::Bool(_) => StaticLitType::Boolean,
+            Value::Int(_) => StaticLitType::Integer,
+            Value::Float(_) => StaticLitType::Float,
+            Value::String(_) => StaticLitType::String,
+            Value::List(_) => StaticLitType::List,
+            Value::Map(_) => StaticLitType::Map,
+            _ => return None,
+        })
     }
 }
 
@@ -216,25 +75,13 @@ impl StaticLitType {
 /// `None` everywhere else (`+` on a string/list mix may be concatenation or
 /// append, so it stays runtime-decided).
 pub(super) fn static_literal_type(expr: &Expr) -> Option<StaticLitType> {
-    match expr {
-        Expr::Paren(inner) => static_literal_type(inner),
-        Expr::Literal(LiteralValue::Null) => Some(StaticLitType::Null),
-        Expr::Literal(LiteralValue::Bool(_)) => Some(StaticLitType::Boolean),
-        Expr::Literal(LiteralValue::Integer(_)) => Some(StaticLitType::Integer),
-        Expr::Literal(LiteralValue::Float(_)) => Some(StaticLitType::Float),
-        Expr::Literal(LiteralValue::String(_)) => Some(StaticLitType::String),
-        // A plan-cache placeholder is the literal it replaced (ADR-0503).
-        // A caller's own parameter stays unknown and is checked at runtime.
-        Expr::Parameter(name) => match relate_core::auto_literal(name) {
-            Some(Value::Null) => Some(StaticLitType::Null),
-            Some(Value::Bool(_)) => Some(StaticLitType::Boolean),
-            Some(Value::Int(_)) => Some(StaticLitType::Integer),
-            Some(Value::Float(_)) => Some(StaticLitType::Float),
-            Some(Value::String(_)) => Some(StaticLitType::String),
-            Some(Value::List(_)) => Some(StaticLitType::List),
-            Some(Value::Map(_)) => Some(StaticLitType::Map),
-            _ => None,
-        },
+    match unparen(expr) {
+        // A literal, or a plan-cache placeholder for one (ADR-0503): the
+        // value fold decides the type. A caller's own parameter is `None`
+        // and is checked at runtime.
+        Expr::Literal(_) | Expr::Parameter(_) => {
+            static_value(expr).and_then(|value| StaticLitType::of_value(&value))
+        }
         Expr::List(_) => Some(StaticLitType::List),
         Expr::Map(_) => Some(StaticLitType::Map),
         Expr::Unary(unary) => match unary.op {
@@ -246,6 +93,108 @@ pub(super) fn static_literal_type(expr: &Expr) -> Option<StaticLitType> {
         Expr::Comparison(_) => Some(StaticLitType::Boolean),
         _ => None,
     }
+}
+
+/// Strip wrapping parentheses.
+pub(super) fn unparen(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => unparen(inner),
+        other => other,
+    }
+}
+
+/// The statically-known *value* an expression spells: a literal, a list
+/// literal of them, a sign over one, and a plan-cache placeholder (ADR-0503).
+/// A caller's own parameter and every non-literal expression are `None`.
+/// [`constant_value`] layers its map marker and arithmetic fold on top.
+pub(super) fn static_value(expr: &Expr) -> Option<Value> {
+    match unparen(expr) {
+        Expr::Literal(LiteralValue::Null) => Some(Value::Null),
+        Expr::Literal(LiteralValue::Bool(value)) => Some(Value::Bool(*value)),
+        Expr::Literal(LiteralValue::Integer(value)) => Some(Value::Int(*value)),
+        Expr::Literal(LiteralValue::Float(value)) => Some(Value::Float(*value)),
+        Expr::Literal(LiteralValue::String(value)) => Some(Value::String(value.as_str().into())),
+        Expr::List(items) => {
+            Value::checked_list(items.iter().map(static_value).collect::<Option<Vec<_>>>()?).ok()
+        }
+        Expr::Parameter(name) => relate_core::auto_literal(name),
+        Expr::Unary(unary) if unary.op == "+" => static_value(&unary.expr),
+        Expr::Unary(unary) if unary.op == "-" => match static_value(&unary.expr)? {
+            Value::Int(value) => value.checked_neg().map(Value::Int),
+            Value::Float(value) => Some(Value::Float(-value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The statically-known type of `expr` when it is outside `allowed` — the one
+/// gate every static argument-type check spells: an undecided type is
+/// deferred to the runtime, and so is any type the site admits (`Null` is
+/// listed by each site that accepts it). The caller authors the rejection.
+pub(super) fn static_type_outside(expr: &Expr, allowed: &[StaticLitType]) -> Option<StaticLitType> {
+    match static_literal_type(expr) {
+        Some(ty) if !allowed.contains(&ty) => Some(ty),
+        _ => None,
+    }
+}
+
+/// Reject `expr` when its static type is outside `allowed`, with the
+/// caller's authored sentence. An undecided type is deferred to the runtime.
+/// The one gate every static argument-type check spells.
+pub(super) fn require_static_type(
+    expr: &Expr,
+    allowed: &[StaticLitType],
+    detail: impl FnOnce(&StaticLitType) -> String,
+) -> Result<(), EngineError> {
+    match static_type_outside(expr, allowed) {
+        Some(ty) => Err(EngineError::semantic(
+            ErrorKind::InvalidArgumentType,
+            detail(&ty),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The class a list element must not have for quantifier arithmetic: a
+/// statically known literal type that is neither numeric nor null (STRING,
+/// BOOLEAN, a nested LIST, a MAP). Shared by the AST arm and the plan-cache
+/// `Value` arm of [`list_literal_all_non_numeric`], and by
+/// `static_calls`' numeric-list gate.
+pub(super) fn non_numeric_leaf_class(ty: StaticLitType) -> bool {
+    !ty.is_numeric() && ty != StaticLitType::Null
+}
+
+/// The one spelling of "this argument must be an integer": reject a
+/// statically-known *literal* (or plan-cache placeholder) of any other type.
+/// `allow_null` says whether a literal NULL is a legitimate value at the site
+/// (deferred to the runtime, which owns the per-row decision) or a
+/// compile-time type error (CIP-34's concurrency value). An expression whose
+/// value the fold declines — a variable, a parameter, a constant
+/// *expression* — keeps its runtime decision (ADR-0175's recorded deviation
+/// for `SKIP 0.0/0.0`).
+pub(super) fn require_integer_argument(
+    expr: &Expr,
+    what: &str,
+    allow_null: bool,
+) -> Result<(), EngineError> {
+    let Some(ty) = static_value(expr).and_then(|value| StaticLitType::of_value(&value)) else {
+        return Ok(());
+    };
+    if ty == StaticLitType::Integer || (allow_null && ty == StaticLitType::Null) {
+        return Ok(());
+    }
+    Err(EngineError::semantic(
+        ErrorKind::InvalidArgumentType,
+        format!("{what} requires an integer value, got {}", ty.name()),
+    ))
+}
+
+/// The boolean-operand rule's predicate, shared by the operator gate here and
+/// `static_calls`' `allReduce()` predicate check: a statically-known type
+/// that is neither BOOLEAN nor NULL.
+pub(super) fn is_statically_non_boolean(expr: &Expr) -> bool {
+    static_type_outside(expr, BOOLEAN_OPERAND_TYPES).is_some()
 }
 
 /// The *class* of an expression whose type is statically known, for CIP-271's
@@ -267,8 +216,7 @@ fn static_literal_class(expr: &Expr) -> Option<StaticLitType> {
 /// elements of more than one class, or a non-literal expression. All of those
 /// are `LIST<ANY>` (or not a list at all) and are left to the runtime.
 fn homogeneous_list_literal_class(list: &Expr) -> Option<StaticLitType> {
-    match list {
-        Expr::Paren(inner) => homogeneous_list_literal_class(inner),
+    match unparen(list) {
         Expr::List(items) if !items.is_empty() => {
             let mut classes = items.iter().map(static_literal_class);
             let first = classes.next()??;
@@ -316,27 +264,14 @@ pub(super) enum FoldedConstant {
     Map,
 }
 
-/// The constant subset the compile-time fold evaluates. `None` is a fold
-/// decline, never an error: the expression keeps its runtime semantics, and
-/// the executor's shared rule checks it on each row. A map literal anywhere
-/// in a constant list is reported as [`FoldedConstant::Map`], so it cannot
-/// slip past both the fold and the type check.
+/// The constant subset the compile-time fold evaluates: [`static_value`]'s
+/// literal vocabulary plus the map marker and checked arithmetic. `None` is a
+/// fold decline, never an error: the expression keeps its runtime semantics,
+/// and the executor's shared rule checks it on each row. A map literal
+/// anywhere in a constant list is reported as [`FoldedConstant::Map`], so it
+/// cannot slip past both the fold and the type check.
 pub(super) fn constant_value(expr: &Expr) -> Option<FoldedConstant> {
-    match expr {
-        Expr::Literal(LiteralValue::Null) => Some(FoldedConstant::Value(Value::Null)),
-        Expr::Literal(LiteralValue::Bool(value)) => {
-            Some(FoldedConstant::Value(Value::Bool(*value)))
-        }
-        Expr::Literal(LiteralValue::Integer(value)) => {
-            Some(FoldedConstant::Value(Value::Int(*value)))
-        }
-        Expr::Literal(LiteralValue::Float(value)) => {
-            Some(FoldedConstant::Value(Value::Float(*value)))
-        }
-        Expr::Literal(LiteralValue::String(value)) => {
-            Some(FoldedConstant::Value(Value::String(value.as_str().into())))
-        }
-        Expr::Paren(inner) => constant_value(inner),
+    match unparen(expr) {
         Expr::Map(_) => Some(FoldedConstant::Map),
         Expr::List(items) => {
             let mut values = Vec::with_capacity(items.len());
@@ -348,15 +283,6 @@ pub(super) fn constant_value(expr: &Expr) -> Option<FoldedConstant> {
             }
             Value::checked_list(values).ok().map(FoldedConstant::Value)
         }
-        Expr::Unary(unary) if unary.op == "-" => match constant_value(&unary.expr)? {
-            FoldedConstant::Value(Value::Int(value)) => value
-                .checked_neg()
-                .map(|value| FoldedConstant::Value(Value::Int(value))),
-            FoldedConstant::Value(Value::Float(value)) => {
-                Some(FoldedConstant::Value(Value::Float(-value)))
-            }
-            _ => None,
-        },
         Expr::Binary(binary) => match (
             constant_value(&binary.left)?,
             constant_value(&binary.right)?,
@@ -368,7 +294,7 @@ pub(super) fn constant_value(expr: &Expr) -> Option<FoldedConstant> {
             // operand of this module's contract; the runtime decides it.
             _ => None,
         },
-        _ => None,
+        other => static_value(other).map(FoldedConstant::Value),
     }
 }
 
@@ -391,21 +317,20 @@ pub(super) fn constant_binary(op: &str, left: Value, right: Value) -> Option<Val
     }
 }
 
+/// The types a boolean operand admits: BOOLEAN, plus NULL (three-valued
+/// logic). One list, consulted by the operator gate and
+/// [`is_statically_non_boolean`].
+const BOOLEAN_OPERAND_TYPES: &[StaticLitType] = &[StaticLitType::Boolean, StaticLitType::Null];
+
 /// Reject a boolean-operator operand whose *literal* type is neither Boolean nor
 /// Null. A `null` operand is always allowed (three-valued logic); a non-literal
 /// operand is left for runtime. A list *literal* stays a compile-time error
 /// (openCypher TCK Boolean1-3 [8]); only a runtime list (a parameter, a
 /// function result) takes the deprecated list-to-boolean conversion.
 fn require_boolean_literal_operand(operand: &Expr) -> Result<(), EngineError> {
-    if let Some(t) = static_literal_type(operand) {
-        if t != StaticLitType::Boolean && t != StaticLitType::Null {
-            return Err(EngineError::semantic(
-                ErrorKind::InvalidArgumentType,
-                format!("Type mismatch: expected Boolean but was {}", t.name()),
-            ));
-        }
-    }
-    Ok(())
+    require_static_type(operand, BOOLEAN_OPERAND_TYPES, |ty| {
+        format!("Type mismatch: expected Boolean but was {}", ty.name())
+    })
 }
 
 /// Compile-time type checking for operators/functions whose operand type is
@@ -487,29 +412,25 @@ fn check_static_operator_types(e: &Expr, cypher_version: Option<u32>) -> Result<
             require_boolean_literal_operand(&b.right)?;
         }
         Expr::In(ie) => {
-            if let Some(t) = static_literal_type(&ie.list) {
-                if t != StaticLitType::List && t != StaticLitType::Null {
-                    return Err(EngineError::semantic(
-                        ErrorKind::InvalidArgumentType,
-                        format!("IN requires a list, got {}", t.name()),
-                    ));
-                }
-            }
+            require_static_type(
+                &ie.list,
+                &[StaticLitType::List, StaticLitType::Null],
+                |ty| format!("IN requires a list, got {}", ty.name()),
+            )?;
         }
         Expr::FunctionCall(fc)
             if fc.name.with_str(|n| n.eq_ignore_ascii_case("properties")) && fc.args.len() == 1 =>
         {
-            if let Some(t) = static_literal_type(&fc.args[0]) {
-                if !matches!(t, StaticLitType::Map | StaticLitType::Null) {
-                    return Err(EngineError::semantic(
-                        ErrorKind::InvalidArgumentType,
-                        format!(
-                            "properties() requires a node, relationship, or map, got {}",
-                            t.name()
-                        ),
-                    ));
-                }
-            }
+            require_static_type(
+                &fc.args[0],
+                &[StaticLitType::Map, StaticLitType::Null],
+                |ty| {
+                    format!(
+                        "properties() requires a node, relationship, or map, got {}",
+                        ty.name()
+                    )
+                },
+            )?;
         }
         // CIP-271's static half: Neo4j's type checker rejects the `toString`
         // family on a `LIST<T>` with a concrete `T` — a list literal whose
@@ -590,32 +511,20 @@ fn is_failing_arithmetic_op(op: &str) -> bool {
 /// `null` yields `null` — so the list does not qualify and the query is left
 /// untouched. A plan-cache placeholder is the list it replaced.
 fn list_literal_all_non_numeric(list: &Expr) -> bool {
-    match list {
-        Expr::Paren(inner) => list_literal_all_non_numeric(inner),
+    match unparen(list) {
         Expr::List(items) => {
             !items.is_empty()
-                && items.iter().all(|e| {
-                    matches!(
-                        static_literal_type(e),
-                        Some(
-                            StaticLitType::String
-                                | StaticLitType::Boolean
-                                | StaticLitType::List
-                                | StaticLitType::Map
-                        )
-                    )
-                })
+                && items
+                    .iter()
+                    .all(|e| static_literal_type(e).is_some_and(non_numeric_leaf_class))
         }
         // The list a plan-cache placeholder replaced. Its elements are the
         // literals, so `all(x IN ['Clara'] WHERE x % 2 = 0)` still fails
         // here instead of at runtime.
         Expr::Parameter(name) => match relate_core::auto_literal(name) {
-            Some(Value::List(items)) if !items.is_empty() => items.iter().all(|item| {
-                matches!(
-                    item,
-                    Value::String(_) | Value::Bool(_) | Value::List(_) | Value::Map(_)
-                )
-            }),
+            Some(Value::List(items)) if !items.is_empty() => items
+                .iter()
+                .all(|item| StaticLitType::of_value(item).is_some_and(non_numeric_leaf_class)),
             _ => false,
         },
         _ => false,
@@ -624,12 +533,8 @@ fn list_literal_all_non_numeric(list: &Expr) -> bool {
 
 /// True if `e`, ignoring wrapping parentheses, is exactly the bare variable
 /// `var`.
-fn expr_is_bare_var(e: &Expr, var: &str) -> bool {
-    match e {
-        Expr::Paren(inner) => expr_is_bare_var(inner, var),
-        Expr::Variable(v) => v == var,
-        _ => false,
-    }
+pub(super) fn expr_is_bare_var(e: &Expr, var: &str) -> bool {
+    matches!(unparen(e), Expr::Variable(v) if v == var)
 }
 
 /// True if `expr` applies an [`is_failing_arithmetic_op`] operator *directly* to

@@ -35,8 +35,11 @@ pub use dynamic::{
     dynamic_label_names, dynamic_property_key, DynamicAccessError, DynamicNameToken,
 };
 pub use error::{
-    expected_type_detail, uniqueness_violation_detail, ArithmeticFailure, CapacityKind, Error,
-    Result, FUNCTION_REQUIRES_ONE_ARGUMENT,
+    builtin_arity, expected_type_detail, negative_page_bound_text, uniqueness_violation_detail,
+    ArithmeticFailure, ArityContract, CapacityKind, Error, Result, CHAR_LENGTH_ARITY, FORMAT_ARITY,
+    FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS, FUNCTION_REQUIRES_ONE_ARGUMENT,
+    NEGATIVE_PAGE_BOUND_DETAIL, NULLIF_ARITY, NULLIF_REQUIRES_TWO_ARGUMENTS, VECTOR_ARITY,
+    VECTOR_REQUIRES_THREE_ARGUMENTS,
 };
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,

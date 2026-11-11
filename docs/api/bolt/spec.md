@@ -438,10 +438,10 @@ engine's own text, verbatim. An engine error maps by its typed
 
 | Engine variant | Code |
 | --- | --- |
-| `Syntax` (parse error, ADR-0257 input limit; an undefined variable, ADR-0335; the traversal-depth admission limit, LABS-610/ADR-0466) | `Neo.ClientError.Statement.SyntaxError` |
+| `Syntax` (parse error, ADR-0257 input limit; an undefined variable, ADR-0335; the traversal-depth admission limit, LABS-610/ADR-0466; every rejection the statement text decides — a literal argument of the wrong type or outside its domain, a literal that cannot parse, call arity, a statically non-boolean predicate, ADR-0566) | `Neo.ClientError.Statement.SyntaxError` |
 | `ProcedureNotFound` (a call to an unregistered procedure, ADR-0138) | `Neo.ClientError.Procedure.ProcedureNotFound` |
 | `ParameterMissing` (ADR-0308) | `Neo.ClientError.Statement.ParameterMissing` |
-| `Type`, `TypeError`, `InvalidArgumentType` | `Neo.ClientError.Statement.TypeError` |
+| `Type`, `TypeError`, `InvalidArgumentType` (a type fault only a per-row value reveals, ADR-0566) | `Neo.ClientError.Statement.TypeError` |
 | `ArgumentError` (a DDL `OPTIONS`/`indexConfig` value rejection, ADR-0489) | `Neo.ClientError.General.InvalidArguments` |
 | `ArgumentValue` (a run-time function-argument value rejection — `range()`'s zero step, the `substring()`/`left()`/`right()` range checks, list-slice bounds, `point()`'s in-map values, `bar()`'s width, the percentile aggregates' argument, the vector similarity/distance and `vector()` dimension faults, `round()`'s precision/mode checks, `replace()`'s limit, the `trim()` single-character rule and a zero `CALL … IN TRANSACTIONS` batch size; ADR-0559, ADR-0565) | `Neo.ClientError.Statement.ArgumentError` |
 | `Arithmetic` (`/ by zero`, `% by zero`, `ArithmeticError: rounding necessary`) | `Neo.ClientError.Statement.ArithmeticError` |

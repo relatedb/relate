@@ -305,6 +305,13 @@ impl Error {
         Self::ty(kind_prefixed(ErrorKind::InvalidArgumentValue, detail))
     }
 
+    /// A call outside its arity requirement, with the detail text after the
+    /// pinned `InvalidNumberOfArguments:` token — the one composer of that
+    /// class, so an [`ArityContract`] detail is never token-prefixed twice.
+    pub fn invalid_number_of_arguments(detail: impl Into<String>) -> Self {
+        Self::syntax(kind_prefixed(ErrorKind::InvalidNumberOfArguments, detail))
+    }
+
     /// A boolean-requiring context that received a non-boolean, with the
     /// detail text `<ctx> requires a boolean` — the one constructor of the
     /// ADR-0511 boolean family, so the wording cannot drift between the
@@ -312,7 +319,38 @@ impl Error {
     /// own naming of the position (`"predicate"`, an operator's spelling,
     /// or a dynamic context like `"quantifier WHERE"`).
     pub fn requires_boolean(ctx: &str) -> Self {
-        Self::invalid_argument_type(format!("{ctx} requires a boolean"))
+        Self::invalid_argument_type(requires_boolean_detail(ctx))
+    }
+
+    /// The compile-time sibling of [`Self::requires_boolean`]: the same
+    /// `<ctx> requires a boolean` detail over the `Syntax` class, because a
+    /// *statically* non-boolean operand or predicate is Neo4j's compile-time
+    /// `SyntaxError`, while a value whose type is only known per row keeps
+    /// the runtime `TypeError` from [`Self::requires_boolean`]. Both read one
+    /// detail spelling.
+    pub fn static_requires_boolean(ctx: &str) -> Self {
+        Self::syntax(kind_prefixed(
+            ErrorKind::InvalidArgumentType,
+            requires_boolean_detail(ctx),
+        ))
+    }
+
+    /// Re-class an error into the compile-time `Syntax` class carrying only
+    /// its typed *detail* — never its rendered `Display`, whose
+    /// `<class> error:` prefix would be re-embedded and double the class.
+    /// The token-carrying variants keep their pinned token
+    /// ([`Error::typed_detail_text`]); the bare `Type`/`Semantic` payloads
+    /// keep only their detail. A variant with neither (a capacity refusal, a
+    /// cancellation) keeps its own class: its payload is not a string this
+    /// helper can re-home.
+    pub fn into_syntax(self) -> Self {
+        match self {
+            Error::Type(detail) | Error::Semantic(detail) => Self::syntax(detail),
+            other => match other.typed_detail_text() {
+                Some(text) => Self::syntax(text),
+                None => other,
+            },
+        }
     }
 
     /// A runtime type failure under the legacy `TypeError` detail name, with
@@ -558,12 +596,121 @@ const CONSTRAINT_VALIDATION_FAILED: &str = "ConstraintValidationFailed";
 /// them can spell the class differently.
 const TYPE_ERROR_PREFIX: &str = "type error";
 
-/// The one spelling of the one-argument arity rejection shared by the
+/// The one spelling of the one-argument arity requirement shared by the
 /// planner's `FIXED_ARITY_FUNCTIONS` row and the executor's list-builtin
-/// backstop — the two layers both depend on core, so the plan-time
-/// rejection and the backstop cannot drift apart.
-pub const FUNCTION_REQUIRES_ONE_ARGUMENT: &str =
-    "InvalidNumberOfArguments: function requires one argument";
+/// backstop — the bare detail, without the `InvalidNumberOfArguments`
+/// class token, which each layer composes exactly once
+/// ([`Error::invalid_number_of_arguments`], or the typed channel).
+pub const FUNCTION_REQUIRES_ONE_ARGUMENT: &str = "function requires one argument";
+
+/// The one spelling of `nullif()`'s two-argument arity requirement: the
+/// front-end static-argument check and the executor's implementation both
+/// state it from here, so the compile-time and runtime halves cannot drift
+/// (the [`FUNCTION_REQUIRES_ONE_ARGUMENT`] precedent).
+pub const NULLIF_REQUIRES_TWO_ARGUMENTS: &str = "nullif() requires two arguments";
+
+/// The one spelling of `format()`'s one-or-two-argument arity requirement,
+/// shared by the front-end check and the executor's implementation.
+pub const FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS: &str = "format() requires one or two arguments";
+
+/// The one spelling of `vector()`'s three-argument arity requirement, shared
+/// by the front-end check and the executor's implementation.
+pub const VECTOR_REQUIRES_THREE_ARGUMENTS: &str = "vector() requires three arguments";
+
+/// One builtin's compile-phase arity contract: the accepted argument-count
+/// range together with the authored rejection *detail* (bare, without the
+/// class token). Declared in the shared contract layer so the front-end
+/// check, the planner's rule table and the executor's dispatch read one
+/// fact instead of a count and a message each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArityContract {
+    min: usize,
+    max: usize,
+    detail: &'static str,
+}
+
+impl ArityContract {
+    /// Exactly `count` arguments.
+    pub const fn exact(count: usize, detail: &'static str) -> Self {
+        Self {
+            min: count,
+            max: count,
+            detail,
+        }
+    }
+
+    /// Between `min` and `max` arguments, inclusive.
+    pub const fn range(min: usize, max: usize, detail: &'static str) -> Self {
+        Self { min, max, detail }
+    }
+
+    /// The least accepted argument count — the executor's dispatch gate
+    /// derives its row bounds from here, so the count has one home.
+    pub const fn min(self) -> usize {
+        self.min
+    }
+
+    /// The greatest accepted argument count (see [`Self::min`]).
+    pub const fn max(self) -> usize {
+        self.max
+    }
+
+    /// The authored rejection detail a call supplying `count` arguments
+    /// violates, or `None` when it satisfies the contract. The accept test
+    /// and the rejection travel together, so no consumer can pair them
+    /// wrongly; each layer composes the class token once around the detail.
+    pub fn violation(self, count: usize) -> Option<&'static str> {
+        if (self.min..=self.max).contains(&count) {
+            None
+        } else {
+            Some(self.detail)
+        }
+    }
+}
+
+/// `char_length()`/`character_length()`'s one-argument contract.
+pub const CHAR_LENGTH_ARITY: ArityContract =
+    ArityContract::exact(1, FUNCTION_REQUIRES_ONE_ARGUMENT);
+
+/// `nullif()`'s two-argument contract.
+pub const NULLIF_ARITY: ArityContract = ArityContract::exact(2, NULLIF_REQUIRES_TWO_ARGUMENTS);
+
+/// `format()`'s one-or-two-argument contract.
+pub const FORMAT_ARITY: ArityContract =
+    ArityContract::range(1, 2, FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS);
+
+/// `vector()`'s three-argument contract.
+pub const VECTOR_ARITY: ArityContract = ArityContract::exact(3, VECTOR_REQUIRES_THREE_ARGUMENTS);
+
+/// The one negative-`SKIP`/`LIMIT` detail, shared by the front end's
+/// compile-time rule, the planner's rule and the executor's runtime guard:
+/// the layer that fires decides the class, never the wording.
+pub const NEGATIVE_PAGE_BOUND_DETAIL: &str = "SKIP/LIMIT must be non-negative";
+
+/// [`NEGATIVE_PAGE_BOUND_DETAIL`] under its pinned `NegativeIntegerArgument`
+/// token — the one composition both stringly layers use: the planner wraps
+/// it in the compile-time `Syntax` class, the executor's runtime guard in its
+/// `Execution` class.
+pub fn negative_page_bound_text() -> String {
+    kind_prefixed(
+        ErrorKind::NegativeIntegerArgument,
+        NEGATIVE_PAGE_BOUND_DETAIL,
+    )
+}
+
+/// The arity contract shared across the front-end check, the planner's rule
+/// table and the executor's dispatch, by lowercased builtin name. `None` for
+/// a name with no cross-layer contract (its arity, if any, is owned by one
+/// layer alone).
+pub fn builtin_arity(name: &str) -> Option<ArityContract> {
+    Some(match name {
+        "char_length" | "character_length" => CHAR_LENGTH_ARITY,
+        "nullif" => NULLIF_ARITY,
+        "format" => FORMAT_ARITY,
+        "vector" => VECTOR_ARITY,
+        _ => return None,
+    })
+}
 
 /// The one spelling of the wrong-type sentence the 22N01 argument errors
 /// and the SEARCH validators share. The expected set is the caller's own
@@ -646,6 +793,14 @@ fn database_not_found_detail(name: &str) -> String {
 /// module.
 fn kind_prefixed(kind: ErrorKind, detail: impl Into<String>) -> String {
     format!("{}: {}", kind.as_str(), detail.into())
+}
+
+/// The one `<ctx> requires a boolean` detail, shared by the runtime
+/// ([`Error::requires_boolean`]) and compile-time
+/// ([`Error::static_requires_boolean`]) constructors so the wording cannot
+/// drift between the planner's and the executor's requiring sites.
+fn requires_boolean_detail(ctx: &str) -> String {
+    format!("{ctx} requires a boolean")
 }
 
 /// The arithmetic failures the executor raises (ADR-0307), typed so a

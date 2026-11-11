@@ -87,11 +87,13 @@ pub fn check_graph_selector_arity(attempted: &str, name: &str, got: usize) -> Re
 /// target, echoed on CE's second line (`testdata/ce-errors/neo4j-ce.json`
 /// `multi_graph_union`/`multi_graph_call`).
 pub fn multiple_graphs(attempted: &str) -> Error {
-    Error::semantic(format!(
-        "{}: Multiple graphs in the same query not allowed here. \
+    // CE's own class is Neo.ClientError.Statement.SyntaxError (42NA5 under
+    // 42001), and its message carries no class tag; the front end rejects the
+    // statement, so it is the SyntaxError class here too.
+    Error::syntax(format!(
+        "Multiple graphs in the same query not allowed here. \
          This feature is only available on composite databases.\n\
-         Attempted to access graph {attempted}",
-        TckErrorClass::SemanticError.as_str()
+         Attempted to access graph {attempted}"
     ))
 }
 
@@ -265,6 +267,21 @@ mod tests {
         );
     }
 
+    /// A formatter whose CE class is Statement.SyntaxError (42NA5's
+    /// multiple-graph rejection): the variant is `Syntax` and the text
+    /// carries no class tag, matching the CE fixture.
+    fn assert_ce_syntax_text(error: &Error, expected_suffix: &str) {
+        assert!(
+            matches!(error, Error::Syntax(_)),
+            "expected Error::Syntax, got {error:?}"
+        );
+        let display = error.to_string();
+        assert!(
+            display.ends_with(expected_suffix),
+            "Display {display:?} does not end with {expected_suffix:?}"
+        );
+    }
+
     #[test]
     fn unsupported_administration_command_echoes_statement() {
         assert_ce_text(
@@ -336,9 +353,9 @@ mod tests {
 
     #[test]
     fn multiple_graphs_names_the_attempted_graph() {
-        assert_ce_text(
+        assert_ce_syntax_text(
             &multiple_graphs("system"),
-            "SemanticError: Multiple graphs in the same query not allowed here. This feature is only available on composite databases.\nAttempted to access graph system",
+            "Multiple graphs in the same query not allowed here. This feature is only available on composite databases.\nAttempted to access graph system",
         );
     }
 

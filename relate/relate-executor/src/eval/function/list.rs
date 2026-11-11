@@ -54,7 +54,9 @@ fn unary_arg(vals: Vec<Value>, f: impl FnOnce(Value) -> Result<Value>) -> Result
     match (vals.next(), vals.next()) {
         (Some(Value::Null), None) => Ok(Value::Null),
         (Some(value), None) => f(value),
-        _ => Err(Error::syntax(FUNCTION_REQUIRES_ONE_ARGUMENT)),
+        _ => Err(Error::invalid_number_of_arguments(
+            FUNCTION_REQUIRES_ONE_ARGUMENT,
+        )),
     }
 }
 
@@ -391,13 +393,11 @@ mod tests {
     /// planner's `FIXED_ARITY_FUNCTIONS` row and the executor backstop
     /// share.
     fn assert_one_argument_error(error: Error) {
-        match error {
-            Error::Syntax(detail) => assert_eq!(
-                detail, FUNCTION_REQUIRES_ONE_ARGUMENT,
-                "zero arguments is the one-argument arity rejection"
-            ),
-            other => panic!("expected the one-argument arity rejection, got {other:?}"),
-        }
+        assert_eq!(
+            error,
+            Error::invalid_number_of_arguments(FUNCTION_REQUIRES_ONE_ARGUMENT),
+            "zero or extra arguments is the one-argument arity rejection"
+        );
     }
 
     /// LABS-709: `head`/`last`/`tail`/`reverse` raise Neo4j's typed

@@ -30,9 +30,19 @@
 //!   (`KNOWN_FUNCTIONS`, `is_known_function`) the planner binds against, and
 //!   the ADR-0497 preview-name admission gate
 //!   (`validate_function_admission`).
-//! - [`static_types`]: compile-time checks decidable from *literal* operand
-//!   types (boolean-operator operands, `IN` lists, `properties()`,
-//!   quantifier/arithmetic mismatches, LIMIT/SKIP literals).
+//! - [`static_types`]: the literal-type/constant vocabulary and the operator
+//!   rules decidable from *literal* operand types (boolean-operator
+//!   operands, `IN` lists, `properties()`, quantifier/arithmetic
+//!   mismatches).
+//! - [`page_bounds`]: the `LIMIT`/`SKIP`/`OFFSET` compile-time rules, in the
+//!   constant-ness and value-domain tiers that `RETURN`/`WITH` own and the
+//!   CIP-168 standalone page statement partly shares (its module doc states
+//!   the split).
+//! - [`static_calls`]: the builtin calls whose literal argument types or
+//!   value domains the statement text decides (`vector*`, `char_length`,
+//!   `nullif`/`format` arity, `replace` limit, temporal constructors,
+//!   quantifier/`allReduce` operands, path-selector counts, `IN TRANSACTIONS`
+//!   concurrency).
 //! - [`dialect`]: `CYPHER <version>` preamble gates (CIP-150): the
 //!   Cypher-25-only surface rejected under `CYPHER 5`.
 //! - [`structure`]: clause-composition rules (USE placement, NEXT chains,
@@ -72,11 +82,13 @@ mod functions;
 mod graph_type_gate;
 mod index_hint;
 mod match_shape;
+mod page_bounds;
 mod safe_mode;
 mod scope;
 mod search;
 mod self_reference;
 mod show;
+mod static_calls;
 mod static_types;
 mod structure;
 mod writes;
@@ -95,6 +107,7 @@ pub use self::functions::{
 };
 pub use self::index_hint::validate_index_hints;
 pub use self::match_shape::validate_match_shape;
+pub use self::page_bounds::validate_limit_skip;
 pub(crate) use self::safe_mode::validate_statement_shape;
 pub use self::scope::validate_variable_types;
 pub(crate) use self::search::search_pattern_is_complex;
@@ -104,7 +117,8 @@ pub use self::show::{
     validate_show_column_names, validate_show_composability, validate_show_output_uniqueness,
     validate_show_requires_yield_before_return, validate_show_system_graph_reads,
 };
-pub use self::static_types::{validate_limit_skip, validate_static_operator_types};
+pub use self::static_calls::validate_static_call_types;
+pub use self::static_types::validate_static_operator_types;
 pub use self::structure::{
     validate_column_name_conflicts, validate_count_subquery_union_shapes,
     validate_expr_traversal_bounds, validate_foreach_body, validate_next_no_admin_commands,
@@ -432,7 +446,7 @@ pub(crate) fn validate_scoped_dynamic_operands(
 /// ORDER BY aggregation check (`aggregation::order_by::check_ob_agg_sub_exprs` /
 /// `validate_ob_non_agg_part`), the list-comprehension aggregation check
 /// (`aggregation::comprehension::check_list_comp_aggregation`), and the focused
-/// static-types helpers (`static_types::expr_references_variables`,
+/// static-types helpers (`page_bounds::expr_references_variables`,
 /// `predicate_applies_arithmetic_to_var`, `expr_is_bare_var`,
 /// `list_literal_all_non_numeric`) — with a descent keyed on grouping keys
 /// and comprehension boundaries rather than plain child structure, so they
@@ -615,6 +629,7 @@ fn validate_statement_node(
     validate_next_no_admin_commands(stmt)?;
     validate_search_clauses(clauses, options)?;
     validate_static_operator_types(clauses, cypher_version)?;
+    validate_static_call_types(clauses)?;
     validate_limit_skip(clauses)?;
     validate_union_columns(stmt)?;
     validate_clause_slots(clauses)?;

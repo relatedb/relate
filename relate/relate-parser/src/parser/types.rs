@@ -352,11 +352,12 @@ impl<'a> Parser<'a> {
         if neg {
             val = -val;
         }
-        if !(1..=4096).contains(&val) {
+        if !relate_model::VECTOR_DIMENSION_RANGE.contains(&val) {
             return Err(self.error_at_token(
                 &tok,
                 format!(
-                    "Expected 'DIMENSION' to be INTEGER in the range 1 to 4096 but found {val}."
+                    "Expected 'DIMENSION' to be INTEGER in the range {} but found {val}.",
+                    relate_model::dimension_range_text()
                 ),
             ));
         }

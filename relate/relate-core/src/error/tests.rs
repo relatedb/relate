@@ -183,6 +183,60 @@ fn requires_boolean_builds_the_shared_boolean_family_detail() {
     );
 }
 
+/// The static sibling keeps the same detail over the Syntax class, and a
+/// typed construction error re-classed by [`Error::into_syntax`] does not
+/// carry its old class prefix into the new message (ADR-0566).
+#[test]
+fn static_requires_boolean_and_into_syntax_keep_the_detail_only() {
+    assert_eq!(
+        Error::static_requires_boolean("AND").to_string(),
+        "syntax error: InvalidArgumentType: AND requires a boolean"
+    );
+    // A bare Type payload keeps its detail alone.
+    assert_eq!(
+        Error::ty("cannot parse date '2022-1'")
+            .into_syntax()
+            .to_string(),
+        "syntax error: cannot parse date '2022-1'"
+    );
+    // A token-carrying variant keeps its pinned detail token.
+    assert_eq!(
+        Error::invalid_argument_type("temporal value")
+            .into_syntax()
+            .to_string(),
+        "syntax error: InvalidArgumentType: temporal value"
+    );
+}
+
+/// One arity contract per shared builtin, by name: the front-end check, the
+/// planner's table and the executor's dispatch read the same count and text.
+#[test]
+fn builtin_arity_contracts_are_shared() {
+    assert_eq!(builtin_arity("char_length"), Some(CHAR_LENGTH_ARITY));
+    assert_eq!(builtin_arity("character_length"), Some(CHAR_LENGTH_ARITY));
+    assert_eq!(builtin_arity("nullif"), Some(NULLIF_ARITY));
+    assert_eq!(builtin_arity("format"), Some(FORMAT_ARITY));
+    assert_eq!(builtin_arity("vector"), Some(VECTOR_ARITY));
+    assert_eq!(
+        NULLIF_ARITY.violation(1),
+        Some(NULLIF_REQUIRES_TWO_ARGUMENTS)
+    );
+    assert_eq!(NULLIF_ARITY.violation(2), None);
+    assert_eq!(
+        FORMAT_ARITY.violation(0),
+        Some(FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS)
+    );
+    assert_eq!(FORMAT_ARITY.violation(1), None);
+    assert_eq!(FORMAT_ARITY.violation(2), None);
+    assert!(FORMAT_ARITY.violation(3).is_some());
+    assert!(VECTOR_ARITY.violation(3).is_none() && VECTOR_ARITY.violation(2).is_some());
+    assert_eq!(
+        CHAR_LENGTH_ARITY.violation(0),
+        Some(FUNCTION_REQUIRES_ONE_ARGUMENT)
+    );
+    assert_eq!(builtin_arity("lower"), None);
+}
+
 /// ADR-0307: the three typed variants render exactly as the stringly
 /// errors they replace.
 #[test]

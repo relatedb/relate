@@ -89,7 +89,9 @@ pub(crate) fn validate_part_with_env(
         shadowable,
     } = scope;
     if part.clauses.is_empty() {
-        return Err(Error::semantic("empty query part"));
+        // Live Neo4j reports an empty/whitespace-only statement as a
+        // compile-time SyntaxError (42N45, unexpected end of input).
+        return Err(Error::syntax("empty query part"));
     }
     // A grammar-ending DDL command is standalone whichever AST carries
     // it (the family is `clause_kind::clause_is_ddl_command`'s — schema

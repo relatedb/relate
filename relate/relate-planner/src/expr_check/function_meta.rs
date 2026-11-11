@@ -3,12 +3,19 @@
 //! (42I13), the argument-shape rule, the ADR-0175 integer-argument sites,
 //! and the binding-kind / scope rules. Split from the expression checker
 //! (`shadowing` sets the split precedent) so the checker file is the
-//! traversal/predicate policy and this file is the table machinery.
+//! traversal/predicate policy and this file is the table machinery. The
+//! temporal constructor family — whose many alias spellings a row per name
+//! would duplicate from `is_constructor` — is the one family rule
+//! [`apply_function_meta`] runs before the row lookup, so the dispatcher stays
+//! the single place per-name call rules fire.
 
-use relate_core::{integer_args, Error, Result, FUNCTION_REQUIRES_ONE_ARGUMENT};
+use relate_core::{
+    builtin_arity, integer_args, ArityContract, Error, Result, Value,
+    FUNCTION_REQUIRES_ONE_ARGUMENT,
+};
 use relate_ir::Expr;
 
-use super::literal::reject_non_integer_literal;
+use super::literal::{reject_non_integer_literal, static_arg_value};
 use crate::binding::{Binding, Env, EnvBridge};
 
 /// Env-free per-name call rules: a rule judges the call's argument list and
@@ -28,9 +35,9 @@ type EnvCallRule = fn(&Env, &[Expr]) -> Result<()>;
 /// `function_meta_rows_are_sorted_and_unique` test).
 struct FunctionMeta {
     name: &'static str,
-    /// 42I13: the exact argument count a call must supply, with the
+    /// 42I13: the argument-count contract a call must satisfy, with the
     /// authored message.
-    arity: Option<(usize, &'static str)>,
+    arity: Option<ArityContract>,
     /// The call's argument-list shape rule.
     rule: Option<CallRule>,
     /// ADR-0175 integer-argument sites: (argument index, authored detail
@@ -54,10 +61,10 @@ const fn shape_rule(name: &'static str, rule: CallRule) -> FunctionMeta {
     }
 }
 
-const fn arity_row(name: &'static str, arity: usize, message: &'static str) -> FunctionMeta {
+const fn arity_row(name: &'static str, arity: ArityContract) -> FunctionMeta {
     FunctionMeta {
         name,
-        arity: Some((arity, message)),
+        arity: Some(arity),
         rule: None,
         int_sites: &[],
         rejected_kinds: None,
@@ -94,32 +101,32 @@ const fn kind_row(
     }
 }
 
-const LIST_CONVERSION_ARITY: &str =
-    "InvalidNumberOfArguments: list conversion requires one argument";
+const LIST_CONVERSION_ARITY: &str = "list conversion requires one argument";
+
+/// The shared one-argument contract the planner-only rows below reuse.
+const ONE_ARGUMENT: ArityContract = ArityContract::exact(1, FUNCTION_REQUIRES_ONE_ARGUMENT);
 
 /// The one planner-side rule table for builtin calls, sorted by name.
 const FUNCTION_META: &[FunctionMeta] = &[
-    arity_row("char_length", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("character_length", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("coll.distinct", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("coll.max", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("coll.min", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("coll.sort", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("cosh", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("coth", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("coll.distinct", ONE_ARGUMENT),
+    arity_row("coll.max", ONE_ARGUMENT),
+    arity_row("coll.min", ONE_ARGUMENT),
+    arity_row("coll.sort", ONE_ARGUMENT),
+    arity_row("cosh", ONE_ARGUMENT),
+    arity_row("coth", ONE_ARGUMENT),
     shape_rule("exists", reject_removed_exists_property_form),
-    arity_row("haversin", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("head", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("isempty", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("last", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("haversin", ONE_ARGUMENT),
+    arity_row("head", ONE_ARGUMENT),
+    arity_row("isempty", ONE_ARGUMENT),
+    arity_row("last", ONE_ARGUMENT),
     int_sites_row("left", &[(1, integer_args::LEFT_LENGTH.type_error)]),
     kind_row(
         "length",
         &[Binding::Node, Binding::Rel, Binding::Scalar],
         "InvalidArgumentType: length() needs a path, string, or list",
     ),
-    arity_row("lower", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("octet_length", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("lower", ONE_ARGUMENT),
+    arity_row("octet_length", ONE_ARGUMENT),
     shape_rule("point", reject_invalid_point_literals),
     kind_row(
         "properties",
@@ -134,12 +141,12 @@ const FUNCTION_META: &[FunctionMeta] = &[
             (2, integer_args::RANGE_STEP.type_error),
         ],
     ),
-    arity_row("reverse", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("reverse", ONE_ARGUMENT),
     int_sites_row("right", &[(1, integer_args::RIGHT_LENGTH.type_error)]),
-    arity_row("sinh", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("sinh", ONE_ARGUMENT),
     FunctionMeta {
         name: "size",
-        arity: Some((1, FUNCTION_REQUIRES_ONE_ARGUMENT)),
+        arity: Some(ONE_ARGUMENT),
         rule: None,
         int_sites: &[],
         rejected_kinds: None,
@@ -152,33 +159,45 @@ const FUNCTION_META: &[FunctionMeta] = &[
             (2, integer_args::SUBSTRING_LENGTH.type_error),
         ],
     ),
-    arity_row("tail", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("tanh", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("tail", ONE_ARGUMENT),
+    arity_row("tanh", ONE_ARGUMENT),
     arity_row(
         "timestamp",
-        0,
-        "InvalidNumberOfArguments: timestamp() takes no arguments",
+        ArityContract::exact(0, "timestamp() takes no arguments"),
     ),
-    arity_row("tobooleanlist", 1, LIST_CONVERSION_ARITY),
-    arity_row("tofloatlist", 1, LIST_CONVERSION_ARITY),
-    arity_row("tointegerlist", 1, LIST_CONVERSION_ARITY),
-    arity_row("tolower", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
-    arity_row("tostringlist", 1, LIST_CONVERSION_ARITY),
-    arity_row("toupper", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row(
+        "tobooleanlist",
+        ArityContract::exact(1, LIST_CONVERSION_ARITY),
+    ),
+    arity_row(
+        "tofloatlist",
+        ArityContract::exact(1, LIST_CONVERSION_ARITY),
+    ),
+    arity_row(
+        "tointegerlist",
+        ArityContract::exact(1, LIST_CONVERSION_ARITY),
+    ),
+    arity_row("tolower", ONE_ARGUMENT),
+    arity_row(
+        "tostringlist",
+        ArityContract::exact(1, LIST_CONVERSION_ARITY),
+    ),
+    arity_row("toupper", ONE_ARGUMENT),
     kind_row(
         "type",
         &[Binding::Node],
         "InvalidArgumentType: type() needs a relationship",
     ),
-    arity_row("upper", 1, FUNCTION_REQUIRES_ONE_ARGUMENT),
+    arity_row("upper", ONE_ARGUMENT),
     arity_row(
         "valuetype",
-        1,
-        "InvalidNumberOfArguments: valueType() requires one argument",
+        ArityContract::exact(1, "valueType() requires one argument"),
     ),
 ];
 
-/// Apply the [`FUNCTION_META`] row for `name`, if any.
+/// Apply the per-name rules for `name`: the temporal constructor family's
+/// static construction check, the cross-layer arity contract, then the
+/// [`FUNCTION_META`] row, if any.
 ///
 /// The column order is the historical one: the argument-list shape rule,
 /// then the ADR-0175 integer-argument sites (a non-INTEGER literal fails
@@ -188,6 +207,18 @@ const FUNCTION_META: &[FunctionMeta] = &[
 /// today, but the sequence is stated once so a future row cannot reorder
 /// it by accident.
 pub(super) fn apply_function_meta(env: &Env, name: &str, args: &[Expr]) -> Result<()> {
+    // The temporal constructor family is a name-family rule (a row per alias
+    // spelling would duplicate `is_constructor`), so it runs here, before the
+    // per-name row: this dispatcher stays the one place call rules fire.
+    if relate_core::temporal::is_constructor(name) {
+        check_static_temporal_construction(name, args)?;
+    }
+    // The arity contracts the front end also enforces live in `relate-core`
+    // (one fact per name), not in this table; a name with a row below and a
+    // contract here carries both, in this one order.
+    if let Some(contract) = builtin_arity(name) {
+        check_arity_contract(contract, args.len())?;
+    }
     let Some(meta) = FUNCTION_META.iter().find(|meta| meta.name == name) else {
         return Ok(());
     };
@@ -199,10 +230,8 @@ pub(super) fn apply_function_meta(env: &Env, name: &str, args: &[Expr]) -> Resul
             reject_non_integer_literal(arg, what)?;
         }
     }
-    if let Some((expected, message)) = meta.arity {
-        if args.len() != expected {
-            return Err(Error::syntax(message));
-        }
+    if let Some(contract) = meta.arity {
+        check_arity_contract(contract, args.len())?;
     }
     if let Some((rejected, message)) = meta.rejected_kinds {
         if let Some(Expr::Variable(variable)) = args.first() {
@@ -220,6 +249,16 @@ pub(super) fn apply_function_meta(env: &Env, name: &str, args: &[Expr]) -> Resul
     Ok(())
 }
 
+/// The 42I13 rejection for a call outside `contract`: the contract's bare
+/// detail under the one `InvalidNumberOfArguments` token, composed once for
+/// this layer.
+fn check_arity_contract(contract: ArityContract, count: usize) -> Result<()> {
+    match contract.violation(count) {
+        Some(detail) => Err(Error::invalid_number_of_arguments(detail)),
+        None => Ok(()),
+    }
+}
+
 /// `size()` cannot take a pattern predicate, nor a statically-path value.
 fn rule_size_argument(env: &Env, args: &[Expr]) -> Result<()> {
     match args.first() {
@@ -230,6 +269,34 @@ fn rule_size_argument(env: &Env, args: &[Expr]) -> Result<()> {
             "InvalidArgumentType: size() cannot be applied to a path",
         )),
         _ => Ok(()),
+    }
+}
+
+/// A temporal constructor over a fully-static one-argument string form is
+/// constructed at compile time: a literal that cannot construct is a
+/// front-end rejection, not a row-time one (live Neo4j: `date('2022-1')` is a
+/// SyntaxError). The construction's own argument-value class — an out-of-range
+/// zone offset, a named zone on a date-less time — is live's ArgumentError and
+/// is kept; every other failure (the parse/type faults) is the compile-time
+/// SyntaxError class. The field-map form and the CIP-228 `(value, pattern)`
+/// form keep their runtime classes (their corpus contract pins run-time
+/// invalidity).
+fn check_static_temporal_construction(name: &str, args: &[Expr]) -> Result<()> {
+    let [arg] = args else {
+        return Ok(());
+    };
+    let Some(value) = static_arg_value(arg) else {
+        return Ok(());
+    };
+    if !matches!(value, Value::String(_)) {
+        return Ok(());
+    }
+    match relate_core::temporal::construct_named(name, std::slice::from_ref(&value)) {
+        Ok(_) => Ok(()),
+        Err(e @ (Error::ArgumentError(_) | Error::Syntax(_))) => Err(e),
+        // The class moves to Syntax; the typed detail must not carry the old
+        // class prefix into the new message.
+        Err(e) => Err(e.into_syntax()),
     }
 }
 

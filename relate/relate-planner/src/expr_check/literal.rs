@@ -22,27 +22,66 @@ enum LiteralKind {
     Other,
 }
 
-/// The statically-known literal an expression spells: a plan-cache
-/// placeholder is resolved to the literal it replaced (ADR-0503) and a
-/// unary sign is unwrapped (the parser splits `-1.5` and `+1.5` into a
-/// unary operator over the literal). A caller's own parameter and every
-/// non-literal expression are `None`.
+/// The statically-known literal an expression spells, as the value itself: a
+/// plan-cache placeholder is resolved to the literal it replaced (ADR-0503),
+/// a unary sign is unwrapped (the parser splits `-1.5` and `+1.5` into a
+/// unary operator over the literal), and list/map literals fold to their
+/// values. A caller's own parameter and every non-literal expression are
+/// `None`. The one `Expr → Option<Value>` walk of this vocabulary;
+/// [`static_literal`] classifies its result.
+pub(super) fn static_arg_value(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Null => Some(Value::Null),
+        Expr::Bool(value) => Some(Value::Bool(*value)),
+        Expr::Int(value) => Some(Value::Int(*value)),
+        Expr::Float(value) => Some(Value::Float(*value)),
+        Expr::String(value) => Some(Value::String(value.as_str().into())),
+        // An executor-side eager value: a temporal constructor call the
+        // front end folded (`date('2020-01-01')`).
+        Expr::RuntimeValue(value) => Some(value.clone()),
+        Expr::Parameter(name) => relate_core::auto_literal(name),
+        Expr::List(items) => Value::checked_list(
+            items
+                .iter()
+                .map(static_arg_value)
+                .collect::<Option<Vec<_>>>()?,
+        )
+        .ok(),
+        Expr::Map(pairs) => {
+            let map = pairs
+                .iter()
+                .map(|(key, value)| Some((key.clone(), static_arg_value(value)?)))
+                .collect::<Option<std::collections::BTreeMap<_, _>>>()?;
+            Value::checked_map(map).ok()
+        }
+        Expr::Unary {
+            op: UnaryOp::Plus,
+            expr,
+        } => static_arg_value(expr),
+        Expr::Unary {
+            op: UnaryOp::Minus,
+            expr,
+        } => match static_arg_value(expr)? {
+            Value::Int(value) => value.checked_neg().map(Value::Int),
+            Value::Float(value) => Some(Value::Float(-value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The literal an expression spells, bucketed by the kind each caller tests
+/// for. A collection literal is `Other` even when an element is dynamic: the
+/// kind a site tests for is the collection. A sign is transparent whatever
+/// its operand's kind (a nonsense `-'x'` is still a non-numeric literal).
 fn static_literal(expr: &Expr) -> Option<LiteralKind> {
     match expr {
-        Expr::Null => Some(LiteralKind::Null),
-        Expr::Bool(_) => Some(LiteralKind::Bool),
-        Expr::Int(_) => Some(LiteralKind::Int),
-        Expr::Float(_) => Some(LiteralKind::Float),
-        Expr::String(_) | Expr::List(_) | Expr::Map(_) => Some(LiteralKind::Other),
-        Expr::Parameter(name) => relate_core::auto_literal(name).as_ref().map(literal_kind),
+        Expr::List(_) | Expr::Map(_) => Some(LiteralKind::Other),
         Expr::Unary {
             op: UnaryOp::Minus | UnaryOp::Plus,
             expr,
         } => static_literal(expr),
-        // An executor-side eager value: a temporal constructor call the
-        // front end folded (`date('2020-01-01')`).
-        Expr::RuntimeValue(value) => Some(literal_kind(value)),
-        _ => None,
+        other => static_arg_value(other).map(|value| literal_kind(&value)),
     }
 }
 

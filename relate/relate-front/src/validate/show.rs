@@ -458,7 +458,11 @@ fn validate_show_system_graph_reads_clauses(clauses: &[Clause]) -> Result<(), En
             None => Ok(()),
         }
     };
-    crate::ast::tree::walk_clause_list_tree(clauses, &mut visit)
+    crate::ast::tree::walk_clause_list_tree(
+        clauses,
+        crate::ast::tree::SubqueryDescent::Enter,
+        &mut visit,
+    )
 }
 
 /// Duplicate-output-name check for the two graph-schema catalog commands

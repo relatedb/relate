@@ -7,26 +7,23 @@ use relate_core::{temporal, Error, Result, Value};
 use crate::overlay::ExecGraph;
 
 pub(super) fn bi_format(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    Ok({
-        if vals.is_empty() || vals.len() > 2 {
-            return Err(Error::semantic("format() requires one or two arguments"));
-        }
-        if vals.iter().any(Value::is_null) {
-            Value::Null
-        } else {
-            let Value::Temporal(t) = &vals[0] else {
-                return Err(Error::ty("format() requires a temporal value"));
-            };
-            match vals.get(1) {
-                // The no-pattern default renders the same full-precision
-                // form toString does (ADR-0448): one temporal rendering
-                // for every string-producing surface.
-                None => Value::String(t.full_seconds_string().into()),
-                Some(Value::String(pattern)) => {
-                    Value::String(temporal::format_pattern(t, pattern)?.into())
-                }
-                _ => return Err(Error::ty("format() pattern must be a string")),
+    // The one-or-two-argument count is the registry row's contract,
+    // enforced before any argument is evaluated.
+    Ok(if vals.iter().any(Value::is_null) {
+        Value::Null
+    } else {
+        let Value::Temporal(t) = &vals[0] else {
+            return Err(Error::ty("format() requires a temporal value"));
+        };
+        match vals.get(1) {
+            // The no-pattern default renders the same full-precision
+            // form toString does (ADR-0448): one temporal rendering
+            // for every string-producing surface.
+            None => Value::String(t.full_seconds_string().into()),
+            Some(Value::String(pattern)) => {
+                Value::String(temporal::format_pattern(t, pattern)?.into())
             }
+            _ => return Err(Error::ty("format() pattern must be a string")),
         }
     })
 }

@@ -42,8 +42,14 @@ pub(crate) fn check_pred(
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     expr: &Expr,
 ) -> Result<()> {
+    // Both of the checks below decide a *static* fact about the expression,
+    // and live Neo4j reports a statically non-boolean predicate as a
+    // compile-time `SyntaxError` (probed 2026-11-10: `WHERE 1` and
+    // `MATCH (n) WHERE n` are both `Neo.ClientError.Statement.SyntaxError`).
+    // A value whose type is only known per row keeps the runtime TypeError
+    // (`bool_or_null`).
     if is_static_non_bool(expr) {
-        return Err(Error::requires_boolean("predicate"));
+        return Err(Error::static_requires_boolean("predicate"));
     }
     if let Expr::Variable(v) = expr {
         if matches!(
@@ -52,7 +58,8 @@ pub(crate) fn check_pred(
         ) {
             return Err(Error::invalid_argument_type(
                 "an entity or path is not a boolean predicate",
-            ));
+            )
+            .into_syntax());
         }
     }
     check_expr_ctx(env, is_write_procedure, expr, true)
@@ -90,18 +97,20 @@ fn reject_property_on_non_map(env: &Env, v: &SmallName) -> Result<()> {
 }
 
 pub(crate) fn check_nonneg_int_arg(expr: &Expr) -> Result<()> {
-    match expr {
-        Expr::Int(i) if *i < 0 => Err(Error::syntax(
-            "NegativeIntegerArgument: SKIP/LIMIT must be non-negative",
-        )),
-        Expr::Unary {
-            op: UnaryOp::Minus,
+    // One authored detail (`relate_core`), one token composition; this layer
+    // decides only the class.
+    let negative = matches!(expr, Expr::Int(i) if *i < 0)
+        || matches!(
             expr,
-        } if matches!(expr.as_ref(), Expr::Int(i) if *i > 0) => Err(Error::syntax(
-            "NegativeIntegerArgument: SKIP/LIMIT must be non-negative",
-        )),
-        _ => Ok(()),
+            Expr::Unary {
+                op: UnaryOp::Minus,
+                expr,
+            } if matches!(expr.as_ref(), Expr::Int(i) if *i > 0)
+        );
+    if negative {
+        return Err(Error::syntax(relate_core::negative_page_bound_text()));
     }
+    Ok(())
 }
 
 pub(crate) fn check_positive_int_arg(expr: &Expr, what: &str) -> Result<()> {
@@ -268,8 +277,9 @@ fn check_expr_ctx(
                 return Err(name.with_str(Error::unknown_function));
             }
             // The one per-name rule table: arity (42I13), the argument
-            // shape rule, the ADR-0175 integer-argument sites, and the
-            // binding-kind / scope rules — one row per name.
+            // shape rule, the ADR-0175 integer-argument sites, the
+            // binding-kind / scope rules, and the temporal constructor
+            // family's static construction check — one dispatch point.
             apply_function_meta(env, &n, args)?;
             let child_pred = n == "exists";
             if is_agg_fn(&n) && args.iter().any(expr_contains_rand) {
@@ -312,15 +322,16 @@ fn check_expr_ctx(
             for c in [left.as_ref(), right.as_ref()] {
                 check_expr_ctx(env, is_write_procedure, c, child)?;
             }
-            // ADR-0511 (LABS-400): the boolean operators require boolean
-            // operands, so a statically non-boolean operand is the typed
-            // `InvalidArgumentType` rejection.
+            // The boolean operators require boolean operands; a statically
+            // non-boolean operand is the compile-time SyntaxError class (live
+            // Neo4j: `RETURN 1 AND true` is a SyntaxException). A value of
+            // runtime-decided type keeps the runtime TypeError.
             if child
                 && [left.as_ref(), right.as_ref()]
                     .into_iter()
                     .any(is_static_non_bool)
             {
-                return Err(Error::requires_boolean(op.as_str()));
+                return Err(Error::static_requires_boolean(op.as_str()));
             }
             if *op == BinaryOp::In {
                 if let Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::String(_) =
@@ -536,38 +547,32 @@ mod tests {
     use super::*;
     use relate_names::SmallName;
 
-    /// ADR-0511 (LABS-400): every boolean-requiring planner site raises the
-    /// typed `InvalidArgumentType` variant, so the class table (ABI v2)
-    /// reports Neo4j's TypeError class for the whole family instead of the
-    /// SyntaxError class ADR-0003 pinned.
+    /// Every boolean-requiring planner site decides a *static* fact and
+    /// raises the SyntaxError class — live Neo4j reports `WHERE 1`,
+    /// `MATCH (n) WHERE n` and `RETURN 1 AND true` all as
+    /// `Neo.ClientError.Statement.SyntaxError` (probed 2026-11-10). A value
+    /// whose type is only known per row keeps the runtime TypeError.
     #[test]
-    fn boolean_requiring_sites_raise_the_typed_invalid_argument_type() {
+    fn static_boolean_requiring_sites_raise_the_syntax_class() {
         let mut env = Env::new();
         env.insert("n".to_string(), Binding::Node);
 
         // `WHERE 1` — a statically non-boolean predicate.
         let err = check_pred(&env, &mut |_| false, &Expr::Int(1)).unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidArgumentType(_)),
-            "predicate: {err:?}"
-        );
+        assert!(matches!(err, Error::Syntax(_)), "predicate: {err:?}");
         assert!(
             err.to_string().contains("predicate requires a boolean"),
             "{err}"
         );
 
-        // `WHERE n` — an entity variable in a predicate position (Neo4j
-        // reports 22N27 / 22G03, the TypeError family).
+        // `WHERE n` — an entity variable in a predicate position.
         let err = check_pred(
             &env,
             &mut |_| false,
             &Expr::Variable(SmallName::from_name("n")),
         )
         .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidArgumentType(_)),
-            "entity: {err:?}"
-        );
+        assert!(matches!(err, Error::Syntax(_)), "entity: {err:?}");
         assert!(
             err.to_string()
                 .contains("an entity or path is not a boolean predicate"),
@@ -581,7 +586,7 @@ mod tests {
             right: Box::new(Expr::Bool(true)),
         };
         let err = check_expr(&env, &mut |_| false, &and).unwrap_err();
-        assert!(matches!(err, Error::InvalidArgumentType(_)), "{err:?}");
+        assert!(matches!(err, Error::Syntax(_)), "{err:?}");
         assert!(err.to_string().contains("AND requires a boolean"), "{err}");
     }
 

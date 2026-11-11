@@ -18,3 +18,4 @@ pub use schema::{
     Constraint, ConstraintClassification, ConstraintType, EnforcedLabelSite, EntityKind,
 };
 pub use value::{CypherValue, GeometryValue, VectorCoordKind};
+pub use vector::coordinates::{dimension_range_text, VectorCoordToken, VECTOR_DIMENSION_RANGE};

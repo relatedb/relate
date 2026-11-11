@@ -616,7 +616,9 @@ mod tests {
                 ce::composite_only_graph_function("graph.byName('neo4j')"),
                 "SemanticError",
             ),
-            (ce::multiple_graphs("system"), "SemanticError"),
+            // CE's class for 42NA5 is Statement.SyntaxError (fixture
+            // `multi_graph_union`), and its message carries no class tag.
+            (ce::multiple_graphs("system"), "SyntaxError"),
             (
                 ce::element_id_no_namespace("4:00000000-0000-0000-0000-000000000000:n1"),
                 "SemanticError",

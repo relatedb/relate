@@ -689,15 +689,18 @@ fn first_return_expr(query: &str) -> mdb::Expr {
 }
 
 /// The fold's declines, each keeping the call's per-evaluation semantics: a
-/// parameter (unknown at lowering), a construction error (the error must
-/// keep raising at evaluation, exactly when the unfolded engine would raise
-/// it), the zero-argument clock form, and the clock-reading map form
-/// (folding it would bake the lowering-time instant into the plan).
+/// parameter (unknown at lowering), the zero-argument clock form, and the
+/// clock-reading map form (folding it would bake the lowering-time instant
+/// into the plan).
+///
+/// A literal that cannot construct no longer reaches the fold: the static
+/// call validator rejects it at compile time (Neo4j reports a literal
+/// temporal parse failure as a SyntaxError;
+/// `static_types::tests::temporal_literal_static_rejections` covers it).
 #[test]
-fn temporal_fold_declines_parameters_errors_and_clock_forms() {
+fn temporal_fold_declines_parameters_and_clock_forms() {
     for src in [
         "RETURN date($d) AS d",
-        "RETURN date(\"not a date\") AS d",
         "RETURN date() AS d",
         "RETURN date({timezone: 'UTC'}) AS d",
     ] {
