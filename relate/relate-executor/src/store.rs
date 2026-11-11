@@ -1,4 +1,5 @@
-//! Compact live records and typed adjacency chunks (ADR-0033).
+//! Compact live records and version-chain structures (ADR-0033); the typed
+//! adjacency chunks live in [`crate::adjacency`].
 //! Public `Node` / `Relationship` maps are materialized at the API boundary.
 
 use std::collections::BTreeMap;
@@ -674,121 +675,6 @@ impl LiveRel {
     }
 }
 
-/// One hop in a typed chunk. Ordered for `ORDER BY ts DESC` (ADR-0035).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct AdjHop {
-    pub ts: Option<i64>,
-    pub id: RelId,
-}
-
-/// Per-node typed adjacency chunks (ADR-0031 / ADR-0033). Superset lists.
-/// Each chunk is `ts` DESC with missing integer `ts` first (ADR-0035);
-/// equal-`ts` hops are newest relationship first (ADR-0203 — see
-/// `cmp_ts_desc`).
-#[derive(Clone, Debug, Default)]
-pub(crate) struct TypedAdj {
-    pub chunks: Vec<(u32, Vec<AdjHop>)>,
-}
-
-impl TypedAdj {
-    pub(crate) fn insert(&mut self, type_id: u32, rid: RelId, ts: Option<i64>) {
-        let hop = AdjHop { ts, id: rid };
-        if let Some(v) = self.chunk_mut(type_id) {
-            insert_hop(v, hop);
-        } else {
-            let mut hops = vec![hop];
-            crate::memory::fit_reserved(&mut hops);
-            self.chunks.push((type_id, hops));
-            crate::memory::fit_reserved(&mut self.chunks);
-        }
-    }
-
-    pub(crate) fn floor_bytes(&self) -> u64 {
-        let hops: Vec<usize> = self.chunks.iter().map(|(_, v)| v.len()).collect();
-        crate::memory::adjacency_bytes(&hops)
-    }
-
-    pub(crate) fn reposition(&mut self, type_id: u32, rid: RelId, ts: Option<i64>) {
-        // The remove-then-reinsert through the two hop policies: a chunk
-        // the removal emptied is recreated by the insert below, so the
-        // hop lands in a freshly ordered chunk either way.
-        self.remove(type_id, rid);
-        if let Some(v) = self.chunk_mut(type_id) {
-            insert_hop(v, AdjHop { ts, id: rid });
-        } else {
-            self.insert(type_id, rid, ts);
-        }
-    }
-
-    /// Remove `rid`'s hop from `type_id`'s chunk, keeping the chunk's
-    /// order, and drop the chunk when the hop was its last — no phantom
-    /// empty chunks for `out_chunks` / `hop_counts` to report (F-1-23).
-    /// The GC's pruning arm (LABS-1116): a chain the version map no
-    /// longer holds must leave adjacency too, or every later scan pays a
-    /// `rels` map miss on the ghost hop. A missing hop is a no-op (the
-    /// removal is idempotent by construction).
-    pub(crate) fn remove(&mut self, type_id: u32, rid: RelId) {
-        if let Some(ci) = self.chunks.iter().position(|(t, _)| *t == type_id) {
-            let v = &mut self.chunks[ci].1;
-            if let Some(i) = v.iter().position(|h| h.id == rid) {
-                v.remove(i);
-                if v.is_empty() {
-                    self.chunks.remove(ci);
-                }
-            }
-        }
-    }
-
-    pub(crate) fn flatten(&self) -> Vec<RelId> {
-        self.chunks
-            .iter()
-            .flat_map(|(_, v)| v.iter().map(|h| h.id))
-            .collect()
-    }
-
-    pub(crate) fn chunk(&self, type_id: u32) -> &[AdjHop] {
-        self.chunks
-            .iter()
-            .find(|(t, _)| *t == type_id)
-            .map(|(_, v)| v.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// The mut twin of [`Self::chunk`] — the one find-chunk spelling the
-    /// in-place hop policies (`insert`, `reposition`) route through.
-    fn chunk_mut(&mut self, type_id: u32) -> Option<&mut Vec<AdjHop>> {
-        self.chunks
-            .iter_mut()
-            .find(|(t, _)| *t == type_id)
-            .map(|(_, v)| v)
-    }
-}
-
-/// OpenCypher: NULL ranks after NUMBER in ASC, so first in DESC.
-/// The `RelId` tie-break is DESCENDING (newest first): Neo4j inserts a new
-/// relationship at the head of the node's relationship chain, so reference
-/// expansions — and therefore its shortestPath tie-breaks and the row order
-/// behind aggregation ties — see the newest relationship first (ADR-0203,
-/// LABS-255/LABS-258).
-fn cmp_ts_desc(a: &AdjHop, b: &AdjHop) -> std::cmp::Ordering {
-    match (a.ts, b.ts) {
-        (None, None) => b.id.cmp(&a.id),
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (Some(ta), Some(tb)) => tb.cmp(&ta).then(b.id.cmp(&a.id)),
-    }
-}
-
-fn insert_hop(v: &mut Vec<AdjHop>, hop: AdjHop) {
-    match v.binary_search_by(|h| cmp_ts_desc(h, &hop)) {
-        Ok(_) => {}
-        Err(pos) => {
-            v.insert(pos, hop);
-            crate::memory::fit_reserved(v);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,41 +787,5 @@ mod tests {
         p.set(&i, "note", Value::String("x".into()));
         assert!(matches!(p, RelPayload::Other(_)));
         assert_eq!(p.to_map(&i).get("note"), Some(&Value::String("x".into())));
-    }
-
-    #[test]
-    fn typed_adj_chunks() {
-        let mut a = TypedAdj::default();
-        a.insert(1, 10, None);
-        a.insert(2, 20, None);
-        a.insert(1, 11, None);
-        // Newest-first within a chunk (ADR-0203): the Neo4j reference
-        // expands a node's relationship chain head-first, so the
-        // highest-id relationship of a type comes first.
-        assert_eq!(
-            a.chunk(1).iter().map(|h| h.id).collect::<Vec<_>>(),
-            vec![11, 10]
-        );
-        assert_eq!(a.flatten(), vec![11, 10, 20]);
-    }
-
-    #[test]
-    fn typed_adj_orders_ts_desc_nulls_first() {
-        let mut a = TypedAdj::default();
-        a.insert(1, 1, Some(10));
-        a.insert(1, 2, Some(30));
-        a.insert(1, 3, None);
-        a.insert(1, 4, Some(20));
-        let ids: Vec<_> = a.chunk(1).iter().map(|h| (h.ts, h.id)).collect();
-        assert_eq!(
-            ids,
-            vec![(None, 3), (Some(30), 2), (Some(20), 4), (Some(10), 1)]
-        );
-        a.reposition(1, 1, Some(40));
-        let ids: Vec<_> = a.chunk(1).iter().map(|h| (h.ts, h.id)).collect();
-        assert_eq!(
-            ids,
-            vec![(None, 3), (Some(40), 1), (Some(30), 2), (Some(20), 4)]
-        );
     }
 }

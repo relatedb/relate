@@ -426,6 +426,25 @@ fn pair_counts_follow_label_mutations_both_sides() {
     assert_eq!(g.pattern_pair_rows("C", "R", "B"), Some(1));
 }
 
+/// ADR-0551: the checkpoint's fold moves a chunk's hops into the sealed
+/// tier; the label-mutation pair walk reads the merged delta+sealed
+/// stream, so the mutation still finds (and charges) every incident rel
+/// the chunk holds.
+#[test]
+fn pair_counts_include_sealed_hops_after_a_fold() {
+    let g = Graph::default();
+    let (a, _, _, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
+    let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
+    assert_eq!(g.sealed_out.get(&a).unwrap().chunk_len(type_id), floor);
+    assert_eq!(g.pattern_pair_rows("N", "T", "N"), Some(floor as u64));
+
+    g.begin_write().unwrap();
+    g.add_labels(a, &["A2".into()]);
+    g.commit_write();
+    assert_eq!(g.pattern_pair_rows("N", "T", "N"), Some(floor as u64));
+    assert_eq!(g.pattern_pair_rows("A2", "T", "N"), Some(floor as u64));
+}
+
 /// LABS-370: the wholesale adjacency rebuild recalibrates the pair
 /// counts from the live state (the high-water-free exact map, the
 /// histogram's rebuild precedent).

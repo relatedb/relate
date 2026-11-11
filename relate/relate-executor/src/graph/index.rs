@@ -204,6 +204,8 @@ impl Graph {
         rows.sort_unstable_by_key(|&(id, ..)| id);
         self.out_adj.clear();
         self.in_adj.clear();
+        self.sealed_out.clear();
+        self.sealed_in.clear();
         for &(id, start, type_id, end, ts) in &rows {
             adj_insert(&self.out_adj, start, type_id, id, ts);
             adj_insert(&self.in_adj, end, type_id, id, ts);
@@ -262,6 +264,9 @@ impl Graph {
 
     pub fn gc_versions(&self) {
         let horizon = self.gc_horizon();
+        // ADR-0551: the checkpoint's GC pass is the one moment the store may
+        // pay the O(chunk) re-encode; a chunk below the watermark stays delta.
+        self.compact_adjacency_at_watermark(horizon);
         let nids: Vec<NodeId> = self.nodes.keys();
         for id in nids {
             self.gc_node_chain(id, horizon);
@@ -346,8 +351,8 @@ impl Graph {
             // every later scan pays a `rels` map miss per ghost hop (the
             // per-hop visibility probe stays the authority; this only
             // stops offering it a rel it cannot resolve).
-            adj_remove(&self.out_adj, start, type_id, id);
-            adj_remove(&self.in_adj, end, type_id, id);
+            adj_remove(&self.out_adj, &self.sealed_out, start, type_id, id);
+            adj_remove(&self.in_adj, &self.sealed_in, end, type_id, id);
         }
         // Prune after the `rels` guard is released — the pair guard is never
         // taken while a `rels` guard is held. When `prune` is false both

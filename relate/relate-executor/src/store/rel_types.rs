@@ -1,7 +1,7 @@
 //! A pattern's static relationship-type disjunction in the interned
 //! domain (LABS-801) — the walk engine's type-filter vocabulary, split
-//! out of `store.rs` (whose charter is compact live records and typed
-//! adjacency chunks, ADR-0033) the way `compact_props` split before it.
+//! out of `store.rs` (whose charter is the compact live records, ADR-0033)
+//! the way `compact_props` split before it.
 //! The pattern carries written names (`RelPattern::types`);
 //! [`RelTypes::resolve`] turns them into catalog ids once, at the walk's
 //! construction, so the per-edge adjacency walk compares ids and never

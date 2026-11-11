@@ -142,14 +142,24 @@ impl Graph {
     /// live version left.
     pub(super) fn incident_rels(&self, node: NodeId) -> Vec<IncidentRel> {
         let mut incidents = Vec::new();
-        for (adj, side) in [(&self.out_adj, Side::Out), (&self.in_adj, Side::In)] {
-            let Some(adj) = adj.get(&node) else {
+        // The live read's merged delta+sealed hop stream (ADR-0551): a
+        // folded chunk's hops live only in the sealed tier, and the read
+        // ts drops the sealed positions a tombstone hides.
+        let ts = self.read_ts();
+        for (map, sealed, side) in [
+            (&self.out_adj, &self.sealed_out, Side::Out),
+            (&self.in_adj, &self.sealed_in, Side::In),
+        ] {
+            let Some(adj) = map.get(&node) else {
                 continue;
             };
-            for (type_id, hops) in &adj.chunks {
-                for hop in hops {
+            let region = sealed.get(&node);
+            // The type slots name the chunks; each chunk's hops are
+            // walked through the merged reader, never `chunks` directly.
+            for (type_id, _) in &adj.chunks {
+                adj.for_each_hop_of(region.as_deref(), *type_id, ts, |hop| {
                     let Some((start, end, live_type)) = self.rel_live_identity(hop.id) else {
-                        continue;
+                        return;
                     };
                     // One dispatch on the walked side: the near end
                     // feeds the live-identity guard, the record carries
@@ -162,10 +172,10 @@ impl Graph {
                     };
                     // The live-identity match the doc above states.
                     if near != node || live_type != *type_id {
-                        continue;
+                        return;
                     }
                     incidents.push(record);
-                }
+                });
             }
         }
         incidents

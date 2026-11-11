@@ -1,8 +1,7 @@
 //! The compact live property map (ADR-0033) and the tagged-JSON byte
 //! counters it shares with the relationship payload, in their own module:
 //! the store's property-record half, split out of `store.rs` so the parent
-//! keeps the live records and the typed adjacency (the repo's
-//! one-theme-per-file shape).
+//! keeps the live records (the repo's one-theme-per-file shape).
 
 use std::collections::BTreeMap;
 use std::io::Write;

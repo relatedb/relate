@@ -86,7 +86,8 @@ relate-test-support = { workspace = true, features = ["vfs_walk", "graph"] }
 # Property-testing harness for WAL/checkpoint invariants (ADR-0268).
 # Dev-only: never compiled into the library or the released artifact. This was
 # the first crate to adopt proptest; `relate-executor` also does now, for
-# the ADR-0439 admission property, under the same pin. Its rand 0.9
+# the ADR-0439 admission property and the ADR-0552 adjacency-model suite,
+# under the same pin. Its rand 0.9
 # requirement unifies with the workspace's rand 0.9 (ADR-0268).
 proptest = { workspace = true }
 proptest-state-machine = "0.8"

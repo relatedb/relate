@@ -207,3 +207,11 @@ because open PRs reserve numbers ahead of merge.
   dev-only/test-build-only scope, same committed-regression-file policy; the
   Decision's "storage only" scope sentence is extended by this note rather
   than replaced as a policy.
+- **Adoption extended to the executor's adjacency-model suite (ADR-0552).**
+  The same pin backs the sealed+delta store's red-line guard: a generated
+  create / ts-update / delete / re-add sequence compared against a plain
+  `BTreeMap` reference model after every op
+  (`src/graph/tests/adjacency_model_proptest.rs`; the regression file lands
+  at `proptest-regressions/graph/tests/adjacency_model_proptest.txt`). Same
+  dev-only/test-build-only scope, same committed-regression-file policy; no
+  second proptest version enters the lockfile.

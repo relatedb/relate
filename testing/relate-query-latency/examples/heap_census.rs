@@ -228,16 +228,16 @@ fn print_census(c: &HeapCensus) {
         "out adjacency (slots+heap)",
         c.out.slot_bytes + c.out.heap_bytes,
         format!(
-            "{} nodes, {} hops, {} chunks",
-            c.out.nodes, c.out.hops, c.out.chunks
+            "{} nodes, {} hops, {} chunks ({} sealed)",
+            c.out.nodes, c.out.hops, c.out.chunks, c.out.sealed_chunks
         ),
     );
     line(
         "in adjacency (slots+heap)",
         c.r#in.slot_bytes + c.r#in.heap_bytes,
         format!(
-            "{} nodes, {} hops, {} chunks",
-            c.r#in.nodes, c.r#in.hops, c.r#in.chunks
+            "{} nodes, {} hops, {} chunks ({} sealed)",
+            c.r#in.nodes, c.r#in.hops, c.r#in.chunks, c.r#in.sealed_chunks
         ),
     );
     line(

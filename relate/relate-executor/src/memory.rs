@@ -230,8 +230,8 @@ pub fn adjacency_bytes(chunk_hops: &[usize]) -> u64 {
     if chunk_hops.is_empty() {
         return 0;
     }
-    let chunk_stride = size_of::<(u32, Vec<crate::store::AdjHop>)>() as u64;
-    let hop_stride = size_of::<crate::store::AdjHop>() as u64;
+    let chunk_stride = size_of::<(u32, Vec<crate::adjacency::AdjHop>)>() as u64;
+    let hop_stride = size_of::<crate::adjacency::AdjHop>() as u64;
     vec_heap(chunk_hops.len(), chunk_stride)
         + chunk_hops
             .iter()

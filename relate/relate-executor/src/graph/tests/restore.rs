@@ -319,6 +319,141 @@ fn checkpoint_load_and_wal_replay_build_adjacency_once() {
     }
 }
 
+/// The checkpoint dumps node and rel rows and folds its adjacency afterwards
+/// (ADR-0551): restoring those rows rebuilds adjacency as a fresh delta — no
+/// sealed bytes or tombstones are serialized — and a WAL tail replayed onto
+/// it leaves the reader's adjacency equal to the writer's. The next
+/// checkpoint re-seals the restored delta.
+#[test]
+fn compaction_restore_roundtrip_rebuilds_a_fresh_delta() {
+    use relate_ir::Direction;
+
+    let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
+    let mut checkpointed: Vec<RedoOp> = (0..2)
+        .map(|id| RedoOp::CreateNode {
+            id,
+            labels: Arc::new(vec!["N".into()]),
+            properties: relate_core::PropertyMap::share(BTreeMap::new()),
+        })
+        .collect();
+    checkpointed.extend((0..floor as RelId).map(|id| create_rel(id, 0, 1, "T")));
+
+    let writer = Graph::default();
+    writer.apply_redo(checkpointed, 1).unwrap();
+    let nodes: Vec<Node> = writer
+        .all_node_ids_at(1)
+        .into_iter()
+        .map(|id| writer.node_at(id, 1).unwrap())
+        .collect();
+    let rels: Vec<Relationship> = writer
+        .all_rel_ids_at(1)
+        .into_iter()
+        .map(|id| writer.rel_at(id, 1).unwrap())
+        .collect();
+    let serialized = |g: &Graph| -> u64 {
+        let nodes: u64 = g
+            .all_node_ids_at(1)
+            .into_iter()
+            .filter_map(|id| g.node_checkpoint_bytes(id, 1).unwrap())
+            .sum();
+        let rels: u64 = g
+            .all_rel_ids_at(1)
+            .into_iter()
+            .filter_map(|id| g.rel_checkpoint_bytes(id, 1).unwrap())
+            .sum();
+        nodes + rels
+    };
+    let dumped = serialized(&writer);
+
+    // The checkpoint's GC pass folds the checkpointed delta; the rows it
+    // dumped carry none of it.
+    writer.gc_versions();
+    let type_id = writer.interner.get_id("T").unwrap();
+    assert_eq!(writer.sealed_out.get(&0).unwrap().chunk_len(type_id), floor);
+    assert_eq!(
+        serialized(&writer),
+        dumped,
+        "the folded layout adds no checkpoint bytes"
+    );
+
+    // The WAL tail: a new type, a delete of a sealed hop, and a ts update of
+    // a sealed hop.
+    let tail = [
+        (
+            2,
+            vec![
+                create_rel(floor as RelId, 0, 1, "U"),
+                RedoOp::DeleteRel { id: 5 },
+            ],
+        ),
+        (
+            3,
+            vec![RedoOp::SetRelProp {
+                id: 7,
+                key: "ts".into(),
+                value: Value::Int(100),
+            }],
+        ),
+    ];
+    for (ts, ops) in tail.iter().cloned() {
+        writer.apply_redo(ops, ts).unwrap();
+    }
+
+    let opened = Graph::default();
+    opened.set_commit_ts(1);
+    for node in nodes {
+        opened.load_checkpoint_node(node).unwrap();
+    }
+    for rel in rels {
+        opened.load_checkpoint_rel(rel).unwrap();
+    }
+    opened.finish_restore();
+    for (ts, ops) in tail {
+        opened.apply_replayed_redo(ops, ts).unwrap();
+    }
+    opened.rebuild_indexes();
+
+    let observable = |g: &Graph| -> Vec<(NodeId, [Vec<RelId>; 3])> {
+        let ts = g.commit_ts();
+        g.all_node_ids_at(ts)
+            .into_iter()
+            .map(|id| {
+                let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
+                    .map(|dir| g.neighbors_at(id, dir, ts));
+                (id, expands)
+            })
+            .collect()
+    };
+    assert_eq!(opened.commit_ts(), writer.commit_ts());
+    // Restore rebuilt adjacency from the rows: a fresh delta, no sealed hops
+    // (the replayed delete still records its tombstone on a zero-hop region).
+    for id in opened.all_node_ids_at(opened.commit_ts()) {
+        for map in [&opened.out_adj, &opened.in_adj] {
+            if let Some(adj) = map.get(&id) {
+                assert!(
+                    adj.chunk_lens(None).all(|(_, _, sealed)| sealed == 0),
+                    "restored node {id} must be delta-only"
+                );
+            }
+        }
+    }
+    assert_eq!(observable(&opened), observable(&writer));
+
+    // The dumped rows are the whole durable state: the next checkpoint
+    // re-seals the restored delta and the reader's adjacency does not move.
+    // The replayed delete's tombstone reclaims at the fold, so the sealed
+    // stream loses its hop — the writer still holds it only because its GC
+    // ran before the tail.
+    opened.gc_versions();
+    let type_id = opened.interner.get_id("T").unwrap();
+    assert_eq!(
+        opened.sealed_out.get(&0).unwrap().chunk_len(type_id),
+        floor - 1,
+        "the restored delta re-seals, without the deleted hop"
+    );
+    assert_eq!(observable(&opened), observable(&writer));
+}
+
 /// An aborted write drops its relationships from adjacency: `abort_write`
 /// still rebuilds it from the live versions.
 #[test]

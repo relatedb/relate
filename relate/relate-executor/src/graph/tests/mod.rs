@@ -2,6 +2,7 @@ use super::*;
 use relate_names::SmallName;
 
 mod adjacency;
+mod adjacency_model_proptest;
 mod chain;
 mod pattern_stats;
 mod point;
@@ -1676,6 +1677,33 @@ fn other_rel_that_gains_triple_keys_stays_on_the_floor() {
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);
     assert_eq!(g.rel(1).unwrap().properties.len(), 4);
     assert_eq!(g.rel(2).unwrap().properties.len(), 3);
+}
+
+/// F-1-30: a self-loop's delete charges both on-demand zero-hop regions —
+/// the two sides share the node, but not their side table. Both tables are
+/// pre-seeded past these ids, so the estimate is the region term alone.
+#[test]
+fn self_loop_delete_charges_both_sealed_regions() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let b = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let c = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let x1 = g.create_rel(a, c, "X".into(), BTreeMap::new()).unwrap();
+    let x2 = g.create_rel(c, b, "X".into(), BTreeMap::new()).unwrap();
+    let loop_id = g.create_rel(a, a, "T".into(), BTreeMap::new()).unwrap();
+    let pair_id = g.create_rel(a, b, "T".into(), BTreeMap::new()).unwrap();
+    g.commit_write();
+    g.begin_write().unwrap();
+    g.delete_rel(x1);
+    g.delete_rel(x2);
+    g.commit_write();
+
+    let region = crate::adjacency::fresh_sealed_region_bytes() as i64;
+    let self_loop = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: loop_id }]);
+    let pair = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: pair_id }]);
+    assert_eq!(self_loop, 2 * region, "both sides of the self-loop charge");
+    assert_eq!(pair, 2 * region, "one region per endpoint");
 }
 
 /// LABS-370 (security follow-up): the redo-delta estimate includes the

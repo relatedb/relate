@@ -3,8 +3,8 @@
 //!
 //! Two schemes, both encoding one `TypedAdj` chunk's hop stream
 //! (`AdjHop { ts: Option<i64>, id: RelId }`, ts-DESC by invariant with
-//! missing-ts first, see `relate-executor/src/store.rs`) as **parallel
-//! streams**:
+//! missing-ts first, see `relate-executor/src/adjacency/delta.rs`) as
+//! **parallel streams**:
 //!
 //! 1. ts-presence bitmap (1 bit per hop, shared by both schemes)
 //! 2. ts stream: first present value raw `i64`, then non-negative gaps
@@ -94,7 +94,7 @@ const TS_BLOCK: usize = 128;
 
 /// The engine's chunk order (ADR-0035 / ADR-0203): missing ts first, then
 /// ts DESC, ties broken by relationship id DESC. Storage-order twin of the
-/// executor's crate-private `cmp_ts_desc` (`relate-executor/src/store.rs`).
+/// executor's crate-private `cmp_ts_desc` (`relate-executor/src/adjacency/delta.rs`).
 pub fn cmp_ts_desc(a: &Hop, b: &Hop) -> std::cmp::Ordering {
     match (a.ts, b.ts) {
         (None, None) => b.id.cmp(&a.id),

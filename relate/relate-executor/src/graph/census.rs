@@ -12,8 +12,8 @@ use std::mem::size_of;
 
 use relate_core::Value;
 
+use crate::adjacency::{SealedAdj, TypedAdj};
 use crate::memory::{self, hashset_i64_bytes, ChainCensus, OVERHEAD_MAP_ENTRY};
-use crate::store::TypedAdj;
 
 use super::id_vec::IdVec;
 
@@ -74,31 +74,35 @@ pub struct HeapCensus {
 }
 
 /// One direction's adjacency: node count, chunk/hop counts, and the slot
-/// plus heap bytes. Both directions go through [`Self::of`].
+/// plus heap bytes. Both directions go through [`Self::of`]. Hops count the
+/// live delta and the sealed stream (`TypedAdj::chunk_lens`), so a folded
+/// chunk keeps its degree; `sealed_chunks` names how many are folded.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AdjacencyCensus {
     pub nodes: u64,
     pub chunks: u64,
+    pub sealed_chunks: u64,
     pub hops: u64,
     pub slot_bytes: u64,
     pub heap_bytes: u64,
 }
 
 impl AdjacencyCensus {
-    fn of(map: &IdVec<TypedAdj>) -> Self {
+    fn of(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>) -> Self {
         let mut c = Self {
-            slot_bytes: map.array_bytes(),
+            slot_bytes: map.array_bytes() + sealed.array_bytes(),
             ..Self::default()
         };
-        map.for_each(|_id, adj| {
+        map.for_each(|id, adj| {
+            let region = sealed.get(&id);
             c.nodes += 1;
             c.chunks += adj.chunks.len() as u64;
+            c.sealed_chunks += region.as_ref().map_or(0, |s| s.chunks.len()) as u64;
             c.hops += adj
-                .chunks
-                .iter()
-                .map(|(_, hops)| hops.len() as u64)
+                .chunk_lens(region.as_deref())
+                .map(|(_, delta, sealed)| (delta + sealed) as u64)
                 .sum::<u64>();
-            c.heap_bytes += adj.floor_bytes();
+            c.heap_bytes += adj.floor_bytes() + region.as_ref().map_or(0, |s| s.floor_bytes());
         });
         c
     }
@@ -193,8 +197,8 @@ impl Graph {
         });
 
         // Adjacency: both directions, every relationship twice.
-        c.out = AdjacencyCensus::of(&self.out_adj);
-        c.r#in = AdjacencyCensus::of(&self.in_adj);
+        c.out = AdjacencyCensus::of(&self.out_adj, &self.sealed_out);
+        c.r#in = AdjacencyCensus::of(&self.in_adj, &self.sealed_in);
 
         // Label index: DashMap slots plus each bucket's HashSet allocation.
         for bucket in self.indexes.label_index.iter() {
@@ -233,5 +237,26 @@ impl Graph {
         c.used_bytes = self.used_bytes();
         c.accounted_bytes = self.accounted_bytes();
         c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Graph;
+
+    /// The census reads one model: hops count delta plus sealed
+    /// (`TypedAdj::chunk_lens`) and sealed chunks are named, so a fold moves
+    /// hops from the delta to the sealed stream instead of erasing them.
+    #[test]
+    fn census_counts_hops_across_the_fold() {
+        let g = Graph::default();
+        crate::graph::test_support::folded_floor_chunk(&g);
+
+        let c = g.heap_census();
+        let floor = crate::adjacency::COMPACTION_DELTA_FLOOR as u64;
+        assert_eq!(c.out.hops, floor, "sealed hops still count");
+        assert_eq!(c.out.sealed_chunks, 1);
+        assert_eq!(c.r#in.hops, floor);
+        assert_eq!(c.r#in.sealed_chunks, 1);
     }
 }

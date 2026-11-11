@@ -1,3 +1,6 @@
+// The sealed adjacency tier (ADR-0551): compressed chunks, versioned
+// tombstones, and the delta merge beside the live store.
+mod adjacency;
 mod catalog_meta;
 mod csv;
 mod ctx;

@@ -10,7 +10,8 @@ use relate_core::NodeId;
 use relate_ir::Direction;
 
 use super::{live_version, Graph};
-use crate::store::{hop_other, AdjHop, LiveNode};
+use crate::adjacency::AdjHop;
+use crate::store::{hop_other, LiveNode};
 
 /// Run `f` on `node`'s live record under one short `nodes` guard — the
 /// research kernel's one live-node read.
@@ -52,11 +53,14 @@ pub(super) fn live_neighbors(
     buf: &mut Vec<NodeId>,
 ) {
     buf.clear();
+    // The live read's merged delta+sealed hop stream (ADR-0551), at the
+    // live read ts so a tombstoned sealed position is dropped.
+    let ts = graph.read_ts();
     // the pairing bound once: each adjacency map with its scan
     // direction in the same row; Both walks both rows
-    for (map, scan_dir) in [
-        (&graph.out_adj, Direction::Outgoing),
-        (&graph.in_adj, Direction::Incoming),
+    for (map, sealed, scan_dir) in [
+        (&graph.out_adj, &graph.sealed_out, Direction::Outgoing),
+        (&graph.in_adj, &graph.sealed_in, Direction::Incoming),
     ] {
         if dir != Direction::Both && dir != scan_dir {
             continue;
@@ -64,10 +68,31 @@ pub(super) fn live_neighbors(
         let Some(adj) = map.get(&node) else {
             continue;
         };
-        for hop in adj.chunk(tid) {
-            if let Some(other) = live_other(graph, hop, node, scan_dir) {
+        let region = sealed.get(&node);
+        adj.for_each_hop_of(region.as_deref(), tid, ts, |hop| {
+            if let Some(other) = live_other(graph, &hop, node, scan_dir) {
                 buf.push(other);
             }
-        }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR-0551: a checkpoint fold moves a chunk's hops into the sealed
+    /// tier — the live-neighbor read walks the merged delta+sealed
+    /// stream, so the fold hides none of them.
+    #[test]
+    fn live_neighbors_sees_sealed_hops() {
+        let g = Graph::default();
+        let (a, b, _, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
+        let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
+        assert_eq!(g.sealed_out.get(&a).unwrap().chunk_len(type_id), floor);
+
+        let mut buf = Vec::new();
+        live_neighbors(&g, a, type_id, Direction::Outgoing, &mut buf);
+        assert_eq!(buf, vec![b; floor]);
     }
 }

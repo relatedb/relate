@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 use relate_catalog::{Catalog, ConstraintDef, IndexDef};
 use relate_core::{Namespace, Node, NodeId, RelId, Relationship, Result, Value};
 
+use crate::adjacency::{SealedAdj, TypedAdj};
 use crate::group_key::GroupKey;
 use crate::memory::ChainShape;
 use crate::pull_identity::PullIdentityIndex;
 use crate::redo::{self, PullKind, RedoOp};
-use crate::store::{Interner, LiveNode, LiveRel, RelTypes, TypedAdj};
+use crate::store::{Interner, LiveNode, LiveRel, RelTypes};
 
 use adjacency::{adj_insert, adj_reposition};
 use constraint_keys::ConstraintKeyIndex;
@@ -271,7 +272,16 @@ pub(crate) fn rel_slot() -> u64 {
 }
 
 pub(crate) fn adj_slot() -> u64 {
-    std::mem::size_of::<Option<crate::store::TypedAdj>>() as u64
+    std::mem::size_of::<Option<TypedAdj>>() as u64
+}
+
+/// One sealed side-table id slot, the stride of the sealed stores' arrays.
+fn sealed_slot() -> u64 {
+    std::mem::size_of::<Option<SealedAdj>>() as u64
+}
+
+fn sealed_value() -> u64 {
+    std::mem::size_of::<SealedAdj>() as u64
 }
 
 pub(crate) fn node_value() -> u64 {
@@ -283,7 +293,7 @@ pub(crate) fn rel_value() -> u64 {
 }
 
 fn adj_value() -> u64 {
-    std::mem::size_of::<crate::store::TypedAdj>() as u64
+    std::mem::size_of::<TypedAdj>() as u64
 }
 
 /// Copy-on-write over `id`'s slot ([`Chain::cow`]) at the write timestamp.
@@ -320,6 +330,12 @@ pub struct Graph {
     rels: IdVec<Chain<LiveRel>>,
     out_adj: IdVec<TypedAdj>,
     in_adj: IdVec<TypedAdj>,
+    /// The sealed tier, one side table per direction keyed by node (ADR-0551):
+    /// a node's compressed chunks and versioned tombstones. An entry exists
+    /// only where a fold or a delete's tombstone landed, so a node that never
+    /// folds pays nothing; the delta slot stays 24 bytes.
+    sealed_out: IdVec<SealedAdj>,
+    sealed_in: IdVec<SealedAdj>,
     /// LABS-851 (the structure round): the counting operator's count
     /// state — per-type rel counts, (start-label, type, end-label) pair
     /// counts, per-label live node counts, and the total live node
@@ -402,6 +418,8 @@ impl Default for Graph {
             rels: IdVec::default(),
             out_adj: IdVec::default(),
             in_adj: IdVec::default(),
+            sealed_out: IdVec::default(),
+            sealed_in: IdVec::default(),
             count_stats: Mutex::new(CountStats::default()),
             degree_histograms: Mutex::new(HashMap::new()),
             constraint_keys: Mutex::new(ConstraintKeyIndex::default()),
@@ -578,6 +596,15 @@ impl Graph {
             .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
         self.in_adj
             .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
+        // The sealed side tables (ADR-0551) are retained structure: each
+        // entry's compressed chunks and tombstones, the floor ADR-0551
+        // prices, plus the slot arrays that hold them — the term the heap
+        // census reads as `slot_bytes`.
+        n = n.saturating_add(self.sealed_out.array_bytes());
+        n = n.saturating_add(self.sealed_in.array_bytes());
+        for sealed in [&self.sealed_out, &self.sealed_in] {
+            sealed.for_each(|_id, region| n = n.saturating_add(region.floor_bytes()));
+        }
         // LABS-351 / LABS-370: the degree histograms and the count
         // bundle's charged maps are retained structure — the recount
         // oracle must include them or the incremental entry charges
@@ -694,9 +721,55 @@ impl Graph {
                 delta += span_growth(&mut in_span, *end, slot, overflow, &mut in_side);
             }
             delta += bump_adj(&mut out, *start, type_id, || {
-                hop_counts(&self.out_adj, *start)
+                hop_counts(&self.out_adj, &self.sealed_out, *start)
             });
-            delta += bump_adj(&mut inn, *end, type_id, || hop_counts(&self.in_adj, *end));
+            delta += bump_adj(&mut inn, *end, type_id, || {
+                hop_counts(&self.in_adj, &self.sealed_in, *end)
+            });
+        }
+        // A delete of a hop in a type that never sealed records the type's
+        // first tombstone on an on-demand zero-hop region (ADR-0551), one per
+        // endpoint that does not hold one yet. The key carries the side: a
+        // self-loop's two endpoints are one node, but two side tables.
+        let mut regions: HashSet<(bool, NodeId, u32)> = HashSet::new();
+        let mut sealed_out_span = self.sealed_out.span();
+        let mut sealed_in_span = self.sealed_in.span();
+        let mut sealed_out_side = HashSet::new();
+        let mut sealed_in_side = HashSet::new();
+        let sealed_slot = sealed_slot();
+        let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_value());
+        for op in ops {
+            let RedoOp::DeleteRel { id } = op else {
+                continue;
+            };
+            let Some((start, end, type_id)) = self.rels.get(id).map(|vers| {
+                // Every version of one rel id shares its endpoints and type.
+                let newest = vers.last();
+                (newest.live.start, newest.live.end, newest.live.type_id)
+            }) else {
+                continue;
+            };
+            for (incoming, node, sealed) in [
+                (false, start, &self.sealed_out),
+                (true, end, &self.sealed_in),
+            ] {
+                let region = sealed.get(&node);
+                let sealed = region
+                    .as_ref()
+                    .is_some_and(|region| region.chunk(type_id).is_some());
+                if !sealed && regions.insert((incoming, node, type_id)) {
+                    // A brand-new side-table entry also grows the slot array.
+                    if region.is_none() {
+                        let (span, side) = if incoming {
+                            (&mut sealed_in_span, &mut sealed_in_side)
+                        } else {
+                            (&mut sealed_out_span, &mut sealed_out_side)
+                        };
+                        delta += span_growth(span, node, sealed_slot, sealed_overflow, side);
+                    }
+                    delta += crate::adjacency::fresh_sealed_region_bytes() as i64;
+                }
+            }
         }
         delta
     }
@@ -1300,9 +1373,13 @@ pub(crate) fn spec_has_property_defaults(spec: &crate::graph_type::GraphTypeSpec
         .any(|e| e.properties.iter().any(|p| p.default_value.is_some()))
 }
 
-fn hop_counts(map: &IdVec<TypedAdj>, node: NodeId) -> Vec<(u32, usize)> {
+fn hop_counts(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> Vec<(u32, usize)> {
     map.get(&node)
-        .map(|adj| adj.chunks.iter().map(|(t, v)| (*t, v.len())).collect())
+        .map(|adj| {
+            adj.chunk_lens(sealed.get(&node).as_deref())
+                .map(|(type_id, delta, sealed)| (type_id, delta + sealed))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1368,8 +1445,11 @@ fn span_growth(
     after as i64 - before as i64
 }
 
-fn adj_floor(map: &IdVec<TypedAdj>, node: NodeId) -> u64 {
+/// One node's adjacency floor in one direction: the delta hop bytes plus its
+/// sealed side-table entry's compressed chunks and tombstones.
+fn adj_floor(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> u64 {
     map.get(&node).map(|adj| adj.floor_bytes()).unwrap_or(0)
+        + sealed.get(&node).map_or(0, |region| region.floor_bytes())
 }
 
 fn bump_adj(
