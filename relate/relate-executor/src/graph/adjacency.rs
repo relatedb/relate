@@ -7,6 +7,7 @@
 use super::hop_counts;
 use super::id_vec::IdVec;
 use super::*;
+use crate::adjacency::AdjHop;
 
 fn flatten_adj(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> Vec<RelId> {
     map.get(&node)
@@ -22,6 +23,68 @@ pub(super) fn adj_insert(
     ts: Option<i64>,
 ) {
     map.entry(node).or_default().insert(type_id, id, ts);
+}
+
+/// Which endpoint of a [`RelRow`] one direction's grouping pass keys on.
+enum Side {
+    Start,
+    End,
+}
+
+impl Side {
+    fn endpoint(&self, row: &RelRow) -> NodeId {
+        match self {
+            Side::Start => row.start,
+            Side::End => row.end,
+        }
+    }
+}
+
+/// One direction's wholesale build: `map` keyed by the row's `side`
+/// endpoint, each (node, type) run handed to [`TypedAdj::from_runs`] —
+/// no per-hop binary search or memmove, and the chunk order and hop order
+/// are the store tier's, the order an id-ordered load's incremental
+/// [`adj_insert`]s leave (the wholesale build's pinned contract).
+fn build_side(map: &IdVec<TypedAdj>, rows: &mut [RelRow], side: Side) {
+    let endpoint = |row: &RelRow| side.endpoint(row);
+    rows.sort_unstable_by(|a, b| {
+        endpoint(a)
+            .cmp(&endpoint(b))
+            .then(a.type_id.cmp(&b.type_id))
+    });
+    for node_run in rows.chunk_by_mut(|a, b| endpoint(a) == endpoint(b)) {
+        let node = endpoint(&node_run[0]);
+        // One run per type: its type id and its hops, unsorted and keyless —
+        // `TypedAdj::from_runs` derives the chunk-order key from the hops.
+        let runs = node_run
+            .chunk_by_mut(|a, b| a.type_id == b.type_id)
+            .map(|run| {
+                let hops: Vec<AdjHop> = run
+                    .iter()
+                    .map(|row| AdjHop {
+                        ts: row.ts,
+                        id: row.id,
+                    })
+                    .collect();
+                (run[0].type_id, hops)
+            });
+        map.insert(node, TypedAdj::from_runs(runs));
+    }
+}
+
+/// Install both adjacency maps wholesale from the live rel rows: `out_map`
+/// keyed by each row's start, `in_map` by its end. Both maps must be empty:
+/// this is the whole build, not a merge. `rows` is left grouped by
+/// `(end, type)`; the folds that follow a rebuild are order-independent
+/// aggregates, so reusing the buffer under a second grouping order is
+/// sound.
+pub(super) fn adj_build(out_map: &IdVec<TypedAdj>, in_map: &IdVec<TypedAdj>, rows: &mut [RelRow]) {
+    debug_assert!(
+        out_map.is_empty() && in_map.is_empty(),
+        "adj_build is a wholesale build, not a merge"
+    );
+    build_side(out_map, rows, Side::Start);
+    build_side(in_map, rows, Side::End);
 }
 
 pub(super) fn adj_reposition(

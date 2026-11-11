@@ -1,6 +1,6 @@
 use relate_ir::BinaryOp;
 
-use super::adjacency::{adj_insert, adj_remove};
+use super::adjacency::{adj_build, adj_remove};
 use super::*;
 
 /// Lazily materialized equality postings for one `(class, key)` pair
@@ -183,44 +183,45 @@ pub fn take_index_rebuilds() -> u64 {
 }
 
 impl Graph {
-    /// Derive adjacency from each relationship's live version, inserting in
-    /// ascending id order: a node's type chunks then follow their first id,
-    /// as an id-ordered load leaves them, not the map's hash order. The
-    /// degree-statistic half of the rebuild (rel-type/pair counts,
-    /// histograms) lives behind the family seam:
+    /// Derive adjacency from each relationship's live version. Each map is
+    /// built group-and-sort — one sort per (node, type) run instead of a
+    /// binary-search insert per hop — and a node's type chunks follow their
+    /// first rel id, as an id-ordered load leaves them, not the map's hash
+    /// order: `TypedAdj::from_runs` derives that order from each run's
+    /// hops. The degree-statistic half of the rebuild (rel-type/pair
+    /// counts, histograms) lives behind the family seam:
     /// [`Graph::rebuild_degree_stats`].
     pub(super) fn rebuild_adj(&self) {
         #[cfg(test)]
         ADJ_BUILDS.with(|n| n.set(n.get() + 1));
-        let mut rows = Vec::new();
+        let mut rows: Vec<RelRow> = Vec::new();
         self.rels.for_each(|id, vers| {
             let Some(ver) = live_version(vers) else {
                 return;
             };
             let live = &ver.live;
             let ts = live.payload.ts(&self.interner);
-            rows.push((id, live.start, live.type_id, live.end, ts));
+            rows.push(RelRow {
+                id,
+                start: live.start,
+                type_id: live.type_id,
+                end: live.end,
+                ts,
+            });
         });
-        rows.sort_unstable_by_key(|&(id, ..)| id);
         self.out_adj.clear();
         self.in_adj.clear();
         self.sealed_out.clear();
         self.sealed_in.clear();
-        for &(id, start, type_id, end, ts) in &rows {
-            adj_insert(&self.out_adj, start, type_id, id, ts);
-            adj_insert(&self.in_adj, end, type_id, id, ts);
-        }
-        // Both wholesale folds ride one projection of the live rels —
-        // the (start, type, end) triples, borrowed off `rows` per fold
-        // (no second materialization): the histograms here, the count
-        // bundle's rel side through rebuild_count_stats (its node side
-        // walks nodes itself).
-        let fold_rows = || {
-            rows.iter()
-                .map(|&(_id, start, type_id, end, _ts)| (start, type_id, end))
-        };
-        self.rebuild_degree_stats(fold_rows());
-        self.rebuild_count_stats(fold_rows());
+        adj_build(&self.out_adj, &self.in_adj, &mut rows);
+        // Both wholesale folds ride the same rows the build grouped — no
+        // second materialization: the histograms here, the count bundle's
+        // rel side through rebuild_count_stats (its node side walks nodes
+        // itself). Both are order-independent aggregates, so the rows
+        // carrying the in_adj grouping order rather than rel-id order is
+        // sound.
+        self.rebuild_degree_stats(rows.iter());
+        self.rebuild_count_stats(rows.iter());
         // The wholesale rebuild replaces the histogram map: recompute the
         // incremental `used_bytes` so it tracks the new entry count (the
         // recount oracle includes the histogram term).

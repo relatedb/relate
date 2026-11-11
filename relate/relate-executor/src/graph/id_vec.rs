@@ -296,7 +296,6 @@ impl<T> IdVec<T> {
         Some(IdMut { guard, loc })
     }
 
-    #[allow(dead_code)]
     pub(super) fn insert(&self, id: i64, value: T) -> Option<T> {
         let idx = index(id).expect("id fits an index");
         let mut store = self.slots.write().expect("id store lock");

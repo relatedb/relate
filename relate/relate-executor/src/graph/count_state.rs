@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use relate_core::NodeId;
 
-use super::{Graph, LabelCache};
+use super::{Graph, LabelCache, RelRow};
 
 /// One count-map mutation's direction: every caller
 /// mutates one entry at a time, so the delta is ±1 by construction — the
@@ -363,9 +363,9 @@ impl Graph {
     /// Rebuild the exact count state wholesale from the live graph —
     /// abort and restore recompute it (the abort's install-time bumps
     /// die with the reverted versions). The count state's one rebuild
-    /// home: `rebuild_adj` feeds it its projection of the live rels
-    /// beside the histogram fold (both paired rebuild sites run the
-    /// two together). The node fold reads only liveness and the live
+    /// home: `rebuild_adj` feeds it the same materialized `RelRow`s it
+    /// hands `adj_build`, beside the histogram fold (both paired
+    /// rebuild sites run the two together). The node fold reads only liveness and the live
     /// versions' already-interned label ids — never `node_at`'s full
     /// property materialization — and every live node counts toward
     /// the total, the label-less ones included. Both sides ride the
@@ -373,7 +373,7 @@ impl Graph {
     /// wholesale rebuild's one exception to the no-discarded-return
     /// rule: its caller runs `recompute_used`, which re-tallies
     /// wholesale.
-    pub(super) fn rebuild_count_stats(&self, rows: impl Iterator<Item = (NodeId, u32, NodeId)>) {
+    pub(super) fn rebuild_count_stats<'a>(&self, rows: impl Iterator<Item = &'a RelRow>) {
         // Built whole outside the guard, published in one store: the
         // bundle's wholesale rebuild owns all four fields — one
         // bundle, one guard, one publish, so a reader can never see
@@ -389,18 +389,18 @@ impl Graph {
             // Charge discarded — see the doc's rebuild note.
             let _ = Self::fold_node_stats(&mut stats, &v.live.labels, CountDelta::Add);
         });
-        // The rel side rides `rebuild_adj`'s projection of the live
-        // rels (both paired rebuild sites materialize the rows once);
-        // charges discarded — see the doc's rebuild note.
+        // The rel side rides `rebuild_adj`'s materialized `RelRow`s —
+        // the same rows `adj_build` installs (both paired rebuild sites
+        // pass them on); charges discarded — see the doc's rebuild note.
         let mut label_cache = LabelCache::default();
-        for (start, type_id, end) in rows {
-            label_cache.ensure(self, start);
-            label_cache.ensure(self, end);
+        for row in rows {
+            label_cache.ensure(self, row.start);
+            label_cache.ensure(self, row.end);
             let _ = Self::fold_rel_stats(
                 &mut stats,
-                label_cache.get(start),
-                type_id,
-                label_cache.get(end),
+                label_cache.get(row.start),
+                row.type_id,
+                label_cache.get(row.end),
                 CountDelta::Add,
             );
         }

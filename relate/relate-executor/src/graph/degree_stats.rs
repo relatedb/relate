@@ -18,8 +18,7 @@ use std::sync::atomic::Ordering;
 use relate_core::NodeId;
 
 use super::count_state::CountDelta;
-use super::Graph;
-use super::LabelCache;
+use super::{Graph, LabelCache, RelRow};
 
 impl Graph {
     /// The histogram's bucket count (LABS-311: one constant, consulted at
@@ -236,10 +235,10 @@ impl Graph {
     /// live in this file, the rebuild's folds included — the
     /// label-mutation incident walk lives in the family's incident
     /// sibling, `degree_stats_incident.rs`). Called by `rebuild_adj`
-    /// (graph/index.rs) with the
-    /// rebuild's rel rows projected to the (start, type, end) triples
-    /// these folds read — the rel id and timestamp stay in index.rs
-    /// where `adj_insert` consumes them. A pure fold over its input:
+    /// (graph/index.rs) with the rebuild's materialized [`RelRow`]s —
+    /// the same rows `adjacency::adj_build` installs, `id` and `ts`
+    /// included though these folds read neither. A pure fold over its
+    /// input:
     /// the (label, rel-type) histograms come from the same rows (a
     /// node's per-type out-degree is the count of its rows of that
     /// type), not from the adjacency the caller built, so no
@@ -249,11 +248,11 @@ impl Graph {
     /// count bundle's rel-side and node-side fields publish wholesale
     /// through the count family's own [`Graph::rebuild_count_stats`] —
     /// one bundle, one guard, one publish).
-    pub(super) fn rebuild_degree_stats(&self, rows: impl Iterator<Item = (NodeId, u32, NodeId)>) {
+    pub(super) fn rebuild_degree_stats<'a>(&self, rows: impl Iterator<Item = &'a RelRow>) {
         let mut label_cache = LabelCache::default();
         // LABS-351: the per-(node, type) out-degrees counted off the
         // rows — the same number the out-adjacency chunk holds once
-        // `adj_insert` ran. A fold-local map rather than an out_adj
+        // `adj_build` installed it. A fold-local map rather than an out_adj
         // read: it keeps this seam a pure function of its rows (no
         // call-ordering precondition rides it), at the cost of one
         // transient per-rebuild map. Bucket counts are
@@ -261,11 +260,11 @@ impl Graph {
         // matter. Recomputed so the high-water mark recalibrates to the
         // honest live state after a restore.
         let mut out_degrees: HashMap<(NodeId, u32), u64> = HashMap::new();
-        for (start, type_id, _end) in rows {
+        for row in rows {
             // One label read per distinct node, the family's shared
             // cache seam.
-            label_cache.ensure(self, start);
-            *out_degrees.entry((start, type_id)).or_insert(0) += 1;
+            label_cache.ensure(self, row.start);
+            *out_degrees.entry((row.start, row.type_id)).or_insert(0) += 1;
         }
         let mut histograms: HashMap<(u32, u32), [u64; Graph::DEGREE_BUCKETS]> = HashMap::new();
         for ((start, type_id), degree) in &out_degrees {

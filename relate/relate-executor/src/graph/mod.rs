@@ -111,6 +111,22 @@ fn live_version<Live>(vers: &Chain<Live>) -> Option<VerRef<'_, Live>> {
     vers.live()
 }
 
+/// One live rel row of a wholesale adjacency build — the seam
+/// `rebuild_adj` materializes once and hands to `adjacency::adj_build`
+/// and both rebuild folds (`rebuild_degree_stats`,
+/// `rebuild_count_stats`) consume. It lives here beside [`LabelCache`],
+/// not in the adjacency-accessor sibling: the folds read it without
+/// touching adjacency. Named fields rather than a positional tuple:
+/// `start` and `end` share a type, so a swapped pair would compile and
+/// only the adjacency tests would catch it.
+pub(in crate::graph) struct RelRow {
+    pub(in crate::graph) id: RelId,
+    pub(in crate::graph) start: NodeId,
+    pub(in crate::graph) type_id: u32,
+    pub(in crate::graph) end: NodeId,
+    pub(in crate::graph) ts: Option<i64>,
+}
+
 /// The wholesale rebuild folds' shared label cache: one live-label
 /// read per distinct endpoint node ([`Graph::live_label_ids`]), the
 /// same seam [`Graph::rebuild_count_stats`] and
