@@ -1,8 +1,9 @@
 # The one TAP-ish assertion harness for the scripts/tests shell tests
 # (LABS-622): numbered `ok`/`not ok` lines, a SKIP form, command wrappers
-# that state their own outcome, a sandbox helper with signal-safe
-# cleanup, and a plan+summary footer whose exit status is 0 only when
-# nothing failed. POSIX sh bodies — source it:
+# that state their own outcome, an equality assertion over extracted
+# literals, a sandbox helper with signal-safe cleanup, and a plan+summary
+# footer whose exit status is 0 only when nothing failed. POSIX sh
+# bodies — source it:
 #   . "$(dirname -- "$0")/lib/tap.sh"
 #
 # State (tap_num, tap_passed, tap_failed, sandbox, and the helpers'
@@ -55,6 +56,26 @@ tap_run_failure() { # $1 = description; rest = the command that must exit non-ze
 	else
 		tap_ok "$tap_desc"
 	fi
+}
+
+assert_same() { # $1 = description, $2.. = values that must all be non-empty and equal
+	tap_desc="$1"
+	shift
+	[ "$#" -ge 2 ] || {
+		echo "assert_same: needs at least two values: $tap_desc" >&2
+		exit 2
+	}
+	tap_status=0
+	tap_first=''
+	for tap_value in "$@"; do
+		[ -n "$tap_value" ] || tap_status=1
+		if [ -z "$tap_first" ]; then
+			tap_first=$tap_value
+		elif [ "$tap_value" != "$tap_first" ]; then
+			tap_status=1
+		fi
+	done
+	tap_check "$tap_desc" $tap_status
 }
 
 tap_sandbox() { # $1 = mktemp tag; sets $sandbox, cleans up on EXIT and signals

@@ -19,9 +19,10 @@
 # logs its argv so the tests can assert which releases were hydrated.
 # `generated_at` is pinned via PUBLISH_RELEASES_JSON_GENERATED_AT so the
 # output is compared against the committed expected-output fixture
-# (fixtures/publish-releases-json-expected.json); that comparison is
-# canonicalized (jq -S) so it asserts the document, not a jq version's
-# pretty-printer.
+# (fixtures/publish-releases-json-expected.json) twice: canonically
+# (jq -S, asserting the document independently of any jq version's
+# pretty-printer) and byte-exactly (asserting the serialization itself —
+# see the byte-exact test below).
 #
 # Local run:
 #   bats .github/scripts/tests/publish-releases-json.bats
@@ -117,6 +118,27 @@ canonical() {
 
   jq -e . "${OUT}" > /dev/null
   diff -u <(canonical "${EXPECTED_FIXTURE}") <(canonical "${OUT}")
+}
+
+# The publisher serialization pin, byte-exact against the producer: the
+# generator above runs the real jq assembly (publish-releases-json.sh's
+# `jq -n` document build) under this suite's own jq, and its output must
+# be byte-identical to the committed fixture — not merely the same
+# document. The fixture is what the install.sh harness serves end to end
+# in its publisher_doc mode, and install.sh's latest_tag_of parses the
+# publisher's serialization grammar (one key per line, two-space indents),
+# so a reformatting jq flag or assembly change must fail here and force
+# the fixture's regeneration rather than drift past the canonicalized
+# comparison. (The chosen shape: the pin lives in this suite as a
+# byte-exact cmp, rather than regenerating the install.sh harness's
+# served document through the publisher; the harness's publisher_doc case
+# is the other half, pinning that the parser reads this very fixture.)
+@test "the serialization is byte-exact against the committed fixture" {
+  run run_generator "${RELEASES_FIXTURE}"
+  echo "$output"
+  [ "$status" -eq 0 ]
+
+  cmp "${EXPECTED_FIXTURE}" "${OUT}"
 }
 
 @test "carries schema_version 1, the ADR top-level keys in order, and an RFC 3339 UTC generated_at" {

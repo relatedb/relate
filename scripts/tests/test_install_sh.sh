@@ -21,8 +21,9 @@ INSTALLER="$ROOT/distribution/install.sh"
 # Shared script helpers (sha256_of, for the SHA256SUMS fixture below;
 # common.sh's bodies are POSIX sh, so `.` works here).
 . "$ROOT/scripts/lib/common.sh"
-# The shared TAP harness (LABS-622): tap_check/tap_skip/tap_done, the
-# counters, output format, and sandbox policy spelled once.
+# The shared TAP harness (LABS-622): tap_check/tap_skip/tap_done,
+# assert_same, the counters, output format, and sandbox policy spelled
+# once.
 . "$ROOT/scripts/tests/lib/tap.sh"
 
 tap_sandbox relate-install-sh-test
@@ -44,10 +45,8 @@ mkdir -p "$stubbin" "$fixtures" "$itmp"
 pinned_key=$(sed -n "s/^SIGNING_KEY='\\(.*\\)'\$/\\1/p" "$INSTALLER")
 pub_key=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
 	"$ROOT/distribution/release-signing-key.pub")
-[ -n "$pinned_key" ]
-tap_check "drift guard: install.sh carries a pinned SIGNING_KEY assignment" $?
-[ "$pinned_key" = "$pub_key" ]
-tap_check "drift guard: pinned SIGNING_KEY matches distribution/release-signing-key.pub" $?
+assert_same "drift guard: install.sh's pinned SIGNING_KEY matches distribution/release-signing-key.pub" \
+	"$pinned_key" "$pub_key"
 
 # The ADR-0457 wire contract exists in four spellings: the release producer's
 # printf, manifest.rs's constants, install.sh's copy, and this harness's
@@ -58,12 +57,8 @@ manifest_rs="$ROOT/surfaces/relate-cli/src/upgrade_cmd/manifest.rs"
 installer_ceiling=$(sed -n 's/^LEGACY_MANIFEST_CEILING=//p' "$INSTALLER")
 rust_ceiling=$(sed -n 's/^const LEGACY_MANIFEST_CEILING: (u64, u64, u64) = (\([0-9][0-9]*\), \([0-9][0-9]*\), \([0-9][0-9]*\));$/\1.\2.\3/p' \
 	"$manifest_rs")
-[ -n "$installer_ceiling" ]
-tap_check "drift guard: install.sh carries a LEGACY_MANIFEST_CEILING assignment" $?
-[ -n "$rust_ceiling" ]
-tap_check "drift guard: manifest.rs carries the LEGACY_MANIFEST_CEILING constant" $?
-[ "$installer_ceiling" = "$rust_ceiling" ]
-tap_check "drift guard: install.sh ceiling matches manifest.rs (ADR-0457)" $?
+assert_same "drift guard: install.sh's LEGACY_MANIFEST_CEILING matches manifest.rs (ADR-0457)" \
+	"$installer_ceiling" "$rust_ceiling"
 
 # Prefix parity: the producer's printf, install.sh's assignment and the
 # harness fixture writer's constant must all equal the literal manifest.rs
@@ -74,26 +69,58 @@ rust_prefix=$(sed -n 's/^const SUMS_VERSION_PREFIX: &str = "\(.*\)";$/\1/p' \
 	"$manifest_rs")
 release_prefix=$(sed -n "s/^[[:space:]]*printf '\(.*\)%s\\\\n'.*> SHA256SUMS\$/\1/p" \
 	"$ROOT/.github/workflows/release.yml")
-[ -n "$installer_prefix" ]
-tap_check "drift guard: install.sh carries the SUMS_VERSION_PREFIX constant" $?
-[ -n "$rust_prefix" ]
-tap_check "drift guard: manifest.rs carries the SUMS_VERSION_PREFIX constant" $?
-[ -n "$release_prefix" ]
-tap_check "drift guard: release workflow carries the SUMS_VERSION_PREFIX literal" $?
-[ "$installer_prefix" = "$rust_prefix" ]
-tap_check "drift guard: install.sh header prefix matches manifest.rs (ADR-0457)" $?
-[ "$release_prefix" = "$rust_prefix" ]
-tap_check "drift guard: release workflow header prefix matches manifest.rs (ADR-0457)" $?
-[ "$SUMS_VERSION_PREFIX" = "$rust_prefix" ]
-tap_check "drift guard: harness fixture prefix matches manifest.rs (ADR-0457)" $?
+assert_same "drift guard: the ADR-0457 sums header prefix is one literal in install.sh, manifest.rs, release.yml and the harness fixture" \
+	"$installer_prefix" "$rust_prefix" "$release_prefix" "$SUMS_VERSION_PREFIX"
 grep -qF 'case "$first_line" in' "$INSTALLER" &&
 	grep -qF '"$SUMS_VERSION_PREFIX"*)' "$INSTALLER"
 tap_check "drift guard: install.sh matches the header through the shared prefix" $?
+
+# The installer resolves its release tag from the same releases.json the
+# CLI's upgrade reads (ADR-0571): one canonical URL, spelled once per
+# side — install.sh's assignment and releases_json.rs's RELEASES_JSON_URL
+# constant — held equal here so the two consumers cannot drift onto
+# different metadata sources.
+releases_rs="$ROOT/surfaces/relate-cli/src/upgrade_cmd/releases_json.rs"
+installer_releases_url=$(sed -n "s/^RELEASES_JSON_URL='\\(.*\\)'\$/\\1/p" "$INSTALLER")
+rust_releases_url=$(sed -n "s/^const RELEASES_JSON_URL: &str = \"\\(.*\\)\";\$/\\1/p" \
+	"$releases_rs")
+assert_same "drift guard: install.sh's RELEASES_JSON_URL matches releases_json.rs (ADR-0571)" \
+	"$installer_releases_url" "$rust_releases_url"
+
+# The override env var is the other half of that seam (ADR-0571):
+# releases_json.rs reads it through RELEASES_JSON_URL_ENV and install.sh
+# references it on the metadata_url line — one spelling, held equal here
+# so the two consumers cannot drift onto different seam names.
+rust_releases_env=$(sed -n 's/^const RELEASES_JSON_URL_ENV: &str = "\(.*\)";$/\1/p' \
+	"$releases_rs")
+installer_releases_env=$(sed -n 's/^metadata_url=${\([A-Z_]*\):-\$RELEASES_JSON_URL}$/\1/p' \
+	"$INSTALLER")
+assert_same "drift guard: install.sh's override env var matches releases_json.rs (ADR-0571)" \
+	"$rust_releases_env" "$installer_releases_env"
+
+# The GitHub API's latest-release endpoint is gone from the installer
+# entirely (ADR-0571): after an extension release it names no product
+# release, so resolution may not consult it in any spelling.
+! grep -q 'releases/latest' "$INSTALLER"
+tap_check "drift guard: install.sh requests no GitHub latest-release URL" $?
 
 # The legacy-tag fixture (built below) derives from the ceiling the guard
 # just extracted, so a constant change cannot leave the fixture on a stale
 # hardcoded tag.
 LEGACY_MANIFEST_TAG="v$rust_ceiling"
+
+# The publisher-fixture documents (built below) name the committed
+# publisher fixture's latest.tag — derived here from that fixture rather
+# than hand-spelled, so regenerating it with a newer release moves the
+# tag with it. The sed range is latest_tag_of's own grammar: the
+# top-level latest object's four-space-indented tag line, closed at the
+# object's two-space brace before the prerelease slot's tag. A null
+# latest matches nothing, failing the non-empty guard below.
+publisher_fixture="$ROOT/.github/scripts/tests/fixtures/publish-releases-json-expected.json"
+PUBLISHER_FIXTURE_TAG=$(sed -n '/^  "latest": [{]$/,/^  [}]/ s/^    "tag": "\(.*\)",$/\1/p' \
+	"$publisher_fixture")
+[ -n "$PUBLISHER_FIXTURE_TAG" ]
+tap_check "drift guard: the publisher fixture carries a latest.tag the installer fixtures follow" $?
 
 # Build the fixtures and PATH stubs only now that their legacy-tag input is
 # pinned to the guarded ceiling.
@@ -147,9 +174,11 @@ GITHUB_TOKEN=test-token
 install_run token-set
 [ "$RUN_STATUS" -eq 0 ]
 tap_check "token set: installer exits 0" $?
-every_call_has "Authorization: Bearer test-token"
-tap_check "token set: every curl call carries Authorization: Bearer test-token" $?
-asset_calls_have "Accept: application/octet-stream"
+calls_to_url_have 'api\.github\.com' "Authorization: Bearer test-token"
+tap_check "token set: every api.github.com call carries Authorization: Bearer test-token" $?
+calls_to_url_lack 'releases\.json' "Authorization: Bearer test-token"
+tap_check "token set: the releases.json request carries no Authorization header" $?
+calls_to_url_have '/releases/assets/' "Accept: application/octet-stream"
 tap_check "token set: asset downloads carry Accept: application/octet-stream" $?
 [ "$(asset_call_count)" -eq 3 ]
 tap_check "token set: exactly three asset downloads (binary + SHA256SUMS + SHA256SUMS.sig)" $?
@@ -182,6 +211,57 @@ sig_line=$(grep -n "releases/assets/$ASSET_ID_SIG\$" "$RUN_LOG" | head -n 1 | cu
 bin_line=$(grep -n "releases/assets/$ASSET_ID_DARWIN\$" "$RUN_LOG" | head -n 1 | cut -d: -f1)
 [ -n "$sig_line" ] && [ -n "$bin_line" ] && [ "$sig_line" -lt "$bin_line" ]
 tap_check "happy path: SHA256SUMS.sig is downloaded before the binary asset" $?
+
+# --- 3a. Release resolution (releases.json, ADR-0571) -------------------------
+# The stub's latest-endpoint arm serves the relate-extensions-dungeon-0.1.0
+# release in every mode — the repository's newest full release after an
+# extension ship — so every case already runs with the trap armed. These
+# cases pin the resolution contract explicitly.
+
+reset_case
+install_run dungeon-latest
+[ "$RUN_STATUS" -eq 0 ]
+tap_check "extension release at the latest endpoint: installer exits 0" $?
+cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
+tap_check "extension release at the latest endpoint: installed content is the product binary fixture" $?
+! grep -q 'releases/latest' "$RUN_LOG"
+tap_check "extension release at the latest endpoint: the stub log carries no latest-endpoint request" $?
+grep -qF "releases/tags/$TEST_TAG" "$RUN_LOG"
+tap_check "extension release at the latest endpoint: the per-tag endpoint is asked for the product tag" $?
+
+# The committed publisher fixture — the document publish-releases-json.sh's
+# own suite compares its output against — served byte-for-byte as the
+# metadata document (publisher_doc mode, with the matching per-tag release
+# fixture and manifest variant): the end-to-end pin that the serialization
+# the producer writes is the grammar latest_tag_of reads. When the two
+# drift apart, this is the case that fails.
+reset_case
+STUB_MODE=publisher_doc
+install_run publisher-fixture
+[ "$RUN_STATUS" -eq 0 ]
+tap_check "publisher fixture as releases.json: installer exits 0" $?
+grep -qF "releases/tags/$PUBLISHER_FIXTURE_TAG" "$RUN_LOG"
+tap_check "publisher fixture as releases.json: resolves the fixture's latest tag" $?
+cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
+tap_check "publisher fixture as releases.json: installs that release's product binary" $?
+
+reset_case
+RELATE_RELEASES_JSON_URL=https://example.test/releases.json
+install_run releases-url-override
+[ "$RUN_STATUS" -eq 0 ]
+tap_check "metadata URL override: installer exits 0" $?
+grep -qF "https://example.test/releases.json" "$RUN_LOG"
+tap_check "metadata URL override: the override URL is fetched" $?
+! grep -qF "$installer_releases_url" "$RUN_LOG"
+tap_check "metadata URL override: the canonical URL is not fetched" $?
+
+reset_case
+RELATE_RELEASES_JSON_URL=
+install_run releases-url-override-empty
+[ "$RUN_STATUS" -eq 0 ]
+tap_check "metadata URL override, empty value: installer exits 0" $?
+grep -qF "$installer_releases_url" "$RUN_LOG"
+tap_check "metadata URL override, empty value: the canonical URL is fetched (empty means default)" $?
 
 # --- 3b. Signature verification ------------------------------------------------
 
@@ -365,18 +445,69 @@ tap_check "missing asset: error names the missing asset" $?
 [ "$(asset_call_count)" -eq 0 ]
 tap_check "missing asset: no /releases/assets/ download is attempted" $?
 
-# --- 6. Lookup failure ----------------------------------------------------------
+# --- 6. Resolution failure ------------------------------------------------------
+
+# The one assertion shape every resolution-failure case shares: the
+# installer dies non-zero, its stderr carries the case's needle (the
+# authored failure message, matched as a fixed string), and no asset
+# download is attempted — resolution dies before any /releases/assets/
+# request. Each case keeps only what is specific to it beside this call.
+assert_resolution_failure() { # $1 = case label, $2 = stderr needle
+	[ "$RUN_STATUS" -ne 0 ]
+	tap_check "$1: installer dies non-zero" $?
+	grep -qF "$2" "$RUN_ERR"
+	tap_check "$1: stderr carries the authored failure message" $?
+	[ "$(asset_call_count)" -eq 0 ]
+	tap_check "$1: no asset download is attempted" $?
+}
 
 reset_case
 STUB_MODE=lookup_404
-install_run lookup-fail
-[ "$RUN_STATUS" -ne 0 ]
-tap_check "lookup failure: installer dies non-zero" $?
-grep -q "could not resolve latest release" "$RUN_ERR" &&
-	grep -q "GITHUB_TOKEN" "$RUN_ERR"
-tap_check "lookup failure: stderr carries the could-not-resolve message mentioning GITHUB_TOKEN" $?
-[ "$(grep -c 'could not resolve latest release' "$INSTALLER")" -eq 1 ]
-tap_check "lookup failure: the message text appears exactly once in install.sh" $?
+install_run metadata-unreachable
+assert_resolution_failure \
+	"metadata unreachable" \
+	"could not read the release list from $installer_releases_url"
+! grep -q "GITHUB_TOKEN" "$RUN_ERR"
+tap_check "metadata unreachable: no GITHUB_TOKEN hint (the token cannot help fetch the website file)" $?
+[ "$(grep -c 'could not read the release list from' "$INSTALLER")" -eq 1 ]
+tap_check "metadata unreachable: the message text appears exactly once in install.sh" $?
+
+reset_case
+STUB_MODE=releases_malformed
+install_run releases-malformed
+assert_resolution_failure \
+	"malformed releases.json" \
+	"could not read the release list from $installer_releases_url: the document is malformed"
+
+reset_case
+STUB_MODE=releases_null_latest
+install_run releases-null-latest
+assert_resolution_failure \
+	"null latest" \
+	"latest is null: no stable release is published"
+
+reset_case
+STUB_MODE=releases_bad_tag
+install_run releases-bad-tag
+assert_resolution_failure \
+	"latest.tag outside the vX.Y.Z shape" \
+	"is not a vX.Y.Z release tag"
+
+reset_case
+STUB_MODE=tag_404
+install_run tag-lookup-fail
+assert_resolution_failure \
+	"per-tag lookup failure" \
+	"could not resolve release $TEST_TAG"
+grep -q "GITHUB_TOKEN" "$RUN_ERR"
+tap_check "per-tag lookup failure: the failure carries the GITHUB_TOKEN hint" $?
+
+reset_case
+STUB_MODE=tag_mismatch
+install_run tag-mismatch
+assert_resolution_failure \
+	"tag_name mismatch" \
+	"served release $RELEASE_MISMATCH_TAG for tag $TEST_TAG"
 
 # --- 7. Cleanliness -------------------------------------------------------------
 

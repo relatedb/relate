@@ -165,3 +165,21 @@ publishes. The signing step signs the resulting bytes unchanged.
   only); `upgrade` reuses its existing numeric triple parse.
 - Older clients (built before this change) ignore the header line and keep
   working; they simply do not enforce the binding.
+
+## Later references
+
+ADR-0571 changes the tag provenance behind both places this decision names
+the GitHub API for `install.sh`: the Context sentence that has the script
+read `tag_name` from the `releases/latest` response, and §2's enforcement
+point that makes that `tag_name` the tag the script was asked to install.
+The requested tag now comes from the file host's `releases.json`
+`latest.tag` (ADR-0250) — the same source `upgrade` reads — because the
+extension channel publishes full releases into the same repository
+(ADR-0431) and the latest-release endpoint names whichever release was
+published last. The API's `tag_name` remains, now as the equality check on
+the per-tag GitHub API fetch for the asset ids: the response's `tag_name`
+must equal the requested tag, so the API describes exactly the release the
+metadata named. The binding itself is unchanged — the signed header must
+still equal the requested tag after the SSHSIG check and before the binary
+download, and the empty-header, headerless-legacy, and v0.14.0 ceiling
+rules stand as written.

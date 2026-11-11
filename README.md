@@ -31,7 +31,11 @@ curl -sSfL https://relatedb.ai/install.sh | bash
 ```
 
 Downloads the release binary for your platform (macOS and Linux, amd64 and
-arm64) to `$HOME/.local/bin`. Each release's `SHA256SUMS` manifest is
+arm64) to `$HOME/.local/bin`, resolving the latest release from
+[`releases.json`](https://relatedb.ai/releases.json) — the same release
+metadata `relate upgrade` reads
+([ADR-0571](docs/adr/0571-installer-resolves-via-releases-json.md)). Each
+release's `SHA256SUMS` manifest is
 authenticated against its SSHSIG signature with the stock `ssh-keygen` — the
 public key is pinned in the script, and the installer **fails closed** on a
 missing or invalid signature

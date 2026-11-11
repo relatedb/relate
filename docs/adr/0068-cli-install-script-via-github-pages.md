@@ -142,3 +142,12 @@ publishes an OpenSSH SSHSIG signature `SHA256SUMS.sig` over `SHA256SUMS`
 stock `ssh-keygen` against a pinned public key **before** the checksum step,
 failing closed when the signature is missing or invalid. The installer's
 hosting, URL, install directory, and platform scope are unchanged.
+
+ADR-0571 changes the resolution mechanism behind the consequence that the
+script must read the latest release at runtime: the release tag now comes
+from the website's `releases.json` (ADR-0250) instead of the GitHub API's
+latest-release endpoint, because the extension channel publishes full
+releases into the same repository (ADR-0431) and that endpoint names
+whichever release was published last. The hosting, URL, install directory,
+platform scope, and the asset-request auth model of this decision are
+unchanged.
