@@ -1,9 +1,9 @@
 //! Reusable Query API JSON response framing.
 //!
-//! The standalone server writes HTTP/1.1 chunk frames itself. Embedders such
-//! as MemoryDB Cloud use Hyper, which owns those frames, so this module emits
-//! bounded representation bytes instead. Both paths share the threshold,
-//! gzip negotiation, and serializer.
+//! The standalone server writes HTTP/1.1 chunk frames itself. Clients
+//! implementing embedded Relate may use Hyper, which owns those frames, so
+//! this module emits bounded representation bytes instead. Both paths share
+//! the threshold, gzip negotiation, and serializer.
 
 use std::io::{self, BufWriter, Write};
 

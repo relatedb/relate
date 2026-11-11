@@ -23,7 +23,7 @@ convenient whole-value root-path wrapper.
 
 The end-of-feature stellar review flagged this as a boundaries defect: the
 crate exports a public function with no production caller, and ADR-0177's
-breaking-change record makes the cloud `mdb-db-api` consumer track a
+breaking-change record makes a client implementing embedded Relate track a
 signature the server itself does not use. The PackStream surface ADR-0281
 consumers link is `decode`, `encode`, `try_struct_msg`, `chunk_message`, and
 the `Pack` type; the parameter conversion is an implementation detail of the
@@ -76,8 +76,8 @@ migrate.
 - The public PackStream surface is `decode`, `encode`, `try_struct_msg`,
   `chunk_message`, and `Pack` — no signature change ships, so the
   `CHANGELOG.md` `[Unreleased]` entry advertising a public `Pack::to_mdb`
-  signature change is removed, and the cloud `mdb-db-api` consumer has
-  nothing to track.
+  signature change is removed, and a client implementing embedded Relate
+  has nothing to track.
 - The parameter-conversion contract (ADR-0177 items 2-6) is untouched: the
   nine tags decode through the RUN entry point and `to_mdb_at`, failure
   messages and paths are unchanged, and the pinned tests stay green.

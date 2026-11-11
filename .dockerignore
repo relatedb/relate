@@ -1,5 +1,5 @@
-# memorydb-cloud builds this as a named context (--build-context
-# relate=../relate). Allowlist: the leading `*` excludes
+# Clients implementing embedded Relate may build this as a named context
+# (--build-context relate=../relate). Allowlist: the leading `*` excludes
 # everything (.git, docs, fixtures, build output, …) and the `!` lines
 # re-include exactly what cargo needs: Cargo.toml, Cargo.lock and every
 # workspace group: relate/*, surfaces/*, testing/*, extensions/*

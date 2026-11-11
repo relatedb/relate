@@ -12,7 +12,7 @@ flags, and env vars still say MemoryDB. Two CLIs, two C ABIs, and two TCK
 crates cannot all be renamed to `cypherlite-*` without colliding with existing
 CypherLite packages.
 
-`memorydb-cloud` continues to depend on the sibling `../memorydb` tree.
+Clients implementing embedded Relate are outside this rename.
 
 ## Decision
 
@@ -38,7 +38,8 @@ In the `cypherlite/` workspace only:
   `CYPHERLITE_CHECKPOINT_INTERVAL_SECS`, `CYPHERLITE_COMMIT_TIMING`,
   `CYPHERLITE_SHARD_TARGET_BYTES`, `CYPHERLITE_PARSER`. If unset, the matching
   `MEMORYDB_*` name is still read.
-- `memorydb-cloud` and the `../memorydb` quarry are out of scope.
+- Clients implementing embedded Relate, and the `../memorydb` quarry,
+  are out of scope.
 
 ## Alternatives considered
 
@@ -53,8 +54,8 @@ In the `cypherlite/` workspace only:
 
 ## Consequences
 
-- Embedders of this tree use `cypherlite::Database`. `memorydb-cloud` stays on
-  `../memorydb` until a later switch.
+- Embedders of this tree use `cypherlite::Database`. Clients implementing
+  embedded Relate are outside this rename.
 - Docs and CI must use the new package names in the same change.
 - On-disk WAL magic (`MDBWAL01`) is unchanged.
 

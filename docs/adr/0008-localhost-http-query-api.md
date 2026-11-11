@@ -45,5 +45,6 @@ Documented in [`docs/api/http/`](../api/http/).
 ## Later references
 
 ADR-0029 withdraws this sidecar. `memorydb-http` and `docs/api/http/`
-are removed. HTTPS + JWT query lives in `memorydb-cloud`. The
-“localhost HTTP for the explorer” decision no longer holds.
+are removed. Hosted HTTP belongs to clients implementing embedded
+Relate, not to this engine. The “localhost HTTP for the explorer”
+decision no longer holds.

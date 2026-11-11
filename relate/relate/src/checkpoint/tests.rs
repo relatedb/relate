@@ -287,7 +287,11 @@ fn s3_uri_is_rejected() {
         .err()
         .expect("s3 rejected");
     assert!(err.to_string().contains("s3://"), "{err}");
-    assert!(err.to_string().contains("memorydb-cloud"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("clients implementing embedded Relate"),
+        "{err}"
+    );
 }
 
 #[test]

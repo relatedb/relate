@@ -86,8 +86,8 @@ stretched across statements. SSI / write-skew detection is out of scope
 
 ## Later references
 
-ADR-0029 removes engine HTTP. Auto-commit per HTTP request is a
-`memorydb-cloud` ingress concern, not `memorydb-http`.
+ADR-0029 removes engine HTTP. Auto-commit per HTTP request belongs
+to clients implementing embedded Relate, not to `memorydb-http`.
 
 ADR-0164 records the cypherlite CLI exit contract for an open `.begin`
 transaction: the historical stderr warning is restored verbatim on every

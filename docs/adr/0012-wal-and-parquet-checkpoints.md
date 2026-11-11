@@ -92,4 +92,5 @@ statements are unchanged. Bolt `BEGIN` / `COMMIT` are no longer no-ops.
 
 ADR-0044 withdraws engine `s3://` (the local-WAL-plus-remote-Parquet
 split in this file). Persistent URIs in this repo are filesystem
-paths / `file://` only. Object storage lives in `memorydb-cloud`.
+paths / `file://` only. Object storage belongs to clients implementing
+embedded Relate.

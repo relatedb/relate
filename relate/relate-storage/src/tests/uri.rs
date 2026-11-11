@@ -20,7 +20,11 @@ fn opfs_uri_is_rejected_without_a_vfs() {
 fn s3_uri_is_rejected() {
     let err = parse_uri("s3://bucket/prefix").err().expect("s3 rejected");
     assert!(err.to_string().contains("s3://"), "{err}");
-    assert!(err.to_string().contains("memorydb-cloud"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("clients implementing embedded Relate"),
+        "{err}"
+    );
     let err = reset_uri("s3://bucket/prefix", None).unwrap_err();
     assert!(err.to_string().contains("s3://"), "{err}");
     let err = parse_uri("gs://bucket/prefix").err().expect("gs rejected");

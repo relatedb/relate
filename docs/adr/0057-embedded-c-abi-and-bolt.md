@@ -48,8 +48,8 @@ documented.
 ## Later references
 
 ADR-0029 removes the localhost HTTP sidecar (ADR-0008). This repo does
-not ship an HTTP query API. Managed-service HTTPS + JWT is
-`memorydb-cloud`, not a second engine protocol.
+not ship an HTTP query API. Hosted HTTP belongs to clients implementing
+embedded Relate, not a second engine protocol.
 
 Renumbered from ADR-0003 to ADR-0057: the CypherLite/MemoryDB merge
 imported the MemoryDB ADR series numbered from 0001 while this repo already

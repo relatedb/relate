@@ -417,7 +417,7 @@ fn ensure_writable_refuses_retryably_only_while_draining() {
     ));
     // Draining refuses even though the handle is still the writer
     // underneath — demote has not released the lease yet, matching the
-    // plan's "Ready until the drain finishes" contract for db-api.
+    // plan's "Ready until the drain finishes" contract.
     assert!(!follower.is_read_only());
     shared.draining.store(false, Ordering::Release);
 

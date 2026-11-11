@@ -142,7 +142,8 @@ crossterm = "0.28"
 # Python bindings
 pyo3 = { version = "0.23", features = ["extension-module"] }
 
-# Arrow (Relate). Match MemoryDB Cloud / iggy chrono (Arrow 54).
+# Arrow (Relate). Arrow 54, matching the chrono clients implementing
+# embedded Relate already use.
 arrow = { version = "54", features = ["json"] }
 arrow-array = "54"
 arrow-schema = "54"

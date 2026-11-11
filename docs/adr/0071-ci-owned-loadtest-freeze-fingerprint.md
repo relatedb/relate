@@ -106,7 +106,7 @@ authority and an environment class**, not on looser ratios.
   incompatible until the next freeze, which is the intended signal.
 - Matched-class GHA noise is unchanged by this ADR (dedicated runners,
   longer `OPS`, median-of-3 remain later knobs).
-- memorydb-cloud in-cluster loadtests remain out of scope.
+- Loadtests run by clients implementing embedded Relate are out of scope.
 
 ## Later references
 

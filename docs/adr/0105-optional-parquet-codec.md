@@ -137,9 +137,9 @@ explicitly. ADR-0104 rules 1, 2, 6 and 7 apply unchanged.
 - The requirement is then visible in each `Cargo.toml`, and feature
   unification cannot quietly re-enable Parquet in a build that asked for
   less.
-- External path consumers such as memorydb-cloud depend on
-  `cypherlite/cypherlite` directly. They get the crate's own defaults, so
-  Parquet stays on with no change on their side.
+- External path consumers, including clients implementing embedded
+  Relate, depend on `cypherlite/cypherlite` directly. They get the
+  crate's own defaults, so Parquet stays on with no change on their side.
 
 ### Public API
 
@@ -187,8 +187,9 @@ This applies on every target and in every build, with or without
   that only use `:memory:` or JSON always pay for about 50 extra crates and
   their build time. Rejected: LABS-103 asks for a lean core on native too.
 - **Replace Parquet with JSON entirely.** Parquet gives dirty-window
-  incremental checkpoints (ADR-0022). memorydb-cloud and the frozen
-  checkpoint baselines (ADR-0070, ADR-0071) are built on it. Rejected: it
+  incremental checkpoints (ADR-0022). Clients implementing embedded
+  Relate, and the frozen checkpoint baselines (ADR-0070, ADR-0071), are
+  built on it. Rejected: it
   would regress persistence performance and break existing stores to save
   dependencies.
 - **Parquet off by default (opt-in).** A plain `cargo build` or a new
@@ -227,8 +228,9 @@ This applies on every target and in every build, with or without
 
 ## Consequences
 
-- Default builds, release artifacts, memorydb-cloud and every client
-  binding keep Parquet, so they see no behaviour change.
+- Default builds, release artifacts, clients implementing embedded
+  Relate, and every client binding keep Parquet, so they see no
+  behaviour change.
 - The `minimal` and `agent` CLI bundles and any embedder that sets
   `default-features = false` drop about 50 crates, including Arrow and
   Parquet.

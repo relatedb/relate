@@ -465,8 +465,8 @@ mod tests {
 
     /// ADR-0440: `run_error`'s status/code mapping alone cannot distinguish
     /// a retryable logical-workspace refusal from a non-retryable one — both are
-    /// 429 with the same message — so a host counting them separately
-    /// (memorydb-cloud's `db-api-signals`) reads `metrics.retryable`.
+    /// 429 with the same message — so a client implementing embedded Relate
+    /// that counts them separately reads `metrics.retryable`.
     #[test]
     fn a_retryable_peak_token_refusal_is_429_with_retryable_true_in_metrics() {
         let reply = run_error(&peak_token_refusal(true));

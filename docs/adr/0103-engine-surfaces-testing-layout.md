@@ -152,12 +152,13 @@ References: LABS-103 and the LABS-103 architecture proposal document.
   paths, CI workflows, Makefile targets, scripts, docs links and AGENTS.md's
   crate layout, and adds `testing/xtask` plus the CI step. Package names and
   published artifacts are unchanged.
-- The memorydb-cloud build consumes this repository as a named Docker build
-  context, and `.dockerignore` currently assumes all Rust sources live in
-  `crates/*` (including the `crates/*/python` exclude). It must be updated in
-  the move to include `cypherlite/`, `surfaces/` and `testing/` (or at least
-  the members memorydb-cloud builds), and memorydb-cloud's build must be
-  verified against the new paths.
+- A client implementing embedded Relate that Docker-builds this repository
+  consumes it as a named build context, and `.dockerignore` currently
+  assumes all Rust sources live in `crates/*` (including the
+  `crates/*/python` exclude). It must be updated in the move to include
+  `cypherlite/`, `surfaces/` and `testing/` (or at least the members that
+  client builds), and that client's build must be verified against the
+  new paths.
 - In-flight branches that touch files under `crates/` (for example
   `oskar/query-resource-governor`, which also reserves ADR-0100–0102) must be
   rebased across the move. Git rename detection handles most content edits,

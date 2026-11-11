@@ -15,7 +15,8 @@ GitHub blob link is the usual shape).
 
 The engine deliberately refuses remote URIs: `reject_remote_scheme`
 (ADR-0044) answers any `scheme://` other than `file://` with "`s3://` is not
-an engine URI (ADR-0044); object storage lives in memorydb-cloud", and the
+an engine URI (ADR-0044); object storage belongs to clients implementing
+embedded Relate", and the
 `.cl` bundle route opens a **host file** it locks (ADR-0074). So a URL store
 cannot be an engine URI without dragging network access, credentials, and a
 retry policy into the storage layer — and it would still need a local file

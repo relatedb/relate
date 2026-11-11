@@ -5,16 +5,13 @@ Claim: 59ea09d54dce44274d6404e2b94327e4db5e09e2
 
 ## Context
 
-memorydb-cloud wants to raise a database's `--memory-limit` and
-`--concurrent-peak-token-limit` without customer-visible query loss,
-including writes. Each increase needs more pod memory, which needs a pod
-resize. The chosen sequence (documented in the sibling `memorydb-cloud`
-repository's `docs/designs/autoscaling.md`) creates a second pod at the
-new size as a WAL follower (ADR-0137), then
-swaps which pod is the writer twice — once up, once back to the lowest
-ordinal — using a `StatefulSet` partitioned rolling update. memorydb-cloud
-needs each pod's process to change role in place: CypherLite today only
-decides writable-or-not once, at open.
+A client implementing embedded Relate wants to raise a database's
+`--memory-limit` and `--concurrent-peak-token-limit` without
+customer-visible query loss, including writes. Each increase needs more
+process memory, which needs a new process at the new size. The client
+creates that process as a WAL follower (ADR-0137), then swaps which
+process is the writer. The client needs each process to change role in
+place: CypherLite today only decides writable-or-not once, at open.
 
 `OpenMode` (`cypherlite/cypherlite/src/lib.rs`) is `Writable`, `ReadOnly`,
 or `Follow`, fixed for a handle's life. `Shared::new`
@@ -102,7 +99,7 @@ reload, and has not been rescanned since.
    then reopens the WAL read-only at the published checkpoint
    (`open_follower_wal`) and keeps the loaded graph: that graph is already
    the snapshot just written, and a second load is what pushed a demoting
-   writer past its pod memory limit. `poll_follow` still needs the
+   writer past its process memory limit. `poll_follow` still needs the
    read-only handle, so the append WAL is swapped out before the lease is
    released. Then demote releases the writer lease, flips `writable`
    false, and restarts the follow thread. `draining` clears whether this
@@ -134,19 +131,19 @@ reload, and has not been rescanned since.
    `run_error` folds both `concurrent-peak-token-limit` and any retryable
    `ResourceLimit` into the same HTTP 429 with the same message text
    (`e.to_string()` never includes `retryable`); a host counting retryable
-   and non-retryable peak-token refusals separately (memorydb-cloud's
-   `db-api-signals`) has no other way to see the bit. Additive JSON field;
-   an older reader ignores it. Bolt is unaffected — memorydb-cloud's
-   `db-api` only speaks the HTTP Query API to the engine.
+   and non-retryable peak-token refusals separately has no other way to
+   see the bit. Additive JSON field; an older reader ignores it. Bolt is
+   unaffected.
 5. **One writer lease.** `.cypherlite.writer` is held as a `WriterLease`
    on the open handle. A writable native open moves that lease out of
    the VFS lease onto `Shared` before the open returns. `promote` takes
    the same value. `demote` drops it, on a handle that opened writable
    and on one that opened `Follow`. A writable open's `promote` is a
    no-op while it still holds the lease, and works again after `demote`.
-   A frozen `ReadOnly` open still cannot become the writer. memorydb-cloud
-   opens writable when the store files are absent and `Follow` plus
-   `promote` when they exist; `Error::Locked` leaves that pod a follower.
+   A frozen `ReadOnly` open still cannot become the writer. A client
+   implementing embedded Relate opens writable when the store files are
+   absent and `Follow` plus `promote` when they exist; `Error::Locked`
+   leaves that process a follower.
 
 ## Alternatives considered
 
@@ -161,22 +158,22 @@ reload, and has not been rescanned since.
   already rescans those counters. Promote calls that scan and keeps the
   loaded graph; it does not invent a second set of counters.
 - **Leave the writable open's lease inside `NativeLease`.** Rejected.
-  `demote` could not release it without closing the store, so the first
-  pod of a new database could never hand the writer role off. The lease
+  `demote` could not release it without closing the store, so the process
+  that created the database could never hand the writer role off. The lease
   is the same `WriterLease` either way; a writable open moves it onto
   `Shared` instead of keeping a second copy in the VFS.
 - **A second writer-lease flavor that blocks until free, instead of
   failing with `Error::Locked`.** Rejected. The two-handoff sequence
   already orders the lease release (old writer's `demote`) before the new
-  acquisition (new writer's `promote`) at the StatefulSet layer; a
-  blocking lease would hide a sequencing bug as a hang instead of the
-  typed error a second `Writable` open already produces.
+  acquisition (new writer's `promote`) in the client; a blocking lease
+  would hide a sequencing bug as a hang instead of the typed error a
+  second `Writable` open already produces.
 
 ## Consequences
 
 - `cypherlite serve`'s `--follow` flag gains no new CLI surface in this
-  change; `promote`/`demote` are a library API for an embedding host
-  (memorydb-cloud's `mdb-db-api`) to call, not a `cypherlite` CLI verb.
+  change; `promote`/`demote` are a library API for a client implementing
+  embedded Relate to call, not a `cypherlite` CLI verb.
 - A direct `Writable` open stays the way to create a store, and that
   handle can now `demote` and `promote` with the same lease a follower
   uses. `cypherlite serve`/`query` and other embedders are unchanged

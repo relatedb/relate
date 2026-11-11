@@ -36,7 +36,8 @@ Constraints from earlier decisions: Bolt is a transport (ADR-0057) and
 does not claim Neo4j's status-code taxonomy; FAILURE text crosses a trust
 boundary and is server-authored (ADR-0260); RESULT-side encoding is
 unchanged (ADR-0272 — Temporal, Point, and Vector results stay strings);
-and `Pack` is part of the library API the cloud links (ADR-0281).
+and `Pack` is part of the library API clients implementing embedded
+Relate link (ADR-0281).
 
 ## Decision
 
@@ -54,7 +55,8 @@ entry.**
    threads the `Result` through List and Map, and the `String` error is
    the message template in item 6. This is a **breaking change to the
    ADR-0281 library API** (the exported `Pack` type): every caller,
-   including the cloud `mdb-db-api`, must handle the `Err(String)` case.
+   including a client implementing embedded Relate, must handle the
+   `Err(String)` case.
    `Pack::from_mdb`, `decode`, `encode`, `try_struct_msg`, and
    `chunk_message` keep their signatures.
 
@@ -256,8 +258,8 @@ entry.**
 
 - `Pack::to_mdb` returns `Result<cypherlite::Value, String>`. This is a
   breaking change to the ADR-0281 library API: the in-tree caller
-  (`pack_params`) is updated in the same change, and the cloud
-  `mdb-db-api` consumer must handle `Err`. `Pack::from_mdb` and the
+  (`pack_params`) is updated in the same change, and a client
+  implementing embedded Relate must handle `Err`. `Pack::from_mdb` and the
   encoder are unchanged (ADR-0272).
 - Parameters of every engine temporal type — `date`, `time`, `localtime`,
   `datetime` (offset and zone forms), `localdatetime`, `duration` — and

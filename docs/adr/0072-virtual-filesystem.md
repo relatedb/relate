@@ -48,9 +48,10 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
    not database files.
 
 5. **Follow-on backends (not this change):** `opfs://<name>`; an
-   object-store VFS (likely feature-gated or owned by memorydb-cloud so
-   the default crate still does not pull AWS). Naive object `put` is
-   still not a WAL `fsync` (ADR-0012). Single-file packing is ADR-0074.
+   object-store VFS (likely feature-gated, or owned by a client
+   implementing embedded Relate, so the default crate still does not
+   pull AWS). Naive object `put` is still not a WAL `fsync` (ADR-0012).
+   Single-file packing is ADR-0074.
 
 ## Alternatives considered
 

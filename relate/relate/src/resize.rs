@@ -1,9 +1,9 @@
 //! Promote a WAL follower to writer, and demote a writer back to follower
 //! (ADR-0440, engine ADR-0440): Relate owns the in-process role change
 //! so the loaded graph and the open WAL/checkpoint machinery survive the
-//! swap. memorydb-cloud owns the decision to call either and the pod
-//! lifecycle around it; this module knows nothing about pods, StatefulSets,
-//! or capacity.
+//! swap. A client implementing embedded Relate owns the decision to call
+//! either and the process lifecycle around it; this module knows nothing
+//! about that lifecycle or about capacity.
 //!
 //! Split out of `lib.rs` per the crate's per-concern file convention
 //! (ADR-0371's split precedent): the three `start_*` helpers below are the
@@ -357,8 +357,9 @@ impl Database {
     }
 
     /// Whether this handle is mid-`demote`: new writes refuse retryably,
-    /// but the handle is still Ready for ingress until the drain finishes
-    /// (ADR-0440's db-api role surfaces this on `GET /info`).
+    /// but the handle is still the writer until the drain finishes
+    /// (ADR-0440). A client implementing embedded Relate can read this
+    /// while it still serves the open handle.
     pub fn is_draining(&self) -> bool {
         self.inner.draining.load(Ordering::Acquire)
     }

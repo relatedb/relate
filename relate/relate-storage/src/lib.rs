@@ -574,7 +574,8 @@ fn valid_scheme(scheme: &str) -> Option<&str> {
 
 fn unsupported_remote_uri(scheme: &str) -> String {
     if scheme.eq_ignore_ascii_case("s3") {
-        "s3:// is not an engine URI; object storage lives in memorydb-cloud".into()
+        "s3:// is not an engine URI; object storage belongs to clients implementing embedded Relate"
+            .into()
     } else {
         format!(
             "unsupported URI scheme {scheme}:// (engine URIs are :memory:, a filesystem path, or file://)"

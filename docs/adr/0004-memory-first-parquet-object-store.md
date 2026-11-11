@@ -59,5 +59,5 @@ ADR-0050: Parquet remains the **default** snapshot codec. Other codecs
 unchanged.
 
 ADR-0044 withdraws engine `s3://`. `object_store` still addresses
-`:memory:` and `file://` / filesystem paths; object storage for the
-managed service lives in `memorydb-cloud`.
+`:memory:` and `file://` / filesystem paths; object storage belongs
+to clients implementing embedded Relate.

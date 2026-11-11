@@ -160,7 +160,7 @@ second baseline directory by default.
   compares against root `baselines/`.
 - `make gate` still compares last `target/*.json` reports; those reports
   must have been produced by the docker environment.
-- memorydb-cloud in-cluster loadtests are out of scope.
+- Loadtests run by clients implementing embedded Relate are out of scope.
 
 ## Later references
 

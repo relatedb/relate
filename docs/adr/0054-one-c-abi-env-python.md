@@ -28,7 +28,7 @@ vs ctypes `memorydb`). Those leftovers block a single product identity.
   `clients/python` (ctypes) is deleted. Wheels publish to PyPI on tagged
   releases via trusted publishing when configured.
 
-`memorydb-cloud` remains on `../memorydb`.
+Clients implementing embedded Relate are outside this rename.
 
 ## Alternatives considered
 
@@ -47,8 +47,7 @@ vs ctypes `memorydb`). Those leftovers block a single product identity.
 
 - PyPI distribution name is `neo4j-cypherlite` because `cypherlite` is already
   published by another project. The import module remains `cypherlite`.
-- `memorydb-cloud` now path-depends on this tree (`cypherlite::Database`),
-  not `../memorydb` (cloud ADR-0067).
+- Clients implementing embedded Relate embed `cypherlite::Database`.
 - ADR-0066: the CIP ratchet env vars are now `CIP_EVAL_*` (was
   `CIP_EVAL_MEMORYDB_*`) and the baseline is `baselines/cip-eval.json` (was
   `baselines/cip-eval-memorydb.json`). The MemoryDB name is retired from live

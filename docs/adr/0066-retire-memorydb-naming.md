@@ -95,5 +95,4 @@ coordinate to the values above is carried out by the accompanying cleanup.
   open.
 - Reinstating the MemoryDB name would require a new ADR; this one is the
   recorded decision that it is retired.
-- The sibling `memorydb-cloud` project keeps its name (maintainer decision);
-  this ADR retires the MemoryDB name only inside this repository.
+- This ADR retires the MemoryDB name only inside this repository.

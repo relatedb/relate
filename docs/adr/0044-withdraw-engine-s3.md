@@ -9,9 +9,10 @@
 ADR-0004 and ADR-0012 made `s3://` a first-class engine URI:
 `AmazonS3Builder` for Parquet checkpoints, a local WAL sidecar
 (`--wal-dir` / `MEMORYDB_WAL_DIR` / a temp hash), and a MinIO CI job.
-The managed plane already owns cloud concerns (ADR-0029). Keeping S3
-in the engine couples every embed, CLI, and default CI build to AWS
-`object_store` features the laptop/product surfaces do not need.
+Clients implementing embedded Relate already own hosted concerns
+(ADR-0029). Keeping S3 in the engine couples every embed, CLI, and
+default CI build to AWS `object_store` features the laptop/product
+surfaces do not need.
 
 ## Decision
 
@@ -20,7 +21,7 @@ Remove engine `s3://`.
 - Supported URIs are `:memory:`, a filesystem path, and `file://`.
   Opening `s3://` (or another remote scheme) fails with a storage
   error. The engine does not advertise a URI it cannot open.
-- Object storage for the managed service belongs to `memorydb-cloud`.
+- Object storage belongs to clients implementing embedded Relate.
 - Keep Apache `object_store` **without** the `aws` feature, for
   `LocalFileSystem` and `InMemory` only.
 - `--wal-dir` remains for filesystem URIs (default `<dir>/wal`).
@@ -29,10 +30,10 @@ Remove engine `s3://`.
 ## Alternatives considered
 
 - **Optional `s3` Cargo feature** — still invites `--all-features` and
-  keeps an AWS client in this repo. Cloud should own the object-store
-  client. Rejected.
-- **Keep documenting `s3://` as “coming from cloud”** — the engine
-  would advertise a URI `Database::open` rejects. Rejected.
+  keeps an AWS client in this repo. Clients implementing embedded
+  Relate should own the object-store client. Rejected.
+- **Keep documenting `s3://` as provided by an embedding client** — the
+  engine would advertise a URI `Database::open` rejects. Rejected.
 - **WAL as S3 objects** — `put` has no `fsync`. Already rejected in
   ADR-0012; still rejected.
 

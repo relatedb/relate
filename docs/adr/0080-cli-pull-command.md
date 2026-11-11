@@ -8,9 +8,10 @@
 
 GraphStore `--sync` pulled a Neo4j/Aura subgraph over HTTP Query API v2 from
 an Aura/`neo4j-cli` env file and hydrated a read-only `MemoryStore`
-(ADR-0052 withdrew that runtime). MemoryDB Cloud later seeded a live
-`cypherlite::Database` from a Cypher slice: extract graph elements, `CREATE`
-them, checkpoint. Operators want that pull on the laptop CLI without
+(ADR-0052 withdrew that runtime). A client implementing embedded Relate
+later seeded a live `cypherlite::Database` from a Cypher slice: extract
+graph elements, `CREATE` them, checkpoint. Operators want that pull on
+the laptop CLI without
 reviving GraphStore, putting passwords on argv, or taking `neo4rs` in a
 product crate.
 
@@ -92,8 +93,8 @@ new remote elements.
 
 6. **Library boundary.** Fetch, extract, and upsert live in
    `cypherlite-load`. The public `cypherlite` crate does not grow HTTP or
-   Neo4j types. Cloud `query.memdb` JWT, `POST /seed`, named Secrets, and
-   Bolt fallback stay in memorydb-cloud.
+   Neo4j types. Seeding, authentication, named secrets, and any Bolt
+   fallback stay with clients implementing embedded Relate.
 
 ## Alternatives considered
 
@@ -135,8 +136,8 @@ new remote elements.
   next pull of that remote id. Source `elementId` reuse after
   delete+recreate at Neo4j maps to a new local element only after the
   previous local element is gone.
-- memorydb-cloud may later depend on `cypherlite-load` for extract/upsert;
-  that wrap is a separate change.
+- A client implementing embedded Relate may later call `cypherlite-load`
+  for extract and upsert; that wrap is a separate change.
 
 ## Later references
 

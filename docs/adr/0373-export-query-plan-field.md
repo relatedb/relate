@@ -12,8 +12,8 @@ Bolt wire's `args`) and the metric fields Neo4j's own response carries.
 That projection lives in `cypherlite-http` as `plan_field`, and it is
 `pub(crate)`. The HTTP server is the only caller.
 
-An embedder that builds its own success envelope — MemoryDB Cloud's
-`mdb-db-api` is the one that does — receives a `QueryResult` whose
+An embedder that builds its own success envelope — a client
+implementing embedded Relate — receives a `QueryResult` whose
 `plan` is already set, then has to encode the tree. Copying the walk
 would be a second spelling of ADR-0365. The Bolt summary is the wrong
 shape for an HTTP client.

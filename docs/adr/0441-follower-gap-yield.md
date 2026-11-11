@@ -10,7 +10,7 @@ recycled WAL it had not applied, a trimmed tail moved under its cursor,
 or a redo batch applied only a prefix. The reload loads the snapshot and
 the surviving WAL beside the installed graph, then swaps. Queries already
 pinned to the old graph finish on it. That second graph is the memory
-cost. A host whose pod is sized for one graph is killed while the two
+cost. A host whose process is sized for one graph is killed while the two
 copies overlap.
 
 The missing commits exist only in the new snapshot, so the destination
@@ -41,7 +41,7 @@ after in-flight work releases it, and open one new follower.
 ## Alternatives considered
 
 - **Keep reloading in place for every host.** Rejected: the overlap is
-  a second copy of the graph, and a pod sized for one copy is killed
+  a second copy of the graph, and a process sized for one copy is killed
   before the swap frees the first.
 - **Retain WAL until every follower acknowledges an LSN.** Rejected for
   this decision: a correct ack crosses processes or files and is the

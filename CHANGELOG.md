@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Opening an `s3://` URI reports that object storage belongs to clients
+  implementing embedded Relate.
+
 ### Removed
 
 - CDC replication slots. `register_cdc_slot`, `ack_cdc_slot`,
