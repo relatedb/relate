@@ -164,6 +164,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         run: |
@@ -246,6 +247,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         run: |
@@ -306,6 +308,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         run: |
