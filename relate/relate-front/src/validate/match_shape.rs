@@ -71,8 +71,9 @@ pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// The expression-embedded half: a shortest-path expression's own shape and
-/// its bound endpoints. Rides the whole-tree walk's expression visitor.
+/// The expression-embedded half: a shortest-path expression's own shape, its
+/// relationship-property rule and its bound endpoints. Rides the whole-tree
+/// walk's expression visitor.
 pub(crate) fn validate_expr_pattern_shape(expr: &Expr) -> Result<(), EngineError> {
     let Some(path) = pattern_of_expr(expr) else {
         return Ok(());
@@ -81,6 +82,7 @@ pub(crate) fn validate_expr_pattern_shape(expr: &Expr) -> Result<(), EngineError
         return Ok(());
     };
     let name = shortest_path_function_name(shortest.all);
+    reject_shortest_path_property_map(path)?;
     reject_shortest_path_shape(name, path)?;
     reject_unbound_shortest_path_endpoints(name, path)
 }
@@ -216,11 +218,16 @@ fn path_mode_name(mode: &relate_parser::PathMode) -> &'static str {
 
 /// 42N56: `shortestPath()`/`allShortestPaths()` patterns support no
 /// relationship properties ("Properties are not supported in the
-/// shortestPath() function").
+/// shortestPath() function"). The `MATCH`-clause half's gated entry.
 fn reject_shortest_path_properties(path: &PatternPath) -> Result<(), EngineError> {
     if !path.is_shortest_path_function {
         return Ok(());
     }
+    reject_shortest_path_property_map(path)
+}
+
+/// The one property-rule body both shortest-path spellings share.
+fn reject_shortest_path_property_map(path: &PatternPath) -> Result<(), EngineError> {
     let has_properties = path.elements.iter().any(|element| match element {
         PatternElement::Relationship(rel) => rel.has_properties,
         PatternElement::Node(_) | PatternElement::Quantified(_) => false,
@@ -467,6 +474,17 @@ mod tests {
             assert!(err.contains("properties"), "{query}: {err}");
         }
         assert!(validate("MATCH (a), (b), shortestPath((a)-[*]->(b)) RETURN *").is_ok());
+
+        // The expression form carries the same rule (live Neo4j 2026.10.1,
+        // `42001` `SyntaxError` for both spellings and the empty map).
+        for query in [
+            "MATCH (a), (b) RETURN shortestPath((a)-[:T {x: 1}]->(b)) AS p",
+            "MATCH (a), (b) RETURN allShortestPaths((a)-[:T*0..1 {x: 1}]->(b)) AS p",
+            "MATCH (a), (b) RETURN shortestPath((a)-[{}]->(b)) AS p",
+        ] {
+            let err = crate::validate::parse_and_validate_tree(query).unwrap_err();
+            assert!(err.contains("properties"), "{query}: {err}");
+        }
     }
 
     /// 42N40 / 42I08: a `shortestPath()`/`allShortestPaths()` pattern has
