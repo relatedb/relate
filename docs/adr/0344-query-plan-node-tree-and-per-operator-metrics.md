@@ -92,3 +92,7 @@ which is what client tooling (Browser, drivers) renders.
   accessor's parse: name, payload, notification projection, and message
   text are owned once by the enum instead of three review-coordinated
   layers. `cypherlite::PlanWarning` and the wire shape are unchanged.
+- ADR-0555 fixes the operator boundary this ADR's per-operator metrics
+  observe: a pull stream of rows or bounded batches rather than a whole
+  vector. Row counts describe rows passing that boundary, and retained
+  state is charged by the declared breakers (ADR-0463), not by every operator.
