@@ -364,10 +364,13 @@ jobs:
   crates-io:
     name: Publish the facade closure to crates.io
     needs: registry-owner
-    # Main-only like every publish job (see pypi). Disabled until the
-    # manual bootstrap in docs/PUBLISHING.md lands; re-enable by dropping
-    # the `&& false`.
-    if: github.ref == 'refs/heads/main' && inputs.crates-io && false
+    # Main-only like every publish job (see pypi). Publishes the tag's
+    # source closure via OIDC trusted publishing: it fails closed at
+    # authentication until every crate's trusted publisher is configured
+    # on crates.io (the crates.io section of docs/PUBLISHING.md), and
+    # the publish loop skips crates whose versions are already on the
+    # registry, so an interrupted run can be re-dispatched to finish.
+    if: github.ref == 'refs/heads/main' && inputs.crates-io
     runs-on: ubuntu-latest
     # Publishes run in the `release` environment: its deployment branch
     # rule (main only) stops a write-access collaborator from publishing
@@ -414,17 +417,25 @@ jobs:
             args+=(--dry-run)
           fi
           for c in "${crates[@]}"; do
-            # A re-run after a partial publish hits "already exists" on
-            # the crates that made it; the registry's own rejection is
-            # the skip, so retry only rides the index-lag failure.
+            # A re-dispatch after an interrupted run must be able to
+            # finish the loop: a crate whose version already landed in
+            # the earlier attempt is done, not a failure — skip it
+            # instead of burning the retries and exiting.
             for attempt in 1 2 3; do
-              if rustup run stable cargo publish -p "$c" "${args[@]}"; then
+              if out=$(rustup run stable cargo publish -p "$c" "${args[@]}" 2>&1); then
+                printf '%s\n' "$out"
+                break
+              fi
+              if printf '%s\n' "$out" | grep -qiE 'already (uploaded|exists)'; then
+                echo "$c: version already on the registry — skipping"
                 break
               fi
               if [ "$attempt" = 3 ]; then
+                printf '%s\n' "$out" >&2
                 echo "cargo publish -p $c failed after 3 attempts" >&2
                 exit 1
               fi
+              printf '%s\n' "$out" | tail -5 >&2
               echo "cargo publish -p $c failed (attempt $attempt); waiting for the index"
               sleep 30
             done

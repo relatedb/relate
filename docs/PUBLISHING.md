@@ -85,34 +85,30 @@ artifact landed on that first release:
   release.
 - [ ] crates.io (ADR-0560): the publishable set is the `relate` facade's
   transitive workspace closure — 17 crates, all lockstep with the release
-  tag. The first publish is manual because a crate must exist before
-  trusted publishing can be configured on it. Create a **scoped,
-  short-lived** crates.io API token for the bootstrap (Account Settings →
-  API Tokens): scopes `publish-new` and `publish-update` only, crate
-  pattern `relate*` (or exactly the 17 names), expiry of a day — never an
-  unscoped token. With it (`cargo login`), publish in topological order,
-  waiting a few seconds between crates for the registry index to catch
-  up:
-
-  ```sh
-  for c in relate-model relate-names relate-splitter relate-core \
-           relate-parser relate-catalog relate-error relate-ir \
-           relate-markdown relate-ontology relate-front relate-planner \
-           relate-engine-api relate-executor relate-storage \
-           relate-write-local relate; do
-    cargo publish -p "$c" || break
-    sleep 30
-  done
-  ```
+  tag. The bootstrap claims the names without publishing source: each of
+  the 16 unclaimed names gets a manual `0.0.1` placeholder publish
+  (empty crate, description, Apache-2.0, a coming-soon README); `relate`
+  itself is already owned (the predecessor CLI project, ADR-0560).
+  Create a **scoped, short-lived** crates.io API token for the bootstrap
+  (Account Settings → API Tokens): scopes `publish-new` and
+  `publish-update` only, crate pattern `relate*` (or exactly the 17
+  names), expiry of a day — never an unscoped token — then `cargo login`
+  and publish the placeholders (crates.io rate-limits new-crate creation
+  in bursts; a retry-with-backoff loop rides the 429 windows). The
+  first **real** publish is the pipeline's: deferred to the v1.0.0
+  release, which publishes the closure from the tag via the `crates-io`
+  job — the first registry version is v1.0.0 on every registry.
 
   Then, per crate on crates.io (Settings → Trusted Publishing): GitHub
   Actions, repository `relatedb/relate`, workflow `publish-registries.yml`
   (the OIDC token names the *called* workflow, even on a chained run).
-  The `crates-io` job is fail-closed (`&& false` guard) until all 17 are
-  configured. Once they are, **revoke the bootstrap API token**
-  (crates.io → Account Settings → API Tokens, then `cargo logout`
-  locally): trusted publishing has taken over, and no long-lived token
-  should survive the bootstrap.
+  The `crates-io` job is enabled but fails closed at authentication
+  until all 17 are configured, and its publish loop skips crates whose
+  versions are already on the registry, so an interrupted run can be
+  re-dispatched to finish. Once the publishers are in, **revoke the
+  bootstrap API token** (crates.io → Account Settings → API Tokens, then
+  `cargo logout` locally): trusted publishing has taken over, and no
+  long-lived token should survive the bootstrap.
 - [ ] npm (ADR-0278): the `@relate` npm scope exists and the releaser has
   publish rights.
 - [ ] Licensing: the project's licensing decision is resolved and the
