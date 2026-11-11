@@ -19,6 +19,11 @@ on:
         required: false
         default: false
         type: boolean
+      registries:
+        description: "Chain the registry publish (npm/PyPI/crates.io via publish-registries.yml) after the GitHub release; turn off to release without touching any registry (e.g. while a registry's trusted-publishing setup is pending)"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -965,11 +970,12 @@ jobs:
   # (ADR-0560, ADR-0278): called here once the GitHub release and its
   # assets exist, and dispatchable by hand with a tag plus per-registry
   # toggles for dry runs and partial-failure recovery. An offline release
-  # touches nothing outside GitHub, so it skips the call.
+  # touches nothing outside GitHub, so it skips the call; registries=false
+  # skips only the registries (website, Slack, and the canary still run).
   publish-registries:
     name: Publish to registries
     needs: [version, create-release, npm-smoke-gate]
-    if: ${{ !inputs.offline }}
+    if: ${{ !inputs.offline && inputs.registries }}
     # The caller's permissions cap the called workflow's: without
     # id-token: write here, the called jobs' trusted-publishing token
     # request cannot be honored on the chained path. No secrets: inherit —

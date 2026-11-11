@@ -26,6 +26,13 @@ a later backfill), no Slack announcement, no self-update canary. Use it
 while the website and announcement channels are being stood up; a later
 non-offline release-notes dispatch can still announce the tag.
 
+**Skipping only the registries**: dispatch with `registries=false` —
+`gh workflow run release.yml -f bump=patch -f registries=false` — for a
+full release (website poke, Slack, canary) that does not chain the
+registry publish. Use it while a registry's trusted-publishing setup is
+pending; a later manual `publish-registries.yml` dispatch against the
+tag publishes the registries after the fact.
+
 The version is derived from the existing `v*` git tags plus the chosen bump,
 not from the workspace version. The first ever run (no `v*` tags yet)
 produces `v0.1.0` regardless of the bump choice — the first release cut
