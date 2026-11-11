@@ -65,9 +65,13 @@ exec/procedures.rs::exec_call # bounded catalog/admin/procedure result, not grap
 exec/procedures.rs::exec_fulltext_query_call # bounded catalog/admin/procedure result, not graph-sized
 exec/procedures.rs::exec_registry_call # bounded catalog/admin/procedure result, not graph-sized
 exec/procedures.rs::exec_vector_query_call # bounded catalog/admin/procedure result, not graph-sized
+exec/project.rs::aggregate_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::filter_where # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::plain_rows # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::preprojected_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::retain_distinct # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::star_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/search.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
