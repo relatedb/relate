@@ -86,8 +86,8 @@ the feature must share them. wasm32 is JSON-only either way. See
 [Cargo features](../api/rust/spec.md#cargo-features).
 
 ```bash
-./relate ./mydata
-./relate --snapshot-format json ./mydata-json
+./relate -d ./mydata
+./relate -d ./mydata-json --snapshot-format json
 ```
 
 ```rust

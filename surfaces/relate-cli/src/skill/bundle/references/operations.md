@@ -6,7 +6,7 @@
 |------|---------|-------|
 | Directory | `relate --database ./mydata` | WAL + snapshot (Parquet by default in builds with that codec, else JSON; `--help` lists what is compiled in). `--snapshot-format` only on an **empty** directory (values as `--help` lists); never mix codecs in one database. Parquet checkpoints are wide-column parts (ADR-0553). |
 | Single file | `relate --database ./mydata.rl` | `.rl` bundle: WAL + snapshot inside one host file (ADR-0074). Same semantics as the directory form — copy the one file to back it up. |
-| Ephemeral | `relate :memory:` | Gone when the process exits. Default when no path is given. |
+| Ephemeral | `relate` | Gone when the process exits. Default when no path is given. |
 
 A `.db` file is **not** a Relate database; legacy `graph.json` data is
 imported by copying it to `<dir>/graph.json` before opening.
@@ -30,7 +30,7 @@ imported by copying it to `<dir>/graph.json` before opening.
   `--to-snapshot-format json|parquet` transcodes the destination checkpoint
   (ADR-0163) — e.g. `relate clone --to-snapshot-format parquet ./db
   ./backup.rl` for a compact bundle from a JSON working directory.
-- `.rl` backup: run `.checkpoint` (or one-shot `relate ./db.rl ".checkpoint"`),
+- `.rl` backup: run `.checkpoint` (or one-shot `relate -d ./db.rl ".checkpoint"`),
   wait for it to finish, then copy the file. A bundle cannot be read beside
   its writer. Never copy mid-write: the WAL plus snapshot are one unit.
 - Restoring = copy the backup back and open it. Treat the WAL as part of the

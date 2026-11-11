@@ -111,8 +111,8 @@ hand-written `--help` is the source of truth and must match docs.
   spellings get no migration hints — generic unknown-flag error
 - New flags: double-dash kebab-case only; single-dash (`-json`, `-mode`, …)
   = legacy aliases, not pattern. `-d` = short `--database` (ADR-0200)
-- Database path colliding with a command word: reach it via `./` prefix
-  (`relate ./skill`) or after `--` (`relate -- skill`)
+- Database path colliding with a command word: reach it via `--database`
+  (`relate --database skill`); the store is never the first positional
 - New commands: singular nouns, `<resource> <action>`, ≤ 1 positional
   (extras → flags). Otherwise follow <https://clig.dev/>
 

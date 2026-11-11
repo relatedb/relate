@@ -21,7 +21,7 @@ Ships in the `relate` binary through the `extensions` Cargo feature
 (`full` — the default — and `agent`; not `minimal`). The
 `run` word is reserved in every build: without the feature the command
 keeps the shared not-included error (exit 2), and a store named `run`
-stays reachable as `relate ./run` or `relate -- run`.
+stays reachable as `relate --database run`.
 
 ## The mount
 

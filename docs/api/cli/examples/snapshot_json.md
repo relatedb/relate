@@ -7,7 +7,7 @@ is optional:
 
 ```bash
 printf "CREATE (:Person {name: 'Ada'});\n.checkpoint\n" | \
-  cargo run -p relate-cli -- --snapshot-format json ./graph-json
+  cargo run -p relate-cli -- -d ./graph-json --snapshot-format json
 ```
 
 `./graph-json/graph.json` now holds the graph, e.g.:
@@ -26,7 +26,7 @@ printf "CREATE (:Person {name: 'Ada'});\n.checkpoint\n" | \
 Product shell:
 
 ```bash
-cargo run -p relate-cli -- --snapshot-format json ./graph-json
+cargo run -p relate-cli -- -d ./graph-json --snapshot-format json
 ```
 
 Reopen without the flag. Passing `--snapshot-format parquet` on this
