@@ -80,12 +80,40 @@ public struct QueryStats: Sendable, Hashable, Decodable {
     public let constraintsRemoved: Int
 }
 
-/// One query notification (ADR-0363) in the engine-native shape.
+/// A notification's severity (ADR-0363): a closed vocabulary. A wire value
+/// outside it is an ABI contract violation at decode, never a lenient string.
+public enum Severity: String, Sendable, Hashable, Decodable {
+    case information = "INFORMATION"
+    case warning = "WARNING"
+
+    public init(from decoder: any Decoder) throws {
+        self = try decodeWire(Self.self, from: decoder)
+    }
+}
+
+/// A notification's category (ADR-0363): a closed vocabulary, refused like
+/// `Severity` when the wire value is outside it.
+public enum Category: String, Sendable, Hashable, Decodable {
+    case performance = "PERFORMANCE"
+    case unrecognized = "UNRECOGNIZED"
+    case deprecation = "DEPRECATION"
+    case schema = "SCHEMA"
+    case hint = "HINT"
+
+    public init(from decoder: any Decoder) throws {
+        self = try decodeWire(Self.self, from: decoder)
+    }
+}
+
+/// One query notification (ADR-0363) in the engine-native shape. `severity`
+/// and `category` are the closed `Severity` and `Category` enums: decoding
+/// refuses a missing, null or unknown value as an ABI contract violation
+/// naming the key and the (sanitized) offending value.
 public struct Notification: Sendable, Hashable, Decodable {
     public let code: String
     public let gqlStatus: String
-    public let severity: String
-    public let category: String
+    public let severity: Severity
+    public let category: Category
     public let title: String
     public let description: String
     public let remedy: String

@@ -64,6 +64,11 @@ func main() {
 	}
 	for _, n := range res.Notifications {
 		fmt.Println("notification:", n.Code, n.Severity, n.Category)
+		// Severity and Category are closed, typed vocabularies.
+		if n.Severity != relate.SeverityInformation || n.Category != relate.CategoryPerformance {
+			fmt.Fprintln(os.Stderr, "unexpected severity/category:", n.Severity, n.Category)
+			os.Exit(1)
+		}
 		fmt.Println("  remedy:", n.Remedy)
 		if n.OperatorID != nil {
 			fmt.Println("  operator:", *n.OperatorID)

@@ -46,8 +46,11 @@ day: 2))`, `.point(.init(srid: 4326, x: -105.0, y: 40.0, z: nil))`).
 
 ## Gotchas
 
-- **`queryType` / `namespace` are closed enums** — a value outside the
-  vocabulary throws `RelateError.decoding` (`ABI contract violated: ...`).
+- **`queryType` / `namespace` and notification `severity` / `category` are
+  closed enums** — a value outside the vocabulary throws
+  `RelateError.decoding` (`ABI contract violated: ...`). The offending value
+  echoed into the message is sanitized: non-printable characters arrive escaped
+  and the value is bounded.
 - A result map key containing an interior NUL is refused with an error (the C ABI looks keys up NUL-terminated); string values keep their NULs.
 - **`Connection` is not `Sendable`** — the compiler stops you sharing one
   across actors. Own it inside one actor; `Database` is shareable, open one

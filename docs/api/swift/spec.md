@@ -131,7 +131,15 @@ list stays `.path`, and `value.kind` (``CypherValueKind``) reads it back. An
 enumerator this client does not know (a later, additive ABI) is a defined
 `.decoding` error, never a silent null. The result metadata is closed the same
 way: a `query_type` outside `r`/`w`/`rw`/`s` or a `namespace` outside the three
-fixed names is a `.decoding` error reading `ABI contract violated: ...`.
+fixed names is a `.decoding` error reading `ABI contract violated: ...`, and so
+is a notification `severity` outside the closed `Severity` enum
+(`.information`, `.warning`) or a `category` outside the closed `Category` enum
+(`.performance`, `.unrecognized`, `.deprecation`, `.schema`, `.hint`) — a
+missing or null key too — as in the Go and Java clients. The refusal names the
+key and the offending value, sanitized: control and other non-printable
+characters appear as `\uXXXX` escapes and the echoed value is bounded (64
+characters; an echoed payload 256), so a hostile native library cannot inject
+log lines (CWE-117).
 
 | ABI kind | Swift value |
 | --- | --- |

@@ -31,7 +31,7 @@ res.Namespace                                   // typed Namespace — resolved 
 res.Bookmark                                    // "relate:<n>" after a write
 res.Stats                                       // typed Stats — the 11 mutation counters, zeros included (ADR-0216)
 res.Plan                                        // *PlanDocument — EXPLAIN/PROFILE
-res.Notifications                               // [] on a plain run
+res.Notifications                               // [] on a plain run; Severity / Category are typed, closed vocabularies
 
 _ = conn.Begin()                                // explicit transaction
 bookmark, _ := conn.Commit()                    // "" when nothing committed
@@ -39,6 +39,11 @@ bookmark, _ := conn.Commit()                    // "" when nothing committed
 
 ## Gotchas
 
+- **Metadata vocabularies are closed** — a `QueryType`, `Namespace`, notification
+  `Severity` or `Category` (or error stage) outside the documented set is an
+  `ABI contract violated: ...` error, like the Java and Swift clients. The
+  offending value echoed into the message is sanitized — non-printable
+  characters arrive escaped and the value is bounded.
 - **The library must be findable** — the cgo directives search the checkout's
   `target/debug` and `target/release`; outside the build tree set
   `DYLD_LIBRARY_PATH` (macOS) / `LD_LIBRARY_PATH` (Linux) to the directory

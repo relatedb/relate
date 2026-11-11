@@ -14,20 +14,6 @@ import (
 	"reflect"
 )
 
-// Notification is one query notification (ADR-0363) in the engine-native
-// shape. Operator-scoped kinds carry the raising operator's plan id as
-// OperatorID; statement-scoped kinds leave it nil.
-type Notification struct {
-	Code        string `json:"code"`
-	GQLStatus   string `json:"gql_status"`
-	Severity    string `json:"severity"`
-	Category    string `json:"category"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Remedy      string `json:"remedy"`
-	OperatorID  *int64 `json:"operator_id,omitempty"`
-}
-
 // QueryType is a statement's plan-time classification (ADR-0162), the
 // split per ADR-0332. It is a closed vocabulary: decodeQueryType refuses
 // any value outside the four constants, the same refusal decodeError makes
@@ -49,12 +35,7 @@ const (
 // accessor's contract is the four-value vocabulary above; any other value
 // is an ABI contract violation and an error.
 func decodeQueryType(raw string) (QueryType, error) {
-	switch qt := QueryType(raw); qt {
-	case QueryTypeRead, QueryTypeWrite, QueryTypeReadWrite, QueryTypeSchema:
-		return qt, nil
-	default:
-		return "", fmt.Errorf("ABI contract violated: query type %q", raw)
-	}
+	return decodeClosed("query type", raw, QueryTypeRead, QueryTypeWrite, QueryTypeReadWrite, QueryTypeSchema)
 }
 
 // Namespace is a statement's resolved session namespace (ADR-0117): one
@@ -77,12 +58,7 @@ const (
 // contract violation and an error, so every closed-vocabulary accessor in
 // readResult fails loudly on a wire break.
 func decodeNamespace(raw string) (Namespace, error) {
-	switch ns := Namespace(raw); ns {
-	case NamespaceNeo4j, NamespaceSystem, NamespaceSystemOntologies:
-		return ns, nil
-	default:
-		return "", fmt.Errorf("ABI contract violated: namespace %q", raw)
-	}
+	return decodeClosed("namespace", raw, NamespaceNeo4j, NamespaceSystem, NamespaceSystemOntologies)
 }
 
 type Result struct {
@@ -168,22 +144,6 @@ func statementError(res C.relate_query_result) error {
 		return err
 	}
 	return e
-}
-
-// decodeNotifications decodes the C ABI's engine-native notification array
-// (ADR-0363). The accessor's contract is an always-present JSON array, so a
-// null or non-array payload is an ABI contract violation and an error — never
-// a silently nil slice, which json.Unmarshal would otherwise produce for
-// "null".
-func decodeNotifications(raw string) ([]Notification, error) {
-	var notifications []Notification
-	if err := json.Unmarshal([]byte(raw), &notifications); err != nil {
-		return nil, fmt.Errorf("ABI contract violated: decoding notifications: %w", err)
-	}
-	if notifications == nil {
-		return nil, fmt.Errorf("ABI contract violated: decoding notifications: expected a JSON array, got %s", raw)
-	}
-	return notifications, nil
 }
 
 // Stats is a statement's mutation counters (ADR-0216): the canonical 11,
@@ -294,10 +254,10 @@ func decodePlan(raw string) (*PlanDocument, error) {
 		return nil, fmt.Errorf("ABI contract violated: decoding plan: %w", err)
 	}
 	if plan == nil {
-		return nil, fmt.Errorf("ABI contract violated: plan payload is JSON null, expected an object: %s", raw)
+		return nil, fmt.Errorf("ABI contract violated: plan payload is JSON null, expected an object: %s", safeWire(raw))
 	}
 	if plan.Schema != planSchema {
-		return nil, fmt.Errorf("ABI contract violated: plan schema %q is not %q", plan.Schema, planSchema)
+		return nil, fmt.Errorf("ABI contract violated: plan schema %s is not %q", quotedWire(plan.Schema), planSchema)
 	}
 	if plan.Root.Operator == "" {
 		return nil, fmt.Errorf("ABI contract violated: plan document carries no root operator")

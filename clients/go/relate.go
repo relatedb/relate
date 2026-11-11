@@ -92,19 +92,17 @@ func decodeError(raw string) (*Error, error) {
 			return nil, fmt.Errorf("ABI contract violated: error shape is missing %q", field.name)
 		}
 	}
-	stage := Stage(*shape.Stage)
-	switch stage {
-	case StageCompile, StageRuntime, StageInternal:
-		return &Error{
-			Code:      *shape.Code,
-			GQLStatus: *shape.GQLStatus,
-			Stage:     stage,
-			Retryable: *shape.Retryable,
-			Message:   *shape.Message,
-		}, nil
-	default:
-		return nil, fmt.Errorf("ABI contract violated: error stage %q", stage)
+	stage, err := decodeClosed("error stage", *shape.Stage, StageCompile, StageRuntime, StageInternal)
+	if err != nil {
+		return nil, err
 	}
+	return &Error{
+		Code:      *shape.Code,
+		GQLStatus: *shape.GQLStatus,
+		Stage:     stage,
+		Retryable: *shape.Retryable,
+		Message:   *shape.Message,
+	}, nil
 }
 
 // takeError copies and frees a caller-owned error_json out-param. The out-param

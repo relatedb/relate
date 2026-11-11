@@ -79,7 +79,12 @@ Client-side refusals are plain `error` values, not `*Error`. They name the
 violation: `ABI contract violated: ...` (a shape that breaks the ABI contract),
 `unsupported value kind N` (a value kind this client does not know), or one of
 the parameter refusals listed under "Parameters". Match them by text only for
-diagnostics; never branch on them.
+diagnostics; never branch on them. Any untrusted wire value or payload a
+refusal echoes (an unknown query type, namespace, stage, severity or category,
+a malformed notification payload) is sanitized: control and other
+non-printable characters appear as `\uXXXX` escapes and the echo is bounded
+(64 characters for a value, 256 for a payload), so a hostile native library
+cannot inject log lines (CWE-117).
 
 ## Values (ADR-0502 §1)
 
@@ -206,16 +211,26 @@ alive:
 
   ```go
   type Notification struct {
-      Code        string `json:"code"`
-      GQLStatus   string `json:"gql_status"`
-      Severity    string `json:"severity"`
-      Category    string `json:"category"`
+      Code        string   `json:"code"`
+      GQLStatus   string   `json:"gql_status"`
+      Severity    Severity `json:"severity"`
+      Category    Category `json:"category"`
       Title       string `json:"title"`
       Description string `json:"description"`
       Remedy      string `json:"remedy"`
       OperatorID  *int64 `json:"operator_id,omitempty"`
   }
   ```
+
+  `Severity` is the closed `Severity` vocabulary (`SeverityInformation`
+  `"INFORMATION"`, `SeverityWarning` `"WARNING"`) and `Category` the closed
+  `Category` vocabulary (`CategoryPerformance`, `CategoryUnrecognized`,
+  `CategoryDeprecation`, `CategorySchema`, `CategoryHint`, each the upper-case
+  wire name). The decoder refuses a missing, null or unknown value — in the
+  statement's list and in a plan node's `Warnings` — as an ABI contract
+  violation naming the key and the offending value (`ABI contract violated:
+  notification entry carries an unknown severity "LOUD": {...}`), the same
+  strictness as the Java and Swift clients.
 
   `OperatorID` is set only on operator-scoped kinds and names the raising
   plan operator's id; statement-scoped kinds leave it `nil`. For example,

@@ -55,24 +55,19 @@ extension QueryResult {
     }
 }
 
-// The two closed metadata vocabularies: the C ABI's contract is the listed
+// The closed metadata vocabularies (query type and namespace here; severity and
+// category decode through `decodeWire`): the C ABI's contract is the listed
 // values, so anything else is a contract violation, never a lenient string.
 extension QueryType {
     /// Types the `relate_result_query_type` accessor's string (ADR-0162).
     static func decode(_ raw: String) throws(RelateError) -> QueryType {
-        guard let value = QueryType(rawValue: raw) else {
-            throw RelateError.decoding("ABI contract violated: query type '\(raw)'")
-        }
-        return value
+        try closedWire(QueryType.self, raw, what: "query type")
     }
 }
 
 extension Namespace {
     /// Types the `relate_result_namespace` accessor's string (ADR-0117).
     static func decode(_ raw: String) throws(RelateError) -> Namespace {
-        guard let value = Namespace(rawValue: raw) else {
-            throw RelateError.decoding("ABI contract violated: namespace '\(raw)'")
-        }
-        return value
+        try closedWire(Namespace.self, raw, what: "namespace")
     }
 }

@@ -37,6 +37,111 @@ import Testing
         }
     }
 
+    private func notifications(severity: String, category: String) -> String {
+        """
+        [{"code":"c","gql_status":"03N90","severity":\(severity),"category":\(category),\
+        "title":"t","description":"d","remedy":"r"}]
+        """
+    }
+
+    @Test func notificationVocabulariesAreClosed() throws {
+        // ADR-0363: severity and category are closed, like query type and
+        // namespace — every listed value decodes typed, anything else (and a
+        // missing or null key) is refused naming the key and the value.
+        let sevs: [String: Severity] = ["INFORMATION": .information, "WARNING": .warning]
+        let cats: [String: Relate.Category] = [
+            "PERFORMANCE": .performance, "UNRECOGNIZED": .unrecognized,
+            "DEPRECATION": .deprecation, "SCHEMA": .schema, "HINT": .hint,
+        ]
+        for (sev, wantSev) in sevs {
+            for (cat, wantCat) in cats {
+                let json = notifications(severity: "\"\(sev)\"", category: "\"\(cat)\"")
+                let n = try decodeMetadata([Relate.Notification].self, json, what: "notifications")
+                #expect(n.count == 1 && n[0].severity == wantSev && n[0].category == wantCat)
+            }
+        }
+        for bad in ["", "warning", "ERROR"] {
+            do {
+                _ = try decodeMetadata(
+                    [Relate.Notification].self, notifications(severity: "\"\(bad)\"", category: "\"HINT\""),
+                    what: "notifications")
+                Issue.record("severity '\(bad)' decoded")
+            } catch {
+                #expect(error.message.contains("unknown severity '\(bad)'"))
+            }
+            do {
+                _ = try decodeMetadata(
+                    [Relate.Notification].self, notifications(severity: "\"WARNING\"", category: "\"\(bad)\""),
+                    what: "notifications")
+                Issue.record("category '\(bad)' decoded")
+            } catch {
+                #expect(error.message.contains("unknown category '\(bad)'"))
+            }
+        }
+        for json in [
+            notifications(severity: "null", category: "\"HINT\""),
+            notifications(severity: "7", category: "\"HINT\""),
+            #"[{"code":"c","gql_status":"g","category":"HINT","title":"t","description":"d","remedy":"r"}]"#,
+        ] {
+            #expect(throws: RelateError.self) {
+                try decodeMetadata([Relate.Notification].self, json, what: "notifications")
+            }
+        }
+    }
+
+    @Test func refusalsSanitizeEchoedWireValues() throws {
+        // CWE-117: an untrusted wire value echoed into an error message has
+        // its control and non-printable characters escaped and is bounded
+        // (64 for a value, 256 for a payload), like the Java and Go clients.
+        let hostile = "INFO\r\nFAKE LOG '\\x\u{2028}\u{202E}\u{0}"
+        func assertSanitized(_ message: String) {
+            for scalar in message.unicodeScalars {
+                #expect(scalar.value >= 0x20 && scalar.value != 0x7f
+                    && scalar.value != 0x2028 && scalar.value != 0x202E)
+            }
+        }
+        do {
+            _ = try QueryType.decode(hostile)
+            Issue.record("hostile query type decoded")
+        } catch {
+            assertSanitized(error.message)
+            #expect(error.message.contains("\\u000d\\u000a") && error.message.contains("\\u2028"))
+            #expect(error.message.contains("\\u0027") && error.message.contains("\\u005c"))
+        }
+        do {
+            _ = try Namespace.decode(hostile)
+            Issue.record("hostile namespace decoded")
+        } catch {
+            assertSanitized(error.message)
+        }
+        let jsonHostile = "INFO\\r\\nFAKE\\u2028\\u0000"
+        do {
+            _ = try decodeMetadata(
+                [Relate.Notification].self, notifications(severity: "\"\(jsonHostile)\"", category: "\"HINT\""),
+                what: "notifications")
+            Issue.record("hostile severity decoded")
+        } catch {
+            assertSanitized(error.message)
+            #expect(error.message.contains("unknown severity"))
+        }
+        do {
+            _ = try Namespace.decode(String(repeating: "a", count: 500))
+            Issue.record("long namespace decoded")
+        } catch {
+            #expect(error.message.contains("...(truncated)"))
+            #expect(!error.message.contains(String(repeating: "a", count: 65)))
+        }
+        // An unknown error stage and a non-shape error payload echo sanitized too.
+        let stage = "{\"code\":\"c\",\"gql_status\":\"g\",\"stage\":\"x\\u000ay\",\"retryable\":false,\"message\":\"m\"}"
+        let err = stage.withCString { engineError(from: $0, what: "error") }
+        assertSanitized(err.message)
+        #expect(err.message.contains("unknown error stage"))
+        let big = "{" + String(repeating: "z", count: 600)
+        let bigErr = big.withCString { engineError(from: $0, what: "error") }
+        #expect(!bigErr.message.contains(String(repeating: "z", count: 300)))
+        #expect(bigErr.message.contains("...(truncated)"))
+    }
+
     @Test func phaseTimingSplit() throws {
         // ADR-0491: the elapsed total splits into three always-on, disjoint
         // sub-windows whose sum never exceeds the total (the inter-stage
