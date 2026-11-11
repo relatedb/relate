@@ -14,7 +14,7 @@ use crate::graph::Graph;
 use crate::row::Row;
 
 use super::super::GpmFilters;
-use super::fixtures::{counting, gpm, plain, run, shortcut, sorted, Counts};
+use super::fixtures::{counting, gpm, on_route, plain, run, shortcut, sorted, Counts};
 use super::{route_shape, with_forced_gpm};
 
 /// The match mode and first pattern of the statement's last `MATCH` clause.
@@ -165,6 +165,19 @@ fn inline_node_where_stays_on_gpm() {
     assert_stays_on_gpm(&g, q, &[2]);
 }
 
+/// A clause-level `WHERE` over the path is a postfilter for the postfix
+/// spelling: the selector picks the one shortest path, then the predicate
+/// drops it, so the route yields to GPM's enumeration here.
+#[test]
+fn postfix_quantified_relationship_with_outer_path_where_agrees_with_gpm() {
+    let g = shortcut();
+    let q = "MATCH p = ANY SHORTEST (a {id: 0})-[:R]->{1,3}(b {id: 3}) \
+             WHERE none(r IN relationships(p) WHERE r.w = 1) RETURN count(*)";
+    let (rows, counts) = run(&g, q);
+    assert_eq!(counts.route_runs, 0, "route ran for {q}");
+    assert_eq!(sorted(rows), gpm(&g, q), "{q}");
+}
+
 #[test]
 fn dynamic_relationship_type_stays_on_gpm() {
     let g = shortcut();
@@ -173,11 +186,21 @@ fn dynamic_relationship_type_stays_on_gpm() {
     assert_stays_on_gpm(&g, q, &[2]);
 }
 
+/// The postfix `-[:R]->{m,n}` spelling is a quantified var-length hop like
+/// any other: it takes the route, and answers what GPM answers (which of
+/// several equally short paths ANY SHORTEST returns is unspecified, so the
+/// comparison is by length).
 #[test]
-fn quantified_relationship_stays_on_gpm() {
+fn postfix_quantified_relationship_takes_the_route() {
     let g = shortcut();
-    let q = "MATCH p = ANY SHORTEST (a {id: 0})-[:R]->{1,3}(b {id: 3}) RETURN length(p)";
-    assert_stays_on_gpm(&g, q, &[2]);
+    for q in [
+        "MATCH p = ANY SHORTEST (a {id: 0})-[:R]->{1,3}(b {id: 3}) RETURN length(p)",
+        "MATCH p = ALL SHORTEST (a {id: 0})-[:R]->{1,3}(b {id: 3}) RETURN length(p)",
+        "MATCH p = SHORTEST 1 (a {id: 0})-[:R]->{1,3}(b {id: 3}) RETURN length(p)",
+    ] {
+        assert!(guard_accepts(q), "guard rejected {q}");
+        assert_eq!(on_route(&g, q), gpm(&g, q), "{q}");
+    }
 }
 
 #[test]

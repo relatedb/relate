@@ -238,7 +238,14 @@ impl<'a> Route<'a> {
             return Ok(true);
         }
         if let Some(filter) = &self.filter {
-            if !self.predicates_decidable(filter) {
+            // The postfix `->{m,n}` spelling with a clause-level `WHERE` over
+            // the path keeps enumerating: the reference reads that predicate
+            // as a postfilter (the selector picks first), which the route's
+            // in-search predicate does not do. The other spellings' behaviour
+            // here is unchanged.
+            if (self.shape.rel.quantified && !filter.conjuncts.is_empty())
+                || !self.predicates_decidable(filter)
+            {
                 return Ok(false);
             }
         }

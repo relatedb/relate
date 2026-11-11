@@ -139,13 +139,6 @@ fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> 
             let ElementFilter::Rel(filter) = &inner[1] else {
                 return None;
             };
-            // The postfix `->{m,n}` spelling (its origin marker on the inner
-            // rel) keeps its conservative GPM path, as it always has: the
-            // route's ANY-tie choice differs from the GPM enumeration order
-            // the selective-path pins rest on.
-            if rel.quantified {
-                return None;
-            }
             Some(Shape {
                 start,
                 rel,
@@ -157,7 +150,7 @@ fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> 
             })
         }
         (PatternElement::Relationship(rel), ElementFilter::Rel(filter)) => {
-            if !rel.var_length || rel.quantified {
+            if !rel.var_length {
                 return None;
             }
             Some(Shape {
