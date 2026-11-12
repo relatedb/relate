@@ -425,7 +425,7 @@ Process, not code shape:
   never reach, the merge is textually clean, and the definition the
   branch deleted is gone — nothing conflicts, nothing compiles, and the
   head's green checks say nothing. Before merging, run
-  `scripts/premerge-check.sh <PR>`: it decides the merge with
+  `scripts/premerge-check.sh --pr <PR>`: it decides the merge with
   `merge-tree`, exports that exact tree, and type-checks it. A conflict
   is reported as a conflict; a tree that merges and does not compile is
   the case it exists for. Rebase onto current `main` first when it pays

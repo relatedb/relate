@@ -617,6 +617,12 @@ test-install-sh:
 test-stage-setup-scripts:
 	sh $(CURDIR)/scripts/tests/test_stage_setup_scripts.sh
 
+## test-premerge-check: The pre-merge gate's argument surface
+##   (scripts/premerge-check.sh: --pr names a PR, a positional is a rev;
+##   every case exits before any merge or cargo run)
+test-premerge-check:
+	sh $(CURDIR)/scripts/tests/test_premerge_check_cli.sh
+
 ## test-baseline-scripts: The shared baseline container ceremony's rules
 ##   (scripts/baseline-container.sh: the --clear guard's authored refusals,
 ##   asserted without a Docker daemon)
@@ -646,7 +652,7 @@ test-stamp-swift-package:
 test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-stamp-swift-package \
-	test-rename-residuals test-makefile-targets
+	test-rename-residuals test-makefile-targets test-premerge-check
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 

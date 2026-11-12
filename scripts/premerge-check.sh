@@ -16,12 +16,14 @@
 # tree that merges but does not compile is the case this exists for.
 #
 # Usage:
-#   scripts/premerge-check.sh <pr-number> [<base>]
+#   scripts/premerge-check.sh --pr <number> [<base>]
 #   scripts/premerge-check.sh <rev> [<base>]
 #
-#   <pr-number>   a GitHub pull request: its head is taken from `gh`, and
+#   --pr <number> a GitHub pull request: its head is taken from `gh`, and
 #                 its base is `<base>` when given, else the PR's own base
-#                 branch.
+#                 branch. Without the flag the first positional is always
+#                 a rev — an all-digit argument is a (short) commit id,
+#                 never a PR number.
 #   <rev>         any commit-ish to merge.
 #   <base>        the base to merge onto: a branch name (default `main`),
 #                 fetched from the remote and answered through the ref that
@@ -104,41 +106,55 @@ is_commit() {
     git -C "$REPO" rev-parse --verify --quiet "$1^{commit}" >/dev/null
 }
 
-# 1 or 2 positionals; a third is a typo, not a silently ignored argument.
-[ $# -ge 1 ] && [ $# -le 2 ] || usage
+# The two meanings of "what to merge" are two inputs: `--pr <number>` names
+# a pull request, a positional names a rev. Nothing is sniffed from the
+# shape of a string, and head_rev/base_rev are each assigned once.
+pr_number=
+args=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --pr)
+            [ $# -ge 2 ] && [ -n "$2" ] || usage
+            pr_number=$2
+            shift 2
+            ;;
+        --pr=*)
+            pr_number=${1#--pr=}
+            [ -n "$pr_number" ] || usage
+            shift
+            ;;
+        -*) usage ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+[[ -z $pr_number || $pr_number =~ ^[0-9]+$ ]] || usage
 
-# A bare all-digit argument is ambiguous — a short commit id can be all
-# digits too. It is read as a PR number, and only an argument that also
-# names a local commit falls back to the rev defaults: a `gh` that is
-# missing or failing is an environment error, never a silent fall back to
-# treating a PR number as a rev. A successful lookup rewrites the
-# positional arguments rather than assigning the names, so an explicitly
-# supplied base survives it and each name is assigned exactly once below.
-explicit_base=${2:-}
-if [[ $1 =~ ^[0-9]+$ ]]; then
+# With --pr the positionals are `[<base>]`; otherwise `<rev> [<base>]`.
+if [ -n "$pr_number" ]; then
+    [ ${#args[@]} -le 1 ] || usage
     command -v gh >/dev/null || fail "gh is not on PATH — pass the head rev explicitly"
     # Anchored like every git call: gh resolves its repository by walking
     # up from the cwd, so an unanchored lookup run from another clone would
     # read that clone's PR while every git call below runs against $REPO.
-    if resolved=$(cd "$REPO" && gh pr view "$1" --json headRefOid,baseRefName \
-            --jq '.headRefOid, .baseRefName' 2>"$scratch/gh.err"); then
-        # One field per line: the head/base boundary is the newline, not an
-        # unwritten no-whitespace assumption parsed back out. A response
-        # that does not carry both is an environment error (2), never the
-        # exit-1 "do not merge" verdict a bare failing `read` would give.
-        { read -r pr_head; read -r pr_base; } <<<"$resolved" || true
-        [ -n "$pr_head" ] && [ -n "$pr_base" ] \
-            || fail "gh returned an unexpected response for PR $1:" "$scratch/gh.err"
-        set -- "$pr_head" "${explicit_base:-$pr_base}"
-    elif ! is_commit "$1"; then
-        fail "gh could not read PR $1:" "$scratch/gh.err"
-    fi
+    resolved=$(cd "$REPO" && gh pr view "$pr_number" --json headRefOid,baseRefName \
+            --jq '.headRefOid, .baseRefName' 2>"$scratch/gh.err") \
+        || fail "gh could not read PR $pr_number:" "$scratch/gh.err"
+    # One field per line: the head/base boundary is the newline. A response
+    # that does not carry both is an environment error (2), never the
+    # exit-1 "do not merge" verdict a bare failing `read` would give.
+    { read -r pr_head; read -r pr_base; } <<<"$resolved" || true
+    [ -n "$pr_head" ] && [ -n "$pr_base" ] \
+        || fail "gh returned an unexpected response for PR $pr_number:" "$scratch/gh.err"
+    head_rev=$pr_head
+    base_rev=${args[0]:-$pr_base}
+else
+    [ ${#args[@]} -ge 1 ] && [ ${#args[@]} -le 2 ] || usage
+    head_rev=${args[0]}
+    base_rev=${args[1]:-main}
 fi
-
-# The defaults are stated once, here: the head is the (possibly rewritten)
-# first argument, the base is the second or `main`.
-head_rev=$1
-base_rev=${2:-main}
 
 is_commit "$head_rev" || fail "$head_rev is not a commit (fetch it first)"
 
