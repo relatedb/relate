@@ -50,14 +50,8 @@ fn bolt_return_one() {
     // RECORD then SUCCESS with t_last as elapsed milliseconds.
     let rec = read_msg(&mut client);
     assert!(matches!(rec, Pack::Struct { tag: 0x71, .. }));
-    let m = success_map(read_msg(&mut client));
-    let t_last = m
-        .iter()
-        .find(|(k, _)| k.as_str() == Some("t_last"))
-        .and_then(|(_, v)| match v {
-            Pack::Int(i) => Some(*i),
-            _ => None,
-        });
+    let m = Pack::Map(success_map(read_msg(&mut client)));
+    let t_last = m.get("t_last").and_then(Pack::as_int);
     assert!(matches!(t_last, Some(ms) if ms >= 0));
 }
 

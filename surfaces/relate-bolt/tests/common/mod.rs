@@ -115,18 +115,22 @@ fn boot(extra: &[&str], attempt: u32) -> Result<Server, String> {
             serve_on(&args, Some(listener))
         }))
         .unwrap_or_else(|_| Err("the serve thread panicked (payload logged above)".into()));
-        // The empty string is a clean return; anything else is the error the
-        // boot report carries.
-        let message = match result {
-            Ok(()) => String::new(),
-            Err(error) => error.to_string(),
-        };
-        let _ = tx.send(message);
+        // `Ok(())` is a clean return; `Err` is the error the boot report
+        // carries.
+        let _ = tx.send(result.map_err(|error| error.to_string()));
     });
     if let Err(why) = wait_for_listen(&done, &bind) {
         return Err(format!("attempt {attempt} on {bind}: {why}"));
     }
     Ok(Server { addr: bind })
+}
+
+/// The boot error for a serve thread that returned before the port was ready.
+fn early_exit(outcome: Result<(), String>) -> String {
+    match outcome {
+        Ok(()) => "serve returned before binding".to_string(),
+        Err(error) => format!("serve failed before binding: {error}"),
+    }
 }
 
 /// Poll until the server accepts connections and has closed the readiness
@@ -137,17 +141,13 @@ fn boot(extra: &[&str], attempt: u32) -> Result<Server, String> {
 ///
 /// A serve thread that returns first is a startup crash — fail fast with its
 /// error rather than polling a dead port for the full timeout.
-fn wait_for_listen(done: &mpsc::Receiver<String>, addr: &str) -> Result<(), String> {
+fn wait_for_listen(done: &mpsc::Receiver<Result<(), String>>, addr: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         // A serve thread that already returned is a startup crash, so fail
         // fast with its error instead of polling for the full timeout.
-        if let Ok(error) = done.try_recv() {
-            return Err(if error.is_empty() {
-                "serve returned before binding".to_string()
-            } else {
-                format!("serve failed before binding: {error}")
-            });
+        if let Ok(outcome) = done.try_recv() {
+            return Err(early_exit(outcome));
         }
         if let Ok(mut probe) = TcpStream::connect(addr) {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -180,11 +180,11 @@ fn wait_for_listen(done: &mpsc::Receiver<String>, addr: &str) -> Result<(), Stri
                         // report why, so wait for its verdict rather than
                         // calling the port ready.
                         return match done.recv_timeout(Duration::from_secs(5)) {
-                            Ok(error) if error.is_empty() => {
-                                Err("serve returned before binding".to_string())
+                            Ok(outcome) => Err(early_exit(outcome)),
+                            Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                Err("serve thread vanished without a verdict".to_string())
                             }
-                            Ok(error) => Err(format!("serve failed before binding: {error}")),
-                            Err(_) => Ok(()),
                         };
                     }
                     Err(e) => return Err(format!("draining readiness probe: {e}")),
