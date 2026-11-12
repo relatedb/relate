@@ -84,8 +84,9 @@ impl MatchOperator {
 /// semantics live in the walker. The plain limit cap is the gate's one
 /// exception: it yields to a specialized operator for exactly the shapes
 /// that operator proves, while the distinct and ordered caps never
-/// yield. The batch chain still takes the cap and drops it (its emit is
-/// scan-bounded, not path-product-bounded); the contracted kernel takes
+/// yield. The batch chain takes the cap's want as its halt (LABS-1452):
+/// it stops scanning once that many kept rows exist, so a `LIMIT` over a
+/// scan reads one batch, not the graph; the contracted kernel takes
 /// it as its rows-mode halt (LABS-990, ADR-0524) — the want rides, the
 /// kernel's final collection stops at it, and a shape the kernel
 /// declines keeps the cap at the walker, whose sink applies it.
@@ -128,7 +129,15 @@ pub(crate) fn run_match_operator_ladder(
     let plain_want = cap.as_ref().and_then(MatchCap::plain_want);
     let chain_eligible = (cap.is_none() || plain_want.is_some()) && projection.is_none();
     let batched = if chain_eligible {
-        try_scan_filter_batch(ctx, &rows, optional, match_mode, patterns, where_clause)?
+        try_scan_filter_batch(
+            ctx,
+            &rows,
+            optional,
+            match_mode,
+            patterns,
+            where_clause,
+            plain_want,
+        )?
     } else {
         None
     };

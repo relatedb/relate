@@ -93,6 +93,16 @@ const VAR_SLOT: usize = 0;
 /// unchanged. `Ok(Some(rows))` is the clause's output — the same rows,
 /// order, and bindings the per-row path produces, materialized at the
 /// breaker.
+///
+/// `want` is the plain cap's `SKIP+LIMIT` (LABS-1452), `Some` only when
+/// the clause's suffix is a plain `RETURN`/`WITH … LIMIT` the cap gate
+/// proved cannot reorder or drop rows (`match_cap::plain_limit_cap`):
+/// the chain then returns the first `want` kept rows in scan order and
+/// reads no node past the chunk that produced them. `None` is the
+/// unbounded chain. The bound covers rows, scan work and the container's
+/// charge, not the candidate id list: [`node_candidates`] still collects
+/// every candidate id (an O(n) vector of ids, no rows) before the first
+/// chunk, the one cost left until the id walk streams (LABS-1431).
 pub(crate) fn try_scan_filter_batch(
     ctx: ExecCtx<'_>,
     rows: &[Row],
@@ -100,6 +110,7 @@ pub(crate) fn try_scan_filter_batch(
     match_mode: MatchMode,
     patterns: &[PathPattern],
     where_clause: Option<&Expr>,
+    want: Option<usize>,
 ) -> Result<Option<Vec<Row>>> {
     // LABS-359 test hook: force the decline so a differential test can
     // pin the per-row path's answer on a shape the chain would take.
@@ -138,23 +149,42 @@ pub(crate) fn try_scan_filter_batch(
         cypher_version,
         residual.conjuncts,
     )?;
+    // LABS-1452: the plain cap's want bounds the output, so the chain stops
+    // once that many kept rows exist; no cap is `None` and the chain runs
+    // to the end, as before. The test hook below stands the pushdown down
+    // so a differential can compare it against the unbounded chain.
+    #[cfg(test)]
+    let want = if pushdown_disabled() { None } else { want };
     // Admission is the walker's own per-candidate check, unchanged: the
     // same `node_ok` call the per-row path makes per candidate, outside
-    // the seek phase like it is there.
-    let mut admitted: Vec<NodeId> = Vec::with_capacity(candidates.len());
-    for id in candidates {
-        if node_ok(graph, id, plan.node, seed, params, cypher_version)? {
-            admitted.push(id);
+    // the seek phase like it is there. It runs one batch ahead of the
+    // scan, so a bounded run admits (and reads) only the batches it needs.
+    let mut candidates = candidates.into_iter();
+    let mut out: Vec<Row> = Vec::new();
+    let mut batch: Vec<NodeId> = Vec::new();
+    while want.is_none_or(|w| out.len() < w) {
+        let size = plan.batch_size(want.map(|w| w - out.len()));
+        batch.clear();
+        while batch.len() < size {
+            let Some(id) = candidates.next() else { break };
+            if node_ok(graph, id, plan.node, seed, params, cypher_version)? {
+                batch.push(id);
+            }
         }
-    }
-    let mut out = Vec::with_capacity(admitted.len());
-    for batch in admitted.chunks(CHUNK_ROWS) {
+        if batch.is_empty() {
+            break;
+        }
         graph.cancel_tick()?;
-        let chunk = scan_chunk(graph, &plan, batch);
+        #[cfg(test)]
+        batch_scanned(batch.len());
+        let chunk = scan_chunk(graph, &plan, &batch);
         let survivors = filter_chunk(ctx, &plan, &chunk)?;
         let kept = chunk.retain_rows(&survivors);
         let bound = kept.select_columns(&[VAR_SLOT]);
         out.extend(bound.to_rows());
+    }
+    if let Some(w) = want {
+        out.truncate(w);
     }
     Row::share_schemas(&mut out);
     Ok(Some(out))
@@ -174,6 +204,23 @@ struct BatchPlan<'a> {
     keys: Vec<NamedToken>,
     /// The compiled `WHERE` conjuncts, in evaluation order.
     preds: Vec<BatchPred>,
+}
+
+impl BatchPlan<'_> {
+    /// How many admitted candidates the next chunk takes. A chunk is
+    /// [`CHUNK_ROWS`] wide, narrowed to the rows still wanted when no
+    /// predicate can drop one (every admitted candidate then survives, so
+    /// a `LIMIT 1` reads one node, not a chunk of them).
+    fn batch_size(&self, remaining_want: Option<usize>) -> usize {
+        debug_assert!(
+            remaining_want != Some(0),
+            "the loop guard keeps a want unmet"
+        );
+        match remaining_want {
+            Some(left) if self.preds.is_empty() => left.min(CHUNK_ROWS),
+            _ => CHUNK_ROWS,
+        }
+    }
 }
 
 /// One `WHERE` conjunct in the filter operator's vocabulary. The slot is
@@ -476,6 +523,38 @@ thread_local! {
     /// LABS-359 test counter: how many clauses the chain took since the
     /// last take.
     static BATCH_ENGAGED: Cell<u32> = const { Cell::new(0) };
+    /// LABS-1452 test hook: stand the plain cap's pushdown down, so the
+    /// chain runs unbounded and a differential can pin the pushed run
+    /// against it.
+    static PUSHDOWN_DISABLED: Cell<bool> = const { Cell::new(false) };
+    /// LABS-1452 test counter: how many admitted nodes the chain scanned
+    /// into chunks since the last take.
+    static BATCH_SCANNED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether the test hook stood the pushdown down.
+#[cfg(test)]
+fn pushdown_disabled() -> bool {
+    PUSHDOWN_DISABLED.with(Cell::get)
+}
+
+/// Count `n` scanned nodes.
+#[cfg(test)]
+fn batch_scanned(n: usize) {
+    BATCH_SCANNED.with(|c| c.set(c.get() + n));
+}
+
+/// LABS-1452 test helper: run `f` with the cap pushdown off (the chain
+/// still engages, unbounded), restoring the flag on the way out.
+#[cfg(test)]
+pub(crate) fn with_pushdown_disabled<R>(f: impl FnOnce() -> R) -> R {
+    super::test_support::with_flag_disabled(&PUSHDOWN_DISABLED, f)
+}
+
+/// LABS-1452 test helper: drain the scanned-node counter.
+#[cfg(test)]
+pub(crate) fn take_batch_scanned() -> usize {
+    BATCH_SCANNED.with(|c| c.replace(0))
 }
 
 /// Whether the test hook forced the per-row path.

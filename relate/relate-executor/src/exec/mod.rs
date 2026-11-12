@@ -705,6 +705,8 @@ mod aggregate_pool_tests;
 #[cfg(test)]
 mod aggregate_tests;
 #[cfg(test)]
+mod batch_limit_tests;
+#[cfg(test)]
 mod batch_tests;
 #[cfg(test)]
 mod chunk_tests;
