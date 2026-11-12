@@ -15,7 +15,7 @@ fn to_boolean_or_null_and_to_string_or_null_match_neo4j() {
     let row = Row::new();
     let params = BTreeMap::new();
     let call =
-        |name: &str, arg: Expr| function(&graph, &row, &params, name, false, &[arg], None).unwrap();
+        |name: &str, arg: Expr| function(&graph, &row, &params, name, false, &[arg]).unwrap();
 
     // success passthrough
     assert_eq!(
@@ -92,61 +92,48 @@ fn tostring_of_a_list_read_from_a_variable_renders() {
             "toString",
             false,
             &[Expr::Variable("xs".into())],
-            None,
         )
         .unwrap(),
         Value::String("[1, 2]".into())
     );
 }
 
-// CIP-271 is Cypher-25-only: under an explicit `CYPHER 5` preamble the
-// pre-CIP-271 contract holds — `toString()` raises on containers and graph
-// values, and `toStringOrNull()` returns null for them.
+/// The value-level container contract (CIP-271): `toString()` renders every
+/// container and graph value in display form and `toStringOrNull()` maps to
+/// the same rendering — the one behavior, with no dialect arm left to
+/// select another. CIP-271's homogeneous-list rejection stays a front-end
+/// static check, never a value-level one.
 #[test]
-fn tostring_container_semantics_follow_the_cypher5_dialect() {
+fn tostring_container_semantics_render_in_display_form() {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
     let row = Row::new();
     let params = BTreeMap::new();
-    let call = |name: &str, arg: Expr, version: Option<u32>| {
-        function(&graph, &row, &params, name, false, &[arg], version)
-    };
+    let call = |name: &str, arg: Expr| function(&graph, &row, &params, name, false, &[arg]);
     let mixed = Expr::List(vec![Expr::Int(1), Expr::String("a".into())]);
     let homogeneous = Expr::List(vec![Expr::Int(1), Expr::Int(2)]);
     let map = Expr::Map(vec![("a".into(), Expr::Int(1))]);
 
-    // Cypher 25 (the default): every container renders in display form —
-    // CIP-271's homogeneous-list rejection is a front-end static check, not
-    // a value-level one.
     assert_eq!(
-        call("toString", mixed.clone(), None).unwrap(),
+        call("toString", mixed.clone()).unwrap(),
         Value::String("[1, a]".into())
     );
     assert_eq!(
-        call("toStringOrNull", map.clone(), None).unwrap(),
+        call("toStringOrNull", map.clone()).unwrap(),
         Value::String("{a: 1}".into())
     );
     assert_eq!(
-        call("toString", homogeneous.clone(), None).unwrap(),
+        call("toString", homogeneous.clone()).unwrap(),
         Value::String("[1, 2]".into())
     );
     assert_eq!(
-        call("toStringOrNull", homogeneous, None).unwrap(),
+        call("toStringOrNull", homogeneous).unwrap(),
         Value::String("[1, 2]".into())
     );
 
-    // CYPHER 5: every container is non-stringifiable for both spellings.
-    assert!(call("toString", mixed.clone(), Some(5)).is_err());
-    assert!(call("toString", map.clone(), Some(5)).is_err());
+    // Scalars render through the same one display policy.
     assert_eq!(
-        call("toStringOrNull", mixed.clone(), Some(5)).unwrap(),
-        Value::Null
-    );
-    assert_eq!(call("toStringOrNull", map, Some(5)).unwrap(), Value::Null);
-
-    // Scalars are unaffected in either dialect.
-    assert_eq!(
-        call("toString", Expr::Int(7), Some(5)).unwrap(),
+        call("toString", Expr::Int(7)).unwrap(),
         Value::String("7".into())
     );
 }
@@ -158,7 +145,7 @@ fn to_integer_or_null_and_to_float_or_null_match_neo4j() {
     let row = Row::new();
     let params = BTreeMap::new();
     let call =
-        |name: &str, arg: Expr| function(&graph, &row, &params, name, false, &[arg], None).unwrap();
+        |name: &str, arg: Expr| function(&graph, &row, &params, name, false, &[arg]).unwrap();
 
     // Success cases behave exactly like toInteger()/toFloat().
     assert_eq!(
@@ -216,22 +203,12 @@ fn to_integer_or_null_and_to_float_or_null_match_neo4j() {
             &params,
             "toInteger",
             false,
-            &[Expr::Bool(true)],
-            None
+            &[Expr::Bool(true)]
         )
         .unwrap(),
         Value::Int(1)
     );
-    assert!(function(
-        &graph,
-        &row,
-        &params,
-        "toFloat",
-        false,
-        &[Expr::Bool(true)],
-        None
-    )
-    .is_err());
+    assert!(function(&graph, &row, &params, "toFloat", false, &[Expr::Bool(true)]).is_err());
 }
 
 /// The expected outcome of one conversion probe.
@@ -286,7 +263,7 @@ fn check_probes(rows: Vec<(&str, Want)>) {
     for (cypher, want) in rows {
         let parsed = relate_parser::parser::parse_expression_str(cypher).expect(cypher);
         let expr = relate_front::lower_expr(&parsed).expect(cypher);
-        let got = crate::eval::eval(&graph, &Row::new(), &expr, &BTreeMap::new(), None);
+        let got = crate::eval::eval(&graph, &Row::new(), &expr, &BTreeMap::new());
         match (want, got) {
             (Want::Is(want), Ok(got)) => {
                 assert!(same(&got, &want), "{cypher}: got {got:?}, want {want:?}")
@@ -778,12 +755,12 @@ fn to_string_renders_temporals_at_full_precision() {
     let t = relate_core::temporal::datetime_from_epoch(1_709_164_800, 0).unwrap();
     let full = t.full_seconds_string();
     assert_eq!(
-        to_string_value(Some(&Value::Temporal(t.clone())), None),
+        to_string_value(Some(&Value::Temporal(t.clone()))),
         Ok(Value::String(full.clone().into()))
     );
     let nested = Value::Map(BTreeMap::from([("at".to_string(), Value::Temporal(t))]).into());
     assert_eq!(
-        to_string_value(Some(&nested), None),
+        to_string_value(Some(&nested)),
         Ok(Value::String(format!("{{at: {full}}}").into()))
     );
 }
@@ -802,11 +779,10 @@ fn to_string_list_accepts_a_vector_argument() {
     )]);
 }
 
-// `toStringList()`: TypeConversion4's [9]/[10] dialect split — under an
-// explicit CYPHER 5 preamble non-scalar elements become null; in Cypher 25
-// they (and null itself) render in display form.
+// `toStringList()`: TypeConversion4 [10] — non-scalar elements and null
+// itself render in display form, the one behavior.
 #[test]
-fn to_string_list_converts_elements_per_dialect() {
+fn to_string_list_renders_non_scalar_elements_in_display_form() {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
     let s = |v: &str| Value::String(v.into());
@@ -820,19 +796,15 @@ fn to_string_list_converts_elements_per_dialect() {
     };
 
     assert_eq!(
-        bi_tostringlist(&graph, "toStringList", vec![mixed()], Some(25)),
+        bi_tostringlist(&graph, "toStringList", vec![mixed()]),
         Ok(list(vec![s("1"), s("[2, 3]"), s("null")]))
-    );
-    assert_eq!(
-        bi_tostringlist(&graph, "toStringList", vec![mixed()], Some(5)),
-        Ok(list(vec![s("1"), Value::Null, Value::Null]))
     );
     // Null-in-null-out, and only a list is admissible.
     assert_eq!(
-        bi_tostringlist(&graph, "toStringList", vec![Value::Null], None),
+        bi_tostringlist(&graph, "toStringList", vec![Value::Null]),
         Ok(Value::Null)
     );
-    assert!(bi_tostringlist(&graph, "toStringList", vec![Value::Int(1)], None).is_err());
+    assert!(bi_tostringlist(&graph, "toStringList", vec![Value::Int(1)]).is_err());
 }
 
 /// LABS-785: `toString`/`toStringOrNull` take exactly one argument. A second
@@ -849,7 +821,6 @@ fn tostring_rejects_a_second_argument() {
             name,
             false,
             &[Expr::Int(7), Expr::Int(8)],
-            None,
         )
         .unwrap_err();
         assert!(
@@ -879,16 +850,7 @@ fn arity_is_reported_before_any_argument_is_evaluated() {
         ("split", vec![string("a,b")]),
         ("split", vec![string("a"), string(","), string("b")]),
     ] {
-        let err = function(
-            &graph,
-            &Row::new(),
-            &BTreeMap::new(),
-            name,
-            false,
-            &args,
-            None,
-        )
-        .unwrap_err();
+        let err = function(&graph, &Row::new(), &BTreeMap::new(), name, false, &args).unwrap_err();
         assert!(
             err.to_string().contains("InvalidNumberOfArguments"),
             "{name}: {err}"

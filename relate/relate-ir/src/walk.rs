@@ -896,7 +896,7 @@ fn exists_outer_vars(query: &Query, out: &mut HashSet<String>) {
                     }
                 }
                 Clause::Call { args, .. } => {
-                    for a in args {
+                    for a in args.args() {
                         expr_vars(a, &mut inner);
                     }
                 }

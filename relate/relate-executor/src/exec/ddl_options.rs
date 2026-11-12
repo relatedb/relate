@@ -169,7 +169,6 @@ pub(crate) fn resolve_options(
     graph: &ExecGraph<'_>,
     form: &OptionsForm,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     policy: &OptionKeyPolicy<'_>,
     not_a_map: &'static str,
 ) -> Result<BTreeMap<String, Value>> {
@@ -191,7 +190,6 @@ pub(crate) fn resolve_options(
                         &Row::new(),
                         &relate_front::lower_expr(expression)?,
                         params,
-                        cypher_version,
                     )?,
                 );
             }
@@ -229,13 +227,11 @@ pub(crate) fn validate_constraint_options(
     c: &relate_parser::CreateConstraintClause,
     constraint_type: relate_model::ConstraintType,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<()> {
     let options = resolve_options(
         graph,
         &c.options,
         params,
-        cypher_version,
         &ddl_option_key_policy(),
         "Could not create constraint with options: expected a map value.",
     )?;
@@ -314,14 +310,12 @@ pub(crate) fn resolve_index_options(
     graph: &ExecGraph<'_>,
     c: &relate_parser::CreateIndexClause,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<BTreeMap<String, Value>> {
     validate_index_target(c)?;
     let mut options = resolve_options(
         graph,
         &c.options,
         params,
-        cypher_version,
         &ddl_option_key_policy(),
         "InvalidInputValue: OPTIONS parameter must be a MAP",
     )?;

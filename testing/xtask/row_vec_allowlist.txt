@@ -62,11 +62,14 @@ exec/order.rs::page # ORDER BY / SKIP / LIMIT buffer bounded by the sort or limi
 exec/order.rs::take_parked_top_k # ORDER BY / SKIP / LIMIT buffer bounded by the sort or limit
 exec/procedures.rs::compose_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/procedures.rs::exec_call # bounded catalog/admin/procedure result, not graph-sized
+exec/procedures.rs::exec_call_clause # bounded catalog/admin/procedure result, not graph-sized; the CALL arm's body carved out of the dispatcher around the allowlisted exec_call
 exec/procedures.rs::exec_fulltext_query_call # bounded catalog/admin/procedure result, not graph-sized
 exec/procedures.rs::exec_registry_call # bounded catalog/admin/procedure result, not graph-sized
 exec/procedures.rs::exec_vector_query_call # bounded catalog/admin/procedure result, not graph-sized
 exec/project.rs::aggregate_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::filter_where # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::finish_projection # projection/filter stage materializes its rows; the post-merge tail carved out of the allowlisted project_rows, to be replaced by streaming
+exec/project.rs::materialize_feed # projection/filter stage materializes its rows; the feed materialization carved out of the allowlisted project_rows, to be replaced by streaming
 exec/project.rs::plain_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::preprojected_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming

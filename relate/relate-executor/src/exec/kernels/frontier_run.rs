@@ -121,8 +121,7 @@ pub(crate) fn try_frontier_rows(
     // single-quantified gate — a clause the frontier family never
     // considers (no quantified pattern, the stood-down switch) names
     // nothing.
-    let consumer = match decode_consumer(suffix, pattern, ctx.graph, ctx.params, ctx.cypher_version)
-    {
+    let consumer = match decode_consumer(suffix, pattern, ctx.graph, ctx.params) {
         Err(reason) => return Ok(FrontierRows::Declined(Some(reason.into()))),
         Ok(consumer) => consumer,
     };
@@ -143,7 +142,6 @@ pub(crate) fn try_frontier_rows(
         patterns,
         where_clause,
         params: ctx.params,
-        cypher_version: ctx.cypher_version,
     });
     let mut out: Vec<Row> = Vec::new();
     // ADR-0463 (LABS-781, OPLANE_REQ-00345609 item 6): the rung's output
@@ -661,7 +659,7 @@ fn exists_hit(
             };
             let mut row = Row::new();
             bind_boundary(&mut row, ctx, contract, seed, endpoint);
-            Ok(!eval(ctx.graph, &row, counted, ctx.params, ctx.cypher_version)?.is_null())
+            Ok(!eval(ctx.graph, &row, counted, ctx.params)?.is_null())
         },
     )
 }

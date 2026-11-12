@@ -42,6 +42,7 @@ use crate::redo::RedoOp;
 use crate::row::Row;
 
 use super::procedures::CallSpec;
+use relate_ir::CallArgs;
 
 /// `db.ontology.get`'s one output column, used both as the default-yield
 /// name and as the produced row's key so the declared and produced column
@@ -122,7 +123,7 @@ pub(crate) fn exec_ontology_call(
     proc: OntologyProc,
 ) -> Result<Vec<Row>> {
     // The runtime contract (passing mode, arity) ran at the divert site in
-    // `exec_call` (`check_ontology_call_contract`) — the same checks, from
+    // `exec_call` (`CallSpec::check_registry_contract`) — the same checks, from
     // the same registry signature, the generic path applies; nothing is
     // re-checked here.
     match proc {
@@ -130,8 +131,7 @@ pub(crate) fn exec_ontology_call(
         OntologyProc::Set | OntologyProc::Drop | OntologyProc::Apply => {
             let CallSpec {
                 name,
-                args,
-                explicit,
+                source,
                 optional,
                 ..
             } = call;
@@ -141,7 +141,7 @@ pub(crate) fn exec_ontology_call(
                 return Ok(vec![Row::new()]);
             }
             for row in &rows {
-                exec_ontology_write(ctx, row, proc, name, args, explicit)?;
+                exec_ontology_write(ctx, row, proc, name, source)?;
             }
             Ok(rows)
         }
@@ -154,8 +154,7 @@ fn exec_ontology_write(
     row: &Row,
     proc: OntologyProc,
     name: &str,
-    args: &[relate_ir::Expr],
-    explicit: bool,
+    source: &CallArgs,
 ) -> Result<()> {
     let graph = ctx.graph;
     if !graph.has_write_overlay() {
@@ -169,7 +168,7 @@ fn exec_ontology_write(
     }
     match proc {
         OntologyProc::Set => {
-            let document = string_arg(ctx, row, args, explicit, 0, "ontology", name)?;
+            let document = string_arg(ctx, row, source, 0, "ontology", name)?;
             // ADR-0227 §4/§6/§7: validate the document against the pinned
             // schema — before anything is committed. (ADR-0229 §3: only the
             // derived-graph build check is gone with the derived graph; the
@@ -228,8 +227,7 @@ fn exec_ontology_apply(graph: &ExecGraph<'_>, ontology_document: Option<&str>) -
 /// the shared [`super::procedures::compose_rows`] scaffold.
 fn exec_ontology_get(ctx: ExecCtx<'_>, rows: Vec<Row>, call: CallSpec<'_>) -> Result<Vec<Row>> {
     let CallSpec {
-        args,
-        explicit,
+        source,
         yield_items,
         optional,
         where_clause,
@@ -243,7 +241,7 @@ fn exec_ontology_get(ctx: ExecCtx<'_>, rows: Vec<Row>, call: CallSpec<'_>) -> Re
         optional,
         where_clause,
         |input| {
-            let format = optional_format_arg(&ctx, input, args, explicit)?;
+            let format = optional_format_arg(&ctx, input, source)?;
             let value = match ctx.graph.ontology_document() {
                 None => Value::Null,
                 Some(document) => Value::String(render_document(document, format)?.into()),
@@ -259,14 +257,8 @@ fn exec_ontology_get(ctx: ExecCtx<'_>, rows: Vec<Row>, call: CallSpec<'_>) -> Re
 /// The `format` argument of `db.ontology.get`: `"yaml"` (the default) or
 /// `"json"`; anything else is a typed argument error naming the two
 /// (ADR-0227 §3). `null` falls back to the default.
-fn optional_format_arg(
-    ctx: &ExecCtx<'_>,
-    row: &Row,
-    args: &[relate_ir::Expr],
-    explicit: bool,
-) -> Result<DocumentFormat> {
-    let Some(value) =
-        crate::exec::procedures::call_arg_value(ctx, row, args, explicit, 0, "format")?
+fn optional_format_arg(ctx: &ExecCtx<'_>, row: &Row, source: &CallArgs) -> Result<DocumentFormat> {
+    let Some(value) = crate::exec::procedures::call_arg_value(ctx, row, source, 0, "format")?
     else {
         return Ok(DocumentFormat::Yaml);
     };
@@ -329,13 +321,12 @@ fn validate_document(document: &str) -> Result<()> {
 fn string_arg(
     ctx: ExecCtx<'_>,
     row: &Row,
-    args: &[relate_ir::Expr],
-    explicit: bool,
+    source: &CallArgs,
     index: usize,
     arg_name: &str,
     name: &str,
 ) -> Result<String> {
-    match crate::exec::procedures::call_arg_value(&ctx, row, args, explicit, index, arg_name)? {
+    match crate::exec::procedures::call_arg_value(&ctx, row, source, index, arg_name)? {
         Some(Value::String(document)) => Ok(document.to_string()),
         Some(_) => Err(Error::invalid_argument_type(format!(
             "{name} argument `{arg_name}` expects STRING"
@@ -446,13 +437,12 @@ mod tests {
         let graph = crate::graph::Graph::default();
         let params = std::collections::BTreeMap::new();
         let view = ExecGraph::read(&graph);
-        let ctx = ExecCtx::new(&view, &params, None);
+        let ctx = ExecCtx::new(&view, &params);
         // Through the divert: `exec_call` classifies once, the ontology
         // executor's registry-signature contract raises the error.
         let call = CallSpec {
             name: "db.ontology.get",
-            args: &[],
-            explicit: false,
+            source: &CallArgs::Implicit,
             yield_items: &relate_ir::YieldItems::Named(vec![(
                 SmallName::from_name("ontology"),
                 None,
@@ -479,8 +469,7 @@ mod tests {
         });
         let call = CallSpec {
             name: "custom.one",
-            args: &[],
-            explicit: false,
+            source: &CallArgs::Implicit,
             yield_items: &relate_ir::YieldItems::Named(vec![(SmallName::from_name("out"), None)]),
             optional: false,
             where_clause: None,
@@ -501,13 +490,12 @@ mod tests {
         let graph = crate::graph::Graph::default();
         let view = ExecGraph::read(&graph);
         let params = std::collections::BTreeMap::new();
-        let ctx = ExecCtx::new(&view, &params, None);
+        let ctx = ExecCtx::new(&view, &params);
         let row = Row::new();
         let err = optional_format_arg(
             &ctx,
             &row,
-            &[relate_ir::Expr::String("xml".to_string())],
-            true,
+            &CallArgs::Explicit(vec![relate_ir::Expr::String("xml".to_string())]),
         )
         .unwrap_err();
         let text = err.to_string();
@@ -516,15 +504,21 @@ mod tests {
             "{text}"
         );
         // A non-string argument is a type error.
-        let err = optional_format_arg(&ctx, &row, &[relate_ir::Expr::Int(1)], true).unwrap_err();
+        let err = optional_format_arg(
+            &ctx,
+            &row,
+            &CallArgs::Explicit(vec![relate_ir::Expr::Int(1)]),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("InvalidArgumentType"), "{err}");
         // Absent and null both default to yaml.
         assert_eq!(
-            optional_format_arg(&ctx, &row, &[], true).unwrap(),
+            optional_format_arg(&ctx, &row, &CallArgs::Explicit(Vec::new())).unwrap(),
             DocumentFormat::Yaml
         );
         assert_eq!(
-            optional_format_arg(&ctx, &row, &[relate_ir::Expr::Null], true).unwrap(),
+            optional_format_arg(&ctx, &row, &CallArgs::Explicit(vec![relate_ir::Expr::Null]))
+                .unwrap(),
             DocumentFormat::Yaml
         );
     }

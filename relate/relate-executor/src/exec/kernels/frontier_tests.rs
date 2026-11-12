@@ -215,7 +215,7 @@ fn work_budget_fails_fast_with_the_typed_error() {
     let view = ExecGraph::read(&built.graph);
 
     let over = run_frontier(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         built.nodes[0],
         &nfa,
         WalkBudget::for_tests(10),
@@ -244,7 +244,7 @@ fn work_budget_fails_fast_with_the_typed_error() {
     // The boundary: 11 (the largest pre-level count) completes; 10 is
     // the smallest budget that fails.
     let boundary = run_frontier(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         built.nodes[0],
         &nfa,
         WalkBudget::for_tests(11),
@@ -258,7 +258,7 @@ fn work_budget_fails_fast_with_the_typed_error() {
     assert_eq!(boundary.per_level.len(), 8);
     // The production budget is nowhere near a legitimate chain.
     let standard = run_frontier(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         built.nodes[0],
         &nfa,
         WalkBudget::standard(),
@@ -298,7 +298,7 @@ fn overlay_scratch_writes_are_traversed_deletions_and_later_commits_are_not() {
     let y = *column(&created, "y", |v| Some(node_id(v))).first().unwrap();
     let view = ExecGraph::write(graph, &scratch);
     let run = run_frontier(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         x,
         &nfa,
         WalkBudget::standard(),
@@ -329,7 +329,7 @@ fn overlay_scratch_writes_are_traversed_deletions_and_later_commits_are_not() {
         .unwrap();
     graph.commit_write();
     let pinned = run_frontier(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         built.nodes[0],
         &nfa,
         WalkBudget::standard(),
@@ -346,7 +346,7 @@ fn overlay_scratch_writes_are_traversed_deletions_and_later_commits_are_not() {
     // The read view, pinned after that commit, does reach 2.
     let fresh = ExecGraph::read(graph);
     let visible = run_frontier(
-        ExecCtx::new(&fresh, &BTreeMap::new(), None),
+        ExecCtx::new(&fresh, &BTreeMap::new()),
         built.nodes[1],
         &nfa,
         WalkBudget::standard(),
@@ -367,7 +367,7 @@ fn overlay_scratch_writes_are_traversed_deletions_and_later_commits_are_not() {
     exec_write(graph, &deleting, "MATCH ()-[r:T]->() DELETE r").unwrap();
     let deleted_view = ExecGraph::write(graph, &deleting);
     let empty = run_frontier(
-        ExecCtx::new(&deleted_view, &BTreeMap::new(), None),
+        ExecCtx::new(&deleted_view, &BTreeMap::new()),
         built.nodes[0],
         &nfa,
         WalkBudget::standard(),
@@ -415,7 +415,7 @@ fn epsilon_skips_reach_the_in_bounds_endpoints() {
 
     let view = ExecGraph::read(&built.graph);
     let run = run_frontier(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         built.nodes[0],
         &nfa,
         WalkBudget::standard(),
@@ -544,7 +544,7 @@ fn recycled_tables_and_buffers_answer_exactly_as_fresh_ones() {
     let mut bufs = RuleBuffers::new();
     for &seed in &built.nodes {
         let run = run_frontier(
-            ExecCtx::new(&view, &BTreeMap::new(), None),
+            ExecCtx::new(&view, &BTreeMap::new()),
             seed,
             &nfa,
             WalkBudget::standard(),
@@ -560,7 +560,7 @@ fn recycled_tables_and_buffers_answer_exactly_as_fresh_ones() {
 
     for (i, &seed) in built.nodes.iter().enumerate() {
         let fresh = run_frontier(
-            ExecCtx::new(&view, &BTreeMap::new(), None),
+            ExecCtx::new(&view, &BTreeMap::new()),
             seed,
             &nfa,
             WalkBudget::standard(),

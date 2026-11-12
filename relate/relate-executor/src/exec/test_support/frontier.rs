@@ -164,7 +164,7 @@ pub(crate) fn served_nfa_run(
 ) -> FrontierRun {
     let view = ExecGraph::read(graph);
     run(
-        ExecCtx::new(&view, &BTreeMap::new(), None),
+        ExecCtx::new(&view, &BTreeMap::new()),
         seed,
         nfa,
         WalkBudget::standard(),
@@ -274,7 +274,7 @@ pub(crate) fn decide<R>(
         // The probe arm's wiring constructs the verdict shape directly.
         Consumer::Exists
     } else {
-        match decode_consumer(suffix, &patterns[0], &view, &params, None) {
+        match decode_consumer(suffix, &patterns[0], &view, &params) {
             Ok(consumer) => consumer,
             Err(decline) => return k(Err(decline)),
         }

@@ -161,7 +161,7 @@ fn walk_clauses_at<'a>(
             Clause::Call {
                 args, where_clause, ..
             } => {
-                for arg in args {
+                for arg in args.args() {
                     walk_expr(arg, ExprRole::Read, on_clause, on_expr);
                 }
                 if let Some(where_clause) = where_clause {
@@ -528,7 +528,6 @@ mod tests {
             parts: vec![SingleQuery { clauses }],
             union_all: Vec::new(),
             next: None,
-            cypher_version: None,
         }
     }
 

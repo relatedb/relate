@@ -147,7 +147,7 @@ pub struct QueryResult {
     /// // An effective write, and a catalog change that leaves every
     /// // mutation counter at zero, both applied a change.
     /// assert!(conn.query("CREATE (:Kept)")?.effect.applied());
-    /// assert!(conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5")?.effect.applied());
+    /// assert!(conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25")?.effect.applied());
     /// # Ok::<(), relate::Error>(())
     /// ```
     pub effect: StatementEffect,

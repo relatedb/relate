@@ -97,7 +97,6 @@ fn deeply_nested_subquery_bodies_contain_in_one_pass() {
             }],
             union_all: vec![],
             next: None,
-            cypher_version: None,
         },
     };
     let mut body = var("x");

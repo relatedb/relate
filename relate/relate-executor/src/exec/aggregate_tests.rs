@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 fn run_result(group: &[Row], expr: &Expr) -> relate_core::Result<Value> {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
-    agg_eval_rows(&graph, group, expr, &BTreeMap::new(), None)
+    agg_eval_rows(&graph, group, expr, &BTreeMap::new())
 }
 
 fn run(group: &[Row], expr: &Expr) -> Value {

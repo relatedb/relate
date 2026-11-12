@@ -50,7 +50,6 @@ struct FoldEnv<'a> {
     graph: &'a ExecGraph<'a>,
     row: &'a Row,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     plan: &'a PathPlan,
     caches: &'a mut FoldCaches,
     /// The group table the fold accumulates into rides the env the way
@@ -95,7 +94,6 @@ fn path_pred_holds(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     pred: &PathPred,
     id: NodeId,
 ) -> Result<bool> {
@@ -106,7 +104,7 @@ fn path_pred_holds(
         }
         PathPred::Cmp { key, op, other } => {
             let prop = graph.node_prop_resolved(id, key).unwrap_or(Value::Null);
-            let other = eval(graph, row, other, params, cypher_version)?;
+            let other = eval(graph, row, other, params)?;
             Ok(binary(graph, *op, prop, other)?.truthy() == Some(true))
         }
     }
@@ -118,7 +116,7 @@ fn slot_preds_hold(env: &mut FoldEnv<'_>, slot: usize, id: NodeId) -> Result<boo
     }
     let mut ok = true;
     for pred in &env.plan.conjuncts[slot].preds {
-        if !path_pred_holds(env.graph, env.row, env.params, env.cypher_version, pred, id)? {
+        if !path_pred_holds(env.graph, env.row, env.params, pred, id)? {
             ok = false;
             break;
         }
@@ -143,7 +141,7 @@ fn accept_slot(
     if !binding.accepts(&id) {
         return Ok(false);
     }
-    if !node_ok(env.graph, id, node, env.row, env.params, env.cypher_version)? {
+    if !node_ok(env.graph, id, node, env.row, env.params)? {
         return Ok(false);
     }
     slot_preds_hold(env, slot, id)
@@ -180,7 +178,7 @@ fn collect_neighbors(
         env.tallies.walk();
         // The canonical one-hop rel-property admission (pattern_walk.rs's
         // `rel_props_ok`) — the same filter `rel_edge_ok` applies.
-        if !rel_props_ok(graph, rid, rel, env.row, env.params, env.cypher_version)? {
+        if !rel_props_ok(graph, rid, rel, env.row, env.params)? {
             return Ok::<(), Error>(());
         }
         out.push((rid, id));
@@ -253,7 +251,6 @@ fn expand_hop(env: &mut FoldEnv<'_>, walk: &HopWalk<'_>) -> Result<Vec<HopEnd>> 
                 start_node,
                 env.row,
                 env.params,
-                env.cypher_version,
                 &env.plan.conjuncts[walk.start_slot].exprs,
             )?,
             HopOrientation::Forward {
@@ -671,9 +668,8 @@ pub(crate) fn try_fold_path_aggs(
     where_clause: Option<&Expr>,
     suffix: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
-    let Some(output) = fold_return(suffix, params, cypher_version) else {
+    let Some(output) = fold_return(suffix, params) else {
         return Ok(None);
     };
     let Some(plan) = compile_path(patterns, where_clause, output.items) else {
@@ -706,7 +702,6 @@ pub(crate) fn try_fold_path_aggs(
             graph,
             row,
             params,
-            cypher_version,
             plan: &plan,
             caches: &mut caches,
             groups: &mut groups,

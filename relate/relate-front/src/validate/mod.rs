@@ -43,8 +43,6 @@
 //!   `nullif`/`format` arity, `replace` limit, temporal constructors,
 //!   quantifier/`allReduce` operands, path-selector counts, `IN TRANSACTIONS`
 //!   concurrency).
-//! - [`dialect`]: `CYPHER <version>` preamble gates (CIP-150): the
-//!   Cypher-25-only surface rejected under `CYPHER 5`.
 //! - [`structure`]: clause-composition rules (USE placement, NEXT chains,
 //!   UNION column shapes, duplicate column names, relationship
 //!   uniqueness).
@@ -75,7 +73,6 @@ use relate_parser::{Clause, Expr, SearchSpec, Statement};
 
 mod aggregation;
 mod delete;
-mod dialect;
 mod dynamic;
 mod expressions;
 mod functions;
@@ -99,7 +96,6 @@ pub use self::aggregation::{
     validate_aggregation_semantics, validate_clause_slots, validate_expression_slots,
     validate_order_by_aggregation,
 };
-pub use self::dialect::validate_cypher5_restrictions;
 pub use self::expressions::validate_expression_constraints;
 pub(crate) use self::functions::validate_function_admission;
 pub use self::functions::{
@@ -478,9 +474,7 @@ pub(crate) fn validate_scoped_dynamic_operands(
 /// composability pair) need the enclosing body sequence — and, for a nested
 /// body, the correlated outer bindings they cannot see — so they stay
 /// top-level-only (FOREACH bodies, which share the enclosing scope, are
-/// reached by `validate_variable_types`'s own recursion instead). The
-/// CIP-150 dialect gates walk the whole tree themselves with version
-/// inheritance.
+/// reached by `validate_variable_types`'s own recursion instead).
 pub fn validate_statement_tree(stmt: &Statement) -> Result<(), EngineError> {
     validate_statement_tree_with_options_and_policy(
         stmt,
@@ -560,13 +554,9 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
     // so the historical first-error precedence is unchanged.
     let mut validate_operand =
         |expr: &Expr, token: relate_core::DynamicNameToken| dynamic::validate_operand(expr, token);
-    // A version preamble scopes the whole query text (nested statements cannot
-    // carry their own), so every node's battery sees the root statement's
-    // `CYPHER 5` fact.
-    let cypher_version = stmt.cypher_version;
     walk_statement_tree_with_operands(
         stmt,
-        &mut |node| validate_statement_node(node, options, policy, cypher_version),
+        &mut |node| validate_statement_node(node, options, policy),
         // A subquery body is its own statement, so `validate_statement_node`
         // cannot tell it from a top-level one; the 42I39 mixing rule applies
         // only inside those bodies (CIP-40 path-selector-mixing [11]/[13]/
@@ -631,29 +621,27 @@ fn validate_statement_node(
     stmt: StmtRef<'_>,
     options: ValidateOptions,
     policy: StatementPolicy,
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     let clauses = stmt.clauses();
     validate_show_output_uniqueness(clauses)?;
     validate_param_property_shorthand(clauses)?;
     // 42I58 (Cypher 25): a CREATE clause may not reference an entity it
-    // creates from a property definition in the same clause. The rule owns
-    // its own `CYPHER 5` gate (01N00 keeps the warning semantics).
-    // This battery reaches nested bodies without their correlated outer
-    // bindings, so it applies the conservative tier (only unambiguous
-    // declarations count as created); the scope-tracking pass
+    // creates from a property definition in the same clause. This battery
+    // reaches nested bodies without their correlated outer bindings, so it
+    // applies the conservative tier (only unambiguous declarations count
+    // as created); the scope-tracking pass
     // (`validate_variable_types`) re-runs the rule with the exact enclosing
     // names at the top level and in `FOREACH` bodies. The bodies only this
     // battery reaches (`CALL { }`, UNION arms, `NEXT` stages) keep the
     // under-approximation ADR-0513 §Consequences records.
-    validate_create_self_reference_conservative(clauses, cypher_version)?;
+    validate_create_self_reference_conservative(clauses)?;
     validate_relationship_uniqueness(clauses)?;
     validate_order_by_aggregation(clauses)?;
     validate_column_name_conflicts(clauses)?;
     validate_use_placement(stmt)?;
     validate_next_no_admin_commands(stmt)?;
     validate_search_clauses(clauses, options)?;
-    validate_static_operator_types(clauses, cypher_version)?;
+    validate_static_operator_types(clauses)?;
     validate_static_call_types(clauses)?;
     validate_limit_skip(clauses)?;
     validate_union_columns(stmt)?;

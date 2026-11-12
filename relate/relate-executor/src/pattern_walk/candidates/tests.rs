@@ -69,15 +69,7 @@ fn pattern(variable: &str, labels: &[&str], props: Option<&[(&str, Value)]>) -> 
 /// conjuncts — the shape every label-only and label+property MATCH
 /// takes first.
 fn candidates(g: &Graph, np: &NodePattern) -> Vec<NodeId> {
-    node_candidates(
-        &ExecGraph::read(g),
-        np,
-        &Row::new(),
-        &BTreeMap::new(),
-        None,
-        &[],
-    )
-    .unwrap()
+    node_candidates(&ExecGraph::read(g), np, &Row::new(), &BTreeMap::new(), &[]).unwrap()
 }
 
 /// The both-label population's Alice property map — the narrowing
@@ -231,7 +223,6 @@ fn a_capped_funnel_is_complete_at_the_cap_and_over_past_it() {
             &np,
             &Row::new(),
             &BTreeMap::new(),
-            None,
             &[],
             cap,
         )
@@ -263,7 +254,6 @@ fn a_capped_funnel_stops_scanning_past_the_cap() {
         &np,
         &Row::new(),
         &BTreeMap::new(),
-        None,
         &[],
         16,
     )
@@ -343,7 +333,6 @@ fn candidates_with(g: &Graph, np: &NodePattern, conjuncts: &[Expr]) -> Vec<NodeI
         np,
         &Row::new(),
         &BTreeMap::new(),
-        None,
         conjuncts,
     )
     .unwrap()
@@ -556,7 +545,6 @@ fn a_capped_probe_reads_cap_plus_one_for_every_scan_shape() {
             np,
             &Row::new(),
             &BTreeMap::new(),
-            None,
             &[],
             CAP,
         )

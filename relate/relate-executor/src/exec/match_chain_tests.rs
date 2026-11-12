@@ -460,7 +460,7 @@ fn a_finished_container_is_charged_only_when_the_fold_asks() {
     let params = BTreeMap::new();
     let run = |fold: &Counting| {
         run_match_operator_ladder(
-            ExecCtx::new(&view, &params, None),
+            ExecCtx::new(&view, &params),
             vec![Row::new()],
             false,
             *match_mode,
@@ -510,7 +510,7 @@ fn a_cancelled_statement_stops_at_the_next_batch() {
     let view = ExecGraph::read(&built.graph).with_cancel(Some(&token));
     let params = BTreeMap::new();
     let slot = OnceCell::new();
-    let chain = open_match_chain(ExecCtx::new(&view, &params, None), clauses, &slot, None)
+    let chain = open_match_chain(ExecCtx::new(&view, &params), clauses, &slot, None)
         .unwrap()
         .expect("the second MATCH streams");
     for _ in 0..CHAIN_BATCH - 1 {

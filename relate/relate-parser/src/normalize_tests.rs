@@ -335,8 +335,8 @@ fn rewritten_statement_parses() {
 /// a literal only, so its rewritten text does not parse and the statement
 /// stays uncached.
 #[test]
-fn cypher_version_integer_fails_closed() {
-    let n = normalized("CYPHER 5 MATCH (n) RETURN n");
+fn cypher_preamble_integer_fails_closed() {
+    let n = normalized("CYPHER 25 MATCH (n) RETURN n");
     assert!(
         n.rewritten.contains("$__AUTO_INT_0__"),
         "the version became a placeholder: {}",

@@ -66,7 +66,7 @@ fn a_catalog_change_applies_without_moving_a_counter() {
     let result = exec_write(
         &g,
         &scratch,
-        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5",
+        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25",
     )
     .expect("the admin command succeeds");
     assert_eq!(

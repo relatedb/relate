@@ -59,10 +59,13 @@ use expr::{eval_case, prop, reject_deleted_access, slice, subscript, unary};
 pub(crate) use function::is_nondeterministic;
 use function::{entity_backing_map, function};
 pub(crate) use function::{lazy_range, RangeValues};
+use predicates::comprehension_where_holds;
 #[cfg(test)]
 pub(crate) use predicates::take_candidate_passes;
-pub(crate) use predicates::{candidate_passes, inline_predicates_ok, predicate_holds};
-use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce};
+pub(crate) use predicates::{
+    candidate_passes, inline_predicates_ok, predicate_holds, where_clause_holds,
+};
+use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce, list_argument};
 pub(crate) use quantifier::{AllReduceFold, AllReduceStep};
 use string::is_normalized;
 pub(crate) use typematch::value_matches_type;
@@ -126,7 +129,6 @@ fn eval_operand<'a>(
     row: &'a Row,
     expr: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<std::borrow::Cow<'a, Value>> {
     if let Expr::Variable(name) = expr {
         // Free read bridge: the String-keyed row schema is probed through
@@ -135,7 +137,7 @@ fn eval_operand<'a>(
             return Ok(std::borrow::Cow::Borrowed(v));
         }
     }
-    let v = eval(graph, row, expr, params, cypher_version)?;
+    let v = eval(graph, row, expr, params)?;
     Ok(std::borrow::Cow::Owned(v))
 }
 
@@ -153,23 +155,14 @@ pub(crate) fn rows_logical_bytes(rows: &[Row]) -> u64 {
         .sum()
 }
 
-/// Evaluate a scalar expression against a row. `cypher_version` is the
-/// enclosing statement's CIP-150 preamble: nested expression subqueries
-/// (EXISTS/COUNT/COLLECT) lowered with `Query::cypher_version: None` inherit
-/// it (see `exec::subquery_qctx`).
+/// Evaluate a scalar expression against a row.
 pub fn eval(
     graph: &ExecGraph<'_>,
     row: &Row,
     expr: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let ctx = EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    };
+    let ctx = EvalCtx { graph, row, params };
     match expr {
         Expr::RuntimeValue(value) => Ok(value.clone()),
         Expr::Null => Ok(Value::Null),
@@ -197,17 +190,17 @@ pub fn eval(
         Expr::Property { expr, key, key_id } => {
             // Variable operands are read by reference (see Subscript): a
             // property read must not clone the whole map it reads from.
-            let v = eval_operand(graph, row, expr, params, cypher_version)?;
+            let v = eval_operand(graph, row, expr, params)?;
             reject_deleted_access(graph, &v)?;
             prop(graph, &v, &(key.clone(), *key_id))
         }
         Expr::DynamicProperty { expr, key } => {
-            let v = eval_operand(graph, row, expr, params, cypher_version)?;
+            let v = eval_operand(graph, row, expr, params)?;
             if v.is_null() {
                 return Ok(Value::Null);
             }
             reject_deleted_access(graph, &v)?;
-            let key = dynamic_property_key(eval(graph, row, key, params, cypher_version)?)?;
+            let key = dynamic_property_key(eval(graph, row, key, params)?)?;
             prop(graph, &v, &(SmallName::from_name(&key), Token::Unresolved))
         }
         Expr::LabelPredicate {
@@ -215,16 +208,10 @@ pub fn eval(
             label_expr,
             strict,
         } => {
-            let v = eval(graph, row, expr, params, cypher_version)?;
+            let v = eval(graph, row, expr, params)?;
             Ok(match v {
                 Value::Node(n) => Value::Bool(label_expr_matches(
-                    graph,
-                    row,
-                    params,
-                    label_expr,
-                    &n.labels,
-                    false,
-                    cypher_version,
+                    graph, row, params, label_expr, &n.labels, false,
                 )?),
                 Value::Relationship(r) => Value::Bool(label_expr_matches(
                     graph,
@@ -233,7 +220,6 @@ pub fn eval(
                     label_expr,
                     std::slice::from_ref(&r.rel_type),
                     true,
-                    cypher_version,
                 )?),
                 Value::Null => Value::Null,
                 _ if *strict => {
@@ -247,32 +233,31 @@ pub fn eval(
         Expr::Map(entries) => {
             let mut m = BTreeMap::new();
             for (k, e) in entries {
-                m.insert(k.clone(), eval(graph, row, e, params, cypher_version)?);
+                m.insert(k.clone(), eval(graph, row, e, params)?);
             }
             Value::checked_map(m)
         }
         Expr::List(xs) => {
             let mut out = Vec::new();
             for e in xs {
-                out.push(eval(graph, row, e, params, cypher_version)?);
+                out.push(eval(graph, row, e, params)?);
             }
             Value::checked_list(out)
         }
         Expr::Unary { op, expr } => {
-            let v = eval(graph, row, expr, params, cypher_version)?;
+            let v = eval(graph, row, expr, params)?;
             unary(*op, v)
         }
         Expr::Binary { op, left, right } => {
-            let l = eval(graph, row, left, params, cypher_version)?;
-            let r = eval(graph, row, right, params, cypher_version)?;
+            let l = eval(graph, row, left, params)?;
+            let r = eval(graph, row, right, params)?;
             binary(graph, *op, l, r)
         }
         Expr::Function {
             name,
             distinct,
             args,
-        } => name
-            .with_str(|text| function(graph, row, params, text, *distinct, args, cypher_version)),
+        } => name.with_str(|text| function(graph, row, params, text, *distinct, args)),
         // 42I24 (see `function.rs`): the scalar-eval backstop for a `count(*)`
         // that reached evaluation outside an aggregation context is a
         // compile-time-class `SyntaxError` in Neo4j.
@@ -282,35 +267,30 @@ pub fn eval(
         Expr::Case {
             when_then,
             else_expr,
-        } => eval_case(graph, row, params, when_then, else_expr, cypher_version),
+        } => eval_case(graph, row, params, when_then, else_expr),
         Expr::Subscript { expr, index } => {
             // The container is evaluated before the index (the pre-by-reference
             // order, so error precedence is unchanged), and a variable
             // operand is read by reference: evaluating it would deep-clone
             // the whole container, and the subscript only needs the element.
-            let v = eval_operand(graph, row, expr, params, cypher_version)?;
-            let i = eval(graph, row, index, params, cypher_version)?;
+            let v = eval_operand(graph, row, expr, params)?;
+            let i = eval(graph, row, index, params)?;
             subscript(graph, &v, i)
         }
         Expr::Slice { expr, start, end } => {
-            let v = eval_operand(graph, row, expr, params, cypher_version)?;
+            let v = eval_operand(graph, row, expr, params)?;
             let s = match start {
-                Some(e) => Some(eval(graph, row, e, params, cypher_version)?),
+                Some(e) => Some(eval(graph, row, e, params)?),
                 None => None,
             };
             let e = match end {
-                Some(e) => Some(eval(graph, row, e, params, cypher_version)?),
+                Some(e) => Some(eval(graph, row, e, params)?),
                 None => None,
             };
             slice(&v, s, e)
         }
-        // CIP-272 map comprehension: bind (key, value) or (item) per
-        // source element, filter with the optional WHERE, and project
-        // `keyExpr : valueExpr` into a map. A null source is null; a
-        // non-string key is a type error; duplicate keys take the last
-        // write (BTreeMap insert). Each source arm keeps its concrete
-        // iterator type; the shared bind/filter/project loop is generic
-        // over it (see `eval_map_comp`).
+        // CIP-272 map comprehension: the source-shape triage and the
+        // bind/filter/project loop live together in `eval_map_comp`.
         Expr::MapComp {
             key_ident,
             value_ident,
@@ -318,41 +298,15 @@ pub fn eval(
             predicate,
             key_expr,
             value_expr,
-        } => {
-            let src_v = eval(graph, row, source, params, cypher_version)?;
-            // (key, value) bindings per source element; the key binding of
-            // a list-source form is absent.
-            match (src_v, key_ident.as_ref()) {
-                (Value::Map(m), Some(k)) => eval_map_comp(
-                    ctx,
-                    Some(k),
-                    value_ident,
-                    predicate.as_deref(),
-                    key_expr,
-                    value_expr,
-                    Arc::unwrap_or_clone(m)
-                        .into_iter()
-                        .map(|(k, v)| (Some(Value::String(k.into())), v)),
-                ),
-                (Value::List(xs), None) => eval_map_comp(
-                    ctx,
-                    None,
-                    value_ident,
-                    predicate.as_deref(),
-                    key_expr,
-                    value_expr,
-                    into_items(xs).map(|x| (None, x)),
-                ),
-                (Value::Null, _) => Ok(Value::Null),
-                (Value::Map(_), None) => Err(Error::ty(
-                    "map comprehension with a list binding needs a LIST source",
-                )),
-                (Value::List(_), Some(_)) => Err(Error::ty(
-                    "map comprehension with key/value bindings needs a MAP source",
-                )),
-                _ => Err(Error::ty("map comprehension needs a MAP or LIST source")),
-            }
-        }
+        } => eval_map_comp(
+            ctx,
+            key_ident.as_ref(),
+            value_ident,
+            source,
+            predicate.as_deref(),
+            key_expr,
+            value_expr,
+        ),
         Expr::ListComp {
             ident,
             list,
@@ -393,7 +347,7 @@ pub fn eval(
             type_expr,
             negated,
         } => {
-            let value = eval(graph, row, expr, params, cypher_version)?;
+            let value = eval(graph, row, expr, params)?;
             Ok(Value::Bool(
                 value_matches_type(&value, type_expr) ^ *negated,
             ))
@@ -403,7 +357,7 @@ pub fn eval(
             form,
             negated,
         } => {
-            let value = eval(graph, row, expr, params, cypher_version)?;
+            let value = eval(graph, row, expr, params)?;
             let Value::String(s) = value else {
                 return Ok(Value::Null);
             };
@@ -419,122 +373,44 @@ pub fn eval(
             right,
             negated,
         } => {
-            let l = eval(graph, row, left, params, cypher_version)?;
-            let r = eval(graph, row, right, params, cypher_version)?;
+            let l = eval(graph, row, left, params)?;
+            let r = eval(graph, row, right, params)?;
             Ok(temporal::chrono_compare(*op, &l, &r, *negated))
         }
-        Expr::MapProjection { expr, items } => {
-            let target = eval(graph, row, expr, params, cypher_version)?;
-            // A map projection over a null entity is null (CIP-284): the
-            // projection has no properties to project, and returning the
-            // `meta`-only map instead made `collect(n {.*, meta: …})` over
-            // an `OPTIONAL MATCH` miss collect a row instead of nothing.
-            if target.is_null() {
-                return Ok(Value::Null);
-            }
-            // The one deleted-entity admission for the whole projection: the
-            // `Property` arm below reads the same target through the same
-            // policy, so it must be rejected once here rather than per item —
-            // otherwise `n{.*}` silently projects `{}` while `n.p` raises
-            // DeletedEntityAccess (one projection, two answers).
-            reject_deleted_access(graph, &target)?;
-            // The projection's output is a runtime value map: its keys are
-            // the value domain (String), rendered once per entry here.
-            let mut map: BTreeMap<String, Value> = BTreeMap::new();
-            for item in items {
-                match item {
-                    MapProjectionItem::KeyValue { key, value } => {
-                        map.insert(
-                            key.to_string(),
-                            eval(graph, row, value, params, cypher_version)?,
-                        );
-                    }
-                    MapProjectionItem::Property { key } => {
-                        let value = prop(graph, &target, &(key.clone(), Token::Unresolved))?;
-                        map.insert(key.to_string(), value);
-                    }
-                    MapProjectionItem::Variable { name } => {
-                        // ADR-0335: same policy as `Expr::Variable` — an
-                        // unbound name is a typed error, never `null`.
-                        let value = row
-                            .get_name(name)
-                            .cloned()
-                            .ok_or_else(|| name.with_str(Error::undefined_variable))?;
-                        map.insert(name.to_string(), value);
-                    }
-                    MapProjectionItem::AllProperties => match &target {
-                        Value::Map(properties) => {
-                            map.extend(properties.iter().map(|(k, v)| (k.clone(), v.clone())))
-                        }
-                        // A bound entity carries its labels but not its
-                        // properties: the store entry is the read's source
-                        // (CIP-257) — the one store-backed resolver
-                        // `properties()` and `keys()` ride (the caller's
-                        // earlier deleted-entity rejection is idempotent
-                        // with the resolver's own).
-                        value @ (Value::Node(_) | Value::Relationship(_)) => {
-                            let properties =
-                                entity_backing_map(graph, value, "`{.*}` map projection")?;
-                            map.extend(
-                                properties
-                                    .iter()
-                                    .map(|(key, value)| (key.clone(), value.clone())),
-                            );
-                        }
-                        _ => {}
-                    },
-                }
-            }
-            Value::checked_map(map)
-        }
+        Expr::MapProjection { expr, items } => eval_map_projection(ctx, expr, items),
         Expr::DistanceMetric(_) => Err(Error::semantic(
             "distance metrics are only valid as a vector_distance/vector_norm argument",
         )),
         Expr::PatternPred { path } => {
             // LABS-193/LABS-246: existence only — the anchored probe, then
             // a limit-1 walk; never a full match collection.
-            Ok(Value::Bool(pattern_exists(
-                graph,
-                row,
-                path,
-                params,
-                cypher_version,
-            )?))
+            Ok(Value::Bool(pattern_exists(graph, row, path, params)?))
         }
         Expr::PatternComp {
             path,
             predicate,
             projection,
         } => eval_pattern_comp(ctx, path, predicate.as_deref(), projection),
-        Expr::ShortestPath { all, path } => eval_shortest(
-            graph,
-            row,
-            params,
-            *all,
-            path,
-            ShortestWant::Path,
-            cypher_version,
-        ),
-        Expr::ExistsSubquery { query } => {
-            crate::exec::eval_exists_query(graph, row, params, query, cypher_version)
+        Expr::ShortestPath { all, path } => {
+            eval_shortest(graph, row, params, *all, path, ShortestWant::Path)
         }
-        Expr::CountSubquery { query } => {
-            crate::exec::eval_count_query(graph, row, params, query, cypher_version)
-        }
+        Expr::ExistsSubquery { query } => crate::exec::eval_exists_query(graph, row, params, query),
+        Expr::CountSubquery { query } => crate::exec::eval_count_query(graph, row, params, query),
         Expr::CollectSubquery { query } => {
-            crate::exec::eval_collect_query(graph, row, params, query, cypher_version)
+            crate::exec::eval_collect_query(graph, row, params, query)
         }
     }
 }
 
 /// The one retaining-projection loop: charge the output container's slot
-/// buffer, then for each bound row apply the optional WHERE, project, and
-/// grow the container's retained total with the payload. Shared by the list
-/// and pattern comprehensions so the charge protocol has one spelling.
+/// buffer, then for each bound row apply the optional WHERE (the
+/// comprehension WHERE gate, [`comprehension_where_holds`]), project, and
+/// grow the container's retained total with the payload. Shared by the
+/// list and pattern comprehensions so the charge protocol has one
+/// spelling.
 fn retain_projected(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     bound: usize,
     rows: impl Iterator<Item = Row>,
     predicate: Option<&Expr>,
@@ -544,12 +420,10 @@ fn retain_projected(
     let mut out = Vec::with_capacity(bound);
     for r in rows {
         graph.cancel_tick()?;
-        if let Some(pred) = predicate {
-            if !predicate_value_holds(&eval(graph, &r, pred, params, cypher_version)?)? {
-                continue;
-            }
+        if !comprehension_where_holds(graph, &r, predicate, params)? {
+            continue;
         }
-        let value = eval(graph, &r, projection, params, cypher_version)?;
+        let value = eval(graph, &r, projection, params)?;
         retained.add_owned(graph, &value)?;
         out.push(value);
     }
@@ -565,16 +439,13 @@ fn eval_list_comp(
     predicate: Option<&Expr>,
     projection: &Expr,
 ) -> Result<Value> {
-    let EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    } = ctx;
-    let items = match eval(graph, row, list, params, cypher_version)? {
-        Value::List(xs) => xs,
-        Value::Null => return Ok(Value::Null),
-        _ => return Err(Error::ty("list comprehension needs a list")),
+    let EvalCtx { graph, row, params } = ctx;
+    let Some(items) = list_argument(
+        eval(graph, row, list, params)?,
+        "list comprehension needs a list",
+    )?
+    else {
+        return Ok(Value::Null);
     };
     let bound = items.len();
     let rows = into_items(items).map(move |item| {
@@ -582,15 +453,7 @@ fn eval_list_comp(
         r.insert(ident.to_string(), item);
         r
     });
-    retain_projected(
-        graph,
-        params,
-        cypher_version,
-        bound,
-        rows,
-        predicate,
-        projection,
-    )
+    retain_projected(graph, params, bound, rows, predicate, projection)
 }
 
 /// Pattern comprehension: collect the pattern matches, filter with the
@@ -601,18 +464,12 @@ fn eval_pattern_comp(
     predicate: Option<&Expr>,
     projection: &Expr,
 ) -> Result<Value> {
-    let EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    } = ctx;
-    let matches = collect_pattern_rows(graph, row, path, params, cypher_version)?;
+    let EvalCtx { graph, row, params } = ctx;
+    let matches = collect_pattern_rows(graph, row, path, params)?;
     let bound = matches.len();
     retain_projected(
         graph,
         params,
-        cypher_version,
         bound,
         matches.into_iter(),
         predicate,
@@ -620,13 +477,63 @@ fn eval_pattern_comp(
     )
 }
 
-/// CIP-272 map-comprehension body: bind (key, value) — or just (item),
-/// with no key binding, for a list source — per element, filter with the
-/// optional WHERE, and project `keyExpr : valueExpr` into a map. A
-/// non-string key is a type error; duplicate keys take the last write
-/// (BTreeMap insert). Generic over the bindings iterator so the map-source
-/// and list-source arms each keep their concrete iterator type.
+/// CIP-272 map comprehension: the source-shape triage, owned beside the
+/// loop it feeds. The evaluated source and the comprehension's binding
+/// shape must agree — a MAP source with (key, value) bindings and a LIST
+/// source with the item binding alone are the two productive pairings; a
+/// null source is null; every other pairing is the typed shape error.
 fn eval_map_comp(
+    ctx: EvalCtx<'_>,
+    key_ident: Option<&SmallName>,
+    value_ident: &SmallName,
+    source: &Expr,
+    predicate: Option<&Expr>,
+    key_expr: &Expr,
+    value_expr: &Expr,
+) -> Result<Value> {
+    let EvalCtx { graph, row, params } = ctx;
+    match (eval(graph, row, source, params)?, key_ident) {
+        (Value::Map(m), Some(k)) => retain_projected_map(
+            ctx,
+            Some(k),
+            value_ident,
+            predicate,
+            key_expr,
+            value_expr,
+            Arc::unwrap_or_clone(m)
+                .into_iter()
+                .map(|(k, v)| (Some(Value::String(k.into())), v)),
+        ),
+        (Value::List(xs), None) => retain_projected_map(
+            ctx,
+            None,
+            value_ident,
+            predicate,
+            key_expr,
+            value_expr,
+            into_items(xs).map(|x| (None, x)),
+        ),
+        (Value::Null, _) => Ok(Value::Null),
+        (Value::Map(_), None) => Err(Error::ty(
+            "map comprehension with a list binding needs a LIST source",
+        )),
+        (Value::List(_), Some(_)) => Err(Error::ty(
+            "map comprehension with key/value bindings needs a MAP source",
+        )),
+        _ => Err(Error::ty("map comprehension needs a MAP or LIST source")),
+    }
+}
+
+/// The map comprehension's retaining-projection loop — the map twin of
+/// [`retain_projected`]: bind (key, value) — or just (item), with no key
+/// binding, for a list source — per element, filter with the optional
+/// WHERE (the comprehension WHERE gate,
+/// [`comprehension_where_holds`]), and project `keyExpr : valueExpr`
+/// into a map. A non-string key is a type error; duplicate keys take the
+/// last write (BTreeMap insert). Generic over the bindings iterator so
+/// the map-source and list-source arms each keep their concrete iterator
+/// type.
+fn retain_projected_map(
     ctx: EvalCtx<'_>,
     key_ident: Option<&SmallName>,
     value_ident: &SmallName,
@@ -635,12 +542,7 @@ fn eval_map_comp(
     value_expr: &Expr,
     bindings: impl ExactSizeIterator<Item = (Option<Value>, Value)>,
 ) -> Result<Value> {
-    let EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    } = ctx;
+    let EvalCtx { graph, row, params } = ctx;
     // ADR-0463: a BTreeMap is not a Vec, so seed the container with the map
     // entry-storage figure (not the value-slot model), then add each key's
     // bytes and payload as it is produced. The bindings iterator is
@@ -654,12 +556,10 @@ fn eval_map_comp(
             r.insert(kvar.to_string(), kv);
         }
         r.insert(value_ident.to_string(), v);
-        if let Some(pred) = predicate {
-            if !predicate_value_holds(&eval(graph, &r, pred, params, cypher_version)?)? {
-                continue;
-            }
+        if !comprehension_where_holds(graph, &r, predicate, params)? {
+            continue;
         }
-        let key_v = eval(graph, &r, key_expr, params, cypher_version)?;
+        let key_v = eval(graph, &r, key_expr, params)?;
         let key = match key_v {
             Value::String(s) => String::from(&*s),
             // CIP-272: a map key must be a non-null string. Live Neo4j
@@ -676,7 +576,7 @@ fn eval_map_comp(
                 ))
             }
         };
-        let value_v = eval(graph, &r, value_expr, params, cypher_version)?;
+        let value_v = eval(graph, &r, value_expr, params)?;
         // The key is a new String allocation, the map entry is new node
         // storage, and the container retains the value's payload: the
         // running retained total of this one growing map is what is enforced.
@@ -688,4 +588,76 @@ fn eval_map_comp(
         out.insert(key, value_v);
     }
     Value::checked_map(out)
+}
+
+/// A map projection `n { .k, v: expr, name, .* }`: evaluate the target,
+/// then build the output map item by item. A null target is null (CIP-284),
+/// a deleted entity is rejected once for the whole projection, and an
+/// `.*` reads a bound entity's properties from its store entry (CIP-257)
+/// — the same policies the per-item reads apply, stated here once so the
+/// projection answers as one unit.
+fn eval_map_projection(
+    ctx: EvalCtx<'_>,
+    expr: &Expr,
+    items: &[MapProjectionItem],
+) -> Result<Value> {
+    let EvalCtx { graph, row, params } = ctx;
+    let target = eval(graph, row, expr, params)?;
+    // A map projection over a null entity is null (CIP-284): the
+    // projection has no properties to project, and returning the
+    // `meta`-only map instead made `collect(n {.*, meta: …})` over
+    // an `OPTIONAL MATCH` miss collect a row instead of nothing.
+    if target.is_null() {
+        return Ok(Value::Null);
+    }
+    // The one deleted-entity admission for the whole projection: the
+    // `Property` arm below reads the same target through the same
+    // policy, so it must be rejected once here rather than per item —
+    // otherwise `n{.*}` silently projects `{}` while `n.p` raises
+    // DeletedEntityAccess (one projection, two answers).
+    reject_deleted_access(graph, &target)?;
+    // The projection's output is a runtime value map: its keys are
+    // the value domain (String), rendered once per entry here.
+    let mut map: BTreeMap<String, Value> = BTreeMap::new();
+    for item in items {
+        match item {
+            MapProjectionItem::KeyValue { key, value } => {
+                map.insert(key.to_string(), eval(graph, row, value, params)?);
+            }
+            MapProjectionItem::Property { key } => {
+                let value = prop(graph, &target, &(key.clone(), Token::Unresolved))?;
+                map.insert(key.to_string(), value);
+            }
+            MapProjectionItem::Variable { name } => {
+                // ADR-0335: same policy as `Expr::Variable` — an
+                // unbound name is a typed error, never `null`.
+                let value = row
+                    .get_name(name)
+                    .cloned()
+                    .ok_or_else(|| name.with_str(Error::undefined_variable))?;
+                map.insert(name.to_string(), value);
+            }
+            MapProjectionItem::AllProperties => match &target {
+                Value::Map(properties) => {
+                    map.extend(properties.iter().map(|(k, v)| (k.clone(), v.clone())))
+                }
+                // A bound entity carries its labels but not its
+                // properties: the store entry is the read's source
+                // (CIP-257) — the one store-backed resolver
+                // `properties()` and `keys()` ride (the caller's
+                // earlier deleted-entity rejection is idempotent
+                // with the resolver's own).
+                value @ (Value::Node(_) | Value::Relationship(_)) => {
+                    let properties = entity_backing_map(graph, value, "`{.*}` map projection")?;
+                    map.extend(
+                        properties
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
+                }
+                _ => {}
+            },
+        }
+    }
+    Value::checked_map(map)
 }

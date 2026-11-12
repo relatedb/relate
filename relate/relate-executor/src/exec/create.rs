@@ -22,7 +22,6 @@ pub(crate) fn create_patterns(
     row: &mut Row,
     patterns: &[PathPattern],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<()> {
     for p in patterns {
         // A standalone node pattern (`CREATE (n)`, no relationships) is a
@@ -36,22 +35,14 @@ pub(crate) fn create_patterns(
         let fresh = p.rels.is_empty();
         let mut node_ids: Vec<NodeId> = Vec::new();
         for np in &p.nodes {
-            let id = create_or_bind_node(graph, row, np, fresh, params, cypher_version)?;
+            let id = create_or_bind_node(graph, row, np, fresh, params)?;
             node_ids.push(id);
         }
         let mut rel_ids = Vec::new();
         for (i, rp) in p.rels.iter().enumerate() {
             let start = node_ids[i];
             let end = node_ids[i + 1];
-            rel_ids.push(create_rel(
-                graph,
-                row,
-                rp,
-                start,
-                end,
-                params,
-                cypher_version,
-            )?);
+            rel_ids.push(create_rel(graph, row, rp, start, end, params)?);
         }
         if let Some(name) = &p.variable {
             let nodes: Vec<_> = node_ids
@@ -73,22 +64,15 @@ pub(crate) fn resolve_create_patterns(
     row: &Row,
     patterns: &[PathPattern],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<PathPattern>> {
     let mut patterns = patterns.to_vec();
     for path in &mut patterns {
         for node in &mut path.nodes {
             if let Some(properties) = &node.properties {
-                node.properties = Some(Expr::RuntimeValue(eval(
-                    graph,
-                    row,
-                    properties,
-                    params,
-                    cypher_version,
-                )?));
+                node.properties = Some(Expr::RuntimeValue(eval(graph, row, properties, params)?));
             }
             if let Some((labels, label_expr)) =
-                resolve_element_names(graph, row, params, node.label_expr.as_ref(), cypher_version)?
+                resolve_element_names(graph, row, params, node.label_expr.as_ref())?
             {
                 node.labels = labels;
                 node.label_expr = Some(label_expr);
@@ -96,16 +80,10 @@ pub(crate) fn resolve_create_patterns(
         }
         for rel in &mut path.rels {
             if let Some(properties) = &rel.properties {
-                rel.properties = Some(Expr::RuntimeValue(eval(
-                    graph,
-                    row,
-                    properties,
-                    params,
-                    cypher_version,
-                )?));
+                rel.properties = Some(Expr::RuntimeValue(eval(graph, row, properties, params)?));
             }
             if let Some((types, type_expr)) =
-                resolve_element_names(graph, row, params, rel.type_expr.as_ref(), cypher_version)?
+                resolve_element_names(graph, row, params, rel.type_expr.as_ref())?
             {
                 rel.types = types;
                 rel.type_expr = Some(type_expr);
@@ -126,12 +104,11 @@ fn resolve_element_names(
     row: &Row,
     params: &BTreeMap<String, Value>,
     expr: Option<&LabelExpr>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<(Vec<NamedToken>, LabelExpr)>> {
     let Some(expr) = expr else {
         return Ok(None);
     };
-    let names = resolve_creation_labels(graph, row, params, Some(expr), cypher_version)?;
+    let names = resolve_creation_labels(graph, row, params, Some(expr))?;
     // The resolved (String, interner-facing) label list enters the IR
     // pattern's name fields here, classified once.
     let names: Vec<_> = names
@@ -182,7 +159,6 @@ pub(crate) fn resolve_creation_labels(
     row: &Row,
     params: &BTreeMap<String, Value>,
     expr: Option<&LabelExpr>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<String>> {
     fn append(
         graph: &ExecGraph<'_>,
@@ -190,13 +166,12 @@ pub(crate) fn resolve_creation_labels(
         params: &BTreeMap<String, Value>,
         expr: &LabelExpr,
         out: &mut Vec<String>,
-        cypher_version: Option<u32>,
     ) -> Result<()> {
         match expr {
             LabelExpr::Label(name) => out.push(name.to_string()),
             LabelExpr::And(items) => {
                 for item in items {
-                    append(graph, row, params, item, out, cypher_version)?;
+                    append(graph, row, params, item, out)?;
                 }
             }
             LabelExpr::Dynamic { expr, quantifier } => {
@@ -205,13 +180,7 @@ pub(crate) fn resolve_creation_labels(
                         "InvalidLabelExpression: $any() is not allowed in CREATE/MERGE",
                     ));
                 }
-                out.extend(dynamic_label_names(
-                    graph,
-                    row,
-                    params,
-                    expr,
-                    cypher_version,
-                )?);
+                out.extend(dynamic_label_names(graph, row, params, expr)?);
             }
             _ => {
                 return Err(Error::semantic(
@@ -223,7 +192,7 @@ pub(crate) fn resolve_creation_labels(
     }
     let mut labels = Vec::new();
     if let Some(expr) = expr {
-        append(graph, row, params, expr, &mut labels, cypher_version)?;
+        append(graph, row, params, expr, &mut labels)?;
     }
     let mut seen = HashSet::new();
     labels.retain(|label| seen.insert(label.clone()));
@@ -298,7 +267,6 @@ pub(crate) fn reject_null_merge_props(
     row: &Row,
     pattern: &PathPattern,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<()> {
     let maps = pattern
         .nodes
@@ -306,7 +274,7 @@ pub(crate) fn reject_null_merge_props(
         .filter_map(|n| n.properties.as_ref())
         .chain(pattern.rels.iter().filter_map(|r| r.properties.as_ref()));
     for expr in maps {
-        match eval(graph, row, expr, params, cypher_version)? {
+        match eval(graph, row, expr, params)? {
             Value::Map(m) if m.values().any(Value::is_null) => {
                 return Err(Error::execution(
                     "MergeReadOwnWrites: cannot MERGE with null properties",
@@ -338,17 +306,14 @@ pub(crate) fn create_or_bind_node(
     np: &NodePattern,
     fresh: bool,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<NodeId> {
-    let labels =
-        resolve_creation_labels(graph, row, params, np.label_expr.as_ref(), cypher_version)?;
+    let labels = resolve_creation_labels(graph, row, params, np.label_expr.as_ref())?;
     let props = pattern_props(
         graph,
         row,
         np.properties.as_ref(),
         PatternMapRole::Create,
         params,
-        cypher_version,
     )?;
     if let Some((variable, value)) = reusable_binding(np, row, fresh) {
         // A relationship pattern's node position reuses the row's binding, so
@@ -401,13 +366,12 @@ pub(crate) fn create_rel(
     start: NodeId,
     end: NodeId,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<RelId> {
     let (s, e) = match rp.direction {
         Direction::Outgoing | Direction::Both => (start, end),
         Direction::Incoming => (end, start),
     };
-    let types = resolve_creation_labels(graph, row, params, rp.type_expr.as_ref(), cypher_version)?;
+    let types = resolve_creation_labels(graph, row, params, rp.type_expr.as_ref())?;
     if types.len() != 1 {
         return Err(Error::syntax("CREATE relationship requires a type"));
     }
@@ -418,7 +382,6 @@ pub(crate) fn create_rel(
         rp.properties.as_ref(),
         PatternMapRole::Create,
         params,
-        cypher_version,
     )?;
     let id = graph.create_rel(s, e, rel_type, props)?;
     if let Some(v) = &rp.variable {

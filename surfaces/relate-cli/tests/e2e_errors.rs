@@ -9,7 +9,7 @@ use std::io::Write;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use support::{run_cli, CliRunOptions as Opts};
+use support::{run_cli, tempdir, CliRunOptions as Opts};
 
 fn envelope(stdout: &str) -> serde_json::Value {
     let last = stdout.lines().last().unwrap_or_else(|| panic!("no stdout"));
@@ -49,6 +49,29 @@ fn test_read_only_write_is_a_rejected_statement() {
     assert_eq!(
         v["error"]["message"],
         "semantic error: WriteOnReadOnlyAccessDatabase: No write operations are allowed on this database. The database is in read-only mode on this Neo4j instance."
+    );
+}
+
+/// ADR-0584: `ALTER DATABASE … SET DEFAULT LANGUAGE` accepts exactly the one
+/// admitted Cypher version; every other integer fails the command through
+/// the CLI's public path with the authored unsupported-version error.
+#[test]
+fn test_unsupported_default_language_exits_6_with_the_authored_error() {
+    let dir = tempdir();
+    let db = dir.path().join("db");
+    let (status, _, stderr) = run_cli(Opts::new(&[
+        "--jsonl",
+        "--database",
+        db.to_str().unwrap(),
+        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5",
+    ]));
+    assert_eq!(status.code(), Some(6), "{stderr}");
+    assert!(
+        stderr.contains(
+            "UnsupportedCypherVersion: CYPHER 5 is not supported; \
+             the only supported Cypher version is CYPHER 25"
+        ),
+        "the CYPHER 5 spelling fails with the authored error: {stderr}"
     );
 }
 

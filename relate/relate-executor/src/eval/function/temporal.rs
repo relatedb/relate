@@ -67,7 +67,7 @@ pub(super) fn bi_timestamp(_graph: &ExecGraph<'_>, _n: &str, _vals: Vec<Value>) 
     Ok(Value::Int(temporal::now_epoch_millis()))
 }
 /// `duration.between` and its `duration.in*` siblings: the unit comes from
-/// the row (`BuiltinImplementation::Between`), never from the call name, and
+/// the row (`Applied::Between`), never from the call name, and
 /// the two operands are the whole argument list — the dispatcher enforced the
 /// row's exactly-two contract, so the signature states it. `n` is only the
 /// called spelling for the messages.
@@ -163,7 +163,6 @@ mod tests {
                 relate_ir::Expr::Null,
                 relate_ir::Expr::Null,
             ],
-            None,
         )
         .unwrap_err()
         .to_string();
@@ -186,7 +185,7 @@ mod tests {
         let row = crate::row::Row::new();
         let params = std::collections::BTreeMap::new();
         let call = |name: &str, args: &[relate_ir::Expr]| {
-            super::super::function(&graph, &row, &params, name, false, args, None)
+            super::super::function(&graph, &row, &params, name, false, args)
         };
 
         let out = call("date.realtime", &[relate_ir::Expr::String("+14:00".into())]).unwrap();

@@ -141,7 +141,6 @@ struct OrCtx<'a> {
     graph: &'a ExecGraph<'a>,
     row: &'a Row,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     labels: &'a [String],
     label_seekable: bool,
 }
@@ -218,14 +217,7 @@ fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
     // `StringSeek::Contains`: every string that ends with the suffix contains
     // it, and the residual applies the real ENDS WITH. No text index, or an
     // empty suffix, is Unserved so an AND sibling can still seed the arm.
-    let Some(seek) = leaf_seek(
-        var,
-        expr,
-        ctx.graph,
-        ctx.row,
-        ctx.params,
-        ctx.cypher_version,
-    ) else {
+    let Some(seek) = leaf_seek(var, expr, ctx.graph, ctx.row, ctx.params) else {
         return IndexArm::Decline;
     };
     // The caller's real label fact, threaded from binding_arm — the
@@ -244,7 +236,6 @@ pub(crate) fn node_candidates(
     np: &NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     conjuncts: &[Expr],
 ) -> Result<Vec<NodeId>> {
     funnel(
@@ -252,7 +243,6 @@ pub(crate) fn node_candidates(
         np,
         row,
         params,
-        cypher_version,
         Ask {
             conjuncts,
             cap: None,
@@ -285,7 +275,6 @@ pub(crate) fn node_candidates_capped(
     np: &NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     conjuncts: &[Expr],
     cap: usize,
 ) -> Result<Capped> {
@@ -293,7 +282,7 @@ pub(crate) fn node_candidates_capped(
         conjuncts,
         cap: Some(cap),
     };
-    let ids = funnel(graph, np, row, params, cypher_version, ask)?;
+    let ids = funnel(graph, np, row, params, ask)?;
     Ok(if ids.len() > cap {
         Capped::Over
     } else {
@@ -306,7 +295,6 @@ fn funnel(
     np: &NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     ask: Ask<'_>,
 ) -> Result<Vec<NodeId>> {
     // One node-store read per candidate the match examines (LABS-375):
@@ -322,17 +310,8 @@ fn funnel(
     // strategy, and the scan tail, one exhaustive match off the received
     // classification per the rule its doc comment states.
     let reads_before = crate::ctx::node_reads();
-    let candidates = crate::ctx::phase_seek(|| {
-        binding_arm(
-            binding(np, row),
-            np,
-            ask,
-            graph,
-            row,
-            params,
-            cypher_version,
-        )
-    })?;
+    let candidates =
+        crate::ctx::phase_seek(|| binding_arm(binding(np, row), np, ask, graph, row, params))?;
     // A scan counts the nodes it examined as it reads them; an answer
     // served whole from postings has examined exactly what it returns.
     if crate::ctx::node_reads() == reads_before {
@@ -380,7 +359,6 @@ fn binding_arm(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<NodeId>> {
     let Ask { conjuncts, cap } = ask;
     // The pattern's property map, lazily and exactly once per arm that
@@ -392,7 +370,6 @@ fn binding_arm(
             np.properties.as_ref(),
             PatternMapRole::Match,
             params,
-            cypher_version,
         )
     };
     let v = match class {
@@ -419,7 +396,7 @@ fn binding_arm(
     // residual still applies every predicate.
     let mut seeks: Vec<Seek> = conjuncts
         .iter()
-        .filter_map(|c| leaf_seek(v, c, graph, row, params, cypher_version))
+        .filter_map(|c| leaf_seek(v, c, graph, row, params))
         .collect();
     seeks.sort_by_key(Seek::rank);
     // Map-bridge: the graph's label lookups stay String-keyed; the
@@ -461,7 +438,6 @@ fn binding_arm(
         graph,
         row,
         params,
-        cypher_version,
         labels: &labels,
         label_seekable,
     };

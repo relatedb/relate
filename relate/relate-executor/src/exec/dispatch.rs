@@ -36,17 +36,16 @@ use super::match_clause::{
     charge_finished_container, run_match_operator_ladder, LadderFacts, LadderRun, MatchOperator,
 };
 use super::match_folds::try_match_folds;
-use super::order::OrderKeys;
-use super::procedures::{exec_call, CallSpec};
+use super::procedures::exec_call_clause;
 use super::project::{
-    project_rows, return_result, streams_into_projection, ProjectSpec, RowSource,
+    project_rows, return_result, streams_into_projection, ProjectSpec, ProjectionClass, RowSource,
 };
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
-use super::scope::{carry_scope_bindings, star_scope_names};
+use super::scope::carry_scope_bindings;
 use super::search::search_match_clause;
 use super::sink::sinkable_projection;
-use super::unwind::{RowFeed, UnwindFeed, UnwindStats};
-use super::QueryResult;
+use super::unwind::{UnwindFeed, UnwindStats};
+use super::{QueryResult, RowFeed};
 
 /// Read/write mode for the unified clause dispatcher. Both clause loops —
 /// the write-capable [`run_clauses`] and the read-only
@@ -163,6 +162,11 @@ fn run_clauses_mode(
             return Ok((rows, Some(result)));
         }
     }
+    // The statement's evaluation context, built once before the clause
+    // loop (stellar round 2, F-2-21): the authenticated principal
+    // (ADR-0273) travels with it, so every clause arm consumes the same
+    // context — no per-arm construction.
+    let ctx = ExecCtx::new(graph, params).with_principal(qctx.principal);
     let mut clause_i = 0;
     // Set to `SinkProjected` when the clause just run left the next
     // projection's columns already evaluated in its rows (the match sink,
@@ -183,7 +187,7 @@ fn run_clauses_mode(
     // `ORDER BY` plan is borrowed for as long as it lives, so it sits in a
     // cell declared first (dropped last): one streamed `MATCH` per part, any
     // later one takes the held path.
-    let fold_order: OnceCell<OrderKeys<'_>> = OnceCell::new();
+    let fold_class: OnceCell<ProjectionClass<'_>> = OnceCell::new();
     let mut pending_fold: Option<Aggregation<'_>> = None;
     while clause_i < clauses.len() {
         let i = clause_i;
@@ -239,7 +243,7 @@ fn run_clauses_mode(
                 }
             }
             Clause::Create { patterns } => {
-                rows = exec_create(graph, rows, patterns, params, qctx)?;
+                rows = exec_create(graph, rows, patterns, params)?;
             }
             Clause::CreateIndex {
                 name,
@@ -269,7 +273,7 @@ fn run_clauses_mode(
                 field_terminator,
             } => {
                 rows = exec_load_csv(
-                    ExecCtx::new(graph, params, qctx.cypher_version),
+                    ctx,
                     rows,
                     *with_headers,
                     url,
@@ -324,7 +328,7 @@ fn run_clauses_mode(
             } => {
                 if let Some(search) = search {
                     rows = search_match_clause(
-                        ExecCtx::new(graph, params, qctx.cypher_version),
+                        ctx,
                         rows,
                         *optional,
                         *match_mode,
@@ -350,7 +354,7 @@ fn run_clauses_mode(
                     charge_finished_container(graph, &rows)?;
                 } else {
                     let folded = if !*optional {
-                        try_match_folds(graph, &rows, &clauses[i..], params, qctx.cypher_version)?
+                        try_match_folds(graph, &rows, &clauses[i..], params)?
                     } else {
                         None
                     };
@@ -375,7 +379,6 @@ fn run_clauses_mode(
                                     where_clause.as_ref(),
                                     graph,
                                     params,
-                                    qctx.cypher_version,
                                     rows.len(),
                                 )?
                             };
@@ -385,9 +388,9 @@ fn run_clauses_mode(
                             // to rows (ADR-0555, `match_chain.rs`).
                             let consumer = if cap.is_none() && !*optional {
                                 open_match_consumer(
-                                    ExecCtx::new(graph, params, qctx.cypher_version),
+                                    ctx,
                                     &clauses[i..],
-                                    &fold_order,
+                                    &fold_class,
                                     scope,
                                     profile.is_none(),
                                 )?
@@ -408,7 +411,7 @@ fn run_clauses_mode(
                                 rows: ladder_rows,
                                 facts,
                             } = run_match_operator_ladder(
-                                ExecCtx::new(graph, params, qctx.cypher_version),
+                                ctx,
                                 rows,
                                 *optional,
                                 *match_mode,
@@ -485,25 +488,25 @@ fn run_clauses_mode(
                 on_create,
                 on_match,
             } => {
-                rows = exec_merge(graph, rows, pattern, on_create, on_match, params, qctx)?;
+                rows = exec_merge(graph, rows, pattern, on_create, on_match, params)?;
             }
             Clause::Delete {
                 detach,
                 expressions,
             } => {
-                rows = exec_delete(graph, rows, *detach, expressions, params, qctx)?;
+                rows = exec_delete(graph, rows, *detach, expressions, params)?;
             }
             Clause::Set { items } => {
-                rows = exec_set(graph, rows, items, params, qctx)?;
+                rows = exec_set(graph, rows, items, params)?;
             }
             Clause::Remove { items } => {
-                rows = exec_remove(graph, rows, items, params, qctx)?;
+                rows = exec_remove(graph, rows, items, params)?;
             }
             Clause::Unwind { expression, alias } if streams_into_projection(clauses.get(i + 1)) => {
                 let stats = Rc::new(UnwindStats::new(profile.is_some()));
                 pending_unwind = Some(ParkedUnwind {
                     feed: UnwindFeed::new(
-                        ExecCtx::new(graph, params, qctx.cypher_version),
+                        ctx,
                         &clauses[i + 1..],
                         std::mem::take(&mut rows),
                         expression,
@@ -521,61 +524,32 @@ fn run_clauses_mode(
                 profile_recorded = true;
             }
             Clause::Unwind { expression, alias } => {
-                rows = exec_unwind(
-                    graph,
-                    &clauses[i + 1..],
-                    rows,
-                    expression,
-                    alias,
-                    params,
-                    qctx,
-                )?;
+                rows = exec_unwind(ctx, &clauses[i + 1..], rows, expression, alias)?;
             }
             Clause::Call {
                 name,
                 args,
-                explicit,
                 yield_items,
                 optional,
                 where_clause,
             } => {
-                let was_empty = rows.is_empty();
-                // Text render: the procedure dispatcher matches on name
-                // text (String vocabulary), once per clause.
-                let call_name = name.to_string();
-                let (call_rows, yields_unit) = exec_call(
-                    ExecCtx::new(graph, params, qctx.cypher_version).with_principal(qctx.principal),
+                // The CALL arm's body — the call, the void optional
+                // unit-row binding, the terminal unit result — lives in
+                // `procedures.rs`, beside `exec_call` the executor it
+                // delegates to (stellar round 2, F-2-2).
+                let (call_rows, call_result) = exec_call_clause(
+                    ctx,
+                    clauses,
+                    i,
                     rows,
-                    CallSpec {
-                        name: &call_name,
-                        args,
-                        explicit: *explicit,
-                        yield_items,
-                        optional: *optional,
-                        where_clause: where_clause.as_ref(),
-                    },
+                    name,
+                    args,
+                    yield_items,
+                    *optional,
+                    where_clause.as_ref(),
                 )?;
                 rows = call_rows;
-                // A void optional call over a zero-row driving table yields
-                // one unit row (CIP-159 [12]); Neo4j reads every variable
-                // in scope as null on it, so bind the scope names
-                // explicitly (ADR-0335) instead of leaving a following
-                // projection to read an unbound reference.
-                if was_empty && rows.len() == 1 && rows[0].is_empty() {
-                    for name in star_scope_names(&clauses[..i]) {
-                        rows[0].insert(name, Value::Null);
-                    }
-                }
-                // A terminal void call yields an empty unit result (CIP-159):
-                // the call path reported the fact on the resolution it
-                // already made.
-                if i + 1 == clauses.len() && yields_unit {
-                    last_result = Some(QueryResult::intermediate(
-                        Vec::new(),
-                        Vec::new(),
-                        QueryStats::default(),
-                    ));
-                }
+                last_result = call_result.or(last_result);
             }
             Clause::With {
                 distinct,
@@ -589,7 +563,7 @@ fn run_clauses_mode(
             } => {
                 let (feed, parked) = take_feed(&mut pending_unwind, &mut pending_fold, &mut rows);
                 rows = project_rows(
-                    ExecCtx::new(graph, params, qctx.cypher_version),
+                    ctx,
                     feed,
                     &ProjectSpec {
                         items,
@@ -622,7 +596,7 @@ fn run_clauses_mode(
             } => {
                 let (feed, parked) = take_feed(&mut pending_unwind, &mut pending_fold, &mut rows);
                 rows = project_rows(
-                    ExecCtx::new(graph, params, qctx.cypher_version),
+                    ctx,
                     feed,
                     &ProjectSpec {
                         items,

@@ -27,23 +27,21 @@ pub(crate) fn agg_eval_rows(
     group: &[Row],
     expr: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> relate_core::Result<Value> {
     use crate::exec::aggregate::{agg_eval, AggScope, AggSites};
-    let sites = AggSites::discover(graph, [expr], [], params, cypher_version)?;
+    let sites = AggSites::discover(graph, [expr], [], params)?;
     let mut accs = sites.open_group();
     let mut total = graph.retain_bytes(0)?;
     for row in group {
-        accs.offer(graph, row, params, cypher_version)?;
+        accs.offer(graph, row, params)?;
         accs.settle(graph, &mut total)?;
     }
-    let folded = accs.finish(graph, group.first(), params, cypher_version);
+    let folded = accs.finish(graph, group.first(), params);
     agg_eval(
         graph,
         AggScope::of_group(&folded, group.first()),
         expr,
         params,
-        cypher_version,
     )
 }
 

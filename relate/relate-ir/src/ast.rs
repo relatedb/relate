@@ -23,14 +23,6 @@ pub struct Query {
     pub union_all: Vec<bool>,
     /// CIP-213 sequential statement composition.
     pub next: Option<Box<Query>>,
-    /// CIP-150: the statement's `CYPHER <version>` preamble, lowered from
-    /// `relate_parser::Statement::cypher_version`. Set on the top-level
-    /// query (and inherited by `NEXT` stages); nested subquery bodies
-    /// (`CALL { }`, EXISTS/COUNT/COLLECT expression subqueries) keep `None`
-    /// here and inherit the enclosing statement's version at evaluation
-    /// time: the executor threads it through `QueryCtx`/`ExecCtx`/`EvalCtx`
-    /// into `subquery_qctx` (`Query::cypher_version.or(enclosing)`).
-    pub cypher_version: Option<u32>,
 }
 
 impl Query {
@@ -235,8 +227,7 @@ pub enum Clause {
     },
     Call {
         name: SmallName,
-        args: Vec<Expr>,
-        explicit: bool,
+        args: CallArgs,
         yield_items: YieldItems,
         optional: bool,
         where_clause: Option<Expr>,

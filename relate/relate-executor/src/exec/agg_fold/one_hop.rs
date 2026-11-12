@@ -107,15 +107,13 @@ fn fold_rel_seek(
     conjuncts: &[Expr],
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> FoldSeek {
     let rp = &path.rels[0];
-    let (start, end, rid) =
-        match resolve_rel_seek(graph, rp, types, conjuncts, row, params, cypher_version) {
-            SeekedRel::Decline => return FoldSeek::Decline,
-            SeekedRel::Gone => return FoldSeek::Gone,
-            SeekedRel::Resolved { start, end, rid } => (start, end, rid),
-        };
+    let (start, end, rid) = match resolve_rel_seek(graph, rp, types, conjuncts, row, params) {
+        SeekedRel::Decline => return FoldSeek::Decline,
+        SeekedRel::Gone => return FoldSeek::Gone,
+        SeekedRel::Resolved { start, end, rid } => (start, end, rid),
+    };
     // Pick the direction-oriented start of the rel — the one
     // `oriented_start` spelling; the undirected decline lives there.
     let Some(sid) = oriented_start(rp, start, end) else {
@@ -174,11 +172,10 @@ pub(crate) fn try_fold_one_hop_aggs(
     where_clause: Option<&Expr>,
     suffix: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
     // CIP-236: an explicit GROUP BY supplies the grouping keys, so folding
     // by the non-aggregating items would build the wrong groups.
-    let Some(output) = fold_return(suffix, params, cypher_version) else {
+    let Some(output) = fold_return(suffix, params) else {
         return Ok(None);
     };
     let items = output.items;
@@ -321,7 +318,6 @@ impl<'a> OneHopFold<'a> {
         // pattern is the single source).
         let rp = &path.rels[0];
         let params = output.params;
-        let cypher_version = output.cypher_version;
         // The canonical rel-edge policy (type expression and properties,
         // pattern_walk) — the seek must filter identically to the scan.
         // The staticness verdict is the fold's resolved fact (LABS-801),
@@ -330,7 +326,7 @@ impl<'a> OneHopFold<'a> {
             pattern: rp,
             filter: rel_filter,
         };
-        if !rel_edge_ok(graph, rid, hop, base, params, cypher_version)? {
+        if !rel_edge_ok(graph, rid, hop, base, params)? {
             return Ok(());
         }
         // A row-bound end must be this hop's far node; a null or
@@ -339,7 +335,7 @@ impl<'a> OneHopFold<'a> {
         if !binding(&path.nodes[1], base).accepts(&eid) {
             return Ok(());
         }
-        if !node_ok(graph, eid, &path.nodes[1], base, params, cypher_version)? {
+        if !node_ok(graph, eid, &path.nodes[1], base, params)? {
             return Ok(());
         }
         let mut scratch = base.clone();
@@ -354,13 +350,13 @@ impl<'a> OneHopFold<'a> {
         // The canonical MATCH-predicate truthiness (`predicate_holds`):
         // a null or non-boolean answer does not hold.
         if let Some(where_clause) = where_clause {
-            if !predicate_holds(graph, &scratch, where_clause, params, cypher_version)? {
+            if !predicate_holds(graph, &scratch, where_clause, params)? {
                 return Ok(());
             }
         }
         let vals = key_items
             .iter()
-            .map(|p| eval(graph, &scratch, &p.expr, params, cypher_version))
+            .map(|p| eval(graph, &scratch, &p.expr, params))
             .collect::<Result<Vec<_>>>()?;
         let CachedKey { key, vals } = CachedKey::from_vals(vals);
         // ADR-0463 (LABS-781): the group-table landing charge. An
@@ -387,7 +383,7 @@ impl<'a> OneHopFold<'a> {
             }
         };
         for (agg, operand) in &mut entry.1 {
-            agg.offer(graph, &scratch, *operand, params, cypher_version, retained)?;
+            agg.offer(graph, &scratch, *operand, params, retained)?;
         }
         Ok(())
     }
@@ -419,14 +415,7 @@ impl<'a> OneHopFold<'a> {
             output,
             ..
         } = self;
-        if !node_ok(
-            graph,
-            sid,
-            &path.nodes[0],
-            row,
-            output.params,
-            output.cypher_version,
-        )? {
+        if !node_ok(graph, sid, &path.nodes[0], row, output.params)? {
             return Ok(None);
         }
         let mut base = row.clone();
@@ -468,7 +457,6 @@ impl<'a> OneHopFold<'a> {
                 &conjuncts,
                 row,
                 self.output.params,
-                self.output.cypher_version,
             ) {
                 FoldSeek::Decline => {}
                 FoldSeek::Gone => continue,
@@ -494,7 +482,6 @@ impl<'a> OneHopFold<'a> {
                 &self.path.nodes[0],
                 row,
                 self.output.params,
-                self.output.cypher_version,
                 &[],
             )?;
             for sid in starts {

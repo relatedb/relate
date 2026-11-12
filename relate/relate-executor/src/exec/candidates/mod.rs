@@ -44,7 +44,6 @@ pub(crate) fn rel_seek_expr(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<RelId> {
     let Expr::Binary { op, left, right } = expr else {
         return None;
@@ -53,7 +52,7 @@ pub(crate) fn rel_seek_expr(
         return None;
     }
     let to_id: IdConversion = id_fn_conversion(var, left, relate_core::parse_rel_element_id)?;
-    let val = eval(graph, row, right, params, cypher_version).ok()?;
+    let val = eval(graph, row, right, params).ok()?;
     to_id.apply(&val)
 }
 
@@ -90,7 +89,6 @@ pub(crate) fn resolve_rel_seek(
     conjuncts: &[Expr],
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> SeekedRel {
     if rp.var_length {
         return SeekedRel::Decline;
@@ -103,7 +101,7 @@ pub(crate) fn resolve_rel_seek(
         Some(_) => return SeekedRel::Decline,
         None => match conjuncts
             .iter()
-            .find_map(|c| rel_seek_expr(v, c, graph, row, params, cypher_version))
+            .find_map(|c| rel_seek_expr(v, c, graph, row, params))
         {
             Some(rid) => rid,
             None => return SeekedRel::Decline,
@@ -365,7 +363,6 @@ pub(crate) fn node_ok(
     np: &NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     // Cypher keeps a deleted-but-bound entity addressable for the rest of
     // the query: when the row already binds this candidate's variable to
@@ -420,7 +417,7 @@ pub(crate) fn node_ok(
             let Some(labels) = view.labels(graph, id) else {
                 return Ok(false);
             };
-            if !label_expr_matches(graph, row, params, expr, &labels, false, cypher_version)? {
+            if !label_expr_matches(graph, row, params, expr, &labels, false)? {
                 return Ok(false);
             }
         }
@@ -432,14 +429,7 @@ pub(crate) fn node_ok(
         }
     }
     if np.properties.is_some() {
-        let want = pattern_match_props(
-            graph,
-            row,
-            np.properties.as_ref(),
-            &np.prop_keys,
-            params,
-            cypher_version,
-        )?;
+        let want = pattern_match_props(graph, row, np.properties.as_ref(), &np.prop_keys, params)?;
         for (key, v) in want {
             match view.prop(graph, id, &key) {
                 Some(have) if have.eq_non_null(&v) => {}

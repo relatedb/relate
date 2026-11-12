@@ -95,7 +95,7 @@ fn capped_answer(graph: &Graph, cypher: &str, seed: NodeId, pool: Pool, want: us
     let view = ExecGraph::read(graph);
     let mut tables = fresh_tables(&contract.nfa);
     let params = BTreeMap::new();
-    let ctx = ExecCtx::new(&view, &params, None);
+    let ctx = ExecCtx::new(&view, &params);
     capped_rows(
         ctx,
         seed,

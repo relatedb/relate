@@ -2,9 +2,8 @@
 //! clause creates. One home for both halves of the rule — the property-value
 //! half (`validate_create_self_reference`) and the CIP-156 dynamic
 //! label/type half (`check_dynamic_label_scope`) — because they are one
-//! Neo4j admission with one error text. ADR-0513 records the rule, its
-//! Cypher-5 carve-out and the conservative tier's deliberate
-//! under-approximation.
+//! Neo4j admission with one error text. ADR-0513 records the rule and the
+//! conservative tier's deliberate under-approximation.
 //!
 //! The scope-tracking pass ([`crate::validate::validate_variable_types`])
 //! applies the rule with the exact enclosing bindings — the top level and
@@ -23,7 +22,7 @@
 
 use relate_error::{EngineError, ErrorKind};
 use relate_names::SmallName;
-use relate_parser::{Clause, Expr, LabelExpr, NodePattern, PatternElement, Statement};
+use relate_parser::{Clause, Expr, LabelExpr, NodePattern, PatternElement, PatternPath, Statement};
 
 use crate::ast::collect::{
     clause_introduced_names, clause_patterns, pattern_vars, walk_expr_scoped, ScopedExprVisitor,
@@ -64,17 +63,72 @@ pub(crate) fn declares_shape(node: &NodePattern) -> bool {
     node.label_expr.is_some() || node.has_properties
 }
 
-/// The exact-scope tier: `enclosing` is every name bound before `clauses`,
-/// so a bare element variable that is already bound is a reference, never a
-/// declaration. `FOREACH` bodies share the enclosing scope and arrive here
-/// through the scope-tracking pass's own recursion. The set is consulted by
-/// reference — the caller keeps owning it.
+/// The tier a 42I58 self-reference scan runs at: one value carrying every
+/// fact the tier varies. The exact tier holds the caller's enclosing
+/// bindings by reference; the conservative tier holds none — it cannot see
+/// a nested body's correlated outer bindings, so it never consults a
+/// fabricated empty set.
+#[derive(Clone, Copy)]
+enum SelfReferenceTier<'a> {
+    /// The exact-scope tier: `enclosing` is every name bound before
+    /// `clauses`, so a bare element variable that is already bound is a
+    /// reference, never a declaration. `FOREACH` bodies share the
+    /// enclosing scope and arrive here through the scope-tracking pass's
+    /// own recursion. The set is consulted by reference — the caller keeps
+    /// owning it.
+    Exact {
+        enclosing: &'a IdentHashSet<SmallName>,
+    },
+    /// The scope-free battery's tier: the caller cannot see a nested body's
+    /// correlating outer bindings, so only an unambiguous declaration
+    /// counts as created. The under-approximation is deliberate and
+    /// recorded in ADR-0513 §Consequences.
+    Conservative,
+}
+
+impl SelfReferenceTier<'_> {
+    /// The declaration predicate and the MERGE inclusion — the tier's one
+    /// correlated pair, derived together in a single match. Never two
+    /// independently-settable parameters: a tier fixes both facts or
+    /// neither.
+    fn rules(self) -> (fn(&NodePattern) -> bool, bool) {
+        match self {
+            SelfReferenceTier::Exact { .. } => (|_| true, true),
+            SelfReferenceTier::Conservative => (declares_shape, false),
+        }
+    }
+
+    /// Whether `name` was bound before the clause list: the exact tier
+    /// consults the caller's set; the conservative tier sees no enclosing
+    /// binding at all.
+    fn bound_before(self, name: &SmallName) -> bool {
+        match self {
+            SelfReferenceTier::Exact { enclosing } => enclosing.contains(name),
+            SelfReferenceTier::Conservative => false,
+        }
+    }
+}
+
+/// The exact-scope tier over one clause's patterns: `enclosing` is every
+/// name bound before the clause, so a bare element variable that is
+/// already bound is a reference, never a declaration. `FOREACH` bodies
+/// share the enclosing scope and arrive here through the scope-tracking
+/// pass's own recursion. The clause-list shape is the conservative
+/// battery's alone (it spans whole nested bodies); every exact-tier caller
+/// holds one clause, so this entry takes exactly its patterns.
 pub(crate) fn validate_create_self_reference(
-    clauses: &[Clause],
+    patterns: &[PatternPath],
     enclosing: &IdentHashSet<SmallName>,
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
-    validate_create_self_reference_with(clauses, enclosing, |_| true, true, cypher_version)
+    // One clause: nothing earlier in a list exists, so the introduced set
+    // stays empty through the scan.
+    let mut created = IdentHashSet::default();
+    scan_patterns(
+        patterns,
+        SelfReferenceTier::Exact { enclosing },
+        &IdentHashSet::default(),
+        &mut created,
+    )
 }
 
 /// The scope-free battery's tier: the caller cannot see a nested body's
@@ -83,89 +137,90 @@ pub(crate) fn validate_create_self_reference(
 /// ADR-0513 §Consequences.
 pub(crate) fn validate_create_self_reference_conservative(
     clauses: &[Clause],
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     // MERGE is excluded: in a body whose correlated outer bindings this
     // tier cannot see, a merged element with a label/property map may be a
     // reference to an imported entity rather than a declaration, so only the
     // exact tier can decide it.
-    validate_create_self_reference_with(
-        clauses,
-        &IdentHashSet::default(),
-        declares_shape,
-        false,
-        cypher_version,
-    )
+    validate_create_self_reference_with(clauses, SelfReferenceTier::Conservative)
 }
 
-/// One body over the two tiers. `declares_node` is the tier's one varying
-/// fact: which node elements count as declarations. A name is "bound before
-/// the clause" when it sits in `enclosing` (the caller's set, by reference)
-/// or in `introduced`, the names earlier clauses of this list bound — the
-/// conservative battery spans a whole clause list, while the exact tier's
-/// caller passes a one-clause slice that leaves `introduced` empty, so
-/// neither tier ever clones the enclosing set.
+/// The conservative battery's whole-list span. A name is "bound before the
+/// clause" when the tier says so or it sits in `introduced`, the names
+/// earlier clauses of this list bound — a pattern variable that is already
+/// bound is a *reference* to the existing entity, not a new one
+/// (`MATCH (a) … CREATE (a)-[:R]->(b)`), and reading it in a property
+/// value is legal. The exact tier never reaches this body: its callers
+/// hold one clause and enter through [`validate_create_self_reference`]'s
+/// pattern entry directly, so neither tier ever clones the enclosing set.
 fn validate_create_self_reference_with(
     clauses: &[Clause],
-    enclosing: &IdentHashSet<SmallName>,
-    declares_node: fn(&NodePattern) -> bool,
-    include_merge: bool,
-    cypher_version: Option<u32>,
+    tier: SelfReferenceTier<'_>,
 ) -> Result<(), EngineError> {
-    // Cypher 5 only warns (01N00) and binds the earlier pattern element; the
-    // rule owns its dialect gate so no caller can forget it.
-    if relate_core::is_cypher5(cypher_version) {
-        return Ok(());
-    }
+    let (_, include_merge) = tier.rules();
     let mut introduced: IdentHashSet<SmallName> = IdentHashSet::default();
     for clause in clauses {
-        // Names bound before each CREATE/MERGE: a pattern variable that is
-        // already bound is a *reference* to the existing entity, not a new
-        // one (`MATCH (a) … CREATE (a)-[:R]->(b)`), and reading it in a
-        // property value is legal.
-        let patterns: Vec<&relate_parser::PatternPath> = match clause {
-            Clause::Create(create) => create.pattern.iter().collect(),
+        let mut created: IdentHashSet<SmallName> = IdentHashSet::default();
+        match clause {
+            Clause::Create(create) => {
+                scan_patterns(&create.pattern, tier, &introduced, &mut created)?;
+            }
             // MERGE's pattern property maps are the same-clause reads the
             // rule rejects when the merged entity is a fresh declaration
             // (`MATCH (a) WITH a AS b MERGE (a {prop: a.prop})`, live
             // 2026.10 42I58). Its ON CREATE/ON MATCH SET values read the
             // merged entity after the merge, which live allows.
-            Clause::Merge(merge) if include_merge => vec![&merge.pattern],
+            Clause::Merge(merge) if include_merge => {
+                scan_patterns(
+                    std::slice::from_ref(&merge.pattern),
+                    tier,
+                    &introduced,
+                    &mut created,
+                )?;
+            }
             _ => {
                 introduced.extend(clause_introduced_names(clause));
                 continue;
             }
-        };
-        let mut created: IdentHashSet<SmallName> = IdentHashSet::default();
-        let mut collector = ReadCollector::default();
-        for path in patterns {
-            // A CREATE/MERGE path name is always a fresh binding.
-            created.extend(path.path_names().cloned());
-            for element in &path.elements {
-                collect_new_element_vars(
-                    element,
-                    enclosing,
-                    &introduced,
-                    declares_node,
-                    &mut created,
-                );
-                collector.element(element)?;
-            }
-        }
-        if let Some(name) = smallest_created_read(&collector.reads, &created) {
-            return Err(name.with_str(self_reference_error));
         }
         introduced.extend(created);
     }
     Ok(())
 }
 
+/// One clause's patterns under either tier: the created set and the
+/// same-clause reads, intersected once — the body both entries share.
+/// `introduced` is the names earlier clauses of the enclosing list bound
+/// (empty for the exact tier's one-clause entry); `created` accumulates
+/// this clause's declarations for the caller's `introduced` roll-up.
+fn scan_patterns(
+    patterns: &[PatternPath],
+    tier: SelfReferenceTier<'_>,
+    introduced: &IdentHashSet<SmallName>,
+    created: &mut IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    let (declares_node, _) = tier.rules();
+    let mut collector = ReadCollector::default();
+    for path in patterns {
+        // A CREATE/MERGE path name is always a fresh binding.
+        created.extend(path.path_names().cloned());
+        for element in &path.elements {
+            collect_new_element_vars(element, tier, introduced, declares_node, created);
+            collector.element(element)?;
+        }
+    }
+    if let Some(name) = smallest_created_read(&collector.reads, created) {
+        return Err(name.with_str(self_reference_error));
+    }
+    Ok(())
+}
+
 /// Collect the element variables a CREATE pattern introduces fresh (not
-/// already bound before the clause: neither in the caller's enclosing set
+/// already bound before the clause: neither bound before the clause list
 /// nor among the names earlier clauses of the list introduced).
 fn collect_new_element_vars(
     element: &PatternElement,
-    enclosing: &IdentHashSet<SmallName>,
+    tier: SelfReferenceTier<'_>,
     introduced: &IdentHashSet<SmallName>,
     declares_node: fn(&NodePattern) -> bool,
     out: &mut IdentHashSet<SmallName>,
@@ -173,7 +228,7 @@ fn collect_new_element_vars(
     match element {
         PatternElement::Node(node) => {
             if let Some(name) = &node.variable {
-                if declares_node(node) && !enclosing.contains(name) && !introduced.contains(name) {
+                if declares_node(node) && !tier.bound_before(name) && !introduced.contains(name) {
                     out.insert(name.clone());
                 }
             }
@@ -182,14 +237,14 @@ fn collect_new_element_vars(
             // A relationship variable in CREATE is always a declaration: a
             // bound one is `VariableAlreadyBound`.
             if let Some(name) = &rel.variable {
-                if !enclosing.contains(name) && !introduced.contains(name) {
+                if !tier.bound_before(name) && !introduced.contains(name) {
                     out.insert(name.clone());
                 }
             }
         }
         PatternElement::Quantified(quantified) => {
             for inner in &quantified.elements {
-                collect_new_element_vars(inner, enclosing, introduced, declares_node, out);
+                collect_new_element_vars(inner, tier, introduced, declares_node, out);
             }
         }
     }
@@ -655,9 +710,6 @@ mod tests {
             // A `CALL` body's imported bindings are references too.
             "MATCH (c) CALL (c) { CREATE (c)-[:R]->(:X {p: c.q}) } RETURN c",
             "MATCH (c) CALL { WITH c CREATE (c)-[:R]->(:X {p: c.q}) } RETURN c",
-            // The rule is Cypher-25-only: an explicit CYPHER 5 preamble is
-            // the 01N00 notification shape, not an error.
-            "CYPHER 5 CREATE (a {x: 1}), (b {y: a.x})",
             // ADR-0513 §Consequences: the conservative tier cannot see a
             // nested body's correlated outer bindings, so a *bare* declaration
             // inside `CALL { }` read by its own clause is not caught. Pinned
@@ -665,6 +717,23 @@ mod tests {
             "CALL { CREATE (a), (b {x: a.x}) RETURN b } RETURN 1",
         ] {
             assert_no_self_reference(query);
+        }
+    }
+
+    /// The rule holds under every preamble spelling: an explicit
+    /// `CYPHER 25` preamble (the one admitted version, ADR-0584) rejects
+    /// the same-clause read exactly like the unprefixed form.
+    #[test]
+    fn cypher_25_preamble_keeps_the_modern_rejection() {
+        for query in [
+            "CYPHER 25 CREATE (a {x: 1}), (b {y: a.x})",
+            "CREATE (a {x: 1}), (b {y: a.x})",
+            "CYPHER 25 MERGE (a {prop: a.prop})",
+        ] {
+            assert!(
+                self_reference(query).contains("cannot be created and referenced"),
+                "{query}"
+            );
         }
     }
 }

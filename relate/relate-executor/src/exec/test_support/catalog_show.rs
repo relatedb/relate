@@ -22,7 +22,7 @@ pub(crate) fn show_catalog_rows(graph: &Graph, query: &str) -> Vec<Row> {
         &clause,
         vec![Row::new()],
         &BTreeMap::new(),
-        QueryCtx::new(None, query),
+        QueryCtx::new(query),
     )
     .expect("catalog rows")
 }

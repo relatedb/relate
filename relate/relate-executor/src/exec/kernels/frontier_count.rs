@@ -57,7 +57,6 @@ pub(crate) fn try_fold_walk_count(
     rows: &[Row],
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
     let Some(Clause::Match {
         optional: false,
@@ -101,7 +100,7 @@ pub(crate) fn try_fold_walk_count(
     if !contract.target.unfiltered() || !deterministic(&contract.nfa) {
         return Ok(None);
     }
-    let ctx = ExecCtx::new(graph, params, cypher_version);
+    let ctx = ExecCtx::new(graph, params);
     let residual = Residual {
         conjuncts: &conjuncts,
         scope: &match_scope(entering, patterns),

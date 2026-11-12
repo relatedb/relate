@@ -273,18 +273,18 @@ impl BulkWrite {
             }
             TargetsInner::Set { items, factors } => {
                 self.run_row_space(view, targets, factors, cursor, budget, |view, row| {
-                    apply_sets(view, row, items, params, self.cypher_version)
+                    apply_sets(view, row, items, params)
                 })
             }
             TargetsInner::Remove { items, factors } => {
                 self.run_row_space(view, targets, factors, cursor, budget, |view, row| {
-                    let resolved = resolve_removes(view, row, items, params, self.cypher_version)?;
+                    let resolved = resolve_removes(view, row, items, params)?;
                     apply_resolved_removes(view, resolved)
                 })
             }
             TargetsInner::Create { patterns, factors } => {
                 self.run_row_space(view, targets, factors, cursor, budget, |view, row| {
-                    create_patterns(view, row, patterns, params, self.cypher_version)
+                    create_patterns(view, row, patterns, params)
                 })
             }
         }

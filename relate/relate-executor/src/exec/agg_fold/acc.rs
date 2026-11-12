@@ -104,13 +104,9 @@ impl StreamAgg {
         row: &Row,
         operand: Option<&Expr>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
         retained: &mut crate::overlay::RetainedTotal,
     ) -> Result<()> {
-        let value = match operand {
-            None => None,
-            Some(e) => Some(eval(graph, row, e, params, cypher_version)?),
-        };
+        let value = operand.map(|e| eval(graph, row, e, params)).transpose()?;
         self.offer_value(value.as_ref(), graph, retained)
     }
 

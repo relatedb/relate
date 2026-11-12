@@ -7,7 +7,6 @@ use relate_core::{Error, Result, Value};
 use relate_model::EntityKind;
 use relate_parser::RoleModifier;
 
-use crate::ctx::QueryCtx;
 use crate::eval::eval;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
@@ -42,8 +41,8 @@ fn entity_variable(entity: EntityKind) -> &'static str {
 /// ([`Graph::named_indexes`] then [`Graph::named_constraints`] — the
 /// name-keyed catalog's order; the catalog keeps no creation sequence).
 /// Every statement is the `SHOW INDEXES` / `SHOW CONSTRAINTS`
-/// `createStatement` rendering with no `CYPHER 5` preamble — the
-/// dialect's full form, since a schema mirror must recreate, not hide.
+/// `createStatement` rendering — the dialect's full form, since a schema
+/// mirror must recreate, not hide.
 /// An entry whose renderer returns `None` — exactly the rows where the
 /// SHOW column is NULL (a legacy detail-less index row, a
 /// graph-type-managed dependent constraint, a kind with no standalone
@@ -67,7 +66,15 @@ pub fn catalog_create_statements(graph: &Graph) -> Vec<String> {
             )
         })
         .chain(snapshot.constraints.iter().filter_map(|def| {
-            constraints::constraint_ddl_statement(def, &current, &data.derived_constraints)
+            // The schema mirror's constraint statement (ADR-0481 §3) is
+            // the SHOW row's own binding — a mirror must recreate, not
+            // hide: `constraint_statement_for` classifies and renders
+            // exactly as the `SHOW CONSTRAINTS` row does, and `None` (a
+            // graph-type-managed dependent constraint, a kind with no
+            // standalone CREATE form) omits the entry rather than
+            // fabricate a statement, its schema already carried by the
+            // graph type's canonical text.
+            constraints::constraint_statement_for(def, &current, &data.derived_constraints)
         }))
         .collect()
 }
@@ -340,12 +347,7 @@ impl SettingFilter {
 /// list entry treated as a non-existing setting, and an empty list meaning
 /// "no filter". Every other shape is the data-exception type failure Neo4j
 /// raises (`TypeError`), never a silently empty selection.
-fn setting_filter(value: Value, cypher5: bool) -> Result<SettingFilter> {
-    if value.is_null() && cypher5 {
-        return Err(Error::invalid_argument_type(
-            "setting name must be STRING or LIST<STRING>",
-        ));
-    }
+fn setting_filter(value: Value) -> Result<SettingFilter> {
     match value {
         Value::Null => Ok(SettingFilter::Names(Vec::new())),
         Value::String(name) => Ok(SettingFilter::Names(vec![name])),
@@ -371,7 +373,6 @@ pub(crate) fn show_settings_rows(
     rows: Vec<Row>,
     clause: &relate_parser::Clause,
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     // The catalog is built once per statement; a composed SHOW SETTINGS may
     // see many input rows beneath it.
@@ -386,29 +387,21 @@ pub(crate) fn show_settings_rows(
             catalog.into_iter().map(|(_, row)| row).collect(),
             clause,
             params,
-            qctx.cypher_version,
         );
     };
     let lowered = relate_front::lower_expr(names_expr)?;
     // Each input row selects its own names; the compositions concatenate and
     // the clause's paging/WHERE run once over that flattened cross join — a
     // per-row `LIMIT` would repeat for every input row.
-    super::catalog::project_catalog_by_row(
-        graph,
-        rows,
-        clause,
-        params,
-        qctx.cypher_version,
-        |row| {
-            let value = eval(graph, row, &lowered, params, qctx.cypher_version)?;
-            let filter = setting_filter(value, qctx.is_cypher5())?;
-            Ok(catalog
-                .iter()
-                .filter(|(name, _)| filter.admits(name))
-                .map(|(_, row)| row.clone())
-                .collect())
-        },
-    )
+    super::catalog::project_catalog_by_row(graph, rows, clause, params, |row| {
+        let value = eval(graph, row, &lowered, params)?;
+        let filter = setting_filter(value)?;
+        Ok(catalog
+            .iter()
+            .filter(|(name, _)| filter.admits(name))
+            .map(|(_, row)| row.clone())
+            .collect())
+    })
 }
 
 pub(crate) fn show_graph_type_rows(

@@ -174,52 +174,48 @@ fn with_star_may_relist_an_imported_name() {
 }
 
 #[test]
-fn merge_property_map_may_reference_the_merged_entity() {
-    // Cypher 25 rejects the same-clause reference (42I58); the Cypher 5
-    // preamble keeps the deprecated lenient behavior with its 01N00 warning.
+fn merge_property_map_rejects_the_merged_entity_reference_under_every_spelling() {
+    // The same-clause reference is the 42I58 error under every spelling —
+    // the deprecated Cypher-5 leniency is gone, and the one admitted
+    // `CYPHER 25` preamble (ADR-0584) rejects it exactly like the
+    // unprefixed form.
     let mut conn = connection();
     run(&mut conn, "CREATE ({prop: 'x'})");
-    let error = conn
-        .query("MATCH (a) WITH a AS shadow MERGE (a {prop: a.prop}) RETURN a.prop AS prop")
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("cannot be created and referenced"),
-        "{error}"
-    );
-    let legacy = conn
-        .query("CYPHER 5 MATCH (a) WITH a AS shadow MERGE (a {prop: a.prop}) RETURN a.prop AS prop")
-        .unwrap();
-    assert_eq!(legacy.rows, vec![vec![Value::String("x".into())]]);
+    for query in [
+        "MATCH (a) WITH a AS shadow MERGE (a {prop: a.prop}) RETURN a.prop AS prop",
+        "CYPHER 25 MATCH (a) WITH a AS shadow MERGE (a {prop: a.prop}) RETURN a.prop AS prop",
+    ] {
+        let error = conn.query(query).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be created and referenced"),
+            "{query}: {error}"
+        );
+    }
     // The graph still holds exactly the seeded node.
     let nodes = run(&mut conn, "MATCH (n) RETURN count(*) AS c");
     assert_eq!(nodes.rows, vec![vec![Value::Int(1)]]);
 }
 
 #[test]
-fn merge_property_map_reference_for_relationships() {
+fn merge_property_map_reference_for_relationships_is_rejected_under_every_spelling() {
     let mut conn = connection();
     run(&mut conn, "CREATE ()-[:R {prop: 'x'}]->()");
-    let error = conn
-        .query(
-            "MATCH ()-[r]->() WITH r AS shadow MERGE ()-[r:R {prop: r.prop}]->() \
-             RETURN r.prop AS prop",
-        )
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("cannot be created and referenced"),
-        "{error}"
-    );
-    let legacy = conn
-        .query(
-            "CYPHER 5 MATCH ()-[r]->() WITH r AS shadow MERGE ()-[r:R {prop: r.prop}]->() \
-             RETURN r.prop AS prop",
-        )
-        .unwrap();
-    assert_eq!(legacy.rows, vec![vec![Value::String("x".into())]]);
+    for query in [
+        "MATCH ()-[r]->() WITH r AS shadow MERGE ()-[r:R {prop: r.prop}]->() \
+         RETURN r.prop AS prop",
+        "CYPHER 25 MATCH ()-[r]->() WITH r AS shadow MERGE ()-[r:R {prop: r.prop}]->() \
+         RETURN r.prop AS prop",
+    ] {
+        let error = conn.query(query).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be created and referenced"),
+            "{query}: {error}"
+        );
+    }
 }
 
 #[test]

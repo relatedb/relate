@@ -11,7 +11,7 @@ use crate::eval::{eval, is_agg_expr, var_prop};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::order::skip_limit_count;
+use super::order::resolve_page_bounds;
 use super::sink::SinkProjection;
 
 /// Stop MATCH once `RETURN/WITH DISTINCT … LIMIT n` has enough distinct keys.
@@ -19,7 +19,6 @@ use super::sink::SinkProjection;
 pub(crate) struct DistinctLimitCap<'a> {
     items: &'a [Projection],
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     seen: DistinctSet,
     want: usize,
 }
@@ -37,7 +36,7 @@ impl DistinctLimitCap<'_> {
         // `DistinctSet::insert_row` alone.
         let mut vals = Vec::with_capacity(self.items.len());
         for p in self.items {
-            vals.push(eval(graph, row, &p.expr, self.params, self.cypher_version)?);
+            vals.push(eval(graph, row, &p.expr, self.params)?);
         }
         self.seen.insert_row(&vals)?;
         Ok(())
@@ -114,27 +113,35 @@ impl ReturnWithSuffix<'_> {
             .any(|p| matches!(p.expr, Expr::Star) || is_agg_expr(&p.expr))
     }
 
+    /// Whether the suffix's clause outputs one row per matched row — the
+    /// per-match caps' shared fact: no explicit GROUP BY (grouped rows,
+    /// CIP-236), no following WHERE (its filter re-filters rows the walk
+    /// would have to produce whole), and no `*` or aggregate item
+    /// (grouped output again). [`row_limit_cap`] and
+    /// [`distinct_limit_cap`] both read this; each keeps only its own
+    /// polarity and its own `ORDER BY`/`SKIP` gates.
+    fn one_row_per_match(&self) -> bool {
+        self.group_by.is_none() && self.where_clause.is_none() && !self.star_or_aggregate()
+    }
+
     /// The row count the suffix's `SKIP s LIMIT n` truncates the clause's
     /// output to (`s + n`): the want both row-limit caps share. `None`
-    /// when the suffix carries no `LIMIT` or the add overflows.
-    /// `distinct_limit_cap` reaches this only after declining any `SKIP`,
-    /// so its want there is the bare `LIMIT` count.
+    /// when the suffix carries no `LIMIT` or the add overflows. Both
+    /// bounds resolve through the one paging spelling
+    /// ([`resolve_page_bounds`]; a missing `SKIP` defaults to 0), so the
+    /// cap's bound errors are the projection's own. `distinct_limit_cap`
+    /// reaches this only after declining any `SKIP`, so its want there is
+    /// the bare `LIMIT` count.
     pub(crate) fn skip_limit_want(
         &self,
         graph: &ExecGraph<'_>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<Option<usize>> {
-        let Some(lim) = self.limit else {
+        if self.limit.is_none() {
             return Ok(None);
-        };
-        let empty = Row::new();
-        let skip_n = match self.skip {
-            Some(e) => skip_limit_count(&eval(graph, &empty, e, params, cypher_version)?)?,
-            None => 0,
-        };
-        let limit_n = skip_limit_count(&eval(graph, &empty, lim, params, cypher_version)?)?;
-        Ok(skip_n.checked_add(limit_n))
+        }
+        let (skip_n, limit_n) = resolve_page_bounds(graph, params, self.skip, self.limit)?;
+        Ok(limit_n.and_then(|limit_n| skip_n.checked_add(limit_n)))
     }
 }
 
@@ -142,7 +149,6 @@ pub(crate) fn distinct_limit_cap<'a>(
     suffix: &'a [Clause],
     graph: &ExecGraph<'_>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<DistinctLimitCap<'a>>> {
     let Some(clause) = suffix.first() else {
         return Ok(None);
@@ -150,22 +156,15 @@ pub(crate) fn distinct_limit_cap<'a>(
     let Some(s) = return_with_suffix(clause) else {
         return Ok(None);
     };
-    if !s.distinct
-        || s.group_by.is_some()
-        || !s.order.is_empty()
-        || s.skip.is_some()
-        || s.where_clause.is_some()
-        || s.star_or_aggregate()
-    {
+    if !s.distinct || !s.one_row_per_match() || !s.order.is_empty() || s.skip.is_some() {
         return Ok(None);
     }
-    let Some(want) = s.skip_limit_want(graph, params, cypher_version)? else {
+    let Some(want) = s.skip_limit_want(graph, params)? else {
         return Ok(None);
     };
     Ok(Some(DistinctLimitCap {
         items: s.items,
         params,
-        cypher_version,
         seen: DistinctSet::default(),
         want,
     }))
@@ -276,12 +275,37 @@ pub(crate) fn ordered_expand_pattern(patterns: &[PathPattern], rel_var: &SmallNa
         && rp.variable.as_ref() == Some(rel_var)
 }
 
+/// The decline vocabulary and the want-to-counter tail both row-limit
+/// caps share (`ordered_limit_cap`'s and `plain_limit_cap`'s): the
+/// DISTINCT decline (the distinct cap owns that shape) plus the
+/// [`ReturnWithSuffix::one_row_per_match`] decline (grouped or re-filtered
+/// output is not one row per match), then the want both resolve through
+/// [`ReturnWithSuffix::skip_limit_want`], the decline of an empty want
+/// (`LIMIT 0`: nothing to halt on), and the `RowLimitCap` counter
+/// itself. Each cap function keeps only its own gates on top of this
+/// one plumbing.
+fn row_limit_cap(
+    suffix: &ReturnWithSuffix<'_>,
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+) -> Result<Option<RowLimitCap>> {
+    if suffix.distinct || !suffix.one_row_per_match() {
+        return Ok(None);
+    }
+    let Some(want) = suffix.skip_limit_want(graph, params)? else {
+        return Ok(None);
+    };
+    if want == 0 {
+        return Ok(None);
+    }
+    Ok(Some(RowLimitCap { want, produced: 0 }))
+}
+
 pub(crate) fn ordered_limit_cap(
     suffix: &[Clause],
     patterns: &[PathPattern],
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     input_rows: usize,
 ) -> Result<Option<RowLimitCap>> {
     if input_rows != 1 || graph.has_write_overlay() {
@@ -293,22 +317,13 @@ pub(crate) fn ordered_limit_cap(
     let Some(s) = return_with_suffix(clause) else {
         return Ok(None);
     };
-    if s.distinct || s.group_by.is_some() || s.where_clause.is_some() || s.star_or_aggregate() {
-        return Ok(None);
-    }
     let Some(rel_var) = order_rel_ts_desc_var(s.order, s.items) else {
         return Ok(None);
     };
     if !ordered_expand_pattern(patterns, rel_var) {
         return Ok(None);
     }
-    let Some(want) = s.skip_limit_want(graph, params, cypher_version)? else {
-        return Ok(None);
-    };
-    if want == 0 {
-        return Ok(None);
-    }
-    Ok(Some(RowLimitCap { want, produced: 0 }))
+    row_limit_cap(&s, graph, params)
 }
 
 /// Stop MATCH once an un-ordered `RETURN/WITH … [SKIP s] LIMIT n` has
@@ -322,16 +337,14 @@ pub(crate) fn ordered_limit_cap(
 /// the walk's sink filters ahead of the count, so the counter moves only
 /// on rows the eager build would keep and the halt still lands on the
 /// eager prefix — the walk stops building rider rows the projection
-/// would drop. Declines
-/// DISTINCT (the distinct cap owns that shape), any `ORDER BY` (ordered
-/// truncation is `ordered_limit_cap`'s shape — the top rows of a sort are
-/// not the walk's prefix), an explicit GROUP BY (grouped output is not
-/// one row per match), a following WHERE, `*`, and aggregate items.
+/// would drop. This cap's own gate is the empty `ORDER BY` (ordered
+/// truncation is `ordered_limit_cap`'s shape — the top rows of a sort
+/// are not the walk's prefix); every other decline and the
+/// want-to-counter tail are the shared [`row_limit_cap`].
 fn plain_limit_cap(
     suffix: &[Clause],
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<RowLimitCap>> {
     let Some(clause) = suffix.first() else {
         return Ok(None);
@@ -339,21 +352,10 @@ fn plain_limit_cap(
     let Some(s) = return_with_suffix(clause) else {
         return Ok(None);
     };
-    if s.distinct
-        || s.group_by.is_some()
-        || !s.order.is_empty()
-        || s.where_clause.is_some()
-        || s.star_or_aggregate()
-    {
+    if !s.order.is_empty() {
         return Ok(None);
     }
-    let Some(want) = s.skip_limit_want(graph, params, cypher_version)? else {
-        return Ok(None);
-    };
-    if want == 0 {
-        return Ok(None);
-    }
-    Ok(Some(RowLimitCap { want, produced: 0 }))
+    row_limit_cap(&s, graph, params)
 }
 
 /// The one fact the clause filter's placement rides: `true` when the
@@ -389,18 +391,16 @@ pub(crate) fn match_limit_cap<'a>(
     where_clause: Option<&Expr>,
     graph: &ExecGraph<'_>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     input_rows: usize,
 ) -> Result<Option<MatchCap<'a>>> {
     if where_clause.is_some() {
-        return Ok(plain_limit_cap(suffix, graph, params, cypher_version)?.map(MatchCap::Plain));
+        return Ok(plain_limit_cap(suffix, graph, params)?.map(MatchCap::Plain));
     }
-    if let Some(o) = ordered_limit_cap(suffix, patterns, graph, params, cypher_version, input_rows)?
-    {
+    if let Some(o) = ordered_limit_cap(suffix, patterns, graph, params, input_rows)? {
         return Ok(Some(MatchCap::Ordered(o)));
     }
-    if let Some(p) = plain_limit_cap(suffix, graph, params, cypher_version)? {
+    if let Some(p) = plain_limit_cap(suffix, graph, params)? {
         return Ok(Some(MatchCap::Plain(p)));
     }
-    Ok(distinct_limit_cap(suffix, graph, params, cypher_version)?.map(MatchCap::Distinct))
+    Ok(distinct_limit_cap(suffix, graph, params)?.map(MatchCap::Distinct))
 }

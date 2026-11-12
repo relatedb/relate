@@ -73,14 +73,6 @@ pub use value::{
 pub type NodeId = i64;
 pub type RelId = i64;
 
-/// The dialect fact on its own: true when `cypher_version` is an explicit
-/// `CYPHER 5` preamble (CIP-150). The one spelling of the rule — the
-/// executor's evaluation context and the front end's dialect gates both read
-/// it, so the two cannot drift.
-pub fn is_cypher5(cypher_version: Option<u32>) -> bool {
-    cypher_version == Some(5)
-}
-
 /// Whether `id` belongs to a CIP-257 **virtual** entity — a graph-type
 /// projection synthesized with a negative id and carried by its value alone
 /// (it has no store entry). Persisted ids are non-negative

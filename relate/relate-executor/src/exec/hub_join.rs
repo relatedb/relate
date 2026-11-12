@@ -225,7 +225,7 @@ pub(super) fn try_hub_join(
             for &s in &merge.bound_slots {
                 merged.insert(b_names[s].to_string(), b_row.values()[s].clone());
             }
-            if !residual_ok(ctx.graph, &merged, ctx.params, ctx.cypher_version, residual)? {
+            if !residual_ok(ctx.graph, &merged, ctx.params, residual)? {
                 continue;
             }
             out.push(merged);

@@ -154,3 +154,13 @@ and cannot pass against it.
   `validate_create_self_reference` (`validate/self_reference.rs`), and
   end-to-end 22N01 pins in `cypherlite/tests/write_validation.rs` (CREATE and
   MERGE, start and end positions).
+
+## Later references
+
+ADR-0584 removes Decision 1's CYPHER-5 arm — "The rule remains
+Cypher-25-only; an explicit `CYPHER 5` preamble keeps the 01N00 warning
+semantics." With CYPHER 25 the only admitted version, a preamble can no
+longer select Cypher 5, the stand-down is unreachable, and the
+create-self-reference rule applies to every statement. The rest of this
+ADR — Decision 1's rule itself, Decision 2, and the two-tier scope
+tracking — stands.

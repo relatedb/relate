@@ -587,7 +587,6 @@ mod tests {
             ]],
             union_all: Vec::new(),
             next: None,
-            cypher_version: None,
             use_target: None,
         }
     }

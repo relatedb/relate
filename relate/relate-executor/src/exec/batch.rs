@@ -77,7 +77,7 @@ use crate::row::Row;
 use super::agg_fold::is_pred_op;
 use super::candidates::node_ok;
 use super::chunk::{Chunk, Column, ColumnZone, CHUNK_ROWS};
-use super::pushdown::{flatten_and_owned, match_scope, Residual};
+use super::pushdown::flatten_and_owned;
 
 /// The chunk's binding slot: column 0 carries the scan variable's node
 /// binding, the predicate property columns follow. The breaker's
@@ -124,31 +124,14 @@ pub(crate) fn try_scan_filter_batch(
     };
     #[cfg(test)]
     batch_engaged();
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     // The walk-start fact (LABS-369) the per-row path records per walk:
     // this clause's only walk starts at the pattern's only element,
     // forward, the un-optimised default — recorded once, the way the
     // single driving row records it once.
     super::record_walk_start(WalkStart::seed_side_forward());
     let seed = &rows[0];
-    let scope = match_scope(seed, patterns);
-    let residual = Residual {
-        conjuncts: &conjuncts,
-        scope: &scope,
-    };
-    let candidates = node_candidates(
-        graph,
-        plan.node,
-        seed,
-        params,
-        cypher_version,
-        residual.conjuncts,
-    )?;
+    let candidates = node_candidates(graph, plan.node, seed, params, &conjuncts)?;
     // LABS-1452: the plain cap's want bounds the output, so the chain stops
     // once that many kept rows exist; no cap is `None` and the chain runs
     // to the end, as before. The test hook below stands the pushdown down
@@ -167,7 +150,7 @@ pub(crate) fn try_scan_filter_batch(
         batch.clear();
         while batch.len() < size {
             let Some(id) = candidates.next() else { break };
-            if node_ok(graph, id, plan.node, seed, params, cypher_version)? {
+            if node_ok(graph, id, plan.node, seed, params)? {
                 batch.push(id);
             }
         }
@@ -382,12 +365,7 @@ fn scan_chunk(graph: &ExecGraph<'_>, plan: &BatchPlan<'_>, batch: &[NodeId]) -> 
 /// check first (LABS-645), then the rows; a row the conjunct drops is
 /// gone before the next conjunct runs.
 fn filter_chunk(ctx: ExecCtx<'_>, plan: &BatchPlan<'_>, chunk: &Chunk) -> Result<Vec<usize>> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     // The bound evaluates against a row with no bindings — it is
     // variable-free by the gate, so the row it cannot read is inert; this
     // is the seed-row evaluation the per-row path makes against each
@@ -403,7 +381,7 @@ fn filter_chunk(ctx: ExecCtx<'_>, plan: &BatchPlan<'_>, chunk: &Chunk) -> Result
                 survivors = apply_null(chunk.column(*slot), *is_null, survivors);
             }
             BatchPred::Cmp { slot, op, bound } => {
-                let bound_value = eval(graph, &seed, bound, params, cypher_version)?;
+                let bound_value = eval(graph, &seed, bound, params)?;
                 if bound_value.is_null() {
                     // A null bound makes every comparison null, and a
                     // `WHERE` drops null — every row goes, here, without

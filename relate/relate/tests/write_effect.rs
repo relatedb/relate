@@ -41,7 +41,7 @@ fn a_catalog_change_is_a_write_that_applied() {
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
     let result = conn
-        .query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5")
+        .query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25")
         .unwrap();
     assert_eq!(result.stats, relate::QueryStats::default());
     assert!(result.effect.attempted());

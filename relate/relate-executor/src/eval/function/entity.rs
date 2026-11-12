@@ -449,7 +449,7 @@ mod tests {
         name: &str,
         arg: Expr,
     ) -> Result<Value> {
-        function(graph, row, params, name, false, &[arg], None)
+        function(graph, row, params, name, false, &[arg])
     }
 
     #[test]

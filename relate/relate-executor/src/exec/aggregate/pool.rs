@@ -65,13 +65,12 @@ impl PoolState {
         graph: &ExecGraph<'_>,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<()> {
         if self.stopped {
             return Ok(());
         }
         graph.cancel_tick()?;
-        let value = eval(graph, row, site.operand, params, cypher_version)?;
+        let value = eval(graph, row, site.operand, params)?;
         if self.sample.offer(&value).is_err() {
             self.stopped = true;
             self.non_numeric = true;

@@ -4,13 +4,14 @@
 //! that rewrites an aggregate node into its folded value, and the fold
 //! itself, which delegates to the shared [`fold_aggregate`].
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Result, Value};
 use relate_ir::{AggregateKind, Expr};
 
 use super::{fold_aggregate, FoldInput};
-use crate::eval::{eval, expr_vars};
+use crate::eval::{eval, expr_vars, is_agg_expr};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -79,14 +80,25 @@ fn horizontal_call(expr: &Expr) -> Option<HorizontalCall<'_>> {
 /// length; the shorter pads with null and the fold skips nulls,
 /// ADR-0205), evaluate the argument once per cell, fold. A horizontal
 /// aggregate with no row-bound list variable stays the original node —
-/// the vertical aggregation path's input.
-pub(crate) fn rewrite_horizontal_aggregates(
+/// the vertical aggregation path's input. The tree a rewrite did not
+/// transform is borrowed back, never cloned, at every depth: the
+/// aggregate-free check ([`is_agg_expr`], the transform's own first
+/// decision) makes the hot paths — the per-candidate residual conjuncts,
+/// evaluated once per scanned node — pay nothing, where the pre-Cow shape
+/// cloned and dropped one full `Expr` per scanned node (GBL SF0.1 q8:
+/// the CONTAINS seed filter paid one full clone per forum), and the
+/// Cow-preserving child rebuild keeps that promise for a compound tree
+/// whose aggregates all declined. A transformed one owns its rebuilt
+/// nodes.
+pub(crate) fn rewrite_horizontal_aggregates<'e>(
     graph: &ExecGraph<'_>,
     row: &Row,
-    expr: &Expr,
+    expr: &'e Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Expr> {
+) -> Result<Cow<'e, Expr>> {
+    if !is_agg_expr(expr) {
+        return Ok(Cow::Borrowed(expr));
+    }
     match horizontal_call(expr) {
         Some(call) => {
             let mut vars = HashSet::new();
@@ -100,7 +112,7 @@ pub(crate) fn rewrite_horizontal_aggregates(
                 .collect();
             // no row-bound list variable: the vertical path keeps this node
             let Some(len) = list_vars.iter().map(|(_, values)| values.len()).max() else {
-                return Ok(expr.clone());
+                return Ok(Cow::Borrowed(expr));
             };
             let mut values = Vec::new();
             for index in 0..len {
@@ -111,19 +123,40 @@ pub(crate) fn rewrite_horizontal_aggregates(
                         items.get(index).cloned().unwrap_or(Value::Null),
                     );
                 }
-                values.push(eval(graph, &iteration, call.arg, params, cypher_version)?);
+                values.push(eval(graph, &iteration, call.arg, params)?);
             }
             let value = horizontal_aggregate(call.kind, &call.name, values)?;
-            Ok(Expr::RuntimeValue(value))
+            Ok(Cow::Owned(Expr::RuntimeValue(value)))
         }
         // every other node — and a horizontal aggregate the list check
-        // declined — travels through the IR's canonical child rebuild;
-        // scope-bearing variants (pattern/subquery forms) carry their own
-        // structure and are leaves here, exactly as `Expr::children`
-        // skips them
-        None => expr.map_children(&mut |child| {
-            rewrite_horizontal_aggregates(graph, row, child, params, cypher_version)
-        }),
+        // declined — travels through the IR's canonical child rebuild,
+        // Cow-preserving: the children are rewritten first, and only a
+        // tree some child of which was rebuilt owns anything — a tree
+        // whose aggregates all declined, at any depth, borrows whole,
+        // exactly like the aggregate-free gate above. Scope-bearing
+        // variants (pattern/subquery forms) report no children, so they
+        // borrow untouched, as `Expr::children` skips them. Both walkers
+        // (`try_each_child` here, `map_children`'s rebuild) visit the
+        // same children in the same order, so the rewrite stream and the
+        // rebuild positions cannot drift.
+        None => {
+            let mut rewrites: Vec<Cow<'e, Expr>> = Vec::new();
+            expr.try_each_child::<relate_core::Error>(&mut |child| {
+                rewrites.push(rewrite_horizontal_aggregates(graph, row, child, params)?);
+                Ok(())
+            })?;
+            if rewrites.iter().all(|r| matches!(r, Cow::Borrowed(_))) {
+                return Ok(Cow::Borrowed(expr));
+            }
+            let mut rewrites = rewrites.into_iter();
+            expr.map_children(&mut |_| {
+                Ok(rewrites
+                    .next()
+                    .expect("map_children rebuilds exactly the children each_child visited")
+                    .into_owned())
+            })
+            .map(Cow::Owned)
+        }
     }
 }
 
@@ -152,10 +185,62 @@ mod tests {
     /// Run `expr` through the rewrite and return the value it folded the
     /// row-bound list to, failing when the rewrite declined to fold it.
     fn rewritten(graph: &ExecGraph<'_>, row: &Row, expr: &Expr) -> Value {
-        match rewrite_horizontal_aggregates(graph, row, expr, &BTreeMap::new(), None).unwrap() {
-            Expr::RuntimeValue(value) => value,
+        match rewrite_horizontal_aggregates(graph, row, expr, &BTreeMap::new()).unwrap() {
+            Cow::Owned(Expr::RuntimeValue(value)) => value,
             other => panic!("horizontal aggregate was not folded: {other:?}"),
         }
+    }
+
+    /// The borrow contract: an aggregate-free tree and a declined
+    /// aggregate node (no row-bound list variable) both hand the original
+    /// node back — the hot paths the per-candidate conjuncts ride — while
+    /// only a folded tree owns a rebuilt node. A nested declined
+    /// aggregate borrows whole too (F-2-29): the child rebuild is
+    /// Cow-preserving, so a `max(…) > 1` candidate conjunct pays no clone
+    /// per scanned node either.
+    #[test]
+    fn untransformed_trees_borrow_instead_of_cloning() {
+        let graph = Graph::default();
+        let graph = ExecGraph::read(&graph);
+        let empty = Row::new();
+        // Aggregate-free: the transform's own is_agg_expr gate.
+        let plain = Expr::Binary {
+            op: relate_ir::BinaryOp::Gt,
+            left: Box::new(Expr::Variable("n".into())),
+            right: Box::new(Expr::Int(1)),
+        };
+        assert!(matches!(
+            rewrite_horizontal_aggregates(&graph, &empty, &plain, &BTreeMap::new()).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        // An aggregate node with no row-bound list variable: the vertical
+        // path's input stays the original node.
+        assert!(matches!(
+            rewrite_horizontal_aggregates(&graph, &empty, &agg_fn("max"), &BTreeMap::new())
+                .unwrap(),
+            Cow::Borrowed(_)
+        ));
+        // A nested declined aggregate: the compound tree around it borrows
+        // whole — the pre-Cow rebuild cloned every such node.
+        let nested = Expr::Binary {
+            op: relate_ir::BinaryOp::Gt,
+            left: Box::new(agg_fn("max")),
+            right: Box::new(Expr::Int(1)),
+        };
+        assert!(matches!(
+            rewrite_horizontal_aggregates(&graph, &empty, &nested, &BTreeMap::new()).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        // A folded tree still owns its rebuilt node.
+        let foldable = agg_fn("max");
+        let folded = rewrite_horizontal_aggregates(
+            &graph,
+            &list_row(vec![Value::Int(1), Value::Int(3)]),
+            &foldable,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(matches!(folded, Cow::Owned(_)));
     }
 
     /// ADR-0205 through the rewrite: a row-bound list folds per kind, nulls
@@ -198,7 +283,7 @@ mod tests {
         );
         let mixed = list_row(vec![duration(0, 0, 1), Value::Int(1)]);
         assert!(
-            rewrite_horizontal_aggregates(&graph, &mixed, &agg_fn("sum"), &BTreeMap::new(), None)
+            rewrite_horizontal_aggregates(&graph, &mixed, &agg_fn("sum"), &BTreeMap::new())
                 .is_err(),
             "mixing durations and numbers is a type error"
         );
@@ -213,7 +298,7 @@ mod tests {
         let row = list_row(vec![Value::String("x".into())]);
         for name in ["sum", "avg"] {
             assert!(
-                rewrite_horizontal_aggregates(&graph, &row, &agg_fn(name), &BTreeMap::new(), None)
+                rewrite_horizontal_aggregates(&graph, &row, &agg_fn(name), &BTreeMap::new())
                     .is_err(),
                 "a non-numeric {name} operand is a type error"
             );

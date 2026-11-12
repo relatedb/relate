@@ -25,7 +25,6 @@ use crate::eval::{eval, into_items, lazy_range, rows_logical_bytes, Items, Range
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::aggregate::Aggregation;
 use super::scope::call_scope_reads;
 
 pub(super) enum Source {
@@ -210,11 +209,11 @@ pub(super) enum Elements {
 
 impl Elements {
     /// Elements not yet yielded.
-    pub(super) fn remaining(&self) -> usize {
+    pub(super) fn remaining(&self) -> Result<usize> {
         match self {
-            Elements::Range(range) => usize::try_from(range.remaining()).unwrap_or(usize::MAX),
-            Elements::List(items) => items.len(),
-            Elements::One(value) => usize::from(value.is_some()),
+            Elements::Range(range) => range.remaining(),
+            Elements::List(items) => Ok(items.len()),
+            Elements::One(value) => Ok(usize::from(value.is_some())),
         }
     }
 }
@@ -239,24 +238,20 @@ pub(super) fn open_source(
     row: &Row,
     expression: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Elements> {
     if let Expr::Function { name, args, .. } = expression {
-        let plan =
-            name.with_str(|text| lazy_range(graph, row, params, text, args, cypher_version))?;
+        let plan = name.with_str(|text| lazy_range(graph, row, params, text, args))?;
         if let Some(plan) = plan {
             return Ok(Elements::Range(plan.values()));
         }
     }
-    Ok(
-        match eval(graph, row, expression, params, cypher_version)? {
-            Value::List(xs) => Elements::List(into_items(xs)),
-            // A null source yields no rows; any other scalar is its own
-            // single element.
-            Value::Null => Elements::One(None),
-            other => Elements::One(Some(other)),
-        },
-    )
+    Ok(match eval(graph, row, expression, params)? {
+        Value::List(xs) => Elements::List(into_items(xs)),
+        // A null source yields no rows; any other scalar is its own
+        // single element.
+        Value::Null => Elements::One(None),
+        other => Elements::One(Some(other)),
+    })
 }
 
 /// What a streamed `UNWIND` reports to PROFILE once its consumer drained it.
@@ -332,29 +327,26 @@ impl<'a> UnwindFeed<'a> {
         }
     }
 
-    /// Open the next input row's source as the current expansion. `None`
-    /// when the inputs are exhausted. A list source sheds the source column
-    /// from the carried row; a scalar keeps its row whole.
-    fn open_next_input(&mut self) -> Option<Result<()>> {
-        let row = self.inputs.next()?;
-        let elements = match open_source(
-            self.ctx.graph,
-            &row,
-            self.expression,
-            self.ctx.params,
-            self.ctx.cypher_version,
-        ) {
-            Ok(elements) => elements,
-            Err(error) => return Some(Err(error)),
+    /// Open the next input row's source as the current expansion, and
+    /// return the charge facts of the rows this source will add — its
+    /// element count and the carried width — from this seam, so the
+    /// materializing form bills without re-reading the opener's state.
+    /// `Ok(None)` when the inputs are exhausted. A list source sheds the
+    /// source column from the carried row; a scalar keeps its row whole.
+    fn open_next_input(&mut self) -> Result<Option<(usize, usize)>> {
+        let Some(row) = self.inputs.next() else {
+            return Ok(None);
         };
+        let elements = open_source(self.ctx.graph, &row, self.expression, self.ctx.params)?;
         let mut template = row;
         if !matches!(elements, Elements::One(_)) {
             if let Some(source) = &self.strip {
                 source.strip(&mut template);
             }
         }
+        let charge = (elements.remaining()?, template.len().saturating_add(1));
         self.current = Some((template, elements));
-        Some(Ok(()))
+        Ok(Some(charge))
     }
 
     /// The next row of the source being expanded, `None` once it is spent.
@@ -389,20 +381,16 @@ impl<'a> UnwindFeed<'a> {
     /// Drain the feed into a held vector, charging each source's output to
     /// the running total before its first row is built: the clause's
     /// materializing form, for a consumer that cannot fold as rows arrive.
+    /// The charge facts come from the opener itself, so no landing is
+    /// billed from a re-read of the opener's state.
     pub(super) fn materialize(mut self) -> Result<Vec<Row>> {
         // ADR-0463: the output vector is one retaining container; its
         // running total is the guard's.
         let mut retained = self.ctx.graph.retain_bytes(0)?;
         let mut rows = Vec::new();
-        while let Some(opened) = self.open_next_input() {
-            opened?;
-            if let Some((template, elements)) = &self.current {
-                let added = crate::workspace::retained_rows_bytes(
-                    elements.remaining(),
-                    template.len().saturating_add(1),
-                );
-                retained.add_allocation(self.ctx.graph, added)?;
-            }
+        while let Some((count, width)) = self.open_next_input()? {
+            let added = crate::workspace::retained_rows_bytes(count, width);
+            retained.add_allocation(self.ctx.graph, added)?;
             while let Some(row) = self.pull_current() {
                 rows.push(row?);
             }
@@ -415,81 +403,40 @@ impl Iterator for UnwindFeed<'_> {
     type Item = Result<Row>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.stats.timed {
-            return self.generate();
+        let generated = if !self.stats.timed {
+            self.generate()
+        } else {
+            let started = Instant::now();
+            let generated = self.generate();
+            self.stats
+                .time_ns
+                .set(self.stats.time_ns.get() + started.elapsed().as_nanos());
+            generated
+        };
+        // The Iterator protocol's one reshape of the generator's answer:
+        // `Ok(None)` is exhaustion, every error an item.
+        match generated {
+            Ok(Some(row)) => Some(Ok(row)),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
         }
-        let started = Instant::now();
-        let row = self.generate();
-        self.stats
-            .time_ns
-            .set(self.stats.time_ns.get() + started.elapsed().as_nanos());
-        row
     }
 }
 
 impl UnwindFeed<'_> {
-    fn generate(&mut self) -> Option<Result<Row>> {
+    /// The next generated row: the current expansion's next element, or —
+    /// once it is spent — the next input row's expansion. `Ok(None)` once
+    /// the inputs are exhausted. The opener's charge facts are discarded
+    /// here: a generated row is never retained, so they serve the
+    /// materializing form alone.
+    fn generate(&mut self) -> Result<Option<Row>> {
         loop {
             if let Some(row) = self.pull_current() {
-                return Some(row);
+                return Ok(Some(row?));
             }
-            if let Err(error) = self.open_next_input()? {
-                return Some(Err(error));
+            if self.open_next_input()?.is_none() {
+                return Ok(None);
             }
-        }
-    }
-}
-
-/// The rows a projection consumes: held in a vector, or generated one at a
-/// time by an `UNWIND` the projection is fused with. The aggregation walks
-/// either through the same loop, so a fused `UNWIND` never materializes the
-/// rows it feeds.
-pub(crate) enum RowFeed<'a> {
-    Held(Vec<Row>),
-    Unwind(UnwindFeed<'a>),
-    /// Rows already folded into an [`Aggregation`] by the producer: the
-    /// projection only finishes it. Built by the streaming match sink.
-    Folded(Box<Aggregation<'a>>),
-}
-
-impl RowFeed<'_> {
-    /// The rows already in hand, for the decisions that read the row shape
-    /// before the walk starts. A generated feed has none yet.
-    pub(crate) fn probe(&self) -> &[Row] {
-        match self {
-            RowFeed::Held(rows) => rows,
-            RowFeed::Unwind(_) | RowFeed::Folded(_) => &[],
-        }
-    }
-}
-
-/// The walk over a [`RowFeed`].
-pub(crate) enum FeedRows<'a> {
-    Held(std::vec::IntoIter<Row>),
-    Unwind(UnwindFeed<'a>),
-}
-
-impl<'a> IntoIterator for RowFeed<'a> {
-    type Item = Result<Row>;
-    type IntoIter = FeedRows<'a>;
-
-    fn into_iter(self) -> FeedRows<'a> {
-        match self {
-            RowFeed::Held(rows) => FeedRows::Held(rows.into_iter()),
-            RowFeed::Unwind(feed) => FeedRows::Unwind(feed),
-            // No rows left to walk: the aggregation holds them all.
-            RowFeed::Folded(_) => FeedRows::Held(Vec::new().into_iter()),
-        }
-    }
-}
-
-impl Iterator for FeedRows<'_> {
-    type Item = Result<Row>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            FeedRows::Held(rows) => rows.next().map(Ok),
-            FeedRows::Unwind(feed) => feed.next(),
         }
     }
 }
@@ -505,7 +452,6 @@ mod strip_plan_tests {
                 parts: vec![SingleQuery { clauses: vec![] }],
                 union_all: vec![],
                 next: None,
-                cypher_version: None,
             }),
             optional: false,
             scope,

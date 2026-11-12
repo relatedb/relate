@@ -1,6 +1,7 @@
 //! List quantifiers (`all`/`any`/`none`/`single`) and reduce expressions.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, QuantifierKind};
@@ -11,6 +12,20 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::{bool_or_null, eval, fold_quantifier, into_items};
+
+/// The one list-argument triage, shared by every form that iterates a
+/// evaluated list argument — the four quantifier spellings, `reduce()`,
+/// `allReduce()` and the list comprehension: the evaluated source's
+/// elements, `None` for a null source (the whole form is null), or the
+/// typed shape error naming `what`. One spelling, so null handling and
+/// the shape rejection cannot drift between the forms.
+pub(super) fn list_argument(value: Value, what: &str) -> Result<Option<Arc<Vec<Value>>>> {
+    match value {
+        Value::List(items) => Ok(Some(items)),
+        Value::Null => Ok(None),
+        _ => Err(Error::ty(what)),
+    }
+}
 
 /// Whether `expression` is exactly `[<accumulator>]` — the canonical wrap
 /// whose container depth grows by exactly one per iteration. The reduce
@@ -76,22 +91,15 @@ pub(crate) fn eval_quantifier(
     list: &Expr,
     predicate: &Expr,
 ) -> Result<Value> {
-    let EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    } = ctx;
-    let list_v = eval(graph, row, list, params, cypher_version)?;
-    let items = match list_v {
-        Value::List(xs) => xs,
-        Value::Null => return Ok(Value::Null),
-        _ => return Err(Error::ty("quantifier needs a list")),
+    let EvalCtx { graph, row, params } = ctx;
+    let Some(items) = list_argument(eval(graph, row, list, params)?, "quantifier needs a list")?
+    else {
+        return Ok(Value::Null);
     };
     fold_quantifier(kind, into_items(items), |item| {
         let mut r = row.clone();
         r.insert(ident.to_string(), item);
-        let p = eval(graph, &r, predicate, params, cypher_version)?;
+        let p = eval(graph, &r, predicate, params)?;
         bool_or_null(&p, "quantifier WHERE")
     })
 }
@@ -104,45 +112,21 @@ pub(crate) fn eval_reduce(
     list: &Expr,
     expression: &Expr,
 ) -> Result<Value> {
-    let EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    } = ctx;
-    let mut acc = eval(graph, row, initial, params, cypher_version)?;
-    let items = match eval(graph, row, list, params, cypher_version)? {
-        Value::List(items) => items,
-        Value::Null => return Ok(Value::Null),
-        _ => return Err(Error::ty("reduce() requires a list")),
+    let EvalCtx { graph, row, params } = ctx;
+    let acc = eval(graph, row, initial, params)?;
+    let Some(items) = list_argument(eval(graph, row, list, params)?, "reduce() requires a list")?
+    else {
+        return Ok(Value::Null);
     };
-    let wrap_acc = wraps_accumulator(expression, accumulator);
-    // ADR-0462: in the canonical wrap the accumulator grows one container
-    // level per iteration, so its depth is tracked incrementally and the
-    // list is built with the known-child-depth constructor — O(1) per
-    // iteration, no re-walk of the accumulated value.
-    let mut acc_depth = acc.depth();
+    // The reduce loop drives the same fold the allReduce step does: the
+    // accumulator advance — bindings, update, growth charge — is one
+    // implementation ([`AllReduceFold::advance`]).
+    let mut fold = AllReduceFold::start(acc, accumulator, ident, expression);
     let mut inner = row.clone();
     for item in into_items(items) {
-        // The loop's row bindings are maintained for both arms: the wrap fast
-        // path skips only the expression evaluation, never the bindings
-        // (ADR-0462). Sample cancellation and charge the accumulator's
-        // growth (ADR-0463): the accumulator is the one value that can
-        // compound across the loop, so a quadratic-growth reduction (string
-        // or list doubling) is refused once its retained payload crosses the
-        // statement budget.
-        graph.cancel_tick()?;
-        let before = accumulator_allocation_bytes(&acc);
-        inner.insert(accumulator.to_string(), acc.clone());
-        inner.insert(ident.to_string(), item);
-        acc = if wrap_acc {
-            wrap_acc_once(acc, &mut acc_depth)?
-        } else {
-            eval(graph, &inner, expression, params, cypher_version)?
-        };
-        charge_growth(graph, before, &acc)?;
+        fold.advance(graph, &mut inner, &item, params)?;
     }
-    Ok(acc)
+    Ok(fold.acc)
 }
 
 pub(crate) fn eval_all_reduce(
@@ -154,38 +138,20 @@ pub(crate) fn eval_all_reduce(
     expression: &Expr,
     predicate: &Expr,
 ) -> Result<Value> {
-    let EvalCtx {
-        graph,
-        row,
-        params,
-        cypher_version,
-    } = ctx;
-    let acc = eval(graph, row, initial, params, cypher_version)?;
-    let items = match eval(graph, row, list, params, cypher_version)? {
-        Value::List(items) => items,
-        Value::Null => return Ok(Value::Null),
-        _ => return Err(Error::ty("allReduce() requires a list")),
+    let EvalCtx { graph, row, params } = ctx;
+    let acc = eval(graph, row, initial, params)?;
+    let Some(items) = list_argument(
+        eval(graph, row, list, params)?,
+        "allReduce() requires a list",
+    )?
+    else {
+        return Ok(Value::Null);
     };
-    // The fold's accumulator parameter is a name; the per-element row
-    // inserts inside the fold are text-keyed (the row schema's names are
-    // String), so those two IR names render once, here per call.
-    let acc_name = accumulator.to_string();
-    let ident_name = ident.to_string();
-    let mut fold = AllReduceFold::start(acc, expression, accumulator);
+    let mut fold = AllReduceFold::start(acc, accumulator, ident, expression);
     let mut saw_null = false;
     let mut inner = row.clone();
     for item in into_items(items) {
-        match fold.step(
-            graph,
-            &mut inner,
-            &acc_name,
-            &ident_name,
-            &item,
-            expression,
-            predicate,
-            params,
-            cypher_version,
-        )? {
+        match fold.step(graph, &mut inner, &item, predicate, params)? {
             // The deciding element ends the scan: the `1 / 0` element after
             // it is never evaluated (pinned by the quantifier tests below).
             AllReduceStep::Failed => return Ok(Value::Bool(false)),
@@ -200,17 +166,24 @@ pub(crate) fn eval_all_reduce(
     })
 }
 
-/// The running state of one `allReduce` fold: the accumulator value, the
-/// integer-start invariant, and ADR-0462's incremental depth tracking.
-/// Carried by both drivers of the per-element policy — the list evaluator
-/// above and the QPP expansion's mid-path inliner (`exec/gpm/qpp.rs`) —
-/// so the update-then-predicate step exists exactly once.
+/// The running state of one accumulator fold: the accumulator value, the
+/// integer-start invariant, ADR-0462's incremental depth tracking, and the
+/// per-call invariants every advance re-reads — the update expression and
+/// both rendered names (the row schema's names are String, so the two IR
+/// names render once, at start) — carried by every driver of the
+/// accumulator advance: the reduce loop ([`eval_reduce`]), the list
+/// evaluator above ([`eval_all_reduce`]), and the QPP expansion's
+/// mid-path inliner (`exec/gpm/qpp.rs`) — so the advance itself exists
+/// exactly once and takes only per-element facts.
 #[derive(Clone)]
-pub(crate) struct AllReduceFold {
+pub(crate) struct AllReduceFold<'e> {
     acc: Value,
     started_as_integer: bool,
     acc_depth: u32,
     wrap_acc: bool,
+    acc_name: String,
+    ident_name: String,
+    expression: &'e Expr,
 }
 
 /// One element's verdict, as the fold's driver consumes it.
@@ -226,38 +199,45 @@ pub(crate) enum AllReduceStep {
     Null,
 }
 
-impl AllReduceFold {
-    /// Start from the evaluated `initial`. The wrap detection runs once
-    /// here, not per element.
-    pub(crate) fn start(acc: Value, expression: &Expr, accumulator: &SmallName) -> Self {
+impl<'e> AllReduceFold<'e> {
+    /// Start from the evaluated `initial`, owning the fold's per-call
+    /// invariants: the wrap detection runs once here, not per element,
+    /// and the accumulator and loop-variable names render once here —
+    /// the per-element row inserts inside the advance are text-keyed (the
+    /// row schema's names are String).
+    pub(crate) fn start(
+        acc: Value,
+        accumulator: &SmallName,
+        ident: &SmallName,
+        expression: &'e Expr,
+    ) -> Self {
         Self {
             started_as_integer: matches!(acc, Value::Int(_)),
             acc_depth: acc.depth(),
             wrap_acc: wraps_accumulator(expression, accumulator),
+            acc_name: accumulator.to_string(),
+            ident_name: ident.to_string(),
             acc,
+            expression,
         }
     }
 
-    /// Advance one element: bind the pre-update accumulator and the loop
-    /// variable over `inner` (the caller's reusable clone of its base row),
-    /// evaluate the update, enforce the int→float and finiteness
-    /// invariants, then bind the updated accumulator and evaluate the
-    /// predicate. Errors (a raising update or predicate) propagate to the
-    /// driver, which decides how a partial scan's error is surfaced.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn step(
+    /// Advance the accumulator one element: bind the pre-update accumulator
+    /// and the loop variable over `inner` (the caller's reusable clone of
+    /// its base row), evaluate the update, charge the growth, and bind the
+    /// updated accumulator — the binding the allReduce predicate reads, and
+    /// the same value the reduce loop's next iteration re-binds. The one
+    /// implementation of the advance, driven by both [`eval_reduce`] and
+    /// [`Self::step`]. Errors (a raising update) propagate to the driver,
+    /// which decides how a partial scan's error is surfaced.
+    fn advance(
         &mut self,
         graph: &ExecGraph<'_>,
         inner: &mut Row,
-        accumulator: &str,
-        ident: &str,
         element: &Value,
-        expression: &Expr,
-        predicate: &Expr,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
-    ) -> Result<AllReduceStep> {
-        // Bind before the expression (the predicate below reads these
+    ) -> Result<()> {
+        // Bind before the expression (the step's predicate reads these
         // bindings): the wrap fast path skips only the expression
         // evaluation. Pre-update accumulator + loop variable are visible
         // to the expression; the updated accumulator is bound before the
@@ -266,8 +246,8 @@ impl AllReduceFold {
         // the fold owns the accumulator, so the delta is measured here.
         graph.cancel_tick()?;
         let before = accumulator_allocation_bytes(&self.acc);
-        inner.insert(accumulator.to_string(), self.acc.clone());
-        inner.insert(ident.to_string(), element.clone());
+        inner.insert(self.acc_name.clone(), self.acc.clone());
+        inner.insert(self.ident_name.clone(), element.clone());
         let next = if self.wrap_acc {
             // ADR-0462: the canonical wrap grows one container level per
             // element; the depth is tracked incrementally and the list is
@@ -275,10 +255,29 @@ impl AllReduceFold {
             let acc = std::mem::replace(&mut self.acc, Value::Null);
             wrap_acc_once(acc, &mut self.acc_depth)?
         } else {
-            eval(graph, inner, expression, params, cypher_version)?
+            eval(graph, inner, self.expression, params)?
         };
         charge_growth(graph, before, &next)?;
-        if self.started_as_integer && matches!(next, Value::Float(_)) {
+        self.acc = next;
+        inner.insert(self.acc_name.clone(), self.acc.clone());
+        Ok(())
+    }
+
+    /// Advance one element ([`Self::advance`]), then evaluate the predicate
+    /// on the updated prefix. The integer-start invariant is the allReduce
+    /// scan's own — the reduce loop widens freely. Errors (a raising update
+    /// or predicate) propagate to the driver, which decides how a partial
+    /// scan's error is surfaced.
+    pub(crate) fn step(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        inner: &mut Row,
+        element: &Value,
+        predicate: &Expr,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<AllReduceStep> {
+        self.advance(graph, inner, element, params)?;
+        if self.started_as_integer && matches!(self.acc, Value::Float(_)) {
             return Err(Error::ty(
                 "Invalid input 'FLOAT' for accumulator. Expected to be INTEGER.",
             ));
@@ -286,9 +285,7 @@ impl AllReduceFold {
         // A non-finite accumulator is a legitimate value: float division by
         // zero yields ±Infinity / NaN in Neo4j (`1.0 / 0` never raises; only
         // the all-integer `/` raises DivisionByZero, inside `div` itself).
-        self.acc = next;
-        inner.insert(accumulator.to_string(), self.acc.clone());
-        match eval(graph, inner, predicate, params, cypher_version)? {
+        match eval(graph, inner, predicate, params)? {
             Value::Bool(false) => Ok(AllReduceStep::Failed),
             Value::Bool(true) => Ok(AllReduceStep::Holds),
             Value::Null => Ok(AllReduceStep::Null),

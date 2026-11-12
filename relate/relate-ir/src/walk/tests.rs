@@ -23,7 +23,6 @@ fn scope_bearing_variants_match_children_skip_set() {
         parts: vec![],
         union_all: vec![],
         next: None,
-        cypher_version: None,
     };
     let bearing: Vec<Expr> = vec![
         Expr::PatternPred { path: path.clone() },
@@ -404,7 +403,6 @@ fn references_any_treats_a_subquery_body_as_opaque() {
         }],
         union_all: Vec::new(),
         next: None,
-        cypher_version: None,
     };
     let expr = Expr::ExistsSubquery { query };
     let names: HashSet<String> = ["outer".to_string()].into_iter().collect();

@@ -26,7 +26,6 @@ pub(crate) fn try_fold_chain_count(
     rows: &[Row],
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
     let Some(Clause::Match {
         optional: false,
@@ -93,7 +92,7 @@ pub(crate) fn try_fold_chain_count(
     }
     #[cfg(test)]
     super::kernel_engaged();
-    let ctx = ExecCtx::new(graph, params, cypher_version);
+    let ctx = ExecCtx::new(graph, params);
     let residual = Residual {
         conjuncts: &conjuncts,
         scope: &match_scope(entering, compiled),

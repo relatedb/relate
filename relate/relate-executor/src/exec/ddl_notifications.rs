@@ -514,7 +514,7 @@ fn create_constraint_notifications(
     // validation can only turn the statement into an error (the statement's
     // own, which propagates), so the version cannot change the skip
     // evidence. Only a skip carries evidence for a note.
-    let gate = constraint_create_gate(graph, c, &def, constraint_type, params, None)?;
+    let gate = constraint_create_gate(graph, c, &def, constraint_type, params)?;
     let Gate::Skip(rule) = gate else {
         return Ok(Vec::new());
     };

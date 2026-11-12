@@ -132,6 +132,28 @@ impl std::error::Error for ParseError {}
 
 pub type ParseResult<T> = Result<T, ParseError>;
 
+/// ADR-0584: the one admitted Cypher version — the value the statement
+/// preamble accepts as a no-op and `ALTER DATABASE … SET DEFAULT LANGUAGE`
+/// admits, and the one spelling [`unsupported_cypher_version_message`]
+/// names. Every version decision consults this constant. The type is the
+/// admin command's `default_language`; the preamble compares the version
+/// token's canonical decimal text against it, so a radix spelling
+/// (`CYPHER 0x19`) stays the unsupported-version rejection.
+pub const SUPPORTED_CYPHER_VERSION: u32 = 25;
+
+/// ADR-0584: the one authored unsupported-version rejection — the settled
+/// text both version-bearing surfaces raise, `requested` the integer the
+/// statement asked for. The statement preamble raises it at parse
+/// (`Parser::parse_preamble`); `ALTER DATABASE … SET DEFAULT LANGUAGE`
+/// raises it at command execution (`catalog_alter_database`), so the two
+/// spellings cannot drift apart.
+pub fn unsupported_cypher_version_message(requested: impl fmt::Display) -> String {
+    format!(
+        "UnsupportedCypherVersion: CYPHER {requested} is not supported; \
+         the only supported Cypher version is CYPHER {SUPPORTED_CYPHER_VERSION}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

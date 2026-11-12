@@ -168,14 +168,7 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
         let residual = self.residual;
         match &mut self.kind {
             SinkKind::Probe(probe) => {
-                probe.accept_row(
-                    ctx.graph,
-                    row,
-                    used(),
-                    residual,
-                    ctx.params,
-                    ctx.cypher_version,
-                )?;
+                probe.accept_row(ctx.graph, row, used(), residual, ctx.params)?;
             }
             SinkKind::Collect { tail, out, cap } => {
                 if let Some(row) = tail.finish_row(ctx.graph, row, cap.as_deref_mut())? {
@@ -220,7 +213,7 @@ mod tests {
         token.cancel();
         let graph = ExecGraph::read(&g).with_cancel(Some(&token));
         let params = BTreeMap::new();
-        let ctx = ExecCtx::new(&graph, &params, None);
+        let ctx = ExecCtx::new(&graph, &params);
         let residual = Residual::empty();
         let halt = Cell::new(false);
         let mut out: Matched = Vec::new();

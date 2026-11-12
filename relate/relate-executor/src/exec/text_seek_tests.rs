@@ -47,7 +47,6 @@ fn file_candidates(g: &Graph, conjunct: &str) -> Vec<NodeId> {
         &file_pattern(),
         &Row::new(),
         &BTreeMap::new(),
-        None,
         &conjuncts,
     )
     .unwrap();

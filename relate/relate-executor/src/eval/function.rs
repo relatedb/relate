@@ -30,37 +30,47 @@ mod vector;
 
 pub(super) use entity::entity_backing_map;
 pub(crate) use registry::is_nondeterministic;
-use registry::{arity_rejection, lookup_builtin, BuiltinImplementation};
+use registry::{arity_rejection, lookup_builtin, Applied, BuiltinImplementation, BuiltinRow};
+
+/// The one resolution of a call against the builtin table, shared by both
+/// call spellings — the scalar [`function`] dispatcher and the UNWIND
+/// [`lazy_range`] — so lazy_range's resolves-exactly-as promise holds by
+/// construction, never by mirroring the steps. `n` is the call's
+/// lower-cased name (each caller derives it once); the row's arity
+/// contract is enforced here, before any argument is evaluated.
+fn resolve_call(n: &str, args: &[Expr]) -> Result<Option<&'static BuiltinRow>> {
+    let Some(builtin) = lookup_builtin(n) else {
+        return Ok(None);
+    };
+    if let Some(requirement) = builtin.arity.violation(args.len()) {
+        return Err(Error::syntax(arity_rejection(n, requirement, args.len())));
+    }
+    Ok(Some(builtin))
+}
 
 /// The `range(...)` call an `UNWIND` can walk without building its list:
-/// resolves the call exactly as [`function`] does — the lower-cased name
-/// against the builtin table, the arity contract before any argument is
-/// evaluated, the arguments in order — and returns the plan instead of the
-/// materialized list. `None` for every other call.
+/// resolves the call exactly as [`function`] does — through the one
+/// [`resolve_call`] both spellings read, then the arguments in order —
+/// and returns the plan instead of the materialized list. `None` for
+/// every other call.
 pub(crate) fn lazy_range(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
     name: &str,
     args: &[Expr],
-    cypher_version: Option<u32>,
 ) -> Result<Option<RangePlan>> {
     let n = name.to_ascii_lowercase();
-    if n != "range" {
+    let Some(builtin) = resolve_call(&n, args)? else {
+        return Ok(None);
+    };
+    // The resolved row's registered name is the registry's own canonical
+    // spelling, so this is a table-identity question, not call-text
+    // sniffing: only the range row answers a plan.
+    if builtin.name != "range" {
         return Ok(None);
     }
-    let builtin = lookup_builtin(n.as_str()).expect("range is a registered builtin");
-    if let Some(requirement) = builtin.arity.violation(args.len()) {
-        return Err(Error::syntax(arity_rejection(
-            n.as_str(),
-            requirement,
-            args.len(),
-        )));
-    }
-    let mut vals = Vec::with_capacity(args.len());
-    for a in args {
-        vals.push(eval(graph, row, a, params, cypher_version)?);
-    }
+    let vals = eval_args(graph, row, params, args)?;
     list::range_plan(&vals).map(Some)
 }
 
@@ -71,7 +81,6 @@ pub(crate) fn function(
     name: &str,
     _distinct: bool,
     args: &[Expr],
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
     let n = name.to_ascii_lowercase();
     if n == "length" {
@@ -79,26 +88,8 @@ pub(crate) fn function(
             all: false, path, ..
         }) = args.first()
         {
-            return eval_shortest(
-                graph,
-                row,
-                params,
-                false,
-                path,
-                ShortestWant::Length,
-                cypher_version,
-            );
+            return eval_shortest(graph, row, params, false, path, ShortestWant::Length);
         }
-    }
-    if let Some(result) =
-        property::property_exists_form(graph, row, params, n.as_str(), args, cypher_version)
-    {
-        return result;
-    }
-    if let Some(result) =
-        vector::vector_metric_form(graph, row, params, n.as_str(), args, cypher_version)
-    {
-        return result;
     }
     // Resolve the row and validate the call's shape before evaluating any
     // argument: a malformed call reports its arity (LABS-667, Neo4j 42I13:
@@ -106,7 +97,7 @@ pub(crate) fn function(
     // argument's own error, and the evaluator does no work for it. The row
     // owns the contract, so registering a builtin is the one decision
     // point.
-    let Some(builtin) = lookup_builtin(n.as_str()) else {
+    let Some(builtin) = resolve_call(&n, args)? else {
         if relate_front::agg::is_aggregate_name(&n) {
             // 42I24: an aggregate call outside an aggregation context is a
             // compile-time `SyntaxError` in Neo4j, not a semantic error — the
@@ -121,39 +112,54 @@ pub(crate) fn function(
         // not a semantic one; the kind token carries the class.
         return Err(Error::unknown_function(&n));
     };
-    if let Some(requirement) = builtin.arity.violation(args.len()) {
-        return Err(Error::syntax(arity_rejection(
-            n.as_str(),
-            requirement,
-            args.len(),
-        )));
+    match builtin.implementation {
+        // The form rows receive the *unevaluated* arguments: their
+        // trailing argument is syntax (a property-name identifier, a
+        // distance-metric literal), never a value, so no argument is
+        // evaluated before the form's own lowering.
+        BuiltinImplementation::Form(form) => form(graph, row, params, args),
+        // Every value-taking shape: the arguments are evaluated exactly
+        // once, in order, at this one site, before any implementation
+        // runs.
+        BuiltinImplementation::Applied(applied) => {
+            let vals = eval_args(graph, row, params, args)?;
+            match applied {
+                Applied::Plain(implementation) => implementation(graph, n.as_str(), vals),
+                // The clock-access spelling's kind and mode come from the
+                // row, so the implementation never re-parses the call
+                // name; its argument is a timezone (never a value), and
+                // the row's one-argument contract was enforced above.
+                Applied::Clock(kind, mode) => {
+                    relate_core::temporal::construct_clock(kind, mode, vals.first())
+                }
+                Applied::Truncate(kind) => temporal::truncate_call(kind, vals),
+                // The between family's unit comes from the row and its two
+                // operands are the row's arity contract; `n` is the called
+                // spelling its messages name.
+                Applied::Between(unit) => {
+                    let [a, b] = <[Value; 2]>::try_from(vals)
+                        .expect("the between row's arity is exactly two");
+                    temporal::between_call(unit, n.as_str(), [a, b])
+                }
+            }
+        }
     }
+}
+
+/// Evaluate a call's arguments in order — the shared prelude of every
+/// value-taking implementation shape (the form rows take their arguments
+/// unevaluated and never reach this).
+fn eval_args(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    args: &[Expr],
+) -> Result<Vec<Value>> {
     let mut vals = Vec::new();
     for a in args {
-        vals.push(eval(graph, row, a, params, cypher_version)?);
+        vals.push(eval(graph, row, a, params)?);
     }
-    match builtin.implementation {
-        BuiltinImplementation::Plain(implementation) => implementation(graph, n.as_str(), vals),
-        BuiltinImplementation::Versioned(implementation) => {
-            implementation(graph, n.as_str(), vals, cypher_version)
-        }
-        // The clock-access spelling's kind and mode come from the row, so
-        // the implementation never re-parses the call name; its argument is
-        // a timezone (never a value), and the row's one-argument contract
-        // was enforced above.
-        BuiltinImplementation::Clock(kind, mode) => {
-            relate_core::temporal::construct_clock(kind, mode, vals.first())
-        }
-        BuiltinImplementation::Truncate(kind) => temporal::truncate_call(kind, vals),
-        // The between family's unit comes from the row and its two operands
-        // are the row's arity contract; `n` is the called spelling its
-        // messages name.
-        BuiltinImplementation::Between(unit) => {
-            let [a, b] =
-                <[Value; 2]>::try_from(vals).expect("the between row's arity is exactly two");
-            temporal::between_call(unit, n.as_str(), [a, b])
-        }
-    }
+    Ok(vals)
 }
 
 /// The accepted scalar set's rendering, stated once: a STRING passes
@@ -297,7 +303,7 @@ mod tests {
             for count in counts {
                 let requirement = builtin.arity.violation(count).unwrap();
                 let args = vec![Expr::Int(1); count];
-                let text = function(&graph, &row, &params, builtin.name, false, &args, None)
+                let text = function(&graph, &row, &params, builtin.name, false, &args)
                     .unwrap_err()
                     .to_string();
                 let expected = arity_rejection(builtin.name, requirement, args.len());
@@ -342,10 +348,10 @@ mod tests {
 
         assert!(Arc::ptr_eq(&render_scalar(&input).unwrap(), &payload));
         assert!(shared(
-            bi_tostring(&graph, "toString", vec![input.clone()], None).unwrap()
+            bi_tostring(&graph, "toString", vec![input.clone()]).unwrap()
         ));
         assert!(shared(
-            bi_tostringornull(&graph, "toStringOrNull", vec![input.clone()], None).unwrap()
+            bi_tostringornull(&graph, "toStringOrNull", vec![input.clone()]).unwrap()
         ));
         assert!(shared(
             bi_string_interp(&graph, "string.interp", vec![input.clone()]).unwrap()

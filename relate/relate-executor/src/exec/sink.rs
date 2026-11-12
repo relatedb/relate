@@ -123,7 +123,6 @@ pub(crate) fn finish_match_row(
     row: &Row,
     projection: &SinkProjection<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Row> {
     // Each item evaluated once against the incoming row. The result
     // columns are the projection's precomputed names, so the row's schema
@@ -133,7 +132,7 @@ pub(crate) fn finish_match_row(
     // expand kept the spare three, which the ledger does not charge.
     let mut values = Vec::with_capacity(projection.names.names().len());
     for item in projection.items {
-        values.push(eval(graph, row, &item.expr, params, cypher_version)?);
+        values.push(eval(graph, row, &item.expr, params)?);
     }
     // `ORDER BY` keys read the projected row: the incoming bindings with
     // each item's value written over its output name. Without a key there
@@ -150,7 +149,7 @@ pub(crate) fn finish_match_row(
             scope.insert(name.clone(), values[index].clone());
         }
         parked_values(&projection.order, &scope, |expr, scope| {
-            eval(graph, scope, expr, params, cypher_version)
+            eval(graph, scope, expr, params)
         })?
     };
     values.extend(parked);
@@ -193,7 +192,7 @@ mod tests {
         let projection = projection_of(&query);
         let graph = Graph::default();
         let view = ExecGraph::read(&graph);
-        finish_match_row(&view, row, &projection, &BTreeMap::new(), None).unwrap()
+        finish_match_row(&view, row, &projection, &BTreeMap::new()).unwrap()
     }
 
     fn text(s: &str) -> Value {
@@ -261,7 +260,7 @@ mod tests {
         let row = row_with_n(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
         let before = interned_schema_calls();
         for _ in 0..times {
-            let out = finish_match_row(&view, &row, &projection, &BTreeMap::new(), None).unwrap();
+            let out = finish_match_row(&view, &row, &projection, &BTreeMap::new()).unwrap();
             assert_eq!(out.values(), [Value::Int(1), Value::Int(2)]);
         }
         interned_schema_calls() - before

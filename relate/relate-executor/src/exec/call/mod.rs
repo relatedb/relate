@@ -41,16 +41,11 @@ pub(crate) fn exec_load_csv(
     variable: &SmallName,
     field_terminator: Option<&str>,
 ) -> Result<Vec<Row>> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     let delim = field_terminator_char(field_terminator)?;
     let mut out = Vec::new();
     for row in rows {
-        let src = eval(graph, &row, url, params, cypher_version)?;
+        let src = eval(graph, &row, url, params)?;
         let path = match src {
             Value::String(s) => s,
             Value::Null => continue,

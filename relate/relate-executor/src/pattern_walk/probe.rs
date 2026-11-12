@@ -42,14 +42,11 @@ pub(crate) fn resolved_endpoints_exist(
     row: &Row,
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<bool>> {
     match probe_plan(graph, row, path) {
         ProbePlan::Ineligible => Ok(None),
         ProbePlan::NoMatch => Ok(Some(false)),
-        ProbePlan::Anchored(anchor) => {
-            anchored_exists(graph, row, path, params, cypher_version, anchor).map(Some)
-        }
+        ProbePlan::Anchored(anchor) => anchored_exists(graph, row, path, params, anchor).map(Some),
     }
 }
 
@@ -184,7 +181,6 @@ fn anchored_exists(
     row: &Row,
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     anchor: AnchoredPlan,
 ) -> Result<bool> {
     let AnchoredPlan {
@@ -196,7 +192,7 @@ fn anchored_exists(
     let rp = &path.rels[0];
     // The anchor's seat: its own pattern, pre-rel row.
     let (anchor_np, far_np) = seats.patterns(path);
-    if !pattern_node_ok(graph, from, anchor_np, row, params, cypher_version)? {
+    if !pattern_node_ok(graph, from, anchor_np, row, params)? {
         return Ok(false);
     }
     // The rel bind's rung, one per probe: every probed row holds the
@@ -220,7 +216,7 @@ fn anchored_exists(
                 pattern: rp,
                 filter: &filter,
             };
-            if !rel_edge_ok(graph, rid, hop, row, params, cypher_version)? {
+            if !rel_edge_ok(graph, rid, hop, row, params)? {
                 return Ok(false);
             }
             let Some(reached) = graph.hop(from, rid, dir) else {
@@ -246,7 +242,7 @@ fn anchored_exists(
             // The far seat: positionally checked — with the rel bound when it
             // is `nodes[1]`'s pattern, with the pre-rel row when flipped.
             let far_row = seats.far_row(row, &row2);
-            pattern_node_ok(graph, reached, far_np, far_row, params, cypher_version)
+            pattern_node_ok(graph, reached, far_np, far_row, params)
         },
     )?;
     Ok(found.is_some())

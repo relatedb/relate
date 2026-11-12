@@ -25,10 +25,6 @@ pub struct LogicalPlan {
     pub parts: Vec<Vec<Clause>>,
     pub union_all: Vec<bool>,
     pub next: Option<Box<LogicalPlan>>,
-    /// CIP-150 `CYPHER <version>` preamble of the source statement, lowered
-    /// from `Query::cypher_version` (`NEXT` stages inherit it in the
-    /// front-end). Read by the executor for version-dependent behavior.
-    pub cypher_version: Option<u32>,
     /// The statement's resolved `USE` target (ADR-0116 §3), lifted into the
     /// plan by [`plan`]: `Some(namespace)` when any `USE` clause is present
     /// (all `USE` clauses in one statement must agree), `None` when the
@@ -369,7 +365,6 @@ pub(crate) fn plan_with_env(
         parts,
         union_all,
         next,
-        cypher_version,
     } = query;
     let mut parts: Vec<Vec<Clause>> = parts.into_iter().map(|part| part.clauses).collect();
     for part in &mut parts {
@@ -388,7 +383,6 @@ pub(crate) fn plan_with_env(
         parts,
         union_all,
         next,
-        cypher_version,
         use_target: None,
     })
 }

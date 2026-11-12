@@ -100,7 +100,7 @@ fn schema_ddl_returns_zero_rows_and_zero_columns() {
     // Database administration and graph-type DDL.
     assert_omitted(
         &mut conn,
-        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5",
+        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25",
         BTreeMap::new(),
     );
     assert_omitted(

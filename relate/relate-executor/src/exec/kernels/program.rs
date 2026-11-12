@@ -254,13 +254,7 @@ impl<'a> NodePred for PropCmp<'a> {
         // The bound is variable-free by the decoder, so the empty row it
         // cannot read is inert — the same evaluation the per-row path
         // makes against each matched row, minus the row it never reads.
-        let value = eval(
-            ctx.graph,
-            &Row::new(),
-            self.bound,
-            ctx.params,
-            ctx.cypher_version,
-        )?;
+        let value = eval(ctx.graph, &Row::new(), self.bound, ctx.params)?;
         Ok(CmpPrepared {
             labels: InternedLabels::resolve(ctx, self.pattern),
             key: self.key,

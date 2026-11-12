@@ -15,6 +15,7 @@ use web_time::Instant;
 
 use relate_front::parse_and_lower_statement_with_policy_and_params;
 use relate_front::validate::StatementPolicy;
+use relate_parser::PreambleMode;
 use relate_planner::{
     is_database_admin_command, plan_contains_dynamic_operands, plan_has_bound_float_integer_site,
     LogicalPlan, QueryType,
@@ -28,7 +29,7 @@ use crate::plan_cache::{HitPayload, MAX_CACHED_STATEMENT_BYTES};
 use crate::{Error, Result, Value};
 
 /// What [`Connection::admit_statement`] resolves: the parsed preamble
-/// flags plus the gated, classified logical plan — one bundle so
+/// mode plus the gated, classified logical plan — one bundle so
 /// `run_query` and `explain_plan` share the single admission sequence —
 /// the always-on PARSE / PLAN stage durations of the admission
 /// (LABS-832), the first two arms of the phase split, and the statement's
@@ -267,7 +268,7 @@ impl Connection {
             {
                 let admission = stage_admission(
                     preamble,
-                    PreambleMode::from_parsed(compiled.explain, compiled.profile),
+                    compiled.preamble,
                     Arc::clone(&compiled.logical),
                     compiled.stamp,
                     crate::phase_timing::AdmissionTiming {
@@ -291,7 +292,7 @@ impl Connection {
         let parsed =
             parse_and_lower_statement_with_policy_and_params(cypher, preview, policy, params)?;
         let parse = parse_started.elapsed();
-        let mode = PreambleMode::from_parsed(parsed.explain, parsed.profile);
+        let mode = parsed.preamble;
         // LABS-832: the PLAN phase — binding, logical planning and the
         // admission classification, measured always-on.
         let plan_started = Instant::now();
@@ -362,37 +363,6 @@ impl UncachedTail {
             Self::SeededMiss(_) | Self::RejectedHit => crate::PlanCacheOutcome::Miss,
             Self::Bypassed => crate::PlanCacheOutcome::Bypassed,
         }
-    }
-}
-
-/// The statement preamble. The parser rejects a second `EXPLAIN` or
-/// `PROFILE`, so both-true is not a state this mode can hold.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum PreambleMode {
-    Execute,
-    Explain,
-    Profile,
-}
-
-impl PreambleMode {
-    /// Collapse the parser's pair. `explain` wins only if both arrive,
-    /// which the preamble guards do not produce.
-    fn from_parsed(explain: bool, profile: bool) -> Self {
-        if explain {
-            Self::Explain
-        } else if profile {
-            Self::Profile
-        } else {
-            Self::Execute
-        }
-    }
-
-    pub(super) fn explain(self) -> bool {
-        self == Self::Explain
-    }
-
-    pub(super) fn profile(self) -> bool {
-        self == Self::Profile
     }
 }
 

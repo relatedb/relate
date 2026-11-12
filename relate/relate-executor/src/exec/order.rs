@@ -41,9 +41,16 @@ fn order_key_alias_scoped(expr: &Expr, items: &[Projection], explicit_grouping: 
 /// namespace is where internal columns live, and a user alias is allowed to
 /// spell one (`AS __ord0`).
 fn parked_prefix(items: &[Projection]) -> String {
-    let names = projection_names(items);
+    uncolliding_parked_prefix(&projection_names(items))
+}
+
+/// [`parked_prefix`] over a row scope's real column vocabulary: the form
+/// for the paths that order rows without projection items (the catalog
+/// `YIELD` paging, whose composed rows are their own scope), so the
+/// collision guard is decided by the columns that actually exist.
+fn uncolliding_parked_prefix(columns: &[String]) -> String {
     let mut prefix = String::from("__ord");
-    while names.iter().any(|name| name.starts_with(&prefix)) {
+    while columns.iter().any(|name| name.starts_with(&prefix)) {
         prefix.push('_');
     }
     prefix
@@ -110,6 +117,30 @@ impl<'a> OrderKeys<'a> {
                     key,
                     verbatim: None,
                     null_on_failure: reads_unprojected_name(&key.expr, items),
+                    parked: format!("{parked_prefix}{index}"),
+                })
+                .collect(),
+        }
+    }
+
+    /// Every key's plan over a row scope's real column vocabulary — the
+    /// catalog ordering path (`SHOW … YIELD … ORDER BY`): the rows are
+    /// their own scope (a `YIELD` key names an output column, so parking
+    /// reads the row itself), and the parked prefix's collision guard and
+    /// the null-on-failure policy are decided by the columns the composed
+    /// rows actually carry, never by a projection item list this path
+    /// does not have. No verbatim table: with no projection items to
+    /// answer from, every key is evaluated against the row.
+    pub(crate) fn over_columns(keys: &'a [relate_ir::OrderItem], columns: &[String]) -> Self {
+        let parked_prefix = uncolliding_parked_prefix(columns);
+        Self {
+            plan: keys
+                .iter()
+                .enumerate()
+                .map(|(index, key)| KeyPlan {
+                    key,
+                    verbatim: None,
+                    null_on_failure: reads_name_outside(&key.expr, columns),
                     parked: format!("{parked_prefix}{index}"),
                 })
                 .collect(),
@@ -242,11 +273,18 @@ fn verbatim_column(items: &[Projection], expr: &Expr) -> Option<String> {
 /// reads, which only widens the null-on-failure set toward the deprecated
 /// behaviour.
 fn reads_unprojected_name(expr: &Expr, items: &[Projection]) -> bool {
+    reads_name_outside(expr, &projection_names(items))
+}
+
+/// [`reads_unprojected_name`] over a row scope's real column vocabulary:
+/// whether `expr` reads a name no column of the scope carries — the
+/// null-on-failure decision for the paths that order rows without
+/// projection items.
+fn reads_name_outside(expr: &Expr, columns: &[String]) -> bool {
     let mut vars = HashSet::new();
     relate_ir::expr_vars(expr, &mut vars);
-    let outputs = projection_names(items);
     vars.iter()
-        .any(|name| !outputs.iter().any(|output| output == name))
+        .any(|name| !columns.iter().any(|column| column == name))
 }
 
 /// The projection item each folded `ORDER BY` key answers from, or `None`
@@ -296,7 +334,6 @@ fn cmp_sort_keys(
 pub(crate) fn apply_yield_page_stages(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     stages: &[relate_parser::PageStage],
     output: &mut Vec<Row>,
 ) -> Result<()> {
@@ -313,32 +350,32 @@ pub(crate) fn apply_yield_page_stages(
                     })
                     .collect::<Result<Vec<_>>>()?;
                 // The catalog rows are their own scope: a `YIELD` key names
-                // an output column, so parking reads the row itself.
-                let keys = OrderKeys::new(&order, &[], false);
+                // an output column, so parking reads the row itself, and
+                // the key plan resolves its parked-prefix collision guard
+                // and null-on-failure policy from the column vocabulary
+                // the composed rows actually carry — every column any row
+                // of the cross join holds — never from a projection item
+                // list this path does not have.
+                let columns: Vec<String> = {
+                    let mut columns = HashSet::new();
+                    for row in output.iter() {
+                        columns.extend(row.keys().cloned());
+                    }
+                    columns.into_iter().collect()
+                };
+                let keys = OrderKeys::over_columns(&order, &columns);
                 for row in output.iter_mut() {
-                    park_order_keys(&keys, row, |expr, scope| {
-                        eval(graph, scope, expr, params, cypher_version)
-                    })?;
+                    park_order_keys(&keys, row, |expr, scope| eval(graph, scope, expr, params))?;
                 }
                 sort_rows_by_parked_keys(&keys, output, None)?;
                 unpark_order_keys(&keys, output);
             }
             relate_parser::PageStage::Skip(expr) => {
-                let count = resolve_page_bound(
-                    graph,
-                    params,
-                    cypher_version,
-                    &relate_front::lower_expr(expr)?,
-                )?;
+                let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
                 *output = page(std::mem::take(output), count, None);
             }
             relate_parser::PageStage::Limit(expr) => {
-                let count = resolve_page_bound(
-                    graph,
-                    params,
-                    cypher_version,
-                    &relate_front::lower_expr(expr)?,
-                )?;
+                let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
                 *output = page(std::mem::take(output), 0, Some(count));
             }
         }
@@ -458,13 +495,12 @@ pub(crate) fn page(mut rows: Vec<Row>, skip_n: usize, limit_n: Option<usize>) ->
 pub(crate) fn resolve_page_bounds(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     skip: Option<&Expr>,
     limit: Option<&Expr>,
 ) -> Result<(usize, Option<usize>)> {
     let bound = |exprs: Option<&Expr>| -> Result<Option<usize>> {
         exprs
-            .map(|expr| resolve_page_bound(graph, params, cypher_version, expr))
+            .map(|expr| resolve_page_bound(graph, params, expr))
             .transpose()
     };
     Ok((bound(skip)?.unwrap_or(0), bound(limit)?))
@@ -476,10 +512,9 @@ pub(crate) fn resolve_page_bounds(
 pub(crate) fn resolve_page_bound(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     expr: &Expr,
 ) -> Result<usize> {
-    skip_limit_count(&eval(graph, &Row::new(), expr, params, cypher_version)?)
+    skip_limit_count(&eval(graph, &Row::new(), expr, params)?)
 }
 
 /// Whether a projection takes the eager pre-projection page: `SKIP`/`LIMIT`

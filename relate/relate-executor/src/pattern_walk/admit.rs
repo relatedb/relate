@@ -52,9 +52,8 @@ pub(crate) fn map_from_expr(
     expr: &Expr,
     role: PatternMapRole,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<BTreeMap<String, Value>> {
-    match eval(graph, row, expr, params, cypher_version)? {
+    match eval(graph, row, expr, params)? {
         Value::Map(m) => admit_props(Arc::unwrap_or_clone(m), role.nulls()),
         // A null map constrains nothing and stores nothing: the
         // absent-map meaning, the same for both roles.
@@ -103,10 +102,9 @@ pub(crate) fn pattern_props(
     properties: Option<&Expr>,
     role: PatternMapRole,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<BTreeMap<String, Value>> {
     match properties {
-        Some(e) => map_from_expr(graph, row, e, role, params, cypher_version),
+        Some(e) => map_from_expr(graph, row, e, role, params),
         None => Ok(BTreeMap::new()),
     }
 }
@@ -121,16 +119,8 @@ pub(crate) fn pattern_match_props(
     properties: Option<&Expr>,
     prop_keys: &[NamedToken],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<(NamedToken, Value)>> {
-    let want = pattern_props(
-        graph,
-        row,
-        properties,
-        PatternMapRole::Match,
-        params,
-        cypher_version,
-    )?;
+    let want = pattern_props(graph, row, properties, PatternMapRole::Match, params)?;
     Ok(want
         .into_iter()
         .map(|(name, value)| (pattern_prop_key(prop_keys, &name), value))
@@ -150,7 +140,6 @@ pub(crate) fn pattern_node_ok(
     np: &NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     // Visibility first — through the label read when the pattern has a
     // label expression to check (an invisible node has no labels), the
@@ -161,15 +150,7 @@ pub(crate) fn pattern_node_ok(
             let Some(labels) = graph.node_labels(id) else {
                 return Ok(false);
             };
-            if !label_expr_matches(
-                graph,
-                row,
-                params,
-                label_expr,
-                &labels,
-                false,
-                cypher_version,
-            )? {
+            if !label_expr_matches(graph, row, params, label_expr, &labels, false)? {
                 return Ok(false);
             }
         }
@@ -179,14 +160,7 @@ pub(crate) fn pattern_node_ok(
             }
         }
     }
-    let want = pattern_match_props(
-        graph,
-        row,
-        np.properties.as_ref(),
-        &np.prop_keys,
-        params,
-        cypher_version,
-    )?;
+    let want = pattern_match_props(graph, row, np.properties.as_ref(), &np.prop_keys, params)?;
     // the wanted entries only, read key by key from the store
     Ok(props_all_match(&want, |key| {
         graph.node_prop_resolved(id, key)
@@ -207,7 +181,6 @@ pub(crate) fn rel_props_ok(
     rp: &RelPattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     let Some(props) = rp.properties.as_ref() else {
         return Ok(true);
@@ -215,14 +188,7 @@ pub(crate) fn rel_props_ok(
     if !graph.rel_exists(rid) {
         return Ok(false);
     }
-    let want = pattern_match_props(
-        graph,
-        row,
-        Some(props),
-        &rp.prop_keys,
-        params,
-        cypher_version,
-    )?;
+    let want = pattern_match_props(graph, row, Some(props), &rp.prop_keys, params)?;
     // the wanted entries only, read key by key from the store — never
     // the rel's whole property map (LABS-853)
     Ok(props_all_match(&want, |key| {
@@ -278,7 +244,6 @@ pub(crate) fn rel_edge_ok(
     hop: RelHop<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     let rp = hop.pattern;
     if let Some(type_expr) = &rp.type_expr {
@@ -293,13 +258,12 @@ pub(crate) fn rel_edge_ok(
                 type_expr,
                 std::slice::from_ref(&rel.rel_type),
                 true,
-                cypher_version,
             )? {
                 return Ok(false);
             }
         }
     }
-    if !rel_props_ok(graph, rid, rp, row, params, cypher_version)? {
+    if !rel_props_ok(graph, rid, rp, row, params)? {
         return Ok(false);
     }
     Ok(true)
@@ -341,7 +305,6 @@ pub(crate) fn admit_hop(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     hop: RelHop<'_>,
     traverse: relate_ir::Direction,
     used: &UsedRels,
@@ -352,7 +315,7 @@ pub(crate) fn admit_hop(
     if used.contains(rid) || trail.contains(&rid) {
         return Ok(None);
     }
-    if !rel_edge_ok(graph, rid, hop, row, params, cypher_version)? {
+    if !rel_edge_ok(graph, rid, hop, row, params)? {
         return Ok(None);
     }
     Ok(graph.hop(current, rid, traverse))

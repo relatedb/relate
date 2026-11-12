@@ -14,7 +14,7 @@ use relate_names::SmallName;
 use relate_parser::{Clause, Expr, LiteralValue, Statement};
 
 use crate::ast::collect::{walk_expr_scoped, ScopedExprVisitor};
-use crate::ast::tree::{is_boolean_operator, walk_expr};
+use crate::ast::tree::{is_boolean_operator, walk_clause_list_tree, SubqueryDescent};
 
 use super::static_reduce::check_reduce_temporal_arithmetic;
 
@@ -380,71 +380,29 @@ fn require_boolean_literal_operand(operand: &Expr) -> Result<(), EngineError> {
 /// `RETURN properties(1)` are compile errors. This validator reproduces exactly
 /// that boundary and *only* for literal operands; every non-literal operand
 /// (variable, parameter, function result, …) is left to the runtime evaluator,
-/// so no valid query is affected.
-///
-/// `cypher_version` is the statement's CIP-150 preamble: CIP-271's container
-/// acceptance is Cypher-25-only, so the `toString()` gate stands down under an
-/// explicit `CYPHER 5` (where the runtime rejects every container, and
-/// `toStringOrNull()` maps that rejection to null).
+/// so no valid query is affected. It rides the shared clause walk
+/// ([`walk_clause_list_tree`]) over every clause shape's expressions — the
+/// `MERGE` `ON CREATE`/`ON MATCH SET` values, `FOREACH` lists, `CALL`
+/// arguments and `WHERE`, `SKIP`/`LIMIT` bounds and write-clause property
+/// maps included — exactly as [`super::static_calls`]' pass does; nested
+/// statement bodies stay opaque, because the validation battery already
+/// visits each as its own node.
 ///
 /// Covered (all `expressions/…` TCK features):
 /// - `NOT` / `AND` / `OR` / `XOR` require boolean operands (Boolean1-4).
 /// - `x IN <list>` requires a list right operand (List5 scenario 42).
 /// - `properties(x)` requires a node/relationship/map (Graph9 scenarios 5-7).
 /// - `toString()`/`toStringOrNull()` reject a `LIST<T>` literal (CIP-271).
-pub fn validate_static_operator_types(
-    clauses: &[Clause],
-    cypher_version: Option<u32>,
-) -> Result<(), EngineError> {
-    let mut check = |expr: &Expr| check_static_operator_types(expr, cypher_version);
-    for clause in clauses {
-        match clause {
-            Clause::Return(rc) => {
-                for item in &rc.items {
-                    if !item.all {
-                        walk_expr(&item.expr, &mut check)?;
-                    }
-                }
-                for ob in &rc.order_by {
-                    walk_expr(&ob.expr, &mut check)?;
-                }
-            }
-            Clause::With(wc) => {
-                for item in &wc.items {
-                    if !item.all {
-                        walk_expr(&item.expr, &mut check)?;
-                    }
-                }
-                if let Some(w) = &wc.where_expr {
-                    walk_expr(w, &mut check)?;
-                }
-                for ob in &wc.order_by {
-                    walk_expr(&ob.expr, &mut check)?;
-                }
-            }
-            Clause::Match(mc) => {
-                if let Some(w) = &mc.where_expr {
-                    walk_expr(w, &mut check)?;
-                }
-            }
-            Clause::Unwind(uc) => {
-                walk_expr(&uc.expr, &mut check)?;
-            }
-            Clause::Set(sc) => {
-                for item in &sc.items {
-                    if let Some(val) = &item.value {
-                        walk_expr(val, &mut check)?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
+pub fn validate_static_operator_types(clauses: &[Clause]) -> Result<(), EngineError> {
+    walk_clause_list_tree(
+        clauses,
+        SubqueryDescent::Opaque,
+        &mut check_static_operator_types,
+    )
 }
 
 /// The per-node visitor for [`validate_static_operator_types`].
-fn check_static_operator_types(e: &Expr, cypher_version: Option<u32>) -> Result<(), EngineError> {
+fn check_static_operator_types(e: &Expr) -> Result<(), EngineError> {
     match e {
         Expr::Unary(u) if is_boolean_operator(u.op) => require_boolean_literal_operand(&u.expr)?,
         // `||` concatenates strings or lists; any other statically-known
@@ -509,9 +467,7 @@ fn check_static_operator_types(e: &Expr, cypher_version: Option<u32>) -> Result<
                     n.eq_ignore_ascii_case("tostring") || n.eq_ignore_ascii_case("tostringornull")
                 }) =>
         {
-            if !relate_core::is_cypher5(cypher_version)
-                && homogeneous_list_literal_class(&fc.args[0]).is_some()
-            {
+            if homogeneous_list_literal_class(&fc.args[0]).is_some() {
                 return Err(EngineError::semantic(
                     ErrorKind::InvalidArgumentValue,
                     "toString()",
@@ -690,7 +646,7 @@ fn predicate_applies_arithmetic_to_var(expr: &Expr, var: &str) -> bool {
 #[cfg(test)]
 pub(super) fn parse_and_check_static_ops(query: &str) -> Result<(), EngineError> {
     let stmt = relate_parser::parse(query).expect("parse");
-    validate_static_operator_types(&stmt.clauses, stmt.cypher_version)
+    validate_static_operator_types(&stmt.clauses)
 }
 
 #[cfg(test)]
@@ -729,6 +685,13 @@ mod tests {
     // "[15]/[16] Fail … quantifier on type mismatch between list elements and
     // predicate"). Relate's runtime evaluator would otherwise raise the same
     // TypeError one phase too late.
+
+    /// Parse `query`, run only the narrow static operator/type pass, and return
+    /// its verdict.
+    fn parse_and_check_static_ops(query: &str) -> Result<(), EngineError> {
+        let stmt = relate_parser::parse(query).expect("parse");
+        validate_static_operator_types(&stmt.clauses)
+    }
 
     #[test]
     fn quantifier_over_string_literal_arith_predicate_is_compile_time_type_error() {
@@ -860,6 +823,60 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::InvalidArgumentType);
     }
 
+    // ---- The pass rides the shared clause walk: every clause shape's
+    // expressions are checked, not just the projection/where roots the
+    // retired hand-rolled clause match reached ----
+
+    /// A `MERGE`'s `ON CREATE`/`ON MATCH SET` value with a statically
+    /// mistyped operand is rejected at compile time — the pinned shape of
+    /// the wider walk (F-1-53: the check fires before any row exists, as
+    /// a Semantic InvalidArgumentType).
+    #[test]
+    fn merge_on_create_and_on_match_set_value_type_errors_are_compile_time() {
+        for query in [
+            "MERGE (n:Person {id: 1}) ON CREATE SET n.flag = NOT [1]",
+            "MERGE (n:Person {id: 1}) ON MATCH SET n.flag = NOT [1]",
+        ] {
+            let err = parse_and_check_static_ops(query)
+                .expect_err(&format!("`{query}` must be rejected statically"));
+            assert!(
+                matches!(err, EngineError::Semantic { .. }),
+                "`{query}` must fail at compile time (Semantic), got {err:?}"
+            );
+            assert_eq!(
+                err.kind(),
+                ErrorKind::InvalidArgumentType,
+                "`{query}` must carry the InvalidArgumentType detail"
+            );
+        }
+    }
+
+    /// The other clause shapes the retired hand-rolled match never reached:
+    /// FOREACH lists, CALL arguments and WHERE, SKIP/LIMIT bounds and
+    /// write-clause property maps all carry their expressions into the
+    /// shared walk, so a statically mistyped operand fails there too.
+    #[test]
+    fn every_clause_shapes_expressions_are_compile_time_checked() {
+        for query in [
+            // FOREACH's list expression.
+            "FOREACH (x IN NOT [1] | CREATE (n {v: 1}))",
+            // A CALL procedure argument and its WHERE filter.
+            "CALL db.labels(NOT [1]) YIELD label WHERE label IN 2",
+            // SKIP and LIMIT bounds.
+            "RETURN 1 AS n ORDER BY n SKIP NOT [1] LIMIT NOT [1]",
+            // CREATE and MERGE property-map values.
+            "CREATE (n {flag: NOT [1]})",
+            "MERGE (n:Person {flag: NOT [1]})",
+        ] {
+            let err = parse_and_check_static_ops(query)
+                .expect_err(&format!("`{query}` must be rejected statically"));
+            assert!(
+                matches!(err, EngineError::Semantic { .. }),
+                "`{query}` must fail at compile time (Semantic), got {err:?}"
+            );
+        }
+    }
+
     // ---- CIP-271: toString()/toStringOrNull() reject a homogeneous LIST<T> ----
 
     #[test]
@@ -916,17 +933,21 @@ mod tests {
     }
 
     #[test]
-    fn tostring_static_gate_stands_down_under_cypher_5() {
-        // CIP-271 is Cypher-25-only; under an explicit `CYPHER 5` preamble
-        // the runtime owns the container contract (toString raises,
-        // toStringOrNull returns null), so the static gate must not fire.
+    fn tostring_static_gate_applies_under_every_preamble_spelling() {
+        // CIP-271's static `LIST<T>` rejection is the one rule under every
+        // spelling: the homogeneous list literal is rejected exactly like
+        // the unprefixed form under the one admitted `CYPHER 25` preamble.
         for query in [
-            "CYPHER 5 RETURN toString([1, 2]) AS result",
-            "CYPHER 5 RETURN toStringOrNull([1, 2]) AS result",
+            "CYPHER 25 RETURN toString([1, 2]) AS result",
+            "RETURN toString([1, 2]) AS result",
+            "CYPHER 25 RETURN toStringOrNull([1, 2]) AS result",
+            "RETURN toStringOrNull([1, 2]) AS result",
         ] {
+            let error = parse_and_check_static_ops(query)
+                .expect_err(&format!("`{query}` must be rejected"));
             assert!(
-                parse_and_check_static_ops(query).is_ok(),
-                "`{query}` must be left to the runtime under CYPHER 5"
+                error.to_string().contains("toString()"),
+                "`{query}`: {error}"
             );
         }
     }

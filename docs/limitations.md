@@ -29,8 +29,10 @@ runs against a single graph:
   `SHOW HOME DATABASE` return `neo4j`; an unknown name returns no rows.
   Database administration follows Neo4j Community Edition: only
   `SHOW DATABASE[S]`, `SHOW DEFAULT/HOME DATABASE` and
-  `ALTER DATABASE … SET DEFAULT LANGUAGE CYPHER 5|25` are supported; every
-  other database administration command (`CREATE`/`DROP`/`ALTER DATABASE`
+  `ALTER DATABASE … SET DEFAULT LANGUAGE CYPHER 25` are supported (the only
+  admitted language value — every other integer fails the command with
+  `UnsupportedCypherVersion`, ADR-0584); every other database administration
+  command (`CREATE`/`DROP`/`ALTER DATABASE`
   otherwise, `START`/`STOP DATABASE`, aliases, composite forms) fails with
   51N27 `Unsupported administration command: <statement>` (ADR-0116). A
   `WITH` composing one of these commands (`… YIELD … WITH … RETURN …`) is

@@ -202,11 +202,11 @@ fn charged_bytes(k: usize, rows: usize) -> u64 {
         .map(|i| percentile_fn("percentileCont", (i as f64 + 1.0) / (k as f64 + 1.0)))
         .collect();
     let params = BTreeMap::new();
-    let sites = AggSites::discover(&graph, calls.iter(), [], &params, None).expect("discovered");
+    let sites = AggSites::discover(&graph, calls.iter(), [], &params).expect("discovered");
     let mut accs = sites.open_group();
     let mut total = graph.retain_bytes(0).expect("a fresh total");
     for row in &group_with_xs(&(0..rows as i64).collect::<Vec<_>>()) {
-        accs.offer(&graph, row, &params, None).expect("offered");
+        accs.offer(&graph, row, &params).expect("offered");
         accs.settle(&graph, &mut total).expect("settled");
     }
     total.total()
@@ -237,7 +237,7 @@ fn many_percentiles_fit_a_cap_one_buffer_fits() {
     let group = group_with_xs(&(0..rows).collect::<Vec<_>>());
     let call = |p: f64| percentile_fn("percentileCont", p);
     let all = Expr::List(vec![call(0.5), call(0.6), call(0.7), call(0.8)]);
-    let value = super::test_support::agg_eval_rows(&graph, &group, &all, &BTreeMap::new(), None)
+    let value = super::test_support::agg_eval_rows(&graph, &group, &all, &BTreeMap::new())
         .expect("four percentiles share one buffer");
     assert!(matches!(value, Value::List(items) if items.len() == 4));
     // Non-shareable (DISTINCT) calls still retain Values and still refuse.
@@ -257,7 +257,7 @@ fn many_percentiles_fit_a_cap_one_buffer_fits() {
         distinct(0.7),
         distinct(0.8),
     ]);
-    let error = super::test_support::agg_eval_rows(&graph, &group, &all, &BTreeMap::new(), None)
+    let error = super::test_support::agg_eval_rows(&graph, &group, &all, &BTreeMap::new())
         .expect_err("the call is refused");
     assert_expression_cap(&error, cap);
 }

@@ -23,7 +23,6 @@ pub(crate) fn catalog_create_index(
     c: &relate_parser::CreateIndexClause,
     rows: Vec<Row>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<Row>> {
     let name = match &c.name {
         Some(name) => schema_name_value(name, params)?,
@@ -33,7 +32,7 @@ pub(crate) fn catalog_create_index(
     // constraint twin (ADR-0489): Neo4j rejects the statement's shape at
     // compile time, so an `IF NOT EXISTS`/equivalent-rule skip can never
     // mask an invalid property count or OPTIONS map.
-    let options = resolve_index_options(graph, c, params, cypher_version)?;
+    let options = resolve_index_options(graph, c, params)?;
     // The conflict family is one named gate (shared with the legacy IR fast
     // path); the detail/create tail stays here.
     let facts = IndexFacts::from_clause(c, name.clone());
@@ -140,7 +139,6 @@ pub(crate) fn catalog_create_constraint(
     c: &relate_parser::CreateConstraintClause,
     rows: Vec<Row>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<Row>> {
     let declared_name = match &c.name {
         Some(name) => Some(schema_name_value(name, params)?),
@@ -152,7 +150,7 @@ pub(crate) fn catalog_create_constraint(
     // `validate_constraint_options`); this function stays the definition
     // construction plus the creation half.
     if matches!(
-        constraint_create_gate(graph, c, &def, constraint_type, params, cypher_version)?,
+        constraint_create_gate(graph, c, &def, constraint_type, params)?,
         Gate::Skip(_)
     ) {
         return Ok(rows);
@@ -196,9 +194,8 @@ pub(crate) fn constraint_create_gate(
     def: &ConstraintDef,
     constraint_type: ConstraintType,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Gate> {
-    validate_constraint_options(graph, c, constraint_type, params, cypher_version)?;
+    validate_constraint_options(graph, c, constraint_type, params)?;
     // One catalog snapshot for the two views this gate reads (the current
     // graph type and the index details); the effective-constraint view
     // below resolves its own derived records from the same snapshot shape.
@@ -356,9 +353,16 @@ pub(crate) fn catalog_alter_database(
     let state = graph.show_schema()?;
     let composite = state.databases[&ns].composite;
     let language = c.default_language;
-    if !matches!(language, 5 | 25) {
+    // ADR-0584 (narrowing ADR-0116 §2): the one admitted default language
+    // (`SUPPORTED_CYPHER_VERSION`) is accepted; every other integer fails
+    // the command with the same authored unsupported-version error the
+    // statement preamble raises, here at command execution -- where the
+    // value is checked (CIP-170: an unsupported value inside
+    // `DEFAULT LANGUAGE` is a runtime data exception, not a compile-time
+    // syntax error).
+    if language != relate_parser::error::SUPPORTED_CYPHER_VERSION {
         return Err(Error::semantic(
-            "InvalidArgumentValue: unsupported Cypher version",
+            relate_parser::error::unsupported_cypher_version_message(language),
         ));
     }
     graph.push_catalog_redo(RedoOp::PutDatabase {

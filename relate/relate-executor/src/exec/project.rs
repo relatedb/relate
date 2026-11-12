@@ -23,8 +23,7 @@ use super::scope::{
     has_star_item, is_internal_column, is_star_item, projection_names, result_column,
     return_columns, star_scope_names, visible_keys, ProjectionFields,
 };
-use super::unwind::RowFeed;
-use super::{materialize_rows_strict, QueryResult};
+use super::{materialize_rows_strict, QueryResult, RowFeed};
 
 /// The statement's result columns for a `RETURN`/`WITH`: the shared
 /// [`return_columns`] item set, with a `RETURN *`/`WITH *` item expanded
@@ -173,53 +172,144 @@ impl<'a> ProjectSpec<'a> {
     }
 }
 
-/// The post-merge WHERE stage: keep the rows whose predicate reads true;
-/// a failing filter expression propagates, the one error policy every
-/// WHERE path shares. The HAVING form never reaches here (ADR-0453): the
-/// caller passes only the plain filtering predicate.
-fn filter_where(
-    graph: &ExecGraph<'_>,
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-    predicate: &Expr,
-    rows: Vec<Row>,
-) -> Result<Vec<Row>> {
-    let mut filtered = Vec::with_capacity(rows.len());
-    for row in rows {
-        if crate::eval::predicate_value_holds(&eval(
-            graph,
-            &row,
-            predicate,
-            params,
-            cypher_version,
-        )?)? {
-            filtered.push(row);
+/// Which merge path owns a `RETURN`/`WITH` projection — the three
+/// exclusive shapes, decided once at classification so no consumer
+/// re-derives the combination from independent flags:
+/// [`ProjectionShape::Plain`] (each row projects alone),
+/// [`ProjectionShape::Star`] (a `*` item, nothing aggregating: the
+/// visible-bindings merge) and [`ProjectionShape::Aggregate`] (aggregate
+/// items, an explicit GROUP BY, or a DISTINCT with an aggregating
+/// subclause).
+#[derive(Clone, Copy)]
+enum ProjectionShape {
+    Plain,
+    Star,
+    Aggregate {
+        /// A `*` item among the items of the aggregating shape: the group
+        /// keys are every carried variable (ADR-0198 ruling 1), so a feed
+        /// cannot fold into it as rows arrive
+        /// ([`ProjectionShape::streams`]).
+        star: bool,
+    },
+}
+
+impl ProjectionShape {
+    /// Decide the shape from the projection's fields — the one decision
+    /// point every consumer reads. The one rejection the executor owns
+    /// lives here: a `DISTINCT *` whose subclause aggregates. Validation
+    /// admits the shape (DISTINCT makes the clause aggregating regardless
+    /// of `*`), but the executor cannot give it HAVING semantics: the
+    /// aggregate would evaluate per row through scalar `eval`, whose
+    /// error is swallowed (the WHERE form returned zero rows, the ORDER
+    /// BY form sorted on null keys), so the combination fails closed.
+    fn decide(fields: &ProjectionFields<'_>) -> Result<Self> {
+        let aggregating_subclause = fields.order.iter().any(|o| is_agg_expr(&o.expr))
+            || fields.where_clause.is_some_and(is_agg_expr);
+        let star = has_star_item(fields.items);
+        let has_agg = fields.items.iter().any(|p| is_agg_expr(&p.expr))
+            || fields.group_by.is_some()
+            || (fields.distinct && aggregating_subclause);
+        if fields.distinct && star && aggregating_subclause {
+            return Err(Error::syntax(
+                "InvalidAggregation: a DISTINCT * projection cannot aggregate in its ORDER BY or WHERE subclause",
+            ));
+        }
+        Ok(if has_agg {
+            ProjectionShape::Aggregate { star }
+        } else if star {
+            ProjectionShape::Star
+        } else {
+            ProjectionShape::Plain
+        })
+    }
+
+    /// Whether a feed into this projection folds as rows arrive: an
+    /// aggregating shape with no `*` item (a `*` groups by every carried
+    /// variable, which needs the rows' shape up front). One decision for
+    /// the dispatcher, which chooses the feed, and the projection, which
+    /// consumes it.
+    fn streams(&self) -> bool {
+        matches!(self, ProjectionShape::Aggregate { star: false })
+    }
+
+    /// Whether the projection carries a `*` item — the shape a `*` owns
+    /// outright, or the aggregating form that groups by every carried
+    /// variable.
+    fn star(&self) -> bool {
+        matches!(
+            self,
+            ProjectionShape::Star | ProjectionShape::Aggregate { star: true }
+        )
+    }
+}
+
+/// A `RETURN`/`WITH` projection's row-independent classification — the
+/// plan every projection path consults, decided once per clause: the
+/// decided [`ProjectionShape`], the clause's fields (the one field
+/// bundle every consumer reads), ADR-0453's WHERE split, the eager-page
+/// decision, and the parked-key plan and output names built from the
+/// same fields. `project_rows` and `open_fold` read this one plan, so
+/// the streaming decision, the fold and the projection path cannot
+/// disagree on the clause's shape — and no site re-destructures the
+/// fields or hand-builds a `ProjectionFields` literal. The shape alone
+/// ([`ProjectionShape::decide`]) answers the dispatcher's cheap
+/// questions without building the per-key plan.
+pub(crate) struct ProjectionClass<'a> {
+    /// The clause's fields — the one field bundle (a copy of the
+    /// [`ProjectionFields`] every consumer reads).
+    fields: ProjectionFields<'a>,
+    /// The decided shape: which merge path owns the clause.
+    shape: ProjectionShape,
+    /// ADR-0453's HAVING/plain split, decided once: an aggregating path
+    /// whose WHERE carries aggregate calls takes them as HAVING
+    /// (evaluated per group inside the aggregation); every other WHERE
+    /// form — any WHERE on a non-aggregating path included — stays the
+    /// plain post-merge filter.
+    having: Option<&'a Expr>,
+    plain_where: Option<&'a Expr>,
+    /// The eager pre-projection page ([`pages_eagerly`]) on a
+    /// non-aggregating shape: `SKIP`/`LIMIT` with no `ORDER BY`,
+    /// DISTINCT, or filter.
+    eager_paged: bool,
+    /// The projection's parked-key plan — the one per-key scope decision
+    /// every path below parks its keys with.
+    order_keys: OrderKeys<'a>,
+    /// The projection's output names.
+    out_names: Vec<String>,
+}
+
+impl<'a> ProjectionClass<'a> {
+    /// The plan over an already-decided shape — the one construction
+    /// site of the parked-key plan and the output names.
+    fn new(fields: &ProjectionFields<'a>, shape: ProjectionShape) -> Self {
+        let aggregating = matches!(shape, ProjectionShape::Aggregate { .. });
+        let having = fields
+            .where_clause
+            .filter(|w| aggregating && is_agg_expr(w));
+        let plain_where = fields.where_clause.filter(|_| having.is_none());
+        Self {
+            fields: *fields,
+            shape,
+            having,
+            plain_where,
+            eager_paged: !aggregating && pages_eagerly(fields),
+            order_keys: OrderKeys::new(fields.order, fields.items, fields.group_by.is_some()),
+            out_names: projection_names(fields.items),
         }
     }
-    Ok(filtered)
-}
 
-/// Whether a projection folds its input as it arrives, so an `UNWIND` or a
-/// `MATCH` feeding it can generate rows one at a time instead of
-/// materializing them: an aggregating projection with no `*` item (a `*`
-/// groups by every carried variable, which needs the rows' shape up front).
-/// One decision for the dispatcher, which chooses the feed, and the
-/// projection, which consumes it.
-pub(crate) fn streams_into_aggregation(fields: &ProjectionFields<'_>) -> bool {
-    let aggregating_subclause = fields.order.iter().any(|o| is_agg_expr(&o.expr))
-        || fields.where_clause.is_some_and(is_agg_expr);
-    let has_agg = fields.items.iter().any(|p| is_agg_expr(&p.expr))
-        || fields.group_by.is_some()
-        || (fields.distinct && aggregating_subclause);
-    has_agg && !has_star_item(fields.items)
-}
-
-/// Whether the clause after an `UNWIND` or a `MATCH` consumes its rows as a
-/// stream: a `WITH` or `RETURN` whose projection folds an aggregation as rows
-/// arrive. Every other follower takes the rows as a held vector, as ever.
-pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
-    next.and_then(ProjectionFields::from_clause)
-        .is_some_and(|fields| streams_into_aggregation(&fields))
+    /// The projection's per-group subclause bundle over this plan: the
+    /// parked-key plan, the HAVING predicate, and the import scope — the
+    /// one derivation both [`open_fold`] and the aggregation merge path
+    /// hand [`Aggregation::open`].
+    fn group_subclauses<'b>(&'b self, scope: Option<&'b Row>) -> GroupSubclauses<'b> {
+        GroupSubclauses {
+            order: &self.order_keys,
+            having: self.having,
+            plain_where: self.plain_where,
+            import_scope: scope,
+        }
+    }
 }
 
 /// Whether a projection only maps rows: no aggregation, `DISTINCT`,
@@ -237,58 +327,98 @@ pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
         && !fields.where_clause.is_some_and(is_agg_expr)
 }
 
-/// Open the aggregation a streamed `MATCH` folds into, for the
-/// `WITH`/`RETURN` that [`streams_into_aggregation`] accepts: the plan
-/// [`project_rows`] would have built from the collected rows, minus the rows.
-pub(crate) fn open_fold<'a>(
+/// The post-merge WHERE stage: keep the rows whose predicate reads true;
+/// a failing filter expression propagates, the one error policy every
+/// WHERE path shares. The HAVING form never reaches here (ADR-0453): the
+/// caller passes only the plain filtering predicate.
+fn filter_where(
     graph: &ExecGraph<'_>,
-    fields: &ProjectionFields<'a>,
-    order: &'a OrderKeys<'a>,
+    params: &BTreeMap<String, Value>,
+    predicate: &Expr,
+    rows: Vec<Row>,
+) -> Result<Vec<Row>> {
+    let mut filtered = Vec::with_capacity(rows.len());
+    for row in rows {
+        if crate::eval::predicate_value_holds(&eval(graph, &row, predicate, params)?)? {
+            filtered.push(row);
+        }
+    }
+    Ok(filtered)
+}
+
+/// Whether a projection folds its input as it arrives, so an `UNWIND` or a
+/// `MATCH` feeding it can generate rows one at a time instead of
+/// materializing them: an aggregating projection with no `*` item (a `*`
+/// groups by every carried variable, which needs the rows' shape up front).
+/// The decision is the shape's ([`ProjectionShape::decide`] +
+/// [`ProjectionShape::streams`]), answered without building the
+/// parked-key plan. A shape `decide` rejects (the `DISTINCT *`
+/// aggregation) never folds a feed: the projection itself fails closed
+/// at the same decision when the clause reaches it, which every clause
+/// in the list does.
+pub(crate) fn streams_into_aggregation(fields: &ProjectionFields<'_>) -> bool {
+    ProjectionShape::decide(fields).is_ok_and(|shape| shape.streams())
+}
+
+/// Whether the clause after an `UNWIND` or a `MATCH` consumes its rows as a
+/// stream: a `WITH` or `RETURN` whose projection folds an aggregation as rows
+/// arrive. Every other follower takes the rows as a held vector, as ever.
+pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
+    next.and_then(ProjectionFields::from_clause)
+        .is_some_and(|fields| streams_into_aggregation(&fields))
+}
+
+/// Open the aggregation a streamed `MATCH` folds into, for the
+/// `WITH`/`RETURN` whose shape [`ProjectionShape::streams`] accepts: the
+/// plan [`project_rows`] would have built from the collected rows, minus
+/// the rows. The parked-key plan is the class's own
+/// ([`ProjectionClass::order_keys`]) — one construction, read here.
+fn open_fold<'a>(
+    graph: &ExecGraph<'_>,
+    class: &'a ProjectionClass<'a>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     scope: Option<&'a Row>,
 ) -> Result<Aggregation<'a>> {
     Aggregation::open(
         graph,
-        &RowFeed::Held(Vec::new()),
-        fields.items,
-        fields.group_by,
+        &[],
+        class.fields.items,
+        class.fields.group_by,
         params,
-        cypher_version,
-        &GroupSubclauses {
-            order,
-            having: fields.where_clause.filter(|w| is_agg_expr(w)),
-            plain_where: fields.where_clause.filter(|w| !is_agg_expr(w)),
-            import_scope: scope,
-        },
+        &class.group_subclauses(scope),
     )
 }
 
 /// The fold an uncapped `MATCH` streams into when the clause after it
 /// aggregates (`next`), `None` when it does not stream or a fold already
-/// parked its order keys in `order_slot` (the slot keeps them alive for the
-/// fold's borrow).
+/// parked its classification in `class_slot` (the slot keeps the plan
+/// alive for the fold's borrow).
 pub(crate) fn open_match_fold<'a>(
     graph: &ExecGraph<'_>,
     next: Option<&'a Clause>,
-    order_slot: &'a OnceCell<OrderKeys<'a>>,
+    class_slot: &'a OnceCell<ProjectionClass<'a>>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     scope: Option<&'a Row>,
 ) -> Result<Option<MatchFold<'a>>> {
-    if order_slot.get().is_some() {
+    if class_slot.get().is_some() {
         return Ok(None);
     }
-    let Some(fields) = next
-        .and_then(ProjectionFields::from_clause)
-        .filter(streams_into_aggregation)
-    else {
+    let Some(fields) = next.and_then(ProjectionFields::from_clause) else {
         return Ok(None);
     };
-    let order = order_slot
-        .get_or_init(|| OrderKeys::new(fields.order, fields.items, fields.group_by.is_some()));
-    open_fold(graph, &fields, order, params, cypher_version, scope)
-        .map(|aggregation| Some(MatchFold::new(aggregation)))
+    // The shape answers without building the parked-key plan; a rejected
+    // shape never folds (the projection fails closed at its own
+    // classification, which the clause reaches because every clause
+    // executes).
+    let shape = match ProjectionShape::decide(&fields) {
+        Ok(shape) if shape.streams() => shape,
+        _ => return Ok(None),
+    };
+    // The slot owns the clause's one classification: the parked-key plan
+    // is built exactly once, here, and kept alive for the fold's borrow
+    // (a fold that already claimed the slot was declined above).
+    let class = class_slot.get_or_init(|| ProjectionClass::new(&fields, shape));
+    open_fold(graph, class, params, scope).map(|aggregation| Some(MatchFold::new(aggregation)))
 }
 
 /// The projection's payload-inflation policy: identity, or a materializing
@@ -339,68 +469,67 @@ pub(crate) fn project_rows(
     source: RowSource,
     scope: Option<&Row>,
 ) -> Result<Vec<Row>> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
-    let ProjectSpec {
-        items,
-        distinct,
-        group_by,
-        order,
-        skip,
-        limit,
-        where_clause,
-    } = *spec;
-    let star = has_star_item(items);
-    let has_agg = items.iter().any(|p| is_agg_expr(&p.expr));
-    // ADR-0453: a DISTINCT projection with an aggregating subclause (an
-    // ORDER BY key or the WHERE predicate) groups by its items and takes
-    // the aggregation path, so the subclause's aggregate calls recompute
-    // over those groups.
-    let aggregating_subclause =
-        order.iter().any(|o| is_agg_expr(&o.expr)) || where_clause.is_some_and(is_agg_expr);
-    // A `*` item leaves no item list to group by, and validation admits the
-    // shape because DISTINCT makes the clause aggregating regardless of `*`.
-    // The executor cannot give it HAVING semantics either: the aggregate
-    // would evaluate per row through scalar `eval`, whose error is swallowed
-    // (the WHERE form returned zero rows, the ORDER BY form sorted on null
-    // keys), so the combination fails closed.
-    if star && distinct && aggregating_subclause {
-        return Err(Error::syntax(
-            "InvalidAggregation: a DISTINCT * projection cannot aggregate in its ORDER BY or WHERE subclause",
-        ));
-    }
-    let subclause_agg = distinct && aggregating_subclause;
-    // CIP-236: an explicit GROUP BY takes the aggregation path even without
-    // aggregate items (the non-aggregating case acts as DISTINCT).
-    let has_agg = has_agg || group_by.is_some() || subclause_agg;
-    let out_names = projection_names(items);
-    // The one per-key scope decision: every path below parks its keys with
-    // this decision, and the projection's own grouping mode sets it.
-    let order_keys = OrderKeys::new(order, items, group_by.is_some());
-    // Without sorting, filtering, aggregation, or DISTINCT, paging may stop
-    // row evaluation. In particular a LIMIT 1 must not evaluate a later row
-    // whose projection raises an error (CIP-27).
-    let eager_paged = !has_agg && pages_eagerly(&spec.fields());
+    let ExecCtx { graph, params, .. } = ctx;
+    // The clause's one classification: every decision below reads it, so
+    // the paths cannot disagree on the shape — and the shape's decision
+    // ([`ProjectionShape::decide`]) owns the DISTINCT-* rejection.
+    let fields = spec.fields();
+    let class = ProjectionClass::new(&fields, ProjectionShape::decide(&fields)?);
     // The match sink already evaluated these items. Eager paging never takes
-    // that path, so this bag is the full input the sort and the page see.
+    // that path, so the materialized bag is the full input the sort and the
+    // page see.
     let preprojected = matches!(source, RowSource::SinkProjected);
-    // ADR-0453 decides the HAVING/plain split once, here: an aggregating
-    // path whose WHERE carries aggregate calls takes them as HAVING
-    // (evaluated per group inside the aggregation); every other WHERE
-    // form — any WHERE on a non-aggregating path included — stays the
-    // plain post-merge filter.
-    let having = where_clause.filter(|w| has_agg && is_agg_expr(w));
-    let plain_where = where_clause.filter(|_| having.is_none());
-    // A generated feed reaches the aggregation unmaterialized; every other
-    // consumer receives it collected, exactly as the clause would have left
-    // it.
+    let (rows, stream) = materialize_feed(graph, params, feed, &class)?;
+    // One cache for the whole projection: its expressions never write, so
+    // the graph state, and with it each payload's refresh, is fixed here.
+    let mut cache = MaterializeCache::default();
+    let mut refresh = if inflate {
+        Refresh::Materialize(&mut cache)
+    } else {
+        Refresh::Identity
+    };
+    let merged = if preprojected {
+        preprojected_rows(graph, rows, &mut refresh)?
+    } else {
+        match class.shape {
+            ProjectionShape::Star => star_rows(
+                graph,
+                params,
+                rows,
+                class.fields.items,
+                &class.order_keys,
+                &mut refresh,
+            )?,
+            ProjectionShape::Aggregate { .. } => aggregate_rows(
+                graph,
+                params,
+                stream.unwrap_or(RowFeed::Held(rows)),
+                &class,
+                scope,
+                &mut refresh,
+            )?,
+            ProjectionShape::Plain => plain_rows(graph, params, rows, &class, &mut refresh)?,
+        }
+    };
+    finish_projection(graph, params, &class, merged)
+}
+
+/// The feed as the merge paths consume it — the pipeline's materialization
+/// stage: a collected row vector, or — when the projection folds a stream
+/// ([`ProjectionClass::streams`]) — the rows still flowing. A generated
+/// feed reaching a non-streaming projection is collected here under the
+/// one retaining charge, and the eager pre-projection page applies at this
+/// stage, so a `LIMIT 1` must not evaluate a later row whose projection
+/// raises an error (CIP-27).
+fn materialize_feed<'a>(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    feed: RowFeed<'a>,
+    class: &ProjectionClass<'_>,
+) -> Result<(Vec<Row>, Option<RowFeed<'a>>)> {
     let (rows, stream) = match feed {
         RowFeed::Held(rows) => (rows, None),
-        RowFeed::Unwind(unwind) if streams_into_aggregation(&spec.fields()) => {
+        RowFeed::Unwind(unwind) if class.shape.streams() => {
             (Vec::new(), Some(RowFeed::Unwind(unwind)))
         }
         folded @ RowFeed::Folded(_) => (Vec::new(), Some(folded)),
@@ -415,112 +544,89 @@ pub(crate) fn project_rows(
             (rows, None)
         }
     };
-    let rows = if eager_paged {
+    let rows = if class.eager_paged {
         let (skip_n, limit_n) =
-            resolve_page_bounds(graph, params, cypher_version, skip.as_ref(), limit.as_ref())?;
+            resolve_page_bounds(graph, params, class.fields.skip, class.fields.limit)?;
         page(rows, skip_n, limit_n)
     } else {
         rows
     };
-    // One cache for the whole projection: its expressions never write, so
-    // the graph state, and with it each payload's refresh, is fixed here.
-    let mut cache = MaterializeCache::default();
-    let mut refresh = if inflate {
-        Refresh::Materialize(&mut cache)
-    } else {
-        Refresh::Identity
-    };
-    let mut merged = if preprojected {
-        preprojected_rows(graph, rows, &mut refresh)?
-    } else if star && !has_agg {
-        star_rows(
-            graph,
-            params,
-            cypher_version,
-            rows,
-            items,
-            &order_keys,
-            &mut refresh,
-        )?
-    } else if has_agg {
-        aggregate_rows(
-            graph,
-            params,
-            cypher_version,
-            stream.unwrap_or(RowFeed::Held(rows)),
-            items,
-            group_by,
-            &order_keys,
-            having,
-            plain_where,
-            scope,
-            &mut refresh,
-        )?
-    } else {
-        plain_rows(
-            graph,
-            params,
-            cypher_version,
-            rows,
-            items,
-            &order_keys,
-            where_clause,
-            &mut refresh,
-        )?
-    };
+    Ok((rows, stream))
+}
 
-    // The WHERE stage: whatever the split above left as the plain
-    // predicate — a plain WHERE, or any WHERE on a non-aggregating path —
-    // filters the merged rows here.
-    if let Some(w) = plain_where {
-        merged = filter_where(graph, params, cypher_version, w, merged)?;
-    }
-
-    // The eager stop already paged on its own resolved bounds; the
-    // post-merge stage pages only on the non-eager path.
-    let (skip_n, limit_n) = if eager_paged {
+/// The projection's finish tail, shared by every merge path — the
+/// pipeline's last stage: the plain WHERE filter over the merged rows,
+/// then the paging stages (the post-merge bounds, the parked-key sort
+/// with its top-k selection, the DISTINCT first-seen pass with its
+/// row-buffer charge re-measured at each shrink, the page itself), then
+/// the result extraction. The eager stop already paged on its own
+/// resolved bounds ([`materialize_feed`]), so the tail pages only on the
+/// non-eager path.
+fn finish_projection(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    class: &ProjectionClass<'_>,
+    merged: Vec<Row>,
+) -> Result<Vec<Row>> {
+    let ProjectionFields {
+        distinct,
+        skip,
+        limit,
+        ..
+    } = class.fields;
+    let mut merged = if let Some(w) = class.plain_where {
+        filter_where(graph, params, w, merged)?
+    } else {
+        merged
+    };
+    let (skip_n, limit_n) = if class.eager_paged {
         (0, None)
     } else {
-        resolve_page_bounds(graph, params, cypher_version, skip.as_ref(), limit.as_ref())?
+        resolve_page_bounds(graph, params, skip, limit)?
     };
-
-    if !order_keys.is_empty() {
+    if !class.order_keys.is_empty() {
         let top_k = match (distinct, limit_n) {
             (false, Some(lim)) => skip_n.checked_add(lim),
             _ => None,
         };
-        sort_rows_by_parked_keys(&order_keys, &mut merged, top_k)?;
+        sort_rows_by_parked_keys(&class.order_keys, &mut merged, top_k)?;
     }
-
-    let mut retained_rows = relate_core::tokens::WorkspaceCharge::empty();
-    if distinct {
-        let keys = if star {
+    // The DISTINCT pass's row-buffer charge: Option-held from
+    // [`retain_distinct`] — it exists only on the distinct shape, and
+    // every later re-measure (the page, the output conversion) walks the
+    // held charge instead of re-checking the mode beside an empty
+    // sentinel.
+    let mut retained_rows = if distinct {
+        let keys = if class.shape.star() {
             DistinctKeys::Visible
         } else {
-            DistinctKeys::Columns(&out_names)
+            DistinctKeys::Columns(&class.out_names)
         };
         let (kept, charge) = retain_distinct(merged, keys)?;
         merged = kept;
-        retained_rows = charge;
-        retained_rows.resize_with(|| crate::workspace::row_buffer_bytes(&merged))?;
+        Some(charge)
+    } else {
+        None
+    };
+    if let Some(charge) = retained_rows.as_mut() {
+        charge.resize_with(|| crate::workspace::row_buffer_bytes(&merged))?;
     }
-
     merged = page(merged, skip_n, limit_n);
-    if distinct {
-        retained_rows.resize_with(|| crate::workspace::row_buffer_bytes(&merged))?;
+    if let Some(charge) = retained_rows.as_mut() {
+        charge.resize_with(|| crate::workspace::row_buffer_bytes(&merged))?;
     }
-
-    if star {
+    if class.shape.star() {
         // The parked keys were sort surface only; a `*` row keeps exactly
         // the incoming bindings and the explicit items.
-        unpark_order_keys(&order_keys, &mut merged);
+        unpark_order_keys(&class.order_keys, &mut merged);
         drop(retained_rows);
         return Ok(merged);
     }
-    let names = RowNames::new(&out_names);
+    let names = RowNames::new(&class.out_names);
     let mut out = Vec::with_capacity(merged.len());
     for mut row in merged {
-        let values = out_names
+        let values = class
+            .out_names
             .iter()
             .map(|name| {
                 row.take_value(name)
@@ -529,8 +635,8 @@ pub(crate) fn project_rows(
             .collect();
         out.push(Row::from_names(&names, values));
     }
-    if distinct {
-        retained_rows.resize_with(|| crate::workspace::row_buffer_bytes(&out))?;
+    if let Some(charge) = retained_rows.as_mut() {
+        charge.resize_with(|| crate::workspace::row_buffer_bytes(&out))?;
     }
     drop(retained_rows);
     Ok(out)
@@ -560,7 +666,6 @@ fn preprojected_rows(
 fn star_rows(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     rows: Vec<Row>,
     items: &[Projection],
     order_keys: &OrderKeys<'_>,
@@ -583,12 +688,12 @@ fn star_rows(
                 if is_star_item(projection) {
                     continue;
                 }
-                let value = eval(graph, &r, &projection.expr, params, cypher_version)?;
+                let value = eval(graph, &r, &projection.expr, params)?;
                 n.insert(projection.output_name(index), refresh.apply(graph, value));
             }
             drop(r);
             park_order_keys(order_keys, &mut n, |expr, scope| {
-                eval(graph, scope, expr, params, cypher_version)
+                eval(graph, scope, expr, params)
             })?;
             // The star branch's output row landing in its final shape,
             // through the same one `add_row` charge.
@@ -600,19 +705,15 @@ fn star_rows(
 
 /// The aggregation mode: HAVING (the aggregate-call WHERE) is evaluated per
 /// group inside the aggregation, and the group rows were charged in the
-/// emission loop.
-#[allow(clippy::too_many_arguments)]
-fn aggregate_rows<'a>(
+/// emission loop. The clause's items, grouping keys, parked-key plan and
+/// HAVING predicate are the classification's own — read from it, never
+/// handed back as loose parameters.
+fn aggregate_rows(
     graph: &ExecGraph<'_>,
-    params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
+    params: &BTreeMap<String, Value>,
     feed: RowFeed<'_>,
-    items: &'a [Projection],
-    group_by: Option<&'a [Expr]>,
-    order_keys: &'a OrderKeys<'a>,
-    having: Option<&'a Expr>,
-    plain_where: Option<&'a Expr>,
-    scope: Option<&'a Row>,
+    class: &ProjectionClass<'_>,
+    scope: Option<&Row>,
     refresh: &mut Refresh<'_>,
 ) -> Result<Vec<Row>> {
     // ADR-0453: the caller routed the aggregate-call WHERE here as HAVING —
@@ -625,16 +726,10 @@ fn aggregate_rows<'a>(
         feed => aggregate_ex(
             graph,
             feed,
-            items,
-            group_by,
+            class.fields.items,
+            class.fields.group_by,
             params,
-            cypher_version,
-            &GroupSubclauses {
-                order: order_keys,
-                having,
-                plain_where,
-                import_scope: scope,
-            },
+            &class.group_subclauses(scope),
         )?,
     };
     refresh.rows(graph, &mut agg);
@@ -649,18 +744,19 @@ fn aggregate_rows<'a>(
 
 /// The plain projection mode: each item over the incoming row, the kept
 /// bindings the subclauses may name, then the parked order keys — one
-/// landing charge per output row.
-#[allow(clippy::too_many_arguments)]
+/// landing charge per output row. The items, the parked-key plan and the
+/// plain WHERE are the classification's own — read from it, never handed
+/// back as loose parameters.
 fn plain_rows(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     rows: Vec<Row>,
-    items: &[Projection],
-    order_keys: &OrderKeys<'_>,
-    where_clause: Option<&Expr>,
+    class: &ProjectionClass<'_>,
     refresh: &mut Refresh<'_>,
 ) -> Result<Vec<Row>> {
+    let items = class.fields.items;
+    let order_keys = &class.order_keys;
+    let where_clause = class.plain_where;
     let mut keep = HashSet::new();
     if let Some(w) = where_clause {
         expr_vars(w, &mut keep);
@@ -685,7 +781,7 @@ fn plain_rows(
             .filter(|(_, projection)| !is_star_item(projection))
             .map(|(i, projection)| {
                 let name = projection.output_name(i);
-                let val = eval(graph, &row, &projection.expr, params, cypher_version)?;
+                let val = eval(graph, &row, &projection.expr, params)?;
                 Ok((name, refresh.apply(graph, val)))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -711,7 +807,7 @@ fn plain_rows(
         // payload.
         drop(row);
         park_order_keys(order_keys, &mut row2, |expr, scope| {
-            eval(graph, scope, expr, params, cypher_version)
+            eval(graph, scope, expr, params)
         })?;
         // The built row landing in the output container, in its final
         // shape: the identity rule counts each distinct payload once

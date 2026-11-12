@@ -32,7 +32,7 @@ use crate::{QueryResult, ResultHeader};
 use relate_core::{Namespace, Result};
 
 /// The wrapped statement as the plan header echoes it (ADR-0359): the
-/// parse classified the preamble (`parsed.explain`/`parsed.profile`), so
+/// parse classified the preamble (`parsed.preamble`), so
 /// the engine strips the one classified keyword token here, once, at the
 /// producer — the boundary reads the stamped text and never re-scans for
 /// the keyword. `keyword` is the classified token (`EXPLAIN`/`PROFILE`).

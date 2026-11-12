@@ -21,9 +21,8 @@ pub(crate) fn dynamic_label_names(
     row: &Row,
     params: &BTreeMap<String, Value>,
     expr: &Expr,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<String>> {
-    let value = eval(graph, row, expr, params, cypher_version)?;
+    let value = eval(graph, row, expr, params)?;
     // Same shared rule as `dynamic_property_key` (STRING or LIST<STRING>,
     // non-empty, NUL-free), reused rather than restated.
     relate_core::dynamic_label_names(&value).map_err(Error::from)
@@ -36,13 +35,12 @@ pub(crate) fn label_expr_matches(
     expr: &LabelExpr,
     labels: &[String],
     is_rel: bool,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     Ok(match expr {
         LabelExpr::Label(name) => labels.iter().any(|label| name == label.as_str()),
         LabelExpr::Wildcard => is_rel || !labels.is_empty(),
         LabelExpr::Dynamic { expr, quantifier } => {
-            let names = dynamic_label_names(graph, row, params, expr, cypher_version)?;
+            let names = dynamic_label_names(graph, row, params, expr)?;
             match quantifier {
                 DynamicLabelQuantifier::Any => names
                     .iter()
@@ -52,13 +50,11 @@ pub(crate) fn label_expr_matches(
                     .all(|name| labels.iter().any(|label| label == name)),
             }
         }
-        LabelExpr::Not(inner) => {
-            !label_expr_matches(graph, row, params, inner, labels, is_rel, cypher_version)?
-        }
+        LabelExpr::Not(inner) => !label_expr_matches(graph, row, params, inner, labels, is_rel)?,
         LabelExpr::And(items) => {
             let mut matched = true;
             for item in items {
-                if !label_expr_matches(graph, row, params, item, labels, is_rel, cypher_version)? {
+                if !label_expr_matches(graph, row, params, item, labels, is_rel)? {
                     matched = false;
                     break;
                 }
@@ -68,7 +64,7 @@ pub(crate) fn label_expr_matches(
         LabelExpr::Or(items) => {
             let mut matched = false;
             for item in items {
-                if label_expr_matches(graph, row, params, item, labels, is_rel, cypher_version)? {
+                if label_expr_matches(graph, row, params, item, labels, is_rel)? {
                     matched = true;
                     break;
                 }
@@ -83,7 +79,6 @@ pub(crate) fn resolve_write_labels(
     row: &Row,
     params: &BTreeMap<String, Value>,
     items: &[LabelExpr],
-    cypher_version: Option<u32>,
 ) -> Result<Vec<String>> {
     let mut labels = Vec::new();
     for item in items {
@@ -97,13 +92,7 @@ pub(crate) fn resolve_write_labels(
                         "InvalidLabelExpression: $any() is not allowed in SET/REMOVE",
                     ));
                 }
-                labels.extend(dynamic_label_names(
-                    graph,
-                    row,
-                    params,
-                    expr,
-                    cypher_version,
-                )?);
+                labels.extend(dynamic_label_names(graph, row, params, expr)?);
             }
             _ => {
                 return Err(Error::semantic(

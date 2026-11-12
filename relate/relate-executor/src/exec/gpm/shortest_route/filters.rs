@@ -81,13 +81,7 @@ impl<'a> PathFilter<'a> {
             // (live: `ANY SHORTEST ... -[r WHERE r.ls]-> ...` accepts a
             // non-empty list), a non-boolean is the typed rejection live
             // raises (22N01).
-            if !crate::eval::predicate_holds(
-                ctx.graph,
-                row,
-                predicate,
-                ctx.params,
-                ctx.cypher_version,
-            )? {
+            if !crate::eval::predicate_holds(ctx.graph, row, predicate, ctx.params)? {
                 return Ok(false);
             }
         }
@@ -126,13 +120,7 @@ impl PairFilter<'_> {
             conjuncts: &self.conjuncts,
             scope: self.scope,
         };
-        Ok(!residual_ok(
-            ctx.graph,
-            &row,
-            ctx.params,
-            ctx.cypher_version,
-            &residual,
-        )?)
+        Ok(!residual_ok(ctx.graph, &row, ctx.params, &residual)?)
     }
 }
 

@@ -64,25 +64,17 @@ pub(crate) fn first_rel_seek(
     types: &RelTypes,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     residual: &Residual<'_>,
 ) -> RelSeek {
     let Some(rp) = path.rels.first() else {
         return RelSeek::Decline;
     };
-    let (start, end, rid) = match resolve_rel_seek(
-        graph,
-        rp,
-        types,
-        residual.conjuncts,
-        row,
-        params,
-        cypher_version,
-    ) {
-        SeekedRel::Decline => return RelSeek::Decline,
-        SeekedRel::Gone => return RelSeek::Gone,
-        SeekedRel::Resolved { start, end, rid } => (start, end, rid),
-    };
+    let (start, end, rid) =
+        match resolve_rel_seek(graph, rp, types, residual.conjuncts, row, params) {
+            SeekedRel::Decline => return RelSeek::Decline,
+            SeekedRel::Gone => return RelSeek::Gone,
+            SeekedRel::Resolved { start, end, rid } => (start, end, rid),
+        };
     match binding(&path.nodes[0], row) {
         Binding::Bound(_) => RelSeek::Forced(rid),
         // A mismatching binding matches nothing either way; the walk

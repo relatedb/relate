@@ -108,22 +108,6 @@ fn show_where_scope(info: &crate::show_columns::CatalogInfo<'_>) -> IdentHashSet
     }
 }
 
-/// The Cypher-5-withheld `SHOW CONSTRAINTS` columns and their authored
-/// diagnostics: `classification` (CIP-186 graph types) and `enforcedLabel`
-/// (CIP-187) only exist under Cypher 25. One table, one case-insensitive
-/// lookup, one error construction.
-pub(super) fn cypher5_withheld_constraint_column(name: &str) -> Option<&'static str> {
-    match name.to_ascii_lowercase().as_str() {
-        "classification" => Some(
-            "UnknownColumn: 'classification' is not an available SHOW CONSTRAINTS column in Cypher 5",
-        ),
-        "enforcedlabel" => {
-            Some("InvalidColumnName: Invalid input 'enforcedLabel' for column name")
-        }
-        _ => None,
-    }
-}
-
 /// Runs every SHOW-clause-specific column-name check: `SHOW DATABASES`'s
 /// CIP-42 checks, and `SHOW FUNCTIONS`/`SHOW PROCEDURES`/`SHOW SETTINGS`'s
 /// CIP-84/CIP-157 default/Full-only column split. The remaining CIP-68 SHOW

@@ -97,7 +97,6 @@ pub(super) enum BulkKind {
 pub struct BulkWrite {
     pub(super) kind: BulkKind,
     pub(super) factors: Vec<Factor>,
-    pub(super) cypher_version: Option<u32>,
 }
 
 /// Whether `pattern` is a bare node pattern `(<var> [:labels…])`: named,
@@ -524,9 +523,5 @@ pub fn analyze_bulk_write(plan: &LogicalPlan) -> Option<BulkWrite> {
         }
         _ => return None,
     };
-    Some(BulkWrite {
-        kind,
-        factors,
-        cypher_version: plan.cypher_version,
-    })
+    Some(BulkWrite { kind, factors })
 }

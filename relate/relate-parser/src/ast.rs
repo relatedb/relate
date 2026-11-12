@@ -1,5 +1,22 @@
 use relate_names::SmallName;
 
+/// The statement preamble mode (CIP-150): which of `EXPLAIN`/`PROFILE`
+/// heads the statement, or neither. The preamble grammar is top-level
+/// only and each keyword is admitted at most once, so exactly one mode
+/// heads a statement — never a pair of flags that could disagree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreambleMode {
+    /// No preamble keyword: the statement executes.
+    #[default]
+    Execute,
+    /// An `EXPLAIN` preamble: the statement compiles and its plan renders,
+    /// never executes.
+    Explain,
+    /// A `PROFILE` preamble: the statement executes with per-operator
+    /// metrics attached.
+    Profile,
+}
+
 /// AST node types for the Cypher parser.
 ///
 /// The AST uses enums for Clause, Expr, and PatternElement to avoid trait objects.
@@ -10,8 +27,9 @@ use relate_names::SmallName;
 pub struct Statement {
     pub clauses: Vec<Clause>,
     pub union: Option<Box<UnionPart>>,
-    pub explain: bool,
-    pub profile: bool,
+    /// The CIP-150 preamble mode — top-level only; every nested body
+    /// carries [`PreambleMode::Execute`].
+    pub preamble: PreambleMode,
     /// CIP-213 `<statement block> ::= <statement> [<next statement>...]`,
     /// `<next statement> ::= NEXT <statement>`. `next` chains this
     /// statement (which may itself carry its own `.union` chain, or be a
@@ -25,20 +43,6 @@ pub struct Statement {
     /// outermost `Statement` of each stage only -- a stage's own `.union`
     /// arms never carry their own independent `.next` chain.
     pub next: Option<Box<Statement>>,
-    /// CIP-150: the effective Cypher language version explicitly requested
-    /// by a `CYPHER <version>` statement preamble (`5` or `25`), or `None`
-    /// if the query had no version-bearing preamble clause at all (a
-    /// version-less `CYPHER <options>` clause with no `<cypher version>`
-    /// token also leaves this `None`). Only ever set on the outermost
-    /// `Statement` a top-level `parse()` call returns -- the preamble is
-    /// parsed once, before any clause, so nested statements (UNION arms,
-    /// `CALL`/`EXISTS`/`COUNT` subquery bodies, NEXT stages) never carry
-    /// their own value here and consumers must read it off the top-level
-    /// statement. `None` means "use the session/database default
-    /// language", which Relate always resolves to 25 (its only
-    /// implemented dialect) since it has no CIP-170 default-language
-    /// configuration surface.
-    pub cypher_version: Option<u32>,
     /// CIP-146/CIP-242: true when this `SingleQuery` was written as
     /// `[ USE <graph-expr> ] '{' <RegularQuery> '}'` -- top-level braces --
     /// rather than the plain unbraced form. The brace form's *content* is
@@ -79,10 +83,8 @@ impl PartialEq for Statement {
     fn eq(&self, other: &Self) -> bool {
         self.clauses == other.clauses
             && self.union == other.union
-            && self.explain == other.explain
-            && self.profile == other.profile
+            && self.preamble == other.preamble
             && self.next == other.next
-            && self.cypher_version == other.cypher_version
             && self.definitions == other.definitions
     }
 }

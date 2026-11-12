@@ -10,40 +10,22 @@ use crate::overlay::ExecGraph;
 
 use super::super::{eval, Row};
 
-/// The `property_exists` special form. Returns `None` when `n` is not
-/// `property_exists`.
-pub(super) fn property_exists_form(
-    graph: &ExecGraph<'_>,
-    row: &Row,
-    params: &BTreeMap<String, Value>,
-    n: &str,
-    args: &[Expr],
-    cypher_version: Option<u32>,
-) -> Option<Result<Value>> {
-    if n != "property_exists" {
-        return None;
-    }
-    Some(property_exists(graph, row, params, args, cypher_version))
-}
-
-// PROPERTY_EXISTS uses an identifier as a property-name literal. It must
-// not be evaluated as a row variable (CIP-247).
-fn property_exists(
+/// The `property_exists` form row (CIP-247): the element argument is
+/// evaluated, while the property-name argument is an identifier literal
+/// that must not be evaluated as a row variable. The row's exactly-two
+/// contract is enforced by the dispatcher before the form runs.
+pub(super) fn property_exists(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
     args: &[Expr],
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    if args.len() != 2 {
-        return Err(Error::syntax(
-            "InvalidNumberOfArguments: property_exists() requires two arguments",
-        ));
-    }
-    let element = eval(graph, row, &args[0], params, cypher_version)?;
+    let [element, name] =
+        <&[Expr; 2]>::try_from(args).expect("the property_exists row's arity is exactly two");
+    let element = eval(graph, row, element, params)?;
     // The property-name argument renders once (this is a dedicated
     // two-argument builtin, not a per-row hot read).
-    let property = match &args[1] {
+    let property = match name {
         Expr::Variable(name) => name.to_string(),
         Expr::Null => "null".to_string(),
         Expr::String(name) => name.clone(),

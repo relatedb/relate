@@ -367,14 +367,17 @@ const ONTOLOGY_DOC: &str = concat!(
 
 /// ADR-0402 Decision 2: a catalog change persists without touching one graph
 /// mutation counter, so the counters cannot be the criterion. `ALTER DATABASE
-/// SET DEFAULT LANGUAGE` is the default-build case: it must not be reported as
-/// "changed nothing", and the change it reports must be real.
+/// SET DEFAULT LANGUAGE` is the default-build case, on the one admitted
+/// CYPHER 25 spelling (every other value's rejection is the errors suite's
+/// pin, in `e2e_errors.rs`): it must not be reported as "changed nothing",
+/// and the change it reports must be real.
 #[test]
 fn test_alter_database_is_not_reported_as_changed_nothing() {
     let dir = tempdir();
+
     let (status, stdout, stderr) = run_in(
         dir.path(),
-        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5",
+        "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25",
     );
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert!(
@@ -386,7 +389,7 @@ fn test_alter_database_is_not_reported_as_changed_nothing() {
         "a persisted catalog change is not a zero-effect write"
     );
 
-    // The change the silent run made is real: the default language is 5.
+    // The change the silent run made is real: the default language is 25.
     let (status, stdout, stderr) = run_in(
         dir.path(),
         "SHOW DATABASE neo4j YIELD name, defaultLanguage",
@@ -394,7 +397,7 @@ fn test_alter_database_is_not_reported_as_changed_nothing() {
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert_eq!(
         data_rows(&stdout),
-        ["{\"defaultLanguage\":\"CYPHER 5\",\"name\":\"neo4j\"}"],
+        ["{\"defaultLanguage\":\"CYPHER 25\",\"name\":\"neo4j\"}"],
         "ALTER DATABASE persisted the language"
     );
 

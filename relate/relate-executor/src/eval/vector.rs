@@ -215,10 +215,10 @@ pub(crate) fn vector_metric(a: &[f64], b: &[f64], metric: VectorMetric) -> Resul
     })
 }
 
-pub(crate) fn vector_distance_metric(vals: &[Value], metric: VectorMetric) -> Result<Value> {
-    // The arity is `MetricForm`'s contract alone (it strips the metric
-    // literal before calling here), so this target carries no second
-    // user-facing arity error.
+pub(crate) fn vector_distance_metric(vals: &[Value; 2], metric: VectorMetric) -> Result<Value> {
+    // The two fixed operands are the form row's structural contract (it
+    // strips the metric literal before calling here), so this target
+    // carries no second user-facing arity error.
     match (plain_vector(&vals[0])?, plain_vector(&vals[1])?) {
         (None, _) | (_, None) => Ok(Value::Null),
         (Some(a), Some(b)) => {
@@ -230,13 +230,13 @@ pub(crate) fn vector_distance_metric(vals: &[Value], metric: VectorMetric) -> Re
     }
 }
 
-pub(crate) fn vector_norm_metric(vals: &[Value], metric: VectorMetric) -> Result<Value> {
-    // The arity is `MetricForm`'s contract alone (see
+pub(crate) fn vector_norm_metric(val: &Value, metric: VectorMetric) -> Result<Value> {
+    // The single fixed operand is the form row's structural contract (see
     // [`vector_distance_metric`]).
     if !matches!(metric, VectorMetric::Euclidean | VectorMetric::Manhattan) {
         return Err(Error::syntax("UnknownDistanceMetric"));
     }
-    match plain_vector(&vals[0])? {
+    match plain_vector(val)? {
         None => Ok(Value::Null),
         Some(a) => {
             let zero = vec![0.0; a.len()];

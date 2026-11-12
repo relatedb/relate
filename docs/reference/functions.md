@@ -139,7 +139,7 @@ keeps the default, and a null one nulls the call.
 | `toIntegerOrNull(x)` | Convert to integer; `null` instead of an error | `RETURN toIntegerOrNull('x')` → `null` |
 | `toFloatOrNull(x)` | Convert to float; `null` instead of an error | `RETURN toFloatOrNull('x')` → `null` |
 | `toBooleanOrNull(x)` | Convert to boolean; `null` instead of an error | `RETURN toBooleanOrNull('nope')` → `null` |
-| `toStringOrNull(x)` | Convert to string; `null` instead of a runtime error | `CYPHER 5 RETURN toStringOrNull([1, 2])` → `null` |
+| `toStringOrNull(x)` | Convert to string; `null` instead of a runtime error | `RETURN toStringOrNull([1, 'a'])` → `'[1, a]'` |
 | `toBoolean(x)` | Convert to boolean | `RETURN toBoolean('true')` → `true` |
 | `toBooleanList(x)` | Convert each list element to a boolean; a non-convertible element becomes `null` | `RETURN toBooleanList(['true', 'x'])` → `[true,null]` |
 
@@ -303,9 +303,11 @@ reject it during semantic analysis (a compile-time `TypeError`). A
 dynamically typed list — a property, parameter or variable read — has no
 statically known element type and renders normally.
 
-CIP-271 is Cypher-25-only. Under a `CYPHER 5` statement preamble the
-pre-CIP-271 contract holds: containers and graph values are a type error for
-`toString`, and `toStringOrNull` returns `null` for them.
+CIP-271 applies to every statement: with `CYPHER 25` the only Cypher
+version — its preamble an accepted no-op
+([ADR-0584](../adr/0584-one-cypher-version-cypher25-noop.md)) — there is no
+dialect in which containers and graph values are a type error for `toString`
+or `null` from `toStringOrNull`.
 
 ## Vector functions
 

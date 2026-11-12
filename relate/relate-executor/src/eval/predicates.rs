@@ -18,22 +18,15 @@ pub(crate) fn eval_match_predicate(
     row: &Row,
     expr: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    // A predicate with no aggregate anywhere inside it rewrites to a
-    // structurally identical clone (the horizontal-aggregate transform
-    // only fires on an aggregate function node), so the hot paths — the
-    // per-candidate residual conjuncts, evaluated once per scanned node —
-    // skip the deep clone and drop of the rewrite and evaluate the
-    // original tree directly (GBL SF0.1 q8: the CONTAINS seed filter paid
-    // one full Expr clone per forum). An aggregate-bearing predicate
-    // keeps the rewrite: the clone is the price of the transformed tree.
-    if relate_ir::is_agg_expr(expr) {
-        let rewritten = rewrite_horizontal_aggregates(graph, row, expr, params, cypher_version)?;
-        eval(graph, row, &rewritten, params, cypher_version)
-    } else {
-        eval(graph, row, expr, params, cypher_version)
-    }
+    // The horizontal-aggregate rewrite borrows every tree it does not
+    // transform (the aggregate-free gate is the transform's own first
+    // decision, so the hot paths — the per-candidate residual conjuncts,
+    // evaluated once per scanned node — pay nothing), so the call is
+    // unconditional: an aggregate-bearing predicate owns its rebuilt tree,
+    // the clone the transformed tree costs.
+    let rewritten = rewrite_horizontal_aggregates(graph, row, expr, params)?;
+    eval(graph, row, &rewritten, params)
 }
 
 /// Whether a MATCH predicate holds on `row` — the one spelling of the
@@ -45,30 +38,49 @@ pub(crate) fn predicate_holds(
     row: &Row,
     predicate: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
-    super::predicate_value_holds(&eval_match_predicate(
-        graph,
-        row,
-        predicate,
-        params,
-        cypher_version,
-    )?)
+    super::predicate_value_holds(&eval_match_predicate(graph, row, predicate, params)?)
 }
 
 /// The optional-WHERE gate — the one spelling of "a WHERE clause that is
 /// absent imposes no constraint": `None` holds, `Some` holds iff the
 /// predicate holds. Every optional-WHERE site reads this, never a
-/// hand-spelled `if let Some(...)`.
-fn where_clause_holds(
+/// hand-spelled `if let Some(...)` — the MATCH candidate filter, the
+/// inline pattern predicates, and the `CALL` composer's YIELD WHERE.
+pub(crate) fn where_clause_holds(
     graph: &ExecGraph<'_>,
     row: &Row,
     where_clause: Option<&Expr>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     match where_clause {
-        Some(predicate) => predicate_holds(graph, row, predicate, params, cypher_version),
+        Some(predicate) => predicate_holds(graph, row, predicate, params),
+        None => Ok(true),
+    }
+}
+
+/// The comprehension WHERE gate — the optional-WHERE spelling both
+/// comprehension loops read (the list and pattern comprehensions' shared
+/// retaining-projection loop and the map comprehension's own), the
+/// comprehension twin of [`where_clause_holds`]. It deliberately
+/// skips the horizontal-aggregate rewrite [`predicate_holds`] applies
+/// first: that rewrite folds an aggregate over the row's row-bound list
+/// variables once per row — a per-row device of the MATCH-predicate
+/// family — while a comprehension's WHERE is evaluated once per bound
+/// element, where the row's list variable is the source being iterated,
+/// not a row of an aggregation; and the front end rejects an aggregate
+/// in these positions outright (`validate/aggregation/non_aggregating`),
+/// so there is nothing here to fold. The evaluated predicate reads
+/// through [`super::predicate_value_holds`] like every other runtime
+/// predicate position.
+pub(crate) fn comprehension_where_holds(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    where_clause: Option<&Expr>,
+    params: &BTreeMap<String, Value>,
+) -> Result<bool> {
+    match where_clause {
+        Some(predicate) => super::predicate_value_holds(&eval(graph, row, predicate, params)?),
         None => Ok(true),
     }
 }
@@ -97,14 +109,13 @@ pub(crate) fn candidate_passes(
     where_clause: Option<&Expr>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     #[cfg(test)]
     CANDIDATE_PASSES.with(|c| c.set(c.get() + 1));
-    if !inline_predicates_ok(graph, patterns, row, params, cypher_version)? {
+    if !inline_predicates_ok(graph, patterns, row, params)? {
         return Ok(false);
     }
-    where_clause_holds(graph, row, where_clause, params, cypher_version)
+    where_clause_holds(graph, row, where_clause, params)
 }
 
 /// The inline-predicates half: every pattern's element-level WHEREs plus
@@ -115,19 +126,12 @@ pub(crate) fn inline_predicates_ok(
     patterns: &[PathPattern],
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     for path in patterns {
-        if !check_elements(graph, &path.elements, row, params, cypher_version)? {
+        if !check_elements(graph, &path.elements, row, params)? {
             return Ok(false);
         }
-        if !where_clause_holds(
-            graph,
-            row,
-            path.where_clause.as_deref(),
-            params,
-            cypher_version,
-        )? {
+        if !where_clause_holds(graph, row, path.where_clause.as_deref(), params)? {
             return Ok(false);
         }
     }
@@ -143,18 +147,11 @@ fn check_elements(
     elements: &[PatternElement],
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     for element in elements {
         match element {
             PatternElement::Node(node) => {
-                if !where_clause_holds(
-                    graph,
-                    row,
-                    node.where_clause.as_ref(),
-                    params,
-                    cypher_version,
-                )? {
+                if !where_clause_holds(graph, row, node.where_clause.as_ref(), params)? {
                     return Ok(false);
                 }
             }
@@ -176,17 +173,11 @@ fn check_elements(
                         for value in values.iter() {
                             let mut iteration = row.clone();
                             iteration.insert(name.to_string(), value.clone());
-                            if !predicate_holds(
-                                graph,
-                                &iteration,
-                                predicate,
-                                params,
-                                cypher_version,
-                            )? {
+                            if !predicate_holds(graph, &iteration, predicate, params)? {
                                 return Ok(false);
                             }
                         }
-                    } else if !predicate_holds(graph, row, predicate, params, cypher_version)? {
+                    } else if !predicate_holds(graph, row, predicate, params)? {
                         // An anonymous quantified relationship has no
                         // iteration variable to bind: evaluate its WHERE once
                         // against the row, mirroring the walk.
@@ -195,13 +186,7 @@ fn check_elements(
                 }
             }
             PatternElement::Relationship(rel) => {
-                if !where_clause_holds(
-                    graph,
-                    row,
-                    rel.where_clause.as_ref(),
-                    params,
-                    cypher_version,
-                )? {
+                if !where_clause_holds(graph, row, rel.where_clause.as_ref(), params)? {
                     return Ok(false);
                 }
             }
@@ -233,7 +218,7 @@ mod tests {
         );
         let expr = agg_fn("max");
         assert_eq!(
-            eval_match_predicate(&graph, &row, &expr, &BTreeMap::new(), None).unwrap(),
+            eval_match_predicate(&graph, &row, &expr, &BTreeMap::new()).unwrap(),
             Value::Int(3)
         );
     }

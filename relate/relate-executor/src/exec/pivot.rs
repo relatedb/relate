@@ -21,7 +21,6 @@ use crate::pattern_walk::{
 };
 use crate::row::{row_bound, Row};
 
-use super::candidates::node_ok;
 use super::expand::{admit_candidate, admit_far_node_at, match_node, PathMatch};
 use super::predicate_spec;
 use super::pushdown::residual_ok_skipping;
@@ -102,12 +101,11 @@ pub(super) fn cheapest_start_expansion(
         graph,
         path,
         params,
-        cypher_version,
         residual,
         ..
     } = *pm;
     let np = &path.nodes[k];
-    let candidates = node_candidates(graph, np, &row, params, cypher_version, residual.conjuncts)?;
+    let candidates = node_candidates(graph, np, &row, params, residual.conjuncts)?;
     // The residual's ready conjuncts, derived once for the whole candidate
     // loop (every candidate binds the same names before the residual
     // runs), not re-derived per scanned node — with the gate-settled
@@ -120,7 +118,8 @@ pub(super) fn cheapest_start_expansion(
         pm.spec.settled_conjuncts(),
     );
     // The scan-predicate gate, hoisted out of the loop (predicate_spec.rs);
-    // a gated candidate's one store read covers `node_ok`'s checks too.
+    // the admission pair below (`candidate_ok` + `admit`) owns what it
+    // settles.
     let gate = pm.spec.gate_spec(np, &row);
     // The start bind's rung — the schema after the walk binds node k from
     // the entry row.
@@ -133,14 +132,17 @@ pub(super) fn cheapest_start_expansion(
         if !predicate_spec::candidate_ok(graph, gate, id)? {
             continue;
         }
-        if gate.is_none() && !node_ok(graph, id, np, &row, params, cypher_version)? {
+        // The admission's second half (predicate_spec.rs): a gated
+        // candidate's one store read already covered `node_ok`'s
+        // checks, so the pattern's own check runs only ungated.
+        if !predicate_spec::admit(graph, gate, id, np, &row, params)? {
             continue;
         }
         let mut row2 = row.clone();
         if !bind_pattern_node(graph, &mut row2, np, id, k, path.has_path_name(), node_rung) {
             continue;
         }
-        if !super::pushdown::conjuncts_hold(graph, &row2, &ready, params, cypher_version)? {
+        if !super::pushdown::conjuncts_hold(graph, &row2, &ready, params)? {
             continue;
         }
         // LABS-448: the walk phase, through the one wrapper — inclusive
@@ -477,7 +479,6 @@ fn backward_candidate(
         graph,
         path,
         params,
-        cypher_version,
         residual,
         ..
     } = *pm;
@@ -489,7 +490,6 @@ fn backward_candidate(
         graph,
         row,
         params,
-        cypher_version,
         RelHop {
             pattern: rp,
             filter: &pm.rel_filters[idx - 1],
@@ -507,11 +507,9 @@ fn backward_candidate(
     };
     // The scan-predicate gate over the reached node, before any of the
     // binding work below (predicate_spec.rs). The pre-clone `row` is the
-    // right one: the node's variable is unbound in it. A gated
-    // candidate's one store read covers `node_ok`'s label and visibility
-    // checks — the pattern carries no property map and the variable no
-    // binding (the gate's eligibility), so the `node_ok` below only runs
-    // for the ungated.
+    // right one: the node's variable is unbound in it. What a gated
+    // candidate's one store read settles is `admit`'s policy
+    // (predicate_spec.rs), stated once there.
     let np = &path.nodes[idx - 1];
     let gate = pm.spec.gate_spec(np, row);
     if !predicate_spec::candidate_ok(graph, gate, prev)? {
@@ -552,7 +550,10 @@ fn backward_candidate(
     // (`(a {p: a.q})`) must evaluate identically in both walk
     // directions, and binding first would let the backward walk see
     // the candidate's own value where the forward walk sees unbound.
-    if gate.is_none() && !node_ok(graph, prev, np, &row2, params, cypher_version)? {
+    // The admission's second half (predicate_spec.rs): a gated
+    // candidate's one store read already covered `node_ok`'s checks,
+    // so the pattern's own check runs only ungated.
+    if !predicate_spec::admit(graph, gate, prev, np, &row2, params)? {
         return Ok(());
     }
     if !bind_pattern_node(
@@ -568,14 +569,7 @@ fn backward_candidate(
     }
     // The gate-settled conjuncts skip the re-run (predicate_spec.rs): the
     // gate evaluated them under the candidate's own read.
-    if !residual_ok_skipping(
-        graph,
-        &row2,
-        params,
-        cypher_version,
-        residual,
-        pm.spec.settled_conjuncts(),
-    )? {
+    if !residual_ok_skipping(graph, &row2, params, residual, pm.spec.settled_conjuncts())? {
         return Ok(());
     }
     if rel_idx == 0 {

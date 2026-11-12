@@ -264,7 +264,7 @@ fn the_rung_drops_the_self_pair_without_a_reduce_tail() {
     } = leading_match(&clauses, cypher);
     let view = ExecGraph::read(&built.graph);
     let params = BTreeMap::new();
-    let ctx = ExecCtx::new(&view, &params, None);
+    let ctx = ExecCtx::new(&view, &params);
     let rows = try_frontier_rows(
         ctx,
         &[Row::new()],

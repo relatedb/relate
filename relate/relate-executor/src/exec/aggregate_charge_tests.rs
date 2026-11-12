@@ -45,7 +45,7 @@ fn only_retaining_aggregates_charge_per_row() {
         .chain(SINGLE_INPUT_AGGREGATES.iter().copied());
     for name in names {
         let kind = classify_aggregate(name).expect("the table names aggregate kinds");
-        let result = agg_eval_rows(&graph, &group, &agg_fn(name), &BTreeMap::new(), None);
+        let result = agg_eval_rows(&graph, &group, &agg_fn(name), &BTreeMap::new());
         if StreamFold::for_kind(kind).is_some() {
             result.unwrap_or_else(|error| panic!("{name} streams, yet refused: {error}"));
         } else {
@@ -71,11 +71,10 @@ fn distinct_streaming_aggregates_retain_no_operands() {
         args: vec![Expr::Variable("x".into())],
     };
     for name in ["count", "sum", "avg", "stDev", "min", "max"] {
-        agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new(), None)
+        agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new())
             .unwrap_or_else(|error| panic!("{name}(DISTINCT) streams, yet refused: {error}"));
     }
-    let error =
-        agg_eval_rows(&graph, &group, &distinct("collect"), &BTreeMap::new(), None).unwrap_err();
+    let error = agg_eval_rows(&graph, &group, &distinct("collect"), &BTreeMap::new()).unwrap_err();
     assert_expression_cap(&error, cap);
 }
 
@@ -96,18 +95,16 @@ fn distinct_state_is_proportional_to_distinct_values() {
         distinct: true,
         args: vec![Expr::Variable("x".into())],
     };
-    let counted = agg_eval_rows(&graph, &few, &distinct("count"), &BTreeMap::new(), None)
+    let counted = agg_eval_rows(&graph, &few, &distinct("count"), &BTreeMap::new())
         .expect("ten distinct values fit the cap");
     assert_eq!(counted, Value::Int(10));
-    let collected = agg_eval_rows(&graph, &few, &distinct("collect"), &BTreeMap::new(), None)
+    let collected = agg_eval_rows(&graph, &few, &distinct("collect"), &BTreeMap::new())
         .expect("ten distinct values fit the cap");
     assert!(matches!(collected, Value::List(items) if items.len() == 10));
-    let error =
-        agg_eval_rows(&graph, &few, &agg_fn("collect"), &BTreeMap::new(), None).unwrap_err();
+    let error = agg_eval_rows(&graph, &few, &agg_fn("collect"), &BTreeMap::new()).unwrap_err();
     assert_expression_cap(&error, cap);
     let many = group_with_xs(&(0..200_000).collect::<Vec<_>>());
-    let error =
-        agg_eval_rows(&graph, &many, &distinct("collect"), &BTreeMap::new(), None).unwrap_err();
+    let error = agg_eval_rows(&graph, &many, &distinct("collect"), &BTreeMap::new()).unwrap_err();
     assert_expression_cap(&error, cap);
 }
 
@@ -142,7 +139,7 @@ fn retaining_folds_keep_the_exact_cumulative_charge() {
     let graph = ExecGraph::read(&g);
     // The shared operand passes: the row still holds the payload, so the
     // exact walk is one `Arc` count read per row — the O(1) common case.
-    let collected = agg_eval_rows(&graph, &shared, &agg_fn("collect"), &BTreeMap::new(), None)
+    let collected = agg_eval_rows(&graph, &shared, &agg_fn("collect"), &BTreeMap::new())
         .expect("a shared operand charges nothing per row");
     assert!(matches!(collected, Value::List(items) if items.len() == 100));
     // The retaining `collect` over constructed operands refuses through
@@ -163,7 +160,6 @@ fn retaining_folds_keep_the_exact_cumulative_charge() {
                 }]),
             ),
             &BTreeMap::new(),
-            None,
         )
     };
     assert_expression_cap(&constructed_over("collect").unwrap_err(), cap);

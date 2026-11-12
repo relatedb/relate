@@ -241,7 +241,6 @@ fn prepare_vector_filters<'a>(
     graph: &ExecGraph<'_>,
     input: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<PreparedVectorFilter<'a>>> {
     let additional: HashSet<_> = detail.with_properties.iter().map(String::as_str).collect();
     let invalid_rhs = || Error::ty("InvalidValueType: invalid vector search filter RHS type");
@@ -254,13 +253,13 @@ fn prepare_vector_filters<'a>(
                 return Err(Error::execution("WrongPropertyForVectorSearchFilter"));
             }
         }
-        let value = filter
-            .rhs()
-            .map(|rhs| eval(graph, input, rhs, params, cypher_version))
-            .transpose()?;
+        // Each arm destructures its own variant's rhs and evaluates it
+        // there (stellar round 2, F-2-27): the variant's shape is the
+        // one decode — no pre-evaluated Option, no transpose, no
+        // per-arm expect re-asserting what the match already proved.
         let prepared = match filter {
-            SearchFilterPred::Comparison { property, op, .. } => {
-                let value = value.expect("a comparison predicate carries a value RHS");
+            SearchFilterPred::Comparison { property, op, rhs } => {
+                let value = eval(graph, input, rhs, params)?;
                 if !vector_filter_rhs_allowed(&value) {
                     return Err(invalid_rhs());
                 }
@@ -274,8 +273,8 @@ fn prepare_vector_filters<'a>(
             SearchFilterPred::NotExists { property } => {
                 PreparedVectorFilter::NotExists { property }
             }
-            SearchFilterPred::InSet { property, .. } => {
-                let value = value.expect("an in-set predicate carries a value RHS");
+            SearchFilterPred::InSet { property, rhs } => {
+                let value = eval(graph, input, rhs, params)?;
                 if !vector_in_set_rhs_allowed(&value) {
                     return Err(invalid_rhs());
                 }
@@ -284,11 +283,8 @@ fn prepare_vector_filters<'a>(
                     rhs: value,
                 }
             }
-            SearchFilterPred::EntityInSet { .. } => PreparedVectorFilter::EntityInSet {
-                ids: entity_set_ids(
-                    &value.expect("an entity-set predicate carries a value RHS"),
-                    kind,
-                )?,
+            SearchFilterPred::EntityInSet { rhs } => PreparedVectorFilter::EntityInSet {
+                ids: entity_set_ids(&eval(graph, input, rhs, params)?, kind)?,
             },
         };
         evaluated.push(prepared);
@@ -313,20 +309,14 @@ pub(crate) fn vector_index_candidates(
     limit: usize,
     filter: VectorSearchFilter<'_>,
 ) -> Result<(EntityKind, Vec<(Value, f64)>)> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     let VectorSearchFilter { filters, input } = filter;
     let (detail, property, metric) = resolve_vector_index(graph, index_name, query)?;
     // The per-search query facts (ADR-0256 hoist, stellar round 2 bundle):
     // norm and zero-guard are shared by every candidate's cosine.
     let prepared = PreparedQuery::prepare(query);
     let kind = EntityKind::from_relationship_flag(detail.relationship);
-    let evaluated_filters =
-        prepare_vector_filters(filters, &detail, kind, graph, input, params, cypher_version)?;
+    let evaluated_filters = prepare_vector_filters(filters, &detail, kind, graph, input, params)?;
     // ADR-0256: the unfiltered path never materializes a `Value` per scored
     // candidate — only the ≤ offset+limit survivors become entities below.
     // Filtered (CIP-235 `WITH`) searches still evaluate properties per

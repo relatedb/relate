@@ -161,11 +161,20 @@ pub(crate) struct RangeValues {
     remaining: i64,
 }
 
+/// The plan's count spelling both readers share ([`RangePlan::len`],
+/// [`RangeValues::remaining`]): an exact element count is non-negative by
+/// construction (the plan's size is), so the only refusal is the width
+/// conversion to this platform's `usize` — never a fabricated unbounded
+/// fallback at a caller.
+fn count_to_usize(count: i64) -> Result<usize> {
+    usize::try_from(count).map_err(|_| Error::ty("integer out of range"))
+}
+
 impl RangePlan {
     /// The element count as a `usize`, or the arithmetic-overflow error when
     /// it does not fit this platform's address space.
     pub(crate) fn len(&self) -> Result<usize> {
-        usize::try_from(self.size).map_err(|_| Error::ty("integer out of range"))
+        count_to_usize(self.size)
     }
 
     /// The walk over the plan's elements.
@@ -179,9 +188,10 @@ impl RangePlan {
 }
 
 impl RangeValues {
-    /// Elements not yet yielded.
-    pub(crate) fn remaining(&self) -> i64 {
-        self.remaining
+    /// Elements not yet yielded, as the plan's own count spelling
+    /// ([`count_to_usize`], shared with [`RangePlan::len`]).
+    pub(crate) fn remaining(&self) -> Result<usize> {
+        count_to_usize(self.remaining)
     }
 }
 

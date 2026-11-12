@@ -347,13 +347,13 @@ fn test_using_join_without_on_is_rejected() {
 #[test]
 fn test_parse_explain() {
     let stmt = parse("EXPLAIN MATCH (n) RETURN n").unwrap();
-    assert!(stmt.explain);
+    assert_eq!(stmt.preamble, PreambleMode::Explain);
 }
 
 #[test]
 fn test_parse_profile() {
     let stmt = parse("PROFILE MATCH (n) RETURN n").unwrap();
-    assert!(stmt.profile);
+    assert_eq!(stmt.preamble, PreambleMode::Profile);
 }
 
 #[test]

@@ -523,3 +523,26 @@ pub(crate) fn candidate_ok(
         None => Ok(true),
     }
 }
+
+/// The complement of [`candidate_ok`] — the second half of a candidate
+/// loop's admission, beside it: a gated candidate's one store read
+/// already settled the labels and predicates the pattern's own
+/// `node_ok` re-checks (the gate's eligibility guarantees the variable
+/// is unbound and the pattern carries no property map), so `node_ok`
+/// runs only for the ungated. The one spelling of that fact (stellar
+/// round 2, F-2-23/F-2-44): the candidate loops — `match_node`,
+/// `cheapest_start_expansion`, `backward_candidate` — read this pair,
+/// never a hand-spelled `gate.is_none() &&` beside a `node_ok` call.
+pub(crate) fn admit(
+    graph: &ExecGraph<'_>,
+    gate: Option<&VarSpec>,
+    id: NodeId,
+    np: &NodePattern,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+) -> Result<bool> {
+    match gate {
+        Some(_) => Ok(true),
+        None => super::candidates::node_ok(graph, id, np, row, params),
+    }
+}

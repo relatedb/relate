@@ -408,7 +408,7 @@ fn a_rewritten_parse_failure_runs_the_original_and_stores_nothing() {
     conn.query("CREATE ()").unwrap();
     assert_eq!(reserved(&db), 0);
     let ran = conn
-        .query("CYPHER 5 MATCH (n) RETURN count(n) AS c")
+        .query("CYPHER 25 MATCH (n) RETURN count(n) AS c")
         .unwrap();
     assert_eq!(ran.rows, vec![vec![Value::Int(1)]]);
     assert_eq!(cache_len(&db), 0);

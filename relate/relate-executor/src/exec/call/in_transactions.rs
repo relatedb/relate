@@ -1,7 +1,7 @@
 //! `CALL { … } IN TRANSACTIONS`: batch boundaries, per-batch commit and
 //! rollback, and the `ON ERROR` / `REPORT STATUS` rows.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::Query;
@@ -34,7 +34,7 @@ pub(crate) fn exec_call_in_transactions(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let batch_size = resolve_batch_options(graph, &rows[0], tx, params, qctx)?;
+    let batch_size = resolve_batch_options(graph, &rows[0], tx, params)?;
     // The `REPORT STATUS AS <name>` column, resolved once: every status
     // value below is written through `BatchOutcome::stamp`, so "the call
     // reports a status" has a single spelling.
@@ -98,7 +98,7 @@ pub(crate) fn exec_call_in_transactions(
                 // transaction ever started and nothing was bound.
                 let mut failed_rows = Vec::new();
                 for row in batch {
-                    failed_rows.push(failed_batch_row(graph, row, query, scope, params, qctx)?);
+                    failed_rows.push(failed_batch_row(graph, row, query, scope, params)?);
                 }
                 BatchOutcome::Failed {
                     id: tx_id.clone(),
@@ -135,13 +135,12 @@ fn resolve_batch_options(
     first: &Row,
     tx: &relate_ir::InTransactions,
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<usize> {
     const MSG: &str = "batch size must be a positive integer";
     let batch_size = match tx.batch_size.as_ref() {
         None => 1000,
         Some(expr) => {
-            let size = eval(graph, first, expr, params, qctx.cypher_version)?
+            let size = eval(graph, first, expr, params)?
                 .as_int()
                 .ok_or_else(|| Error::ty(MSG))?;
             // A narrowing cast is not a range guard: on a 32-bit target a
@@ -161,7 +160,7 @@ fn resolve_batch_options(
     // only the *literal* forms are rejected — at plan time, by
     // `check_positive_int_arg`. The runtime contract is type-only.
     if let relate_ir::Concurrency::Value(expr) = &tx.concurrency {
-        let value = eval(graph, first, expr, params, qctx.cypher_version)?;
+        let value = eval(graph, first, expr, params)?;
         if value.as_int().is_none() {
             return Err(Error::ty("concurrency must be an integer"));
         }
@@ -242,7 +241,6 @@ fn failed_batch_row(
     query: &Query,
     scope: &relate_ir::CallScope,
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Row> {
     // The body's export shape is its FINAL stage's projection — the same
     // trailing-clause classification `call_subquery_row` and the conditional
@@ -265,20 +263,15 @@ fn failed_batch_row(
     let mut row = outer.clone();
     for (index, item) in items.iter().enumerate() {
         let name = item.output_name(index);
-        let mut vars = HashSet::new();
-        relate_ir::expr_vars(&item.expr, &mut vars);
-        let value = if vars.iter().all(|v| seed.contains_key(v)) {
-            // The projection can fail for the same reason the batch did
-            // (the failing clause may be this very expression); the failed
-            // row reports that column as null — `ON ERROR CONTINUE` must
-            // not turn a handled batch failure into a statement failure.
-            match eval(graph, &seed, &item.expr, params, qctx.cypher_version) {
-                Ok(value) => value,
-                Err(_) => Value::Null,
-            }
-        } else {
-            Value::Null
-        };
+        // A failed or unresolvable projection reads null (stellar round
+        // 2, F-2-51) — the one policy, stated once: the projection can
+        // fail for the same reason the batch did (the failing clause may
+        // be this very expression), and a name the import seed does not
+        // carry is the failing iteration's binding, gone with the
+        // rollback — either way `ON ERROR CONTINUE` must not turn a
+        // handled batch failure into a statement failure, so the column
+        // reports null.
+        let value = eval(graph, &seed, &item.expr, params).unwrap_or(Value::Null);
         row.insert(name, value);
     }
     Ok(row)

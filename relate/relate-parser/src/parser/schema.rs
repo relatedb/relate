@@ -309,10 +309,11 @@ impl<'a> Parser<'a> {
     /// *not* range-checked here (CIP-170 NOTES.md Deviations #2: an
     /// unsupported value inside `DEFAULT LANGUAGE` is a runtime data
     /// exception, not a compile-time syntax error, unlike CIP-150's
-    /// statement-preamble `CYPHER <version>` prefix -- see
-    /// `validate::validate_default_language_version`). Only the token
-    /// shape (`CYPHER` followed by an integer) is a hard grammar
-    /// requirement.
+    /// statement-preamble `CYPHER <version>` prefix -- the value is
+    /// checked where the command executes, the executor's
+    /// `catalog_alter_database`, against the one admitted version,
+    /// ADR-0584). Only the token shape (`CYPHER` followed by an
+    /// integer) is a hard grammar requirement.
     pub(super) fn parse_cypher_language_name(&mut self) -> ParseResult<u32> {
         if !self.peek_is_ident("cypher") {
             let tok = self.peek().clone();

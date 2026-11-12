@@ -3,14 +3,20 @@
 //! the determinism classification. The parent module's `function()` is the
 //! dispatch that reads this table.
 
+use std::collections::BTreeMap;
+
 use relate_core::temporal::{clock_spelling_rows, BetweenUnit, ClockKind, ClockMode};
 use relate_core::{
     ArityContract, Result, Value, CHAR_LENGTH_ARITY, FORMAT_ARITY, NULLIF_ARITY, VECTOR_ARITY,
 };
+use relate_ir::Expr;
 
 use crate::overlay::ExecGraph;
+use crate::row::Row;
 
-use super::{bar, convert, entity, list, math, scalar, spatial, string, temporal, vector};
+use super::{
+    bar, convert, entity, list, math, property, scalar, spatial, string, temporal, vector,
+};
 
 /// Whether a builtin samples the clock or entropy on each call, so two
 /// evaluations in one statement can return different values. This is the
@@ -25,30 +31,44 @@ pub(crate) fn is_nondeterministic(name: &str) -> bool {
         .is_some_and(|row| row.nondeterministic || row.implementation.samples_clock())
 }
 
-/// A dialect-independent builtin implementation.
+/// A builtin implementation.
 pub(super) type Builtin = fn(&ExecGraph<'_>, &str, Vec<Value>) -> Result<Value>;
 
-/// A builtin implementation that also receives the statement's Cypher
-/// version. The `toString` family is the only dialect-sensitive vocabulary
-/// (CIP-271 is Cypher-25-only), so only its rows take this form.
-pub(super) type VersionedBuiltin =
-    fn(&ExecGraph<'_>, &str, Vec<Value>, Option<u32>) -> Result<Value>;
+/// A form-row implementation: like [`Builtin`], but the call's arguments
+/// arrive **unevaluated** — a form's trailing argument is syntax the form
+/// lowers itself (a property-name identifier, a distance-metric literal),
+/// never a value, so the dispatcher hands it the argument expressions.
+pub(super) type Form = fn(&ExecGraph<'_>, &Row, &BTreeMap<String, Value>, &[Expr]) -> Result<Value>;
 
-/// The implementation shape a builtin row carries: the plain form for every
-/// dialect-independent name, the versioned form for the `toString` family,
-/// and the three temporal row shapes whose type is part of the registration —
-/// the clock-access spelling names its kind and mode, the truncate spelling
-/// its kind, and the `duration.between`/`duration.in*` family its
-/// [`BetweenUnit`] — so no implementation re-derives it from the call name.
+/// The implementation shape a builtin row carries, split on the one
+/// policy the dispatcher acts on: a form row takes its arguments
+/// unevaluated, and every value-taking shape wraps an [`Applied`] row —
+/// the dispatcher evaluates the arguments exactly once, in order, before
+/// any implementation runs.
 #[derive(Clone, Copy)]
 pub(super) enum BuiltinImplementation {
+    /// A form row: the implementation receives the call's unevaluated
+    /// argument expressions ([`Form`]).
+    Form(Form),
+    /// A value-taking row: the arguments are evaluated before the
+    /// implementation runs (the dispatcher's one evaluation site).
+    Applied(Applied),
+}
+
+/// The value-taking implementation shapes whose type is part of the
+/// registration: the plain form for every name, and the row shapes that
+/// carry their own data — the clock-access spelling names its kind and
+/// mode, the truncate spelling its kind, the `duration.between`/
+/// `duration.in*` family its [`BetweenUnit`] — so no implementation
+/// re-derives it from the call name.
+#[derive(Clone, Copy)]
+pub(super) enum Applied {
     Plain(Builtin),
-    Versioned(VersionedBuiltin),
     Clock(ClockKind, ClockMode),
     Truncate(ClockKind),
     /// A `duration.between`/`duration.in*` row: the unit is part of the
-    /// registration, so the implementation never re-derives it from the call
-    /// name.
+    /// registration, so the implementation never re-derives it from the
+    /// call name.
     Between(BetweenUnit),
 }
 
@@ -60,7 +80,7 @@ impl BuiltinImplementation {
     fn samples_clock(self) -> bool {
         matches!(
             self,
-            BuiltinImplementation::Clock(..) | BuiltinImplementation::Truncate(_)
+            BuiltinImplementation::Applied(Applied::Clock(..) | Applied::Truncate(_))
         )
     }
 }
@@ -228,6 +248,25 @@ pub(super) const ARITY_EXACTLY_FOUR_ENGINE_ONLY: Arity = Arity {
 
     verified: &[],
 };
+/// `property_exists` (CIP-247) and `vector_norm` (CIP-214): exactly two
+/// arguments, the second of which is the literal the form lowers itself
+/// (the property-name identifier, the distance metric).
+pub(super) const ARITY_EXACTLY_TWO_FORMS: Arity = Arity {
+    min: 2,
+    max: Some(2),
+    requirement: "requires two arguments",
+
+    verified: &["property_exists", "vector_norm"],
+};
+/// `vector_distance` (CIP-214): the two vectors plus the distance-metric
+/// literal the form lowers itself.
+pub(super) const ARITY_EXACTLY_THREE_FORMS: Arity = Arity {
+    min: 3,
+    max: Some(3),
+    requirement: "requires three arguments",
+
+    verified: &["vector_distance"],
+};
 /// Everything else's floor; the upper bounds are the LABS-758 catalogue.
 pub(super) const ARITY_AT_LEAST_ONE: Arity = Arity {
     min: 1,
@@ -304,7 +343,7 @@ pub(super) const fn row(
 ) -> BuiltinRow {
     BuiltinRow {
         name,
-        implementation: BuiltinImplementation::Plain(implementation),
+        implementation: BuiltinImplementation::Applied(Applied::Plain(implementation)),
         nondeterministic,
         arity,
     }
@@ -315,9 +354,22 @@ pub(super) const fn row(
 pub(super) const fn between_row(name: &'static str, unit: BetweenUnit) -> BuiltinRow {
     BuiltinRow {
         name,
-        implementation: BuiltinImplementation::Between(unit),
+        implementation: BuiltinImplementation::Applied(Applied::Between(unit)),
         nondeterministic: false,
         arity: ARITY_EXACTLY_TWO,
+    }
+}
+
+/// Row constructor for a form whose arguments are syntax rather than
+/// values: the implementation receives the unevaluated arguments and
+/// lowers its own literal argument (`property_exists`'s property-name
+/// identifier, the vector metric forms' distance-metric literal).
+pub(super) const fn form_row(name: &'static str, form: Form, arity: Arity) -> BuiltinRow {
+    BuiltinRow {
+        name,
+        implementation: BuiltinImplementation::Form(form),
+        nondeterministic: false,
+        arity,
     }
 }
 
@@ -326,25 +378,9 @@ pub(super) const fn between_row(name: &'static str, unit: BetweenUnit) -> Builti
 pub(super) const fn truncate_row(name: &'static str, kind: ClockKind) -> BuiltinRow {
     BuiltinRow {
         name,
-        implementation: BuiltinImplementation::Truncate(kind),
+        implementation: BuiltinImplementation::Applied(Applied::Truncate(kind)),
         nondeterministic: false,
         arity: ARITY_ONE_TO_THREE,
-    }
-}
-
-/// Row constructor for a dialect-sensitive builtin: dispatch hands it the
-/// statement's Cypher version.
-pub(super) const fn versioned_row(
-    name: &'static str,
-    implementation: VersionedBuiltin,
-    nondeterministic: bool,
-    arity: Arity,
-) -> BuiltinRow {
-    BuiltinRow {
-        name,
-        implementation: BuiltinImplementation::Versioned(implementation),
-        nondeterministic,
-        arity,
     }
 }
 
@@ -552,6 +588,11 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         false,
         ARITY_AT_LEAST_ONE,
     ),
+    form_row(
+        "property_exists",
+        property::property_exists,
+        ARITY_EXACTLY_TWO_FORMS,
+    ),
     row("radians", math::bi_radians, false, ARITY_AT_LEAST_ONE),
     row("rand", math::bi_rand, true, ARITY_EXACT_ZERO),
     row("randomuuid", entity::bi_randomuuid, true, ARITY_EXACT_ZERO),
@@ -649,14 +690,14 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         ARITY_AT_LEAST_ONE,
     ),
     row("tolower", string::bi_lower, false, ARITY_AT_LEAST_ONE),
-    versioned_row("tostring", convert::bi_tostring, false, ARITY_EXACTLY_ONE),
-    versioned_row(
+    row("tostring", convert::bi_tostring, false, ARITY_EXACTLY_ONE),
+    row(
         "tostringlist",
         convert::bi_tostringlist,
         false,
         ARITY_AT_LEAST_ONE,
     ),
-    versioned_row(
+    row(
         "tostringornull",
         convert::bi_tostringornull,
         false,
@@ -712,6 +753,12 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         false,
         ARITY_AT_LEAST_ONE,
     ),
+    form_row(
+        "vector_distance",
+        vector::vector_distance,
+        ARITY_EXACTLY_THREE_FORMS,
+    ),
+    form_row("vector_norm", vector::vector_norm, ARITY_EXACTLY_TWO_FORMS),
     row(
         "zoned_date_time",
         temporal::bi_date,
@@ -742,7 +789,7 @@ pub(super) fn builtins() -> &'static [BuiltinRow] {
         let mut rows = BUILTINS.to_vec();
         rows.extend(clock_spelling_rows().map(|(name, kind, mode)| BuiltinRow {
             name,
-            implementation: BuiltinImplementation::Clock(kind, mode),
+            implementation: BuiltinImplementation::Applied(Applied::Clock(kind, mode)),
             // Determinism is derived from the implementation shape
             // ([`is_nondeterministic`]), like the truncate rows.
             nondeterministic: false,

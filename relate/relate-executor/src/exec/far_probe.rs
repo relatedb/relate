@@ -75,7 +75,6 @@ impl FarProbe {
         path: &PathPattern,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
         residual: &Residual<'_>,
     ) -> Self {
         let mut nodes = HashMap::new();
@@ -87,7 +86,7 @@ impl FarProbe {
             if var.with_str(|text| row.contains_key(text)) {
                 continue;
             }
-            let seeks = far_node_seeks(graph, node, var, row, params, cypher_version, residual);
+            let seeks = far_node_seeks(graph, node, var, row, params, residual);
             if seeks.is_empty() {
                 continue;
             }
@@ -236,7 +235,6 @@ fn far_node_seeks(
     var: &SmallName,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     residual: &Residual<'_>,
 ) -> Vec<Seek> {
     let label_seekable = label_index_seekable(node);
@@ -257,7 +255,6 @@ fn far_node_seeks(
             node.properties.as_ref(),
             PatternMapRole::Match,
             params,
-            cypher_version,
         ) {
             for (key, value) in properties {
                 seeks.push(Seek::Range(key, crate::graph::RangeSeek::Eq(value)));
@@ -267,7 +264,7 @@ fn far_node_seeks(
     // Text render: the servability check reads the label list as text.
     let labels: Vec<String> = node.label_names().map(|label| label.to_string()).collect();
     for conjunct in residual.conjuncts {
-        let Some(seek) = leaf_seek(var, conjunct, graph, row, params, cypher_version) else {
+        let Some(seek) = leaf_seek(var, conjunct, graph, row, params) else {
             continue;
         };
         if !seek.servable(graph, &labels, label_seekable) {

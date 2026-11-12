@@ -48,7 +48,6 @@ fn walk_collect(
     row: &Row,
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     limit: Option<usize>,
 ) -> Result<Vec<Row>> {
     if path.nodes.is_empty() {
@@ -68,7 +67,7 @@ fn walk_collect(
         .collect();
     let mut out = Vec::new();
     walk_pattern(
-        ExecCtx::new(graph, params, cypher_version),
+        ExecCtx::new(graph, params),
         path,
         &ladder,
         &rel_filters,
@@ -89,9 +88,8 @@ pub(crate) fn collect_pattern_rows(
     row: &Row,
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<Row>> {
-    walk_collect(graph, row, path, params, cypher_version, None)
+    walk_collect(graph, row, path, params, None)
 }
 
 /// LABS-246: boolean existence for a pattern predicate — the anchored
@@ -106,15 +104,14 @@ pub(crate) fn pattern_exists(
     row: &Row,
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
-    if let Some(hit) = resolved_endpoints_exist(graph, row, path, params, cypher_version)? {
+    if let Some(hit) = resolved_endpoints_exist(graph, row, path, params)? {
         return Ok(hit);
     }
     if path.nodes.is_empty() {
         return Ok(true);
     }
-    Ok(!walk_collect(graph, row, path, params, cypher_version, Some(1))?.is_empty())
+    Ok(!walk_collect(graph, row, path, params, Some(1))?.is_empty())
 }
 
 /// `collect` carries the row sink and its cap: once `collect.full()`
@@ -134,12 +131,7 @@ fn walk_pattern(
     forced: Option<NodeId>,
     collect: &mut Collect<'_>,
 ) -> Result<()> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     let np = &path.nodes[node_idx];
     // The one boundary spelling of "a rel follows this node" (F-1-10's
     // third-spelling fix): hoisted once, read by the prune below, the
@@ -206,7 +198,7 @@ fn walk_pattern(
     let candidates = if let Some(id) = forced {
         vec![id]
     } else {
-        pattern_node_candidates(graph, np, &row, params, cypher_version)?
+        pattern_node_candidates(graph, np, &row, params)?
     };
     // The node bind's rung, resolved once for the whole candidate loop.
     let node_rung = &ladder.node[node_idx];
@@ -215,7 +207,7 @@ fn walk_pattern(
             return Ok(());
         }
         graph.cancel_tick()?;
-        if !pattern_node_ok(graph, id, np, &row, params, cypher_version)? {
+        if !pattern_node_ok(graph, id, np, &row, params)? {
             continue;
         }
         let mut row2 = row.clone();
@@ -288,12 +280,7 @@ fn descend_candidate(
     used: &UsedRels,
     collect: &mut Collect<'_>,
 ) -> Result<()> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     match descent {
         // A pre-bound trail is the only trail this rel can bind: walk exactly
         // it, never the enumeration that would reconcile one trail out of the
@@ -323,13 +310,8 @@ fn descend_candidate(
             // later in the same pattern (CIP-17/CIP-18 5.2.1). The shared
             // inline-predicate checker (`eval::predicates::inline_predicates_ok`)
             // applies every element's `WHERE` and the path's own.
-            if !crate::eval::inline_predicates_ok(
-                graph,
-                std::slice::from_ref(path),
-                &row2,
-                params,
-                cypher_version,
-            )? {
+            if !crate::eval::inline_predicates_ok(graph, std::slice::from_ref(path), &row2, params)?
+            {
                 return Ok(());
             }
             collect.out.push(row2);
@@ -377,18 +359,12 @@ fn admit_for<'a>(
     ctx: ExecCtx<'a>,
     hop: RelHop<'a>,
 ) -> impl Fn(&Row, &UsedRels, &[RelId], NodeId, RelId) -> Result<Option<NodeId>> + 'a {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     move |row, used, trail, current, rid| {
         crate::pattern_walk::admit_hop(
             graph,
             row,
             params,
-            cypher_version,
             hop,
             hop.pattern.direction,
             used,
@@ -573,7 +549,6 @@ pub(crate) fn pattern_node_candidates(
     np: &relate_ir::NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<NodeId>> {
-    crate::pattern_walk::node_candidates(graph, np, row, params, cypher_version, &[])
+    crate::pattern_walk::node_candidates(graph, np, row, params, &[])
 }

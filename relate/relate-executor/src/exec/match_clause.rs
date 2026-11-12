@@ -275,12 +275,7 @@ pub(crate) fn match_clause(
     projection: Option<&SinkProjection<'_>>,
     fold: Option<&dyn RowFold>,
 ) -> Result<Vec<Row>> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     let mut out = Vec::new();
     // ADR-0463 (LABS-781, OPLANE_REQ-00345609): the walker's output
     // container is a retaining container — each row charges the
@@ -305,7 +300,6 @@ pub(crate) fn match_clause(
         patterns,
         where_clause,
         params,
-        cypher_version,
     });
     for row in rows {
         graph.cancel_tick()?;
@@ -331,14 +325,7 @@ pub(crate) fn match_clause(
         if reduce.is_none() {
             let mut filtered = Vec::with_capacity(matched.len());
             for candidate in matched {
-                if candidate_passes(
-                    graph,
-                    patterns,
-                    where_clause,
-                    &candidate,
-                    params,
-                    cypher_version,
-                )? {
+                if candidate_passes(graph, patterns, where_clause, &candidate, params)? {
                     filtered.push(candidate);
                 }
             }
@@ -348,7 +335,7 @@ pub(crate) fn match_clause(
             let mut r = row;
             bind_pattern_nulls(&mut r, patterns);
             if let Some(projection) = projection {
-                let projected = finish_match_row(graph, &r, projection, params, cypher_version)?;
+                let projected = finish_match_row(graph, &r, projection, params)?;
                 out_retained.add_row(graph, projected.values())?;
                 out.push(projected);
             } else {

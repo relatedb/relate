@@ -26,12 +26,7 @@ pub(crate) fn show_transactions_rows(
         for expr in &c.ids {
             let expr = relate_front::lower_expr(expr)?;
             for row in rows {
-                let value = eval(graph, row, &expr, params, qctx.cypher_version)?;
-                if value.is_null() && qctx.is_cypher5() {
-                    return Err(Error::invalid_argument_type(
-                        "transaction id must be STRING or LIST<STRING>",
-                    ));
-                }
+                let value = eval(graph, row, &expr, params)?;
                 found |= match value {
                     Value::String(ref s) => **s == *txid,
                     Value::List(ref xs) => xs
@@ -58,19 +53,13 @@ pub(crate) fn terminate_transactions_rows(
     c: &relate_parser::TerminateTransactionsClause,
     rows: &[Row],
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     Ok({
         let mut out = Vec::new();
         for expr in &c.ids {
             let expr = relate_front::lower_expr(expr)?;
             for outer in rows {
-                let values = match eval(graph, outer, &expr, params, qctx.cypher_version)? {
-                    Value::Null if qctx.is_cypher5() => {
-                        return Err(Error::invalid_argument_type(
-                            "transaction id must be STRING or LIST<STRING>",
-                        ))
-                    }
+                let values = match eval(graph, outer, &expr, params)? {
                     Value::List(v) => v,
                     v => Arc::new(vec![v]),
                 };
@@ -97,9 +86,8 @@ pub(crate) fn terminate_transactions_rows(
 }
 
 /// Which fixed namespaces `SHOW DATABASES` may emit: every one, exactly
-/// one, or none (a null name parameter off Cypher 5, or a name no fixed
-/// namespace carries — `Namespace::parse` already matches
-/// case-insensitively).
+/// one, or none (a null name parameter, or a name no fixed namespace
+/// carries — `Namespace::parse` already matches case-insensitively).
 #[derive(Clone, Copy)]
 enum NamespaceFilter {
     All,
@@ -131,7 +119,6 @@ pub(crate) fn show_databases_rows(
     graph: &ExecGraph<'_>,
     c: &relate_parser::ShowDatabasesClause,
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     Ok({
         let state = graph.show_schema()?;
@@ -146,9 +133,6 @@ pub(crate) fn show_databases_rows(
             DatabaseFilter::Named(SchemaName::Parameter(p)) => match params.get(p) {
                 None => return Err(Error::parameters_missing([p.as_str()])),
                 Some(Value::String(name)) => NamespaceFilter::named(name),
-                Some(Value::Null) if qctx.is_cypher5() => {
-                    return Err(Error::invalid_argument_type("database name must be STRING"))
-                }
                 Some(Value::Null) => NamespaceFilter::NoMatch,
                 _ => return Err(Error::invalid_argument_type("database name must be STRING")),
             },

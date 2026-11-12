@@ -68,35 +68,7 @@ fn follow_behind_recycle_reloads_from_the_snapshot() {
     assert_eq!(count(&fresh, "Missed"), count(&follower, "Missed"));
 }
 
-/// The `defaultLanguage` `SHOW DATABASES` reports for `name` — the
-/// store-level databases catalog (ADR-0276).
-fn show_default_language(db: &Database, name: &str) -> Value {
-    let result = db
-        .connect()
-        .unwrap()
-        .query("SHOW DATABASES YIELD name, defaultLanguage")
-        .unwrap();
-    let name_col = result
-        .header
-        .columns
-        .iter()
-        .position(|column| column == "name")
-        .expect("SHOW DATABASES carries a name column");
-    let language_col = result
-        .header
-        .columns
-        .iter()
-        .position(|column| column == "defaultLanguage")
-        .expect("SHOW DATABASES carries a defaultLanguage column");
-    let row = result
-        .rows
-        .into_iter()
-        .find(|row| row[name_col] == Value::String(name.into()))
-        .unwrap_or_else(|| panic!("SHOW DATABASES carries a {name} row"));
-    row[language_col].clone()
-}
-
-/// The parked-gap-reload scenario both carry tests walk: open a writer with
+/// The parked-gap-reload scenario the carry test walks: open a writer with
 /// one seeded checkpoint, let a follower catch up, park the follower, run
 /// the writer's `write` plus a checkpoint while the follower sees nothing,
 /// assert the follower still holds its stale state (`stale`), then resume it
@@ -235,38 +207,6 @@ fn follow_apply_failure_yields_without_reloading() {
     );
 }
 
-/// ADR-0276 across a gap reload: the databases catalog is durable state.
-/// `open_store_readonly` restores the checkpoint's table into the freshly
-/// loaded graph's own bundle, so the reload must install that table into
-/// the store's surviving bundle before `share_services_from` adopts it.
-/// Without the carry the share keeps the follower's stale in-memory table,
-/// and an `ALTER DATABASE` committed in the checkpoint's gap window stays
-/// invisible until the next such write.
-#[test]
-fn follow_gap_reload_keeps_the_checkpoint_databases_catalog() {
-    let (_dir, follower) = park_gap_and_reload(
-        |writer| {
-            writer
-                .connect()
-                .unwrap()
-                .execute("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5")
-                .unwrap();
-        },
-        |follower| {
-            assert_eq!(
-                show_default_language(follower, "neo4j"),
-                Value::String("CYPHER 25".into()),
-                "the parked follower must still hold the stale catalog"
-            );
-        },
-    );
-    assert_eq!(
-        show_default_language(&follower, "neo4j"),
-        Value::String("CYPHER 5".into()),
-        "the reload discarded the checkpoint's databases catalog"
-    );
-}
-
 /// A valid ontology document for the gap-reload test (the shape
 /// `tests/ontology_store.rs` uses).
 const ONTOLOGY_DOC: &str = concat!(
@@ -280,9 +220,11 @@ const ONTOLOGY_DOC: &str = concat!(
 /// ADR-0120 §1: the checkpoint's ontology document is store-level durable
 /// state, so the gap reload must install it — a follower parked across a
 /// writer's `db.ontology.set` + checkpoint would otherwise serve the stale
-/// (absent) document until the next such write. The databases-catalog
-/// sibling of this carry is pinned by
-/// `follow_gap_reload_keeps_the_checkpoint_databases_catalog`.
+/// (absent) document until the next such write. (A databases-catalog
+/// sibling once pinned the same carry through an `ALTER DATABASE` to a
+/// differing language; the one-version contract, ADR-0584, made that
+/// divergence unobservable — the one admitted value equals the fixed
+/// default — so this document carry is the pin.)
 #[test]
 fn follow_gap_reload_keeps_the_checkpoint_ontology_document() {
     let (_dir, follower) = park_gap_and_reload(

@@ -24,18 +24,18 @@ pub use validate::{is_known_function, KNOWN_FUNCTIONS};
 use validate::StatementPolicy;
 
 /// A parsed and lowered top-level statement: the planner input plus the
-/// statement's `EXPLAIN`/`PROFILE` preamble flags.
+/// statement's `EXPLAIN`/`PROFILE` preamble mode.
 ///
-/// Only the top-level statement carries the flags (the preamble grammar is
+/// Only the top-level statement carries the mode (the preamble grammar is
 /// top-level only); nested bodies (`CALL { }`, `NEXT` stages, expression
-/// subqueries) always report `false`. The flags are deliberately *not* part
-/// of [`Query`]: honoring them happens above planning, at the connection
-/// layer, so no execution path can mistake an `EXPLAIN` for its wrapped
-/// statement.
+/// subqueries) always report
+/// [`PreambleMode::Execute`](relate_parser::PreambleMode::Execute). The
+/// mode is deliberately *not* part of [`Query`]: honoring it happens above
+/// planning, at the connection layer, so no execution path can mistake an
+/// `EXPLAIN` for its wrapped statement.
 pub struct LoweredStatement {
     pub query: Query,
-    pub explain: bool,
-    pub profile: bool,
+    pub preamble: relate_parser::PreambleMode,
     /// The PARSE stage's fine sub-split (LABS-1120), stamped always-on by
     /// the entry that lowered the statement. Zero on every field only when
     /// nothing ran there — there is no second spelling of the windows.
@@ -115,9 +115,10 @@ pub fn parse_and_lower(src: &str) -> Result<Query> {
 /// The resolve-then-lower tail every top-level entry shares: the CIP-231
 /// rewrite pass (ADR-0382) eliminates `DEFINE` blocks and their call
 /// sites, then lowering runs on the plain pre-existing Cypher that
-/// remains, keeping the statement's own `EXPLAIN`/`PROFILE` flags.
-/// `params` are the statement's bound parameters, which the dynamic-operand
-/// admission rule treats as compile-time constants (LABS-709).
+/// remains, keeping the statement's own `EXPLAIN`/`PROFILE` preamble
+/// mode. `params` are the statement's bound parameters, which the
+/// dynamic-operand admission rule treats as compile-time constants
+/// (LABS-709).
 /// `lex_parse` is the caller's already-closed parse window (tokenize plus
 /// the AST build — the one meaning, measured at the parse call in every
 /// entry, never re-closed here), so the PARSE stage's fine sub-split
@@ -139,8 +140,7 @@ fn resolve_and_lower(
     let query = lower::lower_statement_with_options_and_policy(&stmt, options, policy, params)?;
     let lower = lower_started.elapsed();
     Ok(LoweredStatement {
-        explain: stmt.explain,
-        profile: stmt.profile,
+        preamble: stmt.preamble,
         query,
         stages: ParseStages {
             lex_parse,
@@ -151,7 +151,7 @@ fn resolve_and_lower(
 }
 
 /// Parse and lower a top-level statement, keeping its `EXPLAIN`/`PROFILE`
-/// preamble flags alongside the lowered query.
+/// preamble mode alongside the lowered query.
 pub fn parse_and_lower_statement(src: &str) -> Result<LoweredStatement> {
     // ADR-0257: enforce the query-size limit before parsing. The parser
     // enforces the same cap; this check keeps the error on the front-end
@@ -429,7 +429,7 @@ mod tests {
         let enabled = relate_core::PreviewFeatures::parse("hybrid-search").unwrap();
         let lowered = parse_and_lower_statement_with_preview(COMBINE_QUERY, enabled)
             .expect("the gated entry lowers a COMBINE under the opt-in");
-        assert!(!lowered.explain && !lowered.profile);
+        assert_eq!(lowered.preamble, relate_parser::PreambleMode::Execute);
         let relate_ir::Clause::Match {
             search: Some(_), ..
         } = &lowered.query.parts[0].clauses[0]
@@ -469,7 +469,7 @@ mod tests {
         let enabled = relate_core::PreviewFeatures::parse("local-callables").unwrap();
         let lowered = parse_and_lower_statement_with_preview(LOCAL_CALLABLES_QUERY, enabled)
             .expect("the gated entry lowers a local callable under the opt-in");
-        assert!(!lowered.explain && !lowered.profile);
+        assert_eq!(lowered.preamble, relate_parser::PreambleMode::Execute);
         // The rewrite eliminated the definition: the lowered query is
         // plain pre-existing Cypher (a COLLECT subquery under `head`).
         assert!(lowered.query.parts[0]
@@ -558,7 +558,7 @@ mod tests {
             relate_core::PreviewFeatures::none(),
         )
         .expect("the graduated FOR clause lowers without any opt-in");
-        assert!(!lowered.explain && !lowered.profile);
+        assert_eq!(lowered.preamble, relate_parser::PreambleMode::Execute);
         // CIP-250: the FOR clause lowers onto the existing UNWIND
         // operator -- no new IR clause shape.
         assert!(matches!(

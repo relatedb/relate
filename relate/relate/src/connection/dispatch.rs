@@ -20,6 +20,7 @@ use relate_executor::{
 };
 
 use relate_core::Namespace;
+use relate_parser::PreambleMode;
 use relate_planner::{is_show_databases_with_next, LogicalPlan};
 
 use super::admission::Admission;
@@ -348,7 +349,7 @@ impl Connection {
         // then renders the plan — execution never touches it (no writes, no
         // procedures, no LOAD CSV). The SHOW DATABASES + NEXT restriction is
         // an execution-phase rule, so it does not apply here.
-        if admission.preamble.explain() {
+        if admission.preamble == PreambleMode::Explain {
             // The plain not-admitted outcome: `run_cancellable`'s
             // epilogue owns failing the open transaction for every
             // non-Ok result, so this body does not pre-empt it.
@@ -394,7 +395,7 @@ impl Connection {
         } = &admission;
         let started = *started;
         let timing_on = *timing_on;
-        let profile = preamble.profile();
+        let profile = *preamble == PreambleMode::Profile;
         let admin = *admin;
         let stamp = *stamp;
         // LABS-1120: the admission's timing facts ride as the one carrier

@@ -774,14 +774,7 @@ impl RunGuards<'_, '_> {
         }
         let row = Row::new();
         for guard in guards {
-            if !node_ok(
-                self.ctx.graph,
-                node,
-                guard,
-                &row,
-                self.ctx.params,
-                self.ctx.cypher_version,
-            )? {
+            if !node_ok(self.ctx.graph, node, guard, &row, self.ctx.params)? {
                 return Ok(false);
             }
         }
@@ -831,7 +824,6 @@ impl RunGuards<'_, '_> {
             &row,
             &predicate.expr,
             self.ctx.params,
-            self.ctx.cypher_version,
         )?)
     }
 }

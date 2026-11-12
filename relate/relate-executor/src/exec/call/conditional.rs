@@ -47,8 +47,7 @@ pub(crate) fn exec_conditional(
         // a predecessor's branch may have relabelled or changed them since,
         // so the predicate and the body read them again from the graph.
         refresh_rows(graph, std::slice::from_mut(&mut row));
-        let Some((index, query)) = taken_branch(graph, &row, branches, else_query, params, qctx)?
-        else {
+        let Some((index, query)) = taken_branch(graph, &row, branches, else_query, params)? else {
             continue;
         };
         // The driving row is the branch body's importing scope: its bindings
@@ -90,10 +89,9 @@ fn taken_branch<'q>(
     branches: &'q [(Expr, Query)],
     else_query: Option<&'q Query>,
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Option<(usize, &'q Query)>> {
     for (index, (predicate, query)) in branches.iter().enumerate() {
-        let value = eval(graph, row, predicate, params, qctx.cypher_version)?;
+        let value = eval(graph, row, predicate, params)?;
         // A `WHEN` predicate is a boolean: the one requiring-site policy
         // (`eval::bool_or_null`) leaves the branch untaken on null/false and
         // rejects any other non-boolean value (Neo4j 22G03), never

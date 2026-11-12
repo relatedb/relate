@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::error::{ParseError, ParseResult};
+use crate::error::{ParseError, ParseResult, SUPPORTED_CYPHER_VERSION};
 use crate::lexer::tokenize_with_options;
 use crate::token::{is_clause_boundary, is_contextual_clause_keyword, Token, TokenType};
 use relate_names::SmallName;
@@ -337,20 +337,6 @@ pub fn parse_graph_type_body(canonical: &str) -> ParseResult<GraphTypeBody> {
     let (open, body) = parser.parse_graph_type_spec_body()?;
     parser.reject_bare_constraint_drops(&open, &body)?;
     Ok(body)
-}
-
-/// CIP-150: the parsed statement preamble (`Parser::parse_preamble`) --
-/// `EXPLAIN`/`PROFILE` flags plus the effective `CYPHER <version>`, if any
-/// was given. Distinct option `key=value` pairs are validated for
-/// recognized keys, constrained value vocabularies
-/// ([`CYPHER_OPTION_VALUES`]), and internal consistency while parsing, but
-/// their values aren't retained past that check -- Relate has no
-/// runtime concept of `runtime=`/`planner=` etc. to act on, so only the
-/// fact that they parsed and didn't conflict matters.
-struct Preamble {
-    version: Option<u32>,
-    explain: bool,
-    profile: bool,
 }
 
 /// CIP-150: the pre-parser option keys Relate recognizes after a
@@ -1026,9 +1012,7 @@ impl<'a> Parser<'a> {
         let preamble = self.parse_preamble()?;
 
         let mut stmt = self.parse_statement_block()?;
-        stmt.explain = preamble.explain;
-        stmt.profile = preamble.profile;
-        stmt.cypher_version = preamble.version;
+        stmt.preamble = preamble;
 
         if self.peek_type() == TokenType::Semicolon {
             self.next_token();
@@ -1071,38 +1055,39 @@ impl<'a> Parser<'a> {
     /// token can continue the preamble; anything else (including a bare
     /// `key=value` with no preceding fresh `CYPHER`) falls through to
     /// ordinary statement parsing and is a generic syntax error there --
-    /// this is what makes `CYPHER 5 EXPLAIN runtime=slotted RETURN 1`
-    /// (doc example E1) a hard error: `EXPLAIN` ends the `CYPHER` clause,
-    /// and `runtime=slotted` isn't a valid statement start.
+    /// this is what makes `CYPHER 25 EXPLAIN runtime=slotted RETURN 1`
+    /// a hard error: `EXPLAIN` ends the `CYPHER` clause, and
+    /// `runtime=slotted` isn't a valid statement start.
     ///
-    /// Two different `<cypher version>` values for the same statement (or
-    /// two different values for the same non-version option key) are
-    /// rejected as a conflicting pre-parser combination; the same value
-    /// repeated is fine. An out-of-range or non-integer version number, or
-    /// an unrecognized option key, is also rejected. Relate recognizes
-    /// exactly the two versions Neo4j 2026.05 ships (`5`, `25`); either is
-    /// accepted and recorded on the returned `Statement` for the engine to
-    /// act on (see `Statement::cypher_version`) -- Relate otherwise
-    /// implements a single dialect (the modern, GQL-aligned grammar this
-    /// whole parser targets), so the two versions differ only where the
-    /// engine explicitly checks `cypher_version` (the gates in
-    /// `relate-front`'s `validate::dialect`, wired into lowering).
-    fn parse_preamble(&mut self) -> ParseResult<Preamble> {
-        let mut version: Option<u32> = None;
+    /// One Cypher version is supported: 25 (ADR-0584). A `CYPHER 25`
+    /// preamble is an accepted no-op -- an unprefixed statement already
+    /// speaks Cypher 25, so the version is never recorded and the
+    /// statement lowers exactly as the same query without it; repeating
+    /// the same version is fine. Every other `CYPHER <n>` integer,
+    /// `CYPHER 5` included, fails with the one authored
+    /// unsupported-version error naming the requested value, while a
+    /// non-integer version token stays the 22N10 grammar rejection. Two
+    /// different versions for one statement cannot occur (only 25
+    /// parses); two different values for the same non-version option key
+    /// are rejected as a conflicting pre-parser combination.
+    fn parse_preamble(&mut self) -> ParseResult<PreambleMode> {
         let mut options: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        let mut explain = false;
-        let mut profile = false;
+        // One mode, starting at `Execute`: each preamble keyword is
+        // admitted only from `Execute`, so a second `EXPLAIN` or `PROFILE`
+        // ends the preamble and the leftover keyword becomes the top-level
+        // parse's unexpected-token error -- the mode can never hold both.
+        let mut mode = PreambleMode::Execute;
 
         loop {
             match self.peek_type() {
-                TokenType::EXPLAIN if !explain && !profile => {
+                TokenType::EXPLAIN if mode == PreambleMode::Execute => {
                     self.next_token();
-                    explain = true;
+                    mode = PreambleMode::Explain;
                 }
-                TokenType::PROFILE if !explain && !profile => {
+                TokenType::PROFILE if mode == PreambleMode::Execute => {
                     self.next_token();
-                    profile = true;
+                    mode = PreambleMode::Profile;
                 }
                 TokenType::Identifier if self.peek().literal.eq_ignore_ascii_case("cypher") => {
                     self.next_token(); // consume CYPHER
@@ -1115,9 +1100,18 @@ impl<'a> Parser<'a> {
                     // version>]`.
                     if matches!(self.peek_type(), TokenType::Integer | TokenType::Float) {
                         let tok = self.next_token();
-                        if tok.ty != TokenType::Integer
-                            || (tok.literal != "5" && tok.literal != "25")
-                        {
+                        // A non-integer version token stays the 22N10
+                        // grammar rejection; an integer other than the
+                        // supported one is ADR-0584's authored
+                        // unsupported-version error naming the requested
+                        // value. `CYPHER 25` itself is the accepted
+                        // no-op, and the version is never recorded -- an
+                        // unprefixed statement already speaks Cypher 25,
+                        // so the preamble selects nothing. The comparison
+                        // is the token's canonical decimal text, so a
+                        // radix spelling of the same value is still the
+                        // rejection.
+                        if tok.ty != TokenType::Integer {
                             return Err(self.error_at_token(
                                 &tok,
                                 format!(
@@ -1126,15 +1120,11 @@ impl<'a> Parser<'a> {
                                 ),
                             ));
                         }
-                        let v: u32 = tok.literal.parse().unwrap();
-                        match version {
-                            Some(existing) if existing != v => {
-                                return Err(self.error_at_token(
-                                    &tok,
-                                    "SyntaxError: 22N09 conflicting pre-parser combination: multiple values for 'cypher version'",
-                                ));
-                            }
-                            _ => version = Some(v),
+                        if tok.literal != SUPPORTED_CYPHER_VERSION.to_string() {
+                            return Err(self.error_at_token(
+                                &tok,
+                                crate::error::unsupported_cypher_version_message(&tok.literal),
+                            ));
                         }
                     }
 
@@ -1198,11 +1188,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(Preamble {
-            version,
-            explain,
-            profile,
-        })
+        Ok(mode)
     }
 
     /// `<RegularQuery> ::= <SingleQuery> (UNION [ALL] <SingleQuery>)*` -- a
@@ -1458,10 +1444,8 @@ impl<'a> Parser<'a> {
                 trailer,
             ],
             union: None,
-            explain: false,
-            profile: false,
+            preamble: PreambleMode::Execute,
             next: None,
-            cypher_version: None,
             brace_wrapped: false,
             definitions: Vec::new(),
         }

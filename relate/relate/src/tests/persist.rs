@@ -122,7 +122,7 @@ fn checkpoint_recycles_enforced_label_and_show_theater_for_every_compiled_codec(
                 .unwrap();
             conn.query("CREATE GRAPH TYPE social AS { (:Member => {name :: STRING}) }")
                 .unwrap();
-            conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5")
+            conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25")
                 .unwrap();
             conn.query("CREATE TEXT INDEX people FOR (n:Person) ON (n.name)")
                 .unwrap();
@@ -216,7 +216,7 @@ fn legacy_untyped_label_constraint_survives_checkpoint_and_wal_recycle() {
                 vec![vec![Value::String("label_rule".into()), Value::Null]]
             );
             conn.query("CREATE (:Person {name: 'Per'})").unwrap();
-            conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5")
+            conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25")
                 .unwrap();
             conn.query("CREATE CONSTRAINT known_rule FOR (n:Known) REQUIRE n:Verified")
                 .unwrap();

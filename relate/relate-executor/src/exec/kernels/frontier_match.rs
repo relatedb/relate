@@ -405,7 +405,6 @@ pub(crate) fn decode_consumer(
     pattern: &PathPattern,
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Consumer, FrontierDecline> {
     let Some(clause) = suffix.first() else {
         // No suffix at all cannot happen for a planned statement; this is
@@ -474,7 +473,7 @@ pub(crate) fn decode_consumer(
     // The capped shape: `LIMIT` without `ORDER BY`, the cap rider's own
     // `Plain` want (`SKIP + LIMIT`). Any projection rides — the ≤ want
     // reconstructed witnesses bind everything the DFS's rows bind.
-    let want = match s.skip_limit_want(graph, params, cypher_version) {
+    let want = match s.skip_limit_want(graph, params) {
         Ok(want) => want,
         // A LIMIT that errors here declines; the DFS path's own cap
         // construction (`match_limit_cap`) raises the identical error.

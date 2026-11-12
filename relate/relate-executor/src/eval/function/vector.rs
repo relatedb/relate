@@ -1,5 +1,5 @@
 //! Vector builtins: thin wrappers over the `eval::vector` helpers, plus the
-//! `vector_distance`/`vector_norm` special form with its typed
+//! `vector_distance`/`vector_norm` form rows with their typed
 //! distance-metric literal.
 
 use std::collections::BTreeMap;
@@ -15,81 +15,51 @@ use super::super::vector::{
 };
 use super::super::{eval, Row};
 
-/// The `vector_distance`/`vector_norm` special form. Returns `None` when `n`
-/// is not one of the two metric functions.
-pub(super) fn vector_metric_form(
-    graph: &ExecGraph<'_>,
-    row: &Row,
-    params: &BTreeMap<String, Value>,
-    n: &str,
-    args: &[Expr],
-    cypher_version: Option<u32>,
-) -> Option<Result<Value>> {
-    let form = MetricForm::for_name(n)?;
-    Some(vector_metric(
-        graph,
-        row,
-        params,
-        n,
-        args,
-        form,
-        cypher_version,
-    ))
-}
-
-/// The name-to-behavior mapping for the two metric forms, derived exactly
-/// once: the required arity, the wording used in the arity error, and the
-/// metric target.
-struct MetricForm {
-    arity: usize,
-    wording: &'static str,
-    target: fn(&[Value], VectorMetric) -> Result<Value>,
-}
-
-impl MetricForm {
-    fn for_name(n: &str) -> Option<Self> {
-        Some(match n {
-            "vector_distance" => Self {
-                arity: 3,
-                wording: "three",
-                target: vector_distance_metric,
-            },
-            "vector_norm" => Self {
-                arity: 2,
-                wording: "two",
-                target: vector_norm_metric,
-            },
-            _ => return None,
-        })
+/// The one metric-literal policy both vector metric forms read: the final
+/// argument is a typed `Expr::DistanceMetric` literal — any other
+/// expression in that position is the `UnknownDistanceMetric` rejection,
+/// checked before any vector operand is evaluated.
+fn metric_literal(arg: &Expr) -> Result<VectorMetric> {
+    match arg {
+        Expr::DistanceMetric(metric) => Ok(*metric),
+        _ => Err(Error::syntax("UnknownDistanceMetric")),
     }
 }
 
-// CIP-214: `vector_distance`/`vector_norm` take a typed distance-metric
-// literal as their final argument (resolved at lowering); any other
-// expression in that position is an `UnknownDistanceMetric` error.
-fn vector_metric(
+/// The `vector_distance` form row (CIP-214): two evaluated vectors plus a
+/// typed distance-metric literal as the final argument — any other
+/// expression in that position is an `UnknownDistanceMetric` error, so
+/// the literal check precedes the vector evaluation. The row's
+/// exactly-three contract is enforced by the dispatcher before the form
+/// runs, so the operands are taken structurally.
+pub(super) fn vector_distance(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    n: &str,
     args: &[Expr],
-    form: MetricForm,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    if args.len() != form.arity {
-        return Err(Error::syntax(format!(
-            "InvalidNumberOfArguments: {n}() requires {} arguments",
-            form.wording
-        )));
-    }
-    let Some(Expr::DistanceMetric(metric)) = args.last() else {
-        return Err(Error::syntax("UnknownDistanceMetric"));
-    };
-    let mut vals = Vec::new();
-    for a in &args[..args.len() - 1] {
-        vals.push(eval(graph, row, a, params, cypher_version)?);
-    }
-    (form.target)(&vals, *metric)
+    let [a, b, metric] =
+        <&[Expr; 3]>::try_from(args).expect("the vector_distance row's arity is exactly three");
+    let metric = metric_literal(metric)?;
+    let vals = [eval(graph, row, a, params)?, eval(graph, row, b, params)?];
+    vector_distance_metric(&vals, metric)
+}
+
+/// The `vector_norm` form row (CIP-214): the evaluated vector plus its
+/// typed distance-metric literal, with the same literal-first shape as
+/// [`vector_distance`]. The row's exactly-two contract is enforced by the
+/// dispatcher before the form runs, so the operands are taken
+/// structurally.
+pub(super) fn vector_norm(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    args: &[Expr],
+) -> Result<Value> {
+    let [vector, metric] =
+        <&[Expr; 2]>::try_from(args).expect("the vector_norm row's arity is exactly two");
+    let metric = metric_literal(metric)?;
+    vector_norm_metric(&eval(graph, row, vector, params)?, metric)
 }
 
 pub(super) fn bi_vector(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {

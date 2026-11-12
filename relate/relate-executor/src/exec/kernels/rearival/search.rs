@@ -61,7 +61,7 @@ impl SeekTables<'_, '_> {
         let guards = &self.nfa.state_guards[state as usize];
         let row = Row::new();
         for guard in guards {
-            if !node_ok(self.view, node, guard, &row, &EMPTY_PARAMS, None)? {
+            if !node_ok(self.view, node, guard, &row, &EMPTY_PARAMS)? {
                 return Ok(false);
             }
         }

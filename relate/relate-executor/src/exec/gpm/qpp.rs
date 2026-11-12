@@ -42,7 +42,7 @@ struct QppCursor<'a> {
 #[derive(Clone)]
 struct BranchReduce<'a> {
     spec: &'a InlinedAllReduce<'a>,
-    fold: Option<AllReduceFold>,
+    fold: Option<AllReduceFold<'a>>,
 }
 
 /// The inlined allReduce specs tracking this quantification (their group
@@ -50,12 +50,7 @@ struct BranchReduce<'a> {
 /// initial's value on the entering row. A spec whose initial raises is
 /// poisoned from the start (`fold: None`).
 fn active_reduces<'a>(gctx: &GpmCtx<'a>, names: &[String], row: &Row) -> Vec<BranchReduce<'a>> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
+    let GpmCtx { graph, params, .. } = *gctx;
     let inlined = &gctx.walk.inlined;
     #[cfg(test)]
     if allreduce_pruning_disabled() {
@@ -65,11 +60,16 @@ fn active_reduces<'a>(gctx: &GpmCtx<'a>, names: &[String], row: &Row) -> Vec<Bra
         .iter()
         .filter(|spec| names.iter().any(|name| name.as_str() == spec.group))
         .map(|spec| {
-            let fold = match eval(graph, row, spec.initial, params, cypher_version) {
+            let fold = match eval(graph, row, spec.initial, params) {
                 // A raising initial poisons the fold rather than
                 // propagating: the untouched post-filter raises it on the
                 // rows that survive, exactly as it did before inlining.
-                Ok(acc) => Some(AllReduceFold::start(acc, spec.expression, spec.accumulator)),
+                Ok(acc) => Some(AllReduceFold::start(
+                    acc,
+                    spec.accumulator,
+                    spec.ident,
+                    spec.expression,
+                )),
                 Err(_) => None,
             };
             BranchReduce { spec, fold }
@@ -93,12 +93,7 @@ fn advance_reduces(
     reduces: &mut [BranchReduce<'_>],
     iteration_row: &Row,
 ) -> Result<bool> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
+    let GpmCtx { graph, params, .. } = *gctx;
     for reduce in reduces.iter_mut() {
         let Some(mut fold) = reduce.fold.take() else {
             continue; // poisoned: this branch runs unpruned
@@ -109,21 +104,13 @@ fn advance_reduces(
             reduce.fold = Some(fold);
             continue;
         };
-        let verdict = reduce.spec.accumulator.with_str(|accumulator| {
-            reduce.spec.ident.with_str(|ident| {
-                fold.step(
-                    graph,
-                    &mut iteration_row.clone(),
-                    accumulator,
-                    ident,
-                    &element,
-                    reduce.spec.expression,
-                    reduce.spec.predicate,
-                    params,
-                    cypher_version,
-                )
-            })
-        });
+        let verdict = fold.step(
+            graph,
+            &mut iteration_row.clone(),
+            &element,
+            reduce.spec.predicate,
+            params,
+        );
         match verdict {
             Ok(AllReduceStep::Holds) => reduce.fold = Some(fold),
             // False is deciding: no extension survives the post-filter.
@@ -276,7 +263,6 @@ fn gpm_qpp_iteration_predicates_ok(
     qpp: &QuantifiedPathPattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
     for element in &qpp.elements {
         let predicate = match element {
@@ -285,25 +271,13 @@ fn gpm_qpp_iteration_predicates_ok(
             PatternElement::Quantified(_) => None,
         };
         if let Some(predicate) = predicate {
-            if !crate::eval::predicate_value_holds(&eval(
-                graph,
-                row,
-                predicate,
-                params,
-                cypher_version,
-            )?)? {
+            if !crate::eval::predicate_value_holds(&eval(graph, row, predicate, params)?)? {
                 return Ok(false);
             }
         }
     }
     if let Some(predicate) = &qpp.where_clause {
-        if !crate::eval::predicate_value_holds(&eval(
-            graph,
-            row,
-            predicate,
-            params,
-            cypher_version,
-        )?)? {
+        if !crate::eval::predicate_value_holds(&eval(graph, row, predicate, params)?)? {
             return Ok(false);
         }
     }
@@ -319,12 +293,7 @@ fn gpm_qpp_dfs(
     out: &mut Vec<GpmState>,
     emit: &mut Option<super::GpmEmit<'_, '_>>,
 ) -> Result<()> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
+    let GpmCtx { graph, params, .. } = *gctx;
     let QppCursor {
         count,
         max,
@@ -379,7 +348,7 @@ fn gpm_qpp_dfs(
     let Some(PatternElement::Node(first)) = qpp.elements.first() else {
         return Ok(());
     };
-    if !node_ok(graph, state.current, first, &clean, params, cypher_version)?
+    if !node_ok(graph, state.current, first, &clean, params)?
         || !gpm_bind_node(graph, first, state.current, &mut clean)
     {
         return Ok(());
@@ -412,7 +381,7 @@ fn gpm_qpp_dfs(
         if gctx.halted() {
             return Ok(());
         }
-        if !gpm_qpp_iteration_predicates_ok(graph, qpp, &iteration.row, params, cypher_version)? {
+        if !gpm_qpp_iteration_predicates_ok(graph, qpp, &iteration.row, params)? {
             continue;
         }
         // PROFILE: one quantification hop taken — the store-read tally

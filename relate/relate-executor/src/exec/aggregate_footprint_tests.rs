@@ -16,7 +16,6 @@ use relate_ir::{Expr, Projection};
 use super::aggregate::{Aggregation, GroupSubclauses};
 use super::order::OrderKeys;
 use super::test_support::{exec_cypher, try_exec_cypher, Builder};
-use super::unwind::RowFeed;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowNames};
@@ -51,11 +50,10 @@ fn billed(groups: i64, extra: usize, make_key: impl Fn(i64) -> Value) -> u64 {
     let params = BTreeMap::new();
     let mut aggregation = Aggregation::open(
         &graph,
-        &RowFeed::Held(Vec::new()),
+        &[],
         &items,
         None,
         &params,
-        None,
         &GroupSubclauses {
             order: &order,
             having: None,

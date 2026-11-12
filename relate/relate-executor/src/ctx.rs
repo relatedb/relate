@@ -17,16 +17,14 @@ use crate::overlay::ExecGraph;
 use crate::redo::RedoOp;
 use crate::row::Row;
 
-/// Statement-level context threaded through clause execution: the parsed
-/// CIP-150 `CYPHER <version>` preamble (typed, from `Statement::cypher_version`
-/// via `LogicalPlan::cypher_version`), the statement's source text (which
-/// feeds `SHOW TRANSACTIONS`' `currentQuery` column), and the connection's
-/// authenticated principal (ADR-0273: set by a surface that verified an
-/// identity — the Bolt server after a validated HELLO — else `None`, and
-/// `dbms.showCurrentUser` reports the documented placeholder).
+/// Statement-level context threaded through clause execution: the
+/// statement's source text (which feeds `SHOW TRANSACTIONS`'
+/// `currentQuery` column) and the connection's authenticated principal
+/// (ADR-0273: set by a surface that verified an identity — the Bolt server
+/// after a validated HELLO — else `None`, and `dbms.showCurrentUser`
+/// reports the documented placeholder).
 #[derive(Clone, Copy)]
 pub(crate) struct QueryCtx<'a> {
-    pub cypher_version: Option<u32>,
     pub query_text: &'a str,
     pub principal: Option<&'a str>,
     /// ADR-0210: per-batch durable-commit sink for `CALL { … } IN
@@ -580,9 +578,8 @@ pub trait BatchCommit {
 }
 
 impl<'a> QueryCtx<'a> {
-    pub(crate) fn new(cypher_version: Option<u32>, query_text: &'a str) -> Self {
+    pub(crate) fn new(query_text: &'a str) -> Self {
         Self {
-            cypher_version,
             query_text,
             principal: None,
             batch_commit: None,
@@ -600,42 +597,24 @@ impl<'a> QueryCtx<'a> {
         self.batch_commit = sink;
         self
     }
-
-    /// True when the statement carried an explicit `CYPHER 5` preamble.
-    pub(crate) fn is_cypher5(&self) -> bool {
-        is_cypher5(self.cypher_version)
-    }
 }
 
-/// The dialect fact on its own ([`relate_core::is_cypher5`]): the free
-/// form lets `cypher_version` threading points that hold no [`QueryCtx`]
-/// read the same rule.
-pub(crate) use relate_core::is_cypher5;
-
 /// Graph view + query parameters shared by clause execution and evaluation.
-/// `cypher_version` is the enclosing statement's CIP-150 preamble: expression
-/// subqueries (EXISTS/COUNT/COLLECT) lowered with `Query::cypher_version: None`
-/// observe it at evaluation time. `principal` is the connection's
-/// authenticated principal (ADR-0273), read by the `dbms.showCurrentUser`
-/// procedure arm; `None` when the surface set none.
+/// `principal` is the connection's authenticated principal (ADR-0273), read
+/// by the `dbms.showCurrentUser` procedure arm; `None` when the surface set
+/// none.
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCtx<'a> {
     pub graph: &'a ExecGraph<'a>,
     pub params: &'a BTreeMap<String, Value>,
-    pub cypher_version: Option<u32>,
     pub principal: Option<&'a str>,
 }
 
 impl<'a> ExecCtx<'a> {
-    pub(crate) fn new(
-        graph: &'a ExecGraph<'a>,
-        params: &'a BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
-    ) -> Self {
+    pub(crate) fn new(graph: &'a ExecGraph<'a>, params: &'a BTreeMap<String, Value>) -> Self {
         Self {
             graph,
             params,
-            cypher_version,
             principal: None,
         }
     }
@@ -647,12 +626,10 @@ impl<'a> ExecCtx<'a> {
     }
 }
 
-/// Expression-evaluation context: graph view, current row, parameters, and
-/// the enclosing statement's CIP-150 `cypher_version` (see [`ExecCtx`]).
+/// Expression-evaluation context: graph view, current row, and parameters.
 #[derive(Clone, Copy)]
 pub(crate) struct EvalCtx<'a> {
     pub graph: &'a ExecGraph<'a>,
     pub row: &'a Row,
     pub params: &'a BTreeMap<String, Value>,
-    pub cypher_version: Option<u32>,
 }

@@ -41,7 +41,6 @@ fn resolve_alteration_options(
     graph: &ExecGraph<'_>,
     body: &mut relate_parser::GraphTypeBody,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<()> {
     for constraint in &mut body.constraints {
         if matches!(constraint.options, relate_parser::OptionsForm::Absent) {
@@ -56,7 +55,6 @@ fn resolve_alteration_options(
             graph,
             &constraint.options,
             params,
-            cypher_version,
             &crate::exec::ddl_options::OptionKeyPolicy {
                 admitted: policy.admitted(),
                 literal: &key_error,
@@ -235,7 +233,6 @@ pub(crate) fn alter_current_graph_type(
     c: &relate_parser::AlterCurrentGraphTypeClause,
     rows: Vec<Row>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<Row>> {
     // The stored model converts to the parser model once, here at
     // DDL-execution time; the per-verb body algebra lives in
@@ -262,7 +259,7 @@ pub(crate) fn alter_current_graph_type(
         relate_parser::AlterCurrentGraphTypeTarget::Body(verb_body) => {
             // Only the statement's own body can carry `OPTIONS $param`.
             let mut body = verb_body.clone();
-            resolve_alteration_options(graph, &mut body, params, cypher_version)?;
+            resolve_alteration_options(graph, &mut body, params)?;
             body
         }
     };

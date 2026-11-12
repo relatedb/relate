@@ -79,7 +79,6 @@ impl<'c> EarlyPredicates<'c> {
         row: &Row,
         event: Option<&SmallName>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<bool> {
         #[cfg(test)]
         if early_predicates_disabled() {
@@ -109,7 +108,7 @@ impl<'c> EarlyPredicates<'c> {
             }
             #[cfg(test)]
             count_early_eval();
-            match predicate_holds(graph, row, spec.expr, params, cypher_version) {
+            match predicate_holds(graph, row, spec.expr, params) {
                 // A raised conjunct defers (the allReduce poison rule,
                 // walk-wide): the post-filter reproduces the error on
                 // whatever rows survive, so which errors surface never

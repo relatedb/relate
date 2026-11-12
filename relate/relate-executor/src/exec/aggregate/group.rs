@@ -16,7 +16,7 @@ use crate::row::Row;
 
 use super::super::order::{park_order_keys, OrderKeys};
 use super::super::scope::{has_star_item, is_internal_column, is_star_item, visible_keys};
-use super::super::unwind::RowFeed;
+use super::super::RowFeed;
 use super::eval::{agg_eval, AggScope};
 use super::key::KeyTuple;
 use super::seed::{SeedPlan, SeedStore, Taken};
@@ -63,7 +63,6 @@ pub(crate) struct GroupSubclauses<'a> {
 pub(crate) struct Aggregation<'a> {
     items: &'a [Projection],
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     order: &'a OrderKeys<'a>,
     having: Option<&'a Expr>,
     import_scope: Option<&'a Row>,
@@ -96,15 +95,15 @@ impl<'a> Aggregation<'a> {
     /// a GROUP BY clause is present; that is the only difference from the
     /// implicit form, whose keys come from the non-aggregating projection
     /// items. `Some(&[])` is the empty grouping set (`GROUP BY ()`): one
-    /// global group. `feed` supplies the first-row shape for the `*` key
-    /// desugar and, when held, the input vector to bill.
+    /// global group. `rows` supplies the first-row shape for the `*` key
+    /// desugar and the held input vector to bill (`aggregate_ex` passes the
+    /// feed's probe; a streamed fold passes none).
     pub(crate) fn open(
         graph: &ExecGraph<'_>,
-        feed: &RowFeed<'_>,
+        rows: &[Row],
         items: &'a [Projection],
         group_by: Option<&'a [Expr]>,
         params: &'a BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
         subclauses: &GroupSubclauses<'a>,
     ) -> Result<Self> {
         let GroupSubclauses {
@@ -125,7 +124,7 @@ impl<'a> Aggregation<'a> {
                     .map(|p| Cow::Borrowed(&p.expr))
                     .collect(),
             },
-            feed.probe(),
+            rows,
         );
         // One row for an empty input only when there are no grouping keys
         // at all: implicit grouping over an all-aggregate projection, an
@@ -151,17 +150,13 @@ impl<'a> Aggregation<'a> {
                 .map(|p| &p.expr),
             order.exprs().chain(having),
             params,
-            cypher_version,
         )?;
         let account = relate_core::tokens::workspace_accounting();
         // The input vector stays allocated until the fold finishes. Bill it
         // up front, then hand each row's payload to the group map as it
         // moves. A generated feed holds no input vector: nothing to bill,
         // nothing to release row by row.
-        let retained = match feed {
-            RowFeed::Held(held) if account => Some(crate::workspace::RetainedRows::measure(held)),
-            _ => None,
-        };
+        let retained = account.then(|| crate::workspace::RetainedRows::measure(rows));
         let input_charge = match &retained {
             Some(retained) => {
                 let charge = relate_core::tokens::WorkspaceCharge::retain(retained.bytes())?;
@@ -221,7 +216,6 @@ impl<'a> Aggregation<'a> {
         let mut this = Self {
             items,
             params,
-            cypher_version,
             order,
             having,
             import_scope,
@@ -255,7 +249,6 @@ impl<'a> Aggregation<'a> {
     pub(crate) fn offer(&mut self, graph: &ExecGraph<'_>, row: Row) -> Result<()> {
         let Self {
             params,
-            cypher_version,
             key_exprs,
             groups,
             bill,
@@ -263,11 +256,11 @@ impl<'a> Aggregation<'a> {
             input_charge,
             ..
         } = self;
-        let (params, cypher_version) = (*params, *cypher_version);
+        let params = *params;
         graph.cancel_tick()?;
         // Star-free after the desugar in `open`: one `eval` per key.
         let (key, key_values) = KeyTuple::of(key_exprs.len(), |i| {
-            eval(graph, &row, &key_exprs[i], params, cypher_version)
+            eval(graph, &row, &key_exprs[i], params)
         })?;
         if let Some(retained) = retained.as_mut() {
             retained.release_row(&row);
@@ -281,9 +274,7 @@ impl<'a> Aggregation<'a> {
             Landing::Existing { group, as_seed } => (group, as_seed),
             Landing::New { group } => (group, true),
         };
-        groups
-            .accs
-            .offer(group, graph, &row, params, cypher_version)?;
+        groups.accs.offer(group, graph, &row, params)?;
         // The seed lands once per group: a new group's first row, or the
         // keyless group's. Every other row is spent once the accumulators
         // have it — dropped before the settle, so what a site kept from it
@@ -303,7 +294,6 @@ impl<'a> Aggregation<'a> {
         let Self {
             items,
             params,
-            cypher_version,
             order,
             having,
             import_scope,
@@ -343,7 +333,7 @@ impl<'a> Aggregation<'a> {
             } = seeds.take(group);
             let seed_row = seed.as_ref().or(import_scope);
             let mut n = seed_row.cloned().unwrap_or_default();
-            let folded = accs.finish_group(group, graph, seed.as_ref(), params, cypher_version);
+            let folded = accs.finish_group(group, graph, seed.as_ref(), params);
             if star {
                 // The variables `*` carries are already in the first-row
                 // seed; keep the internal `__*` names out of the projected
@@ -361,12 +351,11 @@ impl<'a> Aggregation<'a> {
                         AggScope::of_group(&folded, seed_row),
                         &p.expr,
                         params,
-                        cypher_version,
                     )?
                 } else if let Some(key) = item_keys[i] {
                     key_values[key].clone()
                 } else if let Some(row) = seed_row {
-                    eval(graph, row, &p.expr, params, cypher_version)?
+                    eval(graph, row, &p.expr, params)?
                 } else {
                     Value::Null
                 };
@@ -381,13 +370,7 @@ impl<'a> Aggregation<'a> {
             // read of a present value fails — the documented `ORDER BY`
             // policy.
             park_order_keys(order, &mut n, |expr, scope| {
-                agg_eval(
-                    graph,
-                    AggScope::of_row(&folded, scope),
-                    expr,
-                    params,
-                    cypher_version,
-                )
+                agg_eval(graph, AggScope::of_row(&folded, scope), expr, params)
             })?;
             // HAVING (ADR-0453): the aggregating WHERE, answered per group
             // with the same scope an ORDER BY key gets. Not-true drops the
@@ -395,13 +378,7 @@ impl<'a> Aggregation<'a> {
             // is the typed rejection live raises (22N01) and a list/path
             // converts, both through the one predicate policy (ADR-0458 §7).
             if let Some(predicate) = having {
-                let keeps = agg_eval(
-                    graph,
-                    AggScope::of_row(&folded, &n),
-                    predicate,
-                    params,
-                    cypher_version,
-                )?;
+                let keeps = agg_eval(graph, AggScope::of_row(&folded, &n), predicate, params)?;
                 if !crate::eval::predicate_value_holds(&keeps)? {
                     continue;
                 }
@@ -421,25 +398,15 @@ impl<'a> Aggregation<'a> {
 /// The loop over [`Aggregation`]: open, offer every row of the feed, finish.
 pub(crate) fn aggregate_ex<'a>(
     graph: &ExecGraph<'_>,
-    rows: RowFeed<'_>,
+    feed: RowFeed<'_>,
     items: &'a [Projection],
     group_by: Option<&'a [Expr]>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     subclauses: &GroupSubclauses<'a>,
 ) -> Result<Vec<Row>> {
-    let mut aggregation = Aggregation::open(
-        graph,
-        &rows,
-        items,
-        group_by,
-        params,
-        cypher_version,
-        subclauses,
-    )?;
-    for row in rows {
-        aggregation.offer(graph, row?)?;
-    }
+    let mut aggregation =
+        Aggregation::open(graph, feed.probe(), items, group_by, params, subclauses)?;
+    feed.try_for_each(|row| aggregation.offer(graph, row))?;
     aggregation.finish(graph)
 }
 

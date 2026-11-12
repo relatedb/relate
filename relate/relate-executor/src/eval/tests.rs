@@ -55,7 +55,7 @@ fn aggregate_backstop_is_a_syntax_error() {
             args: vec![Expr::Int(1)],
         },
     ] {
-        let err = eval(&graph, &row, &expr, &params, None).unwrap_err();
+        let err = eval(&graph, &row, &expr, &params).unwrap_err();
         assert!(
             matches!(err, relate_core::Error::Syntax(_)),
             "{expr:?}: {err:?}"
@@ -142,8 +142,7 @@ fn variable_read_and_row_carry_share_payloads() {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
     let params = BTreeMap::new();
-    let read =
-        |name: &str| eval(&graph, &row, &Expr::Variable(name.into()), &params, None).unwrap();
+    let read = |name: &str| eval(&graph, &row, &Expr::Variable(name.into()), &params).unwrap();
 
     let (Value::List(bound), Value::List(read_back)) = (&row["list"], read("list")) else {
         panic!("list variable did not read back as a list");
@@ -192,14 +191,7 @@ fn unbound_variables_fail_with_undefined_variable() {
     let params = BTreeMap::new();
     let row = Row::new();
 
-    let error = eval(
-        &graph,
-        &row,
-        &Expr::Variable("missing".into()),
-        &params,
-        None,
-    )
-    .unwrap_err();
+    let error = eval(&graph, &row, &Expr::Variable("missing".into()), &params).unwrap_err();
     assert_eq!(error, Error::undefined_variable("missing"));
     assert_eq!(
         error.to_string(),
@@ -213,7 +205,7 @@ fn unbound_variables_fail_with_undefined_variable() {
         }],
     };
     assert_eq!(
-        eval(&graph, &row, &projection, &params, None).unwrap_err(),
+        eval(&graph, &row, &projection, &params).unwrap_err(),
         Error::undefined_variable("missing")
     );
 }

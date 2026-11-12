@@ -243,19 +243,17 @@ pub(crate) fn leaf_seek(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<Seek> {
-    if let Some(ids) = ids_seek_expr(var, expr, graph, row, params, cypher_version) {
+    if let Some(ids) = ids_seek_expr(var, expr, graph, row, params) {
         return Some(Seek::Ids(ids));
     }
-    if let Some((key, seek)) = string_seek_expr(var, expr, graph, row, params, cypher_version) {
+    if let Some((key, seek)) = string_seek_expr(var, expr, graph, row, params) {
         return Some(Seek::Text(key, seek));
     }
-    if let Some((key, seek)) = range_seek_expr(var, expr, graph, row, params, cypher_version) {
+    if let Some((key, seek)) = range_seek_expr(var, expr, graph, row, params) {
         return Some(Seek::Range(key, seek));
     }
-    point_seek_expr(var, expr, graph, row, params, cypher_version)
-        .map(|(key, seek)| Seek::Spatial(key, seek))
+    point_seek_expr(var, expr, graph, row, params).map(|(key, seek)| Seek::Spatial(key, seek))
 }
 
 fn string_seek_expr(
@@ -264,7 +262,6 @@ fn string_seek_expr(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<(String, StringSeek)> {
     let Expr::Binary { op, left, right } = expr else {
         return None;
@@ -278,7 +275,7 @@ fn string_seek_expr(
     };
     // The var's property on the left — the one canonical recognizer.
     let key = prop_key(left, var)?;
-    let val = eval(graph, row, right, params, cypher_version).ok()?;
+    let val = eval(graph, row, right, params).ok()?;
     let s = val.as_string()?.to_string();
     // Servability has one owner: the gram index itself declines an empty
     // needle (lookup_string_contains returns None), and node_candidates
@@ -292,13 +289,12 @@ fn range_seek_expr(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<(String, RangeSeek)> {
     let Expr::Binary { op, left, right } = expr else {
         return None;
     };
     let (key, bound_expr, op) = orient(|e| prop_key(e, var), left, right, *op)?;
-    let bound = eval(graph, row, bound_expr, params, cypher_version).ok()?;
+    let bound = eval(graph, row, bound_expr, params).ok()?;
     // A null bound is never servable. A bound that references the pattern
     // variable itself (`c.key = c.cluster`) or a variable bound later in
     // the pattern evaluates against a row where that variable is unbound —
@@ -355,12 +351,11 @@ fn point_seek_expr(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<(String, SpatialSeek)> {
     if let Some(args) = named_call(expr, "point.withinbbox", 3) {
         let key = prop_key(&args[0], var)?;
-        let lo = eval(graph, row, &args[1], params, cypher_version).ok()?;
-        let hi = eval(graph, row, &args[2], params, cypher_version).ok()?;
+        let lo = eval(graph, row, &args[1], params).ok()?;
+        let hi = eval(graph, row, &args[2], params).ok()?;
         return Some((key, SpatialSeek::BBox { lo, hi }));
     }
     let Expr::Binary { op, left, right } = expr else {
@@ -368,11 +363,8 @@ fn point_seek_expr(
     };
     let (func, bound_expr, inclusive) = distance_cmp(left, right, *op)?;
     let args = named_call(func, "point.distance", 2)?;
-    let (key, origin) =
-        point_prop_and_origin(var, &args[0], &args[1], graph, row, params, cypher_version)?;
-    let max = eval(graph, row, bound_expr, params, cypher_version)
-        .ok()?
-        .as_number()?;
+    let (key, origin) = point_prop_and_origin(var, &args[0], &args[1], graph, row, params)?;
+    let max = eval(graph, row, bound_expr, params).ok()?.as_number()?;
     Some((
         key,
         SpatialSeek::Distance {
@@ -404,13 +396,12 @@ fn point_prop_and_origin(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<(String, Value)> {
     // The distance functions are operand-symmetric — no op to mirror, so
     // only the side-selection core applies: the side carrying the var's
     // property decides, the other side is the origin.
     let (key, origin_expr) = crate::eval::var_key_side(var, a, b)?;
-    let origin = eval(graph, row, origin_expr, params, cypher_version).ok()?;
+    let origin = eval(graph, row, origin_expr, params).ok()?;
     Some((key.to_string(), origin))
 }
 
@@ -492,7 +483,6 @@ fn ids_seek_expr(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<Vec<NodeId>> {
     let Expr::Binary { op, left, right } = expr else {
         return None;
@@ -514,7 +504,7 @@ fn ids_seek_expr(
         Expr::Variable(v) if v == var => IdConversion::NodeValue,
         _ => id_fn_conversion(var, left, relate_core::parse_node_element_id)?,
     };
-    let val = eval(graph, row, right, params, cypher_version).ok()?;
+    let val = eval(graph, row, right, params).ok()?;
     match cmp {
         IdsCmp::Eq => to_id.apply(&val).map(|id| vec![id]),
         IdsCmp::In => in_list_ids(&val, &to_id),

@@ -681,16 +681,17 @@ fn transaction_ddl_schema_names_survive_checkpoint_reopen() {
 }
 
 /// A MERGE whose property map reads the entity it merges is the
-/// deprecated self-reference (MergeAcceptance [6]). Like every
-/// statement-scoped notification it is derived only where a plan tree is
-/// built.
+/// deprecated self-reference (MergeAcceptance [6]). The top-level shape
+/// is the 42I58 error; the notification stays reachable through the
+/// bodies the conservative validation tier deliberately under-approximates
+/// (ADR-0513 §Consequences: a nested MERGE whose correlated outer bindings
+/// that tier cannot see), and like every statement-scoped notification it
+/// is derived only where a plan tree is built.
 #[test]
 fn merge_self_reference_is_a_deprecation_notification() {
     let mut conn = connection();
-    // The rule is an error under Cypher 25; the Cypher 5 preamble keeps
-    // the deprecated shape and raises this warning.
     let explained = conn
-        .query("CYPHER 5 EXPLAIN MERGE (a {prop: a.prop}) RETURN a")
+        .query("EXPLAIN CALL () { MERGE (a {prop: a.prop}) RETURN a } RETURN 1 AS n")
         .unwrap();
     assert_eq!(kinds(&explained), [NotificationKind::MergeSelfReference]);
     let notification = &explained.notifications()[0];

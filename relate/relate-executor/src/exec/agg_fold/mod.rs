@@ -93,7 +93,6 @@ pub(super) fn note_path_binding() {
 pub(super) fn fold_return<'a>(
     suffix: &'a [Clause],
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Option<FoldOutput<'a>> {
     let Clause::Return {
         distinct,
@@ -130,7 +129,6 @@ pub(super) fn fold_return<'a>(
         skip: skip.as_ref(),
         limit: limit.as_ref(),
         params,
-        cypher_version,
     })
 }
 
@@ -148,7 +146,6 @@ pub(super) struct FoldOutput<'a> {
     skip: Option<&'a Expr>,
     limit: Option<&'a Expr>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 }
 
 /// One `ORDER BY` key's folded source: the key and the column its folded
@@ -163,13 +160,7 @@ pub(super) fn finish_folded_rows(
     output: &FoldOutput<'_>,
     mut out: Vec<Row>,
 ) -> Result<FoldedReturn> {
-    let (skip_n, limit_n) = resolve_page_bounds(
-        graph,
-        output.params,
-        output.cypher_version,
-        output.skip,
-        output.limit,
-    )?;
+    let (skip_n, limit_n) = resolve_page_bounds(graph, output.params, output.skip, output.limit)?;
     if !output.order.is_empty() {
         // The folded row is the only row the fold kept: each key parks the
         // value of the item `folded_order_items` resolved for it, and the

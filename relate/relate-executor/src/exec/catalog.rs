@@ -266,20 +266,19 @@ fn finish_catalog_rows(
     graph: &ExecGraph<'_>,
     info: &relate_front::show_columns::CatalogInfo<'_>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     mut output: Vec<Row>,
 ) -> Result<Vec<Row>> {
     // The predicate lowers before the paging stages run, so an invalid WHERE
     // expression reports ahead of any paging-expression error (ADR-0335).
     let predicate = info.where_expr.map(relate_front::lower_expr).transpose()?;
-    super::order::apply_yield_page_stages(graph, params, cypher_version, info.stages, &mut output)?;
+    super::order::apply_yield_page_stages(graph, params, info.stages, &mut output)?;
     if let Some(predicate) = predicate.as_ref() {
         // ADR-0335: the predicate lowers at run time, so an undefined
         // variable surfaces its typed error here instead of silently
         // filtering every row; a null or non-true value still filters.
         let mut filtered = Vec::with_capacity(output.len());
         for row in output {
-            if eval(graph, &row, predicate, params, cypher_version)?.truthy() == Some(true) {
+            if eval(graph, &row, predicate, params)?.truthy() == Some(true) {
                 filtered.push(row);
             }
         }
@@ -337,11 +336,10 @@ pub(crate) fn project_catalog(
     catalog: Vec<Row>,
     clause: &relate_parser::Clause,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<Row>> {
     let info = require_catalog_info(clause)?;
     let output = compose_catalog_rows(&info, input, catalog);
-    finish_catalog_rows(graph, &info, params, cypher_version, output)
+    finish_catalog_rows(graph, &info, params, output)
 }
 
 /// The per-input-row selection form of [`project_catalog`] (`SHOW SETTINGS`'
@@ -354,7 +352,6 @@ pub(crate) fn project_catalog_by_row<F>(
     input: Vec<Row>,
     clause: &relate_parser::Clause,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     mut select: F,
 ) -> Result<Vec<Row>>
 where
@@ -366,7 +363,7 @@ where
         let catalog = select(&row)?;
         output.extend(compose_catalog_rows(&info, std::iter::once(row), catalog));
     }
-    finish_catalog_rows(graph, &info, params, cypher_version, output)
+    finish_catalog_rows(graph, &info, params, output)
 }
 
 /// Statement result of a catalog clause: `Some` of the projected catalog
@@ -506,37 +503,23 @@ pub(crate) fn execute_catalog(
         )])],
         C::ShowUsers(_) => vec![catalog_row([("user", Value::String(CURRENT_USER.into()))])],
         C::ShowSettings(c) => {
-            return catalog_show::show_settings_rows(graph, c, rows, clause, params, qctx);
+            return catalog_show::show_settings_rows(graph, c, rows, clause, params);
         }
         C::ShowTransactions(c) => {
             catalog_show::show_transactions_rows(graph, c, &rows, params, qctx)?
         }
         C::TerminateTransactions(c) => {
-            catalog_show::terminate_transactions_rows(graph, c, &rows, params, qctx)?
+            catalog_show::terminate_transactions_rows(graph, c, &rows, params)?
         }
-        C::ShowDatabases(c) => catalog_show::show_databases_rows(graph, c, params, qctx)?,
-        C::ShowIndexes(c) => catalog_show::show_indexes_rows(graph, c, qctx)?,
-        C::ShowConstraints(c) => catalog_show::show_constraints_rows(graph, c, qctx)?,
+        C::ShowDatabases(c) => catalog_show::show_databases_rows(graph, c, params)?,
+        C::ShowIndexes(c) => catalog_show::show_indexes_rows(graph, c)?,
+        C::ShowConstraints(c) => catalog_show::show_constraints_rows(graph, c)?,
         C::ShowGraphType(c) => catalog_show::show_graph_type_rows(graph, c)?,
         C::ShowCurrentGraphType(c) => catalog_show::show_current_graph_type_rows(graph, c)?,
-        C::CreateIndex(c) => {
-            return catalog_schema::catalog_create_index(
-                graph,
-                c,
-                rows,
-                params,
-                qctx.cypher_version,
-            )
-        }
+        C::CreateIndex(c) => return catalog_schema::catalog_create_index(graph, c, rows, params),
         C::DropIndex(c) => return catalog_schema::catalog_drop_index(graph, c, rows, params),
         C::CreateConstraint(c) => {
-            return catalog_schema::catalog_create_constraint(
-                graph,
-                c,
-                rows,
-                params,
-                qctx.cypher_version,
-            )
+            return catalog_schema::catalog_create_constraint(graph, c, rows, params)
         }
         C::DropConstraint(c) => {
             return catalog_schema::catalog_drop_constraint(graph, c, rows, params)
@@ -548,17 +531,11 @@ pub(crate) fn execute_catalog(
             return graph_type_schema::catalog_create_graph_type(graph, c, rows, params)
         }
         C::AlterCurrentGraphType(c) => {
-            return graph_type_schema::alter_current_graph_type(
-                graph,
-                c,
-                rows,
-                params,
-                qctx.cypher_version,
-            )
+            return graph_type_schema::alter_current_graph_type(graph, c, rows, params)
         }
         _ => return Err(Error::semantic("unsupported catalog command")),
     };
-    project_catalog(graph, rows, catalog, clause, params, qctx.cypher_version)
+    project_catalog(graph, rows, catalog, clause, params)
 }
 
 #[cfg(test)]

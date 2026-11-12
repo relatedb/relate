@@ -489,13 +489,8 @@ impl<'a> Route<'a> {
     }
 
     fn node_ok(&self, id: NodeId, np: &NodePattern, row: &Row) -> Result<bool> {
-        let ExecCtx {
-            graph,
-            params,
-            cypher_version,
-            ..
-        } = self.ctx;
-        node_ok(graph, id, np, row, params, cypher_version)
+        let ExecCtx { graph, params, .. } = self.ctx;
+        node_ok(graph, id, np, row, params)
     }
 
     /// The route's one candidate-resolution call: the funnel's scan or
@@ -503,43 +498,18 @@ impl<'a> Route<'a> {
     /// inside it), from the route's empty residual. The fan's start scan
     /// and the property seek share it.
     fn candidates(&self, np: &NodePattern) -> Result<Vec<NodeId>> {
-        let ExecCtx {
-            graph,
-            params,
-            cypher_version,
-            ..
-        } = self.ctx;
+        let ExecCtx { graph, params, .. } = self.ctx;
         let residual = Residual::empty();
-        node_candidates(
-            graph,
-            np,
-            self.row,
-            params,
-            cypher_version,
-            residual.conjuncts,
-        )
+        node_candidates(graph, np, self.row, params, residual.conjuncts)
     }
 
     /// [`Route::candidates`] stopped at the first match past `cap`: the
     /// pair bound's probe ([`SEEK_PAIR_LIMIT`]) and the full listing's
     /// bound ([`SEEK_LIST_LIMIT`]).
     fn capped_candidates(&self, np: &NodePattern, cap: usize) -> Result<Capped> {
-        let ExecCtx {
-            graph,
-            params,
-            cypher_version,
-            ..
-        } = self.ctx;
+        let ExecCtx { graph, params, .. } = self.ctx;
         let residual = Residual::empty();
-        node_candidates_capped(
-            graph,
-            np,
-            self.row,
-            params,
-            cypher_version,
-            residual.conjuncts,
-            cap,
-        )
+        node_candidates_capped(graph, np, self.row, params, residual.conjuncts, cap)
     }
 
     /// The unbound start pattern's full candidate list (the fan anchor's

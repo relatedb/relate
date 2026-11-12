@@ -214,12 +214,7 @@ fn gpm_rel_dfs(
     out: &mut Vec<GpmState>,
     emit: &mut Option<GpmEmit<'_, '_>>,
 ) -> Result<()> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
+    let GpmCtx { graph, params, .. } = *gctx;
     let GpmRelWalk {
         min,
         max,
@@ -262,13 +257,10 @@ fn gpm_rel_dfs(
         // pattern's last) receives the state and its answer halts the
         // walk.
         if bound
-            && gctx.walk.early.holds_at(
-                graph,
-                &accepted.row,
-                rel.variable.as_ref(),
-                params,
-                cypher_version,
-            )?
+            && gctx
+                .walk
+                .early
+                .holds_at(graph, &accepted.row, rel.variable.as_ref(), params)?
             && gpm_accept_target(gctx, &mut accepted, target)?
             && emit::deliver(gctx, emit, accepted, out)?
         {
@@ -364,12 +356,7 @@ fn rel_admission_ok(
     filter: &RelFilter,
     rid: RelId,
 ) -> Result<bool> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
+    let GpmCtx { graph, params, .. } = *gctx;
     if !rel_edge_ok(
         graph,
         rid,
@@ -379,7 +366,6 @@ fn rel_admission_ok(
         },
         row,
         params,
-        cypher_version,
     )? {
         return Ok(false);
     }
@@ -388,7 +374,7 @@ fn rel_admission_ok(
         if let Some(name) = &rel.variable {
             predicate_row.insert(name.to_string(), bind_rel_stub(graph, rid));
         }
-        if !inline_predicate_holds(graph, &predicate_row, predicate, params, cypher_version)? {
+        if !inline_predicate_holds(graph, &predicate_row, predicate, params)? {
             return Ok(false);
         }
     }
@@ -408,19 +394,12 @@ fn gpm_accept_node(
     id: NodeId,
     row: &mut Row,
 ) -> Result<bool> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
-    if !node_ok(graph, id, node, row, params, cypher_version)?
-        || !gpm_bind_node(graph, node, id, row)
-    {
+    let GpmCtx { graph, params, .. } = *gctx;
+    if !node_ok(graph, id, node, row, params)? || !gpm_bind_node(graph, node, id, row) {
         return Ok(false);
     }
     if let Some(predicate) = &node.where_clause {
-        if !inline_predicate_holds(graph, row, predicate, params, cypher_version)? {
+        if !inline_predicate_holds(graph, row, predicate, params)? {
             return Ok(false);
         }
     }
@@ -429,7 +408,7 @@ fn gpm_accept_node(
     // behind it enumerates no further hops.
     gctx.walk
         .early
-        .holds_at(graph, row, node.variable.as_ref(), params, cypher_version)
+        .holds_at(graph, row, node.variable.as_ref(), params)
 }
 
 pub(super) fn gpm_accept_target(

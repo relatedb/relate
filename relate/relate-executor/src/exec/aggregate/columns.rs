@@ -244,7 +244,6 @@ impl<'e> SiteColumn<'e> {
         graph: &ExecGraph<'_>,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<()> {
         match &mut self.state {
             SiteState::CountStar(counts) => counts[group] += 1,
@@ -259,7 +258,7 @@ impl<'e> SiteColumn<'e> {
                     return Ok(());
                 }
                 graph.cancel_tick()?;
-                let value = eval(graph, row, call.operand, params, cypher_version)?;
+                let value = eval(graph, row, call.operand, params)?;
                 if admits(seen, group, &value)? {
                     call.name.with_str(|name| folds[group].offer(value, name))?;
                 }
@@ -275,7 +274,7 @@ impl<'e> SiteColumn<'e> {
                     return Ok(());
                 }
                 graph.cancel_tick()?;
-                let value = eval(graph, row, call.operand, params, cypher_version)?;
+                let value = eval(graph, row, call.operand, params)?;
                 if admits(seen, group, &value)? {
                     vals[group].push(value);
                 }
@@ -359,7 +358,6 @@ impl<'e> SiteColumn<'e> {
         pools: &[SortedPool],
         seed: Option<&Row>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<Value> {
         match &mut self.state {
             SiteState::CountStar(counts) => Ok(Value::Int(counts[group])),
@@ -371,14 +369,9 @@ impl<'e> SiteColumn<'e> {
                 call, vals, failed, ..
             } => match failed.get(&group) {
                 Some(error) => Err(error.clone()),
-                None => finish_retained(
-                    graph,
-                    std::mem::take(&mut vals[group]),
-                    *call,
-                    seed,
-                    params,
-                    cypher_version,
-                ),
+                None => {
+                    finish_retained(graph, std::mem::take(&mut vals[group]), *call, seed, params)
+                }
             },
             SiteState::Pooled {
                 pool,
@@ -387,15 +380,7 @@ impl<'e> SiteColumn<'e> {
                 failed,
             } => match failed.get(&group) {
                 Some(error) => Err(error.clone()),
-                None => finish_pooled(
-                    graph,
-                    &pools[*pool],
-                    *call,
-                    percentile,
-                    seed,
-                    params,
-                    cypher_version,
-                ),
+                None => finish_pooled(graph, &pools[*pool], *call, percentile, seed, params),
             },
             SiteState::Rejected(error) => Err(error.clone()),
         }
@@ -475,12 +460,11 @@ impl<'e> AccTable<'e> {
         graph: &ExecGraph<'_>,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<()> {
         for index in 0..self.pools.len() {
             let pool = &mut self.pools[index];
             let state = &mut pool.states[group];
-            let offered = state.offer(&pool.site, graph, row, params, cypher_version);
+            let offered = state.offer(&pool.site, graph, row, params);
             if let Some(error) = parked(pool.site.lenient, offered)? {
                 // The pool's sites are all lenient: park the failure on
                 // each and stop collecting.
@@ -495,7 +479,7 @@ impl<'e> AccTable<'e> {
             }
         }
         for site in &mut self.sites {
-            let offered = site.offer(group, graph, row, params, cypher_version);
+            let offered = site.offer(group, graph, row, params);
             if let Some(error) = parked(site.lenient, offered)? {
                 self.parked_bytes = self
                     .parked_bytes
@@ -539,7 +523,6 @@ impl<'e> AccTable<'e> {
         graph: &ExecGraph<'_>,
         seed: Option<&Row>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> FoldedGroup<'e> {
         let pools: Vec<SortedPool> = self
             .pools
@@ -550,7 +533,7 @@ impl<'e> AccTable<'e> {
             self.sites
                 .iter_mut()
                 .map(|site| {
-                    let value = site.finish(group, graph, &pools, seed, params, cypher_version);
+                    let value = site.finish(group, graph, &pools, seed, params);
                     (site.expr, value)
                 })
                 .collect(),

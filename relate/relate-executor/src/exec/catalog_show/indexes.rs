@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use relate_core::{Result, Value};
 use relate_model::EntityKind;
 
-use crate::ctx::QueryCtx;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -95,23 +94,18 @@ fn scalar_option_text(value: &Value) -> Option<String> {
 
 /// The `createStatement` column for one index row: Neo4j CE's rendered
 /// CREATE statement, or `None` when it cannot be faithfully rendered
-/// (Cypher 5 hides the multi-label / WITH-properties forms; an empty
-/// property list or a non-scalar `indexConfig` entry has no faithful
-/// rendering). The caller maps `None` to the column's NULL. The kind is
-/// the renderer's own `detail.kind` — this renderer is reached only
-/// when the detail join hits, so [`IndexKindSpec::resolve`]'s binding
-/// equals it by construction; no threaded second channel.
+/// (an empty property list or a non-scalar `indexConfig` entry has no
+/// faithful rendering). The caller maps `None` to the column's NULL. The
+/// kind is the renderer's own `detail.kind` — this renderer is reached
+/// only when the detail join hits, so [`IndexKindSpec::resolve`]'s
+/// binding equals it by construction; no threaded second channel.
 fn index_create_statement(
     detail: &IndexDetailSpec,
     name: &str,
     entity: EntityKind,
     stored_options: &BTreeMap<String, Value>,
-    cypher5: bool,
 ) -> Option<String> {
     let kind = detail.kind;
-    if cypher5 && (detail.labels.len() > 1 || !detail.with_properties.is_empty()) {
-        return None;
-    }
     let variable = entity_variable(entity);
     let name = backtick(name);
     // The EACH form ([`is_lookup`]'s one LOOKUP decision): Neo4j CE's
@@ -180,21 +174,19 @@ fn index_statement_binding(
     detail: Option<&IndexDetailSpec>,
     name: &str,
     stored_options: &BTreeMap<String, Value>,
-    cypher5: bool,
 ) -> (EntityKind, Option<String>) {
     let entity = EntityKind::from_relationship_flag(facts.relationship);
-    let statement =
-        detail.and_then(|d| index_create_statement(d, name, entity, stored_options, cypher5));
+    let statement = detail.and_then(|d| index_create_statement(d, name, entity, stored_options));
     (entity, statement)
 }
 
 /// The index's CREATE statement for the checkpoint's schema mirror
 /// (ADR-0481 §3), resolved from the committed SHOW metadata exactly as
-/// the SHOW row resolves it, with no `CYPHER 5` preamble — a schema
-/// mirror must recreate, not hide, so the DDL renders the dialect's full
-/// form. `None` is the SHOW column's NULL (a legacy detail-less catalog
-/// row, or a form with no faithful CREATE rendering); the mirror omits
-/// the entry rather than fabricate a statement.
+/// the SHOW row resolves it — a schema mirror must recreate, not hide, so
+/// the DDL renders the dialect's full form. `None` is the SHOW column's
+/// NULL (a legacy detail-less catalog row, or a form with no faithful
+/// CREATE rendering); the mirror omits the entry rather than fabricate a
+/// statement.
 pub(super) fn index_ddl_statement(
     idx: &relate_catalog::IndexDef,
     details: &BTreeMap<String, IndexDetailSpec>,
@@ -216,7 +208,6 @@ pub(super) fn index_ddl_statement(
         detail,
         &idx.name,
         stored_options(index_options, &idx.name),
-        false,
     )
     .1
 }
@@ -238,14 +229,11 @@ fn index_row(
     ctx: IndexRowContext<'_>,
 ) -> Row {
     let options = stored_options(ctx.index_options, &idx.name);
-    let (entity, index_statement) =
-        index_statement_binding(facts, detail, &idx.name, options, ctx.cypher5);
+    let (entity, index_statement) = index_statement_binding(facts, detail, &idx.name, options);
     // A constraint's backing index shows the owning constraint's CREATE
     // CONSTRAINT (Neo4j parity); every standalone index shows its own.
     let create_statement = match backing {
-        Some(def) => {
-            super::constraints::constraint_statement_for(def, ctx.current, ctx.derived, ctx.cypher5)
-        }
+        Some(def) => super::constraints::constraint_statement_for(def, ctx.current, ctx.derived),
         None => index_statement,
     };
     // The options column always carries an `indexConfig` entry in Neo4j's
@@ -291,15 +279,14 @@ fn index_row(
 }
 
 /// The shared per-row inputs of [`index_row`]: the stored options map, the
-/// current graph type (for a backing constraint's classification), its
-/// derived records, and the dialect flag — bundled so the row producer
-/// stays within the argument-count budget.
+/// current graph type (for a backing constraint's classification), and its
+/// derived records — bundled so the row producer stays within the
+/// argument-count budget.
 #[derive(Clone, Copy)]
 struct IndexRowContext<'a> {
     index_options: &'a BTreeMap<String, BTreeMap<String, Value>>,
     current: &'a relate_parser::GraphTypeBody,
     derived: &'a BTreeMap<String, relate_model::Constraint>,
-    cypher5: bool,
 }
 
 /// The planner-IR `Clause::ShowIndexes` result (a fixed four-column
@@ -372,7 +359,6 @@ fn default_lookup_row(name: &str, relationship: bool, ctx: IndexRowContext<'_>) 
 pub(crate) fn show_indexes_rows(
     graph: &ExecGraph<'_>,
     c: &relate_parser::ShowIndexesClause,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     let show = graph.show_schema()?;
     let details = &show.data.index_details;
@@ -381,7 +367,6 @@ pub(crate) fn show_indexes_rows(
         index_options: &show.data.index_options,
         current: &current,
         derived: &show.data.derived_constraints,
-        cypher5: qctx.is_cypher5(),
     };
     let constraints = graph.named_constraints();
     // One kind filter, one predicate, both streams: the defaults are

@@ -120,17 +120,6 @@ fn walk_query_parts_visits_top_level_clauses_per_part_and_next_stage() {
 }
 
 #[test]
-fn plan_carries_typed_cypher_version() {
-    let mut q = parse_and_lower("RETURN 1").unwrap();
-    assert_eq!(
-        plan(q.clone(), &mut |_| false).unwrap().cypher_version,
-        None
-    );
-    q.cypher_version = Some(5);
-    assert_eq!(plan(q, &mut |_| false).unwrap().cypher_version, Some(5));
-}
-
-#[test]
 fn schema_index_must_be_standalone() {
     plan(
         parse_and_lower("CREATE INDEX FOR (n:Person) ON (n.name)").unwrap(),
@@ -326,7 +315,6 @@ fn group_by_key_in_aggregate_expr_is_valid() {
             }],
             union_all: vec![],
             next: None,
-            cypher_version: None,
         }
     }
 

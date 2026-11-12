@@ -168,19 +168,12 @@ impl<'a> PathProbe<'a> {
         used: UsedSet,
         residual: &Residual<'_>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<bool> {
-        if !inline_predicates_ok(
-            graph,
-            std::slice::from_ref(self.pattern),
-            &row,
-            params,
-            cypher_version,
-        )? {
+        if !inline_predicates_ok(graph, std::slice::from_ref(self.pattern), &row, params)? {
             return Ok(false);
         }
-        let accepted = residual_ok(graph, &row, params, cypher_version, residual)?
-            && self.accept_core(row, used)?;
+        let accepted =
+            residual_ok(graph, &row, params, residual)? && self.accept_core(row, used)?;
         Ok(accepted)
     }
 }

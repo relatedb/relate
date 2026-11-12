@@ -139,7 +139,7 @@ fn a_recycled_second_seed_does_not_observe_the_first_seeds_endpoints() {
     let mut run_from = |seed: NodeId, tables: FrontierTables| {
         let mut tables = tables;
         run_frontier(
-            ExecCtx::new(&view, &BTreeMap::new(), None),
+            ExecCtx::new(&view, &BTreeMap::new()),
             seed,
             &nfa,
             WalkBudget::standard(),
@@ -248,7 +248,7 @@ fn a_run_over_the_table_ceiling_declines_with_the_table_budget_reason() {
     let view = ExecGraph::read(&built.graph);
     let run = |tables: &mut FrontierTables| {
         run_frontier(
-            ExecCtx::new(&view, &BTreeMap::new(), None),
+            ExecCtx::new(&view, &BTreeMap::new()),
             built.nodes[0],
             &nfa,
             WalkBudget::standard(),

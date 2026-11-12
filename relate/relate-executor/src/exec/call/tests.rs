@@ -23,7 +23,7 @@ fn load_csv_rejects_multi_char_field_terminator() {
     let params = BTreeMap::new();
     let url = Expr::String("rows.csv".into());
     let err = exec_load_csv(
-        ExecCtx::new(&view, &params, None),
+        ExecCtx::new(&view, &params),
         vec![Row::new()],
         false,
         &url,

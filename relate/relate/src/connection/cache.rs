@@ -16,6 +16,7 @@ use web_time::Instant;
 use relate_front::parse_and_lower_statement_with_policy_and_params;
 use relate_front::validate::StatementPolicy;
 use relate_ir::Query;
+use relate_parser::PreambleMode;
 use relate_planner::LogicalPlan;
 
 use super::Connection;
@@ -269,8 +270,7 @@ impl Connection {
         let plan = Arc::new(plan);
         let bytes = entry_bytes(&template, &query, &plan, cypher, &values);
         Ok(Some(ParameterizedCompile {
-            explain: parsed.explain,
-            profile: parsed.profile,
+            preamble: parsed.preamble,
             logical: Arc::clone(&plan),
             stamp,
             parse,
@@ -321,8 +321,7 @@ impl Connection {
 /// One successful parameterized compile, before eligibility decides
 /// whether it is the plan that runs.
 pub(super) struct ParameterizedCompile {
-    pub(super) explain: bool,
-    pub(super) profile: bool,
+    pub(super) preamble: PreambleMode,
     pub(super) logical: Arc<LogicalPlan>,
     pub(super) stamp: ResultStamp,
     pub(super) parse: Duration,

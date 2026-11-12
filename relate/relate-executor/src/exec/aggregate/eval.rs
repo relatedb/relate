@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{Expr, MapProjectionItem};
+use relate_ir::{walk_scope_children, ChildScope, Expr};
 use relate_names::SmallName;
 
 use crate::eval::eval;
@@ -95,6 +95,39 @@ fn bind_child<'e>(children: &mut Vec<(String, &'e Expr)>, name: String, child: &
     Expr::Variable(SmallName::from_name(&name))
 }
 
+/// Bind every enclosing-scope child of `expr` under a synthetic
+/// `__agg_c{i}` name (collected into `children`) and rebuild `expr` so
+/// those positions read the synthetic variables — the one bind-and-rebuild
+/// every compound agg arm rides. The IR's scope model
+/// ([`walk_scope_children`]) is the whole classification: a
+/// comprehension's source (and a `reduce`'s initial and list) is
+/// enclosing — it folds the group here, bound under its synthetic name —
+/// while the per-element bodies (a comprehension's predicate and
+/// projection, a quantifier's predicate, a `reduce`'s expression and
+/// predicate) stay the original subtrees, evaluated inside the rebuilt
+/// form's own scope; every other variant's children are all enclosing.
+/// The canonical rebuild ([`Expr::map_children`]) walks the same children
+/// in the same order, so the name stream and the rebuild positions cannot
+/// drift — the cursor's exhaustion is the invariant that pins it.
+fn bind_enclosing_children<'e>(expr: &'e Expr, children: &mut Vec<(String, &'e Expr)>) -> Expr {
+    let mut replacements: Vec<Expr> = Vec::new();
+    walk_scope_children(expr, &mut |child, scope| match scope {
+        ChildScope::Enclosing => replacements.push(bind_child(
+            children,
+            format!("__agg_c{}", replacements.len()),
+            child,
+        )),
+        ChildScope::Element(_) => replacements.push(child.clone()),
+    });
+    let mut replacements = replacements.into_iter();
+    expr.map_children::<std::convert::Infallible>(&mut |_| {
+        Ok(replacements
+            .next()
+            .expect("map_children rebuilds exactly the children walk_scope_children visited"))
+    })
+    .expect("the rebuild is infallible when every child position is filled")
+}
+
 /// Evaluate `expr` in `scope`. An aggregate call reads the value its
 /// group's accumulator resolved to (the group's rows were streamed through
 /// the accumulators, never retained); every non-aggregate leaf evaluates
@@ -105,16 +138,11 @@ pub(crate) fn agg_eval<'e>(
     scope: AggScope<'_, 'e>,
     expr: &'e Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
     let seed = scope.seed;
     match expr {
         Expr::CountStar => scope.aggregate_call(expr),
-        Expr::Function {
-            name,
-            distinct: _,
-            args,
-        } => {
+        Expr::Function { name, .. } => {
             // The canonical aggregate classification lives in
             // `relate-ir` (single definition, re-exported by
             // `relate-front::agg`; lowering has already canonicalized
@@ -122,124 +150,61 @@ pub(crate) fn agg_eval<'e>(
             // whether this is an aggregate at all, and which kind — so the
             // aggregate-call policy below reads the same table, not a second
             // spelling of it. A non-aggregate function keeps the transparent
-            // scalar wrapper.
+            // scalar wrapper: every argument is an enclosing child of the
+            // compound bind-and-rebuild.
             if name.with_str(relate_ir::classify_aggregate).is_none() {
-                return agg_eval_function(graph, scope, name, args, params, cypher_version);
+                return agg_eval_compound(graph, scope, expr, params);
             }
             scope.aggregate_call(expr)
         }
         Expr::Map(es) => {
             let mut m = BTreeMap::new();
             for (k, e) in es {
-                m.insert(
-                    k.clone(),
-                    agg_eval(graph, scope, e, params, cypher_version)?,
-                );
+                m.insert(k.clone(), agg_eval(graph, scope, e, params)?);
             }
             // The aggregate evaluator has its own Map/List arms; the
             // checked constructors here are what make the ADR-0462 cap hold
             // on this second evaluation path too.
             Value::checked_map(m)
         }
-        Expr::MapProjection { expr, items } => {
-            agg_eval_map_projection(graph, scope, expr, items, params, cypher_version)
-        }
         Expr::List(xs) => {
             let mut out = Vec::new();
             for e in xs {
-                out.push(agg_eval(graph, scope, e, params, cypher_version)?);
+                out.push(agg_eval(graph, scope, e, params)?);
             }
             Value::checked_list(out)
         }
-        Expr::ListComp {
-            ident,
-            list,
-            predicate,
-            projection,
-        } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::ListComp {
-                ident: ident.clone(),
-                list: Box::new(bind_child(&mut children, "__agg_list".into(), list)),
-                predicate: predicate.clone(),
-                projection: projection.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::MapComp {
-            key_ident,
-            value_ident,
-            source,
-            predicate,
-            key_expr,
-            value_expr,
-        } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::MapComp {
-                key_ident: key_ident.clone(),
-                value_ident: value_ident.clone(),
-                source: Box::new(bind_child(&mut children, "__agg_map".into(), source)),
-                predicate: predicate.clone(),
-                key_expr: key_expr.clone(),
-                value_expr: value_expr.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::Quantifier {
-            kind,
-            ident,
-            list,
-            predicate,
-        } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::Quantifier {
-                kind: *kind,
-                ident: ident.clone(),
-                list: Box::new(bind_child(&mut children, "__agg_list".into(), list)),
-                predicate: predicate.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::Reduce {
-            accumulator,
-            initial,
-            ident,
-            list,
-            expression,
-        } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::Reduce {
-                accumulator: accumulator.clone(),
-                initial: Box::new(bind_child(&mut children, "__agg_initial".into(), initial)),
-                ident: ident.clone(),
-                list: Box::new(bind_child(&mut children, "__agg_list".into(), list)),
-                expression: expression.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::AllReduce {
-            accumulator,
-            initial,
-            ident,
-            list,
-            expression,
-            predicate,
-        } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::AllReduce {
-                accumulator: accumulator.clone(),
-                initial: Box::new(bind_child(&mut children, "__agg_initial".into(), initial)),
-                ident: ident.clone(),
-                list: Box::new(bind_child(&mut children, "__agg_list".into(), list)),
-                expression: expression.clone(),
-                predicate: predicate.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::Case {
-            when_then,
-            else_expr,
-        } => agg_eval_case(graph, scope, when_then, else_expr, params, cypher_version),
+        // Every compound arm rides the one bind-and-rebuild
+        // ([`bind_enclosing_children`]): each enclosing-scope child is
+        // recursively `agg_eval`'d and bound under its synthetic
+        // `__agg_c{i}` name, and the rebuilt expression — which references
+        // those names — runs as scalar `eval` over a row seeded from the
+        // scope's seed row (a harmless superset of whatever the child
+        // leaves read). ADR-0198 ruling 2: an aggregate call in a CASE arm
+        // belongs to the enclosing aggregating projection, so every WHEN
+        // condition, THEN result and ELSE is an enclosing child. The
+        // per-element bodies of the comprehension/quantifier/reduce forms
+        // stay their original subtrees (the scope model's classification),
+        // and the single-wrapper positions (LABS-744 — unary, property,
+        // IS TYPE, IS NORMALIZED, the chrono comparisons, subscripts,
+        // slices, map projections, non-aggregate calls) bind every child:
+        // the front leaves them open (its `agg_enter_child` vocabulary is
+        // narrower); this is the executor's classification.
+        Expr::ListComp { .. }
+        | Expr::MapComp { .. }
+        | Expr::Quantifier { .. }
+        | Expr::Reduce { .. }
+        | Expr::AllReduce { .. }
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Property { .. }
+        | Expr::IsType { .. }
+        | Expr::IsNormalized { .. }
+        | Expr::ChronoCompare { .. }
+        | Expr::Subscript { .. }
+        | Expr::Slice { .. }
+        | Expr::Case { .. }
+        | Expr::MapProjection { .. } => agg_eval_compound(graph, scope, expr, params),
         Expr::Int(i) => Ok(Value::Int(*i)),
         Expr::Float(f) => Ok(Value::Float(*f)),
         Expr::Bool(b) => Ok(Value::Bool(*b)),
@@ -252,65 +217,26 @@ pub(crate) fn agg_eval<'e>(
             .get(name)
             .cloned()
             .ok_or_else(|| Error::parameters_missing([name.as_str()])),
-        // The rebuilt expression references only the synthetic `__l`/`__r`
-        // variables (both operands were already `agg_eval`'d), so the
-        // combinator's first-row seed is a harmless superset of the empty
-        // row this arm used to pass explicitly.
-        Expr::Binary { op, left, right } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::Binary {
-                op: *op,
-                left: Box::new(bind_child(&mut children, "__l".into(), left)),
-                right: Box::new(bind_child(&mut children, "__r".into(), right)),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        // Aggregation-transparent single-wrapper positions (LABS-744): every
-        // child folds the group and the wrapper runs over the folded values.
-        // Driven off the canonical child walk (`children` / `map_children`,
-        // which agree on order), so these positions carry no per-variant
-        // field list of their own. The front leaves them open (its
-        // `agg_enter_child` vocabulary is narrower); this is the executor's
-        // classification.
-        Expr::Unary { .. }
-        | Expr::Property { .. }
-        | Expr::IsType { .. }
-        | Expr::IsNormalized { .. }
-        | Expr::ChronoCompare { .. } => {
-            let kids = expr.children();
-            let names: Vec<String> = (0..kids.len()).map(|i| format!("__agg_c{i}")).collect();
-            let children: Vec<(&String, &Expr)> = names.iter().zip(kids).collect();
-            let mut next = 0;
-            let rebuilt = expr.map_children(&mut |_| {
-                let var = Expr::Variable(SmallName::from_name(&names[next]));
-                next += 1;
-                Ok::<_, std::convert::Infallible>(var)
-            });
-            let Ok(rebuilt) = rebuilt;
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::Subscript { expr, index } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::Subscript {
-                expr: Box::new(bind_child(&mut children, "__agg_base".into(), expr)),
-                index: index.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
-        Expr::Slice { expr, start, end } => {
-            let mut children = Vec::new();
-            let rebuilt = Expr::Slice {
-                expr: Box::new(bind_child(&mut children, "__agg_base".into(), expr)),
-                start: start.clone(),
-                end: end.clone(),
-            };
-            agg_eval_combinator(graph, scope, &children, params, cypher_version, || rebuilt)
-        }
         _ => match seed {
-            Some(row) => eval(graph, row, expr, params, cypher_version),
+            Some(row) => eval(graph, row, expr, params),
             None => Ok(Value::Null),
         },
     }
+}
+
+/// The one compound bind-and-rebuild tail: bind every enclosing child of
+/// `expr` under its synthetic name, then delegate the rebuild — which
+/// references those names via `Expr::Variable` — to scalar `eval` over
+/// the seeded row (see [`agg_eval_combinator`]).
+fn agg_eval_compound<'e>(
+    graph: &ExecGraph<'_>,
+    scope: AggScope<'_, 'e>,
+    expr: &'e Expr,
+    params: &BTreeMap<String, Value>,
+) -> Result<Value> {
+    let mut children = Vec::new();
+    let rebuilt = bind_enclosing_children(expr, &mut children);
+    agg_eval_combinator(graph, scope, &children, params, || rebuilt)
 }
 
 /// Shared shape of the transparent-combinator arms: recursively `agg_eval`
@@ -323,117 +249,16 @@ fn agg_eval_combinator<'e, S: AsRef<str>>(
     scope: AggScope<'_, 'e>,
     children: &[(S, &'e Expr)],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     rebuild: impl FnOnce() -> Expr,
 ) -> Result<Value> {
     let mut row = scope.seed.cloned().unwrap_or_default();
     for (name, child) in children {
-        row.insert(
-            name.as_ref().into(),
-            agg_eval(graph, scope, child, params, cypher_version)?,
-        );
+        row.insert(name.as_ref().into(), agg_eval(graph, scope, child, params)?);
     }
     if scope.is_discovery() {
         // The children are walked and recorded; the wrapper runs over the
         // folded values only once a group has them.
         return Ok(Value::Null);
     }
-    eval(graph, &row, &rebuild(), params, cypher_version)
-}
-
-/// Non-aggregate function wrapper over aggregate arguments: bind each
-/// argument under `__agg_arg{i}` and re-run the call as scalar `eval`.
-fn agg_eval_function<'e>(
-    graph: &ExecGraph<'_>,
-    scope: AggScope<'_, 'e>,
-    name: &SmallName,
-    args: &'e [Expr],
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Value> {
-    let mut children = Vec::new();
-    let rebuilt_args: Vec<Expr> = args
-        .iter()
-        .enumerate()
-        .map(|(i, arg)| bind_child(&mut children, format!("__agg_arg{i}"), arg))
-        .collect();
-    agg_eval_combinator(graph, scope, &children, params, cypher_version, || {
-        Expr::Function {
-            name: name.clone(),
-            distinct: false,
-            args: rebuilt_args,
-        }
-    })
-}
-
-/// ADR-0198 ruling 2: an aggregate call in a CASE arm belongs to the
-/// enclosing aggregating projection. Every part that can contain an
-/// aggregate (WHEN conditions, THEN results, ELSE) goes through `agg_eval`;
-/// the rebuilt CASE references the results via `__agg_*` variables, so
-/// scalar `eval_case` picks the arm.
-fn agg_eval_case<'e>(
-    graph: &ExecGraph<'_>,
-    scope: AggScope<'_, 'e>,
-    when_then: &'e [(Expr, Expr)],
-    else_expr: &'e Option<Box<Expr>>,
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Value> {
-    let mut children: Vec<(String, &Expr)> = Vec::new();
-    // Bind every part under its synthetic name and capture the matching
-    // variable in the same pass: one name stream, no rebuild-time cursor
-    // that could drift.
-    let when_then: Vec<(Expr, Expr)> = when_then
-        .iter()
-        .enumerate()
-        .map(|(i, (when, then))| {
-            (
-                bind_child(&mut children, format!("__agg_when{i}"), when),
-                bind_child(&mut children, format!("__agg_then{i}"), then),
-            )
-        })
-        .collect();
-    let else_expr = else_expr
-        .as_deref()
-        .map(|e| Box::new(bind_child(&mut children, "__agg_else".into(), e)));
-    agg_eval_combinator(graph, scope, &children, params, cypher_version, || {
-        Expr::Case {
-            when_then,
-            else_expr,
-        }
-    })
-}
-
-/// ADR-0453: aggregate calls inside a map projection's key-value expressions
-/// fold the group like any other aggregation sub-expression; the target and
-/// the shorthand items stay seed-relative. Rebuilt over synthetic names, the
-/// same shape the other transparent combinators use.
-fn agg_eval_map_projection<'e>(
-    graph: &ExecGraph<'_>,
-    scope: AggScope<'_, 'e>,
-    target: &'e Expr,
-    items: &'e [MapProjectionItem],
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Value> {
-    let mut children = Vec::new();
-    let target_var = bind_child(&mut children, "__agg_target".into(), target);
-    let mut rebuilt: Vec<MapProjectionItem> = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            MapProjectionItem::KeyValue { key, value } => {
-                rebuilt.push(MapProjectionItem::KeyValue {
-                    key: key.clone(),
-                    value: bind_child(&mut children, format!("__agg_mp{i}"), value),
-                });
-            }
-            other => rebuilt.push(other.clone()),
-        }
-    }
-    agg_eval_combinator(graph, scope, &children, params, cypher_version, || {
-        Expr::MapProjection {
-            expr: Box::new(target_var),
-            items: rebuilt,
-        }
-    })
+    eval(graph, &row, &rebuild(), params)
 }

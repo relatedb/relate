@@ -425,7 +425,6 @@ pub(crate) struct MatchReduce<'a> {
     pub patterns: &'a [PathPattern],
     pub where_clause: Option<&'a Expr>,
     pub params: &'a BTreeMap<String, Value>,
-    pub cypher_version: Option<u32>,
 }
 
 /// A consumer that takes a `MATCH`'s finished rows one at a time instead of
@@ -620,7 +619,6 @@ pub(crate) fn reduce_row(
         reduce.where_clause,
         &row,
         reduce.params,
-        reduce.cypher_version,
     )? {
         return Ok(None);
     }
@@ -635,7 +633,6 @@ pub(crate) fn reduce_row(
             &row,
             projection,
             reduce.params,
-            reduce.cypher_version,
         )?)),
     }
 }

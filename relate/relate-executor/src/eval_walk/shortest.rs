@@ -99,23 +99,17 @@ pub(crate) fn eval_shortest(
     all: bool,
     path: &PathPattern,
     want: ShortestWant,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
     let (name, path) = named_path(path);
     let mut best = Shortest::new(all);
-    let routed = fold_shortest_route(
-        ExecCtx::new(graph, params, cypher_version),
-        &path,
-        row,
-        &mut |r| {
-            best.offer_row(&name, r);
-            Ok(())
-        },
-    )?;
+    let routed = fold_shortest_route(ExecCtx::new(graph, params), &path, row, &mut |r| {
+        best.offer_row(&name, r);
+        Ok(())
+    })?;
     let value = if routed {
         best.into_value()
     } else {
-        enumerate(graph, row, params, all, &name, &path, cypher_version)?
+        enumerate(graph, row, params, all, &name, &path)?
     };
     Ok(shortest_from_enum(value, want))
 }
@@ -141,9 +135,8 @@ fn enumerate(
     all: bool,
     name: &str,
     path: &PathPattern,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let rows = collect_pattern_rows(graph, row, path, params, cypher_version)?;
+    let rows = collect_pattern_rows(graph, row, path, params)?;
     let mut best = Shortest::new(all);
     for r in rows {
         best.offer_row(name, r);

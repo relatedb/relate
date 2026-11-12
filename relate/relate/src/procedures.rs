@@ -77,7 +77,7 @@ fn validate_call_positions(graph: &Graph, logical: &LogicalPlan, result: &mut Re
         for clause in part {
             let Clause::Call {
                 name,
-                explicit: true,
+                args: relate_ir::CallArgs::Explicit(_),
                 yield_items,
                 ..
             } = clause
@@ -114,13 +114,17 @@ fn validate_call_clause(
     let Clause::Call {
         name,
         args,
-        explicit,
         yield_items,
         ..
     } = clause
     else {
         return Ok(());
     };
+    // The one passing-mode value (the IR's `CallArgs`): the explicit
+    // flag and the positional list it once travelled beside are one
+    // fact here — `is_explicit` and `args` are its two projections.
+    let explicit = args.is_explicit();
+    let args = args.args();
     // The procedure registry is &str-keyed (the executor's catalog
     // domain); the IR call name reads through the text bridge.
     let registered = name.with_str(|text| graph.procedure(text));
@@ -164,12 +168,8 @@ fn validate_call_clause(
     // predicates own the policy and the error text for the runtime path;
     // this compile-time facade consults the same two (never a second
     // spelling of either message).
-    relate_executor::check_implicit_passing_mode(
-        *explicit,
-        required_args,
-        yield_items.has_yield(),
-    )?;
-    if *explicit {
+    relate_executor::check_implicit_passing_mode(explicit, required_args, yield_items.has_yield())?;
+    if explicit {
         // Text render (once per call site): the arity check's error text
         // names the procedure.
         let name_text = name.to_string();
@@ -180,7 +180,7 @@ fn validate_call_clause(
             args.len(),
         )?;
     }
-    if !*explicit && required_args > 0 && !yield_items.has_yield() {
+    if !explicit && required_args > 0 && !yield_items.has_yield() {
         // Only parameters without a default are mandatory.
         let missing = arg_names
             .iter()

@@ -170,7 +170,7 @@ pub(super) fn check_call_clause(
     else {
         unreachable!("clause arm");
     };
-    for a in args {
+    for a in args.args() {
         check_expr(env, is_write_procedure, a)?;
         if is_agg_expr(a) {
             return Err(Error::syntax(

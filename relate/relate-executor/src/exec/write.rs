@@ -23,9 +23,8 @@ pub(crate) fn apply_sets(
     row: &mut Row,
     items: &[SetItem],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<()> {
-    let resolved = resolve_sets(graph, row, items, params, cypher_version)?;
+    let resolved = resolve_sets(graph, row, items, params)?;
     apply_resolved_sets(graph, resolved)
 }
 
@@ -126,7 +125,6 @@ fn resolve_property_target(
     target: &Expr,
     err: &'static str,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<(Value, String)>> {
     /// How a property target's key resolves: the static name (`n.k`) or
     /// the runtime expression (`n[expr]`).
@@ -139,16 +137,14 @@ fn resolve_property_target(
         Expr::DynamicProperty { expr, key } => (expr, KeySource::Dynamic(key)),
         _ => return Err(Error::ty(err)),
     };
-    let entity = eval(graph, row, expr, params, cypher_version)?;
+    let entity = eval(graph, row, expr, params)?;
     if entity.is_null() {
         return Ok(None);
     }
     let key = match key {
         // The property key renders once, at the write it names.
         KeySource::Static(key) => key.to_string(),
-        KeySource::Dynamic(key) => {
-            dynamic_property_key(eval(graph, row, key, params, cypher_version)?)?
-        }
+        KeySource::Dynamic(key) => dynamic_property_key(eval(graph, row, key, params)?)?,
     };
     Ok(Some((entity, key)))
 }
@@ -226,7 +222,6 @@ fn resolve_sets(
     row: &Row,
     items: &[SetItem],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<ResolvedSet>> {
     let mut resolved = Vec::with_capacity(items.len());
     for item in items {
@@ -236,15 +231,9 @@ fn resolve_sets(
                 // and normalized — a mixed int/float list stores as
                 // floats). Null transparency is the callee's contract
                 // (ADR-0339), so no per-site null guard.
-                let val = prepare_property_value(eval(graph, row, value, params, cypher_version)?)?;
-                let resolved_target = resolve_property_target(
-                    graph,
-                    row,
-                    target,
-                    "SET expected property",
-                    params,
-                    cypher_version,
-                )?;
+                let val = prepare_property_value(eval(graph, row, value, params)?)?;
+                let resolved_target =
+                    resolve_property_target(graph, row, target, "SET expected property", params)?;
                 if let Some((entity, key)) = resolved_target {
                     resolved.push(ResolvedSet::Prop(entity, key, val));
                 }
@@ -254,39 +243,39 @@ fn resolve_sets(
                 // parser keeps the fact): a map replaces every property,
                 // null clears them, any other entity-shaped value re-reads
                 // its current properties as the replacement map.
-                let val = eval(graph, row, value, params, cypher_version)?;
+                let val = eval(graph, row, value, params)?;
                 let map = set_map_source(graph, val, NullPolicy::Drop)?;
                 resolved.push(ResolvedSet::ReplaceAllProps(
-                    eval(graph, row, target, params, cypher_version)?,
+                    eval(graph, row, target, params)?,
                     map,
                 ));
             }
             SetItem::MergeMap { target, value } => {
-                let val = eval(graph, row, value, params, cypher_version)?;
+                let val = eval(graph, row, value, params)?;
                 // `+=`'s null policy: a null entry survives admission and
                 // records the key's removal (`merge_properties_*` runs it
                 // through the set verb) — the one typed difference from
                 // the `=` arm's `NullPolicy::Drop` above.
                 let map = set_map_source(graph, val, NullPolicy::KeepAsRemoval)?;
                 resolved.push(ResolvedSet::MergeMap(
-                    eval(graph, row, target, params, cypher_version)?,
+                    eval(graph, row, target, params)?,
                     map,
                 ));
             }
             SetItem::Labels { target, labels } => {
-                let labels = resolve_write_labels(graph, row, params, labels, cypher_version)?;
+                let labels = resolve_write_labels(graph, row, params, labels)?;
                 // `SET n :Label` is exactly LabelsFunction(Extend) — one
                 // apply arm instead of two (round-3 review).
                 resolved.push(ResolvedSet::LabelsFunction(
-                    eval(graph, row, target, params, cypher_version)?,
+                    eval(graph, row, target, params)?,
                     labels,
                     LabelsFunctionOp::Extend,
                 ));
             }
             SetItem::LabelsFunction { target, value, op } => {
-                let labels = dynamic_label_names(graph, row, params, value, cypher_version)?;
+                let labels = dynamic_label_names(graph, row, params, value)?;
                 resolved.push(ResolvedSet::LabelsFunction(
-                    eval(graph, row, target, params, cypher_version)?,
+                    eval(graph, row, target, params)?,
                     labels,
                     *op,
                 ));
@@ -345,7 +334,6 @@ pub(crate) fn resolve_removes(
     row: &Row,
     items: &[RemoveItem],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Vec<ResolvedRemove>> {
     let mut resolved = Vec::with_capacity(items.len());
     for item in items {
@@ -357,16 +345,15 @@ pub(crate) fn resolve_removes(
                     target,
                     "REMOVE expected property",
                     params,
-                    cypher_version,
                 )?;
                 if let Some((entity, key)) = resolved_target {
                     resolved.push(ResolvedRemove::Property(entity, key));
                 }
             }
             RemoveItem::Labels { target, labels } => {
-                let labels = resolve_write_labels(graph, row, params, labels, cypher_version)?;
+                let labels = resolve_write_labels(graph, row, params, labels)?;
                 resolved.push(ResolvedRemove::Labels(
-                    eval(graph, row, target, params, cypher_version)?,
+                    eval(graph, row, target, params)?,
                     labels,
                 ));
             }

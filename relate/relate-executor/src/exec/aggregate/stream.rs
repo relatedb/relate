@@ -59,7 +59,6 @@ impl<'e> AggSites<'e> {
         items: impl IntoIterator<Item = &'e Expr>,
         lenient: impl IntoIterator<Item = &'e Expr>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<Self> {
         let mut sites: Vec<SiteColumn<'e>> = Vec::new();
         for (exprs, is_lenient) in [
@@ -68,13 +67,7 @@ impl<'e> AggSites<'e> {
         ] {
             let found = RefCell::new(Vec::new());
             for expr in exprs {
-                agg_eval(
-                    graph,
-                    AggScope::discovering(&found),
-                    expr,
-                    params,
-                    cypher_version,
-                )?;
+                agg_eval(graph, AggScope::discovering(&found), expr, params)?;
             }
             for expr in found.into_inner() {
                 if sites.iter().all(|site| !std::ptr::eq(site.expr, expr)) {
@@ -125,9 +118,8 @@ impl<'e> GroupAccs<'e> {
         graph: &ExecGraph<'_>,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<()> {
-        self.0.offer(0, graph, row, params, cypher_version)
+        self.0.offer(0, graph, row, params)
     }
 
     pub(crate) fn settle(
@@ -143,9 +135,8 @@ impl<'e> GroupAccs<'e> {
         graph: &ExecGraph<'_>,
         seed: Option<&Row>,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> FoldedGroup<'e> {
-        self.0.finish_group(0, graph, seed, params, cypher_version)
+        self.0.finish_group(0, graph, seed, params)
     }
 }
 
@@ -259,12 +250,11 @@ fn percentile_input(
     percentile: &Expr,
     seed: Option<&Row>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<Percentile>> {
     let Some(first) = seed else {
         return Ok(None);
     };
-    let p = eval(graph, first, percentile, params, cypher_version)?;
+    let p = eval(graph, first, percentile, params)?;
     // Two distinct rejections: a non-numeric percentile is the
     // wrong-type class, an out-of-[0, 1] one the NumberOutOfRange
     // kind (ADR-0175's 22N03 mapping).
@@ -291,16 +281,13 @@ pub(super) fn finish_retained(
     call: Call<'_>,
     seed: Option<&Row>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
     let input = match call.percentile {
         None => FoldInput::Many(call.kind),
-        Some(percentile) => {
-            match percentile_input(graph, call, percentile, seed, params, cypher_version)? {
-                Some(percentile) => FoldInput::Percentile(percentile),
-                None => return Ok(Value::Null),
-            }
-        }
+        Some(percentile) => match percentile_input(graph, call, percentile, seed, params)? {
+            Some(percentile) => FoldInput::Percentile(percentile),
+            None => return Ok(Value::Null),
+        },
     };
     call.name.with_str(|text| fold_aggregate(input, text, vals))
 }
@@ -316,10 +303,8 @@ pub(super) fn finish_pooled(
     percentile: &Expr,
     seed: Option<&Row>,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let Some(percentile) = percentile_input(graph, call, percentile, seed, params, cypher_version)?
-    else {
+    let Some(percentile) = percentile_input(graph, call, percentile, seed, params)? else {
         return Ok(Value::Null);
     };
     if pool.non_numeric {

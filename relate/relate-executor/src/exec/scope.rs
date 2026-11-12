@@ -63,6 +63,7 @@ fn projects_name_text(items: &[Projection], name: &str) -> bool {
 /// over a projection read named fields instead of positional parameters
 /// (three of which are the identical `&Option<Expr>`). `where_clause` is
 /// `None` for `RETURN`, the `WITH`'s own filter otherwise.
+#[derive(Clone, Copy)]
 pub(crate) struct ProjectionFields<'a> {
     pub distinct: bool,
     pub items: &'a [Projection],

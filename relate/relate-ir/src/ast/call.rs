@@ -15,6 +15,41 @@ pub enum CallScope {
     Vars(Vec<SmallName>),
 }
 
+/// A `CALL`'s one passing-mode value, lowered once by the front end
+/// from the parser's args-plus-flag pair: the explicit positional
+/// argument expressions of the parenthesized form, or the implicit
+/// parameter/row-column form a paren-less call takes. The mode is the
+/// clause's own fact — never a bool beside a bare argument slice — so
+/// no consumer re-encodes it; the executors borrow this value and
+/// match its variants.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallArgs {
+    /// `CALL proc(expr, …)`: the positional expressions, in order.
+    Explicit(Vec<Expr>),
+    /// `CALL proc`: no argument list. The arguments resolve by name
+    /// (parameters, row columns) in the executor's binder.
+    Implicit,
+}
+
+impl CallArgs {
+    /// The positional expressions — the explicit form's list, or the
+    /// empty slice the implicit form passes by the grammar (a
+    /// paren-less call has no argument list). Arity checks and
+    /// positional readers consult this; the mode itself is the
+    /// variant, never a bool.
+    pub fn args(&self) -> &[Expr] {
+        match self {
+            CallArgs::Explicit(args) => args,
+            CallArgs::Implicit => &[],
+        }
+    }
+
+    /// Whether this is the explicit parenthesized form.
+    pub fn is_explicit(&self) -> bool {
+        matches!(self, CallArgs::Explicit(_))
+    }
+}
+
 impl CallScope {
     /// Whether the subquery is a scope clause (`CALL (…) { … }` /
     /// `CALL (*) { … }`) rather than the naked `CALL { … }`. Only a scope

@@ -32,11 +32,10 @@ fn run_count(parts: Vec<Vec<Clause>>, union_all: Vec<bool>) -> Result<Value> {
             .collect(),
         union_all,
         next: None,
-        cypher_version: None,
     };
     let g = Graph::default();
     let view = ExecGraph::read(&g);
-    eval_count_query(&view, &Row::new(), &BTreeMap::new(), &query, None)
+    eval_count_query(&view, &Row::new(), &BTreeMap::new(), &query)
 }
 
 /// The classification scan still rejects a query whose parts mix an

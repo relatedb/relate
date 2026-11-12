@@ -88,17 +88,23 @@ fn wide_type_expression_declines_past_the_work_budget() {
 fn wide_create_self_reference_scan_declines_past_the_work_budget() {
     // WIDTH property values × WIDTH created entities is well past the
     // budget; the values reference the created names, so a checked scan
-    // would emit WIDTH notifications.
+    // would emit WIDTH notifications. The referencing entities are bare
+    // declarations inside a nested `CALL { … }` body — the shape the
+    // conservative validation tier deliberately lets through
+    // (ADR-0513 §Consequences), so the lowered CREATE reaches the scan.
     const WIDTH: usize = 5000;
-    let mut body = String::from("(n0 {p: 1})");
+    let mut body = String::from("(n0)");
     for index in 1..WIDTH {
         body.push_str(&format!(", (n{index} {{q: n0.p}})"));
     }
-    // The self-reference notification is Cypher 5's 01N00; Cypher 25
-    // rejects the same shape (42I58) at validation, so the notification
-    // scan is exercised under an explicit `CYPHER 5` preamble.
-    let query = relate_front::parse_and_lower(&format!("CYPHER 5 CREATE {body}")).unwrap();
-    let Clause::Create { patterns } = &query.parts[0].clauses[0] else {
+    let query = relate_front::parse_and_lower(&format!(
+        "CALL {{ CREATE {body} RETURN 1 AS one }} RETURN 1"
+    ))
+    .unwrap();
+    let Clause::CallSubquery { query: inner, .. } = &query.parts[0].clauses[0] else {
+        panic!("expected a CALL subquery");
+    };
+    let Clause::Create { patterns } = &inner.parts[0].clauses[0] else {
         panic!("expected a CREATE clause");
     };
     let mut notifications = Vec::new();
@@ -108,8 +114,13 @@ fn wide_create_self_reference_scan_declines_past_the_work_budget() {
         "a wide CREATE declines instead of testing every (value, name) pair"
     );
 
-    let small = relate_front::parse_and_lower("CYPHER 5 CREATE (a {p: 1}), (b {q: a.p})").unwrap();
-    let Clause::Create { patterns } = &small.parts[0].clauses[0] else {
+    let small =
+        relate_front::parse_and_lower("CALL { CREATE (a), (b {q: a.p}) RETURN 1 AS one } RETURN 1")
+            .unwrap();
+    let Clause::CallSubquery { query: inner, .. } = &small.parts[0].clauses[0] else {
+        panic!("expected a CALL subquery");
+    };
+    let Clause::Create { patterns } = &inner.parts[0].clauses[0] else {
         panic!("expected a CREATE clause");
     };
     let mut notifications = Vec::new();

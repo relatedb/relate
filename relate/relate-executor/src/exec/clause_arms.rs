@@ -1,7 +1,7 @@
 //! The non-trivial clause arms the dispatcher delegates to: CREATE, MERGE,
-//! DELETE, SET, REMOVE, and UNWIND. The dispatcher keeps the loop, the
-//! MATCH arm (which needs its local fold machinery), and the shared
-//! clause-exit reporting.
+//! DELETE, SET, REMOVE, and UNWIND. The dispatcher keeps the loop and the
+//! shared clause-exit reporting; the MATCH and CALL arms delegate beside
+//! their executors (`match_clause.rs`, `procedures.rs`).
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -10,7 +10,7 @@ use relate_core::{Result, Value};
 use relate_ir::{Clause, Expr, MatchMode};
 use relate_names::SmallName;
 
-use crate::ctx::{ExecCtx, QueryCtx};
+use crate::ctx::ExecCtx;
 use crate::eval::eval;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -32,17 +32,9 @@ pub(super) fn exec_create(
     rows: Vec<Row>,
     patterns: &[relate_ir::PathPattern],
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     let mut rows = rows;
 
-    // MATCH (and any earlier clause) drops its row charge on
-    // return, but this clause keeps that vector until it
-    // finishes. Bill it for the whole write, and again as
-    // created entities land in the rows.
-    let mut driving = relate_core::tokens::WorkspaceCharge::retain_with(|| {
-        crate::workspace::row_buffer_bytes(&rows)
-    })?;
     // Hoist the graph-sensitive decision to the pattern source: the
     // prepared patterns (when needed) are built before any write lands,
     // then one loop creates every row.
@@ -50,30 +42,39 @@ pub(super) fn exec_create(
         if patterns_have_graph_sensitive_expr(patterns) {
             Some(
                 rows.iter()
-                    .map(|row| {
-                        resolve_create_patterns(graph, row, patterns, params, qctx.cypher_version)
-                    })
+                    .map(|row| resolve_create_patterns(graph, row, patterns, params))
                     .collect::<Result<Vec<_>>>()?,
             )
         } else {
             None
         };
+    // MATCH (and any earlier clause) drops its row charge on return, but
+    // this clause keeps two containers until it finishes: the driving
+    // rows and — when the patterns are graph-sensitive — the prepared
+    // per-row pattern buffer. The prepared buffer is loop-invariant
+    // (built once above, never mutated), so its retained figure
+    // ([`crate::workspace::prepared_pattern_bytes`]) is computed once
+    // and both containers bill as the rows' live walk plus that
+    // constant — at creation and at each resize — never re-walking the
+    // pattern buffer (stellar round 2, F-2-18, closing the rust-review
+    // Medium: the re-walk made the clause's accounting quadratic in
+    // driving rows).
+    let prepared_bytes = prepared
+        .as_deref()
+        .map_or(0, crate::workspace::prepared_pattern_bytes);
+    let mut driving = relate_core::tokens::WorkspaceCharge::retain_with(|| {
+        crate::workspace::row_buffer_bytes(&rows) + prepared_bytes
+    })?;
     for n in 0..rows.len() {
         let row_patterns = prepared.as_ref().map_or(patterns, |p| p[n].as_slice());
-        create_patterns(
-            graph,
-            &mut rows[n],
-            row_patterns,
-            params,
-            qctx.cypher_version,
-        )?;
+        create_patterns(graph, &mut rows[n], row_patterns, params)?;
         if n % 64 == 63 {
-            driving.resize_with(|| crate::workspace::row_buffer_bytes(&rows))?;
+            driving.resize_with(|| crate::workspace::row_buffer_bytes(&rows) + prepared_bytes)?;
         }
     }
-    driving.resize_with(|| crate::workspace::row_buffer_bytes(&rows))?;
+    driving.resize_with(|| crate::workspace::row_buffer_bytes(&rows) + prepared_bytes)?;
     refresh_rows(graph, &mut rows);
-    driving.resize_with(|| crate::workspace::row_buffer_bytes(&rows))?;
+    driving.resize_with(|| crate::workspace::row_buffer_bytes(&rows) + prepared_bytes)?;
     Ok(rows)
 }
 
@@ -86,7 +87,6 @@ pub(super) fn exec_merge(
     on_create: &[relate_ir::SetItem],
     on_match: &[relate_ir::SetItem],
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     let mut rows = rows;
 
@@ -96,10 +96,10 @@ pub(super) fn exec_merge(
     let match_pattern = merge_match_pattern(pattern);
     let mut next = Vec::new();
     for row in rows {
-        reject_null_merge_props(graph, &row, &match_pattern, params, qctx.cypher_version)?;
+        reject_null_merge_props(graph, &row, &match_pattern, params)?;
         let none = Residual::empty();
         let matched = match_paths(
-            ExecCtx::new(graph, params, qctx.cypher_version),
+            ExecCtx::new(graph, params),
             std::slice::from_ref(&match_pattern),
             MatchMode::DifferentRelationships,
             row.clone(),
@@ -109,18 +109,12 @@ pub(super) fn exec_merge(
         )?;
         if matched.is_empty() {
             let mut created = row;
-            create_patterns(
-                graph,
-                &mut created,
-                std::slice::from_ref(pattern),
-                params,
-                qctx.cypher_version,
-            )?;
-            apply_sets(graph, &mut created, on_create, params, qctx.cypher_version)?;
+            create_patterns(graph, &mut created, std::slice::from_ref(pattern), params)?;
+            apply_sets(graph, &mut created, on_create, params)?;
             next.push(created);
         } else {
             for mut m in matched {
-                apply_sets(graph, &mut m, on_match, params, qctx.cypher_version)?;
+                apply_sets(graph, &mut m, on_match, params)?;
                 next.push(m);
             }
         }
@@ -138,7 +132,6 @@ pub(super) fn exec_delete(
     detach: bool,
     expressions: &[Expr],
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     let mut rows = rows;
 
@@ -147,7 +140,7 @@ pub(super) fn exec_delete(
         .flat_map(|row| {
             expressions
                 .iter()
-                .map(|expr| eval(graph, row, expr, params, qctx.cypher_version))
+                .map(|expr| eval(graph, row, expr, params))
         })
         .collect::<Result<Vec<_>>>()?;
     delete_values(graph, &resolved, detach)?;
@@ -165,12 +158,11 @@ pub(super) fn exec_set(
     rows: Vec<Row>,
     items: &[relate_ir::SetItem],
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     let mut rows = rows;
 
     for row in rows.iter_mut() {
-        apply_sets(graph, row, items, params, qctx.cypher_version)?;
+        apply_sets(graph, row, items, params)?;
     }
     refresh_rows(graph, &mut rows);
     Ok(rows)
@@ -182,13 +174,12 @@ pub(super) fn exec_remove(
     rows: Vec<Row>,
     items: &[relate_ir::RemoveItem],
     params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     let mut rows = rows;
 
     let resolved = rows
         .iter()
-        .map(|row| resolve_removes(graph, row, items, params, qctx.cypher_version))
+        .map(|row| resolve_removes(graph, row, items, params))
         .collect::<Result<Vec<_>>>()?;
     for items in resolved {
         apply_resolved_removes(graph, items)?;
@@ -201,18 +192,17 @@ pub(super) fn exec_remove(
 /// the fused aggregation consumes, drained into a held vector with the
 /// ADR-0463 value-buffer charge and cancellation sampling. `tail` is the
 /// clause list after this UNWIND (the dispatcher slices it once for
-/// `Source::plan`).
+/// `Source::plan`). The statement's evaluation context arrives built
+/// once by the dispatch loop (stellar round 2, F-2-21).
 pub(super) fn exec_unwind(
-    graph: &ExecGraph<'_>,
+    ctx: ExecCtx<'_>,
     tail: &[Clause],
     rows: Vec<Row>,
     expression: &Expr,
     alias: &SmallName,
-    params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     UnwindFeed::new(
-        ExecCtx::new(graph, params, qctx.cypher_version),
+        ctx,
         tail,
         rows,
         expression,

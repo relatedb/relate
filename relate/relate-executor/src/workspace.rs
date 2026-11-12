@@ -236,9 +236,11 @@ pub(crate) fn row_buffer_bytes(rows: &[Row]) -> u64 {
     rows_accounted(rows.len(), rows.iter())
 }
 
+mod prepared;
 mod result;
 mod retained;
 
+pub(crate) use prepared::prepared_pattern_bytes;
 pub use result::result_rows_bytes;
 pub(crate) use retained::row_retained_heap;
 #[cfg(test)]

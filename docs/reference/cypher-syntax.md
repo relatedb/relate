@@ -1196,12 +1196,22 @@ authored `preview feature '<name>' is not enabled` error):
 
 ### Cypher version selection
 
-Prefix a statement with `CYPHER 5` or `CYPHER 25` to select the language version:
+One Cypher version is supported: 25. The `CYPHER 25` statement preamble is
+an accepted no-op — it parses and changes nothing, since an unprefixed
+statement already speaks Cypher 25
+([ADR-0584](../adr/0584-one-cypher-version-cypher25-noop.md)):
 
 ```cypher
-CYPHER 25 RETURN vector([1.0, 2.0], 2, FLOAT32);   -- 25-only features
-CYPHER 5  MATCH (n) RETURN n;
+CYPHER 25 MATCH (n) RETURN n;   -- identical to the unprefixed statement
+MATCH (n) RETURN n;
 ```
+
+Every other `CYPHER <n>` integer — `CYPHER 5` included — fails at parse with
+`UnsupportedCypherVersion: CYPHER <n> is not supported; the only supported Cypher version is CYPHER 25`.
+The one other surface admitting a Cypher version,
+`ALTER DATABASE … SET DEFAULT LANGUAGE`, likewise accepts `CYPHER 25` only —
+every other integer fails the command with the same error (ADR-0116 §2,
+narrowed by ADR-0584).
 
 ### Extended functions
 

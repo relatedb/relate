@@ -129,8 +129,7 @@ impl HopFrame {
     }
 }
 
-/// Context shared by the GPM walker: graph view, parameters, the enclosing
-/// statement's CIP-150 `cypher_version`, the walk's own state
+/// Context shared by the GPM walker: graph view, parameters, the walk's own state
 /// ([`WalkState`] — the match mode, the two predicate bundles, the memos
 /// and the tallies), and the halt cell a cap or probe rider sets to stop
 /// the enumeration (`emit`). This view declares no walk state of its own:
@@ -142,7 +141,6 @@ impl HopFrame {
 struct GpmCtx<'a> {
     graph: &'a ExecGraph<'a>,
     params: &'a BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     /// The walk's own state, lent whole.
     walk: &'a WalkState<'a>,
     /// The mount's halt cell — the one decision this view adds to the
@@ -296,8 +294,8 @@ impl<'c> WalkState<'c> {
         }
     }
 
-    /// The walk's context: the statement's graph view, parameters and
-    /// `cypher_version`, this state lent whole, and `halt` — the mount's
+    /// The walk's context: the statement's graph view and parameters, this
+    /// state lent whole, and `halt` — the mount's
     /// one decision, which is the mounted probe's own verdict cell when one
     /// rides and this state's `cap_halt` otherwise.
     fn gctx<'s>(&'s self, ctx: ExecCtx<'s>, halt: &'s Cell<bool>) -> GpmCtx<'s>
@@ -307,7 +305,6 @@ impl<'c> WalkState<'c> {
         GpmCtx {
             graph: ctx.graph,
             params: ctx.params,
-            cypher_version: ctx.cypher_version,
             walk: self,
             halt,
         }
@@ -466,7 +463,6 @@ pub(crate) fn match_gpm_path(
 ) -> Result<Matched> {
     let graph = ctx.graph;
     let params = ctx.params;
-    let cypher_version = ctx.cypher_version;
     // 51N23: a function-form shortestPath/allShortestPaths naming one node
     // variable at both ends rejects each input row before either engine
     // runs — the GPM enumeration reached here answers closed walks the
@@ -521,15 +517,7 @@ pub(crate) fn match_gpm_path(
         Some(PatternElement::Node(node)) => (1, node),
         _ => (0, &anonymous),
     };
-    let mut states = gpm_start_nodes(
-        graph,
-        first,
-        row,
-        used,
-        params,
-        cypher_version,
-        where_clause,
-    )?;
+    let mut states = gpm_start_nodes(graph, first, row, used, params, where_clause)?;
     // The rider (`emit`): with no selector choosing across candidates, a
     // cap or an EXISTS probe rides the walk itself — every complete state
     // flows through the per-candidate pipeline as it emerges and the walk
@@ -611,12 +599,7 @@ pub(crate) fn match_gpm_path(
 /// materialized walk would emit by construction, not by two
 /// hand-maintained copies agreeing.
 fn complete_state(gctx: &GpmCtx<'_>, path: &PathPattern, state: &mut GpmState) -> Result<bool> {
-    let GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = *gctx;
+    let GpmCtx { graph, params, .. } = *gctx;
     if !gpm_path_mode_allows(
         path.mode,
         state.nodes.iter().copied(),
@@ -637,7 +620,7 @@ fn complete_state(gctx: &GpmCtx<'_>, path: &PathPattern, state: &mut GpmState) -
         &rung,
     );
     if let Some(predicate) = path.where_clause.as_deref() {
-        if !inline_predicate_holds(graph, &state.row, predicate, params, cypher_version)? {
+        if !inline_predicate_holds(graph, &state.row, predicate, params)? {
             return Ok(false);
         }
     }
@@ -714,7 +697,6 @@ fn gpm_start_nodes(
     row: Row,
     used: UsedSet,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
     residual: &Residual<'_>,
 ) -> Result<Vec<GpmState>> {
     let mut out = Vec::new();
@@ -725,17 +707,10 @@ fn gpm_start_nodes(
     // LABS-448: the seek phase — the start resolution — is stamped inside
     // the one counted funnel; bound first, iterated second, the shape
     // every seek site shares.
-    let candidates = node_candidates(
-        graph,
-        node,
-        &row,
-        params,
-        cypher_version,
-        residual.conjuncts,
-    )?;
+    let candidates = node_candidates(graph, node, &row, params, residual.conjuncts)?;
     for id in candidates {
         graph.cancel_tick()?;
-        if !node_ok(graph, id, node, &row, params, cypher_version)? {
+        if !node_ok(graph, id, node, &row, params)? {
             continue;
         }
         let mut bound = row.clone();
@@ -743,11 +718,11 @@ fn gpm_start_nodes(
             continue;
         }
         if let Some(predicate) = &node.where_clause {
-            if !inline_predicate_holds(graph, &bound, predicate, params, cypher_version)? {
+            if !inline_predicate_holds(graph, &bound, predicate, params)? {
                 continue;
             }
         }
-        if !super::pushdown::conjuncts_hold(graph, &bound, &ready, params, cypher_version)? {
+        if !super::pushdown::conjuncts_hold(graph, &bound, &ready, params)? {
             continue;
         }
         // the start's slice entry rides as its id (`GpmState`); an
@@ -779,10 +754,8 @@ fn inline_predicate_holds(
     row: &Row,
     predicate: &Expr,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
-    Ok(!gpm_expr_ready(predicate, row)
-        || predicate_holds(graph, row, predicate, params, cypher_version)?)
+    Ok(!gpm_expr_ready(predicate, row) || predicate_holds(graph, row, predicate, params)?)
 }
 
 /// PROFILE's hop counter (the `hops` read kind behind `Db Hits`), as the

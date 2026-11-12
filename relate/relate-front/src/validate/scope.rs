@@ -85,13 +85,7 @@ pub fn validate_variable_types(stmt: &Statement) -> Result<(), EngineError> {
     // the statement's own scope, so a CREATE/MERGE that re-declares one is
     // `VariableAlreadyBound`.
     let shadowable: IdentHashSet<SmallName> = IdentHashSet::default();
-    validate_variable_types_in_clauses(
-        &stmt.clauses,
-        &mut var_types,
-        &mut bound_vars,
-        &shadowable,
-        stmt.cypher_version,
-    )
+    validate_variable_types_in_clauses(&stmt.clauses, &mut var_types, &mut bound_vars, &shadowable)
 }
 
 /// The clause-list body of [`validate_variable_types`], factored out so
@@ -112,7 +106,6 @@ fn validate_variable_types_in_clauses(
     var_types: &mut IdentHashMap<SmallName, VarType>,
     bound_vars: &mut IdentHashSet<SmallName>,
     shadowable: &IdentHashSet<SmallName>,
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
@@ -122,8 +115,8 @@ fn validate_variable_types_in_clauses(
             Clause::LoadCSV(lc) => {
                 bound_vars.insert(lc.alias.clone());
             }
-            Clause::Create(cc) => apply_create(clause, cc, bound_vars, shadowable, cypher_version)?,
-            Clause::Merge(mc) => apply_merge(clause, mc, bound_vars, shadowable, cypher_version)?,
+            Clause::Create(cc) => apply_create(cc, bound_vars, shadowable)?,
+            Clause::Merge(mc) => apply_merge(mc, bound_vars, shadowable)?,
             Clause::CallProcedure(cp) => apply_call_procedure(cp, clauses, bound_vars)?,
             Clause::CallSubquery(csq) => apply_call_subquery(csq, bound_vars)?,
             // A SHOW/TERMINATE clause's output columns are new bindings,
@@ -140,7 +133,7 @@ fn validate_variable_types_in_clauses(
             // A FOREACH body shares the enclosing scope (it is not an
             // isolated subquery): the body policy recurses with a cloned
             // state (see `apply_foreach`).
-            Clause::Foreach(f) => apply_foreach(f, var_types, bound_vars, cypher_version)?,
+            Clause::Foreach(f) => apply_foreach(f, var_types, bound_vars)?,
             _ => {}
         }
     }
@@ -252,15 +245,12 @@ fn apply_unwind(
 }
 
 /// The CREATE policy: the binding, dynamic-label and 42I58 self-reference
-/// gates, then the pattern's names become bound. `clause` re-arms the
-/// one-clause slice the self-reference battery takes (its API is
-/// clause-list-shaped for the conservative tier's whole-list spans).
+/// gates, then the pattern's names become bound. Every gate takes the
+/// clause's patterns.
 fn apply_create(
-    clause: &Clause,
     cc: &CreateClause,
     bound_vars: &mut IdentHashSet<SmallName>,
     shadowable: &IdentHashSet<SmallName>,
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     // Check for VariableAlreadyBound: if a variable used in CREATE
     // for a node is already bound (from MATCH/previous CREATE), error
@@ -274,9 +264,8 @@ fn apply_create(
     // entity this clause creates. This pass knows the exact
     // enclosing bindings -- and reaches `FOREACH` bodies with
     // them -- so a bare element variable the enclosing scope
-    // already binds is a reference, not a declaration. The rule
-    // owns its own Cypher-5 gate.
-    validate_create_self_reference(std::slice::from_ref(clause), bound_vars, cypher_version)?;
+    // already binds is a reference, not a declaration.
+    validate_create_self_reference(&cc.pattern, bound_vars)?;
     // Track new variables created by CREATE
     bind_pattern_vars(&cc.pattern, bound_vars);
     Ok(())
@@ -285,11 +274,9 @@ fn apply_create(
 /// The MERGE policy: the same binding and dynamic-label gates as CREATE
 /// (see `apply_create`), then the pattern's names become bound.
 fn apply_merge(
-    clause: &Clause,
     mc: &MergeClause,
     bound_vars: &mut IdentHashSet<SmallName>,
     shadowable: &IdentHashSet<SmallName>,
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     // Check for VariableAlreadyBound in MERGE: node/rel variables that
     // are already bound should not be redefined
@@ -301,7 +288,7 @@ fn apply_merge(
     // 42I58 (Cypher 25): the same-clause reference rule CREATE applies --
     // the merged entity's own property map and ON CREATE/ON MATCH SET values
     // may not read it when the clause declares it.
-    validate_create_self_reference(std::slice::from_ref(clause), bound_vars, cypher_version)?;
+    validate_create_self_reference(merge_pattern, bound_vars)?;
     // Track new variables from MERGE
     bind_pattern_vars(merge_pattern, bound_vars);
     Ok(())
@@ -371,7 +358,6 @@ fn apply_foreach(
     f: &ForeachClause,
     var_types: &mut IdentHashMap<SmallName, VarType>,
     bound_vars: &mut IdentHashSet<SmallName>,
-    cypher_version: Option<u32>,
 ) -> Result<(), EngineError> {
     let mut body_types = var_types.clone();
     let mut body_bound = bound_vars.clone();
@@ -389,7 +375,6 @@ fn apply_foreach(
         &mut body_types,
         &mut body_bound,
         &body_shadowable,
-        cypher_version,
     )
 }
 

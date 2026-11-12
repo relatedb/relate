@@ -78,16 +78,18 @@ fn projection_subclause_complex_reference_fires_only_for_a_proper_subexpression(
 }
 
 /// LABS-711: one `CREATE` self-reference notification per referencing
-/// property definition. The shape is Cypher 5's 01N00 deprecation; Cypher 25
-/// rejects it (42I58) at validation, so the notification test runs under an
-/// explicit `CYPHER 5` preamble.
+/// property definition. The top-level shape is the 42I58 error under
+/// every spelling; the notification stays reachable through the bodies
+/// the conservative validation tier deliberately under-approximates
+/// (ADR-0513 §Consequences: a nested *bare* declaration read by its own
+/// clause), so the per-occurrence pin runs there.
 #[test]
 fn create_self_reference_fires_per_reference_occurrence() {
     let mut conn = connection();
     let explained = conn
         .query(
-            "CYPHER 5 EXPLAIN CREATE (n1 {np1: 'node1'}), \
-             (n1)-[r1:R {np1: n1.p1}]->(n2 {np1: n1.np1})",
+            "EXPLAIN CALL () { CREATE (n1), \
+             (n1)-[r1:R {np1: n1.p1}]->(n2 {np1: n1.np1}) RETURN n2 } RETURN 1 AS n",
         )
         .unwrap();
     assert_eq!(

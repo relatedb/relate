@@ -62,15 +62,15 @@ use crate::row::Row;
 use super::aggregate::Aggregation;
 use super::match_clause::{charge_finished_container, run_match_operator_ladder, LadderRun};
 use super::match_folds::fold_would_take;
-use super::order::OrderKeys;
 use super::pattern_policies::{MatchFold, RowFold};
 use super::project::{
-    maps_each_row, open_match_fold, project_rows, streams_into_projection, ProjectSpec, RowSource,
+    maps_each_row, open_match_fold, project_rows, streams_into_projection, ProjectSpec,
+    ProjectionClass, RowSource,
 };
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::scope::carry_scope_bindings;
 use super::sink::{sinkable_projection, SinkProjection};
-use super::unwind::RowFeed;
+use super::RowFeed;
 
 /// The most rows a stage buffers before it runs its transform over them
 /// (ADR-0555: bounded batches, low hundreds by default).
@@ -201,12 +201,7 @@ fn stage_transform<'a>(
             using_index: _,
             using_join: _,
         } => {
-            let ExecCtx {
-                graph,
-                params,
-                cypher_version,
-                ..
-            } = ctx;
+            let ExecCtx { graph, params, .. } = ctx;
             // The widest cap arming (one entering row) is the conservative
             // question.
             if match_limit_cap(
@@ -215,7 +210,6 @@ fn stage_transform<'a>(
                 where_clause.as_ref(),
                 graph,
                 params,
-                cypher_version,
                 1,
             )?
             .is_some()
@@ -225,7 +219,7 @@ fn stage_transform<'a>(
             // The fold family answers a `MATCH` plus its aggregate in one
             // pass over the whole entering row set; ask the very same
             // recognizers whether any would take this clause.
-            let folded = fold_would_take(graph, clauses, params, cypher_version)?;
+            let folded = fold_would_take(graph, clauses, params)?;
             Ok((!folded).then(|| Transform::Match {
                 patterns,
                 where_clause: where_clause.as_ref(),
@@ -290,12 +284,12 @@ fn stage_run<'a>(
 /// follow it, ending at the first barrier. `None` when no clause after the
 /// head streams. The caller has already decided the head streams to no
 /// other consumer (no cap or fold) and is neither `OPTIONAL` nor a
-/// `SEARCH`. `order_slot` is the part's one aggregation order slot; it is
+/// `SEARCH`. `class_slot` is the part's one aggregation classification slot; it is
 /// claimed only once every other check has passed.
 pub(crate) fn open_match_chain<'a>(
     ctx: ExecCtx<'a>,
     clauses: &'a [Clause],
-    order_slot: &'a OnceCell<OrderKeys<'a>>,
+    class_slot: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
 ) -> Result<Option<MatchChain<'a>>> {
     let mut transforms = stage_run(ctx, &clauses[1..], scope)?;
@@ -303,17 +297,12 @@ pub(crate) fn open_match_chain<'a>(
     if stages == 0 {
         return Ok(None);
     }
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     // The run's consumer: the barrier after it. An aggregating clause is
     // fed directly (when its order slot is free); any other receives the
     // last stage's retained output.
     let after = clauses.get(1 + stages);
-    let terminal = match open_match_fold(graph, after, order_slot, params, cypher_version, scope)? {
+    let terminal = match open_match_fold(graph, after, class_slot, params, scope)? {
         Some(fold) => Next::Fold(Box::new(fold)),
         None => {
             let mut collector = Collector {
@@ -512,30 +501,18 @@ pub(crate) enum Landing<'a> {
 pub(crate) fn open_match_consumer<'a>(
     ctx: ExecCtx<'a>,
     clauses: &'a [Clause],
-    order_slot: &'a OnceCell<OrderKeys<'a>>,
+    class_slot: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
     streaming_stages: bool,
 ) -> Result<Option<MatchConsumer<'a>>> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
-    if let Some(fold) = open_match_fold(
-        graph,
-        clauses.get(1),
-        order_slot,
-        params,
-        cypher_version,
-        scope,
-    )? {
+    let ExecCtx { graph, params, .. } = ctx;
+    if let Some(fold) = open_match_fold(graph, clauses.get(1), class_slot, params, scope)? {
         return Ok(Some(MatchConsumer::Fold(fold)));
     }
     if !streaming_stages {
         return Ok(None);
     }
-    Ok(open_match_chain(ctx, clauses, order_slot, scope)?.map(MatchConsumer::Chain))
+    Ok(open_match_chain(ctx, clauses, class_slot, scope)?.map(MatchConsumer::Chain))
 }
 
 impl<'a> MatchConsumer<'a> {

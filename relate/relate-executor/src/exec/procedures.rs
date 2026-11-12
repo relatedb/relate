@@ -9,20 +9,23 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{Expr, YieldItems};
+use relate_ir::{CallArgs, Clause, Expr, YieldItems};
 use relate_model::EntityKind;
+use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
-use crate::eval::eval;
+use crate::eval::{eval, where_clause_holds};
 use crate::exec::candidates::{materialize_candidate, resolve_search_index};
-use crate::graph::Procedure;
+use crate::graph::{Procedure, QueryStats};
 use crate::procedure_registry::ProcSignature;
 use crate::row::Row;
 
 use super::fulltext;
 use super::ontology::{exec_ontology_call, OntologyProc};
 use super::procedure_rows::{builtin_procedure_rows, executable_signature, procedure_metadata};
+use super::scope::star_scope_names;
 use super::vector::{vector_index_candidates, vector_operand, VectorSearchFilter};
+use super::QueryResult;
 
 /// Whether a value satisfies a procedure argument type string (`STRING`,
 /// `INTEGER`, `LIST<FLOAT>`, …). `ANY`, an empty type, a nullable `?`
@@ -81,18 +84,98 @@ pub(crate) fn call_args_match(proc_val: &Value, given: &Value) -> bool {
 #[derive(Clone, Copy)]
 pub(crate) struct CallSpec<'a> {
     pub name: &'a str,
-    pub args: &'a [Expr],
-    pub explicit: bool,
+    /// The call's one passing-mode value — the IR's owned [`CallArgs`],
+    /// lowered once by the front end — borrowed for the call's run, so
+    /// no consumer re-encodes the mode as a bool beside a bare slice.
+    pub source: &'a CallArgs,
     pub yield_items: &'a YieldItems,
     pub optional: bool,
     pub where_clause: Option<&'a Expr>,
 }
 
-/// The registry-driven explicit-arity check shared by the generic `CALL`
-/// path and the `db.ontology.*` executor (the divert's consumer): an
-/// explicit call passes between `required` and `total` arguments. (The
-/// facade's compile-time `validate_calls` already enforces the same
-/// contract.)
+impl<'a> CallSpec<'a> {
+    /// The one runtime `CALL` contract every dispatch path reads: the
+    /// implicit-passing-mode backstop, then the arity, over the
+    /// (required, total) pair the call's signature declares — the
+    /// generic registry path passes its resolved pair
+    /// ([`exec_registry_call`]), the diverted executors their canonical
+    /// registry signature's ([`Self::check_registry_contract`]). Every
+    /// path consults the same two predicates through this one method,
+    /// never a hand-rebuilt arity half (stellar round 2, F-2-26).
+    ///
+    /// Answers the positional slice a value-taking executor reads: the
+    /// explicit list, its length the arity check validated, or the
+    /// empty slice a paren-less call passes by the grammar — that form
+    /// has no positional arity at all, its arguments resolving by name
+    /// (the generic binder's missing-name rejection; the facade states
+    /// the same policy at compile time).
+    pub(crate) fn check_contract(&self, required: usize, total: usize) -> Result<&'a [Expr]> {
+        check_implicit_passing_mode(
+            self.source.is_explicit(),
+            required,
+            self.yield_items.has_yield(),
+        )?;
+        match self.source {
+            CallArgs::Explicit(args) => {
+                check_explicit_arity(self.name, required, total, args.len())?;
+                Ok(args)
+            }
+            CallArgs::Implicit => Ok(&[]),
+        }
+    }
+
+    /// The diverted-name contract — [`Self::check_contract`] over the
+    /// name's canonical registry signature. The `db.ontology.*` divert
+    /// reads this at its dispatch site: its executor resolves arguments
+    /// by name, so the paren-less form carries no positional arity
+    /// there (the runtime contract the generic path enforces, from the
+    /// ONE registry signature).
+    pub(crate) fn check_registry_contract(&self) -> Result<()> {
+        let signature = diverted_signature(self.name)?;
+        self.check_contract(signature.required_args(), signature.args.len())
+            .map(|_| ())
+    }
+
+    /// The diverted scan executors' contract — the vector and fulltext
+    /// `db.index.*.query*` calls, whose scans read their arguments
+    /// positionally and resolve no names: [`Self::check_registry_contract`]'s
+    /// pair plus the positional form itself, so a paren-less call —
+    /// which passes no list — answers the arity rejection exactly like
+    /// a short explicit one (`expected 3, got 0`), never a positional
+    /// read off an empty slice (stellar round 2, F-2-43). Answers the
+    /// validated positional slice.
+    pub(crate) fn check_positional_contract(&self) -> Result<&'a [Expr]> {
+        let signature = diverted_signature(self.name)?;
+        let args = self.check_contract(signature.required_args(), signature.args.len())?;
+        match self.source {
+            CallArgs::Explicit(_) => Ok(args),
+            CallArgs::Implicit => check_explicit_arity(
+                self.name,
+                signature.required_args(),
+                signature.args.len(),
+                0,
+            )
+            .map(|()| args),
+        }
+    }
+}
+
+/// The canonical registry signature a diverted name classified by —
+/// the divert's own lookup, answered again for the contract it checks.
+/// The diverted names are statically registered (pinned by test), so a
+/// miss is the fail-closed `ProcedureNotFound`, never a silent
+/// fall-through.
+fn diverted_signature(name: &str) -> Result<&'static ProcSignature> {
+    crate::procedure_registry::builtin_procedure_signature(name)
+        .ok_or_else(|| Error::procedure_not_found(name))
+}
+
+/// The registry-driven explicit-arity check — one half of the runtime
+/// `CALL` contract ([`CallSpec::check_contract`]), which every dispatch
+/// path (the generic registry path, the ontology divert, the vector and
+/// fulltext scans) reads: an explicit call passes between `required`
+/// and `total` arguments. (The facade's compile-time `validate_calls`
+/// already enforces the same contract.)
 pub fn check_explicit_arity(name: &str, required: usize, total: usize, given: usize) -> Result<()> {
     if given < required || given > total {
         return Err(Error::syntax(format!(
@@ -102,8 +185,8 @@ pub fn check_explicit_arity(name: &str, required: usize, total: usize, given: us
     Ok(())
 }
 
-/// The passing-mode backstop shared by the generic `CALL` path and the
-/// `db.ontology.*` executor (the divert's consumer): an in-query implicit
+/// The passing-mode backstop — the other half of the runtime `CALL`
+/// contract ([`CallSpec::check_contract`]): an in-query implicit
 /// call — a `CALL` with a YIELD, in a clause pipeline — cannot pass
 /// arguments; the procedure's arguments resolve only in a standalone unit
 /// call. `required_args` is the caller's registry truth: the number of
@@ -137,9 +220,11 @@ pub(crate) fn void_optional_unit_row(rows_empty: bool, optional: bool) -> bool {
 /// `yield_items`, or — when empty or `*`-containing — `default_yields`),
 /// then per input row and per produced column→value map, clone the input,
 /// insert each yielded cell under `alias.unwrap_or(column)` (`Null` for a
-/// column the producer did not emit), apply the WHERE truthy filter, and
-/// pad one null row when an OPTIONAL call produced nothing for the input
-/// row.
+/// column the producer did not emit), apply the optional-WHERE gate (the
+/// one [`where_clause_holds`] spelling: a non-boolean predicate is the
+/// typed rejection every other WHERE site raises, never a silent drop),
+/// and pad one null row when an OPTIONAL call produced nothing for the
+/// input row.
 pub(crate) fn compose_rows<'a>(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
@@ -149,12 +234,7 @@ pub(crate) fn compose_rows<'a>(
     where_clause: Option<&Expr>,
     mut produce: impl FnMut(&Row) -> Result<Vec<Cow<'a, BTreeMap<String, Value>>>>,
 ) -> Result<Vec<Row>> {
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
+    let ExecCtx { graph, params, .. } = ctx;
     let yields: Vec<(String, Option<String>)> = yield_items.resolved_pairs(default_yields);
     // The YIELD key rule (`alias`, else the column) resolved once; every
     // loop below reads the same keys.
@@ -173,11 +253,7 @@ pub(crate) fn compose_rows<'a>(
                     values.get(column).cloned().unwrap_or(Value::Null),
                 );
             }
-            if where_clause
-                .map(|predicate| eval(graph, &row, predicate, params, cypher_version))
-                .transpose()?
-                .is_none_or(|value| value.truthy() == Some(true))
-            {
+            if where_clause_holds(graph, &row, where_clause, params)? {
                 out.push(row);
                 produced += 1;
             }
@@ -264,37 +340,55 @@ fn divert_call(name: &str) -> Option<CallDivert> {
     }
 }
 
-/// The runtime `CALL` contract for the diverted `db.ontology.*`
-/// procedures — the SAME checks the generic path applies below, from the
-/// ONE registry signature: the passing-mode backstop
-/// (`check_implicit_passing_mode`), then the explicit arity
-/// (`check_explicit_arity`). Applied at the divert site in `exec_call`
-/// so the diverted executor enforces exactly the contract the generic
-/// path enforces, visibly, at the same place.
-pub(super) fn check_ontology_call_contract(call: &CallSpec<'_>) -> Result<()> {
-    // The four names are statically registered and the classification
-    // accepts exactly those four (pinned by test), so this lookup cannot
-    // miss; the fail-closed arm replaces the divert's historical
-    // `ProcedureNotFound` error should the table and the classification
-    // ever drift apart.
-    let signature = crate::procedure_registry::builtin_procedure_signature(call.name)
-        .ok_or_else(|| Error::procedure_not_found(call.name))?;
-    // All-default parameters are callable paren-less (LABS-389): the
-    // guard keys on required args, not declared ones.
-    check_implicit_passing_mode(
-        call.explicit,
-        signature.required_args(),
-        call.yield_items.has_yield(),
+/// The dispatcher's `CALL` arm, beside [`exec_call`] the executor it
+/// delegates to (stellar round 2, F-2-2): run the call, bind the scope
+/// names a void optional call over a zero-row driving table must expose
+/// as null, and answer the terminal void call's empty unit result.
+/// Returns the rows and, for a terminal void call, its statement
+/// result; the dispatcher consumes both.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn exec_call_clause(
+    ctx: ExecCtx<'_>,
+    clauses: &[Clause],
+    index: usize,
+    rows: Vec<Row>,
+    name: &SmallName,
+    source: &CallArgs,
+    yield_items: &YieldItems,
+    optional: bool,
+    where_clause: Option<&Expr>,
+) -> Result<(Vec<Row>, Option<QueryResult>)> {
+    let was_empty = rows.is_empty();
+    // Text render: the procedure dispatcher matches on name text
+    // (String vocabulary), once per clause.
+    let call_name = name.to_string();
+    let (mut rows, yields_unit) = exec_call(
+        ctx,
+        rows,
+        CallSpec {
+            name: &call_name,
+            source,
+            yield_items,
+            optional,
+            where_clause,
+        },
     )?;
-    if call.explicit {
-        check_explicit_arity(
-            call.name,
-            signature.required_args(),
-            signature.args.len(),
-            call.args.len(),
-        )?;
+    // A void optional call over a zero-row driving table yields
+    // one unit row (CIP-159 [12]); Neo4j reads every variable
+    // in scope as null on it, so bind the scope names
+    // explicitly (ADR-0335) instead of leaving a following
+    // projection to read an unbound reference.
+    if was_empty && rows.len() == 1 && rows[0].is_empty() {
+        for name in star_scope_names(&clauses[..index]) {
+            rows[0].insert(name, Value::Null);
+        }
     }
-    Ok(())
+    // A terminal void call yields an empty unit result (CIP-159):
+    // the call path reported the fact on the resolution it
+    // already made.
+    let result = (index + 1 == clauses.len() && yields_unit)
+        .then(|| QueryResult::intermediate(Vec::new(), Vec::new(), QueryStats::default()));
+    Ok((rows, result))
 }
 
 pub(crate) fn exec_call(
@@ -304,11 +398,12 @@ pub(crate) fn exec_call(
 ) -> Result<(Vec<Row>, bool)> {
     // ONE classification step decides divert-or-generic once. The
     // `db.ontology.*` divert runs the same runtime contract (passing
-    // mode, arity — `check_ontology_call_contract`) the generic path runs
-    // below, at this same site, before handing the call to its executor;
-    // the vector executor takes the classified entity kind (node vs
-    // relationship) with it. Everything else falls to the generic
-    // registry machinery below.
+    // mode, arity — `CallSpec::check_registry_contract`) the generic
+    // path runs below, at this same site, before handing the call to
+    // its executor; the vector and fulltext executors take their
+    // contract through `CallSpec::check_positional_contract`, whose
+    // positional form their scans read. Everything else falls to the
+    // generic registry machinery below.
     // The unit fact is the registry's: every diverted name is a registered
     // signature, so the call path reports `is_void()` rather than re-deriving
     // it per arm.
@@ -316,7 +411,7 @@ pub(crate) fn exec_call(
         .is_some_and(ProcSignature::is_void);
     match divert_call(call.name) {
         Some(CallDivert::Ontology(proc)) => {
-            check_ontology_call_contract(&call)?;
+            call.check_registry_contract()?;
             exec_ontology_call(ctx, rows, call, proc).map(|rows| (rows, yields_unit))
         }
         Some(CallDivert::Vector(entity)) => {
@@ -363,8 +458,7 @@ fn exec_registry_call(
     } = ctx;
     let CallSpec {
         name,
-        args,
-        explicit,
+        source,
         yield_items,
         optional,
         where_clause,
@@ -412,21 +506,18 @@ fn exec_registry_call(
     } = resolved;
     // Same rule on the unit-call path (LABS-389): required_args already
     // folds the builtin/registered split, so the guard reads it instead
-    // of any-args.
-    check_implicit_passing_mode(explicit, required_args, yield_items.has_yield())?;
-    if explicit {
-        check_explicit_arity(name, required_args, metadata.arg_names.len(), args.len())?;
-    }
+    // of any-args. The one contract check every dispatch path reads
+    // (CallSpec::check_contract), over this resolution's own pair: the
+    // passing-mode backstop plus the explicit list's arity — the
+    // paren-less form carries no positional arity here, its arguments
+    // resolving by name in the binder below.
+    call.check_contract(required_args, metadata.arg_names.len())?;
     if yields_unit && void_optional_unit_row(rows.is_empty(), optional) {
         return Ok((vec![Row::new()], true));
     }
     let binding = CallBinding {
         name,
-        source: if explicit {
-            CallArgsSource::Explicit(args)
-        } else {
-            CallArgsSource::Implicit
-        },
+        source,
         metadata: &metadata,
         required_args,
         ctx,
@@ -486,18 +577,11 @@ fn exec_registry_call(
     Ok((if yields_unit { rows } else { out }, yields_unit))
 }
 
-/// The bound-argument source of one resolved CALL: explicit positional
-/// expressions, or the implicit parameter/row-column names.
-enum CallArgsSource<'a> {
-    Explicit(&'a [Expr]),
-    Implicit,
-}
-
 /// One resolved CALL's binding context: the facts every per-row bind needs,
 /// carried once instead of as nine positional parameters.
 struct CallBinding<'a> {
     name: &'a str,
-    source: CallArgsSource<'a>,
+    source: &'a CallArgs,
     metadata: &'a Procedure,
     required_args: usize,
     ctx: ExecCtx<'a>,
@@ -520,12 +604,7 @@ impl CallBinding<'_> {
                 self.metadata.arg_types.len()
             )));
         }
-        let explicit = matches!(self.source, CallArgsSource::Explicit(_));
-        let args = match self.source {
-            CallArgsSource::Explicit(args) => args,
-            CallArgsSource::Implicit => &[],
-        };
-        if !explicit {
+        if let CallArgs::Implicit = self.source {
             // Only parameters without a default are mandatory; defaulted
             // built-in parameters (e.g. `db.awaitIndexes`'s
             // `timeOutSeconds`) may be omitted.
@@ -550,7 +629,7 @@ impl CallBinding<'_> {
             .zip(self.metadata.arg_types.iter())
             .enumerate()
         {
-            let Some(value) = call_arg_value(&self.ctx, row, args, explicit, index, n)? else {
+            let Some(value) = call_arg_value(&self.ctx, row, self.source, index, n)? else {
                 // A defaulted implicit argument may legitimately be absent.
                 continue;
             };
@@ -566,28 +645,28 @@ impl CallBinding<'_> {
     }
 }
 
-/// Resolve one declared CALL argument: its explicit positional expression
-/// evaluated against the driving row, or the implicit parameter/row-column
-/// value. The one per-argument resolver the generic binder and the
-/// `db.ontology.*` readers share, so the policy is spelled once.
+/// Resolve one declared CALL argument through the call's one passing-mode
+/// value: the explicit positional expression evaluated against the driving
+/// row, or the implicit parameter/row-column value. The one per-argument
+/// resolver the generic binder and the `db.ontology.*` readers share, so
+/// the policy is spelled once.
 pub(crate) fn call_arg_value(
     ctx: &ExecCtx<'_>,
     row: &Row,
-    args: &[Expr],
-    explicit: bool,
+    source: &CallArgs,
     index: usize,
     arg_name: &str,
 ) -> Result<Option<Value>> {
-    if explicit {
-        args.get(index)
-            .map(|expr| eval(ctx.graph, row, expr, ctx.params, ctx.cypher_version))
-            .transpose()
-    } else {
-        Ok(ctx
+    match source {
+        CallArgs::Explicit(args) => args
+            .get(index)
+            .map(|expr| eval(ctx.graph, row, expr, ctx.params))
+            .transpose(),
+        CallArgs::Implicit => Ok(ctx
             .params
             .get(arg_name)
             .cloned()
-            .or_else(|| row.get(arg_name).cloned()))
+            .or_else(|| row.get(arg_name).cloned())),
     }
 }
 
@@ -601,25 +680,18 @@ pub(crate) fn exec_fulltext_query_call(
     call: CallSpec<'_>,
 ) -> Result<Vec<Row>> {
     let CallSpec {
-        name,
-        args,
         yield_items,
         optional,
         where_clause,
         ..
     } = call;
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
-    if args.len() != 2 {
-        return Err(Error::syntax(format!(
-            "InvalidNumberOfArguments: {name} expected 2, got {}",
-            args.len()
-        )));
-    }
+    let ExecCtx { graph, params, .. } = ctx;
+    // The one contract check every dispatch path reads, over the name's
+    // canonical registry signature — the passing-mode backstop plus the
+    // arity, in the positional form this scan reads (a paren-less call
+    // passes no list, so it answers the arity rejection exactly like a
+    // short explicit one).
+    let args = call.check_positional_contract()?;
     // The entity column is the divert's classification; the score column
     // is shared by both entity variants, so the table is one choice plus
     // one literal.
@@ -634,11 +706,11 @@ pub(crate) fn exec_fulltext_query_call(
         optional,
         where_clause,
         |input| {
-            let index_name = eval(graph, input, &args[0], params, cypher_version)?
+            let index_name = eval(graph, input, &args[0], params)?
                 .as_string()
                 .ok_or_else(|| Error::invalid_argument_type("indexName must be STRING"))?
                 .to_string();
-            let query = eval(graph, input, &args[1], params, cypher_version)?
+            let query = eval(graph, input, &args[1], params)?
                 .as_string()
                 .ok_or_else(|| Error::invalid_argument_type("query must be STRING"))?
                 .to_string();
@@ -687,25 +759,18 @@ fn exec_vector_query_call(
 ) -> Result<Vec<Row>> {
     let relationship = entity.relationship();
     let CallSpec {
-        name,
-        args,
         yield_items,
         optional,
         where_clause,
         ..
     } = call;
-    let ExecCtx {
-        graph,
-        params,
-        cypher_version,
-        ..
-    } = ctx;
-    if args.len() != 3 {
-        return Err(Error::syntax(format!(
-            "InvalidNumberOfArguments: {name} expected 3, got {}",
-            args.len()
-        )));
-    }
+    let ExecCtx { graph, params, .. } = ctx;
+    // The one contract check every dispatch path reads, over the name's
+    // canonical registry signature — the passing-mode backstop plus the
+    // arity, in the positional form this scan reads (a paren-less call
+    // passes no list, so it answers the arity rejection exactly like a
+    // short explicit one).
+    let args = call.check_positional_contract()?;
     // The divert already classified the entity kind (`relationship` is
     // `queryRelationships` vs `queryNodes`); no name re-matching here.
     let entity_column = if relationship { "relationship" } else { "node" };
@@ -717,17 +782,17 @@ fn exec_vector_query_call(
         optional,
         where_clause,
         |input| {
-            let index_name = eval(graph, input, &args[0], params, cypher_version)?
+            let index_name = eval(graph, input, &args[0], params)?
                 .as_string()
                 .ok_or_else(|| Error::invalid_argument_type("indexName must be STRING"))?
                 .to_string();
-            let limit = match eval(graph, input, &args[1], params, cypher_version)? {
+            let limit = match eval(graph, input, &args[1], params)? {
                 Value::Int(value) if (1..=i32::MAX as i64).contains(&value) => value as usize,
                 _ => return Err(Error::ty(
                     "InvalidArgumentValue: numberOfNearestNeighbours must be a positive INTEGER",
                 )),
             };
-            let query = eval(graph, input, &args[2], params, cypher_version)?;
+            let query = eval(graph, input, &args[2], params)?;
             let Some(query) = vector_operand(&query)? else {
                 return Ok(Vec::new());
             };
@@ -785,9 +850,65 @@ mod type_vocabulary_tests {
 
 #[cfg(test)]
 mod row_provenance_tests {
-    use crate::exec::test_support::{exec_autocommit, exec_cypher};
+    use std::collections::BTreeMap;
+
+    use crate::exec::test_support::{
+        exec_autocommit, exec_cypher, try_exec_cypher, try_exec_cypher_params,
+    };
     use crate::graph::Graph;
     use relate_core::Value;
+
+    /// The diverted scan calls read their arguments positionally, so the
+    /// one contract check every dispatch path reads (stellar round 2,
+    /// F-2-26/F-2-43) states the paren-less form's rejection by its
+    /// form: with a YIELD it is the passing-mode violation — never a
+    /// misleading arity count — and standalone it is the arity
+    /// rejection over the empty list the grammar passes.
+    #[test]
+    fn the_diverted_scan_contract_rejects_paren_less_calls_by_their_form() {
+        let graph = Graph::default();
+        let in_query = try_exec_cypher(&graph, "CALL db.index.vector.queryNodes YIELD node")
+            .err()
+            .expect("an in-query paren-less vector call is the passing-mode rejection");
+        assert!(
+            in_query.to_string().contains("InvalidArgumentPassingMode"),
+            "{in_query}"
+        );
+        let standalone = try_exec_cypher(&graph, "CALL db.index.vector.queryNodes")
+            .err()
+            .expect("a paren-less vector call passes no positional list");
+        let text = standalone.to_string();
+        assert!(
+            text.contains("InvalidNumberOfArguments")
+                && text.contains("db.index.vector.queryNodes expected 3, got 0"),
+            "{text}"
+        );
+    }
+
+    /// A `CALL`'s `YIELD … WHERE` is a predicate position: a runtime
+    /// non-boolean (a parameter bound to an integer) is the typed
+    /// `requires a boolean` rejection every other optional-WHERE site
+    /// raises through the one `where_clause_holds` gate — never a silent
+    /// row drop (the composer once hand-spelled the truthy check).
+    #[test]
+    fn a_call_yield_where_with_a_non_boolean_parameter_is_the_typed_rejection() {
+        let graph = Graph::default();
+        exec_autocommit(&graph, "CREATE (:User), (:Admin)").expect("the fixture's CREATE succeeds");
+        let params: BTreeMap<String, Value> =
+            [("flag".to_string(), Value::Int(7))].into_iter().collect();
+        let error = try_exec_cypher_params(
+            &graph,
+            "CALL db.labels() YIELD label WHERE $flag RETURN label",
+            &params,
+        )
+        .err()
+        .expect("a non-boolean CALL YIELD WHERE predicate must be rejected");
+        let text = error.to_string();
+        assert!(
+            text.contains("InvalidArgumentType") && text.contains("requires a boolean"),
+            "{text}"
+        );
+    }
 
     /// A no-argument built-in's rows are produced once for the call and
     /// answered by every driving row — two driving rows times two labels,

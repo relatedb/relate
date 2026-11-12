@@ -17,5 +17,5 @@ pub fn lowered_default(default: &DefaultValue) -> Result<relate_ir::Expr> {
 
 /// Evaluate a pre-lowered default through the engine's own evaluator.
 pub fn eval_lowered_default(graph: &ExecGraph<'_>, lowered: &relate_ir::Expr) -> Result<Value> {
-    eval(graph, &Row::new(), lowered, &BTreeMap::new(), None)
+    eval(graph, &Row::new(), lowered, &BTreeMap::new())
 }

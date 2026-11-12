@@ -58,15 +58,11 @@ fn nested_row_count(rows: &[Row], last: &Option<QueryResult>) -> usize {
 /// row). A `CALL` subquery's explicit import is a different contract —
 /// `call` carries it as a live scope, not as `WITH` items — so this
 /// rewrite stays on the expression-subquery path only.
-fn nested_body(
-    query: &Query,
-    outer: &Row,
-    cypher_version: Option<u32>,
-) -> (Query, QueryCtx<'static>, Row) {
+fn nested_body(query: &Query, outer: &Row) -> (Query, QueryCtx<'static>, Row) {
     let seed = nested_seed_row(outer);
     let imported: Vec<String> = seed.keys().cloned().collect();
     let query = relate_planner::query_with_persistent_imports(query, &imported);
-    let qctx = QueryCtx::new(query.cypher_version.or(cypher_version), "");
+    let qctx = QueryCtx::new("");
     (query, qctx, seed)
 }
 
@@ -81,18 +77,11 @@ fn exists_pattern_probe(
     row: &Row,
     query: &Query,
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<bool>> {
     if query.parts.len() != 1 || !query.union_all.is_empty() || query.next.is_some() {
         return Ok(None);
     }
-    exists_probe::probe_multi_pattern_exists(
-        graph,
-        row,
-        &query.parts[0].clauses,
-        params,
-        cypher_version,
-    )
+    exists_probe::probe_multi_pattern_exists(graph, row, &query.parts[0].clauses, params)
 }
 
 pub(crate) fn eval_exists_query(
@@ -100,9 +89,8 @@ pub(crate) fn eval_exists_query(
     row: &Row,
     params: &BTreeMap<String, Value>,
     query: &Query,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(query, row, cypher_version);
+    let (query, qctx, seed) = nested_body(query, row);
     // LABS-193: a pattern-only body between row-bound nodes answers
     // existence without running the subquery engine — and never ticks
     // the budget (ADR-0395).
@@ -121,7 +109,7 @@ pub(crate) fn eval_exists_query(
             "InvalidClauseComposition: writes are not allowed in EXISTS { }",
         ));
     }
-    if let Some(hit) = exists_pattern_probe(graph, &seed, &query, params, cypher_version)? {
+    if let Some(hit) = exists_pattern_probe(graph, &seed, &query, params)? {
         return Ok(Value::Bool(hit));
     }
     for part in &query.parts {
@@ -167,9 +155,8 @@ pub(crate) fn eval_count_query(
     row: &Row,
     params: &BTreeMap<String, Value>,
     query: &Query,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(query, row, cypher_version);
+    let (query, qctx, seed) = nested_body(query, row);
     // The parts' explicit-vs-omitted RETURN classification as one count:
     // some-but-not-all is the mix error, zero is the omitted-RETURN path,
     // and every other count takes the seeded statement engine below. Both
@@ -218,9 +205,8 @@ pub(crate) fn eval_collect_query(
     row: &Row,
     params: &BTreeMap<String, Value>,
     query: &Query,
-    cypher_version: Option<u32>,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(query, row, cypher_version);
+    let (query, qctx, seed) = nested_body(query, row);
     let result = execute_query_seeded(graph, &query, params, vec![seed], qctx)?;
     if result.columns.len() != 1 {
         return Err(Error::syntax(

@@ -257,48 +257,47 @@ fn uncommitted_index_metadata_is_private_and_rollback_preserves_committed_kind()
 
 #[test]
 fn admitted_theater_shows_are_immutable_across_commit() {
-    for (setup, show, change) in [
-        (
-            "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5",
-            "SHOW DATABASE neo4j YIELD defaultLanguage RETURN defaultLanguage",
-            "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25",
-        ),
-        (
-            "ALTER CURRENT GRAPH TYPE SET { (:Old => {v :: STRING}) }",
-            "SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification",
-            "ALTER CURRENT GRAPH TYPE SET { (:New => {w :: INTEGER}) }",
-        ),
-    ] {
-        let db = Database::open(":memory:").unwrap();
-        db.connect().unwrap().query(setup).unwrap();
-        let expected = db.connect().unwrap().query(show).unwrap().rows;
-        let pause = pause_next_read(&db);
-        let mut reader = db.connect().unwrap();
-        let read = std::thread::spawn(move || reader.query(show).unwrap());
-        pause.entered.wait();
-        let mut writer = db.connect().unwrap();
-        let (tx, rx) = mpsc::channel();
-        let commit = std::thread::spawn(move || tx.send(writer.query(change)).unwrap());
-        let written = rx.recv_timeout(Duration::from_secs(30));
-        pause.release.wait();
-        written
-            .expect("SHOW must not hold publication during execution")
-            .unwrap();
-        commit.join().unwrap();
-        assert_eq!(read.join().unwrap().rows, expected);
-        assert_ne!(db.connect().unwrap().query(show).unwrap().rows, expected);
-    }
+    // The databases-catalog leg this test once carried (ALTER DATABASE to
+    // a differing default language) went with the one-version contract
+    // (ADR-0584): the one admitted value equals the fixed default, so no
+    // committed catalog change can make the row diverge. The graph-type
+    // leg carries the property.
+    let setup = "ALTER CURRENT GRAPH TYPE SET { (:Old => {v :: STRING}) }";
+    let show = "SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification";
+    let change = "ALTER CURRENT GRAPH TYPE SET { (:New => {w :: INTEGER}) }";
+    let db = Database::open(":memory:").unwrap();
+    db.connect().unwrap().query(setup).unwrap();
+    let expected = db.connect().unwrap().query(show).unwrap().rows;
+    let pause = pause_next_read(&db);
+    let mut reader = db.connect().unwrap();
+    let read = std::thread::spawn(move || reader.query(show).unwrap());
+    pause.entered.wait();
+    let mut writer = db.connect().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let commit = std::thread::spawn(move || tx.send(writer.query(change)).unwrap());
+    let written = rx.recv_timeout(Duration::from_secs(30));
+    pause.release.wait();
+    written
+        .expect("SHOW must not hold publication during execution")
+        .unwrap();
+    commit.join().unwrap();
+    assert_eq!(read.join().unwrap().rows, expected);
+    assert_ne!(db.connect().unwrap().query(show).unwrap().rows, expected);
 }
 
 #[test]
 fn graph_type_show_and_transaction_theater_overlay() {
+    // The databases-catalog overlay this test once pinned (an in-transaction
+    // ALTER DATABASE to a differing language, visible only inside the
+    // transaction) went with the one-version contract (ADR-0584): the one
+    // admitted value equals the fixed default, so the overlay is not
+    // observable through `defaultLanguage`. The graph-type legs carry the
+    // transaction theater overlay.
     let db = Database::open(":memory:").unwrap();
     let mut txn = db.connect().unwrap();
     let mut other = db.connect().unwrap();
     txn.begin().unwrap();
     txn.query("CREATE GRAPH TYPE social AS { (:Person => {name :: STRING}) }")
-        .unwrap();
-    txn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 5")
         .unwrap();
     assert_eq!(
         txn.query("SHOW GRAPH TYPE social YIELD name RETURN name")
@@ -306,29 +305,9 @@ fn graph_type_show_and_transaction_theater_overlay() {
             .rows,
         vec![vec![Value::String("social".into())]]
     );
-    assert_eq!(
-        txn.query("SHOW DATABASE neo4j YIELD defaultLanguage RETURN defaultLanguage")
-            .unwrap()
-            .rows,
-        vec![vec![Value::String("CYPHER 5".into())]]
-    );
     assert!(other.query("SHOW GRAPH TYPE social").is_err());
-    assert_eq!(
-        other
-            .query("SHOW DATABASE neo4j YIELD defaultLanguage RETURN defaultLanguage")
-            .unwrap()
-            .rows,
-        vec![vec![Value::String("CYPHER 25".into())]]
-    );
     txn.rollback().unwrap();
     assert!(other.query("SHOW GRAPH TYPE social").is_err());
-    assert_eq!(
-        other
-            .query("SHOW DATABASE neo4j YIELD defaultLanguage RETURN defaultLanguage")
-            .unwrap()
-            .rows,
-        vec![vec![Value::String("CYPHER 25".into())]]
-    );
 
     let show = "SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification";
     let before = other.query(show).unwrap().rows;

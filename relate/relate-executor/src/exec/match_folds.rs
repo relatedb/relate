@@ -31,15 +31,8 @@ pub(crate) fn try_match_folds(
     rows: &[Row],
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
-    fold_ladder(
-        graph,
-        FoldAsk::Answer(rows),
-        clauses,
-        params,
-        cypher_version,
-    )
+    fold_ladder(graph, FoldAsk::Answer(rows), clauses, params)
 }
 
 /// Whether any fold would take the `MATCH` at `clauses[0]` — the streaming
@@ -49,9 +42,8 @@ pub(crate) fn fold_would_take(
     graph: &ExecGraph<'_>,
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<bool> {
-    Ok(fold_ladder(graph, FoldAsk::WouldTake, clauses, params, cypher_version)?.is_some())
+    Ok(fold_ladder(graph, FoldAsk::WouldTake, clauses, params)?.is_some())
 }
 
 fn fold_ladder(
@@ -59,7 +51,6 @@ fn fold_ladder(
     ask: FoldAsk<'_>,
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
     let rows: &[Row] = match ask {
         FoldAsk::Answer(rows) => rows,
@@ -78,19 +69,15 @@ fn fold_ladder(
         return Ok(None);
     };
     let where_clause = where_clause.as_ref();
-    if let Some(folded) = try_fold_boolean_count(graph, rows, clauses, params, cypher_version)? {
+    if let Some(folded) = try_fold_boolean_count(graph, rows, clauses, params)? {
         return Ok(Some(folded));
     }
     // The walk-count arm (`kernels::frontier_count`): a bounded
     // REPEATABLE ELEMENTS quantified pattern under a plain `count`, ahead
     // of the multi-hop REPEATABLE decline below.
-    if let Some(folded) = super::kernels::frontier_count::try_fold_walk_count(
-        graph,
-        rows,
-        clauses,
-        params,
-        cypher_version,
-    )? {
+    if let Some(folded) =
+        super::kernels::frontier_count::try_fold_walk_count(graph, rows, clauses, params)?
+    {
         return Ok(Some(folded));
     }
     // `skip_rel` keeps one relationship out of the next hop, which is the
@@ -105,31 +92,13 @@ fn fold_ladder(
     // widest coverage. The chain count and one-hop folds follow, each
     // serving exactly the queries the path fold declined — no coverage
     // gate between the rungs, so no query compiles the plan twice.
-    if let Some(folded) = try_fold_path_aggs(
-        graph,
-        rows,
-        patterns,
-        where_clause,
-        tail,
-        params,
-        cypher_version,
-    )? {
+    if let Some(folded) = try_fold_path_aggs(graph, rows, patterns, where_clause, tail, params)? {
         return Ok(Some(folded));
     }
     // The plain fixed-hop and exact `*k` counts the path fold declines —
     // the chain kernel's own gates own what it accepts.
-    if let Some(folded) =
-        super::kernels::try_fold_chain_count(graph, rows, clauses, params, cypher_version)?
-    {
+    if let Some(folded) = super::kernels::try_fold_chain_count(graph, rows, clauses, params)? {
         return Ok(Some(folded));
     }
-    try_fold_one_hop_aggs(
-        graph,
-        rows,
-        patterns,
-        where_clause,
-        tail,
-        params,
-        cypher_version,
-    )
+    try_fold_one_hop_aggs(graph, rows, patterns, where_clause, tail, params)
 }

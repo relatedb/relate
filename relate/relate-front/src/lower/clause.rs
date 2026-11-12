@@ -71,8 +71,14 @@ pub(super) fn lower_clause(c: &cl::Clause) -> Result<mdb::Clause> {
         },
         cl::Clause::CallProcedure(p) => mdb::Clause::Call {
             name: p.procedure.clone(),
-            args: map_exprs(&p.args)?,
-            explicit: p.explicit_args,
+            // The one passing-mode value, lowered once: the explicit
+            // positional list or the implicit form — the clause's own
+            // fact from here on, never a bool beside a bare slice.
+            args: if p.explicit_args {
+                mdb::CallArgs::Explicit(map_exprs(&p.args)?)
+            } else {
+                mdb::CallArgs::Implicit
+            },
             yield_items: lower_yield_items(p),
             optional: p.optional,
             where_clause: p.where_expr.as_ref().map(lower_expr).transpose()?,

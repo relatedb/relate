@@ -113,7 +113,6 @@ fn validate_statement(
         crate::validate::validate_variable_types(stmt),
         crate::validate::validate_aggregation_semantics(stmt),
         crate::validate::validate_expression_constraints(stmt),
-        crate::validate::validate_cypher5_restrictions(stmt),
         // ADR-0497 §4: the function-name admission gate.
         crate::validate::validate_function_admission(stmt, options.preview),
         // LABS-709: dynamic key/label operands whose value is statically
@@ -145,29 +144,12 @@ pub(crate) fn validate_statement_for_test(stmt: &cl::Statement) -> Result<()> {
 }
 
 fn lower_statement_impl(stmt: &cl::Statement) -> Result<mdb::Query> {
-    lower_statement_with_inherited_version(stmt, None)
-}
-
-/// A `CYPHER <version>` preamble scopes over the whole statement, including
-/// every stage of a CIP-213 `NEXT` chain (whose own parsed statements carry
-/// no preamble). Each stage's effective version is its own preamble, else
-/// the nearest enclosing stage's — threaded through the single lowering
-/// walk over the chain rather than backfilled by a second pass afterwards.
-/// Nested statement bodies (`CALL { }`, `WHEN`/`ELSE`, FOREACH, and the
-/// expression-embedded subqueries) enter through `lower_statement_impl`
-/// and keep `None` here: they observe the enclosing version at runtime
-/// through the executor's `QueryCtx`, not in their lowered IR.
-fn lower_statement_with_inherited_version(
-    stmt: &cl::Statement,
-    inherited_version: Option<u32>,
-) -> Result<mdb::Query> {
-    // `EXPLAIN`/`PROFILE` preambles (`stmt.explain`/`stmt.profile`) are not
-    // lowered: they ride out of band on `LoweredStatement`
-    // (`crate::parse_and_lower_statement`) and are honored by the connection
+    // The `EXPLAIN`/`PROFILE` preamble (`stmt.preamble`) is not lowered:
+    // it rides out of band on `LoweredStatement`
+    // (`crate::parse_and_lower_statement`) and is honored by the connection
     // layer, which renders the plan without executing (EXPLAIN) or with
     // statistics (PROFILE). Lowering always produces the wrapped statement's
     // real query.
-    let cypher_version = stmt.cypher_version.or(inherited_version);
     let mut parts = vec![mdb::SingleQuery {
         clauses: lower_clauses(&stmt.clauses)?,
     }];
@@ -181,10 +163,7 @@ fn lower_statement_with_inherited_version(
     Ok(mdb::Query {
         parts,
         union_all,
-        next: lower_boxed(stmt.next.as_deref(), |next| {
-            lower_statement_with_inherited_version(next, cypher_version)
-        })?,
-        cypher_version,
+        next: lower_boxed(stmt.next.as_deref(), lower_statement_impl)?,
     })
 }
 

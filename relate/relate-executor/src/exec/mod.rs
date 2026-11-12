@@ -378,7 +378,7 @@ fn run_statement(graph: &ExecGraph<'_>, request: &ExecRequest<'_>) -> Result<(Qu
     graph.begin_statement();
     graph.check_cancelled()?;
     let _clock = QueryClockGuard::new();
-    let qctx = QueryCtx::new(request.plan.cypher_version, request.query_text)
+    let qctx = QueryCtx::new(request.query_text)
         .with_principal(request.principal)
         .with_batch_commit(request.batch_commit);
     let result = execute_plan_stage_seeded(
@@ -417,11 +417,8 @@ pub fn execute_read_at(admission: &ReadAdmission<'_>) -> Result<QueryResult> {
     let attempted = plan_mutates_store(admission.request.plan);
     // ADR-0395: the freshly constructed view carries a zeroed counter —
     // the read admission's statement gets its own budget.
-    let qctx = QueryCtx::new(
-        admission.request.plan.cypher_version,
-        admission.request.query_text,
-    )
-    .with_principal(admission.request.principal);
+    let qctx =
+        QueryCtx::new(admission.request.query_text).with_principal(admission.request.principal);
     let mut result = execute_plan_read_seeded(
         &view,
         admission.request.plan,
@@ -548,6 +545,52 @@ pub(crate) fn materialize_rows_strict(
     columns: &[String],
 ) -> Result<Vec<Vec<Value>>> {
     materialize_rows_with(rows, columns, Missing::Error)
+}
+
+/// The rows a projection consumes: held in a vector, or generated one at a
+/// time by an `UNWIND` the projection is fused with. The aggregation's
+/// offer walk (`aggregate_ex`) consumes either row-bearing form, so a
+/// fused `UNWIND` never materializes the rows it feeds; a `Folded` feed
+/// holds rows its producer already folded, so its consumer finishes it
+/// (`aggregate_rows`) instead of walking it. The projection pipeline's
+/// input shape lives here — the seam the dispatcher (which builds a
+/// feed), the `UNWIND` producer (which generates one) and the projection
+/// and aggregation consumers (which read one) all already reach, so no
+/// producer module carries the consumer-shared type.
+pub(crate) enum RowFeed<'a> {
+    Held(Vec<Row>),
+    Unwind(unwind::UnwindFeed<'a>),
+    /// Rows already folded into an [`aggregate::Aggregation`] by the
+    /// producer: the projection only finishes it. Built by the streaming
+    /// match sink.
+    Folded(Box<aggregate::Aggregation<'a>>),
+}
+
+impl RowFeed<'_> {
+    /// The rows already in hand, for the decisions that read the row shape
+    /// before the walk starts. A generated feed has none yet.
+    pub(crate) fn probe(&self) -> &[Row] {
+        match self {
+            RowFeed::Held(rows) => rows,
+            RowFeed::Unwind(_) | RowFeed::Folded(_) => &[],
+        }
+    }
+
+    /// The feed's row walk: every row of the two row-bearing forms, one at
+    /// a time and fallibly, folded through `offer`. A `Folded` feed offers
+    /// no rows (its producer already folded them): its consumer finishes
+    /// that variant without ever reaching this walk, so a folded feed
+    /// arriving here is an engine wiring error, reported loudly rather
+    /// than silently presented as an empty input.
+    pub(crate) fn try_for_each(self, mut offer: impl FnMut(Row) -> Result<()>) -> Result<()> {
+        match self {
+            RowFeed::Held(rows) => rows.into_iter().try_for_each(offer),
+            RowFeed::Unwind(mut feed) => feed.try_for_each(|row| offer(row?)),
+            RowFeed::Folded(_) => Err(Error::internal(
+                "a folded feed is finished by its consumer, never re-offered",
+            )),
+        }
+    }
 }
 
 /// One stage-walk driver for both dispatch modes (ADR-0344 phase 2

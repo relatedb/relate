@@ -811,7 +811,6 @@ fn run_sum(vals: &[Value]) -> Value {
             &row_with(v.clone()),
             operand,
             &BTreeMap::new(),
-            None,
             &mut graph.retain_bytes(0).unwrap(),
         )
         .unwrap();
@@ -849,7 +848,6 @@ fn folded_sum_accepts_durations_and_rejects_mixing() {
         &row_with(d(1)),
         operand,
         &BTreeMap::new(),
-        None,
         &mut graph.retain_bytes(0).unwrap(),
     )
     .unwrap();
@@ -859,7 +857,6 @@ fn folded_sum_accepts_durations_and_rejects_mixing() {
             &row_with(Value::Int(1)),
             operand,
             &BTreeMap::new(),
-            None,
             &mut graph.retain_bytes(0).unwrap(),
         )
         .unwrap_err();

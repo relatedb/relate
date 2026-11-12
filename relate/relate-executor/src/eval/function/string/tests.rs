@@ -453,16 +453,8 @@ fn split_with_the_wrong_argument_count_is_an_arity_error() {
         ),
     ];
     for (label, args) in cases {
-        let err = function(
-            &graph,
-            &Row::new(),
-            &BTreeMap::new(),
-            "split",
-            false,
-            &args,
-            None,
-        )
-        .expect_err(label);
+        let err = function(&graph, &Row::new(), &BTreeMap::new(), "split", false, &args)
+            .expect_err(label);
         assert!(
             err.to_string().contains("InvalidNumberOfArguments"),
             "{label}: expected the canonical arity error, got {err}"

@@ -207,7 +207,7 @@ fn a_declining_frontier_rung_offers_the_fold_nothing() {
     let fold = Counting(Cell::new(0));
     let answer = with_frontier_table_budget(2048, || {
         try_frontier_rows(
-            ExecCtx::new(&view, &params, None),
+            ExecCtx::new(&view, &params),
             &[Row::new()],
             false,
             *match_mode,
@@ -269,7 +269,7 @@ fn parked_fold_pairs_are_charged_against_the_expression_limit() {
     let view = ExecGraph::read(&built.graph);
     let params = BTreeMap::new();
     let err = try_frontier_rows(
-        ExecCtx::new(&view, &params, None),
+        ExecCtx::new(&view, &params),
         &[Row::new()],
         false,
         *match_mode,

@@ -45,7 +45,7 @@ pub(crate) fn exec_foreach(
         // Neo4j treats a non-list expression as a one-element list (the
         // harness pins `FOREACH(v IN 1 | …)` and `FOREACH(v IN <boolean
         // expression> | …)`); only null iterates zero times.
-        let values = match eval(graph, row, list, params, qctx.cypher_version)? {
+        let values = match eval(graph, row, list, params)? {
             Value::List(values) => values,
             Value::Null => continue,
             single => Arc::new(vec![single]),

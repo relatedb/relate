@@ -46,13 +46,10 @@ impl ExistencePred<'_> {
         graph: &ExecGraph<'_>,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
     ) -> Result<bool> {
         match self {
             ExistencePred::Any => Ok(true),
-            ExistencePred::Counted(expr) => {
-                Ok(!eval(graph, row, expr, params, cypher_version)?.is_null())
-            }
+            ExistencePred::Counted(expr) => Ok(!eval(graph, row, expr, params)?.is_null()),
         }
     }
 }
@@ -140,15 +137,14 @@ fn seek(
 ) -> Result<bool> {
     if idx >= patterns.len() {
         let graph = ctx.graph;
-        return pred.satisfied(graph, &row, ctx.params, ctx.cypher_version);
+        return pred.satisfied(graph, &row, ctx.params);
     }
     let halt = Cell::new(false);
     let graph = ctx.graph;
     let params = ctx.params;
-    let cypher_version = ctx.cypher_version;
     let accept = |row2: Row, used2: UsedSet| -> Result<bool> {
         seek(
-            ExecCtx::new(graph, params, cypher_version),
+            ExecCtx::new(graph, params),
             patterns,
             idx + 1,
             row2,
@@ -338,7 +334,6 @@ pub(crate) fn try_fold_boolean_count(
     rows: &[Row],
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<FoldedReturn>> {
     let Some(span) = boolean_count_span(clauses, params) else {
         return Ok(None);
@@ -350,7 +345,7 @@ pub(crate) fn try_fold_boolean_count(
     for row in rows {
         graph.cancel_tick()?;
         match patterns_exist(
-            ExecCtx::new(graph, params, cypher_version),
+            ExecCtx::new(graph, params),
             &span.patterns,
             &span.wheres,
             row.clone(),
@@ -392,7 +387,6 @@ pub(crate) fn probe_multi_pattern_exists(
     row: &Row,
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
 ) -> Result<Option<bool>> {
     let mut patterns = Vec::new();
     for clause in clauses {
@@ -412,12 +406,12 @@ pub(crate) fn probe_multi_pattern_exists(
     // (ADR-0471's lost early exit restored), through the classic
     // ProbeSink otherwise.
     if let [pattern] = &patterns[..] {
-        if let Some(hit) = resolved_endpoints_exist(graph, row, pattern, params, cypher_version)? {
+        if let Some(hit) = resolved_endpoints_exist(graph, row, pattern, params)? {
             return Ok(Some(hit));
         }
     }
     patterns_exist(
-        ExecCtx::new(graph, params, cypher_version),
+        ExecCtx::new(graph, params),
         &patterns,
         &[],
         row.clone(),
