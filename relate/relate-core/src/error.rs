@@ -119,6 +119,16 @@ pub enum Error {
     /// do not move.
     #[error("semantic error: {}", uniqueness_violation_detail(name))]
     UniquenessViolation { name: String },
+    /// A constraint the statement created (or re-derived) failed its data
+    /// check, carrying the wrapped rule failure's bare detail. The creation
+    /// condition is a documented GQLSTATUS (`50N11`) of its own and outranks
+    /// the rule failure's class, so it travels typed — the classifier reads
+    /// the variant, never a token recovered from the rendered text. The
+    /// Display text is byte-identical to the historical
+    /// `Semantic("ConstraintCreationFailed: <detail>")` rendering — stored
+    /// text, bindings classification and pinned messages do not move.
+    #[error("semantic error: ConstraintCreationFailed: {detail}")]
+    ConstraintCreationFailed { detail: String },
     /// A call to a procedure the engine does not register (ADR-0138),
     /// carrying the missing procedure's name typed, so consumers match the
     /// class without a prefix check on the rendered message. The Display
@@ -273,6 +283,15 @@ impl Error {
     /// counterpart of the pinned `ConstraintValidationFailed` message text.
     pub fn uniqueness_violation(name: impl Into<String>) -> Self {
         Self::UniquenessViolation { name: name.into() }
+    }
+
+    /// A constraint a statement created failed its data check, carrying the
+    /// wrapped rule failure's bare detail — the typed counterpart of the
+    /// pinned `ConstraintCreationFailed: <detail>` message text.
+    pub fn constraint_creation_failed(detail: impl Into<String>) -> Self {
+        Self::ConstraintCreationFailed {
+            detail: detail.into(),
+        }
     }
 
     /// A call to an unregistered procedure, naming it — the typed

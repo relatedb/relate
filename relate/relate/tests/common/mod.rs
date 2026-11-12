@@ -417,6 +417,19 @@ pub fn property_type(name: &str) -> String {
     format!("semantic error: ConstraintValidationFailed: `{name}` property type")
 }
 
+/// The error text of a constraint *creation* failure over violating data
+/// (ADR-0172): the creation condition wraps the violation's own *rendered*
+/// text. The two builders above disagree on the rendering — a `Semantic`
+/// payload carries the `semantic error: ` prefix and an `Execution` one
+/// does not — so the prefix is stripped where present and re-applied once
+/// under the creation condition.
+pub fn creation_failure(violation: String) -> String {
+    let detail = violation
+        .strip_prefix("semantic error: ")
+        .unwrap_or(&violation);
+    format!("semantic error: ConstraintCreationFailed: {detail}")
+}
+
 /// A `YIELD` of a column the procedure does not produce must fail
 /// validation with an `UnknownProcedureOutput` error naming the column.
 pub fn assert_unknown_output_fails(query: &str, unknown_column: &str) {

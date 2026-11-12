@@ -24,6 +24,16 @@ struct Case {
     violates: bool,
 }
 
+impl Case {
+    /// Whether the statement itself creates (or re-derives) the constraint
+    /// it violates — the one shape the incremental validator names with the
+    /// creation condition and the state-reading oracle does not.
+    fn creates_constraint(&self) -> bool {
+        self.statement.starts_with("CREATE CONSTRAINT")
+            || self.statement.starts_with("ALTER CURRENT GRAPH TYPE")
+    }
+}
+
 const fn case(setup: &'static [&'static str], statement: &'static str, violates: bool) -> Case {
     Case {
         setup,
@@ -694,6 +704,26 @@ fn oracle_values(
     Ok(())
 }
 
+/// The bare payload of a rule failure (the variant's rendered class prefix
+/// is not part of the rule) — the validator's own rendering policy, so the
+/// oracle cannot drift from the validator it is compared against.
+fn rule_text(error: &Error) -> String {
+    super::super::rule_failure_detail(error).expect("the full scan raises rule failures only")
+}
+
+/// The incremental validator names a failure of a constraint the statement
+/// created with the `ConstraintCreationFailed:` condition (its documented
+/// GQLSTATUS `50N11`); the full-scan oracle reads state only. Compare the
+/// underlying rule text the two share.
+fn unwrap_creation_failure(error: &Error) -> String {
+    let text = error.to_string();
+    text.strip_prefix("semantic error: ConstraintCreationFailed: ")
+        .unwrap_or_else(|| {
+            panic!("a created constraint's failure must carry the creation condition: {error}")
+        })
+        .to_string()
+}
+
 /// Every corpus statement gets the same verdict and error text from the
 /// incremental validator as from the full-scan oracle on the same state.
 #[test]
@@ -711,8 +741,18 @@ fn incremental_validation_agrees_with_the_full_scan() {
         exec_write_unvalidated(&g, &scratch, case.statement)
             .unwrap_or_else(|e| panic!("`{}` failed before validation: {e}", case.statement));
         let view = ExecGraph::write(&g, &scratch);
-        let oracle = full_scan_oracle(&view).map_err(|e| e.to_string());
-        let incremental = validate_constraints(&view).map_err(|e| e.to_string());
+        let oracle = full_scan_oracle(&view).map_err(|e| rule_text(&e));
+        // The incremental validator names a failure of a constraint the
+        // statement created with the creation condition; the state-reading
+        // oracle does not. Only those cases strip it — so a case that
+        // should carry the condition and does not fails here.
+        let incremental = validate_constraints(&view).map_err(|e| {
+            if case.creates_constraint() {
+                unwrap_creation_failure(&e)
+            } else {
+                rule_text(&e)
+            }
+        });
         assert_eq!(incremental, oracle, "`{}`", case.statement);
         assert_eq!(
             oracle.is_err(),

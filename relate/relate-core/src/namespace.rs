@@ -175,6 +175,15 @@ impl<'a> ElementIdRef<'a> {
         Some(parsed)
     }
 
+    /// Whether the first segment names an element kind the engine writes —
+    /// the one place the kind digit is resolved against
+    /// [`ElementKind`]'s vocabulary, so a caller never re-spells it.
+    pub fn has_known_kind(&self) -> bool {
+        [ElementKind::Node, ElementKind::Rel]
+            .into_iter()
+            .any(|kind| kind.kind_segment() == self.kind)
+    }
+
     /// The namespace the middle segment names (ADR-0116 §7), or `None`
     /// when it names no namespace.
     pub fn namespace(&self) -> Option<Namespace> {

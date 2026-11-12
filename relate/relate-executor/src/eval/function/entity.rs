@@ -138,14 +138,14 @@ pub(super) fn bi_db_namefromelementid(
         Some(Value::Null) | None => Value::Null,
         Some(Value::String(id)) => {
             let parsed = ElementIdRef::parse(id);
-            if !parsed.is_some_and(|p| matches!(p.kind, "4" | "5") && !p.id.is_empty()) {
+            if !parsed.is_some_and(|p| p.has_known_kind() && !p.id.is_empty()) {
                 return Err(Error::execution(
-                    "InvalidArgumentValue: Element ID has an unexpected format",
+                    "ElementIdUnexpectedFormat: Element ID has an unexpected format",
                 ));
             }
             let Some(namespace) = parsed.and_then(|p| p.namespace()) else {
                 return Err(Error::execution(
-                    "InvalidArgumentValue: No database corresponds to the given element id",
+                    "ElementIdUnexpectedFormat: No database corresponds to the given element id",
                 ));
             };
             Value::String(namespace.as_str().into())

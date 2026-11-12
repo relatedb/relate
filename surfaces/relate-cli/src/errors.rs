@@ -154,6 +154,7 @@ fn classify(e: &relate::Error) -> Classified {
         // open-site override reads (see `classify_open`).
         E::Semantic(_)
         | E::UniquenessViolation { .. }
+        | E::ConstraintCreationFailed { .. }
         | E::ParameterMissing(_)
         | E::DatabaseNotFound { .. } => (Validation, ErrorFamily::Semantic),
         // ADR-0489: a DDL option/index-config argument rejection is a

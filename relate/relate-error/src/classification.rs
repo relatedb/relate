@@ -15,6 +15,11 @@
 //! general code for every other class), so deriving a surface from
 //! [`ErrorInfo`] cannot change what that surface sends today.
 
+use crate::nested_class::{
+    nested_error_class, stringly_gql_status, GQLSTATUS_CONSTRAINT_CREATION_FAILED,
+    GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL, GQLSTATUS_INTERNAL,
+    GQLSTATUS_PARAMETER_MISSING, GQLSTATUS_SYNTAX, GQLSTATUS_TYPE,
+};
 use relate_core::{ArithmeticFailure, Error};
 
 /// The `code` of a statement the parser rejects (engine `Syntax`).
@@ -84,36 +89,11 @@ pub const MEMORY_POOL_OUT_OF_MEMORY_CODE: &str =
 pub const UNKNOWN_ERROR_CODE: &str = "Neo.DatabaseError.General.UnknownError";
 
 // The GQLSTATUS column (ADR-0502 §2's error shape). The values are the
-// codes the repo's surfaces emit today: the engine-documented codes of
-// ADR-0116 §9 for the fixed-namespace classes, and the GQL general error
-// code for every class without a class-specific code — exactly the split
-// HTTP's error envelope (ADR-0232) has always made.
-
-/// The GQL general error code: the code of a caller-facing class without a
-/// class-specific GQLSTATUS.
-pub const GQLSTATUS_GENERAL: &str = "42000";
-
-/// The GQLSTATUS of a rejected statement (the `SyntaxError` class).
-pub const GQLSTATUS_SYNTAX: &str = "42N06";
-
-/// The GQLSTATUS of an absent query parameter (ADR-0308).
-const GQLSTATUS_PARAMETER_MISSING: &str = "42N02";
-
-/// The GQLSTATUS of a type failure.
-const GQLSTATUS_TYPE: &str = "22G03";
-
-/// The GQLSTATUS of an unknown database (ADR-0116 §9).
-pub const GQLSTATUS_DATABASE_NOT_FOUND: &str = "42N00";
-
-/// The GQLSTATUS of an unsupported administration command (ADR-0116 §9).
-const GQLSTATUS_UNSUPPORTED_ADMINISTRATION_COMMAND: &str = "51N27";
-
-/// The GQLSTATUS of a write against the read-only `system_ontologies`
-/// namespace (ADR-0116 §9).
-const GQLSTATUS_WRITE_ON_READ_ONLY: &str = "42N18";
-
-/// The GQLSTATUS of an engine-internal failure.
-const GQLSTATUS_INTERNAL: &str = "50N42";
+// documented Neo4j GQLSTATUS codes: the engine-documented codes of
+// ADR-0116 §9 for the fixed-namespace classes, the documented schema/DDL
+// condition codes below (live-verified 2026-11-12 on Neo4j 2026.10.1), and
+// the GQL general error code for every class without a class-specific code
+// — exactly the split HTTP's error envelope (ADR-0232) has always made.
 
 /// Which stage of statement handling an error belongs to (ADR-0319): a
 /// compile-class error fails the statement before any work is done (Bolt's
@@ -210,145 +190,6 @@ pub fn log_internal_original(e: &Error, boundary: &str) {
 /// returns `None` when the payload carries no recognized class — the
 /// caller's variant-level class is then the answer.
 ///
-/// The closed vocabulary of that scan: one variant per class name the
-/// engine's CE formatters (`relate_core::ce_messages`,
-/// ADR-0116 §9/ADR-0117 §6) and the legacy constraint classes embed. The
-/// token parsing stays at the scan's one boundary; every consumer matches
-/// the typed variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NestedErrorClass {
-    /// The legacy constraint family (`ConstraintValidationFailed:` /
-    /// `ConstraintVerificationFailed:` tokens, anywhere in the payload).
-    ConstraintVerificationFailed,
-    /// A DDL argument-value rejection (`ArgumentError:`).
-    ArgumentError,
-    /// A missing node or relationship (`EntityNotFound:`).
-    EntityNotFound,
-    /// A registered procedure's own failure (`ProcedureError:`).
-    ProcedureError,
-    /// A rejected statement (`SyntaxError:`).
-    SyntaxError,
-    /// A semantic rejection (`SemanticError:`).
-    SemanticError,
-    /// An unsupported administration command (ADR-0116 §9).
-    UnsupportedAdministrationCommand,
-    /// A write against the read-only `system_ontologies` namespace
-    /// (ADR-0116 §9).
-    WriteOnReadOnlyAccessDatabase,
-    /// An unknown database (`DatabaseNotFound:`).
-    DatabaseNotFound,
-    /// A transaction-state failure (`TransactionError:`).
-    TransactionError,
-}
-
-impl NestedErrorClass {
-    /// Every class the scan recognizes, in enum order — the one list the
-    /// scan's exact-match half and the round-trip test derive from, so a
-    /// new variant lands in both by construction and the ten spellings are
-    /// written exactly once (in [`as_str`](Self::as_str)).
-    pub(crate) const ALL: [NestedErrorClass; 10] = [
-        NestedErrorClass::ConstraintVerificationFailed,
-        NestedErrorClass::ArgumentError,
-        NestedErrorClass::EntityNotFound,
-        NestedErrorClass::ProcedureError,
-        NestedErrorClass::SyntaxError,
-        NestedErrorClass::SemanticError,
-        NestedErrorClass::UnsupportedAdministrationCommand,
-        NestedErrorClass::WriteOnReadOnlyAccessDatabase,
-        NestedErrorClass::DatabaseNotFound,
-        NestedErrorClass::TransactionError,
-    ];
-
-    /// The one string spelling of the class — the `<Class>:` token the
-    /// engine embeds and the bindings report. Derived from the enum, so
-    /// the spelling is single-sourced.
-    ///
-    /// ```
-    /// use relate_error::{nested_error_class, NestedErrorClass};
-    ///
-    /// assert_eq!(
-    ///     NestedErrorClass::ConstraintVerificationFailed.as_str(),
-    ///     "ConstraintVerificationFailed"
-    /// );
-    /// assert_eq!(
-    ///     nested_error_class("ArgumentError: bad options"),
-    ///     Some(NestedErrorClass::ArgumentError)
-    /// );
-    /// assert_eq!(NestedErrorClass::ArgumentError.as_str(), "ArgumentError");
-    /// ```
-    pub fn as_str(self) -> &'static str {
-        match self {
-            NestedErrorClass::ConstraintVerificationFailed => "ConstraintVerificationFailed",
-            NestedErrorClass::ArgumentError => "ArgumentError",
-            NestedErrorClass::EntityNotFound => "EntityNotFound",
-            NestedErrorClass::ProcedureError => "ProcedureError",
-            NestedErrorClass::SyntaxError => "SyntaxError",
-            NestedErrorClass::SemanticError => "SemanticError",
-            NestedErrorClass::UnsupportedAdministrationCommand => {
-                "UnsupportedAdministrationCommand"
-            }
-            NestedErrorClass::WriteOnReadOnlyAccessDatabase => "WriteOnReadOnlyAccessDatabase",
-            NestedErrorClass::DatabaseNotFound => "DatabaseNotFound",
-            NestedErrorClass::TransactionError => "TransactionError",
-        }
-    }
-}
-
-/// The one canonical scan (AGENTS.md: one canonical helper per policy) of
-/// a still-stringly payload's nested class, consulted by both consumers of
-/// the nested-class fact: [`error_info`]'s GQLSTATUS for these payloads,
-/// and the language bindings' `binding_error_metadata`. A string that
-/// merely resembles a typed class's token does not adopt that class — the
-/// recognized names are the ones [`NestedErrorClass`] closes over.
-pub fn nested_error_class(payload: &str) -> Option<NestedErrorClass> {
-    // The one documented alias: the legacy constraint class was spelled
-    // `ConstraintValidationFailed:` and can appear anywhere in the payload,
-    // not only as the leading token, so the leading-name lookup below
-    // cannot carry it.
-    if payload.contains("ConstraintValidationFailed:")
-        || payload.contains("ConstraintVerificationFailed:")
-    {
-        return Some(NestedErrorClass::ConstraintVerificationFailed);
-    }
-    // A leading `<Class>:` name token. The class names are distinct and the
-    // historical match was exact equality, so this lookup over
-    // [`NestedErrorClass::ALL`] is behavior-identical to the exact-match
-    // arms it replaces — and a new variant joins the scan by joining ALL.
-    let name = payload.split_once(':').map(|(name, _)| name.trim())?;
-    NestedErrorClass::ALL
-        .into_iter()
-        .find(|&class| class.as_str() == name)
-}
-
-/// The GQLSTATUS of a still-stringly payload: a recognized nested class
-/// carries its own code (the engine-documented ones of ADR-0116 §9, the
-/// syntax class's own code, the GQL general code for every other nested
-/// class), and a payload with no nested class carries `own` — its
-/// variant's code. The exact split HTTP's error envelope (ADR-0232) has
-/// always made over the same scan.
-fn stringly_gql_status(payload: &str, own: &'static str) -> &'static str {
-    match nested_error_class(payload) {
-        None => own,
-        Some(NestedErrorClass::DatabaseNotFound) => GQLSTATUS_DATABASE_NOT_FOUND,
-        Some(NestedErrorClass::UnsupportedAdministrationCommand) => {
-            GQLSTATUS_UNSUPPORTED_ADMINISTRATION_COMMAND
-        }
-        Some(NestedErrorClass::WriteOnReadOnlyAccessDatabase) => GQLSTATUS_WRITE_ON_READ_ONLY,
-        Some(NestedErrorClass::SyntaxError) => GQLSTATUS_SYNTAX,
-        // The recognized nested classes without a class-specific GQLSTATUS
-        // carry the general code, never the variant's own — named, not
-        // wildcarded, so a future variant forces its own decision here.
-        Some(
-            NestedErrorClass::ConstraintVerificationFailed
-            | NestedErrorClass::ArgumentError
-            | NestedErrorClass::EntityNotFound
-            | NestedErrorClass::ProcedureError
-            | NestedErrorClass::SemanticError
-            | NestedErrorClass::TransactionError,
-        ) => GQLSTATUS_GENERAL,
-    }
-}
-
 /// The fixed client message every trust boundary substitutes for an
 /// internal-class failure (ADR-0260, OPLANE_REQ-00340359): engine-internal,
 /// IO, storage and locked errors — and caught panic payloads — can carry
@@ -393,7 +234,7 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         // --- Compile class: the statement is rejected before any work. ---
         Error::Syntax(payload) => ErrorInfo {
             neo4j_code: SYNTAX_ERROR_CODE,
-            gql_status: stringly_gql_status(payload, GQLSTATUS_SYNTAX),
+            gql_status: stringly_gql_status(nested_error_class(payload), GQLSTATUS_SYNTAX),
             stage: Compile,
             retryable: false,
         },
@@ -501,9 +342,24 @@ pub fn error_info(e: &Error) -> ErrorInfo {
             stage: Runtime,
             retryable: *retryable,
         },
-        Error::Semantic(payload) | Error::Execution(payload) => ErrorInfo {
-            neo4j_code: SEMANTIC_ERROR_CODE,
-            gql_status: stringly_gql_status(payload, GQLSTATUS_GENERAL),
+        Error::Semantic(payload) | Error::Execution(payload) => {
+            let nested = nested_error_class(payload);
+            ErrorInfo {
+                neo4j_code: SEMANTIC_ERROR_CODE,
+                gql_status: stringly_gql_status(nested, GQLSTATUS_GENERAL),
+                stage: Runtime,
+                retryable: false,
+            }
+        }
+        // The creation condition is typed, so it carries its own row rather
+        // than a token the classifier recovers from the rendered message.
+        // Its client code is the constraint code every creation over
+        // violating data has always reported (the legacy
+        // `ConstraintVerificationFailed` class the bindings keep), and its
+        // documented GQLSTATUS is `50N11`.
+        Error::ConstraintCreationFailed { .. } => ErrorInfo {
+            neo4j_code: CONSTRAINT_VALIDATION_FAILED_CODE,
+            gql_status: GQLSTATUS_CONSTRAINT_CREATION_FAILED,
             stage: Runtime,
             retryable: false,
         },
@@ -522,6 +378,9 @@ pub fn error_info(e: &Error) -> ErrorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nested_class::{
+        GQLSTATUS_UNSUPPORTED_ADMINISTRATION_COMMAND, GQLSTATUS_WRITE_ON_READ_ONLY,
+    };
     use relate_core::ErrorKind;
     use ErrorStage::{Compile, Internal, Runtime};
 
@@ -777,38 +636,89 @@ mod tests {
         }
     }
 
-    /// The canonical nested-class scan: the names the engine embeds are
-    /// recovered, lookalikes are not, and every recovered class renders
-    /// the token it was scanned from.
+    /// The schema/DDL condition tokens carry their documented GQLSTATUS,
+    /// whether the engine raised the bare token or a `<Token>: <detail>`
+    /// payload — live-verified 2026-11-12 on Neo4j 2026.10.1.
     #[test]
-    fn nested_error_class_recovers_the_embedded_names() {
-        assert_eq!(
-            nested_error_class("ArgumentError: x"),
-            Some(NestedErrorClass::ArgumentError)
-        );
-        assert_eq!(
-            nested_error_class("outer context: ConstraintVerificationFailed: duplicate key"),
-            Some(NestedErrorClass::ConstraintVerificationFailed)
-        );
-        assert_eq!(
-            nested_error_class("outer: ConstraintValidationFailed: bad"),
-            Some(NestedErrorClass::ConstraintVerificationFailed)
-        );
-        assert_eq!(nested_error_class("no class here"), None);
-        assert_eq!(nested_error_class("nested ParameterMissing: p"), None);
-        assert_eq!(nested_error_class(""), None);
+    fn schema_condition_tokens_carry_their_documented_gql_status() {
+        let rows: Vec<(Error, &str)> = vec![
+            (Error::semantic("ConstraintAlreadyExists"), "22N67"),
+            (
+                Error::semantic("ConstraintAlreadyExists: `c` already exists"),
+                "22N67",
+            ),
+            (
+                Error::semantic("EquivalentConstraintAlreadyExists: equivalent constraint exists"),
+                "22N65",
+            ),
+            (Error::semantic("ConstraintConflict"), "22N66"),
+            (Error::syntax("ConstraintConflict"), "22N66"),
+            // The creation condition is typed; it carries its own row.
+            (
+                Error::constraint_creation_failed("ConstraintValidationFailed: `c` property type"),
+                "50N11",
+            ),
+            (Error::semantic("ConstraintNotFound"), "50N12"),
+            (
+                Error::execution(
+                    "DependentConstraintManagedIndividually: dependent constraints cannot be dropped",
+                ),
+                "50N12",
+            ),
+            (Error::semantic("DuplicatedIndexName"), "22N71"),
+            (Error::semantic("IndexAlreadyExists"), "22N71"),
+            (Error::semantic("EquivalentSchemaRuleAlreadyExists"), "22N70"),
+            (
+                Error::execution(
+                    "IncompatibleGraphTypeDependence: dependent constraints are managed by the graph type",
+                ),
+                "22NB2",
+            ),
+            (Error::execution("IndexDoesNotExist: idx"), "22N69"),
+            (
+                Error::execution("SystemDatabaseRequired: SHOW DATABASES cannot be combined with NEXT"),
+                "51N28",
+            ),
+            (
+                Error::syntax(
+                    "SystemDatabaseRequired: an administrative command cannot participate in a NEXT chain",
+                ),
+                "51N28",
+            ),
+            (
+                Error::execution("ElementIdUnexpectedFormat: Element ID has an unexpected format"),
+                "50N00",
+            ),
+        ];
+        for (e, status) in rows {
+            let i = error_info(&e);
+            assert_eq!(i.gql_status, status, "{e}");
+        }
     }
 
-    /// The closed vocabulary: every class in [`NestedErrorClass::ALL`] is
-    /// recovered from its own rendered token, so the enum, the scan and
-    /// the wire spelling cannot drift.
+    /// The creation condition is typed, so it carries its own row: the
+    /// client code every creation over violating data has always reported,
+    /// and the documented `50N11`. Every other condition token keeps the
+    /// variant's own code.
     #[test]
-    fn every_nested_class_renders_its_embedded_token() {
-        for class in NestedErrorClass::ALL {
-            let token = class.as_str();
-            let scanned = nested_error_class(&format!("{token}: x"))
-                .unwrap_or_else(|| panic!("token {token} not recognized by the scan"));
-            assert_eq!(scanned.as_str(), token);
-        }
+    fn the_creation_condition_carries_its_own_row() {
+        let info = error_info(&Error::constraint_creation_failed(
+            "ConstraintValidationFailed: `p_id` uniqueness",
+        ));
+        assert_eq!(info.neo4j_code, CONSTRAINT_VALIDATION_FAILED_CODE);
+        assert_eq!(info.gql_status, GQLSTATUS_CONSTRAINT_CREATION_FAILED);
+        assert!(!info.retryable);
+
+        assert_eq!(
+            error_info(&Error::semantic("ConstraintAlreadyExists")).neo4j_code,
+            SEMANTIC_ERROR_CODE
+        );
+        assert_eq!(
+            error_info(&Error::semantic(
+                "ConstraintValidationFailed: `p_id` uniqueness"
+            ))
+            .neo4j_code,
+            SEMANTIC_ERROR_CODE
+        );
     }
 }

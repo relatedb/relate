@@ -113,8 +113,18 @@ fn validate_slice(graph: &ExecGraph<'_>, slice: &ValidationSlice) -> Result<()> 
     }
     for def in &constraints {
         let check = ConstraintCheck::new(def)?;
+        // A constraint this statement created (or re-derived) failing its
+        // data check is a creation failure, not a write-time violation:
+        // live reports `50N11` here and the violation's own code for a write.
+        let created_here = slice.recheck.contains(&def.name);
         if drifted.contains(&def.name) || slice.rechecks(&check) {
-            check.recheck(graph)?;
+            check.recheck(graph).map_err(|error| {
+                if created_here {
+                    constraint_creation_failure(&error)
+                } else {
+                    error
+                }
+            })?;
         } else {
             check.validate_slice(graph, slice)?;
         }
@@ -659,45 +669,61 @@ impl<'c> ConstraintCheck<'c> {
     /// `db.ontology.apply`'s data-violation error.
     fn recheck_naming_elements(&self, graph: &ExecGraph<'_>) -> Result<()> {
         self.recheck_scan(graph, |graph, id, error| {
-            self.apply_violation(graph, id, &error)
+            // The report seam sees rule failures only — the scan's control
+            // errors return through `?`, never through it — so the detail is
+            // always present and `apply_violation` takes it as a value.
+            let detail =
+                rule_failure_detail(&error).expect("the report seam reports rule failures only");
+            self.apply_violation(graph, id, &detail)
         })
     }
 
     /// ADR-0226 §3's data-violation error: names the constraint and the
     /// offending element's element id, and carries the underlying rule
     /// failure's message.
-    fn apply_violation(&self, graph: &ExecGraph<'_>, id: i64, cause: &Error) -> Error {
+    fn apply_violation(&self, graph: &ExecGraph<'_>, id: i64, detail: &str) -> Error {
         let namespace = graph.namespace();
         let element_id = match self.target {
             Target::Node { .. } => relate_core::node_element_id(id, namespace),
             Target::Rel { .. } => relate_core::rel_element_id(id, namespace),
         }
         .unwrap_or_else(|| id.to_string());
-        let detail = match cause {
-            Error::UniquenessViolation { name } => relate_core::uniqueness_violation_detail(name),
-            // The typed detail variants contribute the legacy bare inner
-            // text, token included, as their stringly predecessors did.
-            Error::InvalidArgumentType(detail) => format!("InvalidArgumentType: {detail}"),
-            Error::TypeError(detail) => format!("TypeError: {detail}"),
-            Error::ParameterMissing(detail) => format!("ParameterMissing: {detail}"),
-            // ADR-0307: the legacy `Type`/`Execution` payload.
-            Error::Arithmetic(failure) => failure.detail().to_string(),
-            Error::Semantic(message)
-            | Error::Execution(message)
-            | Error::Type(message)
-            | Error::Syntax(message) => message.clone(),
-            // Every other class — the typed `DatabaseNotFound` included,
-            // whose `typed_detail_text` is its bare token-and-detail text —
-            // falls back to the rendered message, the same collapse
-            // `transaction_error_message` applies.
-            other => other
-                .typed_detail_text()
-                .unwrap_or_else(|| other.to_string()),
-        };
         Error::semantic(format!(
             "ConstraintValidationFailed: `{}` violated by element `{element_id}`: {detail}",
             self.def.name
         ))
+    }
+}
+
+/// The bare detail of a rule failure — the text without the enclosing
+/// error's class prefix — so a wrapping condition can name it once. The
+/// vocabulary is the scan's own: `recheck_scan` reports the four rule
+/// constructors (`requires_error`, `property_type_error`,
+/// `node_label_error`, `endpoint_label_error`) and the uniqueness variant,
+/// and nothing else.
+///
+/// `None` for any other class, because the same scan also raises the
+/// cancellation and resource errors — through `?` from `cancel_tick`, never
+/// through the report seam — and renaming one of those would turn a
+/// cancelled or retryable recheck into a non-retryable schema failure. A
+/// class not named here passes through with its own class and message.
+fn rule_failure_detail(cause: &Error) -> Option<String> {
+    match cause {
+        Error::UniquenessViolation { name } => Some(relate_core::uniqueness_violation_detail(name)),
+        Error::Semantic(message) | Error::Execution(message) => Some(message.clone()),
+        _ => None,
+    }
+}
+
+/// A constraint created (or re-derived) by this statement failed its data
+/// check: the documented GQLSTATUS is the creation failure (`50N11`), which
+/// outranks the wrapped rule failure's own class, so it travels typed. An
+/// error that is not a rule failure is returned unchanged — the scan's
+/// cancellation and resource classes keep their own class and retryability.
+fn constraint_creation_failure(cause: &Error) -> Error {
+    match rule_failure_detail(cause) {
+        Some(detail) => Error::constraint_creation_failed(detail),
+        None => cause.clone(),
     }
 }
 

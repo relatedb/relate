@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use relate_catalog::{rule_disposition, ConstraintDef, RuleDisposition};
 use relate_core::{Error, Result, Value};
+use relate_error::NestedErrorClass;
 use relate_model::ConstraintType;
 
 use crate::overlay::ExecGraph;
@@ -439,8 +440,8 @@ fn reject_added_equivalent_constraints(
             rule_disposition(existing.iter(), &def.schema())
         {
             return Err(Error::syntax(format!(
-                "EquivalentSchemaRuleAlreadyExists: an equivalent constraint already exists: \
-                 '{}'",
+                "{}: an equivalent constraint already exists: '{}'",
+                NestedErrorClass::EquivalentConstraintAlreadyExists.as_str(),
                 existing.name
             )));
         }

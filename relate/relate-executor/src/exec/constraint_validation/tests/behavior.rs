@@ -3,7 +3,7 @@
 //! constraints, and typed constraint-type matching.
 
 use relate_catalog::ConstraintDef;
-use relate_core::Value;
+use relate_core::{Error, Value};
 
 use super::super::{
     parse_constraint_type, take_constraint_inspects, validate_constraints, ConstraintCheck,
@@ -231,6 +231,40 @@ fn a_cancelled_recheck_surfaces_query_cancelled() {
         error.to_string().contains("query cancelled"),
         "expected the cancellation error, got {error}"
     );
+}
+
+/// The creation condition renames a rule failure only. The same scan raises
+/// the cancellation and resource classes too — renaming one of those would
+/// turn a cancelled or retryable recheck into the non-retryable creation
+/// failure, so they pass through with their own class, message and
+/// retryability.
+#[test]
+fn only_a_rule_failure_takes_the_creation_condition() {
+    let renamed = super::super::constraint_creation_failure(&Error::uniqueness_violation("c"));
+    assert!(
+        renamed
+            .to_string()
+            .starts_with("semantic error: ConstraintCreationFailed: "),
+        "{renamed}"
+    );
+
+    for passthrough in [
+        Error::Cancelled,
+        Error::resource_limit("logical-workspace-limit", 1, true),
+        Error::capacity(1, 1),
+    ] {
+        let kept = super::super::constraint_creation_failure(&passthrough);
+        assert_eq!(
+            kept.to_string(),
+            passthrough.to_string(),
+            "a non-rule failure keeps its own class"
+        );
+        assert_eq!(
+            relate_error::error_info(&kept).retryable,
+            relate_error::error_info(&passthrough).retryable,
+            "a non-rule failure keeps its retryability"
+        );
+    }
 }
 
 /// A stored kind tag `ConstraintType` rejects fails the validation closed

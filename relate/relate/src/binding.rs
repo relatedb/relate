@@ -366,22 +366,30 @@ pub fn binding_error_metadata(error: &Error) -> (&'static str, &'static str) {
         // the `ProcedureError` TCK class live Neo4j reports for an
         // unregistered procedure (ADR-0565); its Bolt code is unchanged.
         Error::ProcedureNotFound { .. } => ("ProcedureNotFound", "ProcedureError"),
-        // The still-stringly variants resolve their nested class through the
-        // one canonical scan (ADR-0502 §2) — the same helper the engine's
-        // `error_info` reads — falling back to the variant's own class.
-        Error::Syntax(s) => {
-            let class = nested_error_class(s)
-                .unwrap_or(NestedErrorClass::SyntaxError)
-                .as_str();
-            (class, class)
-        }
+        // The typed creation condition (ADR-0116 §9) keeps the legacy
+        // constraint-verification class every creation over violating data
+        // has always reported; only its GQLSTATUS moves.
+        Error::ConstraintCreationFailed { .. } => (
+            "ConstraintVerificationFailed",
+            "ConstraintVerificationFailed",
+        ),
+        Error::Syntax(s) => still_stringly_class(s, NestedErrorClass::SyntaxError),
         Error::Semantic(s) | Error::Execution(s) => {
-            let class = nested_error_class(s)
-                .unwrap_or(NestedErrorClass::SemanticError)
-                .as_str();
-            (class, class)
+            still_stringly_class(s, NestedErrorClass::SemanticError)
         }
     }
+}
+
+/// The bindings' class for a still-stringly variant: the payload's nested
+/// class through the one canonical scan (ADR-0502 §2) — the same helper the
+/// engine's `error_info` reads — falling back to the variant's own class. A
+/// schema/DDL condition token carries no class of its own (`binding_class`
+/// is `None`), so it keeps the variant fallback.
+fn still_stringly_class(payload: &str, fallback: NestedErrorClass) -> (&'static str, &'static str) {
+    let class = nested_error_class(payload)
+        .and_then(NestedErrorClass::binding_class)
+        .unwrap_or_else(|| fallback.as_str());
+    (class, class)
 }
 
 #[cfg(test)]
@@ -499,6 +507,28 @@ mod tests {
                 Error::WAL_PAYLOAD_CAP_BYTES
             )),
             ("MemoryLimitExceeded", "ArgumentError")
+        );
+        // The schema/DDL condition tokens carry a GQLSTATUS but no class of
+        // their own: the bindings keep the fallback class, so the class
+        // vocabulary is unchanged.
+        assert_eq!(
+            binding_error_metadata(&Error::semantic("ConstraintAlreadyExists")),
+            ("SemanticError", "SemanticError")
+        );
+        assert_eq!(
+            binding_error_metadata(&Error::execution("IndexDoesNotExist: idx")),
+            ("SemanticError", "SemanticError")
+        );
+        // The creation failure keeps the legacy constraint-verification
+        // class the creation-over-violating-data errors always reported.
+        assert_eq!(
+            binding_error_metadata(&Error::semantic(
+                "ConstraintCreationFailed: ConstraintValidationFailed: `c` property type"
+            )),
+            (
+                "ConstraintVerificationFailed",
+                "ConstraintVerificationFailed"
+            )
         );
     }
 

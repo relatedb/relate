@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use relate_catalog::{rule_disposition, ConstraintDef, RuleDisposition};
 use relate_core::{Error, Result, Value};
+use relate_error::NestedErrorClass;
 use relate_model::ConstraintType;
 
 use crate::overlay::ExecGraph;
@@ -178,7 +179,7 @@ fn equivalent_rule_skip(
 ) -> Result<Gate> {
     skip_existing(
         c.if_not_exists,
-        Error::semantic("EquivalentSchemaRuleAlreadyExists"),
+        Error::semantic(NestedErrorClass::EquivalentConstraintAlreadyExists.as_str()),
         rule,
     )
 }
