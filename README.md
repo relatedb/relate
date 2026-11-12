@@ -503,7 +503,7 @@ relate telemetry status    # e.g. "disabled (config file)"
 
 `DO_NOT_TRACK=1` or `RELATE_TELEMETRY=0` also disable it. Only the standalone
 CLI collects metrics; the embedded Rust and Python APIs do not. Full contract:
-[CLI reference](https://relatedb.ai/docs/reference/cli-flags).
+[CLI reference](https://relatedb.ai/docs/reference/cli/flags/).
 
 ## Development
 
