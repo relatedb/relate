@@ -1,9 +1,11 @@
 //! The fulltext query parser: Lucene-style clauses (`AND`/`OR`/`NOT`,
-//! `property:term`, `term~N` fuzzy, `term^B` boost) folded into typed
-//! [`Clause`]s the scanner ranks.
+//! `property:term`, `term~N` fuzzy, `term*`/`te?m` wildcard, `term^B` boost)
+//! folded into typed [`Clause`]s the scanner ranks.
 
 use relate_core::{Error, Result};
 
+use super::fold::fold;
+use super::wildcard::Pattern;
 use super::{tokenize, Analyzer};
 
 /// Lucene's `FuzzyQuery` ceiling on edits (its Levenshtein automata stop at
@@ -19,16 +21,24 @@ pub(super) enum Occur {
     MustNot,
 }
 
+/// Which indexed terms a clause matches.
+#[derive(Debug, PartialEq)]
+pub(super) enum Target {
+    /// Exactly this analyzed term.
+    Term(String),
+    /// Every indexed term within `edits` edits of `term` (`term~n`).
+    Fuzzy { term: String, edits: u8 },
+    /// Every indexed term the pattern matches (`term*`, `te?m`).
+    Wildcard(Pattern),
+}
+
 #[derive(Debug)]
 pub(super) struct Clause {
     pub(super) occur: Occur,
     /// The `property:` prefix, if the query named one (the procedure's
     /// field-filter form; a name outside the index matches nothing).
     pub(super) property: Option<String>,
-    pub(super) term: String,
-    /// `Some(n)`: match every indexed term within `n` edits (`term~n`);
-    /// `None`: the exact term.
-    pub(super) fuzzy: Option<u8>,
+    pub(super) target: Target,
     /// The `^B` multiplier on the clause's score; `1.0` when absent.
     pub(super) boost: f64,
 }
@@ -84,22 +94,86 @@ fn operator(word: &str) -> Option<Occur> {
     }
 }
 
-/// The query's words, with a detached suffix word (`term ~1`, `term ^2`,
-/// which Lucene reads like `term~1`) glued onto the word before it. A suffix
-/// with no ordinary word before it stays alone and fails as a missing term.
-fn words(query: &str) -> Vec<String> {
-    let mut words: Vec<String> = Vec::new();
-    let raw = query.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"'));
-    for word in raw.filter(|word| !word.is_empty()) {
+/// Whether `c` ends a word (outside quotes).
+fn is_separator(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '(' | ')')
+}
+
+/// Characters the later stages read as syntax; a literal one travels as
+/// `\c` (`Pattern::parse` unescapes it, `find_unescaped` skips it).
+fn is_syntax(c: char) -> bool {
+    matches!(c, '*' | '?' | '\\' | ':' | '~' | '^')
+}
+
+/// The first position of one of `targets` in `text` that no backslash
+/// escapes.
+fn find_unescaped(text: &str, targets: &[char]) -> Option<usize> {
+    let mut chars = text.char_indices();
+    while let Some((at, c)) = chars.next() {
+        if c == '\\' {
+            chars.next();
+        } else if targets.contains(&c) {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// Scan the query into whole words, resolving quotes and escapes and nothing
+/// else. A quoted character, or one after a backslash, is literal text: a
+/// syntax character stays escaped for the later stages, `\"` is a quote that
+/// never toggles quoting, and a separator after a backslash joins its word.
+/// A trailing backslash is a typed syntax error.
+fn lex(query: &str) -> Result<Vec<String>> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut flush = |current: &mut String| {
+        if !current.is_empty() {
+            words.push(std::mem::take(current));
+        }
+    };
+    let mut chars = query.chars();
+    while let Some(c) = chars.next() {
+        let (c, literal) = if c == '\\' {
+            let Some(next) = chars.next() else {
+                return Err(malformed(query, "a trailing `\\` escapes nothing"));
+            };
+            (next, true)
+        } else {
+            (c, quoted && is_syntax(c))
+        };
+        if literal {
+            if is_syntax(c) {
+                current.push('\\');
+            }
+            current.push(c);
+        } else if c == '"' || is_separator(c) {
+            flush(&mut current);
+            quoted ^= c == '"';
+        } else {
+            current.push(c);
+        }
+    }
+    flush(&mut current);
+    Ok(words)
+}
+
+/// Glue a detached suffix word (`term ~1`, `term ^2`, which Lucene reads
+/// like `term~1`) onto the word before it. A suffix with no ordinary word
+/// before it stays alone and fails as a missing term.
+fn attach_suffixes(words: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for word in words {
         if word.starts_with(['~', '^']) {
-            if let Some(last) = words.last_mut().filter(|last| operator(last).is_none()) {
-                last.push_str(word);
+            if let Some(last) = out.last_mut().filter(|last| operator(last).is_none()) {
+                last.push_str(&word);
                 continue;
             }
         }
-        words.push(word.to_string());
+        out.push(word);
     }
-    words
+    out
 }
 
 /// Parse a fulltext query string into analyzer-produced clauses.
@@ -116,7 +190,7 @@ pub(super) fn parse(query: &str, analyzer: Analyzer) -> Result<Vec<Clause>> {
         clauses: Vec::new(),
         pending: Occur::Should,
     };
-    for word in words(query) {
+    for word in attach_suffixes(lex(query)?) {
         parser.word(&word)?;
     }
     Ok(parser.clauses)
@@ -135,8 +209,8 @@ impl Parser {
             self.pending = occur;
             return Ok(());
         }
-        let (property, text) = match word.split_once(':') {
-            Some((property, text)) => (Some(property), text),
+        let (property, text) = match find_unescaped(word, &[':']) {
+            Some(at) => (Some(&word[..at]), &word[at + 1..]),
             None => (None, word),
         };
         let mut occur = self.pending;
@@ -163,24 +237,40 @@ impl Parser {
         text: &'t str,
     ) -> Result<Option<&'t str>> {
         let (term, suffix, remainder) = split_suffix(text)?;
-        // A fuzzy term is matched against the index's stored tokens, which
-        // are lowercased but never stemmed or stop-filtered, so it skips the
-        // analyzer's stemming (Lucene's multi-term normalisation).
-        let terms = if suffix.fuzzy.is_some() {
-            tokenize(term)
-        } else {
-            self.analyzer.analyze(term)
-        };
-        for term in terms {
+        // `*:` names every field, like no prefix at all.
+        let property = property.filter(|property| *property != "*");
+        let mut push = |target: Target| {
             self.clauses.push(Clause {
                 occur,
                 property: property.map(str::to_string),
-                fuzzy: suffix
-                    .fuzzy
-                    .map(|fuzz| fuzz.edits_for(term.chars().count())),
-                term,
+                target,
                 boost: suffix.boost,
             });
+        };
+        let prepared = if self.analyzer.folds() {
+            fold(&term.to_lowercase())
+        } else {
+            term.to_string()
+        };
+        if let Some(pattern) = Pattern::parse(&prepared) {
+            // A wildcard term is lowercased, and folded under an analyzer
+            // that folds (a deliberate deviation from live, which leaves it
+            // unfolded: ADR-0583) — never stemmed or stop filtered — and ignores a `~N` suffix (calibrated:
+            // `kolleg*~1` matches like `kolleg*`).
+            push(Target::Wildcard(pattern));
+        } else if let Some(fuzz) = suffix.fuzzy {
+            // A fuzzy term is matched against the index's stored tokens
+            // (lowercased, folded only by a folding index), so it skips the
+            // analyzer: neither stemming nor folding (Lucene's multi-term
+            // normalisation; calibrated: `eifrém~1` still reaches `eifrem`).
+            for term in tokenize(term) {
+                let edits = fuzz.edits_for(term.chars().count());
+                push(Target::Fuzzy { term, edits });
+            }
+        } else {
+            for term in self.analyzer.analyze(term) {
+                push(Target::Term(term));
+            }
         }
         Ok((!remainder.is_empty()).then_some(remainder))
     }
@@ -194,11 +284,11 @@ fn split_suffix(text: &str) -> Result<(&str, Suffix, &str)> {
         fuzzy: None,
         boost: 1.0,
     };
-    let Some(at) = text.find(['~', '^']) else {
+    let Some(at) = find_unescaped(text, &['~', '^']) else {
         return Ok((text, suffix, ""));
     };
     let (term, mut rest) = text.split_at(at);
-    if tokenize(term).is_empty() {
+    if Pattern::parse(term).is_none() && tokenize(term).is_empty() {
         return Err(malformed(text, "a `~`/`^` suffix needs a term before it"));
     }
     if let Some(after) = rest.strip_prefix('~') {
@@ -305,20 +395,38 @@ mod tests {
         parse(query, Analyzer::Standard).expect("a well-formed query")
     }
 
+    fn term(clause: &Clause) -> &str {
+        match &clause.target {
+            Target::Term(term) | Target::Fuzzy { term, .. } => term,
+            Target::Wildcard(_) => panic!("a wildcard clause has no single term"),
+        }
+    }
+
+    fn edits(clause: &Clause) -> Option<u8> {
+        match clause.target {
+            Target::Fuzzy { edits, .. } => Some(edits),
+            _ => None,
+        }
+    }
+
+    fn wildcard(term: &str) -> Target {
+        Target::Wildcard(Pattern::parse(term).expect("a wildcard term"))
+    }
+
     #[test]
     fn parse_folds_operators_onto_neighbours() {
         let parsed = clauses("princess AND NOT snow");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].occur, Occur::Must);
-        assert_eq!(parsed[0].term, "princess");
+        assert_eq!(term(&parsed[0]), "princess");
         assert_eq!(parsed[1].occur, Occur::MustNot);
-        assert_eq!(parsed[1].term, "snow");
+        assert_eq!(term(&parsed[1]), "snow");
 
         // Lowercase `and` stays a term: only uppercase words are operators.
         let parsed = clauses("princess AND and NOT kingdom");
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[1].occur, Occur::Must);
-        assert_eq!(parsed[1].term, "and");
+        assert_eq!(term(&parsed[1]), "and");
         assert_eq!(parsed[2].occur, Occur::MustNot);
 
         // Juxtaposed terms are implicit OR (all Should).
@@ -341,14 +449,54 @@ mod tests {
         let parsed = clauses("plot:princess");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].property.as_deref(), Some("plot"));
-        assert_eq!(parsed[0].term, "princess");
-        assert_eq!(parsed[0].fuzzy, None);
+        assert_eq!(term(&parsed[0]), "princess");
+        assert_eq!(edits(&parsed[0]), None);
         assert_eq!(parsed[0].boost, 1.0);
+    }
+
+    fn lexed(query: &str) -> Vec<String> {
+        lex(query).expect("a well-formed query")
+    }
+
+    #[test]
+    fn lex_keeps_escapes_strict_inside_and_outside_quotes() {
+        // A quoted escaped wildcard stays one literal character, not a
+        // literal backslash followed by a live wildcard.
+        assert_eq!(lexed(r#""foo\*bar""#), [r"foo\*bar"]);
+        // An escaped quote never toggles quoting: the `*` after it is live.
+        assert_eq!(lexed(r#"foo\"*bar"#), [r#"foo"*bar"#]);
+        // Quoted syntax characters are escaped; a quoted backslash is text.
+        assert_eq!(lexed(r#""a*b""#), [r"a\*b"]);
+        assert_eq!(lexed(r#""a\\b""#), [r"a\\b"]);
+        // Outside quotes `\\` is a literal backslash and the `*` stays live.
+        assert_eq!(lexed(r"a\\*"), [r"a\\*"]);
+        // An escaped separator joins its word.
+        assert_eq!(lexed(r"a\ b"), ["a b"]);
+    }
+
+    #[test]
+    fn a_trailing_backslash_is_a_typed_syntax_error() {
+        let err = lex("lamp\\").expect_err("nothing to escape");
+        assert!(err.to_string().contains("trailing"), "{err}");
+    }
+
+    #[test]
+    fn escaped_and_quoted_syntax_characters_stay_inside_their_word() {
+        // `a\:b` is one term, not the property `a` and the term `b`; a
+        // quoted `f:x` has no property either.
+        for query in [r"a\:b", r#""f:x""#] {
+            let parsed = clauses(query);
+            assert!(parsed.iter().all(|c| c.property.is_none()), "{query}");
+        }
+        // An escaped `~` is no fuzzy suffix.
+        assert!(clauses(r"lamp\~1")
+            .iter()
+            .all(|c| !matches!(c.target, Target::Fuzzy { .. })));
     }
 
     #[test]
     fn fuzzy_suffix_forms_never_leak_digits_as_terms() {
-        for (query, edits) in [
+        for (query, expected) in [
             ("kolleger~", 2),
             ("kolleger~0", 0),
             ("kolleger~1", 1),
@@ -359,37 +507,37 @@ mod tests {
         ] {
             let parsed = clauses(query);
             assert_eq!(parsed.len(), 1, "{query}");
-            assert_eq!(parsed[0].term, "kolleger", "{query}");
-            assert_eq!(parsed[0].fuzzy, Some(edits), "{query}");
+            assert_eq!(term(&parsed[0]), "kolleger", "{query}");
+            assert_eq!(edits(&parsed[0]), Some(expected), "{query}");
             assert_eq!(parsed[0].boost, 1.0, "{query}");
         }
         // Operators still fold around a fuzzy clause.
         let parsed = clauses("kolleger~1 AND lamp");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].occur, Occur::Must);
-        assert_eq!(parsed[0].fuzzy, Some(1));
+        assert_eq!(edits(&parsed[0]), Some(1));
         assert_eq!(parsed[1].occur, Occur::Must);
-        assert_eq!(parsed[1].fuzzy, None);
+        assert_eq!(edits(&parsed[1]), None);
     }
 
     #[test]
     fn boost_and_combined_suffixes() {
         let parsed = clauses("lamp^2.5");
-        assert_eq!((parsed[0].fuzzy, parsed[0].boost), (None, 2.5));
+        assert_eq!((edits(&parsed[0]), parsed[0].boost), (None, 2.5));
         let parsed = clauses("title:kolleger~1^3");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].property.as_deref(), Some("title"));
-        assert_eq!(parsed[0].term, "kolleger");
-        assert_eq!((parsed[0].fuzzy, parsed[0].boost), (Some(1), 3.0));
+        assert_eq!(term(&parsed[0]), "kolleger");
+        assert_eq!((edits(&parsed[0]), parsed[0].boost), (Some(1), 3.0));
         // A zero boost is legal; the clause still exists.
         assert_eq!(clauses("lamp^0")[0].boost, 0.0);
     }
 
     #[test]
     fn distance_above_the_maximum_clamps() {
-        assert_eq!(clauses("lamp~7")[0].fuzzy, Some(MAX_FUZZY_EDITS));
+        assert_eq!(edits(&clauses("lamp~7")[0]), Some(MAX_FUZZY_EDITS));
         assert_eq!(
-            clauses("lamp~99999999999999999999999")[0].fuzzy,
+            edits(&clauses("lamp~99999999999999999999999")[0]),
             Some(MAX_FUZZY_EDITS)
         );
     }
@@ -410,11 +558,11 @@ mod tests {
         // Calibrated against Neo4j 2026.09-enterprise: `~0.8` on the
         // 8-character `kolleger` matches like `~1`; 0 is exact; whole
         // numbers of 1 or more clamp like integers.
-        assert_eq!(clauses("kolleger~0.8")[0].fuzzy, Some(1));
-        assert_eq!(clauses("kolleger~0.0")[0].fuzzy, Some(0));
-        assert_eq!(clauses("kolleger~0.1")[0].fuzzy, Some(2));
-        assert_eq!(clauses("abc~0.5")[0].fuzzy, Some(1));
-        assert_eq!(clauses("kolleger~2.0")[0].fuzzy, Some(2));
+        assert_eq!(edits(&clauses("kolleger~0.8")[0]), Some(1));
+        assert_eq!(edits(&clauses("kolleger~0.0")[0]), Some(0));
+        assert_eq!(edits(&clauses("kolleger~0.1")[0]), Some(2));
+        assert_eq!(edits(&clauses("abc~0.5")[0]), Some(1));
+        assert_eq!(edits(&clauses("kolleger~2.0")[0]), Some(2));
     }
 
     #[test]
@@ -422,11 +570,8 @@ mod tests {
         // `term~1x` is a bare `~` plus the separate term `1x`.
         let parsed = clauses("kolleger~1x");
         assert_eq!(parsed.len(), 2);
-        assert_eq!(
-            (parsed[0].term.as_str(), parsed[0].fuzzy),
-            ("kolleger", Some(2))
-        );
-        assert_eq!((parsed[1].term.as_str(), parsed[1].fuzzy), ("1x", None));
+        assert_eq!((term(&parsed[0]), edits(&parsed[0])), ("kolleger", Some(2)));
+        assert_eq!((term(&parsed[1]), edits(&parsed[1])), ("1x", None));
         assert_eq!(parsed[1].occur, Occur::Should);
     }
 
@@ -435,17 +580,84 @@ mod tests {
         // `term ~1` reads like `term~1`.
         let parsed = clauses("kolleger ~1");
         assert_eq!(parsed.len(), 1);
-        assert_eq!(
-            (parsed[0].term.as_str(), parsed[0].fuzzy),
-            ("kolleger", Some(1))
-        );
+        assert_eq!((term(&parsed[0]), edits(&parsed[0])), ("kolleger", Some(1)));
         let parsed = clauses("a AND kolleger ~1 ^2");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[1].occur, Occur::Must);
-        assert_eq!((parsed[1].fuzzy, parsed[1].boost), (Some(1), 2.0));
+        assert_eq!((edits(&parsed[1]), parsed[1].boost), (Some(1), 2.0));
         let parsed = clauses("kolleger ~");
-        assert_eq!(parsed[0].fuzzy, Some(2));
+        assert_eq!(edits(&parsed[0]), Some(2));
         let parsed = clauses("a AND kolleger ~1");
         assert_eq!(parsed[0].occur, Occur::Must);
+    }
+
+    #[test]
+    fn wildcard_terms_are_patterns_lowercased() {
+        let parsed = clauses("Kollegg* ?ollegger *gger");
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].target, wildcard("kollegg*"));
+        assert_eq!(parsed[1].target, wildcard("?ollegger"));
+        assert_eq!(parsed[2].target, wildcard("*gger"));
+        assert!(parsed.iter().all(|clause| clause.occur == Occur::Should));
+    }
+
+    #[test]
+    fn wildcards_combine_with_operators_fields_and_boost() {
+        let parsed = clauses("title:kolleg*^3 AND NOT lamp*");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].property.as_deref(), Some("title"));
+        assert_eq!(parsed[0].target, wildcard("kolleg*"));
+        assert_eq!((parsed[0].occur, parsed[0].boost), (Occur::Must, 3.0));
+        assert_eq!(parsed[1].occur, Occur::MustNot);
+        assert_eq!(parsed[1].target, wildcard("lamp*"));
+        // A bare wildcard may carry a boost; `*:` names every field.
+        let parsed = clauses("*:*^2");
+        assert_eq!(parsed[0].property, None);
+        assert_eq!(parsed[0].target, wildcard("*"));
+        assert_eq!(parsed[0].boost, 2.0);
+    }
+
+    #[test]
+    fn a_fuzzy_suffix_on_a_wildcard_is_ignored() {
+        let parsed = clauses("kolleg*~1");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].target, wildcard("kolleg*"));
+    }
+
+    #[test]
+    fn escaped_and_quoted_wildcard_characters_are_ordinary_text() {
+        // Calibrated: `kollegger\*` is the term `kollegger`; `"tok1*"` is the
+        // term `tok1` (a quoted word is plain text), `(tok1*)` is a wildcard.
+        assert_eq!(
+            clauses(r"kollegger\*")[0].target,
+            Target::Term("kollegger".into())
+        );
+        assert_eq!(clauses("\"tok1*\"")[0].target, Target::Term("tok1".into()));
+        assert_eq!(clauses("(tok1*)")[0].target, wildcard("tok1*"));
+    }
+
+    #[test]
+    fn a_wildcard_folds_only_under_a_folding_analyzer() {
+        let folding = |query: &str| parse(query, Analyzer::StandardFolding).unwrap();
+        assert_eq!(folding("M\u{dc}LL*")[0].target, wildcard("mull*"));
+        assert_eq!(folding("EIFR\u{c9}*")[0].target, wildcard("eifre*"));
+        // The standard analyzer keeps the accent (lowercased only).
+        let plain = clauses("M\u{dc}LL*");
+        assert_eq!(plain[0].target, wildcard("m\u{fc}ll*"));
+        assert_ne!(plain[0].target, wildcard("mull*"));
+    }
+
+    #[test]
+    fn a_fuzzy_term_is_not_folded_by_the_query_parser() {
+        let parsed = parse("Eifr\u{e9}m~1", Analyzer::StandardFolding).unwrap();
+        assert_eq!(
+            parsed[0].target,
+            Target::Fuzzy {
+                term: "eifr\u{e9}m".into(),
+                edits: 1
+            }
+        );
+        let parsed = parse("Eifr\u{e9}m", Analyzer::StandardFolding).unwrap();
+        assert_eq!(parsed[0].target, Target::Term("eifrem".into()));
     }
 }

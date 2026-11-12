@@ -647,7 +647,7 @@ pub(crate) fn exec_fulltext_query_call(
             // helper's typed error. Only the entity-kind disagreement is
             // this procedure's own — `queryNodes` on a relationship index
             // (or the reverse) has no scan to run.
-            let (detail, _options) =
+            let (detail, options) =
                 resolve_search_index(graph, &index_name, crate::redo::IndexKindSpec::Fulltext)?;
             if detail.relationship != relationship {
                 return Err(Error::execution(
@@ -658,19 +658,22 @@ pub(crate) fn exec_fulltext_query_call(
             // OR'd, `AND`/`OR`/`NOT`, `property:term` field filters) and the
             // live-fitted BM25 score, ranked best-first, no window.
             let kind = EntityKind::from_relationship_flag(detail.relationship);
-            let produced =
-                fulltext::search_all(graph, &detail, &query, fulltext::Analyzer::Standard)?
-                    .into_iter()
-                    .map(|(id, score)| {
-                        Cow::Owned(BTreeMap::from([
-                            (
-                                entity_column.to_string(),
-                                materialize_candidate(graph, kind, id),
-                            ),
-                            (score_key.to_string(), Value::Float(score)),
-                        ]))
-                    })
-                    .collect();
+            let analyzers = fulltext::Analyzers::new(
+                crate::exec::ddl_options::index_analyzer(&options, &index_name)?,
+                None,
+            );
+            let produced = fulltext::search_all(graph, &detail, &query, analyzers)?
+                .into_iter()
+                .map(|(id, score)| {
+                    Cow::Owned(BTreeMap::from([
+                        (
+                            entity_column.to_string(),
+                            materialize_candidate(graph, kind, id),
+                        ),
+                        (score_key.to_string(), Value::Float(score)),
+                    ]))
+                })
+                .collect();
             Ok(produced)
         },
     )

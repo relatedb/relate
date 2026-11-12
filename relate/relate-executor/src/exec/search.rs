@@ -106,9 +106,8 @@ fn fulltext_index_candidates(
     // The shared SEARCH index resolution (stellar round 3, std-6): the
     // schema read, the missing-index policy, and the wrong-kind
     // rejection are the one spelling in `exec::candidates`, shared with
-    // the vector path. The fulltext scan reads no options, so the
-    // resolution's options half is discarded here.
-    let (detail, _options) = resolve_search_index(
+    // the vector path. The options carry the index's analyzer.
+    let (detail, options) = resolve_search_index(
         graph,
         &index.index_name,
         crate::redo::IndexKindSpec::Fulltext,
@@ -117,14 +116,19 @@ fn fulltext_index_candidates(
     // FulltextSearchAcceptance [57]); an absent slot means the standard
     // analyzer, and the value's own NULL/unknown-name/type rejections are
     // `Analyzer::from_value`'s.
-    let analyzer = match &index.analyzer {
-        Some(expr) => {
-            fulltext::Analyzer::from_value(&eval(graph, input, expr, params, cypher_version)?)?
-        }
-        None => fulltext::Analyzer::Standard,
-    };
+    let query_override = index
+        .analyzer
+        .as_ref()
+        .map(|expr| {
+            fulltext::Analyzer::from_value(&eval(graph, input, expr, params, cypher_version)?)
+        })
+        .transpose()?;
+    let analyzers = fulltext::Analyzers::new(
+        crate::exec::ddl_options::index_analyzer(&options, &index.index_name)?,
+        query_override,
+    );
     let kind = EntityKind::from_relationship_flag(detail.relationship);
-    let candidates = fulltext::search(graph, &detail, query, analyzer, offset, limit)?
+    let candidates = fulltext::search(graph, &detail, query, analyzers, offset, limit)?
         .into_iter()
         .map(|(id, score)| (materialize_candidate(graph, kind, id), score))
         .collect();

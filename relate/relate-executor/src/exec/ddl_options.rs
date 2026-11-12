@@ -418,10 +418,34 @@ const POINT_FAMILY: ConfigFamily = ConfigFamily {
     foreign_expected: "a spatial bound",
 };
 
+/// The `indexConfig` key naming a fulltext index's analyzer.
+pub(crate) const KEY_FULLTEXT_ANALYZER: &str = "fulltext.analyzer";
+
+/// The analyzer a stored fulltext index was created with: its
+/// [`KEY_FULLTEXT_ANALYZER`] setting, the standard analyzer when absent. A
+/// stored value the create-time validation would have rejected is catalog
+/// drift.
+pub(crate) fn index_analyzer(
+    options: &BTreeMap<String, Value>,
+    index_name: &str,
+) -> Result<Analyzer> {
+    let drift = || {
+        Error::execution(format!(
+            "InvalidIndexDefinition: fulltext index {index_name} has an invalid indexConfig option"
+        ))
+    };
+    let config = index_config(options).map_err(|_| drift())?;
+    match config.and_then(|config| config.get(KEY_FULLTEXT_ANALYZER)) {
+        None => Ok(Analyzer::Standard),
+        Some(Value::String(name)) => Analyzer::from_name(name).ok_or_else(drift),
+        Some(_) => Err(drift()),
+    }
+}
+
 /// The fulltext index's two `indexConfig` settings.
 const FULLTEXT_FAMILY: ConfigFamily = ConfigFamily {
     keys: &[
-        ("fulltext.analyzer", ValueShape::Analyzer),
+        (KEY_FULLTEXT_ANALYZER, ValueShape::Analyzer),
         ("fulltext.eventually_consistent", ValueShape::Boolean),
     ],
     foreign_prefixes: &["spatial.", "vector."],

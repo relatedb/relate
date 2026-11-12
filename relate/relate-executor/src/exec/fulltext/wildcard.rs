@@ -1,0 +1,134 @@
+//! Lucene wildcard terms: `*` matches any run of characters (including
+//! none), `?` exactly one, `\` makes the next character literal. A pattern
+//! is matched against whole indexed terms.
+
+/// One element of a parsed pattern.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Part {
+    Literal(char),
+    /// `*`
+    Run,
+    /// `?`
+    One,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct Pattern(Vec<Part>);
+
+impl Pattern {
+    /// The pattern of `term`, or `None` when it holds no unescaped `*` or
+    /// `?` (an ordinary term). The term is lowercased first: Lucene
+    /// normalises wildcard terms with the lowercase filter only. A caller
+    /// whose analyzer folds folds the term before parsing (folding leaves
+    /// `*`, `?` and `\` alone), so `?` counts one character of the folded
+    /// token: `stra?e` does not match `strasse`, deliberately not special-
+    /// cased.
+    pub(super) fn parse(term: &str) -> Option<Self> {
+        let mut parts = Vec::new();
+        let mut wild = false;
+        let mut chars = term.chars().flat_map(char::to_lowercase);
+        while let Some(c) = chars.next() {
+            parts.push(match c {
+                '*' => {
+                    wild = true;
+                    // `**` is `*`.
+                    if parts.last() == Some(&Part::Run) {
+                        continue;
+                    }
+                    Part::Run
+                }
+                '?' => {
+                    wild = true;
+                    Part::One
+                }
+                '\\' => match chars.next() {
+                    Some(escaped) => Part::Literal(escaped),
+                    None => Part::Literal('\\'),
+                },
+                other => Part::Literal(other),
+            });
+        }
+        wild.then_some(Self(parts))
+    }
+
+    /// Whether the whole of `term` matches the pattern (iterative glob with
+    /// single-star backtracking: linear in practice, no recursion).
+    pub(super) fn matches(&self, term: &str) -> bool {
+        let text: Vec<char> = term.chars().collect();
+        let (mut p, mut t) = (0, 0);
+        // The most recent `*` and the text position it currently absorbs to.
+        let mut resume: Option<(usize, usize)> = None;
+        while t < text.len() {
+            match self.0.get(p) {
+                Some(Part::Run) => {
+                    resume = Some((p, t));
+                    p += 1;
+                }
+                Some(Part::One) => {
+                    p += 1;
+                    t += 1;
+                }
+                Some(Part::Literal(c)) if *c == text[t] => {
+                    p += 1;
+                    t += 1;
+                }
+                _ => match resume {
+                    Some((star, at)) => {
+                        resume = Some((star, at + 1));
+                        p = star + 1;
+                        t = at + 1;
+                    }
+                    None => return false,
+                },
+            }
+        }
+        self.0[p..].iter().all(|part| *part == Part::Run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Pattern;
+
+    fn pattern(term: &str) -> Pattern {
+        Pattern::parse(term).expect("a wildcard term")
+    }
+
+    #[test]
+    fn plain_terms_are_not_patterns() {
+        assert_eq!(Pattern::parse("kollegger"), None);
+        // An escaped wildcard character is literal, so no wildcard remains.
+        assert_eq!(Pattern::parse(r"kollegger\*"), None);
+    }
+
+    #[test]
+    fn star_runs_and_question_marks_match_whole_terms() {
+        assert!(pattern("kollegg*").matches("kollegger"));
+        assert!(pattern("kollegg*").matches("kollegg"));
+        assert!(!pattern("kollegg*").matches("kolleger"));
+        assert!(pattern("*gger").matches("kollegger"));
+        assert!(pattern("*olleg*").matches("kollegium"));
+        assert!(pattern("k?llegger").matches("kollegger"));
+        assert!(!pattern("k?llegger").matches("kllegger"));
+        assert!(!pattern("kolleg?").matches("kollegger"));
+        assert!(pattern("koll*gger").matches("kollegger"));
+        assert!(pattern("k*r").matches("kollegger"));
+        assert!(pattern("*").matches("x"));
+        assert!(!pattern("?").matches("xy"));
+        assert!(pattern("a*b*c").matches("aXbYbZc"));
+        assert!(!pattern("a*b*c").matches("aXbYbZ"));
+    }
+
+    #[test]
+    fn terms_are_lowercased_and_stars_collapse() {
+        assert_eq!(pattern("KOLLEGG*"), pattern("kollegg*"));
+        assert_eq!(pattern("kolleg**"), pattern("kolleg*"));
+    }
+
+    #[test]
+    fn escaped_wildcards_are_literal_characters() {
+        let escaped = pattern(r"a\*b*");
+        assert!(escaped.matches("a*bxyz"));
+        assert!(!escaped.matches("axbxyz"));
+    }
+}

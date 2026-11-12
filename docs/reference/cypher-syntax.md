@@ -649,14 +649,24 @@ procedures):
 | `a AND b`, `NOT a` | both terms / exclusion (uppercase operators only) |
 | `property:term` | restrict the term to one indexed property |
 | `term~`, `term~N` | fuzzy: every indexed term within N edits (N = 0, 1 or 2; bare `~` is 2; larger integers clamp to 2; `~x` with 0 <= x < 1 is a minimum similarity, `floor((1-x) * length)` edits; `~1.5` is an error). Insert, delete, substitute and an adjacent transposition each cost one edit. Up to 50 terms per field, closest then most frequent; a closer match scores higher |
+| `term*`, `te?m`, `*term` | wildcard: `*` is any run of characters (including none), `?` exactly one; a leading wildcard is allowed. The term is lowercased (and ASCII-folded under a folding analyzer), never stemmed, and matches whole indexed terms; `?` counts one character of the folded token (`stra?e` does not match `strasse`). A matching field scores a constant 1.0 (times any boost) however many terms match; there is no expansion cap. `*` (also `field:*`, `*:*`) matches every entity with a token in the field; a `~N` suffix on a wildcard is ignored. `\*` and `\?` are literal characters, and inside quotes `*` and `?` are plain text |
 | `term^B` | multiply the clause's score by B (a non-negative number); matching is unchanged |
 | `field:term~N^B` | the forms combine |
+
+A FULLTEXT index created with `fulltext.analyzer: 'standard-folding'` folds Latin
+diacritics and ligatures (`é` to `e`, `ß` to `ss`, `æ` to `ae`) in its stored
+tokens and in analyzed query terms, so `eifrem` finds `Eifrém`; Greek and
+Cyrillic are not folded. Wildcard terms are folded too on a folding index, so `Müll*`,
+`mull*` and `MÜLL*` all find `Müller` (a deliberate deviation from Neo4j, which
+leaves wildcards unfolded; ADR-0583). Fuzzy terms are lowercased only, as in
+Neo4j: `eifrém~0` misses on a folding index. Without `WITH ANALYZER`, a query uses the index's folding (not its
+stemming); `WITH ANALYZER` changes the query side only.
 
 A malformed suffix (`term^x`, `term^`, `term^-1`, `term~1.5`, a suffix with no term) is a
 syntax error rather than a stray term. Phrase quotes add no adjacency
 constraint and `+`/`-` clause modifiers are not read. Fuzzy and boost
 behaviour follows Lucene's classic query parser and is calibrated against
-Neo4j 2026.09-enterprise (ADR-0578).
+Neo4j 2026.09-enterprise (ADR-0578, ADR-0583).
 
 ```cypher
 CREATE FULLTEXT INDEX relNotes FOR ()-[r:RELATED_TO]-() ON EACH [r.note];

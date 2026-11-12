@@ -20,11 +20,20 @@
 //! Shortcuts, all live-documented and outside the merged corpora's shapes:
 //! a quoted phrase adds no adjacency constraint (its words stay separate
 //! terms), `+`/`-` clause modifiers are not read, and the index's own
-//! `fulltext.analyzer` config is not applied to stored tokens — only the
-//! query-side analyzer is differentiated. Every live-admitted analyzer
+//! `fulltext.analyzer` config reaches stored tokens only as accent folding
+//! (never stop words or stemming) — the query-side analyzer is otherwise
+//! the one differentiated. Every live-admitted analyzer
 //! name is accepted (the one [`ANALYZERS`] table below — the same table
 //! `exec::ddl_options`' config validation reads); the names other than
-//! `english` share the standard tokenizer.
+//! `english` and `standard-folding` share the standard tokenizer.
+//! `standard-folding` ASCII-folds Latin diacritics and ligatures (see
+//! [`fold`]) in the index's stored tokens and in analyzed query terms.
+//!
+//! `term*` / `te?m` wildcard terms (see [`wildcard`]; folded under a folding
+//! analyzer, unlike live) expand against each
+//! field's vocabulary into an any-of group scored as a constant 1.0 per
+//! matching field (times the boost), with no expansion cap — all calibrated
+//! against Neo4j 2026.09-enterprise (ADR-0583).
 //!
 //! `term~N` (fuzzy, N in 0..=2, bare `~` = 2) expands against each field's
 //! vocabulary by bounded Damerau-Levenshtein distance (see [`distance`]) and
@@ -40,11 +49,14 @@ use crate::overlay::ExecGraph;
 use crate::redo::IndexDetailSpec;
 
 mod distance;
+mod fold;
 mod query;
 mod stemmer;
+mod wildcard;
 
 use distance::bounded_distance;
-use query::{parse, Clause, Occur};
+use fold::fold;
+use query::{parse, Clause, Occur, Target};
 use stemmer::porter_stem;
 
 /// Live Neo4j's fulltext similarity parameters (fitted on 2026.10.1
@@ -65,14 +77,16 @@ const ENGLISH_STOP_WORDS: [&str; 33] = [
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Analyzer {
     Standard,
+    /// `standard-folding`: the standard tokenizer plus ASCII folding.
+    StandardFolding,
     English,
 }
 
 /// The one analyzer vocabulary: every fulltext analyzer name live Neo4j
 /// admits (live-verified 2026-11-02 on neo4j:2026.09-enterprise) with the
 /// behaviour it selects — `english` drops English stop words and
-/// Porter-stems, every other admitted name shares the standard
-/// tokenizer. The name admission, the rejection sentence's list and
+/// Porter-stems, `standard-folding` folds Latin diacritics, every other
+/// admitted name shares the standard tokenizer. The name admission, the rejection sentence's list and
 /// `exec::ddl_options`' `fulltext.analyzer` config validation all read
 /// these rows; the name list and the name→behaviour mapping are never
 /// split across modules again.
@@ -112,7 +126,7 @@ const ANALYZERS: [(&str, Analyzer); 45] = [
     ("sorani", Analyzer::Standard),
     ("spanish", Analyzer::Standard),
     ("standard", Analyzer::Standard),
-    ("standard-folding", Analyzer::Standard),
+    ("standard-folding", Analyzer::StandardFolding),
     ("standard-no-stop-words", Analyzer::Standard),
     ("stop", Analyzer::Standard),
     ("swedish", Analyzer::Standard),
@@ -164,11 +178,59 @@ impl Analyzer {
         let tokens = tokenize(text);
         match self {
             Self::Standard => tokens,
+            Self::StandardFolding => tokens.iter().map(|token| fold(token)).collect(),
             Self::English => tokens
                 .into_iter()
                 .filter(|token| !ENGLISH_STOP_WORDS.contains(&token.as_str()))
                 .map(|token| porter_stem(&token))
                 .collect(),
+        }
+    }
+}
+
+impl Analyzer {
+    /// Whether the analyzer ASCII-folds (stored tokens, plain query terms
+    /// and, by ruling, wildcard terms).
+    pub(crate) fn folds(self) -> bool {
+        matches!(self, Self::StandardFolding)
+    }
+
+    /// The tokens a stored value contributes under the index's own analyzer:
+    /// folded for a folding index, the plain tokenizer otherwise (stop words
+    /// and stems stay a query-side shortcut).
+    fn stored_tokens(self, text: &str) -> Vec<String> {
+        match self {
+            Self::StandardFolding => self.analyze(text),
+            Self::Standard | Self::English => tokenize(text),
+        }
+    }
+
+    /// The analyzer a query without `WITH ANALYZER` uses against an index
+    /// configured with `self`: the index's folding carries over, its stemming
+    /// does not (stored tokens are unstemmed).
+    pub(crate) fn query_default(self) -> Self {
+        match self {
+            Self::StandardFolding => Self::StandardFolding,
+            Self::Standard | Self::English => Self::Standard,
+        }
+    }
+}
+
+/// The two analyzers one scan crosses: the index's (what its stored tokens
+/// went through) and the query's (what the query's terms go through).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Analyzers {
+    index: Analyzer,
+    query: Analyzer,
+}
+
+impl Analyzers {
+    /// `query_override` is the evaluated `WITH ANALYZER`; absent, the query
+    /// follows the index ([`Analyzer::query_default`]).
+    pub(crate) fn new(index: Analyzer, query_override: Option<Analyzer>) -> Self {
+        Self {
+            index,
+            query: query_override.unwrap_or_else(|| index.query_default()),
         }
     }
 }
@@ -219,20 +281,30 @@ struct FieldStats {
 /// nested list cannot be a property value at all (live 2026.10.1 rejects it
 /// with 22N39, "cannot be stored in properties") — but it keeps the walker
 /// total over the value model instead of silently dropping an inner list.
-fn value_tokens(value: &Value) -> Vec<String> {
+fn value_tokens(value: &Value, index: Analyzer) -> Vec<String> {
     match value {
-        Value::String(text) => tokenize(text),
-        Value::List(values) => values.iter().flat_map(value_tokens).collect(),
+        Value::String(text) => index.stored_tokens(text),
+        Value::List(values) => values
+            .iter()
+            .flat_map(|value| value_tokens(value, index))
+            .collect(),
         _ => Vec::new(),
     }
 }
 
-fn doc_fields<'a>(properties: &'a [String], values: &PropertyMap) -> Vec<DocField<'a>> {
+fn doc_fields<'a>(
+    properties: &'a [String],
+    values: &PropertyMap,
+    index: Analyzer,
+) -> Vec<DocField<'a>> {
     properties
         .iter()
         .map(|property| DocField {
             property,
-            tokens: values.get(property).map(value_tokens).unwrap_or_default(),
+            tokens: values
+                .get(property)
+                .map(|value| value_tokens(value, index))
+                .unwrap_or_default(),
         })
         .collect()
 }
@@ -283,14 +355,24 @@ struct Alternative {
     weight: f64,
 }
 
+/// The any-of group of terms a clause matches in one field, and how the
+/// match scores.
+enum FieldMatch {
+    /// An exact term is the group of one, a fuzzy term its bounded
+    /// expansion; each alternative scores its own weighted BM25.
+    Weighted(Vec<Alternative>),
+    /// A wildcard's expansion (uncapped): the field scores a constant 1.0
+    /// when it holds any of the terms, however many or how often.
+    Constant(HashSet<String>),
+}
+
 /// A parsed clause resolved against the index vocabulary: per indexed field
-/// the any-of group of terms it matches there. An exact clause is the group
-/// of one; a fuzzy clause is its bounded expansion. The `property:` filter
-/// is applied here, so a field outside it has no entry.
+/// the any-of group of terms it matches there. The `property:` filter is
+/// applied here, so a field outside it has no entry.
 struct ResolvedClause<'a> {
     occur: Occur,
     boost: f64,
-    by_field: HashMap<&'a str, Vec<Alternative>>,
+    by_field: HashMap<&'a str, FieldMatch>,
 }
 
 /// The weight of a fuzzy candidate at edit distance `edits` from a query
@@ -347,14 +429,23 @@ fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> 
                 .is_none_or(|wanted| wanted == **field)
         })
         .map(|(field, stat)| {
-            let alternatives = match clause.fuzzy {
-                None => vec![Alternative {
-                    term: clause.term.clone(),
+            let matched = match &clause.target {
+                Target::Term(term) => FieldMatch::Weighted(vec![Alternative {
+                    term: term.clone(),
                     weight: 1.0,
-                }],
-                Some(max_edits) => expand_fuzzy(&clause.term, max_edits, stat),
+                }]),
+                Target::Fuzzy { term, edits } => {
+                    FieldMatch::Weighted(expand_fuzzy(term, *edits, stat))
+                }
+                Target::Wildcard(pattern) => FieldMatch::Constant(
+                    stat.df
+                        .keys()
+                        .filter(|term| pattern.matches(term))
+                        .cloned()
+                        .collect(),
+                ),
             };
-            (*field, alternatives)
+            (*field, matched)
         })
         .collect();
     ResolvedClause {
@@ -367,18 +458,29 @@ fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> 
 /// One clause's BM25 contribution on one document, summed over the fields
 /// and alternatives it matched (a term present in both `title` and `plot`
 /// scores from each, as Lucene's per-field clauses do; each fuzzy
-/// alternative scales by its closeness weight), times the clause's boost;
-/// `None` when the clause matches no field.
+/// alternative scales by its closeness weight; a wildcard scores a constant
+/// 1.0 per field it matches), times the clause's boost; `None` when the
+/// clause matches no field.
 fn clause_score(
     clause: &ResolvedClause<'_>,
     doc: &[DocField<'_>],
     stats: &HashMap<&str, FieldStats>,
 ) -> Option<f64> {
     let mut score = 0.0;
-    let mut matched = false;
+    let mut any_match = false;
     for field in doc {
-        let Some(alternatives) = clause.by_field.get(field.property) else {
+        let Some(field_match) = clause.by_field.get(field.property) else {
             continue;
+        };
+        let alternatives = match field_match {
+            FieldMatch::Weighted(alternatives) => alternatives,
+            FieldMatch::Constant(terms) => {
+                if field.tokens.iter().any(|token| terms.contains(token)) {
+                    any_match = true;
+                    score += 1.0;
+                }
+                continue;
+            }
         };
         for alternative in alternatives {
             let tf = field
@@ -389,7 +491,7 @@ fn clause_score(
             if tf == 0 {
                 continue;
             }
-            matched = true;
+            any_match = true;
             // Both lookups are invariants of the one statistics pass: every
             // indexed property has an entry, and a term this document
             // carries was counted into that field's document frequency.
@@ -409,7 +511,7 @@ fn clause_score(
             score += alternative.weight * idf * tf / (tf + K1 * (1.0 - B + B * dl / avgdl));
         }
     }
-    matched.then_some(score * clause.boost)
+    any_match.then_some(score * clause.boost)
 }
 
 /// The one fulltext scan, windowed: rank the index's matching entities by
@@ -421,7 +523,7 @@ pub(crate) fn search(
     graph: &ExecGraph<'_>,
     detail: &IndexDetailSpec,
     query: &str,
-    analyzer: Analyzer,
+    analyzers: Analyzers,
     offset: usize,
     limit: usize,
 ) -> Result<Vec<(i64, f64)>> {
@@ -429,7 +531,7 @@ pub(crate) fn search(
         graph,
         detail,
         query,
-        analyzer,
+        analyzers,
         TopWindow::new(offset, limit),
     )
 }
@@ -440,9 +542,9 @@ pub(crate) fn search_all(
     graph: &ExecGraph<'_>,
     detail: &IndexDetailSpec,
     query: &str,
-    analyzer: Analyzer,
+    analyzers: Analyzers,
 ) -> Result<Vec<(i64, f64)>> {
-    rank(graph, detail, query, analyzer, TopWindow::ranking_all())
+    rank(graph, detail, query, analyzers, TopWindow::ranking_all())
 }
 
 /// The fulltext arm's operand read, the twin of the vector arm's
@@ -463,10 +565,10 @@ fn rank(
     graph: &ExecGraph<'_>,
     detail: &IndexDetailSpec,
     query: &str,
-    analyzer: Analyzer,
+    analyzers: Analyzers,
     mut window: TopWindow,
 ) -> Result<Vec<(i64, f64)>> {
-    let clauses = parse(query, analyzer)?;
+    let clauses = parse(query, analyzers.query)?;
     if clauses.is_empty() {
         return Ok(Vec::new());
     }
@@ -475,7 +577,12 @@ fn rank(
     let entities = index_population(graph, detail);
     let docs: Vec<(i64, Vec<DocField<'_>>)> = entities
         .iter()
-        .map(|(id, properties)| (*id, doc_fields(&detail.properties, properties)))
+        .map(|(id, properties)| {
+            (
+                *id,
+                doc_fields(&detail.properties, properties, analyzers.index),
+            )
+        })
         .collect();
     let stats = field_stats(&docs, &detail.properties);
     // Fuzzy clauses expand against each field's vocabulary once per scan.
@@ -520,6 +627,101 @@ mod tests {
             ["the", "princesses"]
         );
         assert_eq!(Analyzer::English.analyze("The princesses"), ["princess"]);
+    }
+
+    #[test]
+    fn a_folding_analyzer_folds_stored_tokens_and_query_terms() {
+        assert_eq!(
+            Analyzer::from_name("standard-folding"),
+            Some(Analyzer::StandardFolding)
+        );
+        assert_eq!(
+            Analyzer::StandardFolding.analyze("Eifr\u{e9}m Stra\u{df}e"),
+            ["eifrem", "strasse"]
+        );
+        assert_eq!(
+            Analyzer::StandardFolding.stored_tokens("Eifr\u{e9}m"),
+            ["eifrem"]
+        );
+        // Stop words and stems stay a query-side shortcut; only folding
+        // reaches the stored side.
+        assert_eq!(
+            Analyzer::English.stored_tokens("The Eifr\u{e9}m"),
+            ["the", "eifr\u{e9}m"]
+        );
+        assert_eq!(
+            Analyzer::Standard.stored_tokens("Eifr\u{e9}m"),
+            ["eifr\u{e9}m"]
+        );
+    }
+
+    #[test]
+    fn the_query_follows_the_index_folding_but_not_its_stemming() {
+        let folding = Analyzers::new(Analyzer::StandardFolding, None);
+        assert_eq!(folding.query, Analyzer::StandardFolding);
+        assert_eq!(
+            Analyzers::new(Analyzer::English, None).query,
+            Analyzer::Standard
+        );
+        let overridden = Analyzers::new(Analyzer::StandardFolding, Some(Analyzer::English));
+        assert_eq!(
+            (overridden.index, overridden.query),
+            (Analyzer::StandardFolding, Analyzer::English)
+        );
+    }
+
+    #[test]
+    fn the_index_analyzer_reads_its_stored_config() {
+        use std::collections::BTreeMap;
+        let config = |analyzer: Value| {
+            BTreeMap::from([(
+                "indexConfig".to_string(),
+                Value::Map(std::sync::Arc::new(BTreeMap::from([(
+                    crate::exec::ddl_options::KEY_FULLTEXT_ANALYZER.to_string(),
+                    analyzer,
+                )]))),
+            )])
+        };
+        assert_eq!(
+            crate::exec::ddl_options::index_analyzer(&BTreeMap::new(), "i").unwrap(),
+            Analyzer::Standard
+        );
+        assert_eq!(
+            crate::exec::ddl_options::index_analyzer(
+                &config(Value::String("standard-folding".into())),
+                "i"
+            )
+            .unwrap(),
+            Analyzer::StandardFolding
+        );
+        assert!(crate::exec::ddl_options::index_analyzer(
+            &config(Value::String("nope".into())),
+            "i"
+        )
+        .is_err());
+        assert!(crate::exec::ddl_options::index_analyzer(&config(Value::Int(1)), "i").is_err());
+    }
+
+    #[test]
+    fn a_wildcard_group_scores_a_constant_per_field() {
+        let stat = stat_of(&[("lampa", 1), ("lampb", 1), ("other", 1)]);
+        let stats = HashMap::from([("name", stat)]);
+        let clause = ResolvedClause {
+            occur: Occur::Should,
+            boost: 2.0,
+            by_field: HashMap::from([(
+                "name",
+                FieldMatch::Constant(HashSet::from(["lampa".to_string(), "lampb".to_string()])),
+            )]),
+        };
+        let field = |tokens: &[&str]| DocField {
+            property: "name",
+            tokens: tokens.iter().map(|t| t.to_string()).collect(),
+        };
+        // Two matching terms, repeated, in a long field: still 1.0 * boost.
+        let doc = [field(&["lampa", "lampa", "lampb", "x", "y", "z"])];
+        assert_eq!(clause_score(&clause, &doc, &stats), Some(2.0));
+        assert_eq!(clause_score(&clause, &[field(&["other"])], &stats), None);
     }
 
     #[test]
