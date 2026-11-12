@@ -160,7 +160,7 @@ pub(crate) struct ProjectSpec<'a> {
 }
 
 impl<'a> ProjectSpec<'a> {
-    fn fields(&self) -> ProjectionFields<'a> {
+    pub(crate) fn fields(&self) -> ProjectionFields<'a> {
         ProjectionFields {
             distinct: self.distinct,
             items: self.items,
@@ -220,6 +220,21 @@ pub(crate) fn streams_into_aggregation(fields: &ProjectionFields<'_>) -> bool {
 pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
     next.and_then(ProjectionFields::from_clause)
         .is_some_and(|fields| streams_into_aggregation(&fields))
+}
+
+/// Whether a projection only maps rows: no aggregation, `DISTINCT`,
+/// `ORDER BY`, `SKIP` or `LIMIT`, so each input row yields at most one
+/// output row independent of every other and the clause can run on a stream
+/// of bounded batches (a `WHERE` filters per row and streams). The
+/// complement — the breakers — keep the held path.
+pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
+    !fields.distinct
+        && fields.group_by.is_none()
+        && fields.order.is_empty()
+        && fields.skip.is_none()
+        && fields.limit.is_none()
+        && !fields.items.iter().any(|item| is_agg_expr(&item.expr))
+        && !fields.where_clause.is_some_and(is_agg_expr)
 }
 
 /// Open the aggregation a streamed `MATCH` folds into, for the
@@ -368,16 +383,7 @@ pub(crate) fn project_rows(
     // Without sorting, filtering, aggregation, or DISTINCT, paging may stop
     // row evaluation. In particular a LIMIT 1 must not evaluate a later row
     // whose projection raises an error (CIP-27).
-    let eager_paged = !has_agg
-        && pages_eagerly(&ProjectionFields {
-            distinct,
-            items,
-            group_by,
-            order,
-            skip: skip.as_ref(),
-            limit: limit.as_ref(),
-            where_clause,
-        });
+    let eager_paged = !has_agg && pages_eagerly(&spec.fields());
     // The match sink already evaluated these items. Eager paging never takes
     // that path, so this bag is the full input the sort and the page see.
     let preprojected = matches!(source, RowSource::SinkProjected);

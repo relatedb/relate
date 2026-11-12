@@ -1,8 +1,10 @@
 //! The run harness: lower Cypher with the product front-end and execute it at a pinned snapshot.
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::thread::LocalKey;
 
+use relate_core::tokens::{workspace_meter, LedgerGuard, TokenLedger};
 use relate_core::{Result, Value};
 use relate_front::parse_and_lower;
 use relate_ir::Query;
@@ -11,6 +13,7 @@ use relate_planner::{plan, plan_with_tokens, NoPatternStats};
 use crate::ctx::{ClauseMetricsRecord, PlanMetricsSink};
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
+use crate::test_support::PeakPoolDouble;
 
 use super::super::{execute, execute_read_at, ExecRequest, QueryResult, ReadAdmission};
 
@@ -187,4 +190,17 @@ pub(crate) fn same_rows(a: &QueryResult, b: &QueryResult) -> bool {
     a.sort_by_key(|row| format!("{row:?}"));
     b.sort_by_key(|row| format!("{row:?}"));
     a == b
+}
+
+/// Run `cypher` under a workspace ledger; the result's rows and the peak
+/// workspace bytes charged while it ran (the memory-independence tests'
+/// one meter).
+pub(crate) fn run_metered(g: &Graph, cypher: &str) -> (Vec<Vec<Value>>, u64) {
+    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 4));
+    assert!(relate_core::tokens::PeakPool::try_grow(pool.as_ref(), 1));
+    let mut ledger = TokenLedger::new(u64::MAX / 4, 1, pool);
+    let _guard = LedgerGuard::install(&mut ledger);
+    let rows = exec_cypher(g, cypher).rows;
+    let (_, peak, _) = workspace_meter().expect("ledger installed");
+    (rows, peak)
 }

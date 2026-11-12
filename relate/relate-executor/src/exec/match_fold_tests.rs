@@ -7,8 +7,7 @@
 
 use relate_core::Value;
 
-use super::test_support::{build, exec_cypher, profiled, same_rows, Built};
-use crate::pattern_engine::PatternEngine;
+use super::test_support::{build, exec_cypher, profiled, same_rows, walk_only, Built};
 
 /// A hub (node 0) over `fan` children, each with two grandchildren, plus a
 /// back edge from the first grandchild to the hub so paths revisit it.
@@ -27,19 +26,13 @@ fn hub(fan: usize) -> Built {
     build(&labels, &rels)
 }
 
-fn walk_only(fan: usize) -> Built {
-    let mut built = hub(fan);
-    built.graph.configure_pattern_engine(PatternEngine::Walk);
-    built
-}
-
 /// `matched` is the `MATCH` text, `rest` the aggregating `RETURN`: folded as
 /// written, held with a `WITH *` between them.
 fn assert_agrees(matched: &str, rest: &str) {
     let folded = format!("{matched} {rest}");
     let held = format!("{matched} WITH * {rest}");
     let auto = hub(6);
-    let walk = walk_only(6);
+    let walk = walk_only(hub(6));
     let expected = exec_cypher(&auto.graph, &held);
     assert!(!expected.rows.is_empty(), "{folded}: the fixture matches");
     let got = exec_cypher(&auto.graph, &folded);

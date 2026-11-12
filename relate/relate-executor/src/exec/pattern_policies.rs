@@ -433,6 +433,16 @@ pub(crate) struct MatchReduce<'a> {
 /// without naming the aggregation's lifetime.
 pub(crate) trait RowFold {
     fn offer(&self, graph: &ExecGraph<'_>, row: Row) -> Result<()>;
+
+    /// A finished container a rung built (the batch chain, the contracted
+    /// kernels) offered whole. The default folds it row by row, uncharged
+    /// (an aggregation keeps its historical answer: the container is
+    /// consumed at once); a consumer that buffers the rows onward charges
+    /// the container against the expression cap first, so a kernel-built
+    /// container is refused at the cap exactly as the held path refused it.
+    fn offer_container(&self, graph: &ExecGraph<'_>, rows: Vec<Row>) -> Result<()> {
+        rows.into_iter().try_for_each(|row| self.offer(graph, row))
+    }
 }
 
 /// The `MATCH` output folded into an [`Aggregation`] as it is emitted, with

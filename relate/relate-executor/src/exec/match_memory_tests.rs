@@ -3,14 +3,10 @@
 //! the number of path rows. Each statement runs at N and 4N path rows and
 //! the peak workspace charge at 4N must stay within 1.25x of the peak at N.
 
-use std::sync::Arc;
-
-use relate_core::tokens::{workspace_meter, LedgerGuard, TokenLedger};
 use relate_core::Value;
 
-use super::test_support::{build, exec_cypher, Built};
+use super::test_support::{build, exec_cypher, run_metered, Built};
 use crate::graph::Graph;
-use crate::test_support::PeakPoolDouble;
 
 const PATHS: usize = 4_000;
 const MIB: u64 = 1024 * 1024;
@@ -25,18 +21,6 @@ fn hub(fan: usize) -> Built {
         rels.push((1 + c, 1 + fan + c, "E"));
     }
     build(&labels, &rels)
-}
-
-/// Run `cypher` under a workspace ledger; the result's single value and the
-/// peak workspace bytes charged while it ran.
-fn run_metered(g: &Graph, cypher: &str) -> (Vec<Vec<Value>>, u64) {
-    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 4));
-    assert!(relate_core::tokens::PeakPool::try_grow(pool.as_ref(), 1));
-    let mut ledger = TokenLedger::new(u64::MAX / 4, 1, pool);
-    let _guard = LedgerGuard::install(&mut ledger);
-    let rows = exec_cypher(g, cypher).rows;
-    let (_, peak, _) = workspace_meter().expect("ledger installed");
-    (rows, peak)
 }
 
 fn assert_flat(aggregation: &str) {

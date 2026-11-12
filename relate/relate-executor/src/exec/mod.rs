@@ -66,7 +66,9 @@ pub(crate) mod hub_join;
 // matcher, cost gate, chain and hub-star operators over the substrate.
 pub(crate) mod kernels;
 pub(crate) mod match_cap;
+pub(crate) mod match_chain;
 pub(crate) mod match_clause;
+pub(crate) mod match_folds;
 pub(crate) mod named_path;
 // The one engine fork (`match_one_path`) every per-path consumer routes
 // through — the driver's pattern loop (match_clause), the hub join's
@@ -739,6 +741,8 @@ mod integer_arg_tests;
 mod kernels_tests;
 #[cfg(test)]
 mod limit_where_tests;
+#[cfg(test)]
+mod match_chain_tests;
 #[cfg(test)]
 mod match_fold_tests;
 #[cfg(test)]

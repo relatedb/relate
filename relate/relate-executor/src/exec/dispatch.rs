@@ -11,7 +11,7 @@ use std::rc::Rc;
 use web_time::Instant;
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{Clause, MatchMode};
+use relate_ir::Clause;
 
 use crate::ctx::{ClauseMetricsRecord, ExecCtx, KernelRung, PlanMetricsSite, QueryCtx};
 use crate::eval::rows_logical_bytes;
@@ -30,19 +30,16 @@ use super::clause_arms::{
 };
 use super::count_stats::count_only_stats_result;
 use super::ddl::{exec_create_index, exec_drop_index};
-use super::exists_probe::try_fold_boolean_count;
 use super::foreach::exec_foreach;
-use super::kernels::try_fold_chain_count;
-use super::match_clause::{run_match_operator_ladder, MatchOperator};
+use super::match_chain::{open_match_consumer, Landing, MatchConsumer};
+use super::match_clause::{charge_finished_container, run_match_operator_ladder, MatchOperator};
+use super::match_folds::try_match_folds;
 use super::order::OrderKeys;
-use super::pattern_policies::RowFold;
 use super::procedures::{exec_call, CallSpec};
 use super::project::{
-    open_match_fold, project_rows, return_result, streams_into_projection, ProjectSpec, RowSource,
+    project_rows, return_result, streams_into_projection, ProjectSpec, RowSource,
 };
-use super::pushdown::{
-    live_from, match_limit_cap, trim_rows, try_fold_one_hop_aggs, try_fold_path_aggs, FoldedReturn,
-};
+use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::scope::{carry_scope_bindings, star_scope_names};
 use super::search::search_match_clause;
 use super::sink::sinkable_projection;
@@ -349,15 +346,7 @@ fn run_clauses_mode(
                     charge_finished_container(graph, &rows)?;
                 } else {
                     let folded = if !*optional {
-                        try_match_folds(
-                            graph,
-                            &rows,
-                            patterns,
-                            where_clause.as_ref(),
-                            &clauses[i..],
-                            params,
-                            qctx.cypher_version,
-                        )?
+                        try_match_folds(graph, &rows, &clauses[i..], params, qctx.cypher_version)?
                     } else {
                         None
                     };
@@ -386,16 +375,23 @@ fn run_clauses_mode(
                                     rows.len(),
                                 )?
                             };
-                            let projection = clauses.get(i + 1).and_then(sinkable_projection);
-                            let fold = if cap.is_none() && !*optional {
-                                open_match_fold(
-                                    graph,
-                                    clauses.get(i + 1),
+                            // What takes the rows as they are emitted: the
+                            // aggregation of a following aggregating clause,
+                            // or the stages after this MATCH that map rows
+                            // to rows (ADR-0555, `match_chain.rs`).
+                            let consumer = if cap.is_none() && !*optional {
+                                open_match_consumer(
+                                    ExecCtx::new(graph, params, qctx.cypher_version),
+                                    &clauses[i..],
                                     &fold_order,
-                                    params,
-                                    qctx.cypher_version,
                                     scope,
+                                    profile.is_none(),
                                 )?
+                            } else {
+                                None
+                            };
+                            let projection = if consumer.is_none() {
+                                clauses.get(i + 1).and_then(sinkable_projection)
                             } else {
                                 None
                             };
@@ -414,21 +410,42 @@ fn run_clauses_mode(
                                 &mut cap,
                                 projection.as_ref(),
                                 &clauses[i + 1..],
-                                fold.as_ref().map(|f| f as &dyn RowFold),
+                                consumer.as_ref().map(MatchConsumer::as_fold),
                             )?;
                             rows = ladder_rows;
-                            let folded = fold.is_some();
-                            if let Some(fold) = fold {
-                                let (aggregation, offered) = fold.into_parts();
-                                pending_fold = Some(aggregation);
-                                if let Some(tick) = metrics_tick.as_mut() {
-                                    tick.streamed_rows = Some(offered);
-                                }
-                            }
+                            let streamed = consumer.is_some();
                             // The ladder's one returned value; the tick
                             // projects both PROFILE facts from it below.
                             clause_operator = Some(operator);
-                            if projection.is_some() {
+                            if let Some(consumer) = consumer {
+                                // The consumer trimmed its own inputs and
+                                // output; its last stage's rows (or the
+                                // aggregation it fed) are what is left.
+                                match consumer.finish(graph)? {
+                                    Landing::Folded {
+                                        aggregation,
+                                        offered,
+                                        consumed,
+                                    } => {
+                                        pending_fold = Some(*aggregation);
+                                        skip = consumed;
+                                        if let (Some(tick), Some(offered)) =
+                                            (metrics_tick.as_mut(), offered)
+                                        {
+                                            tick.streamed_rows = Some(offered);
+                                        }
+                                    }
+                                    Landing::Rows {
+                                        rows: landed,
+                                        source,
+                                        consumed,
+                                    } => {
+                                        rows = landed;
+                                        rows_source = source;
+                                        skip = consumed;
+                                    }
+                                }
+                            } else if projection.is_some() {
                                 rows_source = RowSource::SinkProjected;
                             } else if let Some(live) = live_from(&clauses[i + 1..]) {
                                 // A sink projection already dropped the
@@ -449,7 +466,7 @@ fn run_clauses_mode(
                             // exclusion list re-derived from operator
                             // identity. The refusal fires at ~the cap
                             // with the crossing row's honest figure.
-                            if !folded && operator.hands_dispatch_a_finished_container() {
+                            if !streamed && operator.hands_dispatch_a_finished_container() {
                                 charge_finished_container(graph, &rows)?;
                             }
                         }
@@ -666,23 +683,6 @@ fn match_facts(operator: Option<MatchOperator>) -> (bool, Option<crate::ctx::Ker
     }
 }
 
-/// The dispatch layer's finished-container charge (ADR-0463, LABS-781):
-/// the one bulk spelling both MATCH arms that land a finished container
-/// here read — the SEARCH arm (its walker runs are per-candidate, so
-/// the clause-level container is only whole — and only chargeable — at
-/// this landing, and that arm charges it itself) and the ladder arm for
-/// the operators whose containers arrive uncharged (the ownership
-/// predicate's `true` arms; the walker and the frontier rung charge at
-/// their own emission points and arrive charged). The refusal fires at
-/// ~the cap with the crossing row's honest figure.
-fn charge_finished_container(graph: &ExecGraph<'_>, rows: &[Row]) -> Result<()> {
-    let mut retained = graph.retain_bytes(0)?;
-    for row in rows {
-        retained.add_row(graph, row.values())?;
-    }
-    Ok(())
-}
-
 /// The PROFILE path's per-clause snapshot: the site's sink and its
 /// `(stage, part)` position, plus the arm-start facts the tick owns — the
 /// `Instant`, the store-read and phase-time snapshots, and the view whose
@@ -896,77 +896,6 @@ fn record_streamed_unwind(record: Option<(PlanMetricsSite<'_>, usize)>, unwound:
         frontier: Default::default(),
         frontier_decline: None,
     });
-}
-
-fn try_match_folds(
-    graph: &ExecGraph<'_>,
-    rows: &[Row],
-    patterns: &[relate_ir::PathPattern],
-    where_clause: Option<&relate_ir::Expr>,
-    clauses: &[Clause],
-    params: &BTreeMap<String, Value>,
-    cypher_version: Option<u32>,
-) -> Result<Option<FoldedReturn>> {
-    if let Some(folded) = try_fold_boolean_count(graph, rows, clauses, params, cypher_version)? {
-        return Ok(Some(folded));
-    }
-    // The walk-count arm (`kernels::frontier_count`): a bounded
-    // REPEATABLE ELEMENTS quantified pattern under a plain `count`, ahead
-    // of the multi-hop REPEATABLE decline below.
-    if let Some(folded) = super::kernels::frontier_count::try_fold_walk_count(
-        graph,
-        rows,
-        clauses,
-        params,
-        cypher_version,
-    )? {
-        return Ok(Some(folded));
-    }
-    // `skip_rel` keeps one relationship out of the next hop, which is the
-    // DIFFERENT RELATIONSHIPS rule. A single hop has nothing to skip, so
-    // REPEATABLE ELEMENTS still uses the folds. Wider patterns decline and the
-    // ordinary matcher applies the mode.
-    let single_hop = patterns.len() == 1 && patterns[0].rels.len() == 1;
-    if !single_hop
-        && matches!(
-            clauses.first(),
-            Some(Clause::Match {
-                match_mode: MatchMode::RepeatableElements,
-                ..
-            })
-        )
-    {
-        return Ok(None);
-    }
-    // The path fold first: it compiles the full hop plan once and serves the
-    // widest coverage. The chain count and one-hop folds follow, each
-    // serving exactly the queries the path fold declined — no coverage
-    // gate between the rungs, so no query compiles the plan twice.
-    if let Some(folded) = try_fold_path_aggs(
-        graph,
-        rows,
-        patterns,
-        where_clause,
-        &clauses[1..],
-        params,
-        cypher_version,
-    )? {
-        return Ok(Some(folded));
-    }
-    // The plain fixed-hop and exact `*k` counts the path fold declines —
-    // the chain kernel's own gates own what it accepts.
-    if let Some(folded) = try_fold_chain_count(graph, rows, clauses, params, cypher_version)? {
-        return Ok(Some(folded));
-    }
-    try_fold_one_hop_aggs(
-        graph,
-        rows,
-        patterns,
-        where_clause,
-        &clauses[1..],
-        params,
-        cypher_version,
-    )
 }
 
 pub(crate) fn execute_part_read_seeded(

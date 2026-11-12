@@ -92,6 +92,16 @@ pub(crate) fn range_start_graph(prop: &str, values: &[Value]) -> Graph {
     g
 }
 
+/// `built` with the pattern engine forced to the per-row walker
+/// (`RELATE_PATTERN_ENGINE=walk`'s in-process spelling): the differential
+/// tests' walker-only side.
+pub(crate) fn walk_only(mut built: Built) -> Built {
+    built
+        .graph
+        .configure_pattern_engine(crate::pattern_engine::PatternEngine::Walk);
+    built
+}
+
 /// A built graph and its node and relationship ids, by index.
 pub(crate) struct Built {
     pub graph: Graph,

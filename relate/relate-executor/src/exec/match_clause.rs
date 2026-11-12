@@ -15,6 +15,7 @@ use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
 use crate::ctx::{ExecCtx, KernelRung};
 use crate::eval::candidate_passes;
+use crate::overlay::ExecGraph;
 use crate::row::{Row, RowRung};
 use crate::UsedSet;
 
@@ -167,9 +168,7 @@ pub(crate) fn run_match_operator_ladder(
         let Some(fold) = fold else {
             return Ok((rows, operator));
         };
-        for row in rows {
-            fold.offer(ctx.graph, row)?;
-        }
+        fold.offer_container(ctx.graph, rows)?;
         return Ok((Vec::new(), operator));
     }
     // Every rung above declined: the walker is this clause's rung, and
@@ -188,6 +187,24 @@ pub(crate) fn run_match_operator_ladder(
         )?,
         MatchOperator::Rung(KernelRung::Walker),
     ))
+}
+
+/// The dispatch layer's finished-container charge (ADR-0463, LABS-781):
+/// the one bulk spelling every site that lands a finished container reads
+/// — the SEARCH arm (its walker runs are per-candidate, so the
+/// clause-level container is only whole — and only chargeable — at this
+/// landing, and that arm charges it itself), the dispatcher's ladder arm
+/// for the operators whose containers arrive uncharged (the ownership
+/// predicate's `true` arms; the walker and the frontier rung charge at
+/// their own emission points and arrive charged), and the ladder itself
+/// for a rung's container headed to a [`RowFold`] that asks for the charge.
+/// The refusal fires at ~the cap with the crossing row's honest figure.
+pub(crate) fn charge_finished_container(graph: &ExecGraph<'_>, rows: &[Row]) -> Result<()> {
+    let mut retained = graph.retain_bytes(0)?;
+    for row in rows {
+        retained.add_row(graph, row.values())?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
