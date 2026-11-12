@@ -238,42 +238,84 @@ fn mean_offer(mean: &mut f64, value: f64, n: usize) {
 /// run every operand through `CypherCoercions.asNumberValue`, which raises
 /// for a non-number — so an operand is never silently dropped from the
 /// sample or the divisor.
-fn numeric_operands(vals: &[Value], name: &str) -> Result<Vec<f64>> {
-    vals.iter()
-        .filter(|value| !value.is_null())
-        .map(|value| value.as_number().ok_or_else(|| needs_numbers(name)))
-        .collect()
+/// A non-null operand that is not a number: the one rejection of the strict
+/// numeric extraction, which each caller words with its own call name
+/// ([`needs_numbers`]).
+pub(crate) struct NotNumeric;
+
+/// A percentile's operand sample: the one strict numeric extraction (nulls
+/// skipped, every other non-number rejected, never silently dropped) and the
+/// one ascending sort. The fold over a list ([`fold_aggregate`]) and the
+/// grouped path's shared operand pool both build their sample here, so the
+/// two cannot drift into separate percentile pipelines.
+#[derive(Default)]
+pub(crate) struct PercentileSample {
+    nums: Vec<f64>,
+}
+
+impl PercentileSample {
+    /// Keep one operand: nothing for a null, the number otherwise.
+    pub(crate) fn offer(&mut self, value: &Value) -> std::result::Result<(), NotNumeric> {
+        if value.is_null() {
+            return Ok(());
+        }
+        self.nums.push(value.as_number().ok_or(NotNumeric)?);
+        Ok(())
+    }
+
+    /// How many numbers the sample holds.
+    pub(crate) fn len(&self) -> usize {
+        self.nums.len()
+    }
+
+    /// The sample in ascending order. The sort is `f64::total_cmp`, matching
+    /// the engine's total order — NaN sorts after every number, and the
+    /// comparator never fabricates a position for it via
+    /// `partial_cmp(...).unwrap_or(Equal)` (which the standard library
+    /// documents as an unspecified order and a possible panic for a
+    /// non-total comparator).
+    pub(crate) fn into_sorted(mut self) -> Vec<f64> {
+        self.nums.sort_by(f64::total_cmp);
+        self.nums
+    }
 }
 
 /// The one wrong-type sentence both number-only paths emit — the strict
 /// sum()/avg() offer and the strict numeric extraction — so the wording
 /// cannot drift between them.
-fn needs_numbers(name: &str) -> Error {
+pub(crate) fn needs_numbers(name: &str) -> Error {
     Error::ty(format!("{name}() needs numbers"))
 }
 
 /// The one input of [`fold_aggregate`]: a plain aggregate kind, or a
-/// percentile kind paired with its already-validated percentile argument.
-/// The pairing is a variant rather than an `Option` beside the kind, so a
-/// percentile fold cannot run without its argument and no other kind can
-/// carry one.
+/// percentile paired with its already-validated argument. The pairing is a
+/// variant rather than an `Option` beside the kind, so a percentile fold
+/// cannot run without its argument and no other kind can carry one.
 pub(crate) enum FoldInput {
     Many(AggregateKind),
-    PercentileCont(f64),
-    PercentileDisc(f64),
+    Percentile(Percentile),
 }
 
-impl FoldInput {
+/// A percentile kind paired with its validated argument in [0, 1]. The rank
+/// pick hangs off this type, not [`FoldInput`], so it exists only for the two
+/// kinds that have one.
+#[derive(Clone, Copy)]
+pub(crate) enum Percentile {
+    Cont(f64),
+    Disc(f64),
+}
+
+impl Percentile {
     /// The one pairing of a percentile kind with its validated argument:
     /// the arity class says a call carries a percentile, but only these two
     /// kinds own one. The match enumerates every kind — the percentile kinds
-    /// build their paired variant, every other kind is the internal contract
+    /// build their variant, every other kind is the internal contract
     /// violation — so the pairing lives beside the vocabulary and no caller
     /// re-derives it with a wildcard match over `kind`.
-    pub(crate) fn percentile(kind: AggregateKind, p: f64, name: &str) -> Result<Self> {
+    pub(crate) fn new(kind: AggregateKind, p: f64, name: &str) -> Result<Self> {
         match kind {
-            AggregateKind::PercentileCont => Ok(Self::PercentileCont(p)),
-            AggregateKind::PercentileDisc => Ok(Self::PercentileDisc(p)),
+            AggregateKind::PercentileCont => Ok(Self::Cont(p)),
+            AggregateKind::PercentileDisc => Ok(Self::Disc(p)),
             AggregateKind::Count
             | AggregateKind::Collect
             | AggregateKind::Sum
@@ -284,6 +326,28 @@ impl FoldInput {
             | AggregateKind::StDevP => Err(Error::internal(format!(
                 "{name}() has the percentile arity but not a percentile kind"
             ))),
+        }
+    }
+
+    /// The percentile over an ascending sample
+    /// ([`PercentileSample::into_sorted`]); the one rank pick every
+    /// percentile path ends in, so a sample sorted once serves any number of
+    /// calls. An empty sample has no percentile to report (null). The [0, 1]
+    /// safety rests on the caller's validation; it is asserted here, at the
+    /// boundary both kinds cross, so a caller that skips the check fails
+    /// loudly in debug rather than folding an out-of-range position.
+    pub(crate) fn rank_in_sorted(self, sorted: &[f64]) -> Value {
+        let (Self::Cont(p) | Self::Disc(p)) = self;
+        debug_assert!(
+            (0.0..=1.0).contains(&p),
+            "percentile must be validated before the fold: {p}"
+        );
+        if sorted.is_empty() {
+            return Value::Null;
+        }
+        match self {
+            Self::Cont(p) => rank_cont(sorted, p),
+            Self::Disc(p) => rank_disc(sorted, p),
         }
     }
 }
@@ -300,44 +364,37 @@ impl FoldInput {
 /// the variant that owns it.
 pub(crate) fn fold_aggregate(input: FoldInput, name: &str, vals: Vec<Value>) -> Result<Value> {
     match input {
-        FoldInput::Many(kind) => match StreamFold::for_kind(kind) {
-            // Every non-retaining kind is its streaming accumulator driven
-            // over the list — the grouped path folds through the same
-            // accumulator row by row, so the two cannot drift.
-            Some(mut fold) => {
-                for value in vals {
-                    fold.offer(value, name)?;
-                }
-                fold.finish()
+        // ADR-0462: collect() is a dynamic container construction — a
+        // chained `WITH collect(a) AS a` adds one level per clause — so it
+        // goes through the checked seam like every other constructor.
+        FoldInput::Many(AggregateKind::Collect) => {
+            Value::checked_list(vals.into_iter().filter(|value| !value.is_null()).collect())
+        }
+        // Every other plain kind is its streaming accumulator driven over
+        // the list — the grouped path folds through the same accumulator row
+        // by row, so the two cannot drift. A kind with none (a percentile
+        // kind built without its percentile) is a contract violation,
+        // reported typed rather than panicking.
+        FoldInput::Many(kind) => {
+            let Some(mut fold) = StreamFold::for_kind(kind) else {
+                return Err(Error::internal(format!(
+                    "{name}() has no plain fold: a percentile kind needs its percentile"
+                )));
+            };
+            for value in vals {
+                fold.offer(value, name)?;
             }
-            None => match kind {
-                // ADR-0462: collect() is a dynamic container construction — a
-                // chained `WITH collect(a) AS a` adds one level per clause — so it
-                // goes through the checked seam like every other constructor.
-                AggregateKind::Collect => {
-                    Value::checked_list(vals.into_iter().filter(|value| !value.is_null()).collect())
-                }
-                // Percentile kinds are built only as their paired variants (from
-                // the call's `PercentilePair` arity class); reaching this arm is
-                // a contract violation, reported typed rather than panicking.
-                AggregateKind::PercentileCont | AggregateKind::PercentileDisc => {
-                    Err(Error::internal(format!(
-                        "{name}() percentile kind reached the fold without its percentile"
-                    )))
-                }
-                AggregateKind::Count
-                | AggregateKind::Sum
-                | AggregateKind::Avg
-                | AggregateKind::Min
-                | AggregateKind::Max
-                | AggregateKind::StDev
-                | AggregateKind::StDevP => Err(Error::internal(format!(
-                    "{name}() is a streaming kind with no streaming accumulator"
-                ))),
-            },
-        },
-        FoldInput::PercentileCont(p) => Ok(fold_percentile_cont(numeric_operands(&vals, name)?, p)),
-        FoldInput::PercentileDisc(p) => Ok(fold_percentile_disc(numeric_operands(&vals, name)?, p)),
+            fold.finish()
+        }
+        FoldInput::Percentile(percentile) => {
+            let mut sample = PercentileSample::default();
+            for value in &vals {
+                sample
+                    .offer(value)
+                    .map_err(|NotNumeric| needs_numbers(name))?;
+            }
+            Ok(percentile.rank_in_sorted(&sample.into_sorted()))
+        }
     }
 }
 
@@ -474,39 +531,16 @@ impl StreamFold {
     }
 }
 
-/// The prelude both percentile folds share: the ascending sort of the
-/// sample and the empty-sample exit. The sort is `f64::total_cmp`, matching
-/// the engine's total order — NaN sorts after every number, and the
-/// comparator never fabricates a position for it via
-/// `partial_cmp(...).unwrap_or(Equal)` (which the standard library documents
-/// as an unspecified order and a possible panic for a non-total comparator).
-/// `None`: no percentile to report.
-fn sorted_sample(mut nums: Vec<f64>, p: f64) -> Option<Vec<f64>> {
-    // The fold's [0, 1] safety rests on the caller's validation; assert it
-    // here, at the fold boundary both percentile kinds cross, so a future
-    // caller that skips the check fails loudly in debug rather than folding
-    // an out-of-range position.
-    debug_assert!(
-        (0.0..=1.0).contains(&p),
-        "percentile must be validated before the fold: {p}"
-    );
-    nums.sort_by(f64::total_cmp);
-    (!nums.is_empty()).then_some(nums)
-}
-
-/// `percentileCont` over the non-null numeric operand values; `p` is the
-/// already-validated percentile in [0, 1]. Linear interpolation between the
-/// two nearest ranks.
+/// `percentileCont` over the non-empty sorted numeric operand values; `p` is
+/// the already-validated percentile in [0, 1]. Linear interpolation between
+/// the two nearest ranks.
 ///
 /// A degenerate interpolation weight selects its endpoint instead of
 /// multiplying it in: `f == 0.0` makes `lo == hi` (the single-sample case
 /// included), so the formula's other term is `sample * 0.0` — NaN for
 /// ±Infinity, which would turn `[inf]` and `[1.0, 2.0, inf]` at `p == 1.0`
 /// into NaN rather than ±Infinity.
-fn fold_percentile_cont(nums: Vec<f64>, p: f64) -> Value {
-    let Some(nums) = sorted_sample(nums, p) else {
-        return Value::Null;
-    };
+fn rank_cont(nums: &[f64], p: f64) -> Value {
     let h = p * (nums.len() - 1) as f64;
     let lo = h.floor() as usize;
     let hi = h.ceil() as usize;
@@ -519,19 +553,16 @@ fn fold_percentile_cont(nums: Vec<f64>, p: f64) -> Value {
     Value::Float(value)
 }
 
-/// `percentileDisc` over the non-null numeric operand values; `p` is the
-/// already-validated percentile in [0, 1]. The nearest rank at or below the
-/// percentile position.
+/// `percentileDisc` over the non-empty sorted numeric operand values; `p` is
+/// the already-validated percentile in [0, 1]. The nearest rank at or below
+/// the percentile position.
 ///
 /// The rank arithmetic is total: `saturating_sub(1)` yields index 0 at
 /// `p == 0.0` (where `(0.0f64).ceil() as usize` is 0 and would otherwise
 /// underflow the subtraction, wrapping to the last element in release), and
 /// the same index as before for every other `p` in [0, 1]. With `p <= 1.0`
 /// the ceiling never exceeds `nums.len()`, so no further clamp is needed.
-fn fold_percentile_disc(nums: Vec<f64>, p: f64) -> Value {
-    let Some(nums) = sorted_sample(nums, p) else {
-        return Value::Null;
-    };
+fn rank_disc(nums: &[f64], p: f64) -> Value {
     let idx = (((nums.len() as f64) * p).ceil() as usize).saturating_sub(1);
     Value::Float(nums[idx])
 }

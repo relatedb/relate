@@ -40,7 +40,8 @@ mod typematch;
 mod vector;
 
 pub(crate) use aggregate::{
-    fold_aggregate, rewrite_horizontal_aggregates, FoldInput, StreamFold, SumAcc,
+    fold_aggregate, needs_numbers, rewrite_horizontal_aggregates, FoldInput, Percentile,
+    PercentileSample, StreamFold, SumAcc,
 };
 pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, membership, Extreme};
 pub(crate) use items::{into_items, Items};

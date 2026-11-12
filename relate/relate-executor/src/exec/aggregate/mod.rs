@@ -9,6 +9,7 @@
 
 mod eval;
 mod group;
+mod pool;
 mod stream;
 
 pub(crate) use group::{aggregate_ex, Aggregation, GroupSubclauses};
