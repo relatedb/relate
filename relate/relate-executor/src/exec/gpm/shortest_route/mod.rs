@@ -19,6 +19,7 @@ use crate::ctx::ExecCtx;
 use crate::exec::pushdown::Residual;
 use crate::row::Row;
 
+mod filters;
 mod guard;
 mod route;
 mod trail_walk;
@@ -35,6 +36,8 @@ mod anchor_tests;
 mod bounded_tests;
 #[cfg(test)]
 mod expr_parity_tests;
+#[cfg(test)]
+mod filters_tests;
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]

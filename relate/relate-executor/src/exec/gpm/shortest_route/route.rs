@@ -4,16 +4,14 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell};
-use std::collections::HashSet;
 
 use relate_core::{Error, NodeId, RelId, Result, Value};
-use relate_ir::{Expr, MatchMode, NodePattern, PathPattern};
+use relate_ir::{MatchMode, NodePattern, PathPattern};
 
 use crate::ctx::ExecCtx;
-use crate::eval::expr_vars;
 use crate::exec::candidates::node_ok;
 use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
-use crate::exec::pushdown::{conjunct_ready, expr_ready, Residual};
+use crate::exec::pushdown::{expr_ready, Residual};
 use crate::pattern_walk::{
     bind_path_names, bind_rel_stub_list, bound_node, memoized_path_rung, node_candidates,
     node_candidates_capped, scan_answers_exactly, Capped,
@@ -23,6 +21,7 @@ use crate::shortest::layered::Layer;
 use crate::shortest::{pair, path_from_trail, Search};
 
 use super::super::sink::MatchedSink;
+use super::filters::{PathFilter, RouteFilters};
 use super::guard::Shape;
 use super::trail_walk;
 
@@ -176,47 +175,6 @@ impl Way {
     }
 }
 
-fn path_filter<'p>(path: &'p PathPattern, residual: &'p Residual<'_>) -> Option<PathFilter<'p>> {
-    // Text render: the carrier set compares against the String variable
-    // sets of the filter walk.
-    // The IR's one enumeration of the pattern's relationship variables:
-    // it consults the element view and the compact `rels` view both, so a
-    // quantified or var-length spelling whose variable lives in an element
-    // contributes its carrier too.
-    let mut carriers: HashSet<String> = path
-        .relationship_variables()
-        .map(|name| name.to_string())
-        .collect();
-    for name in path.path_names() {
-        carriers.insert(name.to_string());
-    }
-    let conjuncts: Vec<&Expr> = residual
-        .conjuncts
-        .iter()
-        .filter(|conjunct| {
-            let mut vars = HashSet::new();
-            expr_vars(conjunct, &mut vars);
-            vars.iter().any(|name| carriers.contains(name.as_str()))
-        })
-        .collect();
-    (path.where_clause.is_some() || !conjuncts.is_empty()).then_some(PathFilter {
-        conjuncts,
-        inline: path.where_clause.as_deref(),
-        scope: residual.scope,
-    })
-}
-
-/// The predicates a routed shortest path must satisfy during the search
-/// (see [`path_filter`]): the MATCH-level `WHERE` conjuncts that
-/// read the path itself, plus the pattern's own inline `WHERE`. `scope`
-/// is the MATCH's bound-variable scope, the readiness rule's input (see
-/// [`crate::exec::pushdown::conjunct_ready`]).
-pub(super) struct PathFilter<'a> {
-    pub conjuncts: Vec<&'a Expr>,
-    pub inline: Option<&'a Expr>,
-    pub scope: &'a HashSet<String>,
-}
-
 /// One routed pattern evaluated against one input row.
 pub(super) struct Route<'a> {
     pub(super) ctx: ExecCtx<'a>,
@@ -224,10 +182,12 @@ pub(super) struct Route<'a> {
     row: &'a Row,
     pub(super) shape: Shape<'a>,
     pub(super) search: Search<'a, 'a>,
-    /// `Some` when a predicate filters the *search*: the route then walks
-    /// trails in ascending length and answers the first length at which a
-    /// trail satisfies it, instead of the one shortest trail.
-    filter: Option<PathFilter<'a>>,
+    /// The `WHERE` conjuncts, split by what they read. `path` is `Some`
+    /// when a predicate filters the *search*: the route then walks trails
+    /// in ascending length and answers the first length at which a trail
+    /// satisfies it, instead of the one shortest trail. `pair` drops a
+    /// same-node pair before 51N23 can reject it.
+    filters: RouteFilters<'a>,
     /// The unbounded DFS cap memo — the route-granularity spelling of the
     /// walk memo `GpmCtx::unbounded_dfs_cap` takes: filled on the first
     /// unbounded filtered partition, read by every later one, so the rel
@@ -265,7 +225,7 @@ impl<'a> Route<'a> {
         // correspondences are established here, not by two caller-supplied
         // arguments that must happen to agree.
         let halt = sink.halt_cell();
-        let filter = path_filter(path, sink.residual());
+        let filters = RouteFilters::split(path, sink.residual());
         let rel = shape.rel;
         let search = Search {
             graph: ctx.graph,
@@ -282,18 +242,18 @@ impl<'a> Route<'a> {
             row,
             shape,
             search,
-            filter,
+            filters,
             halt,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
         };
-        if let Some(filter) = &route.filter {
+        if let Some(filter) = &route.filters.path {
             // The postfix `->{m,n}` spelling with a clause-level `WHERE` over
             // the path keeps enumerating: the reference reads that predicate
             // as a postfilter (the selector picks first), which the route's
             // in-search predicate does not do. The other spellings'
             // behaviour here is unchanged.
-            if (route.shape.rel.quantified && !filter.conjuncts.is_empty())
+            if (route.shape.rel.quantified && filter.has_clause_conjuncts())
                 || !route.predicates_decidable(filter)
             {
                 return None;
@@ -378,12 +338,7 @@ impl<'a> Route<'a> {
                 probe.insert(name, Value::Null);
             }
         }
-        filter
-            .conjuncts
-            .iter()
-            .copied()
-            .chain(filter.inline)
-            .all(|predicate| conjunct_ready(predicate, &probe, filter.scope))
+        filter.decidable_on(&probe)
     }
 
     fn anchor(&self) -> Result<Anchor> {
@@ -694,7 +649,7 @@ impl<'a> Route<'a> {
         // still hold a shorter answer: the stop applies to unfiltered
         // routes only.
         let productive =
-            self.filter.is_none() && layer.nodes() != [origin] && out.folded() > before;
+            self.filters.path.is_none() && layer.nodes() != [origin] && out.folded() > before;
         Ok(self.halted() || (self.shape.spelling.first_layer_only() && productive))
     }
 
@@ -739,14 +694,10 @@ impl<'a> Route<'a> {
         if !self.node_ok(e, self.shape.end, srow)? {
             return Ok(());
         }
-        // 51N23: the spelling's runtime policy (a positive lower bound
-        // rejects a pair that resolves to one node; the zero-length path
-        // answers it when the bound is 0).
-        self.shape
-            .spelling
-            .common_end_nodes()
-            .reject(s, e, self.search.min)?;
-        if self.filter.is_some() {
+        if self.common_end_dropped(s, e, srow)? {
+            return Ok(());
+        }
+        if self.filters.path.is_some() {
             return self.feasible_partition(s, e, srow, out);
         }
         let trails = if s != e {
@@ -763,6 +714,23 @@ impl<'a> Route<'a> {
             self.offer_trail(s, e, trail, srow, out)?;
         }
         Ok(())
+    }
+
+    /// 51N23 for the (s, e) partition: the spelling's runtime policy (a
+    /// positive lower bound rejects a pair that resolves to one node; the
+    /// zero-length path answers it when the bound is 0). `Ok(true)` when
+    /// the policy would reject the pair but the MATCH's own WHERE drops it
+    /// first, as live plans it ahead of the search — the partition emits
+    /// nothing; the rejection itself is the `Err`.
+    fn common_end_dropped(&self, s: NodeId, e: NodeId, srow: &Row) -> Result<bool> {
+        let policy = self.shape.spelling.common_end_nodes();
+        let Err(rejection) = policy.reject(s, e, self.search.min) else {
+            return Ok(false);
+        };
+        match &self.filters.pair {
+            Some(pair) if pair.drops(self.ctx, self.shape.end, e, srow)? => Ok(true),
+            _ => Err(rejection),
+        }
     }
 
     /// The predicate-filtered partition: walk trails from `s` in ascending
@@ -801,35 +769,6 @@ impl<'a> Route<'a> {
             }
         }
         Ok(())
-    }
-
-    /// Whether one bound trail satisfies the route's predicate. Every
-    /// predicate is decidable against a trail row — [`Self::predicates_decidable`]
-    /// established that before the search started — so a predicate that is not
-    /// ready here is a broken invariant, reported as a typed internal error
-    /// rather than silently counted as satisfied.
-    pub(super) fn filter_ok(&self, row: &Row, filter: &PathFilter<'_>) -> Result<bool> {
-        let ExecCtx {
-            graph,
-            params,
-            cypher_version,
-            ..
-        } = self.ctx;
-        for predicate in filter.conjuncts.iter().copied().chain(filter.inline) {
-            if !conjunct_ready(predicate, row, filter.scope) {
-                return Err(Error::internal(
-                    "shortest-path route: predicate not decidable against a bound trail",
-                ));
-            }
-            // The one predicate policy (ADR-0458 §7): a list/path converts
-            // (live: `ANY SHORTEST ... -[r WHERE r.ls]-> ...` accepts a
-            // non-empty list), a non-boolean is the typed rejection live
-            // raises (22N01).
-            if !crate::eval::predicate_holds(graph, row, predicate, params, cypher_version)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     /// Bind one trail the way `match_gpm_path` does: start node,
@@ -874,7 +813,7 @@ impl<'a> Route<'a> {
     /// route accepts only a trail that satisfies it), and the push. Returns
     /// whether a row was offered.
     ///
-    /// The gate reads `self.filter` rather than taking it as an argument:
+    /// The gate reads `self.filters.path` rather than taking it as an argument:
     /// the route stores the one filter its search runs under, and a caller
     /// passing its own would be a second spelling of that fact.
     pub(super) fn offer_trail(
@@ -889,8 +828,8 @@ impl<'a> Route<'a> {
         let Some(row) = self.bind_trail(s, e, trail, srow) else {
             return Ok(false);
         };
-        if let Some(filter) = &self.filter {
-            if !self.filter_ok(&row, filter)? {
+        if let Some(filter) = &self.filters.path {
+            if !filter.holds(self.ctx, &row)? {
                 return Ok(false);
             }
         }

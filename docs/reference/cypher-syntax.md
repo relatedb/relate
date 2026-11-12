@@ -844,6 +844,21 @@ MATCH p = shortestPath((a)-[:KNOWS*]-(b))
 RETURN p, length(p) AS hops;
 ```
 
+`shortestPath()` and `allShortestPaths()` reject a start and end node that
+resolve to the same node (`ShortestPathCommonEndNodes`, 51N23) unless the
+lower bound is 0, where the zero-length path answers the pair. A `WHERE`
+conjunct that reads only the two endpoints is applied to that pair first,
+as Neo4j does, so an open end can exclude its own start: the one-pass
+all-pairs form below runs one search per `Person` and skips the pairs
+`n <> p` drops. A pair no endpoint conjunct drops (no `WHERE`, a predicate
+that reads the path, an `OR` the pair satisfies) still raises.
+
+```cypher
+MATCH path = shortestPath((p:Person)-[*1..3]-(n))
+WHERE n <> p
+RETURN count(*) AS pairs, sum(length(path)) AS hops;
+```
+
 ### Parameters
 
 Use `$name` to reference query parameters:

@@ -81,7 +81,7 @@ pub(super) struct Shape<'p> {
 /// bindings the search can honor. `None` keeps the pattern on GPM.
 ///
 /// A path-level `WHERE` no longer sends the pattern to GPM: the route
-/// applies it *during* the search (see [`super::route::path_filter`]), so a
+/// applies it *during* the search (see [`super::filters::PathFilter`]), so a
 /// shortest path that violates the predicate no longer hides the longer
 /// shortest path that satisfies it.
 pub(super) fn route_shape<'p>(
