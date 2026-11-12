@@ -4,10 +4,16 @@
 #
 # Usage:
 #   NEXT_VERSION=0.4.0 scripts/release-bump.sh
+#   NEXT_VERSION=0.4.0 scripts/release-bump.sh --skip-changelog
 #
 # NEXT_VERSION is a bare semver (X.Y.Z, no leading "v"). The same string is
 # used for the Rust workspace and the Python package (stable releases need no
 # PEP 440 translation).
+#
+# --skip-changelog is the advance's scoped mode (ADR-0580): every version
+# surface and Cargo.lock, minus the CHANGELOG rotation. The changelog rotates
+# only at a release cut, so the advance never mints a release section for a
+# version that was never cut.
 #
 # Version surfaces beyond the Rust/Python pair (ADR-0278; every client
 # package is lockstep with the release tag):
@@ -37,8 +43,10 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: NEXT_VERSION=<X.Y.Z> $0" >&2
+  echo "usage: NEXT_VERSION=<X.Y.Z> $0 [--skip-changelog]" >&2
   echo "  NEXT_VERSION: release version without a v prefix, e.g. 0.4.0" >&2
+  echo "  --skip-changelog: the advance's scoped mode (ADR-0580) — the" >&2
+  echo "    version-surface sweep without the CHANGELOG rotation" >&2
 }
 
 next="${NEXT_VERSION:-}"
@@ -46,6 +54,18 @@ if [[ -z "$next" || ! "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   usage
   exit 1
 fi
+
+# The one flag is the advance's scoped mode (ADR-0580): the same sweep, minus
+# the CHANGELOG rotation — the changelog rotates only at a release cut, and
+# an advance-time rotation would mint a release section for a version that
+# was never cut. One spelling; any other argument is a refusal.
+skip_changelog=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-changelog) skip_changelog=1 ;;
+    *) usage; exit 1 ;;
+  esac
+done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -198,9 +218,15 @@ cargo metadata --format-version 1 > /dev/null
 # steady state, plain repository URL = first release), the heading grammar,
 # the idempotence decision, the link-ref rewrites — lives in
 # scripts/changelog_rotate.py, the one implementation, unit-tested directly.
-# Already-rotated is the module's own skip notice on stdout, exit 0.
-python3 scripts/changelog_rotate.py "$changelog" \
-  --version "$next" --date "$(date +%F)"
+# Already-rotated is the module's own skip notice on stdout, exit 0. The
+# advance's scoped mode skips the step: the changelog rotates only at a
+# release cut (ADR-0580).
+if (( ! skip_changelog )); then
+  python3 scripts/changelog_rotate.py "$changelog" \
+    --version "$next" --date "$(date +%F)"
+else
+  echo "release-bump: CHANGELOG rotation skipped (the advance's scoped mode); the changelog rotates only at a release cut"
+fi
 
 # --- 4. Consistency self-check (after editing) --------------------------------
 

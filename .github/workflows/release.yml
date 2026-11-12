@@ -845,6 +845,112 @@ jobs:
           fi
           echo "$VERSION in ECR is this run's image (config $want)"
 
+  # ADR-0580: main never carries a released version — the tagged release
+  # commit is the one transient carrier, so once the tag exists the same
+  # release run advances main past it (an offline release tags too, so it
+  # advances too). The advance performs the same version-surface sweep the
+  # release bump performs, in the bump script's scoped mode: same surfaces,
+  # minus the changelog rotation, which belongs to a release cut alone —
+  # rotating on the advance would mint a release section for a version that
+  # was never cut. scripts/release-bump.sh stays the single source of truth
+  # for which files a bump touches; the advance commits to main through the
+  # same release-bot machinery. Guarded and idempotent: when main's
+  # workspace version already exceeds this run's tag version (a re-dispatch
+  # of this workflow, a re-run of this job) the advance skips instead of
+  # running twice. Nothing here moves or rewrites a tag: the advance commit
+  # lands on main after the tagged commit, which keeps pointing at the
+  # released tree.
+  advance:
+    name: Advance main past the release
+    needs: [version, tag]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+      # main, not the tagged sha: the advance commits on top of main's tip
+      # and the guard below reads main's workspace version. Full depth:
+      # scripts/release-next-version.sh computes from the git tag list, and
+      # by needs-ordering the tag job has already pushed this run's tag.
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          ref: main
+          fetch-depth: 0
+      # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0"):
+      # scripts/release-bump.sh runs `cargo metadata` to refresh Cargo.lock
+      # after the sweep rewrites the workspace version pins.
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+
+      - name: Advance main to the next unreleased version
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "release-bot"
+          git config user.email "actions@github.com"
+
+          # The idempotence guard (ADR-0580): main's workspace version
+          # already past this run's tag means this tag's advance has
+          # already landed — skip instead of advancing twice. The version
+          # comes through the shared TOML reader, the same accessor
+          # release-bump.sh's consistency self-check reads it through.
+          # shellcheck source=scripts/lib/toml.sh
+          source scripts/lib/toml.sh
+          workspace="$(toml_section_version Cargo.toml "[workspace.package]")"
+          latest="$(printf '%s\n' "$RELEASE_VERSION" "$workspace" | sort -V | tail -n1)"
+          if [ "$workspace" != "$RELEASE_VERSION" ] && [ "$latest" = "$workspace" ]; then
+            echo "::notice::main's workspace is already at $workspace, past $RELEASE_TAG — nothing to advance."
+            exit 0
+          fi
+
+          # The next unreleased version from the just-created tag, through
+          # scripts/release-next-version.sh's own semantics: the latest v*
+          # tag plus a patch bump, refusing a version that already exists.
+          # After the tag job's push the latest tag is this release's.
+          next_tag="$(scripts/release-next-version.sh patch)"
+          next_version="${next_tag#v}"
+
+          # The advance is the same version-surface sweep the release bump
+          # performs, in the bump script's scoped mode (--skip-changelog):
+          # same version surfaces, no changelog rotation — the changelog
+          # rotates only at a release cut (ADR-0580). release-bump.sh stays
+          # the single source of truth for which files a bump touches.
+          NEXT_VERSION="$next_version" scripts/release-bump.sh --skip-changelog
+
+          # The same release-bot commit machinery as the version job's bump
+          # commit: stage whatever the sweep modified so a new version
+          # surface can never be left out of the commit, then push to main
+          # under a fetch + rebase retry — a merge landing on main
+          # mid-advance rejects the push as non-fast-forward, and the
+          # rebase carries the advance commit onto the new tip. A rebase
+          # conflict fails loudly. Nothing here moves or rewrites the tag:
+          # only HEAD:main is pushed, so the tag keeps pointing at the
+          # released tree.
+          git add -u
+          git commit -m "chore(release): advance main past $RELEASE_TAG to $next_tag"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::push to main rejected after 3 attempts"
+              exit 1
+            fi
+            echo "push to main rejected (attempt $attempt) — rebasing onto origin/main and retrying"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "main advanced past $RELEASE_TAG to $next_version"
+
   create-release:
     name: Create Release
     needs: [version, tag]

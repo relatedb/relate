@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Component, Path};
 
-use serde_json::Value;
+use crate::workspace::{DepKind, Package};
 
 const TEST_SUPPORT_DIR: &str = "testing/relate-test-support";
 /// The wire kit (ADR-0430's shared half: the bounded reads and the v1
@@ -31,36 +30,6 @@ const LEAF_ENGINE_DIRS: &[&str] = &[
     "relate/relate-splitter",
     "relate/relate-catalog",
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DepKind {
-    Normal,
-    Dev,
-    Build,
-}
-
-impl fmt::Display for DepKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            DepKind::Normal => "normal",
-            DepKind::Dev => "dev",
-            DepKind::Build => "build",
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Dep {
-    pub kind: DepKind,
-    pub path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Package {
-    pub name: String,
-    pub dir: String,
-    pub deps: Vec<Dep>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
@@ -143,84 +112,6 @@ pub struct Report {
     pub packages: usize,
     pub edges: usize,
     pub violations: Vec<Violation>,
-}
-
-pub fn parse_metadata(metadata: &Value) -> Result<Vec<Package>, String> {
-    let root = metadata
-        .get("workspace_root")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .ok_or("cargo metadata: missing workspace_root")?;
-    let members: BTreeSet<&str> = metadata
-        .get("workspace_members")
-        .and_then(Value::as_array)
-        .ok_or("cargo metadata: missing workspace_members")?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    let packages = metadata
-        .get("packages")
-        .and_then(Value::as_array)
-        .ok_or("cargo metadata: missing packages")?;
-
-    let mut out = Vec::new();
-    for package in packages {
-        let id = package.get("id").and_then(Value::as_str).unwrap_or("");
-        if !members.contains(id) {
-            continue;
-        }
-        let name = package
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("cargo metadata: package {id} has no name"))?;
-        let manifest = package
-            .get("manifest_path")
-            .and_then(Value::as_str)
-            .map(Path::new)
-            .ok_or_else(|| format!("cargo metadata: package {name} has no manifest_path"))?;
-        let dir = manifest.parent().unwrap_or(manifest);
-        let mut deps = Vec::new();
-        for dep in package
-            .get("dependencies")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            let kind = match dep.get("kind").and_then(Value::as_str) {
-                None => DepKind::Normal,
-                Some("dev") => DepKind::Dev,
-                Some("build") => DepKind::Build,
-                Some(other) => {
-                    return Err(format!(
-                        "cargo metadata: package {name} has unknown dependency kind {other:?}"
-                    ))
-                }
-            };
-            let path = dep
-                .get("path")
-                .and_then(Value::as_str)
-                .map(|p| relative(root, Path::new(p)));
-            deps.push(Dep { kind, path });
-        }
-        out.push(Package {
-            name: name.to_string(),
-            dir: relative(root, dir),
-            deps,
-        });
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
-}
-
-fn relative(root: &Path, path: &Path) -> String {
-    let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn classify(dir: &str) -> Option<Group> {
@@ -328,9 +219,11 @@ pub fn check(packages: &[Package]) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::Dep;
 
     fn pkg(dir: &str, deps: &[(&str, DepKind)]) -> Package {
         Package {
+            id: format!("path+file:///ws/{dir}#0.1.0"),
             name: dir.rsplit('/').next().unwrap().to_string(),
             dir: dir.to_string(),
             deps: deps
@@ -621,47 +514,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_cargo_metadata_json() {
-        let metadata = serde_json::json!({
-            "workspace_root": "/ws",
-            "workspace_members": ["path+file:///ws/relate/a#0.1.0", "path+file:///ws/surfaces/b#0.1.0"],
-            "packages": [
-                {
-                    "id": "path+file:///ws/relate/a#0.1.0",
-                    "name": "a",
-                    "manifest_path": "/ws/relate/a/Cargo.toml",
-                    "dependencies": [
-                        { "name": "b", "kind": null, "path": "/ws/surfaces/b" },
-                        { "name": "serde_json", "kind": null },
-                        { "name": "b", "kind": "dev", "path": "/ws/surfaces/b" }
-                    ]
-                },
-                {
-                    "id": "path+file:///ws/surfaces/b#0.1.0",
-                    "name": "b",
-                    "manifest_path": "/ws/surfaces/b/Cargo.toml",
-                    "dependencies": [
-                        { "name": "a", "kind": "build", "path": "/ws/relate/a" }
-                    ]
-                },
-                {
-                    "id": "registry+https://example/serde_json#1.0.0",
-                    "name": "serde_json",
-                    "manifest_path": "/registry/serde_json/Cargo.toml",
-                    "dependencies": []
-                }
-            ]
-        });
-        let packages = parse_metadata(&metadata).unwrap();
-        assert_eq!(packages.len(), 2);
-        assert_eq!(packages[0].dir, "relate/a");
-        assert_eq!(
-            packages[0].deps[0],
-            Dep {
-                kind: DepKind::Normal,
-                path: Some("surfaces/b".to_string())
-            }
-        );
+    fn check_reports_the_boundary_violations_it_is_given() {
+        // The metadata parser's own refusals live beside it in
+        // `workspace.rs`; this test owns the boundary verdict only.
+        let packages = vec![
+            pkg(
+                "relate/a",
+                &[
+                    ("surfaces/b", DepKind::Normal),
+                    ("surfaces/b", DepKind::Dev),
+                ],
+            ),
+            pkg("surfaces/b", &[("relate/a", DepKind::Build)]),
+        ];
         let report = check(&packages);
         assert_eq!(report.edges, 3);
         let v: Vec<String> = report.violations.iter().map(ToString::to_string).collect();

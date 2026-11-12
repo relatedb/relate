@@ -1,8 +1,9 @@
 #!/bin/sh
-# Harness machinery for scripts/tests/test_release_bump.sh: the cargo and
-# npm stubs, the fixture-repo factory, and the run helper. Sourced by the
-# test after tap_sandbox, the way install_sh_harness.sh is — this file
-# holds no cases and no assertions.
+# Harness machinery for scripts/tests/test_release_bump.sh and
+# scripts/tests/test_release_advance.sh: the cargo and npm stubs, the
+# fixture-repo factory, and the run helper. Sourced by the test after
+# tap_sandbox, the way install_sh_harness.sh is — this file holds no
+# cases and no assertions.
 #
 # Expects from the caller: $ROOT (repo root), $sandbox (tap_sandbox's),
 # $stubbin (created here under the sandbox).
@@ -74,8 +75,7 @@ chmod +x "$stubbin/npm"
 
 # build_fixture <dir> <changelog-file>: a minimal repo the bump can run in.
 build_fixture() {
-	fx="$1"
-	changelog_src="$2"
+	local fx="$1" changelog_src="$2" p doc
 	mkdir -p "$fx/scripts" "$fx/surfaces/relate-python/python/relate" \
 		"$fx/clients/java" "$fx/clients/javascript/platforms" \
 		"$fx/docs/reference" "$fx/docs/api/cli/examples"
@@ -181,7 +181,33 @@ EOF
 		commit -qm fixture
 }
 
-run_bump() { # $1 = fixture dir, $2 = NEXT_VERSION
-	(cd "$1" && PATH="$stubbin:$PATH" NEXT_VERSION="$2" \
-		bash scripts/release-bump.sh) 2>"$1/stderr.log"
+run_bump() { # $1 = fixture dir, $2 = NEXT_VERSION, the rest = release-bump arguments
+	local dir="$1"
+	local ver="$2"
+	shift 2
+	(cd "$dir" && PATH="$stubbin:$PATH" NEXT_VERSION="$ver" \
+		bash scripts/release-bump.sh "$@") 2>"$dir/stderr.log"
+}
+
+# The canonical after-cut changelog: a release section exists, an empty
+# [Unreleased] sits above it, and the compare refs point at the cut.
+# One fixture factory for every suite that needs the shape — the bump
+# suite's steady-state case and the advance suite's differential both
+# start from these exact bytes.
+after_cut_changelog() { # $1 = output file
+	cat >"$1" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] — 2026-11-08
+
+### Initial release
+
+First release of Relate.
+
+[Unreleased]: https://github.com/relatedb/relate/compare/v0.1.0...HEAD
+
+[0.1.0]: https://github.com/relatedb/relate/releases/tag/v0.1.0
+EOF
 }
