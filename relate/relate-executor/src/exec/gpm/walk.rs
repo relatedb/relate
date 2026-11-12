@@ -262,7 +262,7 @@ fn gpm_rel_dfs(
         // pattern's last) receives the state and its answer halts the
         // walk.
         if bound
-            && gctx.early.holds_at(
+            && gctx.walk.early.holds_at(
                 graph,
                 &accepted.row,
                 rel.variable.as_ref(),
@@ -279,9 +279,9 @@ fn gpm_rel_dfs(
         return Ok(());
     }
     // A walk invariant, fixed for the whole walk — hoisted to the walk
-    // entry (`GpmCtx::enforce_unique`), read here, never re-derived
+    // entry (`WalkState::enforce_unique`), read here, never re-derived
     // per hop.
-    let enforce_unique = gctx.enforce_unique;
+    let enforce_unique = gctx.walk.enforce_unique;
     let current = state.current;
     graph.try_for_each_hop_resolved(current, rel.direction, &filter.types, |rid, next_id| {
         if gctx.halted() {
@@ -309,7 +309,7 @@ fn gpm_rel_dfs(
         // spelling additionally tallies the `hops` kind once per iteration
         // (gpm/qpp.rs — its repetition unit) where the classic walker
         // ticks it per expansion step: same read kind, per-spelling unit.
-        gctx.tallies.walk();
+        gctx.walk.tallies.walk();
         // Descend in place: the hop's rel id, its consumption, and the
         // far endpoint's slice entry go onto the state, and come off
         // again after the descent — a rel the used-set already held (a
@@ -425,9 +425,10 @@ fn gpm_accept_node(
         }
     }
     // The early conjuncts whose reading completed at this binding
-    // (`early`): a failed one drops the accept — the prefix behind it
-    // enumerates no further hops.
-    gctx.early
+    // (`WalkState::early`): a failed one drops the accept — the prefix
+    // behind it enumerates no further hops.
+    gctx.walk
+        .early
         .holds_at(graph, row, node.variable.as_ref(), params, cypher_version)
 }
 

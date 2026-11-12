@@ -54,9 +54,9 @@ fn active_reduces<'a>(gctx: &GpmCtx<'a>, names: &[String], row: &Row) -> Vec<Bra
         graph,
         params,
         cypher_version,
-        inlined,
         ..
     } = *gctx;
+    let inlined = &gctx.walk.inlined;
     #[cfg(test)]
     if allreduce_pruning_disabled() {
         return Vec::new();
@@ -418,7 +418,7 @@ fn gpm_qpp_dfs(
         // PROFILE: one quantification hop taken — the store-read tally
         // behind the plan table's `hops` kind and `Db Hits` total, so a
         // pruned and an unpruned run of the same query are comparable.
-        gctx.tallies.hop();
+        gctx.walk.tallies.hop();
         // Mid-path allReduce: advance each fold one element. A prefix
         // predicate that is false kills every extension of this
         // iteration — the post-filter would reject them all.

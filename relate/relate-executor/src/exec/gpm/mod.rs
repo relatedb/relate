@@ -2,7 +2,7 @@
 //! predicates, path modes, and selectors.
 
 use crate::UsedSet;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{NodeId, Path, RelId, Result, Value};
@@ -10,6 +10,7 @@ use relate_ir::{Expr, MatchMode, NodePattern, PathPattern, PatternElement, RelPa
 
 use crate::ctx::ExecCtx;
 use crate::eval::{eval, predicate_holds, AllReduceFold, AllReduceStep};
+use crate::exec::WalkTallies;
 use crate::overlay::ExecGraph;
 
 use super::candidates::{expect_enumerated_candidate, node_ok};
@@ -129,47 +130,28 @@ impl HopFrame {
 }
 
 /// Context shared by the GPM walker: graph view, parameters, the enclosing
-/// statement's CIP-150 `cypher_version`, match mode, the MATCH-WHERE
-/// allReduce conjuncts inlined into the quantified expansions (mid-path
-/// pruning, `qpp`), the MATCH-WHERE conjuncts evaluated early at binding
-/// points (`early`), and the halt cell a cap or probe rider sets to stop
-/// the enumeration (`emit`). The path mode reaches the walk only through
-/// its whole-walk invariant below — the per-candidate mode check
+/// statement's CIP-150 `cypher_version`, the walk's own state
+/// ([`WalkState`] — the match mode, the two predicate bundles, the memos
+/// and the tallies), and the halt cell a cap or probe rider sets to stop
+/// the enumeration (`emit`). This view declares no walk state of its own:
+/// the fields it lends the hops are [`WalkState`]'s, so the two cannot
+/// drift. The path mode reaches the walk only through the state's
+/// whole-walk invariant — the per-candidate mode check
 /// (`gpm_path_mode_allows`) reads the pattern's own mode directly.
 #[derive(Clone, Copy)]
 struct GpmCtx<'a> {
     graph: &'a ExecGraph<'a>,
     params: &'a BTreeMap<String, Value>,
     cypher_version: Option<u32>,
-    match_mode: MatchMode,
-    inlined: &'a [InlinedAllReduce<'a>],
-    early: &'a EarlyPredicates<'a>,
-    /// The walk's halt flag — always a real cell: the rider's (its emit or
-    /// the probe's own) while one rides, the local one otherwise (which
-    /// nothing sets). Every enumeration loop consults [`GpmCtx::halted`].
+    /// The walk's own state, lent whole.
+    walk: &'a WalkState<'a>,
+    /// The mount's halt cell — the one decision this view adds to the
+    /// walk's state. A mounted probe rider brings its own verdict cell
+    /// (`MatchedSink::new` reads `probe.halt`) and it takes this place; a
+    /// cap rider carries no cell, so the state's `cap_halt` stands here
+    /// and the sink raises it. Always a real cell either way. Every
+    /// enumeration loop consults [`GpmCtx::halted`].
     halt: &'a Cell<bool>,
-    /// The whole-walk rel-uniqueness invariant — whether this walk's hops
-    /// must consume distinct relationships (the default DIFFERENT
-    /// RELATIONSHIPS match mode, or a path mode whose semantics need it,
-    /// [`path_mode_requires_unique_rels`]). Fixed for the whole walk by
-    /// the mode pair, so it is derived once here at the walk entry —
-    /// never re-derived per hop.
-    enforce_unique: bool,
-    /// The walk's unbounded-cap memo — the same shape as the halt cell:
-    /// always a real cell, filled by [`GpmCtx::unbounded_dfs_cap`] on the
-    /// first unbounded expansion and read by every later one.
-    unbounded_cap: &'a Cell<Option<u32>>,
-    /// The walk's path-name rung memo — the precomputed schema for the
-    /// completion's path-name bind, filled from the first complete
-    /// state's row (every complete state binds the same names, so one
-    /// rung serves the whole walk) and stamped by every later one. The
-    /// same whole-walk-memo shape as `unbounded_cap`.
-    path_rung: &'a Cell<Option<RowRung>>,
-    /// The walk's hop/walk tallies (LABS-805): the DFS and the quantified
-    /// expansion count into them per edge and the orchestrator flushes
-    /// once at the walk's end — never a thread-local access per edge.
-    /// The same whole-walk-memo shape as `unbounded_cap`.
-    tallies: &'a crate::exec::WalkTallies,
 }
 
 /// A GPM pattern's resolved rel-type filters (LABS-801), built once per
@@ -240,17 +222,95 @@ impl GpmCtx<'_> {
     /// over the walk's own graph view and match mode, memoized on first
     /// use: the pair is fixed for the whole walk (the statement's
     /// snapshot and the clause's match mode — the same whole-walk
-    /// premise [`Self::enforce_unique`] rests on), so an unbounded walk
-    /// enumerates the rel table once per walk instead of once per
+    /// premise [`WalkState::enforce_unique`] rests on), so an unbounded
+    /// walk enumerates the rel table once per walk instead of once per
     /// expansion entry, and a bounded walk — whose `unwrap_or_else`
     /// never consults this — pays nothing.
     fn unbounded_dfs_cap(&self) -> u32 {
-        if let Some(cap) = self.unbounded_cap.get() {
-            return cap;
+        *self
+            .walk
+            .unbounded_cap
+            .get_or_init(|| unbounded_dfs_cap(self.graph, self.walk.match_mode))
+    }
+}
+
+/// The walk's own state for one materializing GPM match (LABS-1404): the
+/// match-mode facts, the two predicate bundles the walk reads, the mount's
+/// halt cell, the two whole-walk memos and the tallies — one owned value,
+/// and the one field list: [`GpmCtx`] lends these fields whole rather than
+/// redeclaring them, so `match_gpm_path` reads route → start → walk →
+/// deliver instead of six inline locals that exist only to be borrowed by
+/// a `GpmCtx` literal.
+/// The mounted emit and its output vector stay with the caller: the sink
+/// owns `&mut` the vector, so one struct holding both would be
+/// self-referential.
+struct WalkState<'c> {
+    match_mode: MatchMode,
+    /// The whole-walk rel-uniqueness invariant, derived once at the walk
+    /// entry — the mode pair is fixed for the walk, so every hop reads the
+    /// same answer.
+    enforce_unique: bool,
+    /// The MATCH-WHERE allReduce conjuncts inlined into the quantified
+    /// expansions (mid-path pruning, `qpp`): evaluated at every expansion
+    /// step, so a path that already fails the WHERE stops early instead of
+    /// completing and being filtered at the end.
+    inlined: Vec<InlinedAllReduce<'c>>,
+    /// The MATCH-WHERE conjuncts evaluated early at binding points: each
+    /// conjunct rides the element whose bind completes its last free
+    /// variable, so the walk prunes at the earliest point it can.
+    early: EarlyPredicates<'c>,
+    /// The mount's halt cell — the one a cap rider raises through the
+    /// sink. A mounted probe rider brings its own verdict cell and it
+    /// takes this place in the `GpmCtx` [`Self::gctx`] hands the walk.
+    cap_halt: Cell<bool>,
+    /// The walk's unbounded-cap memo (see the field): empty until the first
+    /// unbounded expansion fills it — `OnceCell`, so the type owns the
+    /// filled-exactly-once contract the method used to spell by hand.
+    unbounded_cap: OnceCell<u32>,
+    /// The walk's path-name rung memo (see the field): empty until the
+    /// first complete state fills it.
+    path_rung: Cell<Option<RowRung>>,
+    /// The walk's hop/walk tallies (LABS-805): the per-edge counts
+    /// accumulate here through the whole elements walk and flush on drop at
+    /// the walk's end.
+    tallies: WalkTallies,
+}
+
+impl<'c> WalkState<'c> {
+    fn new(
+        path: &PathPattern,
+        row: &Row,
+        match_mode: MatchMode,
+        where_clause: &Residual<'c>,
+    ) -> Self {
+        Self {
+            match_mode,
+            enforce_unique: match_mode == MatchMode::DifferentRelationships
+                || path.mode.is_some_and(path_mode_requires_unique_rels),
+            inlined: inlined_all_reduces(path, row, where_clause.conjuncts),
+            early: early_predicates(path, row, where_clause),
+            cap_halt: Cell::new(false),
+            unbounded_cap: OnceCell::new(),
+            path_rung: Cell::new(None),
+            tallies: WalkTallies::default(),
         }
-        let cap = unbounded_dfs_cap(self.graph, self.match_mode);
-        self.unbounded_cap.set(Some(cap));
-        cap
+    }
+
+    /// The walk's context: the statement's graph view, parameters and
+    /// `cypher_version`, this state lent whole, and `halt` — the mount's
+    /// one decision, which is the mounted probe's own verdict cell when one
+    /// rides and this state's `cap_halt` otherwise.
+    fn gctx<'s>(&'s self, ctx: ExecCtx<'s>, halt: &'s Cell<bool>) -> GpmCtx<'s>
+    where
+        'c: 's,
+    {
+        GpmCtx {
+            graph: ctx.graph,
+            params: ctx.params,
+            cypher_version: ctx.cypher_version,
+            walk: self,
+            halt,
+        }
     }
 }
 
@@ -439,18 +499,9 @@ pub(crate) fn match_gpm_path(
         return Ok(Vec::new());
     }
     let elements = &path.elements;
-    // Mid-path allReduce inlining: the MATCH-WHERE conjuncts whose
-    // allReduce runs over one of this pattern's quantified-group lists
-    // are advanced per iteration inside the quantified expansion (qpp),
-    // pruning the branch the moment a prefix predicate is false. The
-    // post-filter stays in place — the inliner only ever removes branches
-    // whose every row it would reject.
-    let inlined = inlined_all_reduces(path, &row, where_clause.conjuncts);
-    // Early predicate evaluation (`early`): the MATCH-WHERE conjuncts
-    // whose names are all bound and bind exactly once evaluate the moment
-    // their last name binds — pre-hop at the anchor side — and a failed
-    // prefix enumerates no further hops. The post-filter stays in place.
-    let early = early_predicates(path, &row, where_clause);
+    // The walk's own state — each field's meaning is documented on
+    // `WalkState` itself.
+    let walk_state = WalkState::new(path, &row, match_mode, where_clause);
     // LABS-661: the start-point selection consults the MATCH-level WHERE
     // residual, exactly as the classic walker's `match_node` does —
     // `node_candidates` turns an equality/CONTAINS conjunct on the start
@@ -488,46 +539,17 @@ pub(crate) fn match_gpm_path(
     // The rider mounts itself — one match over its vocabulary, the emit
     // and the halt cell returned together; no rider (or a selector
     // keeping the materializing walk) yields no emit and the local cell.
-    let cap_halt = Cell::new(false);
-    // the walk's unbounded-cap memo (see the field): empty until the
-    // first unbounded expansion fills it
-    let unbounded_cap = Cell::new(None);
-    // the walk's path-name rung memo (see the field): empty until the
-    // first complete state fills it
-    let path_rung = Cell::new(None);
-    // the walk's hop/walk tallies (see the field): the per-edge counts
-    // accumulate here through the whole elements walk and flush on drop
-    // at the walk's end (LABS-805)
-    let tallies = crate::exec::WalkTallies::default();
     let mut emitted: Matched = Vec::new();
     let (mut emit, halt) = emit::mount_rider(
         ctx,
         rider.as_deref_mut(),
         path,
         where_clause,
-        &cap_halt,
+        &walk_state.cap_halt,
         tail,
         &mut emitted,
     );
-    let gctx = GpmCtx {
-        graph,
-        params,
-        cypher_version,
-        match_mode,
-        inlined: &inlined,
-        early: &early,
-        halt,
-        // the whole-walk rel-uniqueness invariant, derived once at the
-        // walk entry (see the field) — the mode pair is fixed for the
-        // walk, so every hop reads the same answer
-        enforce_unique: match_mode == MatchMode::DifferentRelationships
-            || path.mode.is_some_and(path_mode_requires_unique_rels),
-        // the walk's unbounded-cap memo (see the field): empty until the
-        // first unbounded expansion fills it
-        unbounded_cap: &unbounded_cap,
-        path_rung: &path_rung,
-        tallies: &tallies,
-    };
+    let gctx = walk_state.gctx(ctx, halt);
     // LABS-448: the walk phase, through the one wrapper — the whole
     // elements walk this clause performs, inclusive of its nested
     // resolutions (the recursion nests inside the span).
@@ -605,7 +627,7 @@ fn complete_state(gctx: &GpmCtx<'_>, path: &PathPattern, state: &mut GpmState) -
     // The completion's path-name rung through the walk's memo cell —
     // every complete state binds the same names, so one rung serves them
     // all (pattern_walk's `memoized_path_rung`, the one spelling).
-    let rung = memoized_path_rung(gctx.path_rung, &state.row, path);
+    let rung = memoized_path_rung(&gctx.walk.path_rung, &state.row, path);
     bind_path_value(
         graph,
         &mut state.row,
