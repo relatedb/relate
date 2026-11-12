@@ -159,6 +159,7 @@ fn main() {
         mode,
         no_header,
         pretty,
+        timings,
         show_version,
         show_help,
         lifecycle,
@@ -352,6 +353,9 @@ fn main() {
         // ADR-0240: indented JSON is a terminal courtesy; piped or
         // redirected stdout gets one compact line unless --pretty asks.
         pretty: pretty || stdout_is_tty,
+        // ADR-0581: the jsonl terminal timing line's opt-in; off by
+        // default, so the piped default's stream is pure rows.
+        timings,
         max_rows,
         // LABS-399: an explicit --width wins; otherwise the grid wraps to
         // the terminal width (COLUMNS) on a TTY — a piped run keeps the

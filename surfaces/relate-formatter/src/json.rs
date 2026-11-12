@@ -113,8 +113,12 @@ impl Formatter {
         }
         // LABS-1120: the timing block as the stream's final keyed line —
         // the same members every JSON-family mode carries, keyed so the
-        // line can never be confused with a data row.
-        if let Some(timings) = meta.timings {
+        // line can never be confused with a data row. ADR-0581: the line
+        // is the run-level opt-in (`Formatter::render_timings`, the
+        // `pretty` shape) — on, the library's default, a passed stamp
+        // renders; the CLI sets it from `--timings`, off by default, so
+        // its stream is pure rows.
+        if let Some(timings) = meta.timings.filter(|_| self.render_timings) {
             let mut line = serde_json::Map::new();
             for (key, value) in timing_members(&timings) {
                 line.insert(key.to_string(), value);

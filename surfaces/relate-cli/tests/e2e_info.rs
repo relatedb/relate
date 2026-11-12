@@ -13,7 +13,7 @@ mod support;
 
 #[cfg(feature = "info")]
 use support::seed_database;
-use support::{run_cli_in_home, run_cli_stdin_in_home, tempdir};
+use support::{run_cli_in_home, run_cli_stdin_in_home, tempdir, timing_terminal_line};
 
 #[cfg(feature = "info")]
 const SEED: &str = "CREATE (:Person {id: 1, name: 'ada'})";
@@ -697,5 +697,42 @@ fn test_dot_help_lists_info() {
     assert!(
         stdout.contains(".info"),
         ".help must list .info, got: {stdout}"
+    );
+}
+
+/// ADR-0581: `.info` renders its catalog readouts through the shared
+/// statement seam, so the formatter's run-level `render_timings` setting
+/// (written once per run from `--timings`) reaches them — under the
+/// opt-in each catalog statement's jsonl stream closes with the terminal
+/// timing line, a zero-row statement emitting exactly that line, while
+/// the default keeps the readout pure rows.
+#[test]
+fn test_dot_info_forwards_the_timings_opt_in() {
+    let home = tempdir();
+    let (status, stdout, stderr) =
+        run_cli_stdin_in_home(&["query", "--jsonl", "--timings"], home.path(), b".info\n");
+    assert!(status.success(), ".info failed: {stderr}");
+    assert!(
+        stdout.contains("indexes:"),
+        "the catalog headings: {stdout}"
+    );
+    assert!(
+        stdout.contains("constraints:"),
+        "the catalog headings: {stdout}"
+    );
+    // Two catalog statements, each closing with its terminal timing line —
+    // identified by the one typed discriminator, not a substring.
+    assert_eq!(
+        stdout.lines().filter(|l| timing_terminal_line(l)).count(),
+        2,
+        "both catalog readouts carry the timing line: {stdout}"
+    );
+    // The default: the same readout, pure rows — no terminal line.
+    let (status, stdout, stderr) =
+        run_cli_stdin_in_home(&["query", "--jsonl"], home.path(), b".info\n");
+    assert!(status.success(), ".info failed: {stderr}");
+    assert!(
+        !stdout.lines().any(timing_terminal_line),
+        "the default readout carries no timing line: {stdout}"
     );
 }

@@ -102,6 +102,27 @@ fn jsonl_closes_with_the_timings_terminal_line() {
     assert_eq!(row["a"], serde_json::json!(1));
 }
 
+/// ADR-0581: `Formatter::render_timings`, off, suppresses the jsonl
+/// terminal line while the stamp still rides every other mode's rider —
+/// the setting the CLI's `--timings` flag writes once per run. The
+/// library default stays on (render-when-passed), which the test above
+/// pins.
+#[test]
+fn jsonl_timings_off_suppresses_the_terminal_line() {
+    let mut formatter = Formatter::new(Mode::Jsonl);
+    formatter.render_timings = false;
+    let rendered = render_with_meta(
+        formatter,
+        &["a".to_string()],
+        &[vec![CypherValue::Int(1)]],
+        None,
+        None,
+        Some(fixture_stamp()),
+    );
+    // Pure rows: the row line is the whole stream.
+    assert_eq!(rendered, "{\"a\":1}\n", "no terminal line: {rendered}");
+}
+
 /// The `toon` mode renders terminal `timings:` / `planCache:` entries —
 /// the nested object inline, the outcome as a bare TOON token.
 #[test]

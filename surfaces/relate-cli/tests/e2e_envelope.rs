@@ -81,7 +81,8 @@ fn test_envelope_mode_failure_carries_the_error_envelope() {
 fn test_json_and_jsonl_modes_are_unchanged_by_the_envelope_mode() {
     // Piped stdout renders compact JSON (ADR-0240). LABS-1120: a result
     // with its timing block rides the wrapper in `json` (`data` beside
-    // the riders) and the terminal timing line in `jsonl`.
+    // the riders); the jsonl stream is the row alone — its terminal
+    // timing line is the `--timings` opt-in (ADR-0581).
     let (_, json, _) = run_cli(Opts::new(&["--json", "RETURN 1 AS a"]));
     let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
     assert_eq!(v["data"], serde_json::json!([{"a": 1}]));
@@ -90,11 +91,10 @@ fn test_json_and_jsonl_modes_are_unchanged_by_the_envelope_mode() {
         "the timing rider: {json}"
     );
     let (_, jsonl, _) = run_cli(Opts::new(&["--jsonl", "RETURN 1 AS a"]));
-    let lines: Vec<&str> = jsonl.lines().collect();
-    assert_eq!(lines[0], "{\"a\":1}");
-    assert!(
-        lines[1].contains("\"timings\"") && lines[1].contains("\"planCache\""),
-        "the timing line closes the stream: {jsonl}"
+    assert_eq!(
+        jsonl.lines().collect::<Vec<_>>(),
+        ["{\"a\":1}"],
+        "the row is the whole jsonl stream: {jsonl}"
     );
 }
 

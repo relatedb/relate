@@ -51,17 +51,24 @@ terminal, a statement prints at most 100 rows, warns on stderr and exits `0`.
 `--max-rows` overrides it everywhere; `0` is unlimited.
 
 ```bash
-CLAUDECODE=1 relate --jsonl :memory: "UNWIND range(1, 250) AS i RETURN i" | wc -l
-CLAUDECODE=1 relate --jsonl --max-rows 0 :memory: "UNWIND range(1, 250) AS i RETURN i" | wc -l
-relate --mode envelope --max-rows 2 :memory: "UNWIND range(1, 5) AS i RETURN i"
+CLAUDECODE=1 relate --jsonl "UNWIND range(1, 250) AS i RETURN i" | wc -l
+CLAUDECODE=1 relate --jsonl --max-rows 0 "UNWIND range(1, 250) AS i RETURN i" | wc -l
+relate --mode envelope --max-rows 2 "UNWIND range(1, 5) AS i RETURN i"
 ```
 
 ```text
 warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows
-100
+101
 250
-{"columns":["i"],"rows":[{"i":1},{"i":2}],"truncated":true}
+{"columnTypes":["INTEGER"],"columns":["i"],"notifications":[],"planCache":"miss","rowCap":{"kept":2,"total":5},"rows":[{"i":1},{"i":2}],"timings":{...},"truncated":true}
 ```
+
+The first count is the 100 row lines plus the keyed `rowCap` record that
+keeps the cut from reading as complete; the second is the 250 rows with no
+cut and no record. The terminal timing line is opt-in: `--timings` appends
+one keyed `{"timings": ..., "planCache": ...}` line per statement after any
+plan and `rowCap` lines (the two counts above become 102 and 251); without
+it, the default jsonl stream is pure rows.
 
 ## The version
 

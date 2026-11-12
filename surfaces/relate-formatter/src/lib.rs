@@ -183,6 +183,15 @@ pub struct Formatter {
     /// Pretty-print the `json` mode (ADR-0240). Only `Mode::Json` consults
     /// it; `jsonl` and `envelope` are always compact.
     pub pretty: bool,
+    /// The jsonl terminal timing line's opt-in (ADR-0581). Only
+    /// `Mode::Jsonl` consults it: the `json`/`envelope` riders and the
+    /// `toon` terminal entries always render when a stamp is passed.
+    /// Defaults on — the library's render-when-passed behavior — while the
+    /// CLI sets it once per run from its `--timings` flag, off by default,
+    /// so its jsonl stream is pure rows. Named distinctly from
+    /// [`StatementMeta::timings`], the per-statement stamp this gate
+    /// reads: availability and rendering are two facts.
+    pub render_timings: bool,
     /// The total display width the grid must fit (LABS-399) — the terminal
     /// width, when the caller knows it. `None` keeps the natural width: the
     /// stable choice for piped output. `table` and `plan_table` wrap cells
@@ -264,11 +273,13 @@ pub struct StatementMeta<'a> {
     /// plan-cache outcome — the one projection (`relate::timing_stamp_ms`)
     /// every envelope-building surface calls. `Some` renders one keyed
     /// `timings` object (plus the `planCache` outcome beside it) in the
-    /// serializing modes (`envelope`, `json`, `jsonl`, `toon`); `None`
-    /// omits both keys — the presence policy of `plan`, so a caller that
-    /// renders without a result behind it changes nothing. The strict row
-    /// formats (`csv`, `cypher`) and the human `table`/`markdown` modes
-    /// never render it.
+    /// serializing modes (`envelope`, `json`, `toon`); in `jsonl` the
+    /// terminal line renders only while [`Formatter::render_timings`] is
+    /// on (ADR-0581) — the stamp's availability and the run-level render
+    /// gate are two facts, named distinctly. `None` omits both keys —
+    /// the presence policy of `plan`, so a caller that renders without a
+    /// result behind it changes nothing. The strict row formats (`csv`,
+    /// `cypher`) and the human `table`/`markdown` modes never render it.
     pub timings: Option<relate_model::wire::TimingStampMs>,
 }
 
@@ -388,13 +399,15 @@ impl<'a> PlanPresentation<'a> {
 impl Formatter {
     /// Create a new formatter with the given mode. Pretty-printing defaults
     /// on, the historical library behavior; the CLI overrides it from the
-    /// terminal detection (ADR-0240).
+    /// terminal detection (ADR-0240). The jsonl timing line likewise
+    /// defaults on (ADR-0581); the CLI overrides it from `--timings`.
     pub fn new(mode: Mode) -> Self {
         Formatter {
             width: None,
             mode,
             headers: true,
             pretty: true,
+            render_timings: true,
         }
     }
 

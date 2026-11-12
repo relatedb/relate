@@ -38,6 +38,7 @@ hide them (ADR-0200).
 | `--toon` | Output results as TOON: one `rows[N]{cols}:` header plus one line per row (ADR-0239) |
 | `-noheader` | Disable column headers |
 | `--pretty` | Indent `json` output even when stdout is not a terminal (ADR-0240) |
+| `--timings` | Append the per-statement terminal timing line to `--jsonl` output (ADR-0581): one keyed `{"timings": {...}, "planCache": "..."}` line after any plan and `rowCap` lines — a zero-row statement emits exactly that line. Default off: the jsonl stream is pure rows. The other modes always carry their timing block (`--json`/`envelope` as riders, `toon` as terminal entries) |
 | `-mode MODE` | Set output mode (`table`, `csv`, `json`, `jsonl`, `envelope`, `markdown`, `cypher`, `toon`; default table on a terminal, jsonl when stdout is piped or redirected — ADR-0107; `toon` instead of jsonl when agent mode is in effect, ADR-0426). `envelope` prints `{"columns","rows","truncated"}` per result set (ADR-0195). `--format MODE` is the documented alias (ADR-0239) |
 | `--format MODE` | Alias of `--mode` (ADR-0239). `--output`/`-o` are errors whose did-you-mean names `--format` |
 | `--param N=V` | Bind a Cypher parameter (repeatable) |

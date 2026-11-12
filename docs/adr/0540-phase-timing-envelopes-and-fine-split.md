@@ -93,3 +93,11 @@ envelope they can consume already carries it); the coarse trio they
 expose today is unchanged. CI's per-PR query-latency lane (ADR-0245
 bands) guards the real suite against any hidden cost the local fixture
 could not resolve.
+
+## Later references
+
+- ADR-0581 narrows decision 6's jsonl clause: the terminal timing line is
+  now the `--timings` opt-in, default off — a jsonl stream is pure rows
+  (plus the plan and `rowCap` terminal lines, ADR-0403) unless the flag
+  asks for the line back. The json and envelope riders, the toon entries,
+  and decision 2's always-on measurement are unchanged.

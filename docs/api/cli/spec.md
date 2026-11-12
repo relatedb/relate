@@ -1816,7 +1816,10 @@ wraps the rows as `{"data": [...], "timings": {...}, "planCache": "..."}`
 longer renders the bare array), and `--jsonl` closes every statement's
 stream with one keyed terminal line `{"timings": {...}, "planCache": "..."}`
 after any plan and `rowCap` lines — a zero-row statement emits exactly that
-line, nothing else. `-mode toon` renders terminal `timings:` and
+line, nothing else — only under the `--timings` opt-in (ADR-0581); without
+the flag the jsonl stream is pure rows, so a zero-row statement prints an
+empty stdout and an N-row statement exactly N lines. `-mode toon` renders
+terminal `timings:` and
 `planCache:` entries after the rows (the timing object inline, the outcome
 as a bare token). The strict text formats (`csv`, `cypher`) and the human
 `table` mode carry none of it — the interactive session's `.timer` line
@@ -1956,6 +1959,7 @@ See the [executable help example](examples/help.md).
 | `-c, --command <CYPHER>` | unset | Same as positional `QUERY` (cannot combine with both) |
 | `--json` / `--csv` / `--jsonl` / `--markdown` / `--toon` | auto: `table` on a terminal, `jsonl` otherwise (ADR-0107), `toon` when agent mode is in effect ([ADR-0426](#agent-mode-adr-0407)) | Output format shortcuts; an explicit shortcut always overrides the default. `json` renders indented on a terminal and compact (one line) when stdout is piped or redirected (ADR-0240) |
 | `--pretty` | off | Force indented `json` output even when stdout is not a terminal (ADR-0240); ignored by the other modes |
+| `--timings` | off | Append the per-statement terminal timing line to `--jsonl` output (ADR-0581): one keyed `{"timings": {...}, "planCache": "..."}` line after any plan and `rowCap` lines — a zero-row statement emits exactly that line. Without it the jsonl stream is pure rows. Ignored by the other modes: `--json` and `--mode envelope` always carry the timing rider, `--toon` its terminal entries |
 | `--mode MODE` | auto: `table` on a terminal, `jsonl` otherwise (ADR-0107), `toon` when agent mode is in effect ([ADR-0426](#agent-mode-adr-0407)) | `table`, `csv`, `json`, `jsonl`, `envelope`, `markdown`, `cypher`, `toon`, `speedscope`; an explicit `--mode` always overrides the default. `envelope` is [the result envelope](#result-envelope); `toon` is the compact TOON tabular form (one `rows[N]{cols}:` header plus one line per row, nested values inline JSON; ADR-0239); `speedscope` exports a `PROFILE` plan tree as one speedscope evented-profile JSON document ([Speedscope export](#speedscope-export), below) |
 | `--format MODE` | as `--mode` | Documented alias of `--mode` (the neo4j-cli spelling, ADR-0239). `--output`/`-o` stay errors whose did-you-mean names `--format` |
 | `--noheader` | off | Suppress column headers |
@@ -1982,7 +1986,8 @@ See the [executable help example](examples/help.md).
 The hand-rolled parser also accepts legacy `-json`, `-csv`, `-jsonl`,
 `-markdown`, `-noheader`, `-mode`, `-param`, and `-version`/`-v` spellings and
 `-c` as shown above. There is no single-dash `-load-csv-dir` alias; the newer
-`--format` and `--toon` spellings (ADR-0239) and `--pretty` (ADR-0240) are
+`--format` and `--toon` spellings (ADR-0239), `--pretty` (ADR-0240) and
+`--timings` (ADR-0581) are
 double-dash only. An unknown
 flag exits 2 with the command usage line and a `--help` hint; a missing
 query-run flag value exits 2 without usage. `--help` exits 0. Legacy output

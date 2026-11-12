@@ -59,6 +59,9 @@ pub(crate) struct Flags {
     /// `--pretty`: force indented JSON even when stdout is not a terminal
     /// (ADR-0240).
     pub pretty: bool,
+    /// `--timings` (ADR-0581): the jsonl terminal timing line's opt-in;
+    /// off by default, so the jsonl stream is pure rows.
+    pub timings: bool,
     pub show_version: bool,
     pub show_help: bool,
     pub lifecycle: Option<LifecycleCommand>,
@@ -139,6 +142,7 @@ impl Default for Flags {
             mode: None,
             no_header: false,
             pretty: false,
+            timings: false,
             show_version: false,
             show_help: false,
             lifecycle: None,
@@ -450,6 +454,12 @@ fn apply_session_flag(
         }
         "--pretty" => {
             state.pretty = true;
+            true
+        }
+        // ADR-0581: the jsonl terminal timing line's opt-in — double-dash
+        // only, like every newer flag spelling (no legacy alias).
+        "--timings" => {
+            state.timings = true;
             true
         }
         "-d" | "--database" => {

@@ -64,7 +64,9 @@ pub(crate) fn run_info(
         println!("{heading}");
         // `.info` prints the catalog: never capped, no timer line, and it
         // reads only the run's exit code — the ADR-0402 effect facts belong
-        // to the session's note policy, not to this readout.
+        // to the session's note policy, not to this readout. The jsonl
+        // terminal timing line follows the formatter's run-level setting
+        // (ADR-0581) — the readout holds no policy of its own.
         let show_code =
             exec_relate_query(conn, query, params, formatter, RenderOpts::default()).code;
         if show_code != 0 {

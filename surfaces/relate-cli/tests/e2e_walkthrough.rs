@@ -432,9 +432,10 @@ fn line_diff<'a>(old: &[&'a str], new: &[&'a str]) -> (Vec<&'a str>, Vec<&'a str
 /// markdown codec in the `--snapshot-format` row (ADR-0406), gaining
 /// the `--markdown-body-properties` rows (ADR-0460), re-rendering
 /// the `--durability-mode` row to carry its `RELATE_DURABILITY_MODE`
-/// default (ADR-0470), and gaining the `--database` target-axis
+/// default (ADR-0470), gaining the `--database` target-axis
 /// continuation and the `--load` entry (LABS-903, ADR-0500 — LABS-872's
-/// remote fetch folded into `--load`) — every other line, byte for byte,
+/// remote fetch folded into `--load`), and gaining the `--timings` row
+/// (ADR-0581) — every other line, byte for byte,
 /// is the
 /// feature's untouched inheritance, so any other help change this
 /// feature made fails here. The full bundle only (the
@@ -475,6 +476,7 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "  extension      Scaffold, install, check, list, or remove command extensions",
             "                       The store to open — never a URL: a remote store is a --load",
             "                       source",
+            "  --timings     Append the per-statement timing line to --jsonl output (default off)",
             gained_codec_row.as_str(),
             "  --markdown-body-properties LIST  Markdown vault body properties (LIST or",
             "                       Label=LIST; entries separated by ';'; first bare, rest as",
@@ -496,7 +498,8 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "                       clone",
         ],
         "the final build's help must gain exactly the run, extension, --database \
-         target-axis (LABS-903, ADR-0500), markdown-codec snapshot-format, \
+         target-axis (LABS-903, ADR-0500), --timings (ADR-0581), \
+         markdown-codec snapshot-format, \
          markdown body-properties, durability-mode variable (ADR-0470), and \
          --load (LABS-903, ADR-0500; LABS-872's remote fetch folded into it) rows"
     );

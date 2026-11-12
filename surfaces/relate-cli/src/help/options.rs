@@ -135,6 +135,11 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         flags: &["--pretty"],
     },
     OptionEntry {
+        headline: "  --timings     Append the per-statement timing line to --jsonl output (default off)",
+        continuation: &[],
+        flags: &["--timings"],
+    },
+    OptionEntry {
         headline: "  --param N=V   Bind a Cypher parameter (repeatable; V parsed as JSON scalar, bare words are strings)",
         continuation: &[],
         flags: &["--param"],

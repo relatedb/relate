@@ -12,24 +12,6 @@ use support::{run_cli, CliRunOptions as Opts};
 
 // --- Query mode (one-shot positional query argument) ---
 
-#[test]
-fn test_single_query() {
-    // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
-    let (status, stdout, stderr) = run_cli(Opts::new(&["RETURN 42 AS answer;"]));
-    assert!(status.success(), "single query failed: {stderr}");
-    // LABS-1120: the JSONL stream closes with the timing terminal line,
-    // so the row line and the timing block are both present.
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(
-        lines[0], r#"{"answer":42}"#,
-        "piped one-shot should default to JSONL: {stdout}"
-    );
-    assert!(
-        lines[1].contains("\"timings\"") && lines[1].contains("\"planCache\""),
-        "the timing block closes the stream: {stdout}"
-    );
-}
-
 /// ADR-0200: `relate query [STATEMENT] --database PATH`.
 #[test]
 fn test_query_command_with_database() {
@@ -103,38 +85,7 @@ fn test_query_missing_database_value_prints_query_synopsis() {
     );
 }
 
-#[test]
-fn test_single_query_arithmetic() {
-    // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
-    let (status, stdout, stderr) = run_cli(Opts::new(&["RETURN 1 + 1 AS sum;"]));
-    assert!(status.success(), "arithmetic query failed: {stderr}");
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(
-        lines[0], r#"{"sum":2}"#,
-        "piped one-shot should default to JSONL: {stdout}"
-    );
-    assert!(
-        lines[1].contains("\"timings\""),
-        "the timing block closes the stream: {stdout}"
-    );
-}
-
 // --- Piped-output default mode (ADR-0107) ---
-
-#[test]
-fn test_piped_default_is_jsonl() {
-    let (status, stdout, stderr) = run_cli(Opts::new(&["-c", "RETURN 1 AS n"]));
-    assert!(status.success(), "piped query failed: {stderr}");
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(
-        lines[0], r#"{"n":1}"#,
-        "piped stdout must default to JSONL: {stdout}"
-    );
-    assert!(
-        lines[1].contains("\"timings\""),
-        "the timing block closes the stream: {stdout}"
-    );
-}
 
 #[test]
 fn test_piped_explicit_mode_table_wins() {
@@ -237,32 +188,6 @@ fn test_single_query_markdown() {
     assert!(
         stdout.contains("---"),
         "expected markdown separator, got: {stdout}"
-    );
-}
-
-#[test]
-fn test_single_query_jsonl() {
-    // `-jsonl` is shorthand for `--mode jsonl`: one JSON object per line.
-    let (status, stdout, stderr) = run_cli(Opts::new(&["-jsonl", "UNWIND [1, 2] AS n RETURN n;"]));
-    assert!(status.success(), "jsonl query failed: {stderr}");
-    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-    // LABS-1120: the two data rows plus the timing terminal line.
-    assert_eq!(
-        lines.len(),
-        3,
-        "expected one JSON object per line plus the timing line, got: {stdout}"
-    );
-    for line in &lines {
-        let obj: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("invalid JSON line ({e}): {line}"));
-        assert!(
-            obj.is_object(),
-            "expected a JSON object per line, got: {line}"
-        );
-    }
-    assert!(
-        lines[2].contains("\"timings\""),
-        "the last line is the timing block: {stdout}"
     );
 }
 

@@ -22,10 +22,10 @@ fn run_in(dir: &std::path::Path, statement: &str) -> (std::process::ExitStatus, 
     run_cli(Opts::new(&["--jsonl", "--database", "./db", "-c", statement]).in_dir(dir))
 }
 
-/// LABS-1120: every statement's JSONL stream closes with its timing
-/// terminal line, so the zero-effect contract is "no data rows" — the
-/// timing lines are per-statement metadata, never rows (the one typed
-/// discriminator, `support::timing_terminal_line`).
+/// A statement's JSONL stream may close with its timing terminal line
+/// (the `--timings` opt-in, ADR-0581), so the zero-effect contract is
+/// "no data rows" — the timing lines are per-statement metadata, never
+/// rows (the one typed discriminator, `support::timing_terminal_line`).
 fn data_rows(stdout: &str) -> Vec<&str> {
     stdout
         .lines()

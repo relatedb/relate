@@ -209,11 +209,12 @@ fn exec_relate_query_to(
                     column_types: &r.header.column_types,
                     row_cap: cut,
                     plan,
-                    // LABS-1120: the statement's timing block — the one
-                    // projection every envelope-building surface calls —
-                    // so the machine modes carry the phase split, the
-                    // fine sub-split and the plan-cache outcome beside the
-                    // rows, no `.timer` flag needed.
+                    // ADR-0581: the stamp always rides — the jsonl
+                    // terminal line's opt-in is the formatter's own
+                    // run-level `render_timings` setting (set once per
+                    // run from the flag), never a per-statement fact;
+                    // every other mode's rider and the always-on
+                    // measurement (ADR-0540 decision 2) are unchanged.
                     timings: Some(relate::timing_stamp_ms(&r)),
                 },
             ) {
@@ -481,7 +482,8 @@ mod render_failure_tests {
             "the result row goes to the output writer: {out:?}"
         );
         // LABS-1120: the machine stream closes with the timing terminal
-        // line before the human `.timer` line.
+        // line — the formatter's library-default `timings` (ADR-0581) —
+        // before the human `.timer` line.
         assert!(
             lines
                 .get(1)

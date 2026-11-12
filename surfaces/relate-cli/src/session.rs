@@ -182,6 +182,9 @@ pub(crate) struct RunOpts<'a> {
     pub(crate) mode: Mode,
     pub(crate) no_header: bool,
     pub(crate) pretty: bool,
+    /// The `--timings` flag (ADR-0581): the jsonl terminal timing line's
+    /// opt-in; off by default, so the jsonl stream is pure rows.
+    pub(crate) timings: bool,
     pub(crate) max_rows: Option<usize>,
     /// The total display width the human table wraps to (LABS-399).
     pub(crate) width: Option<usize>,
@@ -226,6 +229,7 @@ struct Exec<'a> {
     max_rows: Option<usize>,
     /// The per-statement timeout (ADR-0241); `None` is no bound.
     timeout: Option<std::time::Duration>,
+    /// The `.timer` display state; default OFF (SQLite behavior).
     timer: bool,
     telemetry: &'a mut telemetry::Telemetry,
     query_ctx: QueryContext,
@@ -329,6 +333,10 @@ pub(crate) fn run_relate(opts: RunOpts<'_>) -> ! {
     }
     formatter.pretty = opts.pretty;
     formatter.width = opts.width;
+    // ADR-0581: the jsonl terminal timing line's opt-in — one run-level
+    // fact on the formatter (the `pretty` shape), off by default, so the
+    // piped default's stream is pure rows.
+    formatter.render_timings = opts.timings;
     // The ADR-0164 exit policy reads `query_ctx.source` directly: the
     // invocation-mode trichotomy `main` already classified as a
     // `telemetry::QuerySource`.

@@ -566,8 +566,9 @@ pub fn staged_path(stderr: &str) -> std::path::PathBuf {
 }
 
 /// LABS-1120: the per-statement timing terminal line of a `--jsonl`
-/// stream is metadata, never a data row — the one typed discriminator
-/// every JSONL-reading helper and e2e comparison uses: the terminal line
+/// stream (the `--timings` opt-in, ADR-0581) is metadata, never a data
+/// row — the one typed discriminator every JSONL-reading helper and e2e
+/// comparison uses: the terminal line
 /// is an object carrying exactly the timing rider's two keys (`timings`
 /// and `planCache`, the formatter's one rider builder), so a data row
 /// that happens to carry a `timings` column stays a row.
@@ -581,12 +582,37 @@ pub fn timing_terminal_line(line: &str) -> bool {
     }
 }
 
+/// The 250-row fixture the agent-mode and row-cap suites stream — the
+/// shape the row cap cuts to 100 under a detected harness.
+// Only those two suites use it; allow in the other test binaries.
+#[allow(dead_code)]
+pub const ROW_CAP_QUERY: &str = "UNWIND range(1, 250) AS i RETURN i";
+
+/// The one suite runner the agent-mode and row-cap suites share: a
+/// `--jsonl` invocation over [`ROW_CAP_QUERY`] on the pure-row default
+/// (ADR-0581) — those suites count data rows and the rowCap record, never
+/// the terminal timing line; the opt-in stream is pinned in `e2e_jsonl`.
+/// One copy, so a prelude change lands once.
+// Only those two suites run the row-cap stream; allow in the other test binaries.
+#[allow(dead_code)]
+pub fn run_row_cap(
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> (std::process::ExitStatus, String, String) {
+    let mut all = vec!["--jsonl"];
+    all.extend_from_slice(args);
+    all.push(ROW_CAP_QUERY);
+    run_cli(CliRunOptions::new(&all).with_envs(envs))
+}
+
 /// Run one follow-up query against a persisted database with `--jsonl` and
 /// return every row, parsed. `params` are the `--param name=value` arguments
 /// the query takes; pass `&[]` for a query without parameters.
 ///
 /// The one JSONL query reader: the importer e2e suites never parse the
-/// output themselves.
+/// output themselves. The args never carry `--timings`, so under ADR-0581's
+/// default-off the stream is pure rows by construction — every line is a
+/// data row.
 // Only the importer e2e suites query a persisted database; allow in the others.
 #[allow(dead_code)]
 pub fn query_rows(
@@ -607,9 +633,6 @@ pub fn query_rows(
     stdout
         .lines()
         .filter(|line| !line.trim().is_empty())
-        // LABS-1120: the stream's timing terminal line is metadata, not a
-        // data row — the helper's contract is the rows.
-        .filter(|line| !timing_terminal_line(line))
         .map(|line| {
             serde_json::from_str(line).unwrap_or_else(|error| panic!("bad JSON {line:?}: {error}"))
         })
