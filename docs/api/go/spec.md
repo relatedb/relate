@@ -256,6 +256,21 @@ explicit transaction (ADR-0028); `Close` is implicit rollback. A write-write
 conflict is a `*Error` with `Retryable == true` (`Neo.TransientError.Transaction.Outdated`);
 retry the unit of work in the caller (ADR-0017).
 
+**Lifecycle.** `Database.Close` and `Connection.Close` are idempotent: a second
+call is a no-op. After `Close`, every other method on that handle
+(`Connect`, `ConnectNamespace`, `Checkpoint`, `Query`, `QueryParams`,
+`SetNamespace`, `Begin`, `Commit`, `Rollback`) returns `ErrClosed`
+(`errors.Is(err, relate.ErrClosed)`) without touching the engine. `ErrClosed`
+is a client-side sentinel, not an `*Error`: the call never reached the engine.
+A `Close` waits for calls in flight on the same handle, so it is safe to call
+from another goroutine; every racing call either completes or returns
+`ErrClosed`. Calls on one `Connection` are serialized (the C surface allows one
+call at a time per connection), so sharing a `Connection` across goroutines is
+safe but runs one call at a time; a `Database` may be shared with calls
+overlapping. Use one `Connection` per goroutine for parallelism. A `Database` or `Connection` dropped without `Close` is closed by
+its finalizer, which is a backstop, not a substitute: a file store cannot be
+reopened in the process until the `Database` is closed or collected.
+
 The package links `librelate_ffi` (ABI version 2, ADR-0502). Build it with
 `cargo build --release -p relate-ffi` from the repository root; the cgo
 directives search `target/debug` and `target/release`. On macOS the linker

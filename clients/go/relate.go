@@ -11,15 +11,77 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
+	"sync"
 	"unsafe"
 )
 
+// ErrClosed is returned by every method called on a Database or Connection
+// after Close. It is a client-side failure (the call never reached the
+// engine), so it is a plain sentinel, not an *Error: match it with
+// errors.Is.
+var ErrClosed = errors.New("relate: handle is closed")
+
+// lifecycle is the one open/closed guard both handle types embed. A call
+// holds the guard for its whole C call and Close takes the write side, so a
+// Close never frees a handle under a call in flight, and a call after Close
+// is refused instead of touching freed memory. A Database may be shared
+// across goroutines (calls hold the read side and overlap); a Connection must
+// not be used by two calls at once (C contract, docs/api/c/spec.md
+// Threading), so its calls hold the write side and serialize.
+type lifecycle struct {
+	mu        sync.RWMutex
+	closed    bool
+	exclusive bool
+}
+
+// use admits one call: it returns the release func to defer, or ErrClosed.
+func (l *lifecycle) use() (func(), error) {
+	if l.exclusive {
+		l.mu.Lock()
+		if l.closed {
+			l.mu.Unlock()
+			return nil, ErrClosed
+		}
+		return l.mu.Unlock, nil
+	}
+	l.mu.RLock()
+	if l.closed {
+		l.mu.RUnlock()
+		return nil, ErrClosed
+	}
+	return l.mu.RUnlock, nil
+}
+
+// shut runs free exactly once, after in-flight calls drain; later calls are
+// no-ops.
+func (l *lifecycle) shut(free func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
+	l.closed = true
+	free()
+}
+
+// Database is an open database. Close it when done; a Database dropped
+// without Close is closed by its finalizer. Every method is safe to call
+// concurrently with Close and returns ErrClosed after it.
 type Database struct {
+	lifecycle
 	ptr C.relate_database
 }
 
+// Connection is a session on a Database, closed like a Database: Close is
+// idempotent, a dropped Connection is closed by its finalizer, and every
+// method returns ErrClosed after Close. Calls on one Connection are
+// serialized (the C contract allows one call at a time per connection), so
+// sharing it across goroutines is safe but gains no parallelism: use one
+// Connection per goroutine for that.
 type Connection struct {
+	lifecycle
 	ptr C.relate_connection
 }
 
@@ -155,11 +217,14 @@ func open(uri string, readOnly bool) (*Database, error) {
 	if err := statusErr(st, errJSON); err != nil {
 		return nil, err
 	}
-	return &Database{ptr: db}, nil
+	d := &Database{ptr: db}
+	runtime.SetFinalizer(d, (*Database).Close)
+	return d, nil
 }
 
+// Close frees the database. It is idempotent: a second Close is a no-op.
 func (d *Database) Close() {
-	C.relate_database_close(d.ptr)
+	d.shut(func() { C.relate_database_close(d.ptr) })
 }
 
 // Connect opens a connection in the default "neo4j" session namespace
@@ -182,28 +247,47 @@ func (d *Database) ConnectNamespace(name string) (*Connection, error) {
 }
 
 func (d *Database) connect(cName *C.char) (*Connection, error) {
+	release, err := d.use()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	var conn C.relate_connection
 	var errJSON *C.char
 	st := C.relate_connect_namespace(d.ptr, cName, &conn, &errJSON)
 	if err := statusErr(st, errJSON); err != nil {
 		return nil, err
 	}
-	return &Connection{ptr: conn}, nil
+	c := &Connection{lifecycle: lifecycle{exclusive: true}, ptr: conn}
+	runtime.SetFinalizer(c, (*Connection).Close)
+	return c, nil
 }
 
 func (d *Database) Checkpoint() error {
+	release, err := d.use()
+	if err != nil {
+		return err
+	}
+	defer release()
 	var errJSON *C.char
 	st := C.relate_checkpoint(d.ptr, &errJSON)
 	return statusErr(st, errJSON)
 }
 
+// Close frees the connection (an open transaction is rolled back). It is
+// idempotent: a second Close is a no-op.
 func (c *Connection) Close() {
-	C.relate_disconnect(c.ptr)
+	c.shut(func() { C.relate_disconnect(c.ptr) })
 }
 
 // SetNamespace changes the session namespace (ADR-0117), matched
 // case-insensitively. It fails while an explicit transaction is open.
 func (c *Connection) SetNamespace(name string) error {
+	release, err := c.use()
+	if err != nil {
+		return err
+	}
+	defer release()
 	cName, err := cString("namespace name", name)
 	if err != nil {
 		return err
@@ -215,6 +299,11 @@ func (c *Connection) SetNamespace(name string) error {
 }
 
 func (c *Connection) Begin() error {
+	release, err := c.use()
+	if err != nil {
+		return err
+	}
+	defer release()
 	var errJSON *C.char
 	st := C.relate_conn_begin(c.ptr, &errJSON)
 	return statusErr(st, errJSON)
@@ -225,6 +314,11 @@ func (c *Connection) Begin() error {
 // transaction committed nothing (no write ran, or every write was a no-op):
 // no bookmark is fabricated for a commit that crossed no WAL boundary.
 func (c *Connection) Commit() (string, error) {
+	release, err := c.use()
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	var bm *C.char
 	var errJSON *C.char
 	st := C.relate_conn_commit(c.ptr, &bm, &errJSON)
@@ -240,6 +334,11 @@ func (c *Connection) Commit() (string, error) {
 }
 
 func (c *Connection) Rollback() error {
+	release, err := c.use()
+	if err != nil {
+		return err
+	}
+	defer release()
 	var errJSON *C.char
 	st := C.relate_conn_rollback(c.ptr, &errJSON)
 	return statusErr(st, errJSON)
@@ -259,6 +358,11 @@ func (c *Connection) Query(cypher string) (*Result, error) {
 // returns a *Error from the result's error channel. A connection-level
 // failure returns a *Error from the call's own out-param.
 func (c *Connection) QueryParams(cypher string, params map[string]any) (*Result, error) {
+	release, err := c.use()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	q, err := cString("statement", cypher)
 	if err != nil {
 		return nil, err

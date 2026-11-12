@@ -72,7 +72,9 @@ bookmark, _ := conn.Commit()                    // "" when nothing committed
 - **Close what you open** — `Connection.Close` is an implicit rollback;
   without `Database.Close` a file store cannot be reopened in the same
   process. One writer process per store; `OpenReadOnly` readers are
-  unlimited; `:memory:` vanishes on close.
+  unlimited; `:memory:` vanishes on close. `Close` is idempotent and any
+  method after it returns `ErrClosed` (`errors.Is`); a dropped handle is
+  closed by its finalizer, but do not rely on it.
 
 ## Spec
 
