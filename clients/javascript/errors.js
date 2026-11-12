@@ -52,23 +52,6 @@ function abiViolation(detail) {
   return new Error(`ABI contract violated: ${detail}`);
 }
 
-/// The closed result-metadata vocabularies: the C ABI's `query_type`
-/// (ADR-0162, ADR-0332) and `namespace` (ADR-0117) accessors return exactly
-/// these values, so anything else is an ABI contract violation, never a
-/// lenient pass-through (the Go client's decodeQueryType / decodeNamespace).
-const QUERY_TYPES = ["r", "w", "rw", "s"];
-const NAMESPACES = ["neo4j", "system", "system_ontologies"];
-
-function decodeQueryType(raw) {
-  if (!QUERY_TYPES.includes(raw)) throw abiViolation(`query type ${JSON.stringify(raw)}`);
-  return raw;
-}
-
-function decodeNamespace(raw) {
-  if (!NAMESPACES.includes(raw)) throw abiViolation(`namespace ${JSON.stringify(raw)}`);
-  return raw;
-}
-
 /// The one non-ABI construction: the sync-call refusal while an async
 /// query is in flight (index.js) — a client-side refusal that carries no
 /// engine classification. The only site the no-classification shape
@@ -127,6 +110,4 @@ module.exports = {
   abiViolation,
   clientRefusalError,
   errorFromJson,
-  decodeQueryType,
-  decodeNamespace,
 };

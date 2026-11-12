@@ -284,7 +284,8 @@ try {
 // a RelateError with fabricated null fields (a missing "retryable"
 // would silently decode as false and a retry loop would decline to
 // retry). The Go and Swift clients hold the same contract.
-const { errorFromJson, decodeQueryType, decodeNamespace } = require("./errors");
+const { errorFromJson } = require("./errors");
+const { QUERY_TYPES, NAMESPACES, decodeQueryType, decodeNamespace } = require("./metadata");
 const shape = (over = {}) => JSON.stringify({
   code: "Neo.ClientError.Statement.ArithmeticError",
   gql_status: "22G03",
@@ -310,8 +311,8 @@ const transient = errorFromJson(shape({
 assert.strictEqual(transient.isRetriable, true);
 // The closed result-metadata vocabularies (ADR-0162, ADR-0117): every listed
 // value passes through, anything else is an ABI contract violation.
-for (const qt of ["r", "w", "rw", "s"]) assert.strictEqual(decodeQueryType(qt), qt);
-for (const ns of ["neo4j", "system", "system_ontologies"]) {
+for (const qt of QUERY_TYPES) assert.strictEqual(decodeQueryType(qt), qt);
+for (const ns of NAMESPACES) {
   assert.strictEqual(decodeNamespace(ns), ns);
 }
 for (const bad of ["", "R", "x", null]) {
@@ -319,6 +320,18 @@ for (const bad of ["", "R", "x", null]) {
 }
 for (const bad of ["", "Neo4j", "other", null]) {
   assert.throws(() => decodeNamespace(bad), /ABI contract violated: namespace/);
+}
+// The runtime tables and the d.ts unions are one vocabulary: pin each
+// against the declared union so neither can drift.
+{
+  const dts = require("fs").readFileSync(require("path").join(__dirname, "index.d.ts"), "utf8");
+  const union = (name) => {
+    const m = dts.match(new RegExp(`export type ${name} = ([^;]+);`));
+    assert.ok(m, `index.d.ts declares ${name}`);
+    return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  };
+  assert.deepStrictEqual(QUERY_TYPES, union("QueryType"));
+  assert.deepStrictEqual(NAMESPACES, union("Namespace"));
 }
 // Every violation names itself: not JSON, not an object, a missing field,
 // a mistyped field, an off-vocabulary stage.

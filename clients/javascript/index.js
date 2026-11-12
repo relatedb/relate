@@ -9,9 +9,8 @@ const {
   abiViolation,
   clientRefusalError,
   errorFromJson,
-  decodeQueryType,
-  decodeNamespace,
 } = require("./errors");
+const { decodeQueryType, decodeNamespace } = require("./metadata");
 const path = require("path");
 
 // Platform support, keyed by `${process.platform}-${process.arch}`; a key
