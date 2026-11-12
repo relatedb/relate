@@ -8,11 +8,7 @@ method and ``relate.viz.to_visualization_graph``.
 from typing import Any, Iterable, Mapping
 
 from relate._native import Node, Path, Relationship
-
-# Value types that recursively contain graph entities: sequences, sets,
-# and any Mapping (mirrors neo4j_viz.neo4j.find_graph_entity, which walks
-# lists and dicts; a non-dict Mapping is walked too, per the docstring).
-_CONTAINER_TYPES = (list, tuple, set, frozenset, Mapping)
+from relate.row_values import iter_graph_values
 
 
 class ResultGraph:
@@ -62,22 +58,19 @@ def collect_graph_entities(rows: Iterable[Mapping[str, Any]]):
     nodes: dict = {}
     relationships: dict = {}
 
-    def walk(value: Any) -> None:
+    def collect(value: Any) -> None:
         if isinstance(value, Node):
             nodes.setdefault(value.id, value)
         elif isinstance(value, Relationship):
             relationships.setdefault(value.id, value)
         elif isinstance(value, Path):
-            # A path is just another entity source — recurse so the dedup
-            # policy lives only in the Node/Relationship branches.
+            # A path is just another entity source — collect its entities so
+            # the dedup policy lives only in the Node/Relationship branches.
             for entity in (*value.nodes, *value.relationships):
-                walk(entity)
-        elif isinstance(value, _CONTAINER_TYPES):
-            items = value.values() if isinstance(value, Mapping) else value
-            for item in items:
-                walk(item)
+                collect(entity)
 
     for row in rows:
         for value in row.values():
-            walk(value)
+            for graph_value in iter_graph_values(value):
+                collect(graph_value)
     return nodes, relationships

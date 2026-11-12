@@ -5,7 +5,7 @@ Neo4j driver conveniences: attribute access, ``.data()``, and ``.keys()`` in
 column order.
 """
 
-from relate._native import Node, Path, Relationship
+from relate.row_values import map_row_value
 
 
 def _as_data(value):
@@ -16,17 +16,6 @@ def _as_data(value):
 def _as_dict(value):
     """The lossless, JSON-ready form of one graph value."""
     return value.to_dict()
-
-
-def _convert(value, render):
-    """Recursively replace graph values by ``render(value)``."""
-    if isinstance(value, (Node, Relationship, Path)):
-        return render(value)
-    if isinstance(value, dict):
-        return {k: _convert(v, render) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_convert(v, render) for v in value]
-    return value
 
 
 class Record(dict):
@@ -63,7 +52,7 @@ class Record(dict):
         are converted recursively. Ids, labels and endpoints are dropped; use
         :meth:`to_dict` to keep them.
         """
-        return _convert(self._ordered(), _as_data)
+        return map_row_value(self._ordered(), _as_data)
 
     def to_dict(self):
         """A JSON-ready ``dict`` copy of the row that keeps everything.
@@ -75,7 +64,7 @@ class Record(dict):
         converted recursively. Points, durations, temporals and vectors stay
         as they are.
         """
-        return _convert(self._ordered(), _as_dict)
+        return map_row_value(self._ordered(), _as_dict)
 
     def _ordered(self):
         """The row as a plain ``dict`` in column order (extra keys last)."""
