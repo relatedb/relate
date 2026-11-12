@@ -368,3 +368,21 @@ fn order_by_aggregation_sorts_by_recomputed_value() {
     );
     assert_eq!(r.rows[0][1], Value::Int(1));
 }
+
+// A plain (non-aggregating) WHERE after a GROUP BY reads the grouping
+// key's variable — the key the projection does not carry. The
+// aggregation's seed retains what the predicate reads, so the
+// post-aggregation filter answers from the group's key instead of an
+// undefined variable.
+#[test]
+fn plain_where_after_group_by_reads_the_grouping_key() {
+    let mut c = connection();
+    let r = c
+        .query(
+            "UNWIND [{p: 1}, {p: 2}, {p: 3}] AS x WITH x AS a \
+             WITH count(*) AS cnt GROUP BY a WHERE 1 + a.p > 3 RETURN cnt",
+        )
+        .unwrap();
+    assert_eq!(r.rows.len(), 1, "rows: {:?}", r.rows);
+    assert_eq!(r.rows[0][0], Value::Int(1), "the surviving group's count");
+}

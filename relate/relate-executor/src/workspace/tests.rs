@@ -174,9 +174,8 @@ fn incremental_meters_match_full_walks() {
     }
 
     let mut groups: IndexMap<Vec<GroupKey>, Vec<Row>> = IndexMap::new();
-    let mut group_meter = GroupMapMeter::default();
-    // LABS-781: the entry-landing charge the expression-budget running
-    // total consumes (`group_entry_insert_delta`) is the meter's own
+    // LABS-781: the entry-landing charge the streaming folds' running
+    // total consumes (`group_entry_insert_delta`) is the map oracle's own
     // slot-and-key model of the same insert — accumulated here and
     // asserted below so the two formulations cannot drift.
     let mut entry_delta_total = 0;
@@ -184,23 +183,14 @@ fn incremental_meters_match_full_walks() {
         let row = Row::from_names(&names, vec![Value::Int(i)]);
         let key = vec![GroupKey::new(&Value::Int(i % 3))];
         if let Some(index) = groups.get_index_of(&key) {
-            group_meter.add_row(index, &row);
             groups.get_index_mut(index).expect("group").1.push(row);
         } else {
-            group_meter.add_group(&key, &row);
             entry_delta_total += group_entry_insert_delta(groups.len(), &key);
             groups.insert(key, vec![row]);
         }
-        assert_eq!(group_meter.bytes, group_map_bytes(&groups));
     }
     let rows_bytes: u64 = groups.values().map(|rows| row_buffer_bytes(rows)).sum();
     assert_eq!(entry_delta_total, group_map_bytes(&groups) - rows_bytes);
-
-    let mut empty_groups: IndexMap<Vec<GroupKey>, Vec<Row>> = IndexMap::new();
-    let mut empty_meter = GroupMapMeter::default();
-    empty_groups.insert(Vec::new(), Vec::new());
-    empty_meter.add_empty_group();
-    assert_eq!(empty_meter.bytes, group_map_bytes(&empty_groups));
 
     let mut distinct = HashSet::new();
     let mut distinct_total = 0;

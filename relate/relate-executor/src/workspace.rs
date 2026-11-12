@@ -371,8 +371,9 @@ pub(crate) fn distinct_row_set_bytes<S>(keys: &HashSet<Vec<GroupKey>, S>) -> u64
     bytes
 }
 
-/// Live grouped aggregation: the map, the group keys, and the retained rows.
-/// The hot path updates [`GroupMapMeter`]; this walk is the oracle.
+/// Live grouped aggregation, as the streaming folds' map retains it: the
+/// map, the group keys, and the retained rows. The oracle
+/// [`group_entry_insert_delta`] is pinned against.
 #[cfg(test)]
 pub(crate) fn group_map_bytes(groups: &IndexMap<Vec<GroupKey>, Vec<Row>>) -> u64 {
     let stride = (size_of::<Vec<GroupKey>>() + size_of::<Vec<Row>>()) as u64;
@@ -503,79 +504,19 @@ impl BindingMeter {
     }
 }
 
-#[derive(Debug, Default)]
-struct GroupSlot {
-    rows: usize,
-    schemas: IdSet<usize>,
-}
-
-impl GroupSlot {
-    fn add_row(&mut self, row: &Row) -> u64 {
-        let old = self.rows;
-        self.rows += 1;
-        let mut delta = buffer_growth(old, self.rows, size_of::<Row>() as u64);
-        if self.schemas.insert(row.schema_ptr() as usize) {
-            delta += row.schema_bytes();
-        }
-        delta += buffer_bytes(row.values().len(), size_of::<Value>() as u64);
-        for value in row.values() {
-            delta += owned_heap(value);
-        }
-        delta
-    }
-}
-
-/// Running total for an aggregation map. Adding a group or a row matches
-/// [`group_map_bytes`] of the same map.
-#[derive(Debug, Default)]
-pub(crate) struct GroupMapMeter {
-    pub bytes: u64,
-    groups: Vec<GroupSlot>,
-    payload: u64,
-}
-
-impl GroupMapMeter {
-    fn stride() -> u64 {
-        (size_of::<Vec<GroupKey>>() + size_of::<Vec<Row>>()) as u64
-    }
-
-    fn recompute(&mut self) {
-        self.bytes = buffer_bytes(self.groups.len(), Self::stride()) + self.payload;
-    }
-
-    pub(crate) fn add_group(&mut self, key: &[GroupKey], row: &Row) {
-        let mut slot = GroupSlot::default();
-        let row_bytes = slot.add_row(row);
-        self.groups.push(slot);
-        self.payload += key_account(key) + row_bytes;
-        self.recompute();
-    }
-
-    pub(crate) fn add_row(&mut self, index: usize, row: &Row) {
-        self.payload += self.groups[index].add_row(row);
-        self.recompute();
-    }
-
-    /// The keyless group aggregation inserts before any input row arrives.
-    pub(crate) fn add_empty_group(&mut self) {
-        self.groups.push(GroupSlot::default());
-        self.recompute();
-    }
-}
-
 fn key_account(key: &[GroupKey]) -> u64 {
     buffer_bytes(key.len(), size_of::<GroupKey>() as u64)
         + key.iter().map(GroupKey::logical_bytes).sum::<u64>()
 }
 
-/// The one group-map entry-landing charge: the map slot's buffer growth
-/// (the slot holds the key vector's and the row vector's headers) plus
-/// the key's slot buffer and owned payload — the same figures
-/// [`GroupMapMeter`]'s `key_account` counts for the workspace ledger,
-/// spelled once for the expression-budget running total a new group
-/// grows it by.
+/// The streaming folds' group-map entry-landing charge: the map slot's
+/// buffer growth (the slot holds the key vector's and the row vector's
+/// headers) plus the key's slot buffer and owned payload, spelled once for
+/// the expression-budget running total a new group grows it by. (The
+/// grouped aggregate's own table bills its own layout, `exec::aggregate`.)
 pub(crate) fn group_entry_insert_delta(old_len: usize, key: &[GroupKey]) -> u64 {
-    buffer_growth(old_len, old_len + 1, GroupMapMeter::stride()) + key_account(key)
+    let stride = (size_of::<Vec<GroupKey>>() + size_of::<Vec<Row>>()) as u64;
+    buffer_growth(old_len, old_len + 1, stride) + key_account(key)
 }
 
 pub(crate) fn distinct_row_insert_delta(old_len: usize, key: &[GroupKey]) -> u64 {

@@ -4,14 +4,15 @@
 //! [`AggSites::discover`] finds every aggregate call an aggregating
 //! projection can evaluate (items, `ORDER BY` keys, HAVING) by running the
 //! one recursive evaluator in its discovery mode, so the sites are exactly
-//! the calls the evaluator reaches. Each site gets one accumulator per
-//! group ([`GroupAccs`]): a non-retaining aggregate (`count`, `sum`, `avg`,
-//! `min`, `max`, `stDev`, `stDevP`, DISTINCT or not) keeps constant-size state
-//! (plus a DISTINCT call's seen-set) and never an operand value; only `collect` and the percentiles retain
-//! their operands, charged to the expression budget as a retaining
-//! container. The plain percentile calls of one group over the same operand
-//! share one `f64` buffer (`pool`) rather than each keeping its own `Value`s.
-//! [`GroupAccs::finish`] resolves every site once, and the
+//! the calls the evaluator reaches. Each site gets one column of per-group
+//! state ([`AccTable`], `columns`): a non-retaining aggregate (`count`,
+//! `sum`, `avg`, `min`, `max`, `stDev`, `stDevP`, DISTINCT or not) keeps
+//! constant-size state (plus a DISTINCT call's seen-set) and never an
+//! operand value; only `collect` and the percentiles retain their operands,
+//! charged to the expression budget as a retaining container. The plain
+//! percentile calls of one group over the same operand share one `f64`
+//! buffer (`pool`) rather than each keeping its own `Value`s.
+//! [`AccTable::finish_group`] resolves every site of a group once, and the
 //! evaluator reads the results back from the [`FoldedGroup`].
 
 use std::cell::RefCell;
@@ -21,180 +22,31 @@ use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::{classify_aggregate, AggregateArity, AggregateKind, Expr};
 use relate_names::SmallName;
 
-use crate::distinct_set::DistinctSet;
 use crate::eval::{eval, fold_aggregate, needs_numbers, FoldInput, Percentile, StreamFold};
-use crate::overlay::{ExecGraph, RetainedTotal};
+use crate::overlay::ExecGraph;
+#[cfg(test)]
+use crate::overlay::RetainedTotal;
 use crate::row::Row;
 
+use super::columns::{AccTable, SiteColumn, SiteState};
 use super::eval::{agg_eval, AggScope};
-use super::pool::{shareable, OperandPool, SortedPool};
+use super::pool::{shareable, PoolSite, SortedPool};
 
 /// One aggregate call, validated: the borrowed pieces every offer and the
 /// finish read.
 #[derive(Clone, Copy)]
-struct Call<'e> {
+pub(super) struct Call<'e> {
     kind: AggregateKind,
-    name: &'e SmallName,
-    operand: &'e Expr,
+    pub(super) name: &'e SmallName,
+    pub(super) operand: &'e Expr,
     /// The percentile argument of a `PercentilePair` call.
-    percentile: Option<&'e Expr>,
+    pub(super) percentile: Option<&'e Expr>,
 }
 
-/// One site's per-group state.
-enum SiteAcc<'e> {
-    CountStar(i64),
-    /// A non-retaining aggregate: constant-size state, independent of the
-    /// number of rows offered.
-    Stream {
-        fold: StreamFold,
-        call: Call<'e>,
-        /// The peak payload bytes of the one value a `min`/`max` keeps,
-        /// already charged ([`GroupAccs::settle`]).
-        held: u64,
-        /// A DISTINCT call's seen-set: an operand folds only when it is
-        /// first seen, and is dropped at once; the set's keys are the
-        /// only per-distinct-value state.
-        seen: Option<DistinctSet>,
-    },
-    /// `collect` and the percentiles (and their DISTINCT forms): the operands are the
-    /// state, charged to the aggregation's running total as they settle.
-    Retain {
-        vals: Vec<Value>,
-        /// How many of `vals` are already charged.
-        charged: usize,
-        /// A DISTINCT call's seen-set: only first-seen operands reach
-        /// `vals`, so the state is proportional to the distinct values.
-        seen: Option<DistinctSet>,
-        call: Call<'e>,
-    },
-    /// A plain percentile call: its operands live in the group's shared
-    /// [`OperandPool`] at this index, not in the site.
-    Pooled {
-        pool: usize,
-        call: Call<'e>,
-        /// The call's percentile argument, resolved when it was pooled.
-        percentile: &'e Expr,
-    },
-    /// A lenient site (one only an `ORDER BY` key or HAVING reads) whose
-    /// operand failed to fold: the error is parked here and surfaces when
-    /// the site is read. The read's outcome is stated once at the
-    /// canonical contract ([`GroupSubclauses::having`], ADR-0458 §7); an
-    /// ORDER BY key orders as null.
-    Failed(Error),
-    /// An arity violation (a backtick-escaped `` `count`() `` bypasses the
-    /// parser and front validation): raised when the group resolves, as the
-    /// row-retaining fold did, so an empty keyed input still yields no
-    /// error.
-    Rejected(Error),
-}
-
-struct Slot<'e> {
-    /// The call's identity: the evaluator asks for its value by this
-    /// reference.
-    expr: &'e Expr,
-    /// Whether only an `ORDER BY` key or HAVING reads this call: a fold
-    /// error parks instead of failing the statement (see
-    /// [`SiteAcc::Failed`]); the read's outcome is the canonical HAVING
-    /// contract ([`GroupSubclauses::having`], ADR-0458 §7).
-    lenient: bool,
-    acc: SiteAcc<'e>,
-}
-
-impl<'e> SiteAcc<'e> {
-    /// A fresh group's state from this template site: the same call, an
-    /// empty accumulator (a DISTINCT call's seen-set starts empty).
-    fn open(&self) -> SiteAcc<'e> {
-        match self {
-            Self::CountStar(_) => Self::CountStar(0),
-            Self::Stream {
-                fold,
-                call,
-                held,
-                seen,
-            } => Self::Stream {
-                fold: fold.clone(),
-                call: *call,
-                held: *held,
-                seen: seen.as_ref().map(|_| DistinctSet::default()),
-            },
-            Self::Retain { seen, call, .. } => Self::Retain {
-                vals: Vec::new(),
-                charged: 0,
-                seen: seen.as_ref().map(|_| DistinctSet::default()),
-                call: *call,
-            },
-            Self::Pooled {
-                pool,
-                call,
-                percentile,
-            } => Self::Pooled {
-                pool: *pool,
-                call: *call,
-                percentile,
-            },
-            Self::Failed(error) => Self::Failed(error.clone()),
-            Self::Rejected(error) => Self::Rejected(error.clone()),
-        }
-    }
-}
-
-/// Whether an operand is admitted: true when there is no seen-set (the
-/// call is not DISTINCT) or the value is first seen.
-fn admits(seen: &mut Option<DistinctSet>, value: &Value) -> Result<bool> {
-    seen.as_mut()
-        .map_or(Ok(true), |seen| seen.insert_value(value))
-}
-
-impl SiteAcc<'_> {
-    /// Offer one input row to this site.
-    fn offer(
-        &mut self,
-        graph: &ExecGraph<'_>,
-        row: &Row,
-        params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
-    ) -> Result<()> {
-        match self {
-            Self::CountStar(n) => *n += 1,
-            Self::Stream {
-                fold, call, seen, ..
-            } => {
-                graph.cancel_tick()?;
-                let value = eval(graph, row, call.operand, params, cypher_version)?;
-                if admits(seen, &value)? {
-                    call.name.with_str(|name| fold.offer(value, name))?;
-                }
-            }
-            Self::Retain {
-                vals, seen, call, ..
-            } => {
-                graph.cancel_tick()?;
-                let value = eval(graph, row, call.operand, params, cypher_version)?;
-                if admits(seen, &value)? {
-                    vals.push(value);
-                }
-            }
-            Self::Pooled { .. } | Self::Failed(_) | Self::Rejected(_) => {}
-        }
-        Ok(())
-    }
-}
-
-/// The one strict-raises/lenient-parks rule of an offer: a failure on a
-/// lenient site (or a pool only lenient sites read) is handed back to be
-/// parked, any other failure fails the statement.
-fn parked(lenient: bool, offered: Result<()>) -> Result<Option<Error>> {
-    match offered {
-        Ok(()) => Ok(None),
-        Err(error) if lenient => Ok(Some(error)),
-        Err(error) => Err(error),
-    }
-}
-
-/// The aggregate call sites of one aggregating projection, with the
-/// accumulator each group starts from.
+/// The aggregate call sites of one aggregating projection, as an empty
+/// accumulator table: every group's table is opened from it.
 pub(crate) struct AggSites<'e> {
-    template: GroupAccs<'e>,
+    blank: AccTable<'e>,
 }
 
 impl<'e> AggSites<'e> {
@@ -209,7 +61,7 @@ impl<'e> AggSites<'e> {
         params: &BTreeMap<String, Value>,
         cypher_version: Option<u32>,
     ) -> Result<Self> {
-        let mut slots: Vec<Slot<'e>> = Vec::new();
+        let mut sites: Vec<SiteColumn<'e>> = Vec::new();
         for (exprs, is_lenient) in [
             (items.into_iter().collect::<Vec<_>>(), false),
             (lenient.into_iter().collect::<Vec<_>>(), true),
@@ -225,36 +77,75 @@ impl<'e> AggSites<'e> {
                 )?;
             }
             for expr in found.into_inner() {
-                if slots.iter().all(|slot| !std::ptr::eq(slot.expr, expr)) {
-                    slots.push(Slot {
+                if sites.iter().all(|site| !std::ptr::eq(site.expr, expr)) {
+                    sites.push(SiteColumn {
                         expr,
                         lenient: is_lenient,
-                        acc: site_acc(expr)?,
+                        state: site_state(expr)?,
                     });
                 }
             }
         }
-        let pools = pool_percentiles(&mut slots);
+        let pools = pool_percentiles(&mut sites);
         Ok(Self {
-            template: GroupAccs { slots, pools },
+            blank: AccTable::new(sites, pools),
         })
     }
 
-    /// A fresh group's accumulators.
+    /// A fresh table with no groups: each landing group opens its slot in
+    /// every column ([`AccTable::open_group`]).
+    pub(super) fn open_table(&self) -> AccTable<'e> {
+        self.blank.empty_like()
+    }
+
+    /// The expressions the finish reads from a group's seed beyond the
+    /// projection itself: every percentile's argument.
+    pub(super) fn seed_reads(&self) -> impl Iterator<Item = &'e Expr> + '_ {
+        self.blank.sites().iter().filter_map(SiteColumn::percentile)
+    }
+
+    /// One group's accumulators on their own (the single-group harness the
+    /// tests drive).
+    #[cfg(test)]
     pub(crate) fn open_group(&self) -> GroupAccs<'e> {
-        GroupAccs {
-            pools: self.template.pools.iter().map(OperandPool::open).collect(),
-            slots: self
-                .template
-                .slots
-                .iter()
-                .map(|slot| Slot {
-                    expr: slot.expr,
-                    lenient: slot.lenient,
-                    acc: slot.acc.open(),
-                })
-                .collect(),
-        }
+        let mut table = self.open_table();
+        table.open_group();
+        GroupAccs(table)
+    }
+}
+
+/// One group's accumulators on their own: a table holding group 0.
+#[cfg(test)]
+pub(crate) struct GroupAccs<'e>(AccTable<'e>);
+
+#[cfg(test)]
+impl<'e> GroupAccs<'e> {
+    pub(crate) fn offer(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        row: &Row,
+        params: &BTreeMap<String, Value>,
+        cypher_version: Option<u32>,
+    ) -> Result<()> {
+        self.0.offer(0, graph, row, params, cypher_version)
+    }
+
+    pub(crate) fn settle(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        total: &mut RetainedTotal,
+    ) -> Result<()> {
+        self.0.settle(0, graph, total)
+    }
+
+    pub(crate) fn finish(
+        mut self,
+        graph: &ExecGraph<'_>,
+        seed: Option<&Row>,
+        params: &BTreeMap<String, Value>,
+        cypher_version: Option<u32>,
+    ) -> FoldedGroup<'e> {
+        self.0.finish_group(0, graph, seed, params, cypher_version)
     }
 }
 
@@ -262,12 +153,12 @@ impl<'e> AggSites<'e> {
 /// per distinct operand expression. A DISTINCT call keeps its own seen-set
 /// and values, and `collect` keeps `Value`s: neither is pooled. A pool is
 /// lenient only while every site reading it is.
-fn pool_percentiles<'e>(slots: &mut [Slot<'e>]) -> Vec<OperandPool<'e>> {
-    let mut pools: Vec<OperandPool<'e>> = Vec::new();
-    for slot in slots {
-        let SiteAcc::Retain {
+fn pool_percentiles<'e>(sites: &mut [SiteColumn<'e>]) -> Vec<PoolSite<'e>> {
+    let mut pools: Vec<PoolSite<'e>> = Vec::new();
+    for site in sites {
+        let SiteState::Retain {
             seen: None, call, ..
-        } = &slot.acc
+        } = &site.state
         else {
             continue;
         };
@@ -280,18 +171,19 @@ fn pool_percentiles<'e>(slots: &mut [Slot<'e>]) -> Vec<OperandPool<'e>> {
         }
         let index = match pools.iter().position(|pool| pool.reads(call.operand)) {
             Some(index) => {
-                pools[index].lenient &= slot.lenient;
+                pools[index].lenient &= site.lenient;
                 index
             }
             None => {
-                pools.push(OperandPool::new(call.operand, slot.lenient));
+                pools.push(PoolSite::new(call.operand, site.lenient));
                 pools.len() - 1
             }
         };
-        slot.acc = SiteAcc::Pooled {
+        site.state = SiteState::Pooled {
             pool: index,
             call,
             percentile,
+            failed: BTreeMap::new(),
         };
     }
     pools
@@ -299,9 +191,9 @@ fn pool_percentiles<'e>(slots: &mut [Slot<'e>]) -> Vec<OperandPool<'e>> {
 
 /// Classify one discovered call once: its arity contract, and whether it
 /// streams or retains.
-fn site_acc(expr: &Expr) -> Result<SiteAcc<'_>> {
+fn site_state(expr: &Expr) -> Result<SiteState<'_>> {
     let (name, distinct, args) = match expr {
-        Expr::CountStar => return Ok(SiteAcc::CountStar(0)),
+        Expr::CountStar => return Ok(SiteState::CountStar(Vec::new())),
         Expr::Function {
             name,
             distinct,
@@ -324,7 +216,7 @@ fn site_acc(expr: &Expr) -> Result<SiteAcc<'_>> {
     let arity = kind.arity();
     if args.len() != arity.required() {
         let rejection = name.with_str(|text| arity.rejection(text, args.len()));
-        return Ok(SiteAcc::Rejected(match arity {
+        return Ok(SiteState::Rejected(match arity {
             AggregateArity::SingleInput => Error::syntax(rejection),
             AggregateArity::PercentilePair => Error::ty(rejection),
         }));
@@ -340,165 +232,22 @@ fn site_acc(expr: &Expr) -> Result<SiteAcc<'_>> {
     // streaming DISTINCT call folds an operand when its seen-set admits it.
     let dedups = distinct && !matches!(kind, AggregateKind::Min | AggregateKind::Max);
     Ok(match StreamFold::for_kind(kind) {
-        Some(fold) => SiteAcc::Stream {
-            fold,
+        Some(template) => SiteState::Stream {
             call,
-            held: 0,
-            seen: dedups.then(DistinctSet::default),
+            template,
+            folds: Vec::new(),
+            held: Vec::new(),
+            seen: dedups.then(Vec::new),
+            failed: BTreeMap::new(),
         },
-        None => SiteAcc::Retain {
-            vals: Vec::new(),
-            charged: 0,
-            seen: distinct.then(DistinctSet::default),
+        None => SiteState::Retain {
             call,
+            vals: Vec::new(),
+            charged: Vec::new(),
+            seen: distinct.then(Vec::new),
+            failed: BTreeMap::new(),
         },
     })
-}
-
-/// One group's accumulators, one per site.
-pub(crate) struct GroupAccs<'e> {
-    slots: Vec<Slot<'e>>,
-    /// The group's shared percentile operand buffers, one per distinct
-    /// operand expression (see [`pool_percentiles`]).
-    pools: Vec<OperandPool<'e>>,
-}
-
-impl<'e> GroupAccs<'e> {
-    /// The constant footprint of a group's accumulators — what the group
-    /// map's retained total grows by when a group lands.
-    pub(crate) fn footprint(&self) -> u64 {
-        crate::workspace::buffer_bytes_saturating(self.slots.len(), size_of::<Slot<'e>>() as u64)
-            .saturating_add(crate::workspace::buffer_bytes_saturating(
-                self.pools.len(),
-                size_of::<OperandPool<'e>>() as u64,
-            ))
-    }
-
-    /// Offer one input row to every site. A streaming site evaluates its
-    /// operand and folds it into its constant-size state; a retaining site
-    /// keeps the value. What a site kept is charged by [`Self::settle`],
-    /// once the spent row has let go of its share.
-    pub(crate) fn offer(
-        &mut self,
-        graph: &ExecGraph<'_>,
-        row: &Row,
-        params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
-    ) -> Result<()> {
-        for index in 0..self.pools.len() {
-            let pool = &mut self.pools[index];
-            let offered = pool.offer(graph, row, params, cypher_version);
-            if let Some(error) = parked(pool.lenient, offered)? {
-                // The pool's sites are all lenient: park the failure on each
-                // and stop collecting.
-                pool.stop();
-                for slot in &mut self.slots {
-                    if matches!(slot.acc, SiteAcc::Pooled { pool, .. } if pool == index) {
-                        slot.acc = SiteAcc::Failed(error.clone());
-                    }
-                }
-            }
-        }
-        for slot in &mut self.slots {
-            let offered = slot.acc.offer(graph, row, params, cypher_version);
-            if let Some(error) = parked(slot.lenient, offered)? {
-                slot.acc = SiteAcc::Failed(error);
-            }
-        }
-        Ok(())
-    }
-
-    /// Charge what the sites kept since the last settle to the
-    /// aggregation's one running total: a retaining site's new operand slots
-    /// and payloads, and the growth of the payload a `min`/`max` holds. The
-    /// caller settles after the spent input row is dropped, so a value
-    /// cloned from that row is the sole owner of its payload by now and is
-    /// charged in full (a payload still shared with the store or a
-    /// parameter adds nothing, as everywhere else). One total for every
-    /// group: the groups' retained state is alive together, so it is
-    /// bounded together.
-    pub(crate) fn settle(
-        &mut self,
-        graph: &ExecGraph<'_>,
-        total: &mut RetainedTotal,
-    ) -> Result<()> {
-        for pool in &mut self.pools {
-            pool.settle(graph, total)?;
-        }
-        for slot in &mut self.slots {
-            match &mut slot.acc {
-                SiteAcc::Retain { vals, charged, .. } => {
-                    for value in &vals[*charged..] {
-                        let slot_bytes = crate::workspace::buffer_growth(
-                            *charged,
-                            *charged + 1,
-                            size_of::<Value>() as u64,
-                        );
-                        total.add_bytes(graph, slot_bytes)?;
-                        total.add_owned(graph, value)?;
-                        *charged += 1;
-                    }
-                }
-                SiteAcc::Stream { fold, held, .. } => {
-                    if let Some(best) = fold.held_value() {
-                        let now = crate::workspace::owned_heap(best);
-                        if now > *held {
-                            total.add_bytes(graph, now - *held)?;
-                            *held = now;
-                        }
-                    }
-                }
-                SiteAcc::CountStar(_)
-                | SiteAcc::Pooled { .. }
-                | SiteAcc::Failed(_)
-                | SiteAcc::Rejected(_) => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Resolve every site. `seed` is the group's own first row — a
-    /// percentile's second argument is read from it, and an empty group has
-    /// no percentile to report.
-    pub(crate) fn finish(
-        self,
-        graph: &ExecGraph<'_>,
-        seed: Option<&Row>,
-        params: &BTreeMap<String, Value>,
-        cypher_version: Option<u32>,
-    ) -> FoldedGroup<'e> {
-        let pools: Vec<SortedPool> = self.pools.into_iter().map(OperandPool::finish).collect();
-        FoldedGroup {
-            values: self
-                .slots
-                .into_iter()
-                .map(|slot| {
-                    let value = match slot.acc {
-                        SiteAcc::CountStar(n) => Ok(Value::Int(n)),
-                        SiteAcc::Stream { fold, .. } => fold.finish(),
-                        SiteAcc::Retain { vals, call, .. } => {
-                            finish_retained(graph, vals, call, seed, params, cypher_version)
-                        }
-                        SiteAcc::Pooled {
-                            pool,
-                            call,
-                            percentile,
-                        } => finish_pooled(
-                            graph,
-                            &pools[pool],
-                            call,
-                            percentile,
-                            seed,
-                            params,
-                            cypher_version,
-                        ),
-                        SiteAcc::Failed(error) | SiteAcc::Rejected(error) => Err(error),
-                    };
-                    (slot.expr, value)
-                })
-                .collect(),
-        }
-    }
 }
 
 /// The validated percentile argument of a call. The percentile depends only
@@ -536,7 +285,7 @@ fn percentile_input(
 /// A retaining site's result: the percentile argument is validated first,
 /// and the shared per-kind fold finishes the operands (`collect` and
 /// the DISTINCT percentiles).
-fn finish_retained(
+pub(super) fn finish_retained(
     graph: &ExecGraph<'_>,
     vals: Vec<Value>,
     call: Call<'_>,
@@ -557,10 +306,10 @@ fn finish_retained(
 }
 
 /// A pooled percentile's result: the same order of rejections as the
-/// per-site fold (a parked evaluation failure is already a `Failed` site;
-/// then the percentile argument, then a non-numeric operand), then the rank
-/// in the sample the group sorted once.
-fn finish_pooled(
+/// per-site fold (a parked evaluation failure is already a failed site, read
+/// before this; then the percentile argument, then a non-numeric operand),
+/// then the rank in the sample the group sorted once.
+pub(super) fn finish_pooled(
     graph: &ExecGraph<'_>,
     pool: &SortedPool,
     call: Call<'_>,
@@ -584,7 +333,11 @@ pub(crate) struct FoldedGroup<'e> {
     values: Vec<(&'e Expr, Result<Value>)>,
 }
 
-impl FoldedGroup<'_> {
+impl<'e> FoldedGroup<'e> {
+    pub(super) fn new(values: Vec<(&'e Expr, Result<Value>)>) -> Self {
+        Self { values }
+    }
+
     /// The value of the call at `expr` (by identity).
     pub(crate) fn value(&self, expr: &Expr) -> Result<Value> {
         self.values

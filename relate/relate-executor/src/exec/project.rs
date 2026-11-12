@@ -258,6 +258,7 @@ pub(crate) fn open_fold<'a>(
         &GroupSubclauses {
             order,
             having: fields.where_clause.filter(|w| is_agg_expr(w)),
+            plain_where: fields.where_clause.filter(|w| !is_agg_expr(w)),
             import_scope: scope,
         },
     )
@@ -451,6 +452,7 @@ pub(crate) fn project_rows(
             group_by,
             &order_keys,
             having,
+            plain_where,
             scope,
             &mut refresh,
         )?
@@ -609,6 +611,7 @@ fn aggregate_rows<'a>(
     group_by: Option<&'a [Expr]>,
     order_keys: &'a OrderKeys<'a>,
     having: Option<&'a Expr>,
+    plain_where: Option<&'a Expr>,
     scope: Option<&'a Row>,
     refresh: &mut Refresh<'_>,
 ) -> Result<Vec<Row>> {
@@ -629,6 +632,7 @@ fn aggregate_rows<'a>(
             &GroupSubclauses {
                 order: order_keys,
                 having,
+                plain_where,
                 import_scope: scope,
             },
         )?,

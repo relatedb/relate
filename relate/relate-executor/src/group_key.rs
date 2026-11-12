@@ -366,7 +366,7 @@ pub(crate) enum KeyClass {
 /// tag holds a disjoint set of `Norm` variants. The tag→table map is
 /// `Spill::word_table` in `distinct_set` — one exhaustive `match`, so a
 /// new tag is a compile error there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WordTag {
     Bool,
     Int,
