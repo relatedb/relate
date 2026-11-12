@@ -259,6 +259,9 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
   a generation stamp, and held to the table ceiling by exact accounting
   at every level boundary — a crossing is a run-time decline to the DFS
   — instead of a `span × states` estimate before allocation.
+- ADR-0582 extends Decision 2's boundary-predicate vocabulary with `<>`
+  between the two boundary variables for the distinct-endpoint consumer,
+  and makes the plan-time gates' declines visible on the PROFILE record.
 - ADR-0536 generalizes Decision 1's input space beyond the var-length
   spellings: one regular pattern over the closed atom vocabulary with
   at most one range-quantified region — fixed-length chains as the

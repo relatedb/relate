@@ -35,15 +35,15 @@ use relate_core::{NodeId, RelId, Value};
 
 use super::frontier::FrontierRun;
 use super::frontier_emit::{capped_rows, CappedRun};
-use super::frontier_match::{boundary, Consumer, FrontierContract};
+use super::frontier_match::{boundary, BoundaryPair, Consumer, FrontierContract};
 use super::frontier_tables::fresh_tables;
 use super::nfa::{compile, Pool};
 use super::program::{NodeTarget, Prog};
 use super::rearival::RuleBuffers;
 use super::with_rearival_deferred_budget;
 use crate::ctx::ExecCtx;
-use crate::ctx::FrontierRunDecline;
 use crate::exec::test_support::{build, exec_cypher, patterns, Built};
+use crate::frontier_decline::FrontierRunDecline;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
@@ -89,6 +89,7 @@ fn capped_answer(graph: &Graph, cypher: &str, seed: NodeId, pool: Pool, want: us
         start: bare(start),
         target: bare(target),
         consumer: Consumer::Capped { want },
+        pair: BoundaryPair::Unconstrained,
         pool,
     };
     let view = ExecGraph::read(graph);

@@ -123,9 +123,10 @@ pub struct PlanMetricsWire {
     /// only when it ran (`levels > 0`), all together like the start
     /// trio.
     pub frontier: PlanFrontierWire,
-    /// The frontier rung's run-time decline (ADR-0516), one of the
+    /// Why the frontier rung did not serve the clause: a run-time decline
+    /// (ADR-0516) or a plan-time gate (ADR-0478), one of the
     /// `plan_keys::DECLINE_REASONS` vocabulary — `None` on every clause
-    /// that never declined, present only on a PROFILE node.
+    /// the rung served or never considered, present only on a PROFILE node.
     pub frontier_decline: Option<&'static str>,
 }
 

@@ -15,6 +15,7 @@ use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
 use crate::ctx::{ExecCtx, KernelRung};
 use crate::eval::candidate_passes;
+use crate::frontier_decline::FrontierDeclineReason;
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowRung};
 use crate::UsedSet;
@@ -22,6 +23,7 @@ use crate::UsedSet;
 use super::batch::try_scan_filter_batch;
 use super::hub_join::try_hub_join;
 use super::kernels;
+use super::kernels::frontier_run::FrontierRows;
 use super::one_path::{match_one_path, PathFilters};
 use super::pattern_policies::{reduce_row, MatchReduce, MatchTail, ReduceSink, RowFold};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
@@ -43,6 +45,36 @@ pub(crate) enum MatchOperator {
     /// (ADR-0473), the frontier rung (ADR-0478), or the per-row walker
     /// (every decline's home).
     Rung(KernelRung),
+}
+
+/// The ladder's two non-row facts, one value the dispatcher carries to the
+/// PROFILE tick: the operator that served the clause, and why the frontier
+/// family did not (LABS-1437: the plan-time gate or the run-time decline).
+/// Like the operator, the decline travels in the return value, so a nested
+/// evaluation's ladder run cannot contribute or overwrite the enclosing
+/// clause's.
+#[derive(Clone, Copy)]
+pub(crate) struct LadderFacts {
+    pub(crate) operator: MatchOperator,
+    pub(crate) frontier_decline: Option<FrontierDeclineReason>,
+}
+
+impl LadderFacts {
+    /// A clause the per-row walker runs without the ladder (a `SEARCH`
+    /// `MATCH`): the walker's rung, no frontier decline.
+    pub(crate) fn walker() -> Self {
+        LadderFacts {
+            operator: MatchOperator::Rung(KernelRung::Walker),
+            frontier_decline: None,
+        }
+    }
+}
+
+/// What the operator ladder returns: the clause's rows and the
+/// [`LadderFacts`] that describe how they were produced.
+pub(crate) struct LadderRun {
+    pub(crate) rows: Vec<Row>,
+    pub(crate) facts: LadderFacts,
 }
 
 impl MatchOperator {
@@ -103,13 +135,13 @@ pub(crate) fn run_match_operator_ladder(
     projection: Option<&SinkProjection<'_>>,
     suffix: &[Clause],
     fold: Option<&dyn RowFold>,
-) -> Result<(Vec<Row>, MatchOperator)> {
+) -> Result<LadderRun> {
     // The frontier family's rung (ADR-0478): the quantified-path shapes
     // with a pair-shaped answer contract — the capped emission, the
     // distinct-endpoint answer — over the BFS that collapses the trail
     // enumeration. Every decline falls through to the ladder below with
     // the cap and projection untouched.
-    if let Some(rows) = kernels::frontier_run::try_frontier_rows(
+    let frontier_decline = match kernels::frontier_run::try_frontier_rows(
         ctx,
         &rows,
         optional,
@@ -120,8 +152,17 @@ pub(crate) fn run_match_operator_ladder(
         projection,
         fold,
     )? {
-        return Ok((rows, MatchOperator::Rung(KernelRung::FrontierNfa)));
-    }
+        FrontierRows::Served(rows) => {
+            return Ok(LadderRun {
+                rows,
+                facts: LadderFacts {
+                    operator: MatchOperator::Rung(KernelRung::FrontierNfa),
+                    frontier_decline: None,
+                },
+            })
+        }
+        FrontierRows::Declined(reason) => reason,
+    };
     // The one cap classification both rungs below read: the plain cap's
     // want, `Some` only for a plain cap. The gate admits the clause on
     // it and the kernel rung passes it as the rows mode's halt — one
@@ -166,15 +207,27 @@ pub(crate) fn run_match_operator_ladder(
         .or(kernaled.map(|(rows, rung)| (rows, MatchOperator::Rung(rung))));
     if let Some((rows, operator)) = finished {
         let Some(fold) = fold else {
-            return Ok((rows, operator));
+            return Ok(LadderRun {
+                rows,
+                facts: LadderFacts {
+                    operator,
+                    frontier_decline,
+                },
+            });
         };
         fold.offer_container(ctx.graph, rows)?;
-        return Ok((Vec::new(), operator));
+        return Ok(LadderRun {
+            rows: Vec::new(),
+            facts: LadderFacts {
+                operator,
+                frontier_decline,
+            },
+        });
     }
     // Every rung above declined: the walker is this clause's rung, and
     // the ladder's return value carries it (LABS-1117).
-    Ok((
-        match_clause(
+    Ok(LadderRun {
+        rows: match_clause(
             ctx,
             rows,
             optional,
@@ -185,8 +238,11 @@ pub(crate) fn run_match_operator_ladder(
             projection,
             fold,
         )?,
-        MatchOperator::Rung(KernelRung::Walker),
-    ))
+        facts: LadderFacts {
+            operator: MatchOperator::Rung(KernelRung::Walker),
+            frontier_decline,
+        },
+    })
 }
 
 /// The dispatch layer's finished-container charge (ADR-0463, LABS-781):

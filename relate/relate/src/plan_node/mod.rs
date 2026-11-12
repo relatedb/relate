@@ -227,7 +227,7 @@ pub struct ClauseMetrics {
     /// visits, completed levels, and accepted endpoints, summed over the
     /// clause's per-seed runs — zero on every clause the frontier's
     /// compile gates declined (it never ran). A *run-time* decline
-    /// (`frontier_decline` set, ADR-0516) is the opposite: the rung ran,
+    /// (`frontier_decline` a `Run` reason, ADR-0516) is the opposite: the rung ran,
     /// so its counters stay recorded beside the reason — that pairing is
     /// how the profile shows what the declined run spent. The plan
     /// table's `Details` cell marks the operator
@@ -235,13 +235,14 @@ pub struct ClauseMetrics {
     /// wire emits the counter trio with the metric set when engaged
     /// (`levels > 0`, a run always completes its level 0).
     pub frontier: relate_executor::FrontierCounters,
-    /// The frontier rung's run-time decline (ADR-0516), when it engaged,
-    /// ran, and fell through — `None` on every clause that never
-    /// declined and on every compile-gate decline (which never ran). The
-    /// plan table's `Details` cell marks it (`[frontier-declined …]`)
-    /// and the wire emits `FrontierDeclineReason` with the metric set
-    /// when present.
-    pub frontier_decline: Option<relate_executor::FrontierRunDecline>,
+    /// Why the frontier rung did not serve the clause (ADR-0516,
+    /// extended): a plan-time gate's typed reason (the rung never ran,
+    /// counters zero) or the run-time decline of a rung that engaged,
+    /// ran, and fell through — `None` on every clause the rung served
+    /// and on every clause it never considered. The plan table's
+    /// `Details` cell marks it (`[frontier-declined …]`) and the wire
+    /// emits `FrontierDeclineReason` with the metric set when present.
+    pub frontier_decline: Option<relate_executor::FrontierDeclineReason>,
 }
 
 impl PlanNode {

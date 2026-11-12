@@ -505,9 +505,14 @@ plan.
   (node, state) cells, the re-arrival rule's memo asks, the admission
   asks by verdict, and the rule's spent-work fraction over its budget
   constant), zeros when the clause walks no frontier), `frontier_decline`
-  (the frontier rung's run-time decline as its stable name — `null` when
-  the clause never declined; `rearrival-budget`, ADR-0516, or
-  `table-budget`, ADR-0521),
+  (why the frontier rung did not serve the clause (ADR-0582), as a stable name —
+  `null` when it served it or never considered it; a run-time decline,
+  `rearrival-budget` (ADR-0516) or `table-budget` (ADR-0521), or the
+  plan-time gate that kept the clause off the rung: `conjunct`,
+  `nfa-shape`, `cost`, `full-enumeration`, `path-count`, `ordered-cap`,
+  `path-consumer`, `mode`, `carrying-row`, `pinned-binding`,
+  `nested-spine`, `all-reduce-group`, `guarded-group`,
+  `multiple-patterns`),
   `db_hits`, `memory_bytes`, `expression_built_bytes`, the read-kind mix (`hops`,
   `neighbor_walks`, `node_reads`), `batched` (whether the operator ran the
   ADR-0468 batch scan/filter/project chain over `Chunk` — `false` on every

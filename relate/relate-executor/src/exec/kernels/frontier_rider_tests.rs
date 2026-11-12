@@ -24,20 +24,20 @@ use relate_core::Value;
 
 use crate::ctx::ClauseMetricsRecord;
 use crate::exec::test_support::{
-    column, exec_cypher, int_cell, patterns, profiled, same_rows, string_cell, try_exec_cypher_on,
-    Builder,
+    column, exec_cypher, frontier_decline_of, int_cell, patterns, profiled, same_rows, string_cell,
+    try_exec_cypher_on, Builder,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::QueryResult;
 
-use super::super::{take_frontier_counters, take_frontier_decline};
+use super::super::take_frontier_counters;
 use super::frontier_run::single_quantified;
 use super::{
     take_kernel_engagements, with_frontier_disabled, with_frontier_table_budget,
     with_kernels_disabled,
 };
-use crate::ctx::FrontierRunDecline;
+use crate::frontier_decline::FrontierRunDecline;
 
 /// A small undirected `LINK` ring (the `gpm/emit_tests` fixture's shape):
 /// cyclic, so an unbounded quantifier's trail enumeration fans out while
@@ -387,7 +387,7 @@ fn a_tables_over_ceiling_clause_declines_to_the_dfs() {
     // Unheld: the frontier takes the clause (a fixture's tables are
     // orders under the production constant).
     differential(&g, query);
-    assert_eq!(take_frontier_decline(), None, "no run declined");
+    assert_eq!(frontier_decline_of(&g, query), None, "no run declined");
     // Held at zero: the run starts, then the same statement answers
     // through the DFS, the run-time decline's own proof.
     with_frontier_table_budget(0, || {
@@ -395,8 +395,8 @@ fn a_tables_over_ceiling_clause_declines_to_the_dfs() {
         assert!(take_frontier_counters().levels > 0, "the frontier ran");
         assert_eq!(take_kernel_engagements(), 0, "no kernel served it");
         assert_eq!(
-            take_frontier_decline(),
-            Some(FrontierRunDecline::TableBudget),
+            frontier_decline_of(&g, query),
+            Some(FrontierRunDecline::TableBudget.into()),
             "the typed run-time decline"
         );
         let dfs = with_frontier_disabled(|| exec_cypher(&g, query));
@@ -470,8 +470,8 @@ fn clique_exact_quantifier_falls_through_on_the_rearrival_budget() {
             "the rung declined mid-clause for N={n}: no kernel served it"
         );
         assert_eq!(
-            take_frontier_decline(),
-            Some(FrontierRunDecline::RearrivalBudget),
+            frontier_decline_of(&g, count),
+            Some(FrontierRunDecline::RearrivalBudget.into()),
             "the typed run-time decline for N={n}"
         );
         assert_eq!(
@@ -494,8 +494,8 @@ fn clique_exact_quantifier_falls_through_on_the_rearrival_budget() {
         take_frontier_counters();
         take_kernel_engagements();
         assert_eq!(
-            take_frontier_decline(),
-            Some(FrontierRunDecline::RearrivalBudget),
+            frontier_decline_of(&g, collect),
+            Some(FrontierRunDecline::RearrivalBudget.into()),
             "the collect shape declines too for N={n}"
         );
         let Value::List(list) = &ids.rows[0][0] else {
@@ -512,8 +512,8 @@ fn clique_exact_quantifier_falls_through_on_the_rearrival_budget() {
         take_frontier_counters();
         take_kernel_engagements();
         assert_eq!(
-            take_frontier_decline(),
-            Some(FrontierRunDecline::RearrivalBudget),
+            frontier_decline_of(&g, filtered),
+            Some(FrontierRunDecline::RearrivalBudget.into()),
             "the WHERE shape declines too for N={n}"
         );
         assert_eq!(
@@ -543,7 +543,7 @@ fn clique_inside_the_budget_still_frontier_serves() {
             "the frontier-served exact count for N={n}"
         );
         assert_eq!(
-            take_frontier_decline(),
+            frontier_decline_of(&g, query),
             None,
             "no budget fall-through for N={n}"
         );

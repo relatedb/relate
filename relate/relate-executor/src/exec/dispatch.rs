@@ -13,7 +13,7 @@ use web_time::Instant;
 use relate_core::{Error, Result, Value};
 use relate_ir::Clause;
 
-use crate::ctx::{ClauseMetricsRecord, ExecCtx, KernelRung, PlanMetricsSite, QueryCtx};
+use crate::ctx::{ClauseMetricsRecord, ExecCtx, PlanMetricsSite, QueryCtx};
 use crate::eval::rows_logical_bytes;
 use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
@@ -32,7 +32,9 @@ use super::count_stats::count_only_stats_result;
 use super::ddl::{exec_create_index, exec_drop_index};
 use super::foreach::exec_foreach;
 use super::match_chain::{open_match_consumer, Landing, MatchConsumer};
-use super::match_clause::{charge_finished_container, run_match_operator_ladder, MatchOperator};
+use super::match_clause::{
+    charge_finished_container, run_match_operator_ladder, LadderFacts, LadderRun, MatchOperator,
+};
 use super::match_folds::try_match_folds;
 use super::order::OrderKeys;
 use super::procedures::{exec_call, CallSpec};
@@ -212,7 +214,9 @@ fn run_clauses_mode(
         // boolean or walk count); and a `MATCH` inside a nested evaluation
         // (which has its own loop). A `SEARCH` `MATCH` sets `Rung(Walker)`:
         // it runs the per-row walker directly, so its rung is the walker.
-        let mut clause_operator: Option<MatchOperator> = None;
+        // Carries the ladder's other fact too (LABS-1437): why the frontier
+        // family did not serve the clause, returned beside the operator.
+        let mut clause_ladder: Option<LadderFacts> = None;
         // The read path's one admission rule, asked once per clause before
         // any clause arm runs: the policy names the message, the dispatcher
         // only reports it. The clause match below therefore holds clause arms
@@ -332,7 +336,7 @@ fn run_clauses_mode(
                     // the vector index and then walks the pattern with the
                     // per-row `match_clause` directly (`exec/search.rs`),
                     // never the ladder — its rung is the walker (LABS-1117).
-                    clause_operator = Some(MatchOperator::Rung(KernelRung::Walker));
+                    clause_ladder = Some(LadderFacts::walker());
                     if let Some(live) = live_from(&clauses[i + 1..]) {
                         trim_rows(&mut rows, &live);
                     }
@@ -400,7 +404,10 @@ fn run_clauses_mode(
                             // per-row walker, first taker owns the clause
                             // — lives in `match_clause.rs`, one place with
                             // one admission gate.
-                            let (ladder_rows, operator) = run_match_operator_ladder(
+                            let LadderRun {
+                                rows: ladder_rows,
+                                facts,
+                            } = run_match_operator_ladder(
                                 ExecCtx::new(graph, params, qctx.cypher_version),
                                 rows,
                                 *optional,
@@ -416,7 +423,7 @@ fn run_clauses_mode(
                             let streamed = consumer.is_some();
                             // The ladder's one returned value; the tick
                             // projects both PROFILE facts from it below.
-                            clause_operator = Some(operator);
+                            clause_ladder = Some(facts);
                             if let Some(consumer) = consumer {
                                 // The consumer trimmed its own inputs and
                                 // output; its last stage's rows (or the
@@ -466,7 +473,7 @@ fn run_clauses_mode(
                             // exclusion list re-derived from operator
                             // identity. The refusal fires at ~the cap
                             // with the crossing row's honest figure.
-                            if !streamed && operator.hands_dispatch_a_finished_container() {
+                            if !streamed && facts.operator.hands_dispatch_a_finished_container() {
                                 charge_finished_container(graph, &rows)?;
                             }
                         }
@@ -632,7 +639,7 @@ fn run_clauses_mode(
                 )?;
                 finish_parked_unwind(parked, metrics_tick.as_mut());
                 if let Some(tick) = &metrics_tick {
-                    tick.record(i, &rows, clause_operator);
+                    tick.record(i, &rows, clause_ladder);
                     profile_recorded = true;
                 }
                 last_result = Some(return_result(graph, items, clauses, &mut rows)?);
@@ -647,7 +654,7 @@ fn run_clauses_mode(
         // read, the counter reads, and the row-size walk happen only on the
         // PROFILE path.
         if let Some(tick) = metrics_tick.filter(|_| !profile_recorded) {
-            tick.record(i, &rows, clause_operator);
+            tick.record(i, &rows, clause_ladder);
         }
         clause_i = i + 1 + skip;
     }
@@ -754,10 +761,8 @@ fn profile_tick<'a>(graph: &'a ExecGraph<'a>, site: PlanMetricsSite<'a>) -> Prof
     // records walk starts without ever taking one, so the slot must be
     // emptied here, before the clause's arm runs — otherwise the next
     // PROFILE statement's first walking clause would drop its own fresh
-    // start and report the earlier statement's walk. The frontier
-    // rung's decline slot clears the same way (ADR-0516).
+    // start and report the earlier statement's walk.
     let _ = super::take_walk_start();
-    let _ = super::take_frontier_decline();
     // LABS-448: arm the phase stamps for this arm — the only site that
     // does, so the stamps' `Instant` reads happen exclusively inside a
     // profiled clause arm. LABS-805: arm the store-read counters beside
@@ -793,12 +798,14 @@ impl ProfileTick<'_> {
     /// (ADR-0478) carries the frontier family's run counters — the
     /// delta of the counter snapshot the tick took, the same
     /// subtraction's shape.
-    /// `operator` is the clause's `MATCH` ladder result (LABS-1117); the
-    /// tick projects the `batched` flag and the rung from it here — the
-    /// one projection, so the two facts cannot disagree and a non-`MATCH`
-    /// clause's `None` carries both.
-    fn record(&self, clause: usize, rows: &[Row], operator: Option<MatchOperator>) {
-        let (batched, kernel) = match_facts(operator);
+    /// `ladder` is the clause's `MATCH` ladder result (LABS-1117); the
+    /// tick projects the `batched` flag and the rung from its operator
+    /// here — the one projection, so the two facts cannot disagree and a
+    /// non-`MATCH` clause's `None` carries both — and the frontier decline
+    /// (LABS-1437) from the same value.
+    fn record(&self, clause: usize, rows: &[Row], ladder: Option<LadderFacts>) {
+        let (batched, kernel) = match_facts(ladder.map(|facts| facts.operator));
+        let frontier_decline = ladder.and_then(|facts| facts.frontier_decline);
         let reads = super::store_reads().since(self.reads);
         self.site.sink.record_clause(ClauseMetricsRecord {
             stage: self.site.stage,
@@ -820,7 +827,7 @@ impl ProfileTick<'_> {
             batched,
             zone_skips: super::zone_skips() - self.zone_skips,
             frontier: super::frontier_counters().since(self.frontier),
-            frontier_decline: super::take_frontier_decline(),
+            frontier_decline,
         });
     }
 }

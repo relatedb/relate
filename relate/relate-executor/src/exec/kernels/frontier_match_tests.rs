@@ -9,21 +9,18 @@
 use std::collections::BTreeMap;
 
 use relate_core::Value;
-use relate_front::parse_and_lower;
-use relate_ir::{Clause, MatchMode, NodePattern, PatternElement, RelPattern};
+use relate_ir::{MatchMode, NodePattern, PatternElement, RelPattern};
 
 use super::super::graph_stats::GraphStats;
-use super::super::pushdown::flatten_and_owned;
 use super::super::test_support::Builder;
-use super::frontier_match::{
-    compile_frontier, decode_consumer, Consumer, FrontierContract, FrontierDecline,
-};
+use super::frontier_match::{compile_frontier, Consumer};
 use super::nfa::Pool;
 use crate::exec::test_support::{
-    named_node, one_hop_rel, path_pattern, quantified, var_length_rel,
+    complete_graph, decide, declines_with, line_graph, named_node, one_hop_rel, path_pattern,
+    quantified, var_length_rel,
 };
+use crate::frontier_decline::FrontierDecline;
 use crate::graph::Graph;
-use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 /// A Person-centric cyclic graph: a `knows` triangle (p0-p1-p2), a
@@ -45,97 +42,6 @@ fn corpus_graph() -> Graph {
     b.rel(persons[1], comment, "LIKE", &[]);
     b.rel(persons[0], org, "STUDY_AT", &[]);
     b.done()
-}
-
-/// A line graph (degree ~1): paths ≈ endpoints, the bounded
-/// acyclic-schema recursion the cost gate leaves on the DFS.
-fn line_graph() -> Graph {
-    let b = Builder::new();
-    let nodes: Vec<_> = (0..4)
-        .map(|i| b.node(&format!("n{i}"), &["Person"]))
-        .collect();
-    for pair in nodes.windows(2) {
-        b.rel(pair[0], pair[1], "KNOWS", &[]);
-    }
-    b.done()
-}
-
-/// The complete graph on five Persons (ten `knows` rels): the degree
-/// machinery's path estimate outruns the endpoint pool by the factor.
-fn complete_graph() -> Graph {
-    let b = Builder::new();
-    let nodes: Vec<_> = (0..5)
-        .map(|i| b.node(&format!("n{i}"), &["Person"]))
-        .collect();
-    for i in 0..5 {
-        for j in (i + 1)..5 {
-            b.rel(nodes[i], nodes[j], "KNOWS", &[]);
-        }
-    }
-    b.done()
-}
-
-/// The full plan-time decision on one statement: its planned `MATCH`
-/// facts (patterns, mode, flattened conjuncts) and first-of-suffix
-/// consumer decode against `graph`, then the matcher arm. `probe` marks
-/// the EXISTS wiring (the consumer is constructed, not decoded); `row`
-/// is the entering row the wiring site hands the arm. The decision is
-/// consumed inside `k` while the plan is still alive — the contract
-/// borrows the planned patterns.
-fn decide<R>(
-    cypher: &str,
-    graph: &Graph,
-    probe: bool,
-    row: &Row,
-    k: impl FnOnce(Result<FrontierContract<'_>, FrontierDecline>) -> R,
-) -> R {
-    let query = parse_and_lower(cypher).unwrap();
-    let plan = relate_planner::plan(query, &mut |_| false).unwrap();
-    let clauses = &plan.parts[0];
-    let Clause::Match {
-        match_mode,
-        patterns,
-        where_clause,
-        ..
-    } = &clauses[0]
-    else {
-        panic!(
-            "{cypher}: the first planned clause is not a MATCH: {:?}",
-            clauses[0]
-        );
-    };
-    let conjuncts = where_clause
-        .as_ref()
-        .map(flatten_and_owned)
-        .unwrap_or_default();
-    let view = ExecGraph::read(graph);
-    let params: BTreeMap<String, Value> = BTreeMap::new();
-    let stats = GraphStats::new(graph, &params);
-    let consumer = if probe {
-        // The probe arm's wiring constructs the verdict shape directly.
-        Consumer::Exists
-    } else {
-        match decode_consumer(&clauses[1..], &patterns[0], &view, &params, None) {
-            Ok(consumer) => consumer,
-            Err(decline) => return k(Err(decline)),
-        }
-    };
-    k(compile_frontier(
-        graph,
-        patterns,
-        *match_mode,
-        row,
-        &conjuncts,
-        consumer,
-        &stats,
-    ))
-}
-
-/// The statement declines with exactly this named reason.
-fn declines_with(cypher: &str, graph: &Graph, want: FrontierDecline) {
-    decide(cypher, graph, false, &Row::new(), |decision| {
-        assert_eq!(decision.err(), Some(want), "{cypher}");
-    });
 }
 
 /// Whether the statement engages the frontier.

@@ -1512,11 +1512,16 @@ re-arrival rule's verdict-table asks), the admission asks by verdict
 `FrontierSearchDisproven`/`FrontierDeclinedExhausted`, and the
 `FrontierBudgetFraction` float — the rule's spent work over its budget
 constant, `1.0` a run the budget cut; only when engaged, the set
-together) — and `FrontierDeclineReason` (ADR-0516) when the rung ran
-and fell through at run time: the typed decline's stable name
+together) — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
+not serve the clause: the typed reason's stable name. A run-time decline
 (`rearrival-budget`, ADR-0516, or `table-budget`, the sparse tables'
-allocation ceiling, ADR-0521), beside the counters of the run that
-declined. `SeekTimeNs`/
+allocation ceiling, ADR-0521) sits beside the counters of the run that
+declined; a plan-time gate's reason (`conjunct`, `nfa-shape`, `cost`,
+`full-enumeration`, `path-count`, `ordered-cap`, `path-consumer`, `mode`,
+`carrying-row`, `pinned-binding`, `nested-spine`, `all-reduce-group`,
+`guarded-group`, `multiple-patterns`) names the first gate that kept a
+single-quantified-pattern clause off the rung, with no counters (it never
+ran). `SeekTimeNs`/
 `WalkTimeNs` are the phase times (LABS-448): the elapsed time the
 candidate resolution (`NodeReads`) and the relationship traversal
 (`Hops`/`NeighborWalks`) each spent, inclusive of a multi-element

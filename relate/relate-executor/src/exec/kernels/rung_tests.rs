@@ -11,7 +11,7 @@ use relate_core::Value;
 
 use crate::ctx::KernelRung;
 
-use super::super::test_support::{profiled, Builder};
+use super::super::test_support::{profiled, served, Builder};
 use super::frontier_rider_tests::ring_graph;
 
 /// A 3-hop fixed chain in the chain kernel's closed vocabulary (typed
@@ -35,15 +35,6 @@ fn three_hop_corridor() -> crate::graph::Graph {
     b.rel(g1, d1, "T", &[]);
     b.rel(g2, d2, "T", &[]);
     b.done()
-}
-
-/// The one record whose `MATCH` clause a rung served — the ladder's own
-/// fact, found by the field rather than by a clause position.
-fn served(records: &[crate::ctx::ClauseMetricsRecord]) -> &crate::ctx::ClauseMetricsRecord {
-    records
-        .iter()
-        .find(|record| record.kernel.is_some())
-        .unwrap_or_else(|| panic!("a rung served the MATCH clause ({} records)", records.len()))
 }
 
 /// The unrolled fixed-k chain engages on a 3-hop typed chain, and the

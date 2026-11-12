@@ -1343,14 +1343,25 @@ The plan representation is the `PlanNode` tree:
   `FrontierRepresentativeProofs`, `FrontierSearchProven`,
   `FrontierSearchDisproven`, `FrontierDeclinedExhausted`) together with
   the `FrontierBudgetFraction` float with the metric set when engaged —
-  and `frontier_decline` (ADR-0516) the run-time decline's typed reason
-  (`FrontierRunDecline`, re-exported by this crate beside
-  `FrontierCounters` and `PhaseTimes`; `as_str` naming the decline:
-  `RearrivalBudget`, the re-arrival budget's exhaustion, or
-  `TableBudget`, the sparse tables' allocation ceiling, ADR-0521):
-  `None` on
-  every clause that never declined; the `Details` cell marks it
-  `[frontier-declined rearrival-budget]` and the wire emits
+  and `frontier_decline` (ADR-0516, ADR-0582) the typed reason the frontier
+  rung did not serve the clause (`FrontierDeclineReason`, re-exported by this crate
+  beside `FrontierCounters` and `PhaseTimes`; `as_str` names the reason):
+  either `Run(FrontierRunDecline)` (ADR-0516) — the rung ran and fell
+  through: `RearrivalBudget`, the re-arrival budget's exhaustion, or
+  `TableBudget`, the sparse tables' allocation ceiling, ADR-0521; the
+  counters above stay recorded beside it — or `Plan(FrontierDecline)`
+  (also re-exported) — a plan-time gate kept the clause off the rung, the
+  counters zero: `Conjunct` (a `WHERE` conjunct outside the boundary
+  vocabulary), `NfaShape` (the pattern does not compile to the NFA, e.g.
+  an untyped hop), `Cost` (the cost gate priced the clause output-bound),
+  `FullEnumeration`, `PathCount`, `OrderedCap`, `PathConsumer` (the
+  statement's consumer needs every row or the path multiset), `Mode`,
+  `CarryingRow`, `PinnedBinding`, `NestedSpine`, `AllReduceGroup`,
+  `GuardedGroup`, `MultiplePatterns`. Recorded for a clause that has one
+  quantified pattern and whose family the diagnostic switch has not stood
+  down; `None` on every clause the rung served and on every clause it
+  never considered. The `Details` cell marks it
+  `[frontier-declined conjunct]` (the kebab-case name) and the wire emits
   `FrontierDeclineReason` with the metric set when present) is
   `None` on every EXPLAIN node and stamped on every clause-granularity
   node the dispatch loop executed on a PROFILE run (ADR-0344). `kernel`

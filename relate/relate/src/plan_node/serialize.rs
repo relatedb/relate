@@ -509,9 +509,10 @@ mod tests {
         );
     }
 
-    /// The vocabulary spellings stay in step: every run-time decline the
-    /// PROFILE record can carry (`FrontierRunDecline::as_str`) is exactly
-    /// the wire's vocabulary (`plan_keys::DECLINE_REASONS`), in order —
+    /// The vocabulary spellings stay in step: every decline the PROFILE
+    /// record can carry (`FrontierRunDecline::as_str`, then
+    /// `FrontierDecline::as_str`) is exactly the wire's vocabulary
+    /// (`plan_keys::DECLINE_REASONS`), in order —
     /// the start reasons the same way (`StartReason::as_str` against
     /// `plan_keys::REASONS`), and the traversal rungs (`KernelRung::as_str`
     /// against `plan_keys::KERNEL_RUNGS`, itself derived from the typed
@@ -519,11 +520,27 @@ mod tests {
     /// PROFILE consumer's decode.
     #[test]
     fn decline_and_start_reason_names_match_the_wire_tables() {
-        use relate_executor::{FrontierRunDecline, KernelRung, StartReason};
+        use relate_executor::{FrontierDecline, FrontierRunDecline, KernelRung, StartReason};
         // Exhaustive matches tie the iterated lists below to the enums:
         // a new variant fails to compile here until it is listed.
         let _ = |reason: FrontierRunDecline| match reason {
             FrontierRunDecline::RearrivalBudget | FrontierRunDecline::TableBudget => (),
+        };
+        let _ = |reason: FrontierDecline| match reason {
+            FrontierDecline::MultiplePatterns
+            | FrontierDecline::CarryingRow
+            | FrontierDecline::Mode
+            | FrontierDecline::NestedSpine
+            | FrontierDecline::AllReduceGroup
+            | FrontierDecline::PinnedBinding
+            | FrontierDecline::Conjunct
+            | FrontierDecline::NfaShape
+            | FrontierDecline::GuardedGroup
+            | FrontierDecline::FullEnumeration
+            | FrontierDecline::OrderedCap
+            | FrontierDecline::PathCount
+            | FrontierDecline::PathConsumer
+            | FrontierDecline::Cost => (),
         };
         let _ = |reason: StartReason| match reason {
             StartReason::BoundPivot
@@ -540,6 +557,7 @@ mod tests {
         let declines: Vec<&str> = FrontierRunDecline::ALL
             .iter()
             .map(|reason| reason.as_str())
+            .chain(FrontierDecline::ALL.iter().map(|reason| reason.as_str()))
             .collect();
         assert_eq!(declines, plan_keys::DECLINE_REASONS);
         let starts: Vec<&str> = [

@@ -8,7 +8,7 @@
 use proptest::prelude::*;
 use relate_core::Value;
 
-use crate::exec::test_support::{build, exec_cypher, Built};
+use crate::exec::test_support::{build, exec_cypher, reset_frontier_facts, Built};
 use crate::graph::Graph;
 use crate::test_support::config_with_floor;
 
@@ -43,8 +43,7 @@ fn scalar(g: &Graph, cypher: &str) -> Value {
 /// The arm engaged for `cypher`: the answer, the one engagement, and the
 /// frontier counters' engagement marker.
 fn engaged(g: &Graph, cypher: &str) -> Value {
-    let _ = take_kernel_engagements();
-    let _ = take_frontier_counters();
+    reset_frontier_facts();
     let answer = scalar(g, cypher);
     assert_eq!(take_kernel_engagements(), 1, "the walk count took {cypher}");
     assert!(
@@ -74,8 +73,7 @@ fn differential(g: &Graph, cypher: &str) -> u32 {
 
 /// A declined shape: no kernel engaged, and the rows are the DFS's own.
 fn declines(g: &Graph, cypher: &str) {
-    let _ = take_kernel_engagements();
-    let _ = take_frontier_counters();
+    reset_frontier_facts();
     let rows = exec_cypher(g, cypher);
     assert_eq!(take_kernel_engagements(), 0, "nothing takes {cypher}");
     assert_eq!(

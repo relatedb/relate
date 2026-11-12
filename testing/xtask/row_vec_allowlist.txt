@@ -49,11 +49,11 @@ exec/graph_type_schema.rs::alter_current_graph_type # bounded catalog/admin/proc
 exec/graph_type_schema.rs::catalog_create_graph_type # bounded catalog/admin/procedure result, not graph-sized
 exec/hub_join.rs::try_hub_join # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
 exec/kernels/chain.rs::emit_rows # clause arm materializes its output rows; to be replaced by streaming
-exec/kernels/frontier_run.rs::try_frontier_rows # rung result handed back to the ladder, bounded by the rung's own breaker; ADR-0555 follow-up
+exec/kernels/frontier_run.rs::try_frontier_rows # rung result handed back to the ladder, bounded by the rung's own breaker; returns FrontierRows, a ROW_VEC_CARRIERS wrapper; ADR-0555 follow-up
 exec/kernels/mod.rs::try_match_kernel # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
 exec/match_clause.rs::match_clause # clause arm materializes its output rows; to be replaced by streaming
 exec/match_clause.rs::match_paths # clause arm materializes its output rows; to be replaced by streaming
-exec/match_clause.rs::run_match_operator_ladder # rung result handed back to the clause driver, bounded by the rung's own breaker; ADR-0555 follow-up
+exec/match_clause.rs::run_match_operator_ladder # rung result handed back to the clause driver, bounded by the rung's own breaker; returns LadderRun, a ROW_VEC_CARRIERS wrapper; ADR-0555 follow-up
 exec/mod.rs::next_seeds # row-chunk or seed conversion at an operator boundary
 exec/mod.rs::result_seed_rows # row-chunk or seed conversion at an operator boundary
 exec/ontology.rs::exec_ontology_call # bounded catalog/admin/procedure result, not graph-sized

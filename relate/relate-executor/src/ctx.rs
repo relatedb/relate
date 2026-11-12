@@ -12,6 +12,7 @@ use std::thread::LocalKey;
 use relate_core::{Result, Value};
 use web_time::Instant;
 
+use crate::frontier_decline::FrontierDeclineReason;
 use crate::overlay::ExecGraph;
 use crate::redo::RedoOp;
 use crate::row::Row;
@@ -470,58 +471,6 @@ impl KernelRung {
     }
 }
 
-/// The frontier rung's run-time declines (ADR-0516): the reasons a rung
-/// that engaged and ran still falls through, typed so the PROFILE record
-/// names the one that kept the DFS. The compile-time gates' own
-/// vocabulary (`frontier_match::FrontierDecline`) stays with the
-/// matcher that constructs it — every one of those decides before a
-/// single walk, and none rides the record. Lives here — the crate's
-/// lowest shared module — beside the other PROFILE vocabularies
-/// (`StartReason`): the rider wiring records it and the metric record
-/// carries it. Two today: the re-arrival budget's exhaustion (ADR-0516)
-/// and the sparse tables' allocation ceiling (ADR-0521); a later
-/// run-time decline adds its variant (and its wire name) here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrontierRunDecline {
-    /// The re-arrival rule's shared work budget cut a search — the
-    /// endpoint set is unproven, so the run's buffered rows are
-    /// discarded and the clause falls through to the next rung
-    /// unchanged (the DFS answers these shapes exactly). Constructed on
-    /// the production decline path — the run's outcome carries it
-    /// (`frontier::RunOutcome::Declined`) and the rider wiring records
-    /// it for the PROFILE record.
-    RearrivalBudget,
-    /// The run's sparse tables — sized by the (node, state) pairs it
-    /// touched, never by the store's node-id span — plus the re-arrival
-    /// rule's buffers crossed the allocation ceiling
-    /// (`FRONTIER_TABLE_BUDGET`, ADR-0521) at a level boundary. A
-    /// run-time decline like [`Self::RearrivalBudget`] — the rung ran, so
-    /// its counters stay recorded beside the reason — never a compile
-    /// gate: the run's buffered rows are discarded and the DFS, with its
-    /// own caps, answers the clause.
-    TableBudget,
-}
-
-impl FrontierRunDecline {
-    /// Every run-time decline, in declaration order — the parity pin's
-    /// iteration source against the wire table
-    /// (`plan_keys::DECLINE_REASONS`).
-    pub const ALL: [FrontierRunDecline; 2] = [
-        FrontierRunDecline::RearrivalBudget,
-        FrontierRunDecline::TableBudget,
-    ];
-
-    /// The decline's stable wire name (the `StartReason::as_str` pattern):
-    /// the vocabulary the plan args and the renderers spell,
-    /// single-sourced here.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FrontierRunDecline::RearrivalBudget => "rearrival-budget",
-            FrontierRunDecline::TableBudget => "table-budget",
-        }
-    }
-}
-
 /// One clause operator's PROFILE metrics, reported to the sink (ADR-0344
 /// phase 2 + the metric-fields phase): the position key `(stage, part,
 /// clause)` — the same walk the plan tree construction uses — beside the
@@ -585,16 +534,23 @@ pub struct ClauseMetricsRecord {
     /// visits, completed levels, and accepted endpoints, summed over the
     /// clause's per-seed runs. Zero on every clause the frontier's
     /// compile gates declined (it never ran); a run-time decline
-    /// (`frontier_decline` set) keeps them recorded, since the rung did
-    /// run. The plan table's `Details` cell marks the operator
+    /// ([`FrontierDeclineReason::Run`]) keeps them recorded, since the
+    /// rung did run. The plan table's `Details` cell marks the operator
     /// (`[frontier edges=N levels=L endpoints=P]`) when it ran.
     pub frontier: FrontierCounters,
-    /// The frontier rung's run-time decline (ADR-0516), when it engaged,
-    /// ran, and fell through — `None` on every clause that never
-    /// declined and on every compile-gate decline (which never ran). The
-    /// typed reason the PROFILE record carries beside the run counters:
-    /// the re-arrival budget's exhaustion or the table ceiling's crossing.
-    pub frontier_decline: Option<FrontierRunDecline>,
+    /// Why the frontier rung did not serve the clause (ADR-0516, extended
+    /// by the plan-time half): the first typed reason, `None` on every
+    /// clause the rung served and on every clause the rung never
+    /// considered (no single quantified pattern, the diagnostic switch's
+    /// `walk` stand-down, a nested evaluation's own arm). A plan-time
+    /// reason ([`FrontierDeclineReason::Plan`]) is a gate that kept the
+    /// clause off the rung — the clause itself ran no frontier (its counters
+    /// stay zero unless a nested EXISTS frontier run in the same clause
+    /// contributed); a run-time reason
+    /// ([`FrontierDeclineReason::Run`]) is the re-arrival budget's
+    /// exhaustion or the table ceiling's crossing, the counters recorded
+    /// beside it.
+    pub frontier_decline: Option<FrontierDeclineReason>,
 }
 
 /// Per-clause PROFILE metrics sink (ADR-0344 phase 2): the dispatch loop

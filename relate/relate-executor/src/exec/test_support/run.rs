@@ -204,3 +204,14 @@ pub(crate) fn run_metered(g: &Graph, cypher: &str) -> (Vec<Vec<Value>>, u64) {
     let (_, peak, _) = workspace_meter().expect("ledger installed");
     (rows, peak)
 }
+
+/// The one record whose `MATCH` clause a rung served — the ladder's own
+/// fact (`kernel` is set exactly when a `MATCH` operator ran), found by
+/// the field rather than by clause position. The PROFILE-record suites
+/// (the rung, the decline reasons) read through it.
+pub(crate) fn served(records: &[ClauseMetricsRecord]) -> &ClauseMetricsRecord {
+    records
+        .iter()
+        .find(|record| record.kernel.is_some())
+        .unwrap_or_else(|| panic!("a rung served the MATCH clause ({} records)", records.len()))
+}

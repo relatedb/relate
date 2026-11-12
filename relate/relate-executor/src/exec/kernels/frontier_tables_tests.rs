@@ -14,8 +14,9 @@ use super::frontier_tables::{fresh_tables, within_table_budget, FrontierTables, 
 use super::nfa::{compile, Pool};
 use super::rearival::RuleBuffers;
 use super::with_frontier_table_budget;
-use crate::ctx::{ExecCtx, FrontierRunDecline};
+use crate::ctx::ExecCtx;
 use crate::exec::test_support::{build, endpoint_nodes, patterns};
+use crate::frontier_decline::FrontierRunDecline;
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
 

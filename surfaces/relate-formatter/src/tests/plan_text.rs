@@ -535,7 +535,8 @@ fn the_frontier_kernel_marks_the_clause_it_ran() {
         text.lines().any(|l| l.contains("[kernel frontier-nfa]")),
         "the frontier rung names itself on the served row (LABS-1117): {text}"
     );
-    // The full enumeration the family declined carries no mark.
+    // The full enumeration the family declined carries no run counters,
+    // and names the gate that declined it (LABS-1437).
     let plain = text_of(
         &mut conn,
         "PROFILE MATCH (x:Geo {id:'n0'})-[:LINK*1..3]-(y:Geo) \
@@ -543,8 +544,14 @@ fn the_frontier_kernel_marks_the_clause_it_ran() {
     )
     .join("\n");
     assert!(
-        !plain.contains("[frontier"),
-        "a declined clause carries no mark: {plain}"
+        !plain.contains("[frontier edges="),
+        "a declined clause carries no run counters: {plain}"
+    );
+    assert!(
+        plain
+            .lines()
+            .any(|l| l.contains("[frontier-declined full-enumeration]")),
+        "the plan-time decline names its gate on the walker's row: {plain}"
     );
 }
 

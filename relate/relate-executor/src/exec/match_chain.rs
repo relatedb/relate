@@ -60,7 +60,7 @@ use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
 use super::aggregate::Aggregation;
-use super::match_clause::{charge_finished_container, run_match_operator_ladder};
+use super::match_clause::{charge_finished_container, run_match_operator_ladder, LadderRun};
 use super::match_folds::fold_would_take;
 use super::order::OrderKeys;
 use super::pattern_policies::{MatchFold, RowFold};
@@ -372,7 +372,7 @@ impl<'a> Stage<'a> {
                 // the walk pushes row by row; the last stage's rows come
                 // back (a sink projection) for the collector.
                 let fold = (!matches!(self.next, Next::Rows(_))).then(|| self.next.consumer());
-                let (rows, _operator) = run_match_operator_ladder(
+                let LadderRun { rows, .. } = run_match_operator_ladder(
                     self.ctx,
                     batch,
                     false,

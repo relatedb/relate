@@ -23,8 +23,8 @@ use crate::procedure_registry::call_writes_store;
 use crate::StatementEffect;
 pub(crate) use profiling::{
     arm_store_profiling, count_frontier, count_neighbor_walks, count_zone_skip, frontier_counters,
-    record_frontier_decline, record_walk_start, restore_store_profiling, store_reads,
-    take_frontier_decline, take_walk_start, zone_skips, WalkTallies,
+    record_walk_start, restore_store_profiling, store_reads, take_walk_start, zone_skips,
+    WalkTallies,
 };
 #[cfg(test)]
 pub(crate) use profiling::{

@@ -96,8 +96,9 @@ pub use relate_error::{
     INTERNAL_MESSAGE,
 };
 pub use relate_executor::{
-    FrontierCounters, FrontierRunDecline, KernelRung, PatternEngine, PhaseTimes, Procedure,
-    PullKind, QueryStats, StartReason, StatementEffect, StoreReads, WalkStart,
+    FrontierCounters, FrontierDecline, FrontierDeclineReason, FrontierRunDecline, KernelRung,
+    PatternEngine, PhaseTimes, Procedure, PullKind, QueryStats, StartReason, StatementEffect,
+    StoreReads, WalkStart,
 };
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): this re-export and the

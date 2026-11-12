@@ -93,17 +93,34 @@ pub const FRONTIER_SEARCH_PROVEN: &str = "FrontierSearchProven";
 pub const FRONTIER_SEARCH_DISPROVEN: &str = "FrontierSearchDisproven";
 pub const FRONTIER_DECLINED_EXHAUSTED: &str = "FrontierDeclinedExhausted";
 pub const FRONTIER_BUDGET_FRACTION: &str = "FrontierBudgetFraction";
-/// The frontier rung's run-time decline (ADR-0516), one of the
-/// `DECLINE_REASONS` vocabulary — emitted only when the rung engaged,
-/// ran, and fell through, with the metric set.
+/// Why the frontier rung did not serve the clause, one of the
+/// `DECLINE_REASONS` vocabulary — emitted with the metric set when the
+/// rung declined at plan time (counters absent: it never ran) or engaged,
+/// ran, and fell through (ADR-0516, counters beside it).
 pub const FRONTIER_DECLINE_REASON: &str = "FrontierDeclineReason";
-/// The run-time decline vocabulary (ADR-0516), the executor's
-/// `FrontierRunDecline::as_str` names — single-sourced here so a
-/// renamed decline fails loudly at the wire boundary, like the
-/// start reasons. Only the run-time declines the PROFILE record
-/// carries: the compile-time gates decide before a walk and never
-/// render.
-pub const DECLINE_REASONS: [&str; 2] = ["rearrival-budget", "table-budget"];
+/// The decline vocabulary: first the run-time declines (ADR-0516), the
+/// executor's `FrontierRunDecline::as_str` names, then the plan-time
+/// gates' (ADR-0478), `FrontierDecline::as_str` — single-sourced here so
+/// a renamed decline fails loudly at the wire boundary, like the start
+/// reasons.
+pub const DECLINE_REASONS: [&str; 16] = [
+    "rearrival-budget",
+    "table-budget",
+    "multiple-patterns",
+    "carrying-row",
+    "mode",
+    "nested-spine",
+    "all-reduce-group",
+    "pinned-binding",
+    "conjunct",
+    "nfa-shape",
+    "guarded-group",
+    "full-enumeration",
+    "ordered-cap",
+    "path-count",
+    "path-consumer",
+    "cost",
+];
 /// The start-reason vocabulary (LABS-369), the executor's
 /// `StartReason::as_str` names — single-sourced here so a renamed
 /// reason fails loudly at the wire boundary, like the warning names.

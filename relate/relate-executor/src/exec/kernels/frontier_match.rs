@@ -24,7 +24,10 @@
 //!   broken alternation, an uninterned type name, overflowing bounds. The
 //!   boundary nodes' own admission rides the kernel layer's closed
 //!   predicate vocabulary ([`NodeTarget`] — the chain/hub-star matcher's
-//!   own fold, [`super::matcher::compile_node`]).
+//!   own fold, [`super::matcher::compile_node`]), plus one pair
+//!   comparison between the two boundary variables ([`BoundaryPair`],
+//!   `n <> p`) that the distinct-endpoint consumer decides per
+//!   (seed, endpoint) pair.
 //! - **Answer-shape** ([`Consumer`] and [`decode_consumer`]): the
 //!   semantic half, as much a proof as the structural one — the frontier
 //!   serves exactly the consumers whose answers are functions of the
@@ -49,10 +52,10 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use relate_core::Value;
+use relate_core::{NodeId, Value};
 use relate_ir::{
-    classify_aggregate, AggregateKind, Clause, Expr, MatchMode, NodePattern, PathMode, PathPattern,
-    PatternElement, QuantifiedPathPattern, RelPattern,
+    classify_aggregate, AggregateKind, BinaryOp, Clause, Expr, MatchMode, NodePattern, PathMode,
+    PathPattern, PatternElement, QuantifiedPathPattern, RelPattern,
 };
 use relate_names::SmallName;
 use relate_planner::PatternStats;
@@ -61,6 +64,7 @@ use relate_planner::{
 };
 
 use crate::eval::expr_vars;
+use crate::frontier_decline::FrontierDecline;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
@@ -106,107 +110,35 @@ pub(crate) enum Consumer {
     Capped { want: usize },
 }
 
-/// Every gate's decline, typed so a test or plan dump names the gate that
-/// kept the DFS. The decline is always safe: the per-row DFS answers
-/// identically. Every gate decides before a single walk — the rung's
-/// run-time declines are their own type (`crate::ctx::FrontierRunDecline`:
-/// the re-arrival budget and the table ceiling), the one the PROFILE
-/// record carries; this vocabulary stays the matcher's.
+/// The boundary-pair comparison a `WHERE` conjunct between the two
+/// boundary variables states (`n <> p`): the one vocabulary entry beyond
+/// the per-variable property predicates, decided per (seed, endpoint)
+/// pair at arrival. Only `<>` is admitted — the pair set a `<>` filters is
+/// exactly the pairs the BFS reports (the walker's row filter over the
+/// same trail endpoints), the self pair dropped. Carried only by the
+/// distinct-endpoint consumer, whose answer is the pair set itself: every
+/// other consumer declines the conjunct (`Conjunct`), as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FrontierDecline {
-    /// The clause does not carry exactly one pattern: the frontier is a
-    /// single-pattern, single-quantifier family (a UNION's arms are
-    /// separate clauses, each decided on its own — the non-quantified arm
-    /// needs no kernel at all).
-    MultiplePatterns,
-    /// The entering row binds anything but the pattern's seed-side
-    /// variable: a prebound group-list pin (the legacy exact-trail rule),
-    /// a prebound target or path variable, or a mid-statement clause's
-    /// outer bindings — per-row semantics the single-seed frontier does
-    /// not reproduce.
-    CarryingRow,
-    /// The mode is outside the family: an explicit TRAIL/ACYCLIC/SIMPLE
-    /// path mode outside the capped consumer (the capped emission's
-    /// per-witness cycle checks serve exactly that consumer —
-    /// `frontier_emit`; full enumeration and distinct-endpoint answers
-    /// stay per-path under these modes), any trail-enforcing mode under
-    /// the REPEATABLE pool (rel reuse is that pool's semantics), or an
-    /// unbounded quantifier under the WALK
-    /// pool — REPEATABLE ELEMENTS keeps its authored
-    /// `UnsafeRepeatableElements` rejection (ADR-0478 §5), and the
-    /// bounded-WALK answer shape is bounded by definition.
-    Mode,
-    /// A nested quantifier inside the quantified spine — a var-length
-    /// rel or a quantified group among its inner elements. The spine
-    /// then unrolls (variable round length) or accumulates
-    /// list-of-list groups, and the emission's fixed-round
-    /// reconstruction (`frontier_emit`) cannot bind those rows; the DFS
-    /// keeps the shape, answers identical. Parser-unreachable (the
-    /// front end's `NestedQuantification` rule rejects both spellings):
-    /// the gate is the defensive bound for hand-built IR.
-    NestedSpine,
-    /// A MATCH-WHERE allReduce the inliner runs over one of this
-    /// quantification's groups — ADR-0478 §2's hard decline: the
-    /// inliner's per-branch prefix semantics cannot survive pair dedup
-    /// (one (node, state) pair stands for many prefixes with different
-    /// accumulator values), so that shape keeps the DFS with its
-    /// inliner.
-    AllReduceGroup,
-    /// A repeated element variable pins a binding the pair-dedup cannot
-    /// reconcile: the target (or an interior node) repeating another
-    /// node's variable, a rel variable repeated across hops or colliding
-    /// with a node name — the walker's pre-bound reconciliation
-    /// semantics.
-    PinnedBinding,
-    /// A MATCH-WHERE conjunct outside the closed predicate vocabulary on
-    /// the boundary nodes: it does not decode (a function over the row,
-    /// `OR`, a nondeterministic bound), it names a group list, the path
-    /// variable, a rel, an interior or an outer variable, or it is a
-    /// second predicate on one boundary variable.
-    Conjunct,
-    /// The NFA compiler declined the shape — its declines are this arm's
-    /// declines: a second top-level quantified element, a subpath
-    /// variable, a pattern WHERE or a selector, rel-predicate inner
-    /// hops, admission-bearing interior nodes (the auto rung; the
-    /// forced rung compiles them as guards), the 64-state ceiling, a
-    /// nested unbounded quantifier, broken alternation, an uninterned
-    /// type name, overflowing bounds.
-    NfaShape,
-    /// A quantified group whose `WHERE` references its own pattern
-    /// variables (the fraud f03 shape) — the forced rung compiles it
-    /// (the predicate rides the round-closing transition, each
-    /// referenced variable read at its last binding), but no consumer
-    /// proof covers serving a predicate-guarded run: the pair-dedup
-    /// answers these shapes approximately, so every consumer declines
-    /// and the DFS answers exactly.
-    GuardedGroup,
-    /// The consumer needs every row, not a pair-shaped answer: no cap and
-    /// no distinct/aggregate fold — full enumeration (two trails to one
-    /// node are two answers), a grouped or filtered suffix, a suffix that
-    /// is not a RETURN/WITH, or a `LIMIT 0`/overflowing cap the cap rider
-    /// itself declines.
-    FullEnumeration,
-    /// `ORDER BY` with `LIMIT`: ordered truncation needs the full
-    /// candidate set to sort (ADR-0478 §2 — ordered caps keep the DFS,
-    /// exactly as they keep full enumeration in ADR-0475).
-    OrderedCap,
-    /// The answer counts or folds the path multiset, not the endpoint
-    /// set: `count(p)`, `count(*)`, a non-DISTINCT `count`/`collect`, or
-    /// a multiplicity-sensitive fold (`sum`, `avg`, …) — path counts are
-    /// exponential by nature; the DFS keeps them on this rung (the one
-    /// path count the family serves, the WALK pool's plain `count`, is
-    /// the walk-count fold's — `frontier_count`, ADR-0523).
-    PathCount,
-    /// A non-capped consumer consumes the path variable or a group list —
-    /// only the ≤ `want` reconstructed witnesses of the capped shape
-    /// carry those bindings, so a distinct/aggregate answer over them
-    /// would read bindings the frontier never produced.
-    PathConsumer,
-    /// The cost gate: a bounded recursion whose estimated paths stay under
-    /// [`PATHS_PER_ENDPOINT_FACTOR`] times its estimated distinct
-    /// endpoints — the DFS is already output-bound (no reconstruction
-    /// pass, the existing row plumbing) and keeps the clause.
-    Cost,
+pub(crate) enum BoundaryPair {
+    /// No conjunct between the boundary variables: every admitted
+    /// endpoint answers.
+    Unconstrained,
+    /// `start <> target`: an endpoint that is the seed itself — the seed
+    /// re-reached by a cycle or a self-loop, or the zero-length arrival
+    /// of a `min = 0` quantifier — does not answer.
+    Distinct,
+}
+
+impl BoundaryPair {
+    /// Whether the endpoint answers for its seed. Identity, not value
+    /// equality: the walker's `<>` over two node values compares node
+    /// identity.
+    pub(crate) fn admits(self, seed: NodeId, endpoint: NodeId) -> bool {
+        match self {
+            BoundaryPair::Unconstrained => true,
+            BoundaryPair::Distinct => seed != endpoint,
+        }
+    }
 }
 
 /// The plan-time artifact the matcher returns: everything the BFS runner
@@ -231,6 +163,10 @@ pub(crate) struct FrontierContract<'a> {
     /// The answer shape the runner serves (the answer-shape gate's
     /// survivor).
     pub(crate) consumer: Consumer,
+    /// The boundary-pair comparison the clause's `WHERE` stated, applied
+    /// to every (seed, admitted endpoint) pair the distinct-endpoint row
+    /// pass emits.
+    pub(crate) pair: BoundaryPair,
     /// The pool a run of this contract answers in (ADR-0478 §3), set
     /// once here from the match mode and the written path mode — the
     /// typed fact every driver reads, never re-derived: `Walk` for the
@@ -352,7 +288,17 @@ pub(crate) fn compile_frontier<'a>(
     // Text render: the compiled boundary programs are keyed by the
     // variable's String spelling (sorted iteration stays text order).
     let mut progs: BTreeMap<String, Prog> = BTreeMap::new();
+    let mut pair = BoundaryPair::Unconstrained;
     for conjunct in conjuncts {
+        if is_boundary_pair_neq(conjunct, start_node, target_node) {
+            // The pair comparison rides only the consumer whose answer is
+            // the pair set; the others keep their old decline.
+            if consumer != Consumer::DistinctEndpoints {
+                return Err(FrontierDecline::Conjunct);
+            }
+            pair = BoundaryPair::Distinct;
+            continue;
+        }
         let Some((var, prog)) = decode_conjunct(conjunct) else {
             return Err(FrontierDecline::Conjunct);
         };
@@ -419,8 +365,33 @@ pub(crate) fn compile_frontier<'a>(
         start,
         target,
         consumer,
+        pair,
         pool,
     })
+}
+
+/// Whether `conjunct` is `<>` between the two boundary variables, either
+/// order — the one pair comparison the closed vocabulary admits
+/// ([`BoundaryPair::Distinct`]). Both sides must be exactly the pattern's
+/// two named boundary variables: a comparison against an interior, outer
+/// or group variable, or against the same variable twice, is not this
+/// shape and keeps the `Conjunct` decline.
+fn is_boundary_pair_neq(conjunct: &Expr, start: &NodePattern, target: &NodePattern) -> bool {
+    let Expr::Binary {
+        op: BinaryOp::Neq,
+        left,
+        right,
+    } = conjunct
+    else {
+        return false;
+    };
+    let (Expr::Variable(left), Expr::Variable(right)) = (left.as_ref(), right.as_ref()) else {
+        return false;
+    };
+    let [Some(start), Some(target)] = boundary_vars(start, target) else {
+        return false;
+    };
+    (left == start && right == target) || (left == target && right == start)
 }
 
 /// The consumer of a `MATCH`'s rows as the statement's suffix proves it —
@@ -453,11 +424,6 @@ pub(crate) fn decode_consumer(
         return Err(FrontierDecline::FullEnumeration);
     }
     let (start, target) = boundary(pattern).ok_or(FrontierDecline::NfaShape)?;
-    let boundary: HashSet<String> = boundary_vars(start, target)
-        .into_iter()
-        .flatten()
-        .map(|name| name.to_string())
-        .collect();
     // Every name the clause consumes: the projection items and the order
     // keys (an `ORDER BY` over a path shape consumes it as surely as a
     // projected item does).
@@ -468,11 +434,8 @@ pub(crate) fn decode_consumer(
     for order in s.order {
         expr_vars(&order.expr, &mut referenced);
     }
-    let names_boundary_only = |referenced: &HashSet<String>| {
-        referenced
-            .iter()
-            .all(|name| boundary.contains(name.as_str()))
-    };
+    let names_boundary_only =
+        |referenced: &HashSet<String>| names_boundary_only(referenced, start, target);
 
     // The aggregate calls: an endpoint fold is sound exactly when the
     // aggregate is idempotent over duplicates (min/max) or collapses them
@@ -556,14 +519,34 @@ pub(crate) fn boundary(pattern: &PathPattern) -> Option<(&NodePattern, &NodePatt
 /// The boundary pair's variable names, seed side first — the one
 /// spelling of the boundary-variable fact every re-derivation site
 /// consults: the conjunct decode's name lookup (here, in
-/// [`compile_frontier`]), the consumer decode's boundary-only set
+/// [`compile_frontier`]), the consumer decode's boundary-only rule
 /// ([`decode_consumer`]), and the exists arm's counted-expression gate
-/// (`frontier_run::try_frontier_exists`).
+/// (`frontier_run::try_frontier_exists`) — both of the latter through
+/// [`names_boundary_only`].
 pub(crate) fn boundary_vars<'a>(
     start: &'a NodePattern,
     target: &'a NodePattern,
 ) -> [Option<&'a SmallName>; 2] {
     [start.variable.as_ref(), target.variable.as_ref()]
+}
+
+/// Whether every name in `referenced` is one of the boundary pair's
+/// variables — the one closed-boundary rule: the frontier binds only the
+/// boundary pair (a full node value each), so an expression naming
+/// anything else (the path variable, a group list, an interior or outer
+/// variable) reads a binding only a witness carries.
+pub(crate) fn names_boundary_only(
+    referenced: &HashSet<String>,
+    start: &NodePattern,
+    target: &NodePattern,
+) -> bool {
+    let boundary = boundary_vars(start, target);
+    referenced.iter().all(|name| {
+        boundary
+            .into_iter()
+            .flatten()
+            .any(|var| var == name.as_str())
+    })
 }
 
 /// One boundary node's compiled admission: the canonical fold of the

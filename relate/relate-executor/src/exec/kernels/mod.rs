@@ -113,6 +113,16 @@ mod frontier_count_tests;
 #[cfg(test)]
 mod frontier_differential_tests;
 
+// The boundary-pair comparison (`n <> p`) the distinct-endpoint consumer
+// admits (LABS-1433): the matcher's decisions and the differential
+// against the stood-down walker.
+#[cfg(test)]
+mod frontier_pair_tests;
+
+// The PROFILE record's plan-time decline reason (LABS-1437).
+#[cfg(test)]
+mod frontier_decline_tests;
+
 // The diagnostic engine switch's routing pins (ADR-0519): the forced
 // rung, the stood-down kernels, and the auto twin — the switch's own
 // suite, beside the rider wiring's.

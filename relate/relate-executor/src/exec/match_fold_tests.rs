@@ -218,6 +218,7 @@ fn a_declining_frontier_rung_offers_the_fold_nothing() {
             Some(&fold),
         )
         .unwrap()
+        .served()
     });
     assert!(answer.is_none(), "the later seed's run declines");
     assert_eq!(fold.0.get(), 0, "a declined rung offered the fold rows");

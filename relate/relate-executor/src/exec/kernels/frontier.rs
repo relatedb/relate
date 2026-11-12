@@ -86,9 +86,10 @@
 
 use relate_core::{Error, NodeId, Result, Value};
 
-use crate::ctx::{ExecCtx, FrontierCounters, FrontierRunDecline};
+use crate::ctx::{ExecCtx, FrontierCounters};
 use crate::eval::{eval, predicate_value_holds};
 use crate::exec::candidates::node_ok;
+use crate::frontier_decline::FrontierRunDecline;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::store::RelTypes;

@@ -17,6 +17,9 @@ mod eval;
 // `pub(crate)` items, one public path per item at `crate::eval_walk::…`.
 mod eval_walk;
 mod exec;
+// The frontier rung's decline vocabulary (ADR-0478, ADR-0516): private
+// module, root re-exports only (one public path).
+mod frontier_decline;
 mod function_registry;
 mod graph;
 mod graph_type;
@@ -87,8 +90,8 @@ mod vector_similarity;
 pub use catalog_meta::{DeprecatedBy, DeprecationForm};
 pub use csv::CsvPolicy;
 pub use ctx::{
-    BatchCommit, ClauseMetricsRecord, FrontierCounters, FrontierRunDecline, KernelRung, PhaseTimes,
-    PlanMetricsSink, StartReason, StoreReads, WalkStart,
+    BatchCommit, ClauseMetricsRecord, FrontierCounters, KernelRung, PhaseTimes, PlanMetricsSink,
+    StartReason, StoreReads, WalkStart,
 };
 pub use effect::StatementEffect;
 pub use exec::bulk::{
@@ -101,6 +104,7 @@ pub use exec::{
     catalog_create_statements, ddl_notifications::ddl_notifications, execute, execute_read_at,
     value_matches_proc_type, ExecRequest, QueryResult, ReadAdmission,
 };
+pub use frontier_decline::{FrontierDecline, FrontierDeclineReason, FrontierRunDecline};
 pub use function_registry::builtin_function_deprecation;
 pub use graph::constraint_keys::admission::{ConstraintAdmission, SlotPosition};
 pub use graph::{

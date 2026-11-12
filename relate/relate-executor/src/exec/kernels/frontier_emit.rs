@@ -82,7 +82,8 @@ use std::collections::BTreeMap;
 use relate_core::{Error, Node, NodeId, Path, RelId, Relationship, Result, Value};
 use relate_ir::{PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
 
-use crate::ctx::{ExecCtx, FrontierCounters, FrontierRunDecline};
+use crate::ctx::{ExecCtx, FrontierCounters};
+use crate::frontier_decline::FrontierRunDecline;
 use crate::pattern_walk::{bind_path_names, memoized_path_rung};
 use crate::row::{Row, RowRung};
 

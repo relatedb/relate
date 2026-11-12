@@ -21,7 +21,7 @@
 //! working), one pinned seed when the entering row binds exactly the
 //! seed-side variable (the `CarryingRow` proof's one legal carry).
 //!
-//! The two RUN-TIME declines ([`crate::ctx::FrontierRunDecline`]:
+//! The two RUN-TIME declines ([`crate::frontier_decline::FrontierRunDecline`]:
 //! ADR-0516's `RearrivalBudget`, and the sparse tables' allocation
 //! ceiling, ADR-0521's `TableBudget`): a run whose re-arrival rule cut a
 //! search on its shared work budget carries an unproven endpoint set,
@@ -36,6 +36,7 @@ use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
 use crate::ctx::{ExecCtx, FrontierCounters, WalkStart};
 use crate::eval::{eval, expr_vars};
+use crate::frontier_decline::{FrontierDecline, FrontierDeclineReason, FrontierRunDecline};
 use crate::graph::Graph;
 use crate::overlay::RetainedTotal;
 use crate::row::Row;
@@ -43,22 +44,46 @@ use crate::row::Row;
 use super::super::graph_stats::GraphStats;
 use super::super::pattern_policies::{reduce_row, MatchReduce, ReduceSink, RowFold};
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
+use super::super::record_walk_start;
 use super::super::sink::SinkProjection;
-use super::super::{record_frontier_decline, record_walk_start};
 use super::frontier::{self, FrontierRun, RunOutcome, WalkBudget};
 use super::frontier_emit::{capped_rows, CappedRun};
 use super::frontier_match::{
-    boundary, boundary_vars, compile_frontier, decode_consumer, Consumer, FrontierContract,
+    boundary, compile_frontier, decode_consumer, names_boundary_only, BoundaryPair, Consumer,
+    FrontierContract,
 };
 use super::frontier_tables::{Endpoint, FrontierTables};
 use super::nfa;
 use super::program::{Admission, NodePred};
 use super::rearival::RuleBuffers;
 
+/// [`try_frontier_rows`]' verdict: the served rows, or the decline — with
+/// the typed reason that made it, plan-time gate or run-time decline
+/// (`None` for a clause the family never considered). The reason travels
+/// through the ladder's return value, never a thread-local slot, so a
+/// nested evaluation's ladder run (or EXISTS arm) cannot leak its decline
+/// onto the enclosing clause's record.
+pub(crate) enum FrontierRows {
+    Served(Vec<Row>),
+    Declined(Option<FrontierDeclineReason>),
+}
+
+#[cfg(test)]
+impl FrontierRows {
+    /// The served rows, `None` on any decline — the tests that call the
+    /// rung bare and ask only whether it served.
+    pub(crate) fn served(self) -> Option<Vec<Row>> {
+        match self {
+            FrontierRows::Served(rows) => Some(rows),
+            FrontierRows::Declined(_) => None,
+        }
+    }
+}
+
 /// The row rung: one `MATCH` clause's patterns against the statement's
 /// suffix, engaged when the answer-shape gate proves a pair-shaped
-/// consumer and the structural/cost gates prove the pattern. `Ok(None)`
-/// is the decline — the ladder falls through to the batch chain, the
+/// consumer and the structural/cost gates prove the pattern.
+/// [`FrontierRows::Declined`] is the decline — the ladder falls through to the batch chain, the
 /// chain/hub-star kernels, and the per-row walker unchanged; the cap and
 /// sink projection the clause carried ride the walker untouched (a
 /// clause this rung answers has already applied the projection through
@@ -75,39 +100,43 @@ pub(crate) fn try_frontier_rows(
     suffix: &[Clause],
     projection: Option<&SinkProjection<'_>>,
     fold: Option<&dyn RowFold>,
-) -> Result<Option<Vec<Row>>> {
+) -> Result<FrontierRows> {
     // The walker's admission shapes the specialized operators share: not
     // `OPTIONAL` (the null-binding arm is the walker's), one entering row
     // (a wider driving table is per-row semantics; a row binding exactly
     // the seed-side variable is the one legal carry, below).
     if optional || rows.len() != 1 {
-        return Ok(None);
+        return Ok(FrontierRows::Declined(None));
     }
     let Some(pattern) = single_quantified(ctx.graph.base(), patterns) else {
-        return Ok(None);
+        return Ok(FrontierRows::Declined(None));
     };
     let conjuncts = where_clause.map(flatten_and_owned).unwrap_or_default();
     // The answer-shape gate (ADR-0478 Decision 2): the suffix's consumer
     // as a proof. Every decline keeps the DFS. The decoder answers
-    // exactly the two row-shaped consumers; the Exists consumer is the
-    // exists entry's own construction, never this rung's (a hand-built
-    // IR reaching here keeps the walker).
+    // exactly the two row-shaped consumers; the Exists and WalkCount
+    // consumers are other entries' own constructions, never this rung's
+    // (the consumer match below keeps the walker for either).
+    // The plan-time decline rides the return value (LABS-1437), past the
+    // single-quantified gate — a clause the frontier family never
+    // considers (no quantified pattern, the stood-down switch) names
+    // nothing.
     let consumer = match decode_consumer(suffix, pattern, ctx.graph, ctx.params, ctx.cypher_version)
     {
-        Ok(Consumer::Exists | Consumer::WalkCount) | Err(_) => return Ok(None),
+        Err(reason) => return Ok(FrontierRows::Declined(Some(reason.into()))),
         Ok(consumer) => consumer,
     };
     let stats = GraphStats::new(ctx.graph.base(), ctx.params);
-    let Some(Engaged {
+    let Engaged {
         contract,
         mut tables,
         mut bufs,
         seeds,
-    }) = engage(
+    } = match engage(
         ctx, patterns, match_mode, &rows[0], &conjuncts, consumer, &stats,
-    )?
-    else {
-        return Ok(None);
+    )? {
+        Engagement::Engaged(engaged) => *engaged,
+        Engagement::Declined(reason) => return Ok(FrontierRows::Declined(Some(reason.into()))),
     };
     let reduce = (projection.is_some() || fold.is_some()).then_some(MatchReduce {
         sink: ReduceSink::select(projection, fold),
@@ -172,8 +201,7 @@ pub(crate) fn try_frontier_rows(
                         tables = run.reclaim();
                     }
                     CappedRun::Declined { reason, .. } => {
-                        record_frontier_decline(reason);
-                        return Ok(None);
+                        return Ok(FrontierRows::Declined(Some(reason.into())));
                     }
                 }
             }
@@ -203,8 +231,9 @@ pub(crate) fn try_frontier_rows(
                     &mut tables,
                     &mut bufs,
                 )?;
-                let Some(walked) = recorded_run(outcome) else {
-                    return Ok(None);
+                let walked = match recorded_run(outcome) {
+                    Ok(walked) => walked,
+                    Err(reason) => return Ok(FrontierRows::Declined(Some(reason.into()))),
                 };
                 let pass = SeedPass {
                     contract: &contract,
@@ -218,12 +247,21 @@ pub(crate) fn try_frontier_rows(
                     // can still decline (the walker then re-offers every
                     // row): park the admitted pairs, offer once all served.
                     let pred = Admission::of(&contract.target);
-                    for_each_admitted(ctx, pred, &walked.endpoints, |_, endpoint| {
-                        parked_bytes
-                            .add_bytes(ctx.graph, std::mem::size_of::<(NodeId, NodeId)>() as u64)?;
-                        parked.push((seed, endpoint));
-                        Ok(false)
-                    })?;
+                    for_each_admitted(
+                        ctx,
+                        pred,
+                        contract.pair,
+                        seed,
+                        &walked.endpoints,
+                        |_, endpoint| {
+                            parked_bytes.add_bytes(
+                                ctx.graph,
+                                std::mem::size_of::<(NodeId, NodeId)>() as u64,
+                            )?;
+                            parked.push((seed, endpoint));
+                            Ok(false)
+                        },
+                    )?;
                 } else {
                     endpoint_rows(
                         ctx,
@@ -242,12 +280,9 @@ pub(crate) fn try_frontier_rows(
                 emit_reduced_row(ctx, row, reduce.as_ref(), &mut out, &mut out_retained)?;
             }
         }
-        // The consumer gate above already returned: the decoder answers
-        // exactly the two row-shaped consumers, and the contract carries
-        // the consumer it was compiled with.
-        Consumer::Exists | Consumer::WalkCount => {
-            unreachable!("the Exists and WalkCount declines above already returned")
-        }
+        // Not this rung's consumers (the decoder never yields them): the
+        // clause was never the frontier family's, so it names no decline.
+        Consumer::Exists | Consumer::WalkCount => return Ok(FrontierRows::Declined(None)),
     }
     // The test counter's engagement tick (the production rung is the
     // ladder's own return value now, LABS-1117; the exists entry's own
@@ -255,7 +290,7 @@ pub(crate) fn try_frontier_rows(
     #[cfg(test)]
     super::kernel_engaged();
     Row::share_schemas(&mut out);
-    Ok(Some(out))
+    Ok(FrontierRows::Served(out))
 }
 
 /// The EXISTS arm (ADR-0478 Decision 2's first shape): a witness
@@ -289,22 +324,14 @@ pub(crate) fn try_frontier_exists(
         };
         let mut vars = HashSet::new();
         expr_vars(counted, &mut vars);
-        let boundary = boundary_vars(start, target);
-        if !vars.iter().all(|name| {
-            boundary
-                .into_iter()
-                .flatten()
-                .any(|var| var == name.as_str())
-        }) {
+        if !names_boundary_only(&vars, start, target) {
             return Ok(None);
         }
     }
-    let Some(Engaged {
-        contract,
-        mut tables,
-        mut bufs,
-        seeds,
-    }) = engage(
+    // The exists arm is a nested evaluation of the enclosing clause: its
+    // plan-time decline names nothing on the PROFILE record (the clause's
+    // own rung is the record's subject).
+    let Engagement::Engaged(engaged) = engage(
         ctx,
         patterns,
         match_mode,
@@ -316,6 +343,12 @@ pub(crate) fn try_frontier_exists(
     else {
         return Ok(None);
     };
+    let Engaged {
+        contract,
+        mut tables,
+        mut bufs,
+        seeds,
+    } = *engaged;
     let pool = contract.pool;
     for seed in seeds {
         ctx.graph.cancel_tick()?;
@@ -328,7 +361,9 @@ pub(crate) fn try_frontier_exists(
             &mut tables,
             &mut bufs,
         )?;
-        let Some(walked) = recorded_run(outcome) else {
+        // The exists arm is a nested evaluation: a run-time decline keeps
+        // the probe's seek and names nothing on the PROFILE record.
+        let Ok(walked) = recorded_run(outcome) else {
             return Ok(None);
         };
         let hit = exists_hit(
@@ -377,6 +412,15 @@ struct Engaged<'p> {
     seeds: Vec<NodeId>,
 }
 
+/// [`engage`]'s verdict: the clause's run state, or the typed plan-time
+/// gate that declined it (never the engine error, which rides the
+/// `Result` around this).
+enum Engagement<'p> {
+    // Boxed: the run state (tables, buffers, seeds) dwarfs the decline.
+    Engaged(Box<Engaged<'p>>),
+    Declined(FrontierDecline),
+}
+
 /// The engagement scaffold both entries share, past their consumer
 /// gates: the matcher's proofs (`compile_frontier`), the clause's
 /// sparse tables and buffers (empty until the first arrival — the
@@ -385,8 +429,9 @@ struct Engaged<'p> {
 /// frontier always starts at the pattern's first element, the seed side,
 /// forward, the scan segment's subject (inside an EXISTS probe, nested in
 /// the enclosing clause's arm the way the chain/hub-star exists arm
-/// records its own). `Ok(None)` is the decline, before any of it ran.
-#[allow(clippy::too_many_arguments)]
+/// records its own). [`Engagement::Declined`] is the plan-time decline —
+/// the matcher's typed gate — before any of it ran; the row entry records
+/// it for the PROFILE record, the exists entry does not.
 fn engage<'p>(
     ctx: ExecCtx<'_>,
     patterns: &'p [PathPattern],
@@ -395,8 +440,8 @@ fn engage<'p>(
     conjuncts: &[Expr],
     consumer: Consumer,
     stats: &GraphStats<'_>,
-) -> Result<Option<Engaged<'p>>> {
-    let Ok(contract) = compile_frontier(
+) -> Result<Engagement<'p>> {
+    let contract = match compile_frontier(
         ctx.graph.base(),
         patterns,
         match_mode,
@@ -404,8 +449,9 @@ fn engage<'p>(
         conjuncts,
         consumer,
         stats,
-    ) else {
-        return Ok(None);
+    ) {
+        Ok(contract) => contract,
+        Err(reason) => return Ok(Engagement::Declined(reason)),
     };
     // The clause's one sparse table set (ADR-0478 Decision 6's
     // allocation half, ADR-0521): nothing allocated until the first
@@ -421,38 +467,33 @@ fn engage<'p>(
     };
     let seeds = seeds(ctx, &contract, entering, &residual)?;
     record_walk_start(WalkStart::seed_side_forward());
-    Ok(Some(Engaged {
+    Ok(Engagement::Engaged(Box::new(Engaged {
         contract,
         tables,
         bufs,
         seeds,
-    }))
+    })))
 }
 
 /// One run's outcome through the rider's two facts, the three consumer
 /// arms' shared reader: the counters are recorded either way (a
 /// declined run still walked — PROFILE's `[frontier]` counters never
 /// change), and the served run is yielded only when every endpoint is
-/// proven. `None` is a run-time decline: the rung engaged and ran, but
+/// proven. `Err` is a run-time decline: the rung engaged and ran, but
 /// the run's re-arrival rule cut a search on its shared work budget
 /// (ADR-0516) or its tables crossed the allocation ceiling (ADR-0521) —
 /// the endpoint set is unproven or unfinished, so the caller discards
 /// every buffered row of the clause and falls through with the
 /// ladder's ordinary decline, the next rung serving the clause
 /// unchanged (the DFS answers these shapes exactly). The decline's
-/// typed reason rides the counters channel's decline slot
-/// (`record_frontier_decline`, the walk-start slot's pattern), the one
-/// recording point shared with the capped emission's paired decline —
-/// the PROFILE record's fact, never a second behavior beside the
-/// fall-through.
-fn recorded_run(outcome: RunOutcome) -> Option<FrontierRun> {
+/// typed reason is the `Err` payload, which the row entry returns to the
+/// ladder for the PROFILE record — the fact, never a second behavior
+/// beside the fall-through.
+fn recorded_run(outcome: RunOutcome) -> std::result::Result<FrontierRun, FrontierRunDecline> {
     record_run(outcome.facts());
     match outcome {
-        RunOutcome::Served(run) => Some(run),
-        RunOutcome::Declined { reason, .. } => {
-            record_frontier_decline(reason);
-            None
-        }
+        RunOutcome::Served(run) => Ok(run),
+        RunOutcome::Declined { reason, .. } => Err(reason),
     }
 }
 
@@ -508,21 +549,25 @@ struct SeedPass<'a> {
     reduce: Option<&'a MatchReduce<'a>>,
 }
 
-/// The run's endpoints through the target's admission, one loop both
-/// passes share: `f` runs for every admitted endpoint until it answers
+/// The run's endpoints through the target's admission and the clause's
+/// boundary-pair comparison, one loop every pass shares: `f` runs for
+/// every admitted endpoint that answers for `seed` until it answers
 /// `true` (a hit), the admission prepared once per run — the
-/// distinct-endpoint row pass and the EXISTS hit pass differ only in
-/// what they do with an admitted endpoint.
+/// distinct-endpoint row pass, its parking arm and the EXISTS hit pass
+/// differ only in what they do with an admitted endpoint, and none
+/// spells the pair check beside this loop.
 fn for_each_admitted(
     ctx: ExecCtx<'_>,
     pred: Admission<'_>,
+    pair: BoundaryPair,
+    seed: NodeId,
     endpoints: &[Endpoint],
     mut f: impl FnMut(ExecCtx<'_>, NodeId) -> Result<bool>,
 ) -> Result<bool> {
     let mut prepared: Option<<Admission<'_> as NodePred>::Prepared> = None;
     for endpoint in endpoints {
         ctx.graph.cancel_tick()?;
-        if !pred.admits(&mut prepared, ctx, endpoint.node)? {
+        if !pred.admits(&mut prepared, ctx, endpoint.node)? || !pair.admits(seed, endpoint.node) {
             continue;
         }
         if f(ctx, endpoint.node)? {
@@ -560,7 +605,8 @@ fn emit_reduced_row(
 }
 
 /// The distinct-endpoint consumer's row pass: every endpoint the run
-/// admitted, through the target's admission, bound to its row (the
+/// admitted, through the target's admission and the clause's
+/// boundary-pair comparison, bound to its row (the
 /// boundary pair's full node values — the values the projection's stub
 /// refresh would produce) and the shared `reduce_row` tail — the same
 /// tail the cap rider and the materializing walk run, so an emitted row
@@ -575,12 +621,20 @@ fn endpoint_rows(
     out: &mut Vec<Row>,
     out_retained: &mut RetainedTotal,
 ) -> Result<()> {
-    for_each_admitted(ctx, pred, &pass.walked.endpoints, |ctx, endpoint| {
-        let mut row = pass.entering.clone();
-        bind_boundary(&mut row, ctx, pass.contract, pass.seed, endpoint);
-        emit_reduced_row(ctx, row, pass.reduce, out, out_retained)?;
-        Ok(false)
-    })?;
+    let (pair, seed) = (pass.contract.pair, pass.seed);
+    for_each_admitted(
+        ctx,
+        pred,
+        pair,
+        seed,
+        &pass.walked.endpoints,
+        |ctx, endpoint| {
+            let mut row = pass.entering.clone();
+            bind_boundary(&mut row, ctx, pass.contract, pass.seed, endpoint);
+            emit_reduced_row(ctx, row, pass.reduce, out, out_retained)?;
+            Ok(false)
+        },
+    )?;
     Ok(())
 }
 
@@ -595,14 +649,21 @@ fn exists_hit(
     walked: &FrontierRun,
     counted: Option<&Expr>,
 ) -> Result<bool> {
-    for_each_admitted(ctx, pred, &walked.endpoints, |ctx, endpoint| {
-        let Some(counted) = counted else {
-            return Ok(true);
-        };
-        let mut row = Row::new();
-        bind_boundary(&mut row, ctx, contract, seed, endpoint);
-        Ok(!eval(ctx.graph, &row, counted, ctx.params, ctx.cypher_version)?.is_null())
-    })
+    for_each_admitted(
+        ctx,
+        pred,
+        contract.pair,
+        seed,
+        &walked.endpoints,
+        |ctx, endpoint| {
+            let Some(counted) = counted else {
+                return Ok(true);
+            };
+            let mut row = Row::new();
+            bind_boundary(&mut row, ctx, contract, seed, endpoint);
+            Ok(!eval(ctx.graph, &row, counted, ctx.params, ctx.cypher_version)?.is_null())
+        },
+    )
 }
 
 /// Bind the boundary pair onto `row`: the seed-side and target-side

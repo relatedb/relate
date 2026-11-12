@@ -216,34 +216,6 @@ pub(crate) fn frontier_counters() -> crate::ctx::FrontierCounters {
 }
 
 thread_local! {
-    /// The frontier rung's run-time decline (ADR-0516), recorded by the
-    /// rider wiring's decline paths and taken once per clause by the
-    /// metric tick — the walk-start slot's pattern: the typed reason the
-    /// PROFILE record carries beside the run counters. The rung's one
-    /// decline aborts the clause, so one slot's `set`/`take` pair is the
-    /// whole protocol.
-    static FRONTIER_DECLINE: Cell<Option<crate::ctx::FrontierRunDecline>> = const {
-        Cell::new(None)
-    };
-}
-
-/// Record the frontier rung's run-time decline (ADR-0516) — the one
-/// recording point, the walk-start idiom's: the rider wiring's decline
-/// paths call it, never an inline spelling beside it. Production's
-/// decline is the caller's own fall-through; the recorded reason is the
-/// PROFILE record's fact, never a second behavior beside it.
-pub(crate) fn record_frontier_decline(reason: crate::ctx::FrontierRunDecline) {
-    FRONTIER_DECLINE.with(|c| c.set(Some(reason)));
-}
-
-/// Take the recorded run-time decline, clearing it: the metric tick
-/// reads it once per clause, so a stale decline never leaks into the
-/// next clause.
-pub(crate) fn take_frontier_decline() -> Option<crate::ctx::FrontierRunDecline> {
-    FRONTIER_DECLINE.with(|c| c.take())
-}
-
-thread_local! {
     /// The start the current clause's walk chose (LABS-369), recorded once
     /// per walk by the selection site and taken at the clause's metric
     /// tick. `None` until a walk records one.

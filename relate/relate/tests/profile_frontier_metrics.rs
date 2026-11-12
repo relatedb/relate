@@ -10,16 +10,27 @@ mod common;
 
 use common::{connection, plan};
 
-/// The one operator node the frontier family ran (the `tree_hops`
-/// idiom's predicate form): the clause whose `frontier.levels > 0`
-/// marks the engagement — `None` on a tree the family declined
-/// everywhere. The node itself, so its metrics and its wire args read
-/// the same row.
-fn frontier_run(node: &relate::PlanNode) -> Option<&relate::PlanNode> {
-    if node.metrics.as_ref().is_some_and(|m| m.frontier.levels > 0) {
+/// The first operator node of the tree whose metrics satisfy `pred` —
+/// the one traversal every finder below shares (the `tree_hops` idiom's
+/// predicate form), the node itself so its metrics and its wire args
+/// read the same row.
+fn find_operator<'a>(
+    node: &'a relate::PlanNode,
+    pred: &dyn Fn(&relate::ClauseMetrics) -> bool,
+) -> Option<&'a relate::PlanNode> {
+    if node.metrics.as_ref().is_some_and(pred) {
         return Some(node);
     }
-    node.children.iter().find_map(frontier_run)
+    node.children
+        .iter()
+        .find_map(|child| find_operator(child, pred))
+}
+
+/// The one operator node the frontier family ran: the clause whose
+/// `frontier.levels > 0` marks the engagement — `None` on a tree the
+/// family declined everywhere.
+fn frontier_run(node: &relate::PlanNode) -> Option<&relate::PlanNode> {
+    find_operator(node, &|m| m.frontier.levels > 0)
 }
 
 /// One wire arg of the given plan node (the expression-bytes test's
@@ -235,4 +246,68 @@ fn profile_reports_the_frontier_rung_counters_on_a_declined_run() {
         Some(relate::Value::Int(3)),
         "the cut asks ride the args"
     );
+}
+
+/// The first operator node whose record names a frontier decline — the
+/// plan-time half (LABS-1437) leaves the counters zero, so the
+/// engagement finder cannot locate it.
+fn declined_node(node: &relate::PlanNode) -> Option<&relate::PlanNode> {
+    find_operator(node, &|m| m.frontier_decline.is_some())
+}
+
+/// LABS-1437: a clause the frontier's plan-time gates keep off the rung
+/// names the gate on the record and the wire args of the walker's row —
+/// the sqlite-gate's co-change and k-hop reach shapes get distinct,
+/// typed reasons (the untyped hop declines the NFA compile; a statement
+/// that needs every row declines the answer-shape gate), the counters
+/// stay zero because the rung never ran, and the answer is the
+/// walker's.
+#[test]
+fn profile_names_the_plan_time_decline_on_a_walker_served_run() {
+    let mut conn = connection();
+    conn.query(
+        "CREATE (a:Prompt:File {id:0}), (b:File {id:1}), (c:File {id:2}), \
+         (a)-[:TOUCHES]->(b), (b)-[:TOUCHES]->(c), (c)-[:TOUCHES]->(a)",
+    )
+    .unwrap();
+    for (query, reason) in [
+        (
+            "PROFILE MATCH (p:Prompt)-[*1..3]-(n) WHERE n <> p \
+             WITH DISTINCT p, n RETURN count(*) AS pairs",
+            "nfa-shape",
+        ),
+        (
+            "PROFILE MATCH (a:File)-[:TOUCHES*1..2]-(b:File) \
+             RETURN a.id AS a, b.id AS b",
+            "full-enumeration",
+        ),
+        (
+            "PROFILE MATCH (a:File)-[:TOUCHES*1..2]-(b:File) RETURN count(*) AS c",
+            "path-count",
+        ),
+    ] {
+        let result = conn.query(query).unwrap();
+        let tree = plan(&result);
+        let node = declined_node(tree).unwrap_or_else(|| panic!("a decline is recorded: {query}"));
+        let metrics = node.metrics.expect("the walker's operator metrics");
+        assert_eq!(
+            metrics.frontier_decline.map(|reason| reason.as_str()),
+            Some(reason),
+            "the typed plan-time reason rides the record: {query}"
+        );
+        assert_eq!(
+            metrics.frontier.levels, 0,
+            "a plan-time decline never ran the rung: {query}"
+        );
+        assert_eq!(
+            wire_arg(node, "FrontierDeclineReason"),
+            Some(relate::Value::String(reason.into())),
+            "the typed reason rides the wire args: {query}"
+        );
+        assert_eq!(
+            wire_arg(node, "FrontierEdges"),
+            None,
+            "no run counters beside a plan-time reason: {query}"
+        );
+    }
 }
