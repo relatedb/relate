@@ -684,64 +684,6 @@ fn predicate_applies_arithmetic_to_var(expr: &Expr, var: &str) -> bool {
     applies_arithmetic_to_var(expr, var, is_failing_arithmetic_op)
 }
 
-/// The edge filter [`applies_arithmetic_to_var`] rides, reproducing the
-/// historical hand-rolled recursion's reach — in particular the
-/// binder-shadowing rule: the walk stops at any nested scope-binding
-/// construct (quantifier / list comprehension / reduce / allReduce) that
-/// *rebinds* the same variable name, so shadowing (`all(x IN ['a'] WHERE
-/// any(x IN [1] WHERE x % 2 = 0))`) never yields a false positive: the
-/// inner `x` is a different, numeric binding. A construct the filter does
-/// not enter merely defers to the runtime type check, which is safe; only
-/// a false positive (rejecting a valid query) would be a regression, and
-/// requiring the operand to be the *bare* loop variable prevents that.
-fn enters_arithmetic_search(parent: &Expr, child: &Expr, var: &str) -> bool {
-    // The binder edges: from a scope-binding construct, the walk enters
-    // the bound body only while the construct does not rebind `var` (the
-    // iterated list and the reduce init expression bind nothing, so they
-    // are always entered).
-    match parent {
-        Expr::Quantifier(q) => {
-            std::ptr::eq(child, &q.list)
-                || (q.variable != var
-                    && q.predicate.as_ref().is_some_and(|p| std::ptr::eq(child, p)))
-        }
-        Expr::ListComprehension(lc) => {
-            std::ptr::eq(child, &lc.list_expr)
-                || (lc.variable != var
-                    && (lc
-                        .where_expr
-                        .as_ref()
-                        .is_some_and(|w| std::ptr::eq(child, w))
-                        || lc.map_expr.as_ref().is_some_and(|m| std::ptr::eq(child, m))))
-        }
-        Expr::Reduce(r) => {
-            std::ptr::eq(child, &r.init_expr)
-                || std::ptr::eq(child, &r.list_expr)
-                || (r.variable != var && r.accumulator != var && std::ptr::eq(child, &r.expression))
-        }
-        Expr::AllReduce(r) => {
-            std::ptr::eq(child, &r.init_expr)
-                || std::ptr::eq(child, &r.list_expr)
-                || (r.variable != var
-                    && r.accumulator != var
-                    && (std::ptr::eq(child, &r.expression) || std::ptr::eq(child, &r.predicate)))
-        }
-        // Leaves the hand-rolled recursion never opened: map and pattern
-        // comprehensions and map projections evaluate their contents
-        // against their own bindings, and the preview-gated chronological
-        // comparisons postdate this rule's reach. (Subquery bodies are
-        // opaque leaves to the walker itself.)
-        Expr::MapComprehension(_)
-        | Expr::PatternComprehension(_)
-        | Expr::MapProjection(_)
-        | Expr::ChronologicalCompare(_) => false,
-        // Every other parent's expression children — operands, arguments,
-        // list/map items, CASE arms, property keys, subscript parts — were
-        // all visited by the hand-rolled recursion.
-        _ => true,
-    }
-}
-
 /// Parse `query`, run only the narrow static operator/type pass, and return
 /// its verdict. The one test entry point for this pass; the sibling static
 /// rules' tests call it too rather than re-encoding the call.
