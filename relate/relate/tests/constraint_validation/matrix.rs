@@ -2,7 +2,7 @@
 //! ADR-0172's section-2 table, each asserting today's exact error text and an
 //! unchanged graph, plus the error-selection order.
 
-use crate::common::{property_type, requires, uniqueness};
+use crate::common::{creation_failure, property_type, requires, uniqueness};
 use crate::support::*;
 
 // `unique`, node form.
@@ -27,10 +27,10 @@ violations! {
     unique_on_match_set: [UNIQUE, "CREATE (:P {id: 1}), (:P {id: 2})"]
         => "MERGE (n:P {id: 2}) ON MATCH SET n.id = 1", uniqueness("p_id");
     unique_recheck_create_constraint: ["CREATE (:P {id: 1}), (:P {id: 1.0})"]
-        => UNIQUE, uniqueness("p_id");
+        => UNIQUE, creation_failure(uniqueness("p_id"));
     unique_recheck_alter_graph_type: ["CREATE (:P {id: 1}), (:P {id: 1})"]
         => "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT p_id FOR (n:P) REQUIRE n.id IS UNIQUE }",
-           uniqueness("p_id");
+           creation_failure(uniqueness("p_id"));
 }
 
 // `unique`, relationship form. `SET n:L` has no relationship form in any
@@ -53,10 +53,10 @@ violations! {
         => "MATCH (a:A), (b:B) MERGE (a)-[r:R {id: 2}]->(b) ON MATCH SET r.id = 1",
            uniqueness("r_id");
     unique_rel_recheck_create_constraint: ["CREATE ()-[:R {id: 1}]->(), ()-[:R {id: 1}]->()"]
-        => REL_UNIQUE, uniqueness("r_id");
+        => REL_UNIQUE, creation_failure(uniqueness("r_id"));
     unique_rel_recheck_alter_graph_type: ["CREATE ()-[:R {id: 1}]->(), ()-[:R {id: 1}]->()"]
         => "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT r_id FOR ()-[r:R]->() REQUIRE r.id IS UNIQUE }",
-           uniqueness("r_id");
+           creation_failure(uniqueness("r_id"));
 }
 
 // `key`, node form.
@@ -84,10 +84,10 @@ violations! {
     key_on_match_set: [KEY, "CREATE (:P {k: 1})"]
         => "MERGE (n:P {k: 1}) ON MATCH SET n.k = null", requires("p_key");
     key_recheck_create_constraint: ["CREATE (:P {k: 1}), (:P)"]
-        => KEY, requires("p_key");
+        => KEY, creation_failure(requires("p_key"));
     key_recheck_alter_graph_type: ["CREATE (:P {k: 1}), (:P {k: 1})"]
         => "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT p_key FOR (n:P) REQUIRE n.k IS KEY }",
-           uniqueness("p_key");
+           creation_failure(uniqueness("p_key"));
 }
 
 // `key`, relationship form.
@@ -114,10 +114,10 @@ violations! {
         => "MATCH (a:A), (b:B) MERGE (a)-[r:R {k: 1}]->(b) ON MATCH SET r.k = null",
            requires("r_key");
     key_rel_recheck_create_constraint: ["CREATE ()-[:R {k: 1}]->(), ()-[:R]->()"]
-        => REL_KEY, requires("r_key");
+        => REL_KEY, creation_failure(requires("r_key"));
     key_rel_recheck_alter_graph_type: ["CREATE ()-[:R {k: 1}]->(), ()-[:R {k: 1}]->()"]
         => "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT r_key FOR ()-[r:R]->() REQUIRE r.k IS KEY }",
-           uniqueness("r_key");
+           creation_failure(uniqueness("r_key"));
 }
 
 // `exists`, node form.
@@ -141,10 +141,10 @@ violations! {
     exists_on_match_set: [EXISTS, "CREATE (:P {name: 'a'})"]
         => "MERGE (n:P {name: 'a'}) ON MATCH SET n.name = null", requires("p_name");
     exists_recheck_create_constraint: ["CREATE (:P)"]
-        => EXISTS, requires("p_name");
+        => EXISTS, creation_failure(requires("p_name"));
     exists_recheck_alter_graph_type: ["CREATE (:P)"]
         => "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT p_name FOR (n:P) REQUIRE n.name IS NOT NULL }",
-           requires("p_name");
+           creation_failure(requires("p_name"));
 }
 
 // `exists`, relationship form.
@@ -167,10 +167,10 @@ violations! {
         => "MATCH (a:A), (b:B) MERGE (a)-[r:R {w: 1}]->(b) ON MATCH SET r.w = null",
            requires("r_w");
     exists_rel_recheck_create_constraint: ["CREATE ()-[:R]->()"]
-        => REL_EXISTS, requires("r_w");
+        => REL_EXISTS, creation_failure(requires("r_w"));
     exists_rel_recheck_alter_graph_type: ["CREATE ()-[:R]->()"]
         => "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT r_w FOR ()-[r:R]->() REQUIRE r.w IS NOT NULL }",
-           requires("r_w");
+           creation_failure(requires("r_w"));
 }
 
 // `propertyType`, node form.
@@ -196,10 +196,10 @@ violations! {
     type_on_match_set: [TYPED, "CREATE (:P {age: 1})"]
         => "MERGE (n:P {age: 1}) ON MATCH SET n.age = 'old'", property_type("p_age");
     type_recheck_create_constraint: ["CREATE (:P {age: 'old'})"]
-        => TYPED, property_type("p_age");
+        => TYPED, creation_failure(property_type("p_age"));
     type_recheck_alter_graph_type: ["CREATE (:P {age: 'old'})"]
         => "ALTER CURRENT GRAPH TYPE SET { (:P => {age :: INTEGER}) }",
-           property_type("constraint_c71317ba");
+           creation_failure(property_type("constraint_c71317ba"));
 }
 
 // `propertyType`, relationship form.
@@ -224,10 +224,10 @@ violations! {
         => "MATCH (a:A), (b:B) MERGE (a)-[r:R {t: 1}]->(b) ON MATCH SET r.t = 'x'",
            property_type("r_t");
     type_rel_recheck_create_constraint: ["CREATE ()-[:R {t: 'x'}]->()"]
-        => REL_TYPED, property_type("r_t");
+        => REL_TYPED, creation_failure(property_type("r_t"));
     type_rel_recheck_alter_graph_type: ["CREATE ()-[:R {t: 'x'}]->()"]
         => "ALTER CURRENT GRAPH TYPE SET { ()-[:R => {t :: INTEGER}]->() }",
-           property_type("constraint_79d3a6ae");
+           creation_failure(property_type("constraint_79d3a6ae"));
 }
 
 // `labelExistence` (graph type) and `nodeLabelExistence` (CREATE CONSTRAINT).
@@ -241,7 +241,7 @@ violations! {
     label_existence_remove_label: [LABEL_EXISTENCE, "CREATE (:P:Q)"]
         => "MATCH (n:P) REMOVE n:Q", node_label("P", "Q");
     label_existence_recheck_alter_graph_type: ["CREATE (:P)"]
-        => LABEL_EXISTENCE, node_label("P", "Q");
+        => LABEL_EXISTENCE, creation_failure(node_label("P", "Q"));
     node_label_existence_create_node: [NODE_LABEL_EXISTENCE]
         => "CREATE (:P)", node_label("P", "Q");
     node_label_existence_merge_create_branch: [NODE_LABEL_EXISTENCE]
@@ -253,7 +253,7 @@ violations! {
     node_label_existence_remove_dynamic_label: [NODE_LABEL_EXISTENCE, "CREATE (:P:Q)"]
         => "MATCH (n:P) REMOVE n:$('Q')", node_label("P", "Q");
     node_label_existence_recheck_create_constraint: ["CREATE (:P)"]
-        => NODE_LABEL_EXISTENCE, node_label("P", "Q");
+        => NODE_LABEL_EXISTENCE, creation_failure(node_label("P", "Q"));
 }
 
 // `sourceLabel` (graph type) and `sourceLabelExistence` (CREATE CONSTRAINT).
@@ -265,7 +265,7 @@ violations! {
     source_label_remove_start_label: [SOURCE_LABEL, "CREATE (:A)-[:R]->()"]
         => "MATCH (n:A) REMOVE n:A", endpoint("A");
     source_label_recheck_alter_graph_type: ["CREATE (:X)-[:R]->()"]
-        => SOURCE_LABEL, endpoint("A");
+        => SOURCE_LABEL, creation_failure(endpoint("A"));
     source_label_existence_create_relationship: [SOURCE_LABEL_EXISTENCE]
         => "CREATE (:X)-[:R]->()", endpoint("A");
     source_label_existence_merge_create_branch: [SOURCE_LABEL_EXISTENCE]
@@ -273,7 +273,7 @@ violations! {
     source_label_existence_remove_start_label: [SOURCE_LABEL_EXISTENCE, "CREATE (:A)-[:R]->()"]
         => "MATCH (n:A) REMOVE n:A", endpoint("A");
     source_label_existence_recheck_create_constraint: ["CREATE (:X)-[:R]->()"]
-        => SOURCE_LABEL_EXISTENCE, endpoint("A");
+        => SOURCE_LABEL_EXISTENCE, creation_failure(endpoint("A"));
 }
 
 // `targetLabel` (graph type) and `targetLabelExistence` (CREATE CONSTRAINT).
@@ -285,7 +285,7 @@ violations! {
     target_label_remove_end_label: [TARGET_LABEL, "CREATE ()-[:R]->(:B)"]
         => "MATCH (n:B) REMOVE n:B", endpoint("B");
     target_label_recheck_alter_graph_type: ["CREATE ()-[:R]->(:X)"]
-        => TARGET_LABEL, endpoint("B");
+        => TARGET_LABEL, creation_failure(endpoint("B"));
     target_label_existence_create_relationship: [TARGET_LABEL_EXISTENCE]
         => "CREATE ()-[:R]->(:X)", endpoint("B");
     target_label_existence_merge_create_branch: [TARGET_LABEL_EXISTENCE]
@@ -293,7 +293,7 @@ violations! {
     target_label_existence_remove_end_label: [TARGET_LABEL_EXISTENCE, "CREATE ()-[:R]->(:B)"]
         => "MATCH (n:B) REMOVE n:B", endpoint("B");
     target_label_existence_recheck_create_constraint: ["CREATE ()-[:R]->(:X)"]
-        => TARGET_LABEL_EXISTENCE, endpoint("B");
+        => TARGET_LABEL_EXISTENCE, creation_failure(endpoint("B"));
 }
 
 // Error selection: the first failure of the full scan (constraints in name
