@@ -5,12 +5,35 @@ Neo4j driver conveniences: attribute access, ``.data()``, and ``.keys()`` in
 column order.
 """
 
+from relate._native import Node, Path, Relationship
+
+
+def _as_data(value):
+    """The Neo4j-driver form of one graph value (properties only)."""
+    return value.data()
+
+
+def _as_dict(value):
+    """The lossless, JSON-ready form of one graph value."""
+    return value.to_dict()
+
+
+def _convert(value, render):
+    """Recursively replace graph values by ``render(value)``."""
+    if isinstance(value, (Node, Relationship, Path)):
+        return render(value)
+    if isinstance(value, dict):
+        return {k: _convert(v, render) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_convert(v, render) for v in value]
+    return value
+
 
 class Record(dict):
     """One result row: a ``dict`` with Neo4j-driver-style conveniences.
 
     ``r["name"]`` (DB-API habit), ``r.name`` (attribute access), and
-    ``r.data()`` (a plain ``dict`` copy) all read the same values. Column
+    ``r.data()`` (a nested plain-data copy) all read the same values. Column
     order is the statement's RETURN order, not insertion order. Rows are
     read-only through attributes: ``r.name = x`` raises ``AttributeError``
     (``r["name"] = x`` still works — a ``Record`` is a ``dict``).
@@ -33,8 +56,32 @@ class Record(dict):
         return list(self._columns)
 
     def data(self):
-        """A plain ``dict`` copy of the row."""
-        return dict(self)
+        """A plain ``dict`` copy of the row, converted like the Neo4j driver.
+
+        A node or relationship becomes the ``dict`` of its properties, a path
+        the list alternating node dicts and relationship types; lists and maps
+        are converted recursively. Ids, labels and endpoints are dropped; use
+        :meth:`to_dict` to keep them.
+        """
+        return _convert(self._ordered(), _as_data)
+
+    def to_dict(self):
+        """A JSON-ready ``dict`` copy of the row that keeps everything.
+
+        A node becomes ``{"id", "element_id", "labels", "properties"}``, a
+        relationship ``{"id", "element_id", "type", "start_node", "end_node",
+        "start_node_element_id", "end_node_element_id", "properties"}``, a
+        path ``{"nodes": [...], "relationships": [...]}``; lists and maps are
+        converted recursively. Points, durations, temporals and vectors stay
+        as they are.
+        """
+        return _convert(self._ordered(), _as_dict)
+
+    def _ordered(self):
+        """The row as a plain ``dict`` in column order (extra keys last)."""
+        out = {c: self[c] for c in self._columns if c in self}
+        out.update({k: v for k, v in self.items() if k not in out})
+        return out
 
     def __reduce__(self):
         # Pickle round-trips through the column order plus the values.

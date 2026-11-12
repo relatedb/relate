@@ -260,9 +260,39 @@ iteration — is a `relate.Record`: a `dict` subclass, so the DB-API
 contract (rows are mappings) is unchanged, with the Neo4j driver's row
 conveniences on top: attribute access (`row.name`), `row.keys()` (column
 order, not insertion order; a copy — mutating it never touches the row),
-and `row.data()` (a plain `dict` copy). Attribute access is read-only:
+and `row.data()` (a plain-data copy, converted all the way down — see
+below). Attribute access is read-only:
 `row.name = x` raises `AttributeError`, like the driver's `Record`;
 `row["name"] = x` still works because a `Record` is a `dict`.
+
+`row.data()` follows the Neo4j driver's `Record.data()`: a `Node` becomes the
+`dict` of its properties, a `Relationship` likewise, a `Path` a list that
+alternates node property dicts with relationship types
+(`[{"name": "a"}, "KNOWS", {"name": "b"}]`), and lists and maps are converted
+recursively. Ids, labels and endpoints are not part of that form: use
+`to_dict()` (below) to keep them. `Node.data()`, `Relationship.data()` and `Path.data()`
+return the same forms on their own (a relationship alone yields only its
+properties: it holds endpoint ids, not endpoint nodes). `Point`, `Duration`,
+temporal and `Vector` values are returned unchanged. `data()` always returns
+a copy, so mutating it never touches the row.
+
+`row.to_dict()` is the lossless, JSON-ready counterpart (Relate-specific, not
+in the driver): same recursion, but every graph value keeps its structure.
+
+| Value | `to_dict()` shape |
+| --- | --- |
+| `Node` | `{"id", "element_id", "labels", "properties"}` |
+| `Relationship` | `{"id", "element_id", "type", "start_node", "end_node", "start_node_element_id", "end_node_element_id", "properties"}` |
+| `Path` | `{"nodes": [<node dict>, …], "relationships": [<relationship dict>, …]}` |
+
+`dict(node)` and `dict(relationship)` (also `**node`) give just the property
+dict, as in the Neo4j driver: a `Node` and a `Relationship` expose `keys()`,
+`items()` and `[]` over their properties.
+
+`Node.to_dict()`, `Relationship.to_dict()` and `Path.to_dict()` return the
+same shapes on their own. Properties always sit under `"properties"`, so a
+property named `id` or `type` never collides. `Point`, `Duration`, temporal
+and `Vector` values are returned unchanged; every call returns a copy.
 
 Cursor-level conveniences (same semantics as the driver's `Result`):
 

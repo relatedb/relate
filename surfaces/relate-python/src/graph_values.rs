@@ -4,9 +4,36 @@
 //! `convert` builds these, so their fields are crate-visible; the pymodule
 //! registers the classes from the crate root.
 
-use pyo3::exceptions::PyKeyError;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
+
+/// A copy of a property value with every list and map copied down the tree,
+/// so mutating a returned `data()` / `to_dict()` never reaches the row. Other
+/// values (scalars, points, vectors, temporals) are immutable and shared.
+fn copy_value<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let py = value.py();
+    if let Ok(list) = value.downcast::<PyList>() {
+        let out = PyList::empty(py);
+        for item in list.iter() {
+            out.append(copy_value(&item)?)?;
+        }
+        Ok(out.into_any())
+    } else if let Ok(dict) = value.downcast::<PyDict>() {
+        let out = PyDict::new(py);
+        for (k, v) in dict.iter() {
+            out.set_item(k, copy_value(&v)?)?;
+        }
+        Ok(out.into_any())
+    } else {
+        Ok(value.clone())
+    }
+}
+
+/// An entity's property dict, copied with [`copy_value`].
+fn copy_properties<'py>(py: Python<'py>, properties: &Py<PyDict>) -> PyResult<Bound<'py, PyDict>> {
+    Ok(copy_value(properties.bind(py).as_any())?.downcast_into::<PyDict>()?)
+}
 
 /// A graph node returned from a query. Exposes its integer `id`, its
 /// `element_id` (the engine's `elementId()` string), `labels`, and
@@ -32,6 +59,12 @@ impl Node {
     #[getter]
     fn properties(&self, py: Python<'_>) -> Py<PyDict> {
         self.properties.clone_ref(py)
+    }
+
+    /// The property keys, so `dict(node)` is the property dict (the Neo4j
+    /// driver's behavior) and `**node` works.
+    fn keys(&self, py: Python<'_>) -> PyResult<PyObject> {
+        Ok(self.properties.bind(py).call_method0("keys")?.unbind())
     }
 
     /// The property pairs, like the driver entity's `items()`.
@@ -63,6 +96,24 @@ impl Node {
 
     fn __repr__(&self) -> String {
         format!("Node(id={}, labels={:?})", self.id, self.labels)
+    }
+
+    /// The node as a plain `dict` of its properties (a copy), like the Neo4j
+    /// driver's `Record.data()` renders a node. Ids and labels are left out;
+    /// `to_dict()` keeps them.
+    fn data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        copy_properties(py, &self.properties)
+    }
+
+    /// Everything the node holds as a plain, JSON-ready `dict`: `id`,
+    /// `element_id`, `labels` and a copy of `properties`.
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        out.set_item("id", self.id)?;
+        out.set_item("element_id", &self.element_id)?;
+        out.set_item("labels", &self.labels)?;
+        out.set_item("properties", self.data(py)?)?;
+        Ok(out)
     }
 }
 
@@ -103,6 +154,12 @@ impl Relationship {
     #[getter]
     fn properties(&self, py: Python<'_>) -> Py<PyDict> {
         self.properties.clone_ref(py)
+    }
+
+    /// The property keys, so `dict(relationship)` is the property dict (the
+    /// Neo4j driver's behavior) and `**relationship` works.
+    fn keys(&self, py: Python<'_>) -> PyResult<PyObject> {
+        Ok(self.properties.bind(py).call_method0("keys")?.unbind())
     }
 
     /// The property pairs, like the driver entity's `items()`.
@@ -146,6 +203,29 @@ impl Relationship {
             self.id, self.rel_type, self.start_node, self.end_node
         )
     }
+
+    /// The relationship as a plain `dict` of its properties (a copy). Type
+    /// and endpoints are left out; `to_dict()` keeps them.
+    fn data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        copy_properties(py, &self.properties)
+    }
+
+    /// Everything the relationship holds as a plain, JSON-ready `dict`:
+    /// `id`, `element_id`, `type`, `start_node`, `end_node`,
+    /// `start_node_element_id`, `end_node_element_id` and a copy of
+    /// `properties`.
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        out.set_item("id", self.id)?;
+        out.set_item("element_id", &self.element_id)?;
+        out.set_item("type", &self.rel_type)?;
+        out.set_item("start_node", self.start_node)?;
+        out.set_item("end_node", self.end_node)?;
+        out.set_item("start_node_element_id", &self.start_node_element_id)?;
+        out.set_item("end_node_element_id", &self.end_node_element_id)?;
+        out.set_item("properties", self.data(py)?)?;
+        Ok(out)
+    }
 }
 
 /// A path returned from a query: alternating nodes and relationships, with
@@ -178,6 +258,55 @@ impl Path {
             self.nodes.len(),
             self.relationships.len()
         )
+    }
+
+    /// The path as the Neo4j driver's `Record.data()` renders one: a list
+    /// alternating a node's property dict and the relationship type.
+    /// `to_dict()` keeps ids, labels and endpoints.
+    fn data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.check_shape()?;
+        let out = PyList::empty(py);
+        let (first, rest) = self.nodes.split_first().expect("check_shape: one node");
+        out.append(first.borrow(py).data(py)?)?;
+        for (rel, node) in self.relationships.iter().zip(rest) {
+            out.append(rel.borrow(py).rel_type.as_str())?;
+            out.append(node.borrow(py).data(py)?)?;
+        }
+        Ok(out)
+    }
+
+    /// The path as a plain, JSON-ready `dict`: `nodes` and `relationships`,
+    /// each a list of the corresponding `to_dict()` dicts in path order.
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.check_shape()?;
+        let nodes = PyList::empty(py);
+        for n in &self.nodes {
+            nodes.append(n.borrow(py).to_dict(py)?)?;
+        }
+        let rels = PyList::empty(py);
+        for r in &self.relationships {
+            rels.append(r.borrow(py).to_dict(py)?)?;
+        }
+        let out = PyDict::new(py);
+        out.set_item("nodes", nodes)?;
+        out.set_item("relationships", rels)?;
+        Ok(out)
+    }
+}
+
+impl Path {
+    /// A path holds one more node than relationships; a value built any other
+    /// way cannot be rendered, so say so instead of indexing out of range.
+    fn check_shape(&self) -> PyResult<()> {
+        if self.nodes.len() == self.relationships.len() + 1 {
+            Ok(())
+        } else {
+            Err(PyValueError::new_err(format!(
+                "malformed path: {} nodes, {} relationships",
+                self.nodes.len(),
+                self.relationships.len()
+            )))
+        }
     }
 }
 

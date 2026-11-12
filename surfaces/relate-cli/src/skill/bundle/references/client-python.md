@@ -29,7 +29,10 @@ conn.commit()                            # 'relate:2' — its bookmark
 conn.close()
 ```
 
-Rows are `Record` dicts; the cursor adds the Neo4j driver's `single()`,
+Rows are `Record` dicts; `row.data()` converts nodes, relationships and paths
+to plain dicts/lists (properties only, like the Neo4j driver); `row.to_dict()`
+is the lossless JSON-ready form (ids, labels, type, endpoint ids, `properties`).
+The cursor adds the Neo4j driver's `single()`,
 `peek()`, `fetch(n)`, `data()`, `consume()` (a `ResultSummary`: counters,
 resolved namespace, query type, bookmark, timings, notifications, plan)
 and `graph()`.

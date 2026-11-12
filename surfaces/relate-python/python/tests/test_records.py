@@ -75,6 +75,105 @@ class TestRecord:
         assert type(data) is dict
         assert data == {"name": "a", "score": 1}
 
+    def test_data_converts_graph_values_all_the_way_down(self, db):
+        db.execute("CREATE (:P {name: 'a', n: 1})-[:KNOWS {w: 2}]->(:P {name: 'b'})")
+        row = db.execute(
+            "MATCH p = (a:P {name: 'a'})-[r:KNOWS]->(b:P) "
+            "RETURN a, r, p, [a, {rel: r}] AS nested"
+        ).fetchone()
+        assert isinstance(row["a"], relate.Node)
+        assert row.data() == {
+            "a": {"name": "a", "n": 1},
+            "r": {"w": 2},
+            "p": [{"name": "a", "n": 1}, "KNOWS", {"name": "b"}],
+            "nested": [{"name": "a", "n": 1}, {"rel": {"w": 2}}],
+        }
+        # The row itself still holds the rich objects.
+        assert isinstance(row["r"], relate.Relationship)
+
+    def test_node_relationship_path_data(self, db):
+        db.execute("CREATE (:P {name: 'a'})-[:KNOWS {w: 2}]->(:P {name: 'b'})")
+        row = db.execute(
+            "MATCH p = (:P {name: 'a'})-[r]->() RETURN startNode(r) AS n, r, p"
+        ).fetchone()
+        assert row["n"].data() == {"name": "a"}
+        assert row["r"].data() == {"w": 2}
+        assert row["p"].data() == [{"name": "a"}, "KNOWS", {"name": "b"}]
+        # data() is a copy: mutating it never touches the node.
+        row["n"].data()["name"] = "x"
+        assert row["n"]["name"] == "a"
+
+    def test_to_dict_keeps_ids_labels_endpoints_and_properties(self, db):
+        db.execute("CREATE (:P {name: 'a'})-[:KNOWS {w: 2}]->(:P {name: 'b'})")
+        row = db.execute(
+            "MATCH p = (a:P {name: 'a'})-[r:KNOWS]->(b:P) RETURN a, r, p, [a] AS l"
+        ).fetchone()
+        a, r, p = row["a"], row["r"], row["p"]
+        assert a.to_dict() == {
+            "id": a.id,
+            "element_id": a.element_id,
+            "labels": ["P"],
+            "properties": {"name": "a"},
+        }
+        assert r.to_dict() == {
+            "id": r.id,
+            "element_id": r.element_id,
+            "type": "KNOWS",
+            "start_node": a.id,
+            "end_node": r.end_node,
+            "start_node_element_id": a.element_id,
+            "end_node_element_id": r.end_node_element_id,
+            "properties": {"w": 2},
+        }
+        assert p.to_dict() == {
+            "nodes": [a.to_dict(), p.nodes[1].to_dict()],
+            "relationships": [r.to_dict()],
+        }
+        assert row.to_dict() == {
+            "a": a.to_dict(),
+            "r": r.to_dict(),
+            "p": p.to_dict(),
+            "l": [a.to_dict()],
+        }
+        # JSON-ready, and a copy: mutating it never touches the node.
+        import json
+
+        json.dumps(row.to_dict())
+        a.to_dict()["properties"]["name"] = "x"
+        assert a["name"] == "a"
+
+    def test_dict_of_node_and_relationship_is_their_properties(self, db):
+        db.execute("CREATE (:P {name: 'a', n: 1})-[:KNOWS {w: 2}]->(:P)")
+        row = db.execute("MATCH (a:P {name: 'a'})-[r]->() RETURN a, r").fetchone()
+        assert dict(row["a"]) == {"name": "a", "n": 1}
+        assert dict(row["r"]) == {"w": 2}
+        assert {**row["a"]} == {"name": "a", "n": 1}
+
+    def test_data_and_to_dict_deep_copy_nested_properties(self, db):
+        db.execute("CREATE (:P {tags: ['x']})-[:R {t: ['y']}]->(:P)")
+        row = db.execute("MATCH p = (a:P)-[r:R]->() RETURN a, r, p").fetchone()
+        for out in (row.data(), row.to_dict()):
+            props = out["a"] if "tags" in out["a"] else out["a"]["properties"]
+            props["tags"].append("z")
+        row.data()["p"][0]["tags"].append("z")
+        row.to_dict()["p"]["nodes"][0]["properties"]["tags"].append("z")
+        row.data()["r"]["t"].append("z")
+        assert row["a"]["tags"] == ["x"]
+        assert row["r"]["t"] == ["y"]
+
+    def test_data_and_to_dict_keep_points_and_vectors(self, db):
+        db.execute("CREATE (:G {p: point({x: 1.0, y: 2.0}), v: vector([1.0, 2.0], 2, FLOAT32)})")
+        row = db.execute("MATCH (g:G) RETURN g").fetchone()
+        assert row.data()["g"]["p"] == row["g"]["p"]
+        assert row.to_dict()["g"]["properties"]["v"] == row["g"]["v"]
+
+    def test_data_follows_column_order(self, db):
+        row = db.execute("RETURN 1 AS b, 2 AS a").fetchone()
+        assert list(row.data()) == ["b", "a"]
+        assert list(row.to_dict()) == ["b", "a"]
+        row["extra"] = 3
+        assert list(row.data()) == ["b", "a", "extra"]
+
     def test_pickle_round_trip(self, three_rows):
         row = three_rows.fetchone()
         back = pickle.loads(pickle.dumps(row))

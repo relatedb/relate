@@ -90,7 +90,10 @@ Rows are `relate.Record`s — a `dict` with driver-style conveniences:
 ```python
 row = conn.execute("MATCH (p:Person) RETURN p.name AS name, p.age AS age ORDER BY name").fetchone()
 row["name"] == row.name == "Alice"
-row.data()      # {"name": "Alice", "age": 30}
+row.data()      # {"name": "Alice", "age": 30} — nodes, relationships and
+                # paths inside the row become plain dicts/lists, like the Neo4j driver
+row.to_dict()   # like data(), but nodes/relationships/paths keep ids, labels,
+                # endpoints and a "properties" dict — JSON-ready
 row.keys()      # ["name", "age"]
 ```
 

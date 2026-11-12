@@ -43,7 +43,11 @@ per database, no writes or checkpoints):
 ## Result handling
 
 Every row is a `Record` — a `dict` with read-only attribute access,
-`.data()`, and column-ordered `.keys()`. The cursor carries the Neo4j
+`.data()` (Neo4j-driver form: nodes/relationships become property dicts, paths
+alternate node dicts and relationship types), `.to_dict()` (JSON-ready and
+lossless: nodes keep `id`/`element_id`/`labels`/`properties`, relationships
+add `type`/endpoint ids, paths are `{nodes, relationships}` — use this for
+text2cypher output), and column-ordered `.keys()`. The cursor carries the Neo4j
 driver's conveniences: `single()` (exactly one row or `ResultNotSingleError`),
 `peek()`, `fetch(n)`, `data()`, `keys()`, and `consume()` — a
 `ResultSummary` with the mutation counters, resolved namespace, query

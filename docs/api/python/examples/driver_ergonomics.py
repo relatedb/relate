@@ -25,6 +25,18 @@ def main():
     assert row.keys() == ["name", "score"]
     assert row.data() == {"name": "alice", "score": 9}
 
+    # data() converts nodes, relationships and paths to plain dicts/lists.
+    node_row = db.execute("MATCH (p:Person {name: 'alice'}) RETURN p").fetchone()
+    assert isinstance(node_row["p"], relate.Node)
+    assert node_row.data() == {"p": {"name": "alice", "score": 9}}
+    assert node_row["p"].data() == {"name": "alice", "score": 9}
+
+    # to_dict() keeps ids, labels and properties structure, JSON-ready.
+    full = node_row.to_dict()["p"]
+    assert full["labels"] == ["Person"]
+    assert full["properties"] == {"name": "alice", "score": 9}
+    assert full["id"] == node_row["p"].id
+
     # peek() does not advance; data() consumes the rest.
     assert cur.peek()["name"] == "bob"
     assert [r.name for r in cur.data()] == ["bob"]
