@@ -19,9 +19,15 @@ where E.RawValue == String {
 /// or null key is already a `DecodingError` from the keyed container.
 func decodeWire<E: RawRepresentable>(_ type: E.Type, from decoder: any Decoder) throws -> E
 where E.RawValue == String {
+    // A value decoded through a keyed container always has a coding key; its
+    // absence is a decoder misuse, not a wire condition to paper over.
+    guard let key = decoder.codingPath.last?.stringValue else {
+        throw DecodingError.dataCorrupted(
+            .init(codingPath: decoder.codingPath, debugDescription: "closed value decoded outside a keyed container"))
+    }
     let raw = try decoder.singleValueContainer().decode(String.self)
     do {
-        return try closedWire(type, raw, what: "unknown \(decoder.codingPath.last?.stringValue ?? "?")")
+        return try closedWire(type, raw, what: "unknown \(key)")
     } catch {
         throw DecodingError.dataCorrupted(
             .init(codingPath: decoder.codingPath, debugDescription: error.message))

@@ -66,24 +66,28 @@ type Notification struct {
 // typed through their vocabularies (decodeClosed).
 func (n *Notification) UnmarshalJSON(data []byte) error {
 	type plain Notification // the method-free shape, so no recursion
-	if err := missingKey("notification entry", data, "severity", "category"); err != nil {
-		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
-	}
 	var shape struct {
 		plain
 		Severity string `json:"severity"`
 		Category string `json:"category"`
 	}
+	// violation is the one typed refusal: the cause plus the sanitized entry.
+	violation := func(err error) error {
+		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
+	}
+	if err := missingKey("notification entry", data, "severity", "category"); err != nil {
+		return violation(err)
+	}
 	if err := json.Unmarshal(data, &shape); err != nil {
-		return err
+		return violation(fmt.Errorf("ABI contract violated: decoding notification entry: %w", err))
 	}
 	severity, err := decodeClosed(severityVocabulary, shape.Severity)
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
+		return violation(err)
 	}
 	category, err := decodeClosed(categoryVocabulary, shape.Category)
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
+		return violation(err)
 	}
 	*n = Notification(shape.plain)
 	n.Severity, n.Category = severity, category

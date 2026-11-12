@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -124,13 +125,33 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
+// errorKeys is the required-key list of the error shape, derived from
+// Error's own field tags at init (like statsKeys): every field is required,
+// so presence and the struct can never drift. A field without a bare json
+// name is a programming error, caught here before any error decodes.
+var errorKeys = errorWireKeys()
+
+func errorWireKeys() []string {
+	typ := reflect.TypeOf(Error{})
+	keys := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name, opts := jsonTagName(typ.Field(i))
+		if name == "" || name == "-" || opts != "" {
+			panic(fmt.Sprintf("Error field %s carries %q; every field is a bare json name on the wire",
+				typ.Field(i).Name, typ.Field(i).Tag.Get("json")))
+		}
+		keys = append(keys, name)
+	}
+	return keys
+}
+
 // decodeError parses the ADR-0502 §2 shape. Every field is required: a
 // missing or mistyped one is an ABI contract violation naming the field,
 // never a zero value in its place (a missing "retryable" would silently
 // decode as false and a retry loop would decline to retry). An unknown
 // stage is a violation too.
 func decodeError(raw string) (*Error, error) {
-	if err := missingKey("error shape", []byte(raw), "code", "gql_status", "stage", "retryable", "message"); err != nil {
+	if err := missingKey("error shape", []byte(raw), errorKeys...); err != nil {
 		return nil, err
 	}
 	// Every key is present, so zero values cannot stand in for a missing one;

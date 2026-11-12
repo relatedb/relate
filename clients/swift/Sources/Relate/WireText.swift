@@ -12,24 +12,25 @@ private let wirePayloadMax = 256
 /// The display form of an offending wire value: sanitized (the value's own
 /// quote and backslash escaped too), bounded to 64, wrapped in single quotes.
 func quotedWire(_ raw: String) -> String {
-    "'" + escapeWire(raw, max: wireValueMax) + "'"
+    "'" + escapeWire(raw, max: wireValueMax, inQuotes: true) + "'"
 }
 
 /// The display form of an echoed payload: sanitized and bounded to 256.
 func safeWire(_ raw: String) -> String {
-    escapeWire(raw, max: wirePayloadMax)
+    escapeWire(raw, max: wirePayloadMax, inQuotes: false)
 }
 
-/// Escapes every non-printable scalar, and the quote and
-/// backslash that would break the message's own quoting, as `\uXXXX` (a supplementary scalar as its UTF-16
+/// Escapes every non-printable scalar, and when `inQuotes` the quote and
+/// backslash that would break the message's own quoting (a payload keeps its
+/// structural quotes and backslashes legible), as `\uXXXX` (a supplementary scalar as its UTF-16
 /// surrogate pair), bounds the escaped body to `max` UTF-16 units, and appends
 /// `...(truncated)` when the input is cut.
-private func escapeWire(_ raw: String, max: Int) -> String {
+private func escapeWire(_ raw: String, max: Int, inQuotes: Bool) -> String {
     var out = ""
     var units = 0
     var cut = false
     for scalar in raw.unicodeScalars {
-        let escape = isUnprintable(scalar) || scalar == "\\" || scalar == "'"
+        let escape = isUnprintable(scalar) || (inQuotes && (scalar == "\\" || scalar == "'"))
         let piece = escape ? scalar.utf16.map(hex4).joined() : String(scalar)
         let width = escape ? 6 * scalar.utf16.count : scalar.utf16.count
         if units + width > max {
