@@ -484,7 +484,9 @@ running binary untouched). A manifest with no header predates the field; it
 is accepted with one `warning: …` stderr line only when the requested version
 is at or below **v0.14.0** (the last headerless release), and rejected above
 that. The legacy window is fixed, never extended. `install.sh` applies the
-same rule against the tag resolved from `releases.json` (ADR-0571).
+same rule against the tag resolved from `releases.json` (ADR-0571), whose
+three assets it downloads over the direct release route — no GitHub API
+request, no token (ADR-0585).
 
 The four success sites are the `--check` upgrade-available report
 (``upgrade available: run `relate upgrade` to install <latest>``), the
@@ -1920,7 +1922,7 @@ See the [executable help example](examples/help.md).
 | `GITHUB_TOKEN` | `upgrade`, `extension install` | Optional bearer token for the release-asset downloads (ADR-0068/0069): sent as `Authorization: Bearer $GITHUB_TOKEN` on the direct release-asset requests, and — when the direct probe answers 404 — it is what selects the authenticated GitHub API asset route (ADR-0358 §3). Never sent on the `releases.json` metadata request, nor on the `extensions.json` channel-index or signature requests. While the repository is internal the direct route 404s, so the token is required; once the repository is public the direct route serves tokenless upgrades and the token is unnecessary |
 | `RELATE_RELEASES_JSON_URL` | `upgrade`, `install.sh` | Override the release-metadata URL (dev/test); the default is the canonical website URL `https://relatedb.ai/releases.json` (ADR-0250 §1). An empty value means the default, and the named URL is the only source consulted — there is no fallback. `install.sh` reads the same seam at install time to resolve the release it installs (ADR-0571) |
 | `RELATE_EXTENSIONS_JSON_URL` | `extension install`, `extension list --available` | Override the extension channel-index URL (dev/test; ADR-0431's consequences — the ADR-0250 §1 pattern); the default is `https://relatedb.ai/extensions.json`, and the signature URL derives from it (`<index>.sig`). An empty value means the default; the named URL is the only source consulted — there is no fallback, and no token is ever sent |
-| `RELATE_RELEASE_DOWNLOAD_URL` | `upgrade`, `extension install` | Override the base of the direct release-download route (dev/test seam only); the default is the canonical `https://github.com/relatedb/relate/releases/download` (ADR-0250 §3, ADR-0358 §8). An empty value means the default, and the named base is the only direct-route base consulted — there is no fallback. The extension tarball download rides the same route (ADR-0431 §1) |
+| `RELATE_RELEASE_DOWNLOAD_URL` | `upgrade`, `extension install`, `install.sh` | Override the base of the direct release-download route (dev/test seam only); the default is the canonical `https://github.com/relatedb/relate/releases/download` (ADR-0250 §3, ADR-0358 §8). An empty value means the default, and the named base is the only direct-route base consulted — there is no fallback. The extension tarball download rides the same route (ADR-0431 §1). `install.sh` reads the same seam at install time for all three of its asset downloads and consults no GitHub API endpoint at all (ADR-0585) |
 | `RELATE_GITHUB_API_URL` | `upgrade`, `extension install` | Override the base of the GitHub API asset route (dev/test seam only); the default is the canonical `https://api.github.com` (ADR-0358 §8). An empty value means the default, and the named base is the only API base consulted — there is no fallback. The extension tarball's API fallback rides the same route (ADR-0431 §1) |
 | `RELATE_SNAPSHOT_FORMAT` | `--snapshot-format` | Default snapshot codec for empty URIs |
 | `RELATE_CHECKPOINT_INTERVAL_SECS` | `--checkpoint-interval-secs` | Default timed checkpoint period |

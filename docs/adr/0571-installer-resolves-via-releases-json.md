@@ -104,3 +104,10 @@ GitHub API only for the asset ids of that exact tag.
 - Moving asset downloads off the GitHub API (ADR-0358's direct route once
   the repository is public) remains a future decision; this one only
   changes resolution.
+
+## Later references
+
+ADR-0585 takes the future decision reserved above: the installer's asset
+downloads ride the direct route, and §2's per-tag asset-id request —
+with the token hint §3 moved to it — is gone from the installer
+entirely.

@@ -34,7 +34,11 @@ Downloads the release binary for your platform (macOS and Linux, amd64 and
 arm64) to `$HOME/.local/bin`, resolving the latest release from
 [`releases.json`](https://relatedb.ai/releases.json) — the same release
 metadata `relate upgrade` reads
-([ADR-0571](docs/adr/0571-installer-resolves-via-releases-json.md)). Each
+([ADR-0571](docs/adr/0571-installer-resolves-via-releases-json.md) — and
+the assets themselves come straight from the GitHub release download route,
+so the installer makes no GitHub API requests and no token is ever needed,
+even behind shared-IP networks
+([ADR-0585](docs/adr/0585-installer-downloads-via-direct-route.md))). Each
 release's `SHA256SUMS` manifest is
 authenticated against its SSHSIG signature with the stock `ssh-keygen` — the
 public key is pinned in the script, and the installer **fails closed** on a

@@ -151,3 +151,8 @@ releases into the same repository (ADR-0431) and that endpoint names
 whichever release was published last. The hosting, URL, install directory,
 platform scope, and the asset-request auth model of this decision are
 unchanged.
+
+ADR-0585 supersedes §6's authentication model for the installer: the
+repository is public, `install.sh` downloads every asset from the direct
+release route unauthenticated, reads no `GITHUB_TOKEN`, and consults no
+GitHub API endpoint; §7's token-prefixed invocation is historical.

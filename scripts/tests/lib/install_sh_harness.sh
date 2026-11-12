@@ -3,110 +3,34 @@
 # per-case run harness, the real-ssh-keygen roundtrip machinery, and the
 # argv-log helpers.
 #
-# Sourced after `tap_sandbox` has set `$sandbox`, after tap.sh (for the
-# `tap_skip` the roundtrip skips use) and after scripts/lib/common.sh (for
-# `sha256_of`); the caller then runs `install_sh_fixtures`,
-# `install_sh_stubs` and `build_real_roundtrip_fixtures`. Never executed
+# Expects from the caller, before sourcing: `tap_sandbox` has set
+# `$sandbox`, tap.sh (for the `tap_skip` the roundtrip skips use) and
+# scripts/lib/common.sh (for `sha256_of`) are sourced. The caller also
+# owns `$ROOT`, `$INSTALLER`, `$fixtures`, `$stubbin` and `$itmp` (its
+# sandbox layout). The factories — `install_sh_fixtures`,
+# `install_sh_stubs` and `build_real_roundtrip_fixtures` — expect the
+# caller's section-0 guards to have set `$LEGACY_MANIFEST_TAG` and
+# `$PUBLISHER_FIXTURE_TAG` by the time they are called (the guards run
+# after this file is sourced and before the factories). Never executed
 # directly.
 #
 # The two factories build the release-asset fixtures and the PATH stubs the
 # installer is exercised against; their shared table is below.
 
-# The shared table: the asset-id vocabulary (release.json generation, every
-# assertion, and the stub curl's URL matching via the STUB_ASSET_* env
-# install_run forwards) and the fixture tag/prefix spellings the fixture
-# writers and assertions consult.
-ASSET_ID_DARWIN=575443262
-ASSET_ID_LINUX=575443263
-ASSET_ID_SUMS=575443264
-ASSET_ID_SIG=575443265
-# The dungeon extension release's asset ids: unlike the four above they are
-# never forwarded to the stub (no arm matches them), so any request for one
-# falls through to the stub's unexpected-URL arm and fails loudly.
-ASSET_ID_DUNGEON_TARBALL=575443266
-ASSET_ID_DUNGEON_SIG=575443267
-
-# The id:name asset pairs a complete product release lists — the four
-# assets every full-release fixture serves — spelled once here and
-# spread (unquoted) into the write_release_fixture call sites below;
-# the deliberately partial fixtures (missing-asset, missing-sig) spell
-# their own subsets.
-FULL_RELEASE_ASSETS="$ASSET_ID_DARWIN:relate-darwin-arm64 \
-$ASSET_ID_LINUX:relate-linux-amd64 $ASSET_ID_SUMS:SHA256SUMS \
-$ASSET_ID_SIG:SHA256SUMS.sig"
-
+# The shared table: the fixture tag/prefix spellings the fixture writers and
+# assertions consult.
 # The tag the default fixture release resolves to. The signed SHA256SUMS
-# fixture names it in its ADR-0457 version header, and the release JSON
-# reports it.
+# fixture names it in its ADR-0457 version header, and the releases.json
+# documents name it in their latest slot.
 TEST_TAG=v9.9.9
 
 # A tag the default release must not match: the wrong-version fixture names
 # it in the header, and the assertion expects the mismatch.
 SUMS_WRONG_TAG=v9.9.8
 
-# A tag the per-tag release JSON must not report: the tag-mismatch fixture
-# names it in tag_name while the metadata asks for TEST_TAG, and the
-# assertion expects the installer to die on the difference.
-RELEASE_MISMATCH_TAG=v9.9.7
-
 # The ADR-0457 header prefix as the fixture writer spells it. Section 0 of
 # the harness holds this and install.sh's copy to manifest.rs's constant.
 SUMS_VERSION_PREFIX='# relate-release-version: '
-
-# One GitHub asset object, in GitHub's serialization order
-# (url -> id -> node_id -> name), which install.sh's awk helper relies on.
-# Every field derives from the table, including the release tag in the
-# browser URL.
-asset_obj() { # $1 = id, $2 = name, $3 = tag (default TEST_TAG)
-	tag="${3:-$TEST_TAG}"
-	cat <<EOF
-    {
-      "url": "https://api.github.com/repos/relatedb/relate/releases/assets/$1",
-      "id": $1,
-      "node_id": "RA_kwDOAAAAAc4iVKT$1",
-      "name": "$2",
-      "label": "",
-      "content_type": "application/octet-stream",
-      "state": "uploaded",
-      "size": 42,
-      "download_count": 0,
-      "created_at": "2026-09-01T00:00:00Z",
-      "updated_at": "2026-09-01T00:00:00Z",
-      "browser_download_url": "https://github.com/relatedb/relate/releases/download/$tag/$2"
-    }
-EOF
-}
-
-release_json_head() { # $1 = tag
-	tag="$1"
-	cat <<EOF
-{
-  "url": "https://api.github.com/repos/relatedb/relate/releases/231946846",
-  "tag_name": "$tag",
-  "name": "$tag",
-  "draft": false,
-  "prerelease": false,
-  "assets": [
-EOF
-}
-
-# Write a release JSON for tag $1 to path $2, listing the `id:name` asset
-# pairs $3.. (e.g. `575443262:relate-darwin-arm64`), comma-joined.
-write_release_fixture() { # $1 = tag, $2 = output path, $3.. = id:name pairs
-	_tag="$1"
-	_out="$2"
-	shift 2
-	{
-		release_json_head "$_tag"
-		_first=1
-		for _pair in "$@"; do
-			[ "$_first" -eq 1 ] || printf ',\n'
-			_first=0
-			asset_obj "${_pair%%:*}" "${_pair#*:}" "$_tag"
-		done
-		printf '\n  ]\n}\n'
-	} >"$_out"
-}
 
 # Write the releases.json document whose latest names tag $1 to path $2, in
 # the publisher's jq serialization (one key per line, two-space indents) —
@@ -178,9 +102,8 @@ EOF
 
 # Build the release-asset fixtures under $fixtures: the two platform
 # binaries, their corrupted variant, SHA256SUMS (with the ADR-0457 header)
-# and its header variants, the signature placeholder, the GitHub release
-# JSON documents the stub's per-tag arm serves, and the releases.json
-# metadata documents its releases.json arm serves. The caller sets
+# and its header variants, the signature placeholder, and the releases.json
+# metadata documents the stub's metadata arm serves. The caller sets
 # LEGACY_MANIFEST_TAG (the guarded ceiling, `vX.Y.Z`) and
 # PUBLISHER_FIXTURE_TAG (the committed publisher fixture's latest.tag,
 # extracted by the section-0 guard) first.
@@ -237,38 +160,10 @@ EOF
 	printf 'untrusted comment: relate test signature fixture\n' \
 		>"$fixtures/SHA256SUMS.sig"
 
-	# The four documents the stub's release-latest arm serves.
-	write_release_fixture "$TEST_TAG" "$fixtures/release.json" \
-		$FULL_RELEASE_ASSETS
-	# Without the darwin-arm64 asset, for the missing-asset case.
-	write_release_fixture "$TEST_TAG" "$fixtures/release-missing.json" \
-		"$ASSET_ID_LINUX:relate-linux-amd64" \
-		"$ASSET_ID_SUMS:SHA256SUMS" \
-		"$ASSET_ID_SIG:SHA256SUMS.sig"
-	# Without the SHA256SUMS.sig asset, for the missing-signature case.
-	write_release_fixture "$TEST_TAG" "$fixtures/release-missing-sig.json" \
-		"$ASSET_ID_DARWIN:relate-darwin-arm64" \
-		"$ASSET_ID_SUMS:SHA256SUMS"
-	# The last pre-header release (ADR-0457 §3): its headerless manifest is
-	# the legacy window the installer must still accept. The tag is the
-	# guarded ceiling the caller extracted from manifest.rs, so the fixture
-	# cannot drift from the constants the guards compare.
-	write_release_fixture "$LEGACY_MANIFEST_TAG" "$fixtures/release-legacy-tag.json" \
-		$FULL_RELEASE_ASSETS
-	# A per-tag response whose tag_name is not the requested tag: the API
-	# must describe exactly the release the metadata named, so the full
-	# asset set leaves this death attributable to the tag check alone.
-	write_release_fixture "$RELEASE_MISMATCH_TAG" "$fixtures/release-tag-mismatch.json" \
-		$FULL_RELEASE_ASSETS
-	# The extension release the stub's latest-endpoint trap arm serves
-	# (ADR-0431's relate-extensions-<name>-<X.Y.Z> tag shape): after an
-	# extension release it is the repository's newest full release, so the
-	# GitHub API's latest-release endpoint would name it — the resolution
-	# bug this change removes. It carries extension tarball assets and no
-	# product binary.
-	write_release_fixture relate-extensions-dungeon-0.1.0 "$fixtures/release-dungeon.json" \
-		"$ASSET_ID_DUNGEON_TARBALL:relate-extensions-dungeon-0.1.0.tar.gz" \
-		"$ASSET_ID_DUNGEON_SIG:relate-extensions-dungeon-0.1.0.tar.gz.sig"
+	# The empty body the failure modes serve: a 404/403 response whose
+	# bytes are never used (install.sh dies on the status), as one shared
+	# fixture rather than a per-arm sentinel.
+	: >"$fixtures/empty"
 
 	# The releases.json documents the stub's metadata arm serves: the
 	# default latest (TEST_TAG) and the legacy-ceiling latest (the
@@ -290,41 +185,36 @@ EOF
 	# served byte-for-byte (publisher_doc mode): the end-to-end pin that
 	# the serialization the producer writes is the grammar install.sh's
 	# latest_tag_of reads. Its latest.tag is PUBLISHER_FIXTURE_TAG
-	# (derived by the caller's section-0 guard).
+	# (derived by the caller's section-0 guard). The SHA256SUMS variant
+	# follows: the manifest's ADR-0457 header must name the same tag or
+	# the version binding rejects the release.
 	cp "$ROOT/.github/scripts/tests/fixtures/publish-releases-json-expected.json" \
 		"$fixtures/releases-publisher.json"
-	# The matching per-tag release JSON for that tag — the installer asks
-	# the per-tag endpoint for it once the document names the tag — and
-	# its SHA256SUMS variant: the manifest's ADR-0457 header must name
-	# the same tag or the version binding rejects the release.
-	write_release_fixture "$PUBLISHER_FIXTURE_TAG" "$fixtures/release-publisher-tag.json" \
-		$FULL_RELEASE_ASSETS
 	sed "1s|.*|${SUMS_VERSION_PREFIX}${PUBLISHER_FIXTURE_TAG}|" \
 		"$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.publisher-tag"
 }
 
-# The STUB_MODE vocabulary: every mode a case may set. install_run checks
-# the per-case STUB_MODE against this list before launching the installer,
-# so a typo or a half-renamed mode fails loudly instead of silently serving
-# the happy-path fixtures. `ok` is the neutral value reset_case restores.
-# releases_* select the metadata (releases.json) arm's document; tag_*
-# select the per-tag GitHub API arm's behavior; legacy_tag and publisher_doc
-# select both arms (and the sums arm) together, serving one release end to
-# end.
-STUB_MODES='ok lookup_404 missing_asset missing_sig legacy_tag corrupt sig_invalid'
-STUB_MODES="$STUB_MODES sums_no_version sums_wrong_version sums_empty_version"
-STUB_MODES="$STUB_MODES sums_no_space_header sums_extra_space_header"
-STUB_MODES="$STUB_MODES releases_malformed releases_null_latest releases_bad_tag"
-STUB_MODES="$STUB_MODES publisher_doc tag_404 tag_mismatch"
+# The STUB_MODE vocabulary is owned by the stub curl's dispatch (the
+# comment above its resolution switch): releases_* select the metadata
+# (releases.json) arm's document; sums_* select the manifest variant the
+# direct sums arm serves; legacy_tag and publisher_doc select both arms
+# together, serving one release end to end; sums_404, sums_403, sig_404
+# and binary_404 fail one direct-route asset with the named status;
+# corrupt and sig_invalid fail the binary body and the signature check.
+# `ok` is the neutral value reset_case restores.
 
 # Build the PATH stubs under $stubbin and sets `nosshbin` (the same stubs
 # minus ssh-keygen, for the openssh-client-absent case). The stub curl never
-# touches the network: it logs its argv (one arg per line, calls separated by
-# an =CALL= marker) and serves fixtures keyed on the request URL, with
-# failure modes selected via STUB_MODE.
+# touches the network: it logs its argv (one arg per line, calls separated
+# by an =CALL= marker) and serves fixtures keyed on the request URL, with
+# failure modes selected via STUB_MODE. The direct-route requests arrive as
+# `-o <file> -w '%{http_code}'`; serve() honors both: the body goes to the
+# -o target (stdout when absent), and the status prints after it only when
+# -w asked for one. Every URL outside the arms below — the metadata document
+# and the three direct-route assets — hits the unexpected-URL arm and fails
+# loudly, so any GitHub API request (the route the installer must never take
+# again, ADR-0585) fails the install instead of silently succeeding.
 install_sh_stubs() {
-	# The stub's URL matching reads the asset ids from the STUB_ASSET_* env,
-	# so the table above stays the only spelling.
 	cat >"$stubbin/curl" <<'EOF'
 #!/bin/sh
 # Stub curl: logs argv (one arg per line, calls separated by =CALL=) and
@@ -335,72 +225,101 @@ install_sh_stubs() {
 } >>"$STUB_LOG"
 
 url=""
-for arg in "$@"; do url="$arg"; done
+out=""
+want_code=""
+prev=""
+for arg in "$@"; do
+	url="$arg"
+	case "$prev" in
+	-o) out="$arg" ;;
+	-w)
+		case "$arg" in
+		*%{http_code}*) want_code=1 ;;
+		esac
+		;;
+	esac
+	prev="$arg"
+done
 
-# STUB_MODE is resolved once here, before the URL dispatch: to the three
-# documents the metadata, per-tag and sums arms below serve — and to the
-# one every-URL failure, lookup_404, which exits before any URL is
-# matched. Only the genuinely arm-local behaviors stay in their arms:
-# tag_404 (the per-tag fetch itself fails) and corrupt (the darwin
-# asset's body).
+# STUB_MODE is resolved once here, before the URL dispatch — the one
+# site a mode's complete behavior lives at: the metadata document, each
+# direct asset's body fixture and status. Every knob is a plain fixture
+# path with a 200 default; a mode overrides exactly what it changes, the
+# failure modes pointing their asset at the shared empty fixture beside a
+# non-2xx status. The dispatch is total and fail-closed — an unknown
+# mode fails every request loudly — so this case, not a side table, is
+# the one place the mode vocabulary lives.
 metadata_doc=releases.json
-tag_doc=release.json
-sums_doc=SHA256SUMS
+sums_body="$STUB_FIXTURES/SHA256SUMS"
+sums_status=200
+sig_body="$STUB_FIXTURES/SHA256SUMS.sig"
+sig_status=200
+darwin_body="$STUB_FIXTURES/relate-darwin-arm64"
+darwin_status=200
 case "$STUB_MODE" in
+ok | sig_invalid) ;;
 lookup_404) exit 22 ;;
 releases_malformed) metadata_doc=releases-malformed.json ;;
 releases_null_latest) metadata_doc=releases-null-latest.json ;;
 releases_bad_tag) metadata_doc=releases-bad-tag.json ;;
 legacy_tag)
 	metadata_doc=releases-legacy-tag.json
-	tag_doc=release-legacy-tag.json
-	sums_doc=SHA256SUMS.no-version
+	sums_body="$STUB_FIXTURES/SHA256SUMS.no-version"
 	;;
 publisher_doc)
 	metadata_doc=releases-publisher.json
-	tag_doc=release-publisher-tag.json
-	sums_doc=SHA256SUMS.publisher-tag
+	sums_body="$STUB_FIXTURES/SHA256SUMS.publisher-tag"
 	;;
-tag_mismatch) tag_doc=release-tag-mismatch.json ;;
-missing_asset) tag_doc=release-missing.json ;;
-missing_sig) tag_doc=release-missing-sig.json ;;
-sums_no_version) sums_doc=SHA256SUMS.no-version ;;
-sums_wrong_version) sums_doc=SHA256SUMS.wrong-version ;;
-sums_empty_version) sums_doc=SHA256SUMS.empty-version ;;
-sums_no_space_header) sums_doc=SHA256SUMS.no-space-header ;;
-sums_extra_space_header) sums_doc=SHA256SUMS.extra-space-header ;;
+sums_no_version) sums_body="$STUB_FIXTURES/SHA256SUMS.no-version" ;;
+sums_wrong_version) sums_body="$STUB_FIXTURES/SHA256SUMS.wrong-version" ;;
+sums_empty_version) sums_body="$STUB_FIXTURES/SHA256SUMS.empty-version" ;;
+sums_no_space_header) sums_body="$STUB_FIXTURES/SHA256SUMS.no-space-header" ;;
+sums_extra_space_header) sums_body="$STUB_FIXTURES/SHA256SUMS.extra-space-header" ;;
+sums_404)
+	sums_body="$STUB_FIXTURES/empty"
+	sums_status=404
+	;;
+sums_403)
+	sums_body="$STUB_FIXTURES/empty"
+	sums_status=403
+	;;
+sig_404)
+	sig_body="$STUB_FIXTURES/empty"
+	sig_status=404
+	;;
+corrupt) darwin_body="$STUB_FIXTURES/relate-darwin-arm64.corrupt" ;;
+binary_404)
+	darwin_body="$STUB_FIXTURES/empty"
+	darwin_status=404
+	;;
+*)
+	echo "stub curl: unexpected STUB_MODE: $STUB_MODE" >&2
+	exit 22
+	;;
 esac
 
+# serve $1 (a body fixture file) with status $2: the body to the -o
+# target when one was given (stdout otherwise), the status after it only
+# when -w asked for one. A missing fixture file fails loudly rather than
+# serving an empty success.
+serve() {
+	if [ -f "$1" ]; then
+		if [ -n "$out" ]; then cat "$1" >"$out"; else cat "$1"; fi
+	else
+		echo "stub curl: missing fixture: $1" >&2
+		exit 22
+	fi
+	[ -z "$want_code" ] || printf '%s\n' "$2"
+	exit 0
+}
+
 case "$url" in
-*releases.json) cat "$STUB_FIXTURES/$metadata_doc" ;;
-*/releases/tags/*)
-	case "$STUB_MODE" in
-	tag_404) exit 22 ;;
-	esac
-	cat "$STUB_FIXTURES/$tag_doc"
-	;;
-*/releases/latest)
-	# The trap arm: nothing may request the GitHub API's latest-release
-	# endpoint any more — after an extension release it names no product
-	# release. Serve the dungeon extension release so any hit fails the
-	# install loudly; the regression case asserts the log never shows
-	# this URL.
-	cat "$STUB_FIXTURES/release-dungeon.json"
-	;;
-*/releases/assets/$STUB_ASSET_DARWIN)
-	case "$STUB_MODE" in
-	corrupt) cat "$STUB_FIXTURES/relate-darwin-arm64.corrupt" ;;
-	*) cat "$STUB_FIXTURES/relate-darwin-arm64" ;;
-	esac
-	;;
-*/releases/assets/$STUB_ASSET_LINUX)
-	cat "$STUB_FIXTURES/relate-linux-amd64"
-	;;
-*/releases/assets/$STUB_ASSET_SUMS)
-	cat "$STUB_FIXTURES/$sums_doc"
-	;;
-*/releases/assets/$STUB_ASSET_SIG)
-	cat "$STUB_FIXTURES/SHA256SUMS.sig"
+*releases.json) serve "$STUB_FIXTURES/$metadata_doc" 200 ;;
+*releases/download/*/SHA256SUMS) serve "$sums_body" "$sums_status" ;;
+*releases/download/*/SHA256SUMS.sig) serve "$sig_body" "$sig_status" ;;
+*releases/download/*/relate-darwin-arm64) serve "$darwin_body" "$darwin_status" ;;
+*releases/download/*/relate-linux-amd64)
+	serve "$STUB_FIXTURES/relate-linux-amd64" 200
 	;;
 *)
 	echo "stub curl: unexpected URL: $url" >&2
@@ -450,14 +369,17 @@ EOF
 }
 
 # Reset the per-case knobs to their defaults. The case sets STUB_MODE,
-# STUB_UNAME_S/_M, GITHUB_TOKEN, RELATE_RELEASES_JSON_URL, RUN_PATH or
-# RUN_INSTALLER after calling it.
+# STUB_UNAME_S/_M, GITHUB_TOKEN (set in the environment: the installer
+# must ignore it, ADR-0585), RELATE_RELEASES_JSON_URL,
+# RELATE_RELEASE_DOWNLOAD_URL, RUN_PATH or RUN_INSTALLER after calling
+# it.
 reset_case() {
 	STUB_MODE=ok
 	STUB_UNAME_S=Darwin
 	STUB_UNAME_M=arm64
 	GITHUB_TOKEN=
 	RELATE_RELEASES_JSON_URL=
+	RELATE_RELEASE_DOWNLOAD_URL=
 	STUB_FIXTURES_DIR=$fixtures
 	RUN_PATH="$stubbin:/usr/bin:/bin"
 	RUN_INSTALLER=$INSTALLER
@@ -469,14 +391,6 @@ reset_case() {
 # real-roundtrip cases, which run a sed-patched copy (see section 3c).
 install_run() { # $1 = case name
 	case_name=$1
-	stub_mode=${STUB_MODE:-<unset>}
-	case " $STUB_MODES " in
-	*" $stub_mode "*) ;;
-	*)
-		echo "install_run: case $case_name: unexpected STUB_MODE: $stub_mode" >&2
-		exit 2
-		;;
-	esac
 	RUN_HOME="$sandbox/home-$case_name"
 	RUN_LOG="$sandbox/curl-$case_name.log"
 	RUN_KEYGEN_LOG="$sandbox/keygen-$case_name.log"
@@ -494,63 +408,27 @@ install_run() { # $1 = case name
 		STUB_MODE="$STUB_MODE" \
 		STUB_UNAME_S="$STUB_UNAME_S" \
 		STUB_UNAME_M="$STUB_UNAME_M" \
-		STUB_ASSET_DARWIN="$ASSET_ID_DARWIN" \
-		STUB_ASSET_LINUX="$ASSET_ID_LINUX" \
-		STUB_ASSET_SUMS="$ASSET_ID_SUMS" \
-		STUB_ASSET_SIG="$ASSET_ID_SIG" \
 		${GITHUB_TOKEN:+GITHUB_TOKEN="$GITHUB_TOKEN"} \
 		${RELATE_RELEASES_JSON_URL+RELATE_RELEASES_JSON_URL="$RELATE_RELEASES_JSON_URL"} \
+		${RELATE_RELEASE_DOWNLOAD_URL+RELATE_RELEASE_DOWNLOAD_URL="$RELATE_RELEASE_DOWNLOAD_URL"} \
 		/bin/sh "$RUN_INSTALLER" >"$sandbox/out-$case_name.log" 2>"$RUN_ERR"
 	RUN_STATUS=$?
 }
 
 # Log helpers over the stub curl argv log. The URL regex is awk's: it
 # matches any argument line, so anchor or escape it to the URL shape
-# ('api\.github\.com', '/releases/assets/', 'releases\.json').
+# ('api\.github\.com', '/releases/download/', 'releases\.json').
 
-# The one awk program behind the two assertions below, parameterized by
-# polarity: `have` counts a URL-matching call bad when the wanted argument
-# line is absent, `lack` when it is present. The =CALL= framing and the
-# vacuity guard — zero matching calls fails, so neither polarity can pass
-# without the URL having been requested — are spelled here once.
-calls_to_url_check() { # $1 = polarity (have|lack), $2 = URL regex, $3 = argument line
-	case "$1" in
-	have) lack=0 ;;
-	lack) lack=1 ;;
-	*)
-		echo "calls_to_url_check: unknown polarity: $1" >&2
-		exit 2
-		;;
-	esac
-	awk -v url="$2" -v want="$3" -v lack="$lack" '
-		/^=CALL=$/ {
-			if (hit_url) { n++; if (found == lack) bad++ }
-			hit_url = 0; found = 0; next
-		}
-		$0 ~ url { hit_url = 1 }
-		$0 == want { found = 1 }
-		END {
-			if (hit_url) { n++; if (found == lack) bad++ }
-			exit (n == 0 || bad > 0)
-		}
-	' "$RUN_LOG"
+# How many direct-route download requests the case made.
+direct_call_count() {
+	grep -c '/releases/download/' "$RUN_LOG"
 }
 
-# Every logged call to a URL matching $1 carried the given argument
-# (exact line match). Fails when no call matched the URL at all, so the
-# assertion can never pass vacuously.
-calls_to_url_have() { # $1 = URL regex, $2 = argument line
-	calls_to_url_check have "$1" "$2"
-}
-
-# No logged call to a URL matching $1 carried the given argument. Also
-# fails when no call matched the URL at all.
-calls_to_url_lack() { # $1 = URL regex, $2 = argument line
-	calls_to_url_check lack "$1" "$2"
-}
-
-asset_call_count() {
-	grep -c '/releases/assets/' "$RUN_LOG"
+# How many GitHub API requests the case made. The installer consults no
+# GitHub API endpoint (ADR-0585), so this is zero in every case — the
+# assertion shape that pins it.
+api_call_count() {
+	grep -c 'api\.github\.com' "$RUN_LOG"
 }
 
 # --- real ssh-keygen roundtrip machinery -------------------------------------
@@ -584,7 +462,7 @@ sign_manifest() {
 # against fixture tree $2 under the stub-curl case name $1. Call only
 # under real_roundtrip=1 — patched_installer and keygen_dir exist only
 # after build_real_roundtrip_fixtures.
-real_install_run() {
+real_install_run() { # $1 = case name, $2 = fixture tree
 	reset_case
 	STUB_FIXTURES_DIR=$2
 	RUN_INSTALLER=$patched_installer
@@ -592,8 +470,8 @@ real_install_run() {
 	install_run "$1"
 }
 
-# The skip arm every case shares: one tap_skip per description, under
-# the failure that actually happened.
+# The skip arm every case shares: one tap_skip per description, under the
+# failure that actually happened.
 skip_real_case() {
 	for d in "$@"; do
 		tap_skip "$d" "$real_skip_reason"

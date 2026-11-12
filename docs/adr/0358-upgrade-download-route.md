@@ -151,3 +151,11 @@ the direct route answers 404. The route policy:
 - Users on 0.12.4/0.12.5 cannot self-update to the fixed release — their
   binaries still use the direct route and know no fallback — so the one-time
   remedy is the documented `install.sh` reinstall; subsequent updates work.
+
+## Later references
+
+ADR-0585 takes this route policy to the installer: `install.sh` now
+downloads every asset from the direct route and consults no GitHub API
+endpoint at all, so the "always the API asset route (what `install.sh`
+does)" alternative above describes the pre-0585 installer. The
+authenticated fallback arm recorded here remains `upgrade`'s alone.

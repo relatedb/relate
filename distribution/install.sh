@@ -3,7 +3,6 @@
 #   curl -sSfL https://relatedb.ai/install.sh | bash
 set -eu
 
-REPO=relatedb/relate
 ASSET_PREFIX=relate
 BIN_NAME=relate
 INSTALL_DIR="$HOME/.local/bin"
@@ -35,6 +34,15 @@ LEGACY_MANIFEST_CEILING=0.14.0
 # releases_json.rs's RELEASES_JSON_URL constant by the harness's section-0
 # guard.
 RELEASES_JSON_URL='https://relatedb.ai/releases.json'
+
+# The direct release-asset download route (ADR-0585): the browser
+# download URL base. The repository is public, so the route answers
+# unauthenticated. RELATE_RELEASE_DOWNLOAD_URL overrides it at install
+# time (the same dev/test seam the CLI's upgrade reads); unset or empty
+# means this canonical base. The literal — slug and route — is pinned to
+# the CLI side's constants (download_route.rs's canonical base,
+# release_channel's REPO) by the harness's section-0 guard.
+DOWNLOAD_BASE='https://github.com/relatedb/relate/releases/download'
 
 # True when the X.Y.Z version $1 is greater than $2. Unparseable input counts
 # as greater, so the caller takes the fail-closed branch.
@@ -78,51 +86,29 @@ tmp_out=""
 trap 'rm -rf "$tmp"; [ -z "$tmp_out" ] || rm -f "$tmp_out"' EXIT
 
 # curl|sh: no script path on disk, so all state lives in $tmp.
-# api_get is the single place a GitHub API request is composed: the
-# repos/$REPO URL base — one spelling, serving both the per-tag release
-# fetch below and every asset download — and the Authorization header,
-# whose bearer token is sent only when GITHUB_TOKEN is set. $1 is the
-# API path under repos/$REPO; $2, if given, is one extra header (the
-# asset-download Accept override).
-api_get() {
-	if [ -n "${GITHUB_TOKEN:-}" ]; then
-		auth="Authorization: Bearer $GITHUB_TOKEN"
-	else
-		auth=""
-	fi
-	curl -fsSL ${auth:+-H "$auth"} ${2:+-H "$2"} \
-		"https://api.github.com/repos/$REPO$1"
-}
-
-# Download a release asset by its API asset id, asking for the raw bytes with
-# Accept: application/octet-stream. The browser download URL does not honor
-# tokens for internal repos (it 404s), and the API endpoint also works
-# unauthenticated on public repos, so this single endpoint serves both cases.
-download_asset() {
-	api_get "/releases/assets/$1" "Accept: application/octet-stream"
-}
-
-# Fragile-but-accepted dependency-free parse of the release JSON from the API.
-# Each asset object is serialized with its "url" (ending in
-# /releases/assets/<id>) and its "name" on nearby lines, so derive the asset
-# id from the most recent asset "url" and print it when the wanted name
-# appears. The JSON "id" field is never read.
-# A parse that yields nothing is a hard failure for the callers below, never a
-# fallback to a guessed URL.
-asset_id_for() {
-	awk -v want="$1" '
-		match($0, /\/releases\/assets\/[0-9]+/) {
-			s = substr($0, RSTART, RLENGTH)
-			sub(/.*\//, "", s)
-			id = s
-		}
-		match($0, /"name"[[:space:]]*:[[:space:]]*"[^"]*"/) {
-			s = substr($0, RSTART, RLENGTH)
-			sub(/.*"name"[[:space:]]*:[[:space:]]*"/, "", s)
-			sub(/"$/, "", s)
-			if (s == want) { print id; exit }
-		}
-	'
+#
+# The one download transport (ADR-0585): every asset — the manifest, its
+# signature, the binary — comes from the direct browser download route the
+# public repository serves unauthenticated. No GitHub API request is made
+# anywhere in this script: anonymous API requests are limited to 60/hour per
+# IP, and shared egress addresses (VPNs, corporate NAT, Cloudflare WARP)
+# routinely exhaust that quota — the failure that broke the one-liner while
+# the installer still resolved assets through the API. The status is read
+# from curl's -w report, so any non-2xx answer dies with the request and the
+# code — the same pinned status text the CLI's release channel carries. The
+# requests are TLS-only twice over (CWE-295): the curl protocol pins keep
+# every hop — the initial request and each redirect to the asset CDN — on
+# https, and no Authorization header is sent (no token is read, and curl
+# would forward a custom header across a cross-host redirect).
+direct_get() { # $1 = asset name, $2 = destination
+	url="$download_base/$tag/$1"
+	status=$(curl --proto '=https' --proto-redir '=https' -sSL \
+		-o "$2" -w '%{http_code}' "$url") ||
+		die "failed to fetch $url; check the connection and retry"
+	case "$status" in
+	2??) ;;
+	*) die "GET $url: http status: $status" ;;
+	esac
 }
 
 # Raw binaries, no archive concatenation: relate publishes
@@ -182,8 +168,23 @@ latest_tag_of() {
 # core release by construction (ADR-0250 §2, §6), so it is the one
 # source that cannot select an extension release. The request carries
 # no Authorization header: the file is public and lives on a different
-# origin than the GitHub API and the asset downloads (ADR-0250 §5).
+# origin than the asset downloads (ADR-0250 §5).
 metadata_url=${RELATE_RELEASES_JSON_URL:-$RELEASES_JSON_URL}
+# The asset-download base resolves beside the metadata seam, so both
+# seams' contracts are checked before the first request. The https://
+# gate (Oplane REQ-00358639, CWE-295) is deliberately narrower than the
+# seam's canonical predicate on the CLI side (release_channel http.rs's
+# approved_transport, which admits plain http on the loopback interface
+# for dev/test fixtures): the installer is the end-user curl|sh surface,
+# its own test rig drives the seam without real HTTP, and every download
+# request is additionally protocol-pinned across redirects — so the
+# narrowing is a decision recorded in ADR-0585, not an accident. A
+# mis-set override dies here, before any network hop.
+download_base=${RELATE_RELEASE_DOWNLOAD_URL:-$DOWNLOAD_BASE}
+case "$download_base" in
+https://*) ;;
+*) die "RELATE_RELEASE_DOWNLOAD_URL must be an https:// URL (got: $download_base)" ;;
+esac
 metadata_fail="could not read the release list from $metadata_url"
 releases_doc=$(curl -fsSL "$metadata_url" || true)
 [ -n "$releases_doc" ] ||
@@ -204,39 +205,11 @@ esac
 
 echo "Installing relate $tag ($os/$arch) to $INSTALL_DIR"
 
-# The repository is internal, so an unauthenticated request 404s. Fetch
-# the release JSON for the exact tag releases.json named — it carries
-# the asset ids — and require its tag_name to equal that tag: the API
-# must describe exactly the release asked for, never a neighboring
-# one. GITHUB_TOKEN is the one credential that helps here.
-release_json=$(api_get "/releases/tags/$tag" || true)
-[ -n "$release_json" ] ||
-	die "could not resolve release $tag for $REPO. If the repo is private, set GITHUB_TOKEN."
-release_tag=$(printf '%s\n' "$release_json" |
-	sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-	head -n 1)
-[ -n "$release_tag" ] ||
-	die "the $REPO API returned no tag_name for tag $tag; installing nothing"
-[ "$release_tag" = "$tag" ] ||
-	die "the $REPO API served release $release_tag for tag $tag; installing nothing"
-
-# Resolve the asset ids (binary, manifest, signature) from the release JSON we
-# already have, and die on an empty id rather than downloading the wrong thing.
-asset_id=$(printf '%s\n' "$release_json" | asset_id_for "$asset")
-sums_id=$(printf '%s\n' "$release_json" | asset_id_for SHA256SUMS)
-sig_id=$(printf '%s\n' "$release_json" | asset_id_for SHA256SUMS.sig)
-[ -n "$asset_id" ] ||
-	die "release $tag from $REPO API has no asset named $asset"
-[ -n "$sums_id" ] ||
-	die "release $tag from $REPO API has no asset named SHA256SUMS"
-[ -n "$sig_id" ] ||
-	die "release $tag from $REPO API has no asset named SHA256SUMS.sig"
-# Cheap first: the manifest and its signature are small; the binary is the
-# large download and must not start until the manifest is authenticated.
-download_asset "$sums_id" >"$tmp/SHA256SUMS" ||
-	die "failed to download SHA256SUMS via API asset $sums_id"
-download_asset "$sig_id" >"$tmp/SHA256SUMS.sig" ||
-	die "failed to download SHA256SUMS.sig via API asset $sig_id"
+# Cheap first: the manifest and its signature are small; the binary is
+# the large download and must not start until the manifest is
+# authenticated below (ADR-0115).
+direct_get SHA256SUMS "$tmp/SHA256SUMS"
+direct_get SHA256SUMS.sig "$tmp/SHA256SUMS.sig"
 
 # Authenticate the manifest before trusting any checksum it carries (ADR-0115).
 # The pinned key is written in the identity form ssh-keygen's allowed_signers
@@ -247,12 +220,13 @@ ssh-keygen -Y verify -f "$tmp/allowed_signers" -I relate-release \
 	-n relate-release -s "$tmp/SHA256SUMS.sig" <"$tmp/SHA256SUMS" ||
 	die "SHA256SUMS signature verification failed for $tag; installing nothing"
 
-# Bind the authenticated manifest to the release the API resolved (ADR-0457):
-# the version header is inside the signed bytes, so a validly signed older
-# manifest cannot be replayed for a newer tag. The prefix comes from the one
-# constant above, whose literal the Rust side also pins: any other spelling —
-# no space after the colon, a tab, a later line — is a headerless legacy
-# manifest. A present-but-empty header is a publish bug and fails hard.
+# Bind the authenticated manifest to the release the metadata resolved
+# (ADR-0457): the version header is inside the signed bytes, so a validly
+# signed older manifest cannot be replayed for a newer tag. The prefix
+# comes from the one constant above, whose literal the Rust side also
+# pins: any other spelling — no space after the colon, a tab, a later
+# line — is a headerless legacy manifest. A present-but-empty header is
+# a publish bug and fails hard.
 first_line=$(head -n 1 "$tmp/SHA256SUMS")
 case "$first_line" in
 "$SUMS_VERSION_PREFIX"*)
@@ -274,9 +248,7 @@ esac
 
 # The manifest is authenticated; only now is the binary download worth
 # paying for.
-download_asset "$asset_id" >"$tmp/$asset" ||
-	die "failed to download $asset via API asset $asset_id"
-
+direct_get "$asset" "$tmp/$asset"
 # SHA256SUMS lines are "<64-hex>  <name>" (shasum -a 256, two spaces, no
 # binary-mode asterisk).
 expected=$(grep -E "^[0-9a-fA-F]{64}[[:space:]]+\*?${asset}\$" "$tmp/SHA256SUMS" |
