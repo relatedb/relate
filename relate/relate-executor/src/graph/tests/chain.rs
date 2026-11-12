@@ -263,21 +263,85 @@ fn estimate_matches_the_charge_across_shapes() {
     let slot = crate::graph::node_slot()
         .min(crate::graph::rel_slot())
         .min(crate::graph::adj_slot());
+    // The store's own dense-reservation gate, not a use-site re-split of
+    // it: the first id past what it admits is the side-map boundary.
     let mut wide = 1i64;
-    loop {
-        let need = usize::try_from(wide).unwrap().saturating_add(1);
-        match crate::memory::dense_span_bytes(need, slot) {
-            Some(bytes) if bytes <= crate::memory::DENSE_SPAN_CAP_BYTES => {
-                wide = wide.saturating_mul(2);
-            }
-            _ => break,
-        }
+    while crate::memory::reservable_span_bytes(
+        usize::try_from(wide).unwrap().saturating_add(1),
+        slot,
+    )
+    .is_some()
+    {
+        wide = wide.saturating_mul(2);
     }
     step(vec![create(wide)], false);
     step(
         vec![RedoOp::create_rel(wide, 3, wide, "R".into(), props(1))],
         false,
     );
+    // A delete that drains the last (A, S, A) pair entry refunds its
+    // creation charge — the stats entry term priced (the pair count is
+    // the counting operator's answer set, so the drain removes the
+    // entry and returns its bytes).
+    step(vec![create(7), create(8)], false);
+    step(
+        vec![RedoOp::create_rel(9, 7, 8, "S".into(), props(1))],
+        false,
+    );
+    step(vec![RedoOp::delete_rel(9)], true);
+
+    // The same drain for a rel created and deleted in one batch nets the
+    // create's charge against the refund — not pinned here: its estimate
+    // also needs the delete-spill admission PR's batch-create endpoint
+    // resolution in the adjacency estimate, which this branch does not
+    // carry; that PR's branch pins it.
+
+    // A repeat delete of a dead committed rel tombstones nothing —
+    // priced once, however many deletes follow.
+    // Both rels ride the oracle's own step — every batch in this test
+    // carries the estimate==charge assertion. The survivor keeps the
+    // (A, S3, A) entry alive; the drain itself is pinned above.
+    step(
+        vec![
+            RedoOp::create_rel(11, 7, 8, "S3".into(), props(1)),
+            RedoOp::create_rel(12, 7, 8, "S3".into(), props(1)),
+        ],
+        false,
+    );
+    let doomed = 11;
+    step(
+        vec![
+            RedoOp::delete_rel(doomed),
+            RedoOp::delete_rel(doomed),
+            RedoOp::delete_rel(doomed),
+        ],
+        true,
+    );
+
+    // An AddLabels on a node whose self-loop rides both adjacency sides:
+    // the (joined, type, joined) diagonal is charged once — the apply's
+    // own self-loop policy (`Graph::self_loop_charge_sets`), consulted
+    // through the record. Pricing the plain orientation instead would
+    // charge that diagonal on both sides.
+    step(vec![create(13), create(14)], false);
+    step(
+        vec![RedoOp::create_rel(15, 13, 13, "T".into(), props(1))],
+        false,
+    );
+    // The add and the drain share one batch — the overlay is seeded once
+    // per batch, so only here does the add's count for the diagonal show
+    // in the delete's refund. The delete drains every (label, T, label)
+    // key the add charged: pricing the plain orientation charges the
+    // diagonal on both sides, and the drain then leaves one entry
+    // un-refunded.
+    step(
+        vec![
+            RedoOp::add_labels(13, vec!["B".into()]),
+            RedoOp::delete_rel(15),
+        ],
+        true,
+    );
+
     // Collection returns the spill.
     let before = g.used_bytes();
     g.gc_versions();

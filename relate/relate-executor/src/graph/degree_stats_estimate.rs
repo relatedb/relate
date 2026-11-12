@@ -15,8 +15,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use relate_core::NodeId;
+use relate_core::{NodeId, RelId};
 
+use super::count_state::CountDelta;
 use super::degree_stats_incident::IncidentRel;
 use super::{FreshIds, Graph};
 use crate::redo::RedoOp;
@@ -32,10 +33,12 @@ impl Graph {
     ///
     /// Exact for the same batches the redo-delta oracle is exact for:
     /// the label sets are simulated through the batch (a create sets
-    /// them, add/remove edits them in op order, committed nodes start
-    /// from their live sets), and a fresh name interns to an id no
-    /// committed map can hold, so a fresh label's entry is always a
-    /// creation. The AddLabels growth simulates the batch's in-batch
+    /// them, add edits them in op order, committed nodes start from
+    /// their live sets), and a fresh name interns to an id no committed
+    /// map can hold, so a fresh label's entry is always a creation. The
+    /// removal direction is the stated exception — `BatchSim::step`
+    /// prices no `RemoveLabels` drain, so such a batch is over-estimated
+    /// (over-refused), never under. The AddLabels growth simulates the batch's in-batch
     /// rels too: the apply path's incident walk sees
     /// them (the live-version probe), so the estimate must count their
     /// pair entries — an estimate that walks committed adjacency only
@@ -57,9 +60,7 @@ impl Graph {
         for op in ops {
             sim.step(self, op);
         }
-        // The one conversion to the caller's i64 delta world (the
-        // ledger counts in the entry-byte constants' own u64 domain).
-        sim.charges.growth as i64
+        sim.charges.growth
     }
 }
 
@@ -72,6 +73,7 @@ impl Graph {
 /// entry-growth ledger ([`ChargeLedger`] — the keys already accounted
 /// for and the total they charged, one accumulator), and the batch's
 /// rels.
+#[derive(Clone, Debug, PartialEq)]
 struct BatchSim {
     /// The batch's simulated label sets, per node — the cache-fill half
     /// of the cache-fill-and-borrow pattern: the
@@ -81,17 +83,54 @@ struct BatchSim {
     /// Fresh-name interning: a fresh name interns to an id no committed
     /// map can hold, so a fresh label's entry is always a creation.
     fresh_ids: FreshIds,
-    /// The entry-growth ledger: the keys already accounted for, one
-    /// seeded set per count map, and the total they charged.
+    /// The entry-growth ledger: two charge-only seen sets, one seeded
+    /// pair-count map, and the total they charged net of refunds.
     charges: ChargeLedger,
-    /// The batch's simulated rels ([`BatchRel`]) — the AddLabels
-    /// growth must count them: apply walks the
-    /// adjacency after the batch's CreateRel ops land (rebucket and the
-    /// incident walk see them), so an estimate that walks committed
-    /// adjacency only drifts from the applied `used_bytes` on mixed
-    /// [CreateRel, AddLabels] batches. Deletes stay out of the
-    /// simulation like every other `_` arm.
-    batch_rels: Vec<BatchRel>,
+    /// The batch's rel liveness, keyed by id ([`BatchRelState`]): the
+    /// AddLabels growth must count every rel the batch created — live
+    /// or deleted in the batch, because apply walks the adjacency after
+    /// the batch's CreateRel ops land (rebucket and the incident walk
+    /// see them) and a same-batch delete's pre-delete version stays
+    /// live-looking inside the write window, its founded chunk priced
+    /// chunk-granularly — so an estimate that walks committed adjacency
+    /// only drifts from the applied `used_bytes` on mixed
+    /// [CreateRel, DeleteRel, AddLabels] batches. The dead states are
+    /// the delete arm's tombstones.
+    batch_rels: HashMap<RelId, BatchRelState>,
+}
+
+/// A batch rel's liveness, by name and by founding: the AddLabels
+/// phases price a rel exactly when this batch created it —
+/// [`Live`](BatchRelState::Live) still holds,
+/// [`BatchDead`](BatchRelState::BatchDead) was created and then deleted
+/// in the batch (the tombstone hides the rel's hop from nothing the
+/// write window walks: apply probes the pre-delete version as
+/// live-looking, and the chunk the create founded prices the histogram
+/// chunk-granularly) — while [`StoreDead`](BatchRelState::StoreDead) is
+/// a committed rel the batch deleted: the committed incident stream and
+/// chunk walk already price it, so no batch term may, and it is a bare
+/// presence tombstone because nothing reads an identity off it (the
+/// delete that resolved it owns the one refund, in the step that
+/// resolved it). The dead states are the delete arm's terminal
+/// tombstones, never removed, so a repeat delete resolves nothing (a
+/// re-created id overwrites its entry and is live again).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BatchRelState {
+    Live(BatchRel),
+    BatchDead(BatchRel),
+    StoreDead,
+}
+
+impl BatchRelState {
+    /// The rel the AddLabels phases price, if this state is one: every
+    /// rel the batch created, live or tombstoned — never a committed
+    /// rel the batch deleted, which the committed terms own.
+    fn priced(&self) -> Option<&BatchRel> {
+        match self {
+            BatchRelState::Live(rel) | BatchRelState::BatchDead(rel) => Some(rel),
+            BatchRelState::StoreDead => None,
+        }
+    }
 }
 
 /// One of the batch's simulated rels, its direction as field names
@@ -105,34 +144,51 @@ struct BatchRel {
     type_id: u32,
 }
 
-/// The entry-growth ledger (the LABS-515 grouping): the
-/// keys already accounted for and the total they charged — one
-/// accumulator, not four sibling fields. The sets are seeded with the
-/// committed maps' own keys at construction, then every key this batch
-/// charges; one `insert` decides the LABS-425 two-tier policy.
+impl BatchRel {
+    /// The rel from the store's live-identity probe — the one spelling
+    /// of the tuple-to-rel transition.
+    fn from_identity((start, end, type_id): (NodeId, NodeId, u32)) -> Self {
+        Self {
+            start,
+            end,
+            type_id,
+        }
+    }
+}
+
+/// The entry-growth ledger (the LABS-515 grouping), two tiers by map:
+/// the label and histogram tiers are charge-only seen sets — the
+/// committed maps' own keys seeded at construction, then every key this
+/// batch charges, one `insert` deciding the LABS-425 two-tier policy —
+/// while the pair tier is a live count map through the apply's own
+/// fold (`charge_pair_cross` over `count_entry`): the committed counts
+/// seeded once, every arm's net delta after that, so a drain's refund
+/// prices against the same counts the apply folds and charge, drain,
+/// and refund can never drift between the two sides.
+#[derive(Clone, Debug, PartialEq)]
 struct ChargeLedger {
-    /// The keys already accounted for, one set per count map.
+    /// The charge-only tiers' seen sets (label, histogram).
     labels: HashSet<u32>,
-    pairs: HashSet<(u32, u32, u32)>,
     hists: HashSet<(u32, u32)>,
-    /// The total the accounted-for keys charged — the estimate's
-    /// answer, counted in the entry-byte constants' own domain (the
-    /// ledger only ever adds, so it is structurally non-negative; the
-    /// one conversion to the caller's i64 delta world happens at the
-    /// public boundary).
-    growth: u64,
+    /// The pair tier: the pair counts this batch rides, the committed
+    /// counts seeded once and every arm's net delta after.
+    pairs: HashMap<(u32, u32, u32), u64>,
+    /// The total the accounted-for keys charged, net of the refunds a
+    /// draining delete returns — the estimate's answer, counted in the
+    /// entry-byte constants' own domain.
+    growth: i64,
 }
 
 impl ChargeLedger {
-    /// The ledger seeded with the committed maps' keys (the
-    /// entry-growth policy's committed tier, folded into the one set)
-    /// through the family's own key readers — the locks live in
-    /// degree_stats.rs, one reader per map, each held only for its own
-    /// read.
+    /// The ledger seeded from the committed maps (the entry-growth
+    /// policy's committed tier): the charge-only tiers take the committed
+    /// keys, the pair tier the committed counts. Both come through the
+    /// family's own key readers — the locks live in degree_stats.rs, one
+    /// reader per map, each held only for its own read.
     fn new(g: &Graph) -> Self {
         Self {
             labels: g.label_count_keys(),
-            pairs: g.pair_count_keys(),
+            pairs: g.pair_counts(),
             hists: g.degree_histogram_keys(),
             growth: 0,
         }
@@ -160,14 +216,19 @@ impl ChargeLedger {
         );
     }
 
-    /// One pair-count entry's charge.
-    fn charge_pair(&mut self, key: (u32, u32, u32)) {
-        Self::charge_new(
-            &mut self.pairs,
-            key,
-            Graph::PAIR_COUNT_ENTRY_BYTES,
-            &mut self.growth,
-        );
+    /// One endpoint cross's net pair deltas, charged and refunded
+    /// through the apply's own fold — the one entry point, so the
+    /// growth bookkeeping stays here and the key enumeration is the
+    /// canonical `charge_pair_cross`, never a re-derivation.
+    fn bump_pair_cross(
+        &mut self,
+        start_ids: &[u32],
+        type_id: u32,
+        end_ids: &[u32],
+        delta: CountDelta,
+    ) {
+        self.growth +=
+            Graph::charge_pair_cross(&mut self.pairs, start_ids, type_id, end_ids, delta);
     }
 
     /// The entry-growth policy, named once (LABS-425;
@@ -175,12 +236,12 @@ impl ChargeLedger {
     /// round): a key is a new entry iff neither the committed map nor
     /// an earlier op in this batch holds it — the estimate-side twin of
     /// `count_entry`'s apply-side policy.
-    fn charge_new<K>(seen: &mut HashSet<K>, key: K, entry_bytes: u64, growth: &mut u64)
+    fn charge_new<K>(seen: &mut HashSet<K>, key: K, entry_bytes: u64, growth: &mut i64)
     where
         K: std::hash::Hash + Eq,
     {
         if seen.insert(key) {
-            *growth += entry_bytes;
+            *growth += entry_bytes as i64;
         }
     }
 }
@@ -193,24 +254,55 @@ impl BatchSim {
             node_labels: HashMap::new(),
             fresh_ids: FreshIds::new(),
             charges: ChargeLedger::new(g),
-            batch_rels: Vec::new(),
+            batch_rels: HashMap::new(),
         }
     }
 
-    /// One op's step over the state, in op order: the three arms the
-    /// count family's growth rides; every other op leaves the state
-    /// untouched (deletes stay out of the simulation).
+    /// One op's step over the state, in op order: the four arms the
+    /// count family's growth rides — creates charge their entries, an
+    /// AddLabels prices its label and incident growth, a delete refunds
+    /// the pair entries it drains. The removal direction beyond a rel
+    /// delete is deliberately unpriced — a node delete's label refunds
+    /// and the pair refunds of its detached incident rels, and a label
+    /// removal's drains (the node-side sibling on the ticket): every
+    /// one of them is a refund, so omitting them over-prices, which
+    /// over-refuses but never admits past a cap. The no-op arms are
+    /// enumerated so a new count-affecting op fails to compile here
+    /// instead of silently pricing nothing.
     fn step(&mut self, g: &Graph, op: &RedoOp) {
         match op {
             RedoOp::CreateNode { id, labels, .. } => self.create_node(g, *id, labels),
             RedoOp::CreateRel {
+                id,
                 start,
                 end,
                 rel_type,
                 ..
-            } => self.create_rel(g, *start, *end, rel_type),
+            } => self.create_rel(g, *id, *start, *end, rel_type),
             RedoOp::AddLabels { id, labels } => self.add_labels(g, *id, labels),
-            _ => {}
+            RedoOp::DeleteRel { id } => self.delete_rel(g, *id),
+            // Property and identity edits, index and constraint catalog
+            // ops, and node deletion (the removal-direction omission
+            // above) move no count entry this estimate prices.
+            RedoOp::DeleteNode { .. }
+            | RedoOp::SetNodeProp { .. }
+            | RedoOp::RemoveNodeProp { .. }
+            | RedoOp::SetRelProp { .. }
+            | RedoOp::RemoveRelProp { .. }
+            | RedoOp::RemoveLabels { .. }
+            | RedoOp::CreateIndex { .. }
+            | RedoOp::DropIndex { .. }
+            | RedoOp::CatalogIndexDetail { .. }
+            | RedoOp::CreateConstraint { .. }
+            | RedoOp::DropConstraint { .. }
+            | RedoOp::CatalogDerivedConstraint { .. }
+            | RedoOp::PutDatabase { .. }
+            | RedoOp::DropDatabase { .. }
+            | RedoOp::PutGraphType { .. }
+            | RedoOp::SetCurrentGraphType { .. }
+            | RedoOp::PullIdentityPut { .. }
+            | RedoOp::OntologySet { .. }
+            | RedoOp::OntologyDrop { .. } => {}
         }
     }
 
@@ -232,7 +324,7 @@ impl BatchSim {
     /// simulation, the rel's out-side histogram entry and its endpoint
     /// pair cross each price, and the rel joins the simulation for the
     /// AddLabels steps that follow.
-    fn create_rel(&mut self, g: &Graph, start: NodeId, end: NodeId, rel_type: &str) {
+    fn create_rel(&mut self, g: &Graph, id: RelId, start: NodeId, end: NodeId, rel_type: &str) {
         let t = self.fresh_ids.resolve(g, rel_type);
         Self::ensure_labels(&mut self.node_labels, g, start);
         Self::ensure_labels(&mut self.node_labels, g, end);
@@ -242,15 +334,59 @@ impl BatchSim {
         let end_ids = &self.node_labels[&end];
         for &s in start_ids {
             self.charges.charge_hist((s, t));
-            for &e in end_ids {
-                self.charges.charge_pair((s, t, e));
-            }
         }
-        self.batch_rels.push(BatchRel {
-            start,
-            end,
-            type_id: t,
-        });
+        self.charges
+            .bump_pair_cross(start_ids, t, end_ids, CountDelta::Add);
+        // The rel joins the live set — a re-created id overwrites its
+        // earlier entry, so a later delete resolves the live endpoints.
+        self.batch_rels.insert(
+            id,
+            BatchRelState::Live(BatchRel {
+                start,
+                end,
+                type_id: t,
+            }),
+        );
+    }
+
+    /// DeleteRel: each pair entry the rel's (start-label, type,
+    /// end-label) cross holds loses one count, through the same
+    /// [`Graph::count_entry`] the apply's `bump_rel_stats` rides — the
+    /// entries this delete drains to zero are refunded, the ones that
+    /// live on are not (the rel itself holds one count of every key in
+    /// its cross, so the Remove is always paired). Which identity the
+    /// refund prices is the liveness table's decision
+    /// ([`BatchRelState`] owns the lifecycle); this step only reads it.
+    fn delete_rel(&mut self, g: &Graph, id: RelId) {
+        let rel = match self.batch_rels.get_mut(&id) {
+            // One lookup, one transition: the state is deadened in
+            // place, and a batch-created rel's identity comes back for
+            // the refund. The terminal states yield none — a repeat
+            // delete has nothing left to price.
+            Some(state) => match *state {
+                BatchRelState::Live(rel) => {
+                    *state = BatchRelState::BatchDead(rel);
+                    Some(rel)
+                }
+                BatchRelState::BatchDead(_) | BatchRelState::StoreDead => None,
+            },
+            // An unseen id: the store's live identity, priced once and
+            // tombstoned so no later delete re-probes the pre-batch
+            // store for it.
+            None => g.rel_live_identity(id).map(|identity| {
+                self.batch_rels.insert(id, BatchRelState::StoreDead);
+                BatchRel::from_identity(identity)
+            }),
+        };
+        let Some(rel) = rel else {
+            return;
+        };
+        Self::ensure_labels(&mut self.node_labels, g, rel.start);
+        Self::ensure_labels(&mut self.node_labels, g, rel.end);
+        let start_ids = &self.node_labels[&rel.start];
+        let end_ids = &self.node_labels[&rel.end];
+        self.charges
+            .bump_pair_cross(start_ids, rel.type_id, end_ids, CountDelta::Remove);
     }
 
     /// AddLabels: every requested label charges its exact-count entry
@@ -286,8 +422,18 @@ impl BatchSim {
             return;
         }
         // The simulated set, snapshotted once and released from the
-        // borrow before the pricing calls.
+        // borrow before the pricing calls. It is the post-add set; the
+        // pre-add set is its own prefix (`add_labels` only appends), so
+        // both self-loop charge sets are slices of it — no second
+        // collection.
         let mine = ids.clone();
+        // The pair phase prices only the ids that actually joined: apply
+        // bumps just the mutated labels (`apply_incident_pair_counts`
+        // walks `mutated_labels`), and the count overlay must mirror the
+        // apply's counts exactly — a carried label's keys ride the
+        // committed seed, priced nothing. The histogram phase below keeps
+        // the full set (its charge is entry creation, carried keys are
+        // seeded).
         // The batch's incident enumeration, built once for both phases
         // (LABS-515): the committed live hops on
         // both adjacency sides ([`Graph::incident_rels`], the apply
@@ -298,7 +444,10 @@ impl BatchSim {
         let mut incidents = g.incident_rels(id);
         incidents.extend(self.batch_incidents(id));
         self.price_histogram_entries(g, id, &mine, &incidents);
-        self.price_incidents(g, &mine, &incidents);
+        // The near side is the joined ids, the far-side self-loop sets
+        // the post-add set and its pre-add prefix — the apply's own
+        // three sets.
+        self.price_incidents(g, id, &mine[before..], &mine, &mine[..before], &incidents);
     }
 
     /// The AddLabels step's histogram-entry pricing, one site (the
@@ -351,19 +500,40 @@ impl BatchSim {
     /// twice through the ledger's sets (the previous `seen_far`
     /// early-out keyed (type, far) and skipped the second side's keys
     /// entirely, under-pricing admission).
-    fn price_incidents(&mut self, g: &Graph, mine: &[u32], incidents: &[IncidentRel]) {
+    ///
+    /// A self-loop's far endpoint is the mutated node itself, so its far
+    /// set is not a far node's but the node's own, mutation-aware on
+    /// both sides — the apply's pass-2 policy, consulted here through
+    /// the record's own [`IncidentRel::self_loop_sets`] so the
+    /// (joined, type, joined) diagonal is charged once, exactly as
+    /// `Graph::self_loop_charge_sets` decides it. Pricing the plain
+    /// orientation instead would charge that diagonal on both sides.
+    fn price_incidents(
+        &mut self,
+        g: &Graph,
+        id: NodeId,
+        mine: &[u32],
+        own_out: &[u32],
+        own_in: &[u32],
+        incidents: &[IncidentRel],
+    ) {
         // The pricing pass over the stream: the pair keys follow the
-        // rel's own direction ([`IncidentRel::pair_key`]). The
+        // rel's own direction ([`IncidentRel::ordered`]). The
         // histogram entries are the step's other phase
         // (`price_histogram_entries`), already priced over the one
         // type set.
         for inc in incidents {
-            let far_ids = &*Self::ensure_labels(&mut self.node_labels, g, inc.far);
-            for &lid in mine {
-                for &f in far_ids {
-                    self.charges.charge_pair(inc.pair_key(lid, f));
-                }
-            }
+            let (start_ids, end_ids) = if inc.far == id {
+                inc.self_loop_sets(mine, own_out, own_in)
+            } else {
+                let far_ids = &*Self::ensure_labels(&mut self.node_labels, g, inc.far);
+                // The apply's own orientation — the pair keys follow the
+                // rel's direction ([`IncidentRel::ordered`]), the cross is
+                // the canonical fold.
+                inc.ordered(mine, far_ids)
+            };
+            self.charges
+                .bump_pair_cross(start_ids, inc.type_id, end_ids, CountDelta::Add);
         }
     }
 
@@ -374,17 +544,22 @@ impl BatchSim {
     /// node on BOTH ends, so it enumerates twice — once per side,
     /// exactly as a committed self-loop appears on both adjacency sides
     ///.
-    fn batch_incidents(&self, id: NodeId) -> Vec<IncidentRel> {
-        let mut incidents = Vec::new();
-        for rel in &self.batch_rels {
-            if id == rel.start {
-                incidents.push(IncidentRel::outgoing(rel.type_id, rel.end));
-            }
-            if id == rel.end {
-                incidents.push(IncidentRel::incoming(rel.type_id, rel.start));
-            }
-        }
-        incidents
+    fn batch_incidents(&self, id: NodeId) -> impl Iterator<Item = IncidentRel> + '_ {
+        // Every rel the batch created, live or tombstoned: a same-batch
+        // delete keeps the pre-delete version live-looking inside the
+        // write window, so both AddLabels phases price it exactly as a
+        // live one. A committed rel the batch deleted is absent — the
+        // committed stream ([`Graph::incident_rels`], the pre-batch
+        // store) already carries it, and a second copy here would
+        // double-price it.
+        self.batch_rels
+            .values()
+            .filter_map(|state| state.priced())
+            .flat_map(move |rel| {
+                let out = (id == rel.start).then(|| IncidentRel::outgoing(rel.type_id, rel.end));
+                let inc = (id == rel.end).then(|| IncidentRel::incoming(rel.type_id, rel.start));
+                out.into_iter().chain(inc)
+            })
     }
 
     /// The batch's label-set simulation's fill: cache the node's labels
@@ -411,9 +586,10 @@ mod tests {
     use super::*;
 
     /// LABS-515: the simulator's state transitions, pinned per step —
-    /// each op's step moves exactly the fields it owns, and the `_` arm
-    /// moves nothing. The growth figures mirror
-    /// `stats_entry_growth_estimates_mixed_batches` end to end.
+    /// each op's step moves exactly the fields it owns, and the
+    /// dispatcher's enumerated no-op arms move nothing. The growth
+    /// figures mirror `stats_entry_growth_estimates_mixed_batches` end
+    /// to end.
     #[test]
     fn batch_sim_state_follows_each_step() {
         let g = Graph::default();
@@ -448,17 +624,20 @@ mod tests {
         let r_id = sim.fresh_ids.resolve(&g, "R");
         assert_eq!(
             sim.batch_rels,
-            vec![BatchRel {
-                start: a,
-                end: b,
-                type_id: r_id
-            }]
+            HashMap::from([(
+                1,
+                BatchRelState::Live(BatchRel {
+                    start: a,
+                    end: b,
+                    type_id: r_id
+                })
+            )])
         );
         assert_eq!(sim.node_labels[&a], vec![a_id]);
         assert_eq!(sim.node_labels[&b], vec![b_id]);
         assert_eq!(
             sim.charges.growth,
-            Graph::HISTOGRAM_ENTRY_BYTES + Graph::PAIR_COUNT_ENTRY_BYTES
+            (Graph::HISTOGRAM_ENTRY_BYTES + Graph::PAIR_COUNT_ENTRY_BYTES) as i64
         );
 
         // AddLabels: the actually-added id joins the node's simulated
@@ -473,19 +652,18 @@ mod tests {
         assert!(sim.charges.labels.contains(&a2_id));
         assert_eq!(
             sim.charges.growth,
-            2 * Graph::HISTOGRAM_ENTRY_BYTES
+            (2 * Graph::HISTOGRAM_ENTRY_BYTES
                 + 2 * Graph::PAIR_COUNT_ENTRY_BYTES
-                + Graph::LABEL_COUNT_ENTRY_BYTES
+                + Graph::LABEL_COUNT_ENTRY_BYTES) as i64
         );
 
-        // A non-growth op is a no-op on the state: label removal stays
-        // out of the simulation like every other `_` arm.
-        let before_labels = sim.node_labels.clone();
-        let before_seen = sim.charges.labels.clone();
-        let before_pairs = sim.charges.pairs.clone();
-        let before_hists = sim.charges.hists.clone();
-        let before_rels = sim.batch_rels.clone();
-        let before_growth = sim.charges.growth;
+        // A non-growth op is a no-op on the state: label removal is one
+        // of the dispatcher's enumerated no-op arms, its un-priced drain
+        // the deliberate over-estimating omission documented at
+        // `BatchSim::step`. One whole-state snapshot — the assert follows
+        // the struct definition, so a new field is covered by
+        // construction.
+        let before = sim.clone();
         sim.step(
             &g,
             &RedoOp::RemoveLabels {
@@ -493,12 +671,7 @@ mod tests {
                 labels: vec!["A2".into()],
             },
         );
-        assert_eq!(sim.node_labels, before_labels);
-        assert_eq!(sim.charges.labels, before_seen);
-        assert_eq!(sim.charges.pairs, before_pairs);
-        assert_eq!(sim.charges.hists, before_hists);
-        assert_eq!(sim.batch_rels, before_rels);
-        assert_eq!(sim.charges.growth, before_growth);
+        assert_eq!(sim, before);
     }
 
     /// LABS-515: the AddLabels step's carried-label discipline — a
@@ -541,5 +714,68 @@ mod tests {
             1,
             "the incident walk never ran: the far endpoint never enters the cache"
         );
+    }
+
+    /// LABS-1386: the delete arm's two tombstones, by founding — a rel
+    /// the batch created and then deleted keeps pricing at the AddLabels
+    /// steps (the pre-delete version stays live-looking inside the write
+    /// window, and the chunk the create founded prices the histogram
+    /// chunk-granularly), so its incidents enumerate exactly as a live
+    /// one's; a committed rel the batch deleted does not — the committed
+    /// incident stream already carries it, and a batch copy would
+    /// double-price it.
+    #[test]
+    fn batch_dead_rels_price_and_store_dead_rels_do_not() {
+        let g = Graph::default();
+        let (a, b) = crate::graph::test_support::endpoints(&g);
+        g.begin_write().unwrap();
+        let committed = g
+            .create_rel(a, b, "C".to_string(), BTreeMap::new())
+            .unwrap();
+        g.commit_write();
+
+        let mut sim = BatchSim::new(&g);
+        // The batch creates and deletes its own rel: the tombstone keeps
+        // the killed rel whole and priced.
+        sim.step(
+            &g,
+            &RedoOp::create_rel(9, a, b, "R".to_string(), BTreeMap::new()),
+        );
+        sim.step(&g, &RedoOp::delete_rel(9));
+        let r_id = sim.fresh_ids.resolve(&g, "R");
+        assert_eq!(
+            sim.batch_rels.get(&9),
+            Some(&BatchRelState::BatchDead(BatchRel {
+                start: a,
+                end: b,
+                type_id: r_id
+            }))
+        );
+        let priced: Vec<_> = sim.batch_incidents(a).collect();
+        assert_eq!(priced.len(), 1, "one incident, the out side");
+        assert!(priced[0].is_out());
+        assert_eq!(priced[0].type_id, r_id);
+        assert_eq!(priced[0].far, b);
+
+        // A committed rel the batch deletes: the StoreDead tombstone —
+        // the delete arm resolves it (a repeat delete prices nothing),
+        // but no incident of it prices through the batch terms.
+        sim.step(&g, &RedoOp::delete_rel(committed));
+        assert!(matches!(
+            sim.batch_rels.get(&committed),
+            Some(BatchRelState::StoreDead)
+        ));
+        let c_id = sim.fresh_ids.resolve(&g, "C");
+        assert!(
+            !sim.batch_incidents(a).any(|inc| inc.type_id == c_id),
+            "the committed rel's incident stays with the committed stream"
+        );
+
+        // A repeat delete of either tombstone resolves nothing: neither
+        // the growth nor the states move.
+        let before = sim.clone();
+        sim.step(&g, &RedoOp::delete_rel(9));
+        sim.step(&g, &RedoOp::delete_rel(committed));
+        assert_eq!(sim, before);
     }
 }

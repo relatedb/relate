@@ -1414,6 +1414,7 @@ fn hop_counts(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) ->
 /// graph/degree_stats_estimate.rs) resolved this ladder by hand before;
 /// the descending-id collision invariant (fresh ids never collide with
 /// committed ids or each other) now lives in exactly one place.
+#[derive(Clone, Debug, PartialEq)]
 struct FreshIds {
     fresh: HashMap<String, u32>,
     next: u32,

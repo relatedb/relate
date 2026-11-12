@@ -122,15 +122,12 @@ impl Graph {
             .collect()
     }
 
-    /// The committed pair-count map's keys — the estimate's seed.
-    pub(super) fn pair_count_keys(&self) -> HashSet<(u32, u32, u32)> {
-        self.count_stats
-            .lock()
-            .unwrap()
-            .pair_counts
-            .keys()
-            .copied()
-            .collect()
+    /// The committed pair counts, cloned under the one stats lock — the
+    /// admission estimate's pair overlay seeds itself from this snapshot
+    /// (the old keys-only seed priced charges but could not price a
+    /// delete's drain-to-zero refund).
+    pub(super) fn pair_counts(&self) -> HashMap<(u32, u32, u32), u64> {
+        self.count_stats.lock().unwrap().pair_counts.clone()
     }
 
     /// The endpoint cross-product charge loop the pair-count family
@@ -163,14 +160,17 @@ impl Graph {
 
     /// One count-map entry mutation with its entry-creation charge — the
     /// one policy every exact count map rides (the pair counts, the label
-    /// counts): the delta is +1/-1 (saturating in its direction); the
-    /// return is the charge to apply (`entry_bytes` on creation, the
-    /// refund when a negative delta drains an entry to zero and removes
-    /// it, 0 otherwise) — the caller batches the `used_bytes` application
-    /// outside the lock through [`Graph::charge`] so no
-    /// caller can forget the refund (a label-churn delete that drains
-    /// an entry must give its creation bytes back or `used_bytes`
-    /// drifts upward while the recount stays true).
+    /// counts): the delta is a paired ±1 — [`CountDelta::Add`] on the
+    /// create side of a seam, [`CountDelta::Remove`] on its delete side,
+    /// and a Remove without its paired Add is a broken store that fails
+    /// loudly here; the return is the charge to apply (`entry_bytes` on
+    /// the Add that creates the entry, the refund when a Remove drains
+    /// it to zero and removes it, 0 otherwise) — the caller batches the
+    /// `used_bytes` application outside the lock through
+    /// [`Graph::charge`] so no caller can forget the refund (a
+    /// label-churn delete that drains an entry must give its creation
+    /// bytes back or `used_bytes` drifts upward while the recount stays
+    /// true).
     fn count_entry<K>(
         counts: &mut HashMap<K, u64>,
         key: K,

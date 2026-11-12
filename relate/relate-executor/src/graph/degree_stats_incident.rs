@@ -17,14 +17,13 @@ use super::{Graph, LabelCache};
 /// incident pricing ([`Graph::estimate_stats_entry_growth`]) consult
 /// the same stream. The record owns the mutation's orientation — the
 /// mutated node's labels stand on the rel's start side when the node is
-/// the rel's start ([`IncidentRel::ordered`],
-/// [`IncidentRel::pair_key`]) — so every consumer consults it instead
-/// of re-deriving the side.
+/// the rel's start ([`IncidentRel::ordered`]) — so every consumer
+/// consults it instead of re-deriving the side.
 pub(super) struct IncidentRel {
     /// The mutated node's side of the rel. Private (the LABS-515
     /// boundary closure: the producers set it through the constructors,
     /// the cross-file consumers read it through [`IncidentRel::is_out`]
-    /// / [`IncidentRel::pair_key`], the in-file folds through
+    /// / [`IncidentRel::ordered`], the in-file folds through
     /// [`IncidentRel::ordered`] — one spelling per fact, compiler-held.
     side: Side,
     /// The rel's type id.
@@ -75,32 +74,24 @@ impl IncidentRel {
     /// Order one mutated-node value and one far-endpoint value by the
     /// rel's own direction — the one orientation primitive every
     /// consumer consults: the out side keeps the mutated node's value
-    /// on the start end, the in side puts the far value there.
-    /// [`IncidentRel::pair_key`] and the apply folds are defined over
-    /// it.
-    fn ordered<A>(&self, mine: A, far: A) -> (A, A) {
+    /// on the start end, the in side puts the far value there. The
+    /// apply folds and the admission estimate's incident pricing are
+    /// defined over it.
+    pub(super) fn ordered<'a>(&self, mine: &'a [u32], far: &'a [u32]) -> (&'a [u32], &'a [u32]) {
         match self.side {
             Side::Out => (mine, far),
             Side::In => (far, mine),
         }
     }
 
-    /// The (start, type, end) pair key for one mutated-node label
-    /// `mine` against one far-endpoint label `far` — the pair keys
-    /// follow the rel's own direction (the estimate's key-at-a-time
-    /// shape).
-    pub(super) fn pair_key(&self, mine: u32, far: u32) -> (u32, u32, u32) {
-        let (s, e) = self.ordered(mine, far);
-        (s, self.type_id, e)
-    }
-
-    /// The self-loop charge sets of one record (apply's pass 2): the
+    /// The self-loop charge sets of one record — the apply's pass 2 and
+    /// the admission estimate's incident pricing both consult it: the
     /// side's own set is selected here and the pair ordered through
     /// [`IncidentRel::ordered`], so the call site consults one accessor
     /// instead of re-deriving the side beside it. The charging policy —
     /// which set rides which side, the diagonal charged once — is
     /// [`Graph::self_loop_charge_sets`]'s, stated there once.
-    fn self_loop_sets<'a>(
+    pub(super) fn self_loop_sets<'a>(
         &self,
         mine: &'a [u32],
         own_out: &'a [u32],
