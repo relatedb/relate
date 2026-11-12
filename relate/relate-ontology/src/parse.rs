@@ -40,28 +40,53 @@ pub fn parse_document_value(bytes: &[u8]) -> Result<(Value, DocumentFormat), Ont
     let text = std::str::from_utf8(bytes)?;
     match detect_format(bytes) {
         DocumentFormat::Json => {
-            let value = serde_json::from_str::<Value>(text).map_err(|e| {
-                // serde_json enforces a 128-level recursion limit natively;
-                // the strict-JSON sniff uses its non-recursive `IgnoredAny`
-                // path, so a too-deep document reaches this parse and is
-                // rejected here. serde_json exposes no recursion-limit
-                // classifier (no `is_recursion_limit` in 1.0); the error
-                // message is the stable surface it gives us.
-                if e.is_syntax() && e.to_string().starts_with("recursion limit exceeded") {
-                    OntologyError::NestingTooDeep {
-                        limit: MAX_DOCUMENT_DEPTH,
-                    }
-                } else {
-                    OntologyError::Syntax {
-                        syntax: DocumentFormat::Json,
-                        message: e.to_string(),
-                    }
-                }
+            // serde_json enforces its own 128-level recursion limit but
+            // reports it only as a message; screening the text first makes
+            // the failure typed by construction.
+            screen_json_depth(text)?;
+            let value = serde_json::from_str::<Value>(text).map_err(|e| OntologyError::Syntax {
+                syntax: DocumentFormat::Json,
+                message: e.to_string(),
             })?;
             Ok((value, DocumentFormat::Json))
         }
         DocumentFormat::Yaml => parse_yaml(text).map(|v| (v, DocumentFormat::Yaml)),
     }
+}
+
+/// Pre-parse screen for the JSON path: one iterative pass over the text
+/// counting open `[`/`{` outside string literals, rejecting more than
+/// [`MAX_DOCUMENT_DEPTH`] at once with [`OntologyError::NestingTooDeep`].
+/// Malformed text is left to the real parser to report.
+fn screen_json_depth(text: &str) -> Result<(), OntologyError> {
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for b in text.bytes() {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                // serde_json refuses the 128th open container (limit 128
+                // counts the one being entered); match it exactly.
+                depth += 1;
+                if depth >= MAX_DOCUMENT_DEPTH {
+                    return Err(OntologyError::NestingTooDeep {
+                        limit: MAX_DOCUMENT_DEPTH,
+                    });
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Pre-parse screen for the YAML path (ADR-0227 §3/§4): one pass over the
@@ -232,17 +257,13 @@ fn yaml_to_value(node: &Yaml<'_>) -> Result<Value, OntologyError> {
         Yaml::Tagged(tag, _) => Err(OntologyError::UnsupportedConstruct(format!(
             "custom tags are not supported (found tag '{tag}')"
         ))),
-        // Unreachable via `load_from_str`: the loader resolves aliases
-        // eagerly by cloning, and the pre-parse screen rejects every
-        // anchor and alias before it runs. Kept so the conversion still
-        // fails closed, in the same error family, if a future loader ever
-        // hands it an unresolved alias node.
-        Yaml::Alias(id) => Err(OntologyError::UnsupportedConstruct(format!(
-            "anchors and aliases are not supported (unresolved alias, anchor id {id})"
-        ))),
-        Yaml::Representation(..) | Yaml::BadValue => Err(OntologyError::Syntax {
+        // Invariant: `load_from_str` resolves aliases eagerly, the pre-parse
+        // screen rejects every anchor and alias, and scalars are resolved
+        // on load, so these nodes never reach the conversion. One arm, one
+        // fail-closed error, if a future loader ever hands one over.
+        Yaml::Alias(_) | Yaml::Representation(..) | Yaml::BadValue => Err(OntologyError::Syntax {
             syntax: DocumentFormat::Yaml,
-            message: "unresolvable scalar representation".to_owned(),
+            message: "unresolvable node (loader invariant violated)".to_owned(),
         }),
     }
 }
@@ -263,5 +284,17 @@ mod tests {
         ));
         assert!(yaml.to_string().contains("(YAML)"), "{yaml}");
         assert_eq!(DocumentFormat::Json.to_string(), "JSON");
+    }
+
+    #[test]
+    fn json_depth_is_typed_at_the_limit() {
+        let nest = |n: usize| format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        let ok = parse_document_value(nest(127).as_bytes());
+        assert!(ok.is_ok(), "{ok:?}");
+        let err = parse_document_value(nest(128).as_bytes()).unwrap_err();
+        assert!(matches!(err, OntologyError::NestingTooDeep { limit: 128 }));
+        // Brackets inside strings do not count.
+        let s = format!("[\"{}\"]", "[".repeat(500));
+        assert!(parse_document_value(s.as_bytes()).is_ok());
     }
 }
