@@ -91,9 +91,13 @@ The `indexConfig` map accepts:
 - `` `vector.dimensions` `` — the dimensionality of the indexed vectors (integer)
 - `` `vector.similarity_function` `` — `'cosine'` or `'euclidean'` (string)
 
-Vector indexes use an HNSW (Hierarchical Navigable Small World) approximate
-nearest neighbor index. Without an index, Relate falls back to brute-force
-cosine similarity.
+A vector index is schema metadata (name, label, property, dimensions,
+similarity function); Relate builds no ANN structure. Top-k search is an exact
+scan over the indexed vectors with a bounded top-k heap, so results are exact
+(no recall trade-off, no `ef`-style tuning) and cost grows linearly with the
+number of indexed vectors. The Neo4j HNSW tuning keys (`vector.hnsw.m`,
+`vector.hnsw.ef_construction`) are accepted and reported for compatibility but
+do not change the scan.
 
 ## Top-k nearest neighbor search
 

@@ -194,7 +194,7 @@ Restrict a `MATCH` to the entities of a vector or full-text index (Neo4j's
 is mandatory, and an optional `SCORE AS <var>` exposes the relevance score:
 
 ```cypher
--- Vector (ANN) search: nearest neighbours of a query vector
+-- Vector search (exact top-k): nearest neighbours of a query vector
 MATCH (n:Doc)
 SEARCH n IN (VECTOR INDEX doc_embed FOR $queryVector LIMIT 10)
 RETURN n.title, score AS relevance;

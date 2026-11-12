@@ -177,5 +177,5 @@ RETURN vector([0.1, 0.2, 0.3], 3, FLOAT32) AS v;
 ```
 
 :::tip
-Vector indexes use an HNSW (Hierarchical Navigable Small World) approximate nearest neighbor index for fast top-k search when an index is present; without an index, Relate falls back to brute-force cosine similarity. The index is configured via `OPTIONS` on `CREATE VECTOR INDEX` — set `` `vector.dimensions` `` and `` `vector.similarity_function` `` (`cosine` or `euclidean`) inside `indexConfig`.
+A vector index is schema metadata, not an ANN structure: top-k search is an exact scan over the indexed vectors (bounded top-k heap), so results are exact with no recall trade-off, and cost grows linearly with the number of indexed vectors (ADR-0256). The Neo4j HNSW tuning keys are accepted for compatibility but do not change the scan. The index is configured via `OPTIONS` on `CREATE VECTOR INDEX` — set `` `vector.dimensions` `` and `` `vector.similarity_function` `` (`cosine` or `euclidean`) inside `indexConfig`.
 :::
