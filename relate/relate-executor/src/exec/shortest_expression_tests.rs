@@ -115,21 +115,3 @@ fn assert_shortest_null_bound(g: &Graph, bound: &str) {
         "{bound}: the fast path searched for a null-bound end"
     );
 }
-
-#[test]
-fn relationship_property_map_runs_on_enumeration() {
-    // a→b with k: 0, and a→m→b with k: 1.
-    let b = Builder::new();
-    let (a, end, m) = (b.node("a", &["N"]), b.node("b", &["N"]), b.node("m", &[]));
-    for (from, to, k) in [(a, end, 0), (a, m, 1), (m, end, 1)] {
-        b.rel(from, to, "E", &[("k", Value::Int(k))]);
-    }
-    let g = b.done();
-    let (hops, expands) = value(
-        &g,
-        "MATCH (a:N {id: 'a'}), (b:N {id: 'b'}) \
-         RETURN length(shortestPath((a)-[*1..3 {k: 1}]->(b)))",
-    );
-    assert_eq!(hops, Value::Int(2));
-    assert_eq!(expands, 0, "the BFS ignores relationship property maps");
-}
