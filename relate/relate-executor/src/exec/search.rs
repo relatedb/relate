@@ -124,7 +124,7 @@ fn fulltext_index_candidates(
         None => fulltext::Analyzer::Standard,
     };
     let kind = EntityKind::from_relationship_flag(detail.relationship);
-    let candidates = fulltext::search(graph, &detail, query, analyzer, offset, limit)
+    let candidates = fulltext::search(graph, &detail, query, analyzer, offset, limit)?
         .into_iter()
         .map(|(id, score)| (materialize_candidate(graph, kind, id), score))
         .collect();

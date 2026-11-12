@@ -637,8 +637,26 @@ RETURN node.title, score;
 index, yielding `(node, score)` or `(relationship, score)` respectively.
 `queryNodes` matches the labels of a node index, `queryRelationships` the
 types of a relationship index; both take the index name and the query
-string, a single token optionally written `property:token`. The `SEARCH`
-clause (see SEARCH) is the current-search replacement.
+string in the Lucene-style query syntax below. The `SEARCH` clause (see
+SEARCH) is the current-search replacement and takes the same syntax.
+
+Fulltext query syntax (shared by `SEARCH ... FULLTEXT INDEX` and the
+procedures):
+
+| Form | Meaning |
+| --- | --- |
+| `a b` / `a OR b` | either term (implicit OR) |
+| `a AND b`, `NOT a` | both terms / exclusion (uppercase operators only) |
+| `property:term` | restrict the term to one indexed property |
+| `term~`, `term~N` | fuzzy: every indexed term within N edits (N = 0, 1 or 2; bare `~` is 2; larger integers clamp to 2; `~x` with 0 <= x < 1 is a minimum similarity, `floor((1-x) * length)` edits; `~1.5` is an error). Insert, delete, substitute and an adjacent transposition each cost one edit. Up to 50 terms per field, closest then most frequent; a closer match scores higher |
+| `term^B` | multiply the clause's score by B (a non-negative number); matching is unchanged |
+| `field:term~N^B` | the forms combine |
+
+A malformed suffix (`term^x`, `term^`, `term^-1`, `term~1.5`, a suffix with no term) is a
+syntax error rather than a stray term. Phrase quotes add no adjacency
+constraint and `+`/`-` clause modifiers are not read. Fuzzy and boost
+behaviour follows Lucene's classic query parser and is calibrated against
+Neo4j 2026.09-enterprise (ADR-0578).
 
 ```cypher
 CREATE FULLTEXT INDEX relNotes FOR ()-[r:RELATED_TO]-() ON EACH [r.note];

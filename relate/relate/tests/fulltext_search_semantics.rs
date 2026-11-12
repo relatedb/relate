@@ -9,6 +9,7 @@
 
 mod common;
 
+use common::assert_syntax_error;
 use common::connection;
 use common::first_column_strings as titles;
 use common::run;
@@ -255,4 +256,230 @@ fn fulltext_procedures_share_the_query_syntax() {
     let mut found = titles(&result);
     found.sort();
     assert_eq!(found, ["lamp of wishes", "magic lamp"]);
+}
+
+/// A people index for the fuzzy / boost scenarios: `Kolleger` is the exact
+/// spelling the queries use, `Kollegger` the one-insertion neighbour.
+fn people_store() -> relate::Connection {
+    let mut c = connection();
+    run(
+        &mut c,
+        "CREATE FULLTEXT INDEX personText IF NOT EXISTS FOR (p:Person) ON EACH [p.name, p.bio]",
+    );
+    run(&mut c, "CALL db.awaitIndexes()");
+    run(
+        &mut c,
+        "CREATE (:Person {name: 'Kollegger', bio: 'graph consultant'}), \
+         (:Person {name: 'Kolleger', bio: 'database consultant'}), \
+         (:Person {name: 'Anna', bio: 'lamp maker'})",
+    );
+    c
+}
+
+fn sorted_names(hits: &[(String, f64)]) -> Vec<String> {
+    let mut names: Vec<String> = hits.iter().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    names
+}
+
+fn search_names(c: &mut relate::Connection, query: &str) -> Vec<(String, f64)> {
+    let result = run(
+        c,
+        &format!(
+            "MATCH (p:Person) \
+             SEARCH p IN (FULLTEXT INDEX personText FOR '{query}' LIMIT 10) \
+             SCORE AS score RETURN p.name AS name, score ORDER BY score DESC, name ASC"
+        ),
+    );
+    scored(&result)
+}
+
+fn procedure_names(c: &mut relate::Connection, query: &str) -> Vec<String> {
+    let result = run(
+        c,
+        &format!(
+            "CALL db.index.fulltext.queryNodes('personText', '{query}') \
+             YIELD node, score RETURN node.name AS name ORDER BY score DESC, name ASC"
+        ),
+    );
+    titles(&result)
+}
+
+/// `term~N` matches near terms (a transposition or one insertion away),
+/// ranks the exact spelling above the neighbour, and `~0` / no suffix are
+/// exact — through the SEARCH clause and the procedure alike.
+#[test]
+fn fuzzy_term_matches_near_spellings() {
+    let mut c = people_store();
+    let hits = search_names(&mut c, "kolleger~1");
+    assert_eq!(
+        hits.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["Kolleger", "Kollegger"]
+    );
+    assert!(hits[0].1 > hits[1].1, "{hits:?}");
+    assert_eq!(
+        procedure_names(&mut c, "kolleger~1"),
+        ["Kolleger", "Kollegger"]
+    );
+
+    for exact in ["kolleger~0", "kolleger"] {
+        assert_eq!(
+            search_names(&mut c, exact)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            ["Kolleger"],
+            "{exact}"
+        );
+    }
+    // A bare `~` is Lucene's default distance 2.
+    assert_eq!(search_names(&mut c, "kollger~").len(), 2);
+    // The suffix digit is never a term: `~1` must not require a token `1`.
+    assert_eq!(search_names(&mut c, "kolleger~1 OR zzz").len(), 2);
+}
+
+/// The reported case: `kolleger~1 AND <other term>` composes — the fuzzy
+/// clause is a MUST any-of group, the other term a plain MUST.
+#[test]
+fn fuzzy_clause_composes_with_boolean_operators() {
+    let mut c = people_store();
+    for (query, expected) in [
+        ("kolleger~1 AND consultant", vec!["Kolleger", "Kollegger"]),
+        ("kolleger~1 AND database", vec!["Kolleger"]),
+        ("kolleger~1 AND lamp", vec![]),
+        ("consultant AND NOT kolleger~0", vec!["Kollegger"]),
+        (
+            "name:kolleger~1 AND bio:consultant",
+            vec!["Kolleger", "Kollegger"],
+        ),
+    ] {
+        let found: Vec<String> = search_names(&mut c, query)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(found, expected, "SEARCH {query}");
+        let mut via_procedure = procedure_names(&mut c, query);
+        via_procedure.sort();
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort();
+        assert_eq!(via_procedure, expected_sorted, "procedure {query}");
+    }
+}
+
+/// `term^B` scales the clause's score without changing which rows match.
+#[test]
+fn boost_reorders_without_changing_the_match_set() {
+    let mut c = people_store();
+    let plain = search_names(&mut c, "consultant lamp");
+    let boosted = search_names(&mut c, "consultant^10 lamp");
+    assert_eq!(sorted_names(&plain), sorted_names(&boosted));
+    // `lamp` is rarer than `consultant`, so Anna leads until `consultant`
+    // is boosted past it.
+    assert_eq!(plain[0].0, "Anna", "{plain:?}");
+    assert_ne!(boosted[0].0, "Anna", "{boosted:?}");
+    // Zero boost keeps the match, scoring 0.
+    let zero = search_names(&mut c, "lamp^0");
+    assert_eq!(zero.len(), 1);
+    assert_eq!(zero[0].1, 0.0);
+    // Boost composes with fuzzy.
+    let both = search_names(&mut c, "kolleger~1^2");
+    let single = search_names(&mut c, "kolleger~1");
+    assert!((both[0].1 - 2.0 * single[0].1).abs() < 1e-9, "{both:?}");
+}
+
+/// A malformed suffix is a syntax error on both entry points, not a stray
+/// term (`lamp^x` must not silently search for `lamp` and `x`).
+#[test]
+fn malformed_fuzzy_and_boost_suffixes_are_syntax_errors() {
+    let mut c = people_store();
+    for query in ["lamp^x", "lamp~1.5", "lamp^-1", "~1"] {
+        let error = c
+            .query(&format!(
+                "MATCH (p:Person) \
+                 SEARCH p IN (FULLTEXT INDEX personText FOR '{query}' LIMIT 5) \
+                 RETURN p.name"
+            ))
+            .expect_err(query);
+        assert_syntax_error(&error);
+        let error = c
+            .query(&format!(
+                "CALL db.index.fulltext.queryNodes('personText', '{query}') YIELD node \
+                 RETURN node.name"
+            ))
+            .expect_err(query);
+        assert_syntax_error(&error);
+    }
+}
+
+/// Pins the live Neo4j 2026.09-enterprise probe values: the closeness
+/// weight is `1 - edits / min(len)` (0.875 at one edit, 0.75 at two on an
+/// 8-character term), integers above 2 clamp, a `0.x` fraction is a
+/// minimum similarity, and `~1x` / a detached `~1` follow Lucene's lexer.
+/// Scores are corpus-dependent, so the assertions are ratios and sets.
+#[test]
+fn fuzzy_matches_the_live_probe_values() {
+    let mut c = connection();
+    run(
+        &mut c,
+        "CREATE FULLTEXT INDEX nameText IF NOT EXISTS FOR (p:Person) ON EACH [p.name]",
+    );
+    run(&mut c, "CALL db.awaitIndexes()");
+    run(
+        &mut c,
+        "CREATE (:Person {name: 'Kolleger'}), (:Person {name: 'Kollegger'}), \
+         (:Person {name: 'Colleger'}), (:Person {name: 'Kolegger'}), \
+         (:Person {name: 'Kolleggar'}), (:Person {name: 'Anna'})",
+    );
+    let hits = |c: &mut relate::Connection, query: &str| -> Vec<(String, f64)> {
+        let result = run(
+            c,
+            &format!(
+                "CALL db.index.fulltext.queryNodes('nameText', '{query}') \
+                 YIELD node, score RETURN node.name AS name, score \
+                 ORDER BY score DESC, name ASC"
+            ),
+        );
+        scored(&result)
+    };
+    let score_of = |hits: &[(String, f64)], name: &str| -> f64 {
+        hits.iter().find(|(n, _)| n == name).expect(name).1
+    };
+
+    let one = hits(&mut c, "kolleger~1");
+    assert_eq!(sorted_names(&one), ["Colleger", "Kolleger", "Kollegger"]);
+    assert_eq!(one[0].0, "Kolleger");
+    assert!((score_of(&one, "Kollegger") / score_of(&one, "Kolleger") - 0.875).abs() < 1e-9);
+    assert!((score_of(&one, "Colleger") / score_of(&one, "Kolleger") - 0.875).abs() < 1e-9);
+
+    let two = hits(&mut c, "kolleger~2");
+    assert_eq!(
+        sorted_names(&two),
+        ["Colleger", "Kolegger", "Kolleger", "Kolleggar", "Kollegger"]
+    );
+    assert!((score_of(&two, "Kolegger") / score_of(&two, "Kolleger") - 0.75).abs() < 1e-9);
+    assert!((score_of(&two, "Kolleggar") / score_of(&two, "Kolleger") - 0.75).abs() < 1e-9);
+
+    // Bare `~` is 2; integers above 2 clamp; `~0` is exact.
+    for same_as_two in ["kolleger~", "kolleger~3", "kolleger~99"] {
+        assert_eq!(hits(&mut c, same_as_two), two, "{same_as_two}");
+    }
+    assert_eq!(sorted_names(&hits(&mut c, "kolleger~0")), ["Kolleger"]);
+    // `~0.8` is a minimum similarity: floor(0.2 * 8) = one edit.
+    assert_eq!(hits(&mut c, "kolleger~0.8"), one);
+    // A detached `~1` binds to the previous word.
+    assert_eq!(hits(&mut c, "kolleger ~1"), one);
+    // `~1x` is a bare `~` plus the separate term `1x`.
+    assert_eq!(hits(&mut c, "kolleger~1x"), two);
+    // A boost scales the clause exactly.
+    let boosted = hits(&mut c, "kolleger~1^2");
+    for (name, score) in &one {
+        assert!(
+            (score_of(&boosted, name) - 2.0 * score).abs() < 1e-9,
+            "{name}"
+        );
+    }
+    // `^1.5` scales by 1.5.
+    let plain = hits(&mut c, "anna");
+    let scaled = hits(&mut c, "anna^1.5");
+    assert!((scaled[0].1 - 1.5 * plain[0].1).abs() < 1e-9);
 }

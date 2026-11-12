@@ -25,6 +25,11 @@
 //! name is accepted (the one [`ANALYZERS`] table below — the same table
 //! `exec::ddl_options`' config validation reads); the names other than
 //! `english` share the standard tokenizer.
+//!
+//! `term~N` (fuzzy, N in 0..=2, bare `~` = 2) expands against each field's
+//! vocabulary by bounded Damerau-Levenshtein distance (see [`distance`]) and
+//! `term^B` multiplies a clause's score; both are parsed in [`query`], their
+//! scoring choices are calibrated against Neo4j 2026.09-enterprise.
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,8 +39,12 @@ use crate::exec::candidates::{index_population, TopWindow};
 use crate::overlay::ExecGraph;
 use crate::redo::IndexDetailSpec;
 
+mod distance;
+mod query;
 mod stemmer;
 
+use distance::bounded_distance;
+use query::{parse, Clause, Occur};
 use stemmer::porter_stem;
 
 /// Live Neo4j's fulltext similarity parameters (fitted on 2026.10.1
@@ -186,72 +195,6 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// How one parsed query clause takes part in the boolean match: Lucene's
-/// `Occur` flags after `AND`/`OR`/`NOT` are folded onto their neighbours.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Occur {
-    Should,
-    Must,
-    MustNot,
-}
-
-#[derive(Debug)]
-struct Clause {
-    occur: Occur,
-    /// The `property:` prefix, if the query named one (the procedure's
-    /// field-filter form; a name outside the index matches nothing).
-    property: Option<String>,
-    term: String,
-}
-
-/// Parse a fulltext query string into analyzer-produced clauses.
-///
-/// `AND`/`OR`/`NOT` (uppercase only — lowercase words stay terms, so
-/// `'princess AND and NOT kingdom'` requires the token `and`) bind to
-/// their neighbours the way Lucene's `Occur` flags do; juxtaposed terms
-/// are `Should` (implicit OR). Parentheses and quotes are separators (see
-/// the module's shortcut note).
-fn parse(query: &str, analyzer: Analyzer) -> Vec<Clause> {
-    let mut clauses: Vec<Clause> = Vec::new();
-    let mut pending = Occur::Should;
-    let words = query.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"'));
-    for word in words.filter(|word| !word.is_empty()) {
-        match word {
-            "AND" | "&&" => {
-                if let Some(last) = clauses.last_mut() {
-                    if last.occur == Occur::Should {
-                        last.occur = Occur::Must;
-                    }
-                }
-                pending = Occur::Must;
-                continue;
-            }
-            "OR" | "||" => {
-                pending = Occur::Should;
-                continue;
-            }
-            "NOT" | "!" => {
-                pending = Occur::MustNot;
-                continue;
-            }
-            _ => {}
-        }
-        let (property, text) = match word.split_once(':') {
-            Some((property, text)) => (Some(property.to_string()), text),
-            None => (None, word),
-        };
-        for term in analyzer.analyze(text) {
-            clauses.push(Clause {
-                occur: pending,
-                property: property.clone(),
-                term,
-            });
-        }
-        pending = Occur::Should;
-    }
-    clauses
-}
-
 /// One indexed property's tokens for one document. The property travels
 /// with its tokens, so a clause's `property:` filter reads fields directly
 /// instead of indexing back into `detail.properties`.
@@ -328,52 +271,145 @@ fn field_stats<'a>(
     stats
 }
 
-/// One clause's BM25 contribution on one document, summed over the fields it
-/// matched (a term present in both `title` and `plot` scores from each, as
-/// Lucene's per-field clauses do); `None` when the clause matches no field.
+/// Lucene's `FuzzyQuery` default cap on the terms one fuzzy clause expands
+/// to (`maxExpansions`); its `prefixLength` default of 0 means no leading
+/// characters are pinned.
+const MAX_FUZZY_EXPANSIONS: usize = 50;
+
+/// One index term a clause may match in a field, with the weight its
+/// closeness to the query term earns (`1.0` for an exact term).
+struct Alternative {
+    term: String,
+    weight: f64,
+}
+
+/// A parsed clause resolved against the index vocabulary: per indexed field
+/// the any-of group of terms it matches there. An exact clause is the group
+/// of one; a fuzzy clause is its bounded expansion. The `property:` filter
+/// is applied here, so a field outside it has no entry.
+struct ResolvedClause<'a> {
+    occur: Occur,
+    boost: f64,
+    by_field: HashMap<&'a str, Vec<Alternative>>,
+}
+
+/// The weight of a fuzzy candidate at edit distance `edits` from a query
+/// term, Lucene's `FuzzyTermsEnum` similarity: `1 - edits / min(|query|,
+/// |candidate|)` in characters, so a closer match outscores a farther one
+/// and an exact match keeps weight 1. A candidate whose distance reaches its
+/// shorter side's length weighs nothing and is not a match.
+///
+/// Calibrated against Neo4j 2026.09-enterprise: scores are exactly this
+/// weight times the term's BM25 (0.875 at one edit, 0.75 at two on an
+/// eight-character term). Lucene's document-frequency blending across the
+/// expanded terms is not modelled — each expanded term scores with its own
+/// idf.
+fn fuzzy_weight(edits: u8, query_chars: usize, candidate_chars: usize) -> f64 {
+    if edits == 0 {
+        return 1.0;
+    }
+    1.0 - f64::from(edits) / query_chars.min(candidate_chars) as f64
+}
+
+/// The bounded expansion of a fuzzy term over one field's vocabulary: every
+/// term within `max_edits`, closest first, then most frequent, then
+/// lexicographic (determinism over the hash-ordered vocabulary), capped at
+/// [`MAX_FUZZY_EXPANSIONS`].
+fn expand_fuzzy(term: &str, max_edits: u8, stat: &FieldStats) -> Vec<Alternative> {
+    let term_chars: Vec<char> = term.chars().collect();
+    let query_chars = term_chars.len();
+    let mut near: Vec<(u8, usize, &str, f64)> = stat
+        .df
+        .iter()
+        .filter_map(|(candidate, df)| {
+            let edits = bounded_distance(&term_chars, candidate, max_edits)?;
+            let weight = fuzzy_weight(edits, query_chars, candidate.chars().count());
+            (weight > 0.0).then_some((edits, *df, candidate.as_str(), weight))
+        })
+        .collect();
+    near.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then_with(|| a.2.cmp(b.2)));
+    near.truncate(MAX_FUZZY_EXPANSIONS);
+    near.into_iter()
+        .map(|(_, _, candidate, weight)| Alternative {
+            term: candidate.to_string(),
+            weight,
+        })
+        .collect()
+}
+
+fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> ResolvedClause<'a> {
+    let by_field = stats
+        .iter()
+        .filter(|(field, _)| {
+            clause
+                .property
+                .as_deref()
+                .is_none_or(|wanted| wanted == **field)
+        })
+        .map(|(field, stat)| {
+            let alternatives = match clause.fuzzy {
+                None => vec![Alternative {
+                    term: clause.term.clone(),
+                    weight: 1.0,
+                }],
+                Some(max_edits) => expand_fuzzy(&clause.term, max_edits, stat),
+            };
+            (*field, alternatives)
+        })
+        .collect();
+    ResolvedClause {
+        occur: clause.occur,
+        boost: clause.boost,
+        by_field,
+    }
+}
+
+/// One clause's BM25 contribution on one document, summed over the fields
+/// and alternatives it matched (a term present in both `title` and `plot`
+/// scores from each, as Lucene's per-field clauses do; each fuzzy
+/// alternative scales by its closeness weight), times the clause's boost;
+/// `None` when the clause matches no field.
 fn clause_score(
-    clause: &Clause,
+    clause: &ResolvedClause<'_>,
     doc: &[DocField<'_>],
     stats: &HashMap<&str, FieldStats>,
 ) -> Option<f64> {
     let mut score = 0.0;
     let mut matched = false;
     for field in doc {
-        if clause
-            .property
-            .as_ref()
-            .is_some_and(|wanted| wanted != field.property)
-        {
+        let Some(alternatives) = clause.by_field.get(field.property) else {
             continue;
+        };
+        for alternative in alternatives {
+            let tf = field
+                .tokens
+                .iter()
+                .filter(|token| **token == alternative.term)
+                .count();
+            if tf == 0 {
+                continue;
+            }
+            matched = true;
+            // Both lookups are invariants of the one statistics pass: every
+            // indexed property has an entry, and a term this document
+            // carries was counted into that field's document frequency.
+            let stat = stats
+                .get(field.property)
+                .expect("statistics exist for every indexed property");
+            let df = stat
+                .df
+                .get(&alternative.term)
+                .copied()
+                .expect("a carried token is in the field's document frequency table");
+            let n = stat.docs as f64;
+            let idf = (1.0 + (n - df as f64 + 0.5) / (df as f64 + 0.5)).ln();
+            let dl = field.tokens.len() as f64;
+            let avgdl = stat.total_len as f64 / n;
+            let tf = tf as f64;
+            score += alternative.weight * idf * tf / (tf + K1 * (1.0 - B + B * dl / avgdl));
         }
-        let tf = field
-            .tokens
-            .iter()
-            .filter(|token| **token == clause.term)
-            .count();
-        if tf == 0 {
-            continue;
-        }
-        matched = true;
-        // Both lookups are invariants of the one statistics pass: every
-        // indexed property has an entry, and a term this document carries
-        // was counted into that field's document frequency.
-        let stat = stats
-            .get(field.property)
-            .expect("statistics exist for every indexed property");
-        let df = stat
-            .df
-            .get(&clause.term)
-            .copied()
-            .expect("a carried token is in the field's document frequency table");
-        let n = stat.docs as f64;
-        let idf = (1.0 + (n - df as f64 + 0.5) / (df as f64 + 0.5)).ln();
-        let dl = field.tokens.len() as f64;
-        let avgdl = stat.total_len as f64 / n;
-        let tf = tf as f64;
-        score += idf * tf / (tf + K1 * (1.0 - B + B * dl / avgdl));
     }
-    matched.then_some(score)
+    matched.then_some(score * clause.boost)
 }
 
 /// The one fulltext scan, windowed: rank the index's matching entities by
@@ -388,7 +424,7 @@ pub(crate) fn search(
     analyzer: Analyzer,
     offset: usize,
     limit: usize,
-) -> Vec<(i64, f64)> {
+) -> Result<Vec<(i64, f64)>> {
     rank(
         graph,
         detail,
@@ -405,7 +441,7 @@ pub(crate) fn search_all(
     detail: &IndexDetailSpec,
     query: &str,
     analyzer: Analyzer,
-) -> Vec<(i64, f64)> {
+) -> Result<Vec<(i64, f64)>> {
     rank(graph, detail, query, analyzer, TopWindow::ranking_all())
 }
 
@@ -429,10 +465,10 @@ fn rank(
     query: &str,
     analyzer: Analyzer,
     mut window: TopWindow,
-) -> Vec<(i64, f64)> {
-    let clauses = parse(query, analyzer);
+) -> Result<Vec<(i64, f64)>> {
+    let clauses = parse(query, analyzer)?;
     if clauses.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // The shared index population (exec::candidates); the document build
     // and the corpus statistics are this scan's own.
@@ -442,6 +478,11 @@ fn rank(
         .map(|(id, properties)| (*id, doc_fields(&detail.properties, properties)))
         .collect();
     let stats = field_stats(&docs, &detail.properties);
+    // Fuzzy clauses expand against each field's vocabulary once per scan.
+    let clauses: Vec<ResolvedClause<'_>> = clauses
+        .iter()
+        .map(|clause| resolve_clause(clause, &stats))
+        .collect();
     // A query with a MUST clause needs no SHOULD to match; a should-only
     // query needs one (Lucene's BooleanQuery contract).
     let needs_should = !clauses.iter().any(|clause| clause.occur == Occur::Must);
@@ -465,7 +506,7 @@ fn rank(
             window.push(score, *id);
         }
     }
-    window.into_sorted_rows()
+    Ok(window.into_sorted_rows())
 }
 
 #[cfg(test)]
@@ -507,45 +548,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_folds_operators_onto_neighbours() {
-        let clauses = parse("princess AND NOT snow", Analyzer::Standard);
-        assert_eq!(clauses.len(), 2);
-        assert_eq!(clauses[0].occur, Occur::Must);
-        assert_eq!(clauses[0].term, "princess");
-        assert_eq!(clauses[1].occur, Occur::MustNot);
-        assert_eq!(clauses[1].term, "snow");
-
-        // Lowercase `and` stays a term: only uppercase words are operators.
-        let clauses = parse("princess AND and NOT kingdom", Analyzer::Standard);
-        assert_eq!(clauses.len(), 3);
-        assert_eq!(clauses[1].occur, Occur::Must);
-        assert_eq!(clauses[1].term, "and");
-        assert_eq!(clauses[2].occur, Occur::MustNot);
-
-        // Juxtaposed terms are implicit OR (all Should).
-        let clauses = parse("lamp lamplighter", Analyzer::Standard);
-        assert!(clauses.iter().all(|clause| clause.occur == Occur::Should));
-
-        // An explicit OR clears a preceding AND's carry-over.
-        let clauses = parse("a AND b OR c", Analyzer::Standard);
-        assert_eq!(
-            clauses
-                .iter()
-                .map(|clause| clause.occur)
-                .collect::<Vec<_>>(),
-            [Occur::Must, Occur::Must, Occur::Should]
-        );
-    }
-
-    #[test]
-    fn parse_splits_a_property_prefix_per_term() {
-        let clauses = parse("plot:princess", Analyzer::Standard);
-        assert_eq!(clauses.len(), 1);
-        assert_eq!(clauses[0].property.as_deref(), Some("plot"));
-        assert_eq!(clauses[0].term, "princess");
-    }
-
-    #[test]
     fn tokenizer_splits_hyphens_and_lowercases() {
         assert_eq!(
             tokenize("A wish-granting GENIE."),
@@ -554,5 +556,64 @@ mod tests {
         // Live 2026.10.1: `foo_bar` is one token, and `foo` alone does not
         // match a document holding it.
         assert_eq!(tokenize("foo_bar baz"), ["foo_bar", "baz"]);
+    }
+
+    fn stat_of(terms: &[(&str, usize)]) -> FieldStats {
+        FieldStats {
+            docs: 10,
+            total_len: 100,
+            df: terms.iter().map(|(t, df)| (t.to_string(), *df)).collect(),
+        }
+    }
+
+    fn terms(alternatives: &[Alternative]) -> Vec<&str> {
+        alternatives.iter().map(|a| a.term.as_str()).collect()
+    }
+
+    #[test]
+    fn expansion_orders_closest_then_frequent_then_lexicographic() {
+        let stat = stat_of(&[
+            ("kollegger", 1),
+            ("kolleger", 3),
+            ("kollegers", 5),
+            ("kolleges", 5),
+            ("unrelated", 9),
+        ]);
+        let expanded = expand_fuzzy("kolleger", 1, &stat);
+        // Exact first; then distance 1 by df desc, ties lexicographic.
+        assert_eq!(
+            terms(&expanded),
+            ["kolleger", "kollegers", "kolleges", "kollegger"]
+        );
+        assert_eq!(expanded[0].weight, 1.0);
+        assert!(expanded[1].weight < 1.0 && expanded[1].weight > 0.0);
+        // Distance 0 is the exact term only.
+        assert_eq!(terms(&expand_fuzzy("kolleger", 0, &stat)), ["kolleger"]);
+    }
+
+    #[test]
+    fn expansion_is_capped_and_deterministic() {
+        let owned: Vec<(String, usize)> = (0..80).map(|i| (format!("lam{i:02}"), 1)).collect();
+        let vocabulary: Vec<(&str, usize)> =
+            owned.iter().map(|(t, df)| (t.as_str(), *df)).collect();
+        let first = expand_fuzzy("lamp", 2, &stat_of(&vocabulary));
+        assert_eq!(first.len(), MAX_FUZZY_EXPANSIONS);
+        // Same vocabulary, different hash seeds / insertion order.
+        let mut reversed = vocabulary.clone();
+        reversed.reverse();
+        let second = expand_fuzzy("lamp", 2, &stat_of(&reversed));
+        assert_eq!(terms(&first), terms(&second));
+        let mut sorted = terms(&first);
+        sorted.sort();
+        assert_eq!(terms(&first), sorted, "ties break lexicographically");
+    }
+
+    #[test]
+    fn weight_falls_with_distance_and_never_reaches_zero_in_a_match() {
+        assert_eq!(fuzzy_weight(0, 8, 8), 1.0);
+        assert!(fuzzy_weight(1, 8, 9) > fuzzy_weight(2, 8, 9));
+        // A 2-char candidate 2 edits away weighs nothing: not a match.
+        let stat = stat_of(&[("ab", 1)]);
+        assert!(expand_fuzzy("xy", 2, &stat).is_empty());
     }
 }

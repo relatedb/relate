@@ -659,7 +659,7 @@ pub(crate) fn exec_fulltext_query_call(
             // live-fitted BM25 score, ranked best-first, no window.
             let kind = EntityKind::from_relationship_flag(detail.relationship);
             let produced =
-                fulltext::search_all(graph, &detail, &query, fulltext::Analyzer::Standard)
+                fulltext::search_all(graph, &detail, &query, fulltext::Analyzer::Standard)?
                     .into_iter()
                     .map(|(id, score)| {
                         Cow::Owned(BTreeMap::from([
