@@ -42,11 +42,13 @@ runs against a single graph:
   42N79 ``The `USE` clause is not required for administration commands.
   Retry your query without the `USE` clause, and it will be routed
   automatically.``; `USE system` + administration command stays accepted.
-  Composed administration commands with **no** `USE` clause deliberately
-  still run from the user namespace, where Neo4j 2026.09 raises 51N28
-  instead: that boundary is DBMS session-routing and privilege semantics,
-  with no meaning in a single-user embedded engine whose catalog is
-  store-level (ADR-0116 §2's Later references, ADR-0276).
+  A composed `SHOW DATABASES` with **no** `USE` clause fails with 51N28
+  `This is an administration command and it should be executed against the
+  system database: SHOW DATABASES`, wherever it sits — heading the
+  statement, mid-body, or in any `UNION` arm — as Neo4j does (ADR-0590).
+  Statements routed to `system` keep the behavior recorded above:
+  composition is allowed there, limited by the system-namespace whitelist
+  rather than by this rule.
 - No composite, federated, or sharded databases.
 
 ## Transactions are single-level

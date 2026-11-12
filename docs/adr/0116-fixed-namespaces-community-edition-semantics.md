@@ -14,6 +14,13 @@
   captures a permanently empty graph; §7's `cypherlite.system_ontologies`
   segment is decode-only (no id is minted there); §10's slot is never built
   or replaced. The §6 SHOW row and its values stand.
+  ADR-0590 implements the off-system half of §2's 51N28 boundary recorded
+  below: the "deliberately not implemented" divergence is superseded for
+  statements not routed to `system`, where live rejects every composed
+  administration command — a `UNION` arm included — and the engine now does
+  too. The system-routed half stands as recorded: `USE system` plus an
+  administration command stays accepted, and the clauses allowed there
+  remain §4's system-namespace whitelist.
 
 ## Context
 

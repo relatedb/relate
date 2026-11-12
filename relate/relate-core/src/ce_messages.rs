@@ -161,6 +161,21 @@ pub fn use_clause_with_administration_command() -> Error {
     ))
 }
 
+/// ADR-0590: a database-administration command composed with anything but
+/// its own `YIELD` and a trailing `RETURN`, on a statement not routed to
+/// `system` — CE's `NotSystemDatabaseError` (GQLSTATUS 51N28,
+/// `Neo.ClientError.Statement.NotSystemDatabaseError`). Live raises it
+/// whether the command heads the statement or follows other clauses (live
+/// 2026.10.1, verified for `SHOW DATABASES`), and the spec harness pins the
+/// composed-off-system scenarios to it.
+pub fn administration_command_needs_system_database(command: &str) -> Error {
+    Error::semantic(format!(
+        "{}: This is an administration command and it should be executed \
+         against the system database: {command}",
+        ErrorKind::SystemDatabaseRequired.as_str()
+    ))
+}
+
 /// ADR-0229 §1/§2: every statement routed to the `system_ontologies`
 /// namespace other than the ADR-0116 §2 database-administration commands —
 /// reads included, `EXPLAIN`/`PROFILE`-wrapped included (GQLSTATUS 42N17,
@@ -302,6 +317,21 @@ mod tests {
             &unsupported_administration_command("CREATE DATABASE foo"),
             "UnsupportedAdministrationCommand: Unsupported administration command: CREATE DATABASE foo",
         );
+    }
+
+    /// ADR-0590's 51N28 formatter names the command it refused, in CE's own
+    /// wording.
+    #[test]
+    fn administration_command_needs_system_database_names_the_command() {
+        for command in ["SHOW DATABASES", "ALTER DATABASE"] {
+            assert_ce_text(
+                &administration_command_needs_system_database(command),
+                &format!(
+                    "SystemDatabaseRequired: This is an administration command and \
+                     it should be executed against the system database: {command}"
+                ),
+            );
+        }
     }
 
     /// The unknown-graph pair returns the typed variant (ADR-0307) with the

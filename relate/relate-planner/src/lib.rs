@@ -55,8 +55,8 @@ pub use crate::clause_kind::{clause_keyword, clause_mutates_store, clause_projec
 pub use crate::inline::plan_is_bounded_work;
 pub use crate::names::{conditional_declared_columns, query_with_persistent_imports};
 pub use crate::namespaces::{
-    admin_command_heads_statement, composed_show_disallowed_clause, is_database_admin_command,
-    is_show_databases_with_next, is_write, plan_calls_write_procedure,
+    admin_command_heads_statement, composed_show_databases, composed_show_disallowed_clause,
+    is_database_admin_command, is_show_databases_with_next, is_write, plan_calls_write_procedure,
     unsupported_system_clause_names,
 };
 pub use crate::order::{

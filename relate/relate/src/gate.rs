@@ -14,9 +14,9 @@ use relate_core::{ce_messages, Namespace};
 use relate_executor::{is_ontology_store_op, is_ontology_write_procedure};
 use relate_ir::{Clause, Query};
 use relate_planner::{
-    admin_command_heads_statement, composed_show_disallowed_clause, is_database_admin_command,
-    is_write, plan_with_tokens, query_type, unsupported_system_clause_names, LogicalPlan,
-    QueryType,
+    admin_command_heads_statement, composed_show_databases, composed_show_disallowed_clause,
+    is_database_admin_command, is_write, plan_with_tokens, query_type,
+    unsupported_system_clause_names, LogicalPlan, QueryType,
 };
 
 use crate::connection::Connection;
@@ -310,12 +310,10 @@ impl Connection {
     ///   composable-SHOW contract the harness's `USE system SHOW DEFAULT
     ///   DATABASE … SHOW DATABASES …` scenario pins; recorded in ADR-0116
     ///   §2's Later references).
-    /// - Statements without a `USE` clause never hit this gate: §2's
-    ///   any-namespace run stands for them, and the off-system
-    ///   composed-form boundary (Neo4j's 51N28) is deliberately not
-    ///   implemented — a single-user embedded engine with no privileges
-    ///   and a store-level catalog (ADR-0276) has no wrong database a
-    ///   composed administration command could run against.
+    /// - Statements without a `USE` clause never hit this gate: their
+    ///   routing is the session's, so the off-system composed-form
+    ///   boundary (Neo4j's 51N28) belongs to `namespace_gate_error`
+    ///   below, which knows the namespace they resolved to (ADR-0590).
     fn admin_use_gate_error(&self, logical: &LogicalPlan) -> Option<Error> {
         let target = logical.use_target?;
         if target == Namespace::System || !admin_command_heads_statement(logical) {
@@ -328,14 +326,15 @@ impl Connection {
     /// commands, supported administration commands and standalone procedure
     /// calls run (42N17); on a `system_ontologies` session every statement
     /// fails — reads included — with ADR-0229 §2's 42N17 text (the ADR-0116
-    /// §4 42N18 write arm is superseded). Both checks are plan-based — CE
-    /// raises them at semantic-check time — so `plan_gate_classify`
-    /// enforces this gate once, above the EXPLAIN early-return and the
-    /// dispatch split; database-administration commands are exempt
-    /// (ADR-0116 §2, and the only thing that still runs while routed to
-    /// `system_ontologies`, ADR-0229 §1). The exemption is computed here
-    /// from the plan (`is_database_admin_command(logical)`, a pure
-    /// function of the `LogicalPlan` the gate already takes).
+    /// §4 42N18 write arm is superseded); and off `system` a composed
+    /// administration command is CE's 51N28 (ADR-0590). All three are
+    /// plan-based — CE raises them at semantic-check time — so
+    /// `plan_gate_classify` enforces this gate once, above the EXPLAIN
+    /// early-return and the dispatch split; database-administration
+    /// commands are exempt (ADR-0116 §2, and the only thing that still runs
+    /// while routed to `system_ontologies`, ADR-0229 §1). The exemption is
+    /// computed here from the plan (`is_database_admin_command(logical)`, a
+    /// pure function of the `LogicalPlan` the gate already takes).
     fn namespace_gate_error(&self, logical: &LogicalPlan, namespace: Namespace) -> Option<Error> {
         if is_database_admin_command(logical) {
             return None;
@@ -354,7 +353,14 @@ impl Connection {
                         .map(|clauses| ce_messages::unsupported_system_clauses(&clauses))
                 }),
             Namespace::SystemOntologies => Some(ce_messages::system_ontologies_not_queryable()),
-            Namespace::Neo4j => None,
+            // ADR-0590: off `system`, a composed administration command is
+            // CE's 51N28 — the command belongs to the namespace this gate
+            // resolved as *not* that one, whether the routing came from a
+            // `USE` clause or from the session. (The explicit-`USE` spelling
+            // was already answered 42N79 by `admin_use_gate_error` above, and
+            // a `system` target is answered by §4's whitelist arm.)
+            Namespace::Neo4j => composed_show_databases(logical)
+                .map(ce_messages::administration_command_needs_system_database),
         }
     }
 }

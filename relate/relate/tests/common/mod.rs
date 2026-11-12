@@ -47,6 +47,11 @@ pub const WITH_ON_SYSTEM_SUFFIX: &str =
 pub const USE_WITH_ADMIN_SUFFIX: &str =
     "The `USE` clause is not required for administration commands. \
      Retry your query without the `USE` clause, and it will be routed automatically.";
+/// CE's off-system 51N28 text, live-verified 2026-10 (ADR-0590;
+/// Neo.ClientError.Statement.NotSystemDatabaseError). The refused command
+/// is appended by the caller.
+pub const NEEDS_SYSTEM_DATABASE_SUFFIX: &str =
+    "This is an administration command and it should be executed against the system database: ";
 
 pub fn err_text<T>(result: relate::Result<T>) -> String {
     // `err().expect` over `unwrap_err`: no `T: Debug` bound, so callers
@@ -298,6 +303,32 @@ pub fn error_class(
 /// files share one default instead of each wrapping it again.
 pub fn error_class_literal(conn: &mut relate::Connection, statement: &str) -> &'static str {
     error_class(conn, statement, BTreeMap::new())
+}
+
+/// The one assertion for a statement a CE rule must refuse: the error text
+/// ends with the rule's pinned suffix (the class token included) and the
+/// binding reports the matching class. The three plan-based namespace gates
+/// share it, so a shape's expectation is one `(statement, suffix, class)`
+/// row rather than a hand-rolled block per test.
+pub fn assert_ce_rejection(
+    conn: &mut relate::Connection,
+    statement: &str,
+    expected_suffix: &str,
+    expected_class: &str,
+) {
+    // One execution, both facets: the error the statement produced, not a
+    // second run of the same statement for its class.
+    let error = conn.query(statement).expect_err("expected an error");
+    let text = error.to_string();
+    assert!(
+        text.ends_with(expected_suffix),
+        "wrong outcome for {statement:?}: {text:?} does not end with {expected_suffix:?}"
+    );
+    assert_eq!(
+        relate::binding_error_metadata(&error).1,
+        expected_class,
+        "{statement}"
+    );
 }
 
 /// Assert `error` carries the `ArgumentError` class (Neo4j's

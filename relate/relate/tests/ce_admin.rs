@@ -18,7 +18,8 @@ use relate::{Database, Namespace, Value};
 mod common;
 
 use common::{
-    connection, err_text, error_class_literal, USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
+    assert_ce_rejection, connection, err_text, NEEDS_SYSTEM_DATABASE_SUFFIX, USE_WITH_ADMIN_SUFFIX,
+    WITH_ON_SYSTEM_SUFFIX,
 };
 
 /// The statement is echoed verbatim; a leading `CYPHER n` preamble is
@@ -315,33 +316,29 @@ fn with_composing_a_show_command_is_rejected_on_system() {
         "USE system SHOW SETTINGS YIELD name AS s1 WITH 1 AS n RETURN n",
         "USE system SHOW CURRENT GRAPH TYPE YIELD specification AS spec1 WITH 1 AS n RETURN n",
     ] {
-        let err = err_text(conn.query(src));
-        assert!(
-            err.ends_with(&format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}")),
-            "wrong outcome for {src:?}: {err:?}"
-        );
-        assert_eq!(
-            error_class_literal(&mut conn, src),
+        assert_ce_rejection(
+            &mut conn,
+            src,
+            &format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}"),
             "SemanticError",
-            "{src}"
         );
     }
     // The same rejection through the session namespace alone (no `USE`
     // clause): §4 gates the *routed* namespace.
     let db = Database::open(":memory:").unwrap();
     let mut system = db.connect_namespace("system").unwrap();
-    let err = err_text(system.query("SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n"));
-    assert!(
-        err.ends_with(&format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}")),
-        "{err:?}"
+    assert_ce_rejection(
+        &mut system,
+        "SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
+        &format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}"),
+        "SemanticError",
     );
     // The gate is plan-based, so EXPLAIN sees it too.
-    let err = err_text(
-        conn.query("EXPLAIN USE system SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n"),
-    );
-    assert!(
-        err.ends_with(&format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}")),
-        "{err:?}"
+    assert_ce_rejection(
+        &mut conn,
+        "EXPLAIN USE system SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
+        &format!("SemanticError: {WITH_ON_SYSTEM_SUFFIX}"),
+        "SemanticError",
     );
     // Off the `system` namespace the same composition is legal.
     conn.query("SHOW SETTINGS YIELD name AS s1 WITH 1 AS n RETURN n")
@@ -371,29 +368,20 @@ fn use_targeting_non_system_with_administration_command_is_rejected() {
         "USE system_ontologies SHOW DATABASES",
         "EXPLAIN USE neo4j SHOW DATABASES",
     ] {
-        let err = err_text(conn.query(src));
-        assert!(
-            err.ends_with(&format!(
-                "UseClauseWithAdministrationCommand: {USE_WITH_ADMIN_SUFFIX}"
-            )),
-            "wrong outcome for {src:?}: {err:?}"
-        );
-        assert_eq!(
-            error_class_literal(&mut conn, src),
-            "SyntaxError",
-            "{src}: 42N79 is a Neo.ClientError.Statement.SyntaxError"
+        assert_ce_rejection(
+            &mut conn,
+            src,
+            &format!("UseClauseWithAdministrationCommand: {USE_WITH_ADMIN_SUFFIX}"),
+            "SyntaxError", // 42N79 is a Neo.ClientError.Statement.SyntaxError
         );
     }
-    // An administration command later in the body is a catalog read, not
-    // a headed command statement — live CE 2026.09 runs both shapes, and
-    // so does the engine (the head-shape scope of the 42N79 rule).
-    for src in [
-        "USE neo4j MATCH (n) SHOW DATABASES YIELD name RETURN name",
-        "USE neo4j WITH 1 AS n SHOW DATABASES YIELD name RETURN name",
-    ] {
-        conn.query(src)
-            .unwrap_or_else(|e| panic!("{src} should still run: {e}"));
-    }
+    // A command later in the body is not headed, so it is not this rule's
+    // subject: it is the off-system 51N28 instead (ADR-0590), asserted in
+    // `composed_show_databases_is_rejected_off_system` below. The distinction
+    // is live's, and the earlier record that live *ran* those mid-body shapes
+    // is superseded — live 2026.10.1 rejects them, as does Neo4j's own
+    // acceptance suite, whose mid-body `SHOW FUNCTIONS … SHOW DATABASES …`
+    // scenario the harness pins.
 }
 
 /// The complement the 42N79 rule keeps: `USE system` + administration
@@ -434,27 +422,44 @@ fn use_system_with_administration_command_stays_accepted() {
     assert_eq!(result.rows.len(), 1);
 }
 
-/// The deliberate divergence the 42N79 rule must not disturb: a composed
-/// administration command with no `USE` clause still runs from the user
-/// namespace (Neo4j's off-system 51N28 boundary is DBMS session-model
-/// semantics — session routing and privilege enforcement — with no meaning
-/// in a single-user embedded engine with a store-level catalog, ADR-0276;
-/// user decision 2026-11-04).
+/// The off-system 51N28 boundary (ADR-0590): a composed administration
+/// command with no `USE` clause fails from the user namespace, as it does on
+/// the server. The `USE system` forms stay accepted — that database is where
+/// the command belongs, and what limits the clauses there is the
+/// system-namespace whitelist (the test above).
+///
+/// `SHOW DATABASES` is the whole scope: `ALTER DATABASE`, the other §2
+/// command, cannot be composed at all — every composed form of it is
+/// rejected before this gate (the front end's stand-alone rule, or 51N27).
+/// The user- and role-management commands (`SHOW USERS`/`ROLES`/`SERVERS`,
+/// `TERMINATE TRANSACTIONS`) are a follow-up: the §2 vocabulary also decides
+/// which commands run from any namespace (ADR-0116 §2, ADR-0229 §1), so
+/// extending it is its own decision.
 #[test]
-fn composed_administration_command_without_use_still_runs_on_the_user_namespace() {
+fn composed_show_databases_is_rejected_off_system() {
     let mut conn = connection();
-    let result = conn
-        .query("SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n")
-        .unwrap();
-    assert_eq!(
-        result.rows,
-        vec![vec![Value::Int(1)]; 3],
-        "the three fixed namespaces each project one WITH row"
-    );
-    // The MATCH-composed form runs too (the harness's
-    // `@fails:admin-session-boundary` divergence shapes).
-    conn.query("SHOW DATABASES YIELD name MATCH (n) RETURN n")
-        .unwrap();
+    for src in [
+        "SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
+        "SHOW DATABASES YIELD name MATCH (n) RETURN n",
+        "SHOW DATABASES YIELD name UNWIND [1] AS n RETURN n",
+        "SHOW FUNCTIONS YIELD name AS function SHOW DATABASES YIELD name AS database RETURN *",
+        "UNWIND ['a'] AS name RETURN name AS x \
+         UNION SHOW DATABASES YIELD name RETURN name AS x",
+        // Mid-body behind a `USE neo4j`: not headed, so not the 42N79 rule's
+        // subject either (live 2026.10.1 rejects both).
+        "USE neo4j MATCH (n) SHOW DATABASES YIELD name RETURN name",
+        "USE neo4j WITH 1 AS n SHOW DATABASES YIELD name RETURN name",
+        // The gate is plan-based, so EXPLAIN sees the rejection too — the
+        // sibling gate tests pin their own EXPLAIN shape the same way.
+        "EXPLAIN SHOW DATABASES YIELD name WITH 1 AS n RETURN n",
+    ] {
+        assert_ce_rejection(
+            &mut conn,
+            src,
+            &format!("SystemDatabaseRequired: {NEEDS_SYSTEM_DATABASE_SUFFIX}SHOW DATABASES"),
+            "SemanticError", // 51N28 rides the nested SystemDatabaseRequired token
+        );
+    }
 }
 
 /// The bare §2 commands keep their ADR-0116 §2 any-namespace run from the
