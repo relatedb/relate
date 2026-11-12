@@ -265,7 +265,11 @@ row = cursor.fetchone()
 row["name"]        # "Alice" — DB-API habit
 row.name           # "Alice" — driver-style attribute access (read-only)
 row.keys()         # ["name", "age"] — column order, not insertion order
-row.data()         # {"name": "Alice", "age": 30} — a plain dict copy
+row.data()         # {"name": "Alice", "age": 30} — a plain dict copy, converted
+                   # like the driver: nodes/relationships become property dicts,
+                   # paths a list of node dicts and relationship types
+row.to_dict()      # JSON-ready copy that keeps ids, element ids, labels, types
+                   # and endpoints (see the API spec)
 ```
 
 Unaliased columns work too — `"p.name"` is a valid dict key, and attribute
