@@ -20,6 +20,7 @@ use super::create::{
     reject_null_merge_props, resolve_create_patterns,
 };
 use super::match_clause::match_paths;
+use super::one_path::PathFilters;
 use super::pushdown::Residual;
 use super::scope::refresh_rows;
 use super::unwind::{UnwindFeed, UnwindStats};
@@ -98,9 +99,17 @@ pub(super) fn exec_merge(
     for row in rows {
         reject_null_merge_props(graph, &row, &match_pattern, params, qctx.cypher_version)?;
         let none = Residual::empty();
+        // Resolved per row: MERGE creates between rows, so no table (and
+        // no reach cache in it) may outlive the graph state it read.
+        let filters = PathFilters::resolve_all(
+            graph,
+            std::slice::from_ref(&match_pattern),
+            MatchMode::DifferentRelationships,
+        );
         let matched = match_paths(
             ExecCtx::new(graph, params, qctx.cypher_version),
             std::slice::from_ref(&match_pattern),
+            &filters,
             MatchMode::DifferentRelationships,
             row.clone(),
             &none,

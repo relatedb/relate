@@ -165,6 +165,9 @@ struct GpmCtx<'a> {
 /// re-resolution per row, frame, or iteration.
 pub(crate) struct GpmFilters {
     pub(crate) filters: Vec<ElementFilter>,
+    /// The shortest-path route's reach cache — pattern-tier state, so it
+    /// lives as long as the table does (one clause evaluation).
+    reach: shortest_route::ReachCache,
 }
 
 /// One pattern element's resolved filter slot — see [`GpmFilters`].
@@ -182,6 +185,7 @@ impl GpmFilters {
     pub(crate) fn resolve(graph: &ExecGraph<'_>, path: &PathPattern) -> Self {
         GpmFilters {
             filters: Self::resolve_elements(graph, &path.elements),
+            reach: shortest_route::ReachCache::default(),
         }
     }
 

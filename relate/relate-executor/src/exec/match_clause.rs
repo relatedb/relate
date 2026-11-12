@@ -307,6 +307,11 @@ pub(crate) fn match_clause(
         params,
         cypher_version,
     });
+    // LABS-801: the patterns' resolved filters, built once per clause
+    // evaluation, not per row — the table also carries the pattern-tier
+    // state the shortest-path route shares between rows (its reach
+    // cache). The graph is read-only for the whole loop.
+    let filters = PathFilters::resolve_all(graph, patterns, match_mode);
     for row in rows {
         graph.cancel_tick()?;
         if cap.as_ref().is_some_and(|c| c.full()) {
@@ -320,6 +325,7 @@ pub(crate) fn match_clause(
         let mut matched = match_paths(
             ctx,
             patterns,
+            &filters,
             match_mode,
             row.clone(),
             &residual,
@@ -387,9 +393,11 @@ pub(crate) fn bind_pattern_nulls(row: &mut Row, patterns: &[PathPattern]) {
     row.stamp_nulls(&rung);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn match_paths(
     ctx: ExecCtx<'_>,
     patterns: &[PathPattern],
+    filters: &[PathFilters],
     match_mode: MatchMode,
     row: Row,
     residual: &Residual<'_>,
@@ -472,10 +480,9 @@ pub(crate) fn match_paths(
         // carry-or-drop decision ([`MatchTail::store_row`]'s), never a
         // second `!last_pat` encoding that must stay hand-in-sync with it.
         let keep_used = p.is_shortest_path_function && matches!(tail, MatchTail::Carry);
-        // LABS-801: the pattern's rel-type filters resolve once per
-        // pattern, here at the pattern tier beside the tail — never per
-        // row of the loop below.
-        let filters = PathFilters::resolve(ctx.graph, p, match_mode);
+        // LABS-801: the pattern's rel-type filters arrive resolved, one
+        // table per pattern, from the caller's widest loop.
+        let filters = &filters[pi];
         for (r, used) in current {
             ctx.graph.cancel_tick()?;
             if last_pat && cap.as_ref().is_some_and(|c| c.full()) {
@@ -502,7 +509,7 @@ pub(crate) fn match_paths(
                 match_one_path(
                     ctx,
                     p,
-                    &filters,
+                    filters,
                     r,
                     seed_used,
                     match_mode,

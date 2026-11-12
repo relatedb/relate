@@ -23,6 +23,7 @@ use crate::store::RelTypes;
 
 pub(crate) mod layered;
 mod pair;
+mod reach;
 
 /// 51N23: what a shortest-path route does when a start and end pair
 /// resolves to one node.

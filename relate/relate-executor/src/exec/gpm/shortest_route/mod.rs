@@ -21,9 +21,11 @@ use crate::row::Row;
 
 mod filters;
 mod guard;
+mod reach_cache;
 mod route;
 mod trail_walk;
 
+pub(super) use reach_cache::ReachCache;
 use route::Route;
 
 use super::sink::MatchedSink;
@@ -42,6 +44,8 @@ mod filters_tests;
 mod fixtures;
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod reach_tests;
 #[cfg(test)]
 mod reject_tests;
 #[cfg(test)]
@@ -118,7 +122,7 @@ pub(super) fn match_shortest_route<'a>(
     // The constructor declines (`None`) before the sink is touched, and
     // takes the sink itself — its halt cell and residual are the route's
     // by construction, not two arguments that must agree.
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink) else {
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, &filters.reach) else {
         return Ok(false);
     };
     route.run(&mut sink)?;
@@ -166,7 +170,7 @@ pub(crate) fn fold_shortest_route(
     let residual = Residual::empty();
     let halt = Cell::new(false);
     let mut sink = MatchedSink::fold(&residual, &halt, fold);
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink) else {
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, &filters.reach) else {
         return Ok(false);
     };
     route.run(&mut sink)?;

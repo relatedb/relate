@@ -59,6 +59,22 @@ impl PathFilters {
     }
 }
 
+impl PathFilters {
+    /// One table per pattern, in order — what [`match_paths`] indexes.
+    ///
+    /// [`match_paths`]: super::match_clause::match_paths
+    pub(crate) fn resolve_all(
+        graph: &ExecGraph<'_>,
+        patterns: &[PathPattern],
+        match_mode: MatchMode,
+    ) -> Vec<Self> {
+        patterns
+            .iter()
+            .map(|path| Self::resolve(graph, path, match_mode))
+            .collect()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn match_one_path(
     ctx: ExecCtx<'_>,

@@ -23,6 +23,7 @@ use crate::shortest::{pair, path_from_trail, Search};
 use super::super::sink::MatchedSink;
 use super::filters::{PathFilter, RouteFilters};
 use super::guard::Shape;
+use super::reach_cache::ReachCache;
 use super::trail_walk;
 
 /// The pair product's candidate bound: past it, the product's
@@ -202,6 +203,9 @@ pub(super) struct Route<'a> {
     /// sink's cap-full cell: raised once it needs no more rows, read only
     /// through [`Self::halted`]. Every sink has one, so it is not optional.
     halt: &'a Cell<bool>,
+    /// The pattern's reach cache: consecutive pair partitions from one
+    /// start share one reach set (see [`ReachCache`]).
+    reach: &'a ReachCache,
 }
 
 impl<'a> Route<'a> {
@@ -218,6 +222,7 @@ impl<'a> Route<'a> {
         row: &'a Row,
         shape: Shape<'a>,
         sink: &MatchedSink<'a, '_>,
+        reach: &'a ReachCache,
     ) -> Option<Self> {
         // The route's halt cell and its path filter both come FROM the
         // sink: the route stops when its sink halts, and the filter is
@@ -244,6 +249,7 @@ impl<'a> Route<'a> {
             search,
             filters,
             halt,
+            reach,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
         };
@@ -592,6 +598,10 @@ impl<'a> Route<'a> {
             return Ok(());
         };
         self.partition(s, e, &srow, out, || {
+            // A reachable end still takes the search below.
+            if self.reach.unreachable(&self.search, s, e)? {
+                return Ok(Vec::new());
+            }
             if self.shape.all {
                 self.search
                     .dag(s, self.shape.all, None, |n, _| Ok(n == e))?
