@@ -19,6 +19,7 @@ use super::{Graph, LabelCache};
 /// mutated node's labels stand on the rel's start side when the node is
 /// the rel's start ([`IncidentRel::ordered`]) — so every consumer
 /// consults it instead of re-deriving the side.
+#[derive(Clone, Copy)]
 pub(super) struct IncidentRel {
     /// The mutated node's side of the rel. Private (the LABS-515
     /// boundary closure: the producers set it through the constructors,

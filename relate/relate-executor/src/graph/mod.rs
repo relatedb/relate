@@ -673,7 +673,7 @@ impl Graph {
         let after = self.charge_after_ops(ops);
         let crate::memory::RedoDelta {
             total: mut delta,
-            tombstone_spill,
+            mut spill,
         } = crate::memory::estimate_redo_delta(
             &self.interner,
             ops,
@@ -685,7 +685,9 @@ impl Graph {
             self.rels.span(),
             &after,
         );
-        delta += self.estimate_adj_delta(ops);
+        let (adj_refusable, adj_spill) = self.estimate_adj_delta(ops);
+        delta += adj_refusable + adj_spill;
+        spill += adj_spill;
         delta += self.estimate_intern_delta(ops);
         // LABS-370 (security follow-up): the count family's entry growth
         // is committed structure too — an oversized-label write must be
@@ -710,11 +712,18 @@ impl Graph {
         }
         crate::memory::RedoDelta {
             total: delta,
-            tombstone_spill,
+            spill,
         }
     }
 
-    fn estimate_adj_delta(&self, ops: &[RedoOp]) -> i64 {
+    /// The adjacency share of a batch's live-size delta, split into the
+    /// refusable growth — a create's hop and slot growth (dense span or the
+    /// side-map entry a wide id takes, as the store's own estimator charges
+    /// it), plus a founding delete's dense side-table span — and the spill
+    /// the checkpoint fold reclaims: a delete's region, chunk, and tombstone
+    /// terms, and the side-map entry a founding delete at a wide id takes
+    /// (ADR-0529).
+    fn estimate_adj_delta(&self, ops: &[RedoOp]) -> (i64, i64) {
         let mut out: HashMap<NodeId, Vec<(u32, usize)>> = HashMap::new();
         let mut inn: HashMap<NodeId, Vec<(u32, usize)>> = HashMap::new();
         let mut fresh_ids = FreshIds::new();
@@ -725,75 +734,130 @@ impl Graph {
         let mut in_span = self.in_adj.span();
         let mut out_side = HashSet::new();
         let mut in_side = HashSet::new();
+        // One traversal carries both halves: the create terms, and the
+        // batch's own rel identities and pending delete tombstones the
+        // delete half prices. A rel created earlier in this batch is
+        // invisible to the committed store, so its delete resolves from
+        // `created` — only creates already walked are in it, so a delete
+        // that precedes its create tombstones nothing, as in the apply path;
+        // a rel the store holds comes from its live version.
+        let mut created: HashMap<RelId, (NodeId, NodeId, u32)> = HashMap::new();
+        let mut pending_out: HashMap<NodeId, HashMap<u32, HashSet<RelId>>> = HashMap::new();
+        let mut pending_in: HashMap<NodeId, HashMap<u32, HashSet<RelId>>> = HashMap::new();
         for op in ops {
-            let RedoOp::CreateRel {
-                start,
-                end,
-                rel_type,
-                ..
-            } = op
-            else {
-                continue;
-            };
-            let type_id = fresh_ids.resolve(self, rel_type);
-            if !self.out_adj.contains_key(start) {
-                delta += span_growth(&mut out_span, *start, slot, overflow, &mut out_side);
+            match op {
+                RedoOp::CreateRel {
+                    id,
+                    start,
+                    end,
+                    rel_type,
+                    ..
+                } => {
+                    let type_id = fresh_ids.resolve(self, rel_type);
+                    created.insert(*id, (*start, *end, type_id));
+                    // One op touches both sides by the same rule, so each
+                    // side's store, sealed region, span, side-map set and
+                    // pending map travel together as one named value and
+                    // the loop runs once per endpoint — the pair the
+                    // incident and detach walks already iterate as a
+                    // slice. The fields name the side's slots because the
+                    // two store refs and the three mutable slots have
+                    // pairwise-identical types: a tuple position could
+                    // swap an out/in pair silently, a field name cannot.
+                    struct SideAdmission<'a, 'm> {
+                        adj: &'a IdVec<TypedAdj>,
+                        sealed: &'a IdVec<SealedAdj>,
+                        node: NodeId,
+                        span: &'m mut usize,
+                        side: &'m mut HashSet<NodeId>,
+                        pending: &'m mut HashMap<NodeId, Vec<(u32, usize)>>,
+                    }
+                    let mut sides = [
+                        SideAdmission {
+                            adj: &self.out_adj,
+                            sealed: &self.sealed_out,
+                            node: *start,
+                            span: &mut out_span,
+                            side: &mut out_side,
+                            pending: &mut out,
+                        },
+                        SideAdmission {
+                            adj: &self.in_adj,
+                            sealed: &self.sealed_in,
+                            node: *end,
+                            span: &mut in_span,
+                            side: &mut in_side,
+                            pending: &mut inn,
+                        },
+                    ];
+                    for side in &mut sides {
+                        if !side.adj.contains_key(&side.node) {
+                            let (dense, side_map) =
+                                span_growth(side.span, side.node, slot, overflow, side.side);
+                            delta += dense + side_map;
+                        }
+                        delta += bump_adj(side.pending, side.node, type_id, || {
+                            hop_counts(side.adj, side.sealed, side.node)
+                        });
+                    }
+                }
+                RedoOp::DeleteRel { id } => {
+                    let Some((start, end, type_id)) = created
+                        .get(id)
+                        .copied()
+                        // The store's rels answer through the one live-identity
+                        // spelling (a dead version's delete tombstones nothing,
+                        // as in the apply path).
+                        .or_else(|| self.rel_live_identity(*id))
+                    else {
+                        continue;
+                    };
+                    pending_out
+                        .entry(start)
+                        .or_default()
+                        .entry(type_id)
+                        .or_default()
+                        .insert(*id);
+                    pending_in
+                        .entry(end)
+                        .or_default()
+                        .entry(type_id)
+                        .or_default()
+                        .insert(*id);
+                }
+                _ => {}
             }
-            if !self.in_adj.contains_key(end) {
-                delta += span_growth(&mut in_span, *end, slot, overflow, &mut in_side);
-            }
-            delta += bump_adj(&mut out, *start, type_id, || {
-                hop_counts(&self.out_adj, &self.sealed_out, *start)
-            });
-            delta += bump_adj(&mut inn, *end, type_id, || {
-                hop_counts(&self.in_adj, &self.sealed_in, *end)
-            });
         }
-        // A delete of a hop in a type that never sealed records the type's
-        // first tombstone on an on-demand zero-hop region (ADR-0551), one per
-        // endpoint that does not hold one yet. The key carries the side: a
-        // self-loop's two endpoints are one node, but two side tables.
-        let mut regions: HashSet<(bool, NodeId, u32)> = HashSet::new();
-        let mut sealed_out_span = self.sealed_out.span();
-        let mut sealed_in_span = self.sealed_in.span();
-        let mut sealed_out_side = HashSet::new();
-        let mut sealed_in_side = HashSet::new();
+        // Each delete records one tombstone per endpoint that does not hold
+        // one yet (ADR-0551); the region, chunk, and tombstone terms are
+        // reclaimed at the checkpoint fold, so they are spill and never
+        // refuse a batch (ADR-0529: a delete at the cap commits). The
+        // founding side-table slot is the exception — the dense span only
+        // grows (ADR-0086) — so it stays refusable.
+        let (slot_growth, delete_spill) = self.estimate_delete_spill(&pending_out, &pending_in);
+        (delta + slot_growth, delete_spill)
+    }
+
+    /// The batch's delete terms, as `(refusable, spill)`: every delete
+    /// records one tombstone per endpoint that does not hold one yet
+    /// (ADR-0551) — a sealed chunk grows its tombstone vec, a never-sealed
+    /// type adds its on-demand chunk to the endpoint's region, all reclaimed
+    /// at the next checkpoint fold and so spill that never refuses a batch
+    /// (ADR-0529) — while a founding delete's dense side-table span is
+    /// permanent (ADR-0086) and stays refusable; its side-map entry,
+    /// reclaimed with the region, is spill like the rest.
+    fn estimate_delete_spill(
+        &self,
+        pending_out: &HashMap<NodeId, HashMap<u32, HashSet<RelId>>>,
+        pending_in: &HashMap<NodeId, HashMap<u32, HashSet<RelId>>>,
+    ) -> (i64, i64) {
         let sealed_slot = sealed_slot();
         let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_value());
-        for op in ops {
-            let RedoOp::DeleteRel { id } = op else {
-                continue;
-            };
-            let Some((start, end, type_id)) = self.rels.get(id).map(|vers| {
-                // Every version of one rel id shares its endpoints and type.
-                let newest = vers.last();
-                (newest.live.start, newest.live.end, newest.live.type_id)
-            }) else {
-                continue;
-            };
-            for (incoming, node, sealed) in [
-                (false, start, &self.sealed_out),
-                (true, end, &self.sealed_in),
-            ] {
-                let region = sealed.get(&node);
-                let sealed = region
-                    .as_ref()
-                    .is_some_and(|region| region.chunk(type_id).is_some());
-                if !sealed && regions.insert((incoming, node, type_id)) {
-                    // A brand-new side-table entry also grows the slot array.
-                    if region.is_none() {
-                        let (span, side) = if incoming {
-                            (&mut sealed_in_span, &mut sealed_in_side)
-                        } else {
-                            (&mut sealed_out_span, &mut sealed_out_side)
-                        };
-                        delta += span_growth(span, node, sealed_slot, sealed_overflow, side);
-                    }
-                    delta += crate::adjacency::fresh_sealed_region_bytes() as i64;
-                }
-            }
-        }
-        delta
+        let (out_refusable, out_spill) =
+            price_side(&self.sealed_out, pending_out, sealed_slot, sealed_overflow);
+        let (in_refusable, in_spill) =
+            price_side(&self.sealed_in, pending_in, sealed_slot, sealed_overflow);
+        (out_refusable + in_refusable, out_spill + in_spill)
     }
 
     fn estimate_intern_delta(&self, ops: &[RedoOp]) -> i64 {
@@ -1443,29 +1507,32 @@ impl FreshIds {
     }
 }
 
-/// Bytes the slot array gains when `id` extends `span`. An id the store
-/// will not place in the array adds one side-map entry, once per id in
-/// this batch.
+/// The slot array's growth when `id` extends `span`, as `(dense, side_map)`:
+/// the dense-span bytes, which never shrink (ADR-0086), and the side-map
+/// entry an id the store will not place in the array adds instead, once per
+/// id in this batch. A create charges both as refusable — the store's own
+/// estimator does the same ([`Shapes::note_span`]) — while a founding delete
+/// keeps only the dense span refusable: its side-map entry is reclaimed with
+/// the region, so ADR-0529 protects it from refusal. The placement itself is
+/// [`place_in_span`](crate::memory::place_in_span)'s one spelling — the same
+/// rule the store's estimator walks — so only the permanence routing is this
+/// caller's.
 fn span_growth(
     span: &mut usize,
     id: NodeId,
     slot: u64,
     overflow: u64,
     side: &mut HashSet<NodeId>,
-) -> i64 {
-    let Some(idx) = usize::try_from(id).ok() else {
-        return 0;
-    };
-    let need = idx.saturating_add(1);
-    if need <= *span {
-        return 0;
+) -> (i64, i64) {
+    match crate::memory::place_in_span(span, id, slot) {
+        // An id the array cannot index is refused by the commit's own
+        // validation before anything applies, so it prices nothing.
+        None | Some(crate::memory::SpanPlacement::Inside) => (0, 0),
+        Some(crate::memory::SpanPlacement::Grew(bytes)) => (bytes as i64, 0),
+        Some(crate::memory::SpanPlacement::SideEntry) => {
+            (0, if side.insert(id) { overflow as i64 } else { 0 })
+        }
     }
-    let Some(after) = crate::memory::reservable_span_bytes(need, slot) else {
-        return if side.insert(id) { overflow as i64 } else { 0 };
-    };
-    let before = crate::memory::id_vec_bytes(*span, slot);
-    *span = need;
-    after as i64 - before as i64
 }
 
 /// One node's adjacency floor in one direction: the delta hop bytes plus its
@@ -1473,6 +1540,67 @@ fn span_growth(
 fn adj_floor(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> u64 {
     map.get(&node).map(|adj| adj.floor_bytes()).unwrap_or(0)
         + sealed.get(&node).map_or(0, |region| region.floor_bytes())
+}
+
+/// One side's share of the delete terms
+/// ([`Graph::estimate_delete_spill`](Graph::estimate_delete_spill)'s phase
+/// 2), as the `(refusable, spill)` pair: per node, the region-level terms —
+/// the node's dense slot span (permanent, refusable) or its reclaimed
+/// side-map entry (spill), and the chunks-vec entry growth across every
+/// joining type, one
+/// before-and-after term per region, never one per type, or the reserved
+/// model's pow2 steps misprice a batch that joins several — then each key's
+/// own terms (all fold-reclaimed, spill): a sealed chunk's tombstone-vec
+/// growth, or a joining chunk's empty stream and tombstones.
+fn price_side(
+    sealed: &IdVec<SealedAdj>,
+    pending: &HashMap<NodeId, HashMap<u32, HashSet<RelId>>>,
+    sealed_slot: u64,
+    sealed_overflow: u64,
+) -> (i64, i64) {
+    let mut span = sealed.span();
+    let mut side = HashSet::new();
+    let mut refusable = 0i64;
+    let mut spill = 0i64;
+    for (node, keys) in pending {
+        let region = sealed.get(node);
+        let mut joining = 0;
+        for (type_id, ids) in keys {
+            match region.as_ref().and_then(|region| region.chunk(*type_id)) {
+                // A tombstone the chunk already holds is updated in place —
+                // a delete after a reposition adds no slot.
+                Some(chunk) => {
+                    let fresh = chunk.fresh_tombstone_count(ids);
+                    spill += chunk.tombstone_growth_bytes(fresh) as i64;
+                }
+                // The type never sealed: its on-demand chunk joins the
+                // region, bringing the empty stream and its tombstones.
+                None => {
+                    joining += 1;
+                    spill += crate::adjacency::fresh_sealed_chunk_floor_bytes(ids.len()) as i64;
+                }
+            }
+        }
+        if joining > 0 {
+            match region.as_ref() {
+                // A founding delete also grows the node's slot in the side
+                // table — the dense span permanently (refusable), a wide id's
+                // side-map entry only until the region empties (spill); the
+                // region it founds holds nothing yet.
+                None => {
+                    let (dense, side_map) =
+                        span_growth(&mut span, *node, sealed_slot, sealed_overflow, &mut side);
+                    refusable += dense;
+                    spill += side_map;
+                    spill += crate::adjacency::fresh_sealed_chunk_entry_bytes(joining) as i64;
+                }
+                Some(region) => {
+                    spill += region.chunk_entry_growth_bytes(joining) as i64;
+                }
+            }
+        }
+    }
+    (refusable, spill)
 }
 
 fn bump_adj(

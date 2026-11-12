@@ -1699,9 +1699,23 @@ fn self_loop_delete_charges_both_sealed_regions() {
     g.delete_rel(x2);
     g.commit_write();
 
-    let region = crate::adjacency::fresh_sealed_region_bytes() as i64;
-    let self_loop = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: loop_id }]);
-    let pair = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: pair_id }]);
+    // The founding region term derived from the layout primitives, not the
+    // helper it checks: one chunks-vec entry from empty, the empty encoded
+    // stream, one tombstone slot.
+    let entry = std::mem::size_of::<(u32, crate::adjacency::SealedChunk)>() as u64;
+    let tombstone = crate::adjacency::tombstone_stride();
+    let empty_stream = crate::adjacency::encode_chunk(&[]).len();
+    let region = (crate::memory::vec_heap(1, entry)
+        + crate::memory::vec_heap(empty_stream, 1)
+        + crate::memory::vec_heap(1, tombstone)) as i64;
+    let (loop_refusable, self_loop) = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: loop_id }]);
+    let (pair_refusable, pair) = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: pair_id }]);
+    assert_eq!(
+        (loop_refusable, pair_refusable),
+        (0, 0),
+        "no slot growth at these ids: the chunk and tombstone terms are the spill \
+         (the founding-slot routing is pinned in chain.rs)"
+    );
     assert_eq!(self_loop, 2 * region, "both sides of the self-loop charge");
     assert_eq!(pair, 2 * region, "one region per endpoint");
 }

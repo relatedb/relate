@@ -26,7 +26,7 @@ use std::mem::size_of;
 
 use relate_core::RelId;
 
-use crate::memory::vec_heap;
+use crate::memory::{vec_growth, vec_heap};
 
 /// A never-sealed chunk seals only when its delta reaches this hop count
 /// (ADR-0551: the measured knee of the cutoff sweep).
@@ -61,6 +61,12 @@ pub(crate) struct Tombstone {
     pub deleted: Option<u64>,
 }
 
+/// One tombstone slot's stride — owned beside the type, so the layout the
+/// chunk's floor and growth terms price is stated once.
+pub(crate) fn tombstone_stride() -> u64 {
+    size_of::<Tombstone>() as u64
+}
+
 /// One compressed, immutable hop chunk and the tombstones that filter it.
 #[derive(Clone, Debug)]
 pub(crate) struct SealedChunk {
@@ -83,11 +89,53 @@ impl SealedChunk {
             .any(|t| t.xmax <= horizon || t.deleted.is_some_and(|d| d <= horizon))
     }
 
+    /// The slot owning `id`'s tombstone, if the chunk holds one — the one
+    /// statement of tombstone id ownership: the read filter, the admission
+    /// predicate, and the in-place update all derive from it.
+    fn tombstone_slot(&self, id: RelId) -> Option<usize> {
+        self.tombstones.iter().position(|t| t.id == id)
+    }
+
     /// Whether the sealed hop `id` is hidden at read timestamp `ts` — the
     /// sealed position's supersede stamp only. The delta hop has its own
     /// delete stamp and folds only once no reader needs it.
     fn hidden_at(&self, id: RelId, ts: u64) -> bool {
-        self.tombstones.iter().any(|t| t.id == id && t.xmax <= ts)
+        self.tombstone_slot(id)
+            .is_some_and(|i| self.tombstones[i].xmax <= ts)
+    }
+
+    /// How many of `ids` the chunk holds no tombstone for yet — the
+    /// in-place-update arm of [`tombstone`](Self::tombstone) asked of a
+    /// whole batch: a delete after a reposition updates the existing stamp
+    /// and adds no slot. One pass over the tombstones answers every id, so
+    /// a delete-heavy batch's admission never scans the vec once per id
+    /// (quadratic in the chunk's tombstone count). Tombstone ids are
+    /// unique — the push path runs only where `tombstone_slot` found none —
+    /// so the held count is the count of `ids` present.
+    pub(crate) fn fresh_tombstone_count(&self, ids: &HashSet<RelId>) -> usize {
+        ids.len()
+            - self
+                .tombstones
+                .iter()
+                .filter(|t| ids.contains(&t.id))
+                .count()
+    }
+
+    /// Bytes the tombstone vec gains from `fresh` new slots — the canonical
+    /// [`vec_growth`] the sealed tier's other growth terms ride, so the
+    /// reserved-vec algebra is spelled once for the whole tier.
+    pub(crate) fn tombstone_growth_bytes(&self, fresh: usize) -> u64 {
+        vec_growth(self.tombstones.len(), fresh, tombstone_stride())
+    }
+
+    /// The zero-hop chunk a never-sealed type's first tombstone lands in:
+    /// the empty encoding — not an empty `Vec`, so [`len`](Self::len) reads
+    /// its header — and no tombstones.
+    fn zero_hop() -> Self {
+        Self {
+            bytes: encode_chunk(&[]),
+            tombstones: Vec::new(),
+        }
     }
 
     /// Record `id`'s sealed position as superseded at `ts`. Never decodes
@@ -103,9 +151,9 @@ impl SealedChunk {
             Supersede::Deleted => Some(ts),
             Supersede::Repositioned => None,
         };
-        if let Some(t) = self.tombstones.iter_mut().find(|t| t.id == id) {
+        if let Some(i) = self.tombstone_slot(id) {
             if deleted.is_some() {
-                t.deleted = deleted;
+                self.tombstones[i].deleted = deleted;
             }
             return;
         }
@@ -139,11 +187,18 @@ impl SealedChunk {
         crate::memory::fit_reserved(&mut self.tombstones);
     }
 
-    /// Heap of one chunk's bytes and tombstones. The chunk struct itself is
+    /// Heap of one chunk's bytes and `tombstone_count` tombstone slots —
+    /// the floor at a hypothetical count, which the founding case
+    /// ([`fresh_sealed_chunk_floor_bytes`]) needs; [`floor_bytes`](Self::floor_bytes)
+    /// is the same term at the chunk's own count. The chunk struct itself is
     /// inline in [`SealedAdj::chunks`], whose stride owns its `Vec` headers.
+    fn floor_bytes_with(&self, tombstone_count: usize) -> u64 {
+        vec_heap(self.bytes.len(), 1) + vec_heap(tombstone_count, tombstone_stride())
+    }
+
+    /// Heap of one chunk's bytes and tombstones.
     pub(crate) fn floor_bytes(&self) -> u64 {
-        vec_heap(self.bytes.len(), 1)
-            + vec_heap(self.tombstones.len(), size_of::<Tombstone>() as u64)
+        self.floor_bytes_with(self.tombstones.len())
     }
 }
 
@@ -191,6 +246,19 @@ impl SealedAdj {
             .tombstone(rid, xmax, supersede);
     }
 
+    /// Bytes the chunks vec gains from `added` new chunk entries — the
+    /// reserved-vec model [`floor_bytes`](Self::floor_bytes) charges, owned
+    /// beside it so the admission estimate never restates the stride. A
+    /// region being founded prices from
+    /// [`fresh_sealed_chunk_entry_bytes`] instead.
+    pub(crate) fn chunk_entry_growth_bytes(&self, added: usize) -> u64 {
+        vec_growth(
+            self.chunks.len(),
+            added,
+            size_of::<(u32, SealedChunk)>() as u64,
+        )
+    }
+
     /// `type_id`'s chunk, creating a zero-hop one when the type never sealed:
     /// the tombstone a delete records still needs a home. The stream is the
     /// empty encoding, not an empty `Vec`, so `chunk_len` reads its header.
@@ -198,10 +266,7 @@ impl SealedAdj {
         let i = match self.chunks.iter().position(|(t, _)| *t == type_id) {
             Some(i) => i,
             None => {
-                let mut chunk = SealedChunk {
-                    bytes: encode_chunk(&[]),
-                    tombstones: Vec::new(),
-                };
+                let mut chunk = SealedChunk::zero_hop();
                 chunk.fit_reserved();
                 self.chunks.push((type_id, chunk));
                 crate::memory::fit_reserved(&mut self.chunks);
@@ -251,19 +316,21 @@ pub(crate) fn encode_chunk(hops: &[AdjHop]) -> Vec<u8> {
     codec::encode_chunk(hops)
 }
 
-/// Floor bytes a never-sealed type's on-demand sealed region adds when its
-/// first tombstone lands: one chunk entry, the empty encoded stream, and the
-/// tombstone. The node's sealed side-table entry grows by this much on the
-/// delete that creates the region ([`SealedAdj::floor_bytes`]), so the
-/// admission estimate needs the same term.
-pub(crate) fn fresh_sealed_region_bytes() -> u64 {
-    let empty = SealedChunk {
-        bytes: encode_chunk(&[]),
-        tombstones: Vec::new(),
-    };
-    vec_heap(1, size_of::<(u32, SealedChunk)>() as u64)
-        + empty.floor_bytes()
-        + vec_heap(1, size_of::<Tombstone>() as u64)
+/// Bytes the chunks vec of a region being founded gains from `added` new
+/// chunk entries — the founding case of [`SealedAdj::chunk_entry_growth_bytes`],
+/// spelled as a sibling of the other fresh terms so no throwaway region is
+/// constructed to price from empty.
+pub(crate) fn fresh_sealed_chunk_entry_bytes(added: usize) -> u64 {
+    vec_growth(0, added, size_of::<(u32, SealedChunk)>() as u64)
+}
+
+/// Floor bytes one fresh on-demand chunk brings besides its chunks-vec
+/// entry (priced per region by [`SealedAdj::chunk_entry_growth_bytes`]): the
+/// empty encoded stream and its first `tombstone_count` tombstone slots. The
+/// apply path is `SealedAdj::chunk_or_insert` then `SealedChunk::tombstone`,
+/// so the admission estimate needs the same terms.
+pub(crate) fn fresh_sealed_chunk_floor_bytes(tombstone_count: usize) -> u64 {
+    SealedChunk::zero_hop().floor_bytes_with(tombstone_count)
 }
 
 /// Merge a delta chunk and a decoded sealed chunk in `cmp_ts_desc` order.

@@ -2,7 +2,8 @@ use crate::*;
 use std::io::Write;
 
 use relate_executor::{Graph, RedoOp};
-use std::sync::Arc;
+
+use super::support::{node, rel};
 
 fn write_wal(uri: &std::path::Path, ops: Vec<RedoOp>) {
     let wal_dir = uri.join("wal");
@@ -30,24 +31,6 @@ fn write_wal(uri: &std::path::Path, ops: Vec<RedoOp>) {
     file.write_all(&(payload.len() as u32).to_le_bytes())
         .unwrap();
     file.write_all(&payload).unwrap();
-}
-
-fn node(id: i64) -> RedoOp {
-    RedoOp::CreateNode {
-        id,
-        labels: Arc::new(vec!["High".into()]),
-        properties: std::sync::Arc::new(relate_core::PropertyMap::new()),
-    }
-}
-
-fn rel(id: i64, start: i64, end: i64) -> RedoOp {
-    RedoOp::CreateRel {
-        id,
-        start,
-        end,
-        rel_type: "R".into(),
-        properties: std::sync::Arc::new(relate_core::PropertyMap::new()),
-    }
 }
 
 fn json_store(graph: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {

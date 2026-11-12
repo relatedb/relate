@@ -20,6 +20,7 @@ mod read_admission;
 mod resize;
 mod shortest_path;
 mod stack;
+mod support;
 mod txn;
 
 /// Codec expectations in these suites are keyed on this crate's own

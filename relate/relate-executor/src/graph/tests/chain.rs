@@ -213,24 +213,29 @@ fn inline_slot_charges_no_version_list_or_xmax() {
     );
 }
 
+/// The estimate-then-apply oracle both charge-exactness tests run: the
+/// estimate equals the charge the apply lands, the recount agrees with the
+/// used bytes, and the delete spill is reported on its own.
+fn step_matches_charge(g: &Graph, ops: Vec<RedoOp>, spill: bool) {
+    let ops_dbg = format!("{ops:?}");
+    let before = g.used_bytes();
+    let estimate = g.estimate_redo_delta_with_constraint_growth(&ops, None);
+    g.apply_redo(ops, g.commit_ts() + 1).unwrap();
+    assert_eq!(g.used_bytes(), g.accounted_bytes());
+    assert_eq!(
+        g.used_bytes() as i64 - before as i64,
+        estimate.total,
+        "{ops_dbg}"
+    );
+    assert_eq!(estimate.spill > 0, spill, "{ops_dbg}");
+}
+
 /// The admission estimate equals the charge the apply lands, for every
 /// transition of both shapes, and reports a delete's spill on its own.
 #[test]
 fn estimate_matches_the_charge_across_shapes() {
     let g = Graph::default();
-    let step = |ops: Vec<RedoOp>, spill: bool| {
-        let ops_dbg = format!("{ops:?}");
-        let before = g.used_bytes();
-        let estimate = g.estimate_redo_delta_with_constraint_growth(&ops, None);
-        g.apply_redo(ops, g.commit_ts() + 1).unwrap();
-        assert_eq!(g.used_bytes(), g.accounted_bytes());
-        assert_eq!(
-            g.used_bytes() as i64 - before as i64,
-            estimate.total,
-            "{ops_dbg}"
-        );
-        assert_eq!(estimate.tombstone_spill > 0, spill, "{ops_dbg}");
-    };
+    let step = |ops: Vec<RedoOp>, spill: bool| step_matches_charge(&g, ops, spill);
     let create = |id: NodeId| RedoOp::create_node(id, Arc::new(vec!["A".into()]), props(1));
     let set = |id: NodeId, n: i64| RedoOp::set_node_prop(id, "n".into(), Value::Int(n));
     step(vec![create(0), create(1), create(2), create(3)], false);
@@ -263,18 +268,11 @@ fn estimate_matches_the_charge_across_shapes() {
     let slot = crate::graph::node_slot()
         .min(crate::graph::rel_slot())
         .min(crate::graph::adj_slot());
-    // The store's own dense-reservation gate, not a use-site re-split of
-    // it: the first id past what it admits is the side-map boundary.
-    let mut wide = 1i64;
-    while crate::memory::reservable_span_bytes(
-        usize::try_from(wide).unwrap().saturating_add(1),
-        slot,
-    )
-    .is_some()
-    {
-        wide = wide.saturating_mul(2);
-    }
+    let wide = crate::graph::test_support::first_side_map_id(slot);
     step(vec![create(wide)], false);
+    // A create's adjacency slot growth — dense span or the side-map entry a
+    // wide id takes instead — is committed structure, refusable, like the
+    // node and rel stores' own estimator charges it.
     step(
         vec![RedoOp::create_rel(wide, 3, wide, "R".into(), props(1))],
         false,
@@ -291,10 +289,8 @@ fn estimate_matches_the_charge_across_shapes() {
     step(vec![RedoOp::delete_rel(9)], true);
 
     // The same drain for a rel created and deleted in one batch nets the
-    // create's charge against the refund — not pinned here: its estimate
-    // also needs the delete-spill admission PR's batch-create endpoint
-    // resolution in the adjacency estimate, which this branch does not
-    // carry; that PR's branch pins it.
+    // create's charge against the refund — pinned after the AddLabels
+    // section below, on endpoints its own batch creates.
 
     // A repeat delete of a dead committed rel tombstones nothing —
     // priced once, however many deletes follow.
@@ -342,9 +338,118 @@ fn estimate_matches_the_charge_across_shapes() {
         true,
     );
 
+    // The drain of a rel created and deleted in one batch, beside an
+    // AddLabels on its endpoint: the count entries the create charged —
+    // labels(start) × labels(end) pairs for its type — are refunded by
+    // the delete, and the delete's tombstone hides the batch-create's
+    // hop, the hop and never the chunk, so the batch nets to the label
+    // add alone.
+    step(
+        vec![
+            RedoOp::create_rel(16, 13, 14, "U".into(), props(1)),
+            RedoOp::delete_rel(16),
+            RedoOp::add_labels(13, vec!["C".into()]),
+        ],
+        true,
+    );
+
     // Collection returns the spill.
     let before = g.used_bytes();
     g.gc_versions();
     assert!(g.used_bytes() < before);
     assert!(node_inline(&g, 3));
+}
+
+/// A delete's sealed-tier growth — the on-demand region, its slot array, and
+/// the tombstone on an already-sealed chunk — is estimated exactly and lands
+/// in the spill (ADR-0529); a create batch spills nothing.
+#[test]
+fn estimate_matches_the_charge_on_sealed_deletes() {
+    let g = Graph::default();
+    let step = |ops: Vec<RedoOp>, spill: bool| step_matches_charge(&g, ops, spill);
+    // Label-less endpoints: a delete must not also drop a count entry, which
+    // the estimate reports as growth only.
+    let create = |id: NodeId| RedoOp::create_node(id, Arc::new(Vec::new()), props(1));
+    step(vec![create(0), create(1)], false);
+    step(
+        vec![RedoOp::create_rel(2, 0, 1, "U".into(), props(1))],
+        false,
+    );
+
+    // A type that never sealed: the delete creates the on-demand region.
+    step(vec![RedoOp::delete_rel(2)], true);
+
+    // A rel created and deleted in one batch never reaches the committed
+    // store, so the delete's endpoints come from the batch's own create —
+    // its tombstones land on the region the delete above founded.
+    step(
+        vec![
+            RedoOp::create_rel(3, 0, 1, "U".into(), props(1)),
+            RedoOp::delete_rel(3),
+        ],
+        true,
+    );
+
+    // A hop in a folded chunk: the delete grows that chunk's tombstones —
+    // one per endpoint — and that growth is all spill.
+    let (a, b, ids, _) = crate::graph::test_support::folded_floor_chunk(&g);
+    let sealed = vec![RedoOp::delete_rel(ids[0])];
+    let (refusable, spill) = g.estimate_adj_delta(&sealed);
+    let stride = crate::adjacency::tombstone_stride() as i64;
+    assert_eq!(refusable, 0);
+    assert_eq!(spill, 2 * stride, "one tombstone slot per endpoint");
+    step(sealed, true);
+
+    // A never-sealed type joining a region the endpoint already holds: the
+    // on-demand chunk is priced as entry growth on that region, not the
+    // region-founding term (the helper keeps the count entry live, its doc
+    // carries the LABS-1386 note).
+    let joiner = crate::graph::test_support::doomed_rel_with_survivor(&g, a, b, "V");
+    step(vec![RedoOp::delete_rel(joiner)], true);
+
+    // Two never-sealed types joining one region in a single batch: the
+    // chunks-vec entry growth is one before-and-after term per region, not
+    // one per type — the pow2 reservation makes the difference bite (a
+    // two-chunk region gaining two entries charges vec_heap(4) - vec_heap(2),
+    // not twice vec_heap(3) - vec_heap(2)).
+    let pair = [
+        crate::graph::test_support::doomed_rel_with_survivor(&g, a, b, "W"),
+        crate::graph::test_support::doomed_rel_with_survivor(&g, a, b, "X"),
+    ];
+    step(
+        vec![RedoOp::delete_rel(pair[0]), RedoOp::delete_rel(pair[1])],
+        true,
+    );
+
+    // The routing, pinned non-vacuously: a founding delete at an endpoint
+    // beyond the sealed side table's span charges its slot growth as
+    // refusable (committed structure, as the store's own estimator charges
+    // it) and its chunk and tombstone terms as spill.
+    let (edge, other) = crate::graph::test_support::endpoints(&g);
+    let founder = crate::graph::test_support::doomed_rel_with_survivor(&g, edge, other, "Y");
+    let (found_refusable, found_spill) = g.estimate_adj_delta(&[RedoOp::delete_rel(founder)]);
+    assert!(
+        found_refusable > 0,
+        "a founding delete's slot growth is refusable"
+    );
+    assert!(found_spill > 0, "its chunk and tombstone terms spill");
+    step(vec![RedoOp::delete_rel(founder)], true);
+
+    // The same founding delete at a side-map id — past the dense cap, so the
+    // store holds the entry in its side map: the entry is reclaimed with the
+    // region, so it is spill and the delete refuses nothing.
+    let sparse = crate::graph::test_support::first_side_map_id(crate::graph::sealed_slot());
+    g.apply_redo(vec![create(sparse)], g.commit_ts() + 1)
+        .unwrap();
+    let doomed = crate::graph::test_support::doomed_rel_with_survivor(&g, sparse, 0, "Z");
+    let (sparse_refusable, sparse_spill) = g.estimate_adj_delta(&[RedoOp::delete_rel(doomed)]);
+    assert_eq!(
+        sparse_refusable, 0,
+        "a founding delete at a side-map id refuses nothing"
+    );
+    assert!(
+        sparse_spill > 0,
+        "its side-map entry is reclaimed, so spill"
+    );
+    step(vec![RedoOp::delete_rel(doomed)], true);
 }

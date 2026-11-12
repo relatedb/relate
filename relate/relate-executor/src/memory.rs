@@ -63,6 +63,55 @@ pub fn vec_heap(len: usize, elem: u64) -> u64 {
     reserved_len(len) as u64 * elem
 }
 
+/// Heap bytes a `Vec<T>` of length `len` gains from `added` more elements:
+/// the reservation model's own difference — `reserved_len(len + added) *
+/// elem - reserved_len(len) * elem` — the one spelling of the reserved-vec
+/// growth the admission estimates and the sealed tier's cost helpers price
+/// (a founding case is `vec_growth(0, added, elem)`). Both the length and
+/// the byte product saturate, so the canonical growth helper cannot wrap
+/// where the charge path's saturating spelling would not.
+pub fn vec_growth(len: usize, added: usize, elem: u64) -> u64 {
+    reserved_len_saturating(len.saturating_add(added))
+        .saturating_mul(elem)
+        .saturating_sub(reserved_len_saturating(len).saturating_mul(elem))
+}
+
+/// Where one id lands in a span array (ADR-0086), decided once for both the
+/// store's estimator ([`Shapes::note_span`]) and the admission estimate's
+/// span walk: an id the span already covers adds nothing, an id past it
+/// grows the dense array to cover it, and an id the reservation model
+/// refuses to place takes one side-map entry instead.
+pub enum SpanPlacement {
+    /// Already inside the span: no dense growth, no side-map entry.
+    Inside,
+    /// The array grew to cover the id: the dense bytes it gained.
+    Grew(u64),
+    /// The id cannot be placed in the array: it takes a side-map entry.
+    SideEntry,
+}
+
+/// Place `id` in the span array `span` covers, returning what it cost.
+///
+/// `None` is an id the span array cannot index at all — negative, the range
+/// the store refuses. The estimate runs on a batch's ids *before* the
+/// commit validates them (the ordered preflight's `validate_ids`), so this
+/// must price nothing rather than refuse: the caller's own validation
+/// rejects such a batch with the documented storage error before anything
+/// applies, and an estimate that panicked here would bypass it.
+pub fn place_in_span(span: &mut usize, id: i64, slot: u64) -> Option<SpanPlacement> {
+    let idx = usize::try_from(id).ok()?;
+    let need = idx.saturating_add(1);
+    if need <= *span {
+        return Some(SpanPlacement::Inside);
+    }
+    let Some(after) = reservable_span_bytes(need, slot) else {
+        return Some(SpanPlacement::SideEntry);
+    };
+    let before = id_vec_bytes(*span, slot);
+    *span = need;
+    Some(SpanPlacement::Grew(after - before))
+}
+
 /// Grow `v` so `capacity == reserved_len(len)`.
 pub(crate) fn fit_reserved<T>(v: &mut Vec<T>) {
     let want = reserved_len(v.len());
@@ -496,24 +545,22 @@ impl<F: Fn(i64) -> ChainShape> Shapes<F> {
 
     /// Bytes the slot array gains when `id` extends it. An id the store
     /// will not place in the array adds one side-map entry instead, and
-    /// only while the id has no slot yet.
+    /// only while the id has no slot yet. The placement itself is
+    /// [`place_in_span`]'s one spelling — the store's side-map rule is
+    /// the shape read here, not a second copy of the span arithmetic.
     fn note_span(&mut self, id: i64) -> i64 {
-        let Some(idx) = usize::try_from(id).ok() else {
-            return 0;
-        };
-        let need = idx.saturating_add(1);
-        if need <= self.span {
-            return 0;
-        }
-        let Some(after) = reservable_span_bytes(need, self.slot) else {
-            if !matches!(self.shape_of(id), ChainShape::Absent) {
-                return 0;
+        match place_in_span(&mut self.span, id, self.slot) {
+            // An id the array cannot index is refused by the commit's own
+            // validation before anything applies, so it prices nothing.
+            None | Some(SpanPlacement::Inside) => 0,
+            Some(SpanPlacement::Grew(bytes)) => bytes as i64,
+            Some(SpanPlacement::SideEntry) => {
+                if !matches!(self.shape_of(id), ChainShape::Absent) {
+                    return 0;
+                }
+                overflow_entry_bytes(self.value) as i64
             }
-            return overflow_entry_bytes(self.value) as i64;
-        };
-        let before = id_vec_bytes(self.span, self.slot);
-        self.span = need;
-        after as i64 - before as i64
+        }
     }
 
     /// Move `id`'s slot by `step`; the slot bytes it adds.
@@ -545,13 +592,28 @@ fn version_edit<F: Fn(i64) -> ChainShape>(
     }
 }
 
-/// A redo batch's live-size delta, with the part a delete's tombstone
-/// spill contributes (ADR-0529): GC returns those bytes, so admission does
-/// not refuse a batch for them.
+/// A redo batch's live-size delta, split by what the checkpoint fold
+/// reclaims: `spill` is that part — a delete's tombstones (ADR-0529, the
+/// original and largest term) plus the adjacency growth the fold reclaims
+/// with them: the on-demand region, its chunk, and a founding delete's
+/// side-map entry — and [`refusable`](Self::refusable) is `total`'s
+/// remainder. GC returns the spill bytes, so admission does not refuse a
+/// batch for them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RedoDelta {
+    /// The batch's whole live-size delta.
     pub total: i64,
-    pub tombstone_spill: i64,
+    /// The part of `total` the checkpoint fold reclaims.
+    pub spill: i64,
+}
+
+impl RedoDelta {
+    /// The share of the batch admission may refuse — `total` less the
+    /// fold-reclaimed spill. Derived, never stored: one spelling of the
+    /// relation, so the two can never disagree.
+    pub fn refusable(&self) -> i64 {
+        self.total - self.spill
+    }
 }
 
 /// Sequential live-size delta of `ops` against `lookup` (committed graph).
@@ -563,7 +625,7 @@ pub struct RedoDelta {
 /// together the two are exact for created, modified, deleted, and untouched
 /// nodes alike. A delete keeps the version until GC: it adds nothing,
 /// except the spill of an inline row into a one-version chain, which is
-/// also reported as [`RedoDelta::tombstone_spill`]. A set on a committed
+/// also reported as [`RedoDelta::spill`]. A set on a committed
 /// node copies the version and adds the new record; a set on a node this
 /// batch already created or edited edits that record in place.
 #[allow(clippy::too_many_arguments)]
@@ -595,7 +657,7 @@ pub fn estimate_redo_delta(
         crate::graph::rel_value(),
     );
     let mut delta = 0i64;
-    let mut tombstone_spill = 0i64;
+    let mut spill = 0i64;
 
     let get_node = |nodes: &HashMap<NodeId, Option<Node>>, id: NodeId| -> Option<Node> {
         if let Some(v) = nodes.get(&id) {
@@ -644,16 +706,16 @@ pub fn estimate_redo_delta(
                 // Retained until GC. Mark it so a later op in this batch
                 // does not edit the dropped record.
                 if !matches!(nodes.insert(*id, None), Some(None)) {
-                    let spill = node_shapes.step(*id, ChainShape::after_delete);
-                    delta += spill;
-                    tombstone_spill += spill;
+                    let step = node_shapes.step(*id, ChainShape::after_delete);
+                    delta += step;
+                    spill += step;
                 }
             }
             RedoOp::DeleteRel { id } => {
                 if !matches!(rels.insert(*id, None), Some(None)) {
-                    let spill = rel_shapes.step(*id, ChainShape::after_delete);
-                    delta += spill;
-                    tombstone_spill += spill;
+                    let step = rel_shapes.step(*id, ChainShape::after_delete);
+                    delta += step;
+                    spill += step;
                 }
             }
             RedoOp::SetNodeProp { id, key, value } => {
@@ -749,7 +811,7 @@ pub fn estimate_redo_delta(
     }
     RedoDelta {
         total: delta,
-        tombstone_spill,
+        spill,
     }
 }
 

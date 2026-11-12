@@ -101,12 +101,12 @@ struct BatchSim {
 
 /// A batch rel's liveness, by name and by founding: the AddLabels
 /// phases price a rel exactly when this batch created it —
-/// [`Live`](BatchRelState::Live) still holds,
+/// [`Live`](BatchRelState::Live) still holds and prices in both phases,
 /// [`BatchDead`](BatchRelState::BatchDead) was created and then deleted
-/// in the batch (the tombstone hides the rel's hop from nothing the
-/// write window walks: apply probes the pre-delete version as
-/// live-looking, and the chunk the create founded prices the histogram
-/// chunk-granularly) — while [`StoreDead`](BatchRelState::StoreDead) is
+/// in the batch (the delete's tombstone founds the zero-hop sealed
+/// chunk the histogram phase still prices, chunk-granularly, while the
+/// pair phase walks live hops and the tombstone hides the rel's hop
+/// from it) — while [`StoreDead`](BatchRelState::StoreDead) is
 /// a committed rel the batch deleted: the committed incident stream and
 /// chunk walk already price it, so no batch term may, and it is a bare
 /// presence tombstone because nothing reads an identity off it (the
@@ -122,13 +122,25 @@ enum BatchRelState {
 }
 
 impl BatchRelState {
-    /// The rel the AddLabels phases price, if this state is one: every
-    /// rel the batch created, live or tombstoned — never a committed
-    /// rel the batch deleted, which the committed terms own.
-    fn priced(&self) -> Option<&BatchRel> {
+    /// The rel the AddLabels histogram phase prices, if this state is
+    /// one: every rel the batch created, live or deleted in the batch —
+    /// a same-batch delete still founds the zero-hop sealed chunk the
+    /// chunk-granular charge rides — never a committed rel the batch
+    /// deleted, which the committed terms own.
+    fn priced_histogram(&self) -> Option<&BatchRel> {
         match self {
             BatchRelState::Live(rel) | BatchRelState::BatchDead(rel) => Some(rel),
             BatchRelState::StoreDead => None,
+        }
+    }
+
+    /// The rel the AddLabels pair phase prices: only a still-live one —
+    /// the pair charge walks live hops, and a batch-deleted rel's hops
+    /// are tombstoned before the label mutation applies.
+    fn priced_pair(&self) -> Option<&BatchRel> {
+        match self {
+            BatchRelState::Live(rel) => Some(rel),
+            BatchRelState::BatchDead(_) | BatchRelState::StoreDead => None,
         }
     }
 }
@@ -434,20 +446,34 @@ impl BatchSim {
         // committed seed, priced nothing. The histogram phase below keeps
         // the full set (its charge is entry creation, carried keys are
         // seeded).
-        // The batch's incident enumeration, built once for both phases
-        // (LABS-515): the committed live hops on
-        // both adjacency sides ([`Graph::incident_rels`], the apply
-        // path's own walk) plus the batch's created rels
-        // ([`BatchSim::batch_incidents`]) — the histogram phase reads
-        // its out-side types from the stream, the pair phase prices its
-        // keys.
-        let mut incidents = g.incident_rels(id);
-        incidents.extend(self.batch_incidents(id));
-        self.price_histogram_entries(g, id, &mine, &incidents);
+        // The batch's incident enumeration, priced per phase (LABS-515):
+        // the histogram phase reads only the batch's created rels — its
+        // committed out-side types come from `out_chunks` (delta and
+        // sealed alike), so the committed incident stream would
+        // contribute nothing — and a same-batch delete still founds the
+        // zero-hop sealed chunk its tombstone lands on, a charge that is
+        // chunk-granular. The pair phase owns the committed walk
+        // ([`Graph::incident_rels`], the apply path's own) extended with
+        // only the still-live batch rels: the pair charge walks live
+        // hops, and a batch-deleted rel's hops are tombstoned before the
+        // AddLabels applies.
+        let batch: Vec<_> = self
+            .batch_incidents(id, BatchRelState::priced_histogram)
+            .collect();
+        self.price_histogram_entries(g, id, &mine, &batch);
         // The near side is the joined ids, the far-side self-loop sets
         // the post-add set and its pre-add prefix — the apply's own
         // three sets.
-        self.price_incidents(g, id, &mine[before..], &mine, &mine[..before], &incidents);
+        let mut live_incidents = g.incident_rels(id);
+        live_incidents.extend(self.batch_incidents(id, BatchRelState::priced_pair));
+        self.price_incidents(
+            g,
+            id,
+            &mine[before..],
+            &mine,
+            &mine[..before],
+            &live_incidents,
+        );
     }
 
     /// The AddLabels step's histogram-entry pricing, one site (the
@@ -544,17 +570,24 @@ impl BatchSim {
     /// node on BOTH ends, so it enumerates twice — once per side,
     /// exactly as a committed self-loop appears on both adjacency sides
     ///.
-    fn batch_incidents(&self, id: NodeId) -> impl Iterator<Item = IncidentRel> + '_ {
-        // Every rel the batch created, live or tombstoned: a same-batch
-        // delete keeps the pre-delete version live-looking inside the
-        // write window, so both AddLabels phases price it exactly as a
-        // live one. A committed rel the batch deleted is absent — the
-        // committed stream ([`Graph::incident_rels`], the pre-batch
-        // store) already carries it, and a second copy here would
-        // double-price it.
+    ///
+    /// Which rels price is the phase's own decision, stated on
+    /// [`BatchRelState`] and passed as the accessor: the histogram
+    /// phase prices every rel the batch created
+    /// ([`BatchRelState::priced_histogram`]), the pair phase only the
+    /// still-live ones ([`BatchRelState::priced_pair`]). A committed
+    /// rel the batch deleted is absent in both — the committed stream
+    /// ([`Graph::incident_rels`], the pre-batch
+    /// store) already carries it, and a second copy here would
+    /// double-price it.
+    fn batch_incidents(
+        &self,
+        id: NodeId,
+        priced: fn(&BatchRelState) -> Option<&BatchRel>,
+    ) -> impl Iterator<Item = IncidentRel> + '_ {
         self.batch_rels
             .values()
-            .filter_map(|state| state.priced())
+            .filter_map(priced)
             .flat_map(move |rel| {
                 let out = (id == rel.start).then(|| IncidentRel::outgoing(rel.type_id, rel.end));
                 let inc = (id == rel.end).then(|| IncidentRel::incoming(rel.type_id, rel.start));
@@ -751,11 +784,21 @@ mod tests {
                 type_id: r_id
             }))
         );
-        let priced: Vec<_> = sim.batch_incidents(a).collect();
+        let priced: Vec<_> = sim
+            .batch_incidents(a, BatchRelState::priced_histogram)
+            .collect();
         assert_eq!(priced.len(), 1, "one incident, the out side");
         assert!(priced[0].is_out());
         assert_eq!(priced[0].type_id, r_id);
         assert_eq!(priced[0].far, b);
+        // The pair phase skips the same dead rel: its hops are
+        // tombstoned before an AddLabels applies.
+        assert!(
+            sim.batch_incidents(a, BatchRelState::priced_pair)
+                .next()
+                .is_none(),
+            "the dead rel prices no live incident"
+        );
 
         // A committed rel the batch deletes: the StoreDead tombstone —
         // the delete arm resolves it (a repeat delete prices nothing),
@@ -767,7 +810,8 @@ mod tests {
         ));
         let c_id = sim.fresh_ids.resolve(&g, "C");
         assert!(
-            !sim.batch_incidents(a).any(|inc| inc.type_id == c_id),
+            !sim.batch_incidents(a, BatchRelState::priced_histogram)
+                .any(|inc| inc.type_id == c_id),
             "the committed rel's incident stays with the committed stream"
         );
 

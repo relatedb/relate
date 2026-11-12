@@ -1,6 +1,22 @@
 use std::time::Duration;
 
-use crate::{Database, Error, OpenOptions, Value};
+use crate::{Database, Error, OpenOptions, Value, WalRecord};
+
+use super::support::{node, rel};
+
+/// An in-memory database opened under a logical graph size limit — the one
+/// spelling of the reserved-limit policy these tests share. The
+/// `checkpoint_interval` case below keeps its own options.
+fn open_limited(limit: u64) -> Database {
+    Database::open_with(
+        ":memory:",
+        OpenOptions {
+            logical_graph_size_limit: Some(limit),
+            ..OpenOptions::default()
+        },
+    )
+    .unwrap()
+}
 
 #[test]
 fn range_index_moves_memory_usage() {
@@ -27,14 +43,7 @@ fn range_index_moves_memory_usage() {
 
 #[test]
 fn logical_graph_size_limit_rejects_growing_writes_reads_ok() {
-    let db = Database::open_with(
-        ":memory:",
-        OpenOptions {
-            logical_graph_size_limit: Some(1),
-            ..OpenOptions::default()
-        },
-    )
-    .unwrap();
+    let db = open_limited(1);
     let mut c = db.connect().unwrap();
     let err = c.query("CREATE (n:Person {name: 'Ada'})").unwrap_err();
     assert!(
@@ -66,14 +75,7 @@ fn logical_graph_size_limit_delete_then_create_recovers_with(
     index: Option<&str>,
     expected_nodes: u32,
 ) {
-    let db = Database::open_with(
-        ":memory:",
-        OpenOptions {
-            logical_graph_size_limit: Some(limit_bytes),
-            ..OpenOptions::default()
-        },
-    )
-    .unwrap();
+    let db = open_limited(limit_bytes);
     let mut c = db.connect().unwrap();
     if let Some(index) = index {
         c.query(index).unwrap();
@@ -145,16 +147,7 @@ fn logical_graph_size_limit_concurrent_reserve() {
     // floor is already inside `one`, so the slack is half the marginal node.
     let marginal = one - empty;
     let limit = one + marginal / 2;
-    let db = Arc::new(
-        Database::open_with(
-            ":memory:",
-            OpenOptions {
-                logical_graph_size_limit: Some(limit),
-                ..OpenOptions::default()
-            },
-        )
-        .unwrap(),
-    );
+    let db = Arc::new(open_limited(limit));
     let barrier = Arc::new(Barrier::new(2));
     let mut hs = Vec::new();
     for _ in 0..2 {
@@ -206,14 +199,7 @@ fn logical_graph_size_limit_open_over_limit_replay_then_reject() {
 
 #[test]
 fn logical_graph_size_limit_zero_is_unlimited() {
-    let db = Database::open_with(
-        ":memory:",
-        OpenOptions {
-            logical_graph_size_limit: Some(0),
-            ..OpenOptions::default()
-        },
-    )
-    .unwrap();
+    let db = open_limited(0);
     let mut c = db.connect().unwrap();
     c.query("CREATE (n:Person {name: 'Ada'})").unwrap();
     let (used, limit) = db.memory_usage().unwrap();
@@ -228,16 +214,7 @@ fn logical_graph_size_limit_zero_is_unlimited() {
 /// rejected with `Capacity` at admission instead of landing past the cap.
 #[test]
 fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
-    let open = |limit: u64| {
-        Database::open_with(
-            ":memory:",
-            OpenOptions {
-                logical_graph_size_limit: Some(limit),
-                ..OpenOptions::default()
-            },
-        )
-        .unwrap()
-    };
+    let open = |limit: u64| open_limited(limit);
     // Measure the fill phase under a generous cap: two 8-label nodes.
     let fill = "CREATE (a:X1:X2:X3:X4:X5:X6:X7:X8), (b:Y1:Y2:Y3:Y4:Y5:Y6:Y7:Y8)";
     let probe = open(u64::MAX / 4);
@@ -265,4 +242,31 @@ fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
     let mut c = db.connect().unwrap();
     c.query(fill).unwrap();
     c.query(rel).unwrap();
+}
+
+/// Out-of-range ids in a replicated batch are refused with a storage error
+/// once a size limit is configured. Without the limit the commit's own id
+/// validation refuses them before anything prices the batch; with it, the
+/// admission estimate reads the ids *first* and must price nothing rather
+/// than refuse (or panic) there. The limit-free refusal is
+/// `persisted_sentinel::invalid_replicated_ids_leave_existing_wal_and_graph_reopenable`.
+#[test]
+fn invalid_replicated_ids_are_refused_under_a_size_limit() {
+    for (name, invalid) in [
+        ("negative node", node(-1)),
+        ("max node", node(i64::MAX)),
+        ("negative rel", rel(-1, 0, 1)),
+        ("negative start", rel(1, -1, 1)),
+        ("negative end", rel(1, 0, -1)),
+    ] {
+        let db = open_limited(1 << 20);
+        let err = db
+            .apply_replicated(&WalRecord {
+                lsn: 999, // The destination assigns its own LSN.
+                commit_ts: 1,
+                ops: vec![node(0), invalid],
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Storage(_)), "{name}: {err}");
+    }
 }
