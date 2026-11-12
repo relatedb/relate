@@ -4,30 +4,67 @@
 //! `convert` builds these, so their fields are crate-visible; the pymodule
 //! registers the classes from the crate root.
 
+use std::collections::HashSet;
+
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use crate::convert::{enter_container, leave_container, PY_VALUE_DEPTH_CAP};
+
 /// A copy of a property value with every list and map copied down the tree,
 /// so mutating a returned `data()` / `to_dict()` never reaches the row. Other
 /// values (scalars, points, vectors, temporals) are immutable and shared.
+/// Nesting deeper than [`PY_VALUE_DEPTH_CAP`] and self-referential lists or
+/// maps raise `ValueError` instead of overflowing the stack.
 fn copy_value<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    copy_value_at(value, 0, &mut HashSet::new())
+}
+
+fn copy_value_at<'py>(
+    value: &Bound<'py, PyAny>,
+    depth: usize,
+    visiting: &mut HashSet<usize>,
+) -> PyResult<Bound<'py, PyAny>> {
     let py = value.py();
     if let Ok(list) = value.downcast::<PyList>() {
-        let out = PyList::empty(py);
-        for item in list.iter() {
-            out.append(copy_value(&item)?)?;
-        }
-        Ok(out.into_any())
+        within_container(value, depth, visiting, |visiting| {
+            let out = PyList::empty(py);
+            for item in list.iter() {
+                out.append(copy_value_at(&item, depth + 1, visiting)?)?;
+            }
+            Ok(out.into_any())
+        })
     } else if let Ok(dict) = value.downcast::<PyDict>() {
-        let out = PyDict::new(py);
-        for (k, v) in dict.iter() {
-            out.set_item(k, copy_value(&v)?)?;
-        }
-        Ok(out.into_any())
+        within_container(value, depth, visiting, |visiting| {
+            let out = PyDict::new(py);
+            for (k, v) in dict.iter() {
+                out.set_item(k, copy_value_at(&v, depth + 1, visiting)?)?;
+            }
+            Ok(out.into_any())
+        })
     } else {
         Ok(value.clone())
     }
+}
+
+/// Run `copy` with `container` on the recursion path, after the depth and
+/// cycle checks, and take it off the path again however `copy` ends.
+fn within_container<'py>(
+    container: &Bound<'py, PyAny>,
+    depth: usize,
+    visiting: &mut HashSet<usize>,
+    copy: impl FnOnce(&mut HashSet<usize>) -> PyResult<Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if depth > PY_VALUE_DEPTH_CAP {
+        return Err(PyValueError::new_err(format!(
+            "property nesting exceeds the maximum depth of {PY_VALUE_DEPTH_CAP}"
+        )));
+    }
+    enter_container(container, visiting)?;
+    let copied = copy(visiting);
+    leave_container(container, visiting);
+    copied
 }
 
 /// An entity's property dict, copied with [`copy_value`].
@@ -278,7 +315,6 @@ impl Path {
     /// The path as a plain, JSON-ready `dict`: `nodes` and `relationships`,
     /// each a list of the corresponding `to_dict()` dicts in path order.
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        self.check_shape()?;
         let nodes = PyList::empty(py);
         for n in &self.nodes {
             nodes.append(n.borrow(py).to_dict(py)?)?;

@@ -642,7 +642,8 @@ fn py_seq_to_list<'py>(
     Ok(CypherValue::List(converted))
 }
 
-/// Maximum list/dict nesting depth accepted when converting parameters. Deeper
+/// Maximum list/dict nesting depth accepted when converting parameters and when
+/// copying properties for `data()` / `to_dict()`. Deeper
 /// structures raise rather than recursing until the Rust stack overflows and
 /// aborts the host interpreter (LABS-114).
 pub(super) const PY_VALUE_DEPTH_CAP: usize = 128;
@@ -755,7 +756,7 @@ pub(super) fn enter_container(
 ) -> PyResult<()> {
     if !visiting.insert(obj.as_ptr() as usize) {
         return Err(PyValueError::new_err(
-            "parameter contains a cycle: a list or map references itself",
+            "value contains a cycle: a list or map references itself",
         ));
     }
     Ok(())

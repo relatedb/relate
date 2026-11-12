@@ -152,14 +152,40 @@ class TestRecord:
     def test_data_and_to_dict_deep_copy_nested_properties(self, db):
         db.execute("CREATE (:P {tags: ['x']})-[:R {t: ['y']}]->(:P)")
         row = db.execute("MATCH p = (a:P)-[r:R]->() RETURN a, r, p").fetchone()
-        for out in (row.data(), row.to_dict()):
-            props = out["a"] if "tags" in out["a"] else out["a"]["properties"]
-            props["tags"].append("z")
+        row.data()["a"]["tags"].append("z")
+        row.to_dict()["a"]["properties"]["tags"].append("z")
         row.data()["p"][0]["tags"].append("z")
         row.to_dict()["p"]["nodes"][0]["properties"]["tags"].append("z")
         row.data()["r"]["t"].append("z")
         assert row["a"]["tags"] == ["x"]
         assert row["r"]["t"] == ["y"]
+
+    def test_data_and_to_dict_reject_self_referential_properties(self, db):
+        db.execute("CREATE (:P {tags: ['x']})")
+        node = db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
+        node.properties["tags"].append(node.properties["tags"])
+        with pytest.raises(ValueError, match="cycle"):
+            node.data()
+        with pytest.raises(ValueError, match="cycle"):
+            node.to_dict()
+
+    def test_data_rejects_over_deep_properties(self, db):
+        db.execute("CREATE (:P {tags: ['x']})")
+        node = db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
+        deep = []
+        for _ in range(200):
+            deep = [deep]
+        node.properties["deep"] = deep
+        with pytest.raises(ValueError, match="depth"):
+            node.data()
+
+    def test_shared_substructure_in_properties_is_copied(self, db):
+        db.execute("CREATE (:P {tags: ['x']})")
+        node = db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
+        shared = [1]
+        node.properties["a"] = shared
+        node.properties["b"] = shared
+        assert node.data()["a"] == [1] and node.data()["b"] == [1]
 
     def test_data_and_to_dict_keep_points_and_vectors(self, db):
         db.execute("CREATE (:G {p: point({x: 1.0, y: 2.0}), v: vector([1.0, 2.0], 2, FLOAT32)})")
