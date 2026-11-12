@@ -65,15 +65,9 @@ fn json_rel_graph(id: i64) -> Vec<u8> {
 fn invalid_replicated_ids_leave_existing_wal_and_graph_reopenable() {
     use relate_executor::PullKind;
 
-    for (name, invalid) in [
-        ("negative node", node(-1)),
-        ("max node", node(i64::MAX)),
-        ("negative rel", rel(-1, 0, 1)),
-        ("max rel", rel(i64::MAX, 0, 1)),
-        ("negative start", rel(1, -1, 1)),
-        ("max start", rel(1, i64::MAX, 1)),
-        ("negative end", rel(1, 0, -1)),
-        ("max end", rel(1, 0, i64::MAX)),
+    // The id shapes are the shared table; this suite adds the non-id-shape
+    // ops only it exercises.
+    let shapes = super::support::invalid_id_shapes().into_iter().chain([
         (
             "negative mutation",
             RedoOp::SetNodeProp {
@@ -101,7 +95,8 @@ fn invalid_replicated_ids_leave_existing_wal_and_graph_reopenable() {
                 local_id: i64::MAX,
             },
         ),
-    ] {
+    ]);
+    for (name, invalid) in shapes {
         let tmp = tempfile::tempdir().unwrap();
         let uri = tmp.path().join("db");
         let db = Database::open(uri.to_str().unwrap()).unwrap();

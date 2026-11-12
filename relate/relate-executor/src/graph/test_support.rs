@@ -45,29 +45,26 @@ pub(crate) fn folded_floor_chunk(g: &Graph) -> (NodeId, NodeId, Vec<RelId>, u32)
 
 /// The first node id the store will not place in a dense slot array for
 /// `slot` — the side-map boundary, advanced on the store's own
-/// [`reservable_span_bytes`](crate::memory::reservable_span_bytes) gate,
-/// never a use-site re-split of it.
+/// [`SpanPlacement`](crate::memory::SpanPlacement) policy, never a use-site
+/// re-split of it.
 pub(crate) fn first_side_map_id(slot: u64) -> i64 {
     let mut id = 1i64;
-    while crate::memory::reservable_span_bytes(usize::try_from(id).unwrap().saturating_add(1), slot)
-        .is_some()
+    while crate::memory::SpanPlacement::classify(0, usize::try_from(id).unwrap(), slot)
+        != crate::memory::SpanPlacement::SideEntry
     {
         id = id.saturating_mul(2);
     }
     id
 }
 
-/// A doomed rel of `rel_type` between `a` and `b`, plus a committed
-/// survivor of the same type: deleting the doomed one leaves the
-/// (start-label, type, end-label) count entry live — the stats estimator's
-/// delete arm does not yet price a count entry's drop to zero (LABS-1386).
-/// Returns the doomed rel's id.
-pub(crate) fn doomed_rel_with_survivor(g: &Graph, a: NodeId, b: NodeId, rel_type: &str) -> RelId {
+/// A committed rel of `rel_type` between `a` and `b`, returned for a step
+/// to delete. Deleting it may drain the last (start-label, type,
+/// end-label) count entry — the stats estimator prices that refund
+/// (LABS-1386, landed), so no survivor keeps the entry live.
+pub(crate) fn doomed_rel(g: &Graph, a: NodeId, b: NodeId, rel_type: &str) -> RelId {
     g.begin_write().unwrap();
     let doomed = g
         .create_rel(a, b, rel_type.into(), BTreeMap::new())
-        .unwrap();
-    g.create_rel(a, b, rel_type.into(), BTreeMap::new())
         .unwrap();
     g.commit_write();
     doomed

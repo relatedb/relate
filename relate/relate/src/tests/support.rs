@@ -23,3 +23,20 @@ pub(crate) fn rel(id: i64, start: i64, end: i64) -> RedoOp {
         relate_core::PropertyMap::new(),
     )
 }
+
+/// The invalid id shapes a replicated batch must refuse with a storage
+/// error, each with its label — the one table both replicated-batch
+/// suites iterate (the sentinel suite chains its non-id-shape ops onto
+/// it), so a shape added here is covered by both.
+pub(crate) fn invalid_id_shapes() -> Vec<(&'static str, RedoOp)> {
+    vec![
+        ("negative node", node(-1)),
+        ("max node", node(i64::MAX)),
+        ("negative rel", rel(-1, 0, 1)),
+        ("max rel", rel(i64::MAX, 0, 1)),
+        ("negative start", rel(1, -1, 1)),
+        ("max start", rel(1, i64::MAX, 1)),
+        ("negative end", rel(1, 0, -1)),
+        ("max end", rel(1, 0, i64::MAX)),
+    ]
+}

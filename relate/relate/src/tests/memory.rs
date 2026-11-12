@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{Database, Error, OpenOptions, Value, WalRecord};
 
-use super::support::{node, rel};
+use super::support::{invalid_id_shapes, node};
 
 /// An in-memory database opened under a logical graph size limit — the one
 /// spelling of the reserved-limit policy these tests share. The
@@ -252,13 +252,7 @@ fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
 /// `persisted_sentinel::invalid_replicated_ids_leave_existing_wal_and_graph_reopenable`.
 #[test]
 fn invalid_replicated_ids_are_refused_under_a_size_limit() {
-    for (name, invalid) in [
-        ("negative node", node(-1)),
-        ("max node", node(i64::MAX)),
-        ("negative rel", rel(-1, 0, 1)),
-        ("negative start", rel(1, -1, 1)),
-        ("negative end", rel(1, 0, -1)),
-    ] {
+    for (name, invalid) in invalid_id_shapes() {
         let db = open_limited(1 << 20);
         let err = db
             .apply_replicated(&WalRecord {

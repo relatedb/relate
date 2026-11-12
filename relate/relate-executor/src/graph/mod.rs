@@ -794,9 +794,25 @@ impl Graph {
                     ];
                     for side in &mut sides {
                         if !side.adj.contains_key(&side.node) {
-                            let (dense, side_map) =
-                                span_growth(side.span, side.node, slot, overflow, side.side);
-                            delta += dense + side_map;
+                            // The one placement policy, priced here: a dense
+                            // growth is committed structure (refusable); a
+                            // side-map entry is priced once per node per
+                            // batch — this loop can revisit a node across
+                            // its ops, so the dedupe is this caller's.
+                            match crate::memory::place_in_span(side.span, side.node, slot) {
+                                // An id the array cannot index is refused by
+                                // the commit's own validation before anything
+                                // applies, so it prices nothing.
+                                None | Some(crate::memory::SpanPlacement::Inside) => {}
+                                Some(crate::memory::SpanPlacement::Grew(bytes)) => {
+                                    delta += bytes as i64;
+                                }
+                                Some(crate::memory::SpanPlacement::SideEntry) => {
+                                    if side.side.insert(side.node) {
+                                        delta += overflow as i64;
+                                    }
+                                }
+                            }
                         }
                         delta += bump_adj(side.pending, side.node, type_id, || {
                             hop_counts(side.adj, side.sealed, side.node)
@@ -1509,34 +1525,6 @@ impl FreshIds {
     }
 }
 
-/// The slot array's growth when `id` extends `span`, as `(dense, side_map)`:
-/// the dense-span bytes, which never shrink (ADR-0086), and the side-map
-/// entry an id the store will not place in the array adds instead, once per
-/// id in this batch. A create charges both as refusable — the store's own
-/// estimator does the same ([`Shapes::note_span`]) — while a founding delete
-/// keeps only the dense span refusable: its side-map entry is reclaimed with
-/// the region, so ADR-0529 protects it from refusal. The placement itself is
-/// [`place_in_span`](crate::memory::place_in_span)'s one spelling — the same
-/// rule the store's estimator walks — so only the permanence routing is this
-/// caller's.
-fn span_growth(
-    span: &mut usize,
-    id: NodeId,
-    slot: u64,
-    overflow: u64,
-    side: &mut HashSet<NodeId>,
-) -> (i64, i64) {
-    match crate::memory::place_in_span(span, id, slot) {
-        // An id the array cannot index is refused by the commit's own
-        // validation before anything applies, so it prices nothing.
-        None | Some(crate::memory::SpanPlacement::Inside) => (0, 0),
-        Some(crate::memory::SpanPlacement::Grew(bytes)) => (bytes as i64, 0),
-        Some(crate::memory::SpanPlacement::SideEntry) => {
-            (0, if side.insert(id) { overflow as i64 } else { 0 })
-        }
-    }
-}
-
 /// One node's adjacency floor in one direction: the delta hop bytes plus its
 /// sealed side-table entry's compressed chunks and tombstones.
 fn adj_floor(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> u64 {
@@ -1561,44 +1549,56 @@ fn price_side(
     sealed_overflow: u64,
 ) -> (i64, i64) {
     let mut span = sealed.span();
-    let mut side = HashSet::new();
     let mut refusable = 0i64;
     let mut spill = 0i64;
     for (node, keys) in pending {
+        // One key loop prices every key's own term: a chunk the region
+        // already holds grows its tombstone vec (a delete after a
+        // reposition updates the existing slot in place), a type the
+        // region does not hold joins it, bringing the empty stream and
+        // its tombstones — priced once, here, never again in a
+        // region-level arm.
         let region = sealed.get(node);
         let mut joining = 0;
         for (type_id, ids) in keys {
             match region.as_ref().and_then(|region| region.chunk(*type_id)) {
-                // A tombstone the chunk already holds is updated in place —
-                // a delete after a reposition adds no slot.
                 Some(chunk) => {
                     let fresh = chunk.fresh_tombstone_count(ids);
                     spill += chunk.tombstone_growth_bytes(fresh) as i64;
                 }
-                // The type never sealed: its on-demand chunk joins the
-                // region, bringing the empty stream and its tombstones.
                 None => {
                     joining += 1;
                     spill += crate::adjacency::fresh_sealed_chunk_floor_bytes(ids.len()) as i64;
                 }
             }
         }
-        if joining > 0 {
-            match region.as_ref() {
-                // A founding delete also grows the node's slot in the side
-                // table — the dense span permanently (refusable), a wide id's
-                // side-map entry only until the region empties (spill); the
-                // region it founds holds nothing yet.
-                None => {
-                    let (dense, side_map) =
-                        span_growth(&mut span, *node, sealed_slot, sealed_overflow, &mut side);
-                    refusable += dense;
-                    spill += side_map;
-                    spill += crate::adjacency::fresh_sealed_chunk_entry_bytes(joining) as i64;
+        // The region-level term, once per node: a founding delete grows the
+        // node's slot in the side table — the dense span permanently
+        // (refusable), a wide id's side-map entry only until the region
+        // empties (spill) — and its chunks-vec entry growth is one
+        // before-and-after term over every joining type, never one per
+        // type, or the reserved model's pow2 steps misprice a batch that
+        // joins several. An existing region prices the same entry growth
+        // (zero when nothing joined).
+        match region {
+            None => {
+                // The one placement policy, priced here: a dense slot-span
+                // growth is permanent (refusable), a wide id's side-map
+                // entry is reclaimed with the region it founds (spill). Each
+                // node reaches this arm once (`pending` is keyed by node), so
+                // the entry prices unconditionally — the per-batch dedupe is
+                // the create loop's, where a node can recur.
+                match crate::memory::place_in_span(&mut span, *node, sealed_slot) {
+                    None | Some(crate::memory::SpanPlacement::Inside) => {}
+                    Some(crate::memory::SpanPlacement::Grew(bytes)) => refusable += bytes as i64,
+                    Some(crate::memory::SpanPlacement::SideEntry) => {
+                        spill += sealed_overflow as i64;
+                    }
                 }
-                Some(region) => {
-                    spill += region.chunk_entry_growth_bytes(joining) as i64;
-                }
+                spill += crate::adjacency::fresh_sealed_chunk_entry_bytes(joining) as i64;
+            }
+            Some(region) => {
+                spill += region.chunk_entry_growth_bytes(joining) as i64;
             }
         }
     }

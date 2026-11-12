@@ -76,11 +76,13 @@ pub fn vec_growth(len: usize, added: usize, elem: u64) -> u64 {
         .saturating_sub(reserved_len_saturating(len).saturating_mul(elem))
 }
 
-/// Where one id lands in a span array (ADR-0086), decided once for both the
-/// store's estimator ([`Shapes::note_span`]) and the admission estimate's
-/// span walk: an id the span already covers adds nothing, an id past it
-/// grows the dense array to cover it, and an id the reservation model
-/// refuses to place takes one side-map entry instead.
+/// Where one id lands in a span array (ADR-0086) — the one statement of
+/// the placement policy, whose [`classify`](SpanPlacement::classify) every
+/// consumer consults and then applies its own effect to: the store's
+/// `try_grow` reserves on it, the admission estimate's [`place_in_span`]
+/// prices it, the estimator ([`Shapes::note_span`]) books it, and the test
+/// fixtures' boundary search advances on it. Never re-split the gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpanPlacement {
     /// Already inside the span: no dense growth, no side-map entry.
     Inside,
@@ -88,6 +90,23 @@ pub enum SpanPlacement {
     Grew(u64),
     /// The id cannot be placed in the array: it takes a side-map entry.
     SideEntry,
+}
+
+impl SpanPlacement {
+    /// Classify `idx` against a span array covering `span` ids at `slot`
+    /// bytes per slot. Pure — no reservation, no mutation — so every
+    /// consumer reads one policy; the price is the gate's own bytes, so no
+    /// caller re-derives the reservation it just took.
+    pub fn classify(span: usize, idx: usize, slot: u64) -> SpanPlacement {
+        let need = idx.saturating_add(1);
+        if need <= span {
+            return SpanPlacement::Inside;
+        }
+        match reservable_span_bytes(need, slot) {
+            Some(after) => SpanPlacement::Grew(after.saturating_sub(id_vec_bytes(span, slot))),
+            None => SpanPlacement::SideEntry,
+        }
+    }
 }
 
 /// Place `id` in the span array `span` covers, returning what it cost.
@@ -100,16 +119,11 @@ pub enum SpanPlacement {
 /// applies, and an estimate that panicked here would bypass it.
 pub fn place_in_span(span: &mut usize, id: i64, slot: u64) -> Option<SpanPlacement> {
     let idx = usize::try_from(id).ok()?;
-    let need = idx.saturating_add(1);
-    if need <= *span {
-        return Some(SpanPlacement::Inside);
+    let placement = SpanPlacement::classify(*span, idx, slot);
+    if matches!(placement, SpanPlacement::Grew(_)) {
+        *span = idx.saturating_add(1);
     }
-    let Some(after) = reservable_span_bytes(need, slot) else {
-        return Some(SpanPlacement::SideEntry);
-    };
-    let before = id_vec_bytes(*span, slot);
-    *span = need;
-    Some(SpanPlacement::Grew(after - before))
+    Some(placement)
 }
 
 /// Grow `v` so `capacity == reserved_len(len)`.

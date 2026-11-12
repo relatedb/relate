@@ -20,6 +20,17 @@ use super::AdjHop;
 const TS_BLOCK: usize = 128;
 /// zigzag-delta block size for the id stream.
 const ID_BLOCK: usize = 64;
+/// The hop-count header's width — the one spelling of the stream's leading
+/// field: the encoder writes it, the frame readers slice it, and the
+/// admission estimate prices an empty stream at it.
+const CHUNK_HEADER_BYTES: usize = std::mem::size_of::<u32>();
+
+/// The empty hop stream's encoded length — the count header alone, nothing
+/// else. One owner beside the encoder, so the admission estimate prices a
+/// joining chunk's floor without materializing a stream to measure it.
+pub(crate) fn empty_chunk_bytes() -> usize {
+    CHUNK_HEADER_BYTES
+}
 
 /// Encode one chunk's hop stream. `hops` must already be in `cmp_ts_desc`
 /// order.
@@ -99,16 +110,16 @@ pub(crate) fn chunk_len(bytes: &[u8]) -> usize {
     // Only this process's own encoder writes a chunk stream, so its header is
     // always there; a short buffer is a broken chunk, not a zero-hop stream.
     let head = bytes
-        .get(..4)
+        .get(..CHUNK_HEADER_BYTES)
         .expect("chunk stream carries its hop-count header");
-    u32::from_le_bytes(head.try_into().expect("four bytes")) as usize
+    u32::from_le_bytes(head.try_into().expect("header bytes")) as usize
 }
 
 /// Decode one chunk encoded by [`encode_chunk`]; the hop stream comes back
 /// in the original chunk order.
 pub(crate) fn decode_chunk(bytes: &[u8]) -> Vec<AdjHop> {
     let n = chunk_len(bytes);
-    let mut rest = &bytes[4..];
+    let mut rest = &bytes[CHUNK_HEADER_BYTES..];
     let bitmap_len = n.div_ceil(8);
     let (bitmap, tail) = rest.split_at(bitmap_len);
     rest = tail;

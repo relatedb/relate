@@ -361,8 +361,10 @@ fn estimate_matches_the_charge_across_shapes() {
 }
 
 /// A delete's sealed-tier growth — the on-demand region, its slot array, and
-/// the tombstone on an already-sealed chunk — is estimated exactly and lands
-/// in the spill (ADR-0529); a create batch spills nothing.
+/// the tombstone on an already-sealed chunk — is estimated exactly. The
+/// fold-reclaimed terms land in the spill (ADR-0529: a delete at the cap
+/// commits); the founding slot growth the dense span keeps is refusable,
+/// pinned non-vacuously below. A create batch spills nothing.
 #[test]
 fn estimate_matches_the_charge_on_sealed_deletes() {
     let g = Graph::default();
@@ -402,9 +404,8 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
 
     // A never-sealed type joining a region the endpoint already holds: the
     // on-demand chunk is priced as entry growth on that region, not the
-    // region-founding term (the helper keeps the count entry live, its doc
-    // carries the LABS-1386 note).
-    let joiner = crate::graph::test_support::doomed_rel_with_survivor(&g, a, b, "V");
+    // region-founding term.
+    let joiner = crate::graph::test_support::doomed_rel(&g, a, b, "V");
     step(vec![RedoOp::delete_rel(joiner)], true);
 
     // Two never-sealed types joining one region in a single batch: the
@@ -413,8 +414,8 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     // two-chunk region gaining two entries charges vec_heap(4) - vec_heap(2),
     // not twice vec_heap(3) - vec_heap(2)).
     let pair = [
-        crate::graph::test_support::doomed_rel_with_survivor(&g, a, b, "W"),
-        crate::graph::test_support::doomed_rel_with_survivor(&g, a, b, "X"),
+        crate::graph::test_support::doomed_rel(&g, a, b, "W"),
+        crate::graph::test_support::doomed_rel(&g, a, b, "X"),
     ];
     step(
         vec![RedoOp::delete_rel(pair[0]), RedoOp::delete_rel(pair[1])],
@@ -426,7 +427,7 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     // refusable (committed structure, as the store's own estimator charges
     // it) and its chunk and tombstone terms as spill.
     let (edge, other) = crate::graph::test_support::endpoints(&g);
-    let founder = crate::graph::test_support::doomed_rel_with_survivor(&g, edge, other, "Y");
+    let founder = crate::graph::test_support::doomed_rel(&g, edge, other, "Y");
     let (found_refusable, found_spill) = g.estimate_adj_delta(&[RedoOp::delete_rel(founder)]);
     assert!(
         found_refusable > 0,
@@ -441,7 +442,7 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     let sparse = crate::graph::test_support::first_side_map_id(crate::graph::sealed_slot());
     g.apply_redo(vec![create(sparse)], g.commit_ts() + 1)
         .unwrap();
-    let doomed = crate::graph::test_support::doomed_rel_with_survivor(&g, sparse, 0, "Z");
+    let doomed = crate::graph::test_support::doomed_rel(&g, sparse, 0, "Z");
     let (sparse_refusable, sparse_spill) = g.estimate_adj_delta(&[RedoOp::delete_rel(doomed)]);
     assert_eq!(
         sparse_refusable, 0,

@@ -90,8 +90,12 @@ impl SealedChunk {
     }
 
     /// The slot owning `id`'s tombstone, if the chunk holds one — the one
-    /// statement of tombstone id ownership: the read filter, the admission
-    /// predicate, and the in-place update all derive from it.
+    /// statement of tombstone id ownership for the per-id readers: the read
+    /// filter and the in-place update derive from it. The admission
+    /// predicate's batch form ([`fresh_tombstone_count`](Self::fresh_tombstone_count))
+    /// answers a whole batch in one pass over the vec instead, because a
+    /// per-id probe per batch id would be quadratic in the chunk's
+    /// tombstone count.
     fn tombstone_slot(&self, id: RelId) -> Option<usize> {
         self.tombstones.iter().position(|t| t.id == id)
     }
@@ -187,18 +191,22 @@ impl SealedChunk {
         crate::memory::fit_reserved(&mut self.tombstones);
     }
 
-    /// Heap of one chunk's bytes and `tombstone_count` tombstone slots —
-    /// the floor at a hypothetical count, which the founding case
-    /// ([`fresh_sealed_chunk_floor_bytes`]) needs; [`floor_bytes`](Self::floor_bytes)
-    /// is the same term at the chunk's own count. The chunk struct itself is
-    /// inline in [`SealedAdj::chunks`], whose stride owns its `Vec` headers.
-    fn floor_bytes_with(&self, tombstone_count: usize) -> u64 {
-        vec_heap(self.bytes.len(), 1) + vec_heap(tombstone_count, tombstone_stride())
+    /// Heap of one chunk's stream bytes and `tombstone_count` tombstone
+    /// slots — the one statement of the chunk floor's two terms, which both
+    /// the chunk's own count ([`floor_bytes`](Self::floor_bytes)) and the
+    /// founding case ([`fresh_sealed_chunk_floor_bytes`], a hypothetical
+    /// count and the codec's empty stream) delegate to. The chunk struct
+    /// itself is inline in [`SealedAdj::chunks`], whose stride owns its
+    /// `Vec` headers.
+    pub(crate) fn floor_bytes_at(stream_len: usize, tombstone_count: usize) -> u64 {
+        vec_heap(stream_len, 1) + vec_heap(tombstone_count, tombstone_stride())
     }
 
-    /// Heap of one chunk's bytes and tombstones.
+    /// Heap of one chunk's bytes and tombstones —
+    /// [`floor_bytes_at`](Self::floor_bytes_at) at the chunk's own stream
+    /// length and tombstone count.
     pub(crate) fn floor_bytes(&self) -> u64 {
-        self.floor_bytes_with(self.tombstones.len())
+        Self::floor_bytes_at(self.bytes.len(), self.tombstones.len())
     }
 }
 
@@ -328,9 +336,11 @@ pub(crate) fn fresh_sealed_chunk_entry_bytes(added: usize) -> u64 {
 /// entry (priced per region by [`SealedAdj::chunk_entry_growth_bytes`]): the
 /// empty encoded stream and its first `tombstone_count` tombstone slots. The
 /// apply path is `SealedAdj::chunk_or_insert` then `SealedChunk::tombstone`,
-/// so the admission estimate needs the same terms.
+/// so the admission estimate needs the same terms — the chunk floor's own
+/// formula ([`SealedChunk::floor_bytes_at`]) at the codec's empty-stream
+/// length, never a chunk constructed to measure.
 pub(crate) fn fresh_sealed_chunk_floor_bytes(tombstone_count: usize) -> u64 {
-    SealedChunk::zero_hop().floor_bytes_with(tombstone_count)
+    SealedChunk::floor_bytes_at(codec::empty_chunk_bytes(), tombstone_count)
 }
 
 /// Merge a delta chunk and a decoded sealed chunk in `cmp_ts_desc` order.

@@ -14,7 +14,7 @@ use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::memory::{fit_reserved, id_vec_bytes, overflow_entry_bytes, reservable_span_bytes};
+use crate::memory::{fit_reserved, id_vec_bytes, overflow_entry_bytes, SpanPlacement};
 
 /// `None` is a hole: a deleted id, or an id below the highest one stored.
 #[derive(Debug)]
@@ -170,26 +170,33 @@ fn occupied<T>(
     }
 }
 
-/// Grow the dense vector to include `idx`, or report that the reservation
-/// does not fit and the id belongs in the side map.
+/// Whether `idx` has a dense slot — inside the covered span already, or
+/// grown to cover it — or belongs in the side map. The three classes are
+/// [`SpanPlacement`]'s, the one placement policy; this fn applies its own
+/// effect (the reservation) to the Grow class and reports the other two.
+/// `false` therefore means one thing — the id is side-managed — for two
+/// reasons: the policy's gate refused it, or the reservation the gate
+/// admitted could not be allocated. The second keeps the store's own
+/// degradation (an id stays reachable in the side map rather than failing
+/// the write), so both collapse into the side-map answer here.
 fn try_grow<T>(dense: &mut Vec<Option<T>>, idx: usize) -> bool {
-    if idx < dense.len() {
-        return true;
-    }
-    let new_len = idx.saturating_add(1);
-    if new_len <= dense.len() {
-        return false;
-    }
     let slot = size_of::<Option<T>>() as u64;
-    if reservable_span_bytes(new_len, slot).is_none() {
-        return false;
+    match SpanPlacement::classify(dense.len(), idx, slot) {
+        // Inside the covered span: the caller fills the slot.
+        SpanPlacement::Inside => true,
+        // The gate refuses the id: the side map takes it, never the array.
+        SpanPlacement::SideEntry => false,
+        // Grow the dense array to cover it.
+        SpanPlacement::Grew(_) => {
+            let new_len = idx.saturating_add(1);
+            if dense.try_reserve(new_len - dense.len()).is_err() {
+                return false;
+            }
+            dense.resize_with(new_len, || None);
+            fit_reserved(dense);
+            true
+        }
     }
-    if dense.try_reserve(new_len - dense.len()).is_err() {
-        return false;
-    }
-    dense.resize_with(new_len, || None);
-    fit_reserved(dense);
-    true
 }
 
 impl<T> Default for IdVec<T> {
@@ -305,7 +312,7 @@ impl<T> IdVec<T> {
                 Loc::Overflow(id) => store.overflow.insert(id, value),
             };
         }
-        if idx < store.dense.len() || try_grow(&mut store.dense, idx) {
+        if try_grow(&mut store.dense, idx) {
             store.dense[idx].replace(value)
         } else {
             store.overflow.insert(id, value)
@@ -410,7 +417,7 @@ impl<T> IdVec<T> {
         if let Some(loc) = occupied(&guard.dense, &guard.overflow, id, idx) {
             return Entry::Occupied(Occupied { guard, loc });
         }
-        if idx < guard.dense.len() || try_grow(&mut guard.dense, idx) {
+        if try_grow(&mut guard.dense, idx) {
             Entry::Vacant(Vacant {
                 guard,
                 loc: Loc::Dense(idx),
