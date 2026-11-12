@@ -209,3 +209,34 @@ public; the `relatedb.ai/...` links resolve once relate-web serves them
 
 Once every box is checked, the first release is fully published:
 binaries and checksums downloadable, and the documentation site live.
+
+## Between releases
+
+After a release, the workspace version on `main` is the **next
+unreleased** one (ADR-0580): the release workflow's `advance` job — the
+release bot performing the same version-surface sweep the release bump
+performs — commits it to `main`, so the released version exists only on
+the tagged commit and on the registries, and every version `main`
+carries is unpublished by construction. `cargo package -p relate` on
+`main` therefore fails at dependency resolution, by design, until the
+next release publishes that version: the verification resolves the
+facade's dependencies against crates.io, which does not hold `main`'s
+workspace version yet. Between releases that failure is the expected
+state, not a packaging regression.
+
+The advance is the release-bot step in `release.yml` that ADR-0580
+records — never a manual checklist item in this runbook. A manual step
+is skipped under pressure, and nothing detects the omission until the
+next release collides with the registry.
+
+A PR that changes workspace crates may need package evidence — proof
+that the packaged facade still builds, which `cargo package -p relate`
+would otherwise give. Two forms are sanctioned:
+
+- Cite a pre-drift base commit — a commit from before the drift window
+  opened, e.g. the release tag, where the workspace sits at the released
+  version and `cargo package -p relate` passes against the registry.
+- Run `cargo xtask check-package` — it packages the facade, extracts
+  the `.crate` tarball, and builds the extracted lib and examples
+  against the workspace: the same verification with the workspace
+  standing in for the registry (`testing/xtask/README.md`).

@@ -3,9 +3,10 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Workspace maintenance tasks for Relate (`cargo xtask check-boundaries`)"
+description = "Workspace maintenance tasks for Relate (`cargo xtask check-boundaries`, `cargo xtask check-package`)"
 publish = false
 license.workspace = true
 
 [dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }

@@ -1,8 +1,9 @@
 #!/bin/sh
-# Harness machinery for scripts/tests/test_release_bump.sh: the cargo and
-# npm stubs, the fixture-repo factory, and the run helper. Sourced by the
-# test after tap_sandbox, the way install_sh_harness.sh is — this file
-# holds no cases and no assertions.
+# Harness machinery for scripts/tests/test_release_bump.sh and
+# scripts/tests/test_release_advance.sh: the cargo and npm stubs, the
+# fixture-repo factory, and the run helper. Sourced by the test after
+# tap_sandbox, the way install_sh_harness.sh is — this file holds no
+# cases and no assertions.
 #
 # Expects from the caller: $ROOT (repo root), $sandbox (tap_sandbox's),
 # $stubbin (created here under the sandbox).
@@ -181,7 +182,10 @@ EOF
 		commit -qm fixture
 }
 
-run_bump() { # $1 = fixture dir, $2 = NEXT_VERSION
-	(cd "$1" && PATH="$stubbin:$PATH" NEXT_VERSION="$2" \
-		bash scripts/release-bump.sh) 2>"$1/stderr.log"
+run_bump() { # $1 = fixture dir, $2 = NEXT_VERSION, the rest = release-bump arguments
+	dir="$1"
+	ver="$2"
+	shift 2
+	(cd "$dir" && PATH="$stubbin:$PATH" NEXT_VERSION="$ver" \
+		bash scripts/release-bump.sh "$@") 2>"$dir/stderr.log"
 }

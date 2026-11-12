@@ -587,13 +587,17 @@ test-bolt-compat-scripts:
 ##   (scripts/version_tokens.py) and the CHANGELOG rotation
 ##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
 ##   the npm JSON reader (scripts/lib/npm_json.py),
-##   and the bump script end to end (first-release and steady-state paths)
+##   the bump script end to end (first-release, steady-state and
+##   populated-cut paths), and the advance's scoped sweep (scripts/release-bump.sh
+##   --skip-changelog, ADR-0580: the version surfaces advance, the
+##   changelog does not)
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_npm_json.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
 	sh $(CURDIR)/scripts/tests/test_release_bump.sh
+	sh $(CURDIR)/scripts/tests/test_release_advance.sh
 	sh $(CURDIR)/scripts/tests/test_toml_sh.sh
 
 ## test-front-bench-scripts: Unit-test the front-bench statement corpus
