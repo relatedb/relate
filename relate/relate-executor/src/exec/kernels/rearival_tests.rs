@@ -520,6 +520,21 @@ pub(super) const VOCAB: &[&str] = &[
     "(x:N {id: {seed}})-[:KNOWS]->(m)-[:KNOWS*1..2]-(y:N)",
     "(x:N {id: {seed}})-[:LIKES]->(m)-[:KNOWS|LIKES*1..2]-(y:N)",
     "(x:N {id: {seed}})-[:KNOWS*1..3]->(y:N)",
+    // The untyped var-length shapes (LABS-1434): an empty type list
+    // compiles as the any-type set, so these run the same differential as
+    // the typed ones — the evidence that "any type" is the walker's own
+    // answer and not a silently wider match. Undirected and directed.
+    //
+    // The single untyped hop (`-[]-`) is deliberately absent, and not
+    // because of the type list: a pattern with no quantifier is outside
+    // this NFA's vocabulary entirely — `compile` requires exactly one
+    // top-level `Quantified` element (`exactly_one_quantified`) and
+    // declines at that lookup, long before the cost gate. `plain_rel`
+    // admits the empty type list for the *clamped inner rel* a
+    // var-length hop normalizes into; the standalone one-hop spelling
+    // never reaches it.
+    "(x:N {id: {seed}})-[*1..2]-(y:N)",
+    "(x:N {id: {seed}})-[*1..3]->(y:N)",
 ];
 
 /// One vocabulary pattern with its seed anchor substituted (the

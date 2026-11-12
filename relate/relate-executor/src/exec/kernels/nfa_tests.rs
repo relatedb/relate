@@ -483,15 +483,31 @@ fn declines_subpath_variable() {
     );
 }
 
-/// An empty type list (the any-type `[]` hop) declines: the union
-/// would have to be every interned type, which the caller cannot
-/// enumerate through the static list the IR carries.
+/// An empty type list (the any-type `[]` hop) compiles: the transition
+/// carries no interned id, and `arms` resolves that empty list to
+/// `RelTypes::Any` — the store's own "every type matches". The union the
+/// old decline worried about never has to be enumerated (LABS-1434).
 #[test]
-fn declines_empty_type_list() {
-    declines(
+fn compiles_empty_type_list_as_the_any_type_set() {
+    let (graph, nfa) = compiled(
         "MATCH p = (x:Person)-[*1..]-(y) RETURN p LIMIT 100",
         &["knows"],
     );
+    // The type list is the pattern's, never the store's: `knows` is
+    // interned below, and the untyped hop still names nothing, so no
+    // transition carries an id. A regression that resolved the untyped
+    // hop against the store's vocabulary would show here as a non-empty
+    // list rather than as a wrong answer.
+    assert!(!nfa.transitions.is_empty(), "the unrolled body emits hops");
+    for t in &nfa.transitions {
+        assert!(
+            t.types.is_empty(),
+            "the untyped hop carries no interned id, got {:?}",
+            t.types
+        );
+    }
+    // The assertion above is about the hop, not about an empty store.
+    assert!(graph.rel_type_id("knows").is_some());
 }
 
 /// The wider out-of-vocabulary declines, one shape each.

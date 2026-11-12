@@ -11,7 +11,7 @@ use relate_core::Value;
 
 use crate::ctx::KernelRung;
 
-use super::super::test_support::{profiled, served, Builder};
+use super::super::test_support::{line_graph, profiled, served, Builder};
 use super::frontier_rider_tests::ring_graph;
 
 /// A 3-hop fixed chain in the chain kernel's closed vocabulary (typed
@@ -73,15 +73,15 @@ fn profile_names_the_frontier_rung_for_a_varlen_pattern() {
 /// reports a rung at all.
 #[test]
 fn profile_names_the_walker_for_a_declined_pattern() {
-    let built = super::super::test_support::build(
-        &[&["N"], &["N"], &["N"], &["N"]],
-        &[(0, 1, "E"), (1, 2, "E"), (2, 3, "E")],
-    );
-    // An untyped rel keeps the recursive walker (the matcher's static
-    // type-list proof), so no kernel engages.
-    let records = profiled(&built.graph, "MATCH (a:N)-->(b:N) RETURN b");
-    let served = served(&records);
-    assert_eq!(served.kernel, Some(KernelRung::Walker));
+    let graph = line_graph();
+    // A pattern with no quantifier keeps the recursive walker: this NFA
+    // compiles only the one-`Quantified`-element vocabulary, so `compile`
+    // declines at that lookup. Both hops in this module are untyped, so an
+    // empty-type-list decline would have kept both on the walker — the
+    // frontier pin in `an_untyped_quantified_hop_reports_the_frontier`
+    // below is what makes the quantifier, not the type list, the cause.
+    let records = profiled(&graph, "MATCH (a:Person)-->(b:Person) RETURN b");
+    assert_eq!(served(&records).kernel, Some(KernelRung::Walker));
     assert_eq!(
         records
             .iter()
@@ -89,6 +89,31 @@ fn profile_names_the_walker_for_a_declined_pattern() {
             .count(),
         1,
         "only the MATCH clause carries a rung"
+    );
+}
+
+/// An untyped hop *with* a quantifier reports the frontier rung: it
+/// compiles as the any-type set (LABS-1434), so the type list cannot be
+/// what kept its no-quantifier sibling above on the walker. Paired with
+/// that sibling, this is the checkable form of the claim.
+///
+/// The consumer is the distinct-endpoint one this rung serves — the
+/// boundary-pair comparison its answer shape needs (LABS-1433) and the
+/// aggregate that keeps it an endpoint set; a bare `RETURN b` would
+/// decline on answer shape and report `Walker` for a reason that has
+/// nothing to do with the compile.
+#[test]
+fn an_untyped_quantified_hop_reports_the_frontier() {
+    let graph = line_graph();
+    let records = profiled(
+        &graph,
+        "MATCH (a:Person)-[*1..]-(b:Person) WHERE a <> b \
+         WITH DISTINCT a, b RETURN count(*) AS c",
+    );
+    assert_eq!(
+        served(&records).kernel,
+        Some(KernelRung::FrontierNfa),
+        "an untyped quantified hop compiles as the any-type set"
     );
 }
 

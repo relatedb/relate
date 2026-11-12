@@ -18,10 +18,10 @@ use relate_core::Value;
 use crate::ctx::ExecCtx;
 use crate::exec::test_support::{
     build, complete_graph, decide, declines_with, exec_cypher, file_triangle, int_cell,
-    leading_match, line_graph, planned_clauses, profiled, reset_frontier_facts, same_rows, served,
-    Built, LeadingMatch,
+    leading_match, line_graph, planned_clauses, reset_frontier_facts, same_rows, Built,
+    LeadingMatch,
 };
-use crate::frontier_decline::{FrontierDecline, FrontierDeclineReason};
+use crate::frontier_decline::FrontierDecline;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
@@ -47,23 +47,65 @@ fn run_under(graph: &mut Graph, engine: PatternEngine, cypher: &str) -> (QueryRe
     (answer, engagements, levels)
 }
 
+/// One statement's routing facts: the walker's answer and each of the
+/// other two routings' engagement, read from the executions [`agree`]
+/// already performs.
+struct Routed {
+    /// The walker's answer; the other two are asserted equal to it.
+    answer: QueryResult,
+    /// The forced rung's engagement (`nfa`: every proof but the cost gate).
+    forced: RungFacts,
+    /// The cost-gated default's (`auto`).
+    auto: RungFacts,
+}
+
+/// One routing's engagement: how many kernels it engaged and how many
+/// frontier levels it ran. Named so a read site says which fact it wants
+/// rather than `.0`/`.1`.
+struct RungFacts {
+    engaged: u32,
+    levels: u64,
+}
+
 /// The three routings agree on `cypher`: the walker (`walk`, the oracle),
 /// the cost-gated default (`auto`), and the forced rung (`nfa`, every
-/// proof but the cost gate). Returns the forced run's engagements and
-/// frontier levels — the caller decides whether this shape must have
-/// ridden the rung — and the walker's answer.
-fn agree(graph: &mut Graph, cypher: &str) -> (u32, u64, QueryResult) {
+/// proof but the cost gate). Every routing fact comes from these three
+/// executions, so a caller asking "did `auto` take it too?" reads the run
+/// that happened rather than repeating the statement.
+fn agree(graph: &mut Graph, cypher: &str) -> Routed {
     let (walker, walk_engaged, walk_levels) = run_under(graph, PatternEngine::Walk, cypher);
     assert_eq!(
         (walk_engaged, walk_levels),
         (0, 0),
         "the walker oracle never rides a kernel: {cypher}"
     );
-    let (auto, _, _) = run_under(graph, PatternEngine::Auto, cypher);
+    let (auto, auto_engaged, auto_levels) = run_under(graph, PatternEngine::Auto, cypher);
     assert!(same_rows(&auto, &walker), "auto vs walker: {cypher}");
     let (forced, engaged, levels) = run_under(graph, PatternEngine::Nfa, cypher);
     assert!(same_rows(&forced, &walker), "nfa vs walker: {cypher}");
-    (engaged, levels, walker)
+    Routed {
+        answer: walker,
+        forced: RungFacts { engaged, levels },
+        auto: RungFacts {
+            engaged: auto_engaged,
+            levels: auto_levels,
+        },
+    }
+}
+
+/// One statement's forced-rung assertion: the rung takes it, and all
+/// three routings agree on the answer (`agree` asserts the latter). The
+/// one home for this predicate, shared by the hand-built fixtures above
+/// and both gate families below — they differ only in the spelling they
+/// generate. Hands back the record so a caller can read the answer too.
+fn rides(graph: &mut Graph, cypher: &str, case: &str) -> Routed {
+    let routed = agree(graph, cypher);
+    assert_eq!(
+        (routed.forced.engaged, routed.forced.levels > 0),
+        (1, true),
+        "{case} rides the forced rung"
+    );
+    routed
 }
 
 /// The one count cell of a one-row result.
@@ -170,13 +212,15 @@ fn the_seed_reached_again_is_excluded_per_pair_not_per_graph() {
                 WITH DISTINCT a, b RETURN count(*) AS pairs";
     let without = "MATCH (a:File)-[:T*1..3]-(b:File) \
                    WITH DISTINCT a, b RETURN count(*) AS pairs";
-    let (engaged, levels, walker) = agree(&mut triangle.graph, with);
-    assert_eq!((engaged, levels > 0), (1, true), "the comparison rides");
-    assert_eq!(count_of(&walker), 6, "the self pair of every seed drops");
-    let (engaged, _, walker) = agree(&mut triangle.graph, without);
-    assert_eq!(engaged, 1);
+    let with_routed = rides(&mut triangle.graph, with, "the comparison");
     assert_eq!(
-        count_of(&walker),
+        count_of(&with_routed.answer),
+        6,
+        "the self pair of every seed drops"
+    );
+    let without_routed = rides(&mut triangle.graph, without, "the bare spelling");
+    assert_eq!(
+        count_of(&without_routed.answer),
         9,
         "without the comparison the seed stays"
     );
@@ -188,13 +232,21 @@ fn the_seed_reached_again_is_excluded_per_pair_not_per_graph() {
         &[&["File"], &["File"]],
         &[(0, 0, "T"), (0, 1, "T"), (0, 1, "T")],
     );
-    let (engaged, _, walker) = agree(&mut loops.graph, with);
+    let Routed {
+        answer: walker,
+        forced: RungFacts { engaged, .. },
+        ..
+    } = agree(&mut loops.graph, with);
     assert_eq!(engaged, 1);
     assert_eq!(count_of(&walker), 2, "(0,1) and (1,0), the loops dropped");
     // The zero-length arrival of `*0..` is the seed itself: dropped.
     let zero = "MATCH (a:File)-[:T*0..2]-(b:File) WHERE a <> b \
                 WITH DISTINCT a, b RETURN count(*) AS pairs";
-    let (engaged, _, walker) = agree(&mut loops.graph, zero);
+    let Routed {
+        answer: walker,
+        forced: RungFacts { engaged, .. },
+        ..
+    } = agree(&mut loops.graph, zero);
     assert_eq!(engaged, 1);
     assert_eq!(count_of(&walker), 2);
 }
@@ -209,7 +261,11 @@ fn a_far_endpoint_equal_to_another_seed_still_answers() {
         &[(0, 1, "T"), (1, 2, "T")],
     );
     let query = "MATCH (a:File)-[:T*1..2]-(b:File) WHERE a <> b RETURN DISTINCT b.id AS b";
-    let (engaged, _, walker) = agree(&mut line.graph, query);
+    let Routed {
+        answer: walker,
+        forced: RungFacts { engaged, .. },
+        ..
+    } = agree(&mut line.graph, query);
     assert_eq!(engaged, 1);
     assert_eq!(
         walker.rows.len(),
@@ -238,7 +294,10 @@ fn an_anchored_seed_drops_itself() {
         "MATCH (a:File {id: 0})-[:T|U*0..3]->(b) WHERE a <> b RETURN count(DISTINCT b) AS c",
         "MATCH (a:File {id: 2})-[:T*1..3]-(b:Hot) WHERE a <> b RETURN count(DISTINCT b) AS c",
     ] {
-        let (engaged, _, _) = agree(&mut tri.graph, cypher);
+        let Routed {
+            forced: RungFacts { engaged, .. },
+            ..
+        } = agree(&mut tri.graph, cypher);
         assert_eq!(engaged, 1, "{cypher}");
     }
 }
@@ -299,7 +358,10 @@ fn consumers_outside_the_pair_set_answer_as_the_walker() {
          RETURN count(*) AS walks",
         "MATCH (a:File)-[:T*1..3]-(b:File) WHERE a <> b RETURN a.id AS a, b.id AS b",
     ] {
-        let (engaged, levels, _) = agree(&mut tri.graph, cypher);
+        let Routed {
+            forced: RungFacts { engaged, levels },
+            ..
+        } = agree(&mut tri.graph, cypher);
         assert_eq!((engaged, levels), (0, 0), "{cypher}");
     }
 }
@@ -401,16 +463,21 @@ const ENGAGING: &[&str] = &[
      ORDER BY b.id SKIP 1",
     // An aggregate over the endpoint set from an anchored seed.
     "MATCH (a {id: 0})-[:T*0..{k}]-(b) WHERE b <> a RETURN count(DISTINCT b) AS c",
+    // The untyped hop (LABS-1434): an empty type list compiles as the
+    // any-type set, so it rides the rung like any typed one — and the
+    // answers must still be the walker's, which is what proves "any
+    // type" is the walker's own reach and not a wider match.
+    "MATCH (a:File)-[*1..{k}]-(b) WHERE a <> b \
+     WITH DISTINCT a, b RETURN count(*) AS pairs",
 ];
 
-/// The shapes outside the engine's reach (the untyped hop declines the
-/// NFA compile, the path-multiset consumers decline the answer shape):
-/// the answers are the walker's under every routing, and the rung never
-/// engages.
-const DECLINING: &[&str] = &[
-    "MATCH (a:File)-[*1..{k}]-(b) WHERE a <> b WITH DISTINCT a, b RETURN count(*) AS pairs",
-    "MATCH (a:File)-[:T*1..{k}]-(b:File) WHERE a <> b RETURN count(*) AS paths",
-];
+/// The shapes outside the engine's reach (the path-multiset consumers
+/// decline the answer shape): the answers are the walker's under every
+/// routing, and the rung never engages. The untyped hop used to sit here
+/// for the NFA compile's empty-type-list decline; it now compiles
+/// (LABS-1434) and moved to [`ENGAGING`].
+const DECLINING: &[&str] =
+    &["MATCH (a:File)-[:T*1..{k}]-(b:File) WHERE a <> b RETURN count(*) AS paths"];
 
 proptest! {
     #![proptest_config(config_with_floor(192))]
@@ -423,7 +490,7 @@ proptest! {
             let cypher = template
                 .replace("{k}", &k.to_string())
                 .replace("{k1}", &(k + 1).to_string());
-            let (engaged, levels, _) = agree(&mut built.graph, &cypher);
+            let Routed { forced: RungFacts { engaged, levels }, .. } = agree(&mut built.graph, &cypher);
             prop_assert_eq!(engaged, 1, "the forced rung takes {}", cypher);
             prop_assert!(levels > 0, "the frontier ran for {}", cypher);
         }
@@ -431,7 +498,7 @@ proptest! {
             let cypher = template
                 .replace("{k}", &k.to_string())
                 .replace("{k1}", &(k + 1).to_string());
-            let (engaged, levels, _) = agree(&mut built.graph, &cypher);
+            let Routed { forced: RungFacts { engaged, levels }, .. } = agree(&mut built.graph, &cypher);
             prop_assert_eq!((engaged, levels), (0, 0), "no rung takes {}", cypher);
         }
     }
@@ -464,11 +531,61 @@ fn gate_graph(nodes: usize) -> Built {
     build(&labels, &rels)
 }
 
+/// An unbounded untyped hop rides the rung under `auto` — the cost gate
+/// engages any unbounded quantifier on shape alone — so its answers must
+/// be the walker's, not only its bounded twin's. The line graph has no
+/// cycle, so the unbounded walk terminates.
+///
+/// This is the routing change the compile widening actually delivers: the
+/// bounded untyped shapes still decline on cost, the unbounded ones do
+/// not.
+#[test]
+fn unbounded_untyped_hops_answer_as_the_walker() {
+    let mut graph = line_graph();
+    // `auto_engages` is the fact under test, so the bounded row is here
+    // too: the cost gate engages an unbounded quantifier on shape alone,
+    // and a bounded one on its estimate — which is why only the unbounded
+    // spellings change routing. Pinned, not asserted in prose.
+    for (cypher, auto_engages) in [
+        (
+            "MATCH (a:Person)-[*1..]-(b:Person) WHERE a <> b \
+             WITH DISTINCT a, b RETURN count(*) AS pairs",
+            true,
+        ),
+        (
+            "MATCH (a:Person)-[*2..]-(b:Person) WHERE a <> b \
+             WITH DISTINCT a, b RETURN count(*) AS pairs",
+            true,
+        ),
+        (
+            "MATCH (a:Person)-[*1..2]-(b:Person) WHERE a <> b \
+             WITH DISTINCT a, b RETURN count(*) AS pairs",
+            false,
+        ),
+    ] {
+        // One `agree` call, every routing fact: the forced rung's and
+        // `auto`'s counters both come from the three executions it
+        // already performs, so no assertion repeats the statement.
+        let Routed { forced, auto, .. } = agree(&mut graph, cypher);
+        assert_eq!(
+            (forced.engaged, forced.levels > 0),
+            (1, true),
+            "{cypher} rides the forced rung"
+        );
+        let want = u32::from(auto_engages);
+        assert_eq!(
+            (auto.engaged, auto.levels > 0),
+            (want, auto_engages),
+            "the `auto` routing of {cypher}"
+        );
+    }
+}
+
 /// The sqlite-gate's own statement shapes: co-change at `d = 1..4`
 /// (`*1..2d`) answers the walker under every routing, riding the forced
-/// rung; the k-hop reach shape (an untyped hop, LABS-1434's ticket) stays
-/// on the walker with the same answer, and its decline names the NFA
-/// compile.
+/// rung; the k-hop reach shape (an untyped hop, LABS-1434's ticket) does
+/// the same now that an empty type list compiles as the any-type set —
+/// it used to stay on the walker with an `NfaShape` decline.
 #[test]
 fn the_gate_statements_answer_as_the_walker() {
     let mut built = gate_graph(36);
@@ -478,29 +595,17 @@ fn the_gate_statements_answer_as_the_walker() {
              WITH DISTINCT a, b RETURN count(*) AS pairs",
             2 * d
         );
-        let (engaged, levels, _) = agree(&mut built.graph, &cypher);
-        assert_eq!(
-            (engaged, levels > 0),
-            (1, true),
-            "d={d} rides the forced rung"
-        );
+        rides(&mut built.graph, &cypher, &format!("d={d}"));
     }
     for k in 3..=5u32 {
         let cypher = format!(
             "MATCH (p:Prompt)-[*1..{k}]-(n) WHERE n <> p \
              WITH DISTINCT p, n RETURN count(*) AS pairs"
         );
-        let (engaged, levels, _) = agree(&mut built.graph, &cypher);
-        assert_eq!(
-            (engaged, levels),
-            (0, 0),
-            "k={k}: the untyped hop stays on the walker"
-        );
-        let records = profiled(&built.graph, &cypher);
-        assert_eq!(
-            served(&records).frontier_decline,
-            Some(FrontierDeclineReason::Plan(FrontierDecline::NfaShape)),
-            "k={k}: the decline names the NFA compile"
+        rides(
+            &mut built.graph,
+            &cypher,
+            &format!("k={k}: the untyped hop"),
         );
     }
 }

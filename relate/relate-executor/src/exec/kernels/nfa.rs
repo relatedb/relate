@@ -51,8 +51,10 @@
 //! Every decline is structural, never an assert: state count above the
 //! 64-state bitmask ceiling (the prototype's `assert!` is a decline
 //! here), selectors, subpath variables, predicates on inner rels,
-//! non-static or empty type lists, a type name the store never interned,
-//! and anything that breaks the node/hop alternation. The two admission
+//! non-static type lists, a type name the store never interned, and
+//! anything that breaks the node/hop alternation. An *empty* type list is
+//! not a decline: it is the untyped hop, and it compiles as the any-type
+//! set (see `NfaTransition::types`). The two admission
 //! declines are switch-gated (ADR-0519): under `auto` an interior or
 //! inner node carrying admission facts declines exactly as before (the
 //! v1 NFA has no node-admission surface; the boundary nodes' admission
@@ -135,6 +137,13 @@ pub(crate) struct NfaTransition {
     pub(crate) to: u32,
     /// Interned rel-type ids of the hop's static disjunction — the
     /// `(A|B)` union rides one transition, never an alternation arm.
+    ///
+    /// **Empty means every type matches** — the untyped hop (`-[*1..]-`,
+    /// `-[]-`), not "no type". This is the one place the encoding is
+    /// declared: `arms` resolves the empty list to `RelTypes::Any`
+    /// through `RelTypes::from_interned` → `RelTypes::only`, whose
+    /// empty-list arm is `Any` (LABS-1434). A reader that treats an
+    /// empty vec as "matches nothing" would silently drop the hop.
     pub(crate) types: Vec<u32>,
     /// This hop's traversal direction, as written in the pattern.
     pub(crate) direction: Direction,
@@ -359,17 +368,23 @@ pub(crate) fn compile(
     })
 }
 
-/// The plain one-hop rel of the vocabulary: a static non-empty type
-/// disjunction (the `(A|B)` union is one type list, not alternation IR),
-/// no predicates, exactly one hop. Direction and the variable name ride
-/// the transition and the row binding — neither is constrained here.
+/// The plain one-hop rel of the vocabulary: a static type disjunction
+/// (the `(A|B)` union is one type list, not alternation IR), no
+/// predicates, exactly one hop. Direction and the variable name ride the
+/// transition and the row binding — neither is constrained here.
+///
+/// An empty type list is the untyped hop (`-[*1..]-`), and it compiles:
+/// the transition carries no interned id, and `arms` resolves that empty
+/// list to `RelTypes::Any` — the store's own encoding for "every type
+/// matches", which is what an untyped hop means. Nothing has to
+/// enumerate the interned vocabulary, so the decline this used to carry
+/// (LABS-1434) is gone.
 fn plain_rel(rel: &RelPattern) -> Option<()> {
     if rel.var_length
         || rel.min_hops != 1
         || rel.max_hops != Some(1)
         || rel.properties.is_some()
         || rel.where_clause.is_some()
-        || rel.types.is_empty()
         // The synthesized `type_expr` of every typed rel: static
         // disjunctions are exactly what the `types` list already carries
         // (single label or `Or`-chain of labels); anything dynamic,

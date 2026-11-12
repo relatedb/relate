@@ -258,10 +258,10 @@ fn declined_node(node: &relate::PlanNode) -> Option<&relate::PlanNode> {
 /// LABS-1437: a clause the frontier's plan-time gates keep off the rung
 /// names the gate on the record and the wire args of the walker's row —
 /// the sqlite-gate's co-change and k-hop reach shapes get distinct,
-/// typed reasons (the untyped hop declines the NFA compile; a statement
-/// that needs every row declines the answer-shape gate), the counters
-/// stay zero because the rung never ran, and the answer is the
-/// walker's.
+/// typed reasons (a bounded untyped hop clears the NFA compile now and
+/// declines on the cost gate instead — LABS-1434; a statement that needs
+/// every row declines the answer-shape gate), the counters stay zero
+/// because the rung never ran, and the answer is the walker's.
 #[test]
 fn profile_names_the_plan_time_decline_on_a_walker_served_run() {
     let mut conn = connection();
@@ -274,7 +274,7 @@ fn profile_names_the_plan_time_decline_on_a_walker_served_run() {
         (
             "PROFILE MATCH (p:Prompt)-[*1..3]-(n) WHERE n <> p \
              WITH DISTINCT p, n RETURN count(*) AS pairs",
-            "nfa-shape",
+            "cost",
         ),
         (
             "PROFILE MATCH (a:File)-[:TOUCHES*1..2]-(b:File) \
