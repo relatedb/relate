@@ -24,10 +24,12 @@ use crate::fields::{
     metadata_notifications_failure, patch_names, ConsumeRequest, NotificationConfig, RunRequest,
 };
 use crate::keepalive::{run_statement, with_keep_alive};
-use crate::packstream::{chunk_message, decode, encode, encode_error, struct_tag, Pack};
+use crate::packstream::{
+    chunk_message, decode_message, encode, encode_error, struct_tag, DecodeError, Pack,
+};
 use crate::patches::BoltPatches;
 use crate::protocol::{ConnConfig, QueryOutcome};
-use crate::requests::{breach_text, request, Message, Undecodable};
+use crate::requests::{breach_text, request, Message, OverBudget, Refused, Undecodable};
 use crate::results::{fails_run, Body, OpenResults, OverCap};
 use crate::summary::{self, send_success};
 use crate::value_codec::{MdbPackError, ValueCodec};
@@ -168,8 +170,17 @@ impl Session {
         let last_reset = last_reset(&batch);
         for (index, payload) in batch.iter().enumerate() {
             let queued_ahead_of_reset = last_reset.is_some_and(|reset| index < reset);
-            let pack = decode(payload)?;
-            if let Flow::Close = self.dispatch(stream, pack, queued_ahead_of_reset, config)? {
+            let decoded = match decode_message(payload) {
+                Ok(pack) => request(pack, self.dialect.version).map_err(Refused::Undecodable),
+                Err(DecodeError::ValueLimit { at_least }) => Err(Refused::OverBudget(OverBudget {
+                    at_least,
+                    bytes: payload.len(),
+                    message: struct_tag(payload)
+                        .and_then(|tag| Message::from_signature(tag, self.dialect.version)),
+                })),
+                Err(fatal) => return Err(fatal.into()),
+            };
+            if let Flow::Close = self.dispatch(stream, decoded, queued_ahead_of_reset, config)? {
                 return Ok(Flow::Close);
             }
         }
@@ -186,18 +197,17 @@ impl Session {
     fn dispatch<W: Write>(
         &mut self,
         stream: &mut W,
-        pack: Pack,
+        decoded: Result<(Message, Vec<Pack>), Refused>,
         queued_ahead_of_reset: bool,
         config: &ConnConfig,
     ) -> std::io::Result<Flow> {
-        let decoded = request(pack, self.dialect.version);
         match self.gate {
             // Auth (ADR-0126): with a credential configured, nothing but
             // HELLO runs until a HELLO has validated (GOODBYE is always
             // allowed). A client that skips HELLO gets unauthorized — not
             // a silent session. The arm answers before the fatal decode,
             // so an unknown message before HELLO is answered the same
-            // way. At 5.4 the gate always starts armed (the HELLO does
+            // way, and so is an over-budget one (ADR-0577). At 5.4 the gate always starts armed (the HELLO does
             // not authenticate there, ADR-0484 decision 3), so it holds
             // the pre-HELLO stretch under every auth config.
             Gate::AwaitingHello => match decoded {
@@ -216,7 +226,11 @@ impl Session {
             // Neo4j's AUTHENTICATION state; everything else but GOODBYE
             // (which always closes) is IGNORED.
             Gate::HelloRejected => match decoded {
-                Err(undecodable) => Ok(undecodable_exit(undecodable)),
+                Err(Refused::Undecodable(undecodable)) => Ok(undecodable_exit(undecodable)),
+                Err(Refused::OverBudget(_)) => {
+                    send_ignored(stream)?;
+                    Ok(Flow::Continue)
+                }
                 Ok((Message::Hello, _)) => {
                     self.send_breach(stream, Message::Hello, "AUTHENTICATION")
                 }
@@ -232,7 +246,18 @@ impl Session {
             // else — RUN included — is the ADR-0314 breach naming the
             // AUTHENTICATION state, then the close.
             Gate::AwaitingLogon => match decoded {
-                Err(undecodable) => Ok(undecodable_exit(undecodable)),
+                Err(Refused::Undecodable(undecodable)) => Ok(undecodable_exit(undecodable)),
+                // ADR-0577: an over-budget message is not a LOGON, so it
+                // is this gate's breach — the FAILURE naming the limit,
+                // then the close; queued ahead of a RESET it is IGNORED.
+                Err(Refused::OverBudget(over)) => {
+                    if queued_ahead_of_reset && over.interruptible() {
+                        send_ignored(stream)?;
+                        Ok(Flow::Continue)
+                    } else {
+                        self.over_budget_exit(stream, &over)
+                    }
+                }
                 Ok((Message::Goodbye, _)) => Ok(Flow::Close),
                 Ok((message @ Message::Logon, fields)) => {
                     // ADR-0317, consulted through the never-interrupted
@@ -254,7 +279,12 @@ impl Session {
             Gate::Open => {
                 let (message, fields) = match decoded {
                     Ok(request) => request,
-                    Err(undecodable) => return Ok(undecodable_exit(undecodable)),
+                    Err(Refused::Undecodable(undecodable)) => {
+                        return Ok(undecodable_exit(undecodable))
+                    }
+                    Err(Refused::OverBudget(over)) => {
+                        return self.over_budget_open(stream, &over, queued_ahead_of_reset)
+                    }
                 };
                 // ADR-0317, through the never-interrupted set: HELLO,
                 // GOODBYE and the batch's RESETs are never answered
@@ -808,7 +838,6 @@ impl Session {
         }
         Ok(Flow::Continue)
     }
-
     /// The ADR-0110 failure idiom for an engine error, written once: the
     /// failed state, the FAILURE on the wire, and the session continues
     /// (RESET clears it).
@@ -869,6 +898,41 @@ impl Session {
         send_failure_with_code(stream, REQUEST_INVALID_CODE, &breach_text(message, state))?;
         Ok(Flow::Close)
     }
+
+    /// The answer to a well-formed message over the decoded-value budget
+    /// (ADR-0577) in the open session: the message was framed whole, so
+    /// the connection is in sync and the request fails like any other
+    /// rejected one — a FAILURE naming the limit, the failed state, the
+    /// session continues (RESET clears it). A message queued ahead of a
+    /// RESET, or arriving while the session is already failed, answers
+    /// IGNORED through the same [`Message`] classifications the handled
+    /// messages use.
+    fn over_budget_open<W: Write>(
+        &mut self,
+        stream: &mut W,
+        over: &OverBudget,
+        queued_ahead_of_reset: bool,
+    ) -> std::io::Result<Flow> {
+        if (queued_ahead_of_reset && over.interruptible())
+            || (self.failed && over.ignored_while_failed())
+        {
+            send_ignored(stream)?;
+            return Ok(Flow::Continue);
+        }
+        self.fail_with_code(stream, REQUEST_INVALID_CODE, &over.failure_text())
+    }
+
+    /// The over-budget answer where no session is open to fail (the 5.x
+    /// AUTHENTICATION gate, ADR-0484 decision 4): the FAILURE, then the
+    /// close, as for any other message that gate does not accept.
+    fn over_budget_exit<W: Write>(
+        &self,
+        stream: &mut W,
+        over: &OverBudget,
+    ) -> std::io::Result<Flow> {
+        send_failure_with_code(stream, REQUEST_INVALID_CODE, &over.failure_text())?;
+        Ok(Flow::Close)
+    }
 }
 
 /// The fatal decode exit (ADR-0315): a message that is not a request
@@ -882,8 +946,9 @@ fn undecodable_exit(undecodable: Undecodable) -> Flow {
 }
 
 /// The batch's last reachable RESET (0x0F), by index (ADR-0317): the last
-/// RESET inside the decodable prefix. A message after the first undecodable
-/// one is never reached — the fatal decode (ADR-0315) closes the session
+/// RESET inside the prefix before the first fatal decode error (an
+/// over-budget message is not fatal, ADR-0577). A message after the first
+/// fatal one is never reached — the fatal decode (ADR-0315) closes the session
 /// first — so a RESET there queues nothing ahead of it. The prefix bound is
 /// found by decoding the prefix one message at a time and dropping each
 /// before the next: the single-message peak again, never the batch
@@ -896,7 +961,7 @@ fn last_reset(batch: &[Vec<u8>]) -> Option<usize> {
     let is_reset = |payload: &Vec<u8>| struct_tag(payload) == Some(reset_tag);
     let prefix_end = batch
         .iter()
-        .position(|payload| decode(payload).is_err())
+        .position(|payload| decode_message(payload).is_err_and(|e| e.is_fatal()))
         .unwrap_or(batch.len());
     batch[..prefix_end].iter().rposition(is_reset)
 }

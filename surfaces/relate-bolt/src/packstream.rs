@@ -173,10 +173,65 @@ fn enc_int(i: i64, o: &mut Vec<u8>) {
     }
 }
 
-pub fn decode(data: &[u8]) -> Result<Pack, String> {
+/// Why a message failed to decode. The value budget is its own variant: a
+/// well-formed message over the budget is a recoverable request failure the
+/// session answers with an actionable FAILURE, while every other decode
+/// error is a fatal protocol breach (ADR-0315).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DecodeError {
+    /// The message holds more than [`MAX_DECODE_VALUES`] decoded values;
+    /// `at_least` is a lower bound on how many it holds.
+    ValueLimit { at_least: usize },
+    /// Any other malformed PackStream input.
+    Malformed(String),
+}
+
+impl DecodeError {
+    /// Whether the error ends the connection (ADR-0315): every malformed
+    /// input does; the value budget alone is a recoverable request
+    /// failure (ADR-0577). The one classification, beside the enum, so a
+    /// new variant declares its class once.
+    pub(crate) fn is_fatal(&self) -> bool {
+        match self {
+            DecodeError::ValueLimit { .. } => false,
+            DecodeError::Malformed(_) => true,
+        }
+    }
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecodeError::ValueLimit { .. } => f.write_str("packstream value limit exceeded"),
+            DecodeError::Malformed(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+impl From<String> for DecodeError {
+    fn from(m: String) -> Self {
+        DecodeError::Malformed(m)
+    }
+}
+
+impl From<&str> for DecodeError {
+    fn from(m: &str) -> Self {
+        DecodeError::Malformed(m.into())
+    }
+}
+
+/// Decode one message, keeping the failure typed. [`decode`] is the
+/// string-error spelling the sibling test and tooling crates use.
+pub(crate) fn decode_message(data: &[u8]) -> Result<Pack, DecodeError> {
     let mut buf = data;
     let mut remaining_values = MAX_DECODE_VALUES;
     dec(&mut buf, 0, &mut remaining_values)
+}
+
+pub fn decode(data: &[u8]) -> Result<Pack, String> {
+    decode_message(data).map_err(|e| e.to_string())
 }
 
 /// Whether `marker` opens a PackStream structure (`0xB0..=0xBF`); the
@@ -204,7 +259,7 @@ pub(crate) fn struct_tag(data: &[u8]) -> Option<u8> {
 pub(crate) const MAX_DEPTH: usize = 128;
 // Wire bytes alone do not bound the heap occupied by millions of one-byte
 // scalar values. Include the root, containers, and both halves of each map.
-const MAX_DECODE_VALUES: usize = 262_144;
+pub(crate) const MAX_DECODE_VALUES: usize = 262_144;
 
 /// The one container-depth counting rule, shared by encode and decode so
 /// a message built from a `Value` can always be decoded by the peer;
@@ -253,10 +308,8 @@ fn read_u32(buf: &mut &[u8]) -> Result<usize, String> {
     Ok(u32::from_be_bytes(read_fixed(buf)?) as usize)
 }
 
-fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pack, String> {
-    if *remaining_values == 0 {
-        return Err("packstream value limit exceeded".into());
-    }
+fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pack, DecodeError> {
+    check_values(1, 1, remaining_values)?;
     *remaining_values -= 1;
     let marker = consume(buf, 1, "eof")?[0];
     match marker {
@@ -340,11 +393,11 @@ fn dec(buf: &mut &[u8], depth: usize, remaining_values: &mut usize) -> Result<Pa
             }
             Ok(Pack::Struct { tag, fields })
         }
-        _ => Err(format!("unknown packstream marker {marker:#x}")),
+        _ => Err(format!("unknown packstream marker {marker:#x}").into()),
     }
 }
 
-fn dec_str(buf: &mut &[u8], n: usize) -> Result<Pack, String> {
+fn dec_str(buf: &mut &[u8], n: usize) -> Result<Pack, DecodeError> {
     let s = consume(buf, n, "short string")?;
     Ok(Pack::String(
         std::str::from_utf8(s)
@@ -353,7 +406,7 @@ fn dec_str(buf: &mut &[u8], n: usize) -> Result<Pack, String> {
     ))
 }
 
-fn dec_bytes(buf: &mut &[u8], n: usize) -> Result<Pack, String> {
+fn dec_bytes(buf: &mut &[u8], n: usize) -> Result<Pack, DecodeError> {
     Ok(Pack::Bytes(consume(buf, n, "short bytes")?.to_vec()))
 }
 
@@ -361,9 +414,12 @@ fn check_values(
     n: usize,
     values_per_element: usize,
     remaining_values: &usize,
-) -> Result<(), String> {
+) -> Result<(), DecodeError> {
     if n > *remaining_values / values_per_element {
-        return Err("packstream value limit exceeded".into());
+        return Err(DecodeError::ValueLimit {
+            at_least: (MAX_DECODE_VALUES - *remaining_values)
+                .saturating_add(n.saturating_mul(values_per_element)),
+        });
     }
     Ok(())
 }
@@ -373,7 +429,7 @@ fn dec_list(
     n: usize,
     depth: usize,
     remaining_values: &mut usize,
-) -> Result<Pack, String> {
+) -> Result<Pack, DecodeError> {
     let next_depth = child_depth(depth)?;
     if n > buf.len() {
         return Err("short packstream list".into());
@@ -392,7 +448,7 @@ fn dec_map(
     n: usize,
     depth: usize,
     remaining_values: &mut usize,
-) -> Result<Pack, String> {
+) -> Result<Pack, DecodeError> {
     let next_depth = child_depth(depth)?;
     if n > buf.len() / 2 {
         return Err("short packstream map".into());

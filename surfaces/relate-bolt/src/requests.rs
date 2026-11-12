@@ -171,6 +171,45 @@ impl std::fmt::Display for Undecodable {
     }
 }
 
+/// A well-formed message over the decoded-value budget (ADR-0577): the
+/// decoder stopped at the limit, so `at_least` is a lower bound on its
+/// value count. `message` is the request the payload's structure tag names
+/// at this connection's version, when it names one — read without
+/// decoding, so the session's ignore classifications still apply.
+pub(crate) struct OverBudget {
+    pub(crate) at_least: usize,
+    pub(crate) bytes: usize,
+    pub(crate) message: Option<Message>,
+}
+
+impl OverBudget {
+    /// The FAILURE text naming what was measured, the limit and the remedy.
+    pub(crate) fn failure_text(&self) -> String {
+        crate::failures::value_limit_message(self.at_least, self.bytes)
+    }
+
+    /// Whether queued ahead of a batch's last RESET this message answers
+    /// IGNORED (ADR-0317); a payload naming no request is interruptible.
+    pub(crate) fn interruptible(&self) -> bool {
+        !self.message.is_some_and(Message::never_interrupted)
+    }
+
+    /// Whether the failed state answers this message IGNORED (ADR-0110); a
+    /// payload naming no request is ignored like the work it most
+    /// likely is.
+    pub(crate) fn ignored_while_failed(&self) -> bool {
+        self.message.is_none_or(Message::ignored_while_failed)
+    }
+}
+
+/// Why a message is not dispatched as a request: a fatal decode error
+/// (ADR-0315) or the recoverable value budget (ADR-0577). Each session
+/// gate's arm owns its answer to either.
+pub(crate) enum Refused {
+    Undecodable(Undecodable),
+    OverBudget(OverBudget),
+}
+
 /// Split a decoded message into its request and fields (ADR-0315), at the
 /// connection's negotiated version: a 5.x-only signature at 4.4 is the
 /// same fatal unknown as any other unrecognized signature.

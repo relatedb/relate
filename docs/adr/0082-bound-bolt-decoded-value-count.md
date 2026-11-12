@@ -48,3 +48,8 @@ stream (LABS-71/80/88); Bolt PULL governance belongs to the server stream
 - Input heap growth attributable to the number of decoded PackStream values
   is bounded in addition to payload bytes and nesting; outbound result size
   remains a separate governance concern.
+
+## Later references
+
+- ADR-0577: an over-budget message fails its request with a FAILURE and keeps
+  the connection open instead of closing it.

@@ -397,5 +397,8 @@ mod tests;
 #[path = "protocol_tx_results_tests.rs"]
 mod tx_results_tests;
 #[cfg(test)]
+#[path = "protocol_value_limit_tests.rs"]
+mod value_limit_tests;
+#[cfg(test)]
 #[path = "protocol_values_tests.rs"]
 mod values_tests;

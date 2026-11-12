@@ -25,6 +25,19 @@ pub(crate) const REQUEST_INVALID_CODE: &str = "Neo.ClientError.Request.Invalid";
 /// per connection per second. A successful HELLO is answered immediately.
 pub(crate) const FAILED_HELLO_DELAY_MS: u64 = 1000;
 
+/// The FAILURE text for a message over the decoded-value budget: what was
+/// measured, the limit, how values are counted, and what to do. `at_least`
+/// is a lower bound — the decoder stops at the limit — so the text says so.
+pub(crate) fn value_limit_message(at_least: usize, bytes: usize) -> String {
+    let limit = crate::packstream::MAX_DECODE_VALUES;
+    format!(
+        "Bolt message of {bytes} bytes holds at least {at_least} decoded values, over the \
+         per-message limit of {limit} (every list element, map key and map value counts one: a \
+         map row with k fields counts 2k+1). Send fewer rows per request: split the batch into \
+         smaller UNWIND chunks, for example 20000 rows of 3 fields is about 140000 values."
+    )
+}
+
 pub(crate) fn failure_metadata(code: &str, message: &str) -> Vec<(Pack, Pack)> {
     vec![
         (Pack::String("code".into()), Pack::String(code.into())),
