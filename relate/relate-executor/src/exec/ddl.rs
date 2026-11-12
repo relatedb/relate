@@ -693,7 +693,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "semantic error: EquivalentSchemaRuleAlreadyExists"
+            "semantic error: EquivalentConstraintAlreadyExists"
         );
         exec_autocommit(
             &g,
@@ -709,7 +709,7 @@ mod tests {
             };
         assert_eq!(
             error.to_string(),
-            "semantic error: EquivalentSchemaRuleAlreadyExists"
+            "semantic error: EquivalentConstraintAlreadyExists"
         );
     }
 
@@ -812,7 +812,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "semantic error: EquivalentSchemaRuleAlreadyExists"
+            "semantic error: EquivalentConstraintAlreadyExists"
         );
     }
 
