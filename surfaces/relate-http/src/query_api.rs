@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value as Json};
 use relate::Database;
 
 use crate::http::{Request, RequestHead};
-use crate::reply::{auth_error_code, error_envelope, invalid_request_body, run_on, Reply};
+use crate::reply::{error_envelope, invalid_request_body, run_on, AuthFailure, Reply};
 use crate::tx_registry::TxRegistry;
 use crate::typed_params::RequestDialect;
 use crate::v2_envelope::ReplyBody;
@@ -43,12 +43,7 @@ pub(crate) enum CredentialGate {
 
 /// An authentication failure in the Query API envelope.
 fn auth_failure(auth: &relate_auth::AuthConfig, err: relate_auth::AuthError) -> Reply {
-    let failure = auth.http_failure(err);
-    let mut reply = error_envelope(failure.status, auth_error_code(err), failure.message);
-    if let Some(challenge) = failure.challenge {
-        reply.extra_headers.push(challenge);
-    }
-    reply
+    AuthFailure::new(auth, err).into_reply()
 }
 
 /// Dispatch one parsed request against the database, authenticating first —

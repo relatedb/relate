@@ -413,14 +413,9 @@ fn dispatch<S: Read>(
             .filter(|o| config.allowed_origins.allows(o))
             .map(str::to_string)
     };
-    let reply_origin = match &admitted {
-        AdmissionOutcome::Preflight { head } => echo_origin(head.header("origin")),
-        AdmissionOutcome::Rejected { rejection, .. } => {
-            echo_origin(rejection.head.header("origin"))
-        }
-        AdmissionOutcome::Request { request, .. } => echo_origin(request.header("origin")),
-        AdmissionOutcome::Closed | AdmissionOutcome::BadRequest { .. } => None,
-    };
+    let reply_origin = admitted
+        .head()
+        .and_then(|head| echo_origin(head.header("origin")));
     // Map: every admission outcome becomes one Reply plus the post-write
     // drain and the response-encoding policy of the head it answers. A
     // pre-body rejection carries its parsed head, so the Origin echo and the

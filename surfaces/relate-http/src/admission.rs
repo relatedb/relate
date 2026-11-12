@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::http::{HttpVersion, RequestHead, MAX_HEADERS, MAX_HEADER_BYTES};
 use crate::origin::{browser_guard, OriginAllowlist};
-use crate::reply::auth_error_code;
+use crate::reply::AuthFailure;
 use relate_error::GQLSTATUS_GENERAL;
 
 /// Why an admission read stopped before producing a request. The class is
@@ -143,6 +143,34 @@ pub struct Rejection {
     pub extra_headers: Vec<(String, String)>,
 }
 
+impl Rejection {
+    /// A non-authentication rejection (version floor, browser guard,
+    /// malformed body): the general GQLSTATUS code and no extra headers.
+    fn general(head: RequestHead, public: bool, status: u16, message: String) -> Self {
+        Self {
+            head,
+            public,
+            status,
+            code: GQLSTATUS_GENERAL,
+            message,
+            extra_headers: Vec::new(),
+        }
+    }
+
+    /// An authentication rejection: the failure's status, code, message and
+    /// `WWW-Authenticate` challenge, unpacked once by [`AuthFailure`].
+    fn auth(head: RequestHead, public: bool, failure: AuthFailure) -> Self {
+        Self {
+            head,
+            public,
+            status: failure.failure.status,
+            code: failure.code,
+            message: failure.failure.message.to_string(),
+            extra_headers: failure.failure.challenge.into_iter().collect(),
+        }
+    }
+}
+
 /// What [`read_admitted_request`] produced: a request ready for the surface's
 /// router, a gate rejection to render, a malformed-head rejection, a CORS
 /// preflight, or a clean EOF. The reply fields and the drain travel
@@ -177,6 +205,26 @@ pub enum AdmissionOutcome {
         /// The surface's public-probe route matched.
         public: bool,
     },
+}
+
+impl AdmissionOutcome {
+    /// A pre-body rejection paired with the drain plan for its head: the one
+    /// place the two are composed.
+    fn rejected(rejection: Rejection, max_body_bytes: usize) -> Self {
+        let drain = DrainPlan::for_head(&rejection.head, max_body_bytes);
+        Self::Rejected { rejection, drain }
+    }
+
+    /// The parsed head the outcome answers, when one parsed (the Origin echo
+    /// reads it).
+    pub(crate) fn head(&self) -> Option<&RequestHead> {
+        match self {
+            Self::Preflight { head } => Some(head),
+            Self::Rejected { rejection, .. } => Some(&rejection.head),
+            Self::Request { request, .. } => Some(&request.head),
+            Self::Closed | Self::BadRequest { .. } => None,
+        }
+    }
 }
 
 /// The one documented admission path for both HTTP surfaces: read the head
@@ -375,8 +423,7 @@ impl GatedHead {
         match self {
             Self::Preflight { head } => Ok(AdmissionOutcome::Preflight { head }),
             Self::Reject(rejection) => {
-                let drain = DrainPlan::for_head(&rejection.head, limits.max_body_bytes);
-                Ok(AdmissionOutcome::Rejected { rejection, drain })
+                Ok(AdmissionOutcome::rejected(rejection, limits.max_body_bytes))
             }
             Self::Pass { mut head, public } => {
                 let deadline = deadline_instant(limits.body_deadline);
@@ -392,16 +439,9 @@ impl GatedHead {
                         public,
                     }),
                     Err(AdmissionError::Malformed(message)) => {
-                        let rejection = Rejection {
-                            head,
-                            public,
-                            status: 400,
-                            code: GQLSTATUS_GENERAL,
-                            message: malformed_reply(&message),
-                            extra_headers: Vec::new(),
-                        };
-                        let drain = DrainPlan::for_head(&rejection.head, limits.max_body_bytes);
-                        Ok(AdmissionOutcome::Rejected { rejection, drain })
+                        let rejection =
+                            Rejection::general(head, public, 400, malformed_reply(&message));
+                        Ok(AdmissionOutcome::rejected(rejection, limits.max_body_bytes))
                     }
                     Err(error) => Err(error),
                 }
@@ -524,14 +564,12 @@ fn gate_head(
     // on every Pass/Reject as data.
     let public = is_public(&head);
     if head.version == HttpVersion::Http10 {
-        return GatedHead::Reject(Rejection {
+        return GatedHead::Reject(Rejection::general(
             head,
             public,
-            status: 400,
-            code: GQLSTATUS_GENERAL,
-            message: "unsupported HTTP version HTTP/1.0: this surface answers HTTP/1.1".to_string(),
-            extra_headers: Vec::new(),
-        });
+            400,
+            "unsupported HTTP version HTTP/1.0: this surface answers HTTP/1.1".to_string(),
+        ));
     }
     // A CORS preflight is answered unauthenticated and body-free; only
     // the browser-facing policy opts in.
@@ -539,14 +577,12 @@ fn gate_head(
         return GatedHead::Preflight { head };
     }
     if let Err(rejection) = browser_guard(&head, origins) {
-        return GatedHead::Reject(Rejection {
+        return GatedHead::Reject(Rejection::general(
             head,
             public,
-            status: rejection.status,
-            code: GQLSTATUS_GENERAL,
-            message: rejection.message.to_string(),
-            extra_headers: Vec::new(),
-        });
+            rejection.status,
+            rejection.message.to_string(),
+        ));
     }
     // Every route the predicate did not mark public answers the challenge.
     // The MCP transport passes a predicate that always returns `false`.
@@ -557,15 +593,7 @@ fn gate_head(
                 // connection per second.
                 std::thread::sleep(FAILED_AUTH_DELAY);
             }
-            let failure = auth.http_failure(err);
-            return GatedHead::Reject(Rejection {
-                head,
-                public,
-                status: failure.status,
-                code: auth_error_code(err),
-                message: failure.message.to_string(),
-                extra_headers: failure.challenge.into_iter().collect(),
-            });
+            return GatedHead::Reject(Rejection::auth(head, public, AuthFailure::new(auth, err)));
         }
     }
     GatedHead::Pass { head, public }

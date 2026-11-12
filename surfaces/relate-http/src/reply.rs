@@ -69,23 +69,41 @@ impl Reply {
 
 /// The GQLSTATUS code for an unauthenticated request (Neo4j's unauthorized
 /// code).
-pub(crate) const UNAUTHORIZED_CODE: &str = "42NFF";
+const UNAUTHORIZED_CODE: &str = "42NFF";
+
+/// An authentication failure: the canonical HTTP recipe from `relate_auth`
+/// plus the GQLSTATUS code (unauthorized for a rejected credential, general
+/// when the backend is unavailable). The one value the admission gate's
+/// rejection and the Query API's auth reply both unpack.
+pub(crate) struct AuthFailure {
+    pub(crate) failure: relate_auth::HttpAuthFailure,
+    pub(crate) code: &'static str,
+}
+
+impl AuthFailure {
+    pub(crate) fn new(auth: &relate_auth::AuthConfig, err: relate_auth::AuthError) -> Self {
+        let code = match err {
+            relate_auth::AuthError::Rejected => UNAUTHORIZED_CODE,
+            relate_auth::AuthError::Unavailable => GQLSTATUS_GENERAL,
+        };
+        Self {
+            failure: auth.http_failure(err),
+            code,
+        }
+    }
+
+    /// The failure in the Query API error envelope, challenge header included.
+    pub(crate) fn into_reply(self) -> Reply {
+        let mut reply = error_envelope(self.failure.status, self.code, self.failure.message);
+        reply.extra_headers.extend(self.failure.challenge);
+        reply
+    }
+}
 
 /// The 400 envelope for a body that does not parse: one mapping both
 /// routers (the auto-commit route and the tx routes) consult.
 pub(crate) fn invalid_request_body(e: serde_json::Error) -> Reply {
     error_envelope(400, GQLSTATUS_SYNTAX, &format!("invalid request body: {e}"))
-}
-
-/// The GQLSTATUS code an authentication failure answers with: the
-/// unauthorized code for a rejected credential, the general code when the
-/// auth backend is unavailable. The one mapping the admission gate and the
-/// Query API's auth reply both consult.
-pub(crate) fn auth_error_code(error: relate_auth::AuthError) -> &'static str {
-    match error {
-        relate_auth::AuthError::Rejected => UNAUTHORIZED_CODE,
-        relate_auth::AuthError::Unavailable => GQLSTATUS_GENERAL,
-    }
 }
 
 /// The error envelope `{"errors":[{"code","message"}]}` (ADR-0232 §3),
