@@ -1,6 +1,6 @@
 use crate::abi::relate_status;
 use crate::result::*;
-use crate::support::{cell, open_memory, open_memory_db, run, str_of};
+use crate::support::{cell, open_memory_db, run, str_of, Session};
 use crate::tabular::*;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -136,7 +136,8 @@ fn ffi_conn_set_namespace_between_transactions() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         // Between transactions: succeeds.
         assert!(matches!(
@@ -188,8 +189,5 @@ fn ffi_conn_set_namespace_between_transactions() {
         // A NULL name fails without being dereferenced.
         let status = relate_conn_set_namespace(conn, ptr::null(), ptr::null_mut());
         assert!(matches!(status, relate_status::RELATE_ERROR));
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }

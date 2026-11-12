@@ -6,7 +6,7 @@ use crate::result::{
     relate_result_plan_json, relate_result_query_type, relate_result_stats, relate_row_count,
     relate_value_at,
 };
-use crate::support::{cell, int_of, open_memory, run, take_error_json};
+use crate::support::{cell, int_of, open_memory, run, take_error_json, Session};
 use crate::tabular::{
     guard_conn, relate_conn_begin, relate_conn_commit, relate_connect_namespace,
     relate_database_close, relate_database_open, relate_disconnect, relate_query_params,
@@ -34,7 +34,8 @@ fn ffi_statement_failure_rides_the_result_with_the_engine_classification() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         assert!(matches!(
             relate_query_params(
                 conn,
@@ -79,8 +80,6 @@ fn ffi_statement_failure_rides_the_result_with_the_engine_classification() {
         assert_eq!(relate_result_elapsed_ms(result), 0.0);
 
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -90,14 +89,13 @@ fn ffi_statement_failure_rides_the_result_with_the_engine_classification() {
 fn ffi_good_result_is_not_an_error_result() {
     // SAFETY: test drives the FFI with handles and out-params it owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(conn, "RETURN 1 AS n");
         assert_eq!(relate_result_is_error(result), 0);
         assert!(relate_result_error_json(result).is_null());
         assert_eq!(int_of(cell(result, 0, 0)), 1);
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -227,7 +225,8 @@ fn ffi_query_connection_failure_is_a_status_error_not_an_error_result() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         // Poison the connection by unwinding inside a guarded operation.
         assert!(guard_conn(conn, |_c| panic!("poison conn")).is_err());
 
@@ -260,9 +259,6 @@ fn ffi_query_connection_failure_is_a_status_error_not_an_error_result() {
         ));
         let shape = take_error_json(error_json);
         assert_eq!(shape["stage"], "internal");
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 

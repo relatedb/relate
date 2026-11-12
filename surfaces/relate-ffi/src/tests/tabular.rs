@@ -1,6 +1,6 @@
 use crate::abi::relate_status;
 use crate::result::*;
-use crate::support::{cell, int_of, open_memory, run, take_error_json};
+use crate::support::{cell, int_of, open_memory, run, take_error_json, Session};
 use crate::tabular::*;
 use relate::INTERNAL_MESSAGE;
 use std::ffi::{CStr, CString};
@@ -12,14 +12,13 @@ fn ffi_return_one() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(conn, "RETURN 1 AS n");
         assert_eq!(relate_column_count(result), 1);
         assert_eq!(relate_row_count(result), 1);
         assert_eq!(int_of(cell(result, 0, 0)), 1);
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -136,7 +135,8 @@ fn ffi_query_overwrites_result_out_param_on_statement_failure() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         // A successful query seeds the out-param with a real result.
         let real = run(conn, "RETURN 1 AS n");
@@ -163,9 +163,6 @@ fn ffi_query_overwrites_result_out_param_on_statement_failure() {
         // Free the seeded result through its own pointer. The failed call
         // installed a second result, so both are freed exactly once.
         relate_destroy_result(real);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -223,7 +220,8 @@ fn ffi_query_on_poisoned_conn_nulls_out_param() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         // Poison the connection by unwinding inside a guarded operation.
         assert!(guard_conn(conn, |_c| panic!("poison conn")).is_err());
@@ -238,9 +236,6 @@ fn ffi_query_on_poisoned_conn_nulls_out_param() {
             result.is_null(),
             "out-param must be NULL after a failed query"
         );
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 

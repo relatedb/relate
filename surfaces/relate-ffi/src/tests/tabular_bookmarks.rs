@@ -6,7 +6,7 @@
 use crate::abi::relate_status;
 use crate::relate_free_string;
 use crate::result::*;
-use crate::support::{open_memory, run, take_error_json};
+use crate::support::{run, take_error_json, Session};
 use crate::tabular::*;
 use relate::{error_info, Error};
 use std::ffi::CStr;
@@ -84,7 +84,8 @@ fn ffi_auto_commit_bookmarks_increase_and_reads_are_absent() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         let first = run(conn, "CREATE (:Kept)");
         let second = run(conn, "CREATE (:Kept)");
@@ -132,9 +133,6 @@ fn ffi_auto_commit_bookmarks_increase_and_reads_are_absent() {
 
         // A NULL result yields the absent form too.
         assert!(relate_result_bookmark(ptr::null_mut()).is_null());
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -148,7 +146,8 @@ fn ffi_explicit_commit_hands_over_the_bookmark() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         let auto = run(conn, "CREATE (:Kept)");
         let auto_seq = sequence(result_bookmark(auto), "auto-commit write");
@@ -204,9 +203,6 @@ fn ffi_explicit_commit_hands_over_the_bookmark() {
         let after_seq = sequence(result_bookmark(after), "write after the commits");
         relate_destroy_result(after);
         assert!(after_seq > committed_seq);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -218,7 +214,8 @@ fn ffi_explicit_commit_hands_over_the_bookmark() {
 fn ffi_commit_without_a_transaction_is_a_status_error() {
     // SAFETY: test drives the FFI with handles and out-params it owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let mut bookmark: *mut c_char = ptr::null_mut();
         let mut error_json: *mut c_char = ptr::null_mut();
         assert!(matches!(
@@ -239,9 +236,6 @@ fn ffi_commit_without_a_transaction_is_a_status_error() {
                 .is_some_and(|m| m.contains("no transaction")),
             "the engine message rides the shape: {shape}"
         );
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -251,7 +245,8 @@ fn ffi_commit_without_a_transaction_is_a_status_error() {
 fn ffi_commit_opting_out_of_error_json_keeps_the_discrimination() {
     // SAFETY: test drives the FFI with handles and out-params it owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         // A failing commit (no transaction open) with the detail opted
         // out: the status reports it.
@@ -278,9 +273,6 @@ fn ffi_commit_opting_out_of_error_json_keeps_the_discrimination() {
             None,
             "the empty commit committed nothing"
         );
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -293,7 +285,8 @@ fn ffi_commit_null_bookmark_out_is_refused_without_committing() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         assert!(matches!(
             relate_conn_begin(conn, ptr::null_mut()),
             relate_status::RELATE_OK
@@ -337,8 +330,5 @@ fn ffi_commit_null_bookmark_out_is_refused_without_committing() {
         let after_seq = sequence(result_bookmark(after), "write after the commit");
         relate_destroy_result(after);
         assert!(after_seq > committed_seq);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }

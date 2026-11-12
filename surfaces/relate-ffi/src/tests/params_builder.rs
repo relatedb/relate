@@ -9,9 +9,7 @@ use std::ptr;
 use crate::abi::relate_status;
 use crate::params::*;
 use crate::result::*;
-use crate::support::{
-    cell, component, int_of, open_memory, run_query, str_of, take_error_json, text,
-};
+use crate::support::{cell, component, int_of, run_query, str_of, take_error_json, text, Session};
 use crate::tabular::*;
 use crate::value::relate_value_kind::*;
 use crate::value::*;
@@ -35,7 +33,8 @@ fn ffi_params_typed_values_round_trip_inside_a_list() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let params = relate_params_new();
         let mut xs: *mut relate_params = ptr::null_mut();
         ok(relate_params_put_list(
@@ -170,8 +169,6 @@ fn ffi_params_typed_values_round_trip_inside_a_list() {
 
         relate_destroy_result(result);
         relate_params_free(params);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -183,7 +180,8 @@ fn ffi_params_scalars_maps_and_reuse() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let p = relate_params_new();
         let e = ptr::null_mut();
         ok(relate_params_put_null(p, c("n").as_ptr(), e));
@@ -326,8 +324,6 @@ fn ffi_params_scalars_maps_and_reuse() {
 
         relate_params_free(p);
         relate_params_free(ptr::null_mut());
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -363,7 +359,8 @@ fn ffi_params_empty_string_binds_as_zero_length_string() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let params = relate_params_new();
         // The koffi spelling: a zero-length buffer marshals as NULL.
         ok(relate_params_put_string(
@@ -406,15 +403,13 @@ fn ffi_params_empty_string_binds_as_zero_length_string() {
 
         relate_destroy_result(result);
         relate_params_free(params);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
 /// The malformed-put tests' shared setup: an in-memory connection, a
 /// parameter builder `p` and a list child `xs` under it.
 struct Fixture {
-    db: *mut relate_database,
+    _session: Session,
     conn: *mut relate_connection,
     p: *mut relate_params,
     list: *mut relate_params,
@@ -426,7 +421,8 @@ impl Fixture {
     unsafe fn new() -> Self {
         // SAFETY: opens and drives the FFI with out-params this fn owns.
         unsafe {
-            let (db, conn) = open_memory();
+            let session = Session::open();
+            let (_, conn) = session.handles();
             let p = relate_params_new();
             let mut list: *mut relate_params = ptr::null_mut();
             ok(relate_params_put_list(
@@ -435,7 +431,12 @@ impl Fixture {
                 &mut list,
                 ptr::null_mut(),
             ));
-            Fixture { db, conn, p, list }
+            Fixture {
+                _session: session,
+                conn,
+                p,
+                list,
+            }
         }
     }
 }
@@ -445,8 +446,6 @@ impl Drop for Fixture {
         // SAFETY: the fixture uniquely owns each handle, freed once.
         unsafe {
             relate_params_free(self.p);
-            relate_disconnect(self.conn);
-            relate_database_close(self.db);
         }
     }
 }
@@ -683,17 +682,10 @@ fn ffi_params_refusals_leave_the_builder_unchanged_and_usable() {
         // scalars-maps-and-reuse test.)
         let q = c("RETURN 1");
         let mut result: *mut relate_query_result = ptr::null_mut();
-        let mut error_json: *mut c_char = ptr::null_mut();
-        assert!(matches!(
-            relate_query_params(conn, q.as_ptr(), list, &mut result, &mut error_json),
-            relate_status::RELATE_ERROR
-        ));
+        refused("params must be a map builder", |e| {
+            relate_query_params(conn, q.as_ptr(), list, &mut result, e)
+        });
         assert!(result.is_null());
-        let shape = take_error_json(error_json);
-        assert!(shape["message"]
-            .as_str()
-            .unwrap()
-            .contains("params must be a map builder"));
     }
 }
 

@@ -1,6 +1,5 @@
 use crate::result::*;
-use crate::support::{open_memory, run};
-use crate::tabular::*;
+use crate::support::{run, Session};
 use std::ffi::CStr;
 use std::ptr;
 
@@ -36,7 +35,8 @@ fn ffi_explain_create_reports_write_type_without_creating() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         let result = run(conn, "EXPLAIN CREATE (n)");
         let qt = CStr::from_ptr(relate_result_query_type(result))
@@ -49,9 +49,6 @@ fn ffi_explain_create_reports_write_type_without_creating() {
         let result = run(conn, "MATCH (n) RETURN n");
         assert_eq!(relate_row_count(result), 0);
         relate_destroy_result(result);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -63,7 +60,8 @@ fn ffi_result_plan_json_warnings_carry_the_remedy() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(
             conn,
             "EXPLAIN MATCH (a:Person), (b:Person) RETURN a.name AS a, b.name AS b",
@@ -96,8 +94,6 @@ fn ffi_result_plan_json_warnings_carry_the_remedy() {
             "the warning carries an actionable remedy: {warning}"
         );
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -109,7 +105,8 @@ fn ffi_result_namespace_reports_resolved_not_session_namespace() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         let result = run(conn, "USE system SHOW DATABASES YIELD name RETURN name");
         let ns = CStr::from_ptr(relate_result_namespace(result))
@@ -126,9 +123,6 @@ fn ffi_result_namespace_reports_resolved_not_session_namespace() {
             .unwrap();
         assert_eq!(ns, "neo4j");
         relate_destroy_result(result);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -155,7 +149,8 @@ fn ffi_result_notifications_explain_carries_cartesian_product() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         for query in ["CREATE (:Person)", "CREATE (:City)"] {
             let result = run(conn, query);
             assert_eq!(relate_row_count(result), 0);
@@ -202,9 +197,6 @@ fn ffi_result_notifications_explain_carries_cartesian_product() {
             .unwrap();
         assert_eq!(empty, "[]");
         relate_destroy_result(result);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -218,7 +210,8 @@ fn ffi_result_elapsed_ms_is_engine_stamped_and_null_safe() {
     unsafe {
         assert_eq!(relate_result_elapsed_ms(ptr::null_mut()), 0.0);
 
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(conn, "RETURN 1 AS n");
         let elapsed = relate_result_elapsed_ms(result);
         assert!(
@@ -226,9 +219,6 @@ fn ffi_result_elapsed_ms_is_engine_stamped_and_null_safe() {
             "elapsed must be finite and non-negative, got {elapsed}"
         );
         relate_destroy_result(result);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -244,7 +234,8 @@ fn ffi_result_phase_ms_split_the_elapsed_and_are_null_safe() {
         assert_eq!(relate_result_plan_ms(ptr::null_mut()), 0.0);
         assert_eq!(relate_result_execute_ms(ptr::null_mut()), 0.0);
 
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(conn, "RETURN 1 AS n");
         let parse = relate_result_parse_ms(result);
         let plan = relate_result_plan_ms(result);
@@ -262,9 +253,6 @@ fn ffi_result_phase_ms_split_the_elapsed_and_are_null_safe() {
              parse {parse} + plan {plan} + execute {execute} > elapsed {elapsed}"
         );
         relate_destroy_result(result);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -277,7 +265,8 @@ fn ffi_result_plan_json_reports_the_agent_native_document() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
 
         // EXPLAIN: the document, profiled false, no runtime metrics.
         let result = run(conn, "EXPLAIN MATCH (n:Person) RETURN n.name AS name");
@@ -306,8 +295,5 @@ fn ffi_result_plan_json_reports_the_agent_native_document() {
             "a statement with no plan returns NULL"
         );
         relate_destroy_result(result);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }

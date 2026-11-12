@@ -52,6 +52,40 @@ pub(crate) unsafe fn open_memory() -> (*mut relate_database, *mut relate_connect
     (db, conn)
 }
 
+/// An owning `:memory:` session: one database and its default-namespace
+/// connection, freed on drop (connection first), so a test never
+/// hand-writes the disconnect/close tail and a failing assert still
+/// releases both handles.
+pub(crate) struct Session {
+    db: *mut relate_database,
+    conn: *mut relate_connection,
+}
+
+impl Session {
+    /// Open the session, asserting success.
+    pub(crate) fn open() -> Self {
+        // SAFETY: the session owns the handles `open_memory` returns and
+        // frees each exactly once in `drop`.
+        let (db, conn) = unsafe { open_memory() };
+        Session { db, conn }
+    }
+
+    /// The borrowed raw handles; valid until the session drops.
+    pub(crate) fn handles(&self) -> (*mut relate_database, *mut relate_connection) {
+        (self.db, self.conn)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // SAFETY: the session uniquely owns each handle, freed once.
+        unsafe {
+            relate_disconnect(self.conn);
+            relate_database_close(self.db);
+        }
+    }
+}
+
 /// Run `cypher` with `params` through the query entry point, asserting
 /// the transport succeeded AND the statement produced a good result (the
 /// caller destroys it) — the one run helper every suite shares

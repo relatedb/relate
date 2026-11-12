@@ -7,7 +7,7 @@ use std::ptr;
 
 use crate::abi::relate_status;
 use crate::result::*;
-use crate::support::{cell, component, int_of, open_memory, run, str_of, text};
+use crate::support::{cell, component, int_of, run, str_of, text, Session};
 use crate::tabular::*;
 use crate::value::relate_value_kind::*;
 use crate::value::*;
@@ -102,7 +102,8 @@ fn walker_round_trips_kinds_at_every_depth() {
     // SAFETY: test drives the FFI with handles it owns; every value handle
     // is read before its result is destroyed.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let created = run(
             conn,
             "CREATE (:Person {name: 'Ada', born: date('1815-12-10')})\
@@ -231,8 +232,6 @@ fn walker_round_trips_kinds_at_every_depth() {
         assert!(float_of(deep).is_nan());
 
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -242,7 +241,8 @@ fn walker_round_trips_kinds_at_every_depth() {
 fn walker_reads_every_temporal_kind_as_components() {
     // SAFETY: test drives the FFI with handles it owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(
             conn,
             "RETURN time('10:11:12.5+01:00') AS t, localtime('03:04:05') AS lt, \
@@ -293,8 +293,6 @@ fn walker_reads_every_temporal_kind_as_components() {
         assert_eq!((months, days, seconds, nanos), (0, 2, 3, 4));
 
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -305,7 +303,8 @@ fn walker_reads_every_temporal_kind_as_components() {
 fn walker_reads_scalars_points_and_vectors() {
     // SAFETY: test drives the FFI with handles it owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(
             conn,
             "RETURN true AS b, -5 AS i, 'a\\u0000b' AS s, \
@@ -379,8 +378,6 @@ fn walker_reads_scalars_points_and_vectors() {
         assert_eq!(relate_value_list_len(vf), -1);
 
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -394,7 +391,8 @@ fn walker_reads_legacy_numeric_entity_ids() {
     // SAFETY: test drives the FFI with handles it owns; every value handle
     // is read before its result is destroyed.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let created = run(
             conn,
             "CREATE (:Person {name: 'Ada'})-[:KNOWS {since: 1833}]->(:Person {name: 'Babbage'})",
@@ -460,8 +458,6 @@ fn walker_reads_legacy_numeric_entity_ids() {
         assert_eq!(component(relate_value_id, end), ne);
 
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -475,7 +471,8 @@ fn walker_out_of_kind_access_is_a_defined_refusal() {
     // SAFETY: test drives the FFI with handles it owns, and NULL handles
     // the contract defines.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(conn, "RETURN null AS n, 'text' AS s, {k: null} AS m");
 
         // Out-of-range cells, both ends, and a NULL result.
@@ -560,8 +557,6 @@ fn walker_out_of_kind_access_is_a_defined_refusal() {
         assert_eq!(str_of(s), "text");
 
         relate_destroy_result(result);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 
@@ -573,7 +568,8 @@ fn walker_out_of_kind_access_is_a_defined_refusal() {
 fn walker_handles_are_result_owned_and_stable() {
     // SAFETY: test drives the FFI with handles it owns.
     unsafe {
-        let (db, conn) = open_memory();
+        let session = Session::open();
+        let (_, conn) = session.handles();
         let result = run(conn, "RETURN [[1, 2], 'x'] AS l");
         let l = cell(result, 0, 0);
         let first = relate_value_list_get(l, 0);
@@ -601,8 +597,5 @@ fn walker_handles_are_result_owned_and_stable() {
         assert_eq!(relate_result_is_error(failed), 1);
         assert!(relate_value_at(failed, 0, 0).is_null());
         relate_destroy_result(failed);
-
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
