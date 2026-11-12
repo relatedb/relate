@@ -1,6 +1,7 @@
 package relate_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,17 +13,36 @@ import (
 // lowest shared module, not inside either consumer's test file.
 func openConn(t *testing.T) *relate.Connection {
 	t.Helper()
-	db, err := relate.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.Close)
-	conn, err := db.Connect()
+	conn, err := openDB(t).Connect()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(conn.Close)
 	return conn
+}
+
+// openDB opens an in-memory database, closed at test end.
+func openDB(t *testing.T) *relate.Database {
+	t.Helper()
+	db, err := relate.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	return db
+}
+
+// errOf drops a call's value so a two-result method can feed
+// requireErrClosed.
+func errOf[T any](_ T, err error) error { return err }
+
+// requireErrClosed pins the closed-handle contract: the call named what
+// returned an error matching relate.ErrClosed.
+func requireErrClosed(t *testing.T, what string, err error) {
+	t.Helper()
+	if !errors.Is(err, relate.ErrClosed) {
+		t.Fatalf("%s: got %v, want ErrClosed", what, err)
+	}
 }
 
 // requireErrorMentions pins a decoder's refusal: decoding raw fails with

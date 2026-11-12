@@ -54,6 +54,25 @@ func (l *lifecycle) use() (func(), error) {
 	return l.mu.RUnlock, nil
 }
 
+// guarded runs call under l's guard, the one acquire/check/release prologue
+// every handle method shares: it returns ErrClosed (and the zero T) when the
+// handle is closed, else call's result.
+func guarded[T any](l *lifecycle, call func() (T, error)) (T, error) {
+	release, err := l.use()
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	defer release()
+	return call()
+}
+
+// guardedErr is guarded for a call that returns only an error.
+func guardedErr(l *lifecycle, call func() error) error {
+	_, err := guarded(l, func() (struct{}, error) { return struct{}{}, call() })
+	return err
+}
+
 // shut runs free exactly once, after in-flight calls drain; later calls are
 // no-ops.
 func (l *lifecycle) shut(free func()) {
@@ -247,31 +266,25 @@ func (d *Database) ConnectNamespace(name string) (*Connection, error) {
 }
 
 func (d *Database) connect(cName *C.char) (*Connection, error) {
-	release, err := d.use()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	var conn C.relate_connection
-	var errJSON *C.char
-	st := C.relate_connect_namespace(d.ptr, cName, &conn, &errJSON)
-	if err := statusErr(st, errJSON); err != nil {
-		return nil, err
-	}
-	c := &Connection{lifecycle: lifecycle{exclusive: true}, ptr: conn}
-	runtime.SetFinalizer(c, (*Connection).Close)
-	return c, nil
+	return guarded(&d.lifecycle, func() (*Connection, error) {
+		var conn C.relate_connection
+		var errJSON *C.char
+		st := C.relate_connect_namespace(d.ptr, cName, &conn, &errJSON)
+		if err := statusErr(st, errJSON); err != nil {
+			return nil, err
+		}
+		c := &Connection{lifecycle: lifecycle{exclusive: true}, ptr: conn}
+		runtime.SetFinalizer(c, (*Connection).Close)
+		return c, nil
+	})
 }
 
 func (d *Database) Checkpoint() error {
-	release, err := d.use()
-	if err != nil {
-		return err
-	}
-	defer release()
-	var errJSON *C.char
-	st := C.relate_checkpoint(d.ptr, &errJSON)
-	return statusErr(st, errJSON)
+	return guardedErr(&d.lifecycle, func() error {
+		var errJSON *C.char
+		st := C.relate_checkpoint(d.ptr, &errJSON)
+		return statusErr(st, errJSON)
+	})
 }
 
 // Close frees the connection (an open transaction is rolled back). It is
@@ -283,30 +296,24 @@ func (c *Connection) Close() {
 // SetNamespace changes the session namespace (ADR-0117), matched
 // case-insensitively. It fails while an explicit transaction is open.
 func (c *Connection) SetNamespace(name string) error {
-	release, err := c.use()
-	if err != nil {
-		return err
-	}
-	defer release()
-	cName, err := cString("namespace name", name)
-	if err != nil {
-		return err
-	}
-	defer C.free(unsafe.Pointer(cName))
-	var errJSON *C.char
-	st := C.relate_conn_set_namespace(c.ptr, cName, &errJSON)
-	return statusErr(st, errJSON)
+	return guardedErr(&c.lifecycle, func() error {
+		cName, err := cString("namespace name", name)
+		if err != nil {
+			return err
+		}
+		defer C.free(unsafe.Pointer(cName))
+		var errJSON *C.char
+		st := C.relate_conn_set_namespace(c.ptr, cName, &errJSON)
+		return statusErr(st, errJSON)
+	})
 }
 
 func (c *Connection) Begin() error {
-	release, err := c.use()
-	if err != nil {
-		return err
-	}
-	defer release()
-	var errJSON *C.char
-	st := C.relate_conn_begin(c.ptr, &errJSON)
-	return statusErr(st, errJSON)
+	return guardedErr(&c.lifecycle, func() error {
+		var errJSON *C.char
+		st := C.relate_conn_begin(c.ptr, &errJSON)
+		return statusErr(st, errJSON)
+	})
 }
 
 // Commit commits the explicit transaction and returns its bookmark
@@ -314,34 +321,28 @@ func (c *Connection) Begin() error {
 // transaction committed nothing (no write ran, or every write was a no-op):
 // no bookmark is fabricated for a commit that crossed no WAL boundary.
 func (c *Connection) Commit() (string, error) {
-	release, err := c.use()
-	if err != nil {
-		return "", err
-	}
-	defer release()
-	var bm *C.char
-	var errJSON *C.char
-	st := C.relate_conn_commit(c.ptr, &bm, &errJSON)
-	if err := statusErr(st, errJSON); err != nil {
-		return "", err
-	}
-	// OK with no bookmark: the transaction committed nothing (ADR-0510).
-	if bm == nil {
-		return "", nil
-	}
-	defer C.relate_free_string(bm)
-	return C.GoString(bm), nil
+	return guarded(&c.lifecycle, func() (string, error) {
+		var bm *C.char
+		var errJSON *C.char
+		st := C.relate_conn_commit(c.ptr, &bm, &errJSON)
+		if err := statusErr(st, errJSON); err != nil {
+			return "", err
+		}
+		// OK with no bookmark: the transaction committed nothing (ADR-0510).
+		if bm == nil {
+			return "", nil
+		}
+		defer C.relate_free_string(bm)
+		return C.GoString(bm), nil
+	})
 }
 
 func (c *Connection) Rollback() error {
-	release, err := c.use()
-	if err != nil {
-		return err
-	}
-	defer release()
-	var errJSON *C.char
-	st := C.relate_conn_rollback(c.ptr, &errJSON)
-	return statusErr(st, errJSON)
+	return guardedErr(&c.lifecycle, func() error {
+		var errJSON *C.char
+		st := C.relate_conn_rollback(c.ptr, &errJSON)
+		return statusErr(st, errJSON)
+	})
 }
 
 func (c *Connection) Query(cypher string) (*Result, error) {
@@ -358,30 +359,27 @@ func (c *Connection) Query(cypher string) (*Result, error) {
 // returns a *Error from the result's error channel. A connection-level
 // failure returns a *Error from the call's own out-param.
 func (c *Connection) QueryParams(cypher string, params map[string]any) (*Result, error) {
-	release, err := c.use()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	q, err := cString("statement", cypher)
-	if err != nil {
-		return nil, err
-	}
-	defer C.free(unsafe.Pointer(q))
-	var root C.relate_params
-	if params != nil {
-		root = C.relate_params_new()
-		defer C.relate_params_free(root)
-		if err := bindParams(root, params); err != nil {
+	return guarded(&c.lifecycle, func() (*Result, error) {
+		q, err := cString("statement", cypher)
+		if err != nil {
 			return nil, err
 		}
-	}
-	var res C.relate_query_result
-	var errJSON *C.char
-	st := C.relate_query_params(c.ptr, q, root, &res, &errJSON)
-	if err := statusErr(st, errJSON); err != nil {
-		return nil, err
-	}
-	defer C.relate_destroy_result(res)
-	return readResult(res)
+		defer C.free(unsafe.Pointer(q))
+		var root C.relate_params
+		if params != nil {
+			root = C.relate_params_new()
+			defer C.relate_params_free(root)
+			if err := bindParams(root, params); err != nil {
+				return nil, err
+			}
+		}
+		var res C.relate_query_result
+		var errJSON *C.char
+		st := C.relate_query_params(c.ptr, q, root, &res, &errJSON)
+		if err := statusErr(st, errJSON); err != nil {
+			return nil, err
+		}
+		defer C.relate_destroy_result(res)
+		return readResult(res)
+	})
 }
