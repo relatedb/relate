@@ -55,6 +55,10 @@ fn statically_invalid_literal_arguments_are_syntax_errors() {
             "allReduce predicate",
         ),
         (
+            "RETURN reduce(a = 1, b in [date()] | a + b) AS r",
+            "reduce temporal accumulator",
+        ),
+        (
             "MATCH (p) LIMIT -1 RETURN p.name",
             "standalone page statement",
         ),

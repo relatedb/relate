@@ -89,6 +89,7 @@ mod search;
 mod self_reference;
 mod show;
 mod static_calls;
+mod static_reduce;
 mod static_types;
 mod structure;
 mod writes;

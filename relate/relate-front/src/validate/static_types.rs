@@ -4,14 +4,19 @@
 //! argument-type rejection, and quantifier-variable arithmetic over a
 //! statically non-numeric list literal. Page bounds live in
 //! [`super::page_bounds`]; the builtin-call families live in
-//! [`super::static_calls`]. Everything whose type depends on runtime data is
+//! [`super::static_calls`], the `reduce()` accumulator rule in
+//! [`super::static_reduce`]. Everything whose type depends on runtime data is
 //! deliberately left to the runtime evaluator.
 
 use relate_core::Value;
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, Expr, LiteralValue};
+use relate_names::SmallName;
+use relate_parser::{Clause, Expr, LiteralValue, Statement};
 
-use crate::ast::tree::{expr_contains, is_boolean_operator, walk_expr};
+use crate::ast::collect::{walk_expr_scoped, ScopedExprVisitor};
+use crate::ast::tree::{is_boolean_operator, walk_expr};
+
+use super::static_reduce::check_reduce_temporal_arithmetic;
 
 /// The statically-known type of an expression Relate can decide without
 /// evaluating it: a literal (list and map literals included), arithmetic and
@@ -226,13 +231,25 @@ fn homogeneous_list_literal_class(list: &Expr) -> Option<StaticLitType> {
     }
 }
 
+/// The arithmetic-operator vocabulary: the six binary operators whose result
+/// type is decided by their numeric operands ([`static_binary_type`]) and that
+/// the static rejection rules search a body for. The one table;
+/// [`is_failing_arithmetic_op`] is this set minus `+`, which is also string
+/// concatenation and list append and so is not a guaranteed type error.
+const ARITHMETIC_OPS: [&str; 6] = ["+", "-", "*", "/", "%", "^"];
+
+/// Whether `op` is one of the [`ARITHMETIC_OPS`].
+pub(super) fn is_arithmetic_op(op: &str) -> bool {
+    ARITHMETIC_OPS.contains(&op)
+}
+
 /// The result type of a binary operator over statically-typed operands, or
 /// `None` when it is not decided (a non-numeric operand of an arithmetic
 /// operator, an unknown operator, an operand of unknown type).
 fn static_binary_type(op: &str, left: &Expr, right: &Expr) -> Option<StaticLitType> {
     match op {
         "AND" | "OR" | "XOR" => Some(StaticLitType::Boolean),
-        "+" | "-" | "*" | "/" | "%" | "^" => {
+        _ if is_arithmetic_op(op) => {
             let left = static_literal_type(left)?;
             let right = static_literal_type(right)?;
             if !left.is_numeric() || !right.is_numeric() {
@@ -530,18 +547,27 @@ fn check_static_operator_types(e: &Expr, cypher_version: Option<u32>) -> Result<
                 }
             }
         }
+        // The `reduce` analogue: a numerically-initialised accumulator
+        // combined by an arithmetic operator with an element of a list
+        // *literal* of temporal constructor calls is the front-end type fault
+        // live Neo4j reports for the same statement (probed 2026.10.1,
+        // `reduce(a = 1, b in [date()] | a + b)` -> 42001 SyntaxError). Only
+        // the statically decidable numeric-vs-temporal pair qualifies; every
+        // other operand shape keeps the executor's runtime TypeError.
+        Expr::Reduce(r) => check_reduce_temporal_arithmetic(r)?,
         _ => {}
     }
     Ok(())
 }
 
 /// The arithmetic operators that raise a type error for *every* non-numeric,
-/// non-null operand. `+` is deliberately excluded: it is also string
-/// concatenation (`'a' + 1` → `'a1'`) and list append (`[1] + 2`), both valid
-/// for STRING/LIST operands, so `+` is never a *guaranteed* compile-time type
-/// error and is left for the runtime evaluator.
+/// non-null operand. `+` is deliberately excluded from the
+/// [`ARITHMETIC_OPS`] set here: it is also string concatenation (`'a' + 1` →
+/// `'a1'`) and list append (`[1] + 2`), both valid for STRING/LIST operands,
+/// so `+` is never a *guaranteed* compile-time type error and is left for the
+/// runtime evaluator.
 fn is_failing_arithmetic_op(op: &str) -> bool {
-    matches!(op, "-" | "*" | "/" | "%" | "^")
+    op != "+" && is_arithmetic_op(op)
 }
 
 /// True if `list`, ignoring wrapping parentheses, is a non-empty list *literal*
@@ -583,12 +609,82 @@ pub(super) fn expr_is_bare_var(e: &Expr, var: &str) -> bool {
     matches!(unparen(e), Expr::Variable(v) if v == var)
 }
 
-/// True if `expr` applies an [`is_failing_arithmetic_op`] operator *directly* to
-/// the bare quantifier variable `var` somewhere in its tree (`x % 2`, `2 - x`,
-/// `x ^ 2`, …).
+/// True if `expr` applies an operator `is_op` accepts *directly* to the bare
+/// variable `var` somewhere in its tree (`x % 2`, `2 - x`, `x ^ 2`, …).
 ///
-/// Rides the shared self-capping walker ([`expr_contains`]) with a visit
-/// predicate for the `x <op> …` shape and an edge filter reproducing the
+/// Rides [`walk_expr_scoped`] — the one table of which construct binds which
+/// name and where each scope begins and ends (ADR-0513's collector is the
+/// precedent) — so the shadowing rule cannot drift from the resolver's: a
+/// nested scope that rebinds `var` (`all(x IN ['a'] WHERE any(x IN [1]
+/// WHERE x % 2 = 0))`) shadows the search inside it, because the inner `x`
+/// is a different binding. Both static rules that search a body for the
+/// shape use this finder; they differ only in the operator policy they
+/// pass: the quantifier rule excludes `+` ([`is_failing_arithmetic_op`]),
+/// the `reduce`/temporal rule includes it ([`is_arithmetic_op`]).
+pub(super) fn applies_arithmetic_to_var(expr: &Expr, var: &str, is_op: fn(&str) -> bool) -> bool {
+    /// Records the `var <op> …` shape wherever the binder stack open at
+    /// that point does not shadow `var`.
+    struct ArithVarSearch<'a> {
+        var: &'a str,
+        is_op: fn(&str) -> bool,
+        binders: Vec<SmallName>,
+        found: bool,
+    }
+    impl ScopedExprVisitor for ArithVarSearch<'_> {
+        fn enter_expr(&mut self, expr: &Expr) -> Result<(), EngineError> {
+            if let Expr::Binary(b) = expr {
+                if (self.is_op)(b.op)
+                    && !self.binders.iter().any(|bound| bound == self.var)
+                    && (expr_is_bare_var(&b.left, self.var) || expr_is_bare_var(&b.right, self.var))
+                {
+                    self.found = true;
+                }
+            }
+            Ok(())
+        }
+        // A read outside expression position — a pattern name, a projection
+        // selector — is never the `x <op> …` shape this search records.
+        fn read_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
+            Ok(())
+        }
+        fn bind_name(&mut self, name: &SmallName) -> Result<(), EngineError> {
+            self.binders.push(name.clone());
+            Ok(())
+        }
+        // The event stream is well-nested (the trait's contract), so the
+        // pop is always the youngest open binder.
+        fn unbind_name(&mut self) -> Result<(), EngineError> {
+            self.binders.pop();
+            Ok(())
+        }
+        // A subquery body is an opaque leaf to this rule, as it was to the
+        // hand-rolled recursion it replaces.
+        fn subquery_body(&mut self, _statement: &Statement) -> Result<(), EngineError> {
+            Ok(())
+        }
+    }
+    let mut search = ArithVarSearch {
+        var,
+        is_op,
+        binders: Vec::new(),
+        found: false,
+    };
+    match walk_expr_scoped(expr, &mut search) {
+        // An over-deep body caps out and defers to the runtime type check,
+        // exactly as the self-capping walker this replaces did.
+        Err(_) => false,
+        Ok(()) => search.found,
+    }
+}
+
+/// True if `expr` applies an [`is_failing_arithmetic_op`] operator *directly*
+/// to the bare quantifier variable `var` — the quantifier policy over
+/// [`applies_arithmetic_to_var`].
+fn predicate_applies_arithmetic_to_var(expr: &Expr, var: &str) -> bool {
+    applies_arithmetic_to_var(expr, var, is_failing_arithmetic_op)
+}
+
+/// The edge filter [`applies_arithmetic_to_var`] rides, reproducing the
 /// historical hand-rolled recursion's reach — in particular the
 /// binder-shadowing rule: the walk stops at any nested scope-binding
 /// construct (quantifier / list comprehension / reduce / allReduce) that
@@ -598,12 +694,12 @@ pub(super) fn expr_is_bare_var(e: &Expr, var: &str) -> bool {
 /// not enter merely defers to the runtime type check, which is safe; only
 /// a false positive (rejecting a valid query) would be a regression, and
 /// requiring the operand to be the *bare* loop variable prevents that.
-fn predicate_applies_arithmetic_to_var(expr: &Expr, var: &str) -> bool {
+fn enters_arithmetic_search(parent: &Expr, child: &Expr, var: &str) -> bool {
     // The binder edges: from a scope-binding construct, the walk enters
     // the bound body only while the construct does not rebind `var` (the
     // iterated list and the reduce init expression bind nothing, so they
     // are always entered).
-    let enter_child = |parent: &Expr, child: &Expr| match parent {
+    match parent {
         Expr::Quantifier(q) => {
             std::ptr::eq(child, &q.list)
                 || (q.variable != var
@@ -643,18 +739,22 @@ fn predicate_applies_arithmetic_to_var(expr: &Expr, var: &str) -> bool {
         // list/map items, CASE arms, property keys, subscript parts — were
         // all visited by the hand-rolled recursion.
         _ => true,
-    };
-    expr_contains(expr, enter_child, |node| {
-        matches!(node,
-            Expr::Binary(b)
-                if is_failing_arithmetic_op(b.op)
-                    && (expr_is_bare_var(&b.left, var) || expr_is_bare_var(&b.right, var)))
-    })
+    }
+}
+
+/// Parse `query`, run only the narrow static operator/type pass, and return
+/// its verdict. The one test entry point for this pass; the sibling static
+/// rules' tests call it too rather than re-encoding the call.
+#[cfg(test)]
+pub(super) fn parse_and_check_static_ops(query: &str) -> Result<(), EngineError> {
+    let stmt = relate_parser::parse(query).expect("parse");
+    validate_static_operator_types(&stmt.clauses, stmt.cypher_version)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::tree::tests::return_expr_of;
 
     /// The 22N27/22NB1 detail text renders a folded operand's type through
     /// core's `bare_type_name` and a declined-but-typed one through
@@ -679,13 +779,6 @@ mod tests {
         }
     }
 
-    fn expr_of(query: &str) -> Expr {
-        let stmt = relate_parser::parse(query).unwrap();
-        match &stmt.clauses[0] {
-            Clause::Return(rc) => rc.items[0].expr.clone(),
-            _ => panic!("expected a RETURN clause"),
-        }
-    }
     // ---- Quantifier over a non-numeric list literal: compile-time TypeError ----
     //
     // openCypher rejects `all/any/none/single(x IN <non-numeric list literal>
@@ -694,13 +787,6 @@ mod tests {
     // "[15]/[16] Fail … quantifier on type mismatch between list elements and
     // predicate"). Relate's runtime evaluator would otherwise raise the same
     // TypeError one phase too late.
-
-    /// Parse `query`, run only the narrow static operator/type pass, and return
-    /// its verdict.
-    fn parse_and_check_static_ops(query: &str) -> Result<(), EngineError> {
-        let stmt = relate_parser::parse(query).expect("parse");
-        validate_static_operator_types(&stmt.clauses, stmt.cypher_version)
-    }
 
     #[test]
     fn quantifier_over_string_literal_arith_predicate_is_compile_time_type_error() {
@@ -790,7 +876,7 @@ mod tests {
     fn quantifier_static_helpers_are_narrow() {
         // list_literal_all_non_numeric: only fully-known non-numeric literals.
         let all_non_numeric =
-            |q: &str| list_literal_all_non_numeric(&expr_of(&format!("RETURN {q}")));
+            |q: &str| list_literal_all_non_numeric(&return_expr_of(&format!("RETURN {q}")));
         assert!(all_non_numeric("['a', 'b']"));
         assert!(all_non_numeric("[false, true]"));
         assert!(all_non_numeric("[[1], ['a']]"));
@@ -803,7 +889,7 @@ mod tests {
 
         // predicate_applies_arithmetic_to_var: bare-var operand under a failing op.
         let hits = |q: &str| {
-            let e = expr_of(&format!("RETURN {q}"));
+            let e = return_expr_of(&format!("RETURN {q}"));
             predicate_applies_arithmetic_to_var(&e, "x")
         };
         assert!(hits("x % 2 = 0"));
