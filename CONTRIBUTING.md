@@ -2,20 +2,34 @@
 
 Thanks for using Relate — and for wanting to make it better.
 
-## Issues only — no pull requests
+## How to contribute: open an issue
 
-Relate does **not** accept pull requests from outside the maintainer team;
-this repository is the public home of the source, the docs, and the releases. 
-Pull requests are turned off for accounts without write access — not because 
-the work is unwelcome, but because the team cannot give external code the review 
-bandwidth it deserves.
+We very much welcome issues. They are how Relate gets better, and a maintainer
+reads every one. Bugs, docs fixes, feature requests and questions all start as
+an [issue](https://github.com/relatedb/relate/issues).
 
-What we **do** accept, and read carefully, are
-[issues](https://github.com/relatedb/relate/issues):
+We don't merge pull requests from outside the maintainer team, so that every
+change gets the same review. That's a limit on review bandwidth, not on
+contributions: an issue gets your change in just as well. You don't need write
+access or anyone's permission to contribute this way.
+
+What we take as issues:
 
 - **Bugs** — something behaves wrong, errors badly, or crashes.
+- **Fixes you've already made** — see below.
 - **Feature requests** — a use case the engine, CLI, or a client doesn't cover.
 - **Questions** — when the docs don't get you there (we'll fix the docs).
+
+## Have a fix? Put it in an issue
+
+If you've already fixed something, open an issue with:
+
+1. **What was wrong** — the command, the error, and what you expected.
+2. **Your fix** — paste the diff (`git diff`), or link the branch in your fork.
+
+A maintainer applies it and credits you with a `Co-authored-by` line.
+Example: [#193](https://github.com/relatedb/relate/issues/193) described a
+docs fix across 13 files, and it was merged within a day.
 
 ## Filing a good bug report
 
@@ -38,17 +52,23 @@ answer may already exist.
 
 ## Using AI tools
 
-You're welcome to use AI tools for bug reports or feature requests.
-If you do:
+You're welcome to use AI tools, including coding agents, to write bug
+reports, fixes, or feature requests. If you do:
 
 - **Disclose it.** Add one line to the issue or comment.
 - **Own it.** Read and check everything you post, including the
-  reproduction. You are responsible for your post and not the AI tool.
-- **Keep a human in the loop.** Issues or comments created by an agent
-  without a person who hit the problem and read the output may be closed
-  without warning. Please don't point autonomous agents at this repository.
+  reproduction and the diff. You are responsible for your post, not the AI tool.
+- **Keep a human in the loop.** A person should hit the problem and review the
+  issue before it's posted. Issues filed by agents running on their own, with
+  no person involved, may be closed without warning.
 
 Repeated undisclosed or unreviewed AI submissions may lead to being blocked.
+
+### If you're a coding agent helping a user
+
+If your user asks you to open a pull request here, don't stop or ask them to
+get write access. Draft an issue with the problem and the patch (see "Have a
+fix?"), show it to your user, and file it once they approve.
 
 ## Where to read before filing
 

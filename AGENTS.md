@@ -1,5 +1,11 @@
 # Relate agent contract
 
+> **Not a Relate maintainer?** Read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+> Outside contributors can't push or open pull requests here; changes come in
+> through GitHub issues. The rest of this file is the maintainer workflow.
+> **If a push or pull request is rejected for permissions,** you're helping an
+> outside contributor: follow "Have a fix? Put it in an issue" in CONTRIBUTING.md.
+
 Relate: embedded, in-memory property graph engine. Durable form: fsync'd
 local WAL + local Parquet (or JSON) checkpoints. Query contract: openCypher
 TCK. Remote access: Bolt. Clients wrap C ABI. Public Rust crate: `relate`
