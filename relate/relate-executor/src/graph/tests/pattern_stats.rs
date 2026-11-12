@@ -770,3 +770,53 @@ fn any_degree_tail_is_the_highest_tail_across_labels_and_types() {
     // No histogram at all: None.
     assert_eq!(Graph::default().pattern_any_degree_tail(None), None);
 }
+
+/// The degree moments read each log2 bucket at the uniform mean of its
+/// degree range, summed over the selected labels and rel types.
+#[test]
+fn degree_moments_sum_the_selected_histograms() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let leaves: Vec<_> = (0..20)
+        .map(|_| g.create_node(vec!["Leaf".into()], BTreeMap::new()).unwrap())
+        .collect();
+    let small = g
+        .create_node(vec!["Small".into()], BTreeMap::new())
+        .unwrap();
+    let big = g.create_node(vec!["Big".into()], BTreeMap::new()).unwrap();
+    g.create_rel(small, leaves[0], "R".into(), BTreeMap::new())
+        .unwrap();
+    // Big: degree 20 on R (bucket [16, 31]), degree 3 on S (bucket [2, 3]).
+    for leaf in &leaves {
+        g.create_rel(big, *leaf, "R".into(), BTreeMap::new())
+            .unwrap();
+    }
+    for leaf in leaves.iter().take(3) {
+        g.create_rel(big, *leaf, "S".into(), BTreeMap::new())
+            .unwrap();
+    }
+    g.commit_write();
+    let id = |name: &str| g.interner.get_id(name).unwrap();
+    let moments = |sum, sum_sq| DegreeMoments { sum, sum_sq };
+
+    // (Big, R): one node in [16, 31]: mean 23, mean square (256 + 496 + 961) / 3.
+    assert_eq!(
+        g.pattern_degree_moments(Some(id("Big")), Some(&[id("R")])),
+        moments(23, 571)
+    );
+    // Every label of R adds Small's degree-1 node.
+    assert_eq!(
+        g.pattern_degree_moments(None, Some(&[id("R")])),
+        moments(24, 572)
+    );
+    // Untyped: Big's S bucket joins (one node in [2, 3]: 2, (4 + 6 + 9) / 3).
+    assert_eq!(
+        g.pattern_degree_moments(Some(id("Big")), None),
+        moments(25, 577)
+    );
+    // No histogram entry: zero moments.
+    assert_eq!(
+        Graph::default().pattern_degree_moments(None, None),
+        DegreeMoments::default()
+    );
+}

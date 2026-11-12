@@ -27,6 +27,7 @@ use relate_ir::{BinaryOp, Expr};
 use relate_names::{NamedToken, SmallName};
 
 use super::ContainsCount;
+use super::DegreeMoments;
 use super::PatternStats;
 
 /// The borrowed classification of a consult operand into its memo identity
@@ -331,5 +332,13 @@ impl PatternStats for StatsMemo<'_> {
 
     fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
         self.inner.any_degree_tail(rel_type)
+    }
+
+    fn degree_moments(
+        &self,
+        labels: &[NamedToken],
+        rel_types: &[NamedToken],
+    ) -> Option<DegreeMoments> {
+        self.inner.degree_moments(labels, rel_types)
     }
 }

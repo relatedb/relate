@@ -1,5 +1,6 @@
 use super::*;
 use relate_names::SmallName;
+use relate_planner::DegreeMoments;
 
 mod adjacency;
 mod adjacency_model_proptest;

@@ -565,9 +565,10 @@ fn re_arrival_shapes_answer_identically_as_statements() {
     );
 
     // The below-min candidate graph (the walk-pool pin's own fixture,
-    // `rearival_tests`), bounded: two nodes sit under the cost gate's
-    // factor (paths ≈ endpoints) — the DFS keeps it, rows identical.
-    differential_declined(
+    // `rearival_tests`), bounded: the self-loop makes the cost model
+    // price a branching recursion, so the frontier engages — rows
+    // identical.
+    differential(
         &build(&[&["N"], &["N"]], &[(1, 0, "KNOWS"), (1, 1, "KNOWS")]).graph,
         "MATCH (x:N {id: 1})-[:KNOWS*2..3]-(y:N) RETURN DISTINCT y AS y",
     );

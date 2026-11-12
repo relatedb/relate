@@ -104,9 +104,9 @@ pub enum FrontierDecline {
     /// carry those bindings, so a distinct/aggregate answer over them
     /// would read bindings the frontier never produced.
     PathConsumer,
-    /// The cost gate: a bounded recursion whose estimated paths stay under
-    /// `PATHS_PER_ENDPOINT_FACTOR` times its estimated distinct
-    /// endpoints — the DFS is already output-bound (no reconstruction
+    /// The cost gate: a bounded recursion whose estimated trails cost the
+    /// DFS less than the frontier's pairs and probes (or whose hops the
+    /// statistics cannot price) — the DFS is cheaper (no reconstruction
     /// pass, the existing row plumbing) and keeps the clause.
     Cost,
 }

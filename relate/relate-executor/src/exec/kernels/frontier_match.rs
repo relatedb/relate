@@ -38,15 +38,13 @@
 //!   for in-bounds arrivals, the re-arrival rule's walk-length check for
 //!   below-min candidates, ADR-0478 §3), never which consumers are
 //!   pair-functions, and full enumeration declines under every mode.
-//! - **Cost** ([`frontier_engages`], this layer's `engages()` cost gate
-//!   extended to the frontier family over the planner's own estimate
-//!   machinery): engage when the quantifier is unbounded (the DFS cannot
-//!   halt below its rel-count cap, so a cyclic type system makes the
-//!   enumeration exponential while the answer stays pair-shaped), or when
-//!   the estimated paths reach [`PATHS_PER_ENDPOINT_FACTOR`] times the
-//!   estimated distinct endpoints; under the factor the DFS is already
-//!   output-bound and keeps the clause (the bounded acyclic-schema
-//!   recursions: paths ≈ endpoints, measured 0.2–0.7 ms). The diagnostic
+//! - **Cost** ([`frontier_engages`], in [`super::frontier_cost`]): engage
+//!   when the quantifier is unbounded (the DFS cannot halt below its
+//!   rel-count cap, so a cyclic type system makes the enumeration
+//!   exponential while the answer stays pair-shaped), or when the
+//!   measured per-unit costs say the DFS's trails cost more than the
+//!   frontier's pairs and probes; under that break-even the DFS keeps
+//!   the clause (short bounds, the bounded acyclic-schema recursions). The diagnostic
 //!   switch's forced rung (ADR-0519, `RELATE_PATTERN_ENGINE=nfa`)
 //!   bypasses this gate alone — every other proof stands.
 
@@ -55,13 +53,10 @@ use std::collections::{BTreeMap, HashSet};
 use relate_core::{NodeId, Value};
 use relate_ir::{
     classify_aggregate, AggregateKind, BinaryOp, Clause, Expr, MatchMode, NodePattern, PathMode,
-    PathPattern, PatternElement, QuantifiedPathPattern, RelPattern,
+    PathPattern, PatternElement, QuantifiedPathPattern,
 };
 use relate_names::SmallName;
 use relate_planner::PatternStats;
-use relate_planner::{
-    apply_degree, apply_path_degree, endpoint_estimate, seed_on_rel_start, seed_rows,
-};
 
 use crate::eval::expr_vars;
 use crate::frontier_decline::FrontierDecline;
@@ -73,6 +68,7 @@ use crate::row::Row;
 
 use super::super::match_cap::return_with_suffix;
 use super::super::pattern_policies::{gpm_group_vocabulary, inlined_all_reduces};
+use super::frontier_cost::frontier_engages;
 use super::matcher::compile_node;
 use super::nfa::{self, FrontierNfa, Pool};
 use super::program::{decode_conjunct, NodeTarget, Prog};
@@ -679,121 +675,4 @@ fn aggregate_calls(expr: &Expr, calls: &mut Vec<(AggregateKind, bool)>) -> bool 
         _ => {}
     });
     count_star
-}
-
-/// The cost gate's dedup factor (ADR-0478 Decision 1's first cut): the
-/// frontier engages when the DFS's estimated paths reach this multiple of
-/// the estimated distinct endpoints — under it the DFS is already
-/// output-bound.
-const PATHS_PER_ENDPOINT_FACTOR: u128 = 4;
-
-/// The estimate's hop ceiling: a bounded quantifier whose maximum
-/// expansion passes it has a multiplicity saturated beyond pricing (a
-/// degree tail chained per hop), so the estimate engages rather than
-/// underestimates it.
-const MAX_ESTIMATE_HOPS: usize = 1024;
-
-/// The frontier family's cost gate — the `engages()` cost gate (ADR-0473,
-/// `kernels/mod.rs`) extended to the frontier family over the same
-/// planner estimate machinery (ADR-0218's endpoint ladder and degree
-/// tails):
-///
-/// - **(a)** an unbounded quantifier engages on shape alone: the DFS's
-///   termination is the rel-count cap, so a cyclic type system makes the
-///   enumeration exponential in the diameter while the answer stays
-///   pair-shaped — every one of the 42 PathDB timeout classes is this
-///   case;
-/// - **(b)** otherwise the estimated paths (the degree machinery chained
-///   over the maximum hop expansion from the start's seed rows) against
-///   the estimated distinct endpoints (the target's own endpoint
-///   estimate): at [`PATHS_PER_ENDPOINT_FACTOR`] or beyond the dedup win
-///   pays for the reconstruction pass; under it the DFS keeps the clause
-///   (the bounded acyclic-schema recursions sit at paths ≈ endpoints).
-///
-/// Both sides of (b) are counts, never ranks: the path chain prices its
-/// first hop over the distinct seeds ([`apply_degree`], the degree-sum
-/// clamp holds) and every later hop over the path multiset
-/// ([`apply_path_degree`] — paths revisit nodes, so the clamp would cap
-/// a branching recursion's multiplicity at the rel type's total), and
-/// the distinct endpoints are bounded by `population`, the store's
-/// node-id span — an unlabeled target's estimate is the ladder's rank
-/// sentinel, an ordering fact no path count can reach, while no answer
-/// has more distinct endpoints than the store has nodes.
-fn frontier_engages(
-    stats: &dyn PatternStats,
-    population: u128,
-    conjuncts: &[Expr],
-    start: &NodePattern,
-    target: &NodePattern,
-    elements: &[PatternElement],
-    max_hops: Option<u32>,
-) -> bool {
-    if max_hops.is_none() {
-        return true;
-    }
-    let unbound = |_: &str| false;
-    let seeds = seed_rows(endpoint_estimate(start, &unbound, conjuncts.iter(), stats));
-    let mut paths = seeds;
-    let mut hops: Vec<(&NodePattern, &RelPattern)> = Vec::new();
-    if expand_max_hops(elements, None, &mut hops).is_none() {
-        // The expansion passed the estimate's hop ceiling.
-        return true;
-    }
-    for (hop, (seed, rel)) in hops.into_iter().enumerate() {
-        let degree = if hop == 0 {
-            apply_degree
-        } else {
-            apply_path_degree
-        };
-        paths = degree(paths, seed, rel, seed_on_rel_start(rel, false), stats);
-    }
-    let endpoints =
-        seed_rows(endpoint_estimate(target, &unbound, conjuncts.iter(), stats)).min(population);
-    paths >= PATHS_PER_ENDPOINT_FACTOR.saturating_mul(endpoints)
-}
-
-/// The (seed node, rel) hops of `elements` with every quantifier expanded
-/// to its maximum count — the degree estimator's input for the DFS's path
-/// multiplicity. `None` when the expansion passes
-/// [`MAX_ESTIMATE_HOPS`]: the multiplicity is saturated beyond pricing,
-/// and the caller engages rather than underestimates it.
-fn expand_max_hops<'e>(
-    elements: &'e [PatternElement],
-    seed: Option<&'e NodePattern>,
-    hops: &mut Vec<(&'e NodePattern, &'e RelPattern)>,
-) -> Option<()> {
-    let mut seed = seed;
-    for element in elements {
-        if hops.len() > MAX_ESTIMATE_HOPS {
-            return None;
-        }
-        match element {
-            PatternElement::Node(node) => seed = Some(node),
-            PatternElement::Relationship(rel) => {
-                let from = seed.expect("the NFA compile proved the node/rel alternation");
-                hops.push((from, rel));
-            }
-            PatternElement::Quantified(qpp) => {
-                let max = qpp.max.unwrap_or_else(|| {
-                    unreachable!("an unbounded quantifier engaged on cost rule (a) at the top level, and a nested one declined at the NFA compile")
-                });
-                // The body's first and last nodes sit at the shared round
-                // boundary — the NFA compile's own chain model (the cycle
-                // form closes back to the entry state; an unrolled copy's
-                // exit is the next copy's entry) — so a round's
-                // boundary-adjacent hops and the next round both depart
-                // from the entry's population, never from the synthesized
-                // anonymous boundary nodes. The interior middles keep
-                // their own (anonymous) patterns. The body has at least
-                // three elements with a rel between the boundary nodes
-                // (the NFA compile's chain shape), so the interior slice
-                // is well-formed.
-                let interior = &qpp.elements[1..qpp.elements.len() - 1];
-                for _ in 0..max {
-                    expand_max_hops(interior, seed, hops)?;
-                }
-            }
-        }
-    }
-    Some(())
 }

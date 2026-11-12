@@ -73,7 +73,7 @@ pub use crate::plan::{
     walk_plan_parts, walk_query_parts, LogicalPlan,
 };
 pub use crate::query_type::{query_type, QueryType};
-pub use crate::stats::{ContainsCount, NoPatternStats, PatternStats};
+pub use crate::stats::{ContainsCount, DegreeMoments, NoPatternStats, PatternStats};
 pub use crate::validate::check_union_joiners;
 
 /// Test helper: parse `cypher` and plan it with no write procedures

@@ -17,6 +17,8 @@ use std::sync::atomic::Ordering;
 
 use relate_core::NodeId;
 
+use relate_planner::DegreeMoments;
+
 use super::count_state::CountDelta;
 use super::shard;
 use super::{Graph, LabelCache, RelRow};
@@ -286,6 +288,37 @@ impl Graph {
                 .values()
                 .fold(0u64, |sum, tail| sum.saturating_add(*tail)),
         )
+    }
+
+    /// The estimated out-degree moments of one label's (or, for `None`,
+    /// every labeled node's) histograms over `type_ids` (`None`: every
+    /// type). Each bucket is read at the uniform mean of its degree range
+    /// `[2^k, 2^(k+1) - 1]`, so the figures are estimates on the
+    /// histogram's own scale, high-water across deletes like the tails.
+    pub(crate) fn pattern_degree_moments(
+        &self,
+        label_id: Option<u32>,
+        type_ids: Option<&[u32]>,
+    ) -> DegreeMoments {
+        let histograms = self.degree_histograms.lock().unwrap();
+        let mut moments = DegreeMoments::default();
+        for (&(label, type_id), buckets) in histograms.iter() {
+            if label_id.is_some_and(|wanted| wanted != label)
+                || type_ids.is_some_and(|wanted| !wanted.contains(&type_id))
+            {
+                continue;
+            }
+            for (bucket, &nodes) in buckets.iter().enumerate() {
+                let low = 1u128 << bucket;
+                let high = (low << 1) - 1;
+                let nodes = u128::from(nodes);
+                moments.sum = moments.sum.saturating_add(nodes * ((low + high) / 2));
+                moments.sum_sq = moments
+                    .sum_sq
+                    .saturating_add(nodes * ((low * low + low * high + high * high) / 3));
+            }
+        }
+        moments
     }
 
     /// Every per-label statistics change one label-set mutation makes: the

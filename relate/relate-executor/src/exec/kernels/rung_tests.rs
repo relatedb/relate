@@ -163,16 +163,17 @@ fn rung_and_count(graph: &crate::graph::Graph, cypher: &str) -> (Option<KernelRu
     (rung, result.rows[0][0].clone())
 }
 
-/// A bounded recursion whose consumer needs only the distinct endpoints
-/// is served by the frontier rung in auto mode (the cost gate prices an
-/// unlabeled endpoint as the whole store, `frontier_engages`).
+/// A bounded recursion whose trails equal its distinct pairs (a chain: one
+/// trail per endpoint) stays on the walker in auto mode — the cost gate
+/// prices the frontier's per-pair work against the DFS's per-trail work,
+/// and with no dedup win the DFS is cheaper. The answer is the same.
 #[test]
-fn count_distinct_end_over_a_bounded_path_takes_the_frontier() {
+fn count_distinct_end_over_an_acyclic_bounded_path_stays_on_the_walker() {
     let (rung, count) = rung_and_count(
         &r_chain(),
         "MATCH (h)-[:R*1..2]->(e) RETURN count(DISTINCT e) AS c",
     );
-    assert_eq!(rung, Some(KernelRung::FrontierNfa));
+    assert_eq!(rung, Some(KernelRung::Walker));
     assert_eq!(count, Value::Int(39));
 }
 

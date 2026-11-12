@@ -70,6 +70,9 @@ mod rearival_tests;
 // The frontier family's plan-time matcher arm (ADR-0478 §2): the
 // structural and answer-shape proofs plus the cost gate, compiled by the
 // rider wiring (`frontier_run`).
+pub(crate) mod frontier_cost;
+#[cfg(test)]
+mod frontier_cost_tests;
 pub(crate) mod frontier_match;
 #[cfg(test)]
 mod frontier_match_tests;
@@ -556,12 +559,13 @@ fn chain_stages_fit(
 ///   end estimates cheaper, so a shape whose terminals are the cheaper
 ///   plan keeps the walker). Existence mode gets the early-exit slop.
 /// - The **frontier family** (the quantified-path shapes, ADR-0478) is
-///   cost-gated by its own arm — `frontier_match::frontier_engages`
-///   inside `frontier_match::compile_frontier`, over this same estimate
-///   machinery —
+///   cost-gated by its own arm — `frontier_cost::frontier_engages`
+///   inside `frontier_match::compile_frontier`, over the planner's
+///   degree statistics —
 ///   because its contract is not run by the chain/hub-star kernels: it
-///   engages on an unbounded quantifier or on estimated paths reaching
-///   4x the estimated distinct endpoints, and declines keep the GPM DFS.
+///   engages on an unbounded quantifier or when the DFS's estimated
+///   trails cost more than the frontier's pairs and probes, and declines
+///   keep the GPM DFS.
 fn engages(
     stats: &GraphStats<'_>,
     conjuncts: &[Expr],

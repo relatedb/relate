@@ -172,6 +172,15 @@ impl PatternStats for GraphPatternStats<'_> {
     fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params).any_degree_tail(rel_type)
     }
+
+    /// The degree moments ride the same delegation.
+    fn degree_moments(
+        &self,
+        labels: &[NamedToken],
+        rel_types: &[NamedToken],
+    ) -> Option<relate_planner::DegreeMoments> {
+        relate_executor::GraphStats::new(self.graph, self.params).degree_moments(labels, rel_types)
+    }
 }
 
 #[cfg(test)]

@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_ir::{BinaryOp, Expr, NodePattern, RelPattern};
 use relate_names::{NamedToken, SmallName, Token, TokenResolver};
-use relate_planner::{endpoint_estimate, seed_on_rel_start, walk_cost, Bound, ContainsCount};
+use relate_planner::{
+    endpoint_estimate, seed_on_rel_start, walk_cost, Bound, ContainsCount, DegreeMoments,
+};
 
 use crate::graph::Graph;
 
@@ -182,5 +184,37 @@ impl relate_planner::PatternStats for GraphStats<'_> {
             }
             None => self.graph.pattern_any_degree_tail(None),
         }
+    }
+
+    /// The live histograms' out-degree moments. Several labels name the
+    /// nodes carrying all of them, bounded by each label's own moments:
+    /// the smaller sum is the tighter bound (the `degree_tail` min
+    /// discipline). A name the store never interned selects nothing.
+    fn degree_moments(
+        &self,
+        labels: &[NamedToken],
+        rel_types: &[NamedToken],
+    ) -> Option<DegreeMoments> {
+        let type_ids: Vec<u32> = rel_types
+            .iter()
+            .filter_map(|(name, token)| self.id_of(name, *token))
+            .collect();
+        let types = if rel_types.is_empty() {
+            None
+        } else {
+            Some(type_ids.as_slice())
+        };
+        if labels.is_empty() {
+            return Some(self.graph.pattern_degree_moments(None, types));
+        }
+        labels
+            .iter()
+            .map(|(name, token)| {
+                self.id_of(name, *token)
+                    .map_or(DegreeMoments::default(), |id| {
+                        self.graph.pattern_degree_moments(Some(id), types)
+                    })
+            })
+            .min_by_key(|moments| moments.sum)
     }
 }

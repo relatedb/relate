@@ -46,6 +46,21 @@ impl ContainsCount {
     }
 }
 
+/// The first two moments of an out-degree distribution — what a cost gate
+/// needs to price a chain of hops: the mean fanout is `sum / nodes` and
+/// the size-biased (excess) degree a trail meets after its first hop is
+/// `sum_sq / sum - 1`. Estimates on the histogram's log2-bucket scale
+/// (each bucket read at the uniform mean of its degree range), summed
+/// over the selected labels and rel types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DegreeMoments {
+    /// Estimated sum of out-degrees (the relationship count the selected
+    /// nodes start).
+    pub sum: u128,
+    /// Estimated sum of squared out-degrees.
+    pub sum_sq: u128,
+}
+
 /// Live or stubbed counts used to estimate how many rows a pattern endpoint
 /// produces. Every method returns `None` when that signal is unavailable,
 /// which is not the same as zero rows. Labels and relationship types
@@ -124,6 +139,21 @@ pub trait PatternStats {
     /// `None` when the stats keep no histogram.
     fn any_degree_tail(&self, rel_type: Option<&SmallName>) -> Option<u64> {
         let _ = rel_type;
+        None
+    }
+
+    /// The out-degree moments ([`DegreeMoments`]) of nodes carrying the
+    /// labels in `labels` (empty: every labeled node; several: a bound,
+    /// the smallest per-label moments) over the rel types
+    /// `rel_types` (empty: every type). A name the store never interned
+    /// selects nothing, so its moments are zero. `None` when the stats
+    /// keep no histogram.
+    fn degree_moments(
+        &self,
+        labels: &[NamedToken],
+        rel_types: &[NamedToken],
+    ) -> Option<DegreeMoments> {
+        let _ = (labels, rel_types);
         None
     }
 }
