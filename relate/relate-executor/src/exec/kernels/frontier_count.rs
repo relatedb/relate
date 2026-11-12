@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 
 use relate_core::{Error, NodeId, Result, Value};
 
-use crate::hash_seed::FxMap;
+use crate::hash_seed::IdMap;
 use relate_ir::{Clause, MatchMode};
 
 use crate::ctx::{ExecCtx, FrontierCounters};
@@ -44,7 +44,7 @@ use crate::row::Row;
 use super::super::agg_fold::FoldedReturn;
 use super::super::graph_stats::GraphStats;
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
-use super::frontier::arms;
+use super::frontier::{arms, Arm};
 use super::frontier_match::{compile_frontier, Consumer};
 use super::frontier_run::{seeds, single_quantified};
 use super::nfa::FrontierNfa;
@@ -168,7 +168,7 @@ fn count_walks(
         .expect("the WALK pool is bounded: the mode gate declines an unbounded quantifier");
     let arms = arms(view, nfa);
     let mut total: u128 = u128::from(nfa.min_hops == 0 && nfa.accepting[nfa.start as usize]);
-    let mut level: FxMap<(NodeId, u32), u128> = FxMap::from_iter([((seed, nfa.start), 1)]);
+    let mut level: IdMap<(NodeId, u32), u128> = IdMap::from_iter([((seed, nfa.start), 1)]);
     facts.levels = 1;
     facts.cells = 1;
     for hop in 1..=max {
@@ -177,30 +177,33 @@ fn count_walks(
         }
         view.cancel_tick()?;
         facts.levels += 1;
-        let expand = hop < max;
-        let mut next: FxMap<(NodeId, u32), u128> = FxMap::default();
+        if hop == max {
+            // The last level is contracted, never expanded: acceptance only.
+            return match accept_last_level(view, nfa, &arms, &level, hop, total, facts)? {
+                Some(sum) => {
+                    facts.endpoints = tally(sum);
+                    Ok(Some(sum))
+                }
+                None => Ok(None),
+            };
+        }
+        let mut next: IdMap<(NodeId, u32), u128> = IdMap::default();
         let mut overflow = false;
         for (&(u, s), &walks) in &level {
             for arm in &arms[s as usize] {
                 let t = &nfa.transitions[arm.transition];
-                let accept = t.accepts && hop >= nfa.min_hops;
-                if !accept && !expand {
-                    continue;
-                }
                 let mut degree: u128 = 0;
                 view.try_for_each_hop_resolved::<Error>(u, t.direction, &arm.types, |_, v| {
                     facts.edge_visits += 1;
                     degree += 1;
-                    if expand {
-                        let slot = next.entry((v, t.to)).or_insert(0);
-                        match slot.checked_add(walks) {
-                            Some(sum) => *slot = sum,
-                            None => overflow = true,
-                        }
+                    let slot = next.entry((v, t.to)).or_insert(0);
+                    match slot.checked_add(walks) {
+                        Some(sum) => *slot = sum,
+                        None => overflow = true,
                     }
                     Ok(())
                 })?;
-                if accept {
+                if t.accepts && hop >= nfa.min_hops {
                     match walks.checked_mul(degree).and_then(|w| total.checked_add(w)) {
                         Some(sum) => total = sum,
                         None => overflow = true,
@@ -214,12 +217,52 @@ fn count_walks(
         facts.cells += level_len(&next);
         level = next;
     }
-    // A saturating tally: the PROFILE counter, never the answer.
-    facts.endpoints = u64::try_from(total.min(u128::from(u64::MAX))).expect("clamped to u64");
+    facts.endpoints = tally(total);
+    Ok(Some(total))
+}
+
+/// A saturating tally: the PROFILE counter, never the answer.
+fn tally(total: u128) -> u64 {
+    u64::try_from(total.min(u128::from(u64::MAX))).expect("clamped to u64")
+}
+
+/// The last level's accepting arrivals: each pair's multiplicity times its
+/// degree over the accepting transition, summed onto `total` — no next
+/// level is built. `None` is an overflow decline.
+fn accept_last_level(
+    view: &ExecGraph<'_>,
+    nfa: &FrontierNfa,
+    arms: &[Vec<Arm>],
+    level: &IdMap<(NodeId, u32), u128>,
+    hop: u32,
+    mut total: u128,
+    facts: &mut FrontierCounters,
+) -> Result<Option<u128>> {
+    if hop < nfa.min_hops {
+        return Ok(Some(total));
+    }
+    for (&(u, s), &walks) in level {
+        for arm in &arms[s as usize] {
+            let t = &nfa.transitions[arm.transition];
+            if !t.accepts {
+                continue;
+            }
+            let mut degree: u128 = 0;
+            view.try_for_each_hop_resolved::<Error>(u, t.direction, &arm.types, |_, _| {
+                facts.edge_visits += 1;
+                degree += 1;
+                Ok(())
+            })?;
+            match walks.checked_mul(degree).and_then(|w| total.checked_add(w)) {
+                Some(sum) => total = sum,
+                None => return Ok(None),
+            }
+        }
+    }
     Ok(Some(total))
 }
 
 /// One level's cell count, as the counters' unit.
-fn level_len(level: &FxMap<(NodeId, u32), u128>) -> u64 {
+fn level_len(level: &IdMap<(NodeId, u32), u128>) -> u64 {
     u64::try_from(level.len()).expect("a level's cells fit u64")
 }

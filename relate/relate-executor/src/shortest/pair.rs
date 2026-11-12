@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use relate_core::{NodeId, RelId, Result};
 use relate_ir::Direction;
 
-use crate::hash_seed::FxMap;
+use crate::hash_seed::IdMap;
 
 use super::{unique_rels, Search};
 
@@ -47,7 +47,7 @@ fn shallow(s: &Search<'_, '_>, start: NodeId, end: NodeId) -> Result<Option<Vec<
     }
     let back = s.reversed();
     let t1 = back.hops(end)?;
-    let t1_at: FxMap<NodeId, RelId> = t1.iter().copied().collect();
+    let t1_at: IdMap<NodeId, RelId> = t1.iter().copied().collect();
     let two = s1.iter().find_map(|&(mid, r1)| {
         let &r2 = t1_at.get(&mid)?;
         (r1 != r2).then(|| vec![r1, r2])
@@ -55,7 +55,7 @@ fn shallow(s: &Search<'_, '_>, start: NodeId, end: NodeId) -> Result<Option<Vec<
     if two.is_some() || s.max < 3 {
         return Ok(two);
     }
-    let s1_at: FxMap<NodeId, RelId> = s1.iter().copied().collect();
+    let s1_at: IdMap<NodeId, RelId> = s1.iter().copied().collect();
     // Expand the smaller 1-hop side; `from_end` names which side the
     // near walk drives, and the hit site builds one trail near-to-far,
     // reversing it when driven from the end.
@@ -92,7 +92,7 @@ fn shallow(s: &Search<'_, '_>, start: NodeId, end: NodeId) -> Result<Option<Vec<
 /// parent. Keys are dense engine ids — the dense-id hasher rule
 /// (ADR-0355, LABS-337); SipHash on these probes was the profiled BFS
 /// bookkeeping cost.
-type Tree = FxMap<NodeId, (u32, Option<(NodeId, RelId)>)>;
+type Tree = IdMap<NodeId, (u32, Option<(NodeId, RelId)>)>;
 
 /// One BFS tree of the bidirectional search.
 struct Side<'a, 'g> {
@@ -106,7 +106,7 @@ impl<'a, 'g> Side<'a, 'g> {
         Self {
             search,
             q: VecDeque::from([(origin, 0)]),
-            tree: FxMap::from_iter([(origin, (0, None))]),
+            tree: IdMap::from_iter([(origin, (0, None))]),
         }
     }
 

@@ -60,11 +60,9 @@ mod row;
 // used-set signature — `Matched`, the walk-entry and probe-predicate
 // parameters, the GPM state carry. Hoisted to the crate root beside
 // `row` (LABS-668's precedent): the workspace meter and both walk
-// engines import downward from here, no module importing up. FxHash, not
-// SipHash — the keys are engine-generated ids, the `CoreMap` rule
-// (ADR-0355 / LABS-337); SipHashing the used-set per hop was ~17% of a
-// pokec expansion profile.
-pub(crate) type UsedSet = rustc_hash::FxHashSet<relate_core::RelId>;
+// engines import downward from here, no module importing up. Its hasher
+// policy (engine-generated ids, so the id policy) is `hash_seed`'s.
+pub(crate) type UsedSet = hash_seed::IdSet<relate_core::RelId>;
 mod shortest;
 mod show_catalog;
 mod spatial;

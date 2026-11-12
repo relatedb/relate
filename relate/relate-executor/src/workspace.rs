@@ -8,6 +8,11 @@
 //! A cloned graph `Arc` contributes its slot, not the payload again.
 //! [`Value::logical_bytes`](relate_core::Value::logical_bytes) stays the
 //! deep payload function and is not applied to borrowed values.
+//!
+//! The identity tables here (distinct schemas, allocations already
+//! charged) are keyed by allocation addresses, which no client chooses,
+//! so they use the id policy ([`IdMap`] / [`IdSet`], `hash_seed`); the
+//! meters read them for membership and counts, never for order.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::size_of;
@@ -20,6 +25,7 @@ use relate_core::{str_logical_bytes, Node, NodeId, RelId, Relationship, Value};
 use crate::UsedSet;
 
 use crate::group_key::GroupKey;
+use crate::hash_seed::{IdMap, IdSet};
 use crate::memory::{reserved_len, OVERHEAD_MAP_ENTRY, VEC_HEADER};
 use crate::row::Row;
 
@@ -202,7 +208,7 @@ fn rel_heap(rel: &Relationship) -> u64 {
 /// first sight of the row's schema — the one derivation of schema
 /// freshness (F-1-19): the meter's rollback flag and its byte charge
 /// come from the same `insert`, so they cannot disagree.
-fn row_contents(row: &Row, schemas: &mut HashSet<usize>) -> (u64, bool) {
+fn row_contents(row: &Row, schemas: &mut IdSet<usize>) -> (u64, bool) {
     let mut bytes = 0;
     let fresh_schema = schemas.insert(row.schema_ptr() as usize);
     if fresh_schema {
@@ -217,7 +223,7 @@ fn row_contents(row: &Row, schemas: &mut HashSet<usize>) -> (u64, bool) {
 
 fn rows_accounted<'a>(len: usize, rows: impl Iterator<Item = &'a Row>) -> u64 {
     let mut bytes = buffer_bytes(len, size_of::<Row>() as u64);
-    let mut schemas = HashSet::new();
+    let mut schemas = IdSet::default();
     for row in rows {
         bytes += row_contents(row, &mut schemas).0;
     }
@@ -230,149 +236,20 @@ pub(crate) fn row_buffer_bytes(rows: &[Row]) -> u64 {
     rows_accounted(rows.len(), rows.iter())
 }
 
-/// Retained heap of a fully materialized public result. Shared payloads are
-/// counted once by allocation identity, including payloads referenced by
-/// more than one output row.
-pub fn result_rows_bytes(rows: &[Vec<Value>]) -> u64 {
-    let mut seen = HashSet::new();
-    let mut bytes = buffer_bytes(rows.len(), size_of::<Vec<Value>>() as u64);
-    for row in rows {
-        bytes += buffer_bytes(row.len(), size_of::<Value>() as u64);
-        for value in row {
-            bytes += result_value_heap(value, &mut seen);
-        }
-    }
-    bytes
-}
-
+mod result;
 mod retained;
 
+pub use result::result_rows_bytes;
 pub(crate) use retained::row_retained_heap;
 #[cfg(test)]
 pub(crate) use retained::{note_ops, reset_note_ops};
-
-fn mark_arc<T: ?Sized>(value: &Arc<T>, seen: &mut HashSet<usize>) -> bool {
-    seen.insert(Arc::as_ptr(value) as *const () as usize)
-}
-
-fn result_value_heap(value: &Value, seen: &mut HashSet<usize>) -> u64 {
-    match value {
-        Value::Null
-        | Value::Bool(_)
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::Temporal(_)
-        | Value::Point(_)
-        | Value::Uuid(_) => 0,
-        Value::String(text) => {
-            if mark_arc(text, seen) {
-                str_logical_bytes(text)
-            } else {
-                0
-            }
-        }
-        Value::Bytes(bytes) => {
-            if mark_arc(bytes, seen) {
-                relate_core::bytes_logical_bytes(bytes)
-            } else {
-                0
-            }
-        }
-        Value::List(items) | Value::Vector { values: items, .. } => {
-            if !mark_arc(items, seen) {
-                return 0;
-            }
-            buffer_bytes(items.len(), size_of::<Value>() as u64)
-                + items
-                    .iter()
-                    .map(|item| result_value_heap(item, seen))
-                    .sum::<u64>()
-        }
-        Value::Map(entries) => {
-            if !mark_arc(entries, seen) {
-                return 0;
-            }
-            entries
-                .iter()
-                .map(|(key, value)| {
-                    OVERHEAD_MAP_ENTRY + str_logical_bytes(key) + result_value_heap(value, seen)
-                })
-                .sum()
-        }
-        Value::Node(node) => {
-            if !mark_arc(node, seen) {
-                return 0;
-            }
-            size_of::<Node>() as u64 + result_node_heap(node, seen)
-        }
-        Value::Relationship(rel) => {
-            if !mark_arc(rel, seen) {
-                return 0;
-            }
-            size_of::<Relationship>() as u64 + result_rel_heap(rel, seen)
-        }
-        Value::Path(path) => {
-            if !mark_arc(path, seen) {
-                return 0;
-            }
-            size_of::<relate_core::Path>() as u64
-                + buffer_bytes(path.nodes.len(), size_of::<Node>() as u64)
-                + buffer_bytes(path.rels.len(), size_of::<Relationship>() as u64)
-                + path
-                    .nodes
-                    .iter()
-                    .map(|node| result_node_heap(node, seen))
-                    .sum::<u64>()
-                + path
-                    .rels
-                    .iter()
-                    .map(|rel| result_rel_heap(rel, seen))
-                    .sum::<u64>()
-        }
-    }
-}
-
-fn result_node_heap(node: &Node, seen: &mut HashSet<usize>) -> u64 {
-    let labels = if mark_arc(&node.labels, seen) {
-        buffer_bytes(node.labels.len(), size_of::<String>() as u64)
-            + node
-                .labels
-                .iter()
-                .map(|label| str_logical_bytes(label))
-                .sum::<u64>()
-    } else {
-        0
-    };
-    labels + result_property_heap(&node.properties, seen)
-}
-
-fn result_rel_heap(rel: &Relationship, seen: &mut HashSet<usize>) -> u64 {
-    str_logical_bytes(&rel.rel_type) + result_property_heap(&rel.properties, seen)
-}
-
-fn result_property_heap(entries: &Arc<relate_core::PropertyMap>, seen: &mut HashSet<usize>) -> u64 {
-    if !mark_arc(entries, seen) {
-        return 0;
-    }
-    let stride = size_of::<(String, Value)>() as u64;
-    let mut bytes = if entries.slot_capacity() == 0 {
-        0
-    } else {
-        VEC_HEADER + entries.slot_capacity() as u64 * stride
-    };
-    for (key, value) in entries.iter() {
-        bytes += str_logical_bytes(key);
-        bytes += result_value_heap(value, seen);
-    }
-    bytes
-}
 
 /// Input rows an aggregation still owns. Releasing a row drops that row's
 /// payload; the vector's reserved slots stay until the charge is dropped,
 /// because draining the vector does not free its buffer.
 pub(crate) struct RetainedRows {
     bytes: u64,
-    schemas: HashMap<usize, SchemaHold>,
+    schemas: IdMap<usize, SchemaHold>,
 }
 
 struct SchemaHold {
@@ -382,7 +259,7 @@ struct SchemaHold {
 
 impl RetainedRows {
     pub(crate) fn measure(rows: &[Row]) -> Self {
-        let mut schemas = HashMap::new();
+        let mut schemas = IdMap::default();
         for row in rows {
             let hold = schemas
                 .entry(row.schema_ptr() as usize)
@@ -452,7 +329,7 @@ fn binding_stride() -> u64 {
 pub(crate) fn binding_bytes(rows: &[(Row, UsedSet)]) -> u64 {
     let stride = binding_stride();
     let mut bytes = buffer_bytes(rows.len(), stride);
-    let mut schemas = HashSet::new();
+    let mut schemas = IdSet::default();
     for (row, used) in rows {
         bytes += row_contents(row, &mut schemas).0;
         bytes += buffer_bytes(used.len(), size_of::<RelId>() as u64);
@@ -464,8 +341,9 @@ fn group_key_heap(key: &GroupKey) -> u64 {
     key.logical_bytes()
 }
 
-/// A `HashSet<GroupKey>`: its table plus each key's accounted heap.
-pub(crate) fn group_key_set_bytes(keys: &HashSet<GroupKey>) -> u64 {
+/// A set of `GroupKey`s under any hasher: its table plus each key's
+/// accounted heap.
+pub(crate) fn group_key_set_bytes<S>(keys: &HashSet<GroupKey, S>) -> u64 {
     let mut bytes = buffer_bytes(keys.len(), size_of::<GroupKey>() as u64);
     for key in keys {
         bytes += group_key_heap(key);
@@ -482,7 +360,7 @@ pub(crate) fn word_set_bytes(len: usize) -> u64 {
 /// A distinct set's row-key table. The hot path adds
 /// [`distinct_row_insert_delta`]; this walk is the oracle and the figure a
 /// cloned set retains.
-pub(crate) fn distinct_row_set_bytes(keys: &HashSet<Vec<GroupKey>>) -> u64 {
+pub(crate) fn distinct_row_set_bytes<S>(keys: &HashSet<Vec<GroupKey>, S>) -> u64 {
     let mut bytes = buffer_bytes(keys.len(), size_of::<Vec<GroupKey>>() as u64);
     for key in keys {
         bytes += buffer_bytes(key.len(), size_of::<GroupKey>() as u64);
@@ -584,7 +462,7 @@ pub(crate) fn buffer_growth(old_len: usize, new_len: usize, stride: u64) -> u64 
 pub(crate) struct BindingMeter {
     pub bytes: u64,
     len: usize,
-    schemas: HashSet<usize>,
+    schemas: IdSet<usize>,
 }
 
 /// Snapshot taken before a [`BindingMeter::push`], so a refused resize can
@@ -628,7 +506,7 @@ impl BindingMeter {
 #[derive(Debug, Default)]
 struct GroupSlot {
     rows: usize,
-    schemas: HashSet<usize>,
+    schemas: IdSet<usize>,
 }
 
 impl GroupSlot {

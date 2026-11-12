@@ -1,6 +1,6 @@
 //! Fixed-length neighborhood aggregate fold.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use indexmap::map::Entry;
 use indexmap::IndexMap;
@@ -10,6 +10,7 @@ use relate_names::NamedToken;
 
 use crate::eval::{binary, eval};
 use crate::group_key::GroupKey;
+use crate::hash_seed::{seeded_map, IdMap, SeededMap};
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::pattern_walk::{binding, node_candidates, rel_props_ok, Binding, NodeBinding};
 use crate::row::Row;
@@ -41,8 +42,8 @@ struct HopEnd {
 /// fresh per row — a `PathPred::Cmp` verdict binds its other operand to
 /// that row, so it cannot leak into the next by construction.
 struct FoldCaches {
-    props: rustc_hash::FxHashMap<NodeId, HashMap<String, Value>>,
-    keys: rustc_hash::FxHashMap<NodeId, CachedKey>,
+    props: IdMap<NodeId, SeededMap<String, Value>>,
+    keys: IdMap<NodeId, CachedKey>,
 }
 
 struct FoldEnv<'a> {
@@ -66,7 +67,7 @@ struct FoldEnv<'a> {
     /// The row-scoped predicate verdicts: `PathPred::Cmp`'s other operand
     /// evaluates against this row, so a verdict is valid only within it.
     /// The env is constructed fresh per row, so the map starts empty.
-    preds: rustc_hash::FxHashMap<(usize, NodeId), bool>,
+    preds: IdMap<(usize, NodeId), bool>,
     /// The fold's walk tallies (LABS-805): the neighbor walks
     /// `collect_neighbors` counts accumulate here across every row and
     /// flush on drop at the fold's end — never a thread-local access
@@ -431,7 +432,7 @@ fn path_prop(
     id: NodeId,
     key: &NamedToken,
 ) -> Value {
-    let props = caches.props.entry(id).or_default();
+    let props = caches.props.entry(id).or_insert_with(seeded_map);
     if let Some(found) = key.0.with_str(|text| props.get(text)) {
         return found.clone();
     }
@@ -680,8 +681,8 @@ pub(crate) fn try_fold_path_aggs(
     };
     let mut groups: Groups = IndexMap::new();
     let mut caches = FoldCaches {
-        props: rustc_hash::FxHashMap::default(),
-        keys: rustc_hash::FxHashMap::default(),
+        props: IdMap::default(),
+        keys: IdMap::default(),
     };
     // LABS-805: the fold's whole hop/walk count tallies across every
     // row's env and flushes on drop, at the run's end.
@@ -710,7 +711,7 @@ pub(crate) fn try_fold_path_aggs(
             caches: &mut caches,
             groups: &mut groups,
             group_retained: &mut group_retained,
-            preds: rustc_hash::FxHashMap::default(),
+            preds: IdMap::default(),
             tallies: &tallies,
             step_types: &step_types,
         };

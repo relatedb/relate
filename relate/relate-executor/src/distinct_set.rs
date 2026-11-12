@@ -35,14 +35,13 @@
 //! never the exec tree or the pattern walker (a unit test greps this
 //! source to hold that).
 
-use std::collections::HashSet;
 use std::hash::Hash;
 
 use relate_core::tokens::{workspace_accounting, WorkspaceCharge};
 use relate_core::{Result, Value};
 
 use crate::group_key::{row_key, GroupKey, KeyClass, WordTag};
-use crate::hash_seed::{shared_random_state, SeededState};
+use crate::hash_seed::{seeded_set, SeededSet};
 use crate::tiered_set::{TieredWordSet, WordHash};
 use crate::workspace::{
     charge_distinct_delta, distinct_row_insert_delta, distinct_row_set_bytes,
@@ -70,8 +69,8 @@ struct Spill {
     floats: Option<TieredWordSet>,
     nodes: Option<TieredWordSet>,
     rels: Option<TieredWordSet>,
-    singles: Option<HashSet<GroupKey, SeededState>>,
-    rows: Option<HashSet<Vec<GroupKey>, SeededState>>,
+    singles: Option<SeededSet<GroupKey>>,
+    rows: Option<SeededSet<Vec<GroupKey>>>,
 }
 
 impl Spill {
@@ -247,8 +246,8 @@ impl DistinctSet {
                 spill.word_tiers().map(TieredWordSet::len).sum::<usize>()
             });
         let spilled = self.spill_ref().map_or(0, |spill| {
-            spill.singles.as_ref().map_or(0, HashSet::len)
-                + spill.rows.as_ref().map_or(0, HashSet::len)
+            spill.singles.as_ref().map_or(0, SeededSet::len)
+                + spill.rows.as_ref().map_or(0, SeededSet::len)
         });
         usize::from(self.null) + words + spilled
     }
@@ -341,14 +340,14 @@ impl DistinctSet {
     fn insert_single(&mut self, key: GroupKey) -> Result<bool> {
         let singles = Self::spill(&mut self.spill)
             .singles
-            .get_or_insert_with(|| HashSet::with_hasher(shared_random_state()));
+            .get_or_insert_with(seeded_set);
         insert_charged(&mut self.charge, singles, key, group_key_insert_delta)
     }
 
     fn insert_row_key(&mut self, key: Vec<GroupKey>) -> Result<bool> {
         let rows = Self::spill(&mut self.spill)
             .rows
-            .get_or_insert_with(|| HashSet::with_hasher(shared_random_state()));
+            .get_or_insert_with(seeded_set);
         insert_charged(&mut self.charge, rows, key, distinct_row_insert_delta)
     }
 }
@@ -359,7 +358,7 @@ impl DistinctSet {
 /// on the probe, so accounting keeps an undo copy to remove it by.
 fn insert_charged<K, B: ?Sized>(
     charge: &mut WorkspaceCharge,
-    set: &mut HashSet<K, SeededState>,
+    set: &mut SeededSet<K>,
     key: K,
     delta: impl FnOnce(usize, &B) -> u64,
 ) -> Result<bool>

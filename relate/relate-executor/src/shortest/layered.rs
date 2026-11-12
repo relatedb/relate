@@ -6,7 +6,7 @@ use std::collections::hash_map::Entry;
 
 use relate_core::{NodeId, RelId, Result};
 
-use crate::hash_seed::FxMap;
+use crate::hash_seed::IdMap;
 use crate::overlay::ExecGraph;
 
 use super::Search;
@@ -18,9 +18,9 @@ pub(crate) struct Dag {
     /// Depth and first predecessor of each reached node other than the
     /// origin. The origin is never a member: a hop back to it is ignored
     /// at admission, so every entry carries a real first predecessor.
-    first: FxMap<NodeId, (u32, (NodeId, RelId))>,
+    first: IdMap<NodeId, (u32, (NodeId, RelId))>,
     /// Later same-depth predecessors; all-path searches only.
-    more: FxMap<NodeId, Vec<(NodeId, RelId)>>,
+    more: IdMap<NodeId, Vec<(NodeId, RelId)>>,
 }
 
 /// One completed layer of a layered search, handed to the `on_layer`
@@ -136,11 +136,11 @@ impl Search<'_, '_> {
         mut on_layer: impl FnMut(Layer<'_>) -> Result<bool>,
     ) -> Result<Dag> {
         // Dense engine-id keys: the dense-id hasher rule (ADR-0355,
-        // LABS-337), `hash_seed::FxMap`.
+        // LABS-337), `hash_seed::IdMap`.
         let mut dag = Dag {
             origin,
-            first: FxMap::default(),
-            more: FxMap::default(),
+            first: IdMap::default(),
+            more: IdMap::default(),
         };
         let mut stopped = stop(origin, 0)?;
         let mut halted = on_layer(Layer {

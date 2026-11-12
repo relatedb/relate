@@ -406,3 +406,42 @@ fn map_entries_bytes_charges_one_entry_overhead_per_entry() {
     assert_eq!(map_entries_bytes(0), 0);
     assert_eq!(map_entries_bytes(3), 3 * crate::memory::OVERHEAD_MAP_ENTRY);
 }
+
+/// The row-ownership walk keeps its allocation tables on the id policy
+/// (address-keyed, `hash_seed::IdMap`): its figure is the exact sum of
+/// the row-owned allocations — an aliased value and a list holding one
+/// payload twice charge once — and no part of it depends on the order
+/// the values land in the row or on how the tables iterate. Pinned
+/// across several landing orders so a hasher swap can never turn an
+/// unspecified iteration order into a different charge.
+#[test]
+fn row_retained_heap_is_exact_whatever_order_the_values_land_in() {
+    let text = |i: usize| format!("payload-{i:03}-{}", "x".repeat(i));
+    // Value slot 0..40: a distinct string each; 40: one string held
+    // twice by the row (an alias); 41: a list holding one string twice.
+    let value = |slot: usize| match slot {
+        0..=39 => vec![Value::String(Arc::from(text(slot).as_str()))],
+        40 => {
+            let string = Value::String(Arc::from("aliased-payload"));
+            vec![string.clone(), string]
+        }
+        _ => {
+            let inner = Value::String(Arc::from("inside-the-list"));
+            vec![Value::List(Arc::new(vec![inner.clone(), inner]))]
+        }
+    };
+    let row = |order: &[usize]| -> Vec<Value> { order.iter().flat_map(|&s| value(s)).collect() };
+    let expected = (0..40).map(|i| str_logical_bytes(&text(i))).sum::<u64>()
+        + str_logical_bytes("aliased-payload")
+        + str_logical_bytes("inside-the-list")
+        + buffer_bytes(2, size_of::<Value>() as u64);
+    let forward: Vec<usize> = (0..42).collect();
+    let mut reversed = forward.clone();
+    reversed.reverse();
+    let mut rotated = forward.clone();
+    rotated.rotate_left(17);
+    let interleaved: Vec<usize> = (0..21).flat_map(|i| [i, 41 - i]).collect();
+    for order in [forward, reversed, rotated, interleaved] {
+        assert_eq!(row_retained_heap(&row(&order)), expected, "order {order:?}");
+    }
+}

@@ -28,12 +28,10 @@
 //! helpers, the hasher seam and `relate_core` — never the exec tree or
 //! the pattern walker (a unit test greps this source to hold that).
 
-use std::collections::HashSet;
-
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::Result;
 
-use crate::hash_seed::{shared_random_state, FxBuildHasher, SeededState};
+use crate::hash_seed::{id_set_with_capacity, seeded_set_with_capacity, IdSet, SeededSet};
 use crate::workspace::{charge_distinct_delta, word_insert_delta, word_set_bytes};
 
 /// T1's capacity: `2^4` words, 128 B — two cache lines.
@@ -62,23 +60,17 @@ enum Tier {
 #[derive(Clone)]
 enum WordTable {
     /// Engine-allocated ids: no client can choose them, so Fx.
-    Id(HashSet<u64, FxBuildHasher>),
+    Id(IdSet<u64>),
     /// Client-derivable words: the seeded hasher (HashDoS).
-    Value(HashSet<u64, SeededState>),
+    Value(SeededSet<u64>),
 }
 
 impl WordTable {
     /// One table under `hash`, presized to [`PROMOTED_CAPACITY`].
     fn for_hash(hash: WordHash) -> Self {
         match hash {
-            WordHash::Id => Self::Id(HashSet::with_capacity_and_hasher(
-                PROMOTED_CAPACITY,
-                FxBuildHasher::default(),
-            )),
-            WordHash::Value => Self::Value(HashSet::with_capacity_and_hasher(
-                PROMOTED_CAPACITY,
-                shared_random_state(),
-            )),
+            WordHash::Id => Self::Id(id_set_with_capacity(PROMOTED_CAPACITY)),
+            WordHash::Value => Self::Value(seeded_set_with_capacity(PROMOTED_CAPACITY)),
         }
     }
 

@@ -4,11 +4,13 @@
 //! split from `workspace.rs` (the stellar round's 1k-ceiling finding)
 //! beside the `result_*` walk's parent module.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::sync::Arc;
 
 use relate_core::{Node, PropertyMap, Relationship, Value};
+
+use crate::hash_seed::IdMap;
 
 use super::{
     buffer_bytes, created_label_bytes, property_heap, str_logical_bytes, OVERHEAD_MAP_ENTRY,
@@ -86,10 +88,21 @@ enum Expandable<'a> {
 
 /// The walk's state: every allocation reached, the expandable
 /// containers among them, and the parent-to-child reference edges.
+///
+/// The two tables are keyed by `Arc` allocation addresses — live heap
+/// addresses the allocator picked, never bytes a client supplies — so
+/// they sit on the id policy ([`IdMap`], keyless FxHash; the `hash_seed`
+/// seam, ADR-0355), not SipHash: a fresh pair is built per landed row,
+/// and SipHash on them was profiled as a top cost of the frontier rung.
+/// A client shapes how many allocations a row holds, which one row's
+/// tables bound, but cannot steer their addresses (the allocator and
+/// ASLR do), so there is no key to pre-collide. Nothing here reads
+/// table iteration order: `resolve` seeds an unordered worklist and
+/// `charge` sums.
 #[derive(Default)]
 struct RowWalk<'a> {
-    seen: HashMap<usize, RowAllocation>,
-    expandable: HashMap<usize, Expandable<'a>>,
+    seen: IdMap<usize, RowAllocation>,
+    expandable: IdMap<usize, Expandable<'a>>,
     /// One entry per reference from inside a parent allocation to a
     /// child — `[acc, acc]` contributes two — activated by the
     /// ownership worklist when (and only when) the parent turns out to
