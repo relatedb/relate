@@ -318,14 +318,11 @@ impl Refresh<'_> {
             return;
         }
         for row in rows {
-            let keys: Vec<String> = row
-                .keys()
-                .filter(|key| !is_internal_column(key))
-                .cloned()
-                .collect();
-            for key in keys {
-                let value = row.shift_remove(&key).expect("key from row.keys()");
-                row.insert(key, self.apply(graph, value));
+            for (key, value) in row.iter_mut() {
+                if !is_internal_column(key) {
+                    let taken = std::mem::replace(value, Value::Null);
+                    *value = self.apply(graph, taken);
+                }
             }
         }
     }
@@ -723,4 +720,35 @@ fn plain_rows(
         out.push(row2);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use crate::graph::Graph;
+    use crate::row::{interned_schema_calls, RowNames};
+
+    /// The inflate sweep updates each visible column in place: the row keeps
+    /// its schema, so a sweep over wide rows interns no schema (a
+    /// remove-and-reinsert rebuilt and re-interned one per column per row —
+    /// quadratic in the column count), and the column order and the parked
+    /// `__ord*` key survive untouched.
+    #[test]
+    fn the_inflate_sweep_keeps_each_rows_schema() {
+        let names: Vec<String> = ["a", "b", "c", "d", "e", "f", "g", "h", "__ord0"]
+            .map(String::from)
+            .to_vec();
+        let schema = RowNames::new(&names);
+        let mut rows: Vec<Row> = (0..1000)
+            .map(|i| Row::from_names(&schema, (0..9).map(|c| Value::Int(i + c)).collect()))
+            .collect();
+        let graph = Graph::default();
+        let view = ExecGraph::read(&graph);
+        let mut cache = MaterializeCache::default();
+        let before = interned_schema_calls();
+        let snapshot = rows.clone();
+        Refresh::Materialize(&mut cache).rows(&view, &mut rows);
+        assert_eq!(interned_schema_calls() - before, 0);
+        assert_eq!(rows, snapshot);
+    }
 }

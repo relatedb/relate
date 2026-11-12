@@ -329,6 +329,13 @@ impl Row {
         self.schema.names.iter().zip(self.values.iter())
     }
 
+    /// Each column's name with its value, mutable in place: the schema is
+    /// shared and untouched, so a pass over many rows never rebuilds or
+    /// re-interns one.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut Value)> {
+        self.schema.names.iter().zip(self.values.iter_mut())
+    }
+
     fn schema_mut(&mut self) -> &mut RowSchema {
         if Arc::get_mut(&mut self.schema).is_none() {
             self.schema = Arc::new((*self.schema).clone());
