@@ -1,7 +1,6 @@
-use super::tabular_tests::{open_memory, open_memory_db, run};
-use super::value_walker_tests::{cell, str_of};
 use crate::abi::relate_status;
 use crate::result::*;
+use crate::support::{cell, open_memory, open_memory_db, run, str_of};
 use crate::tabular::*;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

@@ -9,12 +9,12 @@ use std::ptr;
 use crate::abi::relate_status;
 use crate::params::*;
 use crate::result::*;
+use crate::support::{
+    cell, component, int_of, open_memory, run_query, str_of, take_error_json, text,
+};
 use crate::tabular::*;
-use crate::tabular_tests::{open_memory, run_query};
-use crate::tests::take_error_json;
 use crate::value::relate_value_kind::*;
 use crate::value::*;
-use crate::value_walker_tests::{cell, component, int_of, str_of, text};
 
 /// A Rust string as an owned C string for one call.
 fn c(s: &str) -> CString {
@@ -411,31 +411,57 @@ fn ffi_params_empty_string_binds_as_zero_length_string() {
     }
 }
 
-/// Every malformed put is a defined refusal on the error channel — never
-/// UB — and leaves the builder unchanged and usable.
+/// The malformed-put tests' shared setup: an in-memory connection, a
+/// parameter builder `p` and a list child `xs` under it.
+struct Fixture {
+    db: *mut relate_database,
+    conn: *mut relate_connection,
+    p: *mut relate_params,
+    list: *mut relate_params,
+}
+
+impl Fixture {
+    /// # Safety
+    /// The fixture owns its handles; dropping it frees every handle.
+    unsafe fn new() -> Self {
+        // SAFETY: opens and drives the FFI with out-params this fn owns.
+        unsafe {
+            let (db, conn) = open_memory();
+            let p = relate_params_new();
+            let mut list: *mut relate_params = ptr::null_mut();
+            ok(relate_params_put_list(
+                p,
+                c("xs").as_ptr(),
+                &mut list,
+                ptr::null_mut(),
+            ));
+            Fixture { db, conn, p, list }
+        }
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // SAFETY: the fixture uniquely owns each handle, freed once.
+        unsafe {
+            relate_params_free(self.p);
+            relate_disconnect(self.conn);
+            relate_database_close(self.db);
+        }
+    }
+}
+
+/// Malformed names, string payloads and builder-kind puts are defined
+/// refusals on the error channel — never UB.
 #[test]
-fn ffi_params_malformed_puts_are_defined_refusals() {
+fn ffi_params_malformed_names_and_strings_are_defined_refusals() {
     // SAFETY: test drives the FFI with handles, strings and out-params it
     // owns.
     unsafe {
-        let (db, conn) = open_memory();
-        let p = relate_params_new();
-        let mut list: *mut relate_params = ptr::null_mut();
-        ok(relate_params_put_list(
-            p,
-            c("xs").as_ptr(),
-            &mut list,
-            ptr::null_mut(),
-        ));
+        let f = Fixture::new();
+        let (p, list) = (f.p, f.list);
         let name = c("x");
         let n = name.as_ptr();
-        let zone = |z: &str| c(z);
-        let stockholm = zone("Europe/Stockholm");
-        let nowhere = zone("Mars/Olympus");
-        let offset_only = zone("+01:00");
-        let float32 = c("FLOAT32");
-        let int8 = c("INTEGER8");
-        let bogus = c("FLOAT128");
 
         refused("null params builder", |e| {
             relate_params_put_int(ptr::null_mut(), n, 1, e)
@@ -456,6 +482,22 @@ fn ffi_params_malformed_puts_are_defined_refusals() {
         refused("invalid utf-8", |e| {
             relate_params_put_string(p, c("s").as_ptr(), b"\xff".as_ptr().cast(), 1, e)
         });
+    }
+}
+
+/// Out-of-range and unresolvable temporal puts are defined refusals on
+/// the error channel — never UB.
+#[test]
+fn ffi_params_malformed_temporal_puts_are_defined_refusals() {
+    // SAFETY: test drives the FFI with handles, strings and out-params it
+    // owns.
+    unsafe {
+        let f = Fixture::new();
+        let p = f.p;
+        let stockholm = c("Europe/Stockholm");
+        let nowhere = c("Mars/Olympus");
+        let offset_only = c("+01:00");
+
         refused("date components out of range", |e| {
             relate_params_put_date(p, c("d").as_ptr(), 2023, 2, 29, e)
         });
@@ -527,6 +569,22 @@ fn ffi_params_malformed_puts_are_defined_refusals() {
                 e,
             )
         });
+    }
+}
+
+/// Invalid point systems, vector dtypes, coordinates and child out
+/// pointers are defined refusals on the error channel — never UB.
+#[test]
+fn ffi_params_malformed_point_and_vector_puts_are_defined_refusals() {
+    // SAFETY: test drives the FFI with handles, strings and out-params it
+    // owns.
+    unsafe {
+        let f = Fixture::new();
+        let p = f.p;
+        let float32 = c("FLOAT32");
+        let int8 = c("INTEGER8");
+        let bogus = c("FLOAT128");
+
         refused("is not a point() coordinate system", |e| {
             relate_params_put_point(p, c("pt").as_ptr(), 7203, 1.0, 2.0, &3.0, e)
         });
@@ -570,6 +628,21 @@ fn ffi_params_malformed_puts_are_defined_refusals() {
         refused("null child out pointer", |e| {
             relate_params_put_map(p, c("m").as_ptr(), ptr::null_mut(), e)
         });
+    }
+}
+
+/// Nesting stops at the depth cap, a NULL `error_json` opts out of the
+/// detail, and every refusal leaves the builder unchanged and usable.
+#[test]
+fn ffi_params_refusals_leave_the_builder_unchanged_and_usable() {
+    // SAFETY: test drives the FFI with handles, strings and out-params it
+    // owns.
+    unsafe {
+        let f = Fixture::new();
+        let (p, list, conn) = (f.p, f.list, f.conn);
+        let name = c("x");
+        let n = name.as_ptr();
+        ok(relate_params_put_int(p, n, 1, ptr::null_mut()));
 
         // Nesting stops at the engine's value-depth cap (ADR-0462).
         let mut at = list;
@@ -621,10 +694,6 @@ fn ffi_params_malformed_puts_are_defined_refusals() {
             .as_str()
             .unwrap()
             .contains("params must be a map builder"));
-
-        relate_params_free(p);
-        relate_disconnect(conn);
-        relate_database_close(db);
     }
 }
 

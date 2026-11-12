@@ -102,6 +102,10 @@ pub unsafe extern "C" fn relate_free_string(s: *mut c_char) {
 }
 
 #[cfg(test)]
+#[path = "tests/support.rs"]
+mod support;
+
+#[cfg(test)]
 #[path = "tests/error_shape.rs"]
 mod error_shape_tests;
 

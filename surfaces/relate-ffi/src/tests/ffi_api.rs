@@ -6,12 +6,11 @@ use crate::result::{
     relate_result_plan_json, relate_result_query_type, relate_result_stats, relate_row_count,
     relate_value_at,
 };
+use crate::support::{cell, int_of, open_memory, run, take_error_json};
 use crate::tabular::{
     guard_conn, relate_conn_begin, relate_conn_commit, relate_connect_namespace,
     relate_database_close, relate_database_open, relate_disconnect, relate_query_params,
 };
-use crate::tabular_tests::{open_memory, run};
-use crate::value_walker_tests::{cell, int_of};
 use relate::{error_info, Error};
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -20,22 +19,6 @@ use std::ptr;
 #[test]
 fn ffi_abi_version_is_two() {
     assert_eq!(relate_abi_version(), 2);
-}
-
-/// Take a caller-owned `error_json` out-param string, parse it as the
-/// ADR-0502 §2 shape, and free it — the one copy of the read the error
-/// channel's tests share.
-///
-/// # Safety
-/// `error_json` must be non-null and hold a string the FFI filled in.
-pub(crate) unsafe fn take_error_json(error_json: *mut c_char) -> serde_json::Value {
-    // SAFETY: the caller guarantees a non-null FFI-owned NUL-terminated
-    // string; `relate_free_string` takes it back exactly once.
-    unsafe {
-        let text = CStr::from_ptr(error_json).to_str().unwrap().to_string();
-        relate_free_string(error_json);
-        serde_json::from_str(&text).expect("the error channel carries JSON")
-    }
 }
 
 /// A statement failure rides the result (ADR-0502 §2): the call returns

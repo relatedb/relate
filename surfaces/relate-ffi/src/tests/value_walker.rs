@@ -2,30 +2,15 @@
 //! accessors by kind, result-owned handles, and the defined out-of-kind
 //! refusal.
 
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::ffi::CString;
 use std::ptr;
 
 use crate::abi::relate_status;
 use crate::result::*;
+use crate::support::{cell, component, int_of, open_memory, run, str_of, text};
 use crate::tabular::*;
-use crate::tabular_tests::{open_memory, run};
 use crate::value::relate_value_kind::*;
 use crate::value::*;
-
-/// The root handle of cell (`row`, `col`), asserted present.
-///
-/// # Safety
-/// `result` must be a live good result.
-pub(crate) unsafe fn cell(
-    result: *mut relate_query_result,
-    row: i64,
-    col: i64,
-) -> *const relate_value {
-    let v = unsafe { relate_value_at(result, row, col) };
-    assert!(!v.is_null(), "cell ({row}, {col}) is in range");
-    v
-}
 
 /// The kind of `v`, asserted to be an enumerator.
 ///
@@ -33,19 +18,6 @@ pub(crate) unsafe fn cell(
 /// `v` must be null or a live handle.
 unsafe fn kind(v: *const relate_value) -> i32 {
     unsafe { relate_value_kind(v) }
-}
-
-/// An INT handle's value, asserted in-kind.
-///
-/// # Safety
-/// `v` must be a live handle.
-pub(crate) unsafe fn int_of(v: *const relate_value) -> i64 {
-    let mut out = 0;
-    assert!(matches!(
-        unsafe { relate_value_int(v, &mut out) },
-        relate_status::RELATE_OK
-    ));
-    out
 }
 
 /// A FLOAT handle's value, asserted in-kind.
@@ -56,41 +28,6 @@ unsafe fn float_of(v: *const relate_value) -> f64 {
     let mut out = 0.0;
     assert!(matches!(
         unsafe { relate_value_float(v, &mut out) },
-        relate_status::RELATE_OK
-    ));
-    out
-}
-
-/// A STRING (or RELATIONSHIP type) handle's text, asserted in-kind.
-///
-/// # Safety
-/// `v` must be a live handle.
-pub(crate) unsafe fn str_of(v: *const relate_value) -> String {
-    let p = unsafe { relate_value_string(v, ptr::null_mut()) };
-    assert!(!p.is_null(), "a string-kind handle");
-    unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_string()
-}
-
-/// A result-owned C string as a Rust string; NULL panics.
-///
-/// # Safety
-/// `p` must be null or a live result-owned string.
-pub(crate) unsafe fn text(p: *const c_char) -> String {
-    assert!(!p.is_null(), "an in-kind string accessor");
-    unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_string()
-}
-
-/// One i64 temporal component read through `read`, asserted in-kind.
-///
-/// # Safety
-/// `v` must be a live handle.
-pub(crate) unsafe fn component(
-    read: unsafe extern "C" fn(*const relate_value, *mut i64) -> relate_status,
-    v: *const relate_value,
-) -> i64 {
-    let mut out = 0;
-    assert!(matches!(
-        unsafe { read(v, &mut out) },
         relate_status::RELATE_OK
     ));
     out

@@ -1,5 +1,5 @@
-use super::tabular_tests::{open_memory, run};
 use crate::result::*;
+use crate::support::{open_memory, run};
 use crate::tabular::*;
 use std::ffi::CStr;
 use std::ptr;

@@ -3,11 +3,10 @@
 //! result-owned string and the explicit commit's caller-owned
 //! `bookmark_out` out-param.
 
-use super::tabular_tests::{open_memory, run};
-use super::tests::take_error_json;
 use crate::abi::relate_status;
 use crate::relate_free_string;
 use crate::result::*;
+use crate::support::{open_memory, run, take_error_json};
 use crate::tabular::*;
 use relate::{error_info, Error};
 use std::ffi::CStr;

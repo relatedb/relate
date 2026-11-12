@@ -1,105 +1,11 @@
 use crate::abi::relate_status;
 use crate::result::*;
+use crate::support::{cell, int_of, open_memory, run, take_error_json};
 use crate::tabular::*;
-use crate::tests::take_error_json;
-use crate::value_walker_tests::{cell, int_of};
 use relate::INTERNAL_MESSAGE;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
-
-/// Open a `:memory:` database with no connection, asserting success.
-///
-/// # Safety
-/// The returned handle is owned by the caller and must be freed with
-/// `relate_database_close`.
-pub(crate) unsafe fn open_memory_db() -> *mut relate_database {
-    let uri = CString::new(":memory:").unwrap();
-    let mut db: *mut relate_database = ptr::null_mut();
-    // SAFETY: test drives the FFI with out-params it owns; the NULL
-    // error_json out-param opts out of the detail the success assert
-    // already covers.
-    unsafe {
-        assert!(matches!(
-            relate_database_open(uri.as_ptr(), &mut db, ptr::null_mut()),
-            relate_status::RELATE_OK
-        ));
-    }
-    db
-}
-
-/// Open a `:memory:` database with one connection (the NULL-name default
-/// `neo4j` namespace), asserting success.
-///
-/// # Safety
-/// The returned handles are owned by the caller and must be freed with
-/// `relate_disconnect` and `relate_database_close`.
-pub(crate) unsafe fn open_memory() -> (*mut relate_database, *mut relate_connection) {
-    let db = unsafe { open_memory_db() };
-    let mut conn: *mut relate_connection = ptr::null_mut();
-    // SAFETY: test drives the FFI with an out-param it owns.
-    unsafe {
-        assert!(matches!(
-            // The one connect entry point (ADR-0220): NULL name = "neo4j".
-            relate_connect_namespace(db, ptr::null(), &mut conn, ptr::null_mut()),
-            relate_status::RELATE_OK
-        ));
-    }
-    (db, conn)
-}
-
-/// Run `cypher` with `params` through the query entry point, asserting
-/// the transport succeeded AND the statement produced a good result (the
-/// caller destroys it) — the one run helper every suite shares
-/// (`run` is its no-params spelling, `params_builder`'s runs delegate
-/// here).
-///
-/// # Safety
-/// `conn` must be a live connection from `open_memory`; `params` null or
-/// a live builder.
-pub(crate) unsafe fn run_query(
-    conn: *mut relate_connection,
-    cypher: &str,
-    params: *const crate::params::relate_params,
-) -> *mut relate_query_result {
-    let q = CString::new(cypher).unwrap();
-    let mut result: *mut relate_query_result = ptr::null_mut();
-    let mut error_json: *mut c_char = ptr::null_mut();
-    // SAFETY: test drives the FFI with a handle, strings and out-params it
-    // owns.
-    unsafe {
-        assert!(
-            matches!(
-                relate_query_params(conn, q.as_ptr(), params, &mut result, &mut error_json),
-                relate_status::RELATE_OK
-            ),
-            "query failed: {}",
-            take_error_json(error_json)
-        );
-    }
-    assert!(!result.is_null());
-    // The status is only the transport verdict: a failing statement rides
-    // the result, so a good result is asserted here too.
-    // SAFETY: test owns the result handle and reads its result-owned
-    // strings before destroying it.
-    unsafe {
-        assert_eq!(
-            relate_result_is_error(result),
-            0,
-            "statement failed: {:?}",
-            CStr::from_ptr(relate_result_error_json(result))
-        );
-    }
-    result
-}
-
-/// `run_query` with no parameters.
-///
-/// # Safety
-/// `conn` must be a live connection from `open_memory`.
-pub(crate) unsafe fn run(conn: *mut relate_connection, cypher: &str) -> *mut relate_query_result {
-    unsafe { run_query(conn, cypher, ptr::null()) }
-}
 
 #[test]
 fn ffi_return_one() {
