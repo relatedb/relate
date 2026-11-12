@@ -304,7 +304,6 @@ fn selector_limit_stops_the_input_row_loop_on_the_gpm_path() {
     let _ = crate::ctx::take_node_reads();
     let limited = exec_cypher(&graph, &q(" LIMIT 1"));
     let limited_reads = crate::ctx::take_node_reads();
-    let _ = crate::ctx::take_node_reads();
     let eager = exec_cypher(&graph, &q(""));
     let eager_reads = crate::ctx::take_node_reads();
     assert_eq!(limited.rows.len(), 1);

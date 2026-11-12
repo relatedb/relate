@@ -2,63 +2,40 @@
 //! materializing every complete state — the rider vocabulary itself
 //! (`Rider`, `PathProbe`) lives at its engine-neutral home,
 //! `exec/rider.rs`, since the classic walk sinks the same vocabulary
-//! (`PathSink`). A MATCH cap (the LIMIT pull-in — the walk stops the
-//! moment the cap is full) or an EXISTS probe (the first accepted row
-//! answers it — the remaining frontier is never evaluated). The rider
-//! runs each complete state through the per-candidate pipeline the
-//! materializing path runs after the walk (path mode, path variable,
-//! path predicate spelled here; the reduce checks and projection via the
-//! shared `reduce_row` — the materializing path's own tail), so the rows
-//! it emits are the rows the materialized walk would emit, in the same
-//! order — only sooner, which is what lets the walk halt.
+//! (`PathSink`). The mount IS the sink ([`MatchedSink`], gpm/sink.rs),
+//! built through the one rider→sink decision, so a MATCH cap charges at
+//! the same `finish_row` seam the materializing tail's sink charges at
+//! and halts on the same kind of cell, and an EXISTS probe answers
+//! through the same accept policy — the rows the walk emits are the rows
+//! the materialized walk would emit, in the same order, only sooner,
+//! which is what lets the walk halt.
 
 use std::cell::Cell;
 
 use relate_core::Result;
 use relate_ir::PathPattern;
 
+use crate::ctx::ExecCtx;
+
 use super::super::pattern_policies::{MatchTail, Matched};
-use super::super::pushdown::{MatchCap, Residual};
-use super::super::rider::{PathProbe, Rider};
+use super::super::pushdown::Residual;
+use super::super::rider::Rider;
+use super::sink::MatchedSink;
 use super::{complete_state, GpmCtx};
 
-/// The mounted rider — one enum, one arm per rider kind, each arm owning
-/// every fact it consumes. A MATCH cap carries the walked pattern; an
-/// EXISTS probe answers through its own pattern (fixed at its
-/// construction) and the MATCH-level residual `mount_rider` threads.
-/// The walk offers each complete state to it and consults
-/// [`GpmCtx::halted`] to stop enumerating — the one reader spelling of
-/// the halt cell (`mount_rider` hands the walk the same cell the rider
-/// sets: the probe's own verdict cell, or the local one a full cap
-/// sets).
-pub(super) enum GpmEmit<'a, 'data> {
-    /// A MATCH cap on the clause's last pattern: the shared `reduce_row`
-    /// tail (the reduce checks and the projection, the same spelling
-    /// the collecting sink runs), the cap's count on the pre-projection row
-    /// the tail accepted, and a halt once the cap is full —
-    /// `CollectSink::offer`'s pipeline for the GPM walk.
-    Cap {
-        path: &'a PathPattern,
-        cap: &'a mut MatchCap<'data>,
-        /// The reduce tail as one object (`MatchTail`, pattern_policies —
-        /// the reduce bundle plus the used-rel carry decision). Its own
-        /// lifetime is separate from the cap's: the cap rides through a
-        /// mutable reference (invariant, it pins `'data`), while the tail
-        /// holds shared references whose lifetimes covariantly shorten to
-        /// the rider's.
-        tail: MatchTail<'a>,
-        out: &'a mut Matched,
-    },
-    /// An EXISTS probe: the residual (the body's WHERE, evaluated on the
-    /// complete row — the walk applied its ready conjuncts at the binding
-    /// points, this pass covers the rest) and then the caller's
-    /// predicate; the first accepted row halts the walk. The residual
-    /// rides the mounted arm, not the probe: it is `match_gpm_path`'s
-    /// one `where_clause` fact, threaded through `mount_rider`.
-    Probe {
-        probe: &'a PathProbe<'a>,
-        residual: &'a Residual<'a>,
-    },
+/// The mounted rider: the pattern its completion pipeline runs on (the
+/// clause's for a cap; a probe's own, fixed at its construction) and the
+/// one sink, which owns the per-candidate pipeline's tail — the reduce
+/// checks, the projection, the cap's count — and the halt contract.
+pub(super) struct GpmEmit<'a, 'data> {
+    /// The caller's own context, threaded at mount time: the sink is
+    /// offered it unchanged, so a mounted rider sees exactly the context
+    /// the selector and route tails hand the same sink — including the
+    /// statement's authenticated principal, which a context re-minted
+    /// from `GpmCtx`'s three fields would silently drop.
+    ctx: ExecCtx<'a>,
+    path: &'a PathPattern,
+    sink: MatchedSink<'a, 'data>,
 }
 
 /// The complete-state delivery policy — the one spelling every per-accept
@@ -105,78 +82,28 @@ pub(super) fn deliver_all(
     Ok(out)
 }
 
-impl<'a, 'data> GpmEmit<'a, 'data> {
-    /// One complete state through the per-candidate pipeline and the
-    /// rider — the same completion pipeline, in the same order, the
-    /// materializing path's candidate loop applies (`complete_state`, the
-    /// one shared spelling, over the arm's own pattern; the reduce tail
-    /// through the shared `reduce_row`), so an emitted row is exactly the
-    /// row the materialized walk would have emitted.
+impl GpmEmit<'_, '_> {
+    /// One complete state through the completion pipeline and the sink —
+    /// the same pipeline, in the same order, the materializing path's
+    /// candidate loop applies (`complete_state`, the one shared
+    /// spelling, over the arm's own pattern), so an emitted row is
+    /// exactly the row the materialized walk would have emitted.
     pub(super) fn offer(&mut self, gctx: &GpmCtx<'_>, mut state: super::GpmState) -> Result<()> {
-        let GpmCtx {
-            graph,
-            params,
-            cypher_version,
-            ..
-        } = *gctx;
-        // the arm's own pattern — the completion pipeline runs once,
-        // before the arm match
-        let path = match self {
-            GpmEmit::Cap { path, .. } => *path,
-            GpmEmit::Probe { probe, .. } => probe.pattern,
-        };
-        if !complete_state(gctx, path, &mut state)? {
+        if !complete_state(gctx, self.path, &mut state)? {
             return Ok(());
         }
-        match self {
-            GpmEmit::Cap { cap, tail, out, .. } => {
-                // The materializing path's own fused tail step, shared:
-                // `MatchTail::finish_row` (pattern_policies — the one
-                // spelling `CollectSink::offer` reads too) runs the
-                // reduce's checks and projection and the cap's count on
-                // the pre-projection row the checks accepted, so the row
-                // pushed here is the row the materialized walk would push
-                // by construction.
-                let Some(row) = tail.finish_row(graph, state.row, Some(&mut **cap))? else {
-                    return Ok(());
-                };
-                // the shared back half of both cap arms (the row stored
-                // with its carried used-set); this arm's own half is the
-                // halt consult below
-                tail.store_row(row, || state.used, out);
-                if cap.full() {
-                    gctx.halt.set(true);
-                }
-            }
-            GpmEmit::Probe { probe, residual } => {
-                // The one probe-answer policy (PathProbe::accept_row, exec/rider): the
-                // deferred element predicates (the row-completion sweep),
-                // the residual pass the walk's own application leaves (the
-                // start selection and the early conjuncts already decided
-                // the ready ones; this covers the rest — later-binding
-                // names, rebinding group names), then the predicate, the
-                // halt cell on the first accept — the same verdict the
-                // materialized rows' answer reads.
-                probe.accept_row(
-                    graph,
-                    state.row,
-                    state.used,
-                    residual,
-                    params,
-                    cypher_version,
-                )?;
-            }
-        }
-        Ok(())
+        self.sink.offer(self.ctx, state.row, || state.used)
     }
 }
 
 /// The one mount spelling for the walk's rider decision: no rider, or a
 /// selector choosing across candidates (a rider's choice is cross-row),
 /// keeps the materializing walk and the local halt cell; a mounted rider
-/// returns its emit pipeline and halt cell together — the one exhaustive
-/// match over the Rider vocabulary.
+/// becomes the one sink — the same construction the materializing tails
+/// push through — and the walk consults the cell that sink raises (the
+/// probe's own verdict cell, or the local one a full cap sets).
 pub(super) fn mount_rider<'a, 'g, 'cap>(
+    ctx: ExecCtx<'a>,
     rider: Option<&'a mut Rider<'g, 'cap>>,
     path: &'a PathPattern,
     where_clause: &'a Residual<'a>,
@@ -194,22 +121,15 @@ where
     if path.selector.is_some() {
         return (None, cap_halt);
     }
-    match rider {
-        Rider::Cap(cap) => (
-            Some(GpmEmit::Cap {
-                path,
-                cap,
-                tail,
-                out: emitted,
-            }),
-            cap_halt,
-        ),
-        Rider::Probe(probe) => (
-            Some(GpmEmit::Probe {
-                probe,
-                residual: where_clause,
-            }),
-            probe.halt,
-        ),
-    }
+    // The pattern the completion pipeline runs on: a probe's own (fixed
+    // at its construction — the walk walked the clause's pattern, the
+    // probe's answer pipeline completes against its own), the clause's
+    // for a cap.
+    let path = match &*rider {
+        Rider::Probe(probe) => probe.pattern,
+        Rider::Cap(_) => path,
+    };
+    let sink = MatchedSink::new(Some(rider), cap_halt, where_clause, tail, emitted);
+    let halt = sink.halt_cell();
+    (Some(GpmEmit { ctx, path, sink }), halt)
 }

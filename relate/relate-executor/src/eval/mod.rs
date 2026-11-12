@@ -61,9 +61,7 @@ use function::{entity_backing_map, function};
 pub(crate) use function::{lazy_range, RangeValues};
 #[cfg(test)]
 pub(crate) use predicates::take_candidate_passes;
-pub(crate) use predicates::{
-    candidate_passes, eval_match_predicate, inline_predicates_ok, predicate_holds,
-};
+pub(crate) use predicates::{candidate_passes, inline_predicates_ok, predicate_holds};
 use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce};
 pub(crate) use quantifier::{AllReduceFold, AllReduceStep};
 use string::is_normalized;

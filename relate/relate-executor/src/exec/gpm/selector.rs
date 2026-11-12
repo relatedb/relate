@@ -152,6 +152,32 @@ pub(crate) fn apply_gpm_selector(
     Ok(selected)
 }
 
+/// The materializing head of a selector's tail: complete each walked state
+/// through the one per-candidate pipeline, then let the selector choose
+/// across them. A selector's choice is cross-candidate, so the walk cannot
+/// halt mid-enumeration and no rider may ride it — the chosen rows are
+/// pushed through the one sink by the caller, which is where a probe
+/// answers from them and a cap charges (LABS-1301).
+pub(super) fn complete_and_select_candidates(
+    gctx: &GpmCtx<'_>,
+    path: &PathPattern,
+    states: Vec<GpmState>,
+) -> Result<Vec<GpmState>> {
+    let mut candidates = Vec::new();
+    for mut state in states {
+        // the one per-candidate completion pipeline (see complete_state) —
+        // the same spelling the rider's offer runs, so the candidates the
+        // selector chooses among are the rows the rider would emit
+        if !complete_state(gctx, path, &mut state)? {
+            continue;
+        }
+        candidates.push(state);
+    }
+    apply_gpm_selector(candidates, path.selector.as_ref(), gctx.params, |rid| {
+        expect_enumerated_candidate(gctx.graph.rel_type_shared(rid), rid)
+    })
+}
+
 /// The shared ordering for both selectors: by rel count, then the rel-type
 /// tiebreak, then the walk's node-id sequence, then the stable position.
 /// The node-sequence key reproduces the reference's equal-length tie order

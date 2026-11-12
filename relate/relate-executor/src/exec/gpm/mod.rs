@@ -33,7 +33,6 @@ use crate::shortest::reject_static_common_end_nodes;
 use early::{early_predicates, EarlyPredicates};
 use emit::GpmEmit;
 use qpp::gpm_expand_quantified;
-pub(crate) use selector::apply_gpm_selector;
 pub(crate) use shortest_route::fold_shortest_route;
 use shortest_route::match_shortest_route;
 use sink::MatchedSink;
@@ -502,6 +501,7 @@ pub(crate) fn match_gpm_path(
     let tallies = crate::exec::WalkTallies::default();
     let mut emitted: Matched = Vec::new();
     let (mut emit, halt) = emit::mount_rider(
+        ctx,
         rider.as_deref_mut(),
         path,
         where_clause,
@@ -548,31 +548,20 @@ pub(crate) fn match_gpm_path(
         return Ok(emitted);
     }
 
-    let mut candidates = Vec::new();
-    for mut state in states {
-        // the one per-candidate completion pipeline (see complete_state) —
-        // the same spelling the rider's offer runs, so the candidates the
-        // selector chooses among are the rows the rider would emit
-        if !complete_state(&gctx, path, &mut state)? {
-            continue;
-        }
-        candidates.push(state);
-    }
-    let candidates = apply_gpm_selector(candidates, path.selector.as_ref(), params, |rid| {
-        expect_enumerated_candidate(graph.rel_type_shared(rid), rid)
-    })?;
-    // A probe that could not ride the walk (a selector chooses across the
-    // candidates): answer from the selector's chosen rows instead — no
-    // early exit, and the same filter policy (the residual pass the
-    // riding spelling applies per offered row), so the verdict is the
-    // same by construction. A selector keeps the materializing walk
-    // (`mount_rider` declines every rider for one: the choice is
-    // cross-candidate, so the walk cannot halt mid-enumeration), and the
-    // cap that would otherwise ride it is charged here instead — through
-    // the same sink the route pushes through, so the count and the
-    // stopping rule are one spelling for both materializing tails. An
-    // uncharged cap never fills, so the caller's row loop never breaks
-    // and a `LIMIT` prefix costs the whole input enumeration (LABS-1301).
+    // A selector keeps the materializing walk (`mount_rider` declines every
+    // rider for one: the choice is cross-candidate, so the walk cannot halt
+    // mid-enumeration); the per-candidate completion and the selector's own
+    // choice are one function beside `apply_gpm_selector`.
+    let candidates = selector::complete_and_select_candidates(&gctx, path, states)?;
+    // A probe that could not ride the walk answers from the selector's
+    // chosen rows instead — no early exit, and the same filter policy (the
+    // residual pass the riding spelling applies per offered row), so the
+    // verdict is the same by construction. The cap that would otherwise
+    // ride the walk is charged here, through the same sink the shortest
+    // route pushes through, so the count and the stopping rule are one
+    // spelling for both materializing tails. An uncharged cap never fills,
+    // so the caller's row loop never breaks and a `LIMIT` prefix costs the
+    // whole input enumeration (LABS-1301).
     let selector_halt = Cell::new(false);
     let mut out = Matched::new();
     let mut sink = MatchedSink::new(rider, &selector_halt, where_clause, tail, &mut out);

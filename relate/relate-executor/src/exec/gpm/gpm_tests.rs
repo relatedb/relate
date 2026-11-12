@@ -1,3 +1,4 @@
+use super::selector::apply_gpm_selector;
 use super::*;
 use crate::exec::test_support::{build, column, exec_cypher, int_cell, path_value, Builder};
 use crate::graph::Graph;

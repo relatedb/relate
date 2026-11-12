@@ -2,7 +2,6 @@
 //! resolved once, picks the searches; each (start, end) partition binds
 //! its selected trails the way the GPM walker does.
 
-use crate::UsedSet;
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell};
 use std::collections::HashSet;
@@ -11,6 +10,7 @@ use relate_core::{Error, NodeId, RelId, Result, Value};
 use relate_ir::{Expr, MatchMode, NodePattern, PathPattern};
 
 use crate::ctx::ExecCtx;
+use crate::eval::expr_vars;
 use crate::exec::candidates::node_ok;
 use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
 use crate::exec::pushdown::{conjunct_ready, expr_ready, Residual};
@@ -24,6 +24,7 @@ use crate::shortest::{pair, path_from_trail, Search};
 
 use super::super::sink::MatchedSink;
 use super::guard::Shape;
+use super::trail_walk;
 
 /// The pair product's candidate bound: past it, the product's
 /// bidirectional searches would out-count the fan's one ball per start,
@@ -175,8 +176,38 @@ impl Way {
     }
 }
 
+fn path_filter<'p>(path: &'p PathPattern, residual: &'p Residual<'_>) -> Option<PathFilter<'p>> {
+    // Text render: the carrier set compares against the String variable
+    // sets of the filter walk.
+    // The IR's one enumeration of the pattern's relationship variables:
+    // it consults the element view and the compact `rels` view both, so a
+    // quantified or var-length spelling whose variable lives in an element
+    // contributes its carrier too.
+    let mut carriers: HashSet<String> = path
+        .relationship_variables()
+        .map(|name| name.to_string())
+        .collect();
+    for name in path.path_names() {
+        carriers.insert(name.to_string());
+    }
+    let conjuncts: Vec<&Expr> = residual
+        .conjuncts
+        .iter()
+        .filter(|conjunct| {
+            let mut vars = HashSet::new();
+            expr_vars(conjunct, &mut vars);
+            vars.iter().any(|name| carriers.contains(name.as_str()))
+        })
+        .collect();
+    (path.where_clause.is_some() || !conjuncts.is_empty()).then_some(PathFilter {
+        conjuncts,
+        inline: path.where_clause.as_deref(),
+        scope: residual.scope,
+    })
+}
+
 /// The predicates a routed shortest path must satisfy during the search
-/// (see [`super::path_filter`]): the MATCH-level `WHERE` conjuncts that
+/// (see [`path_filter`]): the MATCH-level `WHERE` conjuncts that
 /// read the path itself, plus the pattern's own inline `WHERE`. `scope`
 /// is the MATCH's bound-variable scope, the readiness rule's input (see
 /// [`crate::exec::pushdown::conjunct_ready`]).
@@ -188,11 +219,11 @@ pub(super) struct PathFilter<'a> {
 
 /// One routed pattern evaluated against one input row.
 pub(super) struct Route<'a> {
-    ctx: ExecCtx<'a>,
+    pub(super) ctx: ExecCtx<'a>,
     path: &'a PathPattern,
     row: &'a Row,
-    shape: Shape<'a>,
-    search: Search<'a, 'a>,
+    pub(super) shape: Shape<'a>,
+    pub(super) search: Search<'a, 'a>,
     /// `Some` when a predicate filters the *search*: the route then walks
     /// trails in ascending length and answers the first length at which a
     /// trail satisfies it, instead of the one shortest trail.
@@ -214,14 +245,27 @@ pub(super) struct Route<'a> {
 }
 
 impl<'a> Route<'a> {
-    pub(super) fn new(
+    /// The fallible constructor: `None` is the route declining the pattern
+    /// — the decision happens here, before the sink exists in the caller's
+    /// hands, so a declined pattern can never have had a row pushed into
+    /// it. A pattern whose predicate the search cannot decide against the
+    /// rows it binds (or the postfix quantified spelling with a clause
+    /// WHERE, which the reference reads as a postfilter) enumerates
+    /// instead.
+    pub(super) fn try_new(
         ctx: ExecCtx<'a>,
         path: &'a PathPattern,
         row: &'a Row,
         shape: Shape<'a>,
-        filter: Option<PathFilter<'a>>,
-        halt: &'a Cell<bool>,
-    ) -> Self {
+        sink: &MatchedSink<'a, '_>,
+    ) -> Option<Self> {
+        // The route's halt cell and its path filter both come FROM the
+        // sink: the route stops when its sink halts, and the filter is
+        // the sink's residual applied to this pattern — the
+        // correspondences are established here, not by two caller-supplied
+        // arguments that must happen to agree.
+        let halt = sink.halt_cell();
+        let filter = path_filter(path, sink.residual());
         let rel = shape.rel;
         let search = Search {
             graph: ctx.graph,
@@ -232,7 +276,7 @@ impl<'a> Route<'a> {
             min: shape.min,
             max: shape.max.unwrap_or(u32::MAX),
         };
-        Self {
+        let route = Self {
             ctx,
             path,
             row,
@@ -242,7 +286,20 @@ impl<'a> Route<'a> {
             halt,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
+        };
+        if let Some(filter) = &route.filter {
+            // The postfix `->{m,n}` spelling with a clause-level `WHERE` over
+            // the path keeps enumerating: the reference reads that predicate
+            // as a postfilter (the selector picks first), which the route's
+            // in-search predicate does not do. The other spellings'
+            // behaviour here is unchanged.
+            if (route.shape.rel.quantified && !filter.conjuncts.is_empty())
+                || !route.predicates_decidable(filter)
+            {
+                return None;
+            }
         }
+        Some(route)
     }
 
     /// The route's unbounded DFS cap, resolved once — the
@@ -258,26 +315,15 @@ impl<'a> Route<'a> {
     }
 
     /// Push every selected row into `out` as it is bound: the row's
-    /// anchoring, resolved once, picks the searches. A pattern whose minimum
-    /// exceeds its maximum matches nothing; one whose predicate the route
-    /// cannot decide declines (`false`) before any search runs or row is
-    /// pushed, and the pattern enumerates instead. The run stops early once
-    /// the sink is halted.
-    pub(super) fn run(&self, out: &mut MatchedSink<'_, '_>) -> Result<bool> {
+    /// anchoring, resolved once, picks the searches. A pattern whose
+    /// minimum exceeds its maximum matches nothing (no row, no decline —
+    /// the route took it). Declining is the constructor's job
+    /// ([`Route::try_new`]), never the run's: once a route exists, every
+    /// row it binds is pushed. The run stops early once the sink is
+    /// halted.
+    pub(super) fn run(&self, out: &mut MatchedSink<'_, '_>) -> Result<()> {
         if self.search.min > self.search.max {
-            return Ok(true);
-        }
-        if let Some(filter) = &self.filter {
-            // The postfix `->{m,n}` spelling with a clause-level `WHERE` over
-            // the path keeps enumerating: the reference reads that predicate
-            // as a postfilter (the selector picks first), which the route's
-            // in-search predicate does not do. The other spellings' behaviour
-            // here is unchanged.
-            if (self.shape.rel.quantified && !filter.conjuncts.is_empty())
-                || !self.predicates_decidable(filter)
-            {
-                return Ok(false);
-            }
+            return Ok(());
         }
         match self.anchor()? {
             Anchor::Pair { starts, ends } => {
@@ -298,7 +344,7 @@ impl<'a> Route<'a> {
                 self.each_start(|s| self.pair_partition(s, s, out))?;
             }
         };
-        Ok(true)
+        Ok(())
     }
 
     /// Whether the search can decide every predicate it must evaluate, against
@@ -570,7 +616,7 @@ impl<'a> Route<'a> {
 
     /// Whether the consumer needs no more rows — the one reader of the
     /// halt cell, consulted at the loop heads that fan out.
-    fn halted(&self) -> bool {
+    pub(super) fn halted(&self) -> bool {
         self.halt.get()
     }
 
@@ -700,8 +746,8 @@ impl<'a> Route<'a> {
             .spelling
             .common_end_nodes()
             .reject(s, e, self.search.min)?;
-        if let Some(filter) = &self.filter {
-            return self.feasible_partition(s, e, srow, filter, out);
+        if self.filter.is_some() {
+            return self.feasible_partition(s, e, srow, out);
         }
         let trails = if s != e {
             trails()?
@@ -714,7 +760,7 @@ impl<'a> Route<'a> {
             if self.halted() {
                 break;
             }
-            self.emit(s, e, trail, srow, out)?;
+            self.offer_trail(s, e, trail, srow, out)?;
         }
         Ok(())
     }
@@ -731,7 +777,6 @@ impl<'a> Route<'a> {
         s: NodeId,
         e: NodeId,
         srow: &Row,
-        filter: &PathFilter<'_>,
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
         // The one GPM bound policy: a bounded pattern keeps its written
@@ -749,15 +794,7 @@ impl<'a> Route<'a> {
             .shape
             .max
             .unwrap_or_else(|| self.memoized_unbounded_cap());
-        let mut walk = TrailWalk {
-            route: self,
-            start: s,
-            end: e,
-            srow,
-            filter,
-            trail: Vec::new(),
-            used: UsedSet::default(),
-        };
+        let mut walk = trail_walk::TrailWalk::new(self, s, e, srow);
         for length in self.shape.min..=max {
             if walk.any_of_length(s, length, out)? {
                 return Ok(());
@@ -771,7 +808,7 @@ impl<'a> Route<'a> {
     /// established that before the search started — so a predicate that is not
     /// ready here is a broken invariant, reported as a typed internal error
     /// rather than silently counted as satisfied.
-    fn filter_ok(&self, row: &Row, filter: &PathFilter<'_>) -> Result<bool> {
+    pub(super) fn filter_ok(&self, row: &Row, filter: &PathFilter<'_>) -> Result<bool> {
         let ExecCtx {
             graph,
             params,
@@ -788,13 +825,7 @@ impl<'a> Route<'a> {
             // (live: `ANY SHORTEST ... -[r WHERE r.ls]-> ...` accepts a
             // non-empty list), a non-boolean is the typed rejection live
             // raises (22N01).
-            if !crate::eval::predicate_value_holds(&crate::eval::eval_match_predicate(
-                graph,
-                row,
-                predicate,
-                params,
-                cypher_version,
-            )?)? {
+            if !crate::eval::predicate_holds(graph, row, predicate, params, cypher_version)? {
                 return Ok(false);
             }
         }
@@ -804,7 +835,13 @@ impl<'a> Route<'a> {
     /// Bind one trail the way `match_gpm_path` does: start node,
     /// relationship list, end node, then the path. `None` when the end
     /// node's binding refuses the pattern.
-    fn bind_trail(&self, s: NodeId, e: NodeId, trail: &[RelId], srow: &Row) -> Option<Row> {
+    pub(super) fn bind_trail(
+        &self,
+        s: NodeId,
+        e: NodeId,
+        trail: &[RelId],
+        srow: &Row,
+    ) -> Option<Row> {
         let graph = self.ctx.graph;
         let mut row = srow.clone();
         if let Some(name) = &self.shape.rel.variable {
@@ -829,94 +866,35 @@ impl<'a> Route<'a> {
         Some(row)
     }
 
-    /// Bind one selected trail and push it onto the result.
-    fn emit(
+    /// Bind one selected trail and push it onto the result — the one
+    /// "offer this trail" spelling, shared by the unfiltered partition walk
+    /// and the predicate-filtered trail walk
+    /// ([`super::trail_walk::TrailWalk`]): the cancellation tick, the
+    /// binding, the route's own predicate gate when it has one (a filtered
+    /// route accepts only a trail that satisfies it), and the push. Returns
+    /// whether a row was offered.
+    ///
+    /// The gate reads `self.filter` rather than taking it as an argument:
+    /// the route stores the one filter its search runs under, and a caller
+    /// passing its own would be a second spelling of that fact.
+    pub(super) fn offer_trail(
         &self,
         s: NodeId,
         e: NodeId,
         trail: &[RelId],
         srow: &Row,
         out: &mut MatchedSink<'_, '_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.ctx.graph.cancel_tick()?;
         let Some(row) = self.bind_trail(s, e, trail, srow) else {
-            return Ok(());
+            return Ok(false);
         };
-        out.offer(self.ctx, row, || trail.iter().copied().collect())
-    }
-}
-
-/// One predicate-filtered trail walk of a partition: the search frames it
-/// recurses over (the trail and the relationships it consumed) beside the
-/// partition's endpoints, row and predicate. Bundled so the recursion carries
-/// the frame it extends and its buffer is allocated once per partition.
-struct TrailWalk<'r, 'p, 'a> {
-    route: &'r Route<'a>,
-    start: NodeId,
-    end: NodeId,
-    srow: &'r Row,
-    filter: &'r PathFilter<'p>,
-    trail: Vec<RelId>,
-    used: UsedSet,
-}
-
-impl TrailWalk<'_, '_, '_> {
-    /// Enumerate the trails of exactly `length` relationships from `at` to the
-    /// partition's end under the search's direction, types, and relationship
-    /// uniqueness, deciding the predicate at each completed trail. A
-    /// satisfying trail is bound and pushed where it is found — no candidate
-    /// is copied out of the walk, and with a single-path selector the walk
-    /// stops at the first one. Returns whether any trail satisfied the
-    /// predicate.
-    ///
-    /// Every frame ticks the statement's cancellation window (ADR-0111), so a
-    /// dense graph stays interruptible *inside* one length's enumeration
-    /// instead of only at the next length's boundary.
-    fn any_of_length(
-        &mut self,
-        at: NodeId,
-        length: u32,
-        out: &mut MatchedSink<'_, '_>,
-    ) -> Result<bool> {
-        self.route.ctx.graph.cancel_tick()?;
-        if self.trail.len() == length as usize {
-            if at != self.end {
+        if let Some(filter) = &self.filter {
+            if !self.filter_ok(&row, filter)? {
                 return Ok(false);
             }
-            let Some(row) = self
-                .route
-                .bind_trail(self.start, self.end, &self.trail, self.srow)
-            else {
-                return Ok(false);
-            };
-            if !self.route.filter_ok(&row, self.filter)? {
-                return Ok(false);
-            }
-            out.offer(self.route.ctx, row, || self.trail.iter().copied().collect())?;
-            return Ok(true);
         }
-        // Accumulate the satisfied flag across frames and return it after
-        // the loop: `ALL SHORTEST` walks the whole length too, and the
-        // caller (feasible_partition) must see that this length satisfied
-        // so it stops at the shortest satisfying length instead of
-        // walking past it (which returned non-shortest trails).
-        let mut any_satisfied = false;
-        for (next, rid) in self.route.search.hops(at)? {
-            if self.route.halted() {
-                break;
-            }
-            if !self.used.insert(rid) {
-                continue;
-            }
-            self.trail.push(rid);
-            let satisfied = self.any_of_length(next, length, out)?;
-            self.trail.pop();
-            self.used.remove(&rid);
-            if satisfied && !self.route.shape.all {
-                return Ok(true);
-            }
-            any_satisfied |= satisfied;
-        }
-        Ok(any_satisfied)
+        out.offer(self.ctx, row, || trail.iter().copied().collect())?;
+        Ok(true)
     }
 }

@@ -11,62 +11,23 @@
 
 use crate::UsedSet;
 use std::cell::Cell;
-use std::collections::HashSet;
 
 use relate_core::Result;
-use relate_ir::{Expr, MatchMode, PathPattern};
+use relate_ir::{MatchMode, PathPattern};
 
 use crate::ctx::ExecCtx;
-use crate::eval::expr_vars;
 use crate::exec::pushdown::Residual;
 use crate::row::Row;
 
 mod guard;
 mod route;
+mod trail_walk;
+
+use route::Route;
 
 use super::sink::MatchedSink;
 use super::GpmFilters;
 use guard::{route_shape, Spelling};
-use route::{PathFilter, Route};
-
-/// The predicates a routed shortest path must satisfy **during** the
-/// search: the pattern's own inline `WHERE`, plus the MATCH-level `WHERE`
-/// conjuncts that read the *path itself* — the named path variable or the
-/// relationship variable. A route that only filtered the selected shortest
-/// path afterwards answered zero rows whenever that shortest path violated
-/// such a predicate, instead of the shortest path that satisfies it.
-///
-/// Endpoint-only conjuncts are deliberately **not** a filter: the route
-/// answers one shortest path per `(start, end)` partition, so a predicate
-/// on the endpoints selects whole partitions and post-filtering it is
-/// exact — keeping those queries on the BFS search instead of the
-/// enumerated predicate walk.
-fn path_filter<'p>(path: &'p PathPattern, residual: &'p Residual<'_>) -> Option<PathFilter<'p>> {
-    // Text render: the carrier set compares against the String variable
-    // sets of the filter walk.
-    let mut carriers: HashSet<String> = path
-        .rels
-        .iter()
-        .filter_map(|rel| rel.variable.as_ref().map(|v| v.to_string()))
-        .collect();
-    for name in path.path_names() {
-        carriers.insert(name.to_string());
-    }
-    let conjuncts: Vec<&Expr> = residual
-        .conjuncts
-        .iter()
-        .filter(|conjunct| {
-            let mut vars = HashSet::new();
-            expr_vars(conjunct, &mut vars);
-            vars.iter().any(|name| carriers.contains(name.as_str()))
-        })
-        .collect();
-    (path.where_clause.is_some() || !conjuncts.is_empty()).then_some(PathFilter {
-        conjuncts,
-        inline: path.where_clause.as_deref(),
-        scope: residual.scope,
-    })
-}
 
 #[cfg(test)]
 mod anchor_tests;
@@ -133,12 +94,12 @@ fn with_forced_gpm<T>(f: impl FnOnce() -> T) -> T {
 /// the probe's halt cell, no row is kept); anything else reduces each row
 /// through the tail into the caller's vector. Returns whether the route
 /// took the pattern (`false`: it declined before any row was pushed).
-pub(super) fn match_shortest_route(
-    mut sink: MatchedSink<'_, '_>,
-    ctx: ExecCtx<'_>,
-    path: &PathPattern,
-    filters: &GpmFilters,
-    row: &Row,
+pub(super) fn match_shortest_route<'a>(
+    mut sink: MatchedSink<'a, '_>,
+    ctx: ExecCtx<'a>,
+    path: &'a PathPattern,
+    filters: &'a GpmFilters,
+    row: &'a Row,
     used: &UsedSet,
     match_mode: MatchMode,
 ) -> Result<bool> {
@@ -151,12 +112,13 @@ pub(super) fn match_shortest_route(
     let Some(shape) = route_shape(path, filters, match_mode, used, row, ctx.params) else {
         return Ok(false);
     };
-    let residual = sink.residual();
-    let halt = sink.halt_cell();
-    let route = Route::new(ctx, path, row, shape, path_filter(path, residual), halt);
-    if !route.run(&mut sink)? {
+    // The constructor declines (`None`) before the sink is touched, and
+    // takes the sink itself — its halt cell and residual are the route's
+    // by construction, not two arguments that must agree.
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink) else {
         return Ok(false);
-    }
+    };
+    route.run(&mut sink)?;
     note_route_run();
     Ok(true)
 }
@@ -201,10 +163,10 @@ pub(crate) fn fold_shortest_route(
     let residual = Residual::empty();
     let halt = Cell::new(false);
     let mut sink = MatchedSink::fold(&residual, &halt, fold);
-    let filter = path_filter(path, &residual);
-    if !Route::new(ctx, path, row, shape, filter, &halt).run(&mut sink)? {
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink) else {
         return Ok(false);
-    }
+    };
+    route.run(&mut sink)?;
     note_route_run();
     Ok(true)
 }

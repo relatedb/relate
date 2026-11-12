@@ -25,11 +25,16 @@ use crate::UsedSet;
 /// The consumer of a materializing match's rows, with the MATCH-level
 /// residual its probe answers through (the one `where_clause` fact the
 /// caller threads).
-pub(crate) struct MatchedSink<'r, 'a> {
+pub(super) struct MatchedSink<'r, 'a> {
     residual: &'r Residual<'r>,
     kind: SinkKind<'r, 'a>,
-    /// Rows a fold sink has accepted (the fold ran to completion on them).
-    folded: usize,
+    /// The cell the consumer raises when it needs no more rows: a probe's
+    /// verdict cell, or the collecting arm's cap-full cell. One field, set
+    /// by the one rider match `new` already runs — an arm cannot carry a
+    /// different cell from the one `halted` reads. The cell itself lives
+    /// outside the sink because the search holds a reference to it while
+    /// the sink is borrowed mutably.
+    halt: &'r Cell<bool>,
 }
 
 enum SinkKind<'r, 'a> {
@@ -48,12 +53,6 @@ enum SinkKind<'r, 'a> {
         tail: MatchTail<'r>,
         out: &'r mut Matched,
         cap: Option<&'r mut MatchCap<'a>>,
-        /// The collecting arm's halt, raised once the cap is full: the
-        /// consumer needs no more rows, so the search feeding this sink
-        /// stops exactly as a probe's accept stops it. The cell lives
-        /// outside the sink because the search holds a reference to it
-        /// while the sink is borrowed mutably.
-        halt: &'r Cell<bool>,
     },
     /// An expression consumer's fold (the expression-form shortest path):
     /// each bound row goes straight into the caller's reducer, so memory
@@ -61,7 +60,10 @@ enum SinkKind<'r, 'a> {
     /// cap: the fold sees every bound row.
     Fold {
         fold: &'r mut dyn FnMut(Row) -> Result<()>,
-        halt: &'r Cell<bool>,
+        /// Rows the fold has accepted (the fold ran to completion on them):
+        /// the Fold arm's own state — no other arm touches it, so it lives
+        /// here, not on the shared struct.
+        folded: usize,
     },
 }
 
@@ -71,46 +73,52 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
     /// classic walk. A probe answers; a cap or no rider at all collects
     /// through the tail, charging `cap` per row and raising `collect_halt`
     /// once it is full.
-    pub(crate) fn new(
+    pub(super) fn new(
         rider: Option<&'r mut Rider<'a, '_>>,
         collect_halt: &'r Cell<bool>,
         residual: &'r Residual<'r>,
         tail: MatchTail<'r>,
         out: &'r mut Matched,
     ) -> Self {
-        let kind = match rider {
-            Some(Rider::Probe(probe)) => SinkKind::Probe(probe),
-            Some(Rider::Cap(cap)) => SinkKind::Collect {
-                tail,
-                out,
-                cap: Some(&mut **cap),
-                halt: collect_halt,
-            },
-            None => SinkKind::Collect {
-                tail,
-                out,
-                cap: None,
-                halt: collect_halt,
-            },
+        let (kind, halt) = match rider {
+            Some(Rider::Probe(probe)) => (SinkKind::Probe(probe), probe.halt),
+            // the two collecting arms differ only in whether a rider
+            // supplied a cap — the field itself
+            Some(Rider::Cap(cap)) => (
+                SinkKind::Collect {
+                    tail,
+                    out,
+                    cap: Some(&mut **cap),
+                },
+                collect_halt,
+            ),
+            None => (
+                SinkKind::Collect {
+                    tail,
+                    out,
+                    cap: None,
+                },
+                collect_halt,
+            ),
         };
         Self {
             residual,
             kind,
-            folded: 0,
+            halt,
         }
     }
 
     /// A sink that folds each row into `fold` as the search binds it. The
     /// halt cell is never raised by the sink: the fold consumes every row.
-    pub(crate) fn fold(
+    pub(super) fn fold(
         residual: &'r Residual<'r>,
         halt: &'r Cell<bool>,
         fold: &'r mut dyn FnMut(Row) -> Result<()>,
     ) -> Self {
         Self {
             residual,
-            kind: SinkKind::Fold { fold, halt },
-            folded: 0,
+            kind: SinkKind::Fold { fold, folded: 0 },
+            halt,
         }
     }
 
@@ -124,23 +132,23 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
     /// owns reading it (`Route::halted`) — one reader, not a check pasted
     /// at every level.
     pub(super) fn halt_cell(&self) -> &'r Cell<bool> {
-        match &self.kind {
-            SinkKind::Probe(probe) => probe.halt,
-            SinkKind::Collect { halt, .. } | SinkKind::Fold { halt, .. } => halt,
-        }
+        self.halt
     }
 
     /// Rows the fold has accepted so far (always 0 for a non-fold sink): a
     /// caller comparing two reads learns whether a step produced any.
     pub(super) fn folded(&self) -> usize {
-        self.folded
+        match &self.kind {
+            SinkKind::Fold { folded, .. } => *folded,
+            _ => 0,
+        }
     }
 
     /// Whether the consumer is answered — the one halt query, over both
     /// arms, for the callers that drive the sink themselves (the selector
     /// fallback's batch loop).
     pub(super) fn halted(&self) -> bool {
-        self.halt_cell().get()
+        self.halt.get()
     }
 
     /// Take one selected row with the used-set it carries. The set arrives
@@ -153,10 +161,13 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
         row: Row,
         used: impl FnOnce() -> UsedSet,
     ) -> Result<()> {
+        // One cancellation rule for every rider kind and every caller:
+        // whether an offered row is interruptible must not depend on which
+        // arm happens to consume it.
+        ctx.graph.cancel_tick()?;
         let residual = self.residual;
         match &mut self.kind {
             SinkKind::Probe(probe) => {
-                ctx.graph.cancel_tick()?;
                 probe.accept_row(
                     ctx.graph,
                     row,
@@ -166,25 +177,73 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
                     ctx.cypher_version,
                 )?;
             }
-            SinkKind::Collect {
-                tail,
-                out,
-                cap,
-                halt,
-            } => {
+            SinkKind::Collect { tail, out, cap } => {
                 if let Some(row) = tail.finish_row(ctx.graph, row, cap.as_deref_mut())? {
                     tail.store_row(row, used, out);
                 }
                 if cap.as_ref().is_some_and(|cap| cap.full()) {
-                    halt.set(true);
+                    self.halt.set(true);
                 }
             }
-            SinkKind::Fold { fold, .. } => {
-                ctx.graph.cancel_tick()?;
+            SinkKind::Fold { fold, folded } => {
                 fold(row)?;
-                self.folded += 1;
+                *folded += 1;
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::ctx::ExecCtx;
+    use crate::exec::pushdown::Residual;
+    use crate::graph::Graph;
+    use crate::ExecGraph;
+
+    /// The sink's own cancellation rule, on the arm that had none: a collect
+    /// sink offered a row on a cancelled statement stops, exactly as the
+    /// probe arm does — the tick is hoisted above the rider match, so
+    /// interruptibility cannot depend on which rider kind consumes the row.
+    ///
+    /// Only a direct offer distinguishes this: the GPM walk (`walk.rs`) and
+    /// the shortest route (`route.rs`) each tick cancellation before they
+    /// reach a sink, so an end-to-end cancelled-match test passes with or
+    /// without the hoist.
+    #[test]
+    fn a_cancelled_collect_offer_stops() {
+        let g = Graph::default();
+        let token = relate_core::CancelToken::new();
+        token.cancel();
+        let graph = ExecGraph::read(&g).with_cancel(Some(&token));
+        let params = BTreeMap::new();
+        let ctx = ExecCtx::new(&graph, &params, None);
+        let residual = Residual::empty();
+        let halt = Cell::new(false);
+        let mut out: Matched = Vec::new();
+        let mut sink = MatchedSink::new(
+            None,
+            &halt,
+            &residual,
+            MatchTail::Finish { reduce: None },
+            &mut out,
+        );
+        // Past the sampling window: `cancel_tick` consults the token once
+        // per `CANCEL_SAMPLE_MASK + 1` ticks (ADR-0111).
+        let mut observed = None;
+        for _ in 0..2_048 {
+            if let Err(err) = sink.offer(ctx, Row::new(), UsedSet::default) {
+                observed = Some(err);
+                break;
+            }
+        }
+        let err = observed.expect("the collect arm must observe the cancelled statement");
+        assert!(
+            err.to_string().contains("query cancelled"),
+            "expected the cancellation error, got {err}"
+        );
     }
 }
