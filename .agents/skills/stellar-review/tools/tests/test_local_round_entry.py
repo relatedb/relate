@@ -61,6 +61,12 @@ def local_branch():
     )
 
 
+def merge_base_calls(region):
+    """Every `git merge-base ...` call in a shell region, outside comment
+    lines, in order — one scanner for the guard and its self-test."""
+    return [c.strip() for c in MERGE_BASE_CALL.findall(COMMENT_LINE.sub("", region))]
+
+
 def unwrapped(text):
     """Whitespace-collapsed text, so a sentence matches across the
     surface's own line wrapping (AGENTS.md wraps mid-sentence)."""
@@ -152,28 +158,12 @@ class TestLocalRoundEntry(unittest.TestCase):
         # LABS-955: a rebased branch's stale last_head must not widen the
         # scope via merge-base(LAST, HEAD)
         branch = local_branch()
-        calls = [
-            c.strip() for c in MERGE_BASE_CALL.findall(COMMENT_LINE.sub('', branch))
-        ]
+        calls = merge_base_calls(branch)
         self.assertEqual(
             calls,
             ['merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null',
              "merge-base HEAD origin/main"],
         )
-
-    def test_merge_base_scan_catches_a_call_after_a_semicolon(self):
-        # a forbidden call appended after `;` on an allowed line must
-        # surface as its own extracted call
-        line = (
-            'git merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null'
-            '; git merge-base "$LAST" "$HEAD_SHA"\n'
-        )
-        self.assertEqual(
-            [c.strip() for c in MERGE_BASE_CALL.findall(COMMENT_LINE.sub('', line))],
-            ['merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null',
-             'merge-base "$LAST" "$HEAD_SHA"'],
-        )
-        self.assertEqual(MERGE_BASE_CALL.findall(COMMENT_LINE.sub("", "# git merge-base x\n")), [])
 
     def test_agents_md_leads_with_the_entry_point(self):
         text = read(AGENTS)
@@ -210,6 +200,26 @@ class TestLocalRoundEntry(unittest.TestCase):
                     f"opencode-review-reusable.yml: CI must keep calling "
                     f"stellar-prep.sh {mode}",
                 )
+
+
+class TestMergeBaseScanner(unittest.TestCase):
+    """Self-test of the scanner the guard above relies on."""
+
+    def test_catches_a_call_after_a_semicolon(self):
+        # a forbidden call appended after `;` on an allowed line must
+        # surface as its own extracted call
+        line = (
+            'git merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null'
+            '; git merge-base "$LAST" "$HEAD_SHA"\n'
+        )
+        self.assertEqual(
+            merge_base_calls(line),
+            ['merge-base --is-ancestor "$LAST" "$HEAD_SHA" 2>/dev/null',
+             'merge-base "$LAST" "$HEAD_SHA"'],
+        )
+
+    def test_ignores_comment_lines(self):
+        self.assertEqual(merge_base_calls("# git merge-base x\n"), [])
 
 
 if __name__ == "__main__":
