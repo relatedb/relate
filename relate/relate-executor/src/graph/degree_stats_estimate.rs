@@ -19,7 +19,7 @@ use relate_core::{NodeId, RelId};
 
 use super::count_state::CountDelta;
 use super::degree_stats_incident::IncidentRel;
-use super::{FreshIds, Graph};
+use super::{fill_labels, FreshIds, Graph};
 use crate::redo::RedoOp;
 
 impl Graph {
@@ -338,8 +338,8 @@ impl BatchSim {
     /// AddLabels steps that follow.
     fn create_rel(&mut self, g: &Graph, id: RelId, start: NodeId, end: NodeId, rel_type: &str) {
         let t = self.fresh_ids.resolve(g, rel_type);
-        Self::ensure_labels(&mut self.node_labels, g, start);
-        Self::ensure_labels(&mut self.node_labels, g, end);
+        fill_labels(&mut self.node_labels, g, start);
+        fill_labels(&mut self.node_labels, g, end);
         // Both endpoint sets are ensured above — the index read is the
         // borrow, not a clone.
         let start_ids = &self.node_labels[&start];
@@ -393,8 +393,8 @@ impl BatchSim {
         let Some(rel) = rel else {
             return;
         };
-        Self::ensure_labels(&mut self.node_labels, g, rel.start);
-        Self::ensure_labels(&mut self.node_labels, g, rel.end);
+        fill_labels(&mut self.node_labels, g, rel.start);
+        fill_labels(&mut self.node_labels, g, rel.end);
         let start_ids = &self.node_labels[&rel.start];
         let end_ids = &self.node_labels[&rel.end];
         self.charges
@@ -416,7 +416,7 @@ impl BatchSim {
     /// [`Graph::rebucket_added_labels`] materialize at apply time,
     /// estimated against the adjacency the apply path walks).
     fn add_labels(&mut self, g: &Graph, id: NodeId, labels: &[String]) {
-        let ids = Self::ensure_labels(&mut self.node_labels, g, id);
+        let ids = fill_labels(&mut self.node_labels, g, id);
         let before = ids.len();
         for l in labels {
             let lid = self.fresh_ids.resolve(g, l);
@@ -552,7 +552,7 @@ impl BatchSim {
             let (start_ids, end_ids) = if inc.far == id {
                 inc.self_loop_sets(mine, own_out, own_in)
             } else {
-                let far_ids = &*Self::ensure_labels(&mut self.node_labels, g, inc.far);
+                let far_ids = &*fill_labels(&mut self.node_labels, g, inc.far);
                 // The apply's own orientation — the pair keys follow the
                 // rel's direction ([`IncidentRel::ordered`]), the cross is
                 // the canonical fold.
@@ -593,22 +593,6 @@ impl BatchSim {
                 let inc = (id == rel.end).then(|| IncidentRel::incoming(rel.type_id, rel.start));
                 out.into_iter().chain(inc)
             })
-    }
-
-    /// The batch's label-set simulation's fill: cache the node's labels
-    /// once (the batch's simulated set, or the live set), then borrow —
-    /// no per-lookup clone of the live set on the admission path (the
-    /// cache-fill-and-borrow pattern). The fill returns
-    /// the entry's set so every site — the AddLabels step included —
-    /// borrows through the one fill shape.
-    fn ensure_labels<'m>(
-        node_labels: &'m mut HashMap<NodeId, Vec<u32>>,
-        g: &Graph,
-        id: NodeId,
-    ) -> &'m mut Vec<u32> {
-        node_labels
-            .entry(id)
-            .or_insert_with(|| g.live_label_ids(id))
     }
 }
 

@@ -137,12 +137,28 @@ pub(in crate::graph) struct RelRow {
 #[derive(Default)]
 pub(in crate::graph) struct LabelCache(HashMap<NodeId, Vec<u32>>);
 
+/// The one label-cache fill both label maps ride: `node`'s live labels
+/// read exactly once into `map`, then the entry borrowed — the
+/// cache-fill-and-borrow pattern, so no per-lookup clone of the live set
+/// rides a walk. The two maps' *read* contracts differ and stay their
+/// own: [`LabelCache::get`] is the apply fold's read-only view (its miss
+/// is an invariant break, loudly), while the stats estimate's simulated
+/// set (`BatchSim::node_labels`) is mutable — an `AddLabels` step extends
+/// it and the pair phase reads the extended set back.
+pub(in crate::graph) fn fill_labels<'m>(
+    map: &'m mut HashMap<NodeId, Vec<u32>>,
+    graph: &Graph,
+    node: NodeId,
+) -> &'m mut Vec<u32> {
+    map.entry(node)
+        .or_insert_with(|| graph.live_label_ids(node))
+}
+
 impl LabelCache {
-    /// Read `node`'s live labels into the cache exactly once.
+    /// Read `node`'s live labels into the cache exactly once, through the
+    /// one fill shape.
     pub(in crate::graph) fn ensure(&mut self, graph: &Graph, node: NodeId) {
-        self.0
-            .entry(node)
-            .or_insert_with(|| graph.live_label_ids(node));
+        fill_labels(&mut self.0, graph, node);
     }
 
     /// The cached labels — the fold ensured the node's entry first, so
