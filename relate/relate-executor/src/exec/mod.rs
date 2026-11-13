@@ -94,6 +94,7 @@ pub(crate) mod subquery_eval;
 pub(crate) mod union;
 pub(crate) mod unwind;
 pub(crate) mod vector;
+pub(crate) mod vector_filters;
 pub(crate) mod write;
 
 pub use catalog_show::catalog_create_statements;

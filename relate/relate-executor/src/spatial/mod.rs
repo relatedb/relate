@@ -536,6 +536,11 @@ fn distance_between(
     Ok(Some(distance))
 }
 
+/// `point.distance(a, b)`: the distance between two points of one CRS,
+/// null when either argument is null or the CRSes differ, a type error for
+/// any other argument shape. The `point.withinBBox` and `point()` entry
+/// points follow the same split: null in, null out; wrong shape, typed
+/// error.
 pub(crate) fn point_distance(vals: &[Value]) -> Result<Value> {
     if has_null_argument(vals, 2) {
         return Ok(Value::Null);
@@ -591,6 +596,9 @@ fn bbox_contains(p: &[f64; 3], lo: &[f64; 3], hi: &[f64; 3], srid: i32) -> bool 
     first && within(p[1], lo[1], hi[1]) && within(p[2], lo[2], hi[2])
 }
 
+/// `point.withinBBox(p, lowerLeft, upperRight)`: inclusive containment of
+/// `p` in the box the two corner points span, null when any argument is
+/// null or the CRSes differ, a type error for any other argument shape.
 pub(crate) fn point_within_bbox(vals: &[Value]) -> Result<Value> {
     if has_null_argument(vals, 3) {
         return Ok(Value::Null);
