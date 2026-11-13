@@ -1,9 +1,10 @@
 import CRelate
 import Foundation
 
-/// An open Relate store: `":memory:"` or a directory holding the WAL and
-/// checkpoints. Closed when the last reference (including every
-/// ``Connection`` made from it) is released.
+/// An open Relate store: `":memory:"`, a single-file `.rl` store, or a
+/// directory holding the WAL and checkpoints (a path ending in `.rl` names
+/// the single-file form, anything else a directory). Closed when the last
+/// reference (including every ``Connection`` made from it) is released.
 ///
 /// `Database` is `Sendable`: the C ABI documents a `relate_database` as
 /// safe to share across threads, so the wrapper adds no lock of its own.
@@ -13,21 +14,34 @@ public final class Database: @unchecked Sendable {
     public let isReadOnly: Bool
 
     /// Opens (creating when missing) a writable store at `path`.
-    public convenience init(path: String) throws {
+    public convenience init(path: String) throws(RelateError) {
         try self.init(path: path, readOnly: false)
     }
 
     /// Opens an existing store once, refusing writes and checkpoints (ADR-0136).
-    public convenience init(readOnlyPath path: String) throws {
+    public convenience init(readOnlyPath path: String) throws(RelateError) {
         try self.init(path: path, readOnly: true)
     }
 
+    /// Opens the store at a file URL: writable (created when missing) by
+    /// default, or — with `readOnly` — an existing store opened once,
+    /// refusing writes and checkpoints. A URL that is not a `file:` URL is
+    /// refused with ``RelateError/invalidParameter(_:)``; the engine opens
+    /// local paths only.
+    public convenience init(url: URL, readOnly: Bool = false) throws(RelateError) {
+        guard url.isFileURL else {
+            throw RelateError.invalidParameter(
+                "a store URL must be a file URL, got scheme \(quotedWire(url.scheme ?? ""))")
+        }
+        try self.init(path: url.path, readOnly: readOnly)
+    }
+
     /// A fresh in-memory store.
-    public static func inMemory() throws -> Database {
+    public static func inMemory() throws(RelateError) -> Database {
         try Database(path: ":memory:")
     }
 
-    private init(path: String, readOnly: Bool) throws {
+    private init(path: String, readOnly: Bool) throws(RelateError) {
         // The package links the library at build time, so a v1 library
         // already failed to link; this is the startup assert the v2
         // contract still asks for.
@@ -55,12 +69,18 @@ public final class Database: @unchecked Sendable {
     }
 
     /// A new connection on the default namespace `neo4j`.
-    public func connect() throws -> Connection {
+    public func connect() throws(RelateError) -> Connection {
         try connect(namespace: nil)
     }
 
+    /// A new connection whose session namespace is `namespace` (ADR-0117),
+    /// typed: one of the three fixed namespaces.
+    public func connect(namespace: DatabaseNamespace) throws(RelateError) -> Connection {
+        try connect(namespace: namespace.rawValue)
+    }
+
     /// A new connection whose session namespace is `namespace` (ADR-0117).
-    public func connect(namespace: String?) throws -> Connection {
+    public func connect(namespace: String?) throws(RelateError) -> Connection {
         var out: OpaquePointer?
         var err: UnsafeMutablePointer<CChar>? = nil
         let status = try withOptionalCString(namespace, what: "namespace") {
@@ -71,7 +91,7 @@ public final class Database: @unchecked Sendable {
     }
 
     /// Writes a checkpoint and truncates the WAL.
-    public func checkpoint() throws {
+    public func checkpoint() throws(RelateError) {
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(
             relate_checkpoint(handle, &err), err, "checkpointing '\(path)'")
@@ -96,13 +116,18 @@ public final class Connection {
     }
 
     /// Changes the session namespace; only allowed between transactions.
-    public func setNamespace(_ name: String) throws {
+    public func setNamespace(_ name: String) throws(RelateError) {
         var err: UnsafeMutablePointer<CChar>? = nil
-        try check(
-            try withCString(name, what: "namespace") {
-                relate_conn_set_namespace(handle, $0, &err)
-            },
-            err, "setting the namespace to '\(name)'")
+        let status = try withCString(name, what: "namespace") {
+            relate_conn_set_namespace(handle, $0, &err)
+        }
+        try check(status, err, "setting the namespace to '\(name)'")
+    }
+
+    /// Changes the session namespace to one of the three fixed namespaces;
+    /// only allowed between transactions.
+    public func setNamespace(_ namespace: DatabaseNamespace) throws(RelateError) {
+        try setNamespace(namespace.rawValue)
     }
 
     /// Runs one statement. An empty `parameters` binds none; otherwise each
@@ -110,8 +135,8 @@ public final class Connection {
     /// JSON on the way, so temporals, points, vectors, non-finite floats and
     /// full-range integers all bind.
     @discardableResult
-    public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:]) throws
-        -> QueryResult
+    public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:])
+        throws(RelateError) -> QueryResult
     {
         let params: OpaquePointer? = try parameters.isEmpty ? nil : bindParameters(parameters)
         defer { if let params { relate_params_free(params) } }
@@ -133,7 +158,7 @@ public final class Connection {
         return try QueryResult.materialize(result)
     }
 
-    public func begin() throws {
+    public func begin() throws(RelateError) {
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(relate_conn_begin(handle, &err), err, "beginning the transaction")
     }
@@ -144,7 +169,7 @@ public final class Connection {
     /// was a no-op); no bookmark is fabricated. A failed commit throws the
     /// typed engine error — e.g. a retryable write conflict (ADR-0439).
     @discardableResult
-    public func commit() throws -> String? {
+    public func commit() throws(RelateError) -> String? {
         var bookmark: UnsafeMutablePointer<CChar>? = nil
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(
@@ -156,7 +181,7 @@ public final class Connection {
         return try required(bookmark, "the commit's bookmark")
     }
 
-    public func rollback() throws {
+    public func rollback() throws(RelateError) {
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(relate_conn_rollback(handle, &err), err, "rolling back the transaction")
     }

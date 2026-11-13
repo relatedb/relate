@@ -27,8 +27,9 @@ let plan = explain.plan!
 print("plan root:", plan.root.operator, "notifications:", explain.notifications.map(\.code))
 precondition(plan.schema == "relate.plan/v1" && !plan.profiled && plan.root.actual == nil)
 precondition(explain.notifications.contains { $0.code.hasSuffix("CartesianProduct") })
-// Severity and category are closed, typed enums.
-precondition(explain.notifications.allSatisfy { $0.severity == .information && $0.category == .performance })
+// Severity and category are closed, typed enums (NotificationSeverity, NotificationCategory).
+let notifications: [QueryNotification] = explain.notifications
+precondition(notifications.allSatisfy { $0.severity == .information && $0.category == .performance })
 
 let profile = try conn.query("PROFILE MATCH (c:City) RETURN count(c)")
 precondition(profile.plan!.profiled && profile.plan!.root.actual != nil)

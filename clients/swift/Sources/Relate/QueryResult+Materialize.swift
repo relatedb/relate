@@ -7,7 +7,7 @@ extension QueryResult {
     /// cells through the typed walker, the metadata documents from their
     /// JSON. The boundary decode lives here, not in the model file,
     /// mirroring `CypherValue+Walker.swift`.
-    static func materialize(_ result: OpaquePointer) throws -> QueryResult {
+    static func materialize(_ result: OpaquePointer) throws(RelateError) -> QueryResult {
         let columnCount = Int(relate_column_count(result))
         let rowCount = Int(relate_row_count(result))
         var columns: [String] = []
@@ -29,22 +29,26 @@ extension QueryResult {
         let queryTypeName = try required(relate_result_query_type(result), "query type")
         let queryType = try QueryType.decode(queryTypeName)
         let namespaceName = try required(relate_result_namespace(result), "namespace")
-        let namespace = try Namespace.decode(namespaceName)
-        let plan = try relate_result_plan_json(result).map {
-            try decodeMetadata(PlanDocument.self, try required($0, "the plan document"), what: "plan")
+        let namespace = try DatabaseNamespace.decode(namespaceName)
+        var plan: PlanDocument? = nil
+        if let json = relate_result_plan_json(result) {
+            plan = try decodeMetadata(
+                PlanDocument.self, try required(json, "the plan document"), what: "plan")
+        }
+        var bookmark: String? = nil
+        if let text = relate_result_bookmark(result) {
+            bookmark = try required(text, "the result's bookmark")
         }
         return QueryResult(
             columns: columns,
             rows: rows,
-            bookmark: try relate_result_bookmark(result).map {
-                try required($0, "the result's bookmark")
-            },
+            bookmark: bookmark,
             queryType: queryType,
             namespace: namespace,
             stats: try decodeMetadata(
                 QueryStats.self, try required(relate_result_stats(result), "stats"), what: "stats"),
             notifications: try decodeMetadata(
-                [Notification].self,
+                [QueryNotification].self,
                 try required(relate_result_notifications(result), "notifications"),
                 what: "notifications"),
             plan: plan,
@@ -65,9 +69,9 @@ extension QueryType {
     }
 }
 
-extension Namespace {
+extension DatabaseNamespace {
     /// Types the `relate_result_namespace` accessor's string (ADR-0117).
-    static func decode(_ raw: String) throws(RelateError) -> Namespace {
-        try closedWire(Namespace.self, raw, what: "namespace")
+    static func decode(_ raw: String) throws(RelateError) -> DatabaseNamespace {
+        try closedWire(DatabaseNamespace.self, raw, what: "namespace")
     }
 }

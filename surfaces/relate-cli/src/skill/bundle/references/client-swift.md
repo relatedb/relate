@@ -20,8 +20,8 @@ building from a checkout, run `scripts/build-xcframework.sh` and set
 ```swift
 import Relate
 
-let db = try Database(path: storeURL.path)       // or Database.inMemory()
-let conn = try db.connect()                      // connect(namespace: "system")
+let db = try Database(url: storeURL)             // or Database.inMemory(); readOnly: true for an existing store
+let conn = try db.connect()                      // connect(namespace: .system)
 let r = try conn.query("MATCH (n:Person {name: $name}) RETURN n", ["name": "Ada"])
 r.columns; r.rows; r.records                     // [String], [[CypherValue]], [[String: CypherValue]]
 r.queryType      // .read | .write | .readWrite | .schema   (ADR-0162)
@@ -69,11 +69,17 @@ day: 2))`, `.point(.init(srid: 4326, x: -105.0, y: 40.0, z: nil))`).
   points, vectors, durations, `NaN`/`±Infinity` and full-range integers
   directly; nodes, relationships, paths and NUL-bearing names are refused
   (`RelateError.invalidParameter`).
-- **Errors are typed** — every throw carries `code`, `gqlStatus`, `stage`
-  (`compile`/`runtime`/`internal`) and `retryable` (`error.engineError`);
-  retry exactly when `retryable`, never on message text.
-- **One writer per store** — a second writable `Database(path:)` on the same
-  directory throws; use `Database(readOnlyPath:)` for extra readers.
+- **Errors are typed** — calls are `throws(RelateError)`, so a `catch`
+  block's `error` needs no cast. Every engine error carries `code`,
+  `gqlStatus`, `stage` (`compile`/`runtime`/`internal`) and `retryable`
+  (`error.engineError`); branch on `isConstraintViolation`, `isSyntaxError`,
+  `isMissingParameter`, `isWriteConflict` or `classification`, and retry
+  exactly when `retryable`, never on message text.
+- **Metadata type names** — `QueryNotification`, `NotificationSeverity`,
+  `NotificationCategory`, `DatabaseNamespace` (not `Notification` /
+  `Namespace`, which collide with Foundation and SwiftUI).
+- **One writer per store** — a second writable `Database` on the same
+  store throws; use `Database(url:readOnly: true)` for extra readers.
 - **iOS storage** — keep the store in Application Support with
   `completeUntilFirstUserAuthentication` protection; checkpoint after bulk
   loads.

@@ -14,10 +14,10 @@ public struct QueryResult: Sendable {
     public let bookmark: String?
     public let queryType: QueryType
     /// The resolved namespace (ADR-0117): the `USE` target, else the session's.
-    public let namespace: Namespace
+    public let namespace: DatabaseNamespace
     public let stats: QueryStats
     /// Always present: empty on a plain run, populated by EXPLAIN / PROFILE.
-    public let notifications: [Notification]
+    public let notifications: [QueryNotification]
     /// The `relate.plan/v1` document (ADR-0381); `nil` on a plain run.
     public let plan: PlanDocument?
     /// Engine-reported parse + plan + execute wall clock (ADR-0221).
@@ -40,7 +40,7 @@ public struct QueryResult: Sendable {
     }
 
     /// The single value of a one-row, one-column result.
-    public func scalar() throws -> CypherValue {
+    public func scalar() throws(RelateError) -> CypherValue {
         guard rows.count == 1, columns.count == 1 else {
             throw RelateError.decoding(
                 "scalar() needs exactly one row and one column, got \(rows.count)×\(columns.count)")
@@ -59,7 +59,7 @@ public enum QueryType: String, Sendable, Hashable {
 
 /// The statement's resolved namespace (ADR-0117): one of the three fixed
 /// databases. Any other value is an ABI contract violation at decode.
-public enum Namespace: String, Sendable, Hashable {
+public enum DatabaseNamespace: String, Sendable, Hashable {
     case neo4j
     case system
     case systemOntologies = "system_ontologies"
@@ -82,7 +82,7 @@ public struct QueryStats: Sendable, Hashable, Decodable {
 
 /// A notification's severity (ADR-0363): a closed vocabulary. A wire value
 /// outside it is an ABI contract violation at decode, never a lenient string.
-public enum Severity: String, Sendable, Hashable, Decodable {
+public enum NotificationSeverity: String, Sendable, Hashable, Decodable {
     case information = "INFORMATION"
     case warning = "WARNING"
 
@@ -92,8 +92,8 @@ public enum Severity: String, Sendable, Hashable, Decodable {
 }
 
 /// A notification's category (ADR-0363): a closed vocabulary, refused like
-/// `Severity` when the wire value is outside it.
-public enum Category: String, Sendable, Hashable, Decodable {
+/// `NotificationSeverity` when the wire value is outside it.
+public enum NotificationCategory: String, Sendable, Hashable, Decodable {
     case performance = "PERFORMANCE"
     case unrecognized = "UNRECOGNIZED"
     case deprecation = "DEPRECATION"
@@ -105,15 +105,23 @@ public enum Category: String, Sendable, Hashable, Decodable {
     }
 }
 
+/// The former spelling of ``NotificationSeverity``.
+@available(*, deprecated, renamed: "NotificationSeverity")
+public typealias Severity = NotificationSeverity
+
+/// The former spelling of ``NotificationCategory``.
+@available(*, deprecated, renamed: "NotificationCategory")
+public typealias Category = NotificationCategory
+
 /// One query notification (ADR-0363) in the engine-native shape. `severity`
-/// and `category` are the closed `Severity` and `Category` enums: decoding
+/// and `category` are the closed `NotificationSeverity` and `NotificationCategory` enums: decoding
 /// refuses a missing, null or unknown value as an ABI contract violation
 /// naming the key and the (sanitized) offending value.
-public struct Notification: Sendable, Hashable, Decodable {
+public struct QueryNotification: Sendable, Hashable, Decodable {
     public let code: String
     public let gqlStatus: String
-    public let severity: Severity
-    public let category: Category
+    public let severity: NotificationSeverity
+    public let category: NotificationCategory
     public let title: String
     public let description: String
     public let remedy: String
@@ -137,7 +145,7 @@ public struct PlanNode: Sendable, Hashable, Decodable {
     /// PROFILE metrics; `nil` on an EXPLAIN tree.
     public let actual: PlanActual?
     public let children: [PlanNode]
-    public let warnings: [Notification]
+    public let warnings: [QueryNotification]
 }
 
 public struct PlanActual: Sendable, Hashable, Decodable {

@@ -8,17 +8,18 @@ import CRelate
 private func go(
     _ name: String?,
     _ call: (UnsafePointer<CChar>?, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?)
-        throws -> relate_status
-) throws {
+        throws(RelateError) -> relate_status
+) throws(RelateError) {
     var err: UnsafeMutablePointer<CChar>? = nil
-    try check(
-        try withOptionalCString(name, what: "parameter name") { try call($0, &err) },
-        err, "binding a parameter")
+    let status = try withOptionalCString(name, what: "parameter name") {
+        (pointer) throws(RelateError) in try call(pointer, &err)
+    }
+    try check(status, err, "binding a parameter")
 }
 
 /// The one deterministic bind order — sorted by key; the engine is
 /// order-free — for the root map and every nested map.
-private func putEntries(_ entries: [String: CypherValue], into builder: OpaquePointer) throws {
+private func putEntries(_ entries: [String: CypherValue], into builder: OpaquePointer) throws(RelateError) {
     for (name, value) in entries.sorted(by: { $0.key < $1.key }) {
         try put(value, into: builder, name: name)
     }
@@ -34,7 +35,7 @@ private func openChild(
         UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
     ) -> relate_status,
     _ what: String
-) throws -> OpaquePointer {
+) throws(RelateError) -> OpaquePointer {
     var out: OpaquePointer?
     try go(name) { namePointer, err in putter(builder, namePointer, &out, err) }
     return try requireHandle(out, what)
@@ -49,20 +50,28 @@ private func putVector<T>(
     ) -> relate_status,
     _ dtype: CypherValue.Vector.DType, _ values: [T],
     into builder: OpaquePointer, name: String?
-) throws {
-    try values.withUnsafeBufferPointer { buffer in
-        try dtype.rawValue.withCString { dtypePointer in
-            try go(name) { namePointer, err in
-                putter(builder, namePointer, dtypePointer, buffer.baseAddress, buffer.count, err)
+) throws(RelateError) {
+    // The two scope functions only rethrow untyped, so the putter's typed
+    // refusal crosses them as a `Result` (the policy `withCString` states).
+    let result: Result<Void, RelateError> = values.withUnsafeBufferPointer { buffer in
+        dtype.rawValue.withCString { dtypePointer in
+            do throws(RelateError) {
+                try go(name) { namePointer, err in
+                    putter(builder, namePointer, dtypePointer, buffer.baseAddress, buffer.count, err)
+                }
+                return .success(())
+            } catch {
+                return .failure(error)
             }
         }
     }
+    try result.get()
 }
 
 /// Builds the statement's root MAP of named parameters. Every entry crosses
 /// through a typed putter — no JSON. The caller frees the root (which owns
 /// every child minted below it).
-func bindParameters(_ parameters: [String: CypherValue]) throws -> OpaquePointer {
+func bindParameters(_ parameters: [String: CypherValue]) throws(RelateError) -> OpaquePointer {
     // The contract: a root never comes back NULL.
     let root = try requireHandle(relate_params_new(), "relate_params_new")
     do {
@@ -78,7 +87,7 @@ func bindParameters(_ parameters: [String: CypherValue]) throws -> OpaquePointer
 /// crosses through `go` — the one envelope holding the name crossing, the
 /// shared out-param and the single refusal policy (`check`) — so a putter
 /// refusal surfaces as a typed `.engine` error, never a silent skip.
-private func put(_ value: CypherValue, into builder: OpaquePointer, name: String?) throws {
+private func put(_ value: CypherValue, into builder: OpaquePointer, name: String?) throws(RelateError) {
     switch value {
     case .null:
         try go(name) { relate_params_put_null(builder, $0, $1) }
@@ -114,7 +123,7 @@ private func put(_ value: CypherValue, into builder: OpaquePointer, name: String
     case .dateTime(let d):
         // A named zone is kept by the value and re-read by the walker; with
         // none, the offset alone carries the value.
-        try go(name) { namePointer, err in
+        try go(name) { (namePointer, err) throws(RelateError) in
             try withOptionalCString(d.zone, what: "the datetime's zone") { zonePointer in
                 relate_params_put_datetime(
                     builder, namePointer, d.year, d.month, d.day, d.hour, d.minute, d.second,

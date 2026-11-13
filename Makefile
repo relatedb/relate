@@ -66,7 +66,7 @@ bindings: binding-java binding-js
 # The Swift targets link the locally built XCFramework, never a release binary
 # (Package.swift reads this; SwiftPM keys its manifest cache on the env).
 SWIFT_ENV := RELATE_LOCAL_XCFRAMEWORK=1
-SWIFT_EXAMPLES := quickstart transactions result-metadata namespaces persistence
+SWIFT_EXAMPLES := quickstart transactions result-metadata namespaces persistence errors
 
 ## swift-examples: Run every docs/api/swift example (each asserts its own output)
 swift-examples:

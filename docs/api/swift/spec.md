@@ -17,24 +17,30 @@ travels with the call, and bookmarks.
 ## Types
 
 ```swift
+// `throws(RelateError)` is a typed throw: a `catch` block's `error` is a
+// `RelateError` with no cast. `transaction(_:)` runs the caller's closure, so
+// it stays untyped.
 public final class Database: @unchecked Sendable {
-    public init(path: String) throws            // ":memory:" or a store directory (created if missing)
-    public init(readOnlyPath path: String) throws // existing store, loaded once; writes/checkpoint refused (ADR-0136)
-    public static func inMemory() throws -> Database
+    public init(path: String) throws(RelateError)            // ":memory:", a single-file `.rl` store, or a store directory (created if missing)
+    public init(readOnlyPath path: String) throws(RelateError) // existing store, loaded once; writes/checkpoint refused (ADR-0136)
+    public init(url: URL, readOnly: Bool = false) throws(RelateError) // a file URL; any other scheme is .invalidParameter
+    public static func inMemory() throws(RelateError) -> Database
     public let path: String
     public let isReadOnly: Bool
-    public func connect() throws -> Connection                    // namespace "neo4j"
-    public func connect(namespace: String?) throws -> Connection  // "neo4j" | "system" | "system_ontologies" (ADR-0117)
-    public func checkpoint() throws
+    public func connect() throws(RelateError) -> Connection                              // namespace "neo4j"
+    public func connect(namespace: DatabaseNamespace) throws(RelateError) -> Connection  // .neo4j | .system | .systemOntologies (ADR-0117)
+    public func connect(namespace: String?) throws(RelateError) -> Connection            // the same three, by name
+    public func checkpoint() throws(RelateError)
 }
 
 public final class Connection {                  // NOT Sendable
     public let database: Database
-    public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:]) throws -> QueryResult
-    public func setNamespace(_ name: String) throws   // only between transactions
-    public func begin() throws
-    @discardableResult public func commit() throws -> String?  // the transaction's bookmark; nil when it committed nothing
-    public func rollback() throws
+    public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:]) throws(RelateError) -> QueryResult
+    public func setNamespace(_ namespace: DatabaseNamespace) throws(RelateError)  // only between transactions
+    public func setNamespace(_ name: String) throws(RelateError)
+    public func begin() throws(RelateError)
+    @discardableResult public func commit() throws(RelateError) -> String?  // the transaction's bookmark; nil when it committed nothing
+    public func rollback() throws(RelateError)
     public func transaction<T>(_ body: (Connection) throws -> T) throws -> T
 }
 
@@ -45,9 +51,9 @@ public struct QueryResult: Sendable {
                                                  // nil for a read, an empty write pipeline, EXPLAIN, a statement
                                                  // inside an explicit transaction, or an error result
     public let queryType: QueryType              // ADR-0162: .read "r" | .write "w" | .readWrite "rw" | .schema "s"
-    public let namespace: Namespace              // ADR-0117: .neo4j | .system | .systemOntologies (USE target, else session)
+    public let namespace: DatabaseNamespace      // ADR-0117: .neo4j | .system | .systemOntologies (USE target, else session)
     public let stats: QueryStats                 // ADR-0216: the canonical 11 counters
-    public let notifications: [Notification]     // ADR-0363: [] on a plain run
+    public let notifications: [QueryNotification] // ADR-0363: [] on a plain run
     public let plan: PlanDocument?               // ADR-0381: relate.plan/v1; nil on a plain run
     public let elapsedMs: Double                 // ADR-0221: engine parse + plan + execute
     public let parseMs: Double                   // ADR-0491: parse + lowering window
@@ -55,7 +61,7 @@ public struct QueryResult: Sendable {
     public let executeMs: Double                 // ADR-0491: dispatch (or EXPLAIN render) window
                                                  // parseMs + planMs + executeMs <= elapsedMs
     public var records: [[String: CypherValue]] { get }
-    public func scalar() throws -> CypherValue   // exactly one row and one column
+    public func scalar() throws(RelateError) -> CypherValue   // exactly one row and one column
 }
 
 public enum CypherValue: Sendable, Hashable, CustomStringConvertible {
@@ -85,8 +91,30 @@ public struct EngineError: Sendable, Hashable {
     public let retryable: Bool     // the drivers' transient test: retry exactly when true
     public let message: String
     public enum Stage: String, Sendable, Hashable { case compile, runtime, internal }
+
+    public var classification: Classification?   // the code's second segment; nil for a code not shaped `Neo.<Class>.<Category>.<Title>`
+    public enum Classification: String, Sendable, Hashable { case clientError, transientError, databaseError }
+    public var isConstraintViolation: Bool       // Neo.ClientError.Schema.ConstraintValidationFailed
+    public var isSyntaxError: Bool               // Neo.ClientError.Statement.SyntaxError
+    public var isMissingParameter: Bool          // Neo.ClientError.Statement.ParameterMissing
+    public var isWriteConflict: Bool             // Neo.TransientError.Transaction.Outdated (retryable)
+    public enum StatusCode { /* the four code strings above, as static constants */ }
+}
+
+extension RelateError {
+    public var isRetryable: Bool                 // engineError?.retryable ?? false
 }
 ```
+
+### Names
+
+The result-metadata types are `QueryNotification`, `NotificationSeverity`,
+`NotificationCategory` and `DatabaseNamespace`. They were `Notification`,
+`Severity`, `Category` and `Namespace`, which collide with
+`Foundation.Notification`, `SwiftUI.Namespace` and the Objective-C runtime's
+`Category`: a file importing both modules could not spell them unqualified.
+`Severity` and `Category` remain as deprecated aliases. `Notification` and
+`Namespace` are removed, because an alias of either name keeps the ambiguity.
 
 `CypherValue` conforms to every `ExpressibleBy…Literal` protocol, so literal
 parameters need no wrapping (`["n": 1, "tags": ["a"], "m": ["k": true]]`);
@@ -118,7 +146,7 @@ keeps no zone id — the ABI's contract); `DateTime` adds `offsetSeconds` and
 (`PT36H` stays 36 hours, not 1½ days). `Vector` is
 `case floats(dtype:values:)` / `case ints(dtype:values:)` with the eight
 canonical dtype names (`INTEGER8`…`FLOAT`) as a closed `DType` enum.
-`QueryStats`, `Notification`, `PlanDocument`, `PlanNode`, `PlanActual` and
+`QueryStats`, `QueryNotification`, `PlanDocument`, `PlanNode`, `PlanActual` and
 `PlanStart` carry the same fields as the Go client's types, in camelCase.
 
 ## Value decoding
@@ -132,8 +160,8 @@ enumerator this client does not know (a later, additive ABI) is a defined
 `.decoding` error, never a silent null. The result metadata is closed the same
 way: a `query_type` outside `r`/`w`/`rw`/`s` or a `namespace` outside the three
 fixed names is a `.decoding` error reading `ABI contract violated: ...`, and so
-is a notification `severity` outside the closed `Severity` enum
-(`.information`, `.warning`) or a `category` outside the closed `Category` enum
+is a notification `severity` outside the closed `NotificationSeverity` enum
+(`.information`, `.warning`) or a `category` outside the closed `NotificationCategory` enum
 (`.performance`, `.unrecognized`, `.deprecation`, `.schema`, `.hint`) — a
 missing or null key too — as in the Go and Java clients. The refusal names the
 key and the offending value, sanitized: control and other non-printable
@@ -177,7 +205,10 @@ message text. Branch on `code` / `stage`; retry exactly when `retryable`
 statement failure rides the result (`RETURN 1/0` throws
 `.engine(EngineError(code: "Neo.ClientError.Statement.ArithmeticError",
 gqlStatus: "22G03", stage: .runtime, retryable: false, …))`); every other
-call failure fills that call's own `error_json` out-param. `stage ==
+call failure fills that call's own `error_json` out-param. The predicates
+(`isConstraintViolation`, `isSyntaxError`, `isMissingParameter`,
+`isWriteConflict`) and `classification` are read off `code`; the package's
+tests provoke each from the engine, so they track the engine's table. `stage ==
 .internal` means a boundary failure (a NULL or poisoned handle, a caught
 panic, an argument that failed to decode): do not retry on it — release the
 handle and open a new one.
@@ -273,5 +304,5 @@ Release-workflow use only.
 
 [`examples/`](examples/) is a SwiftPM package; each executable asserts its
 output (`quickstart`, `transactions`, `result-metadata`, `namespaces`,
-`persistence`). The iOS app [`examples/ios-snotel`](../../../examples/ios-snotel/)
+`persistence`, `errors`). The iOS app [`examples/ios-snotel`](../../../examples/ios-snotel/)
 is the end-to-end consumer.

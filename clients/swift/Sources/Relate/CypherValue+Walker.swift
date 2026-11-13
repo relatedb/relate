@@ -5,7 +5,7 @@ import CRelate
 extension CypherValue {
     /// Decodes one value handle through the typed walker. Every handle is
     /// result-owned; nothing is freed here.
-    static func decode(_ handle: relate_value?) throws -> CypherValue {
+    static func decode(_ handle: relate_value?) throws(RelateError) -> CypherValue {
         guard let handle else {
             throw RelateError.decoding("the C ABI returned a NULL value handle")
         }
@@ -22,12 +22,7 @@ extension CypherValue {
             return .node(Node(
                 id: try int64(handle, relate_value_id, what: "entity id"),
                 elementId: try required(relate_value_element_id(handle), "an element id"),
-                labels: try listItems(handle).map { item in
-                    guard case .string(let label) = item else {
-                        throw RelateError.decoding("a node label is not a string")
-                    }
-                    return label
-                },
+                labels: try labels(handle),
                 properties: try mapEntries(handle)))
         case .relationship:
             return .relationship(Relationship(
@@ -126,7 +121,7 @@ extension CypherValue {
         _ handle: relate_value,
         _ get: (relate_value, UnsafeMutablePointer<T>?) -> relate_status,
         initial: T, what: String
-    ) throws -> T {
+    ) throws(RelateError) -> T {
         var out = initial
         try refuse(get(handle, &out), what)
         return out
@@ -139,7 +134,7 @@ extension CypherValue {
         _ handle: relate_value,
         _ get: (relate_value, UnsafeMutablePointer<Int64>?) -> relate_status,
         what: String
-    ) throws -> Int64 {
+    ) throws(RelateError) -> Int64 {
         try scalar(handle, get, initial: 0, what: what)
     }
 
@@ -150,7 +145,7 @@ extension CypherValue {
         _ handle: relate_value, _ index: Int64,
         _ get: (relate_value, Int64, UnsafeMutablePointer<T>?) -> relate_status,
         initial: T, what: String
-    ) throws -> T {
+    ) throws(RelateError) -> T {
         var out = initial
         try refuse(get(handle, index, &out), what)
         return out
@@ -158,7 +153,7 @@ extension CypherValue {
 
     /// The wall-clock component bundle the ABI exposes on TIME, LOCALTIME
     /// and the datetimes.
-    private static func wallClock(_ handle: relate_value) throws ->
+    private static func wallClock(_ handle: relate_value) throws(RelateError) ->
         (hour: Int64, minute: Int64, second: Int64, nanosecond: Int64)
     {
         (
@@ -171,7 +166,7 @@ extension CypherValue {
 
     /// The calendar-date component bundle the ABI exposes on DATE and the
     /// datetimes.
-    private static func calendarDate(_ handle: relate_value) throws ->
+    private static func calendarDate(_ handle: relate_value) throws(RelateError) ->
         (year: Int64, month: Int64, day: Int64)
     {
         (
@@ -183,7 +178,7 @@ extension CypherValue {
 
     /// A refused status after the kind switch proved the read in-kind:
     /// only an ABI contract violation, never a value-shaped failure.
-    private static func refuse(_ status: relate_status, _ what: String) throws {
+    private static func refuse(_ status: relate_status, _ what: String) throws(RelateError) {
         guard status == RELATE_OK else {
             throw RelateError.decoding("the walker refused an in-kind \(what) read")
         }
@@ -192,7 +187,7 @@ extension CypherValue {
     /// The ABI's container-length contract: a negative raw is the walker's
     /// refusal of an in-kind length read — one spelling for LIST, MAP and
     /// VECTOR.
-    private static func length(_ raw: Int64, _ what: String) throws -> Int64 {
+    private static func length(_ raw: Int64, _ what: String) throws(RelateError) -> Int64 {
         guard raw >= 0 else {
             throw RelateError.decoding("the walker refused an in-kind \(what) length")
         }
@@ -201,7 +196,7 @@ extension CypherValue {
 
     /// STRING (or a RELATIONSHIP's type) with its byte length, so an
     /// interior NUL crosses whole.
-    private static func string(_ handle: relate_value) throws -> String {
+    private static func string(_ handle: relate_value) throws(RelateError) -> String {
         var length = 0
         guard let pointer = relate_value_string(handle, &length) else {
             throw RelateError.decoding("the walker returned NULL for a string value")
@@ -209,13 +204,26 @@ extension CypherValue {
         return try utf8(pointer, length, what: "a string value")
     }
 
-    private static func zone(_ handle: relate_value) throws -> String? {
+    private static func zone(_ handle: relate_value) throws(RelateError) -> String? {
         let text = try required(relate_value_zone(handle), "a zone")
         return text.isEmpty ? nil : text
     }
 
+    /// A NODE's labels: its list items, each of which the ABI promises is a
+    /// string.
+    private static func labels(_ handle: relate_value) throws(RelateError) -> [String] {
+        var labels: [String] = []
+        for item in try listItems(handle) {
+            guard case .string(let label) = item else {
+                throw RelateError.decoding("a node label is not a string")
+            }
+            labels.append(label)
+        }
+        return labels
+    }
+
     /// LIST items, PATH elements or a NODE's labels.
-    private static func listItems(_ handle: relate_value) throws -> [CypherValue] {
+    private static func listItems(_ handle: relate_value) throws(RelateError) -> [CypherValue] {
         let count = try length(relate_value_list_len(handle), "list")
         var items: [CypherValue] = []
         items.reserveCapacity(Int(count))
@@ -229,7 +237,7 @@ extension CypherValue {
     }
 
     /// MAP entries or an entity's properties, in the engine's order.
-    private static func mapEntries(_ handle: relate_value) throws -> [String: CypherValue] {
+    private static func mapEntries(_ handle: relate_value) throws(RelateError) -> [String: CypherValue] {
         let count = try length(relate_value_map_len(handle), "map")
         var entries: [String: CypherValue] = [:]
         entries.reserveCapacity(Int(count))
@@ -258,7 +266,7 @@ extension CypherValue {
         return entries
     }
 
-    private static func vector(_ handle: relate_value) throws -> Vector {
+    private static func vector(_ handle: relate_value) throws(RelateError) -> Vector {
         let name = try required(relate_value_vector_dtype(handle), "a vector dtype")
         guard let dtype = Vector.DType(rawValue: name) else {
             throw RelateError.decoding("unknown vector dtype '\(name)'")
@@ -266,18 +274,18 @@ extension CypherValue {
         let dim = try length(relate_value_vector_dim(handle), "vector")
         /// One coordinate loop for both coordinate families: the accessor
         /// and the element type are the only differences.
-        func coordinates<T>(_ read: (Int64) throws -> T) throws -> [T] {
+        func coordinates<T>(_ read: (Int64) throws(RelateError) -> T) throws(RelateError) -> [T] {
             var values: [T] = []
             values.reserveCapacity(Int(dim))
             for index in 0..<dim { values.append(try read(index)) }
             return values
         }
         if dtype.isFloat {
-            return .floats(dtype: dtype, values: try coordinates { index in
+            return .floats(dtype: dtype, values: try coordinates { (index) throws(RelateError) in
                 try scalarAt(handle, index, relate_value_vector_float, initial: 0, what: "vector coordinate")
             })
         }
-        return .ints(dtype: dtype, values: try coordinates { index in
+        return .ints(dtype: dtype, values: try coordinates { (index) throws(RelateError) in
             try scalarAt(handle, index, relate_value_vector_int, initial: 0, what: "vector coordinate")
         })
     }
