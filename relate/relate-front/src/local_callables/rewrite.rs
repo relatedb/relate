@@ -45,7 +45,7 @@
 
 use relate_core::{Error, Result};
 use relate_parser::{
-    CallProcedureClause, CallScope, CallSubqueryClause, Clause, EdgeMut, Expr, LabelExpr,
+    CallProcedureClause, CallScope, CallSubqueryClause, Clause, Expr, ExprEdgeMut, LabelExpr,
     LocalDefinitionBody, LocalParam, PatternElement, PatternPath, ReturnClause, ReturnItem,
     SearchSpec, Statement, WithClause, WithOrigin, YieldMode,
 };
@@ -116,10 +116,10 @@ impl Resolver {
         // walker uses). A function call is rewritten after its arguments, so
         // the call site sees them already resolved.
         expr.try_for_each_edge_mut(|edge| match edge {
-            EdgeMut::Expr(child) => self.visit_expr(child),
-            EdgeMut::Pattern(pattern) => self.visit_pattern(pattern),
-            EdgeMut::Subquery(statement) => self.resolve_statement(statement),
-            EdgeMut::Label(label) => self.visit_label_expr(label),
+            ExprEdgeMut::Expr(child) => self.visit_expr(child),
+            ExprEdgeMut::Pattern(pattern) => self.visit_pattern(pattern),
+            ExprEdgeMut::Subquery(statement) => self.resolve_statement(statement),
+            ExprEdgeMut::Label(label) => self.visit_label_expr(label),
         })?;
         if let Expr::FunctionCall(call) = expr {
             self.rewrite_function_call(call)?;

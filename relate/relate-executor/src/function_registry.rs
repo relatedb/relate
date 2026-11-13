@@ -294,14 +294,15 @@ mod tests {
     }
 
     /// The four recased aggregate names and the front's alias table are one
-    /// fact in two layers (ADR-0497 §11, CIP-128): `AGGREGATE_ALIASES`'s
-    /// display column — the spelling the lowering emits into IR — must equal
+    /// fact in two layers (ADR-0497 §11, CIP-128): `FUNCTION_ALIASES`'s
+    /// aggregate-class display — the spelling the lowering emits into IR — must equal
     /// the catalogue name the registry renders, or `RETURN percentile_cont(x)`
     /// and `SHOW FUNCTIONS` would print two different spellings for one
     /// function.
     #[test]
     fn aggregate_alias_display_columns_match_the_registry_keys() {
-        for &(alias, canonical, display) in relate_front::agg::AGGREGATE_ALIASES {
+        for a in relate_front::agg::aggregate_aliases() {
+            let (alias, canonical, display) = (a.spelling, a.canonical, a.display);
             let metas: Vec<&FunctionMeta> = function_metas(canonical).collect();
             assert_eq!(metas.len(), 1, "{alias} -> {canonical} has no unique row");
             assert_eq!(

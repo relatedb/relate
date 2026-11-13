@@ -1,10 +1,10 @@
 //! `Expr::try_for_each_edge` / `try_for_each_edge_mut` enumerate the same
 //! edges in the same order: expression children, patterns, label expressions
-//! and subquery statements, each as its own `Edge` variant.
+//! and subquery statements, each as its own `ExprEdge` variant.
 
 use std::convert::Infallible;
 
-use relate_parser::{parse, Clause, Edge, EdgeMut, Expr};
+use relate_parser::{parse, Clause, Expr, ExprEdge, ExprEdgeMut};
 
 fn return_expr(query: &str) -> Expr {
     let stmt = parse(query).expect("parse");
@@ -18,7 +18,7 @@ fn return_expr(query: &str) -> Expr {
 fn children(expr: &Expr) -> Vec<&Expr> {
     let mut out = Vec::new();
     let Ok(()) = expr.try_for_each_edge::<Infallible>(|edge| {
-        if let Edge::Expr(child) = edge {
+        if let ExprEdge::Expr(child) = edge {
             out.push(child);
         }
         Ok(())
@@ -29,7 +29,7 @@ fn children(expr: &Expr) -> Vec<&Expr> {
 fn children_mut(expr: &mut Expr) -> Vec<&mut Expr> {
     let mut out = Vec::new();
     let Ok(()) = expr.try_for_each_edge_mut::<Infallible>(|edge| {
-        if let EdgeMut::Expr(child) = edge {
+        if let ExprEdgeMut::Expr(child) = edge {
             out.push(child);
         }
         Ok(())
@@ -108,10 +108,10 @@ fn pattern_label_and_subquery_edges_cover_patterns_labels_and_subqueries() {
         let mut out = Vec::new();
         let Ok(()) = e.try_for_each_edge::<Infallible>(|edge| {
             match edge {
-                Edge::Expr(_) => {}
-                Edge::Pattern(_) => out.push("pattern"),
-                Edge::Subquery(_) => out.push("subquery"),
-                Edge::Label(_) => out.push("label"),
+                ExprEdge::Expr(_) => {}
+                ExprEdge::Pattern(_) => out.push("pattern"),
+                ExprEdge::Subquery(_) => out.push("subquery"),
+                ExprEdge::Label(_) => out.push("label"),
             }
             Ok(())
         });
@@ -125,7 +125,7 @@ fn pattern_label_and_subquery_edges_cover_patterns_labels_and_subqueries() {
     let mut e = return_expr("RETURN n:A");
     let mut mut_kinds = Vec::new();
     let Ok(()) = e.try_for_each_edge_mut::<Infallible>(|edge| {
-        mut_kinds.push(matches!(edge, EdgeMut::Label(_)));
+        mut_kinds.push(matches!(edge, ExprEdgeMut::Label(_)));
         Ok(())
     });
     assert_eq!(mut_kinds, [false, true]);
@@ -138,10 +138,10 @@ fn edges_arrive_in_the_documented_visit_order() {
         let mut out = Vec::new();
         let Ok(()) = e.try_for_each_edge::<Infallible>(|edge| {
             out.push(match edge {
-                Edge::Expr(_) => 'e',
-                Edge::Pattern(_) => 'p',
-                Edge::Subquery(_) => 's',
-                Edge::Label(_) => 'l',
+                ExprEdge::Expr(_) => 'e',
+                ExprEdge::Pattern(_) => 'p',
+                ExprEdge::Subquery(_) => 's',
+                ExprEdge::Label(_) => 'l',
             });
             Ok(())
         });

@@ -22,52 +22,6 @@ pub(super) fn map_exprs(xs: &[cl::Expr]) -> Result<Vec<mdb::Expr>> {
     xs.iter().map(lower_expr).collect()
 }
 
-/// One GQL function alias (CIP-245): the snake_case GQL/SQL spelling the
-/// parser accepts and the Cypher-canonical function name it lowers to.
-struct GqlFunctionAlias {
-    gql: &'static str,
-    cypher: &'static str,
-}
-
-/// GQL function aliases (CIP-245): the snake_case GQL/SQL spellings the
-/// parser accepts, each lowered to its Cypher-canonical function name.
-/// (`toString` rendering is not a spelling policy: the executor's value
-/// layer renders temporals at full precision by runtime type, ADR-0448.)
-///
-/// This is the scalar-function alias table. It is a second table beside
-/// [`crate::agg::AGGREGATE_ALIASES`] (which names itself "the single alias
-/// table") by necessity, not drift: that table's entries must target
-/// members of the canonical `AGGREGATES` set and carry display spellings
-/// for column naming — invariants these non-aggregate renames cannot
-/// satisfy. One table per function class, both consulted from
-/// `lower_function_name`.
-const GQL_FUNCTION_ALIASES: &[GqlFunctionAlias] = &[
-    GqlFunctionAlias {
-        gql: "path_length",
-        cypher: "length",
-    },
-    GqlFunctionAlias {
-        gql: "duration_between",
-        cypher: "duration.between",
-    },
-    GqlFunctionAlias {
-        gql: "local_time",
-        cypher: "localtime",
-    },
-    GqlFunctionAlias {
-        gql: "local_datetime",
-        cypher: "localdatetime",
-    },
-    GqlFunctionAlias {
-        gql: "zoned_time",
-        cypher: "time",
-    },
-    GqlFunctionAlias {
-        gql: "zoned_datetime",
-        cypher: "datetime",
-    },
-];
-
 /// CIP-214: `vector_distance`/`vector_norm` take a bare distance-metric
 /// keyword (e.g. EUCLIDEAN) at the argument position the canonical
 /// `crate::ast::collect::distance_metric_arg_index` table records; the keyword
@@ -90,22 +44,12 @@ fn resolve_vector_metric_arg(lowered_name: &str, args: &mut [mdb::Expr]) {
     }
 }
 
-/// The IR name for a parsed function call, applying the lowering's
-/// two name policies in order: the aggregate alias display spelling
-/// (CIP-128, resolved from the single alias table in `agg`) and the GQL
-/// scalar alias table (CIP-245). A name matching no policy keeps its
-/// parsed spelling.
+/// The IR name for a parsed function call: the alias table's lowered
+/// spelling (aggregate display, CIP-128; scalar rename, CIP-245), or the
+/// parsed spelling when the name is not an alias.
 fn lower_function_name(f: &cl::FunctionCallExpr, lowered_name: &str) -> SmallName {
-    if let Some(display) = crate::agg::display_agg_alias(lowered_name) {
-        SmallName::from_name(display)
-    } else if let Some(alias) = GQL_FUNCTION_ALIASES
-        .iter()
-        .find(|alias| alias.gql == lowered_name)
-    {
-        SmallName::from_name(alias.cypher)
-    } else {
-        f.name.clone()
-    }
+    crate::agg::lowered_alias_name(lowered_name)
+        .map_or_else(|| f.name.clone(), SmallName::from_name)
 }
 
 /// A lowered expression that is entirely a literal — scalars, and lists

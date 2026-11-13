@@ -1,9 +1,9 @@
-//! Aggregation name aliases.
+//! Function name aliases and aggregation helpers.
 //!
 //! The canonical aggregate function set (`AGGREGATES`) is owned by
 //! `relate-ir` — the lowest layer that needs aggregation detection —
 //! and re-exported here so every consumer shares one definition. This
-//! module adds the aggregate alias table (`AGGREGATE_ALIASES`) on top.
+//! module adds the one function-alias table (`FUNCTION_ALIASES`) on top.
 //! Consumers: the front validators (`validate`), the lowering rename in
 //! `lower.rs` (which emits the display spelling), the planner, and the
 //! executor's aggregation machinery / `SHOW FUNCTIONS` catalog.
@@ -13,39 +13,81 @@ pub use relate_ir::{AGGREGATES, SINGLE_INPUT_AGGREGATES};
 use crate::ast::tree::expr_contains;
 use relate_parser::{Expr, GroupBySpec, ReturnItem};
 
-/// Aggregate alias table (CIP-128's snake_case GQL/SQL spellings): each
-/// entry maps an accepted alternate lowercase spelling to its canonical
-/// lowercase name and to the canonical *display* spelling the lowering
-/// emits into IR (so an unaliased `RETURN percentile_cont(x)` keeps the
-/// Cypher-canonical column name `percentileCont(x)`).
-pub const AGGREGATE_ALIASES: &[(&str, &str, &str)] = &[
-    ("collect_list", "collect", "collect"),
-    ("stdev_samp", "stdev", "stDev"),
-    ("stddev_samp", "stdev", "stDev"),
-    ("stdev_pop", "stdevp", "stDevP"),
-    ("stddev_pop", "stdevp", "stDevP"),
-    ("percentile_cont", "percentilecont", "percentileCont"),
-    ("percentile_disc", "percentiledisc", "percentileDisc"),
-];
-
-/// The canonical lowercase aggregate name for an accepted lowercase
-/// spelling, or the input unchanged when it is not an alias.
-pub fn canonical_agg_name(name: &str) -> &str {
-    for (alias, canonical, _) in AGGREGATE_ALIASES {
-        if *alias == name {
-            return canonical;
-        }
-    }
-    name
+/// One accepted alternate lowercase spelling, the canonical lowercase name
+/// it resolves to, and the spelling the lowering emits into IR: for an
+/// aggregate the display spelling (so an unaliased `RETURN
+/// percentile_cont(x)` keeps the Cypher-canonical column name
+/// `percentileCont(x)`), for a scalar the canonical name itself.
+#[derive(Clone, Copy, Debug)]
+pub struct FunctionAlias {
+    pub spelling: &'static str,
+    pub canonical: &'static str,
+    pub display: &'static str,
 }
 
-/// The display spelling (IR name) for an accepted lowercase aggregate
-/// alias, or `None` when `name` is not an alias.
-pub fn display_agg_alias(name: &str) -> Option<&'static str> {
-    AGGREGATE_ALIASES
+const fn aggregate(
+    spelling: &'static str,
+    canonical: &'static str,
+    display: &'static str,
+) -> FunctionAlias {
+    FunctionAlias {
+        spelling,
+        canonical,
+        display,
+    }
+}
+
+const fn scalar(spelling: &'static str, canonical: &'static str) -> FunctionAlias {
+    FunctionAlias {
+        spelling,
+        canonical,
+        display: canonical,
+    }
+}
+
+/// The one function-alias table: CIP-128's snake_case aggregate spellings
+/// and CIP-245's snake_case GQL/SQL scalar spellings, scalar rows target names outside `AGGREGATES`.
+/// (`toString` rendering is not a spelling policy: the executor's value
+/// layer renders temporals at full precision by runtime type, ADR-0448.)
+const FUNCTION_ALIASES: &[FunctionAlias] = &[
+    aggregate("collect_list", "collect", "collect"),
+    aggregate("stdev_samp", "stdev", "stDev"),
+    aggregate("stddev_samp", "stdev", "stDev"),
+    aggregate("stdev_pop", "stdevp", "stDevP"),
+    aggregate("stddev_pop", "stdevp", "stDevP"),
+    aggregate("percentile_cont", "percentilecont", "percentileCont"),
+    aggregate("percentile_disc", "percentiledisc", "percentileDisc"),
+    scalar("path_length", "length"),
+    scalar("duration_between", "duration.between"),
+    scalar("local_time", "localtime"),
+    scalar("local_datetime", "localdatetime"),
+    scalar("zoned_time", "time"),
+    scalar("zoned_datetime", "datetime"),
+];
+
+/// The aggregate rows of the alias table: those whose canonical name is a
+/// member of the canonical `AGGREGATES` set (the one source of truth).
+pub fn aggregate_aliases() -> impl Iterator<Item = &'static FunctionAlias> {
+    FUNCTION_ALIASES
         .iter()
-        .find(|(alias, _, _)| *alias == name)
-        .map(|(_, _, display)| *display)
+        .filter(|a| AGGREGATES.contains(&a.canonical))
+}
+
+/// The canonical lowercase aggregate name for an accepted lowercase
+/// spelling, or the input unchanged when it is not an aggregate alias.
+pub fn canonical_agg_name(name: &str) -> &str {
+    aggregate_aliases()
+        .find(|a| a.spelling == name)
+        .map_or(name, |a| a.canonical)
+}
+
+/// The IR name a lowercase alias spelling lowers to, `None` when `name` is
+/// not an alias.
+pub(crate) fn lowered_alias_name(name: &str) -> Option<&'static str> {
+    FUNCTION_ALIASES
+        .iter()
+        .find(|a| a.spelling == name)
+        .map(|a| a.display)
 }
 
 /// True when `name` (any casing, any accepted spelling) is an aggregate
@@ -201,9 +243,12 @@ mod tests {
 
     #[test]
     fn display_spellings_keep_cypher_casing() {
-        assert_eq!(display_agg_alias("percentile_cont"), Some("percentileCont"));
-        assert_eq!(display_agg_alias("stddev_pop"), Some("stDevP"));
-        assert_eq!(display_agg_alias("count"), None);
+        assert_eq!(
+            lowered_alias_name("percentile_cont"),
+            Some("percentileCont")
+        );
+        assert_eq!(lowered_alias_name("stddev_pop"), Some("stDevP"));
+        assert_eq!(lowered_alias_name("count"), None);
     }
 
     #[test]
@@ -226,26 +271,78 @@ mod tests {
     }
 
     #[test]
-    fn alias_targets_are_members_of_the_canonical_set() {
+    fn aggregate_alias_targets_are_members_of_the_canonical_set() {
         // The alias table may only point at members of the canonical set
         // (re-exported from `relate-ir`), and each display spelling must
         // be exactly its canonical target re-cased.
-        for (alias, canonical, display) in AGGREGATE_ALIASES {
+        for a in aggregate_aliases() {
+            let (alias, canonical, display) = (a.spelling, a.canonical, a.display);
             assert!(
-                AGGREGATES.contains(canonical),
+                AGGREGATES.contains(&canonical),
                 "alias {alias} targets {canonical}, which is not in the canonical set"
             );
             assert_eq!(
                 display.to_lowercase(),
-                *canonical,
+                canonical,
                 "alias {alias} display spelling {display} drifted from {canonical}"
             );
             assert!(
-                !AGGREGATES.contains(alias),
+                !AGGREGATES.contains(&alias),
                 "alias {alias} collides with a canonical name"
             );
             assert!(is_aggregate_name(alias), "alias {alias} must match");
         }
+    }
+
+    #[test]
+    fn the_aggregate_alias_rows_are_pinned() {
+        // A mistyped canonical would silently reclassify a row as scalar
+        // (the class is derived from `AGGREGATES` membership), so the
+        // expected aggregate spellings are pinned here.
+        let mut got: Vec<&str> = aggregate_aliases().map(|a| a.spelling).collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            [
+                "collect_list",
+                "percentile_cont",
+                "percentile_disc",
+                "stddev_pop",
+                "stddev_samp",
+                "stdev_pop",
+                "stdev_samp",
+            ]
+        );
+    }
+
+    #[test]
+    fn alias_spellings_are_unique() {
+        for a in FUNCTION_ALIASES {
+            assert_eq!(
+                FUNCTION_ALIASES
+                    .iter()
+                    .filter(|b| b.spelling == a.spelling)
+                    .count(),
+                1,
+                "duplicate alias spelling {}",
+                a.spelling
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_aliases_lower_to_their_canonical_name() {
+        let mut scalars = 0;
+        for a in FUNCTION_ALIASES
+            .iter()
+            .filter(|a| !AGGREGATES.contains(&a.canonical))
+        {
+            scalars += 1;
+            assert_eq!(a.display, a.canonical, "scalar alias {}", a.spelling);
+            assert_eq!(lowered_alias_name(a.spelling), Some(a.canonical));
+            assert!(!is_aggregate_name(a.spelling));
+        }
+        assert!(scalars > 0);
     }
 
     #[test]

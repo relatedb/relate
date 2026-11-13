@@ -11,7 +11,7 @@ use super::{Expr, InterpPart, LabelExpr, MapProjectionItem, PatternPath, Stateme
 /// walker that visits edges as they arrive reproduces the documented order
 /// without a second pass.
 #[derive(Debug)]
-pub enum Edge<'a> {
+pub enum ExprEdge<'a> {
     /// An expression child: operand, argument, list/map item, CASE arm,
     /// comprehension or reduce body, subscript part, interpolation embed.
     Expr(&'a Expr),
@@ -24,22 +24,22 @@ pub enum Edge<'a> {
     Label(&'a LabelExpr),
 }
 
-/// Mutable twin of [`Edge`].
+/// Mutable twin of [`ExprEdge`].
 #[derive(Debug)]
-pub enum EdgeMut<'a> {
-    /// See [`Edge::Expr`].
+pub enum ExprEdgeMut<'a> {
+    /// See [`ExprEdge::Expr`].
     Expr(&'a mut Expr),
-    /// See [`Edge::Pattern`].
+    /// See [`ExprEdge::Pattern`].
     Pattern(&'a mut PatternPath),
-    /// See [`Edge::Subquery`].
+    /// See [`ExprEdge::Subquery`].
     Subquery(&'a mut Statement),
-    /// See [`Edge::Label`].
+    /// See [`ExprEdge::Label`].
     Label(&'a mut LabelExpr),
 }
 
 /// Expands the one exhaustive `Expr` match into the shared or the mutable
 /// edge enumeration: `$r` is the borrow (`&` or `&mut`), `$iter` the matching
-/// iterator method, `$edge` the output enum (`Edge` or `EdgeMut`), `$f` the
+/// iterator method, `$edge` the output enum (`ExprEdge` or `ExprEdgeMut`), `$f` the
 /// fallible sink. Every edge, expression or structural, is listed once and
 /// in visit order, so the two spellings cannot drift and nothing is dropped.
 macro_rules! edge_table {
@@ -166,9 +166,9 @@ impl Expr {
     /// fails compilation.
     pub fn try_for_each_edge<'a, E>(
         &'a self,
-        mut f: impl FnMut(Edge<'a>) -> Result<(), E>,
+        mut f: impl FnMut(ExprEdge<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
-        edge_table!(self, [&], iter, Edge, f);
+        edge_table!(self, [&], iter, ExprEdge, f);
         Ok(())
     }
 
@@ -176,9 +176,9 @@ impl Expr {
     /// table.
     pub fn try_for_each_edge_mut<'a, E>(
         &'a mut self,
-        mut f: impl FnMut(EdgeMut<'a>) -> Result<(), E>,
+        mut f: impl FnMut(ExprEdgeMut<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
-        edge_table!(self, [&mut], iter_mut, EdgeMut, f);
+        edge_table!(self, [&mut], iter_mut, ExprEdgeMut, f);
         Ok(())
     }
 }

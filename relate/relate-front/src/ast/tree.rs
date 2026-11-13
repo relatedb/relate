@@ -8,7 +8,7 @@
 
 use relate_core::DynamicNameToken;
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, Edge, Expr, LocalDefinitionBody, PatternElement, Statement};
+use relate_parser::{Clause, Expr, ExprEdge, LocalDefinitionBody, PatternElement, Statement};
 
 use super::stmt_ref::StmtRef;
 
@@ -630,30 +630,25 @@ fn walk_expr_at(
     // subquery statements before the expression children, a label
     // expression after them. A new pattern- or subquery-bearing variant
     // cannot be dropped here.
-    let enter = walk.descend == SubqueryDescent::Enter;
+    let enters = walk.descend == SubqueryDescent::Enter;
     expr.try_for_each_edge(|edge| match edge {
-        Edge::Pattern(pattern) => {
-            if enter {
-                walk_path_exprs_tree(pattern, depths.deeper_expr(), walk)?;
-            }
-            Ok(())
-        }
-        Edge::Label(label) => {
-            if enter {
-                // A label predicate: the operand is evaluated per row, never
-                // type-checked at compile time (Neo4j's `TypeError`).
-                walk_label_expr_tree(label, depths.deeper_expr(), walk, LabelSite::Predicate)?;
-            }
-            Ok(())
+        ExprEdge::Expr(child) => walk_expr_child(expr, child, depths.deeper_expr(), walk),
+        // The one descent-policy gate: an `Opaque` walk treats every
+        // structural edge (pattern, label expression, subquery) as a leaf.
+        _ if !enters => Ok(()),
+        ExprEdge::Pattern(pattern) => walk_path_exprs_tree(pattern, depths.deeper_expr(), walk),
+        // A label predicate: the operand is evaluated per row, never
+        // type-checked at compile time (Neo4j's `TypeError`).
+        ExprEdge::Label(label) => {
+            walk_label_expr_tree(label, depths.deeper_expr(), walk, LabelSite::Predicate)
         }
         // Expression-embedded subquery: lowering lowers the body from
         // inside `lower_expr`'s recursion, so the body's expressions sit
         // one past this node's depth on the same native stack -- carry
         // the count across the statement boundary instead of resetting.
-        Edge::Subquery(statement) => {
+        ExprEdge::Subquery(statement) => {
             enter_substatement(walk, StmtRef::Real(statement), depths.deeper_subquery())
         }
-        Edge::Expr(child) => walk_expr_child(expr, child, depths.deeper_expr(), walk),
     })
 }
 

@@ -2028,7 +2028,7 @@ pub enum Direction {
 // -- Expression nodes --
 
 mod expr_children;
-pub use expr_children::{Edge, EdgeMut};
+pub use expr_children::{ExprEdge, ExprEdgeMut};
 
 /// One segment of a CIP-261 interpolated string literal.
 #[derive(Debug, Clone, PartialEq)]
