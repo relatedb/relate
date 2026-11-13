@@ -26,6 +26,50 @@ pub(super) enum CountDelta {
     Remove,
 }
 
+/// One distinct label set (its label names in label order) with the
+/// number of live nodes carrying it — the unit the windowed label-set read
+/// hands the grouped-aggregate answer.
+pub(crate) type LabelSetCount = (std::sync::Arc<Vec<String>>, u64);
+
+impl CountDelta {
+    /// The one drain-on-zero state machine every exact count map rides
+    /// (the apply's `count_entry` and the admission estimate's overlay
+    /// fold): the entry's count after the paired ±1, and the charge it
+    /// carries — `entry_bytes` when an Add creates the entry (count 0 to
+    /// 1), the refund when a Remove drains it back to zero, 0 otherwise.
+    /// A Remove at zero has no paired Add: `None`, which the apply treats
+    /// as a broken store and the estimate as nothing to price. An Add past
+    /// u64 is a broken store here, loudly.
+    fn step(self, count: u64, entry_bytes: u64) -> Option<(u64, i64)> {
+        match self {
+            CountDelta::Add => {
+                let next = count
+                    .checked_add(1)
+                    .expect("count overflow: an Add past u64 is a broken store");
+                Some((next, if count == 0 { entry_bytes as i64 } else { 0 }))
+            }
+            CountDelta::Remove => match count {
+                0 => None,
+                1 => Some((0, -(entry_bytes as i64))),
+                _ => Some((count - 1, 0)),
+            },
+        }
+    }
+}
+
+/// One label mutation as the count bundle sees it (LABS-370, ADR-0589):
+/// the labels that joined or left, the direction, and the node's whole
+/// label set on either side of the edit.
+pub(super) struct LabelMutation<'a> {
+    /// The node's label set before the mutation.
+    pub(super) before: &'a [u32],
+    /// The node's label set once the edit is installed.
+    pub(super) after: &'a [u32],
+    /// The labels that joined (Add) or left (Remove).
+    pub(super) labels: &'a [u32],
+    pub(super) delta: CountDelta,
+}
+
 /// LABS-851 (the structure round): the counting operator's count state —
 /// one bundle behind the Graph's one `count_stats` mutex (the
 /// `indexes: Indexes` precedent), so the windowed-consistency invariant
@@ -186,55 +230,45 @@ impl Graph {
             .collect()
     }
 
-    /// The committed node count of one label set (ADR-0589), `None`
-    /// when no live node carries it. A point read under the bundle's
-    /// guard: the admission estimate seeds its per-set overlay one probe
-    /// per distinct set a batch touches, never a copy of the map.
-    pub(super) fn label_set_count(&self, set: &[u32]) -> Option<u64> {
+    /// The committed node count of one label set (ADR-0589), 0 when no
+    /// live node carries it. A point read under the bundle's guard: the
+    /// admission estimate seeds its per-set overlay one probe per distinct
+    /// set a batch touches, never a copy of the map.
+    fn committed_set_count(&self, set: &[u32]) -> u64 {
         self.count_stats
             .lock()
             .unwrap()
             .label_set_counts
             .get(set)
             .copied()
+            .unwrap_or(0)
     }
 
     /// The admission estimate's fold over its label-set overlay (the
-    /// batch's net counts, seeded from [`Self::label_set_count`]): the
-    /// apply's `count_entry` policy and charge, but tolerant where the
+    /// batch's net counts): the apply's `count_entry` policy and charge
+    /// through the one shared [`CountDelta::step`], but tolerant where the
     /// apply is loud — the estimate simulates a batch that may still be
     /// refused, and a simulated removal with no paired add prices
-    /// nothing (an over-estimate) instead of failing the admission. A
-    /// drained set stays in the overlay at zero (present, not absent): the
-    /// caller seeds only sets the overlay has never held, so a drained
-    /// committed set must not be re-seeded from the store.
+    /// nothing (an over-estimate) instead of failing the admission. A set
+    /// the overlay has never held seeds from the committed count in the
+    /// same one probe of the overlay; a drained set stays in it at zero
+    /// (present, not absent), so a drained committed set is never
+    /// re-seeded from the store.
     pub(super) fn estimate_set_move(
+        &self,
         overlay: &mut HashMap<Vec<u32>, u64>,
         set: &[u32],
         delta: CountDelta,
     ) -> i64 {
-        let bytes = Self::label_set_entry_bytes(set) as i64;
-        let count = overlay.entry(set.to_vec()).or_insert(0);
-        match delta {
-            CountDelta::Add => {
-                *count += 1;
-                if *count == 1 {
-                    bytes
-                } else {
-                    0
-                }
+        let count = overlay
+            .entry(set.to_vec())
+            .or_insert_with(|| self.committed_set_count(set));
+        match delta.step(*count, Self::label_set_entry_bytes(set)) {
+            Some((next, charge)) => {
+                *count = next;
+                charge
             }
-            CountDelta::Remove => match *count {
-                0 => 0,
-                1 => {
-                    *count = 0;
-                    -bytes
-                }
-                _ => {
-                    *count -= 1;
-                    0
-                }
-            },
+            None => 0,
         }
     }
 
@@ -304,41 +338,30 @@ impl Graph {
         // invariant-bound values). The key is borrowed so the dominant
         // occupied-entry Add and every Remove allocate nothing (the
         // label-set map's keys are vectors); only the Add that creates
-        // the entry owns its key.
-        match delta {
-            CountDelta::Add => match counts.get_mut(key) {
-                Some(count) => {
-                    *count = count
-                        .checked_add(1)
-                        .expect("count overflow: an Add past u64 is a broken store");
-                    0
-                }
-                None => {
-                    counts.insert(key.to_owned(), 1);
-                    entry_bytes as i64
-                }
-            },
-            // Every Remove is paired with the Add that created its entry
-            // (the create/delete and label-mutation seams pair 1:1; the
-            // wholesale rebuild folds live rels only), so a vacant key on
-            // the Remove side is unrepresentable in the paired contract —
-            // a broken pairing seam fails here, at the seam that broke
-            // it, not as a silently drifting count map.
-            CountDelta::Remove => {
-                let count = counts
-                    .get_mut(key)
-                    .expect("count Remove without its paired Add");
-                if *count > 1 {
-                    *count -= 1;
-                    0
-                } else {
-                    // A drained entry leaves the map — label churn must
-                    // not leak zero-count entries — and refunds its
-                    // creation charge (the accounting oracle tracks both
-                    // directions).
+        // the entry owns its key. Every Remove is paired with the Add
+        // that created its entry (the create/delete and label-mutation
+        // seams pair 1:1; the wholesale rebuild folds live rels only), so
+        // a vacant key on the Remove side is unrepresentable in the
+        // paired contract — a broken pairing seam fails here, at the seam
+        // that broke it, not as a silently drifting count map. A drained
+        // entry leaves the map — label churn must not leak zero-count
+        // entries — and refunds its creation charge (the accounting
+        // oracle tracks both directions).
+        const UNPAIRED: &str = "count Remove without its paired Add";
+        match counts.get_mut(key) {
+            Some(count) => {
+                let (next, charge) = delta.step(*count, entry_bytes).expect(UNPAIRED);
+                if next == 0 {
                     counts.remove(key);
-                    -(entry_bytes as i64)
+                } else {
+                    *count = next;
                 }
+                charge
+            }
+            None => {
+                let (next, charge) = delta.step(0, entry_bytes).expect(UNPAIRED);
+                counts.insert(key.to_owned(), next);
+                charge
             }
         }
     }
@@ -465,17 +488,11 @@ impl Graph {
     /// ADR-0589: the node's label set moves from `before` to `after`
     /// in the same guarded step as the per-label counts, so a reader
     /// never sees the node in neither set or in both.
-    pub(super) fn bump_label_counts(
-        &self,
-        before: &[u32],
-        after: &[u32],
-        labels: &[u32],
-        delta: CountDelta,
-    ) {
+    pub(super) fn bump_label_counts(&self, mutation: LabelMutation<'_>) {
         self.bump_counts(|stats| {
-            Self::fold_label_counts(stats, labels, delta)
-                + Self::fold_label_set(stats, before, CountDelta::Remove)
-                + Self::fold_label_set(stats, after, CountDelta::Add)
+            Self::fold_label_counts(stats, mutation.labels, mutation.delta)
+                + Self::fold_label_set(stats, mutation.before, CountDelta::Remove)
+                + Self::fold_label_set(stats, mutation.after, CountDelta::Add)
         });
     }
 
@@ -628,10 +645,8 @@ impl Graph {
     /// bundle's guard; the planner's `PatternStats` adapter and the
     /// constraint-key estimate read this boundary.
     pub(crate) fn pattern_rel_type_rows(&self, rel_type: &str) -> u64 {
-        // A never-interned name is a hard 0, like `interned_count`.
-        self.interner
-            .get_id(rel_type)
-            .map_or(0, |id| self.pattern_rel_type_rows_by_id(id))
+        let stats = self.count_stats.lock().unwrap();
+        self.interned_count(&stats.rel.rel_type_counts, rel_type)
     }
 
     /// [`Graph::pattern_rel_type_rows`] for an already-resolved token id.
@@ -676,11 +691,24 @@ impl Graph {
         exact: impl FnOnce() -> bool,
         probe: CountProbe,
     ) -> Option<u64> {
+        self.windowed_read(exact, |stats| Some(self.probe_count_under(probe, stats)))
+    }
+
+    /// The consistency window both windowed readers share: the exactness
+    /// check and `read` run under the bundle's one guard, and a failed
+    /// check — or a `read` that declines — is `None` (the scan answers).
+    /// `exact` carries the lock-free obligation [`Self::windowed_stats_count`]
+    /// states; `read` runs under the guard and must not lock the bundle.
+    fn windowed_read<R>(
+        &self,
+        exact: impl FnOnce() -> bool,
+        read: impl FnOnce(&CountStats) -> Option<R>,
+    ) -> Option<R> {
         let stats = self.count_stats.lock().unwrap();
         if !exact() {
             return None;
         }
-        Some(self.probe_count_under(probe, &stats))
+        read(&stats)
     }
 
     /// The set map answers a grouped aggregate in time proportional to
@@ -713,18 +741,16 @@ impl Graph {
     pub(crate) fn windowed_label_sets(
         &self,
         exact: impl FnOnce() -> bool,
-    ) -> Option<Vec<(std::sync::Arc<Vec<String>>, u64)>> {
-        let mut sets: Vec<(Vec<u32>, u64)> = {
-            let stats = self.count_stats.lock().unwrap();
-            if !exact() || !Self::label_set_map_pays(&stats) {
-                return None;
-            }
-            stats
-                .label_set_counts
-                .iter()
-                .map(|(set, count)| (set.clone(), *count))
-                .collect()
-        };
+    ) -> Option<Vec<LabelSetCount>> {
+        let mut sets: Vec<(Vec<u32>, u64)> = self.windowed_read(exact, |stats| {
+            Self::label_set_map_pays(stats).then(|| {
+                stats
+                    .label_set_counts
+                    .iter()
+                    .map(|(set, count)| (set.clone(), *count))
+                    .collect()
+            })
+        })?;
         sets.sort_unstable();
         Some(
             sets.into_iter()

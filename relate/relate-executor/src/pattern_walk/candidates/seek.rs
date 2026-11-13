@@ -11,7 +11,7 @@ use relate_core::{NodeId, Result, Value};
 use relate_ir::{BinaryOp, Expr};
 use relate_names::SmallName;
 
-use crate::eval::{eval, orient};
+use crate::eval::{eval, named_call, orient};
 use crate::graph::{RangeSeek, SpatialSeek};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -328,21 +328,6 @@ fn prop_key(expr: &Expr, var: &SmallName) -> Option<String> {
     // The seek's property key is the planner-IR name; it renders once at
     // this recognition (index lookup text, not a per-row read).
     crate::eval::key_of(expr, var).map(|key| key.to_string())
-}
-
-/// The one call-shape test: `expr` is a call to `name` (case-insensitive)
-/// with exactly `arity` arguments, returning them. Every seek shape and the
-/// id-conversion reader consult it instead of re-spelling the name/arity
-/// conjunction; the label-set group recognizer (ADR-0589) reads it too.
-pub(crate) fn named_call<'a>(expr: &'a Expr, name: &str, arity: usize) -> Option<&'a [Expr]> {
-    match expr {
-        Expr::Function {
-            name: actual, args, ..
-        } if actual.with_str(|text| text.eq_ignore_ascii_case(name)) && args.len() == arity => {
-            Some(args)
-        }
-        _ => None,
-    }
 }
 
 fn point_seek_expr(

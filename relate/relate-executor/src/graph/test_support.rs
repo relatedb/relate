@@ -10,6 +10,16 @@ use relate_core::{NodeId, RelId, Value};
 use super::Graph;
 use crate::adjacency::COMPACTION_DELTA_FLOOR;
 
+/// One node carrying `labels`, no properties, inside the caller's open
+/// write.
+pub(crate) fn labelled_node(g: &Graph, labels: &[&str]) -> NodeId {
+    g.create_node(
+        labels.iter().map(|l| l.to_string()).collect(),
+        BTreeMap::new(),
+    )
+    .unwrap()
+}
+
 /// Two committed `:N` endpoint nodes, shared by the relationship tests.
 pub(crate) fn endpoints(g: &Graph) -> (NodeId, NodeId) {
     g.begin_write().unwrap();

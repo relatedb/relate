@@ -18,7 +18,7 @@ use count_state::{CountDelta, CountStats};
 
 // The count-only reader's probe shape (LABS-370 round 3, F-1-5): re-exported
 // for the recognizer in `exec` — the window itself lives on `Graph`.
-pub(crate) use count_state::CountProbe;
+pub(crate) use count_state::{CountProbe, LabelSetCount};
 
 mod engine_api;
 

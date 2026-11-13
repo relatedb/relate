@@ -228,12 +228,15 @@ impl ChargeLedger {
     /// priced through the apply's own policy over the lazily seeded
     /// overlay ([`Graph::estimate_set_move`]).
     fn bump_set(&mut self, g: &Graph, set: &[u32], delta: CountDelta) {
-        if !self.sets.contains_key(set) {
-            if let Some(committed) = g.label_set_count(set) {
-                self.sets.insert(set.to_vec(), committed);
-            }
-        }
-        self.growth += Graph::estimate_set_move(&mut self.sets, set, delta);
+        self.growth += g.estimate_set_move(&mut self.sets, set, delta);
+    }
+
+    /// One node moving between label sets (ADR-0589): the old set loses it,
+    /// the new one gains it — the paired Remove/Add every label seam
+    /// prices.
+    fn move_set(&mut self, g: &Graph, from: &[u32], to: &[u32]) {
+        self.bump_set(g, from, CountDelta::Remove);
+        self.bump_set(g, to, CountDelta::Add);
     }
 
     /// One histogram entry's charge.
@@ -367,8 +370,7 @@ impl BatchSim {
             return;
         }
         let after = ids.clone();
-        self.charges.bump_set(g, &before, CountDelta::Remove);
-        self.charges.bump_set(g, &after, CountDelta::Add);
+        self.charges.move_set(g, &before, &after);
     }
 
     /// CreateRel: both endpoint label sets are ensured into the
@@ -480,9 +482,7 @@ impl BatchSim {
         let mine = ids.clone();
         // ADR-0589: the node moves from its pre-add set (the prefix) to
         // the post-add one.
-        self.charges
-            .bump_set(g, &mine[..before], CountDelta::Remove);
-        self.charges.bump_set(g, &mine, CountDelta::Add);
+        self.charges.move_set(g, &mine[..before], &mine);
         // The pair phase prices only the ids that actually joined: apply
         // bumps just the mutated labels (`apply_incident_pair_counts`
         // walks `mutated_labels`), and the count overlay must mirror the

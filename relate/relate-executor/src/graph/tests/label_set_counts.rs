@@ -5,13 +5,7 @@
 
 use super::*;
 
-fn node(g: &Graph, labels: &[&str]) -> NodeId {
-    g.create_node(
-        labels.iter().map(|l| l.to_string()).collect(),
-        BTreeMap::new(),
-    )
-    .unwrap()
-}
+use crate::graph::test_support::labelled_node as node;
 
 fn ids(g: &Graph, labels: &[&str]) -> Vec<u32> {
     labels.iter().map(|l| g.interner.intern(l)).collect()

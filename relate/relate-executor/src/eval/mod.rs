@@ -155,6 +155,22 @@ pub(crate) fn rows_logical_bytes(rows: &[Row]) -> u64 {
         .sum()
 }
 
+/// The one call-shape test: `expr` is a call to `name` (case-insensitive)
+/// with exactly `arity` arguments, returning them. Every statement-shape
+/// recognizer (the seek shapes, the id-conversion reader, the label-set
+/// group keys of ADR-0589) consults it instead of re-spelling the
+/// name/arity conjunction.
+pub(crate) fn named_call<'a>(expr: &'a Expr, name: &str, arity: usize) -> Option<&'a [Expr]> {
+    match expr {
+        Expr::Function {
+            name: actual, args, ..
+        } if actual.with_str(|text| text.eq_ignore_ascii_case(name)) && args.len() == arity => {
+            Some(args)
+        }
+        _ => None,
+    }
+}
+
 /// Evaluate a scalar expression against a row.
 pub fn eval(
     graph: &ExecGraph<'_>,

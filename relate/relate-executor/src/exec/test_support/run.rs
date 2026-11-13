@@ -17,6 +17,14 @@ use crate::test_support::PeakPoolDouble;
 
 use super::super::{execute, execute_read_at, ExecRequest, QueryResult, ReadAdmission};
 
+/// Parse a statement into the flat clause list the statement-shape
+/// recognizers take, against the statement's opening stage (one unbound
+/// seed row).
+pub(crate) fn clauses_of(cypher: &str) -> Vec<relate_ir::Clause> {
+    let q = parse_and_lower(cypher).unwrap();
+    q.parts.into_iter().flat_map(|p| p.clauses).collect()
+}
+
 /// Run an already-lowered `Query` (tests that hand-build or rewrite IR —
 /// e.g. the REPEATABLE ELEMENTS unbounded-cap parity test, whose spellings
 /// the parser itself rejects) through the same execute path as
