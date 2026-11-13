@@ -228,15 +228,8 @@ fn gpm_rel_dfs(
     }
     if hops >= min {
         let mut accepted = state.clone();
-        // The rel variable's binding — the pinned-or-fresh policy
-        // (`gpm/mod.rs`'s `prebound`): a fresh name (absent, or null —
-        // a failed OPTIONAL MATCH pre-binds its variables to null) binds
-        // here, exactly as `gpm_bind_node` rebinds a null-bound node and
-        // the classic walker's `bind_trail` rebinds a null-bound rel; a
-        // pinned value must name the same binding (a single rel by
-        // identity, a var-length trail as the same list — the LABS-661
-        // exact-trail pin).
-        // the segment walked so far — the state's own rel ids from this
+        // The rel variable's binding over the segment walked so far —
+        // the state's own rel ids from this
         // expansion's base (see `GpmRelWalk`) — bound through the stub
         // spellings, the pinned-or-fresh policy `gpm_bind_rel` owns
         // (the anonymous case is its own, like `gpm_bind_node`'s)

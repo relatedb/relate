@@ -465,12 +465,9 @@ impl<'a> Emission<'a> {
     /// row the DFS's pipeline would have kept, by the same predicate.
     /// The WALK pool's arm reads no records (rel and node reuse are its
     /// semantics — nothing to check, nothing to materialize for the
-    /// check; the binding is the records' only reader). SIMPLE takes
-    /// the table twice: its own row is nodes-only (the close may
-    /// repeat the seed), and the DFS's walk enforces rel-uniqueness for
-    /// every trail-enforcing mode (`enforce_unique`) — the close may
-    /// repeat the seed node, never a rel — which is the table's TRAIL
-    /// row, the one canonical rel-distinctness predicate.
+    /// check; the binding is the records' only reader). SIMPLE's table
+    /// arm is total — rel uniqueness plus nodes-only uniqueness (the
+    /// close may repeat the seed) — so one call decides it.
     fn mode_allows(&self, records: &ChainRecords) -> bool {
         match self.witness_mode() {
             WitnessMode::Walk => true,
@@ -482,14 +479,11 @@ impl<'a> Emission<'a> {
                 records.node_ids(),
                 records.rel_ids(),
             ),
-            WitnessMode::Simple => {
-                gpm_path_mode_allows(Some(PathMode::Trail), records.node_ids(), records.rel_ids())
-                    && gpm_path_mode_allows(
-                        Some(PathMode::Simple),
-                        records.node_ids(),
-                        records.rel_ids(),
-                    )
-            }
+            WitnessMode::Simple => gpm_path_mode_allows(
+                Some(PathMode::Simple),
+                records.node_ids(),
+                records.rel_ids(),
+            ),
         }
     }
 
