@@ -181,6 +181,69 @@ Strings and map keys carry a byte length, so interior NULs cross whole
 (`.map(["a": .null])`) is distinct from an absent key. UUIDs cross as
 `STRING`, byte arrays as `LIST` of `INT`.
 
+## Bridges
+
+Conversions between `CypherValue`'s typed structs and the platform's own
+types. Inside an `extension CypherValue`, the bare names `Date` and
+`Duration` are the nested Cypher types; write `Foundation.Date` and
+`Swift.Duration` there.
+
+```swift
+// Foundation.Date — to the microsecond
+CypherValue.init(_ date: Foundation.Date) throws(RelateError)                    // a UTC .dateTime
+CypherValue.DateTime.init(_ date: Foundation.Date, offsetSeconds: Int = 0) throws(RelateError)
+CypherValue.DateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the zone's offset at that instant; no zone id
+CypherValue.DateTime.foundationDate: Foundation.Date                             // wall clock less offset
+CypherValue.LocalDateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError)
+CypherValue.LocalDateTime.foundationDate(in: TimeZone) -> Foundation.Date?       // nil in a daylight-saving gap; the earlier instant in an overlap
+CypherValue.Date.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the calendar day there
+CypherValue.Date.init?(_ components: DateComponents)                             // needs year, month and day
+CypherValue.Date.dateComponents: DateComponents
+CypherValue.Date.startOfDay(in: TimeZone) -> Foundation.Date?
+
+// Swift.Duration
+CypherValue.Duration.init(_ duration: Swift.Duration)                            // months and days zero; sub-nanosecond truncated
+CypherValue.Duration.swiftDuration: Swift.Duration?                              // nil when months or days are non-zero
+CypherValue.Duration.dateComponents: DateComponents                              // month, day, second, nanosecond
+
+// Vectors
+CypherValue.init(vector: [Float])                                                // FLOAT32
+CypherValue.init(vector: [Double])                                               // FLOAT
+CypherValue.Vector.float32(_: [Float]), .float64(_: [Double])
+CypherValue.Vector.dtype: DType, .count: Int
+CypherValue.Vector.float32Values: [Float]?                                       // nil for an integer dtype; a FLOAT vector is narrowed
+CypherValue.Vector.doubleValues: [Double]?                                       // nil for an integer dtype
+CypherValue.Vector.init(_: MLShapedArray<Float>)                                 // Core ML: scalars in row-major order, any shape
+CypherValue.Vector.init(_: MLMultiArray) throws(RelateError)                     // float16/float32 → FLOAT32, double → FLOAT, int32 → INTEGER32
+
+// Points
+CypherValue.Point.init(latitude: Double, longitude: Double, height: Double? = nil) // srid 4326, or 4979 with a height
+CypherValue.Point.init(x: Double, y: Double, z: Double? = nil)                     // srid 7203, or 9157 with z
+CypherValue.Point.crs: CRS?                                                        // .cartesian | .cartesian3D | .wgs84 | .wgs84_3D; nil for another srid
+CypherValue.Point.latitude, .longitude: Double?                                    // nil unless geographic
+CypherValue.Point.height: Double?                                                  // nil unless 3D geographic
+CypherValue.Point.init(_: CLLocationCoordinate2D), .coordinate: CLLocationCoordinate2D? // Core Location
+CypherValue.init(_: CLLocationCoordinate2D)
+```
+
+- **Precision.** `Foundation.Date` is a `Double` of seconds, resolving about
+  a quarter of a microsecond near the present, so the date bridges carry
+  microseconds. A value at millisecond or microsecond precision round-trips
+  unchanged for instants within about two centuries of 2001. A non-finite
+  `Date` is refused with `.invalidParameter`.
+- **Calendar.** The bridges use proleptic-Gregorian arithmetic at every
+  year, as Cypher's temporal values do. Foundation's Gregorian `Calendar`
+  is Julian before October 1582 and is not used.
+- **Zones.** `DateTime.init(_:in:)` records the zone's offset, not its id.
+  The engine resolves a named zone from the wall clock, which in a
+  daylight-saving overlap can name the other of the two instants; an offset
+  round-trips the instant exactly.
+- **Vectors.** A `Vector` stores `Double` or `Int64` coordinates whatever
+  its dtype; widening a `Float` is exact, so a `FLOAT32` vector reads back
+  bit-identical through `float32Values`.
+- The Core ML and Core Location members compile where those frameworks can
+  be imported (`#if canImport`).
+
 ## Parameters
 
 `query(_:_:)` binds `parameters` through the C ABI's typed params builder

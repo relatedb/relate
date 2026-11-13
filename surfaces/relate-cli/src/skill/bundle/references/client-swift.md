@@ -42,7 +42,17 @@ vector` — one case per ABI value kind; every value carries its kind
 (`value.kind`), so there is no per-column type stamp. Literals convert
 implicitly, variables via `CypherValue(x)`; the temporal / point / vector
 cases construct from their components (`.date(.init(year: 2026, month: 1,
-day: 2))`, `.point(.init(srid: 4326, x: -105.0, y: 40.0, z: nil))`).
+day: 2))`) or from platform types:
+
+```swift
+try CypherValue(Date())                               // UTC DATETIME, microsecond precision
+value.dateTimeValue?.foundationDate                   // back to a Foundation.Date
+CypherValue(vector: floats)                           // [Float] → FLOAT32 vector
+value.vectorValue?.float32Values                      // back to [Float], exact
+CypherValue.Point(latitude: 40.0, longitude: -105.0)  // srid 4326; .latitude / .longitude read back
+CypherValue(CLLocationCoordinate2D(...)); point.coordinate
+try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any shape
+```
 
 ## Gotchas
 
@@ -62,8 +72,8 @@ day: 2))`, `.point(.init(srid: 4326, x: -105.0, y: 40.0, z: nil))`).
   deprecated numeric ids Cypher's `id()` returns (`node.id`,
   `rel.id`/`rel.startId`/`rel.endId`, ADR-0506 — use them for entity
   equality, not lookups), temporals arrive
-  as components (not ISO strings — render in the app), points and vectors as
-  their structs; non-finite floats stay `.float`. A map that looks like a
+  as components (not ISO strings — bridge with `foundationDate`, or render
+  in the app), points and vectors as their structs; non-finite floats stay `.float`. A map that looks like a
   node stays a `.map`.
 - **Parameters are typed, not JSON** — the params builder binds temporals,
   points, vectors, durations, `NaN`/`±Infinity` and full-range integers

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EngineError` (`isConstraintViolation`, `isSyntaxError`,
   `isMissingParameter`, `isWriteConflict`, `classification`) plus
   `RelateError.isRetryable`.
+- Swift: bridges between `CypherValue` and platform types.
+  `Foundation.Date` to and from `DATETIME`, `LOCAL DATETIME` and `DATE`;
+  `Swift.Duration`; `[Float]` and Core ML arrays to `FLOAT32` vectors;
+  points from a latitude and longitude or a `CLLocationCoordinate2D`.
 
 ### Changed
 

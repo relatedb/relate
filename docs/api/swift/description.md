@@ -19,6 +19,12 @@ engine's elapsed time with its `parseMs` / `planMs` / `executeMs` phase split
 a `USE`-routed statement ran in, show `EXPLAIN`/`PROFILE` plans, and see which
 phase a slow statement spent its time in.
 
+Values meet the platform's own types at the edge: a `Foundation.Date` binds
+as a `DATETIME` and reads back as the same instant, a `[Float]` embedding
+binds as a `FLOAT32` vector, a point is built from a latitude and longitude
+or a `CLLocationCoordinate2D`, and a Core ML output array becomes a vector
+directly. An app stores what it has without formatting it into text first.
+
 The concurrency model is the C ABI's, checked by the Swift 6 compiler: a
 `Database` may be shared across tasks and actors, a `Connection` may not. The
 idiomatic shape is one actor that owns a connection and exposes app-level
