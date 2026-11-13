@@ -164,6 +164,11 @@ import Testing
         let sys = try conn.database.connect(namespace: "system")
         #expect(try sys.query("SHOW DATABASES").namespace == .system)
         #expect(throws: RelateError.self) { try conn.database.connect(namespace: "nope") }
+        // The typed forms name the same namespaces.
+        let typed = try conn.database.connect(namespace: .system)
+        #expect(try typed.query("SHOW DEFAULT DATABASE").namespace == .system)
+        try typed.setNamespace(.neo4j)
+        #expect(try typed.query("RETURN 1").namespace == .neo4j)
     }
 
     @Test func explainAndProfileCarryAPlan() throws {

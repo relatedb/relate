@@ -25,13 +25,19 @@ public final class Database: @unchecked Sendable {
 
     /// Opens the store at a file URL: writable (created when missing) by
     /// default, or — with `readOnly` — an existing store opened once,
-    /// refusing writes and checkpoints. A URL that is not a `file:` URL is
-    /// refused with ``RelateError/invalidParameter(_:)``; the engine opens
-    /// local paths only.
+    /// refusing writes and checkpoints. The engine opens local paths only,
+    /// so a URL that is not a `file:` URL, or a `file:` URL naming a host
+    /// other than `localhost`, is refused with
+    /// ``RelateError/invalidParameter(_:)`` rather than opened as whatever
+    /// local path its path component happens to spell.
     public convenience init(url: URL, readOnly: Bool = false) throws(RelateError) {
         guard url.isFileURL else {
             throw RelateError.invalidParameter(
                 "a store URL must be a file URL, got scheme \(quotedWire(url.scheme ?? ""))")
+        }
+        if let host = url.host, !host.isEmpty, host != "localhost" {
+            throw RelateError.invalidParameter(
+                "a store URL must name a local file, got host \(quotedWire(host))")
         }
         try self.init(path: url.path, readOnly: readOnly)
     }

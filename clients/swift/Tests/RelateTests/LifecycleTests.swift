@@ -36,6 +36,41 @@ import Testing
         }
     }
 
+    @Test func aStoreOpensFromAFileURL() throws {
+        try withTemporaryStoreFile { url in
+            do {
+                let db = try Database(url: url)
+                #expect(!db.isReadOnly && db.path == url.path)
+                try db.connect().query("CREATE (:P {v: 1})")
+            }
+            let reader = try Database(url: url, readOnly: true)
+            #expect(reader.isReadOnly)
+            #expect(try reader.connect().query("MATCH (p:P) RETURN p.v").scalar() == 1)
+            #expect(throws: RelateError.self) { try reader.connect().query("CREATE (:P)") }
+            // `file://localhost/…` names the same local file.
+            var local = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+            local.host = "localhost"
+            #expect(try Database(url: try #require(local.url), readOnly: true).path == url.path)
+        }
+    }
+
+    @Test func aURLThatIsNotALocalFileIsRefusedBeforeTheEngine() throws {
+        func refusal(_ text: String) throws -> String {
+            let url = try #require(URL(string: text))
+            let error = try #require(throws: RelateError.self) { try Database(url: url) }
+            guard case .invalidParameter(let message) = error else {
+                Issue.record("expected invalidParameter for \(text), got \(error)")
+                return ""
+            }
+            return message
+        }
+        #expect(try refusal("https://example.com/store.rl").contains("scheme 'https'"))
+        // A file URL naming another host: its path alone would open (or,
+        // writable, create) an unrelated local file.
+        #expect(try refusal("file://fileserver.example/shared/store.rl").contains("host 'fileserver.example'"))
+        #expect(!FileManager.default.fileExists(atPath: "/shared/store.rl"))
+    }
+
     @Test func aSecondWritableOpenOfOneStoreIsRefused() throws {
         try withTemporaryStore { path in
             let first = try Database(path: path)

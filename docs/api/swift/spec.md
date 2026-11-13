@@ -23,7 +23,7 @@ travels with the call, and bookmarks.
 public final class Database: @unchecked Sendable {
     public init(path: String) throws(RelateError)            // ":memory:", a single-file `.rl` store, or a store directory (created if missing)
     public init(readOnlyPath path: String) throws(RelateError) // existing store, loaded once; writes/checkpoint refused (ADR-0136)
-    public init(url: URL, readOnly: Bool = false) throws(RelateError) // a file URL; any other scheme is .invalidParameter
+    public init(url: URL, readOnly: Bool = false) throws(RelateError) // a local file URL; another scheme, or a host other than localhost, is .invalidParameter
     public static func inMemory() throws(RelateError) -> Database
     public let path: String
     public let isReadOnly: Bool
@@ -302,7 +302,7 @@ Release-workflow use only.
 
 ## Examples
 
-[`examples/`](examples/) is a SwiftPM package; each executable asserts its
-output (`quickstart`, `transactions`, `result-metadata`, `namespaces`,
-`persistence`, `errors`). The iOS app [`examples/ios-snotel`](../../../examples/ios-snotel/)
+[`examples/`](examples/) is a SwiftPM package with one executable per
+directory under `Sources/`; each asserts its own output, and
+`make swift-examples` runs every one. The iOS app [`examples/ios-snotel`](../../../examples/ios-snotel/)
 is the end-to-end consumer.

@@ -51,21 +51,15 @@ private func putVector<T>(
     _ dtype: CypherValue.Vector.DType, _ values: [T],
     into builder: OpaquePointer, name: String?
 ) throws(RelateError) {
-    // The two scope functions only rethrow untyped, so the putter's typed
-    // refusal crosses them as a `Result` (the policy `withCString` states).
-    let result: Result<Void, RelateError> = values.withUnsafeBufferPointer { buffer in
+    try values.withUnsafeBufferPointer { buffer in
         dtype.rawValue.withCString { dtypePointer in
-            do throws(RelateError) {
+            typedResult { () throws(RelateError) in
                 try go(name) { namePointer, err in
                     putter(builder, namePointer, dtypePointer, buffer.baseAddress, buffer.count, err)
                 }
-                return .success(())
-            } catch {
-                return .failure(error)
             }
         }
-    }
-    try result.get()
+    }.get()
 }
 
 /// Builds the statement's root MAP of named parameters. Every entry crosses

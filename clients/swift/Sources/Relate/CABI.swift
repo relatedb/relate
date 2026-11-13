@@ -56,6 +56,19 @@ func requireHandle(_ out: OpaquePointer?, _ what: String) throws(RelateError) ->
     return out
 }
 
+/// The module's one bridge for a typed throw through a standard-library
+/// scope function. `String.withCString`, `Array.withUnsafeBufferPointer` and
+/// their kin only rethrow an untyped error, so a body that throws
+/// `RelateError` runs inside them through this, crosses as a `Result`, and
+/// the caller rethrows it typed with `.get()`.
+func typedResult<R>(_ body: () throws(RelateError) -> R) -> Result<R, RelateError> {
+    do throws(RelateError) {
+        return .success(try body())
+    } catch {
+        return .failure(error)
+    }
+}
+
 /// `withCString` stops at the first NUL, which would silently truncate the
 /// text the engine sees. The refusal lives inside the crossing helpers, so
 /// no call site can forget it.
@@ -68,22 +81,12 @@ private func rejectNUL(_ text: String, what: String) throws(RelateError) {
 /// Crosses a required string to the C boundary as its NUL-terminated form:
 /// the one crossing for a caller-supplied string, interior-NUL refusal
 /// built in.
-///
-/// `String.withCString` only rethrows an untyped error, so the body's typed
-/// failure crosses it as a `Result` — the one way the module keeps
-/// `throws(RelateError)` through a standard-library scope function.
 func withCString<R>(
     _ text: String, what: String, _ body: (UnsafePointer<CChar>) throws(RelateError) -> R
 ) throws(RelateError) -> R {
     try rejectNUL(text, what: what)
-    let result: Result<R, RelateError> = text.withCString { pointer in
-        do throws(RelateError) {
-            return .success(try body(pointer))
-        } catch {
-            return .failure(error)
-        }
-    }
-    return try result.get()
+    return try text.withCString { pointer in typedResult { () throws(RelateError) in try body(pointer) } }
+        .get()
 }
 
 /// The length-prefixed twin of `withCString`: crosses a string's UTF-8
