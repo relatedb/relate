@@ -206,6 +206,21 @@ pub(super) fn check_call_clause(
     Ok(())
 }
 
+/// Whether `e` is a label predicate, seen through the `NOT` that lowering
+/// wraps around `IS NOT LABELED` (the sibling `IS NOT ...` predicates
+/// carry `negated` on their variant; the label form is the one that
+/// lowers to `Unary { Not, LabelPredicate }`).
+fn is_label_predicate(e: &Expr) -> bool {
+    match e {
+        Expr::LabelPredicate { .. } => true,
+        Expr::Unary {
+            op: relate_ir::UnaryOp::Not,
+            expr,
+        } => is_label_predicate(expr),
+        _ => false,
+    }
+}
+
 pub(super) fn check_delete_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
@@ -216,7 +231,7 @@ pub(super) fn check_delete_clause(
     };
     for e in expressions {
         check_expr(env, is_write_procedure, e)?;
-        if matches!(e, Expr::LabelPredicate { .. }) {
+        if is_label_predicate(e) {
             return Err(Error::syntax(
                 "InvalidDelete: cannot delete a literal or label expression",
             ));

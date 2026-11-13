@@ -12,9 +12,7 @@
 
 mod common;
 
-use relate::Value;
-
-use common::{connection, set_preview_once};
+use common::{connection, first_column_strings, set_preview_once};
 
 /// Two FULLTEXT indexes over the corpus's shape: node bios and relationship
 /// notes, with the small graph the acceptance scenarios search.
@@ -42,17 +40,6 @@ fn search_store() -> relate::Connection {
     c
 }
 
-fn names(result: &relate::QueryResult) -> Vec<String> {
-    result
-        .rows
-        .iter()
-        .map(|row| match &row[0] {
-            Value::String(name) => name.to_string(),
-            other => panic!("expected a name string, got {other:?}"),
-        })
-        .collect()
-}
-
 #[test]
 fn a_second_bound_variable_rides_along() {
     // FulltextSearchWithComplexPatternAcceptance "node full-text search
@@ -65,7 +52,7 @@ fn a_second_bound_variable_rides_along() {
              RETURN friend.name AS friend",
         )
         .unwrap();
-    assert_eq!(names(&result), vec!["Bob".to_string()]);
+    assert_eq!(first_column_strings(&result), vec!["Bob".to_string()]);
 }
 
 #[test]
@@ -78,7 +65,7 @@ fn a_multi_hop_relationship_pattern_searches_its_own_edge() {
              RETURN z.name AS z",
         )
         .unwrap();
-    assert_eq!(names(&result), vec!["Carol".to_string()]);
+    assert_eq!(first_column_strings(&result), vec!["Carol".to_string()]);
 }
 
 #[test]
@@ -95,7 +82,7 @@ fn several_components_with_a_cross_component_predicate() {
              RETURN p.name AS person",
         )
         .unwrap();
-    assert_eq!(names(&result), vec!["Bob".to_string()]);
+    assert_eq!(first_column_strings(&result), vec!["Bob".to_string()]);
 }
 
 #[test]
@@ -108,7 +95,7 @@ fn a_variable_length_hop_beyond_the_search_binding() {
              RETURN p.name AS p",
         )
         .unwrap();
-    assert_eq!(names(&result), vec!["Alice".to_string()]);
+    assert_eq!(first_column_strings(&result), vec!["Alice".to_string()]);
 }
 
 #[test]
@@ -122,7 +109,7 @@ fn the_plain_rule_0_shape_keeps_working() {
              RETURN p.name AS p",
         )
         .unwrap();
-    assert_eq!(names(&result), vec!["Alice".to_string()]);
+    assert_eq!(first_column_strings(&result), vec!["Alice".to_string()]);
 }
 
 /// The top-K corpus: one query vector, four films whose similarity falls
@@ -164,7 +151,7 @@ fn the_search_limit_counts_candidates_the_pattern_keeps() {
         )
         .unwrap();
     assert_eq!(
-        names(&result),
+        first_column_strings(&result),
         vec!["Alpha".to_string(), "Gamma".to_string()]
     );
 }
@@ -186,7 +173,7 @@ fn a_cross_component_predicate_does_not_shrink_the_top_k() {
         )
         .unwrap();
     assert_eq!(
-        names(&result),
+        first_column_strings(&result),
         vec!["Beta".to_string(), "Gamma".to_string()]
     );
 }
@@ -209,7 +196,7 @@ fn a_limit_zero_search_terminates_with_no_rows() {
              RETURN seed.title AS title",
         )
         .unwrap();
-    assert_eq!(names(&result), Vec::<String>::new());
+    assert_eq!(first_column_strings(&result), Vec::<String>::new());
 }
 
 /// "pattern with a predicate on a non-search element": the FOR reads the
@@ -248,7 +235,7 @@ fn a_deferred_search_counts_only_surviving_candidates() {
              RETURN movie.title AS title ORDER BY score DESC",
         )
         .unwrap();
-    assert_eq!(names(&result), vec!["Gamma".to_string()]);
+    assert_eq!(first_column_strings(&result), vec!["Gamma".to_string()]);
 }
 
 /// The relationship-index corpus: three ACTED_IN edges whose similarity
@@ -289,7 +276,7 @@ fn a_relationship_predicate_does_not_shrink_the_top_k() {
         )
         .unwrap();
     assert_eq!(
-        names(&result),
+        first_column_strings(&result),
         vec!["old-one".to_string(), "old-three".to_string()]
     );
 }
@@ -310,7 +297,7 @@ fn an_undirected_match_keeps_every_row_of_a_kept_candidate() {
         )
         .unwrap();
     assert_eq!(
-        names(&result),
+        first_column_strings(&result),
         vec!["old-three".to_string(), "old-three".to_string()]
     );
 }

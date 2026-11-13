@@ -747,24 +747,23 @@ fn choose_orientation(
     where_conjuncts: &[&Expr],
     stats: &dyn PatternStats,
 ) -> (bool, u128) {
-    if orientation_locked(path) || path.nodes.is_empty() {
-        return (
-            false,
-            direction_cost(path, false, bound, where_conjuncts, stats).0,
-        );
-    }
-    let first_bound = endpoint_bound(path.nodes.first().expect("nodes is non-empty"), bound);
-    let last_bound = endpoint_bound(path.nodes.last().expect("nodes is non-empty"), bound);
     // The written orientation is the one the elements' left-to-right
-    // binding order is defined on; a peer-referenced predicate keeps it.
-    // Beyond that, an orientation is forced exactly when only one
+    // binding order is defined on; a locked or peer-referenced path keeps
+    // it. Beyond that, an orientation is forced exactly when only one
     // endpoint is bound — seed from the bound end.
-    let forced = if !reversal_safe(path, bound) || (first_bound && !last_bound) {
-        Some(false)
-    } else if last_bound && !first_bound {
-        Some(true)
-    } else {
-        None
+    let forced = match (path.nodes.first(), path.nodes.last()) {
+        (Some(first), Some(last)) if !orientation_locked(path) => {
+            let first_bound = endpoint_bound(first, bound);
+            let last_bound = endpoint_bound(last, bound);
+            if !reversal_safe(path, bound) || (first_bound && !last_bound) {
+                Some(false)
+            } else if last_bound && !first_bound {
+                Some(true)
+            } else {
+                None
+            }
+        }
+        _ => Some(false),
     };
     if let Some(reversed) = forced {
         return (

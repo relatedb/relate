@@ -22,6 +22,23 @@ use relate_ir::{
 /// value imported into a CALL subquery"). Empty at every other scope.
 pub(crate) type Imports = std::collections::HashSet<String>;
 
+/// Whether an explicit `GROUP BY` key list names exactly the variables a
+/// `*` item expands to (ADR-0198): non-empty, every key a bare variable,
+/// and the key set equal to the incoming scope's name set.
+fn explicit_keys_cover_star_scope(keys: &[Expr], outer_names: &crate::binding::Env) -> bool {
+    let names: Option<std::collections::HashSet<String>> = keys
+        .iter()
+        .map(|k| match k {
+            Expr::Variable(v) => Some(v.to_string()),
+            _ => None,
+        })
+        .collect();
+    !keys.is_empty()
+        && names.is_some_and(|names| {
+            names.len() == outer_names.len() && outer_names.keys().all(|s| names.contains(s))
+        })
+}
+
 // `outer_names` (every aggregation-check fn below) is the incoming
 // scope's binding environment: the checks read its keys as the scope's
 // name set (membership, length, iteration), never a materialized
@@ -53,19 +70,8 @@ pub(crate) fn check_agg_projections(
     if let Some(keys) = group_by {
         let star_item = items.iter().any(|i| matches!(i.expr, Expr::Star));
         if star_item && !keys.iter().any(|k| matches!(k, Expr::Star)) {
-            let key_names: Option<std::collections::HashSet<String>> = keys
-                .iter()
-                .map(|k| match k {
-                    Expr::Variable(v) => Some(v.to_string()),
-                    _ => None,
-                })
-                .collect();
             let covers_scope = items.iter().any(|i| is_agg_expr(&i.expr))
-                && !keys.is_empty()
-                && key_names.is_some_and(|names| {
-                    names.len() == outer_names.len()
-                        && outer_names.keys().all(|s| names.contains(s))
-                });
+                && explicit_keys_cover_star_scope(keys, outer_names);
             if !covers_scope {
                 return Err(Error::syntax(
                     "AmbiguousAggregationExpression: `*` projection is not allowed with an explicit GROUP BY",

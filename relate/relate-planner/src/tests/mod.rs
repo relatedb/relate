@@ -629,3 +629,12 @@ fn does_not_fold_rel_inequality() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn delete_negated_label_expression_is_invalid() {
+    let err = rejection("MATCH (n) DELETE n IS NOT LABELED Person");
+    assert!(
+        err.contains("InvalidDelete"),
+        "expected InvalidDelete, got {err}"
+    );
+}
