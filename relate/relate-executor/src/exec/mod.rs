@@ -92,6 +92,7 @@ pub(crate) mod rel_seek;
 pub(crate) mod rider;
 pub(crate) mod scope;
 pub(crate) mod search;
+pub(crate) mod shortest_eval;
 pub(crate) mod sink;
 pub(crate) mod subquery_eval;
 pub(crate) mod union;
@@ -171,6 +172,7 @@ pub(crate) fn plan_mutates_store(plan: &LogicalPlan) -> bool {
 use constraint_validation::validate_constraints;
 use dispatch::{execute_part_read_seeded, run_clauses};
 use scope::visible_keys;
+pub(crate) use shortest_eval::{eval_shortest, ShortestWant};
 pub(crate) use subquery_eval::{eval_collect_query, eval_count_query, eval_exists_query};
 
 use crate::ctx::QueryCtx;

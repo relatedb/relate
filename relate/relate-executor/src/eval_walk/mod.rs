@@ -1,9 +1,10 @@
 //! The eval-side pattern-walk engine — the walker behind pattern
 //! comprehensions (`[p = (a)-[r]->(b) | …]`), pattern predicates
 //! (`WHERE (a)-[r]->(b)`, the anchored probe and the limit-1 walk), and
-//! the expression-form `shortestPath`/`allShortestPaths`: pattern.rs is
-//! the walk itself, shortest.rs the shortest-path arm: the shortest route's
-//! rows folded to one value, with this walker as its enumeration fallback. The anchored existence probe
+//! the expression-form `shortestPath`/`allShortestPaths` fallback: pattern.rs
+//! is the walk itself, with a collecting and a folding spelling (the
+//! shortest-path arm lives in `exec/shortest_eval.rs` and folds this walk's
+//! rows into its accumulator). The anchored existence probe
 //! (LABS-193/LABS-249) is not this engine's — it is cross-engine code
 //! answering for this engine's `pattern_exists` and the exec exists
 //! probe alike, so it sits at the shared tier with the rest of the
@@ -45,7 +46,5 @@
 //! at the crate root.
 
 mod pattern;
-mod shortest;
 
-pub(crate) use pattern::{collect_pattern_rows, pattern_exists};
-pub(crate) use shortest::{eval_shortest, ShortestWant};
+pub(crate) use pattern::{collect_pattern_rows, fold_pattern_rows, pattern_exists};

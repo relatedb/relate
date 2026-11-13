@@ -1,7 +1,6 @@
 # Executor fns returning Vec<Row> / Result<Vec<Row>> (ADR-0555). Format: <file under relate/relate-executor/src>::<fn> # <reason>.
 # Remove a line when its fn is gone or streams; never add one without a reason.
 eval_walk/pattern.rs::collect_pattern_rows # projection/filter stage materializes its rows; to be replaced by streaming
-eval_walk/pattern.rs::walk_collect # projection/filter stage materializes its rows; to be replaced by streaming
 exec/agg_fold/one_hop.rs::finish # projection/filter stage materializes its rows; to be replaced by streaming
 exec/aggregate/group.rs::aggregate_ex # projection/filter stage materializes its rows; to be replaced by streaming
 exec/aggregate/group.rs::finish # emits one row per group, bounded by the group map the aggregation already holds and charges

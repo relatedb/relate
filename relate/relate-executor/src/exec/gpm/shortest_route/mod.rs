@@ -124,7 +124,7 @@ fn with_forced_gpm<T>(f: impl FnOnce() -> T) -> T {
 /// took the pattern (`false`: it declined before any row was pushed).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn match_shortest_route<'a>(
-    mut sink: MatchedSink<'a, '_>,
+    sink: MatchedSink<'a, '_>,
     ctx: ExecCtx<'a>,
     path: &'a PathPattern,
     filters: &'a GpmFilters,
@@ -133,24 +133,17 @@ pub(super) fn match_shortest_route<'a>(
     used: &UsedSet,
     match_mode: MatchMode,
 ) -> Result<bool> {
-    #[cfg(test)]
-    if FORCE_GPM.with(|c| c.get()) {
-        return Ok(false);
-    }
-    // The guard decodes the shape and carries its resolved filter from the
-    // pattern-level table (LABS-801) — one pass, no second shape sniffing.
-    let Some(shape) = route_shape(path, filters, match_mode, used, row, ctx.params) else {
-        return Ok(false);
-    };
-    // The constructor declines (`None`) before the sink is touched, and
-    // takes the sink itself — its halt cell and residual are the route's
-    // by construction, not two arguments that must agree.
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, reach) else {
-        return Ok(false);
-    };
-    route.run(&mut sink)?;
-    note_route_run();
-    Ok(true)
+    run_route(
+        sink,
+        ctx,
+        path,
+        filters,
+        reach,
+        row,
+        used,
+        match_mode,
+        Spelling::of(path),
+    )
 }
 
 /// The expression form's entry (ADR-0568): run `path` (named, carrying the
@@ -170,31 +163,53 @@ pub(crate) fn fold_shortest_route(
     row: &Row,
     fold: &mut dyn FnMut(Row) -> Result<()>,
 ) -> Result<bool> {
+    let filters = GpmFilters::resolve(ctx.graph, path);
+    let reach = ReachCache::default();
+    let residual = Residual::empty();
+    let halt = Cell::new(false);
+    // The expression form is the function spelling: its lowered pattern
+    // carries no function flag, so the caller stamps it here.
+    run_route(
+        MatchedSink::fold(&residual, &halt, fold),
+        ctx,
+        path,
+        &filters,
+        &reach,
+        row,
+        &UsedSet::default(),
+        MatchMode::DifferentRelationships,
+        Spelling::Expression,
+    )
+}
+
+/// The one driver both entries share: the guard decodes the shape and
+/// carries its resolved filter from the pattern-level table (LABS-801) —
+/// one pass, no second shape sniffing — then the route takes the pattern or
+/// declines it before the sink is touched.
+#[allow(clippy::too_many_arguments)]
+fn run_route<'a>(
+    mut sink: MatchedSink<'a, '_>,
+    ctx: ExecCtx<'a>,
+    path: &'a PathPattern,
+    filters: &'a GpmFilters,
+    reach: &'a ReachCache,
+    row: &'a Row,
+    used: &UsedSet,
+    match_mode: MatchMode,
+    spelling: Spelling,
+) -> Result<bool> {
     #[cfg(test)]
     if FORCE_GPM.with(|c| c.get()) {
         return Ok(false);
     }
-    let filters = GpmFilters::resolve(ctx.graph, path);
-    let reach = ReachCache::default();
-    let used = UsedSet::default();
-    let Some(mut shape) = route_shape(
-        path,
-        &filters,
-        MatchMode::DifferentRelationships,
-        &used,
-        row,
-        ctx.params,
-    ) else {
+    let Some(shape) = route_shape(path, filters, match_mode, used, row, ctx.params, spelling)
+    else {
         return Ok(false);
     };
-    shape.max = shape.max.or(Some(crate::pattern_walk::DEFAULT_MAX_HOPS));
-    // The expression form is the function spelling: its lowered pattern
-    // carries no function flag, so the caller stamps it here.
-    shape.spelling = Spelling::Expression;
-    let residual = Residual::empty();
-    let halt = Cell::new(false);
-    let mut sink = MatchedSink::fold(&residual, &halt, fold);
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, &reach) else {
+    // The constructor declines (`None`) before the sink is touched, and
+    // takes the sink itself — its halt cell and residual are the route's
+    // by construction, not two arguments that must agree.
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, reach) else {
         return Ok(false);
     };
     route.run(&mut sink)?;

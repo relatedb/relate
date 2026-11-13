@@ -18,7 +18,8 @@ use crate::ctx::EvalCtx;
 // pattern policy that walker reads lives at the shared tier
 // (`crate::pattern_walk`, LABS-811) — one public path per item, no
 // re-export here.
-use crate::eval_walk::{collect_pattern_rows, eval_shortest, pattern_exists, ShortestWant};
+use crate::eval_walk::{collect_pattern_rows, pattern_exists};
+use crate::exec::{eval_shortest, ShortestWant};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 

@@ -25,28 +25,25 @@ use super::pattern_policies::{MatchTail, Matched};
 use super::pushdown::Residual;
 use super::rider::{PathSink, Rider};
 
-/// A pattern's resolved rel-type filters (LABS-801): the classic engine
-/// reads one per `path.rels` entry, the GPM engine one per expansion
-/// element (a quantified path's compact `rels` projection is empty — see
-/// [`GpmFilters`]). The arm is chosen by the one engine-fork predicate,
-/// so the table and the walk below can never disagree about which engine
-/// the pattern takes.
-pub(crate) enum FilterTable {
-    /// One filter per `path.rels` entry, in order.
-    Classic(Vec<RelFilter>),
-    /// The GPM engine's element-order table.
-    Gpm(GpmFilters),
-}
-
 /// A pattern's tier state, built once per pattern by the caller's widest
 /// loop (the clause's pattern loop in `match_paths`, the join's one side-B
-/// build, the probe's dispatch): the resolved [`FilterTable`] and the
-/// shortest-path route's [`ReachCache`]. The cache is a graph read, so its
-/// life is the one `match_clause` call that built it (one input batch)
-/// and never spans a write; the GPM arm is the only reader.
-pub(crate) struct PathFilters {
-    pub(crate) table: FilterTable,
-    pub(crate) reach: ReachCache,
+/// build, the probe's dispatch). The resolved rel-type filters (LABS-801):
+/// the classic engine reads one per `path.rels` entry, the GPM engine one
+/// per expansion element (a quantified path's compact `rels` projection is
+/// empty — see [`GpmFilters`]). The variant is chosen by the one
+/// engine-fork predicate, so the table and the walk below can never
+/// disagree about which engine the pattern takes. The GPM variant also
+/// carries the shortest-path route's [`ReachCache`]: a graph read, so its
+/// life is the one `match_clause` call that built it (one input batch) and
+/// never spans a write; only the GPM arm reads it.
+pub(crate) enum PathFilters {
+    /// One filter per `path.rels` entry, in order.
+    Classic(Vec<RelFilter>),
+    /// The GPM engine's element-order table and the route's reach cache.
+    Gpm {
+        table: GpmFilters,
+        reach: ReachCache,
+    },
 }
 
 impl PathFilters {
@@ -55,19 +52,18 @@ impl PathFilters {
         path: &PathPattern,
         match_mode: MatchMode,
     ) -> Self {
-        let table = if match_mode == MatchMode::RepeatableElements || path.needs_gpm() {
-            FilterTable::Gpm(GpmFilters::resolve(graph, path))
+        if match_mode == MatchMode::RepeatableElements || path.needs_gpm() {
+            PathFilters::Gpm {
+                table: GpmFilters::resolve(graph, path),
+                reach: ReachCache::default(),
+            }
         } else {
-            FilterTable::Classic(
+            PathFilters::Classic(
                 path.rels
                     .iter()
                     .map(|rp| RelFilter::resolve(graph, rp))
                     .collect(),
             )
-        };
-        PathFilters {
-            table,
-            reach: ReachCache::default(),
         }
     }
 }
@@ -126,28 +122,19 @@ pub(crate) fn match_one_path(
     // every consumer past this fork, GPM and classic alike, reads the one
     // `MatchTail` state model, never a loose reduce/keep_used pair. The
     // filters arrive resolved beside them (LABS-801): the fork reads the
-    // table's arm, the same fact [`PathFilters::resolve`] built it from.
-    match &filters.table {
-        FilterTable::Gpm(table) => {
+    // variant, the same fact [`PathFilters::resolve`] built it from.
+    match filters {
+        PathFilters::Gpm { table, reach } => {
             // A cap rider is the LIMIT pull-in (`gpm::emit`): every complete
             // state is offered as it emerges and the walk halts once the cap
             // is full, instead of materializing the whole enumeration for the
             // caller's projection to truncate. A probe rider is the early
             // exit: the first complete row the chain accepts halts the walk.
             match_gpm_path(
-                ctx,
-                path,
-                table,
-                &filters.reach,
-                row,
-                used,
-                match_mode,
-                tail,
-                residual,
-                rider,
+                ctx, path, table, reach, row, used, match_mode, tail, residual, rider,
             )
         }
-        FilterTable::Classic(table) => {
+        PathFilters::Classic(table) => {
             // The classic walk's sink follows the rider — the one rider→sink
             // decision (`PathSink::for_rider`, exec/rider.rs): a probe rides the
             // classic walk exactly as it rides the GPM one (the probe IS the

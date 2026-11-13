@@ -18,25 +18,49 @@ use crate::row::{Row, RowRung};
 
 use crate::pattern_walk::resolved_endpoints_exist;
 
-/// The row sink `walk_pattern`/`walk_rel` share: the collected rows plus
-/// an optional cap. `full()` gates every recursion level, so a cap of 1
-/// is LABS-246's limit-1 existence walk — it stops at the first full
-/// match; `None` collects all matches. (Bundled to stay under
+/// The row sink `walk_pattern`/`walk_rel` share. `full()` gates every
+/// recursion level: a kept sink with a cap of 1 is LABS-246's limit-1
+/// existence walk — it stops at the first full match; no cap collects all
+/// matches, and a fold sink never fills. (Bundled to stay under
 /// `clippy::too_many_arguments`.)
 pub(crate) struct Collect<'a> {
-    limit: Option<usize>,
-    out: &'a mut Vec<Row>,
+    out: RowSink<'a>,
+}
+
+/// Where a complete match goes: kept in a vector, or folded into the
+/// caller's accumulator as it emerges (ADR-0555) so the walk retains no row.
+enum RowSink<'a> {
+    /// Rows kept in `out`, the walk stopping at `limit` when set.
+    Keep {
+        out: &'a mut Vec<Row>,
+        limit: Option<usize>,
+    },
+    Fold(&'a mut dyn FnMut(Row) -> Result<()>),
 }
 
 impl Collect<'_> {
     fn full(&self) -> bool {
-        self.limit.is_some_and(|l| self.out.len() >= l)
+        match &self.out {
+            RowSink::Keep { out, limit } => limit.is_some_and(|l| out.len() >= l),
+            RowSink::Fold(_) => false,
+        }
+    }
+
+    fn push(&mut self, row: Row) -> Result<()> {
+        match &mut self.out {
+            RowSink::Keep { out, .. } => {
+                out.push(row);
+                Ok(())
+            }
+            RowSink::Fold(fold) => fold(row),
+        }
     }
 }
 
-/// The walk setup `collect_pattern_rows` and `pattern_exists` share:
-/// `limit` is the only difference — `None` collects every match, `Some(n)`
-/// stops at the first n (LABS-246's existence walk passes `Some(1)`).
+/// The walk setup `collect_pattern_rows`, `fold_pattern_rows` and
+/// `pattern_exists` share: the [`RowSink`] is the only difference — a kept
+/// sink collects every match (or stops at its `limit`, LABS-246's existence
+/// walk passes `Some(1)`), a fold sink streams each match to the caller.
 /// The walk's binding-schema ladder is precomputed here, once per walk,
 /// before the candidate loop; every per-candidate bind stamps a rung
 /// instead of rebuilding a schema. The ladder is total over every
@@ -48,10 +72,11 @@ fn walk_collect(
     row: &Row,
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
-    limit: Option<usize>,
-) -> Result<Vec<Row>> {
+    out: RowSink<'_>,
+) -> Result<()> {
+    let mut collect = Collect { out };
     if path.nodes.is_empty() {
-        return Ok(vec![row.clone()]);
+        return collect.push(row.clone());
     }
     // The eval walk's ladder: the forward (k=0) arm of the one ladder
     // build (pattern_walk), node-named false — the eval walk binds no
@@ -65,7 +90,6 @@ fn walk_collect(
         .iter()
         .map(|rp| RelFilter::resolve(graph, rp))
         .collect();
-    let mut out = Vec::new();
     walk_pattern(
         ExecCtx::new(graph, params),
         path,
@@ -75,12 +99,8 @@ fn walk_collect(
         row.clone(),
         UsedRels::new(),
         None,
-        &mut Collect {
-            limit,
-            out: &mut out,
-        },
-    )?;
-    Ok(out)
+        &mut collect,
+    )
 }
 
 pub(crate) fn collect_pattern_rows(
@@ -89,7 +109,31 @@ pub(crate) fn collect_pattern_rows(
     path: &PathPattern,
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<Row>> {
-    walk_collect(graph, row, path, params, None)
+    let mut out = Vec::new();
+    walk_collect(
+        graph,
+        row,
+        path,
+        params,
+        RowSink::Keep {
+            out: &mut out,
+            limit: None,
+        },
+    )?;
+    Ok(out)
+}
+
+/// The streaming spelling of [`collect_pattern_rows`] (ADR-0555): each
+/// complete match is handed to `fold` as the walk reaches it, so the
+/// consumer keeps what it needs and the walk retains no row.
+pub(crate) fn fold_pattern_rows(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    path: &PathPattern,
+    params: &BTreeMap<String, Value>,
+    fold: &mut dyn FnMut(Row) -> Result<()>,
+) -> Result<()> {
+    walk_collect(graph, row, path, params, RowSink::Fold(fold))
 }
 
 /// LABS-246: boolean existence for a pattern predicate — the anchored
@@ -111,7 +155,18 @@ pub(crate) fn pattern_exists(
     if path.nodes.is_empty() {
         return Ok(true);
     }
-    Ok(!walk_collect(graph, row, path, params, Some(1))?.is_empty())
+    let mut out = Vec::new();
+    walk_collect(
+        graph,
+        row,
+        path,
+        params,
+        RowSink::Keep {
+            out: &mut out,
+            limit: Some(1),
+        },
+    )?;
+    Ok(!out.is_empty())
 }
 
 /// `collect` carries the row sink and its cap: once `collect.full()`
@@ -314,8 +369,7 @@ fn descend_candidate(
             {
                 return Ok(());
             }
-            collect.out.push(row2);
-            Ok(())
+            collect.push(row2)
         }
         // LABS-448: the walk phase — following relationships, the store
         // work behind the `Rels`/`Degree` kinds — through the one wrapper,
