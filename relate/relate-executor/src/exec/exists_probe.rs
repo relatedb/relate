@@ -21,6 +21,7 @@ use crate::overlay::ExecGraph;
 use crate::pattern_walk::resolved_endpoints_exist;
 use crate::row::Row;
 
+use super::match_folds::FoldCtx;
 use super::one_path::{match_one_path, PathFilters};
 use super::pattern_policies::MatchTail;
 use super::pushdown::{flatten_and_owned, match_scope, FoldedReturn, Residual};
@@ -329,12 +330,8 @@ fn counted_existence<'a>(expr: &'a Expr, params: &BTreeMap<String, Value>) -> Op
 
 /// `Ok(None)` keeps the full-match path. The returned fold already includes
 /// the consumed `RETURN`.
-pub(crate) fn try_fold_boolean_count(
-    graph: &ExecGraph<'_>,
-    rows: &[Row],
-    clauses: &[Clause],
-    params: &BTreeMap<String, Value>,
-) -> Result<Option<FoldedReturn>> {
+pub(crate) fn try_fold_boolean_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedReturn>> {
+    let (graph, rows, clauses, params) = (&ctx.graph, ctx.rows, ctx.clauses, ctx.params);
     let Some(span) = boolean_count_span(clauses, params) else {
         return Ok(None);
     };

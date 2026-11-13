@@ -217,10 +217,12 @@ fn stage_transform<'a>(
                 return Ok(None);
             }
             // The fold family answers a `MATCH` plus its aggregate in one
-            // pass over the whole entering row set; ask the very same
-            // recognizers whether any would take this clause.
-            let folded = fold_would_take(graph, clauses, params)?;
-            Ok((!folded).then(|| Transform::Match {
+            // pass over the whole entering row set; a rung that would take
+            // this clause keeps it out of the streaming stages.
+            if fold_would_take(graph, clauses, params)? {
+                return Ok(None);
+            }
+            Ok(Some(Transform::Match {
                 patterns,
                 where_clause: where_clause.as_ref(),
                 projection: None,

@@ -112,6 +112,22 @@ impl<'s> Stage<'s> {
     }
 }
 
+/// Walk every hop but the last, uncapped, from the scan starts — the
+/// stages both modes build before their final hop. The empty-frontier
+/// exit lives here once, as `break`: both modes then answer zero over the
+/// empty stage (the rows mode emits none, the tally counts none), never a
+/// second early-return spelling.
+fn walk_prefix<'a>(ctx: ExecCtx<'_>, hops: &[Hop<'_>], starts: &'a [NodeId]) -> Result<Stage<'a>> {
+    let mut stage = Stage::from_starts(starts);
+    for hop in hops {
+        if stage.rows() == 0 {
+            break;
+        }
+        stage = hop_stage(ctx, &stage, hop, None)?;
+    }
+    Ok(stage)
+}
+
 /// Run the chain contract. The caller has proved the shape and the cost
 /// gate; `starts` comes from the scan segment ([`super::scan_segment`]).
 ///
@@ -126,15 +142,13 @@ pub(super) fn run(
     mode: KernelMode<'_>,
 ) -> Result<KernelOutput> {
     let halt = mode.halt();
-    let mut stage = Stage::from_starts(&starts);
-    let last = chain.hops.len().saturating_sub(1);
-    for (i, hop) in chain.hops.iter().enumerate() {
-        if stage.rows() == 0 {
-            break;
-        }
-        let cap = if i == last { halt } else { None };
-        stage = hop_stage(ctx, &stage, hop, cap)?;
-    }
+    let (last, prefix) = chain.split_last_hop();
+    let mut stage = walk_prefix(ctx, prefix, &starts)?;
+    // The final hop runs through `hop_stage` like every other hop: over
+    // an empty stage the expansion iterates no rows and yields the empty
+    // stage, so `walk_prefix` stays the one place the empty frontier is
+    // short-circuited.
+    stage = hop_stage(ctx, &stage, last, halt)?;
     match mode {
         KernelMode::Rows { .. } => Ok(KernelOutput::Rows(emit_rows(ctx, chain, &stage))),
         KernelMode::Exists { counted } => {
@@ -147,19 +161,16 @@ pub(super) fn run(
 /// **last** hop tallies its admitted arrivals instead of landing them —
 /// no leaf columns, no rows. Every check the landing hop applies (lineage,
 /// resolution, admission) is applied per candidate, so the tally equals the
-/// row count of the rows mode exactly.
-pub(super) fn count(ctx: ExecCtx<'_>, chain: &Chain<'_>, starts: Vec<NodeId>) -> Result<u64> {
-    let mut stage = Stage::from_starts(&starts);
-    let (tallied, landed) = chain
-        .hops
-        .split_last()
-        .expect("a chain has at least one hop");
-    for hop in landed {
-        if stage.rows() == 0 {
-            return Ok(0);
-        }
-        stage = hop_stage(ctx, &stage, hop, None)?;
-    }
+/// row count of the rows mode exactly. The caller — the count fold — has
+/// already split the contract's hops and holds both halves, so the
+/// empty-hops invariant is stated there, once.
+pub(super) fn count(
+    ctx: ExecCtx<'_>,
+    tallied: &Hop<'_>,
+    landed: &[Hop<'_>],
+    starts: Vec<NodeId>,
+) -> Result<u64> {
+    let stage = walk_prefix(ctx, landed, &starts)?;
     let mut tally = Tally(0);
     expand_hop(
         ctx,

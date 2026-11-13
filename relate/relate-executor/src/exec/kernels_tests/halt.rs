@@ -153,7 +153,7 @@ fn first_n_halts_the_hub_star_at_the_want() {
 /// keeps an order below the path count. The keyed seed (a RANGE index)
 /// prices the start at one row and the unlabeled hops ride the any-label
 /// tail (LABS-991), so the gate admits the shape at 16^4 stage rows; a
-/// wider fan-out declines to the walker instead (`chain_gate_tests`). The
+/// wider fan-out declines to the walker instead (`chain_gate`). The
 /// walk tallies land only while store profiling is armed (the test-build
 /// default).
 #[test]

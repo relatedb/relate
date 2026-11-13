@@ -23,6 +23,8 @@
 //! (the existence path, engaged ahead of the exists probe's seek).
 
 pub(crate) mod matcher;
+#[cfg(test)]
+mod matcher_tests;
 pub(crate) mod program;
 
 // The frontier-NFA compiler (ADR-0478 Decision 1): `compile` is
@@ -132,11 +134,6 @@ mod frontier_decline_tests;
 #[cfg(test)]
 mod engine_switch_tests;
 
-// The chain gate's pricing of the hops the walk model leaves unpriced
-// (LABS-991).
-#[cfg(test)]
-mod chain_gate_tests;
-
 // The PROFILE rung record's own pins (LABS-1117): two distinct shapes
 // (a fixed chain and a var-length pattern) so a constant rung fails, plus
 // the walker's positive record.
@@ -145,8 +142,6 @@ mod rung_tests;
 
 mod chain;
 mod chain_count;
-#[cfg(test)]
-mod chain_count_tests;
 mod hub_star;
 
 // The chain count fold's entry, lifted the way the aggregate folds lift

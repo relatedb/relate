@@ -16,12 +16,14 @@
 //! bindings under `LIMIT` and the existence differentials ride the
 //! boolean-count fold — the two roads that reach the kernels.
 
-//! One file per family: the chain and hub-star differential suites,
-//! the LABS-990 halt suite, the semantics suites, and the engagement
-//! gate's suites — this module keeps the shared populations and the
-//! differential core.
+//! One file per family: the chain, chain-count, chain-gate and hub-star
+//! differential suites, the LABS-990 halt suite, the semantics suites,
+//! and the engagement gate's suites — this module keeps the shared
+//! populations and the differential core.
 
 mod chain;
+mod chain_count;
+mod chain_gate;
 mod gate;
 mod halt;
 mod hub_star;

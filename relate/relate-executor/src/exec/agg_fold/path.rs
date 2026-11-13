@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use relate_core::{Error, NodeId, RelId, Result, Value};
-use relate_ir::{Clause, Direction, Expr, NodePattern, PathPattern, Projection, RelPattern};
+use relate_ir::{Direction, NodePattern, PathPattern, Projection, RelPattern};
 use relate_names::NamedToken;
 
 use crate::eval::{binary, eval};
@@ -17,6 +17,7 @@ use crate::row::Row;
 use crate::store::RelTypes;
 
 use super::super::candidates::node_ok;
+use super::super::match_folds::FoldCtx;
 use super::super::WalkTallies;
 use super::plan::{compile_path, CountSeat, KeyPlan, PathPlan, PathPred};
 use super::{
@@ -661,14 +662,9 @@ fn fold_steps(
 /// Stream one fixed hop, a fixed two-hop path, or two comma-joined one-hop
 /// patterns into group counts or a distinct set. Wider patterns, variable-length
 /// walks, repeated relationship variables, and `sum` stay on match-then-aggregate.
-pub(crate) fn try_fold_path_aggs(
-    graph: &ExecGraph<'_>,
-    rows: &[Row],
-    patterns: &[PathPattern],
-    where_clause: Option<&Expr>,
-    suffix: &[Clause],
-    params: &BTreeMap<String, Value>,
-) -> Result<Option<FoldedReturn>> {
+pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedReturn>> {
+    let (graph, rows, params) = (&ctx.graph, ctx.rows, ctx.params);
+    let (patterns, where_clause, suffix) = (ctx.patterns, ctx.where_clause, ctx.tail);
     let Some(output) = fold_return(suffix, params) else {
         return Ok(None);
     };

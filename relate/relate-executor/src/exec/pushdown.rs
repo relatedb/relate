@@ -12,7 +12,7 @@ use crate::eval::{expr_vars, label_expr_vars, predicate_holds};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-pub(crate) use super::agg_fold::{try_fold_one_hop_aggs, try_fold_path_aggs, FoldedReturn};
+pub(crate) use super::agg_fold::FoldedReturn;
 pub(crate) use super::match_cap::{match_limit_cap, MatchCap};
 use super::scope::{
     add_gpm_element_names, call_scope_reads, for_each_pattern_bound_name, has_star_item,

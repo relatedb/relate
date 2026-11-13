@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashSet};
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use relate_core::{NodeId, RelId, Result, Value};
-use relate_ir::{Clause, Expr, PathPattern, Projection};
+use relate_ir::{Expr, PathPattern, Projection};
 
 use crate::eval::{eval, expr_vars, is_agg_expr, predicate_holds};
 use crate::group_key::GroupKey;
@@ -28,6 +28,7 @@ use crate::row::{Row, RowRung};
 use crate::store::RelTypes;
 
 use super::super::candidates::{node_ok, oriented_start, resolve_rel_seek, SeekedRel};
+use super::super::match_folds::FoldCtx;
 use super::super::pushdown::{flatten_and_owned, match_scope};
 use super::super::scope::is_internal_column;
 use super::super::WalkTallies;
@@ -164,15 +165,9 @@ fn fresh_stream_aggs<'e>(agg_items: &[&'e Projection]) -> Option<Vec<StreamSeat<
 /// single-node predicates; this one-hop fold serves exactly what it
 /// declined. Sum, CASE, and predicates that mention both ends stay here
 /// on the scratch loop.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn try_fold_one_hop_aggs(
-    graph: &ExecGraph<'_>,
-    rows: &[Row],
-    patterns: &[PathPattern],
-    where_clause: Option<&Expr>,
-    suffix: &[Clause],
-    params: &BTreeMap<String, Value>,
-) -> Result<Option<FoldedReturn>> {
+pub(crate) fn try_fold_one_hop_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedReturn>> {
+    let (graph, rows, params) = (&ctx.graph, ctx.rows, ctx.params);
+    let (patterns, where_clause, suffix) = (ctx.patterns, ctx.where_clause, ctx.tail);
     // CIP-236: an explicit GROUP BY supplies the grouping keys, so folding
     // by the non-aggregating items would build the wrong groups.
     let Some(output) = fold_return(suffix, params) else {

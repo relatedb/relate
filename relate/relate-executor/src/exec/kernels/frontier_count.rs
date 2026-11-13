@@ -30,19 +30,17 @@
 //!   projection;
 //! - a count past `i64` declines (the DFS keeps its own semantics).
 
-use std::collections::BTreeMap;
-
-use relate_core::{Error, NodeId, Result, Value};
+use relate_core::{Error, NodeId, Result};
 
 use crate::hash_seed::IdMap;
 use relate_ir::{Clause, MatchMode};
 
 use crate::ctx::{ExecCtx, FrontierCounters};
 use crate::overlay::ExecGraph;
-use crate::row::Row;
 
 use super::super::agg_fold::FoldedReturn;
 use super::super::graph_stats::GraphStats;
+use super::super::match_folds::FoldCtx;
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
 use super::frontier::{arms, Arm};
 use super::frontier_match::{compile_frontier, Consumer};
@@ -52,12 +50,8 @@ use super::nfa::FrontierNfa;
 /// The fold entry, tried first among the `MATCH` folds: `clauses` starts
 /// at the `MATCH` and its `RETURN` follows. `Ok(None)` keeps every other
 /// fold and the operator ladder exactly as before.
-pub(crate) fn try_fold_walk_count(
-    graph: &ExecGraph<'_>,
-    rows: &[Row],
-    clauses: &[Clause],
-    params: &BTreeMap<String, Value>,
-) -> Result<Option<FoldedReturn>> {
+pub(crate) fn try_fold_walk_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedReturn>> {
+    let (graph, rows, clauses, params) = (&ctx.graph, ctx.rows, ctx.clauses, ctx.params);
     let Some(Clause::Match {
         optional: false,
         match_mode: MatchMode::RepeatableElements,
