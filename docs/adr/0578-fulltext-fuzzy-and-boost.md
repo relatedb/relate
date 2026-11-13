@@ -39,7 +39,11 @@ The behaviours below were calibrated with live probes against Neo4j
    past the bound). Lucene defaults apply: no pinned prefix, at most 50
    expansions, ordered closest, then most frequent, then lexicographic so
    results are deterministic. The expansions form an any-of group, so
-   `AND`/`OR`/`NOT`/required semantics are unchanged.
+   `AND`/`OR`/`NOT`/required semantics are unchanged. The expansion keeps
+   only the best 50 while it scans, so its memory is bounded by the cap, and
+   a query of more than 1024 clauses (Lucene's default clause limit) is a
+   typed syntax error at parse, so the clause count cannot multiply the
+   vocabulary scans.
 3. **Scoring.** Each expanded term scores with the existing calibrated
    BM25, multiplied by a closeness weight of `1 - edits / min(query length,
    term length)`; exact terms weigh 1. A candidate whose weight would be

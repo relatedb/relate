@@ -40,7 +40,8 @@
 //! `term^B` multiplies a clause's score; both are parsed in [`query`], their
 //! scoring choices are calibrated against Neo4j 2026.09-enterprise.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use relate_core::{bare_type_name, Error, PropertyMap, Result, Value};
 
@@ -403,21 +404,26 @@ fn fuzzy_weight(edits: u8, query_chars: usize, candidate_chars: usize) -> f64 {
 fn expand_fuzzy(term: &str, max_edits: u8, stat: &FieldStats) -> Vec<Alternative> {
     let term_chars: Vec<char> = term.chars().collect();
     let query_chars = term_chars.len();
-    let mut near: Vec<(u8, usize, &str, f64)> = stat
-        .df
-        .iter()
-        .filter_map(|(candidate, df)| {
-            let edits = bounded_distance(&term_chars, candidate, max_edits)?;
-            let weight = fuzzy_weight(edits, query_chars, candidate.chars().count());
-            (weight > 0.0).then_some((edits, *df, candidate.as_str(), weight))
-        })
-        .collect();
-    near.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then_with(|| a.2.cmp(b.2)));
-    near.truncate(MAX_FUZZY_EXPANSIONS);
-    near.into_iter()
-        .map(|(_, _, candidate, weight)| Alternative {
+    // A max-heap on the result order keeps the best `MAX_FUZZY_EXPANSIONS`
+    // candidates: the worst kept one sits on top and is evicted first, so
+    // memory is bounded by the cap, not by how many terms are in range.
+    let mut best: BinaryHeap<(u8, Reverse<usize>, &str)> = BinaryHeap::new();
+    for (candidate, df) in &stat.df {
+        let Some(edits) = bounded_distance(&term_chars, candidate, max_edits) else {
+            continue;
+        };
+        if fuzzy_weight(edits, query_chars, candidate.chars().count()) > 0.0 {
+            best.push((edits, Reverse(*df), candidate.as_str()));
+            if best.len() > MAX_FUZZY_EXPANSIONS {
+                best.pop();
+            }
+        }
+    }
+    best.into_sorted_vec()
+        .into_iter()
+        .map(|(edits, _, candidate)| Alternative {
             term: candidate.to_string(),
-            weight,
+            weight: fuzzy_weight(edits, query_chars, candidate.chars().count()),
         })
         .collect()
 }

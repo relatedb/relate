@@ -20,6 +20,13 @@ pub(super) const MAX_FUZZY_EDITS: u8 = 2;
 /// wildcard or regex too large to compile, at parse time (ADR-0583).
 pub(super) const MAX_WILDCARD_PARTS: usize = 256;
 
+/// The most clauses one query may parse to: Lucene's default
+/// `maxClauseCount`, which its boolean query enforces at build time. Each
+/// fuzzy clause scans a field's whole vocabulary and each wildcard clause
+/// every document's tokens, so the clause count multiplies the work of one
+/// query; the bound is checked once at parse (ADR-0578).
+const MAX_QUERY_CLAUSES: usize = 1024;
+
 /// How one parsed query clause takes part in the boolean match: Lucene's
 /// `Occur` flags after `AND`/`OR`/`NOT` are folded onto their neighbours.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -247,13 +254,21 @@ impl Parser {
         let (term, suffix, remainder) = split_suffix(text)?;
         // `*:` names every field, like no prefix at all.
         let property = property.filter(|property| *property != "*");
-        let mut push = |target: Target| {
+        // The one place a clause is appended, so the clause bound holds
+        // before an oversized word can allocate past it.
+        let mut push = |target: Target| -> Result<()> {
+            if self.clauses.len() >= MAX_QUERY_CLAUSES {
+                return Err(Error::syntax(format!(
+                    "Invalid fulltext query: more than {MAX_QUERY_CLAUSES} clauses"
+                )));
+            }
             self.clauses.push(Clause {
                 occur,
                 property: property.map(str::to_string),
                 target,
                 boost: suffix.boost,
             });
+            Ok(())
         };
         let prepared = if self.analyzer.folds() {
             fold(&term.to_lowercase())
@@ -272,7 +287,7 @@ impl Parser {
             // that folds (a deliberate deviation from live, which leaves it
             // unfolded: ADR-0583) — never stemmed or stop filtered — and ignores a `~N` suffix (calibrated:
             // `kolleg*~1` matches like `kolleg*`).
-            push(Target::Wildcard(pattern));
+            push(Target::Wildcard(pattern))?;
         } else if let Some(fuzz) = suffix.fuzzy {
             // A fuzzy term is matched against the index's stored tokens
             // (lowercased, folded only by a folding index), so it skips the
@@ -280,11 +295,11 @@ impl Parser {
             // normalisation; calibrated: `eifrém~1` still reaches `eifrem`).
             for term in tokenize(term) {
                 let edits = fuzz.edits_for(term.chars().count());
-                push(Target::Fuzzy { term, edits });
+                push(Target::Fuzzy { term, edits })?;
             }
         } else {
             for term in self.analyzer.analyze(term) {
-                push(Target::Term(term));
+                push(Target::Term(term))?;
             }
         }
         Ok((!remainder.is_empty()).then_some(remainder))
@@ -567,6 +582,36 @@ mod tests {
         // Runs of `*` collapse before the count, so they never trip it.
         let stars = "*".repeat(10 * MAX_WILDCARD_PARTS);
         assert!(parse(&format!("a{stars}b"), Analyzer::Standard).is_ok());
+    }
+
+    #[test]
+    fn a_query_over_the_clause_cap_is_a_typed_syntax_error() {
+        let words = |n: usize| {
+            (0..n)
+                .map(|i| format!("t{i}~2"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(
+            parse(&words(MAX_QUERY_CLAUSES), Analyzer::Standard)
+                .expect("at the cap")
+                .len(),
+            MAX_QUERY_CLAUSES
+        );
+        let error =
+            parse(&words(MAX_QUERY_CLAUSES + 1), Analyzer::Standard).expect_err("over the cap");
+        assert!(matches!(error, Error::Syntax(_)), "{error:?}");
+    }
+
+    #[test]
+    fn one_word_cannot_append_past_the_clause_cap() {
+        // A single word that analyzes into far more tokens than the cap.
+        let word = (0..10 * MAX_QUERY_CLAUSES)
+            .map(|i| format!("t{i}"))
+            .collect::<Vec<_>>()
+            .join("-");
+        let error = parse(&word, Analyzer::Standard).expect_err("over the cap");
+        assert!(matches!(error, Error::Syntax(_)), "{error:?}");
     }
 
     #[test]
