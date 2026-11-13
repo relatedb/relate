@@ -285,7 +285,7 @@ impl<'a> Aggregation<'a> {
         } else {
             drop(row);
         }
-        groups.accs.settle(group, graph, &mut bill.retained)
+        groups.accs.settle(group, graph, bill)
     }
 
     /// Emit the group rows: projected columns, parked `ORDER BY` keys, and

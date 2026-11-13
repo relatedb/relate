@@ -47,14 +47,16 @@ use super::seed::SeedStore;
 /// hash table's index slot.
 const INDEX_ENTRY: u64 = (size_of::<KeyTuple>() + 2 * size_of::<usize>()) as u64;
 
-/// The one bill for the group table's own bytes (index, keys, seeds, and
-/// accumulator slots): the expression budget's running total and the
-/// workspace ledger are fed the same figure.
+/// The one bill for the aggregation's retained bytes: the group table
+/// (index, keys, seeds, and accumulator slots) and, as rows settle, what
+/// retaining accumulators keep (`collect` operands, percentile samples,
+/// the payload a `min`/`max` holds, parked errors). The expression
+/// budget's running total and the workspace ledger are fed the same figure.
 pub(super) struct GroupBill {
     /// The aggregation's one retaining container: the group table and
     /// what its retaining accumulators keep grow it together.
     pub(super) retained: RetainedTotal,
-    /// The workspace-ledger twin of the table bytes billed so far;
+    /// The workspace-ledger twin of the bytes billed so far;
     /// `None` when workspace accounting is off.
     workspace: Option<(WorkspaceCharge, u64)>,
 }
@@ -67,16 +69,37 @@ impl GroupBill {
         })
     }
 
-    /// Bill `bytes` of landing group state, ahead of the landing so a
-    /// refusal never leaves the group retained.
+    /// Bill `bytes` of retained aggregation state, ahead of the landing or
+    /// the append so a refusal never leaves that state retained. Group
+    /// landings and accumulator settles share this path, so a `collect`
+    /// payload reserves the same ledger bytes the expression cap already
+    /// counts.
     pub(super) fn add(&mut self, graph: &ExecGraph<'_>, bytes: u64) -> Result<()> {
         self.retained.add_bytes(graph, bytes)?;
         if let Some((charge, billed)) = &mut self.workspace {
-            *billed = billed.saturating_add(bytes);
-            charge.resize(*billed)?;
+            let next = billed.saturating_add(bytes);
+            charge.resize(next)?;
+            *billed = next;
             peak_hold("aggregation");
         }
         Ok(())
+    }
+
+    /// Test settle drives a bill that already owns the expression total
+    /// and does not touch the workspace ledger. The placeholder left in
+    /// `total` is replaced when the settle returns the real total.
+    #[cfg(test)]
+    pub(super) fn take_retained(total: &mut RetainedTotal, graph: &ExecGraph<'_>) -> Result<Self> {
+        Ok(Self {
+            retained: std::mem::replace(total, graph.retain_bytes(0)?),
+            workspace: None,
+        })
+    }
+
+    /// Put the expression total back where the test settle found it.
+    #[cfg(test)]
+    pub(super) fn return_retained(self, total: &mut RetainedTotal) {
+        *total = self.retained;
     }
 }
 

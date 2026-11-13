@@ -14,8 +14,10 @@ use relate_core::{Result, Value};
 use relate_ir::Expr;
 
 use crate::eval::{eval, PercentileSample};
-use crate::overlay::{ExecGraph, RetainedTotal};
+use crate::overlay::ExecGraph;
 use crate::row::Row;
+
+use super::table::GroupBill;
 
 /// One shared operand: what every group's buffer over it has in common.
 #[derive(Clone, Copy)]
@@ -79,16 +81,13 @@ impl PoolState {
     }
 
     /// Charge what the buffer kept since the last settle to the
-    /// aggregation's running total: the buffer's growth, once, however many
-    /// calls read it.
-    pub(super) fn settle(
-        &mut self,
-        graph: &ExecGraph<'_>,
-        total: &mut RetainedTotal,
-    ) -> Result<()> {
+    /// aggregation's one bill: the buffer's growth, once, however many
+    /// calls read it. The bill reserves the same bytes on the workspace
+    /// ledger when admission is on.
+    pub(super) fn settle(&mut self, graph: &ExecGraph<'_>, bill: &mut GroupBill) -> Result<()> {
         let len = self.sample.len();
         if len > self.charged {
-            total.add_bytes(
+            bill.add(
                 graph,
                 crate::workspace::buffer_growth(self.charged, len, size_of::<f64>() as u64),
             )?;

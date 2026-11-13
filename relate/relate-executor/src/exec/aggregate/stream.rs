@@ -9,7 +9,8 @@
 //! `sum`, `avg`, `min`, `max`, `stDev`, `stDevP`, DISTINCT or not) keeps
 //! constant-size state (plus a DISTINCT call's seen-set) and never an
 //! operand value; only `collect` and the percentiles retain their operands,
-//! charged to the expression budget as a retaining container. The plain
+//! charged to the expression budget and, when admission is on, to the
+//! workspace ledger as one retaining container. The plain
 //! percentile calls of one group over the same operand share one `f64`
 //! buffer (`pool`) rather than each keeping its own `Value`s.
 //! [`AccTable::finish_group`] resolves every site of a group once, and the
@@ -129,7 +130,10 @@ impl<'e> GroupAccs<'e> {
         graph: &ExecGraph<'_>,
         total: &mut RetainedTotal,
     ) -> Result<()> {
-        self.0.settle(0, graph, total)
+        let mut bill = super::table::GroupBill::take_retained(total, graph)?;
+        let result = self.0.settle(0, graph, &mut bill);
+        bill.return_retained(total);
+        result
     }
 
     pub(crate) fn finish(

@@ -19,13 +19,14 @@ use relate_ir::Expr;
 
 use crate::distinct_set::DistinctSet;
 use crate::eval::{eval, StreamFold};
-use crate::overlay::{ExecGraph, RetainedTotal};
+use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::workspace::buffer_growth;
 
 use super::eval::FoldedGroup;
 use super::pool::{PoolSite, PoolState, SortedPool};
 use super::stream::{finish_pooled, finish_retained, Call};
+use super::table::GroupBill;
 
 /// Groups whose lenient site failed to fold: the error is parked here and
 /// surfaces when the site is read. Sparse — empty unless an `ORDER BY` key
@@ -310,12 +311,7 @@ impl<'e> SiteColumn<'e> {
         bytes
     }
 
-    fn settle(
-        &mut self,
-        group: usize,
-        graph: &ExecGraph<'_>,
-        total: &mut RetainedTotal,
-    ) -> Result<()> {
+    fn settle(&mut self, group: usize, graph: &ExecGraph<'_>, bill: &mut GroupBill) -> Result<()> {
         match &mut self.state {
             SiteState::Retain {
                 vals,
@@ -332,8 +328,8 @@ impl<'e> SiteColumn<'e> {
                         charged[group] + 1,
                         size_of::<Value>() as u64,
                     );
-                    total.add_bytes(graph, slot_bytes)?;
-                    total.add_owned(graph, value)?;
+                    bill.add(graph, slot_bytes)?;
+                    bill.add(graph, crate::workspace::owned_heap(value))?;
                     charged[group] += 1;
                 }
             }
@@ -341,7 +337,7 @@ impl<'e> SiteColumn<'e> {
                 if let Some(best) = folds[group].held_value() {
                     let now = crate::workspace::owned_heap(best);
                     if now > held[group] {
-                        total.add_bytes(graph, now - held[group])?;
+                        bill.add(graph, now - held[group])?;
                         held[group] = now;
                     }
                 }
@@ -491,26 +487,27 @@ impl<'e> AccTable<'e> {
     }
 
     /// Charge what group `group`'s sites kept since the last settle to the
-    /// aggregation's one running total: a retaining site's new operand slots
-    /// and payloads, a pool's buffer growth, and the growth of the payload
-    /// a `min`/`max` holds. The caller settles after the spent input row is
-    /// dropped, so a value cloned from that row is the sole owner of its
-    /// payload by now and is charged in full (a payload still shared with
-    /// the store or a parameter adds nothing, as everywhere else). One total
-    /// for every group: the groups' retained state is alive together, so it
-    /// is bounded together.
+    /// aggregation's one bill: a retaining site's new operand slots and
+    /// payloads, a pool's buffer growth, and the growth of the payload a
+    /// `min`/`max` holds. The bill feeds that figure to the expression cap
+    /// and, when admission is on, to the workspace ledger. The caller
+    /// settles after the spent input row is dropped, so a value cloned from
+    /// that row is the sole owner of its payload by now and is charged in
+    /// full (a payload still shared with the store or a parameter adds
+    /// nothing, as everywhere else). One total for every group: the groups'
+    /// retained state is alive together, so it is bounded together.
     pub(super) fn settle(
         &mut self,
         group: usize,
         graph: &ExecGraph<'_>,
-        total: &mut RetainedTotal,
+        bill: &mut GroupBill,
     ) -> Result<()> {
-        total.add_bytes(graph, std::mem::take(&mut self.parked_bytes))?;
+        bill.add(graph, std::mem::take(&mut self.parked_bytes))?;
         for pool in &mut self.pools {
-            pool.states[group].settle(graph, total)?;
+            pool.states[group].settle(graph, bill)?;
         }
         for site in &mut self.sites {
-            site.settle(group, graph, total)?;
+            site.settle(group, graph, bill)?;
         }
         Ok(())
     }

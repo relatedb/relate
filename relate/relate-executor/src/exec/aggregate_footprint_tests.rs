@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use relate_core::tokens::{workspace_meter, LedgerGuard, TokenLedger};
 use relate_core::{Node, Value};
 use relate_ir::{Expr, Projection};
 
@@ -19,6 +20,7 @@ use super::test_support::{exec_cypher, try_exec_cypher, Builder};
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowNames};
+use crate::test_support::PeakPoolDouble;
 
 fn item(expr: Expr, alias: &str) -> Projection {
     Projection {
@@ -333,6 +335,60 @@ fn a_pattern_scope_in_an_item_keeps_the_whole_first_row() {
 }
 
 #[cfg(test)]
+/// A keyless `collect` of owned strings reserves those operands on the
+/// workspace ledger, not only on the expression cap. The reservation
+/// matches the bill and leaves with the aggregation.
+#[test]
+fn a_collect_reserves_its_operands_on_the_workspace_ledger() {
+    let g = Graph::default();
+    let graph = ExecGraph::read(&g);
+    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 4));
+    assert!(relate_core::tokens::PeakPool::try_grow(pool.as_ref(), 1));
+    let mut ledger = TokenLedger::new(u64::MAX / 4, 1, pool);
+    let _guard = LedgerGuard::install(&mut ledger);
+    let items = [item(
+        Expr::Function {
+            name: "collect".into(),
+            distinct: false,
+            args: vec![Expr::Variable("x".into())],
+        },
+        "xs",
+    )];
+    let order = OrderKeys::new(&[], &items, false);
+    let params = BTreeMap::new();
+    let mut aggregation = Aggregation::open(
+        &graph,
+        &[],
+        &items,
+        None,
+        &params,
+        &GroupSubclauses {
+            order: &order,
+            having: None,
+            plain_where: None,
+            import_scope: None,
+        },
+    )
+    .expect("opened");
+    let opened = workspace_meter().expect("ledger installed").0;
+    let payload = "p".repeat(64);
+    let rows = 16u64;
+    for i in 0..rows {
+        let mut row = Row::new();
+        row.insert("x".into(), Value::String(format!("{payload}{i}").into()));
+        aggregation.offer(&graph, row).expect("offered");
+    }
+    let current = workspace_meter().expect("ledger installed").0;
+    assert!(
+        current >= opened + rows * payload.len() as u64,
+        "collect reserved {current} bytes after an open of {opened}, under {} of payload",
+        rows * payload.len() as u64
+    );
+    assert_eq!(current, aggregation.billed_bytes());
+    drop(aggregation);
+    assert_eq!(workspace_meter().expect("ledger installed").0, 0);
+}
+
 mod plan {
     use relate_ir::Expr;
 
