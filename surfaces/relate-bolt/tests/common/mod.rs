@@ -125,11 +125,57 @@ fn boot(extra: &[&str], attempt: u32) -> Result<Server, String> {
     Ok(Server { addr: bind })
 }
 
-/// The boot error for a serve thread that returned before the port was ready.
+/// The boot error for a serve thread whose verdict arrived before the
+/// harness called the port ready (it returned, or its listener was
+/// dropped on the way out).
 fn early_exit(outcome: Result<(), String>) -> String {
     match outcome {
         Ok(()) => "serve returned before binding".to_string(),
         Err(error) => format!("serve failed before binding: {error}"),
+    }
+}
+
+/// The outcome of one readiness probe against a bound address.
+enum Probe {
+    /// The server accepted and closed the probe: ready.
+    Ready,
+    /// The connection was reset: the serve thread has failed or is about
+    /// to report why, so its verdict decides. A thread still live five
+    /// seconds later means the reset was not the listener dying, so the
+    /// port counts as ready.
+    Reset,
+}
+
+/// Half-close and drain a connected probe until the peer closes.
+/// Half-closing instead of merely dropping the socket matters: reading to
+/// peer EOF proves the server-side handler consumed that EOF and closed
+/// its stream, so its connection-cap permit is released as the handler
+/// thread exits.
+fn probe_once(mut probe: TcpStream, deadline: Instant) -> Result<Probe, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    probe
+        .set_read_timeout(Some(remaining))
+        .map_err(|e| format!("configuring readiness probe: {e}"))?;
+    probe
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|e| format!("closing readiness probe input: {e}"))?;
+    let mut discarded = [0u8; 256];
+    loop {
+        match probe.read(&mut discarded) {
+            Ok(0) => return Ok(Probe::Ready),
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::NotConnected
+                ) =>
+            {
+                return Ok(Probe::Reset)
+            }
+            Err(e) => return Err(format!("draining readiness probe: {e}")),
+        }
     }
 }
 
@@ -140,54 +186,30 @@ fn early_exit(outcome: Result<(), String>) -> String {
 /// that probe (LABS-144).
 ///
 /// A serve thread that returns first is a startup crash — fail fast with its
-/// error rather than polling a dead port for the full timeout.
+/// error rather than polling a dead port for the full timeout. The two
+/// verdict reads differ on purpose: the poll loop only peeks (`try_recv`,
+/// the thread usually has not reported), while a reset probe is evidence
+/// the thread is failing and so waits up to 5s for its verdict.
 fn wait_for_listen(done: &mpsc::Receiver<Result<(), String>>, addr: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        // A serve thread that already returned is a startup crash, so fail
-        // fast with its error instead of polling for the full timeout.
         if let Ok(outcome) = done.try_recv() {
             return Err(early_exit(outcome));
         }
-        if let Ok(mut probe) = TcpStream::connect(addr) {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            probe
-                .set_read_timeout(Some(remaining))
-                .map_err(|e| format!("configuring readiness probe: {e}"))?;
-            // Half-close instead of merely dropping the socket. Reading to
-            // peer EOF proves the server-side handler consumed that EOF and
-            // closed its stream; its connection-cap permit is then released
-            // as the handler thread exits.
-            probe
-                .shutdown(std::net::Shutdown::Write)
-                .map_err(|e| format!("closing readiness probe input: {e}"))?;
-            let mut discarded = [0u8; 256];
-            loop {
-                match probe.read(&mut discarded) {
-                    Ok(0) => return Ok(()),
-                    Ok(_) => {}
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::ConnectionReset
-                                | std::io::ErrorKind::BrokenPipe
-                                | std::io::ErrorKind::NotConnected
-                        ) =>
-                    {
-                        // The harness holds the listener, and `serve` drops
-                        // it on the way out. A reset therefore means the
-                        // serve thread has already failed or is about to
-                        // report why, so wait for its verdict rather than
-                        // calling the port ready.
-                        return match done.recv_timeout(Duration::from_secs(5)) {
-                            Ok(outcome) => Err(early_exit(outcome)),
-                            Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
-                            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                Err("serve thread vanished without a verdict".to_string())
-                            }
-                        };
-                    }
-                    Err(e) => return Err(format!("draining readiness probe: {e}")),
+        if let Ok(stream) = TcpStream::connect(addr) {
+            match probe_once(stream, deadline)? {
+                Probe::Ready => return Ok(()),
+                // The harness holds the listener, and `serve` drops it on
+                // the way out, so wait for the verdict rather than calling
+                // the port ready.
+                Probe::Reset => {
+                    return match done.recv_timeout(Duration::from_secs(5)) {
+                        Ok(outcome) => Err(early_exit(outcome)),
+                        Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            Err("serve thread vanished without a verdict".to_string())
+                        }
+                    };
                 }
             }
         }

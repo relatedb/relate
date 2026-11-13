@@ -24,9 +24,7 @@ use crate::fields::{
     metadata_notifications_failure, patch_names, ConsumeRequest, NotificationConfig, RunRequest,
 };
 use crate::keepalive::{run_statement, with_keep_alive};
-use crate::packstream::{
-    chunk_message, decode_message, encode, encode_error, struct_tag, DecodeError, Pack,
-};
+use crate::packstream::{chunk_message, decode_message, encode, encode_error, struct_tag, Pack};
 use crate::patches::BoltPatches;
 use crate::protocol::{ConnConfig, QueryOutcome};
 use crate::requests::{breach_text, request, Message, OverBudget, Refused, Undecodable};
@@ -172,15 +170,7 @@ impl Session {
             let queued_ahead_of_reset = last_reset.is_some_and(|reset| index < reset);
             let decoded = match decode_message(payload) {
                 Ok(pack) => request(pack, self.dialect.version).map_err(Refused::Undecodable),
-                Err(DecodeError::BudgetExceeded { at_least_bytes }) => {
-                    Err(Refused::OverBudget(OverBudget {
-                        at_least_bytes,
-                        bytes: payload.len(),
-                        message: struct_tag(payload)
-                            .and_then(|tag| Message::from_signature(tag, self.dialect.version)),
-                    }))
-                }
-                Err(fatal) => return Err(fatal.into()),
+                Err(error) => Err(Refused::from_decode(error, payload, self.dialect.version)?),
             };
             if let Flow::Close = self.dispatch(stream, decoded, queued_ahead_of_reset, config)? {
                 return Ok(Flow::Close);

@@ -31,8 +31,9 @@ pub(crate) const FAILED_HELLO_DELAY_MS: u64 = 1000;
 /// the text says so.
 pub(crate) fn decode_budget_message(at_least_bytes: usize, wire_bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
-    let limit_mib = crate::packstream::DecodeError::BUDGET_BYTES / MIB;
-    let at_least_mib = at_least_bytes.div_ceil(MIB);
+    let limit_mib = crate::packstream::MAX_DECODE_BYTES / MIB;
+    // Floor, not ceiling: rounding a lower bound up would overstate it.
+    let at_least_mib = at_least_bytes / MIB;
     format!(
         "Bolt message of {wire_bytes} bytes decodes to at least {at_least_mib} MiB of values, \
          over the per-message limit of {limit_mib} MiB (every value costs a fixed node plus its \

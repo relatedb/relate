@@ -12,14 +12,7 @@ fn bolt_return_one() {
     let addr = spawn_handler(db, ConnConfig::default());
     let mut client = connect(addr);
     crate::testutil::handshake(&mut client);
-    send_struct(
-        &mut client,
-        0x01,
-        vec![Pack::Map(vec![(
-            Pack::String("user_agent".into()),
-            Pack::String("test".into()),
-        )])],
-    );
+    send_struct(&mut client, 0x01, crate::testutil::hello_fields());
     // HELLO SUCCESS: with no --identity the server agent is the honest
     // default, single-sourced from CARGO_PKG_VERSION (ADR-0293).
     let m = Pack::Map(success_map(read_msg(&mut client)));
@@ -42,10 +35,10 @@ fn bolt_return_one() {
     );
     let _ = read_msg(&mut client);
 
-    send_struct(
+    crate::testutil::send_pull(
         &mut client,
-        0x3F,
-        vec![Pack::Map(vec![(Pack::String("n".into()), Pack::Int(-1))])],
+        crate::requests::Message::Pull,
+        vec![("n", Pack::Int(-1))],
     );
     // RECORD then SUCCESS with t_last as elapsed milliseconds.
     let rec = read_msg(&mut client);
@@ -68,14 +61,7 @@ fn hello_carries_the_configured_identity() {
     let addr = spawn_handler(db, config);
     let mut client = connect(addr);
     crate::testutil::handshake(&mut client);
-    send_struct(
-        &mut client,
-        0x01,
-        vec![Pack::Map(vec![(
-            Pack::String("user_agent".into()),
-            Pack::String("test".into()),
-        )])],
-    );
+    send_struct(&mut client, 0x01, crate::testutil::hello_fields());
     let m = Pack::Map(success_map(read_msg(&mut client)));
     assert_eq!(crate::testutil::field(&m, "server"), "Neo4j/5.26.0");
     // The identity override does not touch `connection_id`.
@@ -204,10 +190,10 @@ fn bolt_load_csv_opt_in_reaches_client_records() {
         ],
     );
     success_map(read_msg(&mut client));
-    send_struct(
+    crate::testutil::send_pull(
         &mut client,
-        0x3F,
-        vec![Pack::Map(vec![(Pack::String("n".into()), Pack::Int(-1))])],
+        crate::requests::Message::Pull,
+        vec![("n", Pack::Int(-1))],
     );
     for expected in ["Ada", "Lin"] {
         assert_eq!(

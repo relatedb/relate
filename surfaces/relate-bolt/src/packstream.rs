@@ -198,9 +198,14 @@ impl DecodeError {
         }
     }
 
-    /// The per-message decoded-size budget, in bytes, the error was
-    /// measured against.
-    pub const BUDGET_BYTES: usize = MAX_DECODE_BYTES;
+    /// The one constructor for a budget refusal: `remaining_bytes` of the
+    /// budget are left and `needed` more were asked for, so the message
+    /// decodes to at least the bytes already charged plus `needed`.
+    fn over_budget(remaining_bytes: usize, needed: usize) -> Self {
+        DecodeError::BudgetExceeded {
+            at_least_bytes: (MAX_DECODE_BYTES - remaining_bytes).saturating_add(needed),
+        }
+    }
 }
 
 impl std::fmt::Display for DecodeError {
@@ -269,10 +274,10 @@ pub(crate) const MAX_DEPTH: usize = 128;
 // small rows fits while a hostile message of millions of scalars does not.
 // Lists and maps grow by pushing, so the real allocation can reach twice the
 // charged slots; the worst-case heap is therefore about twice this budget.
-const MAX_DECODE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_DECODE_BYTES: usize = 64 * 1024 * 1024;
 
 /// The charge for one decoded value's own node.
-const NODE_BYTES: usize = std::mem::size_of::<Pack>();
+pub(crate) const NODE_BYTES: usize = std::mem::size_of::<Pack>();
 
 /// The one container-depth counting rule, shared by encode and decode so
 /// a message built from a `Value` can always be decoded by the peer;
@@ -427,9 +432,7 @@ fn dec_bytes(buf: &mut &[u8], n: usize, remaining_bytes: &mut usize) -> Result<P
 /// the message is now known to decode to.
 fn charge(remaining_bytes: &mut usize, cost: usize) -> Result<(), DecodeError> {
     if cost > *remaining_bytes {
-        return Err(DecodeError::BudgetExceeded {
-            at_least_bytes: (MAX_DECODE_BYTES - *remaining_bytes).saturating_add(cost),
-        });
+        return Err(DecodeError::over_budget(*remaining_bytes, cost));
     }
     *remaining_bytes -= cost;
     Ok(())
@@ -447,9 +450,7 @@ fn check_slots(
         .saturating_mul(slots_per_element)
         .saturating_mul(NODE_BYTES);
     if needed > *remaining_bytes {
-        return Err(DecodeError::BudgetExceeded {
-            at_least_bytes: (MAX_DECODE_BYTES - *remaining_bytes).saturating_add(needed),
-        });
+        return Err(DecodeError::over_budget(*remaining_bytes, needed));
     }
     Ok(())
 }

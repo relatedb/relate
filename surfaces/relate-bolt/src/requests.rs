@@ -183,6 +183,17 @@ pub(crate) struct OverBudget {
 }
 
 impl OverBudget {
+    /// The one constructor: the refusal of `payload` at `version`, naming
+    /// the request its structure tag reads as without decoding it.
+    pub(crate) fn of_payload(at_least_bytes: usize, payload: &[u8], version: BoltVersion) -> Self {
+        OverBudget {
+            at_least_bytes,
+            bytes: payload.len(),
+            message: crate::packstream::struct_tag(payload)
+                .and_then(|tag| Message::from_signature(tag, version)),
+        }
+    }
+
     /// The FAILURE text naming what was measured, the limit and the remedy.
     pub(crate) fn failure_text(&self) -> String {
         crate::failures::decode_budget_message(self.at_least_bytes, self.bytes)
@@ -208,6 +219,26 @@ impl OverBudget {
 pub(crate) enum Refused {
     Undecodable(Undecodable),
     OverBudget(OverBudget),
+}
+
+impl Refused {
+    /// Classify a decode failure through [`DecodeError::is_fatal`], the
+    /// one home of the split: the recoverable budget becomes a refusal
+    /// of `payload` at `version`; a fatal error is handed back.
+    pub(crate) fn from_decode(
+        error: crate::packstream::DecodeError,
+        payload: &[u8],
+        version: BoltVersion,
+    ) -> Result<Self, crate::packstream::DecodeError> {
+        match error {
+            crate::packstream::DecodeError::BudgetExceeded { at_least_bytes } => Ok(
+                Refused::OverBudget(OverBudget::of_payload(at_least_bytes, payload, version)),
+            ),
+            // Exhaustive on purpose: a new `DecodeError` variant must
+            // choose its class here, beside `is_fatal`.
+            fatal @ crate::packstream::DecodeError::Malformed(_) => Err(fatal),
+        }
+    }
 }
 
 /// Split a decoded message into its request and fields (ADR-0315), at the

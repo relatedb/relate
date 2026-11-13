@@ -3,7 +3,7 @@
 //! instead of closing it (which a driver retries as a transient failure).
 
 use crate::failures::{decode_budget_message, REQUEST_INVALID_CODE};
-use crate::packstream::{decode_message, encode, DecodeError, Pack};
+use crate::packstream::{decode_message, encode, DecodeError, Pack, MAX_DECODE_BYTES, NODE_BYTES};
 use crate::protocol::ConnConfig;
 use crate::requests::Message;
 use crate::testutil::{
@@ -82,11 +82,11 @@ fn the_notebook_batch_shape_runs() {
 
 #[test]
 fn the_decoder_reports_the_budget_as_its_own_typed_error() {
-    let fits = DecodeError::BUDGET_BYTES / std::mem::size_of::<Pack>();
+    let fits = MAX_DECODE_BYTES / NODE_BYTES;
     let over = encode(&Pack::List(vec![Pack::Null; fits])).unwrap();
     match decode_message(&over) {
         Err(DecodeError::BudgetExceeded { at_least_bytes }) => {
-            assert!(at_least_bytes > DecodeError::BUDGET_BYTES)
+            assert!(at_least_bytes > MAX_DECODE_BYTES)
         }
         other => panic!("expected the decode budget, got {other:?}"),
     }
@@ -100,7 +100,7 @@ fn the_decoder_reports_the_budget_as_its_own_typed_error() {
 fn the_message_names_the_measured_size_the_limit_and_the_remedy() {
     let text = decode_budget_message(70 * 1024 * 1024 + 1, 6_201_334);
     assert!(text.contains("6201334 bytes"), "{text}");
-    assert!(text.contains("at least 71 MiB"), "{text}");
+    assert!(text.contains("at least 70 MiB"), "{text}");
     assert!(text.contains("limit of 64 MiB"), "{text}");
     assert!(text.contains("UNWIND"), "{text}");
 }
