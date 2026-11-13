@@ -31,6 +31,13 @@ strictly, naming the column, the type asked for and the kind found when they
 disagree. Parameters take Swift values as they are: strings, numbers,
 optionals, arrays, dates and an app's own raw-value enums.
 
+A `Statement` is the value form of a query: text plus parameters, built
+once, comparable and safe to pass between actors. Written as a string
+literal it binds whatever it interpolates as a parameter, so a value can
+never become part of the statement text. `Codable` models go both ways: an
+`Encodable` value becomes a map parameter, and records, nodes and relationships
+decode into `Decodable` types by column or property name.
+
 The concurrency model is the C ABI's, checked by the Swift 6 compiler: a
 `Database` may be shared across tasks and actors, a `Connection` may not. The
 idiomatic shape is one actor that owns a connection and exposes app-level

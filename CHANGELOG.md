@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without wrapping. A `QueryResult` is a collection of `Record`s with strict
   typed accessors (`record.get("title", as: String.self)`), plus `single()`
   and `scalar(as:)`. `QueryResult` is `Equatable`.
+- Swift: `Statement`, a value holding statement text and parameters. As a
+  string literal it binds interpolated values as parameters
+  (`try conn.run("MATCH (b {key: \(key)})")`), with `\(identifier:)` and
+  `\(raw:)` for what is not a value.
+- Swift: `CypherValueEncoder` and `CypherValueDecoder`. An `Encodable`
+  model binds as a map; rows, nodes and relationships decode into
+  `Decodable` types (`result.decode(Book.self)`).
 
 ### Changed
 

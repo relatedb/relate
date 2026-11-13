@@ -123,7 +123,8 @@ public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConver
     /// The C ABI returned a payload that violates its documented contract.
     case decoding(String)
     /// A result did not have the shape or type the caller asked for: a
-    /// typed record accessor, `single()` or `scalar()`.
+    /// typed record accessor, `single()`, `scalar()` or a `Decodable`
+    /// decode.
     case unexpectedResult(ResultMismatch)
 
     public var message: String {
@@ -138,10 +139,15 @@ public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConver
     /// container or record names where inside it a conversion failed. Any
     /// other error is returned unchanged.
     func nested(under component: String) -> RelateError {
-        guard case .unexpectedResult(let mismatch) = self else { return self }
+        nested(under: [component])
+    }
+
+    /// This error with a whole path prefixed to its mismatch path.
+    func nested(under path: [String]) -> RelateError {
+        guard case .unexpectedResult(let mismatch) = self, !path.isEmpty else { return self }
         return .unexpectedResult(
             ResultMismatch(
-                path: [component] + mismatch.path, expected: mismatch.expected,
+                path: path + mismatch.path, expected: mismatch.expected,
                 found: mismatch.found, reason: mismatch.reason))
     }
 

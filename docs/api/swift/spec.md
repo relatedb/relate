@@ -246,6 +246,88 @@ list position inside it (`["mixed", "[1]"]`). `single()` throws it for zero
 or several rows; `scalar()` and `scalar(as:)` throw it for anything but one
 row and one column.
 
+## Statements
+
+```swift
+public struct Statement: Sendable, Hashable, ExpressibleByStringInterpolation, CustomStringConvertible {
+    public init(_ cypher: String, _ parameters: [String: CypherValue] = [:])          // the text names its parameters ($key)
+    public init(_ cypher: String, _ parameters: [String: any CypherValueConvertible]) throws(RelateError)
+    public var cypher: String { get }                       // interpolated values rendered as $_p0, $_p1, …
+    public var parameters: [String: CypherValue] { get }    // named and generated
+    public mutating func append(_ other: Statement) throws(RelateError)
+    public static func quoted(identifier: String) -> String // `name`, a backtick inside doubled
+}
+
+extension Connection {
+    @discardableResult public func run(_ statement: Statement) throws(RelateError) -> QueryResult
+}
+```
+
+A `Statement` written as a string literal **binds** what it interpolates:
+
+| Interpolation | Effect |
+| --- | --- |
+| `\(value)` — any `CypherValueConvertible`, optional or not | a parameter; the text gets `$_pN`. Can throw (a value Cypher cannot hold), so the literal is written under `try` |
+| `\(statement)` — another `Statement` | its text in place, its parameters with it |
+| `\(identifier: name)` | a label, relationship type or property key, backtick-quoted |
+| `\(raw: text)` | text spliced as written — for text the program wrote, never for input |
+
+Generated names are assigned on the whole statement in order of appearance,
+so one literal always renders one text whatever its values. A name the
+statement's own parameters already use (`_p0` passed explicitly) is skipped.
+Appending or embedding a statement that binds a name this one already binds
+to a different value throws `.invalidParameter`.
+
+`query(_:_:)` takes a `String` and `run(_:)` takes a `Statement`; they are
+separate names so that an interpolated literal cannot resolve to the wrong
+one. The same literal passed to `query` is an ordinary Swift string, with its
+values in the text.
+
+## Codable
+
+```swift
+public enum CypherKeyStrategy: Sendable, Hashable { case useDefaultKeys, snakeCase }
+
+public struct CypherValueEncoder: Sendable {
+    public var keyStrategy: CypherKeyStrategy
+    public init(keyStrategy: CypherKeyStrategy = .useDefaultKeys)
+    public func encode<T: Encodable>(_ value: T) throws(RelateError) -> CypherValue
+}
+CypherValue.init<T: Encodable>(encoding: T, keyStrategy: CypherKeyStrategy = .useDefaultKeys) throws(RelateError)
+
+public struct CypherValueDecoder: Sendable {
+    public var keyStrategy: CypherKeyStrategy
+    public init(keyStrategy: CypherKeyStrategy = .useDefaultKeys)
+    public func decode<T: Decodable>(_ type: T.Type, from value: CypherValue) throws(RelateError) -> T
+    public func decode<T: Decodable>(_ type: T.Type, from record: Record) throws(RelateError) -> T
+}
+Record.decode<T: Decodable>(_: T.Type = T.self, using: CypherValueDecoder = .init()) throws(RelateError) -> T
+Record.decode<T: Decodable>(_: T.Type = T.self, column: String, using: CypherValueDecoder = .init()) throws(RelateError) -> T
+QueryResult.decode<T: Decodable>(_: T.Type = T.self, using: CypherValueDecoder = .init()) throws(RelateError) -> [T]
+QueryResult.decode<T: Decodable>(_: T.Type = T.self, column: String, using: CypherValueDecoder = .init()) throws(RelateError) -> [T]
+```
+
+- **Encoding.** A struct is a `.map`, an array a `.list`. A value that is
+  `CypherValueConvertible` encodes through that conversion (a `Date` is a
+  `DATETIME`, a `URL` a string) rather than through its own `Encodable`. A
+  `nil` optional property is left out of the map, as synthesized `Encodable`
+  does — which is what `SET n += $props` needs, since a key held as `null`
+  there removes the property. A failure is `.invalidParameter`.
+- **Decoding.** A record decodes by column name; a `.map`, `.node` or
+  `.relationship` by its keys; `decode(_:column:)` decodes the value in one
+  column (`MATCH (b:Book) RETURN b`). A type that decodes from a single
+  value reads the one column of a one-column record. `CypherValueConvertible`
+  types decode through that conversion, with the strict rules under "Records";
+  a `.vector` decodes as an array of its coordinates.
+- **Keys.** `.snakeCase` writes `readingStatus` as `reading_status`. When
+  decoding, a property is looked up under its own name first and then under
+  its snake-case spelling. Converting the Swift name (not the stored key) is
+  what lets `coverURL` find `cover_url`.
+- **Failures** throw `.unexpectedResult` with the full path:
+  `["shelf", "books", "[1]", "n"]` is column `shelf`, key `books`, second
+  element, key `n`. A `DecodingError` thrown by a type's own `init(from:)`
+  is reported the same way at its coding path.
+
 ## Bridges
 
 Conversions between `CypherValue`'s typed structs and the platform's own

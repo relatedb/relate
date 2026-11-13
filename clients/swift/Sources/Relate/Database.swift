@@ -186,6 +186,10 @@ public final class Connection {
     /// through ``CypherValueConvertible`` — strings, numbers, optionals
     /// (`nil` is `null`), arrays, string-keyed dictionaries, `Date`, `URL`,
     /// `UUID` and the typed structs.
+    ///
+    /// Disfavored so that a dictionary of literals keeps resolving to the
+    /// `[String: CypherValue]` entry point, with no conversion pass.
+    @_disfavoredOverload
     @discardableResult
     public func query(_ cypher: String, _ parameters: [String: any CypherValueConvertible])
         throws(RelateError) -> QueryResult

@@ -56,11 +56,15 @@ extension CypherValue {
     public var vectorValue: Vector? { if case .vector(let v) = self { v } else { nil } }
 
     /// Map key or node/relationship property lookup; `nil` for any other value.
-    public subscript(key: String) -> CypherValue? {
+    public subscript(key: String) -> CypherValue? { entries?[key] }
+
+    /// What a keyed read sees: a map's entries, or a node's or
+    /// relationship's properties; `nil` for any other value.
+    var entries: [String: CypherValue]? {
         switch self {
-        case .map(let m): m[key]
-        case .node(let n): n.properties[key]
-        case .relationship(let r): r.properties[key]
+        case .map(let m): m
+        case .node(let n): n.properties
+        case .relationship(let r): r.properties
         default: nil
         }
     }

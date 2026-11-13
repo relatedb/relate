@@ -1,8 +1,8 @@
 // MARK: - Swift values as Cypher values, both ways
 
 /// A Swift type that converts to and from a ``CypherValue``: what a
-/// parameter dictionary and a ``Record`` accessor accept in place of a
-/// hand-built enum case.
+/// parameter dictionary, an interpolated ``Statement`` and a ``Record``
+/// accessor accept in place of a hand-built enum case.
 ///
 /// Conversion from a `CypherValue` is strict. An integer widens to a
 /// floating-point type; nothing else converts — a string is never parsed

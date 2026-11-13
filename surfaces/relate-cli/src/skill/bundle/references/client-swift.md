@@ -25,6 +25,8 @@ let conn = try db.connect()                      // connect(namespace: .system)
 let r = try conn.query("MATCH (n:Person {name: $name}) RETURN n", ["name": name])  // Swift values bind as they are
 for record in r { let n: CypherValue.Node = try record.get("n") }  // typed, strict; Optional accepts null
 try r.single(); try r.scalar(as: Int.self)       // shape-checked
+try conn.run("MATCH (b:Book {key: \(key)}) SET b += \(try CypherValue(encoding: model))")  // Statement: \(value) is BOUND ($_p0)
+let books = try r.decode(Book.self)              // Decodable by column; decode(_:column:) for a node
 r.columns; r.rows; r.records                     // [String], [[CypherValue]], [Record] (record.dictionary for a plain map)
 r.queryType      // .read | .write | .readWrite | .schema   (ADR-0162)
 r.namespace      // .neo4j | .system | .systemOntologies, resolved (ADR-0117)
@@ -77,6 +79,11 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   as components (not ISO strings — bridge with `foundationDate`, or render
   in the app), points and vectors as their structs; non-finite floats stay `.float`. A map that looks like a
   node stays a `.map`.
+- **`run` binds, `query` does not** — an interpolated literal passed to
+  `run(_:)` is a `Statement` and its values become parameters; the same
+  literal passed to `query(_:_:)` is a plain `String` with the values in the
+  text. Use `\(identifier: label)` for labels and property keys and
+  `\(raw: text)` only for text the program wrote.
 - **Typed reads are strict** — `record.get(_:as:)` widens an integer to a
   float and converts nothing else (a string is never parsed into a number,
   `null` needs an `Optional`). A mismatch throws
