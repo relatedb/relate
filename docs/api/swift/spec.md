@@ -867,4 +867,5 @@ Release-workflow use only.
 [`examples/`](examples/) is a SwiftPM package with one executable per
 directory under `Sources/`; each asserts its own output, and
 `make swift-examples` runs every one. The iOS app [`examples/ios-snotel`](../../../examples/ios-snotel/)
-is the end-to-end consumer.
+is the end-to-end consumer, and
+[`docs/guides/ios-apps.md`](../../guides/ios-apps.md) is the task guide.

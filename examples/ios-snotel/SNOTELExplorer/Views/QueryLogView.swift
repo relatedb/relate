@@ -137,9 +137,6 @@ private struct QueryLogRow: View {
 
                 HStack {
                     Label("\(entry.rowCount) rows", systemImage: "tablecells")
-                    if entry.mutationCount > 0 {
-                        Label("\(entry.mutationCount) changes", systemImage: "pencil.and.outline")
-                    }
                     Spacer()
                     Button {
                         UIPasteboard.general.string = entry.cypher

@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Swift: `Database.defaultStoreURL(named:)` and
   `Database.provision(at:from:)` for seeding an app's store from its bundle,
   and `Migrator` for idempotent schema statements plus versioned steps.
+- A guide, "Relate in an iOS app" (`docs/guides/ios-apps.md`), and the
+  `examples/ios-snotel` app moved to live queries and the asynchronous,
+  typed Swift API.
 - Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
   `setNamespace(_:)` taking the typed namespace, and error predicates on
   `EngineError` (`isConstraintViolation`, `isSyntaxError`,

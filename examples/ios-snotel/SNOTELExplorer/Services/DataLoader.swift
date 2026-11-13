@@ -1,6 +1,8 @@
 import Foundation
 
-struct StationCSVRow {
+/// One station of the bundled dataset. Its property names are the keys the
+/// station load statement reads (`row.elevationFt`, …).
+struct StationCSVRow: Encodable {
     let id: Int
     let name: String
     let state: String
@@ -9,7 +11,9 @@ struct StationCSVRow {
     let elevationFt: Int
 }
 
-struct ReadingCSVRow {
+/// One reading of the bundled dataset. Its property names are the keys the
+/// reading load statement reads (`row.stationId`, …).
+struct ReadingCSVRow: Encodable {
     let stationId: Int
     let date: String
     let sweInches: Double
@@ -118,22 +122,41 @@ enum DataLoader {
     }
 
     static func parseBasinsGeoJSON(_ data: Data) throws -> [BasinFeature] {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let features = json["features"] as? [[String: Any]] else {
-            throw DataLoaderError.malformed("basins: not a GeoJSON FeatureCollection")
-        }
-        return try features.enumerated().map { index, feature in
-            guard let props = feature["properties"] as? [String: Any],
-                  let name = props["name"] as? String,
-                  let huc2 = props["huc2"] as? String,
-                  let geometry = feature["geometry"] as? [String: Any],
-                  let coords = geometry["coordinates"] as? [[[Double]]],
-                  let geometryData = try? JSONSerialization.data(
-                      withJSONObject: geometry, options: [.sortedKeys]),
-                  let geoJSON = String(data: geometryData, encoding: .utf8) else {
-                throw DataLoaderError.malformed("basin feature \(index): not a named Polygon feature")
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try JSONDecoder().decode(BasinCollection.self, from: data).features.map { feature in
+                BasinFeature(
+                    name: feature.properties.name, huc2: feature.properties.huc2,
+                    geoJSON: String(decoding: try encoder.encode(feature.geometry), as: UTF8.self),
+                    rings: feature.geometry.coordinates)
             }
-            return BasinFeature(name: name, huc2: huc2, geoJSON: geoJSON, rings: coords)
+        } catch {
+            // The coder's own error says which feature and key did not parse.
+            throw DataLoaderError.malformed("basins: \(error)")
+        }
+    }
+
+    /// The shape of the bundled basins document: a GeoJSON
+    /// FeatureCollection of named Polygon features.
+    private struct BasinCollection: Decodable {
+        let features: [Feature]
+
+        struct Feature: Decodable {
+            let properties: Properties
+            let geometry: Polygon
+        }
+
+        struct Properties: Decodable {
+            let name: String
+            let huc2: String
+        }
+
+        /// A GeoJSON Polygon geometry object; encoding it again gives the
+        /// text the map overlay decodes.
+        struct Polygon: Codable {
+            let type: String
+            let coordinates: [[[Double]]]
         }
     }
 

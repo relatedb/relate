@@ -46,8 +46,9 @@ database owns — one writer and a small set of readers, each on its own
 queue — so a view model can await them from the `MainActor`, a list can
 keep reading while an import writes, and no transaction is ever held across
 a suspension. The synchronous `connect()` API remains for command-line tools,
-tests and code that wants to own its connection, as the iOS example in
-[`examples/ios-snotel`](../../../examples/ios-snotel/) shows.
+tests and code that wants to own its connection. The iOS example in
+[`examples/ios-snotel`](../../../examples/ios-snotel/) uses the asynchronous
+calls and live queries throughout.
 
 Two hooks let an app watch its own store. A trace handler sees every
 statement with its timings and parameter names, not values (its statement
@@ -75,3 +76,5 @@ steps once each. Call
 background, so the next launch opens from a snapshot instead of replaying
 the WAL. An app and its extensions that share a store put it in their App
 Group container; only one process may hold the store writable at a time.
+[Relate in an iOS app](../../guides/ios-apps.md) walks through all of this
+in one small app.

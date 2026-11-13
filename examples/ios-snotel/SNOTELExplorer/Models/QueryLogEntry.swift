@@ -10,12 +10,14 @@ struct QueryLogEntry: Identifiable, Equatable, Sendable {
     let id: UUID = UUID()
     let timestamp: Date = Date()
     let cypher: String
+    /// The names of the parameters the statement bound (`$center,
+    /// $radiusMeters`), `nil` when it bound none. A trace carries names,
+    /// not values.
     let parameters: String?
     let durationMilliseconds: Double
     /// The engine's plan-time classification; `nil` when the statement failed.
     let queryType: QueryType?
     let rowCount: Int
-    let mutationCount: Int
     let outcome: Outcome
 
     var operation: String {
@@ -41,5 +43,21 @@ struct QueryLogEntry: Identifiable, Equatable, Sendable {
 
     var failureMessage: String? {
         if case .failure(let message) = outcome { message } else { nil }
+    }
+}
+
+extension QueryLogEntry {
+    /// The log entry of one statement the database ran, from its trace: the
+    /// engine's own time for a statement that ran, the wall time of the
+    /// call for one that failed before the engine timed it.
+    init(_ trace: QueryTrace) {
+        self.init(
+            cypher: trace.statement,
+            parameters: trace.parameterNames.isEmpty
+                ? nil : trace.parameterNames.map { "$\($0)" }.joined(separator: ", "),
+            durationMilliseconds: trace.error == nil ? trace.elapsedMs : trace.wallMs,
+            queryType: trace.queryType,
+            rowCount: trace.rowCount,
+            outcome: trace.error.map { .failure($0.localizedDescription) } ?? .success)
     }
 }

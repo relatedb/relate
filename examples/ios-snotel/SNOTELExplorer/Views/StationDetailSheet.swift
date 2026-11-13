@@ -50,7 +50,7 @@ struct StationDetailSheet: View {
                             latitude: station.latitude,
                             longitude: station.longitude
                         )
-                        Task { await viewModel.searchNearby(center: center) }
+                        viewModel.searchNearby(center: center)
                         viewModel.selectedStation = nil
                     } label: {
                         Label("Find Nearby Stations", systemImage: "location.magnifyingglass")

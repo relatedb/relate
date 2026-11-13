@@ -1,3 +1,4 @@
+import CoreLocation
 import Testing
 import Foundation
 import Relate
@@ -7,7 +8,7 @@ import Relate
 struct DatabaseServiceTests {
 
     private func makeService() async throws -> DatabaseService {
-        let svc = try DatabaseService()
+        let svc = try await DatabaseService()
         try await svc.load(
             stations: DataLoader.parseStationsCSV(sampleStationsCSV),
             readings: DataLoader.parseReadingsCSV(sampleReadingsCSV),
@@ -16,26 +17,36 @@ struct DatabaseServiceTests {
         return svc
     }
 
+    /// What a view showing `statement` is given: the app reads stations
+    /// only this way, through the store's database.
+    private func shownStations(_ statement: Statement, in svc: DatabaseService) async throws -> [Station] {
+        try await svc.database.read { tx in try tx.run(statement).decode(Station.self) }
+    }
+
+    private func shownStations(_ filter: StationFilter, in svc: DatabaseService) async throws -> [Station] {
+        try await shownStations(try SNOTELQueries.stations(filter), in: svc)
+    }
+
     @Test("A durable store reopens loaded and skips the bundled load")
     func durableStoreReopens() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("snotel-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         do {
-            let svc = try DatabaseService(path: dir.path)
+            let svc = try await DatabaseService(path: dir.path)
             #expect(try await !svc.isLoaded())
             try await svc.loadBundledDataIfNeeded()
             #expect(try await svc.isLoaded())
         }
-        let reopened = try DatabaseService(path: dir.path)
+        let reopened = try await DatabaseService(path: dir.path)
         #expect(try await reopened.isLoaded())
         try await reopened.loadBundledDataIfNeeded()
-        #expect(try await reopened.allStationsWithSWE().count == 50)
+        #expect(try await shownStations(.all, in: reopened).count == 50)
     }
 
     @Test("A failed load commits nothing and does not read as loaded")
     func failedLoadIsAtomic() async throws {
-        let svc = try DatabaseService()
+        let svc = try await DatabaseService()
         // NaN is a valid FLOAT parameter under the typed ABI, so the trigger
         // is a coordinate point() refuses: an out-of-range latitude appended
         // after the valid stations fails the stations statement once earlier
@@ -47,21 +58,21 @@ struct DatabaseServiceTests {
             try await svc.load(stations: stations, readings: [], basins: [])
         }
         #expect(try await !svc.isLoaded())
-        #expect(try await svc.allStationsWithSWE().isEmpty)
+        #expect(try await shownStations(.all, in: svc).isEmpty)
     }
 
     @Test("Load stations and query all")
     func loadAndQueryStations() async throws {
         let svc = try await makeService()
-        let stations = try await svc.allStationsWithSWE()
-        #expect(stations.count == 3)
-        #expect(stations.contains { $0.name == "Bogus Basin" })
+        let all = try await shownStations(.all, in: svc)
+        #expect(all.count == 3)
+        #expect(all.contains { $0.name == "Bogus Basin" })
     }
 
     @Test("Query stations in basin via IN_BASIN")
     func stationsInBasin() async throws {
         let svc = try await makeService()
-        let pnw = try await svc.stationsInBasin(basinName: "Pacific Northwest")
+        let pnw = try await shownStations(.basin("Pacific Northwest"), in: svc)
         // Blewett Pass (WA) and Bumping Ridge (WA) are in PNW; Bogus Basin (ID) is not
         let names = pnw.map(\.name)
         #expect(names.contains("Blewett Pass"))
@@ -73,7 +84,8 @@ struct DatabaseServiceTests {
     func nearbyStations() async throws {
         let svc = try await makeService()
         // Search near Blewett Pass (47.53, -120.62), 200km radius
-        let nearby = try await svc.stationsNearby(lat: 47.53, lon: -120.62, radiusMeters: 200_000)
+        let nearby = try await shownStations(
+            .nearby(CLLocationCoordinate2D(latitude: 47.53, longitude: -120.62), radiusKm: 200), in: svc)
         #expect(nearby.count >= 1)
         #expect(nearby.first?.name == "Blewett Pass") // closest
         // Verify distance is populated
@@ -84,7 +96,11 @@ struct DatabaseServiceTests {
     func boundingBoxQuery() async throws {
         let svc = try await makeService()
         // Box around Washington state
-        let inBox = try await svc.stationsInBBox(swLat: 46.0, swLon: -122.0, neLat: 49.0, neLon: -119.0)
+        let inBox = try await shownStations(
+            try SNOTELQueries.stations(
+                southWest: CLLocationCoordinate2D(latitude: 46.0, longitude: -122.0),
+                northEast: CLLocationCoordinate2D(latitude: 49.0, longitude: -119.0)),
+            in: svc)
         let names = inBox.map(\.name)
         #expect(names.contains("Blewett Pass"))
         #expect(names.contains("Bumping Ridge"))
@@ -94,7 +110,7 @@ struct DatabaseServiceTests {
     @Test("Basins carry geometry and snowpack aggregates")
     func basinAggregates() async throws {
         let svc = try await makeService()
-        let basins = try await svc.basins()
+        let basins = try await svc.database.read(SNOTELQueries.basins).decode(Basin.self)
         #expect(basins.count == 2)
         let pnw = try #require(basins.first { $0.name == "Pacific Northwest" })
         #expect(pnw.avgSWE != nil)
@@ -104,7 +120,7 @@ struct DatabaseServiceTests {
 
     @Test("Query parameters preserve station names with punctuation")
     func parameterizedStationValues() async throws {
-        let svc = try DatabaseService()
+        let svc = try await DatabaseService()
         try await svc.load(stations: [
             StationCSVRow(
                 id: 100,
@@ -115,14 +131,13 @@ struct DatabaseServiceTests {
                 elevationFt: 9_000
             ),
         ], readings: [], basins: [])
-        let stations = try await svc.allStationsWithSWE()
-        #expect(stations.first?.name == "O'Brien's \\ Snow Course")
+        #expect(try await shownStations(.all, in: svc).first?.name == "O'Brien's \\ Snow Course")
     }
 
     @Test("Spatial containment can be materialized as graph relationships")
     func basinMembershipRelationships() async throws {
         let svc = try await makeService()
-        let stats = try await svc.databaseStats()
+        let stats = try await svc.database.read(SNOTELQueries.stats)
         #expect(stats.stations == 3)
         #expect(stats.readings == 3)
         #expect(stats.basins == 2)
@@ -134,8 +149,8 @@ struct DatabaseServiceTests {
     @Test("Station search matches names and state abbreviations")
     func stationSearch() async throws {
         let svc = try await makeService()
-        #expect(try await svc.searchStations("Blewett").map(\.name) == ["Blewett Pass"])
-        #expect(try await svc.searchStations("WA").count == 2)
+        #expect(try await shownStations(.search("Blewett"), in: svc).map(\.name) == ["Blewett Pass"])
+        #expect(try await shownStations(.search("WA"), in: svc).count == 2)
     }
 
     @Test("Curated demo queries execute and return tabular output", arguments: DemoQuery.examples)
@@ -147,9 +162,31 @@ struct DatabaseServiceTests {
         #expect(result.elapsedMs >= 0)
     }
 
-    @Test("Query logger records successful and failed executions")
+    @Test("A nearby search off the globe is refused when its statement is built")
+    func nearbyOffTheGlobe() {
+        #expect(throws: RelateError.self) {
+            try SNOTELQueries.stations(.nearby(CLLocationCoordinate2D(latitude: 200, longitude: 0), radiusKm: 10))
+        }
+    }
+
+    @Test("A live station query follows a workbench write")
+    func liveQueryFollowsAWrite() async throws {
+        let svc = try await makeService()
+        // What `@LiveQuery` observes for the map: the value now, then again
+        // after a commit that changes it.
+        let everyStation = try SNOTELQueries.stations(.all)
+        var shown = svc.database.values { tx in
+            try tx.run(everyStation).decode(Station.self).map(\.name)
+        }.makeAsyncIterator()
+        #expect(try await shown.next()?.count == 3)
+        _ = try await svc.run(
+            "CREATE (:Station {id: 1, name: 'Added In The Workbench', state: 'CO', latitude: 40.0, longitude: -105.0, elevation: 9000})")
+        #expect(try await shown.next()?.contains("Added In The Workbench") == true)
+    }
+
+    @Test("The query log records every statement, with parameter names and failures")
     func queryLogging() async throws {
-        let svc = try DatabaseService()
+        let svc = try await DatabaseService()
         var log = svc.queryLog.makeAsyncIterator()
         try await svc.load(stations: [
             StationCSVRow(
@@ -161,15 +198,16 @@ struct DatabaseServiceTests {
                 elevationFt: 8_000
             ),
         ], readings: [], basins: [])
-        // The load's entries: the index, the four UNWINDs, the marker.
-        let loadEntries = await next(6, from: &log)
-        #expect(loadEntries.count == 6)
-        #expect(loadEntries[1].operation == "UNWIND")
-        #expect(loadEntries[1].queryType == .write)
-        #expect(loadEntries[1].parameters?.contains("Logger Station") == true)
-        #expect(loadEntries[1].mutationCount > 0)
+        // The load's entries: the four UNWINDs, then the marker. (The
+        // index is schema, created when the store opens.)
+        let loadEntries = await next(5, from: &log)
+        #expect(loadEntries.count == 5)
+        #expect(loadEntries[0].operation == "UNWIND")
+        #expect(loadEntries[0].queryType == .write)
+        // A trace carries the names of the parameters bound, not their values.
+        #expect(loadEntries[0].parameters == "$rows")
 
-        _ = try await svc.allStationsWithSWE()
+        _ = try await shownStations(.search("Logger"), in: svc)
 
         do {
             _ = try await svc.run("THIS IS NOT CYPHER")
@@ -182,6 +220,7 @@ struct DatabaseServiceTests {
         #expect(entries.count == 2)
         #expect(entries[0].queryType == .read)
         #expect(entries[0].rowCount == 1)
+        #expect(entries[0].parameters == "$searchText")
         #expect(entries[1].succeeded == false)
     }
 }

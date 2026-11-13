@@ -153,5 +153,5 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
 ## Spec
 
 `docs/api/swift/spec.md` (types, value mapping, lifecycle, build flags);
-runnable examples in `docs/api/swift/examples`; full iOS app in
-`examples/ios-snotel`.
+runnable examples in `docs/api/swift/examples`; the iOS task guide is
+`docs/guides/ios-apps.md`; full iOS app in `examples/ios-snotel`.

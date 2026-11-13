@@ -1,3 +1,4 @@
+import Relate
 import SwiftUI
 
 struct ContentView: View {
@@ -5,6 +6,7 @@ struct ContentView: View {
     @State private var showInsights = false
     @State private var showWorkbench = false
     @State private var showQueryLog = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -25,8 +27,7 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                 }
             case .ready:
-                MapContainerView(viewModel: viewModel)
-                    .ignoresSafeArea()
+                MapScreen(viewModel: viewModel, filter: viewModel.filter)
 
                 VStack(spacing: 0) {
                     HStack {
@@ -55,39 +56,17 @@ struct ContentView: View {
                     .padding(.top, 60)
                     Spacer()
                 }
-
-                VStack(spacing: 0) {
-                    Spacer()
-                    FilterPanelView(viewModel: viewModel)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 8)
-                }
             }
         }
         .task {
             await viewModel.setup()
-        }
-        .alert(
-            "Unable to update stations",
-            isPresented: Binding(
-                get: { viewModel.actionError != nil },
-                set: { if !$0 { viewModel.actionError = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { viewModel.actionError = nil }
-        } message: {
-            Text(viewModel.actionError ?? "Unknown error")
         }
         .sheet(item: $viewModel.selectedStation) { station in
             StationDetailSheet(station: station, viewModel: viewModel)
                 .presentationDetents([.medium])
         }
         .sheet(isPresented: $showInsights) {
-            if let stats = viewModel.databaseStats {
-                InsightsView(stats: stats, basinsBySWE: viewModel.basinsBySWE)
-            }
+            InsightsView()
         }
         .sheet(isPresented: $showWorkbench) {
             QueryWorkbenchView(viewModel: viewModel)
@@ -97,6 +76,16 @@ struct ContentView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        // Commits are durable as they are made; a checkpoint when the app
+        // leaves the foreground keeps the next launch from replaying them.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, let database = viewModel.database {
+                Task { try? await database.checkpointInBackground() }
+            }
+        }
+        // The database every `@LiveQuery` in this view tree reads, the
+        // sheets above included. It is nil until setup has opened the store.
+        .relateDatabase(viewModel.database)
     }
 }
 

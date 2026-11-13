@@ -3,6 +3,9 @@ import MapKit
 import SwiftUI
 
 struct MapContainerView: UIViewRepresentable {
+    /// What the map shows, from the screen's live queries.
+    var stations: [Station]
+    var basins: [Basin]
     var viewModel: MapViewModel
 
     func makeUIView(context: Context) -> MKMapView {
@@ -37,6 +40,8 @@ struct MapContainerView: UIViewRepresentable {
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.viewModel = viewModel
+        context.coordinator.stations = stations
+        context.coordinator.basins = basins
         context.coordinator.updateStations(on: mapView)
         context.coordinator.updateBasinOverlays(on: mapView)
         context.coordinator.updateBasinStyles(on: mapView)
@@ -56,6 +61,8 @@ struct MapContainerView: UIViewRepresentable {
         )
 
         var viewModel: MapViewModel
+        var stations: [Station] = []
+        var basins: [Basin] = []
         private var stationAnnotations: [StationAnnotation] = []
         private var appliedStations: [Station] = []
         private var basinByOverlay: [ObjectIdentifier: Basin] = [:]
@@ -68,12 +75,12 @@ struct MapContainerView: UIViewRepresentable {
         }
 
         func updateStations(on mapView: MKMapView) {
-            guard viewModel.stations != appliedStations else { return }
+            guard stations != appliedStations else { return }
 
             mapView.removeAnnotations(stationAnnotations)
-            stationAnnotations = viewModel.stations.map(StationAnnotation.init)
+            stationAnnotations = stations.map(StationAnnotation.init)
             mapView.addAnnotations(stationAnnotations)
-            appliedStations = viewModel.stations
+            appliedStations = stations
 
             if viewModel.isFiltered, !stationAnnotations.isEmpty {
                 fit(stationAnnotations, on: mapView, animated: true)
@@ -87,13 +94,13 @@ struct MapContainerView: UIViewRepresentable {
         /// (`Basin.geoJSON`, a GeoJSON geometry object), once per basin list;
         /// each overlay keeps its `Basin`, so styling reads it directly.
         func updateBasinOverlays(on mapView: MKMapView) {
-            guard viewModel.basins != overlaidBasins else { return }
-            overlaidBasins = viewModel.basins
+            guard basins != overlaidBasins else { return }
+            overlaidBasins = basins
 
             mapView.removeOverlays(mapView.overlays)
             basinByOverlay.removeAll()
             var overlays: [MKOverlay] = []
-            for basin in viewModel.basins {
+            for basin in basins {
                 let objects: [MKGeoJSONObject]
                 do {
                     objects = try MKGeoJSONDecoder().decode(Data(basin.geoJSON.utf8))
@@ -146,7 +153,7 @@ struct MapContainerView: UIViewRepresentable {
                 return
             }
             guard let annotation = view.annotation as? StationAnnotation else { return }
-            viewModel.selectedStation = viewModel.stations.first { $0.id == annotation.stationID }
+            viewModel.selectedStation = stations.first { $0.id == annotation.stationID }
             mapView.deselectAnnotation(annotation, animated: true)
         }
 

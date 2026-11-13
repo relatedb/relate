@@ -1,9 +1,14 @@
 import Charts
+import Relate
 import SwiftUI
 
+/// The graph at a glance. Both of its values are live queries, so the
+/// counts and the chart follow a write made while the sheet is open. The
+/// counts are placeholders until their first read returns, and a read that
+/// failed is shown, not left as zeros.
 struct InsightsView: View {
-    let stats: DatabaseStats
-    let basinsBySWE: [Basin]
+    @LiveQuery(initial: .empty, SNOTELQueries.stats) private var stats: DatabaseStats
+    @LiveQuery(SNOTELQueries.basins) private var basins: [Basin]
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [
@@ -17,12 +22,17 @@ struct InsightsView: View {
                 VStack(spacing: 20) {
                     hero
 
+                    if let error = $stats.error ?? $basins.error {
+                        QueryErrorBanner(error: error)
+                    }
+
                     LazyVGrid(columns: columns, spacing: 12) {
                         MetricCard(value: stats.nodes, label: "Graph nodes", icon: "circle.hexagongrid.fill")
                         MetricCard(value: stats.relationships, label: "Relationships", icon: "arrow.triangle.branch")
                         MetricCard(value: stats.stations, label: "Stations", icon: "mappin.and.ellipse")
                         MetricCard(value: stats.basinMemberships, label: "Spatial links", icon: "point.3.connected.trianglepath.dotted")
                     }
+                    .redacted(reason: $stats.isLoading ? .placeholder : [])
 
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Graph model", systemImage: "point.3.filled.connected.trianglepath.dotted")
@@ -35,7 +45,7 @@ struct InsightsView: View {
                         Label("Average SWE by basin", systemImage: "chart.bar.xaxis")
                             .font(.headline)
 
-                        Chart(basinsBySWE) { basin in
+                        Chart(basins.bySWE) { basin in
                             BarMark(
                                 x: .value("SWE", basin.avgSWE ?? 0),
                                 y: .value("Basin", basin.name)
@@ -77,11 +87,14 @@ struct InsightsView: View {
                 Image(systemName: "cylinder.split.1x2.fill")
                     .font(.title)
                 Spacer()
-                Text("LIVE")
-                    .font(.caption2.bold())
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.white.opacity(0.18), in: Capsule())
+                // Shown while both queries are following the store.
+                if $stats.isLive && $basins.isLive {
+                    Text("LIVE")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(.white.opacity(0.18), in: Capsule())
+                }
             }
             Text("An embedded spatial graph")
                 .font(.title2.bold())
