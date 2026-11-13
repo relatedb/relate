@@ -26,7 +26,7 @@ use crate::exec::candidates::node_ok;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::super::frontier::Arm;
+use super::super::frontier_tables::Arm;
 use super::super::frontier_tables::Chain;
 use super::super::nfa::FrontierNfa;
 

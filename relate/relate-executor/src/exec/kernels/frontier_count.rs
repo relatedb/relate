@@ -42,9 +42,9 @@ use super::super::agg_fold::FoldedReturn;
 use super::super::graph_stats::GraphStats;
 use super::super::match_folds::FoldCtx;
 use super::super::pushdown::{flatten_and_owned, match_scope, Residual};
-use super::frontier::{arms, Arm};
 use super::frontier_match::{compile_frontier, Consumer};
 use super::frontier_run::{seeds, single_quantified};
+use super::frontier_tables::{arms, Arm};
 use super::nfa::FrontierNfa;
 
 /// The fold entry, tried first among the `MATCH` folds: `clauses` starts

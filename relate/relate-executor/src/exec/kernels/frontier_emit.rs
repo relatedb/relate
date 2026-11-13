@@ -79,7 +79,7 @@ use crate::UsedSet;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use relate_core::{Error, Node, NodeId, Path, RelId, Relationship, Result, Value};
+use relate_core::{Node, NodeId, Path, RelId, Relationship, Result, Value};
 use relate_ir::{PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
 
 use crate::ctx::{ExecCtx, FrontierCounters};
@@ -189,7 +189,6 @@ pub(crate) fn capped_rows(
         accepted: Vec::new(),
         cursor: 0,
         deferred: Vec::new(),
-        error: None,
         // the emission's path-name rung memo (see the field): empty
         // until the first bound witness fills it
         path_rung: Cell::new(None),
@@ -202,22 +201,8 @@ pub(crate) fn capped_rows(
         pool,
         tables,
         bufs,
-        Some(|parents: &Parents<'_>, endpoints: &[Endpoint]| {
-            match emission.on_level(parents, endpoints) {
-                Ok(halted) => halted,
-                Err(error) => {
-                    // Halt the BFS; the error surfaces after the run —
-                    // a probe that returns false would only walk on
-                    // into a state the caller is about to abandon.
-                    emission.error = Some(error);
-                    true
-                }
-            }
-        }),
+        |parents: &Parents<'_>, endpoints: &[Endpoint]| emission.on_level(parents, endpoints),
     )?;
-    if let Some(error) = emission.error.take() {
-        return Err(error);
-    }
     // The deferred pass's own rule shares the verdict (ADR-0516): a
     // budget cut in either half declines the run, and a declined run
     // hands back no rows at all — the emission's accepted buffer drops
@@ -282,8 +267,6 @@ struct Emission<'a> {
     /// candidates, mode-check failures) — the post-BFS pass re-asks
     /// them through the rule's searches.
     deferred: Vec<Endpoint>,
-    /// An error raised inside the halt probe, surfacing after the run.
-    error: Option<Error>,
     /// The witness rows' path-name rung memo — built from the first
     /// bound witness's row (every witness binds the same names against
     /// the one entering row), one per emission, stamped by every later
