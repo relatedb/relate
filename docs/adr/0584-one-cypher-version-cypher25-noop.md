@@ -36,7 +36,7 @@ slated for a re-pin (ADR-0513).
 2. **Every other `CYPHER <n>` integer fails with one authored
    unsupported-version error**, `CYPHER 5` included. Settled text, `<n>`
    the requested integer:
-   `UnsupportedCypherVersion: CYPHER <n> is not supported; the only supported Cypher version is CYPHER 25`
+   `UnsupportedCypherVersion: <n> is not a valid option for cypher version. Valid options are: 25`
    The preamble fails it at parse, the language value at command
    execution — where each is checked today.
 3. **`ALTER DATABASE … SET DEFAULT LANGUAGE` admits only `CYPHER 25`**

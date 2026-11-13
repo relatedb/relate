@@ -1207,7 +1207,7 @@ MATCH (n) RETURN n;
 ```
 
 Every other `CYPHER <n>` integer — `CYPHER 5` included — fails at parse with
-`UnsupportedCypherVersion: CYPHER <n> is not supported; the only supported Cypher version is CYPHER 25`.
+`UnsupportedCypherVersion: <n> is not a valid option for cypher version. Valid options are: 25`.
 The one other surface admitting a Cypher version,
 `ALTER DATABASE … SET DEFAULT LANGUAGE`, likewise accepts `CYPHER 25` only —
 every other integer fails the command with the same error (ADR-0116 §2,

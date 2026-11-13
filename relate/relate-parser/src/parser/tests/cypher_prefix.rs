@@ -23,10 +23,7 @@ fn test_non_25_integer_preambles_fail_with_the_authored_error() {
         let err = parse(src).expect_err(&format!("{src} must be rejected"));
         assert_eq!(
             err.message,
-            format!(
-                "UnsupportedCypherVersion: CYPHER {requested} is not supported; \
-                 the only supported Cypher version is CYPHER 25"
-            ),
+            relate_test_support::ce_text::unsupported_cypher_version(requested),
             "{src}"
         );
     }

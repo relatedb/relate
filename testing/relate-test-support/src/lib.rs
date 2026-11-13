@@ -29,6 +29,8 @@ pub mod recording_engine;
 pub mod rng;
 pub mod stacks;
 
+/// Authored CE error texts more than one crate's tests pin, held once.
+pub mod ce_text;
 pub mod sampling;
 pub mod temporal;
 /// Shared [`Value`] fixtures: the one constructor per value kind the

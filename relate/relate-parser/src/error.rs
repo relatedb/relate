@@ -147,10 +147,17 @@ pub const SUPPORTED_CYPHER_VERSION: u32 = 25;
 /// (`Parser::parse_preamble`); `ALTER DATABASE … SET DEFAULT LANGUAGE`
 /// raises it at command execution (`catalog_alter_database`), so the two
 /// spellings cannot drift apart.
+///
+/// The wording mirrors the server's own version-option rejection, which
+/// names the options it accepts (`4 is not a valid option for cypher
+/// version. Valid options are: 25, 5`). That sentence is the remedy, and it
+/// reads correctly on both surfaces — unlike advice phrased around the
+/// preamble (`omit the CYPHER clause`), for which the `ALTER DATABASE`
+/// spelling has no equivalent.
 pub fn unsupported_cypher_version_message(requested: impl fmt::Display) -> String {
     format!(
-        "UnsupportedCypherVersion: CYPHER {requested} is not supported; \
-         the only supported Cypher version is CYPHER {SUPPORTED_CYPHER_VERSION}"
+        "UnsupportedCypherVersion: {requested} is not a valid option for cypher \
+         version. Valid options are: {SUPPORTED_CYPHER_VERSION}"
     )
 }
 

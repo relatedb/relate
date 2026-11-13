@@ -98,10 +98,7 @@ fn alter_database_rejects_every_language_but_25_with_the_authored_error() {
         let err = err_text(conn.query(&format!(
             "ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER {version}"
         )));
-        let expected = format!(
-            "UnsupportedCypherVersion: CYPHER {version} is not supported; \
-             the only supported Cypher version is CYPHER 25"
-        );
+        let expected = relate_test_support::ce_text::unsupported_cypher_version(version);
         assert!(
             err.contains(&expected),
             "CYPHER {version}: wrong error: {err}"

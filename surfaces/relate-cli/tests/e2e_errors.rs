@@ -67,10 +67,7 @@ fn test_unsupported_default_language_exits_6_with_the_authored_error() {
     ]));
     assert_eq!(status.code(), Some(6), "{stderr}");
     assert!(
-        stderr.contains(
-            "UnsupportedCypherVersion: CYPHER 5 is not supported; \
-             the only supported Cypher version is CYPHER 25"
-        ),
+        stderr.contains(&relate_test_support::ce_text::unsupported_cypher_version(5)),
         "the CYPHER 5 spelling fails with the authored error: {stderr}"
     );
 }

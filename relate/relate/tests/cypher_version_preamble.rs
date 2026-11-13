@@ -162,10 +162,7 @@ fn show_constraints_create_statement_is_identical_under_every_spelling() {
 fn the_labs_1405_repro_fails_with_the_authored_error() {
     let err = err_text(connection().query("CYPHER 5 WHEN true THEN RETURN 2 AS x"));
     assert!(
-        err.contains(
-            "UnsupportedCypherVersion: CYPHER 5 is not supported; \
-             the only supported Cypher version is CYPHER 25"
-        ),
+        err.contains(&relate_test_support::ce_text::unsupported_cypher_version(5)),
         "wrong error: {err}"
     );
     for src in [
@@ -190,10 +187,7 @@ fn explain_plans_under_cypher_25_and_fails_under_cypher_5() {
     assert!(result.plan_root().is_some(), "EXPLAIN stamps a plan");
     let err = err_text(connection().query("EXPLAIN CYPHER 5 RETURN 1 AS n"));
     assert!(
-        err.contains(
-            "UnsupportedCypherVersion: CYPHER 5 is not supported; \
-             the only supported Cypher version is CYPHER 25"
-        ),
+        err.contains(&relate_test_support::ce_text::unsupported_cypher_version(5)),
         "wrong error: {err}"
     );
 }

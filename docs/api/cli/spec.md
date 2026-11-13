@@ -1310,7 +1310,7 @@ the plan and the notifications inside their own payload.
 The `EXPLAIN`/`PROFILE` preamble is stripped from the `Query:` echo; a
 `CYPHER 25` preamble stays — the one accepted spelling, a no-op; every
 other `CYPHER <n>` integer fails at parse with
-`UnsupportedCypherVersion: CYPHER <n> is not supported; the only supported Cypher version is CYPHER 25`
+`UnsupportedCypherVersion: <n> is not a valid option for cypher version. Valid options are: 25`
 (ADR-0584). `| +` glyphs nest each clause beneath
 the one it feeds (`ProduceResults` outermost); `Union`/`UnionAll` carry
 multi-part pipelines as children, `Next` carries chained `NEXT` stages.
