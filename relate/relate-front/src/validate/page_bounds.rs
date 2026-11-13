@@ -18,7 +18,7 @@ use relate_parser::{Clause, Expr, PageStage};
 use crate::ast::collect::expr_child_reaches_scope;
 use crate::ast::tree::try_expr_contains;
 
-use super::static_types::{require_integer_argument, static_value};
+use super::static_literal::{require_integer_argument, static_value};
 
 /// Whether an expression references any variable (a parameter is not a
 /// reference). Rides the shared scope-reach walk, so a variable inside a

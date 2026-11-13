@@ -321,7 +321,7 @@ fn check_projection_items(
     items: &[ReturnItem],
     grouping_key_exprs: &[&Expr],
 ) -> Result<(), EngineError> {
-    let keys = GroupingKeys::new(items, grouping_key_exprs);
+    let keys = GroupingKeys::new(grouping_key_exprs);
     for item in items {
         check_nested_aggregation(&item.expr)?;
         check_non_constant_in_aggregation(&item.expr)?;

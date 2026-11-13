@@ -8,9 +8,9 @@
 use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
 
-use relate_parser::{Expr, ReturnItem};
+use relate_parser::Expr;
 
-use super::{collect_non_agg_variables, is_projected_item};
+use super::collect_non_agg_variables;
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{collect_expr_variables, interp_embeds};
 
@@ -22,30 +22,16 @@ use crate::ast::collect::{collect_expr_variables, interp_embeds};
 /// collapses the per-leaf pass-through plumbing to a single
 /// `&GroupingKeys` parameter.
 pub(super) struct GroupingKeys<'a> {
-    /// The clause's projection items — the set the shared
-    /// [`is_projected_item`] predicate answers the projected-key question
-    /// against.
-    items: &'a [ReturnItem],
     /// The grouping-key expressions themselves.
     keys: &'a [&'a Expr],
-    /// The keys no projected item restates: an explicit `GROUP BY <expr>`
-    /// may name one (this dialect accepts it), and a `*` item never
-    /// answers the item question, so such a key is a key in its own right.
-    bare_keys: Vec<&'a Expr>,
     vars: IdentHashSet<SmallName>,
     star: bool,
 }
 
 impl<'a> GroupingKeys<'a> {
-    pub(super) fn new(items: &'a [ReturnItem], key_exprs: &'a [&'a Expr]) -> Self {
+    pub(super) fn new(key_exprs: &'a [&'a Expr]) -> Self {
         Self {
-            items,
             keys: key_exprs,
-            bare_keys: key_exprs
-                .iter()
-                .copied()
-                .filter(|key| !is_projected_item(items, key))
-                .collect(),
             vars: grouping_key_vars(key_exprs),
             // ADR-0198 ruling 1: a `*` item carries every in-scope variable
             // as a grouping key.
@@ -61,9 +47,7 @@ impl<'a> GroupingKeys<'a> {
         let mut vars = self.vars.clone();
         vars.extend(aliases);
         Self {
-            items: self.items,
             keys: self.keys,
-            bare_keys: self.bare_keys.clone(),
             vars,
             star: self.star,
         }
@@ -84,13 +68,11 @@ impl<'a> GroupingKeys<'a> {
     }
 
     /// The expression is structurally identical to one of the clause's
-    /// grouping keys: either a projected item the key list names (the
-    /// shared item predicate's question, restricted to the keys) or a key
-    /// the projection never restates. Being a projected item alone is not
-    /// enough — only a projected *key* is a key.
+    /// grouping keys — a projected key and a key the projection never
+    /// restates (an explicit `GROUP BY <expr>`) alike. Being a projected
+    /// item alone is not enough — only a *key* is a key.
     fn matches_key(&self, expr: &Expr) -> bool {
-        (is_projected_item(self.items, expr) && self.keys.iter().any(|key| **key == *expr))
-            || self.bare_keys.iter().any(|key| **key == *expr)
+        self.keys.iter().any(|key| **key == *expr)
     }
 }
 
