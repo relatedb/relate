@@ -204,7 +204,7 @@ pub(crate) fn try_frontier_rows(
                 }
             }
         }
-        Consumer::DistinctEndpoints => {
+        Consumer::DistinctEndpoints { .. } => {
             // One row per accepting arrival over the boundary variables,
             // running to fixpoint or `max` — bounded by the pair set,
             // never the path count. The target's admission filters the
@@ -248,7 +248,7 @@ pub(crate) fn try_frontier_rows(
                     for_each_admitted(
                         ctx,
                         pred,
-                        contract.pair,
+                        contract.consumer.pair(),
                         seed,
                         &walked.endpoints,
                         |_, endpoint| {
@@ -619,7 +619,7 @@ fn endpoint_rows(
     out: &mut Vec<Row>,
     out_retained: &mut RetainedTotal,
 ) -> Result<()> {
-    let (pair, seed) = (pass.contract.pair, pass.seed);
+    let (pair, seed) = (pass.contract.consumer.pair(), pass.seed);
     for_each_admitted(
         ctx,
         pred,
@@ -650,7 +650,7 @@ fn exists_hit(
     for_each_admitted(
         ctx,
         pred,
-        contract.pair,
+        contract.consumer.pair(),
         seed,
         &walked.endpoints,
         |ctx, endpoint| {

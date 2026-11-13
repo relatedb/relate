@@ -125,6 +125,20 @@ pub fn first_column(result: &relate::QueryResult) -> Vec<relate::Value> {
     result.rows.iter().map(|row| row[0].clone()).collect()
 }
 
+/// One wire arg of the given plan node, spelled once for the suites that
+/// read serialized args: the node's
+/// serialized `args` map entry, cloned out — `None` when the producer
+/// emitted no such key.
+pub fn wire_arg(node: &relate::PlanNode, key: &str) -> Option<relate::Value> {
+    let relate::Value::Map(map) = node.to_value() else {
+        panic!("to_value is a map");
+    };
+    let Some(relate::Value::Map(args)) = map.get("args") else {
+        panic!("args is a map");
+    };
+    args.get(key).cloned()
+}
+
 /// Opens a fresh in-memory store with `RELATE_PATTERN_ENGINE` forced to
 /// `engine` (ADR-0519). The switch is read once at open and the variable
 /// is process-global, so the lock keeps the `set_var` + open pair atomic
@@ -136,6 +150,16 @@ pub fn open_with_engine(engine: &str) -> relate::Connection {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var("RELATE_PATTERN_ENGINE", engine);
+    // Restores the process-global variable on the way out — unset, the
+    // state every other test in the process assumes — even if the open
+    // panics, still under the lock.
+    struct Unset;
+    impl Drop for Unset {
+        fn drop(&mut self) {
+            std::env::remove_var("RELATE_PATTERN_ENGINE");
+        }
+    }
+    let _unset = Unset;
     relate::Database::open(":memory:")
         .unwrap()
         .connect()
