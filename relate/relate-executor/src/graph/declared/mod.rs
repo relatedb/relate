@@ -255,21 +255,13 @@ impl Graph {
         ts: u64,
     ) -> Option<Vec<NodeId>> {
         let grams = text::query_grams(needle)?;
-        let pairs = &self.indexes.gram_pairs;
-        let lids = self.indexed_labels(labels, key, pairs)?;
-        let kid = self.interner.get_id(key)?;
-        let mut acc: Option<HashSet<NodeId>> = None;
-        for lid in lids {
-            self.drain_pair(pairs, lid, kid);
-            let st = pairs.get(&(lid, kid))?;
-            let next = text::intersect_grams(&st, &grams);
-            drop(st);
-            intersect_acc(&mut acc, next);
-        }
-        Some(
-            self.finish_ids(acc.into_iter().flatten(), labels, key, ts, |v| {
-                v.as_string().is_some_and(|s| s.contains(needle))
-            }),
+        self.lookup_indexed(
+            &self.indexes.gram_pairs,
+            labels,
+            key,
+            ts,
+            |st| Some(text::intersect_grams(st, &grams)),
+            |v| v.as_string().is_some_and(|s| s.contains(needle)),
         )
     }
 

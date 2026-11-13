@@ -69,7 +69,7 @@ fn write_timestamp_sentinel_rejected_before_changing_graph_state() {
         assert!(
             matches!(err, relate_core::Error::Execution(ref message) if message == "write timestamp exhausted")
         );
-        assert!(graph.in_write.load(Ordering::Acquire));
+        assert!(graph.in_write_window());
         assert_eq!(graph.pending_commit_ts(), pending_ts);
         assert_eq!(graph.stats.lock().unwrap().nodes_created, stats);
         assert_eq!(*graph.pending_redo.lock().unwrap(), redo);
@@ -86,7 +86,7 @@ fn write_timestamp_sentinel_rejected_before_changing_graph_state() {
         fresh.begin_write(),
         Err(relate_core::Error::Execution(_))
     ));
-    assert!(!fresh.in_write.load(Ordering::Acquire));
+    assert!(!fresh.in_write_window());
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn apply_redo_rejects_max_timestamp_before_installing_any_ops() {
         graph.apply_redo(ops.clone(), u64::MAX),
         Err(relate_core::Error::Storage(_))
     ));
-    assert!(!graph.in_write.load(Ordering::Acquire));
+    assert!(!graph.in_write_window());
     assert_eq!(graph.pending_commit_ts(), 0);
     assert_eq!(graph.commit_ts(), 0);
     assert_eq!(graph.next_node_id(), 0);
@@ -199,7 +199,7 @@ fn redo_preflight_rejects_zero_and_nonforward_timestamps_without_a_prefix() {
             .for_each(|_, vers| assert!(vers.iter().all(|v| v.xmin != 0)));
         g.rels
             .for_each(|_, vers| assert!(vers.iter().all(|v| v.xmin != 0)));
-        assert!(!g.in_write.load(Ordering::Acquire));
+        assert!(!g.in_write_window());
     }
 }
 
@@ -315,7 +315,7 @@ fn redo_preflight_rejects_later_endpoint_without_installing_prefix() {
         assert_eq!(g.next_rel_id(), 0);
         assert_eq!(g.all_node_ids(), vec![0]);
         assert!(g.all_rel_ids().is_empty());
-        assert!(!g.in_write.load(Ordering::Acquire));
+        assert!(!g.in_write_window());
         assert_eq!(g.pending_commit_ts(), 1);
     }
 }
@@ -346,7 +346,7 @@ fn direct_redo_rejects_incomplete_label_metadata_without_a_prefix() {
     assert_eq!(graph.commit_ts(), 0);
     assert_eq!(graph.next_node_id(), 0);
     assert!(graph.named_constraints().is_empty());
-    assert!(!graph.in_write.load(Ordering::Acquire));
+    assert!(!graph.in_write_window());
 }
 
 #[test]
@@ -419,7 +419,7 @@ fn redo_preflight_catalog_duplicates_and_bad_options_are_atomic() {
         assert!(g.named_indexes().is_empty());
         assert!(g.named_constraints().is_empty());
         assert!(g.theater.lock().unwrap().index_details.is_empty());
-        assert!(!g.in_write.load(Ordering::Acquire));
+        assert!(!g.in_write_window());
     }
 }
 

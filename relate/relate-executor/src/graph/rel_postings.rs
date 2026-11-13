@@ -8,7 +8,7 @@
 //! every version of every candidate), so callers re-verify every id; a pair
 //! nobody probes costs nothing on the write path.
 
-use super::index::PropPairIndex;
+use super::index::{dirty_mark_built, PropPairIndex};
 use super::*;
 
 impl Graph {
@@ -158,11 +158,7 @@ impl Graph {
             .for_each_key_value(&self.interner, |kid, _| kids.push(kid));
         drop(vers);
         for kid in kids {
-            if let Some(mut st) = self.indexes.rel_prop_pairs.get_mut(&(type_id, kid)) {
-                if st.built {
-                    st.dirty.insert(id);
-                }
-            }
+            dirty_mark_built(&self.indexes.rel_prop_pairs, (type_id, kid), id);
         }
     }
 
