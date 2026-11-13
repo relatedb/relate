@@ -104,6 +104,16 @@ class FirstRelease:
     def new_ref_line(self, version: str) -> str:
         return f"[{version}]: {self.base_url}/releases/tag/v{version}\n"
 
+    def insertion(
+        self, lines: list[str], ref_idx: int, version: str
+    ) -> tuple[int, list[str]]:
+        """Where the new ref goes and what it is: the constant position
+        right after the [Unreleased] ref, separated by a blank line. This
+        arm scans nothing (`lines` is unused — the signature is the mode
+        protocol's) and cannot refuse: a first release has no earlier ref
+        to anchor at."""
+        return ref_idx + 1, ["\n", self.new_ref_line(version)]
+
 
 @dataclass(frozen=True)
 class SteadyState:
@@ -119,6 +129,19 @@ class SteadyState:
 
     def new_ref_line(self, version: str) -> str:
         return f"[{version}]: {self.base_url}/compare/v{self.prev}...v{version}\n"
+
+    def insertion(
+        self, lines: list[str], ref_idx: int, version: str
+    ) -> tuple[int, list[str]]:
+        """Where the new ref goes and what it is: at the previous version's
+        own ref (the anchor), which must exist below the [Unreleased] ref."""
+        insert_at, _ = find_line(
+            lines,
+            lambda l: l.startswith(self.anchor),
+            f"changelog_rotate: no [{self.prev}] link ref found",
+            start=ref_idx + 1,
+        )
+        return insert_at, [self.new_ref_line(version)]
 
 
 def find_line(
@@ -187,17 +210,7 @@ def rotate(text: str, *, version: str, date: str) -> str:
     out += ["\n", f"{version_heading(version)} — {date}\n"]
     out += lines[heading_idx + 1 : ref_idx]
     out.append(unreleased_ref_line(mode.base_url, version))
-    if isinstance(mode, FirstRelease):
-        insert_at = ref_idx + 1
-        insertion = ["\n", mode.new_ref_line(version)]
-    else:
-        insert_at, _ = find_line(
-            lines,
-            lambda l: l.startswith(mode.anchor),
-            f"changelog_rotate: no [{mode.prev}] link ref found",
-            start=ref_idx + 1,
-        )
-        insertion = [mode.new_ref_line(version)]
+    insert_at, insertion = mode.insertion(lines, ref_idx, version)
     out += lines[ref_idx + 1 : insert_at]
     out += insertion
     out += lines[insert_at:]

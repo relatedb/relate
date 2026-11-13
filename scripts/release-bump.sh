@@ -37,8 +37,9 @@
 # scripts/build-wasm.sh stamps it from the workspace Cargo.toml (bumped
 # above), so it needs no edit here.
 #
-# Runs in CI on ubuntu-latest (GNU sed); the sedi helper below also works with
-# BSD sed so local rehearsals on macOS behave the same.
+# Runs in CI on ubuntu-latest (GNU sed); the shared sedi helper
+# (scripts/lib/sedi.sh) also works with BSD sed so local rehearsals on macOS
+# behave the same.
 
 set -euo pipefail
 
@@ -82,6 +83,11 @@ pom_py="$repo_root/scripts/lib/pom.py"
 # shellcheck source=lib/toml.sh
 source "$repo_root/scripts/lib/toml.sh"
 
+# The portable in-place sed (the GNU/BSD dance) is shared with the Swift
+# package stamp in scripts/stamp-swift-package.sh; one spelling, one owner.
+# shellcheck source=lib/sedi.sh
+source "$repo_root/scripts/lib/sedi.sh"
+
 cargo_toml="Cargo.toml"
 pyproject="surfaces/relate-python/pyproject.toml"
 pyinit="surfaces/relate-python/python/relate/__init__.py"
@@ -116,19 +122,18 @@ touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_po
 # statement (section 0).
 ok=0
 
-# sed -i that works with both GNU and BSD sed (-i.bak is accepted by both).
-sedi() {
-  local file=$1
-  shift
-  sed -i.bak "$@" "$file"
-  rm -f "$file.bak"
-}
-
 # npm JSON reads (manifest and lockfile versions, platform pins) go through
 # one typed parse; see the module docstring for the subcommands.
 npm_json_py="$repo_root/scripts/lib/npm_json.py"
 npm_json() {
   python3 "$npm_json_py" "$@"
+}
+
+# The work-tree predicate, spelled once: the up-front dirty-tree refusal
+# (section 0) and the rollback both ask whether a git work tree exists to
+# restore from, and must never disagree about the answer.
+in_git_work_tree() {
+  git rev-parse --is-inside-work-tree > /dev/null 2>&1
 }
 
 # Restore every touched path, remove the sweep's sidecar files, and exit 1.
@@ -139,11 +144,11 @@ restore_touched() {
   echo "release-bump: $1; restoring touched files" >&2
   local f
   for f in "${touched[@]}"; do
-    # The sidecar shape is toml.sh's own fact; clean through its helper.
+    # The sidecar shapes are the helpers' own facts; clean through them.
     toml_remove_sidecars "$f"
-    rm -f "$f.bak"
+    sedi_remove_sidecars "$f"
   done
-  if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  if in_git_work_tree; then
     git checkout -- "${touched[@]}"
   else
     echo "release-bump: cannot restore: not inside a git work tree" >&2
@@ -161,7 +166,7 @@ restore_touched() {
 #
 # Rollback restores to HEAD, so it would destroy uncommitted edits to a
 # touched path; refuse up front, before the traps arm (nothing to restore yet).
-if git rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+if in_git_work_tree \
   && ! git diff --quiet HEAD -- "${touched[@]}"; then
   echo "release-bump: refusing to run: uncommitted changes in touched paths (rollback restores to HEAD):" >&2
   git diff --name-only HEAD -- "${touched[@]}" >&2

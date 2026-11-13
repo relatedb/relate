@@ -12,6 +12,11 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$REPO/Package.swift"
 
+# The portable in-place sed, shared with scripts/release-bump.sh; one
+# spelling, one owner.
+# shellcheck source=lib/sedi.sh
+source "$REPO/scripts/lib/sedi.sh"
+
 if [[ $# -ne 2 ]]; then
   echo "usage: $0 TAG ZIP" >&2
   exit 2
@@ -40,11 +45,9 @@ for name in releaseTag releaseChecksum; do
   }
 done
 
-sed -i.bak \
+sedi "$MANIFEST" \
   -e "s|^let releaseTag = \"[^\"]*\"\$|let releaseTag = \"${tag}\"|" \
-  -e "s|^let releaseChecksum = \"[^\"]*\"\$|let releaseChecksum = \"${checksum}\"|" \
-  "$MANIFEST"
-rm -f "$MANIFEST.bak"
+  -e "s|^let releaseChecksum = \"[^\"]*\"\$|let releaseChecksum = \"${checksum}\"|"
 
 grep -q "^let releaseTag = \"${tag}\"\$" "$MANIFEST"
 grep -q "^let releaseChecksum = \"${checksum}\"\$" "$MANIFEST"

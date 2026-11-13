@@ -587,6 +587,7 @@ test-bolt-compat-scripts:
 ##   (scripts/version_tokens.py) and the CHANGELOG rotation
 ##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
 ##   the npm JSON reader (scripts/lib/npm_json.py),
+##   the portable in-place sed (scripts/lib/sedi.sh),
 ##   the bump script end to end (first-release, steady-state and
 ##   populated-cut paths), and the advance's scoped sweep (scripts/release-bump.sh
 ##   --skip-changelog, ADR-0580: the version surfaces advance, the
@@ -599,6 +600,7 @@ test-release-scripts:
 	sh $(CURDIR)/scripts/tests/test_release_bump.sh
 	sh $(CURDIR)/scripts/tests/test_release_advance.sh
 	sh $(CURDIR)/scripts/tests/test_toml_sh.sh
+	sh $(CURDIR)/scripts/tests/test_sedi_sh.sh
 
 ## test-front-bench-scripts: Unit-test the front-bench statement corpus
 ##   builder (scripts/front_bench_corpus.py): the Gherkin walk's container

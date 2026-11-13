@@ -31,6 +31,9 @@ tap_sandbox relate-stamp-test
 repo="$sandbox/repo"
 mkdir -p "$repo/scripts"
 cp "$ROOT/scripts/stamp-swift-package.sh" "$repo/scripts/"
+# The stamp edits through the shared scripts/lib/sedi.sh; the sandbox repo
+# resolves its own lib, so the copy rides along.
+cp -R "$ROOT/scripts/lib" "$repo/scripts/lib"
 cp "$ROOT/Package.swift" "$repo/Package.swift"
 cp "$repo/Package.swift" "$sandbox/original.swift"
 stamp="$repo/scripts/stamp-swift-package.sh"
