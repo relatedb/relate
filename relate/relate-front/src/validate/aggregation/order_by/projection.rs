@@ -21,78 +21,58 @@ use crate::ast::collect::{
 use crate::ast::stmt_ref::StmtRef;
 use crate::ast::tree::{walk_expr_with, walk_statement_tree};
 
-/// The clause-level ORDER BY visibility policy for a `RETURN`/`WITH`
-/// projection (LABS-665): a DISTINCT or aggregating projection's ORDER BY
-/// runs over the projected row, so it may name the projected columns and
-/// restate a projected item — nothing else ([`check_post_projection_expr`]).
-/// A plain projection's ORDER BY sees the full pre-projection scope and
-/// [`validate_order_by_aggregation`] has already rejected aggregation in it.
+/// The post-projection subclause driver (LABS-665): one entry for a
+/// `RETURN`/`WITH` projection's ORDER BY and a WITH's `WHERE`, so the
+/// projection is classified once and the restatable-name set is resolved
+/// once for both.
+///
+/// A DISTINCT or aggregating projection's subclauses run over the projected
+/// row, so they may name the projected columns and restate a projected item
+/// — nothing else ([`check_post_projection_expr`]). A plain projection's
+/// ORDER BY and `WHERE` see the full pre-projection scope: nothing to check
+/// here ([`validate_order_by_aggregation`] has already rejected aggregation
+/// in its ORDER BY, and the expression validator owns its `WHERE`). The
+/// aggregating mode adds the ambiguity check to each ORDER BY item.
 ///
 /// Precondition (caller-enforced): [`validate_order_by_aggregation`] has
 /// rejected every aggregating ORDER BY item of a non-aggregating projection
 /// (no aggregate item, no `GROUP BY`, not DISTINCT) before this runs.
-pub(in crate::validate::aggregation) fn check_projection_order_by(
+pub(in crate::validate::aggregation) fn check_projection_subclauses(
     parts: &ProjectionParts,
     grouping_key_exprs: &[&Expr],
     scope: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    if parts.order_by.is_empty() {
+    let mode = projection_mode(parts);
+    if matches!(mode, ProjectionMode::Plain)
+        || (parts.order_by.is_empty() && parts.where_expr.is_none())
+    {
         return Ok(());
     }
     let projected = post_projection_names(parts, scope);
     let restatable = post_projection_restatable(parts, projected, scope, grouping_key_exprs);
-    // One per-ORDER-BY loop for both post-projection modes (Distinct and
-    // Aggregating): only the aggregating mode adds the ambiguity check,
-    // resolved once here instead of duplicated per arm.
-    let ambiguous_keys = match projection_mode(parts) {
-        ProjectionMode::Plain => return Ok(()),
-        ProjectionMode::Distinct => None,
-        ProjectionMode::Aggregating => {
-            // The ambiguity model still owns the mixed aggregation policy
-            // (ADR-0198, ADR-0453); the visibility rule above owns which
-            // names the subclause may read.
-            Some(
-                GroupingKeys::new(parts.items, grouping_key_exprs)
-                    .with_aliases(parts.items.iter().filter_map(|i| i.alias.as_ref().cloned())),
-            )
-        }
-    };
+    // The ambiguity model still owns the mixed aggregation policy
+    // (ADR-0198, ADR-0453); the visibility rule owns which names the
+    // subclause may read.
+    let ambiguous_keys = matches!(mode, ProjectionMode::Aggregating).then(|| {
+        GroupingKeys::new(parts.items, grouping_key_exprs)
+            .with_aliases(parts.items.iter().filter_map(|i| i.alias.as_ref().cloned()))
+    });
     for ob in parts.order_by {
         check_post_projection_expr(&ob.expr, &restatable)?;
+        // The ambiguity predicate self-gates on aggregation-containing
+        // expressions, so it runs unconditionally.
         if let Some(keys) = &ambiguous_keys {
-            // The ambiguity predicate self-gates on
-            // aggregation-containing expressions, so it runs
-            // unconditionally.
             if is_ambiguous_aggregation(&ob.expr, keys) {
                 return Err(ambiguous_aggregation_error());
             }
         }
     }
-    Ok(())
-}
-
-/// The WITH `WHERE` half of the same policy: a non-aggregating,
-/// non-DISTINCT WITH's WHERE sees the pre-projection scope (the expression
-/// validator owns it); a DISTINCT or aggregating WITH re-evaluates its WHERE
-/// over the projected row, so a pre-projection variable is inaccessible
-/// (Neo4j 42N44) — the same rule as ORDER BY.
-pub(in crate::validate::aggregation) fn check_projection_where(
-    parts: &ProjectionParts,
-    grouping_key_exprs: &[&Expr],
-    scope: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
-    let Some(where_expr) = parts.where_expr else {
-        return Ok(());
-    };
-    match projection_mode(parts) {
-        ProjectionMode::Plain => Ok(()),
-        ProjectionMode::Distinct | ProjectionMode::Aggregating => {
-            let projected = post_projection_names(parts, scope);
-            let restatable =
-                post_projection_restatable(parts, projected, scope, grouping_key_exprs);
-            check_post_projection_expr(where_expr, &restatable)
-        }
+    // A DISTINCT or aggregating WITH's WHERE re-evaluates over the projected
+    // row, exactly like its ORDER BY (Neo4j 42N44).
+    if let Some(where_expr) = parts.where_expr {
+        check_post_projection_expr(where_expr, &restatable)?;
     }
+    Ok(())
 }
 
 /// What a post-projection subclause may restate, resolved once per clause

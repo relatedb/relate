@@ -70,11 +70,11 @@ use crate::ast::tree::walk_label_expr;
 /// compile-time type mismatch (`SyntaxError`), while `NULL` and list
 /// elements are the executor's per-row `TypeError` (a null binding on a
 /// zero-row `MATCH` is not an error at all). The inline
-/// [`StaticOperand::Value`] is a literal the front folds itself, so its
+/// [`StaticOperand::Literal`] is a literal the front folds itself, so its
 /// content is checked here exactly as Neo4j folds a literal.
 #[derive(Clone)]
 enum StaticOperand {
-    Value(Value),
+    Literal(Value),
     Bound(Value),
     Named(&'static str),
 }
@@ -85,14 +85,14 @@ enum StaticOperand {
 /// the map insert and a call site cannot forget it.
 #[derive(Clone)]
 enum BoundOperand {
-    Value(Value),
+    Bound(Value),
     Named(&'static str),
 }
 
 impl From<StaticOperand> for BoundOperand {
     fn from(operand: StaticOperand) -> Self {
         match operand {
-            StaticOperand::Value(value) | StaticOperand::Bound(value) => Self::Value(value),
+            StaticOperand::Literal(value) | StaticOperand::Bound(value) => Self::Bound(value),
             StaticOperand::Named(name) => Self::Named(name),
         }
     }
@@ -101,7 +101,7 @@ impl From<StaticOperand> for BoundOperand {
 impl From<BoundOperand> for StaticOperand {
     fn from(operand: BoundOperand) -> Self {
         match operand {
-            BoundOperand::Value(value) => Self::Bound(value),
+            BoundOperand::Bound(value) => Self::Bound(value),
             BoundOperand::Named(name) => Self::Named(name),
         }
     }
@@ -190,7 +190,7 @@ fn check_operand(
     env: &OperandEnv<'_>,
 ) -> Result<(), EngineError> {
     match static_operand(expr, env) {
-        Some(StaticOperand::Value(value)) => token.check(&value).map_err(dynamic_access_error),
+        Some(StaticOperand::Literal(value)) => token.check(&value).map_err(dynamic_access_error),
         Some(StaticOperand::Bound(value)) => check_bound_operand(token, &value),
         Some(StaticOperand::Named(type_name)) => {
             if token.accepts_type(type_name) {
@@ -247,7 +247,7 @@ fn static_operand(expr: &Expr, env: &OperandEnv<'_>) -> Option<StaticOperand> {
             .and_then(|params| params.get(name.as_str()))
             .map(|value| StaticOperand::Bound(value.clone())),
         _ => match constant_value(expr) {
-            Some(FoldedConstant::Value(value)) => Some(StaticOperand::Value(value)),
+            Some(FoldedConstant::Value(value)) => Some(StaticOperand::Literal(value)),
             Some(FoldedConstant::Map) => Some(StaticOperand::Named(StaticLitType::Map.name())),
             None => static_literal_type(expr)
                 .map(|ty| StaticOperand::Named(ty.name()))

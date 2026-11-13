@@ -17,7 +17,7 @@ use crate::agg::{contains_aggregation, projection_aggregates};
 use crate::ast::collect::interp_embeds;
 
 mod projection;
-pub(super) use self::projection::{check_projection_order_by, check_projection_where};
+pub(super) use self::projection::check_projection_subclauses;
 
 /// The three-way ORDER BY mode of a projection (ADR-0453), classified once
 /// from the same inputs every consumer reads: `DISTINCT` (its items are the
@@ -32,7 +32,7 @@ enum ProjectionMode {
 
 /// Classify a projection's ORDER BY mode once — the single owner of the
 /// three-way decision both [`validate_order_by_aggregation`] and
-/// [`check_projection_order_by`] route on.
+/// [`check_projection_subclauses`] route on.
 fn projection_mode(parts: &ProjectionParts) -> ProjectionMode {
     if parts.distinct {
         ProjectionMode::Distinct

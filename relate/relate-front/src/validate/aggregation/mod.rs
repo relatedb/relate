@@ -349,7 +349,7 @@ struct ProjectionParts<'a> {
     order_by: &'a [OrderByItem],
     /// The WITH clause's `WHERE` subclause (a RETURN has none): a DISTINCT
     /// or aggregating WITH re-evaluates it over the projected row
-    /// ([`order_by::check_projection_where`]).
+    /// ([`order_by::check_projection_subclauses`]).
     where_expr: Option<&'a Expr>,
     distinct: bool,
 }
@@ -428,10 +428,7 @@ pub fn validate_aggregation_semantics(stmt: &Statement) -> Result<(), EngineErro
                 // already rejects it with the identical predicate —
                 // including the DISTINCT and explicit GROUP BY exemptions
                 // (ADR-0453) — one owner for the policy.
-                order_by::check_projection_order_by(&parts, &grouping_key_exprs, &scope)?;
-                // A DISTINCT or aggregating WITH's WHERE re-evaluates over
-                // the projected row, exactly like its ORDER BY.
-                order_by::check_projection_where(&parts, &grouping_key_exprs, &scope)?;
+                order_by::check_projection_subclauses(&parts, &grouping_key_exprs, &scope)?;
 
                 // A WITH replaces the scope with its projected variables
                 // through [`star_sliced_names`]; a RETURN is final.

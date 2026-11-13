@@ -23,8 +23,9 @@ use relate_parser::{
 
 use crate::ast::tree::{walk_clause_list_tree, SubqueryDescent};
 
+use super::static_arithmetic::expr_is_bare_var;
 use super::static_types::{
-    expr_is_bare_var, is_statically_non_boolean, non_numeric_leaf_class, require_integer_argument,
+    is_statically_non_boolean, non_numeric_leaf_class, require_integer_argument,
     require_static_type, static_literal_type, static_value, unparen, StaticLitType,
 };
 

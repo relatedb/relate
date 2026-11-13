@@ -85,6 +85,7 @@ mod scope;
 mod search;
 mod self_reference;
 mod show;
+mod static_arithmetic;
 mod static_calls;
 mod static_reduce;
 mod static_types;
@@ -116,7 +117,7 @@ pub use self::show::{
     validate_show_requires_yield_before_return, validate_show_system_graph_reads,
 };
 pub use self::static_calls::validate_static_call_types;
-pub use self::static_types::validate_static_operator_types;
+pub(crate) use self::static_types::validate_static_operator_types;
 pub use self::structure::{
     validate_column_name_conflicts, validate_count_subquery_union_shapes,
     validate_expr_traversal_bounds, validate_foreach_body, validate_next_no_admin_commands,
@@ -445,7 +446,7 @@ pub(crate) fn validate_scoped_dynamic_operands(
 /// `validate_ob_non_agg_part`), the list-comprehension aggregation check
 /// (`aggregation::comprehension::check_list_comp_aggregation`), and the focused
 /// static-types helpers (`page_bounds::expr_references_variables`,
-/// `predicate_applies_arithmetic_to_var`, `expr_is_bare_var`,
+/// `static_arithmetic::predicate_applies_arithmetic_to_var`, `expr_is_bare_var`,
 /// `list_literal_all_non_numeric`) — with a descent keyed on grouping keys
 /// and comprehension boundaries rather than plain child structure, so they
 /// cannot ride the self-capping walker. Running the depth pass first means
