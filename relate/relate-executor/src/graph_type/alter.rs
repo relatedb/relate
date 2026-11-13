@@ -15,7 +15,7 @@ use relate_core::{Error, PreviewFeatures, Result};
 use relate_names::SmallName;
 use relate_parser::{
     AlterGraphTypeVerb, GraphTypeBody, GraphTypeConstraintSpec, GraphTypeConstraintVerb,
-    GraphTypeElementRef, GraphTypeNodeTypeSpec,
+    GraphTypeEdgeTypeSpec, GraphTypeElementRef, GraphTypeNodeTypeSpec,
 };
 
 use super::{
@@ -234,39 +234,52 @@ pub fn apply_alter(
     Ok(merged)
 }
 
+/// The stored aliases of every element type the incoming body names by
+/// identifying label, as `(stored alias, label, incoming alias)` triples.
+/// The one reading of "which stored aliases does this body's element-type
+/// list touch" that `ALTER` (re-declared) and `DROP` (removed) both consume.
+fn stored_aliases_for(
+    current: &GraphTypeBody,
+    nodes: &[GraphTypeNodeTypeSpec],
+    edges: &[GraphTypeEdgeTypeSpec],
+) -> Vec<(SmallName, SmallName, Option<SmallName>)> {
+    let nodes = nodes.iter().filter_map(|node| {
+        let old = current
+            .node_types
+            .iter()
+            .find(|old| old.identifying_label == node.identifying_label)?;
+        Some((
+            old.alias.clone()?,
+            node.identifying_label.clone(),
+            node.alias.clone(),
+        ))
+    });
+    let edges = edges.iter().filter_map(|edge| {
+        let old = current
+            .edge_types
+            .iter()
+            .find(|old| old.identifying_label == edge.identifying_label)?;
+        Some((
+            old.alias.clone()?,
+            edge.identifying_label.clone(),
+            edge.alias.clone(),
+        ))
+    });
+    nodes.chain(edges).collect()
+}
+
 /// The `old alias -> identifying label` map for every element type the
 /// incoming `ALTER` body re-declares under a different (or no) alias.
 fn replaced_aliases(
     current: &GraphTypeBody,
     nodes: &[GraphTypeNodeTypeSpec],
-    edges: &[relate_parser::GraphTypeEdgeTypeSpec],
+    edges: &[GraphTypeEdgeTypeSpec],
 ) -> HashMap<SmallName, SmallName> {
-    let mut replaced = HashMap::new();
-    for node in nodes {
-        if let Some(old) = current
-            .node_types
-            .iter()
-            .find(|old| old.identifying_label == node.identifying_label)
-            .and_then(|old| old.alias.as_ref())
-        {
-            if node.alias.as_ref() != Some(old) {
-                replaced.insert(old.clone(), node.identifying_label.clone());
-            }
-        }
-    }
-    for edge in edges {
-        if let Some(old) = current
-            .edge_types
-            .iter()
-            .find(|old| old.identifying_label == edge.identifying_label)
-            .and_then(|old| old.alias.as_ref())
-        {
-            if edge.alias.as_ref() != Some(old) {
-                replaced.insert(old.clone(), edge.identifying_label.clone());
-            }
-        }
-    }
-    replaced
+    stored_aliases_for(current, nodes, edges)
+        .into_iter()
+        .filter(|(old, _, incoming)| incoming.as_ref() != Some(old))
+        .map(|(old, label, _)| (old, label))
+        .collect()
 }
 
 /// Rewrites every `AliasRef` naming a replaced alias into the in-situ
@@ -368,15 +381,24 @@ pub fn apply_drop(mut current: GraphTypeBody, body: &GraphTypeBody) -> Result<Gr
              operation.",
         ));
     }
-    let aliases: HashMap<&SmallName, &SmallName> = current
-        .node_types
-        .iter()
-        .filter_map(|node| {
-            node.alias
-                .as_ref()
-                .map(|alias| (alias, &node.identifying_label))
-        })
-        .collect();
+    validate_dropped_node_types(&current, body)?;
+    validate_dropped_edge_types(&current, body)?;
+    // The aliases the dropped element types carried, mapped to the labels
+    // their surviving references must keep resolving to.
+    let dropped_aliases: HashMap<SmallName, SmallName> =
+        stored_aliases_for(&current, &body.node_types, &body.edge_types)
+            .into_iter()
+            .map(|(alias, label, _)| (alias, label))
+            .collect();
+    remove_dropped(&mut current, body);
+    rewrite_alias_refs(&mut current, &dropped_aliases);
+    Ok(current)
+}
+
+/// Every dropped node type must exist, match the stored definition when
+/// given in more than the bare form, and not be referenced by a survivor.
+fn validate_dropped_node_types(current: &GraphTypeBody, body: &GraphTypeBody) -> Result<()> {
+    let aliases = alias_tables(current).0;
     let dropping_edges: HashSet<&SmallName> = body
         .edge_types
         .iter()
@@ -402,12 +424,19 @@ pub fn apply_drop(mut current: GraphTypeBody, body: &GraphTypeBody) -> Result<Gr
                 "GraphTypeError: node element type specified incorrectly",
             ));
         }
-        if node_type_still_referenced(&current, node, &dropping_edges, &node_names, &aliases) {
+        if node_type_still_referenced(current, node, &dropping_edges, &node_names, &aliases) {
             return Err(Error::syntax(
                 "GraphTypeError: node element type is still referenced and cannot be dropped",
             ));
         }
     }
+    Ok(())
+}
+
+/// Every dropped edge type must exist and match the stored definition when
+/// given in more than the bare form.
+fn validate_dropped_edge_types(current: &GraphTypeBody, body: &GraphTypeBody) -> Result<()> {
+    let aliases = alias_tables(current).0;
     for edge in &body.edge_types {
         let Some(existing) = current
             .edge_types
@@ -424,29 +453,17 @@ pub fn apply_drop(mut current: GraphTypeBody, body: &GraphTypeBody) -> Result<Gr
             ));
         }
     }
-    // The aliases the dropped element types carried, mapped to the labels
-    // their surviving references must keep resolving to.
-    let mut dropped_aliases: HashMap<SmallName, SmallName> = HashMap::new();
-    for node in &body.node_types {
-        if let Some(alias) = current
-            .node_types
-            .iter()
-            .find(|old| old.identifying_label == node.identifying_label)
-            .and_then(|old| old.alias.clone())
-        {
-            dropped_aliases.insert(alias, node.identifying_label.clone());
-        }
-    }
-    for edge in &body.edge_types {
-        if let Some(alias) = current
-            .edge_types
-            .iter()
-            .find(|old| old.identifying_label == edge.identifying_label)
-            .and_then(|old| old.alias.clone())
-        {
-            dropped_aliases.insert(alias, edge.identifying_label.clone());
-        }
-    }
+    Ok(())
+}
+
+/// Removes the dropped element types and the constraints that leave with
+/// them or that the body names.
+fn remove_dropped(current: &mut GraphTypeBody, body: &GraphTypeBody) {
+    let node_names: HashSet<&SmallName> = body
+        .node_types
+        .iter()
+        .map(|n| &n.identifying_label)
+        .collect();
     let edge_names: HashSet<&SmallName> = body
         .edge_types
         .iter()
@@ -489,7 +506,7 @@ pub fn apply_drop(mut current: GraphTypeBody, body: &GraphTypeBody) -> Result<Gr
     // against the post-drop tables would lose the alias of an element type
     // dropped in this same command, silently keeping the rule.
     let dropped_by_generated_name: Vec<bool> = {
-        let (node_alias_labels, edge_alias_labels) = alias_tables(&current);
+        let (node_alias_labels, edge_alias_labels) = alias_tables(current);
         current
             .constraints
             .iter()
@@ -532,6 +549,4 @@ pub fn apply_drop(mut current: GraphTypeBody, body: &GraphTypeBody) -> Result<Gr
         kept.push(constraint);
     }
     current.constraints = kept;
-    rewrite_alias_refs(&mut current, &dropped_aliases);
-    Ok(current)
 }

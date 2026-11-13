@@ -14,7 +14,7 @@ use relate_core::{Error, Result};
 /// `", "`.
 pub fn canonicalize_graph_type_body(body: &GraphTypeBody) -> Result<String> {
     let (types, node_c, edge_c, _node_id_labels, _edge_id_labels) =
-        graph_type_components(body, false, true)?;
+        graph_type_components(body, CanonicalForm::Declared)?;
     Ok(sorted_parts(types, node_c, edge_c).join(", "))
 }
 
@@ -77,6 +77,29 @@ pub(super) fn auto_constraint_name(c: &GraphTypeConstraintSpec, label: &str) -> 
     }
 }
 
+/// Which rendering of a graph type body the shared component builder
+/// produces; the two facts that vary (fallback constraint names, rendered
+/// options) always vary together, so one variant names both.
+#[derive(Clone, Copy)]
+pub(super) enum CanonicalForm {
+    /// The literal declared specification (CIP-180): unnamed constraints
+    /// stay unnamed and options render.
+    Declared,
+    /// The observed stored graph type (CIP-184): every constraint carries
+    /// its concrete auto-generated name and options are not rendered.
+    Stored,
+}
+
+impl CanonicalForm {
+    fn auto_name_constraints(self) -> bool {
+        matches!(self, Self::Stored)
+    }
+
+    fn render_options(self) -> bool {
+        matches!(self, Self::Declared)
+    }
+}
+
 /// Shared by `canonicalize_graph_type_body` and
 /// `current_graph_type_specification`: the node/edge type parts (already
 /// fully rendered, in final order) plus the node- and edge-constraint
@@ -85,18 +108,18 @@ pub(super) fn auto_constraint_name(c: &GraphTypeConstraintSpec, label: &str) -> 
 /// independently-created constraints into these same two groups before
 /// sorting each and rendering the final `specification` string (CIP-184).
 ///
-/// `auto_name_constraints`: the canonical form (used by
+/// `form`: the canonical form (used by
 /// `canonicalize_graph_type_body` for CIP-182/183's fragment assertions)
 /// renders an unnamed constraint with no name at all, matching the literal
 /// declared specification; `SHOW CURRENT GRAPH TYPE` (CIP-184) instead
 /// observes the *stored* graph type, where every constraint -- including
 /// one declared without an explicit name -- already has a concrete,
-/// auto-generated name, so `current_graph_type_specification` passes `true`
-/// to render that fallback name instead of omitting it.
+/// auto-generated name, so `current_graph_type_specification` passes
+/// [`CanonicalForm::Stored`] to render that fallback name instead of
+/// omitting it.
 pub(super) fn graph_type_components(
     body: &GraphTypeBody,
-    auto_name_constraints: bool,
-    render_options: bool,
+    form: CanonicalForm,
 ) -> Result<ConstraintGroups> {
     let (node_alias_label, edge_alias_label) = alias_tables(body);
     let node_id_labels = node_id_label_set(body);
@@ -116,44 +139,8 @@ pub(super) fn graph_type_components(
         type_parts.push(canonical_edge_type(et, &node_alias_label, &node_id_labels)?);
     }
 
-    let node_c: Vec<(ConstraintSortKey, String)> = body
-        .constraints
-        .iter()
-        .filter(|c| !c.is_edge)
-        .map(|c| {
-            let label = resolved_constraint_label(c, &node_alias_label)?;
-            let fallback = auto_name_constraints.then(|| auto_constraint_name(c, label.as_str()));
-            Ok((
-                constraint_sort_key(c, &node_alias_label, &node_id_labels)?,
-                canonical_constraint(
-                    c,
-                    &node_alias_label,
-                    &node_id_labels,
-                    fallback.as_deref(),
-                    render_options,
-                )?,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let edge_c: Vec<(ConstraintSortKey, String)> = body
-        .constraints
-        .iter()
-        .filter(|c| c.is_edge)
-        .map(|c| {
-            let label = resolved_constraint_label(c, &edge_alias_label)?;
-            let fallback = auto_name_constraints.then(|| auto_constraint_name(c, label.as_str()));
-            Ok((
-                constraint_sort_key(c, &edge_alias_label, &edge_id_labels)?,
-                canonical_constraint(
-                    c,
-                    &edge_alias_label,
-                    &edge_id_labels,
-                    fallback.as_deref(),
-                    render_options,
-                )?,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let node_c = constraint_group(body, form, false, &node_alias_label, &node_id_labels)?;
+    let edge_c = constraint_group(body, form, true, &edge_alias_label, &edge_id_labels)?;
 
     // Deterministic set renderings (sorted label names): the callers
     // consume membership, not iteration order, but the rendering stays
@@ -175,6 +162,38 @@ pub(super) fn graph_type_components(
         labels
     };
     Ok((type_parts, node_c, edge_c, node_id_labels, edge_id_labels))
+}
+
+/// One side's (node or edge) constraint group, as unsorted
+/// `(sort key, rendered string)` pairs. Each constraint's label resolves
+/// once and feeds both the auto-generated fallback name and the sort key.
+fn constraint_group(
+    body: &GraphTypeBody,
+    form: CanonicalForm,
+    is_edge: bool,
+    alias_table: &HashMap<&SmallName, &SmallName>,
+    id_labels: &HashSet<&SmallName>,
+) -> Result<Vec<(ConstraintSortKey, String)>> {
+    body.constraints
+        .iter()
+        .filter(|c| c.is_edge == is_edge)
+        .map(|c| {
+            let label = resolved_constraint_label(c, alias_table)?;
+            let fallback = form
+                .auto_name_constraints()
+                .then(|| auto_constraint_name(c, label.as_str()));
+            Ok((
+                constraint_sort_key(c, alias_table, id_labels)?,
+                canonical_constraint(
+                    c,
+                    alias_table,
+                    id_labels,
+                    fallback.as_deref(),
+                    form.render_options(),
+                )?,
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn node_id_label_set(body: &GraphTypeBody) -> HashSet<&SmallName> {
@@ -212,7 +231,7 @@ pub fn current_graph_type_specification(
     // The identifying-label sets ride graph_type_components' return
     // (round-15 F-15-1): no second spelling of the builders.
     let (types, mut node_c, mut edge_c, node_id_labels, edge_id_labels) =
-        graph_type_components(body, true, false)?;
+        graph_type_components(body, CanonicalForm::Stored)?;
 
     for c in extra_constraints {
         let is_edge = c.entity_type == "RELATIONSHIP";
@@ -415,6 +434,10 @@ pub(super) fn canonical_option_value(e: &Expr) -> String {
     }
 }
 
+/// Renders one body constraint in the CIP-180 canonical `CONSTRAINT` form.
+/// `fallback_name` is the auto-generated name to print for an unnamed
+/// constraint ([`CanonicalForm::Stored`]); `render_options` prints its
+/// `OPTIONS` ([`CanonicalForm::Declared`]).
 pub(super) fn canonical_constraint(
     c: &GraphTypeConstraintSpec,
     alias_table: &HashMap<&SmallName, &SmallName>,
