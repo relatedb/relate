@@ -220,6 +220,22 @@ fn repeatable_elements_permits_relationship_equijoins() {
 }
 
 #[test]
+fn repeatable_element_singular_spelling_executes() {
+    // LABS-1591: `REPEATABLE ELEMENT` (singular) is a synonym of
+    // `REPEATABLE ELEMENTS`. On a self-loop the three-hop quantified
+    // relationship yields `length(p) = 3` -- the ticket's oracle -- under
+    // both spellings.
+    let mut c = connection();
+    common::run(&mut c, "CREATE (m:M)-[:B]->(m)");
+    for q in [
+        "MATCH REPEATABLE ELEMENT p = (m:M)-[:B]->{3}(m) RETURN length(p) AS len",
+        "MATCH REPEATABLE ELEMENTS p = (m:M)-[:B]->{3}(m) RETURN length(p) AS len",
+    ] {
+        assert_eq!(scalar_one(&mut c, q), Value::Int(3), "{q}: length(p)");
+    }
+}
+
+#[test]
 fn allreduce_three_argument_form_gates_on_its_predicate() {
     // The Cypher 25 allReduce expression form: accumulator, update, and
     // keep-going predicate. The predicate decides whether the reduction

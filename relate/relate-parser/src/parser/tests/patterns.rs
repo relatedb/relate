@@ -485,6 +485,30 @@ fn test_different_relationship_singular_match_mode() {
 }
 
 #[test]
+fn test_repeatable_element_singular_match_mode() {
+    // `ELEMENT` is a synonym of `ELEMENTS` in the match-mode grammar, in
+    // every position the plural spelling is accepted: directly after MATCH,
+    // after the path variable declaration, and path-variable-first. Each
+    // resolves to the same mode, and the singular and plural spellings
+    // produce the same AST (no separate variant).
+    for singular in [
+        "MATCH REPEATABLE ELEMENT (a)-[r]->(b) RETURN a",
+        "MATCH REPEATABLE ELEMENT p = (a)-[r]->(b) RETURN p",
+        "MATCH p = REPEATABLE ELEMENT (a)-[r]->(b) RETURN p",
+    ] {
+        let stmt = parse_ok(singular);
+        assert_eq!(
+            match_clause(&stmt).match_mode,
+            MatchMode::RepeatableElements,
+            "{singular}"
+        );
+    }
+    let singular = parse_ok("MATCH REPEATABLE ELEMENT p = (a)-[r]->(b) RETURN p");
+    let plural = parse_ok("MATCH REPEATABLE ELEMENTS p = (a)-[r]->(b) RETURN p");
+    assert_eq!(format!("{singular:?}"), format!("{plural:?}"));
+}
+
+#[test]
 fn test_unbounded_qpp_allowed_inside_exists_but_not_at_top_level() {
     // REPEATABLE ELEMENTS rejects an unbounded quantified path pattern in a
     // top-level match, but an EXISTS body is an existence probe and accepts
