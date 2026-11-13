@@ -1,0 +1,138 @@
+name: sqlite-gate
+
+# The side-by-side Relate-vs-SQLite performance lane (LABS-1354): every
+# in-review PR builds the engine wheel from its own head and runs the
+# Tracetoon-report shapes against SQLite in-process, then reports the
+# per-case ratio as a traffic light in the job summary and a PR comment.
+#
+# Reporting, not gating — the spec-harness precedent (ADR-0482 §4). A
+# ratio above 1x never fails the build; only a run the report script
+# cannot read does. The point is a number on every PR that touches the
+# engine, so a change that moves the ratio is visible on the PR rather
+# than in a one-off local run on a host that happened to be quiet.
+#
+# Why CI at all: the gate is a timing measurement, and a developer box is
+# not a measurement host. A local attempt on 2026-11-13 ran at load 78
+# against the gate's own contamination bar of 4 and flagged 50 rows — the
+# gate refuses to call that a baseline, and it is right.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# contents: read only. There is no PR-comment step: the ratios ride the
+# job summary, so `pull-requests: write` would be an unused grant — and
+# this lane reads a private repo, so the narrower the token set the better.
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlite-gate-${{ github.head_ref || github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: SQLite gate (k-hop / co-change ratios)
+    # Drafts run the light fast gate only (AGENTS.md); this lane waits for
+    # ready-for-review. A dispatch or push run has no pull_request context
+    # and passes the guard.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The lane's gate: without a read token the private checkout cannot
+      # succeed, so every step below is guarded on this rather than left to
+      # fail red. A warning, not an error — the lane is reporting-only and
+      # an unset token is a configuration state, not a broken build.
+      # Shell-inert probe; the value never reaches the log.
+      - id: token
+        env:
+          GATE_TOKEN: ${{ secrets.BENCHMARKS_READ_TOKEN }}
+        run: |
+          if [ -n "${GATE_TOKEN}" ]; then
+            echo "have=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::BENCHMARKS_READ_TOKEN is not set — skipping the SQLite gate. Set a fine-grained PAT with Contents: Read on relatedb/relate-benchmarks-private to enable it."
+          fi
+
+      # The gate repo (private, same org). A read token is REQUIRED for
+      # the same reason spec-harness.yml documents: github.token is scoped
+      # to this repository, so a cross-repo checkout of a private repo
+      # fails with "Repository not found". Set BENCHMARKS_READ_TOKEN
+      # (fine-grained PAT, Contents: Read on the gate repo) or use a
+      # GitHub App token. Ref is main — the harness is current, the sha
+      # lands in the report.
+      - name: Check out the SQLite gate (relatedb/relate-benchmarks-private)
+        if: steps.token.outputs.have == 'yes'
+        uses: actions/checkout@v7
+        with:
+          repository: relatedb/relate-benchmarks-private
+          path: gate
+          ref: main
+          token: ${{ secrets.BENCHMARKS_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        if: steps.token.outputs.have == 'yes'
+        with:
+          python-version: "3.12"
+
+      # The gate builds its own side environment with uv (Python 3.13,
+      # requirements.lock with hashes). uv is the gate's prerequisite, not
+      # the engine's. The pinned action, not `curl … | sh`: this lane
+      # already handles a private-repo token, so an unpinned remote script
+      # is one supply-chain surface it does not need.
+      - uses: astral-sh/setup-uv@v7
+        if: steps.token.outputs.have == 'yes'
+
+      # The gate's `--relate-src` default is `../relate` beside its own
+      # repo; here the engine checkout is the job's workspace root, so
+      # RELATE_SRC names it explicitly. `env` builds the wheel from that
+      # source (cargo + maturin) — the wheel installed in the side
+      # environment IS the engine under test.
+      - name: Build the engine wheel and the gate environment
+        if: steps.token.outputs.have == 'yes'
+        env:
+          RELATE_SRC: ${{ github.workspace }}
+          RELATE_TELEMETRY: "off"
+        run: ./run.sh env
+        working-directory: gate/benchmarks/sqlite-gate
+
+      # The ticket's own shapes, not all 71 cases: the k-hop reach and the
+      # co-change families are what LABS-1354 is about, and the full set is
+      # a 15-25 minute lane for numbers no PR needs. `--qids` takes ids or
+      # group names.
+      - name: Run the gate (k-hop and co-change cases)
+        if: steps.token.outputs.have == 'yes'
+        env:
+          RELATE_SRC: ${{ github.workspace }}
+          RELATE_TELEMETRY: "off"
+        run: ./run.sh probe --qids khop,cochange && ./run.sh bench --qids khop,cochange && ./run.sh report
+        working-directory: gate/benchmarks/sqlite-gate
+
+      - name: Job summary — the ratios
+        if: always() && steps.token.outputs.have == 'yes'
+        run: |
+          {
+            echo "## SQLite gate — Relate vs SQLite (LABS-1354)"
+            echo
+            echo "Per-case latency ratio, in-process, on the gate's synthetic graphs."
+            echo "Above 1x: Relate is slower. Reporting only — never a merge gate."
+            echo
+            if [ -f gate/benchmarks/sqlite-gate/REPORT.md ]; then
+              sed -n '/| Case | Relate (ms) | SQLite (ms) | Relate \/ SQLite |/,/^$/p' \
+                gate/benchmarks/sqlite-gate/REPORT.md
+            else
+              echo "The gate produced no REPORT.md — see the job log."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
