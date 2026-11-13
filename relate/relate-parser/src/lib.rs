@@ -14,7 +14,6 @@ mod unicode_identifier;
 // Re-export the main parse function and key types for convenience.
 pub use ast::*;
 pub use error::{ParseError, ParseResult};
-pub use lexer::ParseOptions;
 pub use normalize::{
     normalize_statement, params_carry_reserved_prefix, NormalizeOutcome, Normalized,
     NormalizedValue,

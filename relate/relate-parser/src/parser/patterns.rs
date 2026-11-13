@@ -264,7 +264,7 @@ impl<'a> Parser<'a> {
                         self.peek_type(),
                         TokenType::Star | TokenType::Plus | TokenType::LeftBrace
                     ) {
-                        self.side_effects.quantifier_saw_gpm_form = true;
+                        self.side_effects.quantifiers.gpm_form = true;
                         let quantifier = self.parse_quantifier()?;
                         // Rule 3: the operand's minimum path length must be
                         // > 0 -- a single node pattern cannot be quantified.
@@ -673,11 +673,11 @@ impl<'a> Parser<'a> {
     /// current token must be `Star`. Returns `(min, max)` -- an absent
     /// upper bound is `None`, a bare `*` is `(1, None)`, and a single
     /// number `*n` is the exact hop count `(n, Some(n))`. Sets
-    /// `quantifier_saw_legacy_bracket` for the clause-level
+    /// `quantifiers.legacy_bracket` for the clause-level
     /// quantifier-mixing check.
     fn parse_legacy_hop_bounds(&mut self) -> ParseResult<(u32, Option<u32>)> {
         debug_assert_eq!(self.peek_type(), TokenType::Star);
-        self.side_effects.quantifier_saw_legacy_bracket = true;
+        self.side_effects.quantifiers.legacy_bracket = true;
         self.next_token();
         let lower = if self.peek_type() == TokenType::Integer {
             let tok = self.next_token();
@@ -848,7 +848,7 @@ impl<'a> Parser<'a> {
             rel.min_hops = Some(quantifier.min);
             rel.max_hops = quantifier.max;
             rel.quantified = true;
-            self.side_effects.quantifier_saw_gpm_form = true;
+            self.side_effects.quantifiers.gpm_form = true;
         }
 
         Ok(rel)

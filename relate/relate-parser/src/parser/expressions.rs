@@ -2220,19 +2220,11 @@ impl<'a> Parser<'a> {
         // WHERE is legal -- Neo4j QuantifiedPathPatternAcceptance -- while
         // two comprehensions' forms still combine with each other through
         // the shared accumulators). See
-        // `quantifier_comprehension_saw_legacy_bracket`.
-        let saved_legacy = self.side_effects.quantifier_saw_legacy_bracket;
-        let saved_gpm = self.side_effects.quantifier_saw_gpm_form;
-        self.side_effects.quantifier_saw_legacy_bracket = false;
-        self.side_effects.quantifier_saw_gpm_form = false;
+        // `comprehension_quantifiers`.
+        let saved = std::mem::take(&mut self.side_effects.quantifiers);
         let pattern = self.parse_pattern_path();
-        let inner_legacy = self.side_effects.quantifier_saw_legacy_bracket;
-        let inner_gpm = self.side_effects.quantifier_saw_gpm_form;
-        self.side_effects.quantifier_saw_legacy_bracket = saved_legacy;
-        self.side_effects.quantifier_saw_gpm_form = saved_gpm;
-        self.side_effects
-            .quantifier_comprehension_saw_legacy_bracket |= inner_legacy;
-        self.side_effects.quantifier_comprehension_saw_gpm_form |= inner_gpm;
+        let inner = std::mem::replace(&mut self.side_effects.quantifiers, saved);
+        self.side_effects.comprehension_quantifiers.absorb(inner);
         let pattern = pattern?;
 
         let where_expr = if self.peek_type() == TokenType::WHERE {

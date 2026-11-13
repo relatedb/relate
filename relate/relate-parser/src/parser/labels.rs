@@ -73,7 +73,7 @@ impl<'a> Parser<'a> {
     /// under the `mixed-label-syntax` opt-in.
     fn note_gql_label_symbol(&mut self) {
         self.note_label_form(LabelForm::Gql);
-        self.side_effects.label_expr_saw_gql_symbol = true;
+        self.side_effects.expression_labels.gql_symbol = true;
     }
 
     /// Notes a legacy colon-conjunction (`:A:B`) in the clause-local and
@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
     /// [`Self::note_gql_label_symbol`].
     fn note_legacy_label_conjunction(&mut self) {
         self.note_label_form(LabelForm::Legacy);
-        self.side_effects.label_expr_saw_legacy_conjunction = true;
+        self.side_effects.expression_labels.legacy_conjunction = true;
     }
 
     /// Records one label-mixing form in the clause-local set and in the
@@ -225,11 +225,12 @@ impl<'a> Parser<'a> {
         // GPM-only label/type expression operators": `(n:A|B:C)`,
         // `CREATE (n:A:B&C)`).
         if self.options.mixed_label_syntax {
-            self.side_effects.label_expr_saw_legacy_conjunction = false;
-            self.side_effects.label_expr_saw_gql_symbol = false;
+            self.side_effects.expression_labels = LabelMixFlags::default();
             let spec = self.parse_label_or(pipe_is_legacy)?;
-            if self.side_effects.label_expr_saw_legacy_conjunction
-                && self.side_effects.label_expr_saw_gql_symbol
+            if self
+                .side_effects
+                .expression_labels
+                .within_expression_mixing()
             {
                 return Err(self.error(
                     "InvalidLabelExpression: cannot mix colon-conjunction with label expression symbols within one label expression",
