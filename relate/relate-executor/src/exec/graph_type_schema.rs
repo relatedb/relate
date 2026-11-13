@@ -4,6 +4,7 @@
 //! before the first catalog write. Extracted from `catalog_schema`, which keeps
 //! index / constraint / database DDL.
 
+use crate::exec::ddl::{drop_target_exists, SchemaTarget};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
@@ -337,7 +338,10 @@ fn add_named_drop_targets(
             }
             continue;
         }
-        if name.with_str(|text| graph.named_constraint(text)).is_none() {
+        if name
+            .with_str(|text| drop_target_exists(graph, SchemaTarget::ConstraintName(text)))
+            .is_none()
+        {
             return Err(Error::syntax("SchemaError: constraint does not exist"));
         }
         if !purge.iter().any(|existing| name == existing.as_str()) {
