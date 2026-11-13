@@ -23,9 +23,10 @@ pub(super) struct PropPairIndex {
 
 /// All lazily maintained index state of a [`Graph`] (ADR-0063 lazy
 /// postings, ADR-0185 relationship pairs): the label index, the equality
-/// and declared pair maps, the interned `*`/empty-label sentinel ids, and
-/// the committed index memory charge. Bundled so `Graph`'s fields name
-/// what the graph is, and the index lifecycle lives beside the index code.
+/// and declared pair maps, the interned `*`/empty-label sentinel ids, the
+/// label-posting reclamation candidates (ADR-0595), and the committed
+/// index memory charge. Bundled so `Graph`'s fields name what the graph
+/// is, and the index lifecycle lives beside the index code.
 #[derive(Debug)]
 pub(super) struct Indexes {
     pub(super) label_index: CoreMap<u32, HashSet<NodeId>>,
@@ -46,10 +47,31 @@ pub(super) struct Indexes {
     pub(super) star_label_id: u32,
     /// Interned id of the empty-string bucket for label-less nodes.
     pub(super) empty_label_id: u32,
+    /// Label-posting reclamation candidates (ADR-0595): the dying
+    /// postings the removal sites appended through
+    /// [`Graph::suspect_postings`] — a tombstone, a label drop, or a
+    /// first label leaving the empty bucket — held once each, drained at the same
+    /// apply's tail — the single-writer moment — which removes those no
+    /// snapshot at or after the horizon can see and requeues the rest
+    /// while a pin still can. Bounded by one apply's removals.
+    pub(super) label_suspects: CoreMap<u32, HashSet<NodeId>>,
     /// Committed [`crate::memory::IndexCharge`]. Rebuilt when `index_details`
     /// changes so each node write clones an `Arc` instead of rescanning the
     /// catalog.
     pub(super) charge_cache: Mutex<Arc<crate::memory::IndexCharge>>,
+}
+
+/// One label-posting reclamation candidate's fate at a drain
+/// (ADR-0595): see [`Graph::label_posting_fate`].
+#[derive(Debug)]
+enum PostingFate {
+    /// The live version carries the label — the posting is current.
+    Live,
+    /// A carrying version's interval ends past the horizon — a pinned
+    /// snapshot still sees it; requeue for the next drain.
+    Pinned,
+    /// No snapshot at or after the horizon can see the label — reclaim.
+    Dead,
 }
 
 impl Indexes {
@@ -63,15 +85,20 @@ impl Indexes {
             point_pairs: CoreMap::default(),
             star_label_id: interner.intern("*"),
             empty_label_id: interner.intern(""),
+            label_suspects: CoreMap::default(),
             charge_cache: Mutex::new(Arc::new(crate::memory::IndexCharge::default())),
         }
     }
 
     /// Drop every lazily built structure (ADR-0063): the next seek or probe
     /// rebuilds from the live graph on demand. `rebuild_indexes` re-fills
-    /// the label index and the declared pairs afterwards.
+    /// the label index and the declared pairs afterwards. The reclamation
+    /// candidates drop with them — the wholesale repost that follows adds
+    /// back only ids whose visible version carries the label, so no
+    /// pending candidate remains actionable.
     fn clear(&self) {
         self.label_index.clear();
+        self.label_suspects.clear();
         self.prop_pairs.clear();
         self.rel_prop_pairs.clear();
         self.gram_pairs.clear();
@@ -81,20 +108,139 @@ impl Indexes {
 }
 
 impl Graph {
+    /// The buckets a live record's label set posts into: a label-less
+    /// record posts into the empty-label bucket, a labelled one into
+    /// each of its label buckets. The one policy
+    /// [`label_index_insert`](Self::label_index_insert), the reclamation
+    /// sites ([`suspect_postings`](Self::suspect_postings)) and the fate
+    /// predicate ([`label_posting_fate`](Self::label_posting_fate))
+    /// consult. The checkpoint GC's own prune
+    /// ([`index_drop_unused`](Self::index_drop_unused), over
+    /// `collect_index_keys`' string keys) states the same rule a second
+    /// time on the name side — changing the bucket rule means changing
+    /// both.
+    fn label_buckets<'a>(&'a self, labels: &'a [u32]) -> &'a [u32] {
+        if labels.is_empty() {
+            std::slice::from_ref(&self.indexes.empty_label_id)
+        } else {
+            labels
+        }
+    }
+
     /// Insert `id` into the label index: the empty-label bucket when it
     /// carries no labels, then one entry per label. The one spelling the
     /// write path ([`index_add`](Self::index_add)) and the wholesale rebuild
     /// ([`rebuild_indexes`](Self::rebuild_indexes)) share.
     fn label_index_insert(&self, id: NodeId, label_ids: &[u32]) {
-        // One insert policy: a label-less node lands in the empty-label
-        // bucket, a labelled one in each of its label buckets.
-        let lids: &[u32] = if label_ids.is_empty() {
-            &[self.indexes.empty_label_id]
-        } else {
-            label_ids
-        };
-        for &lid in lids {
+        for &lid in self.label_buckets(label_ids) {
             self.indexes.label_index.entry(lid).or_default().insert(id);
+        }
+    }
+
+    /// Append `id`'s dying postings as reclamation candidates (ADR-0595):
+    /// one per bucket the dying label set posts into —
+    /// [`label_buckets`'s](Self::label_buckets) one policy, in the
+    /// removal direction. Called from the removal sites (a tombstone, a
+    /// label drop, a first label leaving the empty bucket) inside the
+    /// apply, so the tail drain decides every posting at the moment it
+    /// dies — no probe's walk is needed and no read path mutates index
+    /// state. Lock contract: the `label_suspects` shard is taken and
+    /// released inside this call; the caller takes it with no `nodes` or
+    /// `label_index` guard held, and this call takes neither.
+    pub(super) fn suspect_postings(&self, id: NodeId, dying: &[u32]) {
+        for &lid in self.label_buckets(dying) {
+            self.indexes
+                .label_suspects
+                .entry(lid)
+                .or_default()
+                .insert(id);
+        }
+    }
+
+    /// Drain the reclamation candidates at the apply point (ADR-0595):
+    /// each candidate's posting fate decides it — a live carrier drops
+    /// from the list (a later delete re-suspects it), one whose posting
+    /// is bounded past the snapshot horizon is requeued for the next
+    /// drain (a pin still sees it), and one no snapshot at or after the
+    /// horizon can see leaves the label's posting set. The candidate set
+    /// holds each id once, so a pin cannot multiply the drain's
+    /// per-apply work. Lock order: the `label_suspects` guard is dropped
+    /// (the `remove` returns the set) before any `nodes` guard is taken
+    /// for the fate checks, and removals under the `label_index` write
+    /// guard come last — `index_add`'s order, never reversed. The
+    /// single-writer apply is what makes the check-then-remove
+    /// race-free against a posting insert.
+    pub(super) fn drain_label_suspects(&self) {
+        let horizon = self.gc_horizon();
+        let lids: Vec<u32> = self
+            .indexes
+            .label_suspects
+            .iter()
+            .map(|e| *e.key())
+            .collect();
+        for lid in lids {
+            let Some((_, ids)) = self.indexes.label_suspects.remove(&lid) else {
+                continue;
+            };
+            let (mut dead, mut pinned) = (Vec::new(), Vec::new());
+            for id in ids {
+                match self.label_posting_fate(id, lid, horizon) {
+                    PostingFate::Live => {}
+                    PostingFate::Pinned => pinned.push(id),
+                    PostingFate::Dead => dead.push(id),
+                }
+            }
+            if !pinned.is_empty() {
+                self.indexes
+                    .label_suspects
+                    .entry(lid)
+                    .or_default()
+                    .extend(pinned);
+            }
+            if dead.is_empty() {
+                continue;
+            }
+            if let Some(mut set) = self.indexes.label_index.get_mut(&lid) {
+                for id in dead {
+                    set.remove(&id);
+                }
+            }
+        }
+    }
+
+    /// One reclamation candidate's fate (ADR-0595): whether any version
+    /// of `id` posting into bucket `lid` is visible at or after the
+    /// horizon. The posting rule is [`label_buckets`'s](Self::label_buckets)
+    /// — bucket membership, with the empty-label bucket for a label-less
+    /// record — so the empty bucket's candidates answer like any other's.
+    /// The **canonical** live version (`Chain::live`, the newest
+    /// `xmax == 0` one) decides [`PostingFate::Live`]; a shadowed
+    /// open-ended version (a replayed re-create leaves one) is skipped.
+    /// It is not unreachable — a snapshot pinned in `[xmin, newer.xmin)`
+    /// reads it — but no removal site can suspect a label only a
+    /// shadowed version carries, because they all read the newest live
+    /// version's labels. A bounded posting interval the
+    /// checkpoint GC's own `dead_at` predicate keeps at the horizon is
+    /// [`PostingFate::Pinned`] (a pinned snapshot still sees it); nothing
+    /// reachable is [`PostingFate::Dead`]. A ts probe
+    /// (`node_carries_label_at`) is the wrong shape here: a version
+    /// created after the horizon is invisible to it while its live
+    /// interval is wide open.
+    fn label_posting_fate(&self, id: NodeId, lid: u32, horizon: u64) -> PostingFate {
+        let Some(vers) = self.nodes.get(&id) else {
+            return PostingFate::Dead;
+        };
+        let posts = |live: &LiveNode| self.label_buckets(&live.labels).contains(&lid);
+        if vers.live().is_some_and(|v| posts(v.live)) {
+            return PostingFate::Live;
+        }
+        let pinned = vers
+            .iter()
+            .any(|v| v.xmax != 0 && !v.dead_at(horizon) && posts(v.live));
+        if pinned {
+            PostingFate::Pinned
+        } else {
+            PostingFate::Dead
         }
     }
 
