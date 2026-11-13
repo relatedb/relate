@@ -21,7 +21,8 @@ let row = try conn.query("MATCH (b:Book) RETURN b.finished_at AS at, b.finished_
 let readBack = row["at"]!.dateTimeValue!.foundationDate
 print("finished:", readBack.formatted(.iso8601), "local day:", row["day"]!)
 precondition(readBack == finished)
-precondition(row["day"]!.dateValue!.dateComponents == DateComponents(year: 2026, month: 11, day: 9))
+let day = row["day"]!.dateValue!.dateComponents
+precondition(day.year == 2026 && day.month == 11 && day.day == 9)
 
 // A fixed-length Swift.Duration; a duration with months or days has none.
 let listened = CypherValue.Duration(.seconds(5_400))

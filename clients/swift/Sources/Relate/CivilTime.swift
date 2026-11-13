@@ -20,7 +20,7 @@ func floorDivMod(_ value: Int64, _ divisor: Int64) -> (quotient: Int64, remainde
 /// Days from 1970-01-01 to a proleptic-Gregorian civil date (the
 /// days-from-civil algorithm). `month` is 1...12 and `day` 1...31; years of
 /// any sign are valid (year 0 is 1 BCE).
-func daysFromCivil(year: Int64, month: Int64, day: Int64) -> Int64 {
+private func daysFromCivil(year: Int64, month: Int64, day: Int64) -> Int64 {
     let y = month <= 2 ? year - 1 : year
     let era = floorDivMod(y, 400).quotient
     let yearOfEra = y - era * 400
@@ -31,7 +31,7 @@ func daysFromCivil(year: Int64, month: Int64, day: Int64) -> Int64 {
 
 /// The proleptic-Gregorian civil date `days` after 1970-01-01 (the inverse
 /// of `daysFromCivil`).
-func civilFromDays(_ days: Int64) -> (year: Int64, month: Int64, day: Int64) {
+private func civilFromDays(_ days: Int64) -> (year: Int64, month: Int64, day: Int64) {
     let shifted = days + 719_468
     let era = floorDivMod(shifted, 146_097).quotient
     let dayOfEra = shifted - era * 146_097

@@ -30,13 +30,10 @@ private func epochMicroseconds(of date: Foundation.Date) throws(RelateError)
         throw RelateError.invalidParameter(
             "a Date \(interval) seconds from the reference date has no datetime value")
     }
-    var seconds = Int64(whole)
-    var microseconds = Int64(((interval - whole) * Double(microsecondsPerSecond)).rounded())
-    if microseconds == microsecondsPerSecond {
-        seconds += 1
-        microseconds = 0
-    }
-    return (seconds + referenceDateEpochSeconds, microseconds)
+    // Rounding the fraction can reach a whole second; the split carries it.
+    let fraction = floorDivMod(
+        Int64(((interval - whole) * Double(microsecondsPerSecond)).rounded()), microsecondsPerSecond)
+    return (Int64(whole) + fraction.quotient + referenceDateEpochSeconds, fraction.remainder)
 }
 
 extension Foundation.Date {
@@ -54,14 +51,14 @@ extension CypherValue.DateTime {
     /// so the value names exactly that instant.
     ///
     /// Throws ``RelateError/invalidParameter(_:)`` for a non-finite `date`.
-    public init(_ date: Foundation.Date, offsetSeconds: Int = 0) throws(RelateError) {
+    public init(_ date: Foundation.Date, offsetSeconds: Int64 = 0) throws(RelateError) {
         let instant = try epochMicroseconds(of: date)
-        let wall = civilFromEpochSeconds(instant.seconds + Int64(offsetSeconds))
+        let wall = civilFromEpochSeconds(instant.seconds + offsetSeconds)
         self.init(
             year: wall.year, month: wall.month, day: wall.day,
             hour: wall.hour, minute: wall.minute, second: wall.second,
             nanosecond: instant.microseconds * nanosecondsPerMicrosecond,
-            offsetSeconds: Int64(offsetSeconds), zone: nil)
+            offsetSeconds: offsetSeconds, zone: nil)
     }
 
     /// The instant `date` as a zoned datetime carrying `timeZone`'s UTC
@@ -70,7 +67,7 @@ extension CypherValue.DateTime {
     /// overlap can name the other of the two instants; the offset alone
     /// round-trips the instant exactly.
     public init(_ date: Foundation.Date, in timeZone: TimeZone) throws(RelateError) {
-        try self.init(date, offsetSeconds: timeZone.secondsFromGMT(for: date))
+        try self.init(date, offsetSeconds: Int64(timeZone.secondsFromGMT(for: date)))
     }
 
     /// The instant this datetime names: its wall clock less its UTC offset.
@@ -122,17 +119,28 @@ extension CypherValue.Date {
         self.init(year: zoned.year, month: zoned.month, day: zoned.day)
     }
 
-    /// The day `components` name; `nil` unless year, month and day are all
-    /// present.
+    /// The day `components` name, read as a Gregorian year, month and day:
+    /// `nil` unless all three are present, and `nil` for components that
+    /// carry a calendar which counts years or months differently (a
+    /// Buddhist, Hebrew or Islamic calendar's fields are not a Cypher
+    /// date's). Components without a calendar are taken as Gregorian.
     public init?(_ components: DateComponents) {
+        if let calendar = components.calendar,
+            ![Calendar.Identifier.gregorian, .iso8601].contains(calendar.identifier)
+        {
+            return nil
+        }
         guard let year = components.year, let month = components.month, let day = components.day
         else { return nil }
         self.init(year: Int64(year), month: Int64(month), day: Int64(day))
     }
 
-    /// Year, month and day as `DateComponents` (no calendar or zone set).
+    /// Year, month and day as `DateComponents` carrying the Gregorian
+    /// calendar, so Foundation reads them back as the same day whatever
+    /// calendar the user's device is set to. No time zone is set.
     public var dateComponents: DateComponents {
-        DateComponents(year: Int(year), month: Int(month), day: Int(day))
+        DateComponents(
+            calendar: Calendar(identifier: .gregorian), year: Int(year), month: Int(month), day: Int(day))
     }
 
     /// The instant this day starts in `timeZone`; `nil` when midnight falls

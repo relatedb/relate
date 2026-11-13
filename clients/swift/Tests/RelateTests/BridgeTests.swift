@@ -66,12 +66,8 @@ import Relate
 
     @Test func aNonFiniteDateIsRefused() throws {
         for interval in [Double.nan, .infinity, -.infinity] {
-            let error = try #require(throws: RelateError.self) {
-                try CypherValue(Date(timeIntervalSinceReferenceDate: interval))
-            }
-            guard case .invalidParameter = error else {
-                Issue.record("expected invalidParameter, got \(error)")
-                continue
+            _ = try invalidParameterMessage {
+                _ = try CypherValue(Date(timeIntervalSinceReferenceDate: interval))
             }
         }
     }
@@ -106,9 +102,25 @@ import Relate
         let date = try parse("2026-11-08T13:00:00.000Z")  // already the 9th in Auckland
         let day = try CypherValue.Date(date, in: zone)
         #expect(day == .init(year: 2026, month: 11, day: 9))
-        #expect(day.dateComponents == DateComponents(year: 2026, month: 11, day: 9))
+        // Out: tagged Gregorian, so Foundation reads the same day back
+        // whatever calendar the device uses.
+        let components = day.dateComponents
+        #expect(components.year == 2026 && components.month == 11 && components.day == 9)
+        #expect(components.calendar?.identifier == .gregorian)
+        #expect(CypherValue.Date(components) == day)
+        // In: uncalendared components are Gregorian; incomplete ones name no day.
         #expect(CypherValue.Date(DateComponents(year: 2026, month: 11, day: 9)) == day)
         #expect(CypherValue.Date(DateComponents(year: 2026, month: 11)) == nil)
+        // Components of a calendar that counts years differently are not a
+        // Cypher date's fields: the same day is year 2569 to a Buddhist calendar.
+        let buddhist = Calendar(identifier: .buddhist)
+        let noon = try #require(Calendar(identifier: .gregorian).date(from: DateComponents(
+            timeZone: zone, year: 2026, month: 11, day: 9, hour: 12)))
+        var theirs = buddhist.dateComponents(in: zone, from: noon)
+        #expect(theirs.year == 2569 && CypherValue.Date(theirs) == nil)
+        theirs.calendar = Calendar(identifier: .iso8601)
+        theirs.year = 2026
+        #expect(CypherValue.Date(theirs) == day)
         #expect(day.startOfDay(in: zone) == (try parse("2026-11-08T11:00:00.000Z")))
         #expect(try conn.query("RETURN date('2026-11-09') = $d", ["d": .date(day)]).scalar() == true)
     }
@@ -165,11 +177,7 @@ import Relate
 
         if #available(macOS 26, iOS 26, *) {
             let bytes = try MLMultiArray(shape: [2], dataType: .int8)
-            let error = try #require(throws: RelateError.self) { try CypherValue.Vector(bytes) }
-            guard case .invalidParameter = error else {
-                Issue.record("expected invalidParameter, got \(error)")
-                return
-            }
+            _ = try invalidParameterMessage { _ = try CypherValue.Vector(bytes) }
         }
     }
 

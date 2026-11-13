@@ -34,8 +34,7 @@ extension CypherValue.Vector {
     /// integer-typed vector. Exact for `FLOAT32`, `FLOAT16` and `BFLOAT16`;
     /// a `FLOAT` (64-bit) vector is narrowed to the nearest `Float`.
     public var float32Values: [Float]? {
-        guard case .floats(_, let values) = self else { return nil }
-        return values.map { Float($0) }
+        doubleValues?.map { Float($0) }
     }
 
     /// The coordinates of a float-typed vector; `nil` for an integer-typed

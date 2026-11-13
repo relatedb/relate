@@ -191,14 +191,14 @@ types. Inside an `extension CypherValue`, the bare names `Date` and
 ```swift
 // Foundation.Date — to the microsecond
 CypherValue.init(_ date: Foundation.Date) throws(RelateError)                    // a UTC .dateTime
-CypherValue.DateTime.init(_ date: Foundation.Date, offsetSeconds: Int = 0) throws(RelateError)
+CypherValue.DateTime.init(_ date: Foundation.Date, offsetSeconds: Int64 = 0) throws(RelateError)
 CypherValue.DateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the zone's offset at that instant; no zone id
 CypherValue.DateTime.foundationDate: Foundation.Date                             // wall clock less offset
 CypherValue.LocalDateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError)
 CypherValue.LocalDateTime.foundationDate(in: TimeZone) -> Foundation.Date?       // nil in a daylight-saving gap; the earlier instant in an overlap
 CypherValue.Date.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the calendar day there
-CypherValue.Date.init?(_ components: DateComponents)                             // needs year, month and day
-CypherValue.Date.dateComponents: DateComponents
+CypherValue.Date.init?(_ components: DateComponents)                             // needs year, month and day; nil for a non-Gregorian calendar's components
+CypherValue.Date.dateComponents: DateComponents                                  // carries the Gregorian calendar
 CypherValue.Date.startOfDay(in: TimeZone) -> Foundation.Date?
 
 // Swift.Duration
