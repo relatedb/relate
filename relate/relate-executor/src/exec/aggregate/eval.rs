@@ -10,7 +10,7 @@ use relate_core::{Error, Result, Value};
 use relate_ir::{walk_scope_children, ChildScope, Expr};
 use relate_names::SmallName;
 
-use crate::eval::{eval, expr_vars};
+use crate::eval::{eval, expr_vars, predicate_value_holds};
 use crate::exec::scope::uncolliding_prefix;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -244,8 +244,11 @@ pub(crate) fn agg_eval<'e>(
         | Expr::ChronoCompare { .. }
         | Expr::Subscript { .. }
         | Expr::Slice { .. }
-        | Expr::Case { .. }
         | Expr::MapProjection { .. } => agg_eval_compound(graph, scope, expr, params),
+        Expr::Case {
+            when_then,
+            else_expr,
+        } => agg_eval_case(graph, scope, when_then, else_expr.as_deref(), params),
         Expr::Int(i) => Ok(Value::Int(*i)),
         Expr::Float(f) => Ok(Value::Float(*f)),
         Expr::Bool(b) => Ok(Value::Bool(*b)),
@@ -262,6 +265,39 @@ pub(crate) fn agg_eval<'e>(
             Some(row) => eval(graph, row, expr, params),
             None => Ok(Value::Null),
         },
+    }
+}
+
+/// `CASE` over a folded group stays lazy like scalar `eval_case`: a WHEN
+/// condition is folded and tested in order, and only the taken THEN (or the
+/// ELSE) is evaluated, so an untaken arm that would raise never does. The
+/// discovery pass must still see every aggregate call in every arm, so it
+/// walks all of them (its values are placeholders and never raise).
+fn agg_eval_case<'e>(
+    graph: &ExecGraph<'_>,
+    scope: AggScope<'_, 'e>,
+    when_then: &'e [(Expr, Expr)],
+    else_expr: Option<&'e Expr>,
+    params: &BTreeMap<String, Value>,
+) -> Result<Value> {
+    if scope.is_discovery() {
+        for (when, then) in when_then {
+            agg_eval(graph, scope, when, params)?;
+            agg_eval(graph, scope, then, params)?;
+        }
+        if let Some(e) = else_expr {
+            agg_eval(graph, scope, e, params)?;
+        }
+        return Ok(Value::Null);
+    }
+    for (when, then) in when_then {
+        if predicate_value_holds(&agg_eval(graph, scope, when, params)?)? {
+            return agg_eval(graph, scope, then, params);
+        }
+    }
+    match else_expr {
+        Some(e) => agg_eval(graph, scope, e, params),
+        None => Ok(Value::Null),
     }
 }
 
@@ -312,6 +348,15 @@ mod tests {
     use crate::exec::test_support::exec_cypher;
     use crate::graph::Graph;
 
+    fn first(q: &str) -> Value {
+        exec_cypher(&Graph::default(), q).rows[0][0].clone()
+    }
+
+    fn fails(q: &str) -> bool {
+        let g = Graph::default();
+        crate::exec::test_support::try_exec_cypher(&g, q).is_err()
+    }
+
     /// A grouping key spelled in the internal `__agg_c` namespace is the
     /// user's variable: the synthetic child bindings must not shadow it
     /// inside a per-element body.
@@ -338,5 +383,49 @@ mod tests {
                 "variable {name}"
             );
         }
+    }
+
+    /// LABS-1587: an untaken CASE arm over an aggregate never evaluates.
+    #[test]
+    fn case_over_an_aggregate_is_lazy() {
+        for q in [
+            "UNWIND [1] AS k RETURN CASE count(*) WHEN 0 THEN 1/0 ELSE 1 END",
+            "UNWIND [1] AS k RETURN CASE WHEN count(*) = 0 THEN 1/0 ELSE 1 END",
+            "UNWIND [1] AS k RETURN CASE WHEN count(*) = 0 THEN 1 \
+             WHEN count(*) = 1 THEN 1 ELSE 1/0 END",
+            "UNWIND [1] AS k RETURN CASE WHEN count(*) = 1 THEN 1 \
+             WHEN 1/0 = 1 THEN 2 END",
+            "UNWIND [1] AS k RETURN CASE WHEN count(*) = 1 THEN \
+             CASE count(*) WHEN 1 THEN 1 ELSE 1/0 END ELSE 1/0 END",
+            "UNWIND [1, 1] AS k RETURN CASE WHEN count(DISTINCT k) = 1 THEN 1 ELSE 1/0 END",
+            "UNWIND [1] AS k RETURN CASE WHEN count(*) = 0 THEN 1/0 ELSE 1 END + 0",
+        ] {
+            assert_eq!(first(q), Value::Int(1), "{q}");
+        }
+    }
+
+    #[test]
+    fn case_over_an_aggregate_with_grouping_keys_is_lazy() {
+        let r = exec_cypher(
+            &Graph::default(),
+            "UNWIND [1, 1, 2] AS k RETURN k, \
+             CASE WHEN count(*) = 0 THEN 1/0 ELSE count(*) END AS c ORDER BY k",
+        );
+        assert_eq!(r.rows[0][1], Value::Int(2));
+        assert_eq!(r.rows[1][1], Value::Int(1));
+    }
+
+    /// A taken branch that errors still errors.
+    #[test]
+    fn a_taken_case_arm_over_an_aggregate_still_raises() {
+        assert!(fails(
+            "UNWIND [1] AS k RETURN CASE count(*) WHEN 1 THEN 1/0 ELSE 1 END"
+        ));
+        assert!(fails(
+            "UNWIND [1] AS k RETURN CASE WHEN count(*) = 5 THEN 1 ELSE 1/0 END"
+        ));
+        assert!(fails(
+            "UNWIND [1] AS k RETURN CASE WHEN 1/0 = 1 THEN 1 ELSE count(*) END"
+        ));
     }
 }
