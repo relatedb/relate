@@ -123,16 +123,28 @@ jobs:
       - name: Job summary — the ratios
         if: always() && steps.token.outputs.have == 'yes'
         run: |
+          report=gate/benchmarks/sqlite-gate/REPORT.md
           {
-            echo "## SQLite gate — Relate vs SQLite (LABS-1354)"
+            echo "## SQLite gate — Relate vs SQLite"
             echo
-            echo "Per-case latency ratio, in-process, on the gate's synthetic graphs."
-            echo "Above 1x: Relate is slower. Reporting only — never a merge gate."
+            echo "Per-case latency, in-process, on the gate's synthetic graphs."
+            echo "Ratio = Relate / SQLite; above 1x means Relate is slower."
+            echo "Reporting only — never a merge gate."
             echo
-            if [ -f gate/benchmarks/sqlite-gate/REPORT.md ]; then
-              sed -n '/| Case | Relate (ms) | SQLite (ms) | Relate \/ SQLite |/,/^$/p' \
-                gate/benchmarks/sqlite-gate/REPORT.md
+            if [ -f "$report" ]; then
+              # The per-case table, matched on its own header and printed to
+              # the first blank line. Not the README's cross-version headline
+              # table, which has a different shape — matching that one
+              # printed nothing at all (the bug this replaces).
+              awk '/^\| Case \| what \|/{f=1} f && /^$/{exit} f' "$report"
             else
-              echo "The gate produced no REPORT.md — see the job log."
+              echo "_The gate produced no REPORT.md — see the job log._"
             fi
+            echo
+            echo "### Reading this"
+            echo
+            echo "- **Host load.** A row is contaminated when the host's 1-minute load average passes the gate's bar, and a contaminated row is not a comparison. On a 4-vCPU runner the bar fires almost always — see LABS-1627."
+            echo "- **Across hosts.** These numbers are for run-to-run regression on this runner class. They are not comparable to the committed baseline, which was taken on an Apple M4 Max."
+            echo "- **Failures.** A \`‡\` marks a row that failed (timeout / memory / refused / parity mismatch) rather than one that is merely slow; the legend is in REPORT.md."
+            echo "- **Coverage.** Only the k-hop and co-change groups run here. The full gate is 71 cases."
           } >> "$GITHUB_STEP_SUMMARY"
