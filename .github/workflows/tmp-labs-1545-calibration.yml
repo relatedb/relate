@@ -1,0 +1,104 @@
+# LABS-1545 THROWAWAY (draft PR only, never merged): validates the frontier cost-gate constants on a
+# GitHub-hosted runner. Numbers are noisy: every comparison is a ratio inside this one job, interleaved.
+name: tmp-labs-1545-calibration
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "bare runner label"
+        default: linux-4-core-x86
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  calibrate:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 340
+    env:
+      RELATE_TELEMETRY: "off"
+      RELATE_MAX_ROWS: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: relate
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: relatedb/relate-benchmarks-private
+          path: bench
+          ref: main
+          token: ${{ secrets.BENCHMARKS_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: ./relate/.github/actions/setup-rust-ci
+        with:
+          sccache: "false"
+          cache: "false"
+          free-disk: "false"
+      - name: Host
+        run: |
+          { echo "runner=${{ inputs.runner }} cpus=$(nproc) mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)";
+            grep -m1 'model name' /proc/cpuinfo; uptime; } | tee host.txt
+          python -m pip install --quiet uv
+          echo "RELATE_SRC=$GITHUB_WORKSPACE/relate" >> "$GITHUB_ENV"
+      - name: Build the engine (CLI + wheel) from this commit
+        run: |
+          cd bench/benchmarks/sqlite-gate
+          ./run.sh env
+      - name: sqlite-gate rows (auto vs nfa vs walk, interleaved, 7 rounds)
+        continue-on-error: true
+        run: |
+          cd bench/benchmarks/sqlite-gate
+          PY=$(ls -d "$GITHUB_WORKSPACE"/bench/.cache/bench-env/sqg-*/bin/python | grep -v report | head -1)
+          mkdir -p "$GITHUB_WORKSPACE/results"
+          PYTHONPATH=$PWD/harness RELATE_TELEMETRY=off "$PY" "$GITHUB_WORKSPACE/relate/.github/scripts/labs1545_sqg.py" \
+            "$GITHUB_WORKSPACE/results/sqg.json" 2> "$GITHUB_WORKSPACE/results/sqg.stderr" | tee "$GITHUB_WORKSPACE/results/sqg.md"
+          echo "--- cost trace (CostEstimate per row)"; grep -E '^LABS1545' "$GITHUB_WORKSPACE/results/sqg.stderr" | tee "$GITHUB_WORKSPACE/results/sqg.trace"
+      - name: pokec - fetch and load
+        id: pokecload
+        continue-on-error: true
+        run: |
+          cd bench/benchmarks/pokec
+          ./run.sh fetch 2>&1 | tail -3
+          ./run.sh load 2>&1 | tail -5
+      - name: pokec - PROFILE decline and cost trace (auto)
+        if: steps.pokecload.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cd bench/benchmarks/pokec
+          CLI=$(ls "$GITHUB_WORKSPACE"/bench/.cache/engines/*/relate | head -1)
+          STORE=$(ls -d "$GITHUB_WORKSPACE"/bench/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1)
+          python3 -I "$GITHUB_WORKSPACE/relate/.github/scripts/labs1545_profile.py" "$CLI" "$STORE" "$PWD/queries" 11 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 | tee "$GITHUB_WORKSPACE/results/pokec-profile.txt"
+      - name: pokec - timed rows (per query: auto, walk, nfa, auto again)
+        if: steps.pokecload.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cd bench/benchmarks/pokec
+          Q="11,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34"
+          ./run.sh probe --qids "$Q" --variant verbatim --timeout 120 2>&1 | tail -3
+          mkdir -p "$GITHUB_WORKSPACE/results/pokec"
+          for q in ${Q//,/ }; do
+            for mode in auto walk nfa auto2; do
+              m=${mode%2}
+              echo "== q$q $mode load=$(cut -d' ' -f1 /proc/loadavg)"
+              RELATE_PATTERN_ENGINE=$m timeout 20m ./run.sh bench --qids "$q" --variant verbatim > /dev/null 2>&1 || echo "q$q $mode: bench exit $?"
+              f=$(ls out/*.json 2>/dev/null | grep -v -E 'probe|env|session|tokens' | head -1 || true)
+              [ -n "$f" ] && cp "$f" "$GITHUB_WORKSPACE/results/pokec/q$q-$mode.json"
+              rm -f out/*bench* "$f" 2>/dev/null || true
+            done
+          done
+      - name: Summarise pokec timings
+        if: always()
+        run: |
+          python3 -I "$GITHUB_WORKSPACE/relate/.github/scripts/labs1545_summary.py" "$GITHUB_WORKSPACE/results/pokec" | tee "$GITHUB_WORKSPACE/results/pokec-summary.md" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: labs1545-results
+          path: |
+            results/
+            host.txt

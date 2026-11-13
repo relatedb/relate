@@ -84,8 +84,19 @@ pub(super) fn frontier_engages(
     let seeds = seed_rows(endpoint_estimate(start, &unbound, conjuncts.iter(), stats));
     let endpoints =
         seed_rows(endpoint_estimate(target, &unbound, conjuncts.iter(), stats)).min(population);
-    estimate(stats, population, seeds, endpoints, start, &hops)
-        .is_some_and(CostEstimate::frontier_wins)
+    let est = estimate(stats, population, seeds, endpoints, start, &hops);
+    // LABS-1545 THROWAWAY TRACE: never merge.
+    if std::env::var_os("LABS1545_TRACE").is_some() {
+        eprintln!(
+            "LABS1545 cost seeds={seeds} endpoints={endpoints} population={population} hops={} est={est:?} walker_ns={} frontier_ns={} engages={}",
+            hops.len(),
+            est.map(|e| WALKER_NS_PER_TRAIL * e.trails).unwrap_or(f64::NAN),
+            est.map(|e| FRONTIER_NS_PER_PAIR * e.pairs + FRONTIER_NS_PER_PROBE * e.probes)
+                .unwrap_or(f64::NAN),
+            est.is_some_and(CostEstimate::frontier_wins)
+        );
+    }
+    est.is_some_and(CostEstimate::frontier_wins)
 }
 
 /// The cost estimate of `hops` (every quantifier expanded to its maximum
