@@ -40,7 +40,7 @@ use crate::validate::ValidateOptions;
 /// clauses of the same linear body declared. (A CIP-213 NEXT stage starts a
 /// fresh body -- its names are bound per stage on the lowered IR, not by
 /// this pass.)
-pub fn validate_search_clauses(
+pub(crate) fn validate_search_clauses(
     clauses: &[Clause],
     options: ValidateOptions,
 ) -> Result<(), EngineError> {

@@ -30,10 +30,12 @@
 //!   (`KNOWN_FUNCTIONS`, `is_known_function`) the planner binds against, and
 //!   the ADR-0497 preview-name admission gate
 //!   (`validate_function_admission`).
-//! - [`static_types`]: the literal-type/constant vocabulary and the operator
-//!   rules decidable from *literal* operand types (boolean-operator
-//!   operands, `IN` lists, `properties()`, quantifier/arithmetic
-//!   mismatches).
+//! - [`static_literal`]: the literal-type/constant vocabulary the static
+//!   rules share (`StaticLitType`, the constant fold, the arithmetic-operator
+//!   set).
+//! - [`static_types`]: the operator rules decidable from *literal* operand
+//!   types (boolean-operator operands, `IN` lists, `properties()`,
+//!   quantifier/arithmetic mismatches).
 //! - [`page_bounds`]: the `LIMIT`/`SKIP`/`OFFSET` compile-time rules, in the
 //!   constant-ness and value-domain tiers that `RETURN`/`WITH` own and the
 //!   CIP-168 standalone page statement partly shares (its module doc states
@@ -87,6 +89,7 @@ mod self_reference;
 mod show;
 mod static_arithmetic;
 mod static_calls;
+mod static_literal;
 mod static_reduce;
 mod static_types;
 mod structure;
@@ -110,7 +113,7 @@ pub use self::page_bounds::validate_limit_skip;
 pub(crate) use self::safe_mode::validate_statement_shape;
 pub use self::scope::validate_variable_types;
 pub(crate) use self::search::search_pattern_is_complex;
-pub use self::search::validate_search_clauses;
+pub(crate) use self::search::validate_search_clauses;
 pub(crate) use self::self_reference::validate_create_self_reference_conservative;
 pub use self::show::{
     validate_show_column_names, validate_show_composability, validate_show_output_uniqueness,
@@ -136,7 +139,7 @@ pub(crate) use self::writes::validate_param_property_shorthand;
 /// `float16-coordinate-types`, …) never lands here: its floor form is
 /// unchanged, so it fails closed in the front's detector loop instead.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ValidateOptions {
+pub(crate) struct ValidateOptions {
     /// The store's `RELATE_PREVIEW` set (ADR-0371). Every validation
     /// gate derives its own on/off state from the one set, so a gate cannot
     /// drift from the store's opt-in.
@@ -307,12 +310,7 @@ pub(crate) fn statement_uses_float16_coordinate_types(
 fn type_uses_float16(type_expr: &relate_parser::TypeExpr) -> bool {
     use relate_parser::TypeExpr;
     match type_expr {
-        TypeExpr::Vector { coord, .. } => matches!(
-            coord,
-            Some(
-                relate_parser::VectorCoordKind::Float16 | relate_parser::VectorCoordKind::BFloat16
-            )
-        ),
+        TypeExpr::Vector { coord, .. } => coord.is_some_and(is_float16_family),
         TypeExpr::List { element, .. } => type_uses_float16(element),
         TypeExpr::Union(members) => members.iter().any(type_uses_float16),
         TypeExpr::Predefined { .. } | TypeExpr::PropertyValue { .. } => false,
@@ -329,13 +327,16 @@ fn is_float16_vector_constructor(call: &relate_parser::FunctionCallExpr) -> bool
     matches!(
         &call.args[2],
         Expr::Literal(relate_parser::LiteralValue::String(name))
-            if matches!(
-                relate_parser::VectorCoordKind::from_alias(name),
-                Some(
-                    relate_parser::VectorCoordKind::Float16
-                        | relate_parser::VectorCoordKind::BFloat16
-                )
-            )
+            if relate_parser::VectorCoordKind::from_alias(name).is_some_and(is_float16_family)
+    )
+}
+
+/// The FLOAT16/BFLOAT16 coordinate-kind class the `float16-coordinate-types`
+/// gate detects — the one spelling both syntactic homes consult.
+fn is_float16_family(kind: relate_parser::VectorCoordKind) -> bool {
+    matches!(
+        kind,
+        relate_parser::VectorCoordKind::Float16 | relate_parser::VectorCoordKind::BFloat16
     )
 }
 
@@ -348,14 +349,9 @@ fn clause_uses_float16_property_type(clause: &Clause) -> bool {
             .property_type
             .as_ref()
             .is_some_and(type_uses_float16),
-        Clause::CreateGraphType(graph_type) => graph_type_body_uses_float16(&graph_type.body),
-        Clause::AlterCurrentGraphType(alter) => match &alter.target {
-            relate_parser::AlterCurrentGraphTypeTarget::Body(body) => {
-                graph_type_body_uses_float16(body)
-            }
-            relate_parser::AlterCurrentGraphTypeTarget::Named(_) => false,
-        },
-        _ => false,
+        other => graph_type_gate::clause_graph_type_bodies(other)
+            .into_iter()
+            .any(graph_type_body_uses_float16),
     }
 }
 

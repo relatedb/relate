@@ -12,17 +12,17 @@ use relate_parser::{Expr, Statement};
 
 use crate::ast::collect::{walk_expr_scoped, ScopedExprVisitor};
 
-use super::static_types::{
+use super::static_literal::{
     is_arithmetic_op, non_numeric_leaf_class, static_literal_type, unparen, StaticLitType,
 };
 
 /// The arithmetic operators that raise a type error for *every* non-numeric,
 /// non-null operand. `+` is deliberately excluded from the
-/// [`ARITHMETIC_OPS`] set here: it is also string concatenation (`'a' + 1` →
+/// arithmetic-operator set ([`is_arithmetic_op`]): it is also string concatenation (`'a' + 1` →
 /// `'a1'`) and list append (`[1] + 2`), both valid for STRING/LIST operands,
 /// so `+` is never a *guaranteed* compile-time type error and is left for the
 /// runtime evaluator.
-pub(super) fn is_failing_arithmetic_op(op: &str) -> bool {
+fn is_failing_arithmetic_op(op: &str) -> bool {
     op != "+" && is_arithmetic_op(op)
 }
 

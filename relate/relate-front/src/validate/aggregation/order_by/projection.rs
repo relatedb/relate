@@ -54,7 +54,7 @@ pub(in crate::validate::aggregation) fn check_projection_subclauses(
     // (ADR-0198, ADR-0453); the visibility rule owns which names the
     // subclause may read.
     let ambiguous_keys = matches!(mode, ProjectionMode::Aggregating).then(|| {
-        GroupingKeys::new(parts.items, grouping_key_exprs)
+        GroupingKeys::new(grouping_key_exprs)
             .with_aliases(parts.items.iter().filter_map(|i| i.alias.as_ref().cloned()))
     });
     for ob in parts.order_by {

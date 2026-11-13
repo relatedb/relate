@@ -54,7 +54,7 @@ use relate_parser::{
     Clause, Expr, LabelExpr, PatternElement, PatternPath, PropertyAccess, SetItem, Statement,
 };
 
-use super::static_types::{constant_value, static_literal_type, FoldedConstant, StaticLitType};
+use super::static_literal::{constant_value, static_literal_type, FoldedConstant, StaticLitType};
 use crate::ast::collect::{bind_pattern_vars, effective_name};
 use crate::ast::tree::walk_label_expr;
 

@@ -70,6 +70,23 @@ fn smallest_collision<'a>(
     exports.iter().filter(|n| outer.contains(*n)).min()
 }
 
+/// The per-stage export collision check, the one spelling for both a NEXT
+/// chain's mid-stage (against the imported names) and final-stage (against
+/// the enclosing scope) export: when `strict`, a colliding export name is
+/// the duplicate-outer-variable rejection.
+fn reject_export_collision(
+    exports: &IdentHashSet<SmallName>,
+    against: &IdentHashSet<SmallName>,
+    strict: bool,
+) -> Result<(), EngineError> {
+    if strict {
+        if let Some(n) = smallest_collision(exports, against) {
+            return Err(n.with_str(duplicate_outer_variable));
+        }
+    }
+    Ok(())
+}
+
 /// Resolves a `CALL (...)` clause's scope against `outer_scope` (the set of
 /// variables bound in the enclosing query immediately before this CALL),
 /// enforcing that every explicit reference is already in scope.
@@ -584,21 +601,11 @@ fn stage_exports(
             // to redeclaration of constant 2": `CALL (a) { ... RETURN a, b
             // NEXT ... }` is 42N07). The final stage's export is handled
             // below; here it is only the mid-chain re-projection.
-            if strict {
-                for n in &stage_export {
-                    if imported.contains(n) {
-                        return Err(n.with_str(duplicate_outer_variable));
-                    }
-                }
-            }
+            reject_export_collision(&stage_export, imported, strict)?;
             stage_exports(next, imported, &stage_export, strict, outer_scope)
         }
         None => {
-            if strict {
-                if let Some(n) = smallest_collision(&stage_export, outer_scope) {
-                    return Err(n.with_str(duplicate_outer_variable));
-                }
-            }
+            reject_export_collision(&stage_export, outer_scope, strict)?;
             Ok(stage_export)
         }
     }

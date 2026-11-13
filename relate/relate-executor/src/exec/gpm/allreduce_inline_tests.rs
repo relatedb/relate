@@ -51,6 +51,34 @@ fn route_query(start: &str, end: &str, max: u32, filter: &str) -> String {
     )
 }
 
+/// The rows of the `s`-to-`t` ROAD route query under `filter`, as the two
+/// pruning-comparison tests read them: the `{1,3}` quantified walk returning
+/// each route's length.
+fn rows(graph: &Graph, filter: &str) -> relate_core::Result<Vec<Vec<Value>>> {
+    try_exec_cypher(
+        graph,
+        &format!(
+            "MATCH REPEATABLE ELEMENTS p = (a:Geo {{id:'s'}}) \
+             (()-[rels:ROAD]-(x:Geo)){{1,3}} (b:Geo {{id:'t'}}) \
+             {filter} \
+             RETURN length(p) AS len",
+        ),
+    )
+    .map(|result| result.rows)
+}
+
+/// The zero-distance road is the only way out of `s`: `s -> m -> t` with a
+/// `0.0` first leg and a `100.0` second.
+fn zero_leg_graph() -> Graph {
+    let b = Builder::new();
+    let s = b.node("s", &["Geo"]);
+    let m = b.node("m", &["Geo"]);
+    let t = b.node("t", &["Geo"]);
+    b.rel(s, m, "ROAD", &[("distance_km", Value::Float(0.0))]);
+    b.rel(m, t, "ROAD", &[("distance_km", Value::Float(100.0))]);
+    b.done()
+}
+
 /// An acyclic EV-shaped road graph: a one-way line Paris → Lyon → Orange →
 /// Marseille with a Valence leg, and a charge self-loop at Valence.
 fn ev_line_graph() -> Graph {
@@ -290,35 +318,17 @@ fn null_distances_answer_exactly() {
 #[test]
 fn non_finite_accumulator_matches_pruning_disabled() {
     let predicate = "allReduce(acc = 0.0, r IN rels | acc + 100 / r.distance_km, acc < 500)";
-    let error = |graph: &Graph, filter: &str| {
-        try_exec_cypher(
-            graph,
-            &format!(
-                "MATCH REPEATABLE ELEMENTS p = (a:Geo {{id:'s'}}) \
-                 (()-[rels:ROAD]-(x:Geo)){{1,3}} (b:Geo {{id:'t'}}) \
-                 {filter} \
-                 RETURN length(p) AS len",
-            ),
-        )
-        .map(|result| result.rows)
-    };
 
     // The zero-distance road is the only way out of s: `100 / 0.0` is
     // Infinity, so the predicate is false on every route and no row
     // survives — the same answer with and without pruning.
-    let b = Builder::new();
-    let s = b.node("s", &["Geo"]);
-    let m = b.node("m", &["Geo"]);
-    let t = b.node("t", &["Geo"]);
-    b.rel(s, m, "ROAD", &[("distance_km", Value::Float(0.0))]);
-    b.rel(m, t, "ROAD", &[("distance_km", Value::Float(100.0))]);
-    let through = b.done();
-    let pruned = error(&through, &format!("WHERE {predicate}")).unwrap();
+    let through = zero_leg_graph();
+    let pruned = rows(&through, &format!("WHERE {predicate}")).unwrap();
     assert!(pruned.is_empty());
     assert_eq!(
         pruned,
         with_allreduce_pruning_disabled(|| {
-            error(&through, &format!("WHERE {predicate}")).unwrap()
+            rows(&through, &format!("WHERE {predicate}")).unwrap()
         })
     );
 
@@ -333,12 +343,12 @@ fn non_finite_accumulator_matches_pruning_disabled() {
     b.rel(s, m, "ROAD", &[("distance_km", Value::Float(100.0))]);
     b.rel(m, t, "ROAD", &[("distance_km", Value::Float(100.0))]);
     let dead_end = b.done();
-    let expected = error(&dead_end, &format!("WHERE {predicate}")).unwrap();
+    let expected = rows(&dead_end, &format!("WHERE {predicate}")).unwrap();
     assert_eq!(expected, vec![vec![Value::Int(2)]]);
     assert_eq!(
         expected,
         with_allreduce_pruning_disabled(|| {
-            error(&dead_end, &format!("WHERE {predicate}")).unwrap()
+            rows(&dead_end, &format!("WHERE {predicate}")).unwrap()
         })
     );
 }
@@ -350,35 +360,17 @@ fn non_finite_accumulator_matches_pruning_disabled() {
 fn raising_updates_surface_identically() {
     let predicate =
         "allReduce(acc = 0, r IN rels | acc + 100 / toInteger(r.distance_km), acc < 500)";
-    let error = |graph: &Graph, filter: &str| {
-        try_exec_cypher(
-            graph,
-            &format!(
-                "MATCH REPEATABLE ELEMENTS p = (a:Geo {{id:'s'}}) \
-                 (()-[rels:ROAD]-(x:Geo)){{1,3}} (b:Geo {{id:'t'}}) \
-                 {filter} \
-                 RETURN length(p) AS len",
-            ),
-        )
-        .map(|result| result.rows)
-    };
 
     // The zero-distance road is the only way out of s: every surviving
     // route's evaluation raises, pruned or not.
-    let b = Builder::new();
-    let s = b.node("s", &["Geo"]);
-    let m = b.node("m", &["Geo"]);
-    let t = b.node("t", &["Geo"]);
-    b.rel(s, m, "ROAD", &[("distance_km", Value::Float(0.0))]);
-    b.rel(m, t, "ROAD", &[("distance_km", Value::Float(100.0))]);
-    let through = b.done();
-    let pruned_err = error(&through, &format!("WHERE {predicate}")).unwrap_err();
+    let through = zero_leg_graph();
+    let pruned_err = rows(&through, &format!("WHERE {predicate}")).unwrap_err();
     assert!(pruned_err.to_string().contains("/ by zero"), "{pruned_err}");
 
     assert_eq!(
         pruned_err.to_string(),
         with_allreduce_pruning_disabled(|| {
-            error(&through, &format!("WHERE {predicate}")).unwrap_err()
+            rows(&through, &format!("WHERE {predicate}")).unwrap_err()
         })
         .to_string()
     );

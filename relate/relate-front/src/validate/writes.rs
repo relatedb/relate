@@ -30,6 +30,29 @@ pub(crate) fn declare_new_name(
     Ok(())
 }
 
+/// Whether `var` re-declares an already-bound name the enclosing scope does
+/// not admit shadowing — the CREATE/MERGE pattern binder's one redeclaration
+/// predicate.
+fn is_redeclared(
+    var: &SmallName,
+    bound_vars: &IdentHashSet<SmallName>,
+    shadowable: &IdentHashSet<SmallName>,
+) -> bool {
+    bound_vars.contains(var) && !shadowable.contains(var)
+}
+
+/// 42N59 for a relationship variable that [`is_redeclared`].
+fn reject_redeclared(
+    var: &SmallName,
+    bound_vars: &IdentHashSet<SmallName>,
+    shadowable: &IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    if is_redeclared(var, bound_vars, shadowable) {
+        return Err(var.with_str(EngineError::duplicate_variable));
+    }
+    Ok(())
+}
+
 /// True if this relationship type spec is anything other than exactly one
 /// plain type name -- used by the CREATE/MERGE "exactly one relationship
 /// type" validation, which now must also reject GQL label-expression
@@ -100,9 +123,7 @@ pub(crate) fn validate_create_bindings(
                     // An enclosing name stays shadowable, so a FOREACH body may
                     // re-declare it.
                     if let Some(var) = &rp.variable {
-                        if bound_vars.contains(var) && !shadowable.contains(var) {
-                            return Err(var.with_str(EngineError::duplicate_variable));
-                        }
+                        reject_redeclared(var, bound_vars, shadowable)?;
                     }
                     // CREATE relationships must have exactly one type
                     if !is_single_type(&rp.type_expr) {
@@ -375,24 +396,19 @@ pub(crate) fn validate_merge_bindings(
                     // An enclosing-scope name is shadowable in a FOREACH body:
                     // the MERGE declares a fresh binding for it (empty set at
                     // top level, so this is a no-op there).
-                    if bound_vars.contains(var) && !shadowable.contains(var) {
-                        // For MERGE, a bound node used as endpoint for relationships is ok
-                        // But a bare MERGE (n) or MERGE (n:Label) where n is already bound is an error
-                        if !has_rels {
-                            return Err(var.with_str(EngineError::duplicate_variable));
-                        }
-                        // Even with rels, if it introduces new labels, that's an error
-                        if np.label_expr.is_some() || !np.properties.is_empty() {
-                            return Err(var.with_str(EngineError::duplicate_variable));
-                        }
+                    // For MERGE, a bound node used as endpoint for relationships is ok
+                    // But a bare MERGE (n) or MERGE (n:Label) where n is already bound is an error,
+                    // and even with rels, introducing new labels/properties is an error
+                    let introduces_shape = np.label_expr.is_some() || !np.properties.is_empty();
+                    if is_redeclared(var, bound_vars, shadowable) && (!has_rels || introduces_shape)
+                    {
+                        return Err(var.with_str(EngineError::duplicate_variable));
                     }
                 }
             }
             PatternElement::Relationship(rp) => {
                 if let Some(var) = &rp.variable {
-                    if bound_vars.contains(var) && !shadowable.contains(var) {
-                        return Err(var.with_str(EngineError::duplicate_variable));
-                    }
+                    reject_redeclared(var, bound_vars, shadowable)?;
                 }
                 // Check for variable-length relationships in MERGE
                 if rp.is_variable_length() {

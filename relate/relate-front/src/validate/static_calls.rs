@@ -24,10 +24,11 @@ use relate_parser::{
 use crate::ast::tree::{walk_clause_list_tree, SubqueryDescent};
 
 use super::static_arithmetic::expr_is_bare_var;
-use super::static_types::{
-    is_statically_non_boolean, non_numeric_leaf_class, require_integer_argument,
-    require_static_type, static_literal_type, static_value, unparen, StaticLitType,
+use super::static_literal::{
+    non_numeric_leaf_class, require_integer_argument, require_static_type, static_literal_type,
+    static_value, unparen, StaticLitType,
 };
+use super::static_types::is_statically_non_boolean;
 
 /// Apply this module's static argument checks to one statement node's
 /// clauses (the module contract above).

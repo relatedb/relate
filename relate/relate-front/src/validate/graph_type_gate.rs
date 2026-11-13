@@ -53,7 +53,7 @@ pub(crate) fn statement_graph_type_gates(stmt: &Statement) -> Result<GraphTypeGa
 /// The graph-type bodies a clause carries: `CREATE GRAPH TYPE`'s own body
 /// and `ALTER CURRENT GRAPH TYPE`'s inline body (the `Named` target has
 /// no body of its own). Every other clause carries none.
-fn clause_graph_type_bodies(clause: &Clause) -> Vec<&GraphTypeBody> {
+pub(super) fn clause_graph_type_bodies(clause: &Clause) -> Vec<&GraphTypeBody> {
     match clause {
         Clause::CreateGraphType(c) => vec![&c.body],
         Clause::AlterCurrentGraphType(c) => match &c.target {
