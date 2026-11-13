@@ -8,7 +8,7 @@
 //! neighbor-walk counter: an eager build walks every pattern hop, a
 //! capped build stops at the hop whose row filled the cap.
 
-use super::test_support::{exec_cypher, hub_out, hub_ts_out};
+use super::test_support::{column, exec_cypher, hub_out, hub_ts_out, int_cell};
 use super::*;
 use crate::eval::take_candidate_passes;
 
@@ -127,10 +127,9 @@ fn where_gate_reads_each_drive_row() {
     // and the second drive row's walk never starts.
     assert_eq!(walks, 3, "walks={walks}");
     assert_eq!(
-        limited
-            .rows
-            .iter()
-            .map(|row| (row[0].as_int().unwrap(), row[1].as_int().unwrap()))
+        column(&limited, "xk", int_cell)
+            .into_iter()
+            .zip(column(&limited, "k", int_cell))
             .collect::<Vec<_>>(),
         vec![(68, 79), (68, 78), (68, 77)]
     );
