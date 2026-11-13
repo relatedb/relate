@@ -54,7 +54,6 @@ for n in qids:
     r = run(".timer on\n" + q, f"q{n}")
     res[f"q{n}"] = r
     print(f"q{n}", {k: v for k, v in r.items() if k not in ("series",)}, flush=True)
-    run("EXPLAIN " + q, f"q{n}-explain", 60)
     if r["wall_s"] < 60 and not r["timeout"]:
         pr = run("PROFILE " + q, f"q{n}-profile", 120)
         res[f"q{n}"]["profile_wall_s"] = pr["wall_s"]

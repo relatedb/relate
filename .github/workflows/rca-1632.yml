@@ -45,7 +45,19 @@ jobs:
           if [ "${{ steps.cache.outputs.cache-hit }}" != true ]; then ./run.sh fetch; fi
           ./run.sh env --relate-src "$RELATE_SRC" --relate-rev 6eb21b93 || true
           ./run.sh load --relate-src "$RELATE_SRC" --relate-rev 6eb21b93 2>&1 | grep -v -i "token" | tail -5
+      - name: Explain all
+        run: |
+          B=relate-benchmarks-private
+          CLI=$(realpath $(ls $B/.cache/engines/*/relate | head -1))
+          STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
+          mkdir -p rca-out; cp "$STORE" "$STORE.exp.rl"
+          for n in $(seq 16 34); do echo "RETURN 'q$n' AS marker;"; echo "EXPLAIN $(grep -v '^//' $B/benchmarks/pokec/queries/q$n.cypher | tr '\n' ' ');"; done > exp.cypher
+          RELATE_MAX_ROWS=0 "$CLI" query -d "$STORE.exp.rl" < exp.cypher > rca-out/explain-all.txt 2>&1 || true
+          rm -f "$STORE.exp.rl"; wc -l rca-out/explain-all.txt
       - name: Measure
+        env:
+          RCA_QIDS: '19,20,21,22,28,30,31'
+          RCA_TIMEOUT: '330'
         run: |
           B=relate-benchmarks-private
           CLI=$(ls $B/.cache/engines/*/relate | head -1)
@@ -73,10 +85,10 @@ jobs:
           CLI=$(realpath $(ls $B/.cache/engines/*/relate | head -1))
           STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
           PERF=$(ls /usr/lib/linux-tools*/perf 2>/dev/null | head -1); [ -n "$PERF" ] || PERF=$(command -v perf); echo "perf=$PERF"
-          for n in 19 20 21 22 28 30 31; do
+          for n in 19 21 28 30 31; do
             rm -rf "$STORE.perf.rl"; cp "$STORE" "$STORE.perf.rl"
             (printf '%s\n' "$(cat $B/benchmarks/pokec/queries/q$n.cypher)") > q.cypher
-            RELATE_MAX_ROWS=0 sudo -E $PERF record -F 299 -g -o rca-out/perf-q$n.data -- timeout -s KILL 50 "$CLI" query --mode jsonl -d "$STORE.perf.rl" < q.cypher >/dev/null 2>rca-out/perf-q$n.err || true
+            RELATE_MAX_ROWS=0 sudo -E $PERF record -F 299 -g -o rca-out/perf-q$n.data -- timeout -s KILL 200 "$CLI" query --mode jsonl -d "$STORE.perf.rl" < q.cypher >/dev/null 2>rca-out/perf-q$n.err || true
             sudo $PERF report -i rca-out/perf-q$n.data --stdio --no-children -g none --percent-limit 1.2 2>/dev/null | grep -v '^#' | grep -v '^$' | head -30 > rca-out/perf-q$n.self.txt || true
             sudo $PERF report -i rca-out/perf-q$n.data --stdio --children -g none --percent-limit 4 2>/dev/null | grep -v '^#' | grep -v '^$' | head -40 > rca-out/perf-q$n.children.txt || true
             sudo rm -f rca-out/perf-q$n.data
@@ -99,5 +111,4 @@ jobs:
           name: rca-1632
           path: |
             rca-out/**
-            !rca-out/**/*.out
           retention-days: 7
