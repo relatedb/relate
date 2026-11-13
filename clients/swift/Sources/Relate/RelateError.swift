@@ -127,12 +127,21 @@ public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConver
     /// typed record accessor, `single()`, `scalar()` or a `Decodable`
     /// decode.
     case unexpectedResult(ResultMismatch)
+    /// The API was used outside its contract: a transaction scope used after
+    /// its body returned, a write statement in a read.
+    case misuse(String)
 
-    public var message: String {
+    public var message: String { text.message }
+
+    /// Each case's label and message: the one place the cases are
+    /// enumerated for text.
+    private var text: (label: String, message: String) {
         switch self {
-        case .engine(let e): e.message
-        case .invalidParameter(let m), .decoding(let m): m
-        case .unexpectedResult(let mismatch): mismatch.message
+        case .engine(let e): ("Relate: [\(e.code)]", e.message)
+        case .invalidParameter(let m): ("Relate invalid parameter:", m)
+        case .decoding(let m): ("Relate decoding error:", m)
+        case .unexpectedResult(let mismatch): ("Relate unexpected result:", mismatch.message)
+        case .misuse(let m): ("Relate misuse:", m)
         }
     }
 
@@ -158,17 +167,10 @@ public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConver
     }
 
     /// Whether re-running the same work may succeed: the engine's own
-    /// verdict, `false` for the two client-side cases.
+    /// verdict, `false` for every client-side case.
     public var isRetryable: Bool { engineError?.retryable ?? false }
 
-    public var description: String {
-        switch self {
-        case .engine(let e): "Relate: [\(e.code)] \(e.message)"
-        case .invalidParameter(let m): "Relate invalid parameter: \(m)"
-        case .decoding(let m): "Relate decoding error: \(m)"
-        case .unexpectedResult(let mismatch): "Relate unexpected result: \(mismatch.message)"
-        }
-    }
+    public var description: String { "\(text.label) \(text.message)" }
 
     /// What `error.localizedDescription` shows (otherwise Foundation prints
     /// "The operation couldn't be completed").

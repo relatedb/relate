@@ -94,6 +94,17 @@ public enum QueryType: String, Sendable, Hashable {
     case schema = "s"
 }
 
+extension QueryType: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .read: "read"
+        case .write: "write"
+        case .readWrite: "read-write"
+        case .schema: "schema"
+        }
+    }
+}
+
 /// The statement's resolved namespace (ADR-0117): one of the three fixed
 /// databases. Any other value is an ABI contract violation at decode.
 public enum DatabaseNamespace: String, Sendable, Hashable {

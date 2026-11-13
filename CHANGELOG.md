@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Swift: `CypherValueEncoder` and `CypherValueDecoder`. An `Encodable`
   model binds as a map; rows, nodes and relationships decode into
   `Decodable` types (`result.decode(Book.self)`).
+- Swift: `Connection.transaction(retries:_:)` re-runs its body on a
+  retryable conflict; `Connection.read(_:)` runs a consistent snapshot that
+  is always rolled back; `runInTransaction(_:retries:)` runs a list of
+  statements all-or-none; `Connection.isPoisoned()` probes for a poisoned
+  handle.
 
 ### Changed
 
@@ -78,9 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Swift: `QueryResult.records` returns `[Record]` instead of
   `[[String: CypherValue]]`. Reading a record by column name
   (`record["name"]`) is unchanged; `record.dictionary` is the old form.
-- Swift: `RelateError` has a new case, `unexpectedResult`; an exhaustive
-  `switch` over it needs the case. `QueryResult.scalar()` now throws it,
-  rather than `decoding`, for a result that is not one row and one column.
+- Swift: `RelateError` has two new cases, `unexpectedResult` and `misuse`;
+  an exhaustive `switch` over it needs them. `QueryResult.scalar()` now
+  throws `unexpectedResult`, rather than `decoding`, for a result that is
+  not one row and one column.
+- Swift: a `transaction(_:)` body receives a `Transaction` instead of the
+  `Connection`. A body that only runs statements on its parameter compiles
+  unchanged; one that called `begin`, `commit`, `rollback` or `setNamespace`
+  on it does not.
 
 ### Deprecated
 

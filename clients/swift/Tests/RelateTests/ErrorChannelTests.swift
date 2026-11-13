@@ -86,4 +86,37 @@ import Testing
         #expect(RelateError.invalidParameter("x").engineError == nil)
         #expect(!RelateError.decoding("x").isRetryable)
     }
+
+    // MARK: Poison
+
+    @Test func aHealthyConnectionIsNotPoisoned() throws {
+        let conn = try Database.inMemory().connect()
+        #expect(!conn.isPoisoned())
+        // A boundary-stage refusal that is not poison: the params builder
+        // rejects an impossible date. The connection stays usable.
+        let error = try #require(throws: RelateError.self) {
+            try conn.query("RETURN $d", ["d": .date(.init(year: 2026, month: 2, day: 31))])
+        }
+        #expect(error.engineError?.stage == .internal)
+        #expect(!conn.isPoisoned())
+        #expect(try conn.query("RETURN 1").scalar() == 1)
+        // Inside an open transaction the probe is harmless.
+        try conn.transaction { tx in
+            try tx.query("CREATE (:Probe)")
+            #expect(!conn.isPoisoned())
+        }
+        #expect(try conn.query("MATCH (n:Probe) RETURN count(n)").scalar() == 1)
+    }
+
+    @Test func theProbeReadsPoisonOffTheBoundaryStage() throws {
+        func engine(_ stage: EngineError.Stage) -> RelateError {
+            .engine(EngineError(
+                code: "Neo.DatabaseError.General.UnknownError", gqlStatus: "50N42", stage: stage,
+                retryable: false, message: "handle poisoned by a previous panic; free it and open a new one"))
+        }
+        #expect(Connection.probeIndicatesPoison(engine(.internal)))
+        #expect(!Connection.probeIndicatesPoison(engine(.runtime)))
+        #expect(!Connection.probeIndicatesPoison(engine(.compile)))
+        #expect(!Connection.probeIndicatesPoison(.decoding("x")))
+    }
 }

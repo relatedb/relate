@@ -36,7 +36,8 @@ r.plan           // PlanDocument? (relate.plan/v1)
 r.bookmark       // String?, the auto-commit write's bookmark (ADR-0502)
 r.elapsedMs      // engine time; r.parseMs / r.planMs / r.executeMs — its
                 // phase split (ADR-0491), sum never exceeding the total
-try conn.transaction { tx in try tx.query("CREATE (:A)") }  // rollback on throw (body or commit)
+try conn.transaction(retries: 2) { tx in try tx.query("CREATE (:A)") }  // rollback on throw; retries re-run on a retryable conflict
+let n = try conn.read { tx in try tx.query("MATCH (n) RETURN count(n)").scalar(as: Int.self) }  // one snapshot; always rolled back
 try db.checkpoint()
 ```
 
@@ -79,6 +80,12 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   as components (not ISO strings — bridge with `foundationDate`, or render
   in the app), points and vectors as their structs; non-finite floats stay `.float`. A map that looks like a
   node stays a `.map`.
+- **A transaction body gets a `Transaction`** — it runs statements only;
+  it is invalid once the body returns. A write inside `read` throws
+  `RelateError.misuse` and is not kept. A body passed with `retries` may run
+  more than once.
+- **Poison** — after an error with stage `internal`, `conn.isPoisoned()`
+  tells whether the connection must be replaced (`db.connect()` again).
 - **`run` binds, `query` does not** — an interpolated literal passed to
   `run(_:)` is a `Statement` and its values become parameters; the same
   literal passed to `query(_:_:)` is a plain `String` with the values in the

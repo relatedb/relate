@@ -18,8 +18,8 @@ travels with the call, and bookmarks.
 
 ```swift
 // `throws(RelateError)` is a typed throw: a `catch` block's `error` is a
-// `RelateError` with no cast. `transaction(_:)` runs the caller's closure, so
-// it stays untyped.
+// `RelateError` with no cast. `transaction(_:)` and `read(_:)` run the
+// caller's closure, so they stay untyped.
 public final class Database: @unchecked Sendable {
     public init(path: String) throws(RelateError)            // ":memory:", a single-file `.rl` store, or a store directory (created if missing)
     public init(readOnlyPath path: String) throws(RelateError) // existing store, loaded once; writes/checkpoint refused (ADR-0136)
@@ -41,7 +41,18 @@ public final class Connection {                  // NOT Sendable
     public func begin() throws(RelateError)
     @discardableResult public func commit() throws(RelateError) -> String?  // the transaction's bookmark; nil when it committed nothing
     public func rollback() throws(RelateError)
-    public func transaction<T>(_ body: (Connection) throws -> T) throws -> T
+    public func transaction<T>(retries: Int = 0, _ body: (Transaction) throws -> T) throws -> T
+    public func read<T>(_ body: (Transaction) throws -> T) throws -> T               // always rolled back
+    @discardableResult public func runInTransaction(_ statements: [Statement], retries: Int = 0) throws(RelateError) -> [QueryResult]
+    public func isPoisoned() -> Bool                                                 // probes with RETURN 1
+}
+
+public final class Transaction {                 // NOT Sendable; valid only inside the body it was passed to
+    public var isReadOnly: Bool { get }
+    public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:]) throws(RelateError) -> QueryResult
+    public func query(_ cypher: String, _ parameters: [String: any CypherValueConvertible]) throws(RelateError) -> QueryResult
+    public func run(_ statement: Statement) throws(RelateError) -> QueryResult
+    public func run(_ statements: [Statement]) throws(RelateError) -> [QueryResult]
 }
 
 public struct QueryResult: Sendable {
@@ -85,6 +96,7 @@ public enum RelateError: LocalizedError, Sendable, Equatable {
     case invalidParameter(String)  // refused before reaching the engine
     case decoding(String)          // the C ABI broke its documented contract
     case unexpectedResult(ResultMismatch) // a result was not the shape or type asked for (Records, below)
+    case misuse(String)            // used outside its contract: an ended transaction scope, a write in a read
 }
 
 public struct ResultMismatch: Sendable, Hashable {
@@ -473,12 +485,34 @@ handle and open a new one.
   thread.
 - A panic inside the engine poisons the handle (C ABI contract): later calls
   throw `.engine` with stage `internal`; release it and open a new one.
-- `transaction(_:)` commits when the body returns and rolls back, then
-  rethrows the body's error, when it throws; a throwing `commit()` inside it
-  likewise rolls back and rethrows the commit's error. `commit()` returns the
-  transaction's bookmark, or `nil` when the transaction committed nothing; a
-  `retryable` conflict can surface on a statement's error result
-  (auto-commit) or on `commit()` — a retry loop must check both.
+- `transaction(retries:_:)` commits when the body returns and rolls back,
+  then rethrows the body's error, when it throws; a throwing `commit()`
+  inside it likewise rolls back and rethrows the commit's error. The body
+  receives a `Transaction`: it can run statements, and cannot begin, commit,
+  roll back or change the namespace. A `Transaction` used after its body
+  returned throws `.misuse`.
+- `retries` is a count of additional attempts. A failure the engine marks
+  `retryable` — on a statement or on the commit — rolls back and runs the
+  body again; any other failure, and any error the body itself throws, is
+  rethrown at once. The body must be safe to run more than once: only what it
+  did inside the transaction is undone. Without `retries`, a retry loop
+  written by hand must check both the statement errors and `commit()`.
+  `commit()` returns the transaction's bookmark, or `nil` when the
+  transaction committed nothing.
+- `read(_:)` runs the body in a transaction that is always rolled back.
+  Every statement in it sees one snapshot, whatever other connections commit
+  meanwhile, and nothing the body does is kept — schema statements included.
+  A statement whose query type is not `read` is refused with `.misuse` after
+  it ran in the transaction's own overlay.
+- `runInTransaction(_:retries:)` runs a fixed list of statements in one
+  transaction, all or none, and is `throws(RelateError)`.
+- `isPoisoned()` answers whether an engine panic poisoned the connection.
+  The error channel has no typed poison signal, so it probes: it runs
+  `RETURN 1`, and reports `true` exactly when that fails at stage
+  `internal`. Call it after an error whose stage is `internal`; not every
+  such error is poison (the params builder refusing an impossible date is
+  one). On `true`, release the connection and `connect()` again; do not
+  retry the failed work.
 
 ## Building and linking
 

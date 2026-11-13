@@ -66,3 +66,11 @@ func resultMismatch(_ body: () throws -> Void) throws -> ResultMismatch {
         if case .unexpectedResult(let mismatch) = $0 { mismatch } else { nil }
     }
 }
+
+/// The message of the `misuse` that `body` must throw: any other outcome
+/// fails the test.
+func misuseMessage(_ body: () throws -> Void) throws -> String {
+    try thrownPayload(expected: "misuse", body) {
+        if case .misuse(let message) = $0 { message } else { nil }
+    }
+}
