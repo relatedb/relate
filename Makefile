@@ -645,6 +645,13 @@ test-makefile-targets:
 test-stamp-swift-package:
 	sh $(CURDIR)/scripts/tests/test_stamp_swift_package.sh
 
+## test-build-xcframework: The Swift surface's build entry — its default
+##   build-and-assemble lane and the ADR-0572 split modes
+##   (scripts/tests/test_build_xcframework.sh, hermetic sandbox with
+##   stubbed toolchain and assembly tools)
+test-build-xcframework:
+	sh $(CURDIR)/scripts/tests/test_build_xcframework.sh
+
 ## test-scripts: Every scripts/tests suite through one owner — the CI
 ##   lanes invoke this aggregate, not each suite, so a new script guard
 ##   extends the prerequisite list below instead of a lane's command
@@ -654,7 +661,7 @@ test-stamp-swift-package:
 test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-stamp-swift-package \
-	test-rename-residuals test-makefile-targets test-premerge-check
+	test-build-xcframework test-rename-residuals test-makefile-targets test-premerge-check
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 

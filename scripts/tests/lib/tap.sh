@@ -80,6 +80,11 @@ assert_same() { # $1 = description, $2.. = values that must all be non-empty and
 
 tap_sandbox() { # $1 = mktemp tag; sets $sandbox, cleans up on EXIT and signals
 	sandbox=$(mktemp -d "${TMPDIR:-/tmp}/${1}.XXXXXX")
+	# Canonical spelling once, here: TMPDIR may end in a slash, which
+	# leaves a double slash in the mktemp result; cd+pwd collapses it so
+	# every consumer — including a script under test that resolves its
+	# own location the same way — sees the same string.
+	sandbox=$(cd "$sandbox" && pwd)
 	trap 'rm -rf "$sandbox"' EXIT
 	trap 'exit 1' HUP INT TERM
 }

@@ -261,3 +261,39 @@ Also recorded here: the action's post-job cleanup walks the cached
 their in-container `CARGO_HOME` under `target/` (root-owned registry,
 dangling `tests/target` symlinks → `ENOENT opendir` annotations, fixed by
 moving it to `/.cargo-docker` in `scripts/baseline-env.sh`).
+
+### Release workflow lanes
+
+The release workflow's compile lanes run through the same mechanisms.
+They are compile-dominated — measured on run 42703213258: the
+pre-split `version` job that built the XCFramework 18.5 min (the head
+gate every other release job waited on), CLI windows 15.9 min, wheels
+windows/darwin-intel 14.6 min each — and before this every leg
+cold-compiled the full dependency tree per release.
+
+- The `xcframework` matrix legs (one Apple target each), the
+  `swift-stamp` job (all five targets, for its rebase-rebuild retry
+  path), and the `cli`/`ffi` jobs use the `setup-rust-ci` preamble
+  with sccache on, **including the macOS and Windows legs**. This
+  deviates from the CI OS lanes' `sccache: "false"`: those lanes are
+  test-shaped and Linux-first, while the release poles are exactly the
+  macOS/Windows legs, and a rust-cache restore alone cannot survive a
+  fresh checkout's mtimes (ADR-0331's finding) — without sccache those
+  legs stay cold every release. The `version` job itself compiles
+  nothing since the ADR-0572 split (bump and push only, ubuntu).
+- The wheel legs pass maturin-action's own `sccache: true` instead of
+  the host preamble: the linux legs build inside manylinux containers a
+  host-side `RUSTC_WRAPPER` never reaches, and the action wires the GHA
+  backend through in both shapes.
+- The wasm package job stays uncached, mirroring the CI `wasm` lane; at
+  ~2 min it is not a pole.
+- First release after the change pays the cache fill; the wins land from
+  the second release onward (each release's `Cargo.lock` version bump
+  rotates the rust-cache lock-hash — the stale-generation restore plus
+  sccache is the expected warm shape, same as the shared-key families).
+
+Pool note: each `xcframework` leg's plain-key rust-cache entry carries
+one triple's dependency artifacts (small entries); the `swift-stamp`
+entry carries five triples only when its retry path actually rebuilt.
+If the 10 GB pool churns, split or trim the stamp entry first (same
+guidance as the shared-key families above).

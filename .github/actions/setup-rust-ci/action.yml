@@ -114,7 +114,7 @@ runs:
     # action installs the toolchain named by @rev, including any
     # components/targets; @stable would put them on a toolchain nothing uses
     # because cargo resolves rust-toolchain.toml instead.
-    - uses: dtolnay/rust-toolchain@1.88.0
+    - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
       with:
         components: ${{ inputs.toolchain-components }}
         targets: ${{ inputs.toolchain-targets }}
@@ -147,7 +147,7 @@ runs:
     # Cargo.lock hash, not once per job. Cold-key race: a lane saves the
     # shared key ONLY on a cold miss when cache-save-if-cold-only is set;
     # the first to finish wins, the rest no-op.
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       if: inputs.cache == 'true' && inputs.cache-shared-key != ''
       id: cache-shared
       with:
@@ -156,6 +156,6 @@ runs:
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
 
     # Plain variant: default content-hash key, default save behavior.
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       if: inputs.cache == 'true' && inputs.cache-shared-key == ''
       id: cache-plain

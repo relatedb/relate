@@ -127,8 +127,9 @@ jobs:
 
       # Shape is not provenance: a write-access collaborator could push
       # their own vX.Y.Z tag with their own release assets and dispatch
-      # from main. release.yml only ever tags the version-bump commit on
-      # main, so the tag's commit must be an ancestor of origin/main.
+      # from main. release.yml only ever tags release commits (the Swift
+      # stamp commit, ADR-0572) on main, so the tag's commit must be an
+      # ancestor of origin/main.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0

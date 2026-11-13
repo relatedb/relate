@@ -2,6 +2,9 @@
 
 Status: Proposed
 Claim: 71e4363e046303fb89ee1174f735c09a9b6509b1
+Later references: the §6 one-release-commit shape is split by ADR-0572 into
+a bump commit (the release cut) and a Swift stamp commit (the tag target);
+the checksum contract itself is unchanged.
 
 ## Context
 
