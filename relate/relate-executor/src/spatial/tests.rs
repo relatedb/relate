@@ -573,3 +573,35 @@ fn a_null_coordinate_makes_the_point_null() {
         Value::Null
     );
 }
+
+/// A non-point argument is not a fault: live answers null for it, as it does
+/// for a null argument and for a pair whose coordinate-reference families
+/// disagree (live 2026.10.1: an integer, a string, a list, a bare map and a
+/// cartesian/geographic pair each return null).
+#[test]
+fn a_non_point_argument_yields_null_not_an_error() {
+    let cartesian = |x: f64, y: f64| {
+        point(&[
+            ("x", Value::Float(x)),
+            ("y", Value::Float(y)),
+            ("crs", Value::String("cartesian".into())),
+        ])
+        .unwrap()
+    };
+    let origin = cartesian(0.0, 0.0);
+    for other in [
+        Value::Int(5),
+        Value::String("nope".into()),
+        Value::List(vec![Value::Int(1), Value::Int(2)].into()),
+        geo(0.0, 0.0),
+    ] {
+        assert_eq!(
+            distance_of(origin.clone(), other.clone()),
+            Value::Null,
+            "{other:?}"
+        );
+        assert_eq!(distance_of(other, origin.clone()), Value::Null);
+    }
+    // The distance itself is untouched.
+    assert_eq!(distance_of(origin, cartesian(3.0, 4.0)), Value::Float(5.0));
+}

@@ -209,6 +209,7 @@ pub(super) const ARITY_EXACTLY_TWO: Arity = Arity {
         "duration.indays",
         "duration.inmonths",
         "duration.inseconds",
+        "point.distance",
     ],
 };
 /// isnan, elementId, db.nameFromElementId, and the `toString` family: both
@@ -574,7 +575,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         "point.distance",
         spatial::bi_distance,
         false,
-        ARITY_AT_LEAST_ONE,
+        ARITY_EXACTLY_TWO,
     ),
     row(
         "point.withinbbox",

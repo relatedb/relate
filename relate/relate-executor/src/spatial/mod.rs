@@ -540,12 +540,23 @@ pub(crate) fn point_distance(vals: &[Value]) -> Result<Value> {
     if has_null_argument(vals, 2) {
         return Ok(Value::Null);
     }
-    match (vals.first(), vals.get(1)) {
-        (Some(Value::Point(a)), Some(Value::Point(b))) => match distance_between(a, b)? {
+    // Matching the slice itself, so the count is part of the pattern: the
+    // registry owns it (`ARITY_EXACTLY_TWO`), and this arm is the refusal a
+    // future entry point meets for a wrong count, never a silent null.
+    match vals {
+        [Value::Point(a), Value::Point(b)] => match distance_between(a, b)? {
             Some(distance) => Ok(Value::Float(distance)),
             None => Ok(Value::Null),
         },
-        _ => Err(Error::ty("distance() requires two points")),
+        // Two arguments that are not both points: not a fault. Live answers
+        // null for it, exactly as it does for a null argument or a pair
+        // whose coordinate-reference families disagree (live 2026.10.1:
+        // `point.distance(point({x:0,y:0}), 5)`, `…, 'nope')`,
+        // `…, {x:1,y:1})` and a cartesian/geographic pair all return null).
+        [_, _] => Ok(Value::Null),
+        _ => Err(Error::invalid_number_of_arguments(
+            "point.distance() requires exactly two arguments",
+        )),
     }
 }
 
