@@ -3,10 +3,9 @@ use crate::convert::{
     cypher_value_to_py, date_to_py, duration_to_py, py_params_to_cypher, py_to_cypher_value,
     py_type_name, PY_VALUE_DEPTH_CAP,
 };
-use crate::result::stats_to_map;
 use indexmap::IndexMap;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use relate::Namespace;
 use relate_model::value::IsoDuration;
 use relate_model::CypherValue;
@@ -61,6 +60,24 @@ fn expect_map(v: CypherValue) -> IndexMap<String, CypherValue> {
     match v {
         CypherValue::Map(map) => map,
         other => panic!("expected Map, got {other:?}"),
+    }
+}
+
+/// See [`expect_list`].
+#[track_caller]
+fn expect_date(v: CypherValue) -> chrono::NaiveDate {
+    match v {
+        CypherValue::Date(d) => d,
+        _ => panic!("expected a Date value"),
+    }
+}
+
+/// See [`expect_list`].
+#[track_caller]
+fn expect_point(v: CypherValue) -> relate_model::value::PointValue {
+    match v {
+        CypherValue::Point(p) => p,
+        _ => panic!("expected a Point value"),
     }
 }
 
@@ -127,4 +144,5 @@ mod duration_tests;
 mod lifecycle_tests;
 mod namespace_tests;
 mod params_tests;
+mod result_tests;
 mod temporal_tests;

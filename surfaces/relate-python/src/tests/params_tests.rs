@@ -1,5 +1,5 @@
 //! Parameter conversion (Python -> Cypher): rich temporal/point params,
-//! cycles and depth caps, UUID/bytes/tuple params, ordered maps, DB-API errors.
+//! cycles and depth caps, UUID/bytes/tuple params, DB-API errors.
 
 use super::*;
 
@@ -21,13 +21,8 @@ fn test_date_param_roundtrips() {
         let dtmod = py.import("datetime").unwrap();
         let d = dtmod.call_method1("date", (2024, 3, 14)).unwrap();
         let cv = py_to_cypher_value(&d).unwrap();
-        match cv {
-            CypherValue::Date(nd) => {
-                let back = date_to_py(py, &nd).unwrap();
-                assert!(back.bind(py).eq(&d).unwrap());
-            }
-            other => panic!("expected Date, got {other:?}"),
-        }
+        let back = date_to_py(py, &expect_date(cv)).unwrap();
+        assert!(back.bind(py).eq(&d).unwrap());
     });
 }
 
@@ -41,20 +36,16 @@ fn test_point_param_roundtrips() {
                 x: -73.98,
                 y: 40.75,
                 z: None,
-                crs: "wgs-84".to_string(),
+                crs: relate_model::wire::crs_name(4326).to_string(),
             },
         )
         .unwrap();
         let bound = pt.bind(py).clone().into_any();
         let cv = py_to_cypher_value(&bound).unwrap();
-        match cv {
-            CypherValue::Point(p) => {
-                assert_eq!(p.srid, 4326);
-                assert_eq!(p.x, -73.98);
-                assert_eq!(p.y, 40.75);
-            }
-            other => panic!("expected Point, got {other:?}"),
-        }
+        let p = expect_point(cv);
+        assert_eq!(p.srid, 4326);
+        assert_eq!(p.x, -73.98);
+        assert_eq!(p.y, 40.75);
     });
 }
 
@@ -130,16 +121,6 @@ fn test_shared_substructure_is_not_a_cycle() {
         outer.append(shared.clone()).unwrap();
         let obj = outer.into_any();
         assert_eq!(expect_list(py_to_cypher_value(&obj).unwrap()).len(), 2);
-    });
-}
-
-#[test]
-fn test_geometry_is_structured_dict() {
-    with_py(|py| {
-        let mut db = new_database(":memory:");
-        let bound = query_first_py(py, &mut db, "RETURN point({x: 1.0, y: 2.0}) AS p", "p");
-        // A point becomes a Point instance, not a dict.
-        assert!(bound.is_instance_of::<Point>());
     });
 }
 
@@ -232,15 +213,17 @@ fn test_tuple_param_becomes_list() {
 fn test_cyclic_tuple_param_raises() {
     with_py(|py| {
         // t = ([],); t[0].append(t)
-        let obj = py
-            .eval(c"__import__('builtins').tuple([[]])", None, None)
-            .unwrap();
+        let obj = PyTuple::new(py, [PyList::empty(py)]).unwrap().into_any();
         obj.get_item(0)
             .unwrap()
             .call_method1("append", (&obj,))
             .unwrap();
         let err = py_to_cypher_value(&obj).unwrap_err();
         assert!(err.is_instance_of::<PyValueError>(py));
+        assert!(
+            err.to_string().to_lowercase().contains("cycle"),
+            "expected cycle in message, got: {err}"
+        );
     });
 }
 
@@ -256,43 +239,6 @@ fn test_srid_dict_stays_a_map() {
             let map = expect_map(py_to_cypher_value(&obj).unwrap());
             assert!(map.contains_key("srid"), "map lost its srid key");
         }
-    });
-}
-
-#[test]
-fn test_returned_map_preserves_engine_key_order() {
-    with_py(|py| {
-        // Keys deliberately not alphabetical: the Python dict must keep
-        // the engine IndexMap's insertion order (ADR-0219).
-        let mut map = IndexMap::new();
-        map.insert("zeta".to_string(), CypherValue::Int(1));
-        map.insert("alpha".to_string(), CypherValue::Int(2));
-        map.insert(
-            "mid".to_string(),
-            CypherValue::Map(IndexMap::from_iter([
-                ("y".to_string(), CypherValue::Int(3)),
-                ("b".to_string(), CypherValue::Int(4)),
-            ])),
-        );
-        let obj = cypher_value_to_py(py, &CypherValue::Map(map), Namespace::Neo4j).unwrap();
-        let dict = obj.into_bound(py);
-        let keys: Vec<String> = dict
-            .downcast::<PyDict>()
-            .unwrap()
-            .keys()
-            .iter()
-            .map(|k| k.extract().unwrap())
-            .collect();
-        assert_eq!(keys, vec!["zeta", "alpha", "mid"]);
-        let nested = dict.get_item("mid").unwrap();
-        let nested_keys: Vec<String> = nested
-            .downcast::<PyDict>()
-            .unwrap()
-            .keys()
-            .iter()
-            .map(|k| k.extract().unwrap())
-            .collect();
-        assert_eq!(nested_keys, vec!["y", "b"]);
     });
 }
 
