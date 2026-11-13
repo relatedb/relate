@@ -164,13 +164,15 @@ impl ExecGraph<'_> {
             .collect();
         let mut s = self.scratch_mut();
         let (labels_added, labels_removed) = self.label_deltas(&s, &fresh, LabelChange::Gain);
-        let before_labels = created_label_snapshot(&s, id);
+        let created = s.batch.created_nodes.contains(&id);
+        let label_bytes = node_label_bytes(id);
+        let before_labels = created_snapshot(&s, created, &label_bytes);
         let mut added = Vec::new();
         if let Some(n) = Self::cow_node(&mut s, self.base, id) {
             std::sync::Arc::make_mut(&mut n.labels).extend(fresh.iter().cloned());
             added = fresh;
         }
-        shift_created_labels(&mut s, id, before_labels);
+        shift_created(&mut s, before_labels, &label_bytes);
         s.net_label_stats(labels_added, labels_removed);
         if !added.is_empty() {
             s.bump_live_labels(&added, 1);
@@ -189,14 +191,16 @@ impl ExecGraph<'_> {
         // empty, exactly what the pre-cow read answered for it.
         let requested: HashSet<&str> = labels.iter().map(String::as_str).collect();
         let mut s = self.scratch_mut();
-        let before_labels = created_label_snapshot(&s, id);
+        let created = s.batch.created_nodes.contains(&id);
+        let label_bytes = node_label_bytes(id);
+        let before_labels = created_snapshot(&s, created, &label_bytes);
         let mut actually: Vec<String> = Vec::new();
         if let Some(n) = Self::cow_node(&mut s, self.base, id) {
             actually = std::sync::Arc::make_mut(&mut n.labels)
                 .extract_if(.., |l| requested.contains(l.as_str()))
                 .collect();
         }
-        shift_created_labels(&mut s, id, before_labels);
+        shift_created(&mut s, before_labels, &label_bytes);
         let (labels_added, labels_removed) = self.label_deltas(&s, &actually, LabelChange::Loss);
         s.net_label_stats(labels_added, labels_removed);
         if !actually.is_empty() {
@@ -231,7 +235,8 @@ impl ExecGraph<'_> {
     pub fn set_property_node(&self, id: NodeId, key: &str, value: Value) {
         let mut s = self.scratch_mut();
         let created = s.batch.created_nodes.contains(&id);
-        let before_props = created_property_snapshot(&s, id, created);
+        let prop_bytes = node_property_bytes(id);
+        let before_props = created_snapshot(&s, created, &prop_bytes);
         let outcome = Self::cow_node(&mut s, self.base, id).map(|n| {
             set_prop_core(
                 std::sync::Arc::make_mut(&mut n.properties),
@@ -240,8 +245,8 @@ impl ExecGraph<'_> {
                 &value,
             )
         });
-        shift_created_properties(&mut s, id, before_props);
-        let ((set, removed), op) = outcome.unwrap_or(((0, 0), None));
+        shift_created(&mut s, before_props, &prop_bytes);
+        let PropWrite { set, removed, op } = outcome.unwrap_or_default();
         s.statement.stats.properties_set += set;
         s.statement.stats.properties_removed += removed;
         if let Some(op) = op {
@@ -255,7 +260,8 @@ impl ExecGraph<'_> {
     pub fn set_property_rel(&self, id: RelId, key: &str, value: Value) {
         let mut s = self.scratch_mut();
         let created = s.batch.created_rels.contains(&id);
-        let before_props = created_rel_property_snapshot(&s, id, created);
+        let prop_bytes = rel_property_bytes(id);
+        let before_props = created_snapshot(&s, created, &prop_bytes);
         let outcome = Self::cow_rel(&mut s, self.base, id).map(|r| {
             set_prop_core(
                 std::sync::Arc::make_mut(&mut r.properties),
@@ -264,8 +270,8 @@ impl ExecGraph<'_> {
                 &value,
             )
         });
-        shift_created_rel_properties(&mut s, id, before_props);
-        let ((set, removed), op) = outcome.unwrap_or(((0, 0), None));
+        shift_created(&mut s, before_props, &prop_bytes);
+        let PropWrite { set, removed, op } = outcome.unwrap_or_default();
         s.statement.stats.properties_set += set;
         s.statement.stats.properties_removed += removed;
         if let Some(op) = op {
@@ -370,78 +376,63 @@ impl ExecGraph<'_> {
     }
 }
 
-fn created_label_snapshot(s: &WriteScratch, id: NodeId) -> Option<u64> {
-    if !relate_core::tokens::workspace_accounting() || !s.batch.created_nodes.contains(&id) {
-        return None;
+/// The workspace bytes the created node `id`'s labels hold now, `None`
+/// when the scratch has no copy of it.
+fn node_label_bytes(id: NodeId) -> impl Fn(&WriteScratch) -> Option<u64> {
+    move |s| {
+        s.batch
+            .nodes
+            .get(&id)
+            .map(|node| crate::workspace::created_label_bytes(&node.labels))
     }
-    s.batch
-        .nodes
-        .get(&id)
-        .map(|node| crate::workspace::created_label_bytes(&node.labels))
 }
 
-fn shift_created_labels(s: &mut WriteScratch, id: NodeId, before: Option<u64>) {
-    let Some(before) = before else {
-        return;
-    };
-    let Some(after) = s
-        .batch
-        .nodes
-        .get(&id)
-        .map(|node| crate::workspace::created_label_bytes(&node.labels))
-    else {
-        return;
-    };
-    s.shift_workspace(before, after);
+/// The workspace bytes the created node `id`'s properties hold now.
+fn node_property_bytes(id: NodeId) -> impl Fn(&WriteScratch) -> Option<u64> {
+    move |s| {
+        s.batch
+            .nodes
+            .get(&id)
+            .map(|node| crate::workspace::created_property_delta(&node.properties))
+    }
 }
 
-fn created_property_snapshot(s: &WriteScratch, id: NodeId, created: bool) -> Option<u64> {
+/// The workspace bytes the created relationship `id`'s properties hold now.
+fn rel_property_bytes(id: RelId) -> impl Fn(&WriteScratch) -> Option<u64> {
+    move |s| {
+        s.batch
+            .rels
+            .get(&id)
+            .map(|rel| crate::workspace::created_property_delta(&rel.properties))
+    }
+}
+
+/// The "before" half of the created-entity workspace shift: the bytes
+/// `bytes` reads off the scratch copy, only when workspace accounting is on
+/// and the entity was created in this batch (`created`).
+fn created_snapshot(
+    s: &WriteScratch,
+    created: bool,
+    bytes: &impl Fn(&WriteScratch) -> Option<u64>,
+) -> Option<u64> {
     if !created || !relate_core::tokens::workspace_accounting() {
         return None;
     }
-    s.batch
-        .nodes
-        .get(&id)
-        .map(|node| crate::workspace::created_property_delta(&node.properties))
+    bytes(s)
 }
 
-fn shift_created_properties(s: &mut WriteScratch, id: NodeId, before: Option<u64>) {
+/// The "after" half: re-read the bytes after the write and shift the
+/// workspace by the difference. A `before` snapshot exists only for an
+/// entity the scratch already held, and the cow never removes it.
+fn shift_created(
+    s: &mut WriteScratch,
+    before: Option<u64>,
+    bytes: &impl Fn(&WriteScratch) -> Option<u64>,
+) {
     let Some(before) = before else {
         return;
     };
-    let Some(after) = s
-        .batch
-        .nodes
-        .get(&id)
-        .map(|node| crate::workspace::created_property_delta(&node.properties))
-    else {
-        return;
-    };
-    s.shift_workspace(before, after);
-}
-
-fn created_rel_property_snapshot(s: &WriteScratch, id: RelId, created: bool) -> Option<u64> {
-    if !created || !relate_core::tokens::workspace_accounting() {
-        return None;
-    }
-    s.batch
-        .rels
-        .get(&id)
-        .map(|rel| crate::workspace::created_property_delta(&rel.properties))
-}
-
-fn shift_created_rel_properties(s: &mut WriteScratch, id: RelId, before: Option<u64>) {
-    let Some(before) = before else {
-        return;
-    };
-    let Some(after) = s
-        .batch
-        .rels
-        .get(&id)
-        .map(|rel| crate::workspace::created_property_delta(&rel.properties))
-    else {
-        return;
-    };
+    let after = bytes(s).expect("the cow inserted the scratch copy");
     s.shift_workspace(before, after);
 }
 
@@ -476,6 +467,14 @@ enum PropOpKind {
     Remove(String),
 }
 
+/// What one set_property did: the stats deltas plus the redo-op payload.
+#[derive(Default)]
+struct PropWrite {
+    set: i64,
+    removed: i64,
+    op: Option<PropOpKind>,
+}
+
 /// The shared core of `set_property_node`/`set_property_rel`: apply the
 /// null-means-remove / otherwise-upsert contract to one properties map and
 /// report the stats deltas plus the redo-op payload. A null value removing
@@ -485,19 +484,25 @@ fn set_prop_core(
     created: bool,
     key: &str,
     value: &Value,
-) -> ((i64, i64), Option<PropOpKind>) {
+) -> PropWrite {
     if value.is_null() {
         if props.remove(key).is_some() {
-            return ((0, 1), Some(PropOpKind::Remove(key.to_string())));
+            return PropWrite {
+                set: 0,
+                removed: 1,
+                op: Some(PropOpKind::Remove(key.to_string())),
+            };
         }
-        return ((0, 0), None);
+        return PropWrite::default();
     }
     let existed = props.contains_key(key);
     props.insert(key.to_string(), value.clone());
-    (
-        prop_stat_deltas(existed, created),
-        Some(PropOpKind::Set(key.to_string(), value.clone())),
-    )
+    let (set, removed) = prop_stat_deltas(existed, created);
+    PropWrite {
+        set,
+        removed,
+        op: Some(PropOpKind::Set(key.to_string(), value.clone())),
+    }
 }
 
 /// The shared core of `replace_properties_*`: null out every current key the

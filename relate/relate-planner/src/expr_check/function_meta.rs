@@ -127,6 +127,7 @@ const ONE_ARGUMENT: ArityContract = ArityContract::exact(1, FUNCTION_REQUIRES_ON
 
 /// The one planner-side rule table for builtin calls, sorted by name.
 const FUNCTION_META: &[FunctionMeta] = &[
+    arity_row("cardinality", ONE_ARGUMENT),
     arity_row("coll.distinct", ONE_ARGUMENT),
     arity_row("coll.max", ONE_ARGUMENT),
     arity_row("coll.min", ONE_ARGUMENT),
@@ -142,7 +143,7 @@ const FUNCTION_META: &[FunctionMeta] = &[
     int_sites_row("left", &[(1, integer_args::LEFT_LENGTH.type_error)]),
     FunctionMeta {
         name: "length",
-        arity: None,
+        arity: Some(ONE_ARGUMENT),
         rule: Some(rule_length_non_path_literal),
         int_sites: &[],
         rejected_kinds: Some((

@@ -137,10 +137,8 @@ impl<'a> ExecGraph<'a> {
             labels,
             key,
             |n| n.as_string().is_some_and(|s| s.contains(needle)),
-            || {
-                self.base
-                    .lookup_string_contains_at(labels, key, needle, self.snapshot_ts())
-            },
+            self.base
+                .lookup_string_contains_at(labels, key, needle, self.snapshot_ts()),
         )
     }
 
@@ -155,10 +153,8 @@ impl<'a> ExecGraph<'a> {
             labels,
             key,
             |n| n.as_string().is_some_and(|s| s.starts_with(prefix)),
-            || {
-                self.base
-                    .lookup_string_prefix_at(labels, key, prefix, self.snapshot_ts())
-            },
+            self.base
+                .lookup_string_prefix_at(labels, key, prefix, self.snapshot_ts()),
         )
     }
 
@@ -172,10 +168,8 @@ impl<'a> ExecGraph<'a> {
             labels,
             key,
             |v| Self::range_overlay_pred(v, seek),
-            || {
-                self.base
-                    .lookup_range_seek(labels, key, seek, self.snapshot_ts())
-            },
+            self.base
+                .lookup_range_seek(labels, key, seek, self.snapshot_ts()),
         )
     }
 
@@ -206,10 +200,8 @@ impl<'a> ExecGraph<'a> {
             labels,
             key,
             |v| spatial_holds(v, seek),
-            || {
-                self.base
-                    .lookup_spatial_seek(labels, key, seek, self.snapshot_ts())
-            },
+            self.base
+                .lookup_spatial_seek(labels, key, seek, self.snapshot_ts()),
         )
     }
 
@@ -240,9 +232,9 @@ impl<'a> ExecGraph<'a> {
         labels: &[String],
         key: &str,
         pred: impl Fn(&Value) -> bool,
-        base: impl FnOnce() -> Option<Vec<NodeId>>,
+        base: Option<Vec<NodeId>>,
     ) -> Option<Vec<NodeId>> {
-        let mut ids = base()?;
+        let mut ids = base?;
         ids.retain(|id| self.node_exists(*id));
         if let Some(cell) = self.scratch {
             // Read the scratch copy in place — `self.node` would clone its
@@ -253,8 +245,7 @@ impl<'a> ExecGraph<'a> {
                 if ids.contains(id) || !self.node_exists(*id) {
                     continue;
                 }
-                if labels.iter().all(|l| n.labels.iter().any(|x| x == l))
-                    && n.properties.get(key).is_some_and(&pred)
+                if Graph::node_carries_labels(n, labels) && n.properties.get(key).is_some_and(&pred)
                 {
                     ids.push(*id);
                 }

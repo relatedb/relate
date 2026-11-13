@@ -47,8 +47,8 @@ fn expected_type_error(expected: &str, value: &Value) -> Error {
 /// arguments are rejected, never truncated to the first; a null argument
 /// propagates null; and every other value is `f`'s to judge — each builtin
 /// matches only the present, non-null value and owns its own wrong-type
-/// rejection. (`length` and `cardinality` keep their own first-argument
-/// reading and are deliberately not routed here.)
+/// rejection. `length` and `cardinality` ride it too; the planner's
+/// `FUNCTION_META` carries the matching one-argument arity row for each.
 fn unary_arg(vals: Vec<Value>, f: impl FnOnce(Value) -> Result<Value>) -> Result<Value> {
     let mut vals = vals.into_iter();
     match (vals.next(), vals.next()) {

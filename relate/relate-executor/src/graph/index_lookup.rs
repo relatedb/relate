@@ -211,6 +211,13 @@ impl Graph {
         self.range_serves_equality(labels, props)
     }
 
+    /// The label half of [`Self::node_matches`]: the node carries every one
+    /// of `labels`. The overlay's scratch merge asks it too, so one
+    /// containment rule serves the committed and the scratch side.
+    pub(crate) fn node_carries_labels(n: &Node, labels: &[String]) -> bool {
+        labels.iter().all(|l| n.labels.iter().any(|x| x == l))
+    }
+
     pub(crate) fn node_matches(
         n: &Node,
         labels: &[String],
@@ -218,7 +225,7 @@ impl Graph {
     ) -> bool {
         // Property comparison is Cypher equality (`1 = 1.0`), matching the
         // normalized index key that produced the candidate.
-        labels.iter().all(|l| n.labels.iter().any(|x| x == l))
+        Self::node_carries_labels(n, labels)
             && props
                 .iter()
                 .all(|(k, v)| n.properties.get(k).is_some_and(|have| have.eq_non_null(v)))
