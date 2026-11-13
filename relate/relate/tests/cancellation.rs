@@ -284,9 +284,9 @@ fn cancelling_inside_a_one_hop_pushdown_aggregation_errors_promptly() {
     // The fold dominates query time while keeping setup and memory modest.
     // `n` escalates until the un-cancelled fold provably outlasts the cancel
     // latency at this compilation profile (see the calibration note above),
-    // or until the rung's single-statement CREATE crosses the WAL payload
-    // cap — from there no larger rung can be committed, so the ladder
-    // asserts on the largest rung that fits.
+    // or until the ladder's top rung (3.2M rels). The graph is built in
+    // chunks, so the single-statement WAL payload cap does not bound the
+    // ladder on a fast host.
     // LABS-851: the bare `MATCH (a)-[:R]->(b) RETURN count(b)` now answers
     // from the rel-type statistics in O(1) — no fold left to cancel. The
     // trivially-true `WHERE b.v >= 0` declines the count short-circuit
@@ -299,11 +299,19 @@ fn cancelling_inside_a_one_hop_pushdown_aggregation_errors_promptly() {
     let ((_db, mut conn), uncancelled_elapsed, stop) = calibrate(ladder, |n| {
         let db = Database::open(":memory:").unwrap();
         let mut conn = db.connect().unwrap();
-        rung_setup(
-            &mut conn,
-            &format!("UNWIND range(1, {n}) AS i CREATE (a:N {{v: i}})-[:R]->(b:N {{v: i}})"),
-            &format!("one-hop setup CREATE at {n} rels"),
-        )?;
+        // One statement per chunk, as the constraint-recheck test does: a
+        // 50k-pair chunk commits far under the WAL payload cap, so a refusal
+        // here is a real failure (the unwrap), never the store limit that
+        // `rung_setup` reports — chunking is what keeps the ladder clear of
+        // that limit.
+        const CHUNK: i64 = 50_000;
+        for start in (1..=n).step_by(CHUNK as usize) {
+            let end = (start + CHUNK - 1).min(n);
+            conn.query(&format!(
+                "UNWIND range({start}, {end}) AS i CREATE (a:N {{v: i}})-[:R]->(b:N {{v: i}})"
+            ))
+            .unwrap();
+        }
         let started = std::time::Instant::now();
         let uncancelled = conn.query(query).unwrap();
         let elapsed = started.elapsed();
