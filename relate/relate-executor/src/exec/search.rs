@@ -786,19 +786,8 @@ fn deferred_row_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::test_support::named_node;
     use relate_ir::{Direction, NodePattern, PatternElement, RelPattern};
-
-    fn node(variable: &str) -> NodePattern {
-        NodePattern {
-            variable: Some(variable.into()),
-            labels: Vec::new(),
-            label_expr: None,
-            properties: None,
-            prop_keys: Vec::new(),
-            where_clause: None,
-            force_scan: false,
-        }
-    }
 
     fn rel(variable: &str) -> RelPattern {
         RelPattern {
@@ -835,7 +824,7 @@ mod tests {
     /// name no node/relationship binds (a path name) is `None`.
     #[test]
     fn binding_kind_reads_the_canonical_pattern_walk() {
-        let compact = pattern(vec![node("n")], vec![rel("r")]);
+        let compact = pattern(vec![named_node("n")], vec![rel("r")]);
         assert_eq!(
             path_pattern_binding_kind(std::slice::from_ref(&compact), "n"),
             Some(EntityKind::Node)
@@ -850,7 +839,7 @@ mod tests {
         );
         let elements = PathPattern {
             elements: vec![
-                PatternElement::Node(node("n")),
+                PatternElement::Node(named_node("n")),
                 PatternElement::Relationship(rel("r")),
             ],
             ..pattern(Vec::new(), Vec::new())

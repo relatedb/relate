@@ -4,6 +4,7 @@
 
 use crate::{Error, Result};
 
+use super::arith::negate_fields;
 use super::exact::{DurationTiers, ExactAccumulator};
 use super::{
     range_err, DurationField, Temporal, MONTHS_PER_YEAR, NANOS_PER_HOUR, NANOS_PER_MINUTE,
@@ -51,9 +52,7 @@ pub(super) fn parse_duration_iso(s: &str) -> Result<Temporal> {
     }
     let (mut months, mut days, mut nanos) = tiers.finish()?;
     if neg {
-        months = months.checked_neg().ok_or_else(range_err)?;
-        days = days.checked_neg().ok_or_else(range_err)?;
-        nanos = nanos.checked_neg().ok_or_else(range_err)?;
+        (months, days, nanos) = negate_fields(months, days, nanos)?;
     }
     // The stored triple's range contract, shared with every duration
     // producer: Neo4j rejects a duration whose average length in seconds

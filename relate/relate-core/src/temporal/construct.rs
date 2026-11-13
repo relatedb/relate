@@ -12,7 +12,7 @@ use crate::{bare_type_name, Error, Result, Value};
 use super::clock::now_value;
 use super::clock::{self, ClockKind};
 use super::exact::{exact_number, DurationTiers, ExactNumber};
-use super::field::DurationTier;
+use super::field::DurationLane;
 use super::field_rules::{
     self, DateForm, EpochField, Fields, Sources, DAY_OF_QUARTER_KEYS, DAY_OF_WEEK_KEYS,
     EPOCH_MILLIS_KEYS, EPOCH_SECONDS_KEYS, ORDINAL_DAY_KEYS,
@@ -678,24 +678,25 @@ fn integral_duration(
     values: &std::collections::BTreeMap<DurationField, ExactNumber>,
 ) -> Result<Temporal> {
     // Every lane is summed from the one field table
-    // ([`DurationField::tier_and_scale`], walked in cascade order), so a
+    // ([`DurationField::lane_and_unit`], walked in cascade order), so a
     // field added to the vocabulary cannot be dropped from a lane. The
     // all-integral guard makes every present field an Int; an absent field
     // contributes zero. The nanosecond tier splits at whole seconds: its
     // seconds lane counts in seconds, its sub-second lane in nanoseconds.
     let (mut months, mut days, mut seconds, mut subsecond) = (0i128, 0i128, 0i128, 0i128);
     for field in DurationField::CASCADE {
-        let Some(n) = values.get(&field).and_then(ExactNumber::as_int) else {
+        let Some(number) = values.get(&field) else {
             continue;
         };
-        let (tier, scale) = field.tier_and_scale();
-        match tier {
-            DurationTier::Months => months += n * scale,
-            DurationTier::Days => days += n * scale,
-            DurationTier::Nanos if scale >= NANOS_PER_SECOND => {
-                seconds += n * (scale / NANOS_PER_SECOND)
-            }
-            DurationTier::Nanos => subsecond += n * scale,
+        let n = number
+            .as_int()
+            .expect("the all-integral guard makes every present field an Int");
+        let (lane, unit) = field.lane_and_unit();
+        match lane {
+            DurationLane::Months => months += n * unit,
+            DurationLane::Days => days += n * unit,
+            DurationLane::Seconds => seconds += n * unit,
+            DurationLane::SubSecond => subsecond += n * unit,
         }
     }
     let months = checked_lane(months, "duration()")?;

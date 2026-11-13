@@ -235,14 +235,73 @@ pub fn zone_offset_at_utc(zone: &str, utc: NaiveDateTime) -> std::result::Result
 /// zero offset. Day-saving names map to the region whose rules decide the
 /// offset (the `CEST` spelling is Europe/Paris summer time).
 pub(super) fn zone_from_short_name(name: &str) -> Option<&'static str> {
-    Some(match name.to_ascii_uppercase().as_str() {
-        "CET" | "CEST" => "Europe/Paris",
-        "UTC" => "UTC",
-        "EST" | "EDT" => "America/New_York",
-        "PST" | "PDT" => "America/Los_Angeles",
-        "JST" => "Asia/Tokyo",
-        _ => return None,
-    })
+    ZONE_NAMES
+        .iter()
+        .find(|row| row.short_names.iter().any(|n| n.eq_ignore_ascii_case(name)))
+        .map(|row| row.zone)
+}
+
+/// How the formatter spells a zone in a `z`/`v` pattern field, for the
+/// zones the engine carries display names for.
+pub(super) struct ZoneDisplay {
+    /// `z`..`zzz`: the abbreviation.
+    pub(super) short_summer: &'static str,
+    /// `v`: the generic abbreviation.
+    pub(super) short_generic: &'static str,
+    /// `zzzz`: the long daylight-saving name.
+    pub(super) long_summer: &'static str,
+    /// `vvvv`: the long generic name.
+    pub(super) long_generic: &'static str,
+}
+
+/// One row of the zone-name vocabulary: the short names that denote `zone`
+/// (the parse direction, [`zone_from_short_name`]) and, where carried, the
+/// display spellings the formatter renders back ([`zone_display`]).
+struct ZoneNameRow {
+    short_names: &'static [&'static str],
+    zone: &'static str,
+    display: Option<ZoneDisplay>,
+}
+
+const ZONE_NAMES: [ZoneNameRow; 5] = [
+    ZoneNameRow {
+        short_names: &["CET", "CEST"],
+        zone: "Europe/Paris",
+        display: Some(ZoneDisplay {
+            short_summer: "CEST",
+            short_generic: "CET",
+            long_summer: "Central European Summer Time",
+            long_generic: "Central European Time",
+        }),
+    },
+    ZoneNameRow {
+        short_names: &["UTC"],
+        zone: "UTC",
+        display: None,
+    },
+    ZoneNameRow {
+        short_names: &["EST", "EDT"],
+        zone: "America/New_York",
+        display: None,
+    },
+    ZoneNameRow {
+        short_names: &["PST", "PDT"],
+        zone: "America/Los_Angeles",
+        display: None,
+    },
+    ZoneNameRow {
+        short_names: &["JST"],
+        zone: "Asia/Tokyo",
+        display: None,
+    },
+];
+
+/// The display spellings for `zone`, if the vocabulary carries any.
+pub(super) fn zone_display(zone: &str) -> Option<&'static ZoneDisplay> {
+    ZONE_NAMES
+        .iter()
+        .find(|row| row.zone == zone)
+        .and_then(|row| row.display.as_ref())
 }
 
 /// The IANA region a `Temporal::DateTime` zone names, or `None` for an

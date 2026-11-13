@@ -101,7 +101,7 @@ fn shift_time_of_day(tm: NaiveTime, nanos: i128) -> NaiveTime {
 /// The checked negation of a duration's three fields: the one spelling of
 /// `-months / -days / -nanos`, shared by subtraction's additive twin and the
 /// unary-minus entry point.
-fn negate_fields(months: i64, days: i64, nanos: i128) -> Result<(i64, i64, i128)> {
+pub(super) fn negate_fields(months: i64, days: i64, nanos: i128) -> Result<(i64, i64, i128)> {
     Ok((
         months.checked_neg().ok_or_else(range_err)?,
         days.checked_neg().ok_or_else(range_err)?,
