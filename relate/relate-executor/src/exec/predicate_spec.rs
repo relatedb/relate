@@ -218,7 +218,12 @@ impl InlinePred {
             }
             _ => return None,
         };
-        let kid = key_id.id_or_else(|| key.with_str(|text| graph.base().prop_key_id(text)));
+        // The kid resolves through the view's rebase-aware token read: a
+        // key the plan saw as never interned can have been interned by
+        // this statement's own `IN TRANSACTIONS` batch commits
+        // (ADR-0210), and the gate must then read the real value, not
+        // silently answer null for every candidate.
+        let kid = key.with_str(|text| graph.prop_key_id_resolved(text, key_id));
         Some(match ctor {
             None => Self::Prop {
                 key: key.to_string(),

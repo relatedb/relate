@@ -11,7 +11,7 @@ use relate_core::Value::{self, Int};
 use crate::exec::test_support::{build, exec_cypher, Builder};
 use crate::graph::Graph;
 
-use super::fixtures::run;
+use super::fixtures::{run, self_loops};
 
 /// Diamonds in the chain; 2^12 = 4096 s-to-t trails, which GPM still
 /// enumerates fast enough that a routing regression fails on `> 0`, not on
@@ -189,4 +189,43 @@ fn shortest_path_to_high_value_targets_is_bounded() {
     let want = [("ca", 5), ("da", 5), ("dc", 6), ("ea", 6)]
         .map(|(id, n)| vec![Value::String(id.into()), Int(n)]);
     assert_eq!(rows, want);
+}
+
+/// The end-node `WHERE` repro over self-loops: a `:M` node with `loops`
+/// parallel `:B` self-loops, `SHORTEST 1` selecting the trail whose end
+/// node predicate accepts it. The route answers at the first satisfying
+/// length — one hop whatever the loop count — while enumeration pays the
+/// trail count, which multiplies by ~`loops` per loop it adds (8 loops:
+/// 109_601 trails; 10: 9_861_101). A routing regression therefore
+/// multiplies the work the same way, so the expansion count must stay
+/// flat in the loop count — a deterministic budget a loaded runner
+/// cannot flake, where a wall-clock ratio could.
+const SELF_LOOP_QUERY: &str = "MATCH p = SHORTEST 1 (m:M)-[bs:B]->*(m WHERE size(bs) = 1) \
+                               RETURN size(bs) AS len";
+
+#[test]
+fn self_loop_end_node_where_cost_stays_flat_across_sizes() {
+    for loops in [8, 9, 10] {
+        let g = self_loops(loops);
+        let (rows, counts) = run(&g, SELF_LOOP_QUERY);
+        assert_eq!(
+            rows,
+            vec![vec![Int(1)]],
+            "{SELF_LOOP_QUERY} at {loops} self-loops"
+        );
+        assert!(
+            counts.route_runs > 0,
+            "{SELF_LOOP_QUERY} fell back to GPM at {loops} self-loops"
+        );
+        // The route follows one relationship at every loop count, so its
+        // expansion budget is flat in `loops` — the enumeration fallback
+        // walks the trail space instead (109_601 trails at 8 loops,
+        // 9_861_101 at 10) and blows straight through it.
+        assert!(
+            counts.expands <= loops as u64 + 1,
+            "{loops} self-loops expanded {} edges: the trail enumeration \
+             bound regressed",
+            counts.expands
+        );
+    }
 }

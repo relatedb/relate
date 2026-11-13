@@ -241,7 +241,7 @@ impl<'a> Route<'a> {
         // correspondences are established here, not by two caller-supplied
         // arguments that must happen to agree.
         let halt = sink.halt_cell();
-        let filters = RouteFilters::split(path, sink.residual());
+        let filters = RouteFilters::split(path, shape.end, sink.residual());
         let rel = shape.rel;
         let search = Search {
             graph: ctx.graph,

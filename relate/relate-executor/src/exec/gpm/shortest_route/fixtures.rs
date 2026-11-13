@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_ir::Direction;
 
-use crate::exec::test_support::{build, try_exec_cypher_params};
+use crate::exec::test_support::{build, try_exec_cypher_params, Builder};
 use crate::graph::Graph;
 use crate::shortest::test_support::counting_expands;
 
@@ -60,6 +60,19 @@ pub(super) fn labelled(x: usize, n: usize, rels: &[(usize, usize)]) -> Graph {
 /// 0→1→2→3, the shortcut 0→4→3, and 3→1 closing a cycle.
 pub(super) fn shortcut() -> Graph {
     plain(5, &[(0, 1), (1, 2), (2, 3), (0, 4), (4, 3), (3, 1)])
+}
+
+/// A `:M` node with `loops` parallel `:B` self-loops (`i` = 1..=loops): the
+/// self-loop shape a `SHORTEST` selector answers over, whose trail count —
+/// every ordering of every subset of the loops — multiplies by ~`loops`
+/// per loop enumeration adds.
+pub(super) fn self_loops(loops: usize) -> Graph {
+    let b = Builder::new();
+    let m = b.node("m", &["M"]);
+    for i in 1..=loops {
+        b.rel(m, m, "B", &[("i", Value::Int(i as i64))]);
+    }
+    b.done()
 }
 
 /// Rows of `q` and the [`Counts`] it caused.

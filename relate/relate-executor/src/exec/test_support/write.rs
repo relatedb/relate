@@ -1,15 +1,16 @@
 //! Write machinery: scratches over a graph, write execution, and commit.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use relate_core::Result;
 use relate_front::parse_and_lower;
-use relate_planner::plan;
+use relate_planner::{plan, plan_with_tokens, NoPatternStats};
 
 use crate::graph::Graph;
 use crate::overlay::{ExecGraph, WriteScratch};
+use crate::redo::RedoOp;
 
 use super::super::{execute, execute_unvalidated, ExecRequest, QueryResult};
 
@@ -35,6 +36,27 @@ pub(crate) fn exec_write(
     cypher: &str,
 ) -> Result<QueryResult> {
     run_write(g, scratch, cypher, execute)
+}
+
+/// Run `cypher` the way the facade's ADR-0210 auto-commit path runs a
+/// `CALL { … } IN TRANSACTIONS` statement: planned with the store's
+/// tokens resolved onto the IR (ADR-0541, the way `Database` plans) and
+/// executed with the per-batch commit sink attached, so each batch
+/// commits to the base and rebases the scratch mid-statement. The run
+/// the mid-statement token staleness (a key interned by the statement's
+/// own batches after the plan resolved it) is tested under.
+pub(crate) fn exec_write_batched(
+    g: &Graph,
+    scratch: &RefCell<WriteScratch>,
+    cypher: &str,
+    sink: &dyn crate::ctx::BatchCommit,
+) -> Result<QueryResult> {
+    let q = parse_and_lower(cypher)?;
+    let p = plan_with_tokens(q, &mut |_| false, &NoPatternStats, g)?;
+    let params = BTreeMap::new();
+    let mut request = ExecRequest::new(&p, &params, cypher);
+    request.batch_commit = Some(sink);
+    execute(&ExecGraph::write(g, scratch), &request)
 }
 
 /// [`exec_write`] through `execute_unvalidated`: the writes stay in the
@@ -84,5 +106,24 @@ pub(crate) fn commit_scratch(g: &Graph, scratch: RefCell<WriteScratch>) {
     let ops = scratch.into_inner().take_redo();
     if !ops.is_empty() {
         g.apply_redo(ops, g.commit_ts() + 1).unwrap();
+    }
+}
+
+/// The overlay seam's one `BatchCommit` test double (F-1-27): applies the
+/// batch's redo ops to the base graph at the next commit ts and counts
+/// its calls. The write-family module is its canonical home — both the
+/// overlay batch-commit tests and the exec-subtree predicate-spec tests
+/// construct it.
+pub(crate) struct ApplySink<'a> {
+    pub(crate) graph: &'a Graph,
+    pub(crate) calls: AtomicUsize,
+}
+
+impl crate::ctx::BatchCommit for ApplySink<'_> {
+    fn commit_batch(&self, ops: Vec<RedoOp>, _snapshot_ts: u64) -> Result<u64> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let commit_ts = self.graph.commit_ts() + 1;
+        self.graph.apply_redo(ops, commit_ts)?;
+        Ok(commit_ts)
     }
 }

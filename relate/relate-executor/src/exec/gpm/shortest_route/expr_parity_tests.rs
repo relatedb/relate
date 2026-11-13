@@ -151,6 +151,11 @@ fn route_and_enumeration_agree_on_every_bound_pair() {
          RETURN a.id, b.id, size(allShortestPaths((a)-[*..4]-(b)))",
         "MATCH (a), (b) WHERE a.id < b.id \
          RETURN a.id, b.id, length(shortestPath((a)-[*0..3]->(b)))",
+        // The end node's inline WHERE rides the route's path filter for
+        // the expression form too, so the one value per row is the
+        // shortest trail the predicate accepts.
+        "MATCH (a), (b) WHERE a.id < b.id \
+         RETURN a.id, b.id, length(shortestPath((a)-[*..4]->(b WHERE b.id = 3)))",
     ] {
         let routed = sorted(exec_cypher(&g, q).rows);
         let enumerated = sorted(with_forced_gpm(|| exec_cypher(&g, q).rows));

@@ -55,7 +55,9 @@ pub(crate) use relate_ir::{
     expr_vars, is_agg_expr, key_of, label_expr_vars, orient, var_key_side, var_prop,
 };
 
-pub(crate) use expr::{binary, binary_pure, cmp_bool, in_op, in_rhs, ordering_operator};
+pub(crate) use expr::{
+    binary, binary_pure, cmp_bool, eval_case_with, in_op, in_rhs, ordering_operator,
+};
 use expr::{eval_case, prop, reject_deleted_access, slice, subscript, unary};
 pub(crate) use function::is_nondeterministic;
 use function::{entity_backing_map, function};

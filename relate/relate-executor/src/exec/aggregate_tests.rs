@@ -616,6 +616,74 @@ fn case_not_taken_arm_still_belongs_to_the_projection() {
     );
 }
 
+/// The gap-2 shape: a CASE whose WHEN reads the group's aggregate must
+/// select before it evaluates — the unselected arm's erroring division
+/// never runs (live Neo4j answers 1 for both spellings), while the
+/// arm a group actually takes still evaluates and still fails.
+#[test]
+fn case_over_an_aggregate_skips_only_the_unselected_arms() {
+    // CASE count(*) WHEN 0 THEN 1/0 ELSE 1 END, one row: count(*) is 1,
+    // the WHEN falls through, and the THEN's 1/0 must not evaluate.
+    let when_is_eq = |n: i64| Expr::Binary {
+        op: relate_ir::BinaryOp::Eq,
+        left: Box::new(Expr::CountStar),
+        right: Box::new(Expr::Int(n)),
+    };
+    let div_by_zero = || Expr::Binary {
+        op: relate_ir::BinaryOp::Div,
+        left: Box::new(Expr::Int(1)),
+        right: Box::new(Expr::Int(0)),
+    };
+    let skip_then = Expr::Case {
+        when_then: vec![(when_is_eq(0), div_by_zero())],
+        else_expr: Some(Box::new(Expr::Int(1))),
+    };
+    let group = group_with_xs(&[7]);
+    assert_eq!(run(&group, &skip_then), Value::Int(1));
+    // CASE count(*) WHEN 1 THEN 1 ELSE 1/0 END, one row: the WHEN holds
+    // and the ELSE's 1/0 must not evaluate.
+    let skip_else = Expr::Case {
+        when_then: vec![(when_is_eq(1), Expr::Int(1))],
+        else_expr: Some(Box::new(div_by_zero())),
+    };
+    assert_eq!(run(&group, &skip_else), Value::Int(1));
+    // The taken arm still fails: over an empty group count(*) is 0, the
+    // WHEN matches, and the THEN's 1/0 is the statement's error — live
+    // Neo4j raises it too.
+    let error = run_result(&[], &skip_then).unwrap_err();
+    assert!(error.to_string().contains("/ by zero"), "{error}");
+}
+
+/// Gap 2 end to end, both spellings: the simple form and the searched
+/// form lower to the one IR shape (the parser folds the test operand into
+/// the arm's equality comparison) and both must answer `x = 1` — live
+/// Neo4j's answer, with the unselected arm's `1/0` never evaluated.
+#[test]
+fn both_aggregate_case_forms_answer_the_selected_branch() {
+    for q in [
+        "UNWIND [1] AS k RETURN CASE count(*) WHEN 0 THEN 1/0 ELSE 1 END AS x",
+        "UNWIND [1] AS k RETURN CASE WHEN count(*) = 0 THEN 1/0 ELSE 1 END AS x",
+    ] {
+        let result = super::test_support::try_exec_cypher(&Graph::default(), q)
+            .unwrap_or_else(|e| panic!("{q}: {e}"));
+        assert_eq!(result.rows, vec![vec![Value::Int(1)]], "{q}");
+    }
+}
+
+/// A CASE without an aggregate keeps the row-scalar laziness inside an
+/// aggregating projection: the `count(*)` item makes the projection
+/// aggregate, but the CASE item itself carries no aggregate, so it rides
+/// the scalar path and its unselected `1/0` never runs.
+#[test]
+fn a_plain_case_beside_an_aggregate_stays_lazy() {
+    let result = super::test_support::try_exec_cypher(
+        &Graph::default(),
+        "UNWIND [1] AS k RETURN CASE 1 WHEN 1 THEN 1 ELSE 1/0 END AS x, count(*) AS c",
+    )
+    .expect("the plain CASE item keeps the scalar evaluation path");
+    assert_eq!(result.rows, vec![vec![Value::Int(1), Value::Int(1)]]);
+}
+
 /// An aggregate that only an `ORDER BY` key reads keeps the documented
 /// policy: a fold error there is a null sort key, never a statement
 /// failure — even though the call now folds in the input row loop.

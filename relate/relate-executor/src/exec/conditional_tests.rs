@@ -4,6 +4,8 @@
 //! "WHEN as a NEXT part sees updates made by the branch of a previous row"),
 //! while a stage's other clauses keep their whole-stage batch semantics.
 
+use relate_core::Value;
+
 use super::test_support::{column, exec_autocommit, exec_cypher, int_cell, string_cell};
 use super::QueryResult;
 use crate::graph::Graph;
@@ -272,4 +274,92 @@ fn a_filtering_match_in_a_next_part_still_evaluates_before_the_update() {
     assert_eq!(integers(&result, "hit"), vec![1, 2, 3]);
     let size = exec_cypher(&graph, "MATCH (b:State) RETURN b.size AS size");
     assert_eq!(integers(&size, "size"), vec![3]);
+}
+
+/// A `CALL (vars) { WHEN … / ELSE … }` whose branch bodies are all unit
+/// (write-only) output is itself a unit body: the outer rows pass through
+/// with the branch writes applied, exactly like a plain unit subquery,
+/// instead of being dropped by the inner-join merge (gap 3 — the labels
+/// were written while `c` came back 0).
+#[test]
+fn a_unit_conditional_call_body_passes_the_outer_rows_through() {
+    let graph = seeded("CREATE (:L {m: 'S'}), (:L {m: '.'})");
+    let result = exec_autocommit(
+        &graph,
+        "MATCH (l:L) \
+         CALL (l) { \
+           WHEN l.m = 'S' THEN { SET l:A } \
+           ELSE { SET l:B } \
+         } \
+         RETURN count(l) AS c",
+    )
+    .unwrap();
+    assert_eq!(integers(&result, "c"), vec![2]);
+
+    // Both branches ran on their own driving row: `S` gained `A`, `.` `B`.
+    let a = exec_cypher(&graph, "MATCH (l:L:A) RETURN l.m AS m ORDER BY m");
+    assert_eq!(strings(&a, "m"), vec!["S"]);
+    let b = exec_cypher(&graph, "MATCH (l:L:B) RETURN l.m AS m ORDER BY m");
+    assert_eq!(strings(&b, "m"), vec!["."]);
+}
+
+/// The gap report's baseline: a plain unit subquery body (a bare `SET`, no
+/// conditional) keeps its pass-through — the unit-conditional refinement
+/// changed no other body shape.
+#[test]
+fn a_plain_unit_subquery_call_body_still_passes_the_outer_rows_through() {
+    let graph = seeded("CREATE (:L {m: 'S'}), (:L {m: '.'})");
+    let result = exec_autocommit(
+        &graph,
+        "MATCH (l:L) CALL (l) { SET l:C } RETURN count(l) AS c",
+    )
+    .unwrap();
+    assert_eq!(integers(&result, "c"), vec![2]);
+
+    let labeled = exec_cypher(&graph, "MATCH (l:L:C) RETURN count(*) AS c");
+    assert_eq!(integers(&labeled, "c"), vec![2]);
+}
+
+/// A unit conditional body under `IN TRANSACTIONS` still yields the outer
+/// row per iteration, so every committed batch reports its status row and
+/// the failing iteration reports its own, with the live error message
+/// (CIP-198 pins `'/ by zero'`) — the committed rows used to disappear
+/// with the body's empty result (gap 3's status variant).
+#[test]
+fn a_unit_conditional_call_in_transactions_reports_every_iteration() {
+    let graph = Graph::default();
+    let result = exec_autocommit(
+        &graph,
+        "UNWIND [1, 2, 3] AS i \
+         CALL (i) { \
+           WHEN i = 3 THEN { CREATE (:X {e: 1/0}) } \
+           ELSE { MERGE (z:Z) SET z.i = i } \
+         } IN TRANSACTIONS OF 1 ROW ON ERROR BREAK REPORT STATUS AS s \
+         RETURN i, s.committed AS committed, s.errorMessage AS err",
+    )
+    .unwrap();
+    assert_eq!(
+        result.columns,
+        vec!["i".to_string(), "committed".to_string(), "err".to_string()]
+    );
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Value::Int(1), Value::Bool(true), Value::Null],
+            vec![Value::Int(2), Value::Bool(true), Value::Null],
+            vec![
+                Value::Int(3),
+                Value::Bool(false),
+                Value::String("/ by zero".into())
+            ],
+        ]
+    );
+
+    // The committed iterations' writes stand (one `Z`, its `i` the second
+    // iteration's); the failed iteration's node never landed.
+    let z = exec_cypher(&graph, "MATCH (z:Z) RETURN count(*) AS c, z.i AS i");
+    assert_eq!(integers(&z, "c"), vec![1]);
+    assert_eq!(integers(&z, "i"), vec![2]);
+    let x = exec_cypher(&graph, "MATCH (x:X) RETURN count(*) AS c");
+    assert_eq!(integers(&x, "c"), vec![0]);
 }

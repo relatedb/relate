@@ -718,33 +718,46 @@ fn parts_have_unit_output<'p>(mut parts: impl Iterator<Item = &'p [Clause]>) -> 
 
 /// Whether the clause concluding a part makes that part unit output: an
 /// empty result still seeds the next `NEXT` stage with one row (ADR-0287).
-/// [`clause_projects_rows`] decides it, plus the two arms this seeding
-/// policy adds over that classification:
-///
-/// - `CALL { … }` is a data write in the ADR-0287 vocabulary, even though
-///   its merged rows are a statement result of their own.
-/// - a `WHEN`/`ELSE` conditional whose branch bodies are all write-only
-///   projects no rows (the per-row driver spills none), so the stage is
-///   write-shaped for seeding.
+/// [`clause_spills_rows`] decides it, plus the one arm this seeding policy
+/// adds over that classification: `CALL { … }` is a data write in the
+/// ADR-0287 vocabulary, even though its merged rows are a statement result
+/// of its own.
 fn unit_output_clause(clause: &Clause) -> bool {
+    matches!(clause, Clause::CallSubquery { .. }) || !clause_spills_rows(clause)
+}
+
+/// Whether the clause concluding a part spills statement rows when it runs
+/// — the planner's published [`clause_projects_rows`] table plus the one
+/// refinement only this layer can make: a `WHEN`/`ELSE` conditional whose
+/// branch bodies are all unit output spills no rows (the per-row driver's
+/// buckets stay empty), so it projects none. Every concluding-clause
+/// policy reads this one answer — the `CALL { … }` merge policy
+/// ([`part_projects_rows`]), a conditional branch body's row-lessness and
+/// the NEXT-stage seeding policy ([`unit_output_clause`]) — so a unit
+/// conditional body is a unit body everywhere: its caller's outer rows
+/// pass through, never drop, and its `IN TRANSACTIONS` iterations report
+/// their status rows.
+fn clause_spills_rows(clause: &Clause) -> bool {
     if !clause_projects_rows(clause) {
-        return true;
+        return false;
     }
-    matches!(clause, Clause::CallSubquery { .. })
-        || matches!(
-            clause,
-            Clause::Conditional { branches, else_query }
-                if !call::conditional_produces_rows(branches, else_query.as_deref())
-        )
+    match clause {
+        Clause::Conditional {
+            branches,
+            else_query,
+        } => call::conditional_produces_rows(branches, else_query.as_deref()),
+        _ => true,
+    }
 }
 
 /// Whether a part (one UNION arm) projects statement rows of its own — the
-/// one classification over the concluding-clause vocabulary, read by the
-/// `CALL { … }` merge policy and by a conditional branch body's
-/// row-lessness (and, through [`unit_output_clause`], by the NEXT-stage
-/// seeding policy).
+/// one classification over the concluding-clause vocabulary
+/// ([`clause_spills_rows`]: the planner table plus the all-unit
+/// conditional refinement), read by the `CALL { … }` merge policy and by a
+/// conditional branch body's row-lessness (and, through
+/// [`unit_output_clause`], by the NEXT-stage seeding policy).
 pub(crate) fn part_projects_rows(clauses: &[Clause]) -> bool {
-    clauses.last().is_none_or(clause_projects_rows)
+    clauses.last().is_none_or(clause_spills_rows)
 }
 
 #[cfg(test)]

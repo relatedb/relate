@@ -437,7 +437,18 @@ fn apply_with_to_scope(
     if strict {
         check_non_star_items_defined(&wc.items, local_scope)?;
         if let Some(w) = &wc.where_expr {
-            check_expr_vars_defined(w, local_scope)?;
+            // The WHERE trails the projection, so its visibility is the
+            // WITH's own output names (`WITH p AS z WHERE z < 2`) plus
+            // everything the clause received -- the same union the
+            // engine's WITH-WHERE evaluation reads.
+            // Pre-sized (ADR-0505 §4): the union of two known-length sets.
+            let mut where_scope = IdentHashSet::with_capacity_and_hasher(
+                local_scope.len() + wc.items.len(),
+                IdentBuildHasher,
+            );
+            where_scope.extend(local_scope.iter().cloned());
+            where_scope.extend(projected_names(&wc.items, local_scope));
+            check_expr_vars_defined(w, &where_scope)?;
         }
 
         // A non-pass-through item whose output name equals
@@ -822,3 +833,6 @@ pub(crate) fn call_subquery_exports(
         _ => resolve_nested_call(csq, outer_scope, false).unwrap_or_default(),
     }
 }
+
+#[cfg(test)]
+mod tests;
