@@ -286,7 +286,16 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
     },
     OptionEntry {
         headline: "  --namespace NAME     Session namespace (neo4j|system|system_ontologies; default neo4j)",
-        continuation: &[],
+        continuation: &[
+            "                       system_ontologies is visible only under",
+            "                       RELATE_PREVIEW=ontology: without it the store",
+            "                       opens but the session connect fails with",
+            "                       'Graph not found: system_ontologies' (exit 6) and",
+            "                       SHOW DATABASES lists the two Community Edition",
+            "                       rows; with it the namespace is visible but not",
+            "                       queryable (only the administration commands run",
+            "                       from there)",
+        ],
         flags: &["--namespace"],
     },
     OptionEntry {

@@ -24,6 +24,7 @@ pub mod peak_pool;
 pub mod plan_rung;
 #[cfg(feature = "pokec")]
 pub mod pokec;
+pub mod preview;
 pub mod profiler;
 pub mod recording_engine;
 pub mod rng;

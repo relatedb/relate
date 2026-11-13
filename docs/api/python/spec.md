@@ -147,7 +147,10 @@ message `semantic error: ParameterMissing: Expected parameter(s): <names>`
 the connection's statements run in when they carry no `USE` clause:
 `"neo4j"` (default), `"system"` or `"system_ontologies"`, matched
 case-insensitively. Any other name fails with `OperationalError` whose message
-ends with `Graph not found: <name>` (ADR-0146).
+ends with `Graph not found: <name>` (ADR-0146). `system_ontologies` is
+visible only under `RELATE_PREVIEW=ontology` (ADR-0593): without the
+opt-in, connecting to it or switching to it fails with the same
+`Graph not found` rejection, indistinguishable from an unknown name.
 
 - `Connection.namespace` — read-only property returning the current session
   namespace.

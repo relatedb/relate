@@ -8,6 +8,10 @@ import (
 )
 
 func main() {
+	// ADR-0593: system_ontologies is visible only under the `ontology`
+	// preview opt-in; set RELATE_PREVIEW before the open (it is read
+	// once, at open).
+	os.Setenv("RELATE_PREVIEW", "ontology")
 	db, err := relate.Open(":memory:")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -17,9 +21,10 @@ func main() {
 
 	// Open a session in a named fixed namespace (ADR-0117); names match
 	// case-insensitively. db.Connect() is ConnectNamespace("neo4j").
-	// system_ontologies is listed but not queryable (ADR-0229): the one
-	// statement kind that still runs there is the administration set
-	// (ADR-0116 §2) — SHOW DATABASES.
+	// system_ontologies is visible under the `ontology` opt-in
+	// (ADR-0593) and not queryable (ADR-0229): the one statement kind
+	// that still runs there is the administration set (ADR-0116 §2) —
+	// SHOW DATABASES.
 	conn, err := db.ConnectNamespace("system_ontologies")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

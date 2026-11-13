@@ -30,7 +30,9 @@ removes it. The accepted document is 1.1.0-shaped: `version` is a string,
 property existence is `must_exist`, and `constraints` is an id-keyed map
 with `type: EXISTS | KEY | UNIQUE | PROPERTY_TYPE`; a pre-bump document is
 rejected at `set`. The stored document is the sole source of truth — the
-`system_ontologies` namespace is listed by `SHOW DATABASES` but not
-queryable (ADR-0229): every other statement routed there, reads included,
-fails with 42N17, so the example reads the namespace's listing and pins
-that failure.
+`system_ontologies` namespace is visible under the same
+`RELATE_PREVIEW=ontology` opt-in (ADR-0593) and not queryable
+(ADR-0229): every other statement routed there, reads included, fails
+with 42N17, so the example reads the namespace's listing and pins that
+failure. Without the opt-in the namespace is invisible — the listing
+shows the two CE rows and `USE` fails as an unknown database.

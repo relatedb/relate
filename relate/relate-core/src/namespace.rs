@@ -4,10 +4,16 @@
 //! data graph), [`Namespace::System`] (CE system database; holds no graph
 //! data) and [`Namespace::SystemOntologies`] (the read-only ontology graph).
 //! None can be created, dropped or renamed, and names match
-//! case-insensitively.
+//! case-insensitively. A namespace whose visibility tracks a preview
+//! feature (today [`Namespace::SystemOntologies`], ADR-0593) is invisible
+//! while that feature is disabled: listed by no catalog, resolved by no
+//! name — see [`namespace_preview_feature`].
 
 use std::fmt;
 use std::str::FromStr;
+
+use crate::preview::{PreviewFeature, PreviewFeatures};
+use crate::{ce_messages, Error};
 
 /// One of the three fixed namespaces of a store.
 ///
@@ -25,7 +31,9 @@ pub enum Namespace {
     /// commands and procedure calls only. Holds no graph data.
     System,
     /// The read-only ontology graph, written only through the `db.ontology.*`
-    /// procedures.
+    /// procedures. Its dialect visibility gates behind the `ontology`
+    /// preview feature (ADR-0593): invisible — unlisted, unaddressable —
+    /// while the opt-in is off.
     SystemOntologies,
 }
 
@@ -68,6 +76,30 @@ impl Namespace {
         matches!(self, Namespace::SystemOntologies)
     }
 
+    /// Whether this namespace is visible under `preview` (ADR-0593): a
+    /// namespace gated by [`namespace_preview_feature`] stays invisible
+    /// until its feature's opt-in is set; the ungated namespaces are
+    /// always visible. The one predicate every visibility consumer
+    /// derives from — the `SHOW DATABASES` listing, `USE` and connect
+    /// resolution, `ALTER DATABASE` targets.
+    pub fn visible_under(self, preview: PreviewFeatures) -> bool {
+        namespace_preview_feature(self).is_none_or(|feature| preview.enabled(feature))
+    }
+
+    /// The visibility gate (ADR-0593): `Ok(())` when
+    /// [`Self::visible_under`] holds, otherwise the ordinary
+    /// unknown-database rejection (42N00, [`ce_messages::graph_not_found`])
+    /// — the name-gate form ADR-0371 prescribes for hidden names: never
+    /// the authored preview error, which would advertise a name the
+    /// catalog must not list.
+    pub fn require_visible(self, preview: PreviewFeatures) -> Result<(), Error> {
+        if self.visible_under(preview) {
+            Ok(())
+        } else {
+            Err(ce_messages::graph_not_found(self.as_str()))
+        }
+    }
+
     /// The element-id middle segment for this namespace (ADR-0116 §7,
     /// ADR-0554), or `None` for `system`, which has no elements. The
     /// segment is dash-bearing and names the database, as Neo4j's UUID
@@ -89,6 +121,23 @@ impl Namespace {
             .iter()
             .find(|ns| ns.element_id_segment() == Some(segment))
             .copied()
+    }
+}
+
+/// The one fixed-namespace → preview-feature mapping (ADR-0593): a
+/// namespace whose dialect visibility tracks a preview feature's opt-in.
+/// Today exactly one row — `system_ontologies` behind the `ontology` row
+/// (ADR-0378's feature; its contract tracks a non-final external spec,
+/// and the namespace exists to host that feature's stored document) —
+/// and the shape is the registry pattern, the namespace twin of the
+/// executor's procedure-to-feature mapping: a future gated namespace
+/// adds its row here, and every consumer — [`Namespace::visible_under`],
+/// [`Namespace::require_visible`] and the resolution sites that consult
+/// them — follows without new machinery.
+fn namespace_preview_feature(namespace: Namespace) -> Option<PreviewFeature> {
+    match namespace {
+        Namespace::SystemOntologies => Some(PreviewFeature::Ontology),
+        Namespace::Neo4j | Namespace::System => None,
     }
 }
 
@@ -332,6 +381,55 @@ mod tests {
         assert!(!Namespace::Neo4j.is_read_only());
         assert!(!Namespace::System.is_read_only());
         assert!(Namespace::SystemOntologies.is_read_only());
+    }
+
+    #[test]
+    fn system_ontologies_is_the_only_preview_gated_namespace() {
+        // The pinned mapping, mirroring the executor's procedure-gate
+        // test: the gated set is derived over the full vocabulary, so a
+        // namespace added to the enum fails this pin until its gating is
+        // decided here, and one moved in or out of the mapping fails the
+        // equality.
+        assert_eq!(
+            namespace_preview_feature(Namespace::SystemOntologies),
+            Some(PreviewFeature::Ontology)
+        );
+        let gated: Vec<Namespace> = Namespace::ALL
+            .iter()
+            .copied()
+            .filter(|ns| namespace_preview_feature(*ns).is_some())
+            .collect();
+        assert_eq!(gated, [Namespace::SystemOntologies]);
+    }
+
+    #[test]
+    fn visibility_follows_the_mapping_and_hides_with_the_ordinary_rejection() {
+        let off = PreviewFeatures::none();
+        let on = PreviewFeatures::parse("ontology").unwrap();
+        assert!(!Namespace::SystemOntologies.visible_under(off));
+        assert!(Namespace::SystemOntologies.visible_under(on));
+        // The ungated set is the mapping's complement over the full
+        // vocabulary, never a hand-spelled subset: a namespace added to
+        // the enum is pinned always-visible until its gating is decided.
+        for ungated in Namespace::ALL
+            .iter()
+            .copied()
+            .filter(|ns| namespace_preview_feature(*ns).is_none())
+        {
+            assert!(ungated.visible_under(off), "{ungated}");
+            assert!(ungated.visible_under(on), "{ungated}");
+        }
+        // The gate's disabled form is the ordinary unknown-database
+        // rejection — never the authored preview error, which would
+        // advertise the hidden name (ADR-0371's name-gate rule).
+        let err = Namespace::SystemOntologies
+            .require_visible(off)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::DatabaseNotFound { name } if name == "system_ontologies"),
+            "{err}"
+        );
+        assert!(Namespace::SystemOntologies.require_visible(on).is_ok());
     }
 
     #[test]

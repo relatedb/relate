@@ -85,6 +85,7 @@ pub use relate_core::{
     MAX_TRAVERSAL_DEPTH_CEILING,
 };
 pub use relate_core::{ExecutionReceipt, TokenEstimate, TokenOutcome};
+pub use relate_core::{PreviewFeature, PreviewFeatures};
 /// The engine's one error classification (ADR-0502 §2): the Neo4j status
 /// code, the GQLSTATUS, the compile/runtime/internal stage (ADR-0319) and
 /// the drivers' transient test for a query-engine [`Error`] — the single
@@ -427,17 +428,31 @@ impl Database {
     }
 
     /// Connect with a typed session namespace (ADR-0117 §2, ADR-0150): no
-    /// name parsing — a typed [`Namespace`] always exists, so this cannot
-    /// fail with `DatabaseNotFound`.
+    /// name parsing — a typed [`Namespace`] always exists. A namespace
+    /// whose gating preview feature is disabled (ADR-0593: today
+    /// `system_ontologies` behind `ontology`) refuses the connect with
+    /// the ordinary unknown-database rejection, so a hidden namespace is
+    /// indistinguishable from an unknown one.
     ///
     /// ```
     /// # use relate::{Database, Namespace};
+    /// # relate::test_opts::assert_preview_unset();
     /// let db = Database::open(":memory:").unwrap();
-    /// let conn = db.connect_typed(Namespace::SystemOntologies).unwrap();
-    /// assert_eq!(conn.namespace(), Namespace::SystemOntologies);
+    /// let conn = db.connect_typed(Namespace::System).unwrap();
+    /// assert_eq!(conn.namespace(), Namespace::System);
+    /// // system_ontologies is invisible without the `ontology` opt-in
+    /// // (ADR-0593): the connect fails with the ordinary rejection.
+    /// // `.err().expect` over `unwrap_err`: `Connection` is not `Debug`.
+    /// let err = db
+    ///     .connect_typed(Namespace::SystemOntologies)
+    ///     .err()
+    ///     .expect("the hidden namespace must refuse the connect");
+    /// assert!(err.to_string().contains("Graph not found: system_ontologies"));
     /// ```
     pub fn connect_typed(&self, namespace: Namespace) -> Result<Connection> {
-        self.inner.check_healthy()?;
+        // ADR-0593, through the one guarded spelling both connect paths
+        // share (which also checks store health under its guard).
+        self.inner.require_namespace_visible(namespace)?;
         Ok(connection::fresh(Arc::clone(&self.inner), namespace))
     }
 

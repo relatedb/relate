@@ -51,9 +51,16 @@ public class DatabaseTest {
         Database db = Database.open(":memory:");
         Database.Connection conn = db.connect();
         conn.setNamespace("SYSTEM");
-        conn.setNamespace("System_Ontologies");
         conn.setNamespace("neo4j");
         assertEquals(1, ((Number) conn.query("RETURN 1 AS n").rows().get(0).get(0)).intValue());
+        // ADR-0593: system_ontologies is invisible without the `ontology`
+        // opt-in (this test process runs ungated), so the switch fails like
+        // an unknown name — and the rejection names the canonical
+        // lowercase spelling whatever case the input carried.
+        RelateException e =
+                assertThrows(RelateException.class, () -> conn.setNamespace("System_Ontologies"));
+        assertTrue(e.getMessage().endsWith("Graph not found: system_ontologies"),
+                "unexpected message: " + e.getMessage());
     }
 
     @Test

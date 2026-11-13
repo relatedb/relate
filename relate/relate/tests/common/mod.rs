@@ -59,26 +59,23 @@ pub fn err_text<T>(result: relate::Result<T>) -> String {
     result.err().expect("expected an error").to_string()
 }
 
-/// Opt this test process into the `ontology` preview feature (ADR-0378):
-/// the `db.ontology.*` procedures are gated behind
-/// `RELATE_PREVIEW=ontology`, and `Database::open` reads the variable
-/// once per open. `Once` because a test binary runs its tests on threads
-/// sharing one environment; every test in the enabled-gate ontology crates
-/// calls this before its first open, and no test ever toggles the variable
-/// back.
+/// Opt this test process into the `ontology` preview feature (ADR-0378,
+/// ADR-0593): the `db.ontology.*` procedures are gated behind
+/// `RELATE_PREVIEW=ontology`, and the same row gates the
+/// `system_ontologies` namespace's visibility; `Database::open` reads the
+/// variable once per open. Every test in the enabled-gate ontology crates
+/// and the visible-namespace suites calls this before its first open.
 pub fn preview_ontology() {
-    set_preview_once("ontology");
+    relate_test_support::preview::preview_ontology();
 }
 
-/// The shared opt-in of the gated-connection fixtures: the preview list is
-/// set exactly once per test process (`Once` because a test binary runs
-/// its tests on threads sharing one environment -- a per-connection
-/// `set_var` races a sibling thread's in-flight `Database::open`, the
-/// round-13 stellar F-13-4 hazard), and no test ever toggles the
-/// variable back.
+/// The shared opt-in of the gated-connection fixtures, delegating to the
+/// one workspace home (the `Once` keeps the set_var + open pair atomic
+/// against sibling threads -- a per-connection `set_var` races a sibling
+/// thread's in-flight `Database::open`, the round-13 stellar F-13-4
+/// hazard).
 pub fn set_preview_once(features: &str) {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| std::env::set_var("RELATE_PREVIEW", features));
+    relate_test_support::preview::set_preview_once(features);
 }
 
 /// Assert that `query` fails closed with the authored preview-gate error for

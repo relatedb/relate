@@ -137,13 +137,19 @@ pub(crate) fn show_databases_rows(
                 _ => return Err(Error::invalid_argument_type("database name must be STRING")),
             },
         };
-        // ADR-0116 §1/§6: exactly the three fixed namespaces; an unknown
-        // name returns no rows. The stored `defaultLanguage` comes from the
-        // store-level databases catalog (ADR-0116 §8/§10; `CYPHER 25`
-        // default).
+        // ADR-0116 §1/§6: the fixed namespaces, an unknown name returning
+        // no rows; the stored `defaultLanguage` comes from the store-level
+        // databases catalog (ADR-0116 §8/§10; `CYPHER 25` default).
+        // ADR-0593: a namespace invisible under the store's preview set
+        // (today `system_ontologies` behind `ontology`) is omitted — the
+        // flag-off default listing is CE's exact two rows — and the named
+        // filter finds nothing, exactly as for an unknown name. The
+        // durable catalog entry is untouched: the opt-in is per-open, so
+        // the row returns when the feature is enabled.
         relate_core::Namespace::ALL
             .iter()
             .filter(|ns| wanted.admits(**ns))
+            .filter(|ns| ns.visible_under(graph.preview()))
             .map(|ns| {
                 let name = ns.as_str();
                 // `DatabasesCatalog::default`/`sanitize` guarantee an

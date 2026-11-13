@@ -384,7 +384,8 @@ Every store has the fixed namespaces `neo4j`, `system` and
 `system_ontologies` (ADR-0116). A connection's session namespace — `neo4j`
 by default — is where its statements run when they carry no `USE` clause; a
 `USE` clause routes one statement only. Names match case-insensitively.
-`system_ontologies` is listed but not queryable (ADR-0229): every statement
+`system_ontologies` is visible only under the `RELATE_PREVIEW=ontology` opt-in (ADR-0593; without it the namespace is invisible — unlisted, and every route to the name fails as an unknown database, 42N00) and not
+queryable (ADR-0229): every statement
 routed there — reads included — fails as an error result with the 42N17
 text; only the ADR-0116 §2 administration commands run from there.
 

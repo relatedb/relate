@@ -4,8 +4,8 @@
 //! (`yaml` by default), `apply` turns it into the database's graph type
 //! (failing on violating data), and `drop` removes it. The stored document
 //! is the sole source of truth: the `system_ontologies` namespace is
-//! listed by `SHOW DATABASES` but not queryable — every other statement
-//! routed to it fails with 42N17 (ADR-0229).
+//! visible under this opt-in (ADR-0593) and not queryable — every other
+//! statement routed to it fails with 42N17 (ADR-0229).
 //!
 //! Run with `cargo run -p relate --example ontology`.
 
@@ -52,9 +52,11 @@ fn main() -> relate::Result<()> {
     let result = conn.query("CALL db.ontology.get('json') YIELD ontology RETURN ontology")?;
     assert!(matches!(&result.rows[0][0], Value::String(json) if json.starts_with('{')));
 
-    // system_ontologies is listed but not queryable: the stored document
-    // is reachable only through the procedures, so an ordinary read routed
-    // there fails with the 42N17 text (ADR-0229 §1/§2).
+    // system_ontologies is visible under this opt-in (ADR-0593) and not
+    // queryable: the stored document is reachable only through the
+    // procedures, so an ordinary read routed there fails with the 42N17
+    // text (ADR-0229 §1/§2). Without the opt-in the namespace is
+    // invisible — unlisted, and refused by `USE` as an unknown name.
     let result = conn.query("SHOW DATABASES YIELD name RETURN name")?;
     assert_eq!(result.rows[2][0], Value::String("system_ontologies".into()));
     let err = conn

@@ -4,9 +4,12 @@
 Start the server first — behind the `--bolt-identity` compat shim,
 because the current python driver validates the HELLO `server` agent and
 rejects anything not starting `Neo4j/` (ADR-0293):
-  cargo run -p relate-cli -- serve --host 127.0.0.1 --bolt 7687 --database :memory: --bolt-identity Neo4j/5.26.0
+  RELATE_PREVIEW=ontology cargo run -p relate-cli -- serve --host 127.0.0.1 --bolt 7687 --database :memory: --bolt-identity Neo4j/5.26.0
 The port comes from RELATE_BOLT_PORT_IDENTITY (scripts/bolt-smoke.sh
 exports it beside the spawn; unset is a configuration error).
+RELATE_PREVIEW=ontology is required: `system_ontologies` is invisible
+without the opt-in (ADR-0593) — the smoke script exports it for its
+spawned servers.
 """
 from _topology import bolt_uri
 from neo4j import GraphDatabase
@@ -15,8 +18,10 @@ from neo4j.exceptions import ClientError
 def main():
     driver = GraphDatabase.driver(
         bolt_uri("RELATE_BOLT_PORT_IDENTITY"), auth=("neo4j", "unused"))
-    # `database_` is sent as `db` in the auto-commit RUN extra. Routed to
-    # `system_ontologies` the one statement kind that still runs is the
+    # `database_` is sent as `db` in the auto-commit RUN extra. The server
+    # runs under RELATE_PREVIEW=ontology (see the module docstring,
+    # ADR-0593), so `system_ontologies` is visible; routed there the one
+    # statement kind that still runs is the
     # administration set (ADR-0116 §2): SHOW DATABASES keeps its three rows.
     records, _, _ = driver.execute_query(
         "SHOW DATABASES", database_="system_ontologies"

@@ -148,7 +148,8 @@ class Connection:
     def namespace(self) -> str:
         """The session namespace this connection's statements run in when
         they carry no ``USE`` clause: ``"neo4j"``, ``"system"`` or
-        ``"system_ontologies"``."""
+        ``"system_ontologies"`` (the latter visible only under
+        ``RELATE_PREVIEW=ontology``, ADR-0593)."""
         self._check_closed()
         return self._db.namespace()
 

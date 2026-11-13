@@ -81,6 +81,11 @@ export RELATE_BOLT_PORT_PRESET_AUTH=7689
 export RELATE_BOLT_PORT_IDENTITY=7691
 export RELATE_BOLT_PORT_AUTH_IDENTITY=7692
 export RELATE_BOLT_IDENTITY=Neo4j/5.26.0
+# ADR-0593: the python smoke's `system_ontologies` legs and the bolt
+# namespace doc example (below) need the `ontology` opt-in — the
+# namespace is invisible while it is off. Exported for every spawned
+# server; the other smokes never touch the gated surface.
+export RELATE_PREVIEW=ontology
 PORT_WEBSOCKET=7690
 
 spawn_serve "$RELATE_BOLT_PORT_DEFAULT" --auth none

@@ -143,3 +143,7 @@ CypherLite has no role-based access control.
   ADR-0371 authored preview error and `SHOW PROCEDURES` omits their rows;
   §6 still holds for the code (every build compiles it in), not for
   callability. §7's listing applies unchanged once the opt-in is on.
+- ADR-0593 extends the same `ontology` opt-in to §7's namespace:
+  `system_ontologies` is visible only while the opt-in is set —
+  unlisted by `SHOW DATABASES` and refused as an unknown database
+  otherwise — so §7's listing, like §6's callability, rides the opt-in.

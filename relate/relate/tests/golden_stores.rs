@@ -468,13 +468,20 @@ fn assert_catalog_rows(conn: &mut Connection) {
     );
 }
 
-/// ADR-0116 §1/§8: exactly the three fixed namespaces. The fixture's
-/// `CREATE DATABASE analytics`/`CREATE DATABASE staging` theater rows
-/// (snapshot and WAL tail) are ignored on load.
+/// ADR-0116 §1/§8 with ADR-0593: the golden stores reopen without the
+/// `ontology` opt-in, so the listing carries the two visible fixed
+/// namespaces — `system_ontologies` is hidden while the opt-in is off,
+/// while the durable theater catalog still carries its row (asserted at
+/// the theater check above). The fixture's `CREATE DATABASE analytics`/
+/// `CREATE DATABASE staging` theater rows (snapshot and WAL tail) are
+/// ignored on load.
 fn assert_fixed_namespaces(conn: &mut Connection) {
-    // ADR-0116 §1/§8: exactly the three fixed namespaces. The fixture's
-    // `CREATE DATABASE analytics`/`CREATE DATABASE staging` theater rows
-    // (snapshot and WAL tail) are ignored on load.
+    // The closed-gate precondition, asserted: a dev shell exporting
+    // RELATE_PREVIEW silently changes what this pin tests.
+    relate::test_opts::assert_preview_unset();
+    // ADR-0116 §1/§8 with ADR-0593: the flag-off listing is the two
+    // visible fixed namespaces; the hidden third stays in the durable
+    // catalog and returns with the opt-in.
     let r = conn
         .query(
             "SHOW DATABASES YIELD name, type, home, defaultLanguage \
@@ -506,12 +513,6 @@ fn assert_fixed_namespaces(conn: &mut Connection) {
             (
                 "system".to_string(),
                 "system".to_string(),
-                false,
-                "CYPHER 25".to_string(),
-            ),
-            (
-                "system_ontologies".to_string(),
-                "standard".to_string(),
                 false,
                 "CYPHER 25".to_string(),
             ),

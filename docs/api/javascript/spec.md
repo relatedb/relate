@@ -239,7 +239,11 @@ string).
 
 A connection's session namespace is the default graph for statements
 without a `USE` clause. Fixed namespaces: `"neo4j"` (default), `"system"`,
-`"system_ontologies"`, matched case-insensitively.
+`"system_ontologies"`, matched case-insensitively. `system_ontologies` is
+visible only under `RELATE_PREVIEW=ontology` (ADR-0593): without the
+opt-in, `connect`/`setNamespace` with it fail with the same `Graph not
+found` rejection as an unknown name, and `SHOW DATABASES` lists the two
+CE rows.
 
 - `db.connect(namespace?)` — omitting `namespace` keeps `"neo4j"` (same as
   the zero-argument `connect()` before ADR-0117). Both forms wrap the

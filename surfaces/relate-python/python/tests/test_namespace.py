@@ -103,13 +103,18 @@ def test_namespace_error_kinds_map_to_dbapi_classes():
     assert exception_for("TransactionError", "TransactionError") is OperationalError
 
 
-def test_statement_in_system_ontologies_is_operational_error(db):
-    # ADR-0229: `system_ontologies` is listed but not queryable — every
-    # non-administration statement routed there fails with the 42N17
-    # SemanticError text, reads included. The kind maps to
-    # OperationalError (ADR-0116/ADR-0117), and administration commands
-    # still run from there (ADR-0116 §2).
-    db.set_namespace("system_ontologies")
+def test_statement_in_system_ontologies_is_operational_error(monkeypatch):
+    # ADR-0229 under the `ontology` opt-in (ADR-0593): `system_ontologies`
+    # is visible but not queryable — every non-administration statement
+    # routed there fails with the 42N17 SemanticError text, reads
+    # included. The kind maps to OperationalError
+    # (ADR-0116/ADR-0117), and administration commands still run from
+    # there (ADR-0116 §2). The opt-in is scoped to this test through
+    # monkeypatch — a module-level setdefault would leak into every other
+    # module's stores, since pytest imports them all up front and the
+    # engine re-reads the variable at each open.
+    monkeypatch.setenv("RELATE_PREVIEW", "ontology")
+    db = relate.connect(":memory:", namespace="system_ontologies")
     try:
         for statement in ["CREATE (:N)", "MATCH (n) RETURN count(n) AS n"]:
             with pytest.raises(relate.OperationalError) as exc_info:
@@ -120,7 +125,7 @@ def test_statement_in_system_ontologies_is_operational_error(db):
             )
         db.execute("SHOW DATABASES")
     finally:
-        db.set_namespace("neo4j")
+        db.close()
 
 
 def test_unsupported_administration_command_is_not_supported_error(db):

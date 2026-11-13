@@ -13,7 +13,6 @@ use crate::testutil::{
 };
 use crate::version::BoltVersion;
 use std::net::TcpStream;
-use std::sync::Arc;
 
 /// Send HELLO and return its SUCCESS metadata map.
 fn hello(client: &mut TcpStream) -> Vec<(Pack, Pack)> {
@@ -246,8 +245,10 @@ fn use_target_query_echoes_the_namespace_the_query_ran_in() {
 
 #[test]
 fn discard_success_carries_db_and_hello_is_unchanged() {
-    let db = Arc::new(Database::open(":memory:").unwrap());
-    let addr = spawn_handler(db, ConnConfig::default());
+    // The fixture's own store (its opt-in is the fixture's precondition,
+    // ADR-0593) — a bespoke open would miss it under nextest's
+    // one-process-per-test model.
+    let addr = spawn_handler(crate::testutil::memory_db(), ConnConfig::default());
     let mut client = crate::testutil::connect(addr);
     crate::testutil::handshake(&mut client);
 

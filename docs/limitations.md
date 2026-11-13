@@ -8,8 +8,9 @@ columnar warehouse. Several of these are scope choices, not bugs.
 
 A Relate store holds exactly the three fixed namespaces of ADR-0116 —
 `neo4j` (the user data graph), `system` (no graph data) and
-`system_ontologies` (listed but not queryable, ADR-0229: every statement
-routed to it, reads included, fails with 42N17; only the database
+`system_ontologies` (visible only under the `RELATE_PREVIEW=ontology` opt-in (ADR-0593; without it the namespace is invisible — unlisted, and every route to the name fails as an unknown database, 42N00)) and not
+queryable, ADR-0229: every statement routed to it, reads included, fails
+with 42N17; only the database
 administration commands still run from there) — and a single query always
 runs against a single graph:
 

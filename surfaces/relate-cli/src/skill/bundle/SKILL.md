@@ -120,11 +120,14 @@ what the graph actually holds.
   block.
 - Namespaces: every store has three fixed namespaces — `neo4j` (user data,
   the default), `system` (SHOW/administration commands) and
-  `system_ontologies` (listed but not queryable: every non-administration
-  statement routed there fails with 42N17 `This database is not queryable.
-  Use the db.ontology.* procedures on the user database 'neo4j' instead.`
+  `system_ontologies` (visible only under `RELATE_PREVIEW=ontology`,
+  ADR-0593: without it the connect fails "Graph not found:
+  system_ontologies" and `SHOW DATABASES` lists the two CE rows; with it,
+  every non-administration statement routed there fails with 42N17
+  `This database is not queryable. Use the db.ontology.* procedures on
+  the user database 'neo4j' instead.`
   — read the stored ontology through `CALL db.ontology.get()` on `neo4j`,
-  with `RELATE_PREVIEW=ontology` set).
+  with the same opt-in set).
   `--namespace NAME` (case-insensitive) sets the session namespace for the
   whole run; `USE <name>` inside a statement switches it for that
   statement. Example:

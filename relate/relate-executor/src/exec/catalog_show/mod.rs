@@ -207,10 +207,16 @@ mod tests {
 
     /// Runs a SHOW DATABASES statement through the real catalog path
     /// (the shared [`show_catalog_rows`](crate::exec::test_support)
-    /// harness) against the default theater, which carries exactly the
-    /// `neo4j` and `system` namespaces.
+    /// harness) against a theater opted into the `ontology` preview
+    /// feature, so it carries all three fixed namespaces.
     fn show_databases(query: &str) -> Vec<Row> {
-        let graph = Graph::default();
+        // ADR-0593: the pinned three-row shape is the `ontology`-on
+        // listing — the fixture's graph opts in exactly the way the
+        // show-catalog fixtures do. The flag-off two-row listing (CE's
+        // own) is pinned by the test below and the engine's preview-gate
+        // suite.
+        let mut graph = Graph::default();
+        graph.configure_preview(relate_core::PreviewFeatures::parse("ontology").unwrap());
         crate::exec::test_support::show_catalog_rows(&graph, query)
     }
 
@@ -261,10 +267,10 @@ mod tests {
         assert_eq!(row.get("home"), Some(&Value::Bool(is_default)));
     }
 
-    /// The default theater carries exactly the three fixed namespaces
-    /// (ADR-0116 §1): `neo4j` (default/home), `system` and
-    /// `system_ontologies` (read-only); every row must carry the
-    /// Browser-compat values.
+    /// The `ontology`-on listing carries exactly the three fixed
+    /// namespaces (ADR-0116 §1): `neo4j` (default/home), `system` and
+    /// `system_ontologies` (read-only, visible under the opt-in,
+    /// ADR-0593); every row must carry the Browser-compat values.
     fn assert_fixed_namespace_rows(rows: &[Row]) {
         assert_eq!(rows.len(), 3);
         assert_browser_compat_row(row_named(rows, "neo4j"), true, "read-write");
@@ -296,6 +302,18 @@ mod tests {
     #[test]
     fn show_databases_yield_star_exposes_browser_compat_values() {
         assert_fixed_namespace_rows(&show_databases("SHOW DATABASES YIELD *"));
+    }
+
+    /// ADR-0593: the flag-off listing is CE's exact two rows — the
+    /// `system_ontologies` row returns with the opt-in (the fixture
+    /// above).
+    #[test]
+    fn show_databases_without_the_opt_in_lists_the_two_ce_rows() {
+        let graph = Graph::default();
+        let rows = crate::exec::test_support::show_catalog_rows(&graph, "SHOW DATABASES");
+        assert_eq!(rows.len(), 2);
+        assert_browser_compat_row(row_named(&rows, "neo4j"), true, "read-write");
+        assert_browser_compat_row(row_named(&rows, "system"), false, "read-write");
     }
 
     #[test]

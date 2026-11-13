@@ -6,7 +6,9 @@
 //! is the one supported alteration (ADR-0584 narrowed it from `CYPHER
 //! 5|25`: every other integer fails with the authored
 //! unsupported-version error), and `SHOW DATABASES` reports the
-//! three fixed namespaces. Amended 2026-11-04: a `USE` clause targeting a
+//! three fixed namespaces — this suite opts into the `ontology`
+//! preview feature (`common::preview_ontology`) so `system_ontologies`
+//! stays visible; ADR-0593 hides it while the opt-in is off. Amended 2026-11-04: a `USE` clause targeting a
 //! non-system namespace on an administration-command statement is
 //! rejected with CE's 42N79 auto-routing text, and a `WITH` composing an
 //! administration command on `system` is rejected with CE's
@@ -18,8 +20,8 @@ use relate::{Database, Namespace, Value};
 mod common;
 
 use common::{
-    assert_ce_rejection, connection, err_text, NEEDS_SYSTEM_DATABASE_SUFFIX, USE_WITH_ADMIN_SUFFIX,
-    WITH_ON_SYSTEM_SUFFIX,
+    assert_ce_rejection, connection, err_text, preview_ontology, NEEDS_SYSTEM_DATABASE_SUFFIX,
+    USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
 };
 
 /// The statement is echoed verbatim; a leading `CYPHER n` preamble is
@@ -55,6 +57,7 @@ fn unsupported_administration_commands_echo_the_statement() {
 
 #[test]
 fn alter_database_set_default_language_succeeds_on_every_fixed_namespace() {
+    preview_ontology();
     let mut conn = connection();
     for name in [
         "neo4j",
@@ -130,6 +133,7 @@ fn alter_database_unknown_name_fails_unless_if_exists() {
 
 #[test]
 fn show_databases_reports_the_three_fixed_namespaces() {
+    preview_ontology();
     let mut conn = connection();
     let result = conn
         .query(
@@ -268,6 +272,7 @@ fn show_default_and_home_database_return_neo4j() {
 
 #[test]
 fn show_database_matches_case_insensitively_and_unknown_names_return_no_rows() {
+    preview_ontology();
     let mut conn = connection();
     for src in [
         "SHOW DATABASE NEO4J YIELD name RETURN name",
@@ -350,6 +355,7 @@ fn with_composing_a_show_command_is_rejected_on_system() {
 /// since the gate is plan-based.
 #[test]
 fn use_targeting_non_system_with_administration_command_is_rejected() {
+    preview_ontology();
     let mut conn = connection();
     for src in [
         "USE neo4j SHOW DATABASES",
@@ -389,6 +395,7 @@ fn use_targeting_non_system_with_administration_command_is_rejected() {
 /// `USE system` + §2 surface runnable (ADR-0116 §2's Later references).
 #[test]
 fn use_system_with_administration_command_stays_accepted() {
+    preview_ontology();
     let mut conn = connection();
     for src in [
         "USE system SHOW DATABASES",
@@ -464,6 +471,7 @@ fn composed_show_databases_is_rejected_off_system() {
 /// `neo4j` as well).
 #[test]
 fn bare_administration_commands_still_run_on_the_user_namespace() {
+    preview_ontology();
     let mut conn = connection();
     for (src, expected_rows) in [
         ("SHOW DATABASES", 3),

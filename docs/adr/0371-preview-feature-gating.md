@@ -98,6 +98,13 @@ knobs, fail-closed on a bad value).
 
 ## Later references
 
+- ADR-0593 records a third gate class inside ADR-0378's exception family:
+  a fixed namespace's visibility gates through a namespace-registry
+  mapping (the namespace twin of the procedure mapping), and its disabled
+  form is the name-gate rule in namespace form — the site's ordinary
+  unknown-database rejection, never the authored error. The one row is
+  `system_ontologies` behind `ontology`; it is removed with ADR-0378's
+  row once the spec is final.
 - ADR-0378 amends the scope policy: a built-in procedure family whose
   contract tracks a non-final external spec may gate even though it does
   not extend syntax. The one row is `ontology` (the `db.ontology.*` family,

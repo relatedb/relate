@@ -1,3 +1,9 @@
+// ADR-0593: the system_ontologies legs below need the `ontology` preview
+// opt-in — without it the namespace is invisible and connect/setNamespace
+// fail as unknown names. Set before the first Database.open (the variable
+// is read once, at open).
+process.env.RELATE_PREVIEW = "ontology";
+
 const { Database } = require("./index");
 const assert = require("assert");
 const path = require("path");
@@ -48,8 +54,9 @@ const after = other.query("MATCH (n:Txn) RETURN n.name AS name");
 if (after.rows[0].name !== "Bob") {
   throw new Error("commit not visible");
 }
-// Namespace API (ADR-0117). system_ontologies is listed but not
-// queryable (ADR-0229): selecting it works; any query fails 42N17.
+// Namespace API (ADR-0117). system_ontologies is visible under the
+// opt-in above (ADR-0593) and not queryable (ADR-0229): selecting it
+// works; any query fails 42N17.
 const defaultConn = db.connect(); // omitting the argument keeps "neo4j"
 assert.strictEqual(defaultConn.query("RETURN 1 AS n").rows[0].n, 1);
 const sysConn = db.connect("system_ontologies");

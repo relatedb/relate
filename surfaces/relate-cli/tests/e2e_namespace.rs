@@ -5,42 +5,53 @@ mod support;
 
 use support::{run_cli, CliRunOptions as Opts};
 
+/// The `ontology` preview opt-in (ADR-0593): every run that selects or
+/// lists `system_ontologies` carries it.
+const GATE_ON: &[(&str, &str)] = &[("RELATE_PREVIEW", "ontology")];
+/// The pinned ADR-0229 42N17 text.
+const NOT_QUERYABLE: &str = "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead.";
+
 #[test]
 fn test_namespace_system_ontologies_rejects_queries_with_42n17() {
     // ADR-0229 §1/§2: selecting the namespace works, but every
     // non-administration statement routed to it — reads included — fails
     // with the pinned 42N17 text (a rejected statement: exit 6, the
     // `semantic error:` line on stderr).
-    let (status, _stdout, stderr) = run_cli(Opts::new(&[
-        "--namespace",
-        "system_ontologies",
-        "--mode",
-        "table",
-        "-c",
-        "MATCH (n) RETURN count(n)",
-    ]));
+    let (status, _stdout, stderr) = run_cli(
+        Opts::new(&[
+            "--namespace",
+            "system_ontologies",
+            "--mode",
+            "table",
+            "-c",
+            "MATCH (n) RETURN count(n)",
+        ])
+        .with_envs(GATE_ON),
+    );
     assert_eq!(status.code(), Some(6), "stderr: {stderr}");
     assert!(
-        stderr.trim_end().ends_with(
-            "semantic error: SemanticError: This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
-        ),
+        stderr
+            .trim_end()
+            .ends_with(&format!("semantic error: SemanticError: {NOT_QUERYABLE}")),
         "expected the 42N17 not-queryable text on stderr, got: {stderr}"
     );
 }
 
-#[test]
-fn test_namespace_system_ontologies_still_runs_administration_commands() {
-    // ADR-0116 §2's carve-out survives ADR-0229: SHOW DATABASES still runs
-    // while routed to `system_ontologies`, and the run selects the
-    // namespace (the SHOW DATABASES rows are there).
-    let (status, stdout, stderr) = run_cli(Opts::new(&[
-        "--namespace",
-        "system_ontologies",
-        "--mode",
-        "table",
-        "-c",
-        "SHOW DATABASES",
-    ]));
+/// The opted-in `SHOW DATABASES` run from a `--namespace` session: the
+/// three fixed namespaces, whatever session namespace the run selects —
+/// the one mechanics the two clause-pinning tests below share.
+fn show_databases_lists_three_rows_from(namespace: &str) {
+    let (status, stdout, stderr) = run_cli(
+        Opts::new(&[
+            "--namespace",
+            namespace,
+            "--mode",
+            "table",
+            "-c",
+            "SHOW DATABASES",
+        ])
+        .with_envs(GATE_ON),
+    );
     assert!(status.success(), "SHOW DATABASES failed: {stderr}");
     for name in ["neo4j", "system", "system_ontologies"] {
         assert!(
@@ -51,22 +62,16 @@ fn test_namespace_system_ontologies_still_runs_administration_commands() {
 }
 
 #[test]
+fn test_namespace_system_ontologies_still_runs_administration_commands() {
+    // ADR-0116 §2's carve-out survives ADR-0229 (under the opt-in,
+    // ADR-0593): SHOW DATABASES still runs while routed to
+    // `system_ontologies`, and the run selects the namespace.
+    show_databases_lists_three_rows_from("system_ontologies");
+}
+
+#[test]
 fn test_namespace_system_show_databases_lists_three_rows() {
-    let (status, stdout, stderr) = run_cli(Opts::new(&[
-        "--namespace",
-        "system",
-        "--mode",
-        "table",
-        "-c",
-        "SHOW DATABASES",
-    ]));
-    assert!(status.success(), "SHOW DATABASES failed: {stderr}");
-    for name in ["neo4j", "system", "system_ontologies"] {
-        assert!(
-            stdout.contains(name),
-            "expected a row for {name}, got: {stdout}"
-        );
-    }
+    show_databases_lists_three_rows_from("system");
 }
 
 #[test]
@@ -87,42 +92,38 @@ fn test_namespace_applies_to_positional_query_and_piped_stdin() {
     // The flag applies in every invocation shape (positional query, piped
     // stdin), and the ADR-0229 gate rejects the read in each of them:
     // `system_ontologies` is not queryable, reads included.
-    let (status, _stdout, stderr) = run_cli(Opts::new(&[
-        "--namespace",
-        "system_ontologies",
-        "MATCH (n) RETURN count(n) AS c",
-    ]));
+    let (status, _stdout, stderr) = run_cli(
+        Opts::new(&[
+            "--namespace",
+            "system_ontologies",
+            "MATCH (n) RETURN count(n) AS c",
+        ])
+        .with_envs(GATE_ON),
+    );
     assert_eq!(status.code(), Some(6), "stderr: {stderr}");
     assert!(
-        stderr.trim_end().ends_with(
-            "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
-        ),
+        stderr.trim_end().ends_with(NOT_QUERYABLE),
         "expected the 42N17 not-queryable text on stderr, got: {stderr}"
     );
 
     let home = tempfile::tempdir().expect("tempdir");
     let (status, _stdout, stderr) = run_cli(
         Opts::new(&["query", "--namespace", "system_ontologies"])
+            .with_envs(GATE_ON)
             .in_home(home.path())
             .with_stdin(b"MATCH (n) RETURN count(n) AS c;"),
     );
     assert_eq!(status.code(), Some(6), "stderr: {stderr}");
     assert!(
-        stderr.trim_end().ends_with(
-            "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
-        ),
+        stderr.trim_end().ends_with(NOT_QUERYABLE),
         "expected the 42N17 not-queryable text on stderr, got: {stderr}"
     );
 }
 
 #[test]
 fn test_namespace_names_are_case_insensitive() {
-    let (status, stdout, stderr) = run_cli(Opts::new(&[
-        "--namespace",
-        "SYSTEM",
-        "-c",
-        "SHOW DATABASES",
-    ]));
+    let (status, stdout, stderr) =
+        run_cli(Opts::new(&["--namespace", "SYSTEM", "-c", "SHOW DATABASES"]).with_envs(GATE_ON));
     assert!(status.success(), "uppercase SYSTEM failed: {stderr}");
     assert!(
         stdout.contains("system_ontologies"),
@@ -188,5 +189,41 @@ fn test_help_lists_namespace_flag() {
             && stdout.contains("neo4j|system|system_ontologies")
             && stdout.contains("default neo4j"),
         "expected --namespace with values and default in --help, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_show_databases_without_the_opt_in_lists_the_two_ce_rows() {
+    // ADR-0593: without the `ontology` opt-in the listing is CE's exact
+    // two rows — `system_ontologies` is invisible.
+    let (status, stdout, stderr) = run_cli(Opts::new(&["-c", "SHOW DATABASES"]));
+    assert!(status.success(), "SHOW DATABASES failed: {stderr}");
+    assert!(
+        stdout.contains("neo4j") && stdout.contains("system"),
+        "got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("system_ontologies"),
+        "the hidden namespace must not be listed, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_namespace_system_ontologies_without_the_opt_in_fails_as_unknown() {
+    // ADR-0593: without the `ontology` opt-in the session connect refuses
+    // the hidden namespace with the ordinary unknown-database rejection —
+    // an engine error (exit 6), not the flag-parse usage error.
+    let (status, _stdout, stderr) = run_cli(Opts::new(&[
+        "--namespace",
+        "system_ontologies",
+        "-c",
+        "SHOW DATABASES",
+    ]));
+    assert_eq!(status.code(), Some(6), "stderr: {stderr}");
+    assert!(
+        stderr
+            .trim_end()
+            .ends_with("Graph not found: system_ontologies"),
+        "expected the unknown-database rejection on stderr, got: {stderr}"
     );
 }

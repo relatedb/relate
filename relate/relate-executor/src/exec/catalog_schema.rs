@@ -342,8 +342,12 @@ pub(crate) fn catalog_alter_database(
     let name = schema_name_value(&c.name, params)?;
     // ADR-0116 §1/§2: namespace names match case-insensitively; an
     // unknown name fails with CE's text unless `IF EXISTS` makes the
-    // command a no-op.
-    let Some(ns) = relate_core::Namespace::parse(&name) else {
+    // command a no-op. ADR-0593: a namespace invisible under the
+    // store's preview set is indistinguishable from an unknown name
+    // here — same branch, same text, same `IF EXISTS` no-op.
+    let Some(ns) =
+        relate_core::Namespace::parse(&name).filter(|ns| ns.visible_under(graph.preview()))
+    else {
         if c.if_exists {
             return Ok(rows);
         }

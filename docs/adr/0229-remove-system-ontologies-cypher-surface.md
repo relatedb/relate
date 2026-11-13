@@ -208,3 +208,12 @@ replaces the surface.
 - ADR-0116, ADR-0120, ADR-0121 and ADR-0226 gain Later-references notes;
   so do ADR-0227 and ADR-0228, whose `system_ontologies` composition and
   queryability statements this supersedes.
+
+## Later references
+
+ADR-0593 narrows this ADR's "listed" premise: `system_ontologies` is
+visible only under the `ontology` preview opt-in (`RELATE_PREVIEW`), so
+while the opt-in is off the namespace is unlisted and every route to the
+name fails as an unknown database (42N00). This ADR's not-queryable gate
+(§1/§2) then applies only with the opt-in set, unchanged in text and
+position.
