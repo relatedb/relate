@@ -45,6 +45,19 @@ jobs:
           echo "cli=$CLI store=$STORE"; ls -la "$STORE" | head -3
           mkdir -p rca-out
           python3 -I relate/.rca/measure.py "$(realpath $CLI)" "$(realpath $STORE)" "$(realpath $B/benchmarks/pokec/queries)" "$(realpath rca-out)" 2>&1 | tail -40
+      - name: Semantics probe (tiny graph)
+        continue-on-error: true
+        run: |
+          B=relate-benchmarks-private
+          CLI=$(realpath $(ls $B/.cache/engines/*/relate | head -1))
+          cat > sem.cypher <<'CY'
+          CREATE (a:U {n:1}), (b:U {n:2}), (x:U {n:3}), (a)-[:K]->(b), (a)-[:K]->(x), (x)-[:K]->(b);
+          MATCH p = SHORTEST 1 (a:U {n:1})-[:K*..2]-(b:U {n:2}) WHERE length(p) >= 2 RETURN length(p) AS postfilter_len_ge2;
+          MATCH p = SHORTEST 1 (a:U {n:1})-[:K*..2]-(b:U) WHERE b.n = 2 RETURN length(p) AS endpoint_where;
+          MATCH p = SHORTEST 3 (a:U {n:1})-[:K*..2]-(b:U {n:2}) RETURN length(p) AS shortest3;
+          CY
+          sed -i 's/^          //' sem.cypher
+          RELATE_MAX_ROWS=0 "$CLI" query --mode jsonl -d :memory: < sem.cypher | tee rca-out/semantics.txt
       - name: Sample slow cases with perf
         continue-on-error: true
         run: |
