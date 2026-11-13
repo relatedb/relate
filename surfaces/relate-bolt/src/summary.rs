@@ -173,9 +173,7 @@ pub(crate) fn ending(
     let plan = plan_summary_pair(result.plan_root(), codec)?;
     let notifications = notifications_summary_pair(result.notifications(), notification_config);
     let mut metadata = Vec::new();
-    if let Some(bookmark) = &result.bookmark {
-        metadata.push(entry("bookmark", Pack::String(bookmark.clone())));
-    }
+    metadata.extend(bookmark_entry(result.bookmark.as_deref()));
     if let Some(stats) = stats(&result.stats) {
         metadata.push(entry("stats", stats));
     }
@@ -226,10 +224,13 @@ pub(crate) fn ending(
 /// ADR-0502 §7); `{}` when the transaction committed nothing, so no
 /// bookmark is fabricated for a commit that crossed no WAL boundary.
 pub(crate) fn commit(bookmark: Option<String>) -> Metadata {
-    bookmark
-        .map(|bookmark| entry("bookmark", Pack::String(bookmark)))
-        .into_iter()
-        .collect()
+    bookmark_entry(bookmark.as_deref()).into_iter().collect()
+}
+
+/// The one spelling of the bookmark wire entry: the `bookmark` key with a
+/// string value, present only when the engine returned a bookmark.
+fn bookmark_entry(bookmark: Option<&str>) -> Option<(Pack, Pack)> {
+    bookmark.map(|bookmark| entry("bookmark", Pack::String(bookmark.to_owned())))
 }
 
 /// ROUTE SUCCESS (ADR-0269): the `rt` routing table, built through the same

@@ -23,16 +23,6 @@ fn name(chunk: &[u8]) -> CString {
 }
 
 
-/// Take the caller-owned error channel back: free the string if the call
-/// filled one, and reset the out-param — the one reclaim policy every
-/// site in this harness shares.
-fn reclaim(err: &mut *mut std::os::raw::c_char) {
-    if !err.is_null() {
-        unsafe { relate_free_string(*err) };
-        *err = std::ptr::null_mut();
-    }
-}
-
 fuzz_target!(|data: &[u8]| {
     // SAFETY: every handle, string and out-param below is created and
     // owned by this harness, and every buffer's length matches the `len`

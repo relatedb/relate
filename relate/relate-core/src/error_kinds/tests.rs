@@ -4,90 +4,8 @@
 
 use super::*;
 
-/// Every non-`Uncategorized` kind used across the engine, for exhaustive
-/// round-trip coverage. Kept in sync with the `error_kinds!` list.
-const ALL_KINDS: &[ErrorKind] = &[
-    ErrorKind::SyntaxError,
-    ErrorKind::UnexpectedSyntax,
-    ErrorKind::IncompleteQuery,
-    ErrorKind::InvalidPatternCharacter,
-    ErrorKind::InvalidLabelExpression,
-    ErrorKind::InvalidNodePatternPredicate,
-    ErrorKind::InvalidClauseComposition,
-    ErrorKind::InvalidAggregation,
-    ErrorKind::AmbiguousAggregationExpression,
-    ErrorKind::NestedAggregation,
-    ErrorKind::NegativeIntegerArgument,
-    ErrorKind::NoSingleRelationshipType,
-    ErrorKind::DifferentColumnsInUnion,
-    ErrorKind::VariableAlreadyBound,
-    ErrorKind::VariableAlreadyDefined,
-    ErrorKind::VariableTypeConflict,
-    ErrorKind::VariableShadowing,
-    ErrorKind::UndefinedVariable,
-    ErrorKind::UnknownFunction,
-    ErrorKind::NoExpressionAlias,
-    ErrorKind::NoVariablesInScope,
-    ErrorKind::RelationshipUniquenessViolation,
-    ErrorKind::CreatingVarLength,
-    ErrorKind::RequiresDirectedRelationship,
-    ErrorKind::InvalidParameterUse,
-    ErrorKind::ColumnNameConflict,
-    ErrorKind::QuantifiedPathPatternNotSupported,
-    ErrorKind::InvalidSelectivePathPatternDependency,
-    ErrorKind::GroupVariableReuse,
-    ErrorKind::SingletonReusedAsGroup,
-    ErrorKind::NonLocalGroupVariableReference,
-    ErrorKind::GroupVariableInNonAggregatingOperation,
-    ErrorKind::InvalidSearchVariableReference,
-    ErrorKind::SelfReferencingSearch,
-    ErrorKind::InvalidUseOfCommand,
-    ErrorKind::InvalidPlacementOfUseClause,
-    ErrorKind::UseClauseWithAdministrationCommand,
-    ErrorKind::InvalidUpdatingClauseInCountSubquery,
-    ErrorKind::InvalidUpdatingClauseInCollectSubquery,
-    ErrorKind::NonConstantExpression,
-    ErrorKind::InvalidShowColumn,
-    ErrorKind::InvalidNumberOfArguments,
-    ErrorKind::IntegerOverflow,
-    ErrorKind::FloatingPointOverflow,
-    ErrorKind::InvalidNumberLiteral,
-    ErrorKind::InvalidUnicodeLiteral,
-    ErrorKind::InvalidUnicodeCharacter,
-    ErrorKind::InvalidRelationshipPattern,
-    ErrorKind::InvalidArgumentPassingMode,
-    ErrorKind::InvalidDelete,
-    ErrorKind::TypeError,
-    ErrorKind::InvalidArgumentType,
-    ErrorKind::ParameterWrongTypeException,
-    ErrorKind::InvalidPropertyType,
-    ErrorKind::InvalidPropertyValueType,
-    ErrorKind::MapElementAccessByNonString,
-    ErrorKind::ArgumentError,
-    ErrorKind::InvalidArgumentValue,
-    ErrorKind::ArithmeticError,
-    ErrorKind::NumberOutOfRange,
-    ErrorKind::ParameterMissing,
-    ErrorKind::EntityNotFound,
-    ErrorKind::DeletedEntityAccess,
-    ErrorKind::ConstraintViolation,
-    ErrorKind::DeleteConnectedNode,
-    ErrorKind::ProcedureError,
-    ErrorKind::ProcedureNotFound,
-    ErrorKind::SchemaError,
-    ErrorKind::MergeReadOwnWrites,
-    ErrorKind::DataException,
-    ErrorKind::DataError,
-    ErrorKind::DatabaseNotFound,
-    ErrorKind::DatabaseExists,
-    ErrorKind::DatabaseError,
-    ErrorKind::SystemDatabaseRequired,
-    ErrorKind::GraphTypeNotFound,
-    ErrorKind::InternalError,
-    ErrorKind::TransactionError,
-    ErrorKind::UnsupportedAdministrationCommand,
-    ErrorKind::WriteOnReadOnlyAccessDatabase,
-];
+/// Every non-`Uncategorized` kind, straight from the `error_kinds!` list.
+const ALL_KINDS: &[ErrorKind] = ErrorKind::ALL;
 
 #[test]
 fn kind_name_round_trips_through_from_name() {
@@ -250,4 +168,13 @@ fn detail_helpers_spell_the_one_text() {
         duplicate_variable_detail("n"),
         "variable 'n' already declared"
     );
+}
+
+#[test]
+fn tck_class_name_round_trips_through_from_name() {
+    assert_eq!(TckErrorClass::ALL.len(), 8);
+    for class in TckErrorClass::ALL {
+        assert_eq!(TckErrorClass::from_name(class.as_str()), Some(*class));
+    }
+    assert_eq!(TckErrorClass::from_name("Uncategorized"), None);
 }

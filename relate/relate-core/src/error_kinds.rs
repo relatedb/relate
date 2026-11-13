@@ -12,12 +12,53 @@
 
 use std::fmt;
 
-/// One of the eight openCypher TCK error *classes*. The spec harness
-/// (ADR-0482) asserts an expected class, while [`ErrorKind`] carries the
-/// finer-grained detail. Every [`ErrorKind`] maps to exactly one class via
-/// [`ErrorKind::tck_class`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TckErrorClass {
+/// Generates [`TckErrorClass`] with its `as_str` / `from_name` tables and
+/// the [`TckErrorClass::ALL`] roster from one variant list, so the enum,
+/// the spelling and the inverse cannot drift apart.
+macro_rules! tck_error_classes {
+    ($($variant:ident),+ $(,)?) => {
+        /// One of the eight openCypher TCK error *classes*. The spec harness
+        /// (ADR-0482) asserts an expected class, while [`ErrorKind`] carries
+        /// the finer-grained detail. Every [`ErrorKind`] maps to exactly one
+        /// class via [`ErrorKind::tck_class`].
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum TckErrorClass {
+            $($variant,)+
+        }
+
+        impl TckErrorClass {
+            /// Every class, in declaration order.
+            pub const ALL: &'static [TckErrorClass] = &[$(TckErrorClass::$variant,)+];
+
+            /// The canonical openCypher class name.
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(TckErrorClass::$variant => stringify!($variant),)+
+                }
+            }
+
+            /// Parses one of the eight canonical openCypher class names back
+            /// into a [`TckErrorClass`]; the inverse of
+            /// [`TckErrorClass::as_str`]. Returns `None` for any other
+            /// string.
+            ///
+            /// The spec harness's `should be raised` matcher makes the same
+            /// call over the same eight names (its `clspec/errors.py`,
+            /// ADR-0482): a step whose class is not one of them (e.g. the
+            /// harness `cip-eval` suite's `GraphTypeError`, `SchemaError`,
+            /// `ConstraintValidationFailed`) falls back to lenient any-error
+            /// matching rather than a strict class assertion.
+            pub fn from_name(name: &str) -> Option<TckErrorClass> {
+                match name {
+                    $(stringify!($variant) => Some(TckErrorClass::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+tck_error_classes! {
     SyntaxError,
     TypeError,
     ArgumentError,
@@ -26,46 +67,6 @@ pub enum TckErrorClass {
     ProcedureError,
     ParameterMissing,
     ConstraintVerificationFailed,
-}
-
-impl TckErrorClass {
-    /// The canonical openCypher class name.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TckErrorClass::SyntaxError => "SyntaxError",
-            TckErrorClass::TypeError => "TypeError",
-            TckErrorClass::ArgumentError => "ArgumentError",
-            TckErrorClass::EntityNotFound => "EntityNotFound",
-            TckErrorClass::SemanticError => "SemanticError",
-            TckErrorClass::ProcedureError => "ProcedureError",
-            TckErrorClass::ParameterMissing => "ParameterMissing",
-            TckErrorClass::ConstraintVerificationFailed => "ConstraintVerificationFailed",
-        }
-    }
-
-    /// Parses one of the eight canonical openCypher class names back into a
-    /// [`TckErrorClass`]; the inverse of [`TckErrorClass::as_str`]. Returns
-    /// `None` for any other string.
-    ///
-    /// The spec harness's `should be raised` matcher makes the same call
-    /// over the same eight names (its `clspec/errors.py`, ADR-0482): a
-    /// step whose class is not one of them (e.g. the harness `cip-eval`
-    /// suite's `GraphTypeError`, `SchemaError`,
-    /// `ConstraintValidationFailed`) falls back to lenient any-error
-    /// matching rather than a strict class assertion.
-    pub fn from_name(name: &str) -> Option<TckErrorClass> {
-        match name {
-            "SyntaxError" => Some(TckErrorClass::SyntaxError),
-            "TypeError" => Some(TckErrorClass::TypeError),
-            "ArgumentError" => Some(TckErrorClass::ArgumentError),
-            "EntityNotFound" => Some(TckErrorClass::EntityNotFound),
-            "SemanticError" => Some(TckErrorClass::SemanticError),
-            "ProcedureError" => Some(TckErrorClass::ProcedureError),
-            "ParameterMissing" => Some(TckErrorClass::ParameterMissing),
-            "ConstraintVerificationFailed" => Some(TckErrorClass::ConstraintVerificationFailed),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for TckErrorClass {
@@ -96,6 +97,11 @@ macro_rules! error_kinds {
         }
 
         impl ErrorKind {
+            /// Every non-`Uncategorized` kind, in declaration order —
+            /// generated from the same list, so coverage tests iterate the
+            /// vocabulary itself rather than a hand copy.
+            pub const ALL: &'static [ErrorKind] = &[$(ErrorKind::$variant,)+];
+
             /// The canonical string form of this kind — the inverse of
             /// [`ErrorKind::from_name`] for every non-`Uncategorized` variant.
             pub fn as_str(&self) -> &'static str {
