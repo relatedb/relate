@@ -522,7 +522,7 @@ assert.deepStrictEqual(lookAlikeRow.m, lookAlike);
 // Symbol.for spelling never matches, so no user code can forge or probe
 // entity-ness, and a look-alike map reads as no entity through the one
 // reader.
-const { decodedEntityKind } = require("./graph");
+const { decodedEntityKind } = require("./entity");
 assert.strictEqual(decodedEntityKind(lookAlikeRow.m), undefined);
 assert.strictEqual(lookAlikeRow.m[Symbol.for("relate.decoded")], undefined);
 // A real decoded entity carries the marker, invisibly to Object.keys.

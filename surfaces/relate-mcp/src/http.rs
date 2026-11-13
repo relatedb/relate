@@ -237,7 +237,7 @@ fn handle_connection(
         // The transport owns the socket, so it arms the short drain timeout
         // (the same shape as the HTTP surface's drain closure).
         stream.set_read_timeout(Some(REJECT_DRAIN_TIMEOUT))?;
-        drain_reader(&mut reader, drain, DEFAULT_MAX_BODY_BYTES);
+        drain_reader(&mut reader, drain, limits.max_body_bytes());
     }
     Ok(())
 }

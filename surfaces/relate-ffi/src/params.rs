@@ -90,6 +90,11 @@ fn pre_copy_bound(bytes: usize, what: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The bytes one vector coordinate charges against the builder budget (an
+/// `f64`/`i64` slot): the one fact the vector pre-copy bound and the
+/// vector entry's charge both read.
+const VECTOR_COORD_BYTES: usize = 8;
+
 /// One params builder (ADR-0502 §4): a MAP or LIST under construction.
 /// Opaque to C.
 pub struct relate_params {
@@ -419,7 +424,7 @@ pub unsafe extern "C" fn relate_params_put_string(
             // contract.
             let bytes = std::slice::from_raw_parts(v.cast::<u8>(), len);
             let s = std::str::from_utf8(bytes).map_err(|_| "invalid utf-8".to_string())?;
-            value(CypherValue::Str(s.to_string())).map(|(entry, _)| (entry, len))
+            Ok((Entry::Value(CypherValue::Str(s.to_string())), len))
         })
     }
 }
@@ -632,7 +637,10 @@ pub unsafe extern "C" fn relate_params_put_point(
 /// Build a VECTOR entry from checked coordinates.
 fn vector(coord: VectorCoordKind, values: Vec<CypherValue>) -> Result<(Entry, usize), String> {
     let dim = values.len();
-    value(CypherValue::Vector { coord, dim, values }).map(|(entry, _)| (entry, dim * 8))
+    Ok((
+        Entry::Value(CypherValue::Vector { coord, dim, values }),
+        dim * VECTOR_COORD_BYTES,
+    ))
 }
 
 /// A VECTOR of one of the four floating dtypes (`FLOAT16`, `BFLOAT16`,
@@ -660,7 +668,7 @@ pub unsafe extern "C" fn relate_params_put_vector_float(
                     coord.canonical_name()
                 ));
             }
-            pre_copy_bound(dim.saturating_mul(8), "vector dimension")?;
+            pre_copy_bound(dim.saturating_mul(VECTOR_COORD_BYTES), "vector dimension")?;
             let mut out = Vec::with_capacity(dim);
             for (i, f) in coordinates(values, dim)?.iter().enumerate() {
                 if !coord.is_exact(*f) {
@@ -701,7 +709,7 @@ pub unsafe extern "C" fn relate_params_put_vector_int(
                     coord.canonical_name()
                 ));
             }
-            pre_copy_bound(dim.saturating_mul(8), "vector dimension")?;
+            pre_copy_bound(dim.saturating_mul(VECTOR_COORD_BYTES), "vector dimension")?;
             let mut out = Vec::with_capacity(dim);
             for (i, n) in coordinates(values, dim)?.iter().enumerate() {
                 if !coord.holds_int(*n) {

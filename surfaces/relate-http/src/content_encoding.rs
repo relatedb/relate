@@ -109,9 +109,10 @@ pub(crate) enum ReplyEncodingPolicy {
 
 impl ReplyEncodingPolicy {
     /// The policy for one reply that will actually be written: `public` is
-    /// the gate's public-probe classification (the Query API's `GET /`
-    /// discovery document is outside the seam), carried as data by the gate
-    /// outcome — no consumer re-derives it. Every other Query API reply
+    /// the gate's public-route classification (the Query API's `GET /`
+    /// discovery document, plus any route the extension declares public —
+    /// both unauthenticated and outside the seam), carried as data by the
+    /// gate outcome — no consumer re-derives it. Every other Query API reply
     /// negotiates. Only the gate outcomes that write a seam reply call this;
     /// the body-less `204` preflight is answered directly by
     /// `server::write_preflight` and never reaches this policy.

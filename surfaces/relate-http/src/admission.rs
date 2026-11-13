@@ -123,6 +123,12 @@ impl ReadLimits {
             read_timeout,
         })
     }
+
+    /// The effective body cap these limits enforce, for a transport that
+    /// drains a rejected request's body to the same bound.
+    pub fn max_body_bytes(&self) -> usize {
+        self.max_body_bytes
+    }
 }
 
 /// A rejection's reply payload: the status, GQLSTATUS code, message and extra

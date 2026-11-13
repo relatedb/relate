@@ -279,8 +279,8 @@ impl TokenBudget {
         })
     }
 
-    /// Live reservation. `None` when admission is off, so a disabled budget
-    /// does not report the dummy pool `reserve` builds for that mode.
+    /// Live reservation. `None` when admission is off: a disabled budget
+    /// reserves nothing, so it has no pool state to report.
     pub(crate) fn snapshot(&self) -> Option<TokenPoolSnapshot> {
         if !self.enabled {
             return None;
