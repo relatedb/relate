@@ -101,6 +101,11 @@ surfaces/relate-cli/src/skill/bundle/references/client-swift.md (+ SKILL.md row)
 Deferred: Mac Catalyst and visionOS slices, Swift Package Index listing,
 `Codable` row decoding, an async streaming result.
 
+Later: ADR-0596 (an idiomatic layer over the Swift surface) takes up
+`Codable` row decoding and replaces "synchronous core API; apps call it from
+their own actor" (§2) with managed asynchronous read and write entries on
+`Database`. The synchronous API remains underneath.
+
 ## 6. Status (2026-10-28)
 
 Implemented, uncommitted, under ADR-0433 (`docs/adr/0433-reinstate-swift-surface.md`;

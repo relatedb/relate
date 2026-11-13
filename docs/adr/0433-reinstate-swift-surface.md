@@ -4,7 +4,12 @@ Status: Proposed
 Claim: 71e4363e046303fb89ee1174f735c09a9b6509b1
 Later references: the §6 one-release-commit shape is split by ADR-0572 into
 a bump commit (the release cut) and a Swift stamp commit (the tag target);
-the checksum contract itself is unchanged.
+the checksum contract itself is unchanged. ADR-0596 adds managed
+asynchronous access, typed records and parameters, Foundation bridges and
+renames four public types; it supersedes this ADR's design record on two
+points ("synchronous core API; apps call it from their own actor", and the
+deferral of `Codable` row decoding). The concurrency contract in item 3
+stands.
 
 ## Context
 
