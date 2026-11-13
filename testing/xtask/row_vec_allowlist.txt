@@ -51,6 +51,8 @@ exec/hub_join.rs::try_hub_join # kernel rung result handed back to the ladder; t
 exec/kernels/chain.rs::emit_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/kernels/frontier_run.rs::try_frontier_rows # rung result handed back to the ladder, bounded by the rung's own breaker; returns FrontierRows, a ROW_VEC_CARRIERS wrapper; ADR-0555 follow-up
 exec/kernels/mod.rs::try_match_kernel # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
+exec/label_set_groups.rs::group_label_sets # emits one row per distinct group key, bounded by the label-set map and charged to the expression budget (ADR-0589)
+exec/label_set_groups.rs::label_set_groups_result # the final page of the grouped answer, bounded by the label-set map and charged to the expression budget (ADR-0589)
 exec/match_clause.rs::match_clause # clause arm materializes its output rows; to be replaced by streaming
 exec/match_clause.rs::match_paths # clause arm materializes its output rows; to be replaced by streaming
 exec/match_clause.rs::run_match_operator_ladder # rung result handed back to the clause driver, bounded by the rung's own breaker; returns LadderRun, a ROW_VEC_CARRIERS wrapper; ADR-0555 follow-up

@@ -784,6 +784,9 @@ mod id_seek_tests;
 mod integer_arg_tests;
 #[cfg(test)]
 mod kernels_tests;
+mod label_set_groups;
+#[cfg(test)]
+mod label_set_groups_tests;
 #[cfg(test)]
 mod limit_where_tests;
 #[cfg(test)]

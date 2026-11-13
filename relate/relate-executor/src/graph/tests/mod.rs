@@ -4,6 +4,7 @@ use relate_names::SmallName;
 mod adjacency;
 mod adjacency_model_proptest;
 mod chain;
+mod label_set_counts;
 mod pattern_stats;
 mod point;
 mod restore;

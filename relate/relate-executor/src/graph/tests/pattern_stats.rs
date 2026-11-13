@@ -659,7 +659,10 @@ fn stats_entry_growth_estimates_mixed_batches() {
     // (A2,R,B) pair entry (the in-batch rel's incident contribution).
     let expected = (2 * Graph::HISTOGRAM_ENTRY_BYTES
         + 2 * Graph::PAIR_COUNT_ENTRY_BYTES
-        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64;
+        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64
+        // ADR-0589: the node's label set moves A -> A,A2; the new set's
+        // entry is one id wider than the drained old one.
+        + std::mem::size_of::<u32>() as i64;
     assert_eq!(g.estimate_stats_entry_growth(&ops), expected);
 }
 
@@ -683,7 +686,10 @@ fn stats_entry_growth_prices_a_committed_self_loop_on_both_sides() {
     // (A ∪ A2) \ A2 -> (A,R,A2).
     let expected = (Graph::HISTOGRAM_ENTRY_BYTES
         + 3 * Graph::PAIR_COUNT_ENTRY_BYTES
-        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64;
+        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64
+        // ADR-0589: the node's label set moves A -> A,A2; the new set's
+        // entry is one id wider than the drained old one.
+        + std::mem::size_of::<u32>() as i64;
     assert_eq!(g.estimate_stats_entry_growth(&ops), expected);
 }
 
@@ -705,7 +711,10 @@ fn stats_entry_growth_prices_a_reciprocal_pair_on_both_sides() {
     // entries: the out side's (A2,R,B) and the in side's (B,R,A2).
     let expected = (Graph::HISTOGRAM_ENTRY_BYTES
         + 2 * Graph::PAIR_COUNT_ENTRY_BYTES
-        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64;
+        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64
+        // ADR-0589: the node's label set moves A -> A,A2; the new set's
+        // entry is one id wider than the drained old one.
+        + std::mem::size_of::<u32>() as i64;
     assert_eq!(g.estimate_stats_entry_growth(&ops), expected);
 }
 
@@ -729,7 +738,10 @@ fn stats_entry_growth_prices_an_in_batch_self_loop_on_both_sides() {
     // realize (out A2 × (A ∪ A2), in (A ∪ A2) \ A2 × A2).
     let expected = (2 * Graph::HISTOGRAM_ENTRY_BYTES
         + 4 * Graph::PAIR_COUNT_ENTRY_BYTES
-        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64;
+        + Graph::LABEL_COUNT_ENTRY_BYTES) as i64
+        // ADR-0589: the node's label set moves A -> A,A2; the new set's
+        // entry is one id wider than the drained old one.
+        + std::mem::size_of::<u32>() as i64;
     assert_eq!(g.estimate_stats_entry_growth(&ops), expected);
 }
 

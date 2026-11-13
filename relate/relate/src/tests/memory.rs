@@ -135,17 +135,20 @@ fn logical_graph_size_limit_delete_then_create_recovers_text_index() {
 fn logical_graph_size_limit_concurrent_reserve() {
     use std::sync::{Arc, Barrier};
     let probe = Database::open(":memory:").unwrap();
-    let empty = probe.memory_usage().unwrap().0;
-    {
-        let mut c = probe.connect().unwrap();
-        c.query("CREATE (n:T {s: 'abcdefghijklmnopqrstuvwxyz0123456789'})")
-            .unwrap();
-    }
+    let mut c = probe.connect().unwrap();
+    c.query("CREATE (n:T {s: 'abcdefghijklmnopqrstuvwxyz0123456789'})")
+        .unwrap();
     let (one, _) = probe.memory_usage().unwrap();
+    // The first node of a label set also creates the count entries (the
+    // label's and the label set's); the marginal cost the limit's slack
+    // halves is a second node of the same set, which creates none.
+    c.query("CREATE (n:T {s: 'abcdefghijklmnopqrstuvwxyz0123456789'})")
+        .unwrap();
+    let (two, _) = probe.memory_usage().unwrap();
+    drop(c);
     drop(probe);
-    // Room for the resident node plus half of another. The empty-server
-    // floor is already inside `one`, so the slack is half the marginal node.
-    let marginal = one - empty;
+    // Room for the resident node plus half of another.
+    let marginal = two - one;
     let limit = one + marginal / 2;
     let db = Arc::new(open_limited(limit));
     let barrier = Arc::new(Barrier::new(2));

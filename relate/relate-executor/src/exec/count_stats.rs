@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use relate_core::Value;
 use relate_ir::{
-    classify_aggregate, AggregateKind, Clause, Direction, Expr, MatchMode, Projection,
+    classify_aggregate, AggregateKind, Clause, Direction, Expr, MatchMode, PathPattern, Projection,
 };
 use relate_names::SmallName;
 
@@ -53,6 +53,49 @@ fn node_population(np: &relate_ir::NodePattern) -> Pop<'_> {
     }
 }
 
+/// The one pattern of a plain whole-population `MATCH` — the recognizer
+/// ladder's first rung, shared by the count-only shapes and the label-set
+/// group shapes (ADR-0589): non-optional, the default match mode, exactly
+/// one pattern, no clause WHERE, no search, and no path-level predicate (a
+/// path WHERE, a mode (WALK/TRAIL/ACYCLIC/SIMPLE) or a selector
+/// (ANY/SHORTEST/...) changes which rows the scan emits; round 3, F-1-3:
+/// every predicate-bearing field on the IR's pattern types is enumerated,
+/// none silently accepted).
+pub(super) fn plain_match_pattern(clause: &Clause) -> Option<&PathPattern> {
+    let Clause::Match {
+        optional: false,
+        match_mode: MatchMode::DifferentRelationships,
+        patterns,
+        where_clause: None,
+        search: None,
+        using_index: _,
+        using_join: _,
+    } = clause
+    else {
+        return None;
+    };
+    let [pattern] = &patterns[..] else {
+        return None;
+    };
+    if pattern.where_clause.is_some() || pattern.mode.is_some() || pattern.selector.is_some() {
+        return None;
+    }
+    Some(pattern)
+}
+
+/// The variable of a one-node, relationship-free pattern whose node is
+/// the whole node population ([`Pop::Any`]: no label, no property, no
+/// inline WHERE). `None` for an anonymous node and every other shape.
+pub(super) fn whole_population_node_var(pattern: &PathPattern) -> Option<&SmallName> {
+    let ([node], true) = (&pattern.nodes[..], pattern.rels.is_empty()) else {
+        return None;
+    };
+    match node_population(node) {
+        Pop::Any => node.variable.as_ref(),
+        Pop::Label(_) | Pop::No => None,
+    }
+}
+
 /// LABS-370 (v1): the count-only shape recognizer (LABS-425, the round-6
 /// decomposition of the round-1 F-1-4 finding — the recognizer, the
 /// gates, and the answer are three concerns in three places, not one
@@ -81,15 +124,7 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
         return None;
     }
     let (
-        Clause::Match {
-            optional: false,
-            match_mode: MatchMode::DifferentRelationships,
-            patterns,
-            where_clause: None,
-            search: None,
-            using_index: _,
-            using_join: _,
-        },
+        Some(pattern),
         Clause::Return {
             distinct: false,
             group_by: None,
@@ -98,7 +133,7 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
             skip: None,
             limit: None,
         },
-    ) = (&clauses[0], &clauses[1])
+    ) = (plain_match_pattern(&clauses[0]), &clauses[1])
     else {
         return None;
     };
@@ -122,15 +157,6 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
         }
         _ => return None,
     };
-    let [pattern] = &patterns[..] else {
-        return None;
-    };
-    // Round 3, F-1-3: the path-level predicate fields — a path WHERE, a
-    // mode (WALK/TRAIL/ACYCLIC/SIMPLE) or a selector (ANY/SHORTEST/...)
-    // changes which rows the scan emits; the counts cannot express them.
-    if pattern.where_clause.is_some() || pattern.mode.is_some() || pattern.selector.is_some() {
-        return None;
-    }
     // Round 3, F-1-4: repeated node variables (a same-variable self-loop
     // shape, `(a:A)-[:R]->(a:A)`) would answer from the (A,R,A) pair
     // count, which includes distinct-endpoint rels the scan's

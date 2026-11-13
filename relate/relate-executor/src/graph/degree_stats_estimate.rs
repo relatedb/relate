@@ -182,6 +182,11 @@ struct ChargeLedger {
     /// The charge-only tiers' seen sets (label, histogram).
     labels: HashSet<u32>,
     hists: HashSet<(u32, u32)>,
+    /// The label-set tier (ADR-0589): a live count overlay like the pair
+    /// tier, seeded lazily — a set's committed count is probed on first
+    /// touch instead of the map being copied, so pricing a batch never
+    /// scales with the number of committed sets.
+    sets: HashMap<Vec<u32>, u64>,
     /// The pair tier: the pair counts this batch rides, the committed
     /// counts seeded once and every arm's net delta after.
     pairs: HashMap<(u32, u32, u32), u64>,
@@ -200,6 +205,7 @@ impl ChargeLedger {
     fn new(g: &Graph) -> Self {
         Self {
             labels: g.label_count_keys(),
+            sets: HashMap::new(),
             pairs: g.pair_counts(),
             hists: g.degree_histogram_keys(),
             growth: 0,
@@ -216,6 +222,18 @@ impl ChargeLedger {
             Graph::LABEL_COUNT_ENTRY_BYTES,
             &mut self.growth,
         );
+    }
+
+    /// One node's label set entering or leaving the set map (ADR-0589),
+    /// priced through the apply's own policy over the lazily seeded
+    /// overlay ([`Graph::estimate_set_move`]).
+    fn bump_set(&mut self, g: &Graph, set: &[u32], delta: CountDelta) {
+        if !self.sets.contains_key(set) {
+            if let Some(committed) = g.label_set_count(set) {
+                self.sets.insert(set.to_vec(), committed);
+            }
+        }
+        self.growth += Graph::estimate_set_move(&mut self.sets, set, delta);
     }
 
     /// One histogram entry's charge.
@@ -292,6 +310,7 @@ impl BatchSim {
                 ..
             } => self.create_rel(g, *id, *start, *end, rel_type),
             RedoOp::AddLabels { id, labels } => self.add_labels(g, *id, labels),
+            RedoOp::RemoveLabels { id, labels } => self.remove_labels(g, *id, labels),
             RedoOp::DeleteRel { id } => self.delete_rel(g, *id),
             // Property and identity edits, index and constraint catalog
             // ops, and node deletion (the removal-direction omission
@@ -301,7 +320,6 @@ impl BatchSim {
             | RedoOp::RemoveNodeProp { .. }
             | RedoOp::SetRelProp { .. }
             | RedoOp::RemoveRelProp { .. }
-            | RedoOp::RemoveLabels { .. }
             | RedoOp::CreateIndex { .. }
             | RedoOp::DropIndex { .. }
             | RedoOp::CatalogIndexDetail { .. }
@@ -329,7 +347,28 @@ impl BatchSim {
         for &lid in &ids {
             self.charges.charge_label(lid);
         }
+        self.charges.bump_set(g, &ids, CountDelta::Add);
         self.node_labels.insert(id, ids);
+    }
+
+    /// RemoveLabels: the removal's per-label and pair drains are refunds
+    /// and stay unpriced, but the node moves between label sets (ADR-0589):
+    /// its old set may drain (a refund) and its new one may be created, so
+    /// the move is priced and the simulated set follows it.
+    fn remove_labels(&mut self, g: &Graph, id: NodeId, labels: &[String]) {
+        let drop: Vec<u32> = labels
+            .iter()
+            .map(|l| self.fresh_ids.resolve(g, l))
+            .collect();
+        let ids = fill_labels(&mut self.node_labels, g, id);
+        let before = ids.clone();
+        ids.retain(|l| !drop.contains(l));
+        if ids.len() == before.len() {
+            return;
+        }
+        let after = ids.clone();
+        self.charges.bump_set(g, &before, CountDelta::Remove);
+        self.charges.bump_set(g, &after, CountDelta::Add);
     }
 
     /// CreateRel: both endpoint label sets are ensured into the
@@ -439,6 +478,11 @@ impl BatchSim {
         // both self-loop charge sets are slices of it — no second
         // collection.
         let mine = ids.clone();
+        // ADR-0589: the node moves from its pre-add set (the prefix) to
+        // the post-add one.
+        self.charges
+            .bump_set(g, &mine[..before], CountDelta::Remove);
+        self.charges.bump_set(g, &mine, CountDelta::Add);
         // The pair phase prices only the ids that actually joined: apply
         // bumps just the mutated labels (`apply_incident_pair_counts`
         // walks `mutated_labels`), and the count overlay must mirror the
@@ -672,14 +716,13 @@ mod tests {
             (2 * Graph::HISTOGRAM_ENTRY_BYTES
                 + 2 * Graph::PAIR_COUNT_ENTRY_BYTES
                 + Graph::LABEL_COUNT_ENTRY_BYTES) as i64
+                // ADR-0589: the set A -> A,A2 is one id wider.
+                + std::mem::size_of::<u32>() as i64
         );
 
-        // A non-growth op is a no-op on the state: label removal is one
-        // of the dispatcher's enumerated no-op arms, its un-priced drain
-        // the deliberate over-estimating omission documented at
-        // `BatchSim::step`. One whole-state snapshot — the assert follows
-        // the struct definition, so a new field is covered by
-        // construction.
+        // A label removal prices only its label-set move (its per-label
+        // and pair drains stay the deliberate over-estimating omission
+        // documented at `BatchSim::step`).
         let before = sim.clone();
         sim.step(
             &g,
@@ -688,7 +731,16 @@ mod tests {
                 labels: vec!["A2".into()],
             },
         );
-        assert_eq!(sim, before);
+        // ADR-0589: a removal moves the node between label sets, so it
+        // is no longer a no-op: the simulated set follows it, and the
+        // set map's drain of the wider set and re-creation of the narrow
+        // one price as the apply charges them.
+        assert_eq!(sim.node_labels[&a], vec![a_id]);
+        assert_eq!(
+            sim.charges.growth,
+            before.charges.growth - Graph::label_set_entry_bytes(&[a_id, a2_id]) as i64
+                + Graph::label_set_entry_bytes(&[a_id]) as i64
+        );
     }
 
     /// LABS-515: the AddLabels step's carried-label discipline — a

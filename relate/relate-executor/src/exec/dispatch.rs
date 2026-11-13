@@ -31,6 +31,7 @@ use super::clause_arms::{
 use super::count_stats::count_only_stats_result;
 use super::ddl::{exec_create_index, exec_drop_index};
 use super::foreach::exec_foreach;
+use super::label_set_groups::label_set_groups_result;
 use super::match_chain::{open_match_consumer, Landing, MatchConsumer};
 use super::match_clause::{
     charge_finished_container, run_match_operator_ladder, LadderFacts, LadderRun, MatchOperator,
@@ -144,6 +145,11 @@ fn run_clauses_mode(
     profile: Option<PlanMetricsSite<'_>>,
     scope: Option<&Row>,
 ) -> Result<(Vec<Row>, Option<QueryResult>)> {
+    // The statement's evaluation context, built once before the clause
+    // loop (stellar round 2, F-2-21): the authenticated principal
+    // (ADR-0273) travels with it, so every clause arm consumes the same
+    // context — no per-arm construction.
+    let ctx = ExecCtx::new(graph, params).with_principal(qctx.principal);
     let mut last_result: Option<QueryResult> = None;
     // LABS-370 (v1): the count-only short-circuit — a whole-population
     // count answers from the maintained statistics (the label counts, the
@@ -161,12 +167,12 @@ fn run_clauses_mode(
         if let Some((rows, result)) = count_only_stats_result(graph, clauses, &rows) {
             return Ok((rows, Some(result)));
         }
+        // ADR-0589: the grouped label aggregates answer from the
+        // maintained label-set counts under the same exactness window.
+        if let Some((rows, result)) = label_set_groups_result(ctx, clauses, &rows, scope)? {
+            return Ok((rows, Some(result)));
+        }
     }
-    // The statement's evaluation context, built once before the clause
-    // loop (stellar round 2, F-2-21): the authenticated principal
-    // (ADR-0273) travels with it, so every clause arm consumes the same
-    // context — no per-arm construction.
-    let ctx = ExecCtx::new(graph, params).with_principal(qctx.principal);
     let mut clause_i = 0;
     // Set to `SinkProjected` when the clause just run left the next
     // projection's columns already evaluated in its rows (the match sink,

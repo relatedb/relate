@@ -292,13 +292,25 @@ impl Graph {
     /// degree re/unbucket, the incident pair counts, and the exact label
     /// counts. `delta` selects the direction — the one entry point both
     /// label seams call.
-    pub(super) fn apply_label_delta_stats(&self, node: NodeId, labels: &[u32], delta: CountDelta) {
+    ///
+    /// `before` is the node's label set before the mutation (the callers'
+    /// effect guard already read it); the set after is the node's live
+    /// set, read once the edit is installed (ADR-0589's label-set map
+    /// moves the node between the two).
+    pub(super) fn apply_label_delta_stats(
+        &self,
+        node: NodeId,
+        before: &[u32],
+        labels: &[u32],
+        delta: CountDelta,
+    ) {
         match delta {
             CountDelta::Add => self.rebucket_added_labels(node, labels),
             CountDelta::Remove => self.unbucket_removed_labels(node, labels),
         }
         self.apply_incident_pair_counts(node, labels, delta);
-        self.bump_label_counts(labels, delta);
+        let after = self.live_label_ids(node);
+        self.bump_label_counts(before, &after, labels, delta);
     }
 
     /// The degree-stats half of the wholesale rebuild — the family seam

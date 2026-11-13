@@ -28,18 +28,20 @@ use relate_datasets::shapes::{
 // the array reserves the next power of two, so flat (1,000 nodes, no
 // relationships) drops another 22,080. Relationship shapes also drop the
 // relationship and adjacency map slots.
+// ADR-0589: each distinct label set adds one entry to the label-set map
+// (148 bytes for a one-label set): flat and ring carry one set, fanout two.
 const BASE: u64 = 258;
-const RING: u64 = 575_636;
-const FANOUT: u64 = 519_750;
-const FLAT: u64 = 222_540;
-const DENSE_RING: u64 = 2_256_838;
+const RING: u64 = 575_784;
+const FANOUT: u64 = 520_046;
+const FLAT: u64 = 222_688;
+const DENSE_RING: u64 = 2_256_986;
 /// Flat, one attribute, one range index on `id`. `1,000 × 62` on top of [`FLAT`].
-const FLAT_RANGE: u64 = 284_540;
+const FLAT_RANGE: u64 = 284_688;
 /// Flat, one attribute, plus one text, one point, and one range index.
 /// The text term is 14 width-3 postings on `abcdefghijklmnop` (ADR-0207).
 /// The index term is unchanged by the id vector, so this is the previous
 /// pin minus flat's 22,080.
-const FLAT_INDEXED: u64 = 688_674;
+const FLAT_INDEXED: u64 = 688_822;
 
 fn apply(
     db: &Database,

@@ -47,6 +47,15 @@ pub(super) struct CountStats {
     /// drained on zero, charged to `used_bytes` per entry like the pair
     /// counts.
     pub(super) label_counts: HashMap<u32, u64>,
+    /// ADR-0589: the exact live node count per distinct label SET, keyed
+    /// by the node's label ids in label order (the order `labels(n)`
+    /// reports), the empty set included. The grouped label aggregates'
+    /// answer: unlike `label_counts` (a multi-label node counts once per
+    /// label) each live node counts in exactly one entry, so the values
+    /// sum to `node_total`. Bumped at the node-liveness seam and moved
+    /// between entries by the label-mutation seam, drained on zero, and
+    /// charged per entry like the other query-controlled maps.
+    pub(super) label_set_counts: HashMap<Vec<u32>, u64>,
     /// LABS-851: the exact total live node count — the counting
     /// operator's unlabeled single-node answer (`MATCH (n) RETURN
     /// count(n)`), which the per-label map cannot answer (a label-less
@@ -148,6 +157,19 @@ impl Graph {
     pub(super) const LABEL_COUNT_ENTRY_BYTES: u64 =
         (std::mem::size_of::<u32>() + std::mem::size_of::<u64>() + 48 + 64) as u64;
 
+    /// One label-set entry's fixed charge (ADR-0589): the key vector's
+    /// header, the count, and the map's slot estimate; the key's
+    /// elements add [`Self::label_set_entry_bytes`]'s per-id width.
+    const LABEL_SET_ENTRY_BYTES: u64 =
+        (std::mem::size_of::<Vec<u32>>() + std::mem::size_of::<u64>() + 48 + 64) as u64;
+
+    /// One label-set entry's whole charge — the one spelling the bump
+    /// folds and the structure recount both read, so the refund of a
+    /// drained entry equals its creation charge by construction.
+    pub(super) fn label_set_entry_bytes(set: &[u32]) -> u64 {
+        Self::LABEL_SET_ENTRY_BYTES + std::mem::size_of_val(set) as u64
+    }
+
     /// The committed label-count map's keys — the admission estimate's
     /// charged-tier seed (the family owns every lock-and-read site for
     /// its maps, the LABS-515 reader: the estimate file
@@ -162,6 +184,58 @@ impl Graph {
             .keys()
             .copied()
             .collect()
+    }
+
+    /// The committed node count of one label set (ADR-0589), `None`
+    /// when no live node carries it. A point read under the bundle's
+    /// guard: the admission estimate seeds its per-set overlay one probe
+    /// per distinct set a batch touches, never a copy of the map.
+    pub(super) fn label_set_count(&self, set: &[u32]) -> Option<u64> {
+        self.count_stats
+            .lock()
+            .unwrap()
+            .label_set_counts
+            .get(set)
+            .copied()
+    }
+
+    /// The admission estimate's fold over its label-set overlay (the
+    /// batch's net counts, seeded from [`Self::label_set_count`]): the
+    /// apply's `count_entry` policy and charge, but tolerant where the
+    /// apply is loud — the estimate simulates a batch that may still be
+    /// refused, and a simulated removal with no paired add prices
+    /// nothing (an over-estimate) instead of failing the admission. A
+    /// drained set stays in the overlay at zero (present, not absent): the
+    /// caller seeds only sets the overlay has never held, so a drained
+    /// committed set must not be re-seeded from the store.
+    pub(super) fn estimate_set_move(
+        overlay: &mut HashMap<Vec<u32>, u64>,
+        set: &[u32],
+        delta: CountDelta,
+    ) -> i64 {
+        let bytes = Self::label_set_entry_bytes(set) as i64;
+        let count = overlay.entry(set.to_vec()).or_insert(0);
+        match delta {
+            CountDelta::Add => {
+                *count += 1;
+                if *count == 1 {
+                    bytes
+                } else {
+                    0
+                }
+            }
+            CountDelta::Remove => match *count {
+                0 => 0,
+                1 => {
+                    *count = 0;
+                    -bytes
+                }
+                _ => {
+                    *count -= 1;
+                    0
+                }
+            },
+        }
     }
 
     /// The committed pair counts, cloned under the one stats lock — the
@@ -191,7 +265,7 @@ impl Graph {
             for e in end_set {
                 charge += Self::count_entry(
                     pairs,
-                    (*s, type_id, *e),
+                    &(*s, type_id, *e),
                     delta,
                     Self::PAIR_COUNT_ENTRY_BYTES,
                 );
@@ -213,32 +287,35 @@ impl Graph {
     /// label-churn delete that drains an entry must give its creation
     /// bytes back or `used_bytes` drifts upward while the recount stays
     /// true).
-    fn count_entry<K>(
+    fn count_entry<K, Q>(
         counts: &mut HashMap<K, u64>,
-        key: K,
+        key: &Q,
         delta: CountDelta,
         entry_bytes: u64,
     ) -> i64
     where
-        K: std::hash::Hash + Eq,
+        K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ToOwned<Owned = K> + ?Sized,
     {
         // The pairing invariant is loud in both directions, matching
         // `bump_node_population_stats`: an Add past u64 or a Remove
         // without its paired Add is a broken store, not a state to clip
         // silently (LABS-311: no fabricated defaults over
-        // invariant-bound values).
+        // invariant-bound values). The key is borrowed so the dominant
+        // occupied-entry Add and every Remove allocate nothing (the
+        // label-set map's keys are vectors); only the Add that creates
+        // the entry owns its key.
         match delta {
-            CountDelta::Add => match counts.entry(key) {
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(1);
-                    entry_bytes as i64
-                }
-                std::collections::hash_map::Entry::Occupied(mut o) => {
-                    *o.get_mut() = o
-                        .get()
+            CountDelta::Add => match counts.get_mut(key) {
+                Some(count) => {
+                    *count = count
                         .checked_add(1)
                         .expect("count overflow: an Add past u64 is a broken store");
                     0
+                }
+                None => {
+                    counts.insert(key.to_owned(), 1);
+                    entry_bytes as i64
                 }
             },
             // Every Remove is paired with the Add that created its entry
@@ -249,7 +326,7 @@ impl Graph {
             // it, not as a silently drifting count map.
             CountDelta::Remove => {
                 let count = counts
-                    .get_mut(&key)
+                    .get_mut(key)
                     .expect("count Remove without its paired Add");
                 if *count > 1 {
                     *count -= 1;
@@ -259,7 +336,7 @@ impl Graph {
                     // not leak zero-count entries — and refunds its
                     // creation charge (the accounting oracle tracks both
                     // directions).
-                    counts.remove(&key);
+                    counts.remove(key);
                     -(entry_bytes as i64)
                 }
             }
@@ -308,7 +385,7 @@ impl Graph {
         for &label in labels {
             charge += Self::count_entry(
                 &mut stats.label_counts,
-                label,
+                &label,
                 delta,
                 Self::LABEL_COUNT_ENTRY_BYTES,
             );
@@ -333,12 +410,24 @@ impl Graph {
         };
     }
 
-    /// The node side's one fold — the label counts and the node total
-    /// together (the pairing the node-liveness seam and the wholesale
-    /// rebuild both ride, mirroring `fold_rel_stats`). Returns the
-    /// label map's entry charge.
+    /// One node's label SET in or out of the set-count map (ADR-0589):
+    /// the `count_entry` policy with the key's width in the entry charge.
+    fn fold_label_set(stats: &mut CountStats, labels: &[u32], delta: CountDelta) -> i64 {
+        Self::count_entry(
+            &mut stats.label_set_counts,
+            labels,
+            delta,
+            Self::label_set_entry_bytes(labels),
+        )
+    }
+
+    /// The node side's one fold — the label counts, the label-set
+    /// count and the node total together (the pairing the node-liveness
+    /// seam and the wholesale rebuild both ride, mirroring
+    /// `fold_rel_stats`). Returns the two maps' entry charges.
     fn fold_node_stats(stats: &mut CountStats, labels: &[u32], delta: CountDelta) -> i64 {
-        let charge = Self::fold_label_counts(stats, labels, delta);
+        let charge = Self::fold_label_counts(stats, labels, delta)
+            + Self::fold_label_set(stats, labels, delta);
         Self::fold_node_total(stats, delta);
         charge
     }
@@ -356,7 +445,7 @@ impl Graph {
         end_labels: &[u32],
         delta: CountDelta,
     ) -> i64 {
-        let type_charge = Self::count_entry(&mut counts.rel_type_counts, type_id, delta, 0);
+        let type_charge = Self::count_entry(&mut counts.rel_type_counts, &type_id, delta, 0);
         let pair_charge = Self::charge_pair_cross(
             &mut counts.pair_counts,
             start_labels,
@@ -372,8 +461,22 @@ impl Graph {
     /// unchanged there, so the node total does not move; create and
     /// delete ride `bump_node_population_stats`; the wholesale rebuild
     /// is `rebuild_count_stats`).
-    pub(super) fn bump_label_counts(&self, labels: &[u32], delta: CountDelta) {
-        self.bump_counts(|stats| Self::fold_label_counts(stats, labels, delta));
+    ///
+    /// ADR-0589: the node's label set moves from `before` to `after`
+    /// in the same guarded step as the per-label counts, so a reader
+    /// never sees the node in neither set or in both.
+    pub(super) fn bump_label_counts(
+        &self,
+        before: &[u32],
+        after: &[u32],
+        labels: &[u32],
+        delta: CountDelta,
+    ) {
+        self.bump_counts(|stats| {
+            Self::fold_label_counts(stats, labels, delta)
+                + Self::fold_label_set(stats, before, CountDelta::Remove)
+                + Self::fold_label_set(stats, after, CountDelta::Add)
+        });
     }
 
     /// LABS-851: the node-liveness seam's one call — the label counts
@@ -399,6 +502,13 @@ impl Graph {
             .saturating_mul(Self::PAIR_COUNT_ENTRY_BYTES)
             .saturating_add(
                 (stats.label_counts.len() as u64).saturating_mul(Self::LABEL_COUNT_ENTRY_BYTES),
+            )
+            .saturating_add(
+                stats
+                    .label_set_counts
+                    .keys()
+                    .map(|set| Self::label_set_entry_bytes(set))
+                    .fold(0u64, u64::saturating_add),
             )
     }
 
@@ -571,6 +681,56 @@ impl Graph {
             return None;
         }
         Some(self.probe_count_under(probe, &stats))
+    }
+
+    /// The set map answers a grouped aggregate in time proportional to
+    /// its entries, so it only beats the node scan while nodes share
+    /// sets: below [`Self::LABEL_SET_FLOOR`] entries it always pays, above
+    /// it only while the average set holds at least
+    /// [`Self::LABEL_SET_MIN_SHARING`] nodes.
+    fn label_set_map_pays(stats: &CountStats) -> bool {
+        let sets = stats.label_set_counts.len() as u64;
+        sets <= Self::LABEL_SET_FLOOR
+            || stats.node_total >= sets.saturating_mul(Self::LABEL_SET_MIN_SHARING)
+    }
+
+    /// The set-map answer's entry count below which it always answers.
+    const LABEL_SET_FLOOR: u64 = 4096;
+    /// The average nodes per set the map needs above the floor to answer.
+    const LABEL_SET_MIN_SHARING: u64 = 4;
+
+    /// ADR-0589: the label-set distribution under the same consistency
+    /// window as [`Self::windowed_stats_count`] — the exactness check and
+    /// the read share the bundle's one guard, a failed check declines
+    /// (`None`, the scan answers), and the `exact` closure carries the
+    /// same lock-free obligation. Returns each distinct live label set as
+    /// its label NAMES in label order with its node count, sorted by label
+    /// id so the answer's order is deterministic. The ids are cloned under
+    /// the guard (bounded by the number of distinct sets); the names
+    /// resolve after it drops. A graph whose sets approach its node count
+    /// ([`Self::label_set_map_pays`]) declines too: the map answers in time
+    /// proportional to the sets, so it has no speed to offer there.
+    pub(crate) fn windowed_label_sets(
+        &self,
+        exact: impl FnOnce() -> bool,
+    ) -> Option<Vec<(std::sync::Arc<Vec<String>>, u64)>> {
+        let mut sets: Vec<(Vec<u32>, u64)> = {
+            let stats = self.count_stats.lock().unwrap();
+            if !exact() || !Self::label_set_map_pays(&stats) {
+                return None;
+            }
+            stats
+                .label_set_counts
+                .iter()
+                .map(|(set, count)| (set.clone(), *count))
+                .collect()
+        };
+        sets.sort_unstable();
+        Some(
+            sets.into_iter()
+                .map(|(set, count)| (self.interner.cached_labels(&set), count))
+                .collect(),
+        )
     }
 
     /// One name→count resolution the single-name probe arms share —

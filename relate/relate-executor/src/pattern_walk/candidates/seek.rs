@@ -333,8 +333,8 @@ fn prop_key(expr: &Expr, var: &SmallName) -> Option<String> {
 /// The one call-shape test: `expr` is a call to `name` (case-insensitive)
 /// with exactly `arity` arguments, returning them. Every seek shape and the
 /// id-conversion reader consult it instead of re-spelling the name/arity
-/// conjunction.
-fn named_call<'a>(expr: &'a Expr, name: &str, arity: usize) -> Option<&'a [Expr]> {
+/// conjunction; the label-set group recognizer (ADR-0589) reads it too.
+pub(crate) fn named_call<'a>(expr: &'a Expr, name: &str, arity: usize) -> Option<&'a [Expr]> {
     match expr {
         Expr::Function {
             name: actual, args, ..

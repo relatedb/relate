@@ -57,3 +57,8 @@ Add a statistics-backed counting operator (LABS-370):
   to the scan; the equivalence is pinned by tests and guarded by TCK/differential.
 - The count map is charged to `used_bytes`; the capacity cap covers it.
 - The planner's estimates and the LABS-348 gate gain the directional counts.
+
+## Later references
+
+- ADR-0589 adds a label-set count map to this count family and answers
+  grouped label aggregates from it.

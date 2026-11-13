@@ -78,7 +78,7 @@ impl Graph {
         self.charge_node_after_edit(id, before.as_ref(), before_shape);
         // The one count-family entry: the degree rebucket (LABS-351), the
         // incident pair counts and the exact label counts (LABS-370).
-        self.apply_label_delta_stats(id, &added_ids, CountDelta::Add);
+        self.apply_label_delta_stats(id, &live, &added_ids, CountDelta::Add);
     }
 
     pub fn remove_labels(&self, id: NodeId, labels: &[String]) {
@@ -148,7 +148,7 @@ impl Graph {
         self.charge_node_after_edit(id, before.as_ref(), before_shape);
         // The one count-family entry, in the removal direction (the ids are
         // the labels ACTUALLY removed, never the requested list).
-        self.apply_label_delta_stats(id, &actually_removed, CountDelta::Remove);
+        self.apply_label_delta_stats(id, &live, &actually_removed, CountDelta::Remove);
     }
 }
 
