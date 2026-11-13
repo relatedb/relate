@@ -843,8 +843,16 @@ mod refresh_tests {
         let mut cache = MaterializeCache::default();
         let before = interned_schema_calls();
         let snapshot = rows.clone();
+        let ptrs: Vec<_> = rows.iter().map(Row::schema_ptr).collect();
         Refresh::Materialize(&mut cache).rows(&view, &mut rows);
         assert_eq!(interned_schema_calls() - before, 0);
+        // `Row` equality compares schema names by value; the pointers pin
+        // that no row swapped its shared schema for an equal copy.
+        assert_eq!(
+            rows.iter().map(Row::schema_ptr).collect::<Vec<_>>(),
+            ptrs,
+            "the sweep replaced a row's shared schema"
+        );
         assert_eq!(rows, snapshot);
     }
 }

@@ -81,13 +81,19 @@ impl Shortest {
         }
     }
 
-    fn into_value(mut self) -> Value {
+    /// The answer in the shape `want` asks: the path (or list of paths),
+    /// or its length (the list's count for `allShortestPaths`); null when
+    /// no path was seen. Decided by the tracked `all` and the path's own
+    /// relationship count, never by sniffing the built value.
+    fn into_value(mut self, want: ShortestWant) -> Value {
         if self.paths.is_empty() {
-            Value::Null
-        } else if self.all {
-            Value::List(self.paths.into())
-        } else {
-            self.paths.swap_remove(0)
+            return Value::Null;
+        }
+        match (want, self.all) {
+            (ShortestWant::Path, true) => Value::List(self.paths.into()),
+            (ShortestWant::Path, false) => self.paths.swap_remove(0),
+            (ShortestWant::Length, true) => Value::Int(self.paths.len() as i64),
+            (ShortestWant::Length, false) => Value::Int(self.len as i64),
         }
     }
 }
@@ -106,40 +112,14 @@ pub(crate) fn eval_shortest(
         best.offer_row(&name, r);
         Ok(())
     })?;
-    let value = if routed {
-        best.into_value()
-    } else {
-        enumerate(graph, row, params, all, &name, &path)?
-    };
-    Ok(shortest_from_enum(value, want))
-}
-
-fn shortest_from_enum(v: Value, want: ShortestWant) -> Value {
-    match want {
-        ShortestWant::Path => v,
-        ShortestWant::Length => match v {
-            Value::Path(p) => Value::Int(p.rels.len() as i64),
-            Value::List(xs) => Value::Int(xs.len() as i64),
-            other => other,
-        },
+    if !routed {
+        // The fallback for every shape the route declines (a minimum above
+        // one, a multi-relationship or quantified body, a predicate the
+        // search cannot decide): enumerate the pattern's rows and keep the
+        // shortest, into the same accumulator.
+        for r in collect_pattern_rows(graph, row, &path, params)? {
+            best.offer_row(&name, r);
+        }
     }
-}
-
-/// The fallback for every shape the route declines (a minimum above one, a
-/// multi-relationship or quantified body, a predicate the search cannot
-/// decide): enumerate the pattern's rows and keep the shortest.
-fn enumerate(
-    graph: &ExecGraph<'_>,
-    row: &Row,
-    params: &BTreeMap<String, Value>,
-    all: bool,
-    name: &str,
-    path: &PathPattern,
-) -> Result<Value> {
-    let rows = collect_pattern_rows(graph, row, path, params)?;
-    let mut best = Shortest::new(all);
-    for r in rows {
-        best.offer_row(name, r);
-    }
-    Ok(best.into_value())
+    Ok(best.into_value(want))
 }

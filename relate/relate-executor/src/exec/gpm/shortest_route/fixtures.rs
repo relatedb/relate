@@ -2,10 +2,12 @@
 //! shared builder, query runners over the counting combinator, and
 //! order-insensitive rows.
 
+use std::collections::BTreeMap;
+
 use relate_core::Value;
 use relate_ir::Direction;
 
-use crate::exec::test_support::{build, exec_cypher};
+use crate::exec::test_support::{build, try_exec_cypher_params};
 use crate::graph::Graph;
 use crate::shortest::test_support::counting_expands;
 
@@ -14,12 +16,13 @@ use super::{take_route_runs, with_forced_gpm};
 
 /// Relationships shortest-path searches followed, (pattern, input row)
 /// evaluations the shortest-path route accepted, and the anchor arms those
-/// runs took.
+/// runs took (a run whose bounds are empty — min above max — matches
+/// nothing before it anchors, so it records no arm).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Counts {
     pub expands: u64,
     pub route_runs: u64,
-    /// The [`AnchorArm`] each route run took, in order.
+    /// The [`AnchorArm`] each anchored route run took, in order.
     pub arms: Vec<AnchorArm>,
 }
 
@@ -61,7 +64,16 @@ pub(super) fn shortcut() -> Graph {
 
 /// Rows of `q` and the [`Counts`] it caused.
 pub(super) fn run(g: &Graph, q: &str) -> (Vec<Vec<Value>>, Counts) {
-    counting(|| exec_cypher(g, q).rows)
+    run_params(g, q, &BTreeMap::new())
+}
+
+/// [`run`] with statement parameters.
+pub(super) fn run_params(
+    g: &Graph,
+    q: &str,
+    params: &BTreeMap<String, Value>,
+) -> (Vec<Vec<Value>>, Counts) {
+    counting(|| try_exec_cypher_params(g, q, params).unwrap().rows)
 }
 
 /// Rows of `q`, sorted; asserts the route ran and expanded.
@@ -74,7 +86,14 @@ pub(super) fn on_route(g: &Graph, q: &str) -> Vec<Vec<Value>> {
 
 /// Rows of `q` with every routed pattern forced onto GPM, sorted.
 pub(super) fn gpm(g: &Graph, q: &str) -> Vec<Vec<Value>> {
-    sorted(with_forced_gpm(|| exec_cypher(g, q).rows))
+    gpm_params(g, q, &BTreeMap::new())
+}
+
+/// [`gpm`] with statement parameters.
+pub(super) fn gpm_params(g: &Graph, q: &str, params: &BTreeMap<String, Value>) -> Vec<Vec<Value>> {
+    sorted(with_forced_gpm(|| {
+        try_exec_cypher_params(g, q, params).unwrap().rows
+    }))
 }
 
 /// `rows` in [`Value::order_by_cmp`] order, for order-insensitive

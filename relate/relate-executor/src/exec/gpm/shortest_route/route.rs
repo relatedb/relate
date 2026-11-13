@@ -60,8 +60,8 @@ pub(super) fn with_list_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
 
 /// Which arm of [`Route::anchor`] answered one route run — the value the
 /// anchor tests assert against (the `take_route_runs` precedent). The
-/// variants mirror [`Anchor`]; the construction sites are the arm branches
-/// of [`Route::run`].
+/// variants are derived from [`Anchor`] by [`Anchor::arm`].
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AnchorArm {
     Pair,
@@ -76,10 +76,10 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Record the anchor arm one route run took; a no-op outside test builds.
-fn note_anchor(_arm: AnchorArm) {
-    #[cfg(test)]
-    ANCHOR_ARMS.with(|c| c.borrow_mut().push(_arm));
+/// Record the anchor arm one route run took.
+#[cfg(test)]
+fn note_anchor(arm: AnchorArm) {
+    ANCHOR_ARMS.with(|c| c.borrow_mut().push(arm));
 }
 
 /// Take and reset this thread's recorded anchor arms.
@@ -101,6 +101,24 @@ enum Anchor {
     /// One unbound variable at both ends (`(a)-[*]-(a)`): the (s, s)
     /// partition of every start candidate.
     Loop,
+}
+
+impl Anchor {
+    /// The arm this anchoring is — the one derivation of [`AnchorArm`], so
+    /// the recorded vocabulary cannot drift from the variants.
+    #[cfg(test)]
+    fn arm(&self) -> AnchorArm {
+        match self {
+            Anchor::Pair { .. } => AnchorArm::Pair,
+            Anchor::Fan {
+                way: Way::Forward, ..
+            } => AnchorArm::FanForward,
+            Anchor::Fan {
+                way: Way::Backward, ..
+            } => AnchorArm::FanBackward,
+            Anchor::Loop => AnchorArm::Loop,
+        }
+    }
 }
 
 /// One resolved endpoint side of a routed pattern: a row-bound endpoint
@@ -284,22 +302,19 @@ impl<'a> Route<'a> {
         if self.search.min > self.search.max {
             return Ok(());
         }
-        match self.anchor()? {
+        let anchor = self.anchor()?;
+        #[cfg(test)]
+        note_anchor(anchor.arm());
+        match anchor {
             Anchor::Pair { starts, ends } => {
-                note_anchor(AnchorArm::Pair);
                 self.each_side(&starts, |s| {
                     self.each_side(&ends, |e| self.pair_partition(s, e, out))
                 })?;
             }
             Anchor::Fan { origins, way } => {
-                note_anchor(match way {
-                    Way::Forward => AnchorArm::FanForward,
-                    Way::Backward => AnchorArm::FanBackward,
-                });
                 self.each_side(&origins, |origin| self.fan(origin, way, out))?;
             }
             Anchor::Loop => {
-                note_anchor(AnchorArm::Loop);
                 self.each_start(|s| self.pair_partition(s, s, out))?;
             }
         };
@@ -434,7 +449,7 @@ impl<'a> Route<'a> {
         }
         Ok(match self.capped_candidates(np, SEEK_PAIR_LIMIT)? {
             Capped::Within(ids) => Probe::Listed(Side::Many(ids)),
-            Capped::Over => Probe::Over,
+            Capped::Over(_) => Probe::Over,
         })
     }
 
@@ -474,10 +489,7 @@ impl<'a> Route<'a> {
         let limit = list_limit();
         match self.capped_candidates(np, limit)? {
             Capped::Within(ids) => Ok(Side::Many(ids)),
-            Capped::Over => Err(Error::capacity_seek_candidates(
-                limit as u64 + 1,
-                limit as u64,
-            )),
+            Capped::Over(stop) => Err(Error::capacity_seek_candidates(stop, limit as u64)),
         }
     }
 

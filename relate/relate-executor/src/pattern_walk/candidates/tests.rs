@@ -231,8 +231,8 @@ fn a_capped_funnel_is_complete_at_the_cap_and_over_past_it() {
     let mut ids = same_name(&g, 4);
     ids.sort_unstable();
     assert!(matches!(capped(&g, 4), Capped::Within(got) if got == ids));
-    assert!(matches!(capped(&g, 3), Capped::Over));
-    assert!(matches!(capped(&g, 0), Capped::Over));
+    assert!(matches!(capped(&g, 3), Capped::Over(_)));
+    assert!(matches!(capped(&g, 0), Capped::Over(_)));
     assert_eq!(candidates(&g, &np), ids);
 }
 
@@ -258,7 +258,7 @@ fn a_capped_funnel_stops_scanning_past_the_cap() {
         16,
     )
     .unwrap();
-    assert!(matches!(capped, Capped::Over));
+    assert!(matches!(capped, Capped::Over(_)));
     assert_eq!(crate::ctx::take_node_reads(), 17);
     assert_eq!(candidates(&g, &np).len(), 200);
     assert_eq!(crate::ctx::take_node_reads(), 200);
@@ -549,7 +549,7 @@ fn a_capped_probe_reads_cap_plus_one_for_every_scan_shape() {
             CAP,
         )
         .unwrap();
-        assert!(matches!(got, Capped::Over));
+        assert!(matches!(got, Capped::Over(_)));
         crate::ctx::take_node_reads()
     };
     let name = [("name", Value::String("Bob".into()))];

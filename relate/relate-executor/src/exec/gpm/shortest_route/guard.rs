@@ -164,49 +164,36 @@ pub(super) fn route_shape<'p>(
 /// element (hand-built or planner-IR-diagnostic plans) remains the legacy
 /// arm.
 fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> Option<Shape<'p>> {
-    let elements = path.elements.as_slice();
-    if elements.len() != 3 {
-        return None;
-    }
-    let (PatternElement::Node(start), PatternElement::Node(end)) = (&elements[0], &elements[2])
+    let [PatternElement::Node(start), rel_element, PatternElement::Node(end)] =
+        path.elements.as_slice()
     else {
         return None;
     };
     // The rel element's resolved filter sits at its own index in the
     // pattern-level table (LABS-801) — the shape decode and the filter
-    // lookup read one position, so they cannot disagree.
-    match (&elements[1], &filters.filters[1]) {
+    // lookup read one position, so they cannot disagree. The two arms
+    // differ only in where the rel, its filter and the bounds come from.
+    let (rel, filter, min, max) = match (rel_element, &filters.filters[1]) {
         (PatternElement::Quantified(qpp), ElementFilter::Group(inner)) => {
             let rel = qpp.implicit_var_length_rel()?;
             let ElementFilter::Rel(filter) = &inner[1] else {
                 return None;
             };
-            Some(Shape {
-                start,
-                rel,
-                filter,
-                end,
-                min: qpp.min,
-                max: qpp.max,
-                all,
-                spelling: Spelling::of(path),
-            })
+            (rel, filter, qpp.min, qpp.max)
         }
-        (PatternElement::Relationship(rel), ElementFilter::Rel(filter)) => {
-            if !rel.var_length {
-                return None;
-            }
-            Some(Shape {
-                start,
-                rel,
-                filter,
-                end,
-                min: rel.min_hops,
-                max: rel.max_hops,
-                all,
-                spelling: Spelling::of(path),
-            })
+        (PatternElement::Relationship(rel), ElementFilter::Rel(filter)) if rel.var_length => {
+            (rel, filter, rel.min_hops, rel.max_hops)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(Shape {
+        start,
+        rel,
+        filter,
+        end,
+        min,
+        max,
+        all,
+        spelling: Spelling::of(path),
+    })
 }

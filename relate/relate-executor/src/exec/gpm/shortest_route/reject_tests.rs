@@ -9,13 +9,15 @@ use relate_core::Value;
 use relate_front::parse_and_lower;
 use relate_ir::{Clause, MatchMode, PathPattern};
 
-use crate::exec::test_support::{try_exec_cypher, try_exec_cypher_params};
+use crate::exec::test_support::try_exec_cypher;
 use crate::graph::Graph;
 use crate::row::Row;
 use crate::shortest::test_support::assert_common_end_nodes;
 
 use super::super::GpmFilters;
-use super::fixtures::{counting, gpm, on_route, plain, run, shortcut, sorted, Counts};
+use super::fixtures::{
+    gpm, gpm_params, on_route, plain, run, run_params, shortcut, sorted, Counts,
+};
 use super::{route_shape, with_forced_gpm};
 
 /// The match mode and first pattern of the statement's last `MATCH` clause.
@@ -97,12 +99,11 @@ fn run_count_param(k: i64) -> CountRun {
     let g = shortcut();
     let q = "MATCH p = SHORTEST $k (a {id: 0})-[*]->(b {id: 3}) RETURN length(p)";
     let params = BTreeMap::from([("k".to_string(), Value::Int(k))]);
-    let exec = || try_exec_cypher_params(&g, q, &params).unwrap().rows;
-    let (rows, counts) = counting(exec);
+    let (rows, counts) = run_params(&g, q, &params);
     CountRun {
         rows: sorted(rows),
         counts,
-        gpm_rows: sorted(with_forced_gpm(exec)),
+        gpm_rows: gpm_params(&g, q, &params),
     }
 }
 
@@ -111,21 +112,21 @@ fn run_count_param(k: i64) -> CountRun {
 /// answers what GPM answers.
 #[test]
 fn parameter_count_of_one_takes_the_route() {
-    let run = run_count_param(1);
+    let counted = run_count_param(1);
     assert!(
-        run.counts.route_runs > 0,
+        counted.counts.route_runs > 0,
         "expected the BFS route for $k = 1"
     );
-    assert_eq!(run.rows, run.gpm_rows);
-    assert_eq!(run.rows, vec![vec![Value::Int(2)]]);
+    assert_eq!(counted.rows, counted.gpm_rows);
+    assert_eq!(counted.rows, vec![vec![Value::Int(2)]]);
 }
 
 /// A count parameter other than 1 keeps GPM's enumerate-then-select.
 #[test]
 fn parameter_count_above_one_stays_on_gpm() {
-    let run = run_count_param(2);
-    assert_eq!(run.counts, Counts::default());
-    assert_eq!(run.rows, run.gpm_rows);
+    let counted = run_count_param(2);
+    assert_eq!(counted.counts, Counts::default());
+    assert_eq!(counted.rows, counted.gpm_rows);
 }
 
 /// [`shortcut`] without its 3→1 cycle: exactly two trails from 0 to 3, so
@@ -221,7 +222,7 @@ fn repeatable_elements_stays_on_gpm() {
 fn non_empty_used_set_or_bound_variables_reject() {
     let q = "MATCH p = ANY SHORTEST (a)-[r*]->(b) RETURN p";
     assert_eq!(last_match(q).0, MatchMode::DifferentRelationships);
-    assert!(guard_accepts_with(q, &UsedSet::default(), &Row::new()));
+    assert!(guard_accepts(q));
     assert!(!guard_accepts_with(
         q,
         &UsedSet::from_iter([7]),

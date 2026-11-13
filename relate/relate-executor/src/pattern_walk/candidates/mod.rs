@@ -259,10 +259,12 @@ struct Ask<'a> {
 }
 
 /// A capped funnel answer: the complete candidate list when at most
-/// `cap` nodes match, or `Over` — more than `cap` match — with no list.
+/// `cap` nodes match, or `Over` — more than `cap` match — with no list,
+/// carrying the first count past the cap (`cap + 1`) so a caller that
+/// refuses reads it instead of rebuilding it.
 pub(crate) enum Capped {
     Within(Vec<NodeId>),
-    Over,
+    Over(u64),
 }
 
 /// [`node_candidates`] for a caller that only needs the candidates when
@@ -284,7 +286,7 @@ pub(crate) fn node_candidates_capped(
     };
     let ids = funnel(graph, np, row, params, ask)?;
     Ok(if ids.len() > cap {
-        Capped::Over
+        Capped::Over(cap as u64 + 1)
     } else {
         Capped::Within(ids)
     })
