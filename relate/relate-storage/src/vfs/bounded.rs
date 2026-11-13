@@ -62,6 +62,17 @@ impl GrowthFailure {
     }
 }
 
+impl Refused {
+    /// The byte total a crossing was recorded at; `None` for a growth
+    /// failure. The one accessor both crossing consumers read.
+    fn crossed_at(&self) -> Option<u64> {
+        match self {
+            Refused::Crossed(crossed_at) => Some(*crossed_at),
+            Refused::Growth(_) => None,
+        }
+    }
+}
+
 impl BoundCore {
     fn new(limit: u64, refusal: Refusal) -> Self {
         Self {
@@ -114,10 +125,8 @@ impl BoundCore {
     /// surfaces as; `None` while the bound held, so the serializer's io
     /// abort never re-stringifies into it.
     fn crossed_refusal(&self) -> Option<Error> {
-        match self.refused {
-            Some(Refused::Crossed(crossed_at)) => Some(self.refusal.error(crossed_at, self.limit)),
-            _ => None,
-        }
+        let crossed_at = self.refused.as_ref()?.crossed_at()?;
+        Some(self.refusal.error(crossed_at, self.limit))
     }
 }
 

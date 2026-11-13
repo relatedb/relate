@@ -358,7 +358,10 @@ impl PlanCache {
 /// Lock the store's plan cache (ADR-0503), recovering from a poisoned
 /// mutex by clearing it: the critical sections are pure data operations,
 /// so a panic mid-section can at worst leave a half-updated entry, and a
-/// cache is derived state that rebuilds itself. The guard is never held
+/// cache is derived state that rebuilds itself. The whole cache is cleared,
+/// not one entry: a poisoned lock carries no record of which entry was
+/// mid-update, so a torn entry cannot be told from a clean poison and no
+/// narrower recovery is sound. The guard is never held
 /// across a parse, a plan, or another lock.
 pub(crate) fn lock(shared: &Shared) -> MutexGuard<'_, PlanCache> {
     match shared.plan_cache.lock() {

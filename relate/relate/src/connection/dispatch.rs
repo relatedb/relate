@@ -16,7 +16,8 @@ use std::sync::Arc;
 use web_time::Instant;
 
 use relate_executor::{
-    execute_read_at, ExecGraph, ExecRequest, Graph, PlanMetricsSink, ReadAdmission, WriteScratch,
+    execute_read_at, ExecGraph, ExecRequest, Graph, PlanMetricsSink, QueryResult as ExecResult,
+    ReadAdmission, WriteScratch,
 };
 
 use relate_core::Namespace;
@@ -514,14 +515,18 @@ impl Connection {
         use crate::token_budget::HoldAttempt;
 
         let budget = &self.inner.resolved.budget;
+        // Park a hold on the statement reservation, when it has one.
+        let park = |reservation: &mut Option<StatementReservation>, hold| {
+            if let Some(reservation) = reservation {
+                reservation.plan = Some(hold);
+            }
+        };
         match memory {
             PlanMemory::Cached => Ok(()),
             PlanMemory::Statement(bytes) => match budget.try_hold_admitted(bytes) {
                 HoldAttempt::Off => Ok(()),
                 HoldAttempt::Held(hold) => {
-                    if let Some(reservation) = reservation {
-                        reservation.plan = Some(hold);
-                    }
+                    park(reservation, hold);
                     Ok(())
                 }
                 HoldAttempt::Refused => Err(budget.plan_refusal(bytes)),
@@ -529,23 +534,15 @@ impl Connection {
             PlanMemory::Cacheable(pending) => {
                 let bytes = pending.bytes;
                 match budget.try_hold_admitted(bytes) {
-                    HoldAttempt::Off => {
-                        self.publish_cache_entry(pending, None);
-                        Ok(())
-                    }
-                    HoldAttempt::Held(hold) => {
-                        self.publish_cache_entry(pending, Some(hold));
-                        Ok(())
-                    }
+                    HoldAttempt::Off => self.publish_cache_entry(pending, None),
+                    HoldAttempt::Held(hold) => self.publish_cache_entry(pending, Some(hold)),
                     HoldAttempt::Refused => {
                         if let HoldAttempt::Held(hold) = budget.try_hold_grow(bytes) {
-                            if let Some(reservation) = reservation {
-                                reservation.plan = Some(hold);
-                            }
+                            park(reservation, hold);
                         }
-                        Ok(())
                     }
                 }
+                Ok(())
             }
         }
     }
@@ -649,59 +646,12 @@ impl Connection {
                 false,
             )
         } else {
-            // The target is selected and pinned under the read guard: the
-            // `neo4j` arm derefs the GraphCell, whose contract requires the
-            // guard (a follow reload may `replace` the graph otherwise,
-            // ADR-0137); the pin then keeps the cell alive for `target`'s
-            // later use. The (admin, namespace) dispatch decision is made
-            // exactly once, here.
-            let target;
-            // The ontology document the statement reads (ADR-0121 §3,
-            // ADR-0227): store-level state captured together with the graph
-            // pin under the read guard, so an auto-commit statement sees a
-            // consistent admission-time document (explicit transactions use
-            // the begin-time capture in `query_in_txn`). A shared handle:
-            // the capture is an `Arc` pointer clone, not a document copy.
-            let ontology_document: Option<Arc<str>>;
-            let (pin, schema) = match self.inner.read_guard() {
-                Ok(_read) => {
-                    // The same target vocabulary every dispatch site
-                    // reads (dispatch_target, ADR-0229 §1): the
-                    // auto-commit read path routes through it too, its
-                    // error mapped to the outcome form.
-                    target = match self.dispatch_target(admin, namespace) {
-                        Ok(target) => target,
-                        Err(e) => return QueryOutcome::not_admitted(Err(e)),
-                    };
-                    ontology_document = self.inner.ontology.get();
-                    match target.pin_now() {
-                        Ok(pin) => (pin, target.schema_snapshot()),
-                        Err(e) => return QueryOutcome::not_admitted(Err(e)),
-                    }
-                }
+            // A refused admission (read guard, target, pin) is not-admitted;
+            // the run's own result pairs with `admitted: true`.
+            match self.query_read(&ctx, logical, params, cypher, token) {
+                Ok(result) => (result.map(|r| (r, None)), true),
                 Err(e) => return QueryOutcome::not_admitted(Err(e)),
-            };
-            #[cfg(test)]
-            self.inner.pause_admitted_read();
-            (
-                execute_read_at(&ReadAdmission {
-                    graph: target,
-                    snapshot_ts: pin.ts(),
-                    schema: &schema,
-                    request: ExecRequest {
-                        plan: logical,
-                        params,
-                        query_text: cypher,
-                        principal: self.principal.as_deref(),
-                        batch_commit: None,
-                        plan_metrics: ctx.profile_metrics,
-                    },
-                    cancel: Some(token),
-                    ontology_document: ontology_document.as_deref(),
-                })
-                .map(|r| (r, None)),
-                true,
-            )
+            }
         };
         // ADR-0319: a failure here is execution-phase — the statement was
         // planned and dispatched — so it is staged as `Executed::Failed`
@@ -757,6 +707,59 @@ impl Connection {
         QueryOutcome { result, admitted }
     }
 
+    /// The auto-commit read arm: the admission protocol (read guard, target
+    /// dispatch, ontology capture, pin), then the snapshot read — the
+    /// read-side twin of the explicit-transaction arm's `query_in_txn`.
+    /// `Err` is a refused admission (the statement never ran); `Ok`
+    /// carries the run's own result.
+    fn query_read(
+        &self,
+        ctx: &DispatchCtx<'_>,
+        logical: &LogicalPlan,
+        params: &BTreeMap<String, Value>,
+        cypher: &str,
+        token: &CancelToken,
+    ) -> std::result::Result<Result<ExecResult>, Error> {
+        let (admin, namespace) = (ctx.admin, ctx.stamp.namespace);
+        // The target is selected and pinned under the read guard: the
+        // `neo4j` arm derefs the GraphCell, whose contract requires the
+        // guard (a follow reload may `replace` the graph otherwise,
+        // ADR-0137); the pin then keeps the cell alive for `target`'s
+        // later use. The (admin, namespace) dispatch decision is made
+        // exactly once, here (dispatch_target, ADR-0229 §1).
+        let target;
+        // The ontology document the statement reads (ADR-0121 §3,
+        // ADR-0227): store-level state captured together with the graph
+        // pin under the read guard, so an auto-commit statement sees a
+        // consistent admission-time document (explicit transactions use
+        // the begin-time capture in `query_in_txn`). A shared handle:
+        // the capture is an `Arc` pointer clone, not a document copy.
+        let ontology_document: Option<Arc<str>>;
+        let (pin, schema) = {
+            let _read = self.inner.read_guard()?;
+            target = self.dispatch_target(admin, namespace)?;
+            ontology_document = self.inner.ontology.get();
+            (target.pin_now()?, target.schema_snapshot())
+        };
+        #[cfg(test)]
+        self.inner.pause_admitted_read();
+        Ok(execute_read_at(&ReadAdmission {
+            graph: target,
+            snapshot_ts: pin.ts(),
+            schema: &schema,
+            request: ExecRequest {
+                plan: logical,
+                params,
+                query_text: cypher,
+                principal: self.principal.as_deref(),
+                batch_commit: None,
+                plan_metrics: ctx.profile_metrics,
+            },
+            cancel: Some(token),
+            ontology_document: ontology_document.as_deref(),
+        }))
+    }
+
     /// The view a statement executes — and its notification derivation
     /// reads — against (ADR-0363 decision 5): the explicit transaction's
     /// write overlay when the target namespace is writable and a scratch is
@@ -804,7 +807,7 @@ impl Connection {
     /// routed there (ADR-0229 §1) — so that arm fails closed instead of
     /// guessing a graph. The `neo4j` arm derefs the GraphCell, so call
     /// only with a read guard held or a live pin (ADR-0137). (The
-    /// auto-commit read path selects its target inline in `dispatch`.)
+    /// auto-commit read path selects its target in `query_read`.)
     fn dispatch_target(
         &self,
         admin: bool,

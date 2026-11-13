@@ -612,20 +612,19 @@ fn admit_slot(
     let mut earlier_ops = accepted.iter().map(|(_, a)| a.record.ops.as_slice());
     let (pending, constraint_growth) =
         constraint_admission.check_with_earlier(&slot.ops, &mut earlier_ops, position)?;
-    *reserved = shared.admit_redo_capacity_with(&slot.ops, *reserved, Some(constraint_growth))?;
-    let commit_ts = {
-        let last = accepted
-            .last()
-            .map(|(_, a)| a.record.commit_ts)
-            .unwrap_or_else(|| shared.graph.commit_ts());
-        last.checked_add(1).map(|next| next.max(slot.txn_id))
-    };
     // Timestamp overflow rejects the slot like the conflict and capacity
     // stages above — never deferred to a sentinel the group-wide preflight
-    // must remember to catch.
-    let Some(commit_ts) = commit_ts else {
-        return Err(Error::storage("commit timestamp overflow"));
-    };
+    // must remember to catch — and runs before the capacity reservation, so
+    // a slot rejected here leaves no reserved bytes behind.
+    let last = accepted
+        .last()
+        .map(|(_, a)| a.record.commit_ts)
+        .unwrap_or_else(|| shared.graph.commit_ts());
+    let commit_ts = last
+        .checked_add(1)
+        .map(|next| next.max(slot.txn_id))
+        .ok_or_else(|| Error::storage("commit timestamp overflow"))?;
+    *reserved = shared.admit_redo_capacity_with(&slot.ops, *reserved, Some(constraint_growth))?;
     constraint_admission.accept(pending);
     Ok(Admitted {
         record: Accepted {
