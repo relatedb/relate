@@ -51,6 +51,11 @@ impl Pattern {
         wild.then_some(Self(parts))
     }
 
+    /// How many parts the pattern holds (consecutive `*` already collapsed).
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Whether the whole of `term` matches the pattern (iterative glob with
     /// single-star backtracking: linear in practice, no recursion).
     pub(super) fn matches(&self, term: &str) -> bool {

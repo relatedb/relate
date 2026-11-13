@@ -61,7 +61,11 @@ available), across the default, `standard-folding`, `english`, `cjk`,
    terms or occurrences, summed over fields and clauses and times the
    boost. There is no expansion cap: live expands 3000 distinct terms with
    no clause-limit error, so a silent cap would drop real hits.
-6. **Errors.** Suffix errors keep ADR-0578's typed syntax errors; a
+6. **Errors.** A wildcard term of more than 256 parts (after `**` collapses)
+   is a typed syntax error, checked once at parse so matching stays free of
+   a per-document budget; Lucene bounds a wildcard by its automaton's
+   determinization work and tantivy by the regex size limit, both at
+   compile time. Suffix errors keep ADR-0578's typed syntax errors; a
    wildcard-only word may carry a boost; a stored analyzer name the engine
    does not know is reported as index-definition drift.
 

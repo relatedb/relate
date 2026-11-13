@@ -12,6 +12,14 @@ use super::{tokenize, Analyzer};
 /// distance 2) and the default a bare `~` selects.
 pub(super) const MAX_FUZZY_EDITS: u8 = 2;
 
+/// The most parts one wildcard term may hold after `**` collapses (each
+/// literal character, `?` and `*` is one part). Matching a pattern costs
+/// time proportional to its parts times the token length for every scanned
+/// token, so the bound is checked once per query, never per document. Real
+/// terms hold a few dozen parts; Lucene and tantivy likewise reject a
+/// wildcard or regex too large to compile, at parse time (ADR-0583).
+pub(super) const MAX_WILDCARD_PARTS: usize = 256;
+
 /// How one parsed query clause takes part in the boolean match: Lucene's
 /// `Occur` flags after `AND`/`OR`/`NOT` are folded onto their neighbours.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -253,6 +261,13 @@ impl Parser {
             term.to_string()
         };
         if let Some(pattern) = Pattern::parse(&prepared) {
+            if pattern.len() > MAX_WILDCARD_PARTS {
+                return Err(Error::syntax(format!(
+                    "Invalid fulltext query: a wildcard term holds {} characters, over the \
+                     limit of {MAX_WILDCARD_PARTS}",
+                    pattern.len()
+                )));
+            }
             // A wildcard term is lowercased, and folded under an analyzer
             // that folds (a deliberate deviation from live, which leaves it
             // unfolded: ADR-0583) — never stemmed or stop filtered — and ignores a `~N` suffix (calibrated:
@@ -540,6 +555,18 @@ mod tests {
             edits(&clauses("lamp~99999999999999999999999")[0]),
             Some(MAX_FUZZY_EDITS)
         );
+    }
+
+    #[test]
+    fn a_wildcard_term_over_the_part_cap_is_a_typed_syntax_error() {
+        let at_cap = format!("{}*", "a".repeat(MAX_WILDCARD_PARTS - 1));
+        assert!(parse(&at_cap, Analyzer::Standard).is_ok());
+        let over = format!("{}*", "a".repeat(MAX_WILDCARD_PARTS));
+        let error = parse(&over, Analyzer::Standard).expect_err("over the cap");
+        assert!(matches!(error, Error::Syntax(_)), "{error:?}");
+        // Runs of `*` collapse before the count, so they never trip it.
+        let stars = "*".repeat(10 * MAX_WILDCARD_PARTS);
+        assert!(parse(&format!("a{stars}b"), Analyzer::Standard).is_ok());
     }
 
     #[test]
