@@ -127,7 +127,9 @@ extension CypherValue.Date {
     ///
     /// An `era`, when present, is part of the year: era 1 is the common
     /// era, and era 0 counts years before it, so year 1 of era 0 (1 BCE) is
-    /// Cypher's year 0. Any other era is `nil`.
+    /// Cypher's year 0. Within an era years count from 1, so an era with a
+    /// year below 1 is `nil`, as is any other era. Without an era the year
+    /// is taken as written, of either sign.
     public init?(_ components: DateComponents) {
         if let calendar = components.calendar,
             ![Calendar.Identifier.gregorian, .iso8601].contains(calendar.identifier)
@@ -138,8 +140,9 @@ extension CypherValue.Date {
         else { return nil }
         let year: Int
         switch components.era {
-        case nil, 1: year = eraYear
-        case 0: year = 1 - eraYear
+        case nil: year = eraYear
+        case 1 where eraYear >= 1: year = eraYear
+        case 0 where eraYear >= 1: year = 1 - eraYear
         default: return nil
         }
         self.init(year: Int64(year), month: Int64(month), day: Int64(day))

@@ -122,16 +122,26 @@ import Relate
         theirs.year = 2026
         theirs.era = 1
         #expect(CypherValue.Date(theirs) == day)
-        // An era is part of the year: Foundation reports a BCE day as era 0
-        // with a positive year, and 1 BCE is Cypher's year 0.
-        #expect(CypherValue.Date(DateComponents(era: 1, year: 2026, month: 11, day: 9)) == day)
-        #expect(CypherValue.Date(DateComponents(era: 0, year: 1, month: 3, day: 1))
-            == .init(year: 0, month: 3, day: 1))
-        #expect(CypherValue.Date(DateComponents(era: 0, year: 44, month: 3, day: 15))
-            == .init(year: -43, month: 3, day: 15))
-        #expect(CypherValue.Date(DateComponents(era: 2, year: 5, month: 1, day: 1)) == nil)
         #expect(day.startOfDay(in: zone) == (try parse("2026-11-08T11:00:00.000Z")))
         #expect(try conn.query("RETURN date('2026-11-09') = $d", ["d": .date(day)]).scalar() == true)
+    }
+
+    @Test func aComponentsEraCountsYearsBeforeTheCommonEra() {
+        func day(era: Int?, year: Int) -> CypherValue.Date? {
+            CypherValue.Date(DateComponents(era: era, year: year, month: 3, day: 15))
+        }
+        // Foundation reports a BCE day as era 0 with a positive year; 1 BCE
+        // is Cypher's year 0.
+        #expect(day(era: 1, year: 2026) == .init(year: 2026, month: 3, day: 15))
+        #expect(day(era: 0, year: 1) == .init(year: 0, month: 3, day: 15))
+        #expect(day(era: 0, year: 44) == .init(year: -43, month: 3, day: 15))
+        // Within an era years count from 1; no other era exists.
+        #expect(day(era: 0, year: 0) == nil && day(era: 0, year: -5) == nil)
+        #expect(day(era: 1, year: 0) == nil && day(era: 0, year: .min) == nil)
+        #expect(day(era: 2, year: 5) == nil)
+        // Without an era the year is as written, of either sign.
+        #expect(day(era: nil, year: 0) == .init(year: 0, month: 3, day: 15))
+        #expect(day(era: nil, year: -43) == .init(year: -43, month: 3, day: 15))
     }
 
     // MARK: Durations
@@ -162,11 +172,20 @@ import Relate
         #expect(doubles.vectorValue?.dtype == .float && doubles.vectorValue?.doubleValues == [0.1, 0.2])
         let ints = CypherValue.Vector.ints(dtype: .integer8, values: [1, 2, 3])
         #expect(ints.float32Values == nil && ints.doubleValues == nil && ints.count == 3)
-        // A 64-bit vector narrows to the nearest Float, unless a coordinate
-        // is beyond Float's range.
+    }
+
+    @Test func aDoubleVectorNarrowsToFloatOrRefusesOutOfRange() {
         #expect(CypherValue.Vector.float64([0.1, -2]).float32Values == [Float(0.1), -2])
-        #expect(CypherValue.Vector.float64([1e300]).float32Values == nil)
-        #expect(CypherValue.Vector.float64([.infinity]).float32Values == [.infinity])
+        // A finite coordinate beyond Float's range has no Float: no
+        // infinity, and no clamping to the largest one either.
+        let largest = Double(Float.greatestFiniteMagnitude)
+        #expect(CypherValue.Vector.float64([largest, -largest]).float32Values
+            == [.greatestFiniteMagnitude, -.greatestFiniteMagnitude])
+        #expect(CypherValue.Vector.float64([largest.nextUp]).float32Values == nil)
+        #expect(CypherValue.Vector.float64([1, -1e300]).float32Values == nil)
+        // Infinities and NaN are values a Float holds.
+        #expect(CypherValue.Vector.float64([.infinity, -.infinity]).float32Values == [.infinity, -.infinity])
+        #expect(CypherValue.Vector.float64([.nan]).float32Values?.first?.isNaN == true)
     }
 
     @Test func coreMLArraysBecomeVectors() throws {
