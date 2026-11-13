@@ -183,6 +183,35 @@ impl<'a> Parser<'a> {
                 let start = self.pos;
                 self.unsupported_admin_clause(start)
             }
+            // LABS-873: `GRANT`/`DENY`/`REVOKE <privilege> … TO/FROM
+            // <role>` and `RENAME USER|ROLE <name> TO <name>` are
+            // administration commands CE does not support. They are plain
+            // identifiers in this grammar, so each needs its own guard here
+            // -- without it they fell through to `unexpected token` and
+            // surfaced as a syntax error instead of the 51N27 rejection.
+            //
+            // No lookahead on `GRANT`/`DENY`/`REVOKE`: their argument is a
+            // privilege, whose spellings are a vocabulary this parser has no
+            // other use for, and no clause of this grammar starts with a
+            // bare identifier, so reaching the guard at all already means
+            // the statement opens with the command. `RENAME` does look
+            // ahead, because `rename` is a plausible variable name and only
+            // `USER`/`ROLE` after it is the command.
+            TokenType::Identifier
+                if tok.literal.eq_ignore_ascii_case("grant")
+                    || tok.literal.eq_ignore_ascii_case("deny")
+                    || tok.literal.eq_ignore_ascii_case("revoke") =>
+            {
+                let start = self.pos;
+                self.unsupported_admin_clause(start)
+            }
+            TokenType::Identifier
+                if tok.literal.eq_ignore_ascii_case("rename")
+                    && (self.peek_at_is_ident(1, "user") || self.peek_at_is_ident(1, "role")) =>
+            {
+                let start = self.pos;
+                self.unsupported_admin_clause(start)
+            }
             // CIP-168: standalone `<order by and page statement>` -- a new
             // clause starting directly with ORDER BY / SKIP / OFFSET /
             // LIMIT rather than attached to WITH/RETURN/YIELD.
@@ -223,10 +252,14 @@ impl<'a> Parser<'a> {
                 // directly after `ALTER` (`DATABASE` vs `CURRENT`).
                 if self.peek_at_is_ident(1, "database") {
                     self.parse_alter_database()
-                } else if self.peek_at_is_ident(1, "alias") {
-                    // ADR-0116 §2: `ALTER ALIAS <name> SET DATABASE <target>`
-                    // -- recognized, then rejected with CE's
-                    // `UnsupportedAdministrationCommand`.
+                } else if self.peek_at_is_ident(1, "alias")
+                    || self.peek_at_is_ident(1, "user")
+                    || self.peek_at_is_ident(1, "role")
+                {
+                    // ADR-0116 §2 / LABS-873: `ALTER ALIAS <name> SET
+                    // DATABASE <target>`, `ALTER USER <name> …` and
+                    // `ALTER ROLE <name> …` -- recognized, then rejected
+                    // with CE's `UnsupportedAdministrationCommand`.
                     let start = self.pos;
                     self.unsupported_admin_clause(start)
                 } else {
@@ -277,6 +310,18 @@ impl<'a> Parser<'a> {
             if self.peek_at_is_ident(after, "alias")
                 && self.peek_at(after + 1).ty.is_ident_like()
                 && self.peek_at(after + 2).ty == TokenType::FOR
+            {
+                return self.unsupported_admin_clause(start);
+            }
+            // LABS-873: `CREATE [OR REPLACE] USER <name> SET PASSWORD …`
+            // and `CREATE ROLE <name> …` are administration commands CE
+            // does not support, so they are recognized and rejected with
+            // the same 51N27 the database forms get -- not left to fail
+            // as an unparseable node pattern. Same named-path
+            // disambiguation as `DATABASE`: a variable spelled
+            // `user`/`role` is followed by `=`.
+            if (self.peek_at_is_ident(after, "user") || self.peek_at_is_ident(after, "role"))
+                && self.peek_at(after + 1).ty != TokenType::Equals
             {
                 return self.unsupported_admin_clause(start);
             }
@@ -458,10 +503,19 @@ impl<'a> Parser<'a> {
             {
                 self.unsupported_admin_clause(start)
             }
+            // LABS-873: `DROP USER <name>` / `DROP ROLE <name>` are CE's
+            // unsupported administration commands, same as the database
+            // forms above.
+            TokenType::Identifier
+                if tok.literal.eq_ignore_ascii_case("user")
+                    || tok.literal.eq_ignore_ascii_case("role") =>
+            {
+                self.unsupported_admin_clause(start)
+            }
             _ => Err(self.error_at_token(
                 &tok,
                 format!(
-                    "expected INDEX, CONSTRAINT, or DATABASE after DROP, got {:?}",
+                    "expected INDEX, CONSTRAINT, DATABASE, USER, or ROLE after DROP, got {:?}",
                     tok.literal
                 ),
             )),
