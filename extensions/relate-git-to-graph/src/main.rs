@@ -46,13 +46,7 @@ fn run(child: &mut StdioChild, envelope: Envelope) -> Result<(), String> {
     // reading, the path rule and the pair cap while building the plan
     // (ADR-0392) — an import that would refuse has written nothing.
     let caps = Caps::ADR;
-    let history = git_log::read_history(
-        &dir,
-        opts.max_commits,
-        opts.since.as_deref(),
-        caps.log_bytes,
-    )
-    .map_err(|e| e.to_string())?;
+    let history = git_log::read_history(&dir, &opts, caps.log_bytes).map_err(|e| e.to_string())?;
     let built =
         plan::build(&dir, history, opts.max_changeset, caps.pairs).map_err(|e| e.to_string())?;
     let stats = built.stats();

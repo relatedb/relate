@@ -109,7 +109,7 @@ impl fmt::Display for ImportError {
             Self::LogTooLarge { limit } => write!(
                 f,
                 "git log output exceeds the {limit}-byte import limit ({} MiB); \
-                 pass --max-commits or --since to read a smaller window",
+                 pass --max-commits, --since or --until to read a smaller window",
                 limit / MIB
             ),
             Self::TooManyPairs { limit } => write!(
@@ -154,7 +154,8 @@ impl Caps {
     };
 }
 
-/// Options for one import (ADR-0376).
+/// Options for one import (ADR-0376; the window's upper bound is
+/// ADR-0597).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opts {
     /// `--max-commits`: read at most this many commits; `None` is all history.
@@ -164,6 +165,10 @@ pub struct Opts {
     pub max_changeset: u64,
     /// `--since`: git's committer-date lower bound; `None` is no bound.
     pub since: Option<String>,
+    /// `--until`: git's committer-date upper bound; `None` is no bound.
+    /// With `since` it closes the window, so `--since A --until B` reads a
+    /// reproducible range that need not end at HEAD (ADR-0597).
+    pub until: Option<String>,
 }
 
 impl Default for Opts {
@@ -172,8 +177,17 @@ impl Default for Opts {
             max_commits: None,
             max_changeset: DEFAULT_MAX_CHANGESET,
             since: None,
+            until: None,
         }
     }
+}
+
+/// The manifest's empty-string-means-no-bound rule (ADR-0430 §6): the
+/// envelope always carries a resolved value, so an empty string is no
+/// bound and any other value is the bound itself — the one lowering both
+/// date bounds ride.
+fn bound(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// What an import planned, as this run's row counts (ADR-0376's `C`, `P`,
@@ -202,10 +216,10 @@ pub struct Stats {
 /// kind-checked parse cannot see value ranges, ADR-0429 §5).
 ///
 /// The optional-with-no-bound flags ride the wire as their defaults'
-/// values: `max-commits` `0` means all history and an empty `since` means
-/// no bound — the envelope always carries a resolved value, so the
-/// absent and the explicitly-empty spelling merge (the child cannot tell
-/// them apart; ADR-0430 §6's envelope contract).
+/// values: `max-commits` `0` means all history and an empty `since` or
+/// `until` means no bound — the envelope always carries a resolved value,
+/// so the absent and the explicitly-empty spelling merge (the child cannot
+/// tell them apart; ADR-0430 §6's envelope contract).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Envelope {
@@ -220,6 +234,9 @@ pub struct Envelope {
     /// `--since`, the manifest's default (empty) when absent: empty is no
     /// bound.
     pub since: String,
+    /// `--until`, the manifest's default (empty) when absent: empty is no
+    /// bound (ADR-0597).
+    pub until: String,
 }
 
 impl Envelope {
@@ -250,7 +267,8 @@ impl Envelope {
         Ok(Opts {
             max_commits: (self.max_commits > 0).then_some(self.max_commits as u64),
             max_changeset: self.max_changeset as u64,
-            since: (!self.since.is_empty()).then(|| self.since.clone()),
+            since: bound(&self.since),
+            until: bound(&self.until),
         })
     }
 }

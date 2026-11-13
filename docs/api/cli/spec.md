@@ -1111,6 +1111,7 @@ in the CLI skill bundle (`relate skill install`).
 ```bash
 relate run fs-to-graph ./src --database ./code-graph --ignore-patterns target/
 relate run git-to-graph . --database ./code-graph --max-commits 500 --since 2026-01-01
+relate run git-to-graph . --database ./code-graph --since 2018-01-01 --until 2020-01-01
 ```
 
 The `lab` command these importers rode is retired (ADR-0431 §12, the

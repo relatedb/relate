@@ -7,7 +7,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::*;
-use relate_test_support::git::Repo;
+use crate::Opts;
+use relate_test_support::git::{Repo, AUTHOR_EMAIL, AUTHOR_NAME, JAN_1, JAN_2, JAN_3};
 
 /// Build one raw git record the way the pinned format emits it.
 fn record(
@@ -31,7 +32,15 @@ fn record(
 
 #[test]
 fn argv_pins_the_adr_invocation_and_appends_optional_filters() {
-    let args = log_args(Path::new("/repo"), Some(5), Some("-x"));
+    let args = log_args(
+        Path::new("/repo"),
+        &Opts {
+            max_commits: Some(5),
+            since: Some("-x".to_string()),
+            until: Some("-y".to_string()),
+            ..Opts::default()
+        },
+    );
     let strings: Vec<String> = args
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -62,18 +71,20 @@ fn argv_pins_the_adr_invocation_and_appends_optional_filters() {
         "{strings:?}"
     );
     assert!(strings.contains(&"--since=-x".to_string()), "{strings:?}");
+    assert!(strings.contains(&"--until=-y".to_string()), "{strings:?}");
     assert_eq!(&strings[strings.len() - 2..], ["--", "."]);
 }
 
 #[test]
 fn argv_omits_the_optional_filters_when_absent() {
-    let args = log_args(Path::new("."), None, None);
+    let args = log_args(Path::new("."), &Opts::default());
     let strings: Vec<String> = args
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     assert!(!strings.iter().any(|arg| arg.starts_with("--max-count")));
     assert!(!strings.iter().any(|arg| arg.starts_with("--since=")));
+    assert!(!strings.iter().any(|arg| arg.starts_with("--until=")));
     assert_eq!(&strings[strings.len() - 2..], ["--", "."]);
 }
 
@@ -266,18 +277,18 @@ fn read_history_maps_the_byte_past_the_cap_to_log_too_large() {
     repo.write("b.txt", b"b");
     repo.commit("second");
     let mut command = Command::new("git");
-    command.args(log_args(dir.path(), None, None));
+    command.args(log_args(dir.path(), &Opts::default()));
     let full = command.output().unwrap();
     assert!(full.status.success());
     let cap = full.stdout.len() as u64 - 1;
 
-    let err = read_history(dir.path(), None, None, cap).unwrap_err();
+    let err = read_history(dir.path(), &Opts::default(), cap).unwrap_err();
     assert_eq!(err, ImportError::LogTooLarge { limit: cap });
     assert_eq!(
         err.to_string(),
         format!(
             "git log output exceeds the {cap}-byte import limit ({} MiB); \
-             pass --max-commits or --since to read a smaller window",
+             pass --max-commits, --since or --until to read a smaller window",
             cap / (1024 * 1024)
         )
     );
@@ -303,7 +314,7 @@ fn read_history_uses_real_git_output() {
     repo.write("with space.txt", b"changed");
     let second = repo.commit("second");
 
-    let commits = read_history(dir.path(), None, None, u64::MAX).unwrap();
+    let commits = read_history(dir.path(), &Opts::default(), u64::MAX).unwrap();
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].sha, second);
     assert_eq!(commits[0].paths, ["with space.txt", "å.txt"]);
@@ -313,42 +324,96 @@ fn read_history_uses_real_git_output() {
     assert_eq!(commits[1].subject, "first: \"quoted\"");
 }
 
+/// The three-commit dated ladder the window tests read: oldest, middle
+/// and newest at JAN_1, JAN_2 and JAN_3, one file changed per commit, all
+/// by one author, returning the newest sha. `commit_as` sets author and
+/// committer date alike, and the committer date is what `--since` and
+/// `--until` filter, so the ladder orders the way the windows cut it.
+fn dated_ladder(repo: &Repo) -> String {
+    repo.write("a.txt", b"a");
+    repo.commit_as(AUTHOR_NAME, AUTHOR_EMAIL, JAN_1, "oldest");
+    repo.write("a.txt", b"b");
+    repo.commit_as(AUTHOR_NAME, AUTHOR_EMAIL, JAN_2, "middle");
+    repo.write("a.txt", b"c");
+    repo.commit_as(AUTHOR_NAME, AUTHOR_EMAIL, JAN_3, "newest")
+}
+
+/// The history's subjects in log order — the projection every window
+/// test asserts, spelled once.
+fn subjects(history: &[GitCommit]) -> Vec<&str> {
+    history
+        .iter()
+        .map(|commit| commit.subject.as_str())
+        .collect()
+}
+
 #[test]
 fn read_history_applies_max_commits_and_since() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Repo::init(dir.path());
-    repo.write("a.txt", b"a");
-    repo.commit_as(
-        "Ada Lovelace",
-        "ada@example.com",
-        "2026-01-01T00:00:00+00:00",
-        "oldest",
-    );
-    repo.write("a.txt", b"b");
-    repo.commit_as(
-        "Ada Lovelace",
-        "ada@example.com",
-        "2026-01-02T00:00:00+00:00",
-        "middle",
-    );
-    repo.write("a.txt", b"c");
-    let newest = repo.commit_as(
-        "Ada Lovelace",
-        "ada@example.com",
-        "2026-01-03T00:00:00+00:00",
-        "newest",
-    );
+    let newest = dated_ladder(&repo);
 
-    let one = read_history(dir.path(), Some(1), None, u64::MAX).unwrap();
+    let one = read_history(
+        dir.path(),
+        &Opts {
+            max_commits: Some(1),
+            ..Opts::default()
+        },
+        u64::MAX,
+    )
+    .unwrap();
     assert_eq!(one.len(), 1);
     assert_eq!(one[0].sha, newest);
 
-    let recent = read_history(dir.path(), None, Some("2026-01-02T00:00:00Z"), u64::MAX).unwrap();
+    let recent = read_history(
+        dir.path(),
+        &Opts {
+            since: Some("2026-01-02T00:00:00Z".to_string()),
+            ..Opts::default()
+        },
+        u64::MAX,
+    )
+    .unwrap();
+    assert_eq!(subjects(&recent), ["newest", "middle"]);
+}
+
+#[test]
+fn read_history_applies_until_for_an_era_and_a_closed_range() {
+    // The ADR-0597 shapes: `--until` alone reads an era that need not end
+    // at HEAD, and `--since A --until B` is a closed, reproducible range —
+    // both filter committer date, exactly as `--since` does.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Repo::init(dir.path());
+    dated_ladder(&repo);
+
+    let era = read_history(
+        dir.path(),
+        &Opts {
+            until: Some("2026-01-02T00:00:00Z".to_string()),
+            ..Opts::default()
+        },
+        u64::MAX,
+    )
+    .unwrap();
     assert_eq!(
-        recent
-            .iter()
-            .map(|commit| commit.subject.as_str())
-            .collect::<Vec<_>>(),
-        ["newest", "middle"]
+        subjects(&era),
+        ["middle", "oldest"],
+        "an --until window reads an era that stops before HEAD"
+    );
+
+    let closed = read_history(
+        dir.path(),
+        &Opts {
+            since: Some("2026-01-01T00:00:01Z".to_string()),
+            until: Some("2026-01-02T00:00:01Z".to_string()),
+            ..Opts::default()
+        },
+        u64::MAX,
+    )
+    .unwrap();
+    assert_eq!(
+        subjects(&closed),
+        ["middle"],
+        "a closed --since/--until range reads exactly the middle commit"
     );
 }

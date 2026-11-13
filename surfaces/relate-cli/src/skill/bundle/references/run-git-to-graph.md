@@ -13,7 +13,7 @@ catalog says so where that matters.
 ## Run it
 
 ```
-relate run git-to-graph [DIR] [--database PATH] [--max-commits N] [--max-changeset N] [--since DATE]
+relate run git-to-graph [DIR] [--database PATH] [--max-commits N] [--max-changeset N] [--since DATE] [--until DATE]
 ```
 
 Both importers are first-party extension packages (ADR-0431 §11): they mount
@@ -43,8 +43,10 @@ An import is bounded (ADR-0377; the pair cap as ADR-0392 raises it):
 bytes (128 MiB), one import writes at most 5000000 distinct `CO_CHANGED`
 pairs, and `--max-changeset` accepts `1..=1000` (default 50). Exceeding a
 cap fails the import (exit 1) before anything is written, as does a
-`--max-changeset` above 1000. Pass `--max-commits` or `--since` to
-read a smaller window. Each write batch commits as its own transaction, so
+`--max-changeset` above 1000. Pass `--max-commits`, `--since` or `--until`
+to read a smaller window; `--since A --until B` is a closed range, so an
+old era imports reproducibly instead of reading everything since A
+(ADR-0597). Each write batch commits as its own transaction, so
 a failed import can leave the batches before the failure committed; the
 idempotent `MERGE`s above make re-running the same command complete it.
 Rows are generated lazily one batch at a time over the wire, so the
@@ -96,13 +98,13 @@ references a parameter the CLI was not given fails instead of binding `null`.
 - **Merge commits are not imported.** `--no-merges` and `HEAD` only: merged
   work appears through the commits that carry it, and branches, tags, and the
   DAG are not modeled.
-- **`--since` filters committer date**, while `authored_at` is the author
+- **`--since` and `--until` filter committer date**, while `authored_at` is the author
   date; a rebase or cherry-pick can make them disagree.
 - **Oversized commits are half-visible.** A commit over `--max-changeset`
   keeps its `Commit` and `TOUCHED` rows but contributes no `CO_CHANGED` pair,
   so stored coupling can miss a large change. Re-import with a larger
   `--max-changeset` when that matters.
-- **A narrower re-import leaves old edges.** `--since` and `--max-commits`
+- **A narrower re-import leaves old edges.** `--since`, `--until` and `--max-commits`
   overwrite only the pairs they recompute; use a fresh `--database` when the window
   changes.
 - **`content` is not universal.** `fs-to-graph` stores it only for text files
