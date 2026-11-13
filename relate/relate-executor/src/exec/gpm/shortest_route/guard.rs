@@ -32,8 +32,9 @@ pub(super) enum Spelling {
 impl Spelling {
     /// The `MATCH`-clause spelling: the function forms carry the flag, a
     /// keyword selector does not. The expression form is stamped by its
-    /// own entry ([`super::fold_shortest_route`]).
-    fn of(path: &PathPattern) -> Self {
+    /// own entry ([`super::fold_shortest_route`]), which hands
+    /// [`Spelling::Expression`] to the one driver.
+    pub(super) fn of(path: &PathPattern) -> Self {
         if path.is_shortest_path_function {
             Spelling::Function
         } else {
@@ -53,6 +54,13 @@ impl Spelling {
     /// deeper layers are longer than its own shortest, so they cannot win.
     pub(super) fn first_layer_only(self) -> bool {
         self == Spelling::Expression
+    }
+
+    /// The hop ceiling an unbounded relationship takes: only the expression
+    /// form carries one (the walk's flat default); the clause spellings keep
+    /// the pattern's own bound.
+    fn unbounded_ceiling(self) -> Option<u32> {
+        (self == Spelling::Expression).then_some(crate::pattern_walk::DEFAULT_MAX_HOPS)
     }
 }
 
@@ -91,6 +99,7 @@ pub(super) fn route_shape<'p>(
     used: &UsedSet,
     row: &Row,
     params: &BTreeMap<String, Value>,
+    spelling: Spelling,
 ) -> Option<Shape<'p>> {
     if match_mode != MatchMode::DifferentRelationships
         || !used.is_empty()
@@ -112,7 +121,7 @@ pub(super) fn route_shape<'p>(
         } if resolve_gpm_count(Some(count), 1, params).is_ok_and(|n| n == 1) => *group,
         PathSelector::Shortest { .. } | PathSelector::Any(_) | PathSelector::All => return None,
     };
-    let hop = routed_hop(path, filters, all)?;
+    let hop = routed_hop(path, filters, all, spelling)?;
     if hop.min > 1
         || hop.rel.where_clause.is_some()
         || !followable(hop.start, hop.rel, hop.end)
@@ -181,7 +190,12 @@ pub(super) fn route_shape<'p>(
 /// `implicit_var_length_rel` decoder); the plain var-length `Relationship`
 /// element (hand-built or planner-IR-diagnostic plans) remains the legacy
 /// arm.
-fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> Option<Shape<'p>> {
+fn routed_hop<'p>(
+    path: &'p PathPattern,
+    filters: &'p GpmFilters,
+    all: bool,
+    spelling: Spelling,
+) -> Option<Shape<'p>> {
     let [PatternElement::Node(start), rel_element, PatternElement::Node(end)] =
         path.elements.as_slice()
     else {
@@ -210,8 +224,8 @@ fn routed_hop<'p>(path: &'p PathPattern, filters: &'p GpmFilters, all: bool) -> 
         filter,
         end,
         min,
-        max,
+        max: max.or(spelling.unbounded_ceiling()),
         all,
-        spelling: Spelling::of(path),
+        spelling,
     })
 }

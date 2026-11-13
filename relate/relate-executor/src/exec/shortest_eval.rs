@@ -3,7 +3,7 @@
 //! selector form the `MATCH` clause uses (ADR-0568), so it runs on the one
 //! shortest route: each (start, end) partition's rows fold into the
 //! global shortest, no row retained but the winners (ADR-0555). A shape
-//! the route declines enumerates and keeps the shortest (ADR-0025).
+//! the route declines enumerates and folds the shortest (ADR-0025, ADR-0555).
 
 use std::collections::BTreeMap;
 
@@ -11,11 +11,10 @@ use relate_core::{Result, Value};
 use relate_ir::PathPattern;
 
 use crate::ctx::ExecCtx;
+use crate::eval_walk::fold_pattern_rows;
 use crate::exec::gpm::fold_shortest_route;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
-
-use super::pattern::collect_pattern_rows;
 
 #[derive(Clone, Copy)]
 pub(crate) enum ShortestWant {
@@ -117,9 +116,10 @@ pub(crate) fn eval_shortest(
         // one, a multi-relationship or quantified body, a predicate the
         // search cannot decide): enumerate the pattern's rows and keep the
         // shortest, into the same accumulator.
-        for r in collect_pattern_rows(graph, row, &path, params)? {
+        fold_pattern_rows(graph, row, &path, params, &mut |r| {
             best.offer_row(&name, r);
-        }
+            Ok(())
+        })?;
     }
     Ok(best.into_value(want))
 }

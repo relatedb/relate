@@ -8,7 +8,7 @@ use std::sync::Arc;
 use relate_core::{Error, Result, Value};
 use relate_ir::Expr;
 
-use crate::eval_walk::{eval_shortest, ShortestWant};
+use crate::exec::{eval_shortest, ShortestWant};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 

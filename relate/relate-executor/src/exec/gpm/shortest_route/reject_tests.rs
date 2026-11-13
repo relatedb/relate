@@ -18,7 +18,7 @@ use super::super::GpmFilters;
 use super::fixtures::{
     gpm, gpm_params, on_route, plain, run, run_params, shortcut, sorted, Counts,
 };
-use super::{route_shape, with_forced_gpm};
+use super::{route_shape, with_forced_gpm, Spelling};
 
 /// The match mode and first pattern of the statement's last `MATCH` clause.
 fn last_match(cypher: &str) -> (MatchMode, PathPattern) {
@@ -49,7 +49,16 @@ fn guard_accepts_with(cypher: &str, used: &UsedSet, row: &Row) -> bool {
     let g = Graph::default();
     let view = crate::overlay::ExecGraph::read(&g);
     let filters = GpmFilters::resolve(&view, &path);
-    route_shape(&path, &filters, mode, used, row, &BTreeMap::new()).is_some()
+    route_shape(
+        &path,
+        &filters,
+        mode,
+        used,
+        row,
+        &BTreeMap::new(),
+        Spelling::of(&path),
+    )
+    .is_some()
 }
 
 /// `q` is rejected by the guard, neither runs nor expands on the route, and
