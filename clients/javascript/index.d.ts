@@ -19,6 +19,14 @@ export type QueryType = "r" | "w" | "rw" | "s";
 export type Namespace = "neo4j" | "system" | "system_ontologies";
 
 /**
+ * Where an error's failure happened (ADR-0502 §2): `"compile"` (parse/plan),
+ * `"runtime"` (execution) or `"internal"` (a failure the engine never saw —
+ * a NULL or poisoned handle, a caught panic, an argument that failed to
+ * decode, a params-builder refusal).
+ */
+export type ErrorStage = "compile" | "runtime" | "internal";
+
+/**
  * A Cypher INTEGER (int64) as a JS value — the lossless representation
  * policy (LABS-901): a `number` when the value is exactly representable
  * (within ±2^53-1, `Number.isSafeInteger`), a `bigint` beyond it.
@@ -154,8 +162,8 @@ export class RelateError extends Error {
   readonly code: string | null;
   /** The GQLSTATUS value, e.g. "22G03". */
   readonly gqlStatus: string | null;
-  /** "compile" | "runtime" | "internal". */
-  readonly stage: "compile" | "runtime" | "internal" | null;
+  /** The failure's stage; see {@link ErrorStage}. */
+  readonly stage: ErrorStage | null;
   /** The drivers' transient test: re-run the same work only when true. */
   readonly retryable: boolean;
   /** The drivers' retriable spelling (=== retryable). */

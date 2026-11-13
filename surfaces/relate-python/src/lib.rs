@@ -67,6 +67,7 @@ mod graph_values;
 mod result;
 mod temporal_values;
 mod vector_values;
+mod walk;
 
 use convert::optional_params_to_cypher;
 use graph_values::{Node, Path, Point, Relationship};

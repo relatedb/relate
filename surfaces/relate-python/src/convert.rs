@@ -9,9 +9,10 @@
 use crate::graph_values::{Node, Path, Point, Relationship};
 use crate::temporal_values::{Duration, Temporal, TemporalParts};
 use crate::vector_values::Vector;
+use crate::walk::Walk;
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveTime, TimeZone, Timelike};
 use indexmap::IndexMap;
-use pyo3::exceptions::{PyOverflowError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{
     PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple,
@@ -19,7 +20,7 @@ use pyo3::types::{
 use relate::{node_element_id, rel_element_id, Namespace};
 use relate_model::value::{IsoDuration, PointValue};
 use relate_model::CypherValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 // ============================================================
 // CypherValue -> Python
@@ -389,14 +390,7 @@ pub(super) fn cypher_value_to_py(
             for r in relationships {
                 rs.push(rel_to_pyrel(py, r, ns)?);
             }
-            Ok(Py::new(
-                py,
-                Path {
-                    nodes: nodes_py,
-                    relationships: rs,
-                },
-            )?
-            .into_any())
+            Ok(Py::new(py, Path::new(nodes_py, rs)?)?.into_any())
         }
         CypherValue::Date(_)
         | CypherValue::Time(..)
@@ -630,44 +624,25 @@ fn bytes_to_int_list(bytes: &[u8]) -> CypherValue {
 fn py_seq_to_list<'py>(
     obj: &Bound<'py, PyAny>,
     items: impl Iterator<Item = Bound<'py, PyAny>>,
-    depth: usize,
-    visiting: &mut HashSet<usize>,
+    walk: &mut Walk,
 ) -> PyResult<CypherValue> {
-    enter_container(obj, visiting)?;
-    let mut converted = Vec::with_capacity(items.size_hint().0);
-    for item in items {
-        converted.push(py_to_cypher_value_at(&item, depth + 1, visiting)?);
-    }
-    leave_container(obj, visiting);
-    Ok(CypherValue::List(converted))
+    walk.enter(obj, |walk| {
+        let mut converted = Vec::with_capacity(items.size_hint().0);
+        for item in items {
+            converted.push(py_to_cypher_value_at(&item, walk)?);
+        }
+        Ok(CypherValue::List(converted))
+    })
 }
-
-/// Maximum list/dict nesting depth accepted when converting parameters and when
-/// copying properties for `data()` / `to_dict()`. Deeper
-/// structures raise rather than recursing until the Rust stack overflows and
-/// aborts the host interpreter (LABS-114).
-pub(super) const PY_VALUE_DEPTH_CAP: usize = 128;
 
 /// Convert a Python parameter object to a [`CypherValue`], rejecting nesting
-/// deeper than [`PY_VALUE_DEPTH_CAP`] and self-referential lists/maps.
+/// deeper than [`crate::walk::PY_VALUE_DEPTH_CAP`] and self-referential
+/// lists/maps.
 pub(super) fn py_to_cypher_value(obj: &Bound<'_, PyAny>) -> PyResult<CypherValue> {
-    // `visiting` holds the `PyObject*` of every container on the current
-    // recursion path, so a list/dict that (transitively) contains itself is
-    // rejected instead of recursing forever.
-    let mut visiting = HashSet::new();
-    py_to_cypher_value_at(obj, 0, &mut visiting)
+    py_to_cypher_value_at(obj, &mut Walk::parameter())
 }
 
-pub(super) fn py_to_cypher_value_at(
-    obj: &Bound<'_, PyAny>,
-    depth: usize,
-    visiting: &mut HashSet<usize>,
-) -> PyResult<CypherValue> {
-    if depth > PY_VALUE_DEPTH_CAP {
-        return Err(PyValueError::new_err(format!(
-            "parameter nesting exceeds the maximum depth of {PY_VALUE_DEPTH_CAP}"
-        )));
-    }
+fn py_to_cypher_value_at(obj: &Bound<'_, PyAny>, walk: &mut Walk) -> PyResult<CypherValue> {
     if obj.is_none() {
         return Ok(CypherValue::Null);
     }
@@ -717,52 +692,32 @@ pub(super) fn py_to_cypher_value_at(
         return Ok(bytes_to_int_list(unsafe { ba.as_bytes() }));
     }
     if let Ok(list) = obj.downcast::<PyList>() {
-        return py_seq_to_list(obj, list.iter(), depth, visiting);
+        return py_seq_to_list(obj, list.iter(), walk);
     }
     // Tuples convert exactly like lists (ADR-0219).
     if let Ok(tuple) = obj.downcast::<PyTuple>() {
-        return py_seq_to_list(obj, tuple.iter(), depth, visiting);
+        return py_seq_to_list(obj, tuple.iter(), walk);
     }
     if let Ok(dict) = obj.downcast::<PyDict>() {
         // Dicts are always maps (ADR-0219): points are made only from an
         // explicit `relate.Point` (above) or in Cypher via `point()`.
-        enter_container(obj, visiting)?;
-        let mut map = IndexMap::new();
-        for (k, v) in dict.iter() {
-            let key: String = k.extract().map_err(|_| {
-                PyTypeError::new_err(format!(
-                    "map keys must be strings, got a key of type '{}'",
-                    py_type_name(&k)
-                ))
-            })?;
-            let value = py_to_cypher_value_at(&v, depth + 1, visiting)?;
-            map.insert(key, value);
-        }
-        leave_container(obj, visiting);
-        return Ok(CypherValue::Map(map));
+        return walk.enter(obj, |walk| {
+            let mut map = IndexMap::new();
+            for (k, v) in dict.iter() {
+                let key: String = k.extract().map_err(|_| {
+                    PyTypeError::new_err(format!(
+                        "map keys must be strings, got a key of type '{}'",
+                        py_type_name(&k)
+                    ))
+                })?;
+                map.insert(key, py_to_cypher_value_at(&v, walk)?);
+            }
+            Ok(CypherValue::Map(map))
+        });
     }
 
     Err(PyTypeError::new_err(format!(
         "Relate cannot convert a parameter of Python type '{}' to a graph value",
         py_type_name(obj)
     )))
-}
-
-/// Record `obj` as being on the current recursion path. Errors if it is already
-/// present, i.e. the structure references itself.
-pub(super) fn enter_container(
-    obj: &Bound<'_, PyAny>,
-    visiting: &mut HashSet<usize>,
-) -> PyResult<()> {
-    if !visiting.insert(obj.as_ptr() as usize) {
-        return Err(PyValueError::new_err(
-            "value contains a cycle: a list or map references itself",
-        ));
-    }
-    Ok(())
-}
-
-/// Remove `obj` from the current recursion path once its children are handled.
-pub(super) fn leave_container(obj: &Bound<'_, PyAny>, visiting: &mut HashSet<usize>) {
-    visiting.remove(&(obj.as_ptr() as usize));
 }

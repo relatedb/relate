@@ -7,8 +7,8 @@ method and ``relate.viz.to_visualization_graph``.
 
 from typing import Any, Iterable, Mapping
 
-from relate._native import Node, Path, Relationship
-from relate.row_values import iter_graph_values
+from relate._native import Node
+from relate.row_values import iter_graph_entities
 
 
 class ResultGraph:
@@ -58,19 +58,13 @@ def collect_graph_entities(rows: Iterable[Mapping[str, Any]]):
     nodes: dict = {}
     relationships: dict = {}
 
-    def collect(value: Any) -> None:
-        if isinstance(value, Node):
-            nodes.setdefault(value.id, value)
-        elif isinstance(value, Relationship):
-            relationships.setdefault(value.id, value)
-        elif isinstance(value, Path):
-            # A path is just another entity source — collect its entities so
-            # the dedup policy lives only in the Node/Relationship branches.
-            for entity in (*value.nodes, *value.relationships):
-                collect(entity)
-
     for row in rows:
-        for value in row.values():
-            for graph_value in iter_graph_values(value):
-                collect(graph_value)
+        # The row is a mapping, so the walk descends it like any other
+        # container: it owns the vocabulary and yields only Node or
+        # Relationship (a Path is flattened), leaving this a two-way bucket.
+        for entity in iter_graph_entities(row):
+            if isinstance(entity, Node):
+                nodes.setdefault(entity.id, entity)
+            else:
+                relationships.setdefault(entity.id, entity)
     return nodes, relationships
