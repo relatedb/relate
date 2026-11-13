@@ -54,11 +54,20 @@ impl Pattern {
     /// Whether the whole of `term` matches the pattern (iterative glob with
     /// single-star backtracking: linear in practice, no recursion).
     pub(super) fn matches(&self, term: &str) -> bool {
-        let text: Vec<char> = term.chars().collect();
+        // Walk `term` by byte offset, stepping one `char` at a time, so the
+        // per-token scan allocates nothing.
+        let step = |at: usize| -> (char, usize) {
+            let c = term[at..]
+                .chars()
+                .next()
+                .expect("an offset below the term length starts a char");
+            (c, at + c.len_utf8())
+        };
         let (mut p, mut t) = (0, 0);
-        // The most recent `*` and the text position it currently absorbs to.
+        // The most recent `*` and the text offset it currently absorbs to.
         let mut resume: Option<(usize, usize)> = None;
-        while t < text.len() {
+        while t < term.len() {
+            let (c, next) = step(t);
             match self.0.get(p) {
                 Some(Part::Run) => {
                     resume = Some((p, t));
@@ -66,17 +75,18 @@ impl Pattern {
                 }
                 Some(Part::One) => {
                     p += 1;
-                    t += 1;
+                    t = next;
                 }
-                Some(Part::Literal(c)) if *c == text[t] => {
+                Some(Part::Literal(l)) if *l == c => {
                     p += 1;
-                    t += 1;
+                    t = next;
                 }
                 _ => match resume {
                     Some((star, at)) => {
-                        resume = Some((star, at + 1));
+                        let (_, after) = step(at);
+                        resume = Some((star, after));
                         p = star + 1;
-                        t = at + 1;
+                        t = after;
                     }
                     None => return false,
                 },
@@ -115,6 +125,11 @@ mod tests {
         assert!(pattern("k*r").matches("kollegger"));
         assert!(pattern("*").matches("x"));
         assert!(!pattern("?").matches("xy"));
+        // Multi-byte characters step by char, not byte, including on a
+        // backtrack past a `*`.
+        assert!(pattern("k?ln*").matches("kölner"));
+        assert!(pattern("*ß*c").matches("aßßc"));
+        assert!(!pattern("k?ln").matches("kölner"));
         assert!(pattern("a*b*c").matches("aXbYbZc"));
         assert!(!pattern("a*b*c").matches("aXbYbZ"));
     }

@@ -30,9 +30,9 @@
 //! [`fold`]) in the index's stored tokens and in analyzed query terms.
 //!
 //! `term*` / `te?m` wildcard terms (see [`wildcard`]; folded under a folding
-//! analyzer, unlike live) expand against each
-//! field's vocabulary into an any-of group scored as a constant 1.0 per
-//! matching field (times the boost), with no expansion cap — all calibrated
+//! analyzer, unlike live) match each document's tokens and score a constant
+//! 1.0 per matching field (times the boost), with no expansion cap and no
+//! materialized expansion set — all calibrated
 //! against Neo4j 2026.09-enterprise (ADR-0583).
 //!
 //! `term~N` (fuzzy, N in 0..=2, bare `~` = 2) expands against each field's
@@ -58,6 +58,7 @@ use distance::bounded_distance;
 use fold::fold;
 use query::{parse, Clause, Occur, Target};
 use stemmer::porter_stem;
+use wildcard::Pattern;
 
 /// Live Neo4j's fulltext similarity parameters (fitted on 2026.10.1
 /// enterprise, see the module docs).
@@ -361,9 +362,11 @@ enum FieldMatch {
     /// An exact term is the group of one, a fuzzy term its bounded
     /// expansion; each alternative scores its own weighted BM25.
     Weighted(Vec<Alternative>),
-    /// A wildcard's expansion (uncapped): the field scores a constant 1.0
-    /// when it holds any of the terms, however many or how often.
-    Constant(HashSet<String>),
+    /// A wildcard (uncapped): the field scores a constant 1.0 when any of
+    /// its tokens matches the pattern, however many or how often. The
+    /// pattern is carried, not its expansion: a vocabulary-sized set per
+    /// clause and field would multiply memory by the clause count.
+    Constant(Pattern),
 }
 
 /// A parsed clause resolved against the index vocabulary: per indexed field
@@ -437,13 +440,7 @@ fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> 
                 Target::Fuzzy { term, edits } => {
                     FieldMatch::Weighted(expand_fuzzy(term, *edits, stat))
                 }
-                Target::Wildcard(pattern) => FieldMatch::Constant(
-                    stat.df
-                        .keys()
-                        .filter(|term| pattern.matches(term))
-                        .cloned()
-                        .collect(),
-                ),
+                Target::Wildcard(pattern) => FieldMatch::Constant(pattern.clone()),
             };
             (*field, matched)
         })
@@ -474,8 +471,8 @@ fn clause_score(
         };
         let alternatives = match field_match {
             FieldMatch::Weighted(alternatives) => alternatives,
-            FieldMatch::Constant(terms) => {
-                if field.tokens.iter().any(|token| terms.contains(token)) {
+            FieldMatch::Constant(pattern) => {
+                if field.tokens.iter().any(|token| pattern.matches(token)) {
                     any_match = true;
                     score += 1.0;
                 }
@@ -711,7 +708,7 @@ mod tests {
             boost: 2.0,
             by_field: HashMap::from([(
                 "name",
-                FieldMatch::Constant(HashSet::from(["lampa".to_string(), "lampb".to_string()])),
+                FieldMatch::Constant(Pattern::parse("lamp?").expect("a wildcard")),
             )]),
         };
         let field = |tokens: &[&str]| DocField {

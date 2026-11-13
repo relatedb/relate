@@ -54,8 +54,8 @@ available), across the default, `standard-folding`, `english`, `cjk`,
    wildcard characters are plain text, as live reads `"tok1*"` as the term
    `tok1`. A `~N` suffix on a wildcard is ignored; `*^B` boosts. `*`,
    `field:*` and `*:*` match every entity with a token in the field.
-5. **Expansion and scoring.** A wildcard expands against each field's
-   vocabulary into the same any-of group the fuzzy path builds, so
+5. **Matching and scoring.** A wildcard is matched against each
+   document's tokens in the fields it selects, as one any-of clause, so
    `AND`/`OR`/`NOT`, `field:` filters and boost compose unchanged. A field
    scores a constant 1.0 when it holds any matching term, however many
    terms or occurrences, summed over fields and clauses and times the
@@ -89,8 +89,9 @@ available), across the default, `standard-folding`, `english`, `cjk`,
   queries (`eifrem`, `andreas sateras`, a `Kollegg*` prefix) work.
 - Queries containing `*` or `?` outside quotes now mean wildcard; before,
   they tokenized as separators.
-- A wildcard costs one vocabulary pass per field per scan, and its
-  expansion set is bounded by the vocabulary.
+- A wildcard costs one pattern match per token scanned and holds no
+  expansion set, so memory does not grow with the vocabulary or with the
+  number of wildcard clauses.
 - Wildcard folding is the one place this change knowingly differs from
   live 2026.09 behaviour.
 - Known divergences: wildcard terms under `english` are not stemmed or
