@@ -93,6 +93,7 @@ pub(crate) mod rider;
 pub(crate) mod scope;
 pub(crate) mod search;
 pub(crate) mod sink;
+mod stats_short_circuit;
 pub(crate) mod subquery_eval;
 pub(crate) mod union;
 pub(crate) mod unwind;

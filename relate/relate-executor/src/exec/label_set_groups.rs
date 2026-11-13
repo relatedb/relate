@@ -8,7 +8,8 @@
 //! whether the statement is the shape (every decline is `None`, the scan
 //! answers), [`group_label_sets`] evaluates the key expressions once per
 //! distinct label set through the ordinary evaluator and sums the counts,
-//! and [`label_set_groups_result`] gates on the view's exactness, then lets
+//! and [`label_set_groups_result`] takes the base counts under the view's
+//! exactness window (the seed gate is the caller's), then lets
 //! the ordinary projection finish ordering and paging over the grouped rows.
 
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::store::empty_properties;
 
-use super::count_stats::{plain_match_pattern, stats_view_serves, whole_population_node_var};
+use super::count_stats::{plain_match_pattern, whole_population_node_var};
 use super::order::folded_order_items;
 use super::project::{project_rows, return_result, ProjectSpec, RowSource};
 use super::{QueryResult, RowFeed};
@@ -270,13 +271,9 @@ fn group_label_sets(
 pub(super) fn label_set_groups_result(
     ctx: ExecCtx<'_>,
     clauses: &[Clause],
-    seed_rows: &[Row],
     scope: Option<&Row>,
 ) -> Result<Option<(Vec<Row>, QueryResult)>> {
     let graph = ctx.graph;
-    if !stats_view_serves(graph, seed_rows) {
-        return Ok(None);
-    }
     let Some(shape) = recognize_label_groups(clauses) else {
         return Ok(None);
     };

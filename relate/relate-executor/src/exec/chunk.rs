@@ -18,15 +18,13 @@
 //! metadata ([`ColumnZone`]): null-presence and the typed kinds'
 //! min/max, folded at construction by the one [`zone_of`] spelling.
 //!
-//! Three facts of the layer still sit ahead of their first engine
-//! consumer, each marked where it is declared: [`ColumnData::Id`] (a
-//! scan-side id buffer — the contracted traversal kernels fill it),
-//! [`Column::data`] and the `Row`-side conversions [`Chunk::from_rows`] /
-//! [`Chunk::batches`] (an operator that *receives* boundary rows reads
-//! them — this node's chain starts from the store and decodes at the
-//! breaker). Their round-trip suites are the exercise until then, the
-//! storage crate's `lease.rs` pattern, item-scoped — never a blanket
-//! allow over the module the batch chain already consumes.
+//! Two facts of the layer sit ahead of their first engine consumer, each
+//! marked where it is declared: [`Column::data`] and the `Row`-side
+//! conversion [`Chunk::from_rows`] (an operator that *receives* boundary
+//! rows reads it — the batch chain starts from the store and decodes at
+//! the breaker). Their round-trip suites are the exercise until then,
+//! item-scoped — never a blanket allow over the module the batch chain
+//! already consumes.
 
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -36,8 +34,7 @@ use relate_core::Value;
 use crate::row::{Row, RowNames};
 
 /// Rows per chunk (ADR-0468): the one batch-size knob, mid way in the
-/// ADR's 256–1024 band. Operators chunk to it via [`Chunk::batches`]; the
-/// conversion entry points accept any length, because the batch a
+/// ADR's 256–1024 band. The conversion entry points accept any length, because the batch a
 /// pipeline breaker hands over is whatever the clause produced.
 pub(crate) const CHUNK_ROWS: usize = 512;
 
@@ -127,21 +124,10 @@ impl ColumnZone {
     }
 }
 
-/// One column's buffer. The first five are ADR-0468's typed buffers;
+/// One column's buffer. The first four are ADR-0468's typed buffers;
 /// [`ColumnData::Value`] is the explicit degradation target.
 #[derive(Clone, Debug)]
 pub(crate) enum ColumnData {
-    /// Interned-id and node/rel-id slots. No `Value` variant encodes into
-    /// this buffer, so [`Chunk::from_rows`] never yields one — only
-    /// operator construction writes it (a scan filling id slots straight
-    /// from the store). Decoding materializes `Value::Int`, the
-    /// value-space image of an id slot; resolving ids back to entities or
-    /// interned keys is the operator layer's job, not the type layer's.
-    ///
-    /// Still ahead of its first engine consumer (the module doc's set):
-    /// the contracted traversal kernels fill it.
-    #[cfg_attr(not(test), allow(dead_code))]
-    Id(Vec<u32>),
     /// `Value::Int` slots.
     Int(Vec<i64>),
     /// `Value::Float` slots.
@@ -182,7 +168,6 @@ impl Column {
         assert_eq!(
             nulls.len(),
             match &data {
-                ColumnData::Id(ids) => ids.len(),
                 ColumnData::Int(ints) => ints.len(),
                 ColumnData::Float(floats) => floats.len(),
                 ColumnData::Utf8(strings) => strings.len(),
@@ -209,7 +194,6 @@ impl Column {
             return Value::Null;
         }
         match &self.data {
-            ColumnData::Id(ids) => Value::Int(i64::from(ids[row])),
             ColumnData::Int(ints) => Value::Int(ints[row]),
             ColumnData::Float(floats) => Value::Float(floats[row]),
             ColumnData::Utf8(strings) => Value::String(Arc::clone(&strings[row])),
@@ -253,7 +237,6 @@ impl Column {
     pub(crate) fn retain_rows(&self, keep: &[usize]) -> Column {
         let mut nulls = NullBitmap::new(keep.len());
         let data = match &self.data {
-            ColumnData::Id(ids) => ColumnData::Id(keep.iter().map(|&row| ids[row]).collect()),
             ColumnData::Int(ints) => ColumnData::Int(keep.iter().map(|&row| ints[row]).collect()),
             ColumnData::Float(floats) => {
                 ColumnData::Float(keep.iter().map(|&row| floats[row]).collect())
@@ -484,8 +467,6 @@ fn zone_of(nulls: &NullBitmap, data: &ColumnData) -> ColumnZone {
     // slot — one words walk, never a per-row probe.
     let null_present = nulls.words.iter().any(|&word| word != 0);
     let min_max = match data {
-        ColumnData::Id(ids) => fold_bounds(slots(nulls, ids))
-            .map(|(min, max)| (Value::Int(i64::from(min)), Value::Int(i64::from(max)))),
         ColumnData::Int(ints) => {
             fold_bounds(slots(nulls, ints)).map(|(min, max)| (Value::Int(min), Value::Int(max)))
         }
@@ -611,18 +592,6 @@ impl Chunk {
                 Row::from_names(&self.names, values)
             })
             .collect()
-    }
-
-    /// Slice `rows` into [`CHUNK_ROWS`]-sized chunks, encoding each: the
-    /// pull-based streaming shape operators use inside a clause
-    /// (ADR-0468). The last chunk of a batch is short — a boundary batch
-    /// is whatever length the clause produced.
-    ///
-    /// Still ahead of its first engine consumer (the module doc's set):
-    /// an operator that receives boundary rows reads it.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn batches(rows: &[Row]) -> impl Iterator<Item = Chunk> + '_ {
-        rows.chunks(CHUNK_ROWS).map(Self::from_rows)
     }
 
     /// Rows in the chunk.

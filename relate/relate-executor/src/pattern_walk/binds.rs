@@ -358,14 +358,9 @@ pub(crate) fn bind_path_names(
     }
     // Path names ride the IR's representation (cheap copies); the row
     // probes read through the free text bridge and the inserts render.
-    let fresh: Vec<&SmallName> = path
+    let (bound, fresh): (Vec<&SmallName>, Vec<&SmallName>) = path
         .path_names()
-        .filter(|name| !name.with_str(|text| row.contains_key(text)))
-        .collect();
-    let bound: Vec<&SmallName> = path
-        .path_names()
-        .filter(|name| name.with_str(|text| row.contains_key(text)))
-        .collect();
+        .partition(|name| name.with_str(|text| row.contains_key(text)));
     let value = build();
     for name in bound {
         row.insert(name.to_string(), value.clone());

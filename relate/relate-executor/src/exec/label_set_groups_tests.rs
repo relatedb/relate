@@ -17,14 +17,13 @@ use crate::ctx::ExecCtx;
 use crate::graph::test_support::labelled_node as node;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
-use crate::row::Row;
 use relate_core::Value;
 
 /// The label-set answer, or `None` when the statement declines to the scan.
 fn census_answer(view: &ExecGraph<'_>, cypher: &str) -> Option<Vec<Vec<Value>>> {
     let params = BTreeMap::new();
     let ctx = ExecCtx::new(view, &params);
-    label_set_groups_result(ctx, &clauses_of(cypher), &[Row::new()], None)
+    label_set_groups_result(ctx, &clauses_of(cypher), None)
         .unwrap()
         .map(|(_, result)| result.rows)
 }
@@ -321,7 +320,7 @@ fn a_paged_grouped_answer_over_many_label_sets_hits_the_expression_budget() {
     let view = ExecGraph::read(&g);
     let params = BTreeMap::new();
     let ctx = ExecCtx::new(&view, &params);
-    let error = match label_set_groups_result(ctx, &clauses_of(q), &[Row::new()], None) {
+    let error = match label_set_groups_result(ctx, &clauses_of(q), None) {
         Err(error) => error,
         Ok(answer) => panic!(
             "the label-set answer must refuse at the cap: answered={}",

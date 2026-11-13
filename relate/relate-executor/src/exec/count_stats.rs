@@ -5,18 +5,16 @@
 
 use std::collections::HashSet;
 
-use relate_core::{Result, Value};
+use relate_core::Value;
 use relate_ir::{
     classify_aggregate, AggregateKind, Clause, Direction, Expr, MatchMode, PathPattern, Projection,
 };
 use relate_names::SmallName;
 
-use crate::ctx::ExecCtx;
 use crate::graph::{CountProbe, QueryStats};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::label_set_groups::label_set_groups_result;
 use super::{label_expr_ok, QueryResult};
 
 /// The population a pattern node's own shape can answer a whole-count
@@ -288,25 +286,9 @@ pub(super) fn stats_view_serves(graph: &ExecGraph<'_>, seed_rows: &[Row]) -> boo
     graph.sees_exact_base_stats() && seed_rows.len() == 1 && seed_rows[0].is_empty()
 }
 
-/// The statistics short-circuits, tried in order — each gates on
-/// [`stats_view_serves`] itself, the one eligibility check, so each stays
-/// callable alone: the count-only operator (LABS-370), then the grouped label
-/// aggregates over the label-set counts (ADR-0589). `Ok(None)` = neither
-/// took the statement, the clause loop's scan answers.
-pub(super) fn stats_short_circuit(
-    ctx: ExecCtx<'_>,
-    clauses: &[Clause],
-    seed_rows: &[Row],
-    scope: Option<&Row>,
-) -> Result<Option<(Vec<Row>, QueryResult)>> {
-    if let Some(answer) = count_only_stats_result(ctx.graph, clauses, seed_rows) {
-        return Ok(Some(answer));
-    }
-    label_set_groups_result(ctx, clauses, seed_rows, scope)
-}
-
 /// LABS-370 (v1): recognize the count-only shape and answer it from the
-/// statistics. The exactness and seed gates and the answer live here; the
+/// statistics. The answer lives here; the exactness and seed gate is
+/// [`stats_view_serves`], checked once by the short-circuit's owner; the
 /// shape decline-ladder lives in [`recognize_count_shape`] (LABS-425,
 /// the round-6 decomposition of the round-1 F-1-4 finding). The boundary
 /// never fails — `Option` is the whole contract: `Some` = answered,
@@ -318,11 +300,7 @@ pub(super) fn stats_short_circuit(
 pub(super) fn count_only_stats_result(
     graph: &ExecGraph<'_>,
     clauses: &[Clause],
-    seed_rows: &[Row],
 ) -> Option<(Vec<Row>, QueryResult)> {
-    if !stats_view_serves(graph, seed_rows) {
-        return None;
-    }
     let (probe, item) = recognize_count_shape(clauses)?;
     // Round 3, F-1-5: the consistency window — the exactness check and
     // the count read under BOTH count-map locks (the pre-check above
