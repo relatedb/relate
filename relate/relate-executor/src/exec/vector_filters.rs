@@ -118,7 +118,10 @@ pub(super) fn vector_filter_passes(
 /// the index's own entity kind. `in_rhs` supplies `IN`'s one operand
 /// policy: a null operand matches nothing (`x IN null` is null, so an empty
 /// set carries the same outcome), and members of the other entity kind can
-/// never equal a candidate.
+/// never equal a candidate. A member that is neither an entity nor an
+/// allowed scalar (a nested list or map) is rejected like the property
+/// form's [`vector_in_set_rhs_allowed`], so both `IN` forms share one
+/// member-type policy.
 fn entity_set_ids(value: &Value, kind: EntityKind) -> Result<HashSet<i64>> {
     let Some(members) = in_rhs(value).map_err(|_| invalid_filter_rhs())? else {
         return Ok(HashSet::new());
@@ -132,7 +135,9 @@ fn entity_set_ids(value: &Value, kind: EntityKind) -> Result<HashSet<i64>> {
             (Value::Relationship(rel), EntityKind::Relationship) => {
                 ids.insert(rel.id);
             }
-            _ => {}
+            (Value::Node(_) | Value::Relationship(_), _) => {}
+            (item, _) if vector_filter_rhs_allowed(item) => {}
+            _ => return Err(invalid_filter_rhs()),
         }
     }
     Ok(ids)
@@ -306,6 +311,17 @@ mod tests {
         assert!(entity_set_ids(&Value::Null, EntityKind::Node)
             .unwrap()
             .is_empty());
+    }
+
+    /// A member that is neither an entity nor a scalar is the same typed
+    /// rejection on both `IN` forms.
+    #[test]
+    fn container_in_member_is_rejected_on_both_forms() {
+        let nested =
+            || Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(2)].into())].into());
+        assert!(!vector_in_set_rhs_allowed(&nested()));
+        let err = entity_set_ids(&nested(), EntityKind::Node).unwrap_err();
+        assert_eq!(err.to_string(), invalid_filter_rhs().to_string());
     }
 
     /// A non-list `IN` operand is one typed rejection on both `IN` forms

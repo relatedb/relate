@@ -2,6 +2,16 @@
 //! none), `?` exactly one, `\` makes the next character literal. A pattern
 //! is matched against whole indexed terms.
 
+use relate_core::{Error, Result};
+
+/// The most parts one wildcard term may hold after `**` collapses (each
+/// literal character, `?` and `*` is one part). Matching a pattern costs
+/// time proportional to its parts times the token length for every scanned
+/// token, so the bound is checked once per query, never per document. Real
+/// terms hold a few dozen parts; Lucene and tantivy likewise reject a
+/// wildcard or regex too large to compile, at parse time (ADR-0583).
+pub(super) const MAX_WILDCARD_PARTS: usize = 256;
+
 /// One element of a parsed pattern.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Part {
@@ -16,14 +26,15 @@ enum Part {
 pub(super) struct Pattern(Vec<Part>);
 
 impl Pattern {
-    /// The pattern of `term`, or `None` when it holds no unescaped `*` or
-    /// `?` (an ordinary term). The term is lowercased first: Lucene
+    /// The pattern of `term`, `None` when it holds no unescaped `*` or
+    /// `?` (an ordinary term), or a typed syntax error when it holds more
+    /// than [`MAX_WILDCARD_PARTS`] parts. The term is lowercased first: Lucene
     /// normalises wildcard terms with the lowercase filter only. A caller
     /// whose analyzer folds folds the term before parsing (folding leaves
     /// `*`, `?` and `\` alone), so `?` counts one character of the folded
     /// token: `stra?e` does not match `strasse`, deliberately not special-
     /// cased.
-    pub(super) fn parse(term: &str) -> Option<Self> {
+    pub(super) fn parse(term: &str) -> Result<Option<Self>> {
         let mut parts = Vec::new();
         let mut wild = false;
         let mut chars = term.chars().flat_map(char::to_lowercase);
@@ -48,12 +59,26 @@ impl Pattern {
                 other => Part::Literal(other),
             });
         }
-        wild.then_some(Self(parts))
+        if !wild {
+            return Ok(None);
+        }
+        if parts.len() > MAX_WILDCARD_PARTS {
+            return Err(Error::syntax(format!(
+                "Invalid fulltext query: a wildcard term holds {} characters, over the \
+                 limit of {MAX_WILDCARD_PARTS}",
+                parts.len()
+            )));
+        }
+        Ok(Some(Self(parts)))
     }
 
-    /// How many parts the pattern holds (consecutive `*` already collapsed).
-    pub(super) fn len(&self) -> usize {
-        self.0.len()
+    /// The pattern of a test's wildcard term, which must be one and within
+    /// the part cap.
+    #[cfg(test)]
+    pub(super) fn must_parse(term: &str) -> Self {
+        Self::parse(term)
+            .expect("within the part cap")
+            .expect("a wildcard term")
     }
 
     /// Whether the whole of `term` matches the pattern (iterative glob with
@@ -106,14 +131,14 @@ mod tests {
     use super::Pattern;
 
     fn pattern(term: &str) -> Pattern {
-        Pattern::parse(term).expect("a wildcard term")
+        Pattern::must_parse(term)
     }
 
     #[test]
     fn plain_terms_are_not_patterns() {
-        assert_eq!(Pattern::parse("kollegger"), None);
+        assert_eq!(Pattern::parse("kollegger").unwrap(), None);
         // An escaped wildcard character is literal, so no wildcard remains.
-        assert_eq!(Pattern::parse(r"kollegger\*"), None);
+        assert_eq!(Pattern::parse(r"kollegger\*").unwrap(), None);
     }
 
     #[test]

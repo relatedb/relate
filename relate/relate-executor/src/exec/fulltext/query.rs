@@ -6,19 +6,13 @@ use relate_core::{Error, Result};
 
 use super::fold::fold;
 use super::wildcard::Pattern;
+#[cfg(test)]
+use super::wildcard::MAX_WILDCARD_PARTS;
 use super::{tokenize, Analyzer};
 
 /// Lucene's `FuzzyQuery` ceiling on edits (its Levenshtein automata stop at
 /// distance 2) and the default a bare `~` selects.
 pub(super) const MAX_FUZZY_EDITS: u8 = 2;
-
-/// The most parts one wildcard term may hold after `**` collapses (each
-/// literal character, `?` and `*` is one part). Matching a pattern costs
-/// time proportional to its parts times the token length for every scanned
-/// token, so the bound is checked once per query, never per document. Real
-/// terms hold a few dozen parts; Lucene and tantivy likewise reject a
-/// wildcard or regex too large to compile, at parse time (ADR-0583).
-pub(super) const MAX_WILDCARD_PARTS: usize = 256;
 
 /// The most clauses one query may parse to: Lucene's default
 /// `maxClauseCount`, which its boolean query enforces at build time. Each
@@ -275,14 +269,7 @@ impl Parser {
         } else {
             term.to_string()
         };
-        if let Some(pattern) = Pattern::parse(&prepared) {
-            if pattern.len() > MAX_WILDCARD_PARTS {
-                return Err(Error::syntax(format!(
-                    "Invalid fulltext query: a wildcard term holds {} characters, over the \
-                     limit of {MAX_WILDCARD_PARTS}",
-                    pattern.len()
-                )));
-            }
+        if let Some(pattern) = Pattern::parse(&prepared)? {
             // A wildcard term is lowercased, and folded under an analyzer
             // that folds (a deliberate deviation from live, which leaves it
             // unfolded: ADR-0583) — never stemmed or stop filtered — and ignores a `~N` suffix (calibrated:
@@ -318,7 +305,7 @@ fn split_suffix(text: &str) -> Result<(&str, Suffix, &str)> {
         return Ok((text, suffix, ""));
     };
     let (term, mut rest) = text.split_at(at);
-    if Pattern::parse(term).is_none() && tokenize(term).is_empty() {
+    if Pattern::parse(term)?.is_none() && tokenize(term).is_empty() {
         return Err(malformed(text, "a `~`/`^` suffix needs a term before it"));
     }
     if let Some(after) = rest.strip_prefix('~') {
@@ -378,11 +365,9 @@ fn malformed(word: &str, reason: &str) -> Error {
 /// a non-integer of 1 or more (`~1.5`) is a parse error.
 fn fuzz_spec(raw: &str) -> std::result::Result<Fuzz, &'static str> {
     if !raw.contains('.') {
-        // `raw` is all digits, so only overflow can saturate.
-        let n = raw.bytes().fold(0u64, |acc, digit| {
-            acc.saturating_mul(10)
-                .saturating_add(u64::from(digit - b'0'))
-        });
+        // `raw` is all digits, so parsing fails only on overflow, which
+        // saturates like any other value past the cap.
+        let n = raw.parse::<u64>().unwrap_or(u64::MAX);
         return Ok(Fuzz::Edits(
             u8::try_from(n.min(u64::from(MAX_FUZZY_EDITS))).expect("clamped to the u8 maximum"),
         ));
@@ -440,7 +425,7 @@ mod tests {
     }
 
     fn wildcard(term: &str) -> Target {
-        Target::Wildcard(Pattern::parse(term).expect("a wildcard term"))
+        Target::Wildcard(Pattern::must_parse(term))
     }
 
     #[test]
