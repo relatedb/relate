@@ -156,8 +156,7 @@ use crate::overlay::ExecGraph;
 use self::search::{
     seek, NodeSimple, Position, SearchPolicy, SeekTables, Stop, TrailPolicy, WalkPolicy,
 };
-use super::frontier::Arm;
-use super::frontier_tables::{Chain, Parents, Step};
+use super::frontier_tables::{epsilon_index, Arm, Chain, Parents, Step};
 use super::nfa::{FrontierNfa, Pool};
 use super::node_map::NodeMap;
 
@@ -320,24 +319,25 @@ impl<'a, 'g> RearivalRule<'a, 'g> {
         work: u64,
         bufs: &'a mut RuleBuffers,
     ) -> Self {
-        let states = nfa.states as usize;
         // The per-state epsilon closure: the runner's `epsilon_index`
         // is from-indexed and expands on the fly; the search needs the
-        // to-set per arrival, precomputed once here.
-        let mut eps_closure = vec![Vec::<u32>::new(); states];
-        for s in 0..states as u32 {
-            let mut reach = vec![s];
-            let mut work = vec![s];
-            while let Some(t) = work.pop() {
-                for &(from, to) in &nfa.epsilons {
-                    if from == t && !reach.contains(&to) {
-                        reach.push(to);
-                        work.push(to);
+        // to-set per arrival, closed once here over that same index.
+        let eps_from = epsilon_index(nfa);
+        let eps_closure = (0..nfa.states)
+            .map(|s| {
+                let mut reach = vec![s];
+                let mut pending = vec![s];
+                while let Some(t) = pending.pop() {
+                    for &to in &eps_from[t as usize] {
+                        if !reach.contains(&to) {
+                            reach.push(to);
+                            pending.push(to);
+                        }
                     }
                 }
-            }
-            eps_closure[s as usize] = reach;
-        }
+                reach
+            })
+            .collect::<Vec<_>>();
         // The borrowed buffers' fresh run: one generation bump, every
         // previous run's verdicts stale together.
         bufs.begin_run();

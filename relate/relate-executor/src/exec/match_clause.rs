@@ -336,22 +336,22 @@ pub(crate) fn match_clause(
             }
             matched = filtered;
         }
-        if matched.is_empty() && optional {
+        // Pick the rows first, land them once: the unmatched OPTIONAL
+        // row (null-bound, projected when the clause carries a
+        // projection) or the matched rows.
+        let landing = if matched.is_empty() && optional {
             let mut r = row;
             bind_pattern_nulls(&mut r, patterns);
-            if let Some(projection) = projection {
-                let projected = finish_match_row(graph, &r, projection, params)?;
-                out_retained.add_row(graph, projected.values())?;
-                out.push(projected);
-            } else {
-                out_retained.add_row(graph, r.values())?;
-                out.push(r);
-            }
+            vec![match projection {
+                Some(projection) => finish_match_row(graph, &r, projection, params)?,
+                None => r,
+            }]
         } else {
-            for row in matched {
-                out_retained.add_row(graph, row.values())?;
-                out.push(row);
-            }
+            matched
+        };
+        for landed in landing {
+            out_retained.add_row(graph, landed.values())?;
+            out.push(landed);
         }
     }
     Row::share_schemas(&mut out);

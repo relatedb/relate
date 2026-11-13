@@ -51,7 +51,7 @@ use proptest::{collection, prelude::*};
 
 use relate_core::NodeId;
 
-use super::frontier::arms;
+use super::frontier_tables::arms;
 use super::nfa::{compile, Pool};
 use super::rearival::{RearivalRule, RuleBuffers, Verdict};
 use crate::exec::test_support::{

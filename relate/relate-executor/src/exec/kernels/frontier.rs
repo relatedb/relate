@@ -90,12 +90,11 @@ use crate::ctx::{ExecCtx, FrontierCounters};
 use crate::eval::{eval, predicate_value_holds};
 use crate::exec::candidates::node_ok;
 use crate::frontier_decline::FrontierRunDecline;
-use crate::overlay::ExecGraph;
 use crate::row::Row;
-use crate::store::RelTypes;
 
 use super::frontier_tables::{
-    within_table_budget, Arrival, Endpoint, FrontierTables, Parent, Parents, Step, TableCeiling,
+    arms, epsilon_index, within_table_budget, Arm, Arrival, Endpoint, FrontierTables, Parent,
+    Parents, Step, TableCeiling,
 };
 use super::nfa::{FrontierNfa, Pool, STATE_CEILING};
 use super::rearival::{RearivalRule, RuleBuffers, Verdict};
@@ -278,20 +277,6 @@ impl RunOutcome {
     }
 }
 
-/// One transition's expansion inputs, resolved once per run: the
-/// transition's index into the NFA's table and its type filter in the
-/// interned domain (LABS-801). The compiler left ids; the names beside
-/// them are the write overlay's arm (`RelTypes::matches_name`) and come
-/// from the interner's own `Arc<str>` units — a clone is a refcount, never
-/// a copy, and the per-pair walk compares ids. One canonical resolver: the
-/// re-arrival rule's search ([`super::rearival`]) walks the same table,
-/// never a second copy.
-#[derive(Debug, Clone)]
-pub(crate) struct Arm {
-    pub(crate) transition: usize,
-    pub(crate) types: RelTypes,
-}
-
 /// Run `nfa` from `seed` over the overlay view to fixpoint or `max`:
 /// the every-arrival shape — the DistinctEndpoints and Exists
 /// consumers' runner. See [`run_with_halt`] for the BFS's own contract
@@ -305,16 +290,7 @@ pub(crate) fn run(
     tables: &mut FrontierTables,
     bufs: &mut RuleBuffers,
 ) -> Result<RunOutcome> {
-    run_with_halt(
-        ctx,
-        seed,
-        nfa,
-        budget,
-        pool,
-        tables,
-        bufs,
-        None::<fn(&Parents<'_>, &[Endpoint]) -> bool>,
-    )
+    run_with_halt(ctx, seed, nfa, budget, pool, tables, bufs, |_, _| Ok(false))
 }
 
 /// Run `nfa` from `seed` over the overlay view: the level-synchronous
@@ -350,7 +326,7 @@ pub(crate) fn run(
 /// the DistinctEndpoints and Exists consumers' shape, every arrival
 /// answered.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> bool>(
+pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> Result<bool>>(
     ctx: ExecCtx<'_>,
     seed: NodeId,
     nfa: &FrontierNfa,
@@ -358,7 +334,7 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> bool>(
     pool: Pool,
     tables: &mut FrontierTables,
     bufs: &mut RuleBuffers,
-    mut halt: Option<HALT>,
+    mut halt: HALT,
 ) -> Result<RunOutcome> {
     let view = ctx.graph;
     let states = nfa.states as usize;
@@ -450,9 +426,7 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> bool>(
     let mut hops = 0u32;
     // The early-halt seam's first ask: the zero-length endpoint can
     // fill a `LIMIT 1` cap before any expansion runs at all.
-    let mut halted = halt
-        .as_mut()
-        .is_some_and(|probe| probe(&tables.parents(), &endpoints));
+    let mut halted = halt(&tables.parents(), &endpoints)?;
     let mut level_start = 0usize;
     let mut level_end = tables.pair_count();
     while !halted && !over_ceiling && level_start != level_end {
@@ -607,9 +581,7 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> bool>(
         // The early-halt seam's per-level ask: every arrival of the
         // level just expanded is already recorded, so the capped
         // consumer's reconstruction sees a complete level.
-        halted = halt
-            .as_mut()
-            .is_some_and(|probe| probe(&tables.parents(), &endpoints));
+        halted = halt(&tables.parents(), &endpoints)?;
     }
 
     // The below-min candidates, after the BFS: one rule question per
@@ -669,35 +641,6 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> bool>(
         },
         None => RunOutcome::Served(run),
     })
-}
-
-/// The per-state expansion table: every transition indexed by its from
-/// state, its interned type ids carried as the resolved filter the
-/// adjacency walk reads (LABS-801) — built once per run, never per pair.
-pub(crate) fn arms(view: &ExecGraph<'_>, nfa: &FrontierNfa) -> Vec<Vec<Arm>> {
-    let mut arms = vec![Vec::<Arm>::new(); nfa.states as usize];
-    for (i, t) in nfa.transitions.iter().enumerate() {
-        let types = RelTypes::from_interned(
-            t.types
-                .iter()
-                .map(|&tid| (tid, view.base().rel_type_name(tid))),
-        );
-        arms[t.from as usize].push(Arm {
-            transition: i,
-            types,
-        });
-    }
-    arms
-}
-
-/// The epsilon edges indexed by from state — the runner's one view of
-/// the compiler's epsilon list.
-fn epsilon_index(nfa: &FrontierNfa) -> Vec<Vec<u32>> {
-    let mut eps_from = vec![Vec::new(); nfa.states as usize];
-    for &(from, to) in &nfa.epsilons {
-        eps_from[from as usize].push(to);
-    }
-    eps_from
 }
 
 /// The epsilon closure's outcome: every target joined the ledger, or

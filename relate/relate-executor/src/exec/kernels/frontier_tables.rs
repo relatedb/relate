@@ -24,7 +24,9 @@ use std::mem::size_of;
 
 use relate_core::{NodeId, RelId};
 
-#[cfg(test)]
+use crate::overlay::ExecGraph;
+use crate::store::RelTypes;
+
 use super::nfa::FrontierNfa;
 use super::node_map::NodeMap;
 
@@ -471,6 +473,49 @@ pub(crate) struct Chain {
     pub(crate) nodes: Vec<NodeId>,
     /// The chain's rels, one per hop, in walk order.
     pub(crate) rels: Vec<RelId>,
+}
+
+/// One transition's expansion inputs, resolved once per run: the
+/// transition's index into the NFA's table and its type filter in the
+/// interned domain (LABS-801). The compiler left ids; the names beside
+/// them are the write overlay's arm (`RelTypes::matches_name`) and come
+/// from the interner's own `Arc<str>` units — a clone is a refcount, never
+/// a copy, and the per-pair walk compares ids. One canonical resolver: the
+/// re-arrival rule's search ([`super::rearival`]) walks the same table,
+/// never a second copy.
+#[derive(Debug, Clone)]
+pub(crate) struct Arm {
+    pub(crate) transition: usize,
+    pub(crate) types: RelTypes,
+}
+
+/// The per-state expansion table: every transition indexed by its from
+/// state, its interned type ids carried as the resolved filter the
+/// adjacency walk reads (LABS-801) — built once per run, never per pair.
+pub(crate) fn arms(view: &ExecGraph<'_>, nfa: &FrontierNfa) -> Vec<Vec<Arm>> {
+    let mut arms = vec![Vec::<Arm>::new(); nfa.states as usize];
+    for (i, t) in nfa.transitions.iter().enumerate() {
+        let types = RelTypes::from_interned(
+            t.types
+                .iter()
+                .map(|&tid| (tid, view.base().rel_type_name(tid))),
+        );
+        arms[t.from as usize].push(Arm {
+            transition: i,
+            types,
+        });
+    }
+    arms
+}
+
+/// The epsilon edges indexed by from state — the runner's one view of
+/// the compiler's epsilon list.
+pub(crate) fn epsilon_index(nfa: &FrontierNfa) -> Vec<Vec<u32>> {
+    let mut eps_from = vec![Vec::new(); nfa.states as usize];
+    for &(from, to) in &nfa.epsilons {
+        eps_from[from as usize].push(to);
+    }
+    eps_from
 }
 
 /// The test seam's table set for one standalone run — fresh tables for
