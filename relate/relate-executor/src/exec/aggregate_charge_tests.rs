@@ -459,17 +459,7 @@ fn a_streaming_fold_group_table_is_capped_by_its_running_total() {
 fn a_one_hop_fold_served_grouped_count_is_capped_by_its_keys_running_total() {
     let cap = 50_000;
     let pad = "p".repeat(2_000);
-    let builder = crate::exec::test_support::Builder::new();
-    for i in 0..40 {
-        let a = builder.prop_node(
-            &format!("a{i}"),
-            &["A"],
-            &[("name", Value::String(format!("n{i}").into()))],
-        );
-        let b = builder.node(&format!("b{i}"), &["B"]);
-        builder.edge(a, b);
-    }
-    let mut g = builder.done();
+    let mut g = crate::exec::test_support::named_a_to_b_pairs(40);
     g.configure_expression_memory_limit(Some(cap));
     let query = format!("MATCH (a:A)-[:E]->(b:B) RETURN a.name + '{pad}' AS k, count(*) AS c");
     let error = try_exec_cypher(&g, &query)
@@ -501,17 +491,7 @@ fn a_one_hop_fold_served_grouped_count_is_capped_by_its_keys_running_total() {
 fn a_fold_served_distinct_count_is_capped_by_its_running_total() {
     let cap = 50_000;
     let pad = "p".repeat(2_000);
-    let builder = crate::exec::test_support::Builder::new();
-    for i in 0..40 {
-        let a = builder.prop_node(
-            &format!("a{i}"),
-            &["A"],
-            &[("name", Value::String(format!("n{i}").into()))],
-        );
-        let b = builder.node(&format!("b{i}"), &["B"]);
-        builder.edge(a, b);
-    }
-    let mut g = builder.done();
+    let mut g = crate::exec::test_support::named_a_to_b_pairs(40);
     g.configure_expression_memory_limit(Some(cap));
     let query = format!("MATCH (a:A)-[:E]->(b:B) RETURN count(DISTINCT a.name + '{pad}') AS c");
     let error = try_exec_cypher(&g, &query)

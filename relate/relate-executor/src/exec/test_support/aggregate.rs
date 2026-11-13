@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_ir::Expr;
 
+use crate::exec::aggregate::{agg_eval, AggScope, AggSites, FoldedGroup};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -19,6 +20,30 @@ pub(crate) fn agg_fn_over(name: &str, arg: Expr) -> Expr {
     }
 }
 
+/// The shared operand column every aggregate fixture reads.
+pub(crate) const OPERAND_COLUMN: &str = "x";
+
+/// Stream every row of `group` through the accumulators of the calls found
+/// in `exprs` (the production discover / open / offer / settle protocol),
+/// then resolve the group: its folded calls and the retained total the
+/// accumulators ended on.
+pub(crate) fn fold_group_rows<'e>(
+    graph: &ExecGraph<'_>,
+    group: &[Row],
+    exprs: impl IntoIterator<Item = &'e Expr>,
+    params: &BTreeMap<String, Value>,
+) -> relate_core::Result<(FoldedGroup<'e>, u64)> {
+    let sites = AggSites::discover(graph, exprs, [], params)?;
+    let mut accs = sites.open_group();
+    let mut total = graph.retain_bytes(0)?;
+    for row in group {
+        accs.offer(graph, row, params)?;
+        accs.settle(graph, &mut total)?;
+    }
+    let folded = accs.finish(graph, group.first(), params);
+    Ok((folded, total.total()))
+}
+
 /// Evaluate `expr` over `group` through the production path: discover the
 /// aggregate calls, stream every row through the group's accumulators, and
 /// read the resolved values back — the one entry the aggregate tests drive.
@@ -28,15 +53,7 @@ pub(crate) fn agg_eval_rows(
     expr: &Expr,
     params: &BTreeMap<String, Value>,
 ) -> relate_core::Result<Value> {
-    use crate::exec::aggregate::{agg_eval, AggScope, AggSites};
-    let sites = AggSites::discover(graph, [expr], [], params)?;
-    let mut accs = sites.open_group();
-    let mut total = graph.retain_bytes(0)?;
-    for row in group {
-        accs.offer(graph, row, params)?;
-        accs.settle(graph, &mut total)?;
-    }
-    let folded = accs.finish(graph, group.first(), params);
+    let (folded, _) = fold_group_rows(graph, group, [expr], params)?;
     agg_eval(
         graph,
         AggScope::of_group(&folded, group.first()),
@@ -47,7 +64,7 @@ pub(crate) fn agg_eval_rows(
 
 /// [`agg_fn_over`] over the shared `x` column.
 pub(crate) fn agg_fn(name: &str) -> Expr {
-    agg_fn_over(name, Expr::Variable("x".into()))
+    agg_fn_over(name, Expr::Variable(OPERAND_COLUMN.into()))
 }
 
 /// A group of one row per `x` binding (the aggregate tests' row fixture,
@@ -64,7 +81,7 @@ pub(crate) fn group_with_vals(vals: &[Value]) -> Vec<Row> {
     vals.iter()
         .map(|v| {
             let mut row = Row::new();
-            row.insert("x".into(), v.clone());
+            row.insert(OPERAND_COLUMN.into(), v.clone());
             row
         })
         .collect()
@@ -76,7 +93,7 @@ pub(crate) fn percentile_fn(name: &str, p: f64) -> Expr {
     Expr::Function {
         name: name.into(),
         distinct: false,
-        args: vec![Expr::Variable("x".into()), Expr::Float(p)],
+        args: vec![Expr::Variable(OPERAND_COLUMN.into()), Expr::Float(p)],
     }
 }
 

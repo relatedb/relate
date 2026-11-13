@@ -71,7 +71,7 @@ fn run_write(
     cypher: &str,
     run: fn(&ExecGraph<'_>, &ExecRequest<'_>) -> Result<QueryResult>,
 ) -> Result<QueryResult> {
-    let p = plan(parse_and_lower(cypher).unwrap(), &mut |_| false).unwrap();
+    let p = plan(parse_and_lower(cypher)?, &mut |_| false)?;
     run(
         &ExecGraph::write(g, scratch),
         &ExecRequest::new(&p, &BTreeMap::new(), cypher),

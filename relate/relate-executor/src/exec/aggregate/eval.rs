@@ -4,17 +4,40 @@
 //! the same scope.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{walk_scope_children, ChildScope, Expr};
 use relate_names::SmallName;
 
-use crate::eval::eval;
+use crate::eval::{eval, expr_vars};
+use crate::exec::scope::uncolliding_prefix;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::stream::FoldedGroup;
+/// One group's resolved aggregate calls, read back by the evaluator.
+pub(crate) struct FoldedGroup<'e> {
+    values: Vec<(&'e Expr, Result<Value>)>,
+}
+
+impl<'e> FoldedGroup<'e> {
+    pub(super) fn new(values: Vec<(&'e Expr, Result<Value>)>) -> Self {
+        Self { values }
+    }
+
+    /// The value of the call at `expr` (by identity).
+    fn value(&self, expr: &Expr) -> Result<Value> {
+        self.values
+            .iter()
+            .find(|(site, _)| std::ptr::eq(*site, expr))
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| {
+                Err(Error::internal(
+                    "an aggregate call was not discovered before the group resolved",
+                ))
+            })
+    }
+}
 
 /// Where an aggregate call's value comes from: the group's resolved
 /// accumulators, or — in the discovery pass that finds the call sites the
@@ -41,20 +64,14 @@ impl<'a, 'e> AggScope<'a, 'e> {
     /// row, or (ADR-0453) an importing subquery's scope row for the phantom
     /// keyless group, whose imports are per-row constants present even
     /// when the body's rows are gone; `None` for an empty group elsewhere.
+    /// An `ORDER BY` key's or HAVING's scope is the same with the projected
+    /// output row as `seed`: aggregate calls still read the group, every
+    /// non-aggregate leaf asks about the row whose names the projection's
+    /// aliases shadow.
     pub(crate) fn of_group(folded: &'a FoldedGroup<'e>, seed: Option<&'a Row>) -> Self {
         Self {
             source: AggSource::Folded(folded),
             seed,
-        }
-    }
-
-    /// An `ORDER BY` key's scope: aggregate calls still read the group, but
-    /// every non-aggregate leaf asks about `row` — the projected output
-    /// row, whose names the projection's aliases shadow.
-    pub(crate) fn of_row(folded: &'a FoldedGroup<'e>, row: &'a Row) -> Self {
-        Self {
-            source: AggSource::Folded(folded),
-            seed: Some(row),
         }
     }
 
@@ -84,6 +101,26 @@ impl<'a, 'e> AggScope<'a, 'e> {
     }
 }
 
+/// The base of this evaluation's synthetic child names.
+const SYNTHETIC_CHILD_PREFIX: &str = "__agg_c";
+
+/// The prefix of this evaluation's synthetic child names:
+/// [`SYNTHETIC_CHILD_PREFIX`], lengthened until no seed column and no
+/// variable `expr` reads starts with it, so a synthetic binding can never
+/// shadow a user variable (a user may spell a name in the internal `__`
+/// namespace).
+fn fresh_prefix(seed: Option<&Row>, expr: &Expr) -> String {
+    let mut read = HashSet::new();
+    expr_vars(expr, &mut read);
+    let seed_columns = seed
+        .into_iter()
+        .flat_map(|row| row.keys().map(String::as_str));
+    uncolliding_prefix(
+        SYNTHETIC_CHILD_PREFIX,
+        read.iter().map(String::as_str).chain(seed_columns),
+    )
+}
+
 /// Bind `child` under its synthetic `name` and return the `Expr::Variable`
 /// that reads it back — one pass over both sides, so the name stream the
 /// combinator inserts and the names its rebuilt expression references
@@ -96,7 +133,7 @@ fn bind_child<'e>(children: &mut Vec<(String, &'e Expr)>, name: String, child: &
 }
 
 /// Bind every enclosing-scope child of `expr` under a synthetic
-/// `__agg_c{i}` name (collected into `children`) and rebuild `expr` so
+/// `{prefix}{i}` name (collected into `children`) and rebuild `expr` so
 /// those positions read the synthetic variables — the one bind-and-rebuild
 /// every compound agg arm rides. The IR's scope model
 /// ([`walk_scope_children`]) is the whole classification: a
@@ -109,12 +146,16 @@ fn bind_child<'e>(children: &mut Vec<(String, &'e Expr)>, name: String, child: &
 /// The canonical rebuild ([`Expr::map_children`]) walks the same children
 /// in the same order, so the name stream and the rebuild positions cannot
 /// drift — the cursor's exhaustion is the invariant that pins it.
-fn bind_enclosing_children<'e>(expr: &'e Expr, children: &mut Vec<(String, &'e Expr)>) -> Expr {
+fn bind_enclosing_children<'e>(
+    expr: &'e Expr,
+    prefix: &str,
+    children: &mut Vec<(String, &'e Expr)>,
+) -> Expr {
     let mut replacements: Vec<Expr> = Vec::new();
     walk_scope_children(expr, &mut |child, scope| match scope {
         ChildScope::Enclosing => replacements.push(bind_child(
             children,
-            format!("__agg_c{}", replacements.len()),
+            format!("{prefix}{}", replacements.len()),
             child,
         )),
         ChildScope::Element(_) => replacements.push(child.clone()),
@@ -235,7 +276,8 @@ fn agg_eval_compound<'e>(
     params: &BTreeMap<String, Value>,
 ) -> Result<Value> {
     let mut children = Vec::new();
-    let rebuilt = bind_enclosing_children(expr, &mut children);
+    let prefix = fresh_prefix(scope.seed, expr);
+    let rebuilt = bind_enclosing_children(expr, &prefix, &mut children);
     agg_eval_combinator(graph, scope, &children, params, || rebuilt)
 }
 
@@ -261,4 +303,40 @@ fn agg_eval_combinator<'e, S: AsRef<str>>(
         return Ok(Value::Null);
     }
     eval(graph, &row, &rebuild(), params)
+}
+
+#[cfg(test)]
+mod tests {
+    use relate_core::Value;
+
+    use crate::exec::test_support::exec_cypher;
+    use crate::graph::Graph;
+
+    /// A grouping key spelled in the internal `__agg_c` namespace is the
+    /// user's variable: the synthetic child bindings must not shadow it
+    /// inside a per-element body.
+    #[test]
+    fn a_user_variable_in_the_synthetic_namespace_is_not_shadowed() {
+        let g = Graph::default();
+        let base = super::SYNTHETIC_CHILD_PREFIX;
+        for name in [
+            format!("{base}0"),
+            base.to_string(),
+            format!("{base}_0"),
+            format!("{base}___0"),
+        ] {
+            let result = exec_cypher(
+                &g,
+                &format!(
+                    "WITH 7 AS {name} RETURN {name}, \
+                     [x IN [1] | x + {name}] + [count(*)] AS r"
+                ),
+            );
+            assert_eq!(
+                result.rows[0][1],
+                Value::List(vec![Value::Int(8), Value::Int(1)].into()),
+                "variable {name}"
+            );
+        }
+    }
 }

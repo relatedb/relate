@@ -7,6 +7,8 @@
 
 use relate_core::Value;
 
+use crate::pattern_engine::PatternEngine;
+
 use super::test_support::{build, exec_cypher, profiled, same_rows, walk_only, Built};
 
 /// A hub (node 0) over `fan` children, each with two grandchildren, plus a
@@ -140,6 +142,133 @@ fn optional_match_without_a_match_still_counts_the_null_row() {
         "MATCH (h:N {id: 0}) OPTIONAL MATCH (h)-[:NOPE]->(b) WITH count(*) AS c RETURN c",
     );
     assert_eq!(r.rows, vec![vec![Value::Int(1)]]);
+}
+
+/// Inputs `P` with 1, 2 and no `R` children (ids 0, 1, 2), and a hub `H`
+/// (id 16) with 10: the shapes an `OPTIONAL MATCH` feeding an aggregate
+/// must tell apart (a null row per unmatched input, none per matched one).
+fn optional_graph() -> Built {
+    let mut labels = vec![&["P"][..]; 3];
+    labels.extend(vec![&["C"][..]; 13]);
+    labels.push(&["H"][..]);
+    labels.extend(vec![&["C"][..]; 10]);
+    let mut rels = vec![(0, 3, "R"), (1, 4, "R"), (1, 5, "R")];
+    rels.extend((17..27).map(|child| (16, child, "R")));
+    build(&labels, &rels)
+}
+
+/// Run `cypher` on every pattern engine, asserting each agrees with the
+/// default routing, and return the default's rows (sorted).
+fn on_every_engine(cypher: &str) -> Vec<Vec<Value>> {
+    let run = |engine: PatternEngine| {
+        let mut built = optional_graph();
+        built.graph.configure_pattern_engine(engine);
+        exec_cypher(&built.graph, cypher)
+    };
+    let reference = PatternEngine::default();
+    let baseline = run(reference);
+    for engine in PatternEngine::ALL
+        .into_iter()
+        .filter(|&engine| engine != reference)
+    {
+        assert!(
+            same_rows(&run(engine), &baseline),
+            "{cypher}: {engine:?} vs default"
+        );
+    }
+    let mut rows = baseline.rows;
+    rows.sort_by_cached_key(|row| format!("{row:?}"));
+    rows
+}
+
+fn ints_row(cells: &[i64]) -> Vec<Value> {
+    cells.iter().copied().map(Value::Int).collect()
+}
+
+#[test]
+fn optional_match_of_one_two_and_ten_rows_aggregates_each() {
+    for (input, matched) in [(0, 1), (1, 2), (16, 10)] {
+        let rows = on_every_engine(&format!(
+            "MATCH (p {{id: {input}}}) OPTIONAL MATCH (p)-[:R]->(c) \
+             RETURN count(*) AS rows, count(c) AS matched"
+        ));
+        assert_eq!(rows, vec![ints_row(&[matched, matched])], "input {input}");
+    }
+}
+
+#[test]
+fn optional_match_adds_a_null_row_per_unmatched_input_only() {
+    // Three inputs, two matching (1 + 2 children): four rows, three matches.
+    let rows = on_every_engine(
+        "MATCH (p:P) OPTIONAL MATCH (p)-[:R]->(c) \
+         RETURN count(*) AS rows, count(c) AS matched",
+    );
+    assert_eq!(rows, vec![ints_row(&[4, 3])]);
+}
+
+#[test]
+fn aggregates_over_the_null_row_follow_their_null_semantics() {
+    // Mixed inputs: the null row is skipped by every non-star aggregate.
+    let rows = on_every_engine(
+        "MATCH (p:P) OPTIONAL MATCH (p)-[:R]->(c) \
+         RETURN count(*) AS rows, count(c) AS matched, sum(c.id) AS total, \
+                min(c.id) AS lo, max(c.id) AS hi, size(collect(c.id)) AS kept, \
+                count(DISTINCT c) AS distinct_matched",
+    );
+    assert_eq!(rows, vec![ints_row(&[4, 3, 12, 3, 5, 3, 3])]);
+    // Only the null row: count(*) counts it, the rest see nothing.
+    let rows = on_every_engine(
+        "MATCH (p {id: 2}) OPTIONAL MATCH (p)-[:R]->(c) \
+         RETURN count(*) AS rows, count(c) AS matched, sum(c.id) AS total, \
+                min(c.id) AS lo, max(c.id) AS hi, size(collect(c.id)) AS kept, \
+                count(DISTINCT c) AS distinct_matched",
+    );
+    assert_eq!(
+        rows,
+        vec![vec![
+            Value::Int(1),
+            Value::Int(0),
+            Value::Int(0),
+            Value::Null,
+            Value::Null,
+            Value::Int(0),
+            Value::Int(0),
+        ]]
+    );
+}
+
+#[test]
+fn group_by_an_input_variable_mixes_matched_and_unmatched_groups() {
+    let rows = on_every_engine(
+        "MATCH (p:P) OPTIONAL MATCH (p)-[:R]->(c) \
+         RETURN p.id AS p, count(*) AS rows, count(c) AS matched",
+    );
+    assert_eq!(
+        rows,
+        vec![
+            ints_row(&[0, 1, 1]),
+            ints_row(&[1, 2, 2]),
+            ints_row(&[2, 1, 0])
+        ]
+    );
+}
+
+/// For the inputs that do match, the optional form answers exactly what the
+/// plain `MATCH` does.
+#[test]
+fn matched_groups_equal_the_plain_match() {
+    let built = optional_graph();
+    let optional = exec_cypher(
+        &built.graph,
+        "MATCH (p:P) WHERE p.id IN [0, 1] OPTIONAL MATCH (p)-[:R]->(c) \
+         RETURN p.id AS p, count(*) AS rows, sum(c.id) AS total",
+    );
+    let plain = exec_cypher(
+        &built.graph,
+        "MATCH (p:P) WHERE p.id IN [0, 1] MATCH (p)-[:R]->(c) \
+         RETURN p.id AS p, count(*) AS rows, sum(c.id) AS total",
+    );
+    assert!(same_rows(&optional, &plain));
 }
 
 #[test]

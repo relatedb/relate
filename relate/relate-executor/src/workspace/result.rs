@@ -10,9 +10,9 @@ use std::sync::Arc;
 use relate_core::{str_logical_bytes, Node, Relationship, Value};
 
 use crate::hash_seed::IdSet;
-use crate::memory::{OVERHEAD_MAP_ENTRY, VEC_HEADER};
+use crate::memory::OVERHEAD_MAP_ENTRY;
 
-use super::buffer_bytes;
+use super::{buffer_bytes, created_label_bytes, property_container_bytes};
 
 /// Retained heap of a fully materialized public result. Shared payloads are
 /// counted once by allocation identity, including payloads referenced by
@@ -112,12 +112,7 @@ fn result_value_heap(value: &Value, seen: &mut IdSet<usize>) -> u64 {
 
 fn result_node_heap(node: &Node, seen: &mut IdSet<usize>) -> u64 {
     let labels = if mark_arc(&node.labels, seen) {
-        buffer_bytes(node.labels.len(), size_of::<String>() as u64)
-            + node
-                .labels
-                .iter()
-                .map(|label| str_logical_bytes(label))
-                .sum::<u64>()
+        created_label_bytes(&node.labels)
     } else {
         0
     };
@@ -132,12 +127,7 @@ fn result_property_heap(entries: &Arc<relate_core::PropertyMap>, seen: &mut IdSe
     if !mark_arc(entries, seen) {
         return 0;
     }
-    let stride = size_of::<(String, Value)>() as u64;
-    let mut bytes = if entries.slot_capacity() == 0 {
-        0
-    } else {
-        VEC_HEADER + entries.slot_capacity() as u64 * stride
-    };
+    let mut bytes = property_container_bytes(entries);
     for (key, value) in entries.iter() {
         bytes += str_logical_bytes(key);
         bytes += result_value_heap(value, seen);

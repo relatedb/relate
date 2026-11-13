@@ -23,8 +23,9 @@ use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 use crate::workspace::buffer_growth;
 
+use super::eval::FoldedGroup;
 use super::pool::{PoolSite, PoolState, SortedPool};
-use super::stream::{finish_pooled, finish_retained, Call, FoldedGroup};
+use super::stream::{finish_pooled, finish_retained, Call};
 
 /// Groups whose lenient site failed to fold: the error is parked here and
 /// surfaces when the site is read. Sparse — empty unless an `ORDER BY` key

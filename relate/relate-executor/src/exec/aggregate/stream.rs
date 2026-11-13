@@ -13,7 +13,7 @@
 //! percentile calls of one group over the same operand share one `f64`
 //! buffer (`pool`) rather than each keeping its own `Value`s.
 //! [`AccTable::finish_group`] resolves every site of a group once, and the
-//! evaluator reads the results back from the [`FoldedGroup`].
+//! evaluator reads the results back from the `FoldedGroup` it resolves.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -29,6 +29,8 @@ use crate::overlay::RetainedTotal;
 use crate::row::Row;
 
 use super::columns::{AccTable, SiteColumn, SiteState};
+#[cfg(test)]
+use super::eval::FoldedGroup;
 use super::eval::{agg_eval, AggScope};
 use super::pool::{shareable, PoolSite, SortedPool};
 
@@ -311,28 +313,4 @@ pub(super) fn finish_pooled(
         return Err(call.name.with_str(needs_numbers));
     }
     Ok(percentile.rank_in_sorted(&pool.vals))
-}
-
-/// One group's resolved aggregate calls, read back by the evaluator.
-pub(crate) struct FoldedGroup<'e> {
-    values: Vec<(&'e Expr, Result<Value>)>,
-}
-
-impl<'e> FoldedGroup<'e> {
-    pub(super) fn new(values: Vec<(&'e Expr, Result<Value>)>) -> Self {
-        Self { values }
-    }
-
-    /// The value of the call at `expr` (by identity).
-    pub(crate) fn value(&self, expr: &Expr) -> Result<Value> {
-        self.values
-            .iter()
-            .find(|(site, _)| std::ptr::eq(*site, expr))
-            .map(|(_, value)| value.clone())
-            .unwrap_or_else(|| {
-                Err(Error::internal(
-                    "an aggregate call was not discovered before the group resolved",
-                ))
-            })
-    }
 }

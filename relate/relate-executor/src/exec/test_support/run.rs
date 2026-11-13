@@ -187,8 +187,8 @@ pub(crate) fn same_rows(a: &QueryResult, b: &QueryResult) -> bool {
     }
     let mut a = a.rows.clone();
     let mut b = b.rows.clone();
-    a.sort_by_key(|row| format!("{row:?}"));
-    b.sort_by_key(|row| format!("{row:?}"));
+    a.sort_by_cached_key(|row| format!("{row:?}"));
+    b.sort_by_cached_key(|row| format!("{row:?}"));
     a == b
 }
 

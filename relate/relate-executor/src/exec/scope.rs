@@ -21,6 +21,29 @@ pub(crate) fn is_internal_column(name: &str) -> bool {
     name.starts_with("__")
 }
 
+/// `base` lengthened with `_` until no name in `names` starts with it: the
+/// one freshening policy for a synthetic `__` column prefix (parked sort
+/// keys, aggregate child bindings), so a user spelling of an internal name
+/// can never be shadowed or read back as a synthetic one. One pass over the
+/// names, linear in their total length (a name can be as long as the query
+/// cap): the prefix needs one more `_` than the longest run of them any
+/// name carries right after `base`.
+pub(crate) fn uncolliding_prefix<'n>(
+    base: &str,
+    names: impl IntoIterator<Item = &'n str>,
+) -> String {
+    let longest_run = names
+        .into_iter()
+        .filter_map(|name| name.strip_prefix(base))
+        .map(|rest| rest.bytes().take_while(|&byte| byte == b'_').count())
+        .max();
+    let mut prefix = String::from(base);
+    if let Some(run) = longest_run {
+        prefix.extend(std::iter::repeat_n('_', run + 1));
+    }
+    prefix
+}
+
 /// The output names of a projection's non-`*` items, in item order —
 /// the one walk the parked-prefix check, the sink's output names and the
 /// result-column models read.

@@ -24,7 +24,7 @@ pub(crate) use group::{aggregate_ex, Aggregation, GroupSubclauses};
 // the crate's own tests only; `super::eval`/`super::group` serve the
 // runtime paths directly.
 #[cfg(test)]
-pub(crate) use eval::{agg_eval, AggScope};
+pub(crate) use eval::{agg_eval, AggScope, FoldedGroup};
 #[cfg(test)]
 pub(crate) use group::desugar_star_keys;
 #[cfg(test)]

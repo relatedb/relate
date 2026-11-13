@@ -193,3 +193,20 @@ impl Builder {
         self.0
     }
 }
+
+/// `pairs` `A` nodes named `n0`, `n1`, … (`name` property), each with one
+/// `:E` edge to a `B` of its own: the grouped-key fixture the charge pins
+/// build their group tables from.
+pub(crate) fn named_a_to_b_pairs(pairs: usize) -> Graph {
+    let builder = Builder::new();
+    for i in 0..pairs {
+        let a = builder.prop_node(
+            &format!("a{i}"),
+            &["A"],
+            &[("name", Value::String(format!("n{i}").into()))],
+        );
+        let b = builder.node(&format!("b{i}"), &["B"]);
+        builder.edge(a, b);
+    }
+    builder.done()
+}

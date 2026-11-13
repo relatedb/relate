@@ -16,7 +16,9 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::scope::is_star_item;
-use super::scope::{projection_names, projects_name, result_column, ProjectionFields};
+use super::scope::{
+    projection_names, projects_name, result_column, uncolliding_prefix, ProjectionFields,
+};
 
 /// Whether an `ORDER BY` key must read the projected row even when its
 /// expression is verbatim a projection item.
@@ -49,11 +51,7 @@ fn parked_prefix(items: &[Projection]) -> String {
 /// `YIELD` paging, whose composed rows are their own scope), so the
 /// collision guard is decided by the columns that actually exist.
 fn uncolliding_parked_prefix(columns: &[String]) -> String {
-    let mut prefix = String::from("__ord");
-    while columns.iter().any(|name| name.starts_with(&prefix)) {
-        prefix.push('_');
-    }
-    prefix
+    uncolliding_prefix("__ord", columns.iter().map(String::as_str))
 }
 
 /// One projection's `ORDER BY` keys, each with its resolved scope decision

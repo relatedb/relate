@@ -370,7 +370,12 @@ impl<'a> Aggregation<'a> {
             // read of a present value fails — the documented `ORDER BY`
             // policy.
             park_order_keys(order, &mut n, |expr, scope| {
-                agg_eval(graph, AggScope::of_row(&folded, scope), expr, params)
+                agg_eval(
+                    graph,
+                    AggScope::of_group(&folded, Some(scope)),
+                    expr,
+                    params,
+                )
             })?;
             // HAVING (ADR-0453): the aggregating WHERE, answered per group
             // with the same scope an ORDER BY key gets. Not-true drops the
@@ -378,7 +383,12 @@ impl<'a> Aggregation<'a> {
             // is the typed rejection live raises (22N01) and a list/path
             // converts, both through the one predicate policy (ADR-0458 §7).
             if let Some(predicate) = having {
-                let keeps = agg_eval(graph, AggScope::of_row(&folded, &n), predicate, params)?;
+                let keeps = agg_eval(
+                    graph,
+                    AggScope::of_group(&folded, Some(&n)),
+                    predicate,
+                    params,
+                )?;
                 if !crate::eval::predicate_value_holds(&keeps)? {
                     continue;
                 }

@@ -353,8 +353,8 @@ impl Percentile {
 }
 
 /// The one per-kind fold over an aggregate call's already-evaluated operand
-/// values, shared by the grouped evaluator (through its
-/// `fold_aggregate_call`) and the horizontal rewrite
+/// values, shared by the grouped evaluator (through
+/// [`StreamFold`]) and the horizontal rewrite
 /// ([`super::horizontal::horizontal_aggregate`]) so count/collect/min/
 /// max/sum/avg/stDev/percentile cannot drift into two behaviours again.
 /// Nulls are skipped by every kind — count counts the non-null operands,
@@ -398,6 +398,24 @@ pub(crate) fn fold_aggregate(input: FoldInput, name: &str, vals: Vec<Value>) -> 
     }
 }
 
+/// Which standard deviation a [`StreamFold::Deviation`] reports: `stDev`
+/// divides by `n - 1`, `stDevP` by `n`.
+#[derive(Clone, Copy)]
+pub(crate) enum DeviationKind {
+    Sample,
+    Population,
+}
+
+impl DeviationKind {
+    /// The divisor of `n` (at least 2 for a sample) squared deviations.
+    fn divisor(self, n: usize) -> usize {
+        match self {
+            Self::Sample => n - 1,
+            Self::Population => n,
+        }
+    }
+}
+
 /// One aggregate call's streaming accumulator: the constant-size state a
 /// non-retaining aggregate keeps per group instead of its operand values —
 /// a counter for `count`, the numeric/duration accumulator for `sum` and
@@ -416,7 +434,7 @@ pub(crate) enum StreamFold {
         best: Option<Value>,
     },
     Deviation {
-        population: bool,
+        kind: DeviationKind,
         n: usize,
         mean: f64,
         m2: f64,
@@ -433,8 +451,8 @@ impl StreamFold {
             AggregateKind::Avg => Some(Self::Avg(SumAcc::new())),
             AggregateKind::Min => Some(Self::extreme(Extreme::Min)),
             AggregateKind::Max => Some(Self::extreme(Extreme::Max)),
-            AggregateKind::StDev => Some(Self::deviation(false)),
-            AggregateKind::StDevP => Some(Self::deviation(true)),
+            AggregateKind::StDev => Some(Self::deviation(DeviationKind::Sample)),
+            AggregateKind::StDevP => Some(Self::deviation(DeviationKind::Population)),
             AggregateKind::Collect
             | AggregateKind::PercentileCont
             | AggregateKind::PercentileDisc => None,
@@ -448,9 +466,9 @@ impl StreamFold {
         }
     }
 
-    fn deviation(population: bool) -> Self {
+    fn deviation(kind: DeviationKind) -> Self {
         Self::Deviation {
-            population,
+            kind,
             n: 0,
             mean: 0.0,
             m2: 0.0,
@@ -469,20 +487,17 @@ impl StreamFold {
     /// Fold one operand value in. `name` labels the wrong-type message of
     /// the number-only kinds; the error is raised at the offending value.
     pub(crate) fn offer(&mut self, value: Value, name: &str) -> Result<()> {
+        // Every kind skips a null operand: the one skip, before the arms.
+        if value.is_null() {
+            return Ok(());
+        }
         match self {
-            Self::Count(n) => {
-                if !value.is_null() {
-                    *n += 1;
-                }
-            }
+            Self::Count(n) => *n += 1,
             Self::Sum(acc) | Self::Avg(acc) => acc.offer(&value, name)?,
             Self::Extreme { extreme, best } => {
                 extreme_offer(best, *extreme, value, Value::order_by_cmp);
             }
             Self::Deviation { n, mean, m2, .. } => {
-                if value.is_null() {
-                    return Ok(());
-                }
                 let x = value.as_number().ok_or_else(|| needs_numbers(name))?;
                 *n += 1;
                 if *n == 1 {
@@ -517,15 +532,12 @@ impl StreamFold {
             Self::Extreme { best, .. } => Ok(best.unwrap_or(Value::Null)),
             Self::Deviation { n: 0, .. } => Ok(Value::Null),
             Self::Deviation {
-                population: false,
+                kind: DeviationKind::Sample,
                 n: 1,
                 ..
             } => Ok(Value::Float(0.0)),
-            Self::Deviation {
-                population, n, m2, ..
-            } => {
-                let divisor = if population { n } else { n - 1 };
-                Ok(Value::Float((m2 / divisor as f64).sqrt()))
+            Self::Deviation { kind, n, m2, .. } => {
+                Ok(Value::Float((m2 / kind.divisor(n) as f64).sqrt()))
             }
         }
     }

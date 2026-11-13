@@ -133,20 +133,23 @@ fn profile_reports_the_wanted_rows_for_the_scan() {
 fn a_limit_one_scan_retains_only_the_row_it_returns() {
     const CAP: u64 = 16 * 1024;
     const QUERY: &str = "MATCH (n) RETURN n LIMIT 1";
-    let mut row_bytes = Vec::new();
+    let mut first_row_bytes: Option<u64> = None;
     for n in [5_000, 20_000] {
         let mut built = items(n);
         built.graph.configure_expression_memory_limit(Some(CAP));
         let record = profiled(&built.graph, QUERY).remove(0);
         assert_eq!(record.rows, 1, "rows at {n} nodes");
-        row_bytes.push(record.memory_bytes);
+        assert!(record.memory_bytes > 0, "row bytes at {n} nodes");
+        assert_eq!(
+            *first_row_bytes.get_or_insert(record.memory_bytes),
+            record.memory_bytes,
+            "row bytes at {n} nodes against the first size"
+        );
         let refusal = with_pushdown_disabled(|| try_exec_cypher(&built.graph, QUERY))
             .err()
             .unwrap_or_else(|| panic!("the unbounded scan over {n} nodes fits the budget"));
         assert!(assert_expression_cap(&refusal, CAP) > CAP);
     }
-    assert!(row_bytes[0] > 0);
-    assert_eq!(row_bytes[0], row_bytes[1]);
 }
 
 /// The non-pushable shapes: each changes which rows arrive or in what

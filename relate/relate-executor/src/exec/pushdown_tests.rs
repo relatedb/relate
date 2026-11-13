@@ -4,6 +4,7 @@ use super::*;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use relate_core::NodeId;
+use relate_ir::Expr;
 use std::collections::HashSet;
 
 fn two_hop_graph() -> Graph {
@@ -806,16 +807,26 @@ fn run_sum(vals: &[Value]) -> Value {
     let expr = agg_fn("sum");
     let (mut agg, operand) = StreamAgg::new(&expr).unwrap();
     for v in vals {
-        agg.offer(
-            &graph,
-            &row_with(v.clone()),
-            operand,
-            &BTreeMap::new(),
-            &mut graph.retain_bytes(0).unwrap(),
-        )
-        .unwrap();
+        offer_value(&mut agg, &graph, operand, v.clone()).unwrap();
     }
     agg.finish()
+}
+
+/// One operand value through a one-hop fold accumulator, charged to a
+/// throwaway retained-bytes ledger.
+fn offer_value(
+    agg: &mut StreamAgg,
+    graph: &ExecGraph<'_>,
+    operand: Option<&Expr>,
+    value: Value,
+) -> Result<()> {
+    agg.offer(
+        graph,
+        &row_with(value),
+        operand,
+        &BTreeMap::new(),
+        &mut graph.retain_bytes(0).unwrap(),
+    )
 }
 
 // ADR-0205: the one-hop fold skips nulls like the grouped path, and
@@ -843,23 +854,8 @@ fn folded_sum_accepts_durations_and_rejects_mixing() {
     let graph = ExecGraph::read(&g);
     let expr = agg_fn("sum");
     let (mut agg, operand) = StreamAgg::new(&expr).unwrap();
-    agg.offer(
-        &graph,
-        &row_with(d(1)),
-        operand,
-        &BTreeMap::new(),
-        &mut graph.retain_bytes(0).unwrap(),
-    )
-    .unwrap();
-    let err = agg
-        .offer(
-            &graph,
-            &row_with(Value::Int(1)),
-            operand,
-            &BTreeMap::new(),
-            &mut graph.retain_bytes(0).unwrap(),
-        )
-        .unwrap_err();
+    offer_value(&mut agg, &graph, operand, d(1)).unwrap();
+    let err = offer_value(&mut agg, &graph, operand, Value::Int(1)).unwrap_err();
     assert!(err.to_string().contains("cannot mix numbers and durations"));
 }
 

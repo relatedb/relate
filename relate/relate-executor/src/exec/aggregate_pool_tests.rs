@@ -6,8 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use super::test_support::{assert_expression_cap, group_with_xs, percentile_fn, try_exec_cypher};
-use crate::exec::aggregate::AggSites;
+use super::test_support::{
+    assert_expression_cap, fold_group_rows, group_with_xs, percentile_fn, try_exec_cypher,
+};
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use relate_core::Value;
@@ -21,8 +22,12 @@ fn float(value: &Value) -> Option<f64> {
     }
 }
 
-/// The reference percentile of one sample, spelled independently of the
-/// engine's helper.
+/// The reference percentile of one sample, from the definitions rather than
+/// the engine's rank arithmetic: `percentileDisc` is the smallest sample
+/// value at least `p` of the sample sits at or below; `percentileCont` is
+/// the straight line through the two samples bracketing the fractional
+/// position `p * (n - 1)`. The continuous form is compared with a tolerance
+/// (a different but equal formulation rounds differently).
 fn oracle(sample: &[f64], p: f64, continuous: bool) -> Option<f64> {
     let mut v = sample.to_vec();
     v.sort_by(f64::total_cmp);
@@ -31,17 +36,26 @@ fn oracle(sample: &[f64], p: f64, continuous: bool) -> Option<f64> {
         return None;
     }
     if continuous {
-        let h = p * (n - 1) as f64;
-        let (lo, hi) = (h.floor() as usize, h.ceil() as usize);
-        let f = h - lo as f64;
-        Some(if f == 0.0 {
-            v[lo]
-        } else {
-            v[lo] * (1.0 - f) + v[hi] * f
-        })
+        let position = p * (n - 1) as f64;
+        let below = v[position.floor() as usize];
+        let above = v[position.ceil() as usize];
+        Some(below + (above - below) * position.fract())
     } else {
-        let idx = ((n as f64 * p).ceil() as usize).saturating_sub(1);
-        Some(v[idx])
+        let covers = |rank: usize| rank as f64 / n as f64 >= p;
+        let rank = (1..=n)
+            .find(|&rank| covers(rank))
+            .expect("the full sample covers any p <= 1");
+        Some(v[rank - 1])
+    }
+}
+
+fn assert_percentile(got: Option<f64>, want: Option<f64>, context: &str) {
+    match (got, want) {
+        (Some(got), Some(want)) => assert!(
+            (got - want).abs() <= 1e-9 * want.abs().max(1.0),
+            "{context}: {got} vs {want}"
+        ),
+        (got, want) => assert_eq!(got, want, "{context}"),
     }
 }
 
@@ -67,31 +81,38 @@ fn grouped_percentiles_equal_a_per_group_oracle() {
         }
     }
     let ps = [0.0, 0.1, 0.5, 0.75, 0.999, 1.0];
-    let calls: Vec<String> = ps
+    // The one ordered call list: the query's columns and the expected
+    // values are both built from it.
+    let calls: Vec<(f64, bool)> = ps.iter().flat_map(|&p| [(p, true), (p, false)]).collect();
+    let call_texts: Vec<String> = calls
         .iter()
-        .flat_map(|p| {
-            [
-                format!("percentileCont(r.n, {p:?})"),
-                format!("percentileDisc(r.n, {p:?})"),
-            ]
+        .map(|&(p, continuous)| {
+            let name = if continuous {
+                "percentileCont"
+            } else {
+                "percentileDisc"
+            };
+            format!("{name}(r.n, {p:?})")
         })
         .collect();
     let query = format!(
         "UNWIND [{}] AS r RETURN r.k AS k, {} ORDER BY k",
         rows.join(", "),
-        calls.join(", ")
+        call_texts.join(", ")
     );
     let result = try_exec_cypher(&g, &query).expect("the grouped percentiles run");
     assert_eq!(result.rows.len(), groups.len());
     for (row, (k, vals)) in result.rows.iter().zip(&groups) {
         assert_eq!(row[0], Value::Int(*k));
         let sample: Vec<f64> = vals.iter().flatten().copied().collect();
-        for (i, p) in ps.iter().enumerate() {
-            for (j, continuous) in [true, false].into_iter().enumerate() {
-                let got = float(&row[1 + 2 * i + j]);
-                assert_eq!(got, oracle(&sample, *p, continuous), "key {k} p {p}");
-            }
+        for (cell, &(p, continuous)) in row[1..].iter().zip(&calls) {
+            assert_percentile(
+                float(cell),
+                oracle(&sample, p, continuous),
+                &format!("key {k} p {p} continuous {continuous}"),
+            );
         }
+        assert_eq!(row.len(), 1 + calls.len());
     }
 }
 
@@ -114,10 +135,10 @@ fn different_operands_stay_separate_and_mixed_numbers_fold() {
     a.sort_by(f64::total_cmp);
     let b: Vec<f64> = (1..=9).map(|i| i as f64 * 100.0).collect();
     let row = &result.rows[0];
-    assert_eq!(float(&row[0]), oracle(&a, 0.5, false));
-    assert_eq!(float(&row[1]), oracle(&a, 0.5, true));
-    assert_eq!(float(&row[2]), oracle(&b, 0.5, false));
-    assert_eq!(float(&row[3]), oracle(&b, 0.25, true));
+    assert_percentile(float(&row[0]), oracle(&a, 0.5, false), "column 0");
+    assert_percentile(float(&row[1]), oracle(&a, 0.5, true), "column 1");
+    assert_percentile(float(&row[2]), oracle(&b, 0.5, false), "column 2");
+    assert_percentile(float(&row[3]), oracle(&b, 0.25, true), "column 3");
 }
 
 /// A DISTINCT percentile beside plain ones over the same operand folds its
@@ -201,15 +222,10 @@ fn charged_bytes(k: usize, rows: usize) -> u64 {
     let calls: Vec<Expr> = (0..k)
         .map(|i| percentile_fn("percentileCont", (i as f64 + 1.0) / (k as f64 + 1.0)))
         .collect();
-    let params = BTreeMap::new();
-    let sites = AggSites::discover(&graph, calls.iter(), [], &params).expect("discovered");
-    let mut accs = sites.open_group();
-    let mut total = graph.retain_bytes(0).expect("a fresh total");
-    for row in &group_with_xs(&(0..rows as i64).collect::<Vec<_>>()) {
-        accs.offer(&graph, row, &params).expect("offered");
-        accs.settle(&graph, &mut total).expect("settled");
-    }
-    total.total()
+    let group = group_with_xs(&(0..rows as i64).collect::<Vec<_>>());
+    let (_, retained) =
+        fold_group_rows(&graph, &group, calls.iter(), &BTreeMap::new()).expect("folded");
+    retained
 }
 
 /// The memory shape: the charge does not grow with the number of calls and

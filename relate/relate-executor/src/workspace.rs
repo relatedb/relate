@@ -184,10 +184,7 @@ fn property_heap(entries: &relate_core::PropertyMap) -> u64 {
 fn node_heap(node: &Node) -> u64 {
     let mut bytes = 0;
     if Arc::strong_count(&node.labels) == 1 {
-        bytes += buffer_bytes(node.labels.len(), size_of::<String>() as u64);
-        for label in node.labels.iter() {
-            bytes += str_logical_bytes(label);
-        }
+        bytes += created_label_bytes(&node.labels);
     }
     if Arc::strong_count(&node.properties) == 1 {
         bytes += property_heap(&node.properties);
@@ -424,13 +421,10 @@ pub(crate) fn scratch_created_bytes(
 }
 
 fn created_node_bytes(node: &Node) -> u64 {
-    let mut bytes = OVERHEAD_MAP_ENTRY + size_of::<Node>() as u64;
-    bytes += buffer_bytes(node.labels.len(), size_of::<String>() as u64);
-    for label in node.labels.iter() {
-        bytes += str_logical_bytes(label);
-    }
-    bytes += created_property_bytes(&node.properties);
-    bytes
+    OVERHEAD_MAP_ENTRY
+        + size_of::<Node>() as u64
+        + created_label_bytes(&node.labels)
+        + created_property_bytes(&node.properties)
 }
 
 fn created_rel_bytes(rel: &Relationship) -> u64 {
@@ -440,13 +434,18 @@ fn created_rel_bytes(rel: &Relationship) -> u64 {
         + created_property_bytes(&rel.properties)
 }
 
+/// The slot buffer a property map reserves: nothing for an empty map, a
+/// header plus its capacity's slots otherwise. The container figure the
+/// statement's scratch and a result's property maps both bill.
+pub(crate) fn property_container_bytes(entries: &relate_core::PropertyMap) -> u64 {
+    match entries.slot_capacity() {
+        0 => 0,
+        slots => VEC_HEADER + slots as u64 * size_of::<(String, Value)>() as u64,
+    }
+}
+
 fn created_property_bytes(entries: &relate_core::PropertyMap) -> u64 {
-    let stride = size_of::<(String, Value)>() as u64;
-    let mut bytes = if entries.slot_capacity() == 0 {
-        0
-    } else {
-        VEC_HEADER + entries.slot_capacity() as u64 * stride
-    };
+    let mut bytes = property_container_bytes(entries);
     for (key, value) in entries {
         bytes += str_logical_bytes(key);
         bytes += owned_heap(value);
@@ -561,8 +560,10 @@ pub(crate) fn created_node_insert_delta(existing: usize, node: &Node) -> u64 {
     buffer_growth(existing, existing + 1, size_of::<NodeId>() as u64) + created_node_bytes(node)
 }
 
+/// Deleting a created node drops its record and id-set slot: the figure
+/// inserting it into a set of `remaining` ids adds, read back.
 pub(crate) fn created_node_remove_delta(remaining: usize, node: &Node) -> u64 {
-    buffer_growth(remaining, remaining + 1, size_of::<NodeId>() as u64) + created_node_bytes(node)
+    created_node_insert_delta(remaining, node)
 }
 
 pub(crate) fn created_rel_insert_delta(
@@ -571,14 +572,12 @@ pub(crate) fn created_rel_insert_delta(
     out_len: Option<usize>,
     in_len: Option<usize>,
 ) -> u64 {
-    buffer_growth(existing, existing + 1, size_of::<RelId>() as u64)
-        + created_rel_bytes(rel)
-        + adj_len_delta(out_len)
-        + adj_len_delta(in_len)
+    created_rel_remove_delta(existing, rel) + adj_len_delta(out_len) + adj_len_delta(in_len)
 }
 
-/// Deleting a created relationship drops its record and id-set slot. The
-/// adjacency lists keep the id, matching [`delete_rel`].
+/// Deleting a created relationship drops its record and id-set slot; the
+/// insert's id-set and record share, with no adjacency term. The adjacency
+/// lists keep the id, matching [`delete_rel`].
 pub(crate) fn created_rel_remove_delta(remaining: usize, rel: &Relationship) -> u64 {
     buffer_growth(remaining, remaining + 1, size_of::<RelId>() as u64) + created_rel_bytes(rel)
 }
