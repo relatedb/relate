@@ -39,10 +39,15 @@ never become part of the statement text. `Codable` models go both ways: an
 decode into `Decodable` types by column or property name.
 
 The concurrency model is the C ABI's, checked by the Swift 6 compiler: a
-`Database` may be shared across tasks and actors, a `Connection` may not. The
-idiomatic shape is one actor that owns a connection and exposes app-level
-queries, with the `@MainActor` view model awaiting it — the pattern of the
-iOS example in [`examples/ios-snotel`](../../../examples/ios-snotel/).
+`Database` may be shared across tasks and actors, a `Connection` may not. An
+app does not have to manage that itself. `try await db.read { … }` and
+`try await db.write { … }` run a synchronous body on connections the
+database owns — one writer and a small set of readers, each on its own
+queue — so a view model can await them from the `MainActor`, a list can
+keep reading while an import writes, and no transaction is ever held across
+a suspension. The synchronous `connect()` API remains for command-line tools,
+tests and code that wants to own its connection, as the iOS example in
+[`examples/ios-snotel`](../../../examples/ios-snotel/) shows.
 
 For iOS apps, keep the store in Application Support (not Documents), give the
 directory `FileProtectionType.completeUntilFirstUserAuthentication` if the app

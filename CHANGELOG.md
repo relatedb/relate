@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Swift: managed asynchronous access. `try await db.read { tx in … }` and
+  `try await db.write { tx in … }` run a synchronous body off the caller's
+  thread on connections the database owns (one writer, up to
+  `Options.maxReaders` readers), with single-statement forms and
+  `checkpointInBackground()`. A poisoned pooled connection is replaced.
 - Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
   `setNamespace(_:)` taking the typed namespace, and error predicates on
   `EngineError` (`isConstraintViolation`, `isSyntaxError`,

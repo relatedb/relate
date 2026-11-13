@@ -128,7 +128,8 @@ public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConver
     /// decode.
     case unexpectedResult(ResultMismatch)
     /// The API was used outside its contract: a transaction scope used after
-    /// its body returned, a write statement in a read.
+    /// its body returned, a write statement in a read, a write on a
+    /// read-only database.
     case misuse(String)
 
     public var message: String { text.message }

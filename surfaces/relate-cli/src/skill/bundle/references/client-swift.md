@@ -39,6 +39,11 @@ r.elapsedMs      // engine time; r.parseMs / r.planMs / r.executeMs — its
 try conn.transaction(retries: 2) { tx in try tx.query("CREATE (:A)") }  // rollback on throw; retries re-run on a retryable conflict
 let n = try conn.read { tx in try tx.query("MATCH (n) RETURN count(n)").scalar(as: Int.self) }  // one snapshot; always rolled back
 try db.checkpoint()
+
+// Async, from any actor: the database manages one writer + a few readers.
+let n = try await db.read { tx in try tx.run("MATCH (n) RETURN count(n)").scalar(as: Int.self) }
+try await db.write { tx in try tx.run("CREATE (:A {name: \(name)})") }   // one transaction
+try await db.write(try "CREATE (:A {name: \(name)})")                    // single statement
 ```
 
 `CypherValue` is an enum — `null bool int float string list map node
@@ -67,11 +72,17 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   echoed into the message is sanitized: non-printable characters arrive escaped
   and the value is bounded.
 - A result map key containing an interior NUL is refused with an error (the C ABI looks keys up NUL-terminated); string values keep their NULs.
+- **Prefer `db.read` / `db.write` in apps** — bodies are synchronous
+  closures run off the caller's thread on pooled connections; safe to await
+  from the `MainActor`. Reads are snapshots that never commit (a write in one
+  throws `misuse`); writes run one at a time. The body and its result must be
+  `Sendable`; the `Transaction` does not leave the body. A running statement
+  cannot be cancelled.
 - **`Connection` is not `Sendable`** — the compiler stops you sharing one
-  across actors. Own it inside one actor; `Database` is shareable, open one
-  connection per concurrent worker.
-- **Blocking calls** — queries run synchronously; never call them on the
-  `MainActor`.
+  across actors. If you use `connect()` directly, own the connection inside
+  one actor; `Database` is shareable.
+- **Blocking calls** — `Connection` calls run synchronously; never call them
+  on the `MainActor`.
 - **Every value is typed** — nodes and relationships carry element ids
   (`"4:rl-id:n0"`, `elementId(n) = $id` round-trips) plus the
   deprecated numeric ids Cypher's `id()` returns (`node.id`,
@@ -86,6 +97,7 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   more than once.
 - **Poison** — after an error with stage `internal`, `conn.isPoisoned()`
   tells whether the connection must be replaced (`db.connect()` again).
+  `db.read` / `db.write` do this themselves.
 - **`run` binds, `query` does not** — an interpolated literal passed to
   `run(_:)` is a `Statement` and its values become parameters; the same
   literal passed to `query(_:_:)` is a plain `String` with the values in the

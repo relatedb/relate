@@ -20,17 +20,26 @@ travels with the call, and bookmarks.
 // `throws(RelateError)` is a typed throw: a `catch` block's `error` is a
 // `RelateError` with no cast. `transaction(_:)` and `read(_:)` run the
 // caller's closure, so they stay untyped.
-public final class Database: @unchecked Sendable {
-    public init(path: String) throws(RelateError)            // ":memory:", a single-file `.rl` store, or a store directory (created if missing)
-    public init(readOnlyPath path: String) throws(RelateError) // existing store, loaded once; writes/checkpoint refused (ADR-0136)
-    public init(url: URL, readOnly: Bool = false) throws(RelateError) // a local file URL; another scheme, or a host other than localhost, is .invalidParameter
-    public static func inMemory() throws(RelateError) -> Database
+public final class Database: Sendable {
+    public init(path: String, options: Options = Options()) throws(RelateError)            // ":memory:", a single-file `.rl` store, or a store directory (created if missing)
+    public init(readOnlyPath path: String, options: Options = Options()) throws(RelateError) // existing store, loaded once; writes/checkpoint refused (ADR-0136)
+    public init(url: URL, readOnly: Bool = false, options: Options = Options()) throws(RelateError) // a local file URL; another scheme, or a host other than localhost, is .invalidParameter
+    public static func inMemory(options: Options = Options()) throws(RelateError) -> Database
+    public struct Options: Sendable, Hashable { public var maxReaders: Int /* = 2; below 1 is .invalidParameter at open */ }
     public let path: String
     public let isReadOnly: Bool
     public func connect() throws(RelateError) -> Connection                              // namespace "neo4j"
     public func connect(namespace: DatabaseNamespace) throws(RelateError) -> Connection  // .neo4j | .system | .systemOntologies (ADR-0117)
     @available(*, deprecated) public func connect(namespace: String?) throws(RelateError) -> Connection  // by name; use the typed form
     public func checkpoint() throws(RelateError)
+
+    // Managed asynchronous access — see "Managed asynchronous access" below.
+    public func read<T: Sendable>(_ body: @escaping @Sendable (Transaction) throws -> T) async throws -> T
+    @discardableResult public func write<T: Sendable>(retries: Int = 0, _ body: @escaping @Sendable (Transaction) throws -> T) async throws -> T
+    public func read(_ statement: Statement) async throws -> QueryResult
+    @discardableResult public func write(_ statement: Statement, retries: Int = 0) async throws -> QueryResult
+    @discardableResult public func write(_ statements: [Statement], retries: Int = 0) async throws -> [QueryResult]
+    public func checkpointInBackground() async throws
 }
 
 public final class Connection {                  // NOT Sendable
@@ -203,6 +212,57 @@ Strings and map keys carry a byte length, so interior NULs cross whole
 (`'a\u0000b'` is `.string("a\u{0}b")`); a present key holding `null`
 (`.map(["a": .null])`) is distinct from an absent key. UUIDs cross as
 `STRING`, byte arrays as `LIST` of `INT`.
+
+## Managed asynchronous access
+
+`Database.read` and `Database.write` run a **synchronous** body on a
+connection the database opens and owns, off the caller's thread:
+
+```swift
+let titles = try await db.read { tx in
+    try tx.run("MATCH (b:Book) RETURN b.title AS title").map { try $0.get("title", as: String.self) }
+}
+try await db.write { tx in
+    try tx.run("MATCH (b:Book {key: \(key)}) SET b.rating = \(4)")
+}
+```
+
+- **Connections.** One writer connection and up to `Options.maxReaders`
+  reader connections (default 2), each opened on first use on the default
+  namespace and confined to its own serial dispatch queue. A read goes to the
+  least busy reader; another reader is opened only while every existing one
+  has work pending.
+- **`read`** is `Connection.read`: a transaction that is always rolled back.
+  Its statements see one snapshot, nothing it does is kept, and a statement
+  that is not a read throws `.misuse`. Reads run concurrently with each other
+  and with a write, and do not see a write's uncommitted changes.
+- **`write`** is `Connection.transaction(retries:)` on the single writer:
+  committed when the body returns, rolled back when it throws. Writes through
+  the database run one at a time and so never conflict with each other;
+  `retries` covers a conflict with a writer outside the pool. Schema
+  statements are writes. On a database opened read-only, `write` and
+  `checkpointInBackground` throw `.misuse`.
+- **Blocking.** The awaiting task suspends and the engine call blocks the
+  connection's queue, so no cooperative-pool thread is held and the
+  `MainActor` can `await` these directly. The body cannot `await`, so a
+  transaction is never held across a suspension.
+- **Cancellation.** A task cancelled before its body starts throws
+  `CancellationError` and runs nothing. A statement already running is not
+  interrupted; the C ABI has no cancel call.
+- **Sendability.** The body is `@Sendable` and its result is `Sendable`; the
+  `Transaction` it receives is not, and never leaves the body.
+- **Poison.** After a body fails at stage `internal`, the connection is
+  probed (`isPoisoned()`); a poisoned one is discarded and replaced on the
+  next use. The failed body's error is rethrown and the body is not run
+  again.
+- **Lifetime.** The pool's connections keep the store open but do not keep
+  the `Database` object alive: releasing the last `Database` reference
+  releases them and, with no other connection outstanding, closes the store.
+- `checkpointInBackground()` checkpoints on the writer's queue, between
+  writes.
+
+The synchronous `connect()` API is unchanged and may be used alongside; a
+connection made that way is a writer outside the pool.
 
 ## Records
 
@@ -475,10 +535,12 @@ handle and open a new one.
   A `Connection` disconnects when released.
 - `Database` is `Sendable`: share one across tasks and actors. `Connection` is
   not: Swift 6 rejects sending it across isolation domains, which is the C
-  ABI's "do not share a connection across threads" rule. Own each connection
-  in one actor; open more connections for concurrent work.
-- Calls are synchronous and block while the engine runs. Call them from a
-  background actor, not the `MainActor`.
+  ABI's "do not share a connection across threads" rule. Use
+  `Database.read` / `Database.write`, which manage their own connections, or
+  own each `Connection` in one actor and open more for concurrent work.
+- Calls on a `Connection` are synchronous and block while the engine runs.
+  Call them from a background actor, not the `MainActor`. `Database.read`
+  and `Database.write` are `async` and safe to await from the `MainActor`.
 - Errors travel with the call that failed (the v2 error channel — ADR-0502
   §2): a query run from any task reports its own error to whoever reads its
   throw. There is no thread-local slot, so nothing depends on the calling

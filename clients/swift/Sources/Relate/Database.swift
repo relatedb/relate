@@ -7,20 +7,44 @@ import Foundation
 /// reference (including every ``Connection`` made from it) is released.
 ///
 /// `Database` is `Sendable`: the C ABI documents a `relate_database` as
-/// safe to share across threads, so the wrapper adds no lock of its own.
-public final class Database: @unchecked Sendable {
-    private let handle: OpaquePointer
+/// safe to share across threads, so the wrapper adds no lock around it.
+///
+/// Besides the synchronous ``connect()``, a `Database` offers managed
+/// asynchronous access — `read(_:)` and `write(retries:_:)` — over
+/// connections it opens and owns itself.
+public final class Database: Sendable {
+    /// The open store. Connections hold it too, so the store outlives the
+    /// `Database` object for as long as any connection does.
+    let core: DatabaseCore
     public let path: String
     public let isReadOnly: Bool
+    /// The connections behind the managed asynchronous entry points. This
+    /// object owns the pool; the pool's connections refer back to it
+    /// without owning it, so releasing the last `Database` reference
+    /// releases them.
+    let pool: ConnectionPool
+
+    /// Settings for the managed asynchronous access.
+    public struct Options: Sendable, Hashable {
+        /// The most reader connections `Database.read(_:)` opens.
+        /// Reads beyond that wait their turn on the least busy reader. At
+        /// least 1: opening a database with fewer throws
+        /// ``RelateError/invalidParameter(_:)``.
+        public var maxReaders: Int
+
+        public init(maxReaders: Int = 2) {
+            self.maxReaders = maxReaders
+        }
+    }
 
     /// Opens (creating when missing) a writable store at `path`.
-    public convenience init(path: String) throws(RelateError) {
-        try self.init(path: path, readOnly: false)
+    public convenience init(path: String, options: Options = Options()) throws(RelateError) {
+        try self.init(path: path, readOnly: false, options: options)
     }
 
     /// Opens an existing store once, refusing writes and checkpoints (ADR-0136).
-    public convenience init(readOnlyPath path: String) throws(RelateError) {
-        try self.init(path: path, readOnly: true)
+    public convenience init(readOnlyPath path: String, options: Options = Options()) throws(RelateError) {
+        try self.init(path: path, readOnly: true, options: options)
     }
 
     /// Opens the store at a file URL: writable (created when missing) by
@@ -31,7 +55,9 @@ public final class Database: @unchecked Sendable {
     /// trailing dot of a fully qualified name), is refused with
     /// ``RelateError/invalidParameter(_:)`` rather than opened as whatever
     /// local path its path component happens to spell.
-    public convenience init(url: URL, readOnly: Bool = false) throws(RelateError) {
+    public convenience init(
+        url: URL, readOnly: Bool = false, options: Options = Options()
+    ) throws(RelateError) {
         guard url.isFileURL else {
             throw RelateError.invalidParameter(
                 "a store URL must be a file URL, got scheme \(quotedWire(url.scheme ?? ""))")
@@ -41,15 +67,19 @@ public final class Database: @unchecked Sendable {
             throw RelateError.invalidParameter(
                 "a store URL must name a local file, got host \(quotedWire(host))")
         }
-        try self.init(path: url.path, readOnly: readOnly)
+        try self.init(path: url.path, readOnly: readOnly, options: options)
     }
 
     /// A fresh in-memory store.
-    public static func inMemory() throws(RelateError) -> Database {
-        try Database(path: ":memory:")
+    public static func inMemory(options: Options = Options()) throws(RelateError) -> Database {
+        try Database(path: ":memory:", options: options)
     }
 
-    private init(path: String, readOnly: Bool) throws(RelateError) {
+    private init(path: String, readOnly: Bool, options: Options) throws(RelateError) {
+        guard options.maxReaders >= 1 else {
+            throw RelateError.invalidParameter(
+                "a database needs at least one reader, got maxReaders \(options.maxReaders)")
+        }
         // The package links the library at build time, so a v1 library
         // already failed to link; this is the startup assert the v2
         // contract still asks for.
@@ -65,15 +95,11 @@ public final class Database: @unchecked Sendable {
                 : relate_database_open(uri, &out, &err)
         }
         try check(status, err, "opening the database at '\(path)'")
-        self.handle = try requireHandle(out, "relate_database_open")
+        let core = DatabaseCore(handle: try requireHandle(out, "relate_database_open"))
+        self.core = core
         self.path = path
         self.isReadOnly = readOnly
-    }
-
-    deinit {
-        // A close failure here has no caller to report to; the handle is
-        // freed either way (poisoned handles included).
-        _ = relate_database_close(handle)
+        self.pool = ConnectionPool(maxReaders: options.maxReaders)
     }
 
     /// A new connection on the default namespace, `neo4j`.
@@ -94,23 +120,57 @@ public final class Database: @unchecked Sendable {
         try connect(namespaceNamed: namespace ?? DatabaseNamespace.neo4j.rawValue)
     }
 
-    /// The one crossing that opens a session. The engine matches `name`
-    /// against its fixed namespaces and refuses any other.
+    /// A caller-made connection on the namespace named `name`.
     func connect(namespaceNamed name: String) throws(RelateError) -> Connection {
+        try core.connect(namespaceNamed: name, database: self, retained: true)
+    }
+
+    /// Writes a checkpoint and truncates the WAL.
+    public func checkpoint() throws(RelateError) {
+        try core.checkpoint(describing: path)
+    }
+}
+
+/// The open store handle, closed when its last holder — the `Database`
+/// object or any ``Connection`` — is released.
+///
+/// `@unchecked Sendable` because it stores an `OpaquePointer`; the C ABI
+/// documents a `relate_database` as safe to share across threads.
+final class DatabaseCore: @unchecked Sendable {
+    private let handle: OpaquePointer
+
+    init(handle: OpaquePointer) {
+        self.handle = handle
+    }
+
+    deinit {
+        // A close failure here has no caller to report to; the handle is
+        // freed either way (poisoned handles included).
+        _ = relate_database_close(handle)
+    }
+
+    /// The one crossing that opens a session. The engine matches `name`
+    /// against its fixed namespaces and refuses any other. A connection
+    /// made for a caller is `retained`: it keeps `database` alive. One the
+    /// managed pool opens is not, which is what keeps the pool from owning
+    /// the object that owns it.
+    func connect(
+        namespaceNamed name: String, database: Database, retained: Bool
+    ) throws(RelateError) -> Connection {
         var out: OpaquePointer?
         var err: UnsafeMutablePointer<CChar>? = nil
         let status = try withCString(name, what: "namespace") {
             relate_connect_namespace(handle, $0, &out, &err)
         }
         try check(status, err, "connecting to namespace '\(name)'")
-        return Connection(handle: try requireHandle(out, "relate_connect_namespace"), database: self)
+        return Connection(
+            handle: try requireHandle(out, "relate_connect_namespace"), core: self,
+            database: database, retained: retained)
     }
 
-    /// Writes a checkpoint and truncates the WAL.
-    public func checkpoint() throws(RelateError) {
+    func checkpoint(describing path: String) throws(RelateError) {
         var err: UnsafeMutablePointer<CChar>? = nil
-        try check(
-            relate_checkpoint(handle, &err), err, "checkpointing '\(path)'")
+        try check(relate_checkpoint(handle, &err), err, "checkpointing '\(path)'")
     }
 }
 
@@ -119,12 +179,21 @@ public final class Database: @unchecked Sendable {
 /// one actor (or one thread) and open another for concurrent work.
 public final class Connection {
     private let handle: OpaquePointer
-    /// Keeps the database open for as long as this connection lives.
-    public let database: Database
+    /// Keeps the store open for as long as this connection lives.
+    let core: DatabaseCore
+    /// The database this connection was made from. Holding a connection
+    /// from ``Database/connect()`` keeps it open.
+    public unowned let database: Database
+    /// What keeps `database` alive for a caller-made connection. A
+    /// connection the managed pool opened holds none: its database owns it
+    /// (through the pool) and outlives it, so it only refers back.
+    private let retainedDatabase: Database?
 
-    fileprivate init(handle: OpaquePointer, database: Database) {
+    fileprivate init(handle: OpaquePointer, core: DatabaseCore, database: Database, retained: Bool) {
         self.handle = handle
+        self.core = core
         self.database = database
+        self.retainedDatabase = retained ? database : nil
     }
 
     deinit {
