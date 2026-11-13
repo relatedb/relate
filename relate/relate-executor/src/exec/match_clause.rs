@@ -24,7 +24,7 @@ use super::batch::try_scan_filter_batch;
 use super::hub_join::try_hub_join;
 use super::kernels;
 use super::kernels::frontier_run::FrontierRows;
-use super::one_path::{match_one_path, PathFilters};
+use super::one_path::{match_one_path, ResolvedPatterns};
 use super::pattern_policies::{reduce_row, MatchReduce, MatchTail, ReduceSink, RowFold};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
@@ -302,10 +302,10 @@ pub(crate) fn match_clause(
         params,
     });
     // LABS-801: the patterns' resolved filters, built once per clause
-    // evaluation, not per row — the table also carries the pattern-tier
-    // state the shortest-path route shares between rows (its reach
-    // cache). The graph is read-only for the whole loop.
-    let filters = PathFilters::resolve_all(graph, patterns, match_mode);
+    // evaluation, not per row — each pattern carries its tier state too,
+    // which the shortest-path route shares between rows (its reach cache).
+    // The graph is read-only for the whole loop.
+    let resolved = ResolvedPatterns::resolve(graph, patterns, match_mode);
     for row in rows {
         graph.cancel_tick()?;
         if cap.as_ref().is_some_and(|c| c.full()) {
@@ -318,8 +318,7 @@ pub(crate) fn match_clause(
         };
         let mut matched = match_paths(
             ctx,
-            patterns,
-            &filters,
+            &resolved,
             match_mode,
             row.clone(),
             &residual,
@@ -383,8 +382,7 @@ pub(crate) fn bind_pattern_nulls(row: &mut Row, patterns: &[PathPattern]) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn match_paths(
     ctx: ExecCtx<'_>,
-    patterns: &[PathPattern],
-    filters: &[PathFilters],
+    resolved: &ResolvedPatterns<'_>,
     match_mode: MatchMode,
     row: Row,
     residual: &Residual<'_>,
@@ -399,6 +397,7 @@ pub(crate) fn match_paths(
     // both this keep-alive clone and the boundary call: a single-pattern
     // match (the common shape) and a three-pattern clause pay no clone
     // for a join that cannot engage.
+    let patterns = resolved.paths();
     let hub_join = patterns.len() == 2;
     let base = hub_join.then(|| row.clone());
     let mut current = vec![(row, UsedSet::default())];
@@ -407,7 +406,7 @@ pub(crate) fn match_paths(
         crate::workspace::binding_bytes(&current)
     })?;
     let last = patterns.len().saturating_sub(1);
-    for (pi, p) in patterns.iter().enumerate() {
+    for (pi, (p, filters)) in resolved.iter().enumerate() {
         // LABS-348: at the pattern-0→pattern-1 boundary, try the hub
         // join — the two-pattern comma join through one shared hub
         // intersects at the hub instead of re-expanding pattern 1 for
@@ -467,9 +466,8 @@ pub(crate) fn match_paths(
         // carry-or-drop decision ([`MatchTail::store_row`]'s), never a
         // second `!last_pat` encoding that must stay hand-in-sync with it.
         let keep_used = p.is_shortest_path_function && matches!(tail, MatchTail::Carry);
-        // LABS-801: the pattern's rel-type filters arrive resolved, one
-        // table per pattern, from the caller's widest loop.
-        let filters = &filters[pi];
+        // LABS-801: the pattern's rel-type filters arrive resolved with
+        // it, from the caller's widest loop.
         for (r, used) in current {
             ctx.graph.cancel_tick()?;
             if last_pat && cap.as_ref().is_some_and(|c| c.full()) {

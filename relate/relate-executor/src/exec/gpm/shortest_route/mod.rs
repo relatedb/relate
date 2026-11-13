@@ -11,6 +11,8 @@
 
 use crate::UsedSet;
 use std::cell::Cell;
+#[cfg(test)]
+use std::thread::LocalKey;
 
 use relate_core::Result;
 use relate_ir::{MatchMode, PathPattern};
@@ -25,12 +27,31 @@ mod reach_cache;
 mod route;
 mod trail_walk;
 
-pub(super) use reach_cache::ReachCache;
+pub(crate) use reach_cache::ReachCache;
 use route::Route;
 
 use super::sink::MatchedSink;
 use super::GpmFilters;
 use guard::{route_shape, Spelling};
+
+#[cfg(test)]
+/// Run `f` with the thread-local test override `slot` set to `value`,
+/// restoring the previous setting afterwards (also on unwind) — the one
+/// scoped-override helper the route's size limits share.
+pub(super) fn with_override<V: Copy + 'static, T>(
+    slot: &'static LocalKey<Cell<Option<V>>>,
+    value: V,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore<V: Copy + 'static>(&'static LocalKey<Cell<Option<V>>>, Option<V>);
+    impl<V: Copy + 'static> Drop for Restore<V> {
+        fn drop(&mut self) {
+            self.0.with(|c| c.set(self.1));
+        }
+    }
+    let _restore = Restore(slot, slot.with(|c| c.replace(Some(value))));
+    f()
+}
 
 #[cfg(test)]
 mod anchor_tests;
@@ -101,11 +122,13 @@ fn with_forced_gpm<T>(f: impl FnOnce() -> T) -> T {
 /// the probe's halt cell, no row is kept); anything else reduces each row
 /// through the tail into the caller's vector. Returns whether the route
 /// took the pattern (`false`: it declined before any row was pushed).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn match_shortest_route<'a>(
     mut sink: MatchedSink<'a, '_>,
     ctx: ExecCtx<'a>,
     path: &'a PathPattern,
     filters: &'a GpmFilters,
+    reach: &'a ReachCache,
     row: &'a Row,
     used: &UsedSet,
     match_mode: MatchMode,
@@ -122,7 +145,7 @@ pub(super) fn match_shortest_route<'a>(
     // The constructor declines (`None`) before the sink is touched, and
     // takes the sink itself — its halt cell and residual are the route's
     // by construction, not two arguments that must agree.
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, &filters.reach) else {
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, reach) else {
         return Ok(false);
     };
     route.run(&mut sink)?;
@@ -152,6 +175,7 @@ pub(crate) fn fold_shortest_route(
         return Ok(false);
     }
     let filters = GpmFilters::resolve(ctx.graph, path);
+    let reach = ReachCache::default();
     let used = UsedSet::default();
     let Some(mut shape) = route_shape(
         path,
@@ -170,7 +194,7 @@ pub(crate) fn fold_shortest_route(
     let residual = Residual::empty();
     let halt = Cell::new(false);
     let mut sink = MatchedSink::fold(&residual, &halt, fold);
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, &filters.reach) else {
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, &reach) else {
         return Ok(false);
     };
     route.run(&mut sink)?;

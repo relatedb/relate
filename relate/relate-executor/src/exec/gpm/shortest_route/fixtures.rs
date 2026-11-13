@@ -43,6 +43,17 @@ pub(super) fn plain(n: usize, rels: &[(usize, usize)]) -> Graph {
     build(&vec![&[][..]; n], &rels).graph
 }
 
+/// `n` nodes, the first `x` labelled `X` and the rest `Y`, and `(from, to)`
+/// relationships of type `R`: the cross-product shape of an all-pairs
+/// `MATCH (a:X), (b:Y)`.
+pub(super) fn labelled(x: usize, n: usize, rels: &[(usize, usize)]) -> Graph {
+    let labels: Vec<&[&str]> = (0..n)
+        .map(|i| if i < x { &["X"][..] } else { &["Y"][..] })
+        .collect();
+    let rels: Vec<_> = rels.iter().map(|&(a, b)| (a, b, "R")).collect();
+    build(&labels, &rels).graph
+}
+
 /// 0→1→2→3, the shortcut 0→4→3, and 3→1 closing a cycle.
 pub(super) fn shortcut() -> Graph {
     plain(5, &[(0, 1), (1, 2), (2, 3), (0, 4), (4, 3), (3, 1)])

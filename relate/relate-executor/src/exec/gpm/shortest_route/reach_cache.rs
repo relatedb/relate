@@ -9,9 +9,9 @@
 //! "unreachable": a reachable end still takes the pair search, so the
 //! trail chosen, its tie-break and the row order are the per-pair path's.
 //!
-//! The cache lives in the pattern's [`super::super::GpmFilters`], built
-//! once per clause, so it spans the rows of one clause evaluation and
-//! never a write: the graph it read cannot change under it.
+//! The cache lives in the pattern's tier state (`PathFilters`), built once
+//! per `match_clause` call, so it spans the rows of that one input batch
+//! and never a write: the graph it read cannot change under it.
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -63,14 +63,7 @@ fn cap() -> usize {
 /// Run `f` with the reach cap lowered to `cap` on this thread.
 #[cfg(test)]
 pub(super) fn with_reach_cap<T>(cap: usize, f: impl FnOnce() -> T) -> T {
-    struct Restore(Option<usize>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            CAP.with(|c| c.set(self.0));
-        }
-    }
-    let _restore = Restore(CAP.with(|c| c.replace(Some(cap))));
-    f()
+    super::with_override(&CAP, cap, f)
 }
 
 /// Take and reset this thread's counts: reach sets built, and pair
@@ -108,28 +101,31 @@ enum Step {
     Build(u32),
 }
 
-#[derive(Default)]
-enum State {
-    /// Nothing seen yet.
-    #[default]
-    Cold,
-    /// Pairs seen from the key's start, with their count at which a reach
-    /// set is next attempted.
-    Seen { key: Key, pairs: u32, retry: u32 },
-    /// The reach set of the key's start, charged while held.
+/// What the cache knows of the held key's start.
+enum Phase {
+    /// Pairs seen, with their count at which a reach set is next
+    /// attempted.
+    Seen { pairs: u32, retry: u32 },
+    /// The reach set, charged while held.
     Ball {
-        key: Key,
         reached: IdSet<NodeId>,
         _charge: WorkspaceCharge,
     },
-    /// The key's start reaches more than the hard cap: pair searches only.
-    Refused(Key),
+    /// The start reaches more than the hard cap: pair searches only.
+    Refused,
 }
 
-/// The last start's reach set, shared by the rows of one clause.
+/// The last start the cache saw and what it knows of it.
+struct Held {
+    key: Key,
+    phase: Phase,
+}
+
+/// The last start's reach set, shared by the rows of one clause. Empty
+/// until a first pair arrives.
 #[derive(Default)]
 pub(crate) struct ReachCache {
-    state: RefCell<State>,
+    state: RefCell<Option<Held>>,
 }
 
 impl ReachCache {
@@ -150,28 +146,26 @@ impl ReachCache {
         let attempt = {
             let mut state = self.state.borrow_mut();
             match &mut *state {
-                State::Ball {
-                    key: held, reached, ..
-                } if *held == key => Step::Answer(!reached.contains(&end)),
-                State::Refused(held) if *held == key => Step::Answer(false),
-                State::Seen {
-                    key: held,
-                    pairs,
-                    retry,
-                } if *held == key => {
-                    *pairs = pairs.saturating_add(1);
-                    if *pairs < *retry {
-                        Step::Answer(false)
-                    } else {
-                        Step::Build(*pairs)
+                Some(Held { key: held, phase }) if *held == key => match phase {
+                    Phase::Ball { reached, .. } => Step::Answer(!reached.contains(&end)),
+                    Phase::Refused => Step::Answer(false),
+                    Phase::Seen { pairs, retry } => {
+                        *pairs = pairs.saturating_add(1);
+                        if *pairs < *retry {
+                            Step::Answer(false)
+                        } else {
+                            Step::Build(*pairs)
+                        }
                     }
-                }
+                },
                 _ => {
-                    *state = State::Seen {
+                    *state = Some(Held {
                         key,
-                        pairs: 1,
-                        retry: FIRST_TRY,
-                    };
+                        phase: Phase::Seen {
+                            pairs: 1,
+                            retry: FIRST_TRY,
+                        },
+                    });
                     Step::Answer(false)
                 }
             }
@@ -198,26 +192,28 @@ impl ReachCache {
         let hard = cap();
         let want = hard.min((pairs as usize).saturating_mul(ENTRIES_PER_PAIR));
         let Some(reached) = search.reach(key.start, want)? else {
-            *self.state.borrow_mut() = if want >= hard {
-                State::Refused(key)
+            let phase = if want >= hard {
+                Phase::Refused
             } else {
-                State::Seen {
-                    key,
+                Phase::Seen {
                     pairs,
                     retry: pairs.saturating_mul(RETRY_FACTOR),
                 }
             };
+            *self.state.borrow_mut() = Some(Held { key, phase });
             return Ok(false);
         };
         let charge = WorkspaceCharge::retain_with(|| {
             (reached.capacity() as u64).saturating_mul(ENTRY_BYTES)
         })?;
         let out = !reached.contains(&end);
-        *self.state.borrow_mut() = State::Ball {
+        *self.state.borrow_mut() = Some(Held {
             key,
-            reached,
-            _charge: charge,
-        };
+            phase: Phase::Ball {
+                reached,
+                _charge: charge,
+            },
+        });
         Ok(out)
     }
 }

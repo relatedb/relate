@@ -34,8 +34,8 @@ use crate::shortest::reject_static_common_end_nodes;
 use early::{early_predicates, EarlyPredicates};
 use emit::GpmEmit;
 use qpp::gpm_expand_quantified;
-pub(crate) use shortest_route::fold_shortest_route;
 use shortest_route::match_shortest_route;
+pub(crate) use shortest_route::{fold_shortest_route, ReachCache};
 use sink::MatchedSink;
 use walk::gpm_walk_elements;
 
@@ -163,9 +163,6 @@ struct GpmCtx<'a> {
 /// re-resolution per row, frame, or iteration.
 pub(crate) struct GpmFilters {
     pub(crate) filters: Vec<ElementFilter>,
-    /// The shortest-path route's reach cache — pattern-tier state, so it
-    /// lives as long as the table does (one clause evaluation).
-    reach: shortest_route::ReachCache,
 }
 
 /// One pattern element's resolved filter slot — see [`GpmFilters`].
@@ -183,7 +180,6 @@ impl GpmFilters {
     pub(crate) fn resolve(graph: &ExecGraph<'_>, path: &PathPattern) -> Self {
         GpmFilters {
             filters: Self::resolve_elements(graph, &path.elements),
-            reach: shortest_route::ReachCache::default(),
         }
     }
 
@@ -458,6 +454,7 @@ pub(crate) fn match_gpm_path(
     ctx: ExecCtx<'_>,
     path: &PathPattern,
     rel_filters: &GpmFilters,
+    reach: &ReachCache,
     row: Row,
     used: UsedSet,
     match_mode: MatchMode,
@@ -492,7 +489,7 @@ pub(crate) fn match_gpm_path(
         tail,
         &mut routed,
     );
-    if match_shortest_route(sink, ctx, path, rel_filters, &row, &used, match_mode)? {
+    if match_shortest_route(sink, ctx, path, rel_filters, reach, &row, &used, match_mode)? {
         return Ok(routed);
     }
     if path.elements.is_empty() {
