@@ -319,6 +319,18 @@ impl GroupKey {
         norm_bytes(&self.0)
     }
 
+    /// The class of a value whose word needs no tree: an integer or a node
+    /// (the dominant keys), by the same encodings [`Self::class`] gives
+    /// them. `None` for every other value, which goes through
+    /// [`Self::new`] and [`Self::class`].
+    pub(crate) fn class_of(value: &Value) -> Option<KeyClass> {
+        match value {
+            Value::Int(i) => Some(KeyClass::int(*i)),
+            Value::Node(node) => Some(KeyClass::node(node.id)),
+            _ => None,
+        }
+    }
+
     /// The key's cheap projection for the distinct set's tiers: the one
     /// canonical derivation, so no site re-derives it. One exhaustive
     /// `match` over `Norm` with every variant spelled — a new variant
@@ -335,10 +347,10 @@ impl GroupKey {
         match &self.0 {
             Norm::Null => KeyClass::Null,
             Norm::Bool(b) => KeyClass::Word(WordTag::Bool, u64::from(*b)),
-            Norm::Num(NormNum::Int(i)) => KeyClass::Word(WordTag::Int, *i as u64),
+            Norm::Num(NormNum::Int(i)) => KeyClass::int(*i),
             Norm::Num(NormNum::Bits(bits)) => KeyClass::Word(WordTag::FloatBits, *bits),
             Norm::Num(NormNum::Nan(_)) => KeyClass::General,
-            Norm::Node(id) => KeyClass::Word(WordTag::Node, *id as u64),
+            Norm::Node(id) => KeyClass::node(*id),
             Norm::Rel(id) => KeyClass::Word(WordTag::Rel, *id as u64),
             Norm::Str(_)
             | Norm::Bytes(_)
@@ -360,6 +372,18 @@ pub(crate) enum KeyClass {
     Null,
     Word(WordTag, u64),
     General,
+}
+
+impl KeyClass {
+    /// The one encoding of an integer word.
+    fn int(i: i64) -> Self {
+        Self::Word(WordTag::Int, i as u64)
+    }
+
+    /// The one encoding of a node-id word.
+    fn node(id: i64) -> Self {
+        Self::Word(WordTag::Node, id as u64)
+    }
 }
 
 /// The type tag of a word key. Words of different tags never meet: each

@@ -55,6 +55,19 @@ impl AggregateArity {
         }
     }
 
+    /// The typed rejection for a call spelled `name` with `got`
+    /// arguments: the class owns the error kind too — a misspelled
+    /// single-input call is the 42I13-shaped syntax rejection, a
+    /// short-handed percentile call the type rejection — so callers
+    /// build the whole error from the contract.
+    pub fn error(self, name: &str, got: usize) -> relate_core::Error {
+        let rejection = self.rejection(name, got);
+        match self {
+            AggregateArity::SingleInput => relate_core::Error::syntax(rejection),
+            AggregateArity::PercentilePair => relate_core::Error::ty(rejection),
+        }
+    }
+
     /// The rejection message for a call spelled `name` with `got`
     /// arguments.
     pub fn rejection(self, name: &str, got: usize) -> String {

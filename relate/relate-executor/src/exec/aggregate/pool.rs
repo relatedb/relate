@@ -20,18 +20,26 @@ use crate::row::Row;
 use super::table::GroupBill;
 
 /// One shared operand: what every group's buffer over it has in common.
-#[derive(Clone, Copy)]
 pub(super) struct PoolSite<'e> {
     operand: &'e Expr,
     /// Whether every site reading the pool is lenient: only then does an
     /// evaluation failure park instead of failing the statement (the one
     /// rule, [`super::columns::AccTable::offer`]).
     pub(super) lenient: bool,
+    /// The indices of the sites that read this pool, assigned as
+    /// `super::stream::pool_percentiles` routes them — the reverse edge of
+    /// the sites' pool reference, so a pool's failure parks its readers
+    /// without scanning every site.
+    pub(super) readers: Vec<usize>,
 }
 
 impl<'e> PoolSite<'e> {
     pub(super) fn new(operand: &'e Expr, lenient: bool) -> Self {
-        Self { operand, lenient }
+        Self {
+            operand,
+            lenient,
+            readers: Vec::new(),
+        }
     }
 
     /// Whether a call over `operand` reads this pool.
@@ -40,24 +48,42 @@ impl<'e> PoolSite<'e> {
     }
 }
 
+/// How a pool's collecting stands: open, or ended one of the two ways it
+/// can — a non-numeric operand arrived (each reading call reports its own
+/// `{name}() needs numbers` once its percentile argument validated), or
+/// the failure was parked on the reading sites (they answer with the
+/// parked error, never from the sample).
+#[derive(Default)]
+pub(super) enum Collecting {
+    #[default]
+    Open,
+    NonNumeric,
+    Parked,
+}
+
 /// One group's buffer over one pool's operand: the numbers, how many are
-/// charged, and how collecting ended.
+/// charged, and how collecting stands.
 #[derive(Default)]
 pub(super) struct PoolState {
     sample: PercentileSample,
     /// How many of the sample's numbers are already charged.
     charged: usize,
-    /// Collecting ended: a non-numeric operand arrived (each reading call
-    /// reports its own `{name}() needs numbers` once its percentile argument
-    /// validated), or the failure was parked on the reading sites.
-    stopped: bool,
-    non_numeric: bool,
+    ending: Collecting,
 }
 
 impl PoolState {
-    /// Stop collecting: the failure was parked on the reading sites.
-    pub(super) fn stop(&mut self) {
-        self.stopped = true;
+    /// End collecting, one typed way: the buffer is released with its
+    /// charge cursor, whichever ending it was.
+    pub(super) fn stop_collecting(&mut self, ending: Collecting) {
+        self.ending = ending;
+        self.sample = PercentileSample::default();
+        self.charged = 0;
+    }
+
+    /// How many numbers the buffer holds.
+    #[cfg(test)]
+    pub(super) fn held(&self) -> usize {
+        self.sample.len()
     }
 
     /// Offer one input row: evaluate the operand once and keep the number.
@@ -68,14 +94,13 @@ impl PoolState {
         row: &Row,
         params: &BTreeMap<String, Value>,
     ) -> Result<()> {
-        if self.stopped {
+        if !matches!(self.ending, Collecting::Open) {
             return Ok(());
         }
         graph.cancel_tick()?;
         let value = eval(graph, row, site.operand, params)?;
         if self.sample.offer(&value).is_err() {
-            self.stopped = true;
-            self.non_numeric = true;
+            self.stop_collecting(Collecting::NonNumeric);
         }
         Ok(())
     }
@@ -100,7 +125,7 @@ impl PoolState {
     pub(super) fn finish(self) -> SortedPool {
         SortedPool {
             vals: self.sample.into_sorted(),
-            non_numeric: self.non_numeric,
+            non_numeric: matches!(self.ending, Collecting::NonNumeric),
         }
     }
 }

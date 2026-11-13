@@ -13,7 +13,7 @@ use crate::eval::{eval, expr_vars, filter_rows_where, is_agg_expr};
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::{Row, RowNames};
 
-use super::aggregate::{aggregate_ex, Aggregation, GroupSubclauses};
+use super::aggregate::{aggregate_ex, Aggregation, GroupSubclauses, WhereMode};
 use super::order::{
     page, pages_eagerly, park_order_keys, resolve_page_bounds, sort_rows_by_parked_keys,
     unpark_order_keys, OrderKeys,
@@ -260,13 +260,12 @@ pub(crate) struct ProjectionClass<'a> {
     fields: ProjectionFields<'a>,
     /// The decided shape: which merge path owns the clause.
     shape: ProjectionShape,
-    /// ADR-0453's HAVING/plain split, decided once: an aggregating path
-    /// whose WHERE carries aggregate calls takes them as HAVING
-    /// (evaluated per group inside the aggregation); every other WHERE
-    /// form — any WHERE on a non-aggregating path included — stays the
-    /// plain post-merge filter.
-    having: Option<&'a Expr>,
-    plain_where: Option<&'a Expr>,
+    /// ADR-0453's one WHERE split, decided once in the mode the pipeline
+    /// reads: an aggregating path whose WHERE carries aggregate calls
+    /// takes it as HAVING (evaluated per group inside the aggregation);
+    /// every other WHERE form — any WHERE on a non-aggregating path
+    /// included — stays the plain post-merge filter.
+    where_mode: Option<WhereMode<'a>>,
     /// The eager pre-projection page ([`pages_eagerly`]) on a
     /// non-aggregating shape: `SKIP`/`LIMIT` with no `ORDER BY`,
     /// DISTINCT, or filter.
@@ -283,15 +282,15 @@ impl<'a> ProjectionClass<'a> {
     /// site of the parked-key plan and the output names.
     fn new(fields: &ProjectionFields<'a>, shape: ProjectionShape) -> Self {
         let aggregating = matches!(shape, ProjectionShape::Aggregate { .. });
-        let having = fields
-            .where_clause
-            .filter(|w| aggregating && is_agg_expr(w));
-        let plain_where = fields.where_clause.filter(|_| having.is_none());
+        let where_mode = match fields.where_clause {
+            Some(w) if aggregating && is_agg_expr(w) => Some(WhereMode::Having(w)),
+            Some(w) => Some(WhereMode::Plain(w)),
+            None => None,
+        };
         Self {
             fields: *fields,
             shape,
-            having,
-            plain_where,
+            where_mode,
             eager_paged: !aggregating && pages_eagerly(fields),
             order_keys: OrderKeys::new(fields.order, fields.items, fields.group_by.is_some()),
             out_names: projection_names(fields.items),
@@ -299,14 +298,13 @@ impl<'a> ProjectionClass<'a> {
     }
 
     /// The projection's per-group subclause bundle over this plan: the
-    /// parked-key plan, the HAVING predicate, and the import scope — the
-    /// one derivation both [`open_fold`] and the aggregation merge path
-    /// hand [`Aggregation::open`].
+    /// parked-key plan, the WHERE mode (HAVING or the plain filter), and
+    /// the import scope — the one derivation both [`open_fold`] and the
+    /// aggregation merge path hand [`Aggregation::open`].
     fn group_subclauses<'b>(&'b self, scope: Option<&'b Row>) -> GroupSubclauses<'b> {
         GroupSubclauses {
             order: &self.order_keys,
-            having: self.having,
-            plain_where: self.plain_where,
+            where_mode: self.where_mode,
             import_scope: scope,
         }
     }
@@ -552,7 +550,7 @@ fn finish_projection(
         limit,
         ..
     } = class.fields;
-    let mut merged = if let Some(w) = class.plain_where {
+    let mut merged = if let Some(w) = class.where_mode.and_then(WhereMode::plain) {
         filter_rows_where(graph, params, w, merged)?
     } else {
         merged
@@ -734,9 +732,9 @@ fn plain_rows(
 ) -> Result<Vec<Row>> {
     let items = class.fields.items;
     let order_keys = &class.order_keys;
-    let where_clause = class.plain_where;
+    let where_mode = class.where_mode;
     let mut keep = HashSet::new();
-    if let Some(w) = where_clause {
+    if let Some(w) = where_mode.and_then(WhereMode::plain) {
         expr_vars(w, &mut keep);
     }
     for expr in order_keys.exprs() {

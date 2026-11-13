@@ -26,13 +26,12 @@ pub(super) enum KeySlot {
 
 impl KeySlot {
     /// The slot of `value`. An integer or a node never builds the
-    /// intermediate tree: both map to the word `GroupKey::class` gives
-    /// them (pinned by `fast_paths_agree_with_the_canonical_class`).
+    /// intermediate tree: [`GroupKey::class_of`] gives their word directly
+    /// (pinned by `fast_paths_agree_with_the_canonical_class`).
     pub(super) fn of(value: &Value) -> Self {
-        match value {
-            Value::Int(i) => Self::Word(WordTag::Int, *i as u64),
-            Value::Node(node) => Self::Word(WordTag::Node, node.id as u64),
-            other => Self::from_key(GroupKey::new(other)),
+        match GroupKey::class_of(value) {
+            Some(KeyClass::Word(tag, word)) => Self::Word(tag, word),
+            _ => Self::from_key(GroupKey::new(value)),
         }
     }
 
@@ -117,19 +116,8 @@ impl KeyTuple {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use relate_core::Node;
-
     use super::*;
-
-    fn node(id: i64) -> Value {
-        Value::Node(Arc::new(Node {
-            id,
-            labels: Arc::new(vec!["V".into()]),
-            properties: Arc::default(),
-        }))
-    }
+    use crate::exec::test_support::node_value as node;
 
     #[test]
     fn fast_paths_agree_with_the_canonical_class() {

@@ -15,40 +15,72 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::super::order::{park_order_keys, OrderKeys};
-use super::super::scope::{has_star_item, is_internal_column, is_star_item, visible_keys};
+use super::super::scope::{is_internal_column, is_star_item, visible_keys};
 use super::super::RowFeed;
 use super::eval::{agg_eval, AggScope};
 use super::key::KeyTuple;
-use super::seed::{SeedPlan, SeedStore, Taken};
-use super::stream::AggSites;
-use super::table::{GroupBill, GroupTable, Landing};
+use super::seed::{ItemRole, SeedStore, Taken};
+use super::stream::discover;
+use super::table::{GroupBill, GroupTable, InputBill, Landing};
+
+/// ADR-0453's one WHERE split, one mode: an aggregating path whose WHERE
+/// carries aggregate calls takes it as HAVING — evaluated once per group
+/// through [`agg_eval`] (aggregate calls fold the group, non-aggregate
+/// leaves read the projected row), a group whose predicate is not true is
+/// dropped; false and null drop, a non-boolean value is the typed
+/// rejection live raises (22N01) rather than a silent drop, and a
+/// predicate evaluation error aborts the statement — the same
+/// convert-or-raise policy the ordinary WHERE positions read
+/// (ADR-0458 §7, [`crate::eval::predicate_value_holds`]). Every other
+/// WHERE form — any WHERE on a non-aggregating path included — stays the
+/// plain post-merge filter: the projection applies it to the emitted
+/// rows, not the group, and the aggregation retains only what it reads
+/// in the seed, so an emitted row still carries the grouping keys the
+/// predicate names (`GROUP BY a.p WHERE a.p > 0`).
+#[derive(Clone, Copy)]
+pub(crate) enum WhereMode<'a> {
+    Having(&'a Expr),
+    Plain(&'a Expr),
+}
+
+impl<'a> WhereMode<'a> {
+    /// The predicate, whichever form it takes — the seed keeps what it
+    /// reads in both modes.
+    fn predicate(self) -> &'a Expr {
+        match self {
+            Self::Having(predicate) | Self::Plain(predicate) => predicate,
+        }
+    }
+
+    /// The HAVING predicate, `None` for the plain form.
+    pub(crate) fn having(self) -> Option<&'a Expr> {
+        match self {
+            Self::Having(predicate) => Some(predicate),
+            Self::Plain(_) => None,
+        }
+    }
+
+    /// The plain filter, `None` for the HAVING form.
+    pub(crate) fn plain(self) -> Option<&'a Expr> {
+        match self {
+            Self::Plain(predicate) => Some(predicate),
+            Self::Having(_) => None,
+        }
+    }
+}
 
 /// The projection's per-group subclause state, bundled to keep
 /// [`aggregate_ex`] under the argument-count lint.
+#[derive(Clone, Copy)]
 pub(crate) struct GroupSubclauses<'a> {
     /// The projection's `ORDER BY` key list with its per-key alias-scope
     /// decision. The group is the only place a key's aggregate calls can be
     /// answered, so each output row parks them through [`park_order_keys`]
     /// for the sort to read back.
     pub order: &'a OrderKeys<'a>,
-    /// The projection's WHERE predicate when it contains aggregate calls
-    /// (ADR-0453): HAVING semantics — evaluated once per group through
-    /// [`agg_eval`] (aggregate calls fold the group, non-aggregate leaves
-    /// read the projected row), a group whose predicate is not true is
-    /// dropped; false and null drop, a non-boolean value is the typed
-    /// rejection live raises (22N01) rather than a silent drop, and a
-    /// predicate evaluation error aborts the statement — the same
-    /// convert-or-raise policy the ordinary WHERE positions read
-    /// (ADR-0458 §7, [`crate::eval::predicate_value_holds`]). `None` for
-    /// every other shape.
-    pub having: Option<&'a Expr>,
-    /// The projection's WHERE predicate when it carries no aggregate call
-    /// (ADR-0453's other arm): the projection applies it to the emitted
-    /// rows, not the group — the aggregation only retains what it reads
-    /// in the seed, so an emitted row still carries the grouping keys the
-    /// predicate names (`GROUP BY a.p WHERE a.p > 0`). Never set beside
-    /// [`Self::having`] — the split has one predicate.
-    pub plain_where: Option<&'a Expr>,
+    /// The projection's one WHERE predicate, in the mode ADR-0453 decides
+    /// for it — see [`WhereMode`].
+    pub where_mode: Option<WhereMode<'a>>,
     /// ADR-0453: an importing subquery's scope row — the seed the phantom
     /// keyless group over an emptied input uses, so a non-aggregate leaf
     /// naming an import (`sum(y) + tax` with no rows left) reads the
@@ -63,17 +95,14 @@ pub(crate) struct GroupSubclauses<'a> {
 pub(crate) struct Aggregation<'a> {
     items: &'a [Projection],
     params: &'a BTreeMap<String, Value>,
-    order: &'a OrderKeys<'a>,
-    having: Option<&'a Expr>,
-    import_scope: Option<&'a Row>,
+    /// The projection's `ORDER BY`, WHERE mode and import scope (the
+    /// finish reads them; the plain WHERE is read at planning only).
+    subclauses: GroupSubclauses<'a>,
     key_exprs: Vec<Cow<'a, Expr>>,
-    star: bool,
-    /// Per projection item: which kept key value (an index into the
-    /// seed's key slots) answers it. A pure non-aggregate item that is a
-    /// grouping key reads the key's first-seen value, not the columns it was
-    /// computed from; `None` for every other item (and for all of them in
-    /// the whole-row mode, where the seed row answers).
-    item_keys: Vec<Option<usize>>,
+    /// How each projection item is answered at the finish (a kept key
+    /// value, the folded sites, or the seed row) — decided once at plan
+    /// time.
+    roles: Vec<ItemRole>,
     /// The groups: key index, seeds (the first-row columns the finish
     /// reads), and accumulator columns — see [`GroupTable`] for the
     /// per-group layout and what each group costs.
@@ -86,8 +115,9 @@ pub(crate) struct Aggregation<'a> {
     /// retaining aggregate — `collect`, a percentile, a DISTINCT call —
     /// charges its operands to the same total as they settle.)
     bill: GroupBill,
-    retained: Option<crate::workspace::RetainedRows>,
-    input_charge: relate_core::tokens::WorkspaceCharge,
+    /// The input vector's bill, released row by row as payloads move into
+    /// the group table; `None` when workspace accounting is off.
+    input: Option<InputBill>,
 }
 
 impl<'a> Aggregation<'a> {
@@ -107,11 +137,11 @@ impl<'a> Aggregation<'a> {
         subclauses: &GroupSubclauses<'a>,
     ) -> Result<Self> {
         let GroupSubclauses {
-            order,
-            having,
-            plain_where,
-            import_scope,
+            order, where_mode, ..
         } = *subclauses;
+        // The HAVING predicate the sites discover and the finish reads;
+        // the plain form carries no aggregate call, so it discovers none.
+        let having = where_mode.and_then(WhereMode::having);
         // The grouping strategy is loop-invariant: decide once whether the
         // key comes from the explicit `group_by` expressions or from the
         // inferred non-aggregating projection items.
@@ -135,14 +165,10 @@ impl<'a> Aggregation<'a> {
         // no key values. A `*` item counts as a key: it carries every
         // in-scope variable (ADR-0198).
         let keyless = key_exprs.is_empty();
-        // ADR-0198 ruling 1: with aggregation in play, a `*` item groups by
-        // all of the row's carried variables and projects them through to
-        // the output row alongside the aggregate aliases.
-        let star = has_star_item(items);
         // The aggregate calls the projection evaluates — items, ORDER BY
         // keys, HAVING — found once, so every group streams its input
         // through constant-size accumulators instead of retaining its rows.
-        let sites = AggSites::discover(
+        let accs = discover(
             graph,
             items
                 .iter()
@@ -156,76 +182,28 @@ impl<'a> Aggregation<'a> {
         // up front, then hand each row's payload to the group map as it
         // moves. A generated feed holds no input vector: nothing to bill,
         // nothing to release row by row.
-        let retained = account.then(|| crate::workspace::RetainedRows::measure(rows));
-        let input_charge = match &retained {
-            Some(retained) => {
-                let charge = relate_core::tokens::WorkspaceCharge::retain(retained.bytes())?;
-                relate_core::tokens::peak_hold("aggregation");
-                charge
-            }
-            None => relate_core::tokens::WorkspaceCharge::empty(),
-        };
-        // What a group keeps of its first row. A pure non-aggregate item
-        // that is a grouping key is answered by the key's first-seen value
-        // (kept once per group); the finish reads the seed only for the
-        // remaining items, the `ORDER BY` keys, HAVING and the percentile
-        // arguments — and keeps the whole row only where the analysis
-        // declines (see `seed`).
-        let key_of_item: Vec<Option<usize>> = items
-            .iter()
-            .map(|p| {
-                if star || is_star_item(p) || is_agg_expr(&p.expr) {
-                    None
-                } else {
-                    key_exprs.iter().position(|k| **k == p.expr)
-                }
-            })
-            .collect();
-        let plan = SeedPlan::plan(
-            star,
-            items
-                .iter()
-                .zip(&key_of_item)
-                .filter(|(p, key)| key.is_none() && !is_star_item(p))
-                .map(|(p, _)| &p.expr)
-                .chain(order.exprs())
-                .chain(having)
-                // The plain WHERE is evaluated after emission, against the
-                // emitted row — the seed keeps what it reads so the row
-                // still carries the grouping keys it names.
-                .chain(plain_where)
-                .chain(sites.seed_reads()),
+        let input = account.then(|| InputBill::open(rows)).transpose()?;
+        // What a group keeps of its first row (see `seed`). The plain
+        // WHERE is evaluated after emission, against the emitted row — the
+        // seed keeps what it reads so the row still carries the grouping
+        // keys it names.
+        let (seeds, roles) = SeedStore::planned(
+            items,
+            &key_exprs,
+            order
+                .exprs()
+                .chain(where_mode.map(WhereMode::predicate))
+                .chain(accs.seed_reads()),
         );
-        let mut key_slots: Vec<usize> = Vec::new();
-        let mut item_keys = vec![None; items.len()];
-        if matches!(plan, SeedPlan::Columns(_)) {
-            for (item, key) in key_of_item.iter().enumerate() {
-                if let Some(key) = key {
-                    let slot = key_slots
-                        .iter()
-                        .position(|kept| kept == key)
-                        .unwrap_or_else(|| {
-                            key_slots.push(*key);
-                            key_slots.len() - 1
-                        });
-                    item_keys[item] = Some(slot);
-                }
-            }
-        }
-        let seeds = SeedStore::new(plan, key_slots);
         let mut this = Self {
             items,
             params,
-            order,
-            having,
-            import_scope,
+            subclauses: *subclauses,
             key_exprs,
-            star,
-            item_keys,
-            groups: GroupTable::new(seeds, sites.open_table()),
+            roles,
+            groups: GroupTable::new(seeds, accs),
             bill: GroupBill::open(graph, account)?,
-            retained,
-            input_charge,
+            input,
         };
         // A keyless aggregation has exactly one group whose key is the
         // empty set: seed it here, through the same charge sequence a row
@@ -252,8 +230,7 @@ impl<'a> Aggregation<'a> {
             key_exprs,
             groups,
             bill,
-            retained,
-            input_charge,
+            input,
             ..
         } = self;
         let params = *params;
@@ -262,9 +239,8 @@ impl<'a> Aggregation<'a> {
         let (key, key_values) = KeyTuple::of(key_exprs.len(), |i| {
             eval(graph, &row, &key_exprs[i], params)
         })?;
-        if let Some(retained) = retained.as_mut() {
-            retained.release_row(&row);
-            input_charge.resize(retained.bytes())?;
+        if let Some(input) = input.as_mut() {
+            input.release(&row)?;
         }
         // The landing bills what the row adds, ahead of the landing (see
         // [`GroupTable::land`]); the row's own payload is then spent into
@@ -274,7 +250,7 @@ impl<'a> Aggregation<'a> {
             Landing::Existing { group, as_seed } => (group, as_seed),
             Landing::New { group } => (group, true),
         };
-        groups.accs.offer(group, graph, &row, params)?;
+        groups.accs.offer(group, graph, &row, params, bill)?;
         // The seed lands once per group: a new group's first row, or the
         // keyless group's. Every other row is spent once the accumulators
         // have it — dropped before the settle, so what a site kept from it
@@ -294,17 +270,19 @@ impl<'a> Aggregation<'a> {
         let Self {
             items,
             params,
-            order,
-            having,
-            import_scope,
-            star,
-            item_keys,
+            subclauses:
+                GroupSubclauses {
+                    order,
+                    where_mode,
+                    import_scope,
+                },
+            roles,
             groups,
             bill,
-            input_charge,
+            input,
             ..
         } = self;
-        drop(input_charge);
+        drop(input);
         let mut out = Vec::new();
         // ADR-0463 (LABS-781): the aggregating projection's output
         // container — each emitted group row charges as it lands, ahead of
@@ -320,6 +298,12 @@ impl<'a> Aggregation<'a> {
         // Emission order is landing order; the keys are not read again.
         let group_count = index.len();
         drop(index);
+        // ADR-0198 ruling 1: a `*` item projects the row's carried
+        // variables through alongside the aggregate aliases.
+        let has_star = roles.iter().any(|role| matches!(role, ItemRole::Star));
+        // The HAVING predicate is loop-invariant, like `has_star`: decided
+        // once, read per group.
+        let having = where_mode.and_then(WhereMode::having);
         for group in 0..group_count {
             // The group's own first row — narrowed to the columns this
             // finish reads — is the seed every non-aggregate leaf reads;
@@ -334,32 +318,28 @@ impl<'a> Aggregation<'a> {
             let seed_row = seed.as_ref().or(import_scope);
             let mut n = seed_row.cloned().unwrap_or_default();
             let folded = accs.finish_group(group, graph, seed.as_ref(), params);
-            if star {
+            if has_star {
                 // The variables `*` carries are already in the first-row
                 // seed; keep the internal `__*` names out of the projected
                 // row, the same filter the non-aggregating `*` path applies.
                 n.retain(|name, _| !is_internal_column(name));
             }
-            for (i, p) in items.iter().enumerate() {
-                if is_star_item(p) {
-                    continue;
-                }
-                let name = p.output_name(i);
-                let val = if is_agg_expr(&p.expr) {
-                    agg_eval(
+            for (i, (p, role)) in items.iter().zip(&roles).enumerate() {
+                let val = match *role {
+                    ItemRole::Star => continue,
+                    ItemRole::Aggregate => agg_eval(
                         graph,
                         AggScope::of_group(&folded, seed_row),
                         &p.expr,
                         params,
-                    )?
-                } else if let Some(key) = item_keys[i] {
-                    key_values[key].clone()
-                } else if let Some(row) = seed_row {
-                    eval(graph, row, &p.expr, params)?
-                } else {
-                    Value::Null
+                    )?,
+                    ItemRole::Key(slot) => key_values[slot].clone(),
+                    ItemRole::Leaf => match seed_row {
+                        Some(row) => eval(graph, row, &p.expr, params)?,
+                        None => Value::Null,
+                    },
                 };
-                n.insert(name, val);
+                n.insert(p.output_name(i), val);
             }
             // Park the `ORDER BY` keys beside the projected columns, through
             // the same decision and writer every other projection path uses.

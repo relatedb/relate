@@ -37,7 +37,7 @@ use relate_core::Result;
 
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
-use crate::workspace::buffer_growth;
+use crate::workspace::{buffer_growth, RetainedRows};
 
 use super::columns::AccTable;
 use super::key::{KeyTuple, KeyValues};
@@ -56,16 +56,41 @@ pub(super) struct GroupBill {
     /// The aggregation's one retaining container: the group table and
     /// what its retaining accumulators keep grow it together.
     pub(super) retained: RetainedTotal,
-    /// The workspace-ledger twin of the bytes billed so far;
-    /// `None` when workspace accounting is off.
-    workspace: Option<(WorkspaceCharge, u64)>,
+    /// The workspace-ledger twin of the table bytes billed so far (its own
+    /// [`WorkspaceCharge::bytes`] is the running total); `None` when
+    /// workspace accounting is off.
+    workspace: Option<WorkspaceCharge>,
+}
+
+/// The one bill for the input vector the fold holds: its measured bytes
+/// and the workspace-ledger charge that follows them down as each row's
+/// payload moves into the group table.
+pub(super) struct InputBill {
+    retained: RetainedRows,
+    charge: WorkspaceCharge,
+}
+
+impl InputBill {
+    /// Bill the whole input vector up front.
+    pub(super) fn open(rows: &[Row]) -> Result<Self> {
+        let retained = RetainedRows::measure(rows);
+        let charge = WorkspaceCharge::retain(retained.bytes())?;
+        peak_hold("aggregation");
+        Ok(Self { retained, charge })
+    }
+
+    /// Release `row`'s share: its payload moves on to the group table.
+    pub(super) fn release(&mut self, row: &Row) -> Result<()> {
+        self.retained.release_row(row);
+        self.charge.resize(self.retained.bytes())
+    }
 }
 
 impl GroupBill {
     pub(super) fn open(graph: &ExecGraph<'_>, account: bool) -> Result<Self> {
         Ok(Self {
             retained: graph.retain_bytes(0)?,
-            workspace: account.then(|| (WorkspaceCharge::empty(), 0)),
+            workspace: account.then(WorkspaceCharge::empty),
         })
     }
 
@@ -76,10 +101,8 @@ impl GroupBill {
     /// counts.
     pub(super) fn add(&mut self, graph: &ExecGraph<'_>, bytes: u64) -> Result<()> {
         self.retained.add_bytes(graph, bytes)?;
-        if let Some((charge, billed)) = &mut self.workspace {
-            let next = billed.saturating_add(bytes);
-            charge.resize(next)?;
-            *billed = next;
+        if let Some(charge) = &mut self.workspace {
+            charge.resize(charge.bytes().saturating_add(bytes))?;
             peak_hold("aggregation");
         }
         Ok(())
