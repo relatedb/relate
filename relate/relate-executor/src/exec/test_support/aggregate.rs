@@ -4,9 +4,19 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_ir::Expr;
 
-use crate::exec::aggregate::{agg_eval, AggScope, AggSites, FoldedGroup};
+use crate::exec::aggregate::{agg_eval, discover, AggScope, FoldedGroup, GroupAccs};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
+
+/// A bare node value (label `V`, no properties): the one fixture the
+/// group-key, seed and footprint tests build node keys from.
+pub(crate) fn node_value(id: i64) -> Value {
+    Value::Node(std::sync::Arc::new(relate_core::Node {
+        id,
+        labels: std::sync::Arc::new(vec!["V".into()]),
+        properties: std::sync::Arc::default(),
+    }))
+}
 
 /// A one-argument aggregate call over a caller-chosen operand — the
 /// parameterized form of the shape the aggregate tests, the charge tests,
@@ -33,11 +43,11 @@ pub(crate) fn fold_group_rows<'e>(
     exprs: impl IntoIterator<Item = &'e Expr>,
     params: &BTreeMap<String, Value>,
 ) -> relate_core::Result<(FoldedGroup<'e>, u64)> {
-    let sites = AggSites::discover(graph, exprs, [], params)?;
-    let mut accs = sites.open_group();
+    let table = discover(graph, exprs, [], params)?;
+    let mut accs = GroupAccs::open(table);
     let mut total = graph.retain_bytes(0)?;
     for row in group {
-        accs.offer(graph, row, params)?;
+        accs.offer(graph, row, params, &mut total)?;
         accs.settle(graph, &mut total)?;
     }
     let folded = accs.finish(graph, group.first(), params);
@@ -87,13 +97,20 @@ pub(crate) fn group_with_vals(vals: &[Value]) -> Vec<Row> {
         .collect()
 }
 
-/// The two-argument percentile call over the shared `x` column, with the
-/// literal percentile `p`.
+/// [`percentile_fn_over`] over the shared `x` column, with the literal
+/// percentile `p`.
 pub(crate) fn percentile_fn(name: &str, p: f64) -> Expr {
+    percentile_fn_over(name, Expr::Variable(OPERAND_COLUMN.into()), p)
+}
+
+/// The two-argument percentile call over a caller-chosen operand, with the
+/// literal percentile `p` — the parameterized form, so the parked-failure
+/// and pool fixtures build it over a `p`-property row with one spelling.
+pub(crate) fn percentile_fn_over(name: &str, arg: Expr, p: f64) -> Expr {
     Expr::Function {
         name: name.into(),
         distinct: false,
-        args: vec![Expr::Variable(OPERAND_COLUMN.into()), Expr::Float(p)],
+        args: vec![arg, Expr::Float(p)],
     }
 }
 

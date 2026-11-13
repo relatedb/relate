@@ -11,12 +11,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::tokens::{workspace_meter, LedgerGuard, TokenLedger};
-use relate_core::{Node, Value};
+use relate_core::Value;
 use relate_ir::{Expr, Projection};
 
 use super::aggregate::{Aggregation, GroupSubclauses};
 use super::order::OrderKeys;
-use super::test_support::{exec_cypher, try_exec_cypher, Builder};
+use super::test_support::{
+    assert_expression_cap, exec_cypher, node_value, try_exec_cypher, Builder,
+};
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowNames};
@@ -28,14 +30,6 @@ fn item(expr: Expr, alias: &str) -> Projection {
         alias: Some(alias.into()),
         source_text: None,
     }
-}
-
-fn node(id: i64) -> Value {
-    Value::Node(Arc::new(Node {
-        id,
-        labels: Arc::new(vec!["V".into()]),
-        properties: Arc::default(),
-    }))
 }
 
 /// Bytes billed after streaming `groups` one-row groups, keyed by the first
@@ -58,8 +52,7 @@ fn billed(groups: i64, extra: usize, make_key: impl Fn(i64) -> Value) -> u64 {
         &params,
         &GroupSubclauses {
             order: &order,
-            having: None,
-            plain_where: None,
+            where_mode: None,
             import_scope: None,
         },
     )
@@ -88,7 +81,7 @@ fn billed(groups: i64, extra: usize, make_key: impl Fn(i64) -> Value) -> u64 {
 /// the same shapes, growing with the row's width).
 #[test]
 fn a_groups_bill_is_independent_of_the_input_row_width() {
-    for make_key in [|i: i64| node(i), |i: i64| Value::Int(i)] {
+    for make_key in [node_value, |i: i64| Value::Int(i)] {
         let narrow = billed(4_096, 0, make_key);
         let wide = billed(4_096, 10, make_key);
         assert_eq!(narrow, wide, "ten extra carried columns changed the bill");
@@ -158,11 +151,7 @@ fn parked_lenient_failures_are_billed_to_the_expression_budget() {
     let Err(error) = try_exec_cypher(&g, query) else {
         panic!("the parked errors exceed the budget");
     };
-    let message = error.to_string();
-    assert!(
-        message.contains("memory") || message.contains("budget") || message.contains("limit"),
-        "refused for the wrong reason: {message}"
-    );
+    assert_expression_cap(&error, 8_000_000);
 }
 
 fn rows(g: &Graph, query: &str) -> Vec<Vec<Value>> {
@@ -334,7 +323,6 @@ fn a_pattern_scope_in_an_item_keeps_the_whole_first_row() {
     );
 }
 
-#[cfg(test)]
 /// A keyless `collect` of owned strings reserves those operands on the
 /// workspace ledger, not only on the expression cap. The reservation
 /// matches the bill and leaves with the aggregation.
@@ -364,8 +352,7 @@ fn a_collect_reserves_its_operands_on_the_workspace_ledger() {
         &params,
         &GroupSubclauses {
             order: &order,
-            having: None,
-            plain_where: None,
+            where_mode: None,
             import_scope: None,
         },
     )
@@ -387,57 +374,4 @@ fn a_collect_reserves_its_operands_on_the_workspace_ledger() {
     assert_eq!(current, aggregation.billed_bytes());
     drop(aggregation);
     assert_eq!(workspace_meter().expect("ledger installed").0, 0);
-}
-
-mod plan {
-    use relate_ir::Expr;
-
-    use super::super::aggregate::SeedPlan;
-    use super::super::test_support::agg_fn_over;
-
-    fn var(name: &str) -> Expr {
-        Expr::Variable(name.into())
-    }
-
-    fn columns(plan: SeedPlan) -> Vec<String> {
-        let SeedPlan::Columns(names) = plan else {
-            panic!("a narrowed plan")
-        };
-        let mut names: Vec<String> = names.into_iter().collect();
-        names.sort();
-        names
-    }
-
-    /// An aggregate call's operands are evaluated while the rows stream;
-    /// the finish never reads them again.
-    #[test]
-    fn aggregate_operands_are_not_seed_reads() {
-        let count_x = agg_fn_over("count", var("x"));
-        assert!(columns(SeedPlan::plan(false, [&count_x])).is_empty());
-        let mixed = Expr::Binary {
-            op: relate_ir::BinaryOp::Add,
-            left: Box::new(agg_fn_over("sum", var("x"))),
-            right: Box::new(var("tax")),
-        };
-        assert_eq!(columns(SeedPlan::plan(false, [&mixed])), ["tax"]);
-    }
-
-    /// The two shapes the analysis declines.
-    #[test]
-    fn star_and_captured_scopes_decline() {
-        assert!(matches!(SeedPlan::plan(true, []), SeedPlan::Whole));
-        assert!(matches!(
-            SeedPlan::plan(false, [&Expr::Star]),
-            SeedPlan::Whole
-        ));
-        let query =
-            relate_front::parse_and_lower("RETURN EXISTS { (a)-[:E]->() } AS x").expect("parses");
-        let Some(relate_ir::Clause::Return { items, .. }) = query.parts[0].clauses.last() else {
-            panic!("a RETURN")
-        };
-        assert!(matches!(
-            SeedPlan::plan(false, [&items[0].expr]),
-            SeedPlan::Whole
-        ));
-    }
 }

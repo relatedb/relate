@@ -720,7 +720,7 @@ fn a_having_only_aggregate_that_fails_to_fold_aborts_the_statement() {
 }
 
 /// ADR-0458 §7 at the HAVING position, through the query-level harness
-/// (the same `GroupSubclauses::having` path a real statement drives): a
+/// (the same `GroupSubclauses::where_mode` HAVING path a real statement
 /// non-empty `collect(x)` converts to true so the group is kept, an empty
 /// one drops it (the keyless phantom group), and a non-boolean (`count(x)`)
 /// is the typed rejection live raises (22N01) — never a silent group drop.
