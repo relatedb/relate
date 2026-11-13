@@ -41,6 +41,7 @@ exec/clause_arms.rs::exec_remove # clause arm materializes its output rows; to b
 exec/clause_arms.rs::exec_set # clause arm materializes its output rows; to be replaced by streaming
 exec/clause_arms.rs::exec_unwind # clause arm materializes its output rows; to be replaced by streaming
 exec/count_stats.rs::count_only_stats_result # bounded count-only result, one row per statement
+exec/count_stats.rs::stats_short_circuit # the one dispatch seam over the two statistics short-circuits, bounded by their own results (count-only: one row; label-set groups: ADR-0589)
 exec/dispatch.rs::run_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_clauses_mode # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_nested_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming

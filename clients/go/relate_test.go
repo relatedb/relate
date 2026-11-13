@@ -7,6 +7,9 @@ import (
 	"github.com/relatedb/relate/clients/go"
 )
 
+// notQueryableSuffix is the pinned ADR-0229 42N17 text.
+const notQueryableSuffix = "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
+
 func TestQueryParams(t *testing.T) {
 	conn := openConn(t)
 	res, err := conn.QueryParams("RETURN $n AS n", map[string]any{"n": 7})
@@ -72,10 +75,13 @@ func TestExplicitTransaction(t *testing.T) {
 }
 
 func TestConnectNamespace(t *testing.T) {
-	// ADR-0229: `system_ontologies` stays selectable, but every
-	// non-administration statement routed to it — reads included — fails
-	// with the 42N17 text; SHOW DATABASES still runs from there
-	// (ADR-0116 §2).
+	// ADR-0229 under the `ontology` opt-in (ADR-0593): `system_ontologies`
+	// is visible, stays selectable, but every non-administration
+	// statement routed to it — reads included — fails with the 42N17
+	// text; SHOW DATABASES still runs from there (ADR-0116 §2). Without
+	// the opt-in the namespace is invisible and the connect fails as an
+	// unknown name.
+	t.Setenv("RELATE_PREVIEW", "ontology")
 	db, err := relate.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +103,7 @@ func TestConnectNamespace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the not-queryable error for a data query")
 	}
-	if !strings.HasSuffix(err.Error(),
-		"This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead.") {
+	if !strings.HasSuffix(err.Error(), notQueryableSuffix) {
 		t.Fatalf("got %q", err.Error())
 	}
 }
@@ -119,6 +124,9 @@ func TestConnectNamespaceUnknown(t *testing.T) {
 }
 
 func TestSetNamespaceCaseInsensitive(t *testing.T) {
+	// ADR-0593: the system_ontologies leg needs the `ontology` opt-in —
+	// without it the switch fails as an unknown name.
+	t.Setenv("RELATE_PREVIEW", "ontology")
 	conn := openConn(t)
 	if err := conn.SetNamespace("SYSTEM_ONTOLOGIES"); err != nil {
 		t.Fatal(err)
@@ -129,8 +137,7 @@ func TestSetNamespaceCaseInsensitive(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the not-queryable error for a read")
 	}
-	if !strings.HasSuffix(err.Error(),
-		"This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead.") {
+	if !strings.HasSuffix(err.Error(), notQueryableSuffix) {
 		t.Fatalf("got %q", err.Error())
 	}
 	if err := conn.SetNamespace("Neo4j"); err != nil {

@@ -8,18 +8,25 @@
 //! error naming the known names — never a silent ignore.
 //!
 //! Only syntax-extending features gate: a purely additive function name
-//! never needs the opt-in, so it never lands in this registry. Two gate
-//! classes are recorded exceptions. (a) ADR-0378: a built-in procedure
-//! family whose contract tracks a non-final external spec — the
-//! `db.ontology.*` procedures behind the `ontology` row. (b) ADR-0497: a
+//! never needs the opt-in, so it never lands in this registry. Three
+//! gate classes are recorded exceptions. (a) ADR-0378, widened by
+//! ADR-0593: a built-in surface whose contract tracks a non-final
+//! external spec — the `ontology` row gates the `db.ontology.*`
+//! procedure family and, through the namespace registry's one
+//! fixed-namespace → feature mapping, the `system_ontologies`
+//! namespace's visibility. (b) ADR-0497: a
 //! *name admission* gate — a function name an approved CIP adds that no
 //! reference release ships, or one the corpus records as unreachable
 //! (`coll-zip`, `coll-has`, `gql-stddev-aliases`). A name
 //! gate hides a name; it never widens grammar, and its disabled form is the
 //! registry's ordinary unknown-function rejection rather than the authored
 //! error below: a name that must not exist cannot be named in an error
-//! without advertising it. Neither exception is general — additive function
-//! names and procedure families on our own pinned contract still never
+//! without advertising it. (c) ADR-0593: a fixed namespace's visibility —
+//! the name-gate rule in namespace form, so a hidden database is
+//! indistinguishable from an unknown one at every resolution site: listed
+//! by no catalog, rejected by the site's own unknown-database path, never
+//! the authored error. None of the exceptions is general — additive
+//! function names and surfaces on our own pinned contract still never
 //! gate. Each gated feature checks the gate where it would otherwise be
 //! parsed or dispatched; while disabled a syntax or procedure-family check
 //! fails with [`preview_feature_disabled`]'s authored error.
@@ -97,9 +104,13 @@ preview_feature_registry! {
     (GraphTypeImpliedLabels, "CIP-266 graph-type implied labels that identify node element types (inheritance).", "graph-type-implied-labels"),
     (
         Ontology,
-        "The `db.ontology.*` procedures (ADR-0378: the first non-syntax extension of ADR-0371's \
-         scope policy — the family's contract tracks the non-final Ontology Graph Spec and \
-         CIP-287, and row plus gate are removed once both are final).",
+        "The ontology feature's whole dialect surface: the `db.ontology.*` procedures \
+         (ADR-0378: the first non-syntax extension of ADR-0371's scope policy — the \
+         family's contract tracks the non-final Ontology Graph Spec and CIP-287) and, \
+         through the namespace registry's mapping, the `system_ontologies` namespace's \
+         visibility (ADR-0593 — the namespace exists to host this feature's stored \
+         document, so its listing advertises the same non-final surface the procedures \
+         do). Row, mapping and gates are removed once the spec and CIP-287 are final.",
         "ontology"
     ),
     (

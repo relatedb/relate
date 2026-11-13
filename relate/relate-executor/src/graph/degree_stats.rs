@@ -19,7 +19,7 @@ use relate_core::NodeId;
 
 use relate_planner::DegreeMoments;
 
-use super::count_state::CountDelta;
+use super::count_state::{CountDelta, LabelMutation};
 use super::shard;
 use super::{Graph, LabelCache, RelRow};
 
@@ -343,7 +343,12 @@ impl Graph {
         }
         self.apply_incident_pair_counts(node, labels, delta);
         let after = self.live_label_ids(node);
-        self.bump_label_counts(before, &after, labels, delta);
+        self.bump_label_counts(LabelMutation {
+            before,
+            after: &after,
+            labels,
+            delta,
+        });
     }
 
     /// The degree-stats half of the wholesale rebuild — the family seam

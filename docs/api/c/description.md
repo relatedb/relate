@@ -38,7 +38,10 @@ by default — is where statements without a `USE` clause run.
 `relate_connect_namespace` opens a connection in a named namespace and
 `relate_conn_set_namespace` switches it between transactions
 (ADR-0117); the JS, Java and Go clients expose `connect(namespace)` /
-`setNamespace(name)` over these two functions. See the
+`setNamespace(name)` over these two functions. `system_ontologies` is
+visible only under `RELATE_PREVIEW=ontology` (ADR-0593): without the
+opt-in both functions refuse it with the ordinary `Graph not found`
+rejection, and `SHOW DATABASES` lists the two CE rows. See the
 [compiled namespace example](examples/namespace.c).
 
 Every good result carries metadata (ADR-0285), readable while the result

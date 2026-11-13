@@ -67,6 +67,7 @@ mod graph_values;
 mod result;
 mod temporal_values;
 mod vector_values;
+mod walk;
 
 use convert::optional_params_to_cypher;
 use graph_values::{Node, Path, Point, Relationship};
@@ -185,7 +186,10 @@ fn native_error(
 ///
 /// The optional second argument selects the session namespace (ADR-0117 §4):
 /// `"neo4j"` (default), `"system"` or `"system_ontologies"`, matched
-/// case-insensitively.
+/// case-insensitively. `system_ontologies` is visible only under
+/// `RELATE_PREVIEW=ontology` (ADR-0593): without the opt-in connecting to
+/// it fails with the ordinary `Graph not found` rejection, like an unknown
+/// name.
 ///
 /// Thread-affine (DB-API `threadsafety = 1`): the opening thread is recorded
 /// and every engine access from any other thread raises a

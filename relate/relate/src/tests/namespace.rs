@@ -1,6 +1,8 @@
 //! Crate-internal namespace tests (ADR-0116 §5, §10): namespace identity
-//! of the slots and the ADR-0229 `system_ontologies` gate. The public-API
-//! rules live in `tests/namespace.rs`.
+//! of the slots and the closed `system_ontologies` visibility gate
+//! (ADR-0593 — this binary must never opt into a preview feature; the
+//! visible-namespace rules, ADR-0229's 42N17 gate included, live in
+//! `tests/namespace.rs` under the opt-in).
 
 use relate_core::Namespace;
 
@@ -15,32 +17,38 @@ fn namespace_slots_have_their_namespace_identity() {
 }
 
 #[test]
-fn system_ontologies_is_gated_before_dispatch() {
-    // ADR-0229 §1: the namespace stays listed and selectable, but every
-    // non-administration statement routed to it — reads included — fails
-    // with the pinned 42N17 text at the semantic gate, above dispatch (so
-    // no graph ever exists for the namespace). Administration commands
-    // still run from there (ADR-0116 §2's carve-out).
+fn system_ontologies_is_invisible_without_the_ontology_opt_in() {
+    // ADR-0593: while the `ontology` preview feature is off the namespace
+    // is invisible — the connect refuses with the ordinary
+    // unknown-database rejection, and every `USE` route fails the same
+    // way (before the 42N79 admin gate and the ADR-0229 42N17 gate, so
+    // a hidden namespace behaves exactly like a name that never
+    // resolved). The 42N17 gate itself is unchanged and only reachable
+    // with the opt-in; its pins live in tests/namespace.rs.
+    crate::test_opts::assert_preview_unset();
     let db = Database::open(":memory:").unwrap();
-    let mut conn = db.connect_namespace("system_ontologies").unwrap();
+    // `.err().expect` over `expect_err`: `Connection` is not `Debug`.
+    let err = db
+        .connect_namespace("system_ontologies")
+        .err()
+        .expect("the hidden namespace must refuse the connect");
+    assert!(
+        err.to_string()
+            .ends_with("Graph not found: system_ontologies"),
+        "{err}"
+    );
+    let mut conn = db.connect().unwrap();
     for statement in [
-        "MATCH (n) RETURN count(n) AS c",
-        "RETURN 1 AS one",
-        "CREATE (n)",
-        "CALL db.info()",
-        "EXPLAIN MATCH (n) RETURN n",
+        "USE system_ontologies MATCH (n) RETURN count(n) AS c",
+        "USE system_ontologies SHOW DATABASES",
     ] {
         let err = conn.query(statement).expect_err("must fail");
         assert!(
-            err.to_string().ends_with(
-                "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
-            ),
+            err.to_string()
+                .ends_with("Graph not found: system_ontologies"),
             "{statement}: {err}"
         );
     }
-    conn.query("SHOW DATABASES").unwrap();
-    conn.query("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25")
-        .unwrap();
 }
 
 #[test]

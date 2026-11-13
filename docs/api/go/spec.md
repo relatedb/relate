@@ -247,7 +247,10 @@ See [`examples/result_metadata.go`](examples/result_metadata.go) and
 Namespaces (ADR-0117) are the fixed set `neo4j`, `system`,
 `system_ontologies`, matched case-insensitively; the namespace is the session
 default for statements without a `USE` clause. An unknown name fails with a
-message ending `Graph not found: <name>` (ADR-0146).
+message ending `Graph not found: <name>` (ADR-0146). `system_ontologies` is
+visible only under `RELATE_PREVIEW=ontology` (ADR-0593): without the opt-in
+`ConnectNamespace`/`SetNamespace` with it fail with the same rejection, and
+`SHOW DATABASES` lists the two CE rows.
 `SetNamespace` fails while an explicit transaction is open with a message
 ending `Cannot change the namespace while a transaction is open.`
 

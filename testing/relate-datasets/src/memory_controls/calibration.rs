@@ -19,10 +19,136 @@ use relate_test_support::bolt::client::Session;
 
 const BATCH: i64 = 500;
 const PAYLOAD_BYTES: usize = 256;
-/// The charge quantum. Shapes are multiples of it so a hold threshold lines
-/// up with a reserved logical-byte total. The report records the bytes.
-const QUANTUM_BYTES: u64 = 4096;
-const FAMILIES: &[&str] = &["sort", "expand", "aggregation", "distinct", "create"];
+/// How a family's graph is seeded before the measured statement runs.
+#[derive(Debug)]
+enum Seed {
+    /// `:Cal` nodes with id and payload columns.
+    Rows,
+    /// One `:CalRoot` with `:CalLeaf` edges hanging off it.
+    Expand,
+}
+
+/// One family's calibration scenario: the load's row density per charge
+/// quantum, the smallest load, how the graph is seeded, whether the
+/// measured statement writes (so the read-only growth guard exempts it),
+/// and the statement the observation holds. The one record a family's
+/// density recalibration edits — nothing else in the module spells
+/// per-family data.
+#[derive(Debug)]
+struct Scenario {
+    rows_per_quantum: u64,
+    floor: i64,
+    seed: Seed,
+    /// True when the statement grows the logical graph (the create
+    /// family): the read-only growth guard exempts exactly these.
+    grows_graph: bool,
+    statement: &'static str,
+}
+
+/// One calibration family: its wire name with its scenario. The
+/// [`FAMILIES`] table is the vocabulary's single home — every
+/// family-scoped path resolves through it, and a new family is one row.
+#[derive(Debug)]
+pub struct FamilySpec {
+    /// The wire name: the `--calibration-family` value, the store
+    /// directory, the progress line, the `RELATE_PEAK_HOLD_FAMILY` value,
+    /// and the report's family field.
+    pub name: &'static str,
+    scenario: Scenario,
+}
+
+/// The calibration families, in run order.
+pub const FAMILIES: &[FamilySpec] = &[
+    FamilySpec {
+        name: "sort",
+        scenario: Scenario {
+            // Sixteen rows per quantum gives the sort buffer enough
+            // retained workspace to reach the logical-byte threshold.
+            rows_per_quantum: 16,
+            floor: 1_000,
+            seed: Seed::Rows,
+            grows_graph: false,
+            statement: "MATCH (n:Cal) RETURN n.id, n.payload ORDER BY n.id",
+        },
+    },
+    FamilySpec {
+        name: "expand",
+        scenario: Scenario {
+            rows_per_quantum: 64,
+            floor: 2_000,
+            seed: Seed::Expand,
+            grows_graph: false,
+            statement: "MATCH (:CalRoot)-[:CAL_EDGE]->(n:CalLeaf) RETURN n.id AS leaf",
+        },
+    },
+    FamilySpec {
+        name: "aggregation",
+        scenario: Scenario {
+            // The group table is the aggregation's one workspace-charged
+            // retention: every group landing bills its entry, key, seed and
+            // accumulator slots to the ledger, where the hold samples. The
+            // old keyless `collect` shape crossed only through the input
+            // vector the statement billed at open — a materialization
+            // ADR-0555 streaming (LABS-1439) removed, leaving one keyless
+            // group that never reaches any target. Grouping on the eight id
+            // columns lands one group per row (~330 bytes a landing, eight
+            // word keys), so thirty-two rows per quantum crosses every
+            // target mid-fold with ~2.6x margin at the smallest shape.
+            rows_per_quantum: 32,
+            floor: 1_000,
+            seed: Seed::Rows,
+            grows_graph: false,
+            statement:
+                "MATCH (n:Cal) WITH n.id AS a, n.id AS b, n.id AS c, n.id AS d, n.id AS e, n.id AS f, n.id AS g, n.id AS h RETURN a, b, c, d, e, f, g, h, collect(a) AS ids",
+        },
+    },
+    FamilySpec {
+        name: "distinct",
+        scenario: Scenario {
+            // Sixteen rows per quantum gives the distinct set's entries
+            // enough retained workspace to reach the threshold.
+            rows_per_quantum: 16,
+            floor: 1_000,
+            seed: Seed::Rows,
+            grows_graph: false,
+            statement:
+                "MATCH (n:Cal) RETURN DISTINCT n.id AS a, n.id AS b, n.id AS c, n.id AS d, n.id AS e, n.id AS f, n.id AS g, n.id AS h",
+        },
+    },
+    FamilySpec {
+        name: "create",
+        scenario: Scenario {
+            // Stream graph-owned seed rows. A giant `UNWIND range(...)`
+            // materializes input that is not create scratch and would make
+            // this family measure an unrelated accounting gap.
+            rows_per_quantum: 32,
+            floor: 2_000,
+            seed: Seed::Rows,
+            grows_graph: true,
+            statement:
+                "MATCH (s:Cal) CREATE (:CalCreate {id: s.id, payload: s.payload}) RETURN count(*)",
+        },
+    },
+];
+
+/// Resolve a `--calibration-family` name against the table: the one loud
+/// unknown-family rejection, run where the config is built so a bad name
+/// fails at startup regardless of which case runs.
+pub fn family_spec(name: &str) -> Result<&'static FamilySpec, String> {
+    FAMILIES
+        .iter()
+        .find(|spec| spec.name == name)
+        .ok_or_else(|| {
+            format!(
+                "unknown calibration family {name:?}; expected one of {}",
+                FAMILIES
+                    .iter()
+                    .map(|spec| spec.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
 /// Logical bytes per query, then holder count. The last three keep the same
 /// 16,777,216-byte total and change the query count.
 const SHAPES: &[(u64, usize)] = &[
@@ -119,23 +245,15 @@ pub struct PeakCalibrationReport {
 pub(crate) fn case_workspace_memory(
     cfg: &Config,
 ) -> Result<(CaseReport, PeakCalibrationReport), String> {
-    if let Some(family) = cfg.calibration_family.as_deref() {
-        if !FAMILIES.contains(&family) {
-            return Err(format!(
-                "unknown calibration family {family:?}; expected one of {}",
-                FAMILIES.join(", ")
-            ));
-        }
-    }
     let mut observations = Vec::new();
     let mut display_case = None;
+    // The config's family is already typed (parsed where it is built); the
+    // table is the one filter over it.
     let families = FAMILIES
         .iter()
-        .copied()
-        .filter(|family| {
+        .filter(|spec| {
             cfg.calibration_family
-                .as_deref()
-                .is_none_or(|only| only == *family)
+                .is_none_or(|only| only.name == spec.name)
         })
         .collect::<Vec<_>>();
     let total = families.len() * SHAPES.len() * cfg.calibration_repeats as usize;
@@ -147,22 +265,23 @@ pub(crate) fn case_workspace_memory(
         cfg.calibration_repeats,
         cfg.calibration_hold_ms
     );
-    for family in families {
+    for spec in families.iter().copied() {
         for &(target, holders) in SHAPES {
             for repetition in 0..cfg.calibration_repeats {
                 let index = observations.len();
                 // Progress on stderr: the report on stdout stays clean, and a
                 // long matrix shows it is moving.
                 eprintln!(
-                    "  [{}/{total}] {family}  {} x {holders} holder(s)  repeat {}/{}  elapsed {}s",
+                    "  [{}/{total}] {}  {} x {holders} holder(s)  repeat {}/{}  elapsed {}s",
                     index + 1,
+                    spec.name,
                     crate::memory_controls::format_mem(target),
                     repetition + 1,
                     cfg.calibration_repeats,
                     started.elapsed().as_secs()
                 );
                 let (observation, case) =
-                    run_observation(cfg, family, target, holders, repetition, index == 0)?;
+                    run_observation(cfg, spec, target, holders, repetition, index == 0)?;
                 if case.is_some() {
                     display_case = case;
                 }
@@ -170,17 +289,12 @@ pub(crate) fn case_workspace_memory(
             }
         }
     }
-    let mut summaries = FAMILIES
+    let mut summaries = families
         .iter()
         .copied()
-        .filter(|family| {
-            cfg.calibration_family
-                .as_deref()
-                .is_none_or(|only| only == *family)
-        })
-        .map(|family| summarize_family(family, &observations))
+        .map(|spec| summarize_family(Some(spec), &observations))
         .collect::<Vec<_>>();
-    summaries.push(summarize_family("overall", &observations));
+    summaries.push(summarize_family(None, &observations));
     let conservative_cgroup_ratio = observations
         .iter()
         .filter_map(|row| row.cgroup_to_logical_ratio)
@@ -200,14 +314,17 @@ pub(crate) fn case_workspace_memory(
 
 fn run_observation(
     cfg: &Config,
-    family: &'static str,
+    spec: &'static FamilySpec,
     target: u64,
     holders: usize,
     repetition: u32,
     make_case: bool,
 ) -> Result<(PeakCalibrationObservation, Option<CaseReport>), String> {
+    // The wire spelling for every prose, log, and report use; the spec's
+    // own fields stay for the decisions below.
+    let family_name = spec.name;
     let store = cfg.store.join(format!(
-        "workspace-memory-{family}-b{target}-h{holders}-r{repetition}"
+        "workspace-memory-{family_name}-b{target}-h{holders}-r{repetition}"
     ));
     let server = Server::start(
         &cfg.serve_bin,
@@ -217,13 +334,13 @@ fn run_observation(
             peak_hold_ms: Some(cfg.calibration_hold_ms),
             // The engine compares this threshold to reserved logical bytes.
             peak_hold_logical_bytes: Some(target),
-            peak_hold_family: Some(family),
+            peak_hold_family: Some(family_name),
             ..ServeLimits::default()
         },
     )?;
     let baseline = server.sample()?;
     let mut loader = connect_addr(server.bolt())?;
-    let query = load_scenario(&mut loader, family, target)?;
+    let query = load_scenario(&mut loader, spec, target)?;
     // Create calibrates statement-local scratch and intentionally has no
     // graph preload. This also gives that case a logical-meter sample.
     loader.run("RETURN 1")?;
@@ -241,10 +358,11 @@ fn run_observation(
     let parked_cgroup = cgroup_memory_current();
     let session_cost = parked.saturating_sub(cold.rss) / holders as u64;
 
+    // The statement is static, so every holder thread captures it without
+    // a per-holder clone.
     let mut joins = Vec::with_capacity(holders);
     for mut session in parked_sessions {
-        let query = query.clone();
-        joins.push(thread::spawn(move || session.run(&query)));
+        joins.push(thread::spawn(move || session.run(query)));
     }
     server.expect_log_count_within("peak hold:", holders, Duration::from_secs(60))?;
     let mut held_rss = 0;
@@ -256,15 +374,15 @@ fn run_observation(
     }
     for join in joins {
         join.join()
-            .map_err(|_| format!("{family} query thread panicked"))?
+            .map_err(|_| format!("{family_name} query thread panicked"))?
             .map_err(|err| format!("{err}\n{}", server.log_text()))?;
     }
     let holds = peak_holds(&server.log_text());
     let after = crate::processing_logical::logical_bytes(&server)?;
     let growth = after.saturating_sub(logical);
-    if family != "create" && growth > LOGICAL_READ_SLACK {
+    if !spec.scenario.grows_graph && growth > LOGICAL_READ_SLACK {
         return Err(format!(
-            "graph grew during the {family} hold: {logical} -> {after} ({growth} bytes)"
+            "graph grew during the {family_name} hold: {logical} -> {after} ({growth} bytes)"
         ));
     }
     if holds.len() != holders {
@@ -276,10 +394,10 @@ fn run_observation(
     }
     if holds
         .iter()
-        .any(|hold| hold.family != family || hold.held < target || hold.peak_bytes == 0)
+        .any(|hold| hold.family != family_name || hold.held < target || hold.peak_bytes == 0)
     {
         return Err(format!(
-            "{family} did not reach its peak reservation target\n{}",
+            "{family_name} did not reach its peak reservation target\n{}",
             server.log_text()
         ));
     }
@@ -288,7 +406,7 @@ fn run_observation(
     let retained = held_rss.saturating_sub(parked);
     if held_logical_bytes == 0 || retained == 0 {
         return Err(format!(
-            "logical-byte RSS calibration saw family={family} logical_bytes={held_logical_bytes} retained={retained} parked={parked} held={held_rss}\n{}",
+            "logical-byte RSS calibration saw family={family_name} logical_bytes={held_logical_bytes} retained={retained} parked={parked} held={held_rss}\n{}",
             server.log_text()
         ));
     }
@@ -296,7 +414,7 @@ fn run_observation(
         .zip(parked_cgroup)
         .map(|(held, parked)| held.saturating_sub(parked));
     let observation = PeakCalibrationObservation {
-        family: family.to_string(),
+        family: family_name.to_string(),
         target_logical_bytes: target,
         holders,
         repetition,
@@ -335,53 +453,30 @@ fn run_observation(
     Ok((observation, case))
 }
 
+/// The one row-count policy: rows per charge quantum, floored, converted
+/// once. Every family's load goes through it.
+fn rows_for(quanta: u64, per_quanta: u64, floor: i64) -> Result<i64, String> {
+    i64::try_from(quanta.saturating_mul(per_quanta))
+        .map_err(|_| "calibration row count overflow".to_string())
+        .map(|rows| rows.max(floor))
+}
+
+/// Seed the spec's graph and return its statement. The charge quantum is
+/// the engine's: shapes are multiples of it so a hold threshold lines up
+/// with a reserved logical-byte total.
 fn load_scenario(
     session: &mut Session,
-    family: &str,
+    spec: &'static FamilySpec,
     target_logical_bytes: u64,
-) -> Result<String, String> {
-    let quanta = target_logical_bytes / QUANTUM_BYTES;
-    match family {
-        "sort" | "aggregation" | "distinct" => {
-            // Sixteen rows per quantum gives every family enough retained
-            // workspace to reach the logical-byte threshold.
-            let rows = i64::try_from(quanta.saturating_mul(16))
-                .map_err(|_| "calibration row count overflow".to_string())?
-                .max(1_000);
-            load_rows(session, rows)?;
-            Ok(match family {
-                "sort" => "MATCH (n:Cal) RETURN n.id, n.payload ORDER BY n.id",
-                "aggregation" => {
-                    "MATCH (n:Cal) WITH n.id AS a, n.id AS b, n.id AS c, n.id AS d, n.id AS e, n.id AS f, n.id AS g, n.id AS h RETURN collect(a) AS ids"
-                }
-                "distinct" => {
-                    "MATCH (n:Cal) RETURN DISTINCT n.id AS a, n.id AS b, n.id AS c, n.id AS d, n.id AS e, n.id AS f, n.id AS g, n.id AS h"
-                }
-                _ => unreachable!(),
-            }
-            .to_string())
-        }
-        "expand" => {
-            let rows = i64::try_from(quanta.saturating_mul(64))
-                .map_err(|_| "expand row count overflow".to_string())?
-                .max(2_000);
-            load_expand(session, rows)?;
-            Ok("MATCH (:CalRoot)-[:CAL_EDGE]->(n:CalLeaf) RETURN n.id AS leaf".into())
-        }
-        "create" => {
-            let rows = quanta.saturating_mul(32).max(2_000);
-            let rows = i64::try_from(rows).map_err(|_| "create row count overflow".to_string())?;
-            // Stream graph-owned seed rows. A giant `UNWIND range(...)`
-            // materializes input that is not create scratch and would make
-            // this family measure an unrelated accounting gap.
-            load_rows(session, rows)?;
-            Ok(
-                "MATCH (s:Cal) CREATE (:CalCreate {id: s.id, payload: s.payload}) RETURN count(*)"
-                    .into(),
-            )
-        }
-        _ => Err(format!("unknown calibration family {family}")),
+) -> Result<&'static str, String> {
+    let scenario = &spec.scenario;
+    let quanta = target_logical_bytes / relate_core::tokens::CHARGE_QUANTUM_BYTES;
+    let rows = rows_for(quanta, scenario.rows_per_quantum, scenario.floor)?;
+    match scenario.seed {
+        Seed::Rows => load_rows(session, rows)?,
+        Seed::Expand => load_expand(session, rows)?,
     }
+    Ok(scenario.statement)
 }
 
 fn load_rows(session: &mut Session, rows: i64) -> Result<(), String> {
@@ -432,13 +527,17 @@ fn max_option(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     }
 }
 
+/// Summarize one scope's observations: a single family's, or — `None` —
+/// every observation for the overall row. The summary's `family` field
+/// carries the wire name, `overall` for the overall row; no caller
+/// discriminates a magic string.
 fn summarize_family(
-    family: &str,
+    family: Option<&'static FamilySpec>,
     observations: &[PeakCalibrationObservation],
 ) -> PeakCalibrationSummary {
     let rows = observations
         .iter()
-        .filter(|row| family == "overall" || row.family == family)
+        .filter(|row| family.is_none_or(|spec| row.family == spec.name))
         .collect::<Vec<_>>();
     let rss_points = rows
         .iter()
@@ -467,9 +566,12 @@ fn summarize_family(
     let cgroup_single_points = logical_byte_points(&single, |row| row.cgroup_delta_bytes);
     let cgroup_single =
         (!cgroup_single_points.is_empty()).then(|| linear_fit(&cgroup_single_points));
-    let per_family = family != "overall";
+    let per_family = family.is_some();
     PeakCalibrationSummary {
-        family: family.to_string(),
+        family: family
+            .map(|spec| spec.name)
+            .unwrap_or("overall")
+            .to_string(),
         observations: rows.len(),
         rss_slope,
         rss_intercept_bytes: rss_intercept,
@@ -549,22 +651,32 @@ fn max_abs_residual(points: &[(f64, f64)], slope: f64, intercept: f64) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// The observations of one shape — one family at one target and holder
+/// count — mapped through `value`. The one shape selector; both spreads
+/// and any future per-shape statistic go through it.
+fn shape_values(
+    rows: &[&PeakCalibrationObservation],
+    family: &str,
+    target: u64,
+    holders: usize,
+    value: &impl Fn(&PeakCalibrationObservation) -> Option<f64>,
+) -> Vec<f64> {
+    rows.iter()
+        .filter(|row| {
+            row.family == family && row.target_logical_bytes == target && row.holders == holders
+        })
+        .filter_map(|row| value(row))
+        .collect()
+}
+
 fn repeat_spread(
     rows: &[&PeakCalibrationObservation],
     value: impl Fn(&PeakCalibrationObservation) -> Option<f64>,
 ) -> Option<f64> {
     let mut largest = None::<f64>;
-    for family in FAMILIES {
+    for spec in FAMILIES {
         for &(target, holders) in SHAPES {
-            let values = rows
-                .iter()
-                .filter(|row| {
-                    row.family == *family
-                        && row.target_logical_bytes == target
-                        && row.holders == holders
-                })
-                .filter_map(|row| value(row))
-                .collect::<Vec<_>>();
+            let values = shape_values(rows, spec.name, target, holders, &value);
             if values.len() > 1 {
                 let min = values.iter().copied().fold(f64::INFINITY, f64::min);
                 let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -580,23 +692,15 @@ fn equal_total_spread(
     value: impl Fn(&PeakCalibrationObservation) -> Option<f64>,
 ) -> Option<f64> {
     let mut largest = None::<f64>;
-    for family in FAMILIES {
+    for spec in FAMILIES {
         let means = EQUAL_TOTAL
             .iter()
             .filter_map(|&(target, holders)| {
-                let values = rows
-                    .iter()
-                    .filter(|row| {
-                        row.family == *family
-                            && row.target_logical_bytes == target
-                            && row.holders == holders
-                    })
-                    .filter_map(|row| value(row))
-                    .collect::<Vec<_>>();
+                let values = shape_values(rows, spec.name, target, holders, &value);
                 (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
             })
             .collect::<Vec<_>>();
-        if means.len() == 3 {
+        if means.len() == EQUAL_TOTAL.len() {
             let min = means.iter().copied().fold(f64::INFINITY, f64::min);
             let max = means.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             if min > 0.0 {
@@ -717,7 +821,7 @@ mod tests {
 
     #[test]
     fn summary_separates_single_query_slope_from_holder_cost() {
-        let bytes = |quanta: u64| quanta * QUANTUM_BYTES;
+        let bytes = |quanta: u64| quanta * relate_core::tokens::CHARGE_QUANTUM_BYTES;
         let holder = 1_000_000;
         let rows = vec![
             observation(bytes(256), 1, bytes(256), bytes(256) * 2),
@@ -726,15 +830,13 @@ mod tests {
             observation(bytes(2048), 2, bytes(4096), bytes(4096) * 2 + holder),
             observation(bytes(1024), 4, bytes(4096), bytes(4096) * 2 + 3 * holder),
         ];
-        let summary = summarize_family("create", &rows);
+        let summary = summarize_family(family_spec("create").ok(), &rows);
         assert!((summary.rss_single_holder_slope - 2.0).abs() < 1e-9);
         assert!((summary.rss_single_holder_r_squared - 1.0).abs() < 1e-9);
         let per_holder = summary.rss_per_holder_bytes.expect("per-holder cost");
         assert!((per_holder - holder as f64).abs() < 1.0, "{per_holder}");
         assert!(summary.rss_slope > summary.rss_single_holder_slope);
-        assert!(summarize_family("overall", &rows)
-            .rss_per_holder_bytes
-            .is_none());
+        assert!(summarize_family(None, &rows).rss_per_holder_bytes.is_none());
     }
 
     #[test]

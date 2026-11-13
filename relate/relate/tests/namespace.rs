@@ -12,11 +12,12 @@ use relate::{Database, Namespace, Procedure, Value};
 
 mod common;
 
-use common::{err_text, NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
+use common::{err_text, preview_ontology, NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
 use std::sync::Arc;
 
 #[test]
 fn connect_defaults_to_neo4j_and_namespace_is_case_insensitive() {
+    preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let conn = db.connect().unwrap();
     assert_eq!(conn.namespace(), Namespace::Neo4j);
@@ -25,8 +26,10 @@ fn connect_defaults_to_neo4j_and_namespace_is_case_insensitive() {
     assert_eq!(conn.namespace(), Namespace::Neo4j);
     let conn = db.connect_namespace("SYSTEM").unwrap();
     assert_eq!(conn.namespace(), Namespace::System);
-    // ADR-0229 §1: the name stays accepted everywhere a namespace name is
-    // parsed — selection works; the queries fail in the gate below.
+    // ADR-0229 §1, under the `ontology` opt-in (ADR-0593): the name stays
+    // accepted everywhere a namespace name is parsed — selection works;
+    // the queries fail in the gate below. Without the opt-in the connect
+    // itself fails as an unknown name.
     let conn = db.connect_namespace("System_Ontologies").unwrap();
     assert_eq!(conn.namespace(), Namespace::SystemOntologies);
 }
@@ -123,6 +126,7 @@ fn system_session_allows_show_commands_and_procedure_calls() {
 
 #[test]
 fn explain_is_gated_by_the_namespace_rules_like_profile() {
+    preview_ontology();
     // Regression: EXPLAIN's early-return bypassed the ADR-0116 §4 namespace
     // gates in dispatch, so EXPLAIN of a statement that plain execution and
     // PROFILE reject with 42N17 succeeded. CE raises the gates at
@@ -163,6 +167,7 @@ fn explain_is_gated_by_the_namespace_rules_like_profile() {
 
 #[test]
 fn explain_matches_execute_error_precedence_and_gates_in_transactions() {
+    preview_ontology();
     // EXPLAIN validates procedure calls before gating, exactly like execution
     // and PROFILE: a doubly-invalid statement reports the procedure error on
     // every path.
@@ -214,6 +219,7 @@ fn use_system_show_composition_rule_still_holds() {
 
 #[test]
 fn system_ontologies_session_rejects_every_non_administration_statement() {
+    preview_ontology();
     // ADR-0229 §1/§2: the namespace is listed and selectable, but every
     // statement routed to it — reads and writes, data clauses, DDL,
     // procedure and function calls, EXPLAIN/PROFILE-wrapped — fails with
@@ -258,6 +264,7 @@ fn system_ontologies_session_rejects_every_non_administration_statement() {
 
 #[test]
 fn system_ontologies_rejects_writes_nested_in_subqueries_and_label_exprs() {
+    preview_ontology();
     // The gate is unconditional (ADR-0229 §1), so nothing can nest its way
     // past it: write procedures in WHEN/ELSE branches, CALL subqueries, NEXT
     // stages and dynamic label expressions all fail with the same 42N17
@@ -297,6 +304,7 @@ fn system_ontologies_rejects_writes_nested_in_subqueries_and_label_exprs() {
 
 #[test]
 fn read_only_call_in_expression_subqueries_stays_on_the_read_path_on_neo4j() {
+    preview_ontology();
     // Regression: `is_write` must not descend into expression subqueries —
     // a read-only `CALL { … }` inside EXISTS/COUNT/COLLECT is a pure read
     // and must stay on the read path (no write stats). Routed to
@@ -319,6 +327,7 @@ fn read_only_call_in_expression_subqueries_stays_on_the_read_path_on_neo4j() {
 
 #[test]
 fn write_procedure_nested_in_expression_subquery_is_rejected_at_plan_time() {
+    preview_ontology();
     // Reverse-hole pin: a write procedure inside a `CALL { … }` nested in
     // an expression subquery never reaches a namespace gate — plan-time
     // validation rejects writes in subquery expressions first
@@ -355,6 +364,7 @@ fn catalog_write_nested_in_expression_subquery_is_rejected_at_plan_time() {
 
 #[test]
 fn neo4j_writes_are_invisible_to_system_ontologies_sessions() {
+    preview_ontology();
     // ADR-0229 §1: the namespace rejects every read routed to it, so
     // `neo4j`'s data is invisible there by construction — and `system`
     // holds no graph data at all (ADR-0116 §1).
@@ -427,6 +437,7 @@ fn system_session_element_id_on_procedure_node_is_a_typed_error_not_a_panic() {
 
 #[test]
 fn query_result_reports_the_session_namespace() {
+    preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
     let result = conn.query("RETURN 1 AS one").unwrap();
@@ -449,6 +460,7 @@ fn query_result_reports_the_session_namespace() {
 
 #[test]
 fn db_info_reports_the_session_namespace() {
+    preview_ontology();
     // ADR-0116 §7: db.info() id/name is the namespace the statement targets.
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
@@ -465,6 +477,7 @@ fn db_info_reports_the_session_namespace() {
 
 #[test]
 fn namespace_survives_explicit_transactions() {
+    preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect_namespace("system_ontologies").unwrap();
     conn.begin().unwrap();

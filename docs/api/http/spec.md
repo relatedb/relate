@@ -375,7 +375,9 @@ the cap) until the next such operation or shutdown.
 ## Namespaces and expected client noise
 
 `{databaseName}` selects one of the fixed namespaces `neo4j`, `system`,
-`system_ontologies` (ADR-0116). An unknown name fails with **404** and code
+`system_ontologies` (ADR-0116). `system_ontologies` is visible only under
+`RELATE_PREVIEW=ontology` (ADR-0593): without the opt-in selecting it fails
+the same way. An unknown name fails with **404** and code
 `42N00` in the error envelope.
 
 Expected client noise: Neo4j Browser probes `https://<host>:<port>/` before

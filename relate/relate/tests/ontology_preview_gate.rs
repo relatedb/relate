@@ -1,20 +1,27 @@
-//! The fail-closed `RELATE_PREVIEW` gate on the `db.ontology.*`
-//! procedures (ADR-0378): with the opt-in absent, every procedure call —
-//! `get` included — fails with ADR-0371's authored preview error before
-//! arity/`YIELD` validation and before the namespace gates, and
-//! `SHOW PROCEDURES` omits the four rows in every composed form. Stored
-//! state is unaffected: a store holding a document opens, checkpoints and
-//! reloads with the gate off.
+//! The fail-closed `RELATE_PREVIEW` gate on the ontology feature's whole
+//! dialect surface (ADR-0378, ADR-0593): with the opt-in absent, every
+//! `db.ontology.*` call — `get` included — fails with ADR-0371's authored
+//! preview error before arity/`YIELD` validation and before the namespace
+//! gates, `SHOW PROCEDURES` omits the four rows in every composed form,
+//! and the `system_ontologies` namespace is invisible: unlisted by
+//! `SHOW DATABASES`, refused by `USE` (the element-id route included),
+//! session connect and `set_namespace` with the ordinary
+//! unknown-database rejection (42N00), and treated as an unknown target
+//! by `ALTER DATABASE` — never the authored preview error, which would
+//! advertise a name the catalog must not list (ADR-0371's name-gate
+//! rule). Stored state is unaffected: a store holding a document opens,
+//! checkpoints and reloads with the gate off.
 //!
-//! The enabled side (the calls succeed and the four rows are listed) lives
-//! in the four ontology test crates, which opt in through
-//! `common::preview_ontology`. This crate must never opt in — it exists to
-//! pin the closed gate.
+//! The enabled side (the calls succeed, the four rows are listed and the
+//! namespace is visible and not queryable) lives in the four ontology
+//! test crates and the namespace suites, which opt in through
+//! `common::preview_ontology`. This crate must never opt in — it exists
+//! to pin the closed gate.
 
 mod common;
 
 use relate::test_opts::assert_preview_unset;
-use relate::{Database, Value};
+use relate::{Database, Namespace, Value};
 
 use common::{err_text, set_doc, ONTOLOGY_DOC};
 
@@ -110,9 +117,10 @@ fn nested_calls_are_gated() {
 #[test]
 fn preview_error_precedes_namespace_and_transaction_gates() {
     let (db, mut conn) = open_closed();
-    // Routed to `system_ontologies`, the preview error precedes ADR-0229
-    // §2's 42N17 text; on `system` it precedes ADR-0227 §1's
-    // target-namespace text.
+    // Routed to `system_ontologies`, the preview error precedes the
+    // namespace visibility gate itself (ADR-0593: the procedures gate
+    // keeps ADR-0378's pinned first position) and ADR-0229 §2's 42N17
+    // text; on `system` it precedes ADR-0227 §1's target-namespace text.
     assert_all_disabled(
         &mut conn,
         &[
@@ -122,11 +130,10 @@ fn preview_error_precedes_namespace_and_transaction_gates() {
     );
     let mut system = db.connect_namespace("system").unwrap();
     assert_eq!(err_text(system.query("CALL db.ontology.drop()")), DISABLED);
-    let mut ontologies = db.connect_namespace("system_ontologies").unwrap();
-    assert_eq!(
-        err_text(ontologies.query("CALL db.ontology.get() YIELD ontology RETURN ontology")),
-        DISABLED
-    );
+    // A `system_ontologies` *session* cannot exist while the opt-in is
+    // off — the connect refuses (see
+    // `session_connect_refuses_the_hidden_namespace`) — so the session-
+    // namespace precedence case exists only for `system`.
     // In an open explicit transaction the preview gate still wins over the
     // implicit-transaction-only rule.
     conn.begin().unwrap();
@@ -169,6 +176,99 @@ fn show_procedures_omits_the_ontology_family() {
         .query("SHOW PROCEDURES YIELD name WHERE name = 'db.labels' RETURN count(*) AS c")
         .unwrap();
     assert_eq!(result.rows, vec![vec![Value::Int(1)]]);
+}
+
+/// ADR-0593: the namespace is invisible while the opt-in is off — the
+/// listing omits the row in every composed form, the named forms find
+/// nothing (exactly as for an unknown name), and an expression subquery
+/// sees the same filtered catalog. The flag-off default listing is CE's
+/// exact two rows.
+#[test]
+fn show_databases_omits_system_ontologies_in_every_composed_form() {
+    let (_db, mut conn) = open_closed();
+    let result = conn.query("SHOW DATABASES YIELD name RETURN name").unwrap();
+    let mut names = common::first_column_strings(&result);
+    names.sort();
+    assert_eq!(names, ["neo4j", "system"], "the flag-off listing");
+    // The named form answers like an unknown name: no rows.
+    let result = conn
+        .query("SHOW DATABASE system_ontologies YIELD name RETURN name")
+        .unwrap();
+    assert!(result.rows.is_empty());
+    // So does every composed filter over the listing.
+    let result = conn
+        .query("SHOW DATABASES YIELD name WHERE name = 'system_ontologies' RETURN name")
+        .unwrap();
+    assert!(result.rows.is_empty());
+    let result = conn
+        .query("RETURN EXISTS { SHOW DATABASES YIELD name WHERE name = 'system_ontologies' } AS e")
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Bool(false)]]);
+}
+
+/// ADR-0593: every `USE` route to the hidden namespace fails with the
+/// site's ordinary unknown-database rejection — 42N00 `Graph not found`,
+/// case-insensitively, the element-id route included (the resolved
+/// namespace's name) — never the authored preview error, which would
+/// advertise a name the catalog must not list (ADR-0371's name-gate
+/// rule). The rejection precedes the 42N79 admin gate, so
+/// `USE system_ontologies SHOW DATABASES` is an unknown database, not a
+/// mis-routed administration command.
+#[test]
+fn use_routes_to_system_ontologies_fail_as_an_unknown_name() {
+    let (_db, mut conn) = open_closed();
+    for statement in [
+        "USE system_ontologies MATCH (n) RETURN count(n) AS c",
+        "USE SYSTEM_ONTOLOGIES RETURN 1 AS one",
+        "USE system_ontologies SHOW DATABASES",
+        "EXPLAIN USE system_ontologies MATCH (n) RETURN n",
+        "USE graph.byElementId('4:rl-onto:n1') MATCH (n) RETURN count(n) AS c",
+    ] {
+        let err = err_text(conn.query(statement));
+        assert!(
+            err.ends_with("Graph not found: system_ontologies"),
+            "{statement}: {err}"
+        );
+    }
+}
+
+/// ADR-0593: the session routes refuse the hidden namespace with the same
+/// ordinary rejection an unknown name gets — typed and by name, at
+/// connect and on `set_namespace` — and the session keeps its namespace
+/// on refusal.
+#[test]
+fn session_connect_refuses_the_hidden_namespace() {
+    let (db, mut conn) = open_closed();
+    for name in ["system_ontologies", "System_Ontologies"] {
+        let err = err_text(db.connect_namespace(name));
+        assert!(
+            err.ends_with("Graph not found: system_ontologies"),
+            "{name}: {err}"
+        );
+    }
+    let err = err_text(db.connect_typed(Namespace::SystemOntologies));
+    assert!(err.ends_with("Graph not found: system_ontologies"), "{err}");
+    let err = err_text(conn.set_namespace("system_ontologies"));
+    assert!(err.ends_with("Graph not found: system_ontologies"), "{err}");
+    assert_eq!(conn.namespace(), Namespace::Neo4j);
+}
+
+/// ADR-0593: `ALTER DATABASE` treats the hidden namespace as an unknown
+/// target — the command's own unknown-database text, and a no-op under
+/// `IF EXISTS`, exactly as for a name that never existed.
+#[test]
+fn alter_database_treats_the_hidden_namespace_as_unknown() {
+    let (_db, mut conn) = open_closed();
+    let err =
+        err_text(conn.query("ALTER DATABASE system_ontologies SET DEFAULT LANGUAGE CYPHER 25"));
+    assert!(
+        err.ends_with(
+            "Failed to alter the specified database 'system_ontologies': Database does not exist."
+        ),
+        "{err}"
+    );
+    conn.query("ALTER DATABASE system_ontologies IF EXISTS SET DEFAULT LANGUAGE CYPHER 25")
+        .unwrap();
 }
 
 /// Persistence is unaffected (ADR-0378): the hidden facade writes and

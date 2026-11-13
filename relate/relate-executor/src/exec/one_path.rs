@@ -20,24 +20,33 @@ use crate::pattern_walk::RelFilter;
 use crate::row::Row;
 
 use super::expand::match_resolved_path;
-use super::gpm::{match_gpm_path, GpmFilters};
+use super::gpm::{match_gpm_path, GpmFilters, ReachCache};
 use super::pattern_policies::{MatchTail, Matched};
 use super::pushdown::Residual;
 use super::rider::{PathSink, Rider};
 
-/// A pattern's resolved rel-type filters (LABS-801), built once per
-/// pattern by the caller's widest loop (the clause's pattern loop in
-/// `match_paths`, the join's one side-B build, the probe's dispatch):
-/// the classic engine reads one per `path.rels` entry, the GPM engine
-/// one per expansion element (a quantified path's compact `rels`
-/// projection is empty — see [`GpmFilters`]). The arm is chosen by the
-/// one engine-fork predicate, so the table and the walk below can never
-/// disagree about which engine the pattern takes.
-pub(crate) enum PathFilters {
+/// A pattern's resolved rel-type filters (LABS-801): the classic engine
+/// reads one per `path.rels` entry, the GPM engine one per expansion
+/// element (a quantified path's compact `rels` projection is empty — see
+/// [`GpmFilters`]). The arm is chosen by the one engine-fork predicate,
+/// so the table and the walk below can never disagree about which engine
+/// the pattern takes.
+pub(crate) enum FilterTable {
     /// One filter per `path.rels` entry, in order.
     Classic(Vec<RelFilter>),
     /// The GPM engine's element-order table.
     Gpm(GpmFilters),
+}
+
+/// A pattern's tier state, built once per pattern by the caller's widest
+/// loop (the clause's pattern loop in `match_paths`, the join's one side-B
+/// build, the probe's dispatch): the resolved [`FilterTable`] and the
+/// shortest-path route's [`ReachCache`]. The cache is a graph read, so its
+/// life is the one `match_clause` call that built it (one input batch)
+/// and never spans a write; the GPM arm is the only reader.
+pub(crate) struct PathFilters {
+    pub(crate) table: FilterTable,
+    pub(crate) reach: ReachCache,
 }
 
 impl PathFilters {
@@ -46,32 +55,52 @@ impl PathFilters {
         path: &PathPattern,
         match_mode: MatchMode,
     ) -> Self {
-        if match_mode == MatchMode::RepeatableElements || path.needs_gpm() {
-            PathFilters::Gpm(GpmFilters::resolve(graph, path))
+        let table = if match_mode == MatchMode::RepeatableElements || path.needs_gpm() {
+            FilterTable::Gpm(GpmFilters::resolve(graph, path))
         } else {
-            PathFilters::Classic(
+            FilterTable::Classic(
                 path.rels
                     .iter()
                     .map(|rp| RelFilter::resolve(graph, rp))
                     .collect(),
             )
+        };
+        PathFilters {
+            table,
+            reach: ReachCache::default(),
         }
     }
 }
 
-impl PathFilters {
-    /// One table per pattern, in order — what [`match_paths`] indexes.
-    ///
-    /// [`match_paths`]: super::match_clause::match_paths
-    pub(crate) fn resolve_all(
+/// One clause's patterns, each carried with its [`PathFilters`]: the
+/// pairing is made once, here, so a caller cannot hand `match_paths` a
+/// table list that is not the pattern list's.
+pub(crate) struct ResolvedPatterns<'a> {
+    paths: &'a [PathPattern],
+    tiers: Vec<PathFilters>,
+}
+
+impl<'a> ResolvedPatterns<'a> {
+    pub(crate) fn resolve(
         graph: &ExecGraph<'_>,
-        patterns: &[PathPattern],
+        paths: &'a [PathPattern],
         match_mode: MatchMode,
-    ) -> Vec<Self> {
-        patterns
+    ) -> Self {
+        let tiers = paths
             .iter()
-            .map(|path| Self::resolve(graph, path, match_mode))
-            .collect()
+            .map(|path| PathFilters::resolve(graph, path, match_mode))
+            .collect();
+        ResolvedPatterns { paths, tiers }
+    }
+
+    /// The patterns, in clause order.
+    pub(crate) fn paths(&self) -> &'a [PathPattern] {
+        self.paths
+    }
+
+    /// Each pattern with its tier state, in clause order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&'a PathPattern, &PathFilters)> {
+        self.paths.iter().zip(&self.tiers)
     }
 }
 
@@ -98,18 +127,27 @@ pub(crate) fn match_one_path(
     // `MatchTail` state model, never a loose reduce/keep_used pair. The
     // filters arrive resolved beside them (LABS-801): the fork reads the
     // table's arm, the same fact [`PathFilters::resolve`] built it from.
-    match filters {
-        PathFilters::Gpm(filters) => {
+    match &filters.table {
+        FilterTable::Gpm(table) => {
             // A cap rider is the LIMIT pull-in (`gpm::emit`): every complete
             // state is offered as it emerges and the walk halts once the cap
             // is full, instead of materializing the whole enumeration for the
             // caller's projection to truncate. A probe rider is the early
             // exit: the first complete row the chain accepts halts the walk.
             match_gpm_path(
-                ctx, path, filters, row, used, match_mode, tail, residual, rider,
+                ctx,
+                path,
+                table,
+                &filters.reach,
+                row,
+                used,
+                match_mode,
+                tail,
+                residual,
+                rider,
             )
         }
-        PathFilters::Classic(filters) => {
+        FilterTable::Classic(table) => {
             // The classic walk's sink follows the rider — the one rider→sink
             // decision (`PathSink::for_rider`, exec/rider.rs): a probe rides the
             // classic walk exactly as it rides the GPM one (the probe IS the
@@ -122,7 +160,7 @@ pub(crate) fn match_one_path(
             // LABS-161: an elementId()/id() equality (or a row-bound variable) on
             // the first rel seeks the rel directly instead of scanning every
             // node's adjacency; a Gone seek matches nothing (zero rows).
-            match_resolved_path(ctx, path, filters, residual, row, used, &mut sink)?;
+            match_resolved_path(ctx, path, table, residual, row, used, &mut sink)?;
             Ok(out)
         }
     }

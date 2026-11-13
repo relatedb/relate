@@ -3,7 +3,8 @@ import Relate
 let db = try Database.inMemory()
 
 // connect() is connect(namespace: "neo4j"); the other fixed namespaces are
-// "system" and "system_ontologies" (ADR-0117).
+// "system" and "system_ontologies" (ADR-0117) — the latter visible only
+// under the `ontology` preview opt-in (ADR-0593).
 let conn = try db.connect()
 try conn.query("CREATE (:Item)")
 

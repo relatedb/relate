@@ -12,6 +12,8 @@ use std::collections::BTreeSet;
 use relate::{Database, Value};
 use serde::Deserialize;
 
+mod common;
+
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../testdata/ce-errors/neo4j-ce.json"
@@ -183,6 +185,10 @@ fn load_fixture() -> Fixture {
 /// case is exercised comes from the fixture's `harness` field (emitted by
 /// scripts/ce_error_fixtures.py's HARNESS map), not from case ids here.
 fn run_case(case: &Case) -> Result<(), String> {
+    // The read-only-namespace cases run on `system_ontologies`, which is
+    // hidden without the `ontology` opt-in (ADR-0593) — the CE fixture is
+    // captured against the visible namespace, so the runner opts in.
+    common::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let namespace = match case.harness {
         Some(Harness::ConnectNamespace) => {

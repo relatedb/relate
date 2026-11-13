@@ -389,9 +389,9 @@ catalog (ADR-0040). MATCH still seeks without them.
 Every store carries three fixed namespaces (ADR-0116): `neo4j` (the user
 data graph and the only writable one), `system` (the CE system database —
 SHOW commands, supported administration commands and procedure calls only,
-holding no graph data) and `system_ontologies` (listed but not queryable,
-ADR-0229: every statement routed to it, reads included, fails with 42N17,
-except the ADR-0116 §2 administration commands). A connection's session
+holding no graph data) and `system_ontologies` (visible only under the `RELATE_PREVIEW=ontology` opt-in (ADR-0593; without it the namespace is invisible — unlisted, and every route to the name fails as an unknown database, 42N00)) and not
+queryable, ADR-0229: every statement routed to it, reads included, fails
+with 42N17, except the ADR-0116 §2 administration commands). A connection's session
 namespace (`Database::connect_namespace` —
 or `Database::connect_typed` with a typed `Namespace` (ADR-0150) —
 `Connection::set_namespace` between transactions) selects where its

@@ -88,8 +88,10 @@ explicit transaction — `"relate:<n>"`, the engine's commit sequence.
 - **One connection, one thread at a time** — a `relate_database` may be
   shared across threads; a `relate_connection` (and a params builder)
   must not. A caught panic poisons the handle: close it and open a new one.
-- **`system_ontologies` is listed but not queryable** — statements routed
-  there fail as error results (42N17 text); use the `db.ontology.*`
+- **`system_ontologies` is visible only under `RELATE_PREVIEW=ontology`
+  (ADR-0593)** — without the opt-in the connect fails "Graph not found:
+  system_ontologies" and `SHOW DATABASES` lists two rows; with it, statements
+  routed there fail as error results (42N17 text) — use the `db.ontology.*`
   procedures on `neo4j` instead. Unknown names fail "Graph not found".
 
 Full contract: `docs/api/c/spec.md` (symbol table, ownership, walker, params

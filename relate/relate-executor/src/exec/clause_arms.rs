@@ -20,7 +20,7 @@ use super::create::{
     reject_null_merge_props, resolve_create_patterns,
 };
 use super::match_clause::match_paths;
-use super::one_path::PathFilters;
+use super::one_path::ResolvedPatterns;
 use super::pushdown::Residual;
 use super::scope::refresh_rows;
 use super::unwind::{UnwindFeed, UnwindStats};
@@ -101,15 +101,14 @@ pub(super) fn exec_merge(
         let none = Residual::empty();
         // Resolved per row: MERGE creates between rows, so no table (and
         // no reach cache in it) may outlive the graph state it read.
-        let filters = PathFilters::resolve_all(
+        let resolved = ResolvedPatterns::resolve(
             graph,
             std::slice::from_ref(&match_pattern),
             MatchMode::DifferentRelationships,
         );
         let matched = match_paths(
             ExecCtx::new(graph, params),
-            std::slice::from_ref(&match_pattern),
-            &filters,
+            &resolved,
             MatchMode::DifferentRelationships,
             row.clone(),
             &none,

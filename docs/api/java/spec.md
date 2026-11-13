@@ -425,7 +425,10 @@ See `examples/ResultMetadata.java`.
 
 Every store has three fixed namespaces: `neo4j`, `system` and
 `system_ontologies` (ADR-0116). The namespace is the session default for
-statements that carry no `USE` clause.
+statements that carry no `USE` clause. `system_ontologies` is visible only
+under `RELATE_PREVIEW=ontology` (ADR-0593): without the opt-in
+`connect`/`setNamespace` with it fail with the same `Graph not found`
+rejection as an unknown name, and `SHOW DATABASES` lists the two CE rows.
 
 ```java
 Connection conn = db.connect("system"); // connect() == connect("neo4j")

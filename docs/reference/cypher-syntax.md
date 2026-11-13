@@ -679,7 +679,9 @@ Neo4j's CIP-287 surface) manage the store's single ontology document. They
 require `RELATE_PREVIEW=ontology` (ADR-0378; ADR-0371's opt-in): with it
 off, every call fails with `SemanticError: preview feature 'ontology' is not
 enabled: set RELATE_PREVIEW=ontology` and `SHOW PROCEDURES` omits them;
-the stored document and the store's open/replay path are unaffected. They
+the stored document and the store's open/replay path are unaffected. The
+same opt-in gates the `system_ontologies` namespace's visibility
+(ADR-0593 — see below). The procedures
 act on the session or `USE`-target database, which must be `neo4j`:
 
 ```cypher
@@ -701,8 +703,15 @@ dual gate or migration.
 `set` and `drop` run only in implicit (auto-commit) transactions, and a
 statement calling them may not write anything else. `get` reads the calling
 transaction's captured document; `apply` may run in explicit transactions.
-The `system_ontologies` namespace is listed by `SHOW DATABASES` but not
-queryable (ADR-0229): every statement routed to it — `USE
+The `system_ontologies` namespace is visible only under the same
+`RELATE_PREVIEW=ontology` opt-in (ADR-0593): without it the namespace is
+invisible — `SHOW DATABASES` lists the two CE rows, and `USE
+system_ontologies …` (the `rl-onto` element-id route included), session
+connect and `ALTER DATABASE system_ontologies` all fail with the site's
+ordinary unknown-database rejection (42N00 `Graph not found:
+system_ontologies` for `USE` and connect), never the authored preview
+error. With the opt-in the namespace is visible but not queryable
+(ADR-0229): every statement routed to it — `USE
 system_ontologies MATCH (n) RETURN n` included, `EXPLAIN`-wrapped included —
 fails with 42N17 `This database is not queryable. Use the db.ontology.*
 procedures on the user database 'neo4j' instead.`; only the ADR-0116 §2
@@ -1220,4 +1229,4 @@ Three function names accepted into a CIP that no reference release ships sit beh
 
 ### Scope note
 
-Server- and multi-user-oriented Cypher (RBAC & privileges, user auth, remote/composite/sharded databases, clustering) is intentionally **not** implemented — Relate is a single-process embedded engine. Multi-database surface follows Neo4j Community Edition over three fixed namespaces (`neo4j`, `system`, `system_ontologies`; ADR-0116): `USE` routes a statement to one of them (unknown names fail with 42N00), composite forms (`USE graph.byName`, composite databases) fail with 42N72/51N27, and `SHOW DATABASES` lists the three fixed rows. `SHOW` commands are supported over local metadata with a stable column subset. The CIP-derived evaluation suite in the spec harness tracks this scope per CIP (`features/cip-eval`, ADR-0482, ADR-0520).
+Server- and multi-user-oriented Cypher (RBAC & privileges, user auth, remote/composite/sharded databases, clustering) is intentionally **not** implemented — Relate is a single-process embedded engine. Multi-database surface follows Neo4j Community Edition over three fixed namespaces (`neo4j`, `system`, `system_ontologies`; ADR-0116): `USE` routes a statement to one of them (unknown names fail with 42N00), composite forms (`USE graph.byName`, composite databases) fail with 42N72/51N27, and `SHOW DATABASES` lists the fixed rows — two by default, since `system_ontologies` is visible only under `RELATE_PREVIEW=ontology` (ADR-0593: CE's own listing is exactly the two). `SHOW` commands are supported over local metadata with a stable column subset. The CIP-derived evaluation suite in the spec harness tracks this scope per CIP (`features/cip-eval`, ADR-0482, ADR-0520).

@@ -1,9 +1,10 @@
 "use strict";
 
 // The error channel (ADR-0502 §2): the ABI's one error shape, parsed once
-// into a typed exception. Pure over the FFI — the koffi decode/free of the
-// error out-array stays in index.js — so the parsing contract is testable
-// on its own (a malformed shape never needs a library to reproduce).
+// into a typed exception, and the one policy for a closed vocabulary. Pure
+// over the FFI — the koffi decode/free of the error out-array stays in
+// index.js — so the parsing contract is testable on its own (a malformed
+// shape never needs a library to reproduce).
 
 /// The error shape's field table (ADR-0502 §2): the ABI key, the
 /// exception's property (a null jsKey — the message — rides the
@@ -52,6 +53,18 @@ function abiViolation(detail) {
   return new Error(`ABI contract violated: ${detail}`);
 }
 
+/// The one policy for a closed vocabulary: a listed value passes through,
+/// anything else is an ABI contract violation naming `what` and listing the
+/// vocabulary it must be one of. The lowest module's copy — metadata.js's
+/// query-type and namespace decoders call it too, so no surface keeps a
+/// second Set/.has() policy beside it.
+function decodeClosed(vocabulary, what, raw) {
+  if (!vocabulary.includes(raw)) {
+    throw abiViolation(`${what} ${JSON.stringify(raw)} is not one of ${vocabulary.join(", ")}`);
+  }
+  return raw;
+}
+
 /// The one non-ABI construction: the sync-call refusal while an async
 /// query is in flight (index.js) — a client-side refusal that carries no
 /// engine classification. The only site the no-classification shape
@@ -66,12 +79,13 @@ function clientRefusalError(message) {
   });
 }
 
-/// The stage vocabulary of the ABI's error shape (ADR-0502 §2): where the
-/// failure happened — compile (parse/plan), runtime (execution) or
-/// internal (a failure the engine never saw: a NULL or poisoned handle, a
-/// caught panic, an argument that failed to decode, a params-builder
-/// refusal).
-const ERROR_STAGES = new Set(["compile", "runtime", "internal"]);
+/// The stage vocabulary of the ABI's error shape (ADR-0502 §2). The prose
+/// definition of the three stages lives on the `ErrorStage` d.ts union;
+/// test.js pins this array to it so the two cannot drift.
+const ERROR_STAGES = Object.freeze(["compile", "runtime", "internal"]);
+
+/// The stage check through the one closed-vocabulary policy.
+const decodeStage = (raw) => decodeClosed(ERROR_STAGES, "error stage", raw);
 
 /// Parse the error shape once into the typed exception. Input is the ABI's
 /// JSON text (the one JSON that remains on the error path — metadata, not
@@ -99,9 +113,7 @@ function errorFromJson(json) {
       throw abiViolation(`error shape field "${field}" must be a ${type}, got ${typeof facts[field]}`);
     }
   }
-  if (!ERROR_STAGES.has(facts.stage)) {
-    throw abiViolation(`error stage "${facts.stage}" is not one of ${[...ERROR_STAGES].join(", ")}`);
-  }
+  decodeStage(facts.stage);
   return new RelateError(facts.message, facts);
 }
 
@@ -109,5 +121,7 @@ module.exports = {
   RelateError,
   abiViolation,
   clientRefusalError,
+  decodeClosed,
+  ERROR_STAGES,
   errorFromJson,
 };

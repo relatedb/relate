@@ -5,18 +5,15 @@
 // these values, so anything else is an ABI contract violation, never a
 // lenient pass-through (the Go client's decodeQueryType / decodeNamespace).
 // index.d.ts declares the same two unions; test.js pins them to these tables.
+// The refusal policy is the error channel's one `decodeClosed` (errors.js),
+// so no surface spells a second Set/.has() beside it.
 
-const { abiViolation } = require("./errors");
+const { decodeClosed } = require("./errors");
 
-const QUERY_TYPES = ["r", "w", "rw", "s"];
-const NAMESPACES = ["neo4j", "system", "system_ontologies"];
-
-/// The one policy for a closed vocabulary: a listed value passes through,
-/// anything else throws naming `what`.
-function decodeClosed(vocabulary, what, raw) {
-  if (!vocabulary.includes(raw)) throw abiViolation(`${what} ${JSON.stringify(raw)}`);
-  return raw;
-}
+/// The plan-time statement classification (ADR-0162 wire code).
+const QUERY_TYPES = Object.freeze(["r", "w", "rw", "s"]);
+/// The three fixed namespaces (ADR-0117).
+const NAMESPACES = Object.freeze(["neo4j", "system", "system_ontologies"]);
 
 const decodeQueryType = (raw) => decodeClosed(QUERY_TYPES, "query type", raw);
 const decodeNamespace = (raw) => decodeClosed(NAMESPACES, "namespace", raw);

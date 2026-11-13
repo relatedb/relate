@@ -590,12 +590,15 @@ is the single feature-name table — a feature PR adds its row there and
 gates at the parse/dispatch point. Only syntax-extending features gate
 (additive function names don't); ADR-0497's name-admission gates are the
 recorded exception, and its taxonomy records the four gate-location
-exceptions. The `db.ontology.*` procedure family (feature name `ontology`)
-is one of them: it gates at procedure dispatch, tracking a non-final
-external spec (ADR-0378) — while off, every call fails with the authored
+exceptions. The `db.ontology.*` procedure family and the
+`system_ontologies` namespace visibility (feature name `ontology`) are one
+of them: the family gates at procedure dispatch and the namespace through
+the namespace registry's one mapping (ADR-0378, ADR-0593), tracking a
+non-final external spec — while off, every call fails with the authored
 `semantic error: SemanticError: preview feature 'ontology' is not enabled:
-set RELATE_PREVIEW=ontology` error and `SHOW PROCEDURES` omits the four
-rows; on, the rows are listed and callable.
+set RELATE_PREVIEW=ontology` error, `SHOW PROCEDURES` omits the four rows,
+and the namespace is invisible (see Database administration below); on,
+the rows are listed and callable and the namespace is visible.
 
 Name gates hide a name, not a syntax: while off, a call fails with the
 registry's ordinary `UnknownFunction` rejection (42N48) and `SHOW
@@ -627,7 +630,12 @@ unknown name fails (42N00). Supported commands = `SHOW DATABASE[S]`, `SHOW
 DEFAULT/HOME DATABASE`, `ALTER DATABASE … SET DEFAULT LANGUAGE` only —
 everything else (`CREATE`/`DROP`/`ALTER DATABASE` otherwise,
 `START`/`STOP`, aliases, composite forms) fails 51N27. `system_ontologies`
-is listed but not queryable (ADR-0229): every statement routed there —
+is visible only under the `ontology` opt-in (ADR-0593): without it the
+namespace is invisible — `SHOW DATABASES` lists the two CE rows, and
+`USE`, session connect and `ALTER DATABASE` treat the name as unknown
+(42N00, never the authored preview error; the mapping in
+relate-core/src/namespace.rs is the one table). With the opt-in it is
+visible and not queryable (ADR-0229): every statement routed there —
 reads included, `EXPLAIN`-wrapped included — fails with the authored 42N17
 text (`This database is not queryable. Use the db.ontology.* procedures on
 the user database 'neo4j' instead.`); only the ADR-0116 §2

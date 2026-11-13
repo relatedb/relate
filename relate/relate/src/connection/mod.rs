@@ -239,7 +239,9 @@ impl Connection {
 
     /// Change the session namespace (ADR-0117 §2). Names match
     /// case-insensitively; an unknown name fails with `DatabaseNotFound`
-    /// (`Graph not found: <name>`, ADR-0146). A session
+    /// (`Graph not found: <name>`, ADR-0146), and a namespace hidden by
+    /// the preview set (ADR-0593: `system_ontologies` while the
+    /// `ontology` opt-in is off) fails the same way. A session
     /// namespace changes only between transactions (ADR-0116 §5): while an
     /// explicit transaction is open this fails with `Cannot change the
     /// namespace while a transaction is open.`
@@ -260,7 +262,13 @@ impl Connection {
         if self.txn.is_some() {
             return Err(ce_messages::namespace_change_in_transaction());
         }
-        self.namespace = parse_session_namespace(name)?;
+        let namespace = parse_session_namespace(name)?;
+        // ADR-0593: a namespace hidden by the preview set is refused here
+        // too, with the same ordinary rejection the parse above produces
+        // for an unknown name — through the one guarded spelling both
+        // connect paths share.
+        self.inner.require_namespace_visible(namespace)?;
+        self.namespace = namespace;
         Ok(())
     }
 

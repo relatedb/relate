@@ -9,12 +9,18 @@ use std::ptr;
 /// `relate_connect_namespace` opens a connection in the named fixed
 /// namespace (ADR-0117 §3); an unknown name fails with CE's
 /// `DatabaseNotFound` classification on the error channel. A
-/// `system_ontologies` connection is listed but not queryable
+/// `system_ontologies` connection is visible under the `ontology`
+/// opt-in (ADR-0593) and not queryable
 /// (ADR-0229 §1/§2): selecting it succeeds, a data query on it fails with
 /// the 42N17 text, and the ADR-0116 §2 administration commands still run
 /// from there.
 #[test]
 fn ffi_connect_namespace_selects_fixed_namespace() {
+    // The `system_ontologies` connect needs the `ontology` opt-in
+    // (ADR-0593): without it the namespace is invisible and the connect
+    // fails as an unknown name (the closed pins live in the engine's
+    // preview-gate suite).
+    relate_test_support::preview::preview_ontology();
     let sys = CString::new("system_ontologies").unwrap();
     let unknown = CString::new("movies").unwrap();
     let mut conn: *mut relate_connection = ptr::null_mut();

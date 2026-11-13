@@ -8,7 +8,8 @@ or auto-commit `RUN` extra (ADR-0117). Absent, `null` or `""` means `neo4j`,
 and the selection never carries over to the next request. The final
 `PULL`/`DISCARD` SUCCESS reports the namespace the query ran in as `db`; an
 unknown name fails with `Graph not found: <name>` (ADR-0146).
-`system_ontologies` is listed but not queryable (ADR-0229): only the
+`system_ontologies` is visible only under the `RELATE_PREVIEW=ontology` opt-in (ADR-0593; without it the namespace is invisible — unlisted, and every route to the name fails as an unknown database, 42N00) and not
+queryable (ADR-0229): only the
 ADR-0116 §2 database-administration commands (`SHOW DATABASES`, `ALTER
 DATABASE … SET DEFAULT LANGUAGE`) still run while routed to it — every
 other statement, reads included, fails with the 42N17 text `This database

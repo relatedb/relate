@@ -616,6 +616,15 @@ impl Shared {
         Ok(guard)
     }
 
+    /// The ADR-0593 namespace visibility gate for the connect paths: the
+    /// resolved preview set read under the publication read guard (the
+    /// GraphCell deref contract, ADR-0137) — the one guarded spelling
+    /// `Database::connect_typed` and `Connection::set_namespace` share.
+    pub(crate) fn require_namespace_visible(&self, namespace: Namespace) -> Result<()> {
+        let _read = self.read_guard()?;
+        namespace.require_visible(self.graph.preview())
+    }
+
     /// The store's current commit timestamp, read under the publication
     /// read guard. This is THE way to read `commit_ts()` from a facade
     /// path outside a commit pipeline: the `GraphCell` deref contract

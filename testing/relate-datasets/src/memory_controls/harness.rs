@@ -63,8 +63,10 @@ pub struct Config {
     pub calibration_repeats: u32,
     /// Milliseconds each calibration query remains paused at its live peak.
     pub calibration_hold_ms: u64,
-    /// Optional workspace family filter for workspace-memory calibration.
-    pub calibration_family: Option<String>,
+    /// Restrict logical-byte calibration to one family: the typed table
+    /// row, resolved where the config is built (see
+    /// [`crate::memory_controls::calibration::family_spec`]).
+    pub calibration_family: Option<&'static crate::memory_controls::calibration::FamilySpec>,
 }
 
 /// The processing family's report: the invariant cases, the configured

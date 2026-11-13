@@ -11,10 +11,10 @@ use rand::{Rng, SeedableRng};
 use relate_core::Value;
 use relate_ir::Direction;
 
-use crate::exec::test_support::{build, exec_cypher, run_metered};
+use crate::exec::test_support::{exec_cypher, run_metered};
 use crate::graph::Graph;
 
-use super::fixtures::{counting, gpm, sorted, DirectionExt, DIRS};
+use super::fixtures::{counting, gpm, labelled, sorted, DirectionExt, DIRS};
 use super::reach_cache::{take_reach_counts, with_reach_cap};
 
 /// Corpus seed; a failure names it with the graph index.
@@ -23,13 +23,10 @@ const SEED: u64 = 0x1438_0001;
 /// `x` start nodes labelled `X`, then `y` labelled `Y`, and `rels` random
 /// `R` relationships among them (self-loops and parallels included).
 fn graph(rng: &mut StdRng, x: usize, y: usize, rels: usize) -> Graph {
-    let labels: Vec<&[&str]> = (0..x + y)
-        .map(|i| if i < x { &["X"][..] } else { &["Y"][..] })
-        .collect();
     let rels: Vec<_> = (0..rels)
-        .map(|_| (rng.random_range(0..x + y), rng.random_range(0..x + y), "R"))
+        .map(|_| (rng.random_range(0..x + y), rng.random_range(0..x + y)))
         .collect();
-    build(&labels, &rels).graph
+    labelled(x, x + y, &rels)
 }
 
 /// The cross product followed by the shortest-path pattern, in the
@@ -158,11 +155,8 @@ fn interleaved_starts_build_no_reach_set_and_stay_correct() {
 #[test]
 fn a_start_over_the_cap_is_refused_once_and_searched_per_pair() {
     // A path 0-1-2-...-9 under the starts: reach sets hold several nodes.
-    let labels: Vec<&[&str]> = (0..10)
-        .map(|i| if i < 2 { &["X"][..] } else { &["Y"][..] })
-        .collect();
-    let rels: Vec<_> = (0..9).map(|i| (i, i + 1, "R")).collect();
-    let g = build(&labels, &rels).graph;
+    let rels: Vec<_> = (0..9).map(|i| (i, i + 1)).collect();
+    let g = labelled(2, 10, &rels);
     let q =
         "MATCH (a:X), (b:Y) MATCH p = ANY SHORTEST (a)-[:R*1..9]-(b) RETURN a.id, b.id, length(p)";
     let _ = take_reach_counts();
@@ -178,11 +172,8 @@ fn a_start_over_the_cap_is_refused_once_and_searched_per_pair() {
 /// isolated end nodes: pairs grow with `ends`, the reach sets do not.
 fn peak_with(ends: usize) -> u64 {
     let (x, linked) = (8, 24);
-    let labels: Vec<&[&str]> = (0..x + linked + ends)
-        .map(|i| if i < x { &["X"][..] } else { &["Y"][..] })
-        .collect();
-    let rels: Vec<_> = (0..x + linked - 1).map(|i| (i, i + 1, "R")).collect();
-    let g = build(&labels, &rels).graph;
+    let rels: Vec<_> = (0..x + linked - 1).map(|i| (i, i + 1)).collect();
+    let g = labelled(x, x + linked + ends, &rels);
     let q = "MATCH (a:X), (b:Y) MATCH p = ANY SHORTEST (a)-[:R*1..3]-(b) \
              RETURN count(*) AS pairs, sum(length(p)) AS hops";
     let (rows, peak) = run_metered(&g, q);
@@ -204,11 +195,8 @@ fn peak_memory_is_independent_of_the_pair_count() {
 fn a_set_past_its_budget_is_retried_later_not_built_per_pair() {
     // One start over a 200-node path plus 20 isolated ends: its reach set
     // (200) is past the budget of the 2nd pair (128) and within the 8th's.
-    let labels: Vec<&[&str]> = (0..221)
-        .map(|i| if i == 0 { &["X"][..] } else { &["Y"][..] })
-        .collect();
-    let rels: Vec<_> = (0..200).map(|i| (i, i + 1, "R")).collect();
-    let g = build(&labels, &rels).graph;
+    let rels: Vec<_> = (0..200).map(|i| (i, i + 1)).collect();
+    let g = labelled(1, 221, &rels);
     let q = "MATCH (a:X), (b:Y) MATCH p = ANY SHORTEST (a)-[:R*]-(b) RETURN count(*) AS n";
     let _ = take_reach_counts();
     let rows = exec_cypher(&g, q).rows;

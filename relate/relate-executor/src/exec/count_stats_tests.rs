@@ -4,7 +4,8 @@
 
 use super::count_stats::count_only_stats_result;
 use super::test_support::{
-    commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write, write_scratch,
+    clauses_of, commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write,
+    write_scratch,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
@@ -12,13 +13,6 @@ use crate::row::Row;
 use relate_core::Value;
 use relate_ir::Clause;
 use std::collections::BTreeMap;
-
-/// Parse a statement into the flat clause list the recognizer takes,
-/// against the statement's opening stage (one unbound seed row).
-fn clauses_of(cypher: &str) -> Vec<Clause> {
-    let q = relate_front::parse_and_lower(cypher).unwrap();
-    q.parts.into_iter().flat_map(|p| p.clauses).collect()
-}
 
 /// Pin the decline itself, not a coincidentally-equal accept: parse each
 /// declined statement and assert the recognizer returns `Ok(None)` (the

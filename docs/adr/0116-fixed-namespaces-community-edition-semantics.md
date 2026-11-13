@@ -266,3 +266,10 @@ namespace's is `rl-onto` (this ADR's `cypherlite` spelling predates the
 product rename; the segment was `relate`, then the dash-bearing
 `relate-neo4j`, at the time of those changes). The three-part shape and the
 segment-to-namespace mapping of (7) are unchanged.
+
+ADR-0593 narrows §1/§6's "listed" default for `system_ontologies`: the
+namespace is visible only under the `ontology` preview opt-in
+(`RELATE_PREVIEW`), so `SHOW DATABASES` lists the two CE rows while the
+opt-in is off, and the name resolves as unknown (42N00) at every routing
+site. The three fixed namespaces, the durable catalog row of §8/§10 and
+the behavior with the opt-in set are unchanged.

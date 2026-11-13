@@ -1,5 +1,12 @@
+// ADR-0593: the system_ontologies legs below need the `ontology` preview
+// opt-in — without it the namespace is invisible and connect/setNamespace
+// fail as unknown names. Set before the first Database.open (the variable
+// is read once, at open).
+process.env.RELATE_PREVIEW = "ontology";
+
 const { Database } = require("./index");
 const assert = require("assert");
+const fs = require("fs");
 const path = require("path");
 const Module = require("module");
 
@@ -48,8 +55,9 @@ const after = other.query("MATCH (n:Txn) RETURN n.name AS name");
 if (after.rows[0].name !== "Bob") {
   throw new Error("commit not visible");
 }
-// Namespace API (ADR-0117). system_ontologies is listed but not
-// queryable (ADR-0229): selecting it works; any query fails 42N17.
+// Namespace API (ADR-0117). system_ontologies is visible under the
+// opt-in above (ADR-0593) and not queryable (ADR-0229): selecting it
+// works; any query fails 42N17.
 const defaultConn = db.connect(); // omitting the argument keeps "neo4j"
 assert.strictEqual(defaultConn.query("RETURN 1 AS n").rows[0].n, 1);
 const sysConn = db.connect("system_ontologies");
@@ -284,7 +292,7 @@ try {
 // a RelateError with fabricated null fields (a missing "retryable"
 // would silently decode as false and a retry loop would decline to
 // retry). The Go and Swift clients hold the same contract.
-const { errorFromJson } = require("./errors");
+const { errorFromJson, ERROR_STAGES } = require("./errors");
 const { QUERY_TYPES, NAMESPACES, decodeQueryType, decodeNamespace } = require("./metadata");
 const shape = (over = {}) => JSON.stringify({
   code: "Neo.ClientError.Statement.ArithmeticError",
@@ -322,16 +330,27 @@ for (const bad of ["", "Neo4j", "other", null]) {
   assert.throws(() => decodeNamespace(bad), /ABI contract violated: namespace/);
 }
 // The runtime tables and the d.ts unions are one vocabulary: pin each
-// against the declared union so neither can drift.
+// against the declared union so neither can drift. Membership, not order —
+// the table and the union may list the same values in any order.
 {
-  const dts = require("fs").readFileSync(require("path").join(__dirname, "index.d.ts"), "utf8");
+  const dts = fs.readFileSync(path.join(__dirname, "index.d.ts"), "utf8");
   const union = (name) => {
     const m = dts.match(new RegExp(`export type ${name} = ([^;]+);`));
     assert.ok(m, `index.d.ts declares ${name}`);
     return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
   };
-  assert.deepStrictEqual(QUERY_TYPES, union("QueryType"));
-  assert.deepStrictEqual(NAMESPACES, union("Namespace"));
+  const closedVocabularies = [
+    [QUERY_TYPES, "QueryType"],
+    [NAMESPACES, "Namespace"],
+    [ERROR_STAGES, "ErrorStage"],
+  ];
+  for (const [values, name] of closedVocabularies) {
+    assert.deepStrictEqual(
+      [...values].sort(),
+      union(name).sort(),
+      `the ${name} table matches its d.ts union`
+    );
+  }
 }
 // Every violation names itself: not JSON, not an object, a missing field,
 // a mistyped field, an off-vocabulary stage.

@@ -1,12 +1,14 @@
 //! `USE` routing (ADR-0116 §3, §5): a statement targets the namespace named
 //! by its `USE` clause, resolved eagerly before execution, else the session
-//! namespace (ADR-0117 §2).
+//! namespace (ADR-0117 §2). The `system_ontologies` routes opt into the
+//! `ontology` preview feature (`preview_ontology`): ADR-0593 hides the
+//! namespace while the opt-in is off.
 
 use relate::{Database, Namespace, Value};
 
 mod common;
 
-use common::{connection, err_text, NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
+use common::{connection, err_text, preview_ontology, NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
 
 /// CE 42NA5 text (ADR-0116 §3); CE names the attempted graph on a second
 /// line (testdata/ce-errors/neo4j-ce.json `multi_graph_*`).
@@ -24,6 +26,7 @@ fn element_id_no_namespace_suffix(id: &str) -> String {
 
 #[test]
 fn use_routes_reads_and_writes_to_the_target_namespace() {
+    preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect_namespace("neo4j").unwrap();
 
@@ -113,6 +116,10 @@ fn composite_only_graph_functions_are_42n72_as_use_target_and_as_calls() {
 
 #[test]
 fn graph_by_element_id_is_42n72_in_expression_position() {
+    // The `rl-onto` USE-target leg needs the `ontology` opt-in (ADR-0593):
+    // without it the route fails as an unknown database before the
+    // not-queryable gate this test pins.
+    preview_ontology();
     let mut conn = connection();
 
     // In an arbitrary expression position `graph.byElementId` fails with
@@ -134,6 +141,7 @@ fn graph_by_element_id_is_42n72_in_expression_position() {
 
 #[test]
 fn use_graph_by_element_id_resolves_the_id_namespace() {
+    preview_ontology();
     let mut conn = connection();
 
     // ADR-0229 §5: the `system_ontologies` segment still decodes and routes
@@ -158,6 +166,7 @@ fn use_graph_by_element_id_resolves_the_id_namespace() {
 
 #[test]
 fn distinct_targets_in_one_statement_are_42na5() {
+    preview_ontology();
     let mut conn = connection();
 
     for (cypher, attempted) in [
@@ -206,6 +215,7 @@ fn distinct_targets_in_one_statement_are_42na5() {
 
 #[test]
 fn use_routing_inside_an_explicit_transaction() {
+    preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect_namespace("neo4j").unwrap();
 

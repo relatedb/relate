@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
+use relate_datasets::memory_controls::calibration::family_spec;
 use relate_datasets::memory_controls::harness::{default_store, run, CaseReport, Config};
 use relate_datasets::memory_controls::workload::{
     parse_index_mode, parse_ratio, parse_read_query, Controls, IndexMode, ReadQuery, WorkloadReport,
@@ -240,6 +241,21 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // The family filter resolves here, against the one table, so a bad
+    // `--calibration-family` name fails at startup regardless of which
+    // case runs.
+    let calibration_family = match args
+        .calibration_family
+        .as_deref()
+        .map(family_spec)
+        .transpose()
+    {
+        Ok(spec) => spec,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
     let cfg = Config {
         serve_bin: args.serve_bin.clone().unwrap_or_else(relate_bin_or_default),
         store: args.uri.clone().unwrap_or_else(default_store),
@@ -249,7 +265,7 @@ fn main() {
         case: args.case.clone(),
         calibration_repeats: args.calibration_repeats,
         calibration_hold_ms: args.calibration_hold_ms,
-        calibration_family: args.calibration_family.clone(),
+        calibration_family,
     };
     println!(
         "scale {}  workers {}  ratio {}  index {:?}  ops {}  warmup {}",

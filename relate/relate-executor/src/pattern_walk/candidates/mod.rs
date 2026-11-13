@@ -33,7 +33,7 @@ mod seek;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use seek::{id_fn_conversion, leaf_seek, named_call, IdConversion, Seek, ServedIds};
+pub(crate) use seek::{id_fn_conversion, leaf_seek, IdConversion, Seek, ServedIds};
 
 /// The label criterion is static (then `np.labels` is its exact operand
 /// list) or dynamic: one spelling, consulted by the seek funnel and the

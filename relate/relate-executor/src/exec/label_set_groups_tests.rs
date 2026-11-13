@@ -10,20 +10,15 @@ use std::sync::Arc;
 
 use super::label_set_groups::label_set_groups_result;
 use super::test_support::{
-    commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write, try_exec_cypher_on,
-    write_scratch,
+    clauses_of, commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write,
+    try_exec_cypher_on, write_scratch,
 };
 use crate::ctx::ExecCtx;
+use crate::graph::test_support::labelled_node as node;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use relate_core::Value;
-use relate_ir::Clause;
-
-fn clauses_of(cypher: &str) -> Vec<Clause> {
-    let q = relate_front::parse_and_lower(cypher).unwrap();
-    q.parts.into_iter().flat_map(|p| p.clauses).collect()
-}
 
 /// The label-set answer, or `None` when the statement declines to the scan.
 fn census_answer(view: &ExecGraph<'_>, cypher: &str) -> Option<Vec<Vec<Value>>> {
@@ -82,14 +77,6 @@ fn assert_matches_scan(g: &Graph, when: &str) {
             .unwrap_or_else(|| panic!("{when}: the label sets must answer: {q}"));
         assert_eq!(sorted(got), sorted(scan_answer(&view, q)), "{when}: {q}");
     }
-}
-
-fn node(g: &Graph, labels: &[&str]) -> i64 {
-    g.create_node(
-        labels.iter().map(|l| l.to_string()).collect(),
-        BTreeMap::new(),
-    )
-    .unwrap()
 }
 
 #[test]
@@ -310,19 +297,26 @@ fn is_expression_capacity(error: &relate_core::Error) -> bool {
     )
 }
 
+/// 400 nodes, each in its own `Label{i}` set plus the shared label, under
+/// the given expression-memory limit.
+fn many_sets_graph(limit: Option<u64>) -> Graph {
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(limit);
+    g.begin_write().unwrap();
+    for i in 0..400 {
+        node(&g, &[&format!("Label{i}"), "Shared"]);
+    }
+    g.commit_write();
+    g
+}
+
 /// ADR-0463: the grouped answer's group table (and its copy of the set
 /// map) is charged to the expression budget, so a paged statement over
 /// many label sets refuses at the cap exactly as the scan's aggregation
 /// does, instead of materializing the table unmetered.
 #[test]
 fn a_paged_grouped_answer_over_many_label_sets_hits_the_expression_budget() {
-    let mut g = Graph::default();
-    g.configure_expression_memory_limit(Some(30_000));
-    g.begin_write().unwrap();
-    for i in 0..400 {
-        node(&g, &[&format!("Label{i}"), "Shared"]);
-    }
-    g.commit_write();
+    let g = many_sets_graph(Some(30_000));
     let q = "MATCH (n) RETURN labels(n) AS ls, count(*) AS c ORDER BY ls SKIP 5 LIMIT 1";
     let view = ExecGraph::read(&g);
     let params = BTreeMap::new();
@@ -341,12 +335,7 @@ fn a_paged_grouped_answer_over_many_label_sets_hits_the_expression_budget() {
         .expect("the scan's aggregation refuses at the same cap");
     assert!(is_expression_capacity(&scan_error), "{scan_error}");
     // Under the default budget the same statement answers and equals the scan.
-    let ok = Graph::default();
-    ok.begin_write().unwrap();
-    for i in 0..400 {
-        node(&ok, &[&format!("Label{i}"), "Shared"]);
-    }
-    ok.commit_write();
+    let ok = many_sets_graph(None);
     let view = ExecGraph::read(&ok);
     assert_eq!(census_answer(&view, q).unwrap(), scan_answer(&view, q));
 }

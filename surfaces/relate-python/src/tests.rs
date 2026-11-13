@@ -1,8 +1,9 @@
 use super::*;
 use crate::convert::{
     cypher_value_to_py, date_to_py, duration_to_py, py_params_to_cypher, py_to_cypher_value,
-    py_type_name, PY_VALUE_DEPTH_CAP,
+    py_type_name,
 };
+use crate::walk::PY_VALUE_DEPTH_CAP;
 use indexmap::IndexMap;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::types::{PyDict, PyList, PyTuple};

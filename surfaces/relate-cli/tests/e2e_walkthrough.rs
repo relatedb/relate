@@ -496,11 +496,20 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "                       is not supported. Nothing is kept: the memory target releases",
             "                       the copy after the load, a path target removes it after the",
             "                       clone",
+            "                       system_ontologies is visible only under",
+            "                       RELATE_PREVIEW=ontology: without it the store",
+            "                       opens but the session connect fails with",
+            "                       'Graph not found: system_ontologies' (exit 6) and",
+            "                       SHOW DATABASES lists the two Community Edition",
+            "                       rows; with it the namespace is visible but not",
+            "                       queryable (only the administration commands run",
+            "                       from there)",
         ],
         "the final build's help must gain exactly the run, extension, --database \
          target-axis (LABS-903, ADR-0500), --timings (ADR-0581), \
          markdown-codec snapshot-format, \
-         markdown body-properties, durability-mode variable (ADR-0470), and \
-         --load (LABS-903, ADR-0500; LABS-872's remote fetch folded into it) rows"
+         markdown body-properties, durability-mode variable (ADR-0470), \
+         --load (LABS-903, ADR-0500; LABS-872's remote fetch folded into it), \
+         and --namespace system_ontologies visibility (ADR-0593) rows"
     );
 }

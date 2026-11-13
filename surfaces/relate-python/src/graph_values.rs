@@ -1,75 +1,57 @@
 //! The rich graph-value pyclasses returned from a query: [`Node`],
 //! [`Relationship`], [`Path`] and [`Point`].
 //!
-//! `convert` builds these, so their fields are crate-visible; the pymodule
-//! registers the classes from the crate root.
+//! `convert` builds these; `Node`, `Relationship` and `Point` expose
+//! crate-visible fields, and `Path` owns its shape through [`Path::new`] with
+//! private fields. The pymodule registers the classes from the crate root.
 
-use std::collections::HashSet;
-
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::convert::{enter_container, leave_container, PY_VALUE_DEPTH_CAP};
+use crate::walk::Walk;
 
-/// A copy of a property value with every list and map copied down the tree,
-/// so mutating a returned `data()` / `to_dict()` never reaches the row. Other
-/// values (scalars, points, vectors, temporals) are immutable and shared.
-/// Nesting deeper than [`PY_VALUE_DEPTH_CAP`] and self-referential lists or
-/// maps raise `ValueError` instead of overflowing the stack.
-fn copy_value<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    copy_value_at(value, 0, &mut HashSet::new())
-}
-
-fn copy_value_at<'py>(
-    value: &Bound<'py, PyAny>,
-    depth: usize,
-    visiting: &mut HashSet<usize>,
-) -> PyResult<Bound<'py, PyAny>> {
+/// A copy of a nested property value with every list and map copied down the
+/// tree, so mutating a returned `data()` / `to_dict()` never reaches the row.
+/// Other values (scalars, points, vectors, temporals) are immutable and shared.
+/// Nesting deeper than [`crate::walk::PY_VALUE_DEPTH_CAP`] and self-referential
+/// lists or maps raise `ValueError` instead of overflowing the stack.
+fn copy_value_at<'py>(value: &Bound<'py, PyAny>, walk: &mut Walk) -> PyResult<Bound<'py, PyAny>> {
     let py = value.py();
     if let Ok(list) = value.downcast::<PyList>() {
-        within_container(value, depth, visiting, |visiting| {
+        walk.enter(value, |walk| {
             let out = PyList::empty(py);
             for item in list.iter() {
-                out.append(copy_value_at(&item, depth + 1, visiting)?)?;
+                out.append(copy_value_at(&item, walk)?)?;
             }
             Ok(out.into_any())
         })
     } else if let Ok(dict) = value.downcast::<PyDict>() {
-        within_container(value, depth, visiting, |visiting| {
-            let out = PyDict::new(py);
-            for (k, v) in dict.iter() {
-                out.set_item(k, copy_value_at(&v, depth + 1, visiting)?)?;
-            }
-            Ok(out.into_any())
-        })
+        Ok(copy_dict(py, dict, walk)?.into_any())
     } else {
         Ok(value.clone())
     }
 }
 
-/// Run `copy` with `container` on the recursion path, after the depth and
-/// cycle checks, and take it off the path again however `copy` ends.
-fn within_container<'py>(
-    container: &Bound<'py, PyAny>,
-    depth: usize,
-    visiting: &mut HashSet<usize>,
-    copy: impl FnOnce(&mut HashSet<usize>) -> PyResult<Bound<'py, PyAny>>,
-) -> PyResult<Bound<'py, PyAny>> {
-    if depth > PY_VALUE_DEPTH_CAP {
-        return Err(PyValueError::new_err(format!(
-            "property nesting exceeds the maximum depth of {PY_VALUE_DEPTH_CAP}"
-        )));
-    }
-    enter_container(container, visiting)?;
-    let copied = copy(visiting);
-    leave_container(container, visiting);
-    copied
+/// Copy a mapping's entries with [`copy_value_at`], the walk opened on the
+/// dict itself.
+fn copy_dict<'py>(
+    py: Python<'py>,
+    dict: &Bound<'py, PyDict>,
+    walk: &mut Walk,
+) -> PyResult<Bound<'py, PyDict>> {
+    walk.enter(dict, |walk| {
+        let out = PyDict::new(py);
+        for (k, v) in dict.iter() {
+            out.set_item(k, copy_value_at(&v, walk)?)?;
+        }
+        Ok(out)
+    })
 }
 
-/// An entity's property dict, copied with [`copy_value`].
+/// An entity's property dict, copied with [`copy_dict`].
 fn copy_properties<'py>(py: Python<'py>, properties: &Py<PyDict>) -> PyResult<Bound<'py, PyDict>> {
-    Ok(copy_value(properties.bind(py).as_any())?.downcast_into::<PyDict>()?)
+    copy_dict(py, properties.bind(py), &mut Walk::property())
 }
 
 /// A graph node returned from a query. Exposes its integer `id`, its
@@ -269,8 +251,34 @@ impl Relationship {
 /// `path.nodes` (length n+1) and `path.relationships` (length n).
 #[pyclass(module = "relate._native")]
 pub(super) struct Path {
-    pub(super) nodes: Vec<Py<Node>>,
-    pub(super) relationships: Vec<Py<Relationship>>,
+    nodes: Vec<Py<Node>>,
+    relationships: Vec<Py<Relationship>>,
+}
+
+impl Path {
+    /// Build a path from its nodes and relationships. A path holds exactly one
+    /// more node than relationships; the engine's `CypherValue::Path` already
+    /// guarantees that, so a mismatch is an internal boundary failure (the
+    /// sibling path-element conversions raise `PyRuntimeError` for the same
+    /// class) — never a caller-supplied value error. Owning the invariant here,
+    /// at the one construction site ([`crate::convert`]), lets every renderer
+    /// ([`Path::data`], [`Path::to_dict`]) rely on it instead of re-checking.
+    pub(super) fn new(
+        nodes: Vec<Py<Node>>,
+        relationships: Vec<Py<Relationship>>,
+    ) -> PyResult<Self> {
+        if nodes.len() != relationships.len() + 1 {
+            return Err(PyRuntimeError::new_err(format!(
+                "malformed path: {} nodes, {} relationships",
+                nodes.len(),
+                relationships.len()
+            )));
+        }
+        Ok(Path {
+            nodes,
+            relationships,
+        })
+    }
 }
 
 #[pymethods]
@@ -301,9 +309,8 @@ impl Path {
     /// alternating a node's property dict and the relationship type.
     /// `to_dict()` keeps ids, labels and endpoints.
     fn data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        self.check_shape()?;
         let out = PyList::empty(py);
-        let (first, rest) = self.nodes.split_first().expect("check_shape: one node");
+        let (first, rest) = self.nodes.split_first().expect("Path::new: one node");
         out.append(first.borrow(py).data(py)?)?;
         for (rel, node) in self.relationships.iter().zip(rest) {
             out.append(rel.borrow(py).rel_type.as_str())?;
@@ -327,22 +334,6 @@ impl Path {
         out.set_item("nodes", nodes)?;
         out.set_item("relationships", rels)?;
         Ok(out)
-    }
-}
-
-impl Path {
-    /// A path holds one more node than relationships; a value built any other
-    /// way cannot be rendered, so say so instead of indexing out of range.
-    fn check_shape(&self) -> PyResult<()> {
-        if self.nodes.len() == self.relationships.len() + 1 {
-            Ok(())
-        } else {
-            Err(PyValueError::new_err(format!(
-                "malformed path: {} nodes, {} relationships",
-                self.nodes.len(),
-                self.relationships.len()
-            )))
-        }
     }
 }
 

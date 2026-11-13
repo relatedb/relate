@@ -77,7 +77,10 @@ graph properties (statement-scoped only, ADR-0327), UTF-8 identifier quirks.
 ### Namespace selection (ADR-0117)
 
 Every store has the fixed namespaces `neo4j`, `system` and
-`system_ontologies` (ADR-0116). Neo4j drivers select one through session or
+`system_ontologies` (ADR-0116) — the latter visible only under
+`RELATE_PREVIEW=ontology` (ADR-0593: the server process must be started
+with the opt-in for drivers to select it; `SHOW DATABASES` lists the two
+CE rows without it). Neo4j drivers select one through session or
 query configuration (`session(database=…)`, `execute_query(database_=…)`),
 which Bolt 4.x sends as `db` in the `BEGIN` extra and in the auto-commit
 `RUN` extra:

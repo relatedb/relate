@@ -39,6 +39,14 @@ def three_rows(db):
     return cur
 
 
+@pytest.fixture
+def tagged_node(db):
+    """A ``:P`` node carrying a ``tags`` list property, fetched as a rich
+    ``Node`` whose properties the tests mutate directly."""
+    db.execute("CREATE (:P {tags: ['x']})")
+    return db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
+
+
 class TestRecord:
     def test_is_a_dict(self, three_rows):
         row = three_rows.fetchone()
@@ -160,32 +168,26 @@ class TestRecord:
         assert row["a"]["tags"] == ["x"]
         assert row["r"]["t"] == ["y"]
 
-    def test_data_and_to_dict_reject_self_referential_properties(self, db):
-        db.execute("CREATE (:P {tags: ['x']})")
-        node = db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
-        node.properties["tags"].append(node.properties["tags"])
+    def test_data_and_to_dict_reject_self_referential_properties(self, tagged_node):
+        tagged_node.properties["tags"].append(tagged_node.properties["tags"])
         with pytest.raises(ValueError, match="cycle"):
-            node.data()
+            tagged_node.data()
         with pytest.raises(ValueError, match="cycle"):
-            node.to_dict()
+            tagged_node.to_dict()
 
-    def test_data_rejects_over_deep_properties(self, db):
-        db.execute("CREATE (:P {tags: ['x']})")
-        node = db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
+    def test_data_rejects_over_deep_properties(self, tagged_node):
         deep = []
         for _ in range(200):
             deep = [deep]
-        node.properties["deep"] = deep
+        tagged_node.properties["deep"] = deep
         with pytest.raises(ValueError, match="depth"):
-            node.data()
+            tagged_node.data()
 
-    def test_shared_substructure_in_properties_is_copied(self, db):
-        db.execute("CREATE (:P {tags: ['x']})")
-        node = db.execute("MATCH (a:P) RETURN a").fetchone()["a"]
+    def test_shared_substructure_in_properties_is_copied(self, tagged_node):
         shared = [1]
-        node.properties["a"] = shared
-        node.properties["b"] = shared
-        assert node.data()["a"] == [1] and node.data()["b"] == [1]
+        tagged_node.properties["a"] = shared
+        tagged_node.properties["b"] = shared
+        assert tagged_node.data()["a"] == [1] and tagged_node.data()["b"] == [1]
 
     def test_data_and_to_dict_keep_points_and_vectors(self, db):
         db.execute("CREATE (:G {p: point({x: 1.0, y: 2.0}), v: vector([1.0, 2.0], 2, FLOAT32)})")

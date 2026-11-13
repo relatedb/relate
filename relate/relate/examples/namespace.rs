@@ -7,6 +7,14 @@
 use relate::{Database, Namespace, Result, Value};
 
 fn main() -> Result<()> {
+    // The `system_ontologies` namespace's visibility is gated behind the
+    // preview opt-in (ADR-0593), together with the `db.ontology.*`
+    // procedures (ADR-0378). This in-process mutation is example-only: a
+    // library must not set the process environment. Library callers
+    // instead have the process owner set RELATE_PREVIEW=ontology before
+    // open — the documented deployment path. The variable is read once,
+    // at open, so it must be set before the call below.
+    std::env::set_var("RELATE_PREVIEW", "ontology");
     let db = Database::open(":memory:")?;
 
     // The default session namespace is `neo4j`, the user data graph.
@@ -35,8 +43,9 @@ fn main() -> Result<()> {
 
     // The session namespace changes only between transactions (ADR-0116 §5).
     conn.set_namespace("system_ontologies")?;
-    // `system_ontologies` is listed but not queryable (ADR-0229): selecting
-    // it works, and the one statement kind that still runs there is the
+    // `system_ontologies` is visible under the `ontology` opt-in
+    // (ADR-0593) and not queryable (ADR-0229): selecting it works, and
+    // the one statement kind that still runs there is the
     // database-administration set (ADR-0116 §2) — every other statement,
     // reads included, fails with the 42N17 text.
     let result = conn.query("SHOW DATABASES")?;

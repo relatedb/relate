@@ -92,7 +92,10 @@ impl Connection {
     /// the graph otherwise, ADR-0137). The guard is dropped before
     /// dispatch, so admission semantics are unchanged. The preview gate
     /// precedes compile-time CALL validation and the namespace gates on
-    /// every path (ADR-0378); CALL validation in turn precedes the
+    /// every path (ADR-0378); the namespace visibility gate (ADR-0593)
+    /// follows it and precedes CALL validation and every later gate, so a
+    /// namespace hidden by the preview set behaves exactly like a name that
+    /// never resolved; CALL validation in turn precedes the
     /// namespace gates, so a doubly-invalid statement reports the procedure
     /// error. All run exactly once here, above the EXPLAIN early-return and
     /// the normal dispatch, so no future early-return path can skip them.
@@ -153,6 +156,25 @@ impl Connection {
         if let Some(e) = self.preview_gate_error(&call_names) {
             return Err(e);
         }
+        // ADR-0116 §3: `USE` routes the statement; the planner resolved
+        // the target eagerly, so the resolved target picks the graph and
+        // the namespace rules it runs under. Derived once here — the one
+        // spelling every namespace-consuming gate below takes as input
+        // (the visibility gate, the §4 gates, the ontology gates and the
+        // stamp).
+        let namespace = logical.use_target.unwrap_or(self.namespace);
+        // ADR-0593: the namespace visibility gate, immediately after the
+        // procedures preview gate (ADR-0378's pinned first position stands)
+        // and before CALL validation and every later gate — so a namespace
+        // hidden by the preview set is indistinguishable from a name that
+        // never resolved: the 42N79 admin gate, the §4 namespace gates and
+        // dispatch never see it. `require_visible`'s fail-closed form is
+        // the ordinary unknown-database rejection (42N00), never the
+        // authored preview error — ADR-0371's name-gate rule: an error
+        // must not advertise a name the catalog does not list. The
+        // element-id `USE` route lands here too, on the resolved
+        // namespace.
+        namespace.require_visible(self.inner.graph.preview())?;
         validate_calls(&self.inner.graph, logical, params)?;
         if let Some(e) = self.transaction_gate_error(logical) {
             return Err(e);
@@ -171,12 +193,8 @@ impl Connection {
         if let Some(e) = self.admin_use_gate_error(logical) {
             return Err(e);
         }
-        // ADR-0116 §3: `USE` routes the statement; the planner resolved
-        // the target eagerly, so the resolved target picks the graph and
-        // the namespace rules it runs under.
         // ADR-0116 §4: the gates are plan-based (CE raises 42N17/42N18 at
         // semantic-check time), so they apply to EXPLAIN too.
-        let namespace = logical.use_target.unwrap_or(self.namespace);
         if let Some(e) = self.namespace_gate_error(logical, namespace) {
             return Err(e);
         }

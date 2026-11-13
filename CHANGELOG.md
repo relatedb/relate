@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `system_ontologies` namespace is now visible only under
+  `RELATE_PREVIEW=ontology` (ADR-0593), the same preview row that gates the
+  `db.ontology.*` procedures (ADR-0378). Without the opt-in the namespace
+  is invisible: `SHOW DATABASES` lists the two Community Edition rows, and
+  `USE system_ontologies`, session connect (`--namespace`, the client
+  `connect`/`setNamespace` APIs, Bolt's `db` routing) and
+  `ALTER DATABASE system_ontologies` all fail with the site's ordinary
+  unknown-database rejection (`Graph not found: system_ontologies`,
+  42N00) — never the authored preview error. With the opt-in set, the
+  namespace is visible and behaves exactly as before (ADR-0229: not
+  queryable, only the administration commands run from it). Stored
+  databases are unaffected: the durable catalog row stays and the listing
+  returns when the opt-in is set.
+
 ## [1.0.1] — 2026-11-12
 
 ### Added

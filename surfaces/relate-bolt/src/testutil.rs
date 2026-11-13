@@ -147,8 +147,14 @@ pub fn hello_fields() -> Vec<Pack> {
 }
 
 /// A fresh in-memory database — the store every fixture that owns its
-/// db opens, one spelling.
-fn memory_db() -> std::sync::Arc<relate::Database> {
+/// db opens, one spelling — opened with the `ontology` preview opt-in
+/// (ADR-0593). The opt-in is the fixture's precondition, not a per-test
+/// call: the setting is process-global and first-call-wins, so per-test
+/// calls make every store-opening test order-dependent. The flag only
+/// affects the gated surfaces; the transport tests that never touch them
+/// are unchanged by it.
+pub(crate) fn memory_db() -> std::sync::Arc<relate::Database> {
+    relate_test_support::preview::preview_ontology();
     std::sync::Arc::new(relate::Database::open(":memory:").unwrap())
 }
 

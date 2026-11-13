@@ -3,7 +3,8 @@
 The `db.ontology.*` procedures manage the store's single ontology document:
 one Ontology Graph Spec document for the user database `neo4j`, stored
 verbatim — the sole stored source of truth; no graph is derived from it, and
-the `system_ontologies` namespace is listed but not queryable
+the `system_ontologies` namespace is visible only under the same
+`RELATE_PREVIEW=ontology` opt-in (ADR-0593) and not queryable
 ([ADR-0116](../adr/0116-fixed-namespaces-community-edition-semantics.md),
 [ADR-0120](../adr/0120-ontology-document-persistence.md),
 [ADR-0121](../adr/0121-ontology-procedures.md),
@@ -54,6 +55,16 @@ so they cannot enable the feature; the procedures are unreachable there
 until a programmatic opt-in exists. The code itself still ships in every
 build — no Cargo feature and no `cfg` — and the ADR-0229 42N17 text is
 unchanged.
+
+The same registry row gates the `system_ontologies` namespace's visibility
+(ADR-0593): while the feature is off the namespace is invisible — `SHOW
+DATABASES` lists the two CE rows, and every route to the name (`USE`, the
+`rl-onto` element-id segment, session connect, `set_namespace`, `ALTER
+DATABASE`) fails with that site's ordinary unknown-database rejection,
+never the authored preview error above — ADR-0371's name-gate rule: an
+error must not advertise a name the catalog does not list. The durable
+catalog entry is untouched (the opt-in is per-open, not durable), so an
+existing store lists two rows while off and three once the opt-in is set.
 
 ## Procedures
 
@@ -263,11 +274,14 @@ Each procedure acts on the database it is executed against — the session
 database or the `USE` target (ADR-0227 §1) — which must be `neo4j`
 (ADR-0121 §2):
 
-- Executed against `system_ontologies`, every procedure — `get` included —
+- Executed against `system_ontologies` (visible only under the
+  `ontology` opt-in, ADR-0593), every procedure — `get` included —
   fails that namespace's not-queryable gate first (ADR-0229 §1/§2), with
   `SemanticError: This database is not queryable. Use the db.ontology.*
   procedures on the user database 'neo4j' instead.` (GQLSTATUS 42N17,
-  `EXPLAIN`/`PROFILE`-wrapped included).
+  `EXPLAIN`/`PROFILE`-wrapped included). While the opt-in is off the
+  namespace itself is invisible — the route fails as an unknown database
+  before the procedure surface is reached.
 - Executed against `system`, the procedures fail with
   `Ontologies can only be stored for the user database 'neo4j'.`
 - An unknown `USE` target fails at routing with 42N00 before the procedure
@@ -287,16 +301,32 @@ database or the `USE` target (ADR-0227 §1) — which must be `neo4j`
   semantics; see above).
 - `apply` writes only `neo4j` and may run in explicit transactions.
 
-## The `system_ontologies` namespace: listed, not queryable
+## The `system_ontologies` namespace: gated visibility, never queryable
 
-`system_ontologies` stays a fixed, listed namespace — `SHOW DATABASES` keeps
-its row (ADR-0116 §6's values), the name stays accepted everywhere a
-namespace name is parsed (session-namespace selection over the embedding
-APIs and Bolt, a static `USE` target, the CLI `--namespace` flag), and
-`graph.byElementId` keeps decoding the `rl-onto`
-element-id segment to it. But every statement routed to it — reads
-included, `EXPLAIN`/`PROFILE`-wrapped included — fails at the plan-based
-semantic gate with (ADR-0229 §1/§2):
+`system_ontologies` stays a fixed namespace of every store — its durable
+catalog row is always written — but its dialect visibility rides the
+`ontology` preview row (ADR-0593):
+
+- **Opt-in off (the default): the namespace is invisible.** `SHOW
+  DATABASES` lists the two CE rows, and every route to the name fails
+  with the site's ordinary unknown-database rejection — `USE
+  system_ontologies` (and `graph.byElementId` on the `rl-onto` segment)
+  with `Graph not found: system_ontologies` (42N00), session-namespace
+  connect and `set_namespace` the same, `ALTER DATABASE
+  system_ontologies` as an unknown target (a no-op under `IF EXISTS`).
+  The name-shape stays valid — the CLI `--namespace` flag and the client
+  wire vocabularies still accept the spelling — and the refusal moves to
+  the post-open connect. Never the authored preview error: an error must
+  not advertise a name the catalog does not list (ADR-0371's name-gate
+  rule).
+- **Opt-in on: the namespace is visible and selectable** everywhere a
+  namespace name is parsed — `SHOW DATABASES` keeps its row (ADR-0116
+  §6's values), session-namespace selection over the embedding APIs and
+  Bolt, a static `USE` target, the CLI `--namespace` flag, and
+  `graph.byElementId` keeps decoding the `rl-onto` element-id segment to
+  it. But every statement routed to it — reads
+  included, `EXPLAIN`/`PROFILE`-wrapped included — fails at the plan-based
+  semantic gate with (ADR-0229 §1/§2):
 
 ```text
 semantic error: SemanticError: This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead.
@@ -420,13 +450,15 @@ CALL db.ontology.get() YIELD ontology RETURN ontology;
 CALL db.ontology.get('json') YIELD ontology RETURN ontology;
 ```
 
-The `system_ontologies` namespace is listed by `SHOW DATABASES` but not
-queryable — every other statement routed there, reads included, fails with
-the 42N17 text above (ADR-0229):
+The `system_ontologies` namespace is visible only under the same
+`RELATE_PREVIEW=ontology` opt-in (ADR-0593) and not queryable — every other
+statement routed there, reads included, fails with the 42N17 text above
+(ADR-0229). Without the opt-in the namespace is invisible: two rows, and
+`USE` fails as an unknown database:
 
 ```cypher
-SHOW DATABASES YIELD name RETURN name;   -- three rows: neo4j, system, system_ontologies
-USE system_ontologies MATCH (n) RETURN n;  -- fails: 42N17, not queryable
+SHOW DATABASES YIELD name RETURN name;   -- two rows without the opt-in (ADR-0593), three with it
+USE system_ontologies MATCH (n) RETURN n;  -- opt-in on: fails 42N17, not queryable; off: 42N00, unknown database
 ```
 
 Apply the ontology as the database's current graph type. Data violating it

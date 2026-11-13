@@ -55,14 +55,7 @@ fn list_limit() -> usize {
 /// Run `f` with the listing limit lowered to `limit` on this thread.
 #[cfg(test)]
 pub(super) fn with_list_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
-    struct Restore(Option<usize>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            LIST_LIMIT.with(|c| c.set(self.0));
-        }
-    }
-    let _restore = Restore(LIST_LIMIT.with(|c| c.replace(Some(limit))));
-    f()
+    super::with_override(&LIST_LIMIT, limit, f)
 }
 
 /// Which arm of [`Route::anchor`] answered one route run — the value the

@@ -18,14 +18,15 @@ use relate_ir::{classify_aggregate, AggregateKind, Clause, Expr, OrderItem, Proj
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
-use crate::eval::eval;
+use crate::eval::{eval, named_call};
+use crate::graph::LabelSetCount;
 use crate::group_key::GroupKey;
 use crate::overlay::ExecGraph;
-use crate::pattern_walk::named_call;
 use crate::row::Row;
 use crate::store::empty_properties;
 
-use super::count_stats::{plain_match_pattern, whole_population_node_var};
+use super::count_stats::{plain_match_pattern, stats_view_serves, whole_population_node_var};
+use super::order::folded_order_items;
 use super::project::{project_rows, return_result, ProjectSpec, RowSource};
 use super::{QueryResult, RowFeed};
 
@@ -35,21 +36,15 @@ use super::{QueryResult, RowFeed};
 /// node's.
 const STAND_IN_NODE_ID: NodeId = -1;
 
-/// What one RETURN item is in the recognized shape.
-enum ItemRole {
-    /// A group key: an expression over the node's label list alone.
-    Key,
-    /// The one `count(*)` / `count(n)`.
-    Count,
-}
-
-/// A recognized statement: the node variable the keys read, each item's
-/// role in item order, and the ORDER BY with every key rewritten onto an
-/// output column (the grouped rows carry no node to evaluate against).
+/// A recognized statement: the node variable the keys read, the position
+/// of the one node count among the RETURN items (every other item is a
+/// group key: an expression over the node's label list alone), and the
+/// ORDER BY with every key rewritten onto an output column (the grouped
+/// rows carry no node to evaluate against).
 struct LabelGroupShape<'a> {
     var: &'a SmallName,
     items: &'a [Projection],
-    roles: Vec<ItemRole>,
+    count_at: usize,
     order: Vec<OrderItem>,
     skip: &'a Option<Expr>,
     limit: &'a Option<Expr>,
@@ -97,27 +92,23 @@ fn is_node_count(expr: &Expr, var: &SmallName) -> bool {
     }
 }
 
-/// Rewrite one ORDER BY key onto an output column: a bare reference to an
-/// output name stays, an expression equal to an output item becomes a
-/// reference to that item's column. Anything else (an expression the
-/// grouped rows cannot evaluate) is `None`.
-fn order_on_columns(item: &OrderItem, items: &[Projection]) -> Option<OrderItem> {
-    let column = match &item.expr {
-        Expr::Variable(v) => items
+/// Rewrite the ORDER BY onto output columns: each key resolves to its
+/// projection item through the canonical [`folded_order_items`] (an
+/// expression equal to an output item, or a bare reference to an output
+/// name), and becomes a reference to that item's column. A key the
+/// grouped rows cannot evaluate is `None`.
+fn order_on_columns(order: &[OrderItem], items: &[Projection]) -> Option<Vec<OrderItem>> {
+    let resolved = folded_order_items(order, items)?;
+    Some(
+        order
             .iter()
-            .enumerate()
-            .find(|(i, p)| v.with_str(|text| p.output_name(*i) == text))
-            .map(|(i, p)| p.output_name(i))?,
-        expr => items
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.expr == *expr)
-            .map(|(i, p)| p.output_name(i))?,
-    };
-    Some(OrderItem {
-        expr: Expr::Variable(SmallName::from_name(&column)),
-        ascending: item.ascending,
-    })
+            .zip(resolved)
+            .map(|(key, item)| OrderItem {
+                expr: Expr::Variable(SmallName::from_name(&items[item].output_name(item))),
+                ascending: key.ascending,
+            })
+            .collect(),
+    )
 }
 
 /// Recognize the label-group shape. Deliberately conservative: exactly
@@ -141,23 +132,20 @@ fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
         return None;
     };
     let var = whole_population_node_var(plain_match_pattern(first)?)?;
-    let roles: Vec<ItemRole> = items
+    let mut counts = items
         .iter()
-        .map(|p| {
-            if is_node_count(&p.expr, var) {
-                Some(ItemRole::Count)
-            } else if is_label_key(&p.expr, var) {
-                Some(ItemRole::Key)
-            } else {
-                None
-            }
-        })
-        .collect::<Option<_>>()?;
-    let counts = roles
+        .enumerate()
+        .filter(|(_, p)| is_node_count(&p.expr, var))
+        .map(|(i, _)| i);
+    let count_at = counts.next()?;
+    if counts.next().is_some() || items.len() == 1 {
+        return None;
+    }
+    let keys_only = items
         .iter()
-        .filter(|r| matches!(r, ItemRole::Count))
-        .count();
-    if counts != 1 || roles.len() == 1 {
+        .enumerate()
+        .all(|(i, p)| i == count_at || is_label_key(&p.expr, var));
+    if !keys_only {
         return None;
     }
     if items
@@ -167,14 +155,11 @@ fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
     {
         return None;
     }
-    let order = order
-        .iter()
-        .map(|o| order_on_columns(o, items))
-        .collect::<Option<Vec<_>>>()?;
+    let order = order_on_columns(order, items)?;
     Some(LabelGroupShape {
         var,
         items,
-        roles,
+        count_at,
         order,
         skip,
         limit,
@@ -188,7 +173,7 @@ fn group_label_sets(
     graph: &ExecGraph<'_>,
     ctx: ExecCtx<'_>,
     shape: &LabelGroupShape<'_>,
-    sets: Vec<(std::sync::Arc<Vec<String>>, u64)>,
+    sets: Vec<LabelSetCount>,
 ) -> Result<Vec<Row>> {
     let names: Vec<String> = shape
         .items
@@ -204,7 +189,7 @@ fn group_label_sets(
     for (labels, _) in &sets {
         retained.add_bytes(
             graph,
-            (std::mem::size_of::<(std::sync::Arc<Vec<String>>, u64)>() as u64)
+            (std::mem::size_of::<LabelSetCount>() as u64)
                 .saturating_add(crate::workspace::value_buffer_bytes(labels.len()))
                 .saturating_add(labels.iter().map(|l| l.len() as u64).sum::<u64>()),
         )?;
@@ -223,10 +208,13 @@ fn group_label_sets(
         let mut row = Row::new();
         row.insert(var_name.clone(), Value::from_node(node));
         let mut keys = Vec::new();
-        for (p, role) in shape.items.iter().zip(&shape.roles) {
-            if matches!(role, ItemRole::Key) {
-                keys.push(eval(graph, &row, &p.expr, ctx.params)?);
-            }
+        for (_, p) in shape
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != shape.count_at)
+        {
+            keys.push(eval(graph, &row, &p.expr, ctx.params)?);
         }
         let identity: Vec<GroupKey> = keys.iter().map(GroupKey::new).collect();
         match index.get(&identity) {
@@ -254,14 +242,14 @@ fn group_label_sets(
         .map(|(keys, count)| {
             let mut keys = keys.into_iter();
             let mut row = Row::new();
-            for (name, role) in names.iter().zip(&shape.roles) {
-                let value = match role {
-                    ItemRole::Key => keys
-                        .next()
-                        .expect("every Key item evaluated one value per set"),
-                    ItemRole::Count => Value::Int(
+            for (i, name) in names.iter().enumerate() {
+                let value = if i == shape.count_at {
+                    Value::Int(
                         i64::try_from(count).expect("a group count past i64 is a broken store"),
-                    ),
+                    )
+                } else {
+                    keys.next()
+                        .expect("every key item evaluated one value per set")
                 };
                 row.insert(name.clone(), value);
             }
@@ -286,10 +274,7 @@ pub(super) fn label_set_groups_result(
     scope: Option<&Row>,
 ) -> Result<Option<(Vec<Row>, QueryResult)>> {
     let graph = ctx.graph;
-    if !graph.sees_exact_base_stats() {
-        return Ok(None);
-    }
-    if seed_rows.len() != 1 || !seed_rows[0].is_empty() {
+    if !stats_view_serves(graph, seed_rows) {
         return Ok(None);
     }
     let Some(shape) = recognize_label_groups(clauses) else {

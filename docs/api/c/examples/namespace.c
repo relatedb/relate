@@ -7,6 +7,7 @@
  *   cc -I surfaces/relate-ffi/include example.c -L target/debug -lrelate_ffi
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "relate.h"
 
@@ -26,6 +27,14 @@ static relate_query_result run(relate_connection conn, const char *query) {
 }
 
 int main(void) {
+    /* ADR-0593: system_ontologies is visible only under the `ontology`
+     * preview opt-in; set RELATE_PREVIEW before the open (it is read
+     * once, at open). The portable spelling: MSVC has no setenv. */
+#ifdef _WIN32
+    _putenv_s("RELATE_PREVIEW", "ontology");
+#else
+    setenv("RELATE_PREVIEW", "ontology", 1);
+#endif
     relate_database db = NULL;
     relate_connection conn = NULL;
     relate_query_result result = NULL;
@@ -38,8 +47,9 @@ int main(void) {
     /* Connect straight into system_ontologies; names match
      * case-insensitively. An unknown name is refused through the
      * out-param error channel: "Graph not found: <name>" (ADR-0146). The
-     * namespace is listed but not queryable (ADR-0229): the one statement
-     * kind that still runs there is the administration set (ADR-0116 §2). */
+     * namespace is visible under the `ontology` opt-in (ADR-0593) and not
+     * queryable (ADR-0229): the one statement kind that still runs there
+     * is the administration set (ADR-0116 §2). */
     if (relate_connect_namespace(db, "system_ontologies", &conn, &err) != RELATE_OK) {
         take_error("connect_namespace", err);
         return 1;
