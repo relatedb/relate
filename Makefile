@@ -74,6 +74,7 @@ SWIFT_EXAMPLES = $(sort $(notdir $(wildcard docs/api/swift/examples/Sources/*)))
 
 ## swift-examples: Run every docs/api/swift example (each asserts its own output)
 swift-examples:
+	@test -n "$(SWIFT_EXAMPLES)" || { echo "swift-examples: no example directories under docs/api/swift/examples/Sources"; exit 2; }
 	cd docs/api/swift/examples && for e in $(SWIFT_EXAMPLES); do \
 		echo "== $$e"; $(SWIFT_ENV) swift run -q $$e || exit 1; done
 

@@ -47,10 +47,14 @@ import Testing
             #expect(reader.isReadOnly)
             #expect(try reader.connect().query("MATCH (p:P) RETURN p.v").scalar() == 1)
             #expect(throws: RelateError.self) { try reader.connect().query("CREATE (:P)") }
-            // `file://localhost/…` names the same local file.
-            var local = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-            local.host = "localhost"
-            #expect(try Database(url: try #require(local.url), readOnly: true).path == url.path)
+            // `file://localhost/…` names the same local file, however the
+            // host name is spelled.
+            for host in ["localhost", "LOCALHOST", "localhost."] {
+                var local = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+                local.host = host
+                let spelled = try #require(local.url)
+                #expect(try Database(url: spelled, readOnly: true).path == url.path, "host \(host)")
+            }
         }
     }
 
@@ -60,7 +64,7 @@ import Testing
             let error = try #require(throws: RelateError.self) { try Database(url: url) }
             guard case .invalidParameter(let message) = error else {
                 Issue.record("expected invalidParameter for \(text), got \(error)")
-                return ""
+                throw error
             }
             return message
         }
