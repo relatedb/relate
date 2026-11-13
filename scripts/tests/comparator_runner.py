@@ -32,6 +32,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from child_env import child_env
+
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPARE = ROOT / "scripts" / "compare-loadtest.py"
@@ -50,18 +52,15 @@ def scrubbed_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     SCRUB_PREFIXES are scrubbed, so the comparators' documented defaults
     apply no matter what the host shell (or a GitHub Actions runner,
     which exports `GITHUB_ACTIONS=true` ambiently) carries; a test opts
-    variables back in through `extra_env`. One policy, one spelling —
-    the comparator suites and the query-latency gate suite all build
-    their child environments through this.
+    variables back in through `extra_env`. The copy-scrub-override shape
+    is child_env's (the one policy); this call site only widens the scrub
+    vocabulary from exact names to the knob prefixes.
     """
-    env = os.environ.copy()
-    env.pop("GITHUB_ACTIONS", None)
-    for key in list(env):
-        if key.startswith(SCRUB_PREFIXES):
-            del env[key]
-    if extra_env:
-        env.update(extra_env)
-    return env
+    scrub = [
+        "GITHUB_ACTIONS",
+        *(key for key in os.environ if key.startswith(SCRUB_PREFIXES)),
+    ]
+    return child_env(scrub, extra_env)
 
 
 def run_pair(

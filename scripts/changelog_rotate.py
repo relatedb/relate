@@ -35,15 +35,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import re
-import shutil
 import sys
-import tempfile
 from dataclasses import dataclass
 from datetime import date as date_type
 from pathlib import Path
 from typing import Callable, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+
+from atomic_write import atomic_write
 
 UNRELEASED_REF = "[Unreleased]:"
 
@@ -234,20 +235,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RotateError as exc:
         print(exc, file=sys.stderr)
         return 1
-    # Atomic update through the shared sidecar shape (`<name>.tmp.XXXXXX`,
-    # the one scripts/lib/toml.sh's writers own and the bump's rollback
-    # removes through toml_remove_sidecars), preserving the file's mode
-    # across the replace.
-    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".tmp.", dir=path.parent)
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(rotated)
-        shutil.copymode(path, tmp)
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    # Atomic update through the shared sidecar writer (scripts/lib/
+    # atomic_write.py), so an interrupt never truncates the CHANGELOG.
+    atomic_write(path, rotated)
     return 0
 
 

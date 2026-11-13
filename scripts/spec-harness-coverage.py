@@ -208,12 +208,13 @@ class Summary:
 def parse_summary(raw: object) -> tuple[Summary | None, list[str]]:
     """Validate one decoded `summary.json` and return its [`Summary`], or
     `(None, diagnostics)` on the first shape the contract does not
-    recognize: a non-object summary, a missing or misshapen total (the
-    roles' absence rules live on [`TotalRole`]), a category rollup that
-    is not a str -> count map of identifier-shaped names, a rollup that
-    breaks the @fails exclusion (`sum(failure_categories) != failed` —
-    ADR-0482 §3), or a run that executed no scenarios. Total over its
-    input; never a silent default.
+    recognize: a non-object summary; a missing or non-object `totals`
+    object; a missing or misshapen total (the roles' absence rules live on
+    [`TotalRole`]); a totals key outside the [`TOTALS_KEYS`] vocabulary; a
+    missing `failure_categories`, or one that is not a str -> count map of
+    identifier-shaped names; a rollup that breaks the @fails exclusion
+    (`sum(failure_categories) != failed` — ADR-0482 §3); or a run that
+    executed no scenarios. Total over its input; never a silent default.
 
     The one walk over [`TOTALS_KEYS`] validates every total and collects
     everything the Summary is built from — the counted roles into one
@@ -259,7 +260,12 @@ def parse_summary(raw: object) -> tuple[Summary | None, list[str]]:
             "vocabulary (ADR-0482 §3)"
             for key in sorted(unknown)
         ]
-    categories = raw.get("failure_categories")
+    # Absence is named as absence, like the totals walk above: a missing
+    # `failure_categories` is a different fact from a present-but-malformed
+    # one, and each carries its own diagnostic.
+    if "failure_categories" not in raw:
+        return None, ["failure_categories is missing (required member)"]
+    categories = raw["failure_categories"]
     if not isinstance(categories, dict) or not all(
         isinstance(name, str)
         and CATEGORY_NAME.fullmatch(name)

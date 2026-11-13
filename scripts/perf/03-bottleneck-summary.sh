@@ -11,24 +11,36 @@ source scripts/perf/_common.sh
 perf_mode_base "${1:-}"
 perf_require_data "bottleneck summary"
 
+# The percent-row regex, spelled once: the self and call-graph views both
+# filter on it.
+PERCENT_ROW='^\s*[0-9]+\.[0-9]+%'
+
+# A no-match is not a failure for the filters below — grep exits 1 when it
+# selects nothing — but a grep error (exit 2) still fails the script. Stating
+# the policy once here beats a `|| true` at each call site.
+matches() {
+  local status
+  grep "$@" || { status=$?; [[ $status -eq 1 ]]; }
+}
+
 # One perf report per view, captured whole: a failed report exits here with
-# its stderr visible, and the greps below can no-match without failing the
-# summary (`|| true` covers only that genuine no-match case).
+# its stderr visible, and the filters below can no-match without failing the
+# summary.
 self_report=$(perf report -i "$LT.perf" --stdio --no-children)
 children_report=$(perf report -i "$LT.perf" --stdio --children)
 
 echo "== top functions (self) =="
-{ grep -E '^\s*[0-9]+\.[0-9]+%' <<< "$self_report" || true; } | sed -n '1,25p'
+matches -E "$PERCENT_ROW" <<< "$self_report" | sed -n '1,25p'
 
 echo
 echo "== share by engine layer (inclusive, from call graph) =="
-{ grep -E '^\s*[0-9]+\.[0-9]+%' <<< "$children_report" || true; } \
-  | { grep -oE 'relate_[a-z_]+' || true; } | sort | uniq -c | sort -rn | sed -n '1,20p' \
+matches -E "$PERCENT_ROW" <<< "$children_report" \
+  | matches -oE 'relate_[a-z_]+' | sort | uniq -c | sort -rn | sed -n '1,20p' \
   | while read -r n sym; do printf "%6d  %s\n" "$n" "$sym"; done
 
 echo
 echo "== lock/wait share =="
-{ grep -iE 'psynch|futex|wait|lock|fsync|fcntl|sync_all' <<< "$self_report" || true; } | sed -n '1,12p'
+matches -iE 'psynch|futex|wait|lock|fsync|fcntl|sync_all' <<< "$self_report" | sed -n '1,12p'
 
 echo
 echo "Hint: if 'commit::CommitWaiter' or futex dominates in memory mode, that is"

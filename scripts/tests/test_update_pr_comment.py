@@ -32,7 +32,7 @@ import unittest
 from pathlib import Path
 
 from child_env import REPORTING_ENV, child_env
-from loadtest_fixtures import aggregator_env, report
+from loadtest_fixtures import BaselineReportTreeMixin, aggregator_env, report
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -726,7 +726,7 @@ class DocPathTests(UpdatePrCommentTestBase):
         self.assertIn("| ops/s | 100.00 | 95.00 |", body)
 
 
-class RoundTripTests(UpdatePrCommentTestBase):
+class RoundTripTests(BaselineReportTreeMixin, UpdatePrCommentTestBase):
     """The anchor: the REAL aggregator renders a REAL pair through the
     REAL comparator, and the REAL updater posts the REAL document. If
     any layer of the comparator → aggregator → updater token chain
@@ -734,16 +734,7 @@ class RoundTripTests(UpdatePrCommentTestBase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.baselines = self.sandbox / "baselines"
-        self.reports = self.sandbox / "reports"
-        self.baselines.mkdir()
-        self.reports.mkdir()
-
-    def write_baseline(self, name: str, doc: dict) -> None:
-        (self.baselines / name).write_text(json.dumps(doc))
-
-    def write_report(self, name: str, doc: dict) -> None:
-        (self.reports / name).write_text(json.dumps(doc))
+        self.make_tree(self.sandbox)
 
     def render_document(self) -> Path:
         """Run the real `compare-baselines.sh --render-only` over the

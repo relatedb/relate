@@ -2,8 +2,8 @@
 corpus builder.
 
 Covers the Gherkin walk's one-sink container model (a step before any
-Background/Scenario is dropped, never mis-filed; a second Background
-reopens the background sink), the doc-string dedent that delegates to
+Background/Scenario is a loud parse error, never a silent drop; a second
+Background reopens the background sink), the doc-string dedent through
 `textwrap.dedent` — including the whitespace-only-line normalization a
 hand-rolled margin walk differs on — the top-level-semicolon splitter's
 quote tracking, the keyword filter, and `main`'s one dedupe pass, where
@@ -28,47 +28,13 @@ def feature_text(*lines: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def tck_statements_of(*lines: str):
+def tck_statements_of(*lines: str) -> list[str]:
     """The statements `tck_statements` reads out of one synthetic
     `.feature` file — the setup every tck_statements case shares."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "a.feature").write_text(feature_text(*lines), encoding="utf-8")
         return SUBJECT.tck_statements(root)
-
-
-class DedentDocStringTests(unittest.TestCase):
-    """The doc string dedent is `textwrap.dedent`, and its
-    whitespace-only-line behavior is load-bearing, not incidental."""
-
-    def test_common_leading_whitespace_is_removed(self) -> None:
-        self.assertEqual(
-            SUBJECT._dedent_doc_string(["    MATCH (n)", "    RETURN n"]),
-            "MATCH (n)\nRETURN n",
-        )
-
-    def test_whitespace_only_lines_normalize_to_empty(self) -> None:
-        # The hand-rolled margin walk left a whitespace-only line longer
-        # than the common indent with its excess spaces; textwrap.dedent
-        # empties it. The corpus must carry the normalized form.
-        self.assertEqual(
-            SUBJECT._dedent_doc_string(["    MATCH (n)", "      ", "    RETURN n"]),
-            "MATCH (n)\n\nRETURN n",
-        )
-
-    def test_tab_indent_is_removed(self) -> None:
-        self.assertEqual(
-            SUBJECT._dedent_doc_string(["\tMATCH (n)", "\tRETURN n"]),
-            "MATCH (n)\nRETURN n",
-        )
-
-    def test_all_blank_lines_collapse_to_one_newline(self) -> None:
-        # textwrap.dedent's documented shape for whitespace-only input —
-        # callers strip the result, so it reads as empty.
-        self.assertEqual(SUBJECT._dedent_doc_string(["   ", "\t"]), "\n")
-
-    def test_no_lines_is_empty(self) -> None:
-        self.assertEqual(SUBJECT._dedent_doc_string([]), "")
 
 
 class ParseFeatureTests(unittest.TestCase):
@@ -97,17 +63,43 @@ class ParseFeatureTests(unittest.TestCase):
             ["MATCH (n)\nRETURN n"],
         )
 
-    def test_step_before_any_container_is_dropped(self) -> None:
+    def test_doc_string_whitespace_only_lines_normalize_to_empty(self) -> None:
+        # The dedent is `textwrap.dedent`, and its whitespace-only-line
+        # behavior is load-bearing: a hand-rolled margin walk left a
+        # whitespace-only line longer than the common indent with its excess
+        # spaces, where textwrap.dedent empties it. The corpus must carry
+        # the normalized form.
         feature = SUBJECT.parse_feature(
             feature_text(
-                "Feature: F",
-                "    Given a stray step",
                 "  Scenario: S",
-                "    Then ok",
+                "    When executing query:",
+                '      """',
+                "      MATCH (n)",
+                "        ",
+                "      RETURN n",
+                '      """',
             )
         )
-        self.assertEqual(feature.background, [])
-        self.assertEqual(len(feature.scenarios[0].steps), 1)
+        self.assertEqual(
+            [s.doc_string for s in feature.scenarios[0].steps],
+            ["MATCH (n)\n\nRETURN n"],
+        )
+
+    def test_a_step_before_any_container_is_a_loud_parse_error(self) -> None:
+        # A step outside any Background/Scenario is not valid Gherkin: the
+        # walk names the file and exits rather than dropping the step.
+        with self.assertRaises(SystemExit) as caught:
+            SUBJECT.parse_feature(
+                feature_text(
+                    "Feature: F",
+                    "    Given a stray step",
+                    "  Scenario: S",
+                    "    Then ok",
+                ),
+                source="stray.feature",
+            )
+        self.assertIn("stray.feature", str(caught.exception))
+        self.assertIn("outside any Background/Scenario", str(caught.exception))
 
     def test_a_second_background_reopens_the_background_sink(self) -> None:
         feature = SUBJECT.parse_feature(
@@ -336,17 +328,26 @@ class MainTests(unittest.TestCase):
     """main() over stubbed collectors — the dedupe pass, its workload-first
     attribution, and the summary it prints."""
 
-    def run_main(self, workloads, tck):
+    def run_main(
+        self, workloads: list[str], tck: list[str] | None
+    ) -> tuple[str, str, Path]:
         """Run main() with stubbed collectors; return (stdout, corpus text,
         the corpus path main wrote)."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "corpus.txt"
             buffer = io.StringIO()
+            # One corpus value: the tck_root stub returns the temp dir only
+            # when the corpus is set (never a path the collector ignores),
+            # and the tck_statements stub returns the statements — so
+            # "unset" is tested once. When unset, main() takes its skip
+            # branch and never calls the collector, so the stub needs no
+            # fallback: a contract change surfaces as a loud TypeError.
+            root = Path(tmp) if tck is not None else None
             with mock.patch.multiple(
                 SUBJECT,
                 workload_statements=lambda: list(workloads),
-                tck_root=lambda: None if tck is None else Path("/stub"),
-                tck_statements=lambda root: list(tck or []),
+                tck_root=lambda: root,
+                tck_statements=lambda _root: list(tck),
                 OUT=out,
             ):
                 with contextlib.redirect_stdout(buffer):

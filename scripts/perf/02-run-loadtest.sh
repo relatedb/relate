@@ -31,7 +31,7 @@ perf record -F 997 --call-graph dwarf -o "$LT.perf" -- "$LOADTEST_BIN" "${LOADTE
 # written, so a skip is reported and the listing continues.
 # `sed -n '1,60p'` (not `head`) consumes the whole stream, so the report
 # block's pipeline status is honest under pipefail.
-collapser=$(pick_stage inferno-collapse-perf stackcollapse-perf.pl)
+collapser=$(perf_pick_stage inferno-collapse-perf stackcollapse-perf.pl)
 produce_report() { perf report -i "$LT.perf" --stdio --no-children | sed -n '1,60p'; }
 produce_folded() { perf script -i "$LT.perf" | "$collapser"; }
 
@@ -40,14 +40,15 @@ echo "wrote:"
 perf_announce "$LT.perf" "perf record data"
 perf_announce "$LT.out" "loadtest stdout"
 # perf report's stderr stays visible: a failed report is named as skipped
-# instead of a listing row.
+# instead of a listing row. The reason is cause-neutral — perf_produce appends
+# the cause (the producer failed, or wrote nothing).
 perf_produce "$LT.report" "top functions" \
-  "perf report produced no output for $LT.report; see error above" produce_report || true
+  "perf report for $LT.report" produce_report || true
 # Folded stacks need a collapser; without one the flamegraph step is skipped
 # loudly rather than half-done.
 if [[ -n "$collapser" ]]; then
   perf_produce "$LT.folded" "folded stacks for a flamegraph" \
-    "perf script | $collapser produced no $LT.folded; see error above" produce_folded || true
+    "perf script | $collapser for $LT.folded" produce_folded || true
 else
   perf_skip "folded stacks" "install inferno or set FLAMEGRAPH_DIR for $LT.folded"
 fi

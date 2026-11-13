@@ -75,26 +75,18 @@ class Feature:
     scenarios: list[Scenario] = field(default_factory=list)
 
 
-def _dedent_doc_string(lines: list[str]) -> str:
-    """A doc string's lines dedented by their common leading whitespace.
-
-    `textwrap.dedent` is the one implementation of the rule — including
-    its normalization of whitespace-only lines to empty, the load-bearing
-    half the hand-rolled margin walk used to differ on
-    (`scripts/tests/test_front_bench_corpus.py` pins it)."""
-    return textwrap.dedent("\n".join(lines))
-
-
-def parse_feature(text: str) -> Feature:
+def parse_feature(text: str, source: str = "<feature>") -> Feature:
     """Parse a .feature file into a Feature (dialect of the openCypher TCK).
 
     The model carries only what the corpus extractor (`tck_statements`)
     reads: the feature/scenario/step walk and each step's doc string —
-    step tables and Examples rows are walked past, not modeled."""
+    step tables and Examples rows are walked past, not modeled.
+
+    A step outside any Background/Scenario is not valid Gherkin, so the
+    walk refuses it (naming `source`) rather than dropping it silently."""
     lines = text.splitlines()
     feature = Feature()
-    # One sink for the step stream: None before any container (those
-    # steps are dropped, as the walk always dropped them), the background
+    # One sink for the step stream: None before any container, the background
     # list inside a Background block, the open scenario's step list inside
     # a Scenario. The three states are one value, assigned once per
     # container line, so the step branch tests it once.
@@ -118,7 +110,10 @@ def parse_feature(text: str) -> Feature:
                         break
                     doc_lines.append(lines[idx])
                     idx += 1
-                step.doc_string = _dedent_doc_string(doc_lines)
+                # `textwrap.dedent` is the one dedent rule — including its
+                # normalization of whitespace-only lines to empty, the
+                # load-bearing half a hand-rolled margin walk differed on.
+                step.doc_string = textwrap.dedent("\n".join(doc_lines))
                 continue
             if nxt.startswith("|"):
                 while idx < len(lines) and lines[idx].strip().startswith("|"):
@@ -129,10 +124,6 @@ def parse_feature(text: str) -> Feature:
 
     while i < len(lines):
         line = lines[i].strip()
-
-        if not line or line.startswith("#"):
-            i += 1
-            continue
 
         if line.startswith("Background:"):
             sink = feature.background
@@ -147,11 +138,17 @@ def parse_feature(text: str) -> Feature:
             continue
 
         if any(line.startswith(kw) for kw in STEP_KEYWORDS):
+            if sink is None:
+                raise SystemExit(
+                    f"{source}: step outside any Background/Scenario: {line}"
+                )
             step, i = parse_step_at(i)
-            if sink is not None:
-                sink.append(step)
+            sink.append(step)
             continue
 
+        # A blank line, a comment, a `Feature:`/`Examples:` header, or a
+        # table row outside a step: none opens a container or a step, so the
+        # walk just advances past it.
         i += 1
 
     return feature
@@ -231,20 +228,19 @@ def tck_root():
     return root
 
 
-def tck_statements(root):
+def tck_statements(root: pathlib.Path) -> list[str]:
     """Every doc-string statement whose first word is a Cypher statement
     keyword. The `\"\"\"` doc-block walk is `parse_feature`'s — this
     file's Gherkin reader — with doc strings dedented exactly as the
     spec harness's TCK consumers read them."""
     out = []
     for f in sorted(root.rglob("*.feature")):
-        feature = parse_feature(read_strict(f))
+        feature = parse_feature(read_strict(f), source=str(f))
         for step in chain(feature.background, *(sc.steps for sc in feature.scenarios)):
             if step.doc_string is None:
                 continue
             statement = step.doc_string.strip()
-            first = statement.split(None, 1)[0].upper() if statement else ""
-            if first in KEYWORDS:
+            if statement and statement.split(None, 1)[0].upper() in KEYWORDS:
                 out.append(statement)
     return out
 

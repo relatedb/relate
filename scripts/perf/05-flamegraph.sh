@@ -13,15 +13,16 @@ out="$LT.svg"
 # Pick each stage on its own — inferno when it is installed, else that stage's
 # FlameGraph script from $FLAMEGRAPH_DIR — then run the one pipeline. Any mix
 # of the two works, including a partial inferno install.
-collapser=$(pick_stage inferno-collapse-perf stackcollapse-perf.pl)
-renderer=$(pick_stage inferno-flamegraph flamegraph.pl)
+collapser=$(perf_pick_stage inferno-collapse-perf stackcollapse-perf.pl)
+renderer=$(perf_pick_stage inferno-flamegraph flamegraph.pl)
 if [[ -z "$collapser" || -z "$renderer" ]]; then
   perf_skip "flamegraph" "install inferno (cargo install inferno) or set FLAMEGRAPH_DIR to a FlameGraph checkout"
   exit 1
 fi
 
 # The SVG is this script's whole output, so a skip is fatal, unlike 02's
-# best-effort artifacts.
+# best-effort artifacts. The reason is cause-neutral — perf_produce appends
+# the cause.
 produce_flamegraph() { perf script -i "$LT.perf" | "$collapser" | "$renderer"; }
 perf_produce "$out" "flamegraph SVG" \
-  "the render produced no $out; see error above" produce_flamegraph || exit 1
+  "the render for $out" produce_flamegraph || exit 1
