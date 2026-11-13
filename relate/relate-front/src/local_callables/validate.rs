@@ -348,6 +348,25 @@ fn non_scalar_message(name: &SmallName, because: &str) -> String {
     )
 }
 
+/// Whether a conditional (`WHEN`/`ELSE`) tail of `body` has an arm that
+/// returns result columns: such a body has one export set per arm, so no
+/// single set can be YIELDed or silently dropped (the call site rejects
+/// it). Unit-output conditional bodies (every arm ends without a RETURN)
+/// stay callable.
+pub(super) fn conditional_arms_return(body: &Statement) -> bool {
+    chain_links(body).into_iter().any(|link| {
+        let Some(Clause::Conditional(conditional)) = link.clauses.last() else {
+            return false;
+        };
+        conditional
+            .branches
+            .iter()
+            .map(|branch| &branch.body)
+            .chain(conditional.else_body.iter())
+            .any(|arm| terminal_return(arm).is_some() || conditional_arms_return(arm))
+    })
+}
+
 /// The columns a procedure body exports, in projection order: `None`
 /// when the body does not export (a FINISH/void body or an unnamed item).
 pub(super) fn body_export_names(body: &Statement) -> Option<Vec<SmallName>> {

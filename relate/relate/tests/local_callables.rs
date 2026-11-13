@@ -561,3 +561,50 @@ fn local_callable_shadows_the_built_in_name() {
         .unwrap();
     assert_eq!(ints(&result), vec![-4, -6]);
 }
+
+const CONDITIONAL_PROCEDURE: &str = "DEFINE PROCEDURE pick() { \
+       WHEN true THEN { RETURN 1 AS a } ELSE { RETURN 2 AS a } \
+     } ";
+
+#[test]
+fn conditional_procedure_body_yield_is_rejected() {
+    // A conditional body has no single export set to YIELD from: the
+    // call fails closed with the conditional-specific error, not the
+    // misleading "must end in a RETURN clause" one.
+    let mut c = gated_connection();
+    let error = c
+        .query(&format!(
+            "{CONDITIONAL_PROCEDURE}CALL pick() YIELD a RETURN a"
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("conditional (WHEN/ELSE) body"), "{error}");
+}
+
+#[test]
+fn conditional_procedure_body_bare_call_is_rejected() {
+    // A bare call used to drop every arm's rows silently.
+    let mut c = gated_connection();
+    let error = c
+        .query(&format!("{CONDITIONAL_PROCEDURE}CALL pick() RETURN 1 AS x"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("conditional (WHEN/ELSE) body"), "{error}");
+}
+
+#[test]
+fn unit_output_conditional_procedure_body_stays_callable() {
+    // No arm returns columns, so there is nothing to YIELD or drop.
+    let mut c = gated_connection();
+    let result = c
+        .query(
+            "DEFINE PROCEDURE mark() { \
+               WHEN true THEN { CREATE (:Mark {k: 1}) FINISH } \
+               ELSE { CREATE (:Mark {k: 2}) FINISH } \
+             } \
+             CALL mark() \
+             MATCH (m:Mark) RETURN m.k AS k",
+        )
+        .unwrap();
+    assert_eq!(ints(&result), vec![1]);
+}
