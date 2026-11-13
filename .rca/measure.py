@@ -7,7 +7,7 @@ cli, master, qdir, out = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path
 timeout = float(os.environ.get("RCA_TIMEOUT", "120"))
 qids = [int(x) for x in os.environ.get("RCA_QIDS", ",".join(str(i) for i in range(16, 35))).split(",")]
 out.mkdir(parents=True, exist_ok=True)
-work = master.parent / "rca-work"
+work = master.parent / "rca-work.rl"
 env = dict(os.environ, RELATE_TELEMETRY="off", RELATE_MAX_ROWS="0")
 
 def status_kb(pid, key):
@@ -20,8 +20,10 @@ def status_kb(pid, key):
     return None
 
 def run(script, tag, to=timeout):
-    if work.exists():
+    if work.is_dir():
         shutil.rmtree(work)
+    elif work.exists():
+        work.unlink()
     shutil.copytree(master, work) if master.is_dir() else shutil.copy(master, work)
     db = work if master.is_dir() else work
     of = out / f"{tag}.out"
@@ -41,7 +43,7 @@ def run(script, tag, to=timeout):
                 os.killpg(p.pid, signal.SIGKILL); p.wait(); break
         wall = time.time() - t0
     nout = sum(1 for _ in open(of, "rb"))
-    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True) if work.is_dir() else work.unlink(missing_ok=True)
     return dict(tag=tag, wall_s=round(wall, 2), timeout=timed_out, rc=p.returncode, hwm_mib=hwm // 1024, out_lines=nout, series=series[::max(1, len(series)//60)])
 
 res = {}
