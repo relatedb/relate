@@ -146,8 +146,3 @@ rests on the record cited.
   database (ADR-0012); nothing encrypts them. Anyone who can read the
   store directory can read the entire graph — protecting it is the
   host's job.
-- **Labs preview.** Relate is an experimental Neo4j Labs project: not an
-  official Neo4j product, provided as-is with no warranties,
-  service-level commitments, maintenance guarantees, security
-  assurances, or official technical support, and not intended for
-  production use (`LABS_DISCLAIMER.txt`).

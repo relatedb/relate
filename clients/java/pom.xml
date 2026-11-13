@@ -16,9 +16,9 @@
   </licenses>
   <developers>
     <developer>
-      <name>Neo4j Labs</name>
+      <name>Neo4j</name>
       <organization>Neo4j</organization>
-      <organizationUrl>https://neo4j.com/labs/</organizationUrl>
+      <organizationUrl>https://neo4j.com/</organizationUrl>
     </developer>
   </developers>
   <scm>

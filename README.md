@@ -19,9 +19,6 @@ and the CLI / Cypher / Rust / C API references. The deep references live in
 [`docs/`](docs/) in this repository, and the honest list of what Relate does
 not do yet is [`docs/limitations.md`](docs/limitations.md).
 
-> This is an experimental Neo4j Labs project and not part of Neo4j's supported
-> product lineup. See the [Neo4j Labs disclaimer](./LABS_DISCLAIMER.txt).
-
 ## Install
 
 **CLI (macOS & Linux):**

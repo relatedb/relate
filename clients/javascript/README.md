@@ -7,9 +7,6 @@ runs it inside your Node process (through the engine's C ABI): a graph that is
 pure in-memory, a directory, or a single `.rl` file, made durable by a
 fsync'd write-ahead log and Parquet checkpoints.
 
-> An experimental Neo4j Labs project, not part of Neo4j's supported product
-> lineup.
-
 ## Install
 
 ```sh

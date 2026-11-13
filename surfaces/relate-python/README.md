@@ -7,8 +7,7 @@ embeds it as a native extension (`import relate`): queries run in your
 process, on a graph that is pure in-memory, a directory, or a single `.rl`
 file, made durable by a fsync'd write-ahead log and Parquet checkpoints.
 
-> An experimental Neo4j Labs project, not part of Neo4j's supported product
-> lineup. The PyPI name `relate` belongs to another project; this package is
+> The PyPI name `relate` belongs to another project; this package is
 > `relate-db`, and the import is `relate`.
 
 ## Install
