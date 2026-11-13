@@ -56,9 +56,15 @@ fn for_case(cfg: &Config, case: &CaseReport) -> ScenarioText {
             ),
         },
         "workspace-memory-calibration" => {
-            let families = match cfg.calibration_family.as_deref() {
-                Some(family) => family.to_string(),
-                None => "sort, expand, aggregation, distinct, and create".into(),
+            // The families prose derives from the one table; no second
+            // spelling of the vocabulary lives here.
+            let families = match cfg.calibration_family {
+                Some(spec) => spec.name.to_string(),
+                None => super::calibration::FAMILIES
+                    .iter()
+                    .map(|spec| spec.name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
             };
             let outcome = match (
                 case.peak_logical_bytes_held,
