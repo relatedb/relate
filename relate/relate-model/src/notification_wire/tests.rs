@@ -12,7 +12,7 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
     // forces every new variant to claim a row; this list forces that row
     // to carry an authored expectation below (a kind missing here also
     // misses its expectation, so the lengths differ and the pin fails).
-    const ALL_KINDS: [NotificationKind; 28] = [
+    const ALL_KINDS: [NotificationKind; 30] = [
         NotificationKind::CartesianProduct,
         NotificationKind::UnboundedVariableLengthPattern,
         NotificationKind::AllNodesScan,
@@ -41,6 +41,8 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
         NotificationKind::SchemaVectorIndexDimensionsNotSpecified,
         NotificationKind::HintedIndexNotFound,
         NotificationKind::JoinHintUnfulfillable,
+        NotificationKind::RedundantOptionalProcedure,
+        NotificationKind::RedundantOptionalSubquery,
     ];
     let rows: Vec<(&str, &str, &str, &str, &str, &str)> = ALL_KINDS
         .iter()
@@ -301,6 +303,22 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
                 "HINT",
                 "The database was unable to plan a hinted join.",
                 "Try a different join key or restructure the query.",
+            ),
+            (
+                "Neo.ClientNotification.Statement.RedundantOptionalProcedure",
+                "03N61",
+                "INFORMATION",
+                "PERFORMANCE",
+                "Redundant optional procedure",
+                "Drop `OPTIONAL`: the procedure declares no return columns, so the call yields the same single row either way.",
+            ),
+            (
+                "Neo.ClientNotification.Statement.RedundantOptionalSubquery",
+                "03N62",
+                "INFORMATION",
+                "PERFORMANCE",
+                "Redundant optional subquery",
+                "Drop `OPTIONAL`: the subquery projects no columns, so the call yields the same single row either way.",
             ),
         ]
     );

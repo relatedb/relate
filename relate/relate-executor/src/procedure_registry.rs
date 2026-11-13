@@ -245,6 +245,21 @@ pub fn builtin_procedure_signature(name: &str) -> Option<&'static ProcSignature>
         .find(|sig| sig.name == name)
 }
 
+/// Whether the procedure behind `name` declares no return columns — the one
+/// void-procedure fact, so the `CALL` contract validator and the
+/// redundant-`OPTIONAL` notification detector cannot drift.
+///
+/// `registered` is the caller's own lookup of a user-registered procedure,
+/// which shadows the built-in: it answers from its `yield_names`, the
+/// built-in from the one signature table. A name that is neither is not a
+/// procedure, and is not void.
+pub fn is_void_procedure(registered: Option<&crate::graph::Procedure>, name: &str) -> bool {
+    if let Some(procedure) = registered {
+        return procedure.yield_names.is_empty();
+    }
+    builtin_procedure_signature(name).is_some_and(ProcSignature::is_void)
+}
+
 /// Whether `name` names one of the `db.ontology.*` procedures (ADR-0121 as
 /// amended by ADR-0227). Derived from the one table so the facade's
 /// compile-time gates (implicit-only, no-mixed-writes, target namespace)

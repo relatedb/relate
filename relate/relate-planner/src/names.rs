@@ -206,41 +206,11 @@ pub(crate) fn part_output_names(
         // A stage that ends in a projecting CALL subquery exports the body's
         // own columns. A unit subquery call with no RETURN leaves the stage
         // columnless, like any other write-only tail.
-        Some(Clause::CallSubquery { query, .. }) if query_projects(query) => {
+        Some(Clause::CallSubquery { query, .. }) if query.projects_columns() => {
             Ok(trailing_call_added)
         }
         Some(Clause::Catalog(_)) => Ok(names),
         _ => Ok(Vec::new()),
-    }
-}
-
-/// Whether a CALL subquery body projects columns: its final stage is a
-/// RETURN, or a conditional / nested CALL that projects. Mirrors the parser
-/// and front validators' `call_subquery_projects`, on the IR — including
-/// reading the body's true terminal stage, the end of its whole `NEXT`
-/// chain ([`Query::final_stage`]), not merely the first stage's part list.
-fn query_projects(query: &Query) -> bool {
-    let stage = query.final_stage();
-    // A `Query` invariantly carries at least one part (the executor spells
-    // the same invariant at its `stage_export_columns` sites); an empty
-    // `parts` is a broken invariant to surface, never a "does not project"
-    // verdict.
-    let part = stage
-        .parts
-        .last()
-        .expect("a Query invariantly carries at least one part");
-    match part.clauses.last() {
-        Some(Clause::Return { .. }) => true,
-        Some(Clause::Conditional {
-            branches,
-            else_query,
-        }) => branches
-            .first()
-            .map(|(_, q)| query_projects(q))
-            .or_else(|| else_query.as_deref().map(query_projects))
-            .unwrap_or(false),
-        Some(Clause::CallSubquery { query, .. }) => query_projects(query),
-        _ => false,
     }
 }
 
