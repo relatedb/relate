@@ -9,7 +9,7 @@ use relate_core::{Error, Result, Value};
 use relate_model::identifier::quote_identifier_always;
 use relate_model::EntityKind;
 
-use crate::eval::eval;
+use crate::eval::filter_rows_where;
 use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -275,14 +275,8 @@ fn finish_catalog_rows(
     if let Some(predicate) = predicate.as_ref() {
         // ADR-0335: the predicate lowers at run time, so an undefined
         // variable surfaces its typed error here instead of silently
-        // filtering every row; a null or non-true value still filters.
-        let mut filtered = Vec::with_capacity(output.len());
-        for row in output {
-            if eval(graph, &row, predicate, params)?.truthy() == Some(true) {
-                filtered.push(row);
-            }
-        }
-        output = filtered;
+        // filtering every row; a null value still filters.
+        output = filter_rows_where(graph, params, predicate, output)?;
     }
     // Undo the source-name shadowing (see the marker coupling invariant
     // above): restore an outer variable the SHOW column shadowed, remove a

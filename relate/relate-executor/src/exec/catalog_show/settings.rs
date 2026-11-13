@@ -319,6 +319,22 @@ mod settings_tests {
         crate::exec::test_support::show_catalog_rows(&Graph::default(), query)
     }
 
+    /// A catalog `YIELD ... WHERE` takes the canonical predicate rule every
+    /// WHERE shares: a non-boolean value is a typed error, not a silent
+    /// filter-everything.
+    #[test]
+    fn yield_where_rejects_a_non_boolean_predicate() {
+        let err = crate::exec::test_support::try_show_catalog_rows(
+            &Graph::default(),
+            "SHOW SETTINGS YIELD name WHERE name",
+        )
+        .expect_err("a string predicate is not a boolean");
+        assert!(
+            matches!(err, relate_core::Error::InvalidArgumentType(_)),
+            "typed rejection, got: {err}"
+        );
+    }
+
     /// The catalog is Neo4j 2026.09's own snapshot: the alphabetically first
     /// declared setting is `browser.allow_outgoing_connections` (the harness
     /// pins `ORDER BY name LIMIT 1`), the metadata columns carry real values,

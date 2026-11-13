@@ -1,5 +1,5 @@
 //! Engine-level `LOAD CSV` integration tests for the CALL-clause
-//! executor (`super::exec_load_csv`), kept in the exec layer beside the
+//! executor (`load_csv::exec_load_csv`), kept in the exec layer beside the
 //! code they drive.
 
 use std::collections::BTreeMap;
@@ -10,9 +10,9 @@ use relate_ir::Expr;
 use relate_names::SmallName;
 
 use super::super::test_support::{exec_autocommit, exec_cypher_on, try_exec_cypher_on};
-use super::exec_load_csv;
 use crate::csv::{local_file_url, test_root, CsvPolicy};
 use crate::ctx::ExecCtx;
+use crate::exec::load_csv::exec_load_csv;
 use crate::row::Row;
 use crate::{ExecGraph, Graph};
 

@@ -14,13 +14,13 @@ pub(crate) mod constraints;
 mod databases;
 pub(crate) mod indexes;
 mod settings;
+mod transactions;
 
 pub(crate) use constraints::show_constraints_rows;
-pub(crate) use databases::{
-    show_databases_rows, show_transactions_rows, terminate_transactions_rows,
-};
+pub(crate) use databases::show_databases_rows;
 pub(crate) use indexes::{show_indexes_result, show_indexes_rows};
 pub(crate) use settings::show_settings_rows;
+pub(crate) use transactions::{show_transactions_rows, terminate_transactions_rows};
 
 /// The pattern variable Neo4j CE's rendered statements use — the single
 /// place the `n`-for-nodes / `r`-for-relationships decision lives; both

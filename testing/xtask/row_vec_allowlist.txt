@@ -10,7 +10,7 @@ exec/call/conditional.rs::exec_conditional # projection/filter stage materialize
 exec/call/in_transactions.rs::exec_call_in_transactions # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/mod.rs::call_subquery_row # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/mod.rs::exec_call_subquery # projection/filter stage materializes its rows; to be replaced by streaming
-exec/call/mod.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
+exec/load_csv.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/shared.rs::exec_call_subquery_shared # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::compose_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::execute_catalog # projection/filter stage materializes its rows; to be replaced by streaming
@@ -26,8 +26,8 @@ exec/catalog_schema.rs::catalog_drop_constraint # bounded catalog/admin/procedur
 exec/catalog_schema.rs::catalog_drop_index # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/constraints.rs::show_constraints_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/databases.rs::show_databases_rows # bounded catalog/admin/procedure result, not graph-sized
-exec/catalog_show/databases.rs::show_transactions_rows # bounded catalog/admin/procedure result, not graph-sized
-exec/catalog_show/databases.rs::terminate_transactions_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/transactions.rs::show_transactions_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/transactions.rs::terminate_transactions_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/indexes.rs::show_indexes_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/mod.rs::show_current_graph_type_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/mod.rs::show_graph_type_rows # bounded catalog/admin/procedure result, not graph-sized
@@ -70,7 +70,7 @@ exec/procedures.rs::exec_fulltext_query_call # bounded catalog/admin/procedure r
 exec/procedures.rs::exec_registry_call # bounded catalog/admin/procedure result, not graph-sized
 exec/procedures.rs::exec_vector_query_call # bounded catalog/admin/procedure result, not graph-sized
 exec/project.rs::aggregate_rows # projection/filter stage materializes its rows; to be replaced by streaming
-exec/project.rs::filter_where # projection/filter stage materializes its rows; to be replaced by streaming
+eval/predicates.rs::filter_rows_where # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::finish_projection # projection/filter stage materializes its rows; the post-merge tail carved out of the allowlisted project_rows, to be replaced by streaming
 exec/project.rs::materialize_feed # projection/filter stage materializes its rows; the feed materialization carved out of the allowlisted project_rows, to be replaced by streaming
 exec/project.rs::plain_rows # projection/filter stage materializes its rows; to be replaced by streaming

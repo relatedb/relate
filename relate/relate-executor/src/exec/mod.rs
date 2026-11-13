@@ -57,6 +57,9 @@ pub(crate) mod far_probe;
 pub(crate) mod fulltext;
 pub(crate) mod gpm;
 pub(crate) mod graph_type_schema;
+mod load_csv;
+mod match_arm;
+mod profile_tick;
 // The LABS-348 hub join — the whole family (gate, join, row-shape
 // helpers, test hooks), invoked by the driver at its pattern-0→
 // pattern-1 boundary (`match_clause::match_paths`) over the caller's

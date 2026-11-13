@@ -42,6 +42,27 @@ pub(crate) fn predicate_holds(
     super::predicate_value_holds(&eval_match_predicate(graph, row, predicate, params)?)
 }
 
+/// Keep the rows whose bare-evaluated predicate holds — the post-merge
+/// WHERE stage of the projection and of a catalog `YIELD ... WHERE`: a
+/// failing filter expression propagates, a null does not hold, and any
+/// non-boolean is the one typed rejection [`predicate_holds`] applies. The
+/// predicate evaluates bare (no horizontal-aggregate rewrite): its rows are
+/// already projected.
+pub(crate) fn filter_rows_where(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    predicate: &Expr,
+    rows: Vec<Row>,
+) -> Result<Vec<Row>> {
+    let mut filtered = Vec::with_capacity(rows.len());
+    for row in rows {
+        if super::predicate_value_holds(&eval(graph, &row, predicate, params)?)? {
+            filtered.push(row);
+        }
+    }
+    Ok(filtered)
+}
+
 /// The optional-WHERE gate — the one spelling of "a WHERE clause that is
 /// absent imposes no constraint": `None` holds, `Some` holds iff the
 /// predicate holds. Every optional-WHERE site reads this, never a

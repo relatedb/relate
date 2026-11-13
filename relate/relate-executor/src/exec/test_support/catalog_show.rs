@@ -14,6 +14,12 @@ use super::write::exec_autocommit;
 /// indexes, constraints, and databases key-order pins), never a second
 /// pasted scaffold per module.
 pub(crate) fn show_catalog_rows(graph: &Graph, query: &str) -> Vec<Row> {
+    try_show_catalog_rows(graph, query).expect("catalog rows")
+}
+
+/// [`show_catalog_rows`]'s fallible form: the same parse -> `execute_catalog`
+/// scaffold, with the executor's error handed back for the rejection pins.
+pub(crate) fn try_show_catalog_rows(graph: &Graph, query: &str) -> relate_core::Result<Vec<Row>> {
     let view = ExecGraph::read(graph);
     let stmt = relate_parser::parse(query).expect("parse");
     let clause = stmt.clauses.into_iter().next().expect("one clause");
@@ -24,7 +30,6 @@ pub(crate) fn show_catalog_rows(graph: &Graph, query: &str) -> Vec<Row> {
         &BTreeMap::new(),
         QueryCtx::new(query),
     )
-    .expect("catalog rows")
 }
 
 /// The catalog rows' YIELD-* key-order pin, the one spelling every

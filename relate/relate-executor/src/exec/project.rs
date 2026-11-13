@@ -9,7 +9,7 @@ use relate_ir::{Clause, Expr, Projection};
 
 use crate::ctx::ExecCtx;
 use crate::distinct_set::DistinctSet;
-use crate::eval::{eval, expr_vars, is_agg_expr};
+use crate::eval::{eval, expr_vars, filter_rows_where, is_agg_expr};
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::{Row, RowNames};
 
@@ -327,25 +327,6 @@ pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
         && !fields.where_clause.is_some_and(is_agg_expr)
 }
 
-/// The post-merge WHERE stage: keep the rows whose predicate reads true;
-/// a failing filter expression propagates, the one error policy every
-/// WHERE path shares. The HAVING form never reaches here (ADR-0453): the
-/// caller passes only the plain filtering predicate.
-fn filter_where(
-    graph: &ExecGraph<'_>,
-    params: &BTreeMap<String, Value>,
-    predicate: &Expr,
-    rows: Vec<Row>,
-) -> Result<Vec<Row>> {
-    let mut filtered = Vec::with_capacity(rows.len());
-    for row in rows {
-        if crate::eval::predicate_value_holds(&eval(graph, &row, predicate, params)?)? {
-            filtered.push(row);
-        }
-    }
-    Ok(filtered)
-}
-
 /// Whether a projection folds its input as it arrives, so an `UNWIND` or a
 /// `MATCH` feeding it can generate rows one at a time instead of
 /// materializing them: an aggregating projection with no `*` item (a `*`
@@ -572,7 +553,7 @@ fn finish_projection(
         ..
     } = class.fields;
     let mut merged = if let Some(w) = class.plain_where {
-        filter_where(graph, params, w, merged)?
+        filter_rows_where(graph, params, w, merged)?
     } else {
         merged
     };

@@ -64,7 +64,7 @@ use predicates::comprehension_where_holds;
 #[cfg(test)]
 pub(crate) use predicates::take_candidate_passes;
 pub(crate) use predicates::{
-    candidate_passes, inline_predicates_ok, predicate_holds, where_clause_holds,
+    candidate_passes, filter_rows_where, inline_predicates_ok, predicate_holds, where_clause_holds,
 };
 use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce, list_argument};
 pub(crate) use quantifier::{AllReduceFold, AllReduceStep};
