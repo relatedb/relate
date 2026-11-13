@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AsyncStream` of
   committed writes with their bookmark, summed counters and the tags the
   writer attached (`db.write(tags:)`, `transaction(tags:)`).
+- Swift: `Database.defaultStoreURL(named:)` and
+  `Database.provision(at:from:)` for seeding an app's store from its bundle,
+  and `Migrator` for idempotent schema statements plus versioned steps.
 - Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
   `setNamespace(_:)` taking the typed namespace, and error predicates on
   `EngineError` (`isConstraintViolation`, `isSyntaxError`,

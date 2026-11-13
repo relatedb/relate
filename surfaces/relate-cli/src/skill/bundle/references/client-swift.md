@@ -130,9 +130,11 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   `Namespace`, which collide with Foundation and SwiftUI).
 - **One writer per store** — a second writable `Database` on the same
   store throws; use `Database(url:readOnly: true)` for extra readers.
-- **iOS storage** — keep the store in Application Support with
-  `completeUntilFirstUserAuthentication` protection; checkpoint after bulk
-  loads.
+- **iOS storage** — `Database.defaultStoreURL(named:)` (Application
+  Support); `Database.provision(at:from:)` copies a bundled store there on
+  first launch (never open a store inside the app bundle); `Migrator` for
+  idempotent schema plus versioned steps; `checkpointInBackground()` after
+  bulk loads and on backgrounding.
 - **No polygon geometry support** — the engine's geospatial surface is the
   point: `point.distance` and `point.withinBBox` are native, and line/polygon
   work belongs in Swift (`MapKit`, `shapely`-style geometry) over properties.

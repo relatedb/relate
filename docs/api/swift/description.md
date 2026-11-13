@@ -58,9 +58,15 @@ reports each committed write with the tags its writer attached, so a view
 model can refresh when the data it shows changes, without every write having
 to go through one controller.
 
-For iOS apps, keep the store in Application Support (not Documents), give the
-directory `FileProtectionType.completeUntilFirstUserAuthentication` if the app
-writes while locked, and call `checkpoint()` after bulk loads so the next
-launch opens from a snapshot instead of replaying the WAL. An app and its
-extensions that share a store put it in their App Group container; only one
-process may hold the store writable at a time.
+For iOS apps, `Database.defaultStoreURL(named:)` is the store's place in
+Application Support (not Documents), and `Database.provision(at:from:)`
+copies a store shipped in the app bundle there on first launch — atomically,
+writable, and with `completeUntilFirstUserAuthentication` protection so the
+app can write while the device is locked after its first unlock. A
+`Migrator` then brings the schema to the version the build expects:
+idempotent index and constraint statements every launch, versioned data
+steps once each. Call
+`checkpointInBackground()` after bulk loads and when the app moves to the
+background, so the next launch opens from a snapshot instead of replaying
+the WAL. An app and its extensions that share a store put it in their App
+Group container; only one process may hold the store writable at a time.

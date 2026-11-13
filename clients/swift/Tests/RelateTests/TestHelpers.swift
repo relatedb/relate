@@ -38,6 +38,14 @@ func withTemporaryStoreFile<T>(_ body: (URL) async throws -> T) async throws -> 
     try await withTemporaryItem(suffix: ".rl", body)
 }
 
+/// A throwaway directory, created empty, for a body that may suspend.
+func withTemporaryDirectory<T>(_ body: (URL) async throws -> T) async throws -> T {
+    try await withTemporaryItem(suffix: "") { url in
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return try await body(url)
+    }
+}
+
 /// Waits for a semaphore without parking a cooperative-pool thread; `false`
 /// on timeout, so a broken test fails instead of hanging.
 func signalled(_ semaphore: DispatchSemaphore, within seconds: Double = 10) async -> Bool {

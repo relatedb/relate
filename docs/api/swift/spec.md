@@ -326,6 +326,65 @@ public struct Commit: Sendable, Hashable {
   another process, or through a second `Database` opened on the same store,
   is not seen.
 
+## Provisioning and migration
+
+```swift
+extension Database {
+    public static func defaultStoreURL(named name: String) throws -> URL
+    @discardableResult public static func provision(
+        at target: URL, from seed: URL,
+        protection: FileProtectionType? = .completeUntilFirstUserAuthentication) throws -> Bool
+}
+
+public struct Migrator: Sendable {
+    public init(versionLabel: String = "RelateMigration")   // the version node is (:label {key: 'schema_version'}).version
+    public var versionLabel: String
+    public var schema: [Statement]                          // run every time; must be idempotent
+    public mutating func register(version: Int, _ statements: [Statement])
+    public mutating func register(version: Int, _ body: @escaping @Sendable (Transaction) throws -> Void)
+    public var latestVersion: Int { get }
+    public func currentVersion(_ connection: Connection) throws(RelateError) -> Int   // 0 for a store never migrated; a broken record (several version nodes, or one without an integer version) is .unexpectedResult
+    @discardableResult public func migrate(_ connection: Connection) throws -> Int
+    @discardableResult public func migrate(_ database: Database) async throws -> Int  // on the writer connection
+}
+```
+
+- **`defaultStoreURL(named:)`** is `name` inside the user's Application
+  Support directory — on macOS inside a folder named for the app's bundle
+  identifier, since that directory is shared between apps (a process with no
+  bundle identifier, such as a command-line tool, gets `name` directly in
+  that directory). It creates the containing directory, not the store. `name` is one path component: an
+  empty name, `.`, `..` or one containing `/` is `.invalidParameter`.
+- **`provision(at:from:)`** copies a seed store to `target` when nothing is
+  there, and returns whether it copied. A store bundled with an app cannot
+  be opened in place (the bundle is read-only and a store writes beside
+  itself). The copy goes to a temporary name in the target's directory and is
+  renamed into place, so an interrupted launch leaves no partial store. A
+  temporary copy an interrupted launch left behind is removed by a later
+  call, once it was started more than ten minutes ago (a younger one may be
+  another launch's copy in progress). A seed that is a symbolic link is
+  followed. The copy is made owner-writable (`0600` for files, `0700` for
+  directories) and, on iOS, given `protection`. Both store forms work: a
+  `.rl` file and a store directory. File-system failures are thrown as
+  Foundation reports them.
+- **`Migrator.migrate`** runs `schema` (each statement on its own), then
+  every registered step whose version is above the store's, in ascending
+  order, and returns the resulting version. A step and the record of its
+  version commit in one transaction: a failing step leaves neither its work
+  nor its version, and later steps do not run. Versions are positive and
+  registered in ascending order, each once; a migrator whose steps are not
+  is refused with `.misuse`. A store already above `latestVersion` was
+  written by a newer build and is refused the same way, as is a database
+  opened read-only (through either `migrate`). The refusals come before
+  anything runs, `schema` included. Run one migration at a time:
+  `migrate(_ database:)` does, on the database's single writer.
+- **The version** is the `version` property of one node,
+  `(:RelateMigration {key: 'schema_version'})`, in the namespace of the
+  connection the migration runs on (the default namespace for
+  `migrate(_ database:)`). `versionLabel` changes the label, for an app
+  whose own labels would collide. Several version nodes, or one without an
+  integer version, are `.unexpectedResult`, never read as version zero.
+
 ## Records
 
 ```swift
