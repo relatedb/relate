@@ -26,9 +26,7 @@ fn seed(g: &Graph, cypher: &str) {
 /// Run `cypher`'s bulk write through the batched path with the given
 /// budget, committing every chunk like `commit_optimistic_batched` does.
 fn run_batched(g: &Graph, cypher: &str, budget: u64) -> crate::graph::QueryStats {
-    let query = relate_front::parse_and_lower(cypher).unwrap();
-    let plan = relate_planner::plan(query, &mut |_| false).unwrap();
-    let bulk = analyze_bulk_write(&plan).expect("eligible bulk write");
+    let bulk = analyze(cypher).expect("eligible bulk write");
     let pin = g.pin_now().unwrap();
     let targets = bulk
         .collect_targets(g, pin.ts())

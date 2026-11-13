@@ -133,7 +133,7 @@ impl<'a> ExecGraph<'a> {
         key: &str,
         needle: &str,
     ) -> Option<Vec<NodeId>> {
-        self.merge_string_lookup(
+        self.merge_scratch_lookup(
             labels,
             key,
             |n| n.as_string().is_some_and(|s| s.contains(needle)),
@@ -149,7 +149,7 @@ impl<'a> ExecGraph<'a> {
         key: &str,
         prefix: &str,
     ) -> Option<Vec<NodeId>> {
-        self.merge_string_lookup(
+        self.merge_scratch_lookup(
             labels,
             key,
             |n| n.as_string().is_some_and(|s| s.starts_with(prefix)),
@@ -164,7 +164,7 @@ impl<'a> ExecGraph<'a> {
         key: &str,
         seek: &RangeSeek,
     ) -> Option<Vec<NodeId>> {
-        self.merge_string_lookup(
+        self.merge_scratch_lookup(
             labels,
             key,
             |v| Self::range_overlay_pred(v, seek),
@@ -196,7 +196,7 @@ impl<'a> ExecGraph<'a> {
         key: &str,
         seek: &SpatialSeek,
     ) -> Option<Vec<NodeId>> {
-        self.merge_string_lookup(
+        self.merge_scratch_lookup(
             labels,
             key,
             |v| spatial_holds(v, seek),
@@ -227,7 +227,7 @@ impl<'a> ExecGraph<'a> {
         }
     }
 
-    fn merge_string_lookup(
+    fn merge_scratch_lookup(
         &self,
         labels: &[String],
         key: &str,
@@ -237,12 +237,13 @@ impl<'a> ExecGraph<'a> {
         let mut ids = base?;
         ids.retain(|id| self.node_exists(*id));
         if let Some(cell) = self.scratch {
+            let seen: HashSet<NodeId> = ids.iter().copied().collect();
             // Read the scratch copy in place — `self.node` would clone its
             // whole property map per scratch node; `node_exists` keeps the
             // one visibility prologue (a scratch deletion hides the copy).
             let scratch = cell.borrow();
             for (id, n) in &scratch.batch.nodes {
-                if ids.contains(id) || !self.node_exists(*id) {
+                if seen.contains(id) || !self.node_exists(*id) {
                     continue;
                 }
                 if Graph::node_carries_labels(n, labels) && n.properties.get(key).is_some_and(&pred)
