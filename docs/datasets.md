@@ -1216,10 +1216,32 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 | Argument | Meaning |
 | --- | --- |
 | `small` \| `medium` (required, first) | Fixture shape: `small` = 10,000 users / 121,716 friendships (opens in seconds); `medium` = 100,000 users / 1,768,164 friendships. No default. |
-| `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `expansion_3_unrolled`, `scan_expand_2hop_filter`. All groups when omitted; an unknown name is a usage error before the fixture opens. |
+| `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `expansion_3_unrolled`, `scan_expand_2hop_filter`, or a shortest-path group (below). All groups when omitted; an unknown name is a usage error before the fixture opens. |
 | `--sample DIR` | Run the selected groups under the in-process profiler (997 Hz, ADR-0244) and write `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`, one directory per group. Conflicts with `--profile`; a failed round keeps its stacks. |
 | `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
 | `--help` | The generated usage and flag list. |
+
+The shortest-path groups time the forms ADR-0556, ADR-0567 and ADR-0568 route
+onto the shortest route, each over start ids `1..=N` and, for the pair groups,
+the end `start + 5000` (a mid-range user on both shapes):
+
+| Group | Query shape | Start ids |
+| --- | --- | --- |
+| `shortest_pair` | `SHORTEST 1` selector, both endpoints seeked by `id`, `*..6`, undirected | 64 |
+| `shortest_path_fn` | `shortestPath()` in `MATCH`, same pair | 64 |
+| `shortest_expr` | `count(shortestPath())` in `RETURN` position over two bound users | 64 |
+| `all_shortest_paths` | `allShortestPaths()` over the same pair | 64 |
+| `shortest_postfix` | `SHORTEST 1` over the postfix-quantified relationship `-[:Friend]-{1,6}`, same pair | 64 |
+| `shortest_fan` | `SHORTEST 1` from one seeked start to every user within `*..3` | 16 |
+| `shortest_all_pairs` | 8 x 8 bound users (`range()` lists), then `SHORTEST 1 ... *..6` | 16 |
+
+A timed run prints, per group and before its timing line, `<group>: plan
+<operator [kernel rows db_hits hops walks node_reads]> > ...`: the PROFILE plan
+evidence of the group's query at start id 1 (`[no metrics]` marks an operator the engine folded into its child). The engine's PROFILE does not
+name the shortest route (it runs inside the walker's `MATCH` operator, so the
+rung reads `kernel=walker`, and the search's own reads are not counted), so a
+regression to enumerate-then-select shows as a changed operator or rung, or as
+a group whose timed rounds stop finishing.
 
 No environment variables beyond cargo's own. A bad argument exits 2 with the
 generated usage error.
