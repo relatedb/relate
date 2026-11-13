@@ -43,6 +43,17 @@ curl -sSfL https://relatedb.ai/install.sh | bash
 relate --version        # always verify the version before relying on behavior
 ```
 
+On Windows (PowerShell, `cmd`, or Git Bash — `install.sh` points there too):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://relatedb.ai/install.ps1 | iex"
+```
+
+It installs `%LOCALAPPDATA%\Programs\relate\relate.exe` and adds it to the
+user `PATH`; open a new shell before running `relate`. `relate upgrade`
+cannot replace a running `.exe`, so rerun the installer to upgrade
+(`relate upgrade --check` still reports versions).
+
 From source: `git clone https://github.com/relatedb/relate && cargo build --release`.
 The Python package (`relate-db`) is pending its first tagged PyPI
 publish; until then use `make install-python` from a source checkout.

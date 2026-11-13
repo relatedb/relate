@@ -81,6 +81,26 @@ fn test_skill_install_writes_bundle_to_all_detected_agents() {
     }
 }
 
+/// Stock PowerShell and cmd on Windows set `%USERPROFILE%` but no `$HOME`:
+/// `skill install --agent claude-code` must still resolve the agent's
+/// directory, under the profile. Runs on every host (the profile fallback
+/// is not Windows-only), with `HOME` removed from the child.
+#[test]
+fn test_skill_install_resolves_userprofile_without_home() {
+    let profile = fake_home_with(&[]);
+    let profile_str = profile.path().to_str().expect("utf-8 tempdir");
+    let (status, _stdout, stderr) = run_cli(
+        Opts::new(&["skill", "install", "--agent", "claude-code"])
+            .without_envs(&["HOME"])
+            .with_envs(&[("USERPROFILE", profile_str)]),
+    );
+    assert!(status.success(), "install exited non-zero: {stderr}");
+    assert!(
+        installed_skill_md(profile.path(), ".claude").is_some(),
+        "SKILL.md missing under %USERPROFILE%\\.claude: {stderr}"
+    );
+}
+
 #[test]
 fn test_skill_install_stamps_binary_version() {
     let home = fake_home_with(&[".claude"]);

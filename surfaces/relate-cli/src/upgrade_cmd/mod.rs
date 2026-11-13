@@ -9,9 +9,11 @@
 //! set, falls back to the authenticated GitHub API asset route for all three
 //! assets (ADR-0358).
 //!
-//! Platform scope matches the ADR-0068 installer (macOS/Linux): a running
-//! Windows `.exe` cannot replace itself, so Windows gets a not-supported
-//! error pointing at the README's manual download.
+//! The replace's platform scope matches the ADR-0068 installer
+//! (macOS/Linux): a running Windows `.exe` cannot replace itself, so a
+//! Windows upgrade gets a not-supported error pointing at the PowerShell
+//! installer (ADR-0586). `--check` reads no asset and replaces nothing, so
+//! it reports current-vs-latest on every platform, Windows included.
 //!
 //! Every network operation lives behind
 //! [`releases_json::fetch_latest_release`] and the [`download_route`] probe
@@ -59,8 +61,21 @@ const SUMS_SIG_ASSET: &str = "SHA256SUMS.sig";
 /// The documented reinstall one-liner (README / install.sh header), offered
 /// whenever `upgrade` cannot proceed: release discovery failed (ADR-0250 §4),
 /// the signed manifest's version did not bind to the requested release
-/// (ADR-0457 §2), or the in-place replace failed.
+/// (ADR-0457 §2), or the in-place replace failed. A Windows build offers the
+/// PowerShell installer's one-liner instead (ADR-0586): `install.sh` installs
+/// nothing there.
+#[cfg(not(windows))]
 const INSTALL_ONE_LINER: &str = "curl -sSfL https://relatedb.ai/install.sh | bash";
+#[cfg(windows)]
+const INSTALL_ONE_LINER: &str = WINDOWS_INSTALL_ONE_LINER;
+
+/// The PowerShell installer's documented one-liner (README, `install.ps1`
+/// header; ADR-0586), in the `powershell -c` form that runs from any shell
+/// — PowerShell, `cmd`, or Git Bash. Spelled once: the Windows refusal
+/// names it on every host, and a Windows build's [`INSTALL_ONE_LINER`] is
+/// it.
+const WINDOWS_INSTALL_ONE_LINER: &str =
+    "powershell -ExecutionPolicy ByPass -c \"irm https://relatedb.ai/install.ps1 | iex\"";
 
 /// Options for `relate upgrade`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +120,11 @@ pub fn run(opts: UpgradeOpts) -> i32 {
 }
 
 fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
+    if opts.check {
+        return run_check();
+    }
+    // Only the replace needs a supported os/arch pair; an unsupported one
+    // refuses here, before any network request.
     let platform = platform_support()?;
 
     // GITHUB_TOKEN is read exactly once and used only as an
@@ -118,27 +138,12 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
 
     // Release discovery reads the website's releases.json (ADR-0250): no
     // token, no retry, no GitHub API fallback. The version triple was proven
-    // at the parse boundary, so the comparison below never re-parses the tag.
+    // and the tag sanitized at the parse boundary, so nothing below
+    // re-parses or re-strips it.
     let (release, latest_version) = fetch_latest_release()?;
-    // Every string below comes from the release metadata and must be
-    // stripped of control characters before it reaches stdout/stderr (a
-    // compromised document could embed ESC/CSI sequences in the tag to
-    // spoof output).
-    let tag = relate_formatter::strip_unsafe_output_chars(&release.tag);
-    let latest = strip_v_prefix(&tag);
-    let newer = version_is_newer(latest_version, VERSION);
-
-    if opts.check {
-        println!("current version: {VERSION}");
-        println!("latest release:  {latest}");
-        if newer {
-            println!("upgrade available: run `relate upgrade` to install {latest}");
-        } else {
-            println!("relate is up to date");
-        }
-        return Ok(());
-    }
-    if !newer {
+    let tag = release.tag.as_str();
+    let latest = strip_v_prefix(tag);
+    if !version_is_newer(latest_version, VERSION) {
         println!("relate {VERSION} is up to date (latest release: {latest})");
         return Ok(());
     }
@@ -162,7 +167,7 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
     let probe = probe_route_at(
         crate::release_channel::REPO,
         &direct_base,
-        &tag,
+        tag,
         SUMS_ASSET,
         &needed,
         token.as_deref(),
@@ -186,7 +191,7 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
     // (ADR-0457 §2), before trusting any entry or paying for the binary. A
     // legacy manifest gets a warning; it was only accepted because the
     // requested version predates the header (ADR-0457 §3).
-    match bind_signed_version(&sums, &tag, latest_version)? {
+    match bind_signed_version(&sums, tag, latest_version)? {
         ManifestBinding::Authenticated => {}
         ManifestBinding::Legacy => crate::print_error(format!(
             "warning: SHA256SUMS from {tag} has no signed version header (legacy manifest, \
@@ -264,13 +269,39 @@ impl From<crate::release_channel::ChannelError> for UpgradeError {
     }
 }
 
+/// `relate upgrade --check`: report current-vs-latest and the advice, then
+/// stop. It downloads no asset and replaces nothing, so it runs on every
+/// platform (ADR-0586), and an unsupported pair's refusal becomes its
+/// advice rather than its error.
+fn run_check() -> Result<(), UpgradeError> {
+    let (release, latest_version) = fetch_latest_release()?;
+    let label = strip_v_prefix(&release.tag);
+    let newer = version_is_newer(latest_version, VERSION);
+    println!("current version: {VERSION}");
+    println!("latest release:  {label}");
+    println!("{}", check_verdict(&platform_support(), newer, label));
+    Ok(())
+}
+
+/// The `--check` report's last line: up to date, or the upgrade advice —
+/// `relate upgrade` where the replace is supported, else the platform's
+/// refusal (on Windows, the PowerShell installer one-liner), so the report
+/// never advises a command that would refuse.
+fn check_verdict(platform: &Result<Platform, UpgradeError>, newer: bool, latest: &str) -> String {
+    match (newer, platform) {
+        (false, _) => "relate is up to date".to_string(),
+        (true, Ok(_)) => format!("upgrade available: run `relate upgrade` to install {latest}"),
+        (true, Err(refusal)) => format!("upgrade available: {latest}; {refusal}"),
+    }
+}
+
 /// The host platform for this flow, or why self-upgrade cannot run here:
 /// the shared release-channel table (ADR-0068) decides the os/arch pair —
 /// the same vocabulary the extension index's per-platform rows speak
 /// (ADR-0431 §1), so the os/arch picking is one shared table, not one per
 /// flow — and this flow renders its own refusal over the table's `None`:
-/// the Windows arm points at the manual `.exe` download, every other
-/// unsupported pair at the README.
+/// the Windows arm points at the PowerShell installer (ADR-0586), every
+/// other unsupported pair at the README's install section.
 fn platform_support() -> Result<Platform, UpgradeError> {
     platform_support_for(std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -283,26 +314,25 @@ fn platform_support_for(os: &str, arch: &str) -> Result<Platform, UpgradeError> 
     match platform_for(os, arch) {
         Some(platform) => Ok(platform),
         // unsupported_platform: self-upgrade on this OS/arch is out of scope
-        // (ADR-0069 §6) — Windows gets the manual .exe pointer.
-        None if os == "windows" => Err(UpgradeError::new(
+        // (ADR-0069 §6) — Windows gets the PowerShell installer pointer
+        // (ADR-0586), which installs the verified relate-windows-amd64.exe.
+        None if os == "windows" => Err(UpgradeError::new(format!(
             "self-upgrade is not supported on Windows (a running .exe cannot replace itself); \
-             download the latest relate-windows-amd64.exe manually — see the README: \
-             https://github.com/relatedb/relate#prebuilt-binaries"
-                .to_string(),
-        )),
+             reinstall with the PowerShell installer to upgrade: {WINDOWS_INSTALL_ONE_LINER}"
+        ))),
         // unsupported_platform: an OS/arch pair with no release asset.
         None => Err(UpgradeError::new(format!(
             "self-upgrade is not supported on {os}/{arch} (supported: macOS and Linux, \
              amd64 and arm64); see the README for manual downloads: \
-             https://github.com/relatedb/relate#prebuilt-binaries"
+             https://github.com/relatedb/relate#install"
         ))),
     }
 }
 
 /// The release asset name for a supported platform, e.g.
 /// `relate-darwin-arm64`. Windows never reaches here: `platform_for`
-/// rejects it before any download is attempted (the manual-download message
-/// names the `.exe` asset itself).
+/// rejects it before any download is attempted (the refusal points at the
+/// PowerShell installer, which downloads the `.exe` asset itself).
 fn asset_name(platform: &Platform) -> String {
     format!("relate-{}-{}", platform.os, platform.arch)
 }
@@ -450,17 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn release_tag_is_sanitized_before_display() {
-        // Mirrors run_inner's order: sanitize the remote tag with the shared
-        // formatter fn, then strip `v`.
-        let evil = "v0.5.0\x1b[31m";
-        let tag = relate_formatter::strip_unsafe_output_chars(evil);
-        assert_eq!(tag, "v0.5.0[31m");
-        assert_eq!(strip_v_prefix(&tag), "0.5.0[31m");
-        assert!(!tag.contains('\x1b'), "escape survived: {tag:?}");
-    }
-
-    #[test]
     fn version_is_newer_orders_triples_numerically() {
         // newer / older / equal
         assert!(version_is_newer((0, 5, 0), "0.4.0"));
@@ -512,7 +531,7 @@ mod tests {
     #[test]
     fn platform_support_for_windows_is_not_supported() {
         // Any Windows arch is unsupported; the message must point at the
-        // README's manual .exe download.
+        // PowerShell installer, never at a README anchor that can rot.
         for arch in ["x86_64", "aarch64"] {
             let err = platform_support_for("windows", arch).unwrap_err();
             let msg = err.stderr_message();
@@ -521,11 +540,52 @@ mod tests {
                 "missing not-supported: {msg}"
             );
             assert!(
-                msg.contains("relate-windows-amd64.exe"),
-                "missing .exe pointer: {msg}"
+                msg.contains(WINDOWS_INSTALL_ONE_LINER),
+                "missing the install.ps1 one-liner: {msg}"
             );
-            assert!(msg.contains("README"), "missing README pointer: {msg}");
+            assert!(!msg.contains('#'), "no README anchor: {msg}");
         }
+    }
+
+    #[test]
+    fn windows_one_liner_names_the_powershell_installer() {
+        assert!(WINDOWS_INSTALL_ONE_LINER.contains("https://relatedb.ai/install.ps1"));
+        // A Windows build's reinstall advice is the PowerShell one-liner;
+        // every other build keeps install.sh's.
+        if cfg!(windows) {
+            assert_eq!(INSTALL_ONE_LINER, WINDOWS_INSTALL_ONE_LINER);
+        } else {
+            assert!(INSTALL_ONE_LINER.contains("https://relatedb.ai/install.sh"));
+        }
+    }
+
+    #[test]
+    fn check_verdict_never_advises_a_refused_upgrade() {
+        let supported = Ok(Platform {
+            os: "linux",
+            arch: "amd64",
+        });
+        let windows = platform_support_for("windows", "x86_64");
+        assert_eq!(
+            check_verdict(&supported, false, "1.2.3"),
+            "relate is up to date"
+        );
+        assert_eq!(
+            check_verdict(&windows, false, "1.2.3"),
+            "relate is up to date"
+        );
+        assert_eq!(
+            check_verdict(&supported, true, "1.2.3"),
+            "upgrade available: run `relate upgrade` to install 1.2.3"
+        );
+        let advice = check_verdict(&windows, true, "1.2.3");
+        assert!(
+            advice
+                .starts_with("upgrade available: 1.2.3; self-upgrade is not supported on Windows"),
+            "{advice}"
+        );
+        assert!(advice.contains(WINDOWS_INSTALL_ONE_LINER), "{advice}");
+        assert!(!advice.contains("run `relate upgrade`"), "{advice}");
     }
 
     #[test]
@@ -543,6 +603,10 @@ mod tests {
             "missing the supported set: {msg}"
         );
         assert!(msg.contains("README"), "missing README pointer: {msg}");
+        assert!(
+            msg.contains("https://github.com/relatedb/relate#install"),
+            "the README pointer must name the Install section: {msg}"
+        );
     }
 
     #[test]

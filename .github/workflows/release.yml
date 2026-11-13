@@ -367,7 +367,9 @@ jobs:
 
   cli:
     name: CLI (${{ matrix.target }})
-    needs: [release-owner, swift-stamp]
+    # `version` for the Windows smoke's expected version (swift-stamp
+    # already orders this job after it).
+    needs: [release-owner, version, swift-stamp]
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -433,6 +435,32 @@ jobs:
           EXT=""
           if [ "${{ matrix.runner }}" = "windows-latest" ]; then EXT=".exe"; fi
           cp "target/${{ matrix.target }}/release/relate${EXT}" "${{ matrix.artifact }}${EXT}"
+
+      # The Windows binary must start on a host without the Visual C++
+      # redistributable (ADR-0587): it imports no dynamic C runtime. dumpbin
+      # comes from the runner's Visual Studio, found through vswhere. Then
+      # the built .exe runs under PowerShell: --version and a one-shot query.
+      - name: Static CRT check and smoke (Windows, PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found through vswhere' }
+          $exe = Join-Path $PWD "$env:ARTIFACT.exe"
+          $imports = & $dumpbin /nologo /dependents $exe | Out-String
+          Write-Output $imports
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed on $exe" }
+          if ($imports -match '(?i)vcruntime|msvcp|ucrtbase|api-ms-win-crt') {
+            throw 'the CLI imports the dynamic C runtime; +crt-static did not apply (ADR-0587)'
+          }
+          $version = & $exe --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or -not $version.Contains("v$env:EXPECTED_VERSION")) { throw "--version: $version" }
+          $out = & $exe --format csv 'RETURN 1 AS ok' | Out-String
+          if ($LASTEXITCODE -ne 0 -or ($out -replace "`r", '') -cne "ok`n1`n") { throw "one-shot query: $out" }
 
       # Sign and notarize the darwin binaries with the shared composite action
       # (ADR-0123) so Gatekeeper accepts the downloaded CLI. Runs after the
@@ -1421,7 +1449,8 @@ jobs:
             exit 1
           fi
       # The generator at the stamped release commit (the release publishes
-      # with the script it shipped with); distribution carries install.sh.
+      # with the script it shipped with); distribution carries install.sh
+      # and install.ps1.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
@@ -1435,16 +1464,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: .github/scripts/publish-releases-json.sh "$RUNNER_TEMP/releases.json"
 
-      - name: Attach releases.json and install.sh to the release
+      - name: Attach releases.json and the installers to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           gh release upload "${{ needs.version.outputs.tag }}" \
-            "$RUNNER_TEMP/releases.json" distribution/install.sh --clobber
+            "$RUNNER_TEMP/releases.json" distribution/install.sh distribution/install.ps1 --clobber
 
       # One poke per release (ADR-0546): relate-web's publish workflow
-      # pulls releases.json, install.sh and the release assets it needs;
+      # pulls releases.json, install.sh, install.ps1 and the release assets it needs;
       # this repo never commits into it. 404 = the repository does not
       # exist yet (or the token cannot see it) — a stated skip, not a
       # failure, until relate-web is stood up. Offline releases never
@@ -1538,6 +1567,59 @@ jobs:
           EXPECTED_VERSION: ${{ needs.version.outputs.version }}
           ASSET: relate-linux-amd64
         run: bash .github/scripts/self-update-smoke.sh
+
+  # The Windows installer end to end against the release just published
+  # (ADR-0586): the install.ps1 attached to the release, through
+  # `irm | iex`, under Windows PowerShell 5.1 and then PowerShell 7 (the
+  # second run replaces the first one's binary). Then the installed
+  # relate.exe runs from a process that sees only the persisted PATH, with
+  # HOME unset as in stock PowerShell. The metadata seam points at the
+  # releases.json attached to the release, so the smoke never waits on the
+  # website deploy (relate-web, ADR-0546). The runner image ships the
+  # Visual C++ redistributable, so a clean host's missing CRT is the cli
+  # job's import check, not this one.
+  windows-install-smoke:
+    name: Windows install smoke
+    needs: [version, publish-releases-json]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}
+    steps:
+      - name: install.ps1 via irm | iex (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $env:RELATE_RELEASES_JSON_URL = "$env:RELEASE_BASE/releases.json"
+          irm "$env:RELEASE_BASE/install.ps1" | iex
+
+      - name: install.ps1 via irm | iex (PowerShell 7, over the first install)
+        shell: pwsh
+        run: |
+          $env:RELATE_RELEASES_JSON_URL = "$env:RELEASE_BASE/releases.json"
+          irm "$env:RELEASE_BASE/install.ps1" | iex
+
+      - name: The installed relate.exe from a new shell (HOME unset)
+        shell: pwsh
+        run: |
+          Remove-Item Env:HOME -ErrorAction SilentlyContinue
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path', 'User')
+          $expected = Join-Path $env:LOCALAPPDATA 'Programs\relate\relate.exe'
+          $resolved = (Get-Command relate -CommandType Application | Select-Object -First 1).Path
+          if ($resolved -ne $expected) { throw "relate resolves to '$resolved', not $expected" }
+          $version = relate --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or -not $version.Contains("v$env:EXPECTED_VERSION")) { throw "--version: $version" }
+          $out = relate --format csv 'RETURN 1 AS ok' | Out-String
+          if ($LASTEXITCODE -ne 0 -or ($out -replace "`r", '') -cne "ok`n1`n") { throw "one-shot query: $out" }
+          relate skill install --agent claude-code
+          if ($LASTEXITCODE -ne 0) { throw 'skill install failed' }
+          $skill = Join-Path $env:USERPROFILE '.claude\skills\relate\SKILL.md'
+          if (-not (Test-Path -LiteralPath $skill)) { throw "skill install did not write $skill" }
+          $env:RELATE_RELEASES_JSON_URL = "$env:RELEASE_BASE/releases.json"
+          relate upgrade --check
+          if ($LASTEXITCODE -ne 0) { throw 'upgrade --check failed' }
 
   # ADR-0465: the Slack announcement is the release pipeline's final step.
   # The release-notes run generates the payload early — publish-releases-json

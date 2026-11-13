@@ -6,5 +6,19 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=-zstack-size=16777216"]
 
+# Windows MSVC: link the C runtime statically (ADR-0587). Without it every
+# artifact imports VCRUNTIME140.dll and the UCRT, so the CLI .exe and the FFI
+# .dll fail to start on a clean Windows, Windows Sandbox or Server Core host
+# that lacks the Visual C++ redistributable. Workspace-wide on purpose: the
+# CLI, the FFI DLL and the Python / Node native modules all build through
+# here, and none of them passes CRT objects (FILE*, CRT heap pointers) across
+# its boundary. An env RUSTFLAGS replaces this table, so no Windows build may
+# set one; the release workflow checks the CLI's imports.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [alias]
 xtask = "run -p xtask --"

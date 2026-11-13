@@ -122,3 +122,11 @@ Exits write locally; the next enabled run delivers.
   here because the spool requires it.
 - `RELATE_TELEMETRY_FLUSH_MS` disappears with no migration hint, per
   the repository's precedent for removed spellings.
+
+## Later references
+
+ADR-0586's change reads `$HOME` through the shared rule every base uses,
+which requires an absolute value: a relative `$HOME` (on Windows, also a
+driveless one such as `/c/Users/u`) names no base, like a relative
+`$XDG_CONFIG_HOME`, so the config directory falls through to the next tier
+instead of resolving against the working directory or the current drive.

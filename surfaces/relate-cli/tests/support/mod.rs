@@ -22,6 +22,14 @@ pub use mock_mixpanel::{FollowupRun, MockMixpanel, DELIVERY_WAIT, QUIET_GRACE};
 #[allow(dead_code)] // Each test binary compiles this module and uses a subset.
 pub mod serve;
 
+/// The `upgrade` e2e harness (the releases.json loopback and the
+/// newer-release document): shared by `e2e_upgrade.rs` and
+/// `e2e_upgrade_route.rs`, so the fixture has one copy. Compiled only when
+/// self-upgrade is in the build — the same gate as the suites that use it.
+#[cfg(feature = "upgrade")]
+#[allow(dead_code)] // Each test binary compiles this module and uses a subset.
+pub mod releases;
+
 /// The client-side Bolt exchange helpers (handshake, struct send/read, the
 /// SUCCESS/FAILURE metadata unpack, connect-and-HELLO): shared by
 /// `e2e_serve.rs` and `e2e_serve_read_only.rs`, so the client-side Bolt

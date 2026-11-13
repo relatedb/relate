@@ -163,15 +163,15 @@ repository, which pulls what it needs from this repository's releases.
 - [ ] Stand up `relatedb/relate-web` with its publish workflow
   (trigger: `repository_dispatch` with `event_type: relate-release`,
   payload `{kind: cli|extension, tag}`; it pulls `releases.json`,
-  `install.sh`, and the signed `extensions.json` pair from the named
+  `install.sh`, `install.ps1`, and the signed `extensions.json` pair from the named
   release's assets and assembles its Pages artifact from build outputs).
 - [ ] Create the `RELATE_WEB_DISPATCH_TOKEN` repository secret here (a
   token with `contents:write` on `relate-web`) so the release pipeline's
   poke stops skipping.
 - [ ] Point `https://relatedb.ai/` at the relate-web Pages deployment and
   confirm the site loads.
-- [ ] Confirm the install script is served at
-  `https://relatedb.ai/install.sh` and `releases.json` at
+- [ ] Confirm the install scripts are served at
+  `https://relatedb.ai/install.sh` and `https://relatedb.ai/install.ps1`, and `releases.json` at
   `https://relatedb.ai/releases.json` (the document `relate upgrade`
   reads).
 - [ ] Until relate-web is live, a manual run of the **Publish

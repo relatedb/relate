@@ -217,14 +217,14 @@ EOF
 # loudly, so any GitHub API request (the route the installer must never take
 # again, ADR-0585) fails the install instead of silently succeeding.
 install_sh_stubs() {
-	cat >"$stubbin/curl" <<'EOF'
+	{
+		cat <<'EOF'
 #!/bin/sh
 # Stub curl: logs argv (one arg per line, calls separated by =CALL=) and
 # serves fixtures based on the URL (last argument). Never uses the network.
-{
-	printf '=CALL=\n'
-	for arg in "$@"; do printf '%s\n' "$arg"; done
-} >>"$STUB_LOG"
+EOF
+		stub_argv_logger STUB_LOG
+		cat <<'EOF'
 
 url=""
 out=""
@@ -329,6 +329,7 @@ case "$url" in
 	;;
 esac
 EOF
+	} >"$stubbin/curl"
 
 	cat >"$stubbin/uname" <<'EOF'
 #!/bin/sh
@@ -342,21 +343,22 @@ EOF
 
 	chmod +x "$stubbin/curl" "$stubbin/uname"
 
-	cat >"$stubbin/ssh-keygen" <<'EOF'
+	{
+		cat <<'EOF'
 #!/bin/sh
 # Stub ssh-keygen: logs argv in the same =CALL= format as stub curl, then
 # succeeds or fails based on the mode env var. It never inspects the signature
 # or stdin; the harness only exercises install.sh's control flow.
-{
-	printf '=CALL=\n'
-	for arg in "$@"; do printf '%s\n' "$arg"; done
-} >>"$STUB_KEYGEN_LOG"
+EOF
+		stub_argv_logger STUB_KEYGEN_LOG
+		cat <<'EOF'
 
 case "$STUB_MODE" in
 sig_invalid) exit 1 ;;
 *) exit 0 ;;
 esac
 EOF
+	} >"$stubbin/ssh-keygen"
 
 	chmod +x "$stubbin/ssh-keygen"
 
@@ -364,10 +366,28 @@ EOF
 	# sandbox cannot rely on deleting it from $stubbin (other cases need it),
 	# and /usr/bin cannot be left on PATH because the host may ship a real
 	# ssh-keygen.
+	# The set is derived, every stub but ssh-keygen, so a stub added above is
+	# never left out of it.
 	nosshbin="$sandbox/stub-bin-no-ssh"
 	mkdir -p "$nosshbin"
-	cp "$stubbin/curl" "$stubbin/uname" "$nosshbin/"
-	chmod +x "$nosshbin/curl" "$nosshbin/uname"
+	for stub in "$stubbin"/*; do
+		case "${stub##*/}" in
+		ssh-keygen) ;;
+		*) cp "$stub" "$nosshbin/" && chmod +x "$nosshbin/${stub##*/}" ;;
+		esac
+	done
+}
+
+# The argv-logging prelude every stub opens with: one =CALL= marker, then
+# one argument per line, appended to the log the variable named $1 holds.
+# The one writer of the framing curl_call_args reads.
+stub_argv_logger() { # $1 = name of the log variable the stub appends to
+	sed "s/@LOG@/$1/" <<'EOF'
+{
+	printf '=CALL=\n'
+	for arg in "$@"; do printf '%s\n' "$arg"; done
+} >>"$@LOG@"
+EOF
 }
 
 # Reset the per-case knobs to their defaults. The case sets STUB_MODE,
@@ -385,14 +405,26 @@ reset_case() {
 	STUB_FIXTURES_DIR=$fixtures
 	RUN_PATH="$stubbin:/usr/bin:/bin"
 	RUN_INSTALLER=$INSTALLER
+	RUN_VIA_PIPE=
+	unset RUN_HOME_ENV
 }
 
 # Run the installer fully sandboxed. Populates RUN_STATUS, RUN_HOME, RUN_LOG
 # (stub curl argv log) and RUN_ERR (installer stderr). RUN_INSTALLER selects
 # the script under test: the shipped install.sh everywhere except the
 # real-roundtrip cases, which run a sed-patched copy (see section 3c).
+# RUN_VIA_PIPE=1 feeds the script on stdin, as `curl ... | sh` does, instead
+# of naming it as a file. RUN_HOME_ENV, when set (even empty), is the HOME the
+# installer sees instead of the case's sandbox home.
 install_run() { # $1 = case name
 	case_name=$1
+	if [ -n "${RUN_VIA_PIPE:-}" ]; then
+		run_stdin=$RUN_INSTALLER
+		set -- /bin/sh
+	else
+		run_stdin=/dev/null
+		set -- /bin/sh "$RUN_INSTALLER"
+	fi
 	RUN_HOME="$sandbox/home-$case_name"
 	RUN_LOG="$sandbox/curl-$case_name.log"
 	RUN_KEYGEN_LOG="$sandbox/keygen-$case_name.log"
@@ -401,7 +433,7 @@ install_run() { # $1 = case name
 	: >"$RUN_LOG"
 	: >"$RUN_KEYGEN_LOG"
 	env -i \
-		HOME="$RUN_HOME" \
+		HOME="${RUN_HOME_ENV-$RUN_HOME}" \
 		PATH="$RUN_PATH" \
 		TMPDIR="$itmp" \
 		STUB_LOG="$RUN_LOG" \
@@ -413,13 +445,23 @@ install_run() { # $1 = case name
 		${GITHUB_TOKEN:+GITHUB_TOKEN="$GITHUB_TOKEN"} \
 		${RELATE_RELEASES_JSON_URL+RELATE_RELEASES_JSON_URL="$RELATE_RELEASES_JSON_URL"} \
 		${RELATE_RELEASE_DOWNLOAD_URL+RELATE_RELEASE_DOWNLOAD_URL="$RELATE_RELEASE_DOWNLOAD_URL"} \
-		/bin/sh "$RUN_INSTALLER" >"$sandbox/out-$case_name.log" 2>"$RUN_ERR"
+		"$@" <"$run_stdin" >"$sandbox/out-$case_name.log" 2>"$RUN_ERR"
 	RUN_STATUS=$?
 }
 
 # Log helpers over the stub curl argv log. The URL regex is awk's: it
 # matches any argument line, so anchor or escape it to the URL shape
 # ('api\.github\.com', '/releases/download/', 'releases\.json').
+
+# The arguments of the first stub curl call with an argument matching the
+# awk regex $1, one per line: the one reader of the log's =CALL= framing.
+curl_call_args() {
+	awk -v pat="$1" '
+		/^=CALL=$/ { if (found) { printf "%s", call; done = 1; exit } call = ""; next }
+		{ call = call $0 "\n"; if ($0 ~ pat) found = 1 }
+		END { if (found && !done) printf "%s", call }
+	' "$RUN_LOG"
+}
 
 # How many direct-route download requests the case made.
 direct_call_count() {
@@ -447,7 +489,7 @@ real_skip_reason=""
 
 # Generates a throwaway signing keypair at $1.
 make_key() {
-	"$real_keygen" -t ed25519 -N '' -C relate-release \
+	"$real_keygen" -t ed25519 -N '' -C "$INSTALLER_SIGNER" \
 		-f "$1" </dev/null >/dev/null 2>&1
 }
 
@@ -456,7 +498,7 @@ make_key() {
 # without a tty, so the copied placeholder signature must go first.
 sign_manifest() {
 	rm -f "$2/SHA256SUMS.sig"
-	"$real_keygen" -Y sign -f "$1" -n relate-release \
+	"$real_keygen" -Y sign -f "$1" -n "$INSTALLER_SIGNER" \
 		"$2/SHA256SUMS" </dev/null >/dev/null 2>&1
 }
 

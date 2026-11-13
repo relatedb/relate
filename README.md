@@ -30,6 +30,40 @@ larger-than-memory warehouse, an analytics engine, or a multi-tenant server.
 curl -sSfL https://relatedb.ai/install.sh | bash
 ```
 
+**CLI (Windows, PowerShell):**
+
+```powershell
+irm https://relatedb.ai/install.ps1 | iex
+```
+
+From `cmd` or Git Bash, run
+`powershell -ExecutionPolicy ByPass -c "irm https://relatedb.ai/install.ps1 | iex"`.
+It installs `relate.exe` to `%LOCALAPPDATA%\Programs\relate` and adds that
+folder to your user `PATH`. It runs the same checks as `install.sh` with
+the inbox Windows `ssh-keygen`, in Windows PowerShell 5.1 and PowerShell 7
+([ADR-0586](docs/adr/0586-windows-powershell-installer.md)). The binary
+links the C runtime statically, so it needs no Visual C++ redistributable
+([ADR-0587](docs/adr/0587-windows-static-crt.md)).
+
+> **Piping a script into a shell runs it before you have read it.** Both
+> installers authenticate everything they download (the signed manifest,
+> then the binary's checksum), but the script itself is trusted on the
+> strength of the HTTPS connection to `relatedb.ai`. To read it first,
+> download it, inspect it, then run the local copy:
+>
+> ```bash
+> curl -sSfLo install.sh https://relatedb.ai/install.sh && less install.sh && bash install.sh
+> ```
+>
+> ```powershell
+> irm https://relatedb.ai/install.ps1 -OutFile install.ps1; notepad install.ps1
+> powershell -ExecutionPolicy ByPass -File .\install.ps1
+> ```
+>
+> Both scripts are also attached to every
+> [GitHub release](https://github.com/relatedb/relate/releases/latest), as
+> the copy from the tagged commit.
+
 Downloads the release binary for your platform (macOS and Linux, amd64 and
 arm64) to `$HOME/.local/bin`, resolving the latest release from
 [`releases.json`](https://relatedb.ai/releases.json) — the same release
@@ -54,6 +88,10 @@ installed binary self-updates:
 relate upgrade          # download, verify, and replace (alias: update)
 relate upgrade --check  # report current vs latest; changes nothing
 ```
+
+On Windows a running `.exe` cannot replace itself, so `relate upgrade`
+points you at the PowerShell installer: rerun it to upgrade.
+`relate upgrade --check` works on every platform.
 
 **Python:**
 

@@ -376,6 +376,23 @@ Both `skill` actions also accept:
 | `--agent NAME` | all detected agents | Scope the action to one agent (case-insensitive) |
 | `--force` | `refuse` | Clobber `<skills dir>/relate` even when the command would otherwise refuse it (install: an unmarked, unrecognizable dir; remove: any unmarked dir) |
 
+Every agent's detect and skills directory is home-relative (`~/.claude`,
+`~/.claude/skills`, …; OpenCode's sits under `$XDG_CONFIG_HOME` when it is
+absolute, falling back to `<home>/.config`), on Windows as on macOS and Linux. The home directory is
+`$HOME` when set, non-empty and absolute (a relative value names no base, so no
+path depends on the working directory; on Windows a driveless value such as
+`/c/Users/u` names no base either, since it resolves against the current
+drive), else an absolute `%USERPROFILE%`. A
+value holding a `..` component names no base either, in every tier (CWE-22:
+no home-relative write is steered outside the directory the variable appears
+to name). A base that is itself a symlink is resolved to its target, which
+must pass the same rules; a dangling link names no base. Links earlier in the
+path, such as macOS `/var`, are left as written. Stock
+PowerShell and `cmd` on Windows set no `$HOME`, so there `relate skill install
+--agent claude-code` writes under `%USERPROFILE%\.claude\skills\relate`. A
+POSIX-style shell (Git Bash, MSYS2, Cygwin) sets `$HOME`, which keeps
+priority. With neither set, no agent resolves.
+
 `skill install` writes `<skills dir>/relate/.relate-installed`, the
 ownership marker that proves the directory was created by relate. The
 marker check does not follow symlinks: only a real regular file counts, so a
@@ -462,8 +479,19 @@ did, because only the typed 404 status triggers the fallback. Both route bases
 are overridable through the dev/test seams `RELATE_RELEASE_DOWNLOAD_URL`
 and `RELATE_GITHUB_API_URL` ([Environment](#environment)). `upgrade`
 authenticates the manifest, then checksum-verifies the binary against it and
-atomically replaces the running binary (macOS/Linux only; on Windows it errors
-and points at the manual `.exe` download). The signature is an OpenSSH SSHSIG
+atomically replaces the running binary (macOS/Linux only). On Windows a
+running `.exe` cannot replace itself, so `upgrade` exits 1 before any network
+request with one `Error: upgrade: self-upgrade is not supported on Windows …`
+line naming the PowerShell installer one-liner,
+`powershell -ExecutionPolicy ByPass -c "irm https://relatedb.ai/install.ps1 | iex"`
+(ADR-0586). On a Windows build, every other reinstall pointer `upgrade` prints
+names that one-liner too, instead of `install.sh`'s. `upgrade --check`
+downloads and replaces nothing, so it runs on every platform. It prints
+`current version:` and `latest release:`, then either
+`relate is up to date` or the advice. The advice is
+``upgrade available: run `relate upgrade` to install X.Y.Z`` where the replace
+is supported, and `upgrade available: X.Y.Z; <the platform's refusal>`
+elsewhere, so it never advises a command that would refuse. The signature is an OpenSSH SSHSIG
 (`ssh-keygen -Y sign`) over the exact `SHA256SUMS` bytes, in the namespace
 `relate-release`, made with the Ed25519 release key whose public half is
 pinned in the binary; it is never fetched from the release (ADR-0115). The
@@ -653,7 +681,8 @@ relate extension list --available
 `telemetry on|off` persists the `telemetry` key in
 `<config>/relate/config.json` (`$XDG_CONFIG_HOME/relate/` when
 `$XDG_CONFIG_HOME` is set, non-empty and absolute — a relative or empty
-value is treated as unset, as for the Windows bases — otherwise
+value, or one holding a `..` component, is treated as unset, as for every
+base — otherwise
 `~/.config/relate/`, otherwise `%APPDATA%\relate\`, finally
 `%USERPROFILE%\.config\relate\` — the Windows bases ADR-0545 §6 adds)
 and prints a confirmation with the config path. `telemetry off` is one
@@ -1928,9 +1957,9 @@ See the [executable help example](examples/help.md).
 | Variable | Used by | Meaning |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | `upgrade`, `extension install` | Optional bearer token for the release-asset downloads (ADR-0068/0069): sent as `Authorization: Bearer $GITHUB_TOKEN` on the direct release-asset requests, and — when the direct probe answers 404 — it is what selects the authenticated GitHub API asset route (ADR-0358 §3). Never sent on the `releases.json` metadata request, nor on the `extensions.json` channel-index or signature requests. While the repository is internal the direct route 404s, so the token is required; once the repository is public the direct route serves tokenless upgrades and the token is unnecessary |
-| `RELATE_RELEASES_JSON_URL` | `upgrade`, `install.sh` | Override the release-metadata URL (dev/test); the default is the canonical website URL `https://relatedb.ai/releases.json` (ADR-0250 §1). An empty value means the default, and the named URL is the only source consulted — there is no fallback. `install.sh` reads the same seam at install time to resolve the release it installs (ADR-0571) |
+| `RELATE_RELEASES_JSON_URL` | `upgrade`, `install.sh`, `install.ps1` | Override the release-metadata URL (dev/test); the default is the canonical website URL `https://relatedb.ai/releases.json` (ADR-0250 §1). An empty value means the default, and the named URL is the only source consulted — there is no fallback. `install.sh` reads the same seam at install time to resolve the release it installs (ADR-0571); `install.ps1` reads it the same way (ADR-0586). Both installers accept only an `https://` override, before any request, and pin the fetch to https across redirects (ADR-0586) |
 | `RELATE_EXTENSIONS_JSON_URL` | `extension install`, `extension list --available` | Override the extension channel-index URL (dev/test; ADR-0431's consequences — the ADR-0250 §1 pattern); the default is `https://relatedb.ai/extensions.json`, and the signature URL derives from it (`<index>.sig`). An empty value means the default; the named URL is the only source consulted — there is no fallback, and no token is ever sent |
-| `RELATE_RELEASE_DOWNLOAD_URL` | `upgrade`, `extension install`, `install.sh` | Override the base of the direct release-download route (dev/test seam only); the default is the canonical `https://github.com/relatedb/relate/releases/download` (ADR-0250 §3, ADR-0358 §8). An empty value means the default, and the named base is the only direct-route base consulted — there is no fallback. The extension tarball download rides the same route (ADR-0431 §1). `install.sh` reads the same seam at install time for all three of its asset downloads and consults no GitHub API endpoint at all (ADR-0585) |
+| `RELATE_RELEASE_DOWNLOAD_URL` | `upgrade`, `extension install`, `install.sh`, `install.ps1` | Override the base of the direct release-download route (dev/test seam only); the default is the canonical `https://github.com/relatedb/relate/releases/download` (ADR-0250 §3, ADR-0358 §8). An empty value means the default, and the named base is the only direct-route base consulted — there is no fallback. The extension tarball download rides the same route (ADR-0431 §1). `install.sh` reads the same seam at install time for all three of its asset downloads and consults no GitHub API endpoint at all (ADR-0585); so does `install.ps1`, with the same `https://`-only gate (ADR-0586) |
 | `RELATE_GITHUB_API_URL` | `upgrade`, `extension install` | Override the base of the GitHub API asset route (dev/test seam only); the default is the canonical `https://api.github.com` (ADR-0358 §8). An empty value means the default, and the named base is the only API base consulted — there is no fallback. The extension tarball's API fallback rides the same route (ADR-0431 §1) |
 | `RELATE_SNAPSHOT_FORMAT` | `--snapshot-format` | Default snapshot codec for empty URIs |
 | `RELATE_CHECKPOINT_INTERVAL_SECS` | `--checkpoint-interval-secs` | Default timed checkpoint period |

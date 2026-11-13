@@ -249,6 +249,8 @@ fn read_lines(path: &Path) -> Option<Vec<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::home_dir::permission_bits_enforced;
     use serde_json::json;
 
     fn tmp() -> tempfile::TempDir {
@@ -450,28 +452,6 @@ mod tests {
         assert_eq!(clear(dir.path()), 2);
         assert!(dir.path().join("state.json").exists());
         assert!(spool_files(dir.path()).is_empty());
-    }
-
-    /// Whether this test runner enforces permission bits: a root or
-    /// `CAP_DAC_OVERRIDE` runner (CI containers) bypasses them, and the
-    /// unreadable-claim tests' premise — a `chmod 000` file fails to
-    /// read — does not hold there. Probed once per test through a real
-    /// 000-mode read attempt, so the enforcement tests skip loudly
-    /// (with a stderr note) instead of failing on environments that
-    /// cannot express the premise.
-    #[cfg(unix)]
-    fn permission_bits_enforced(dir: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = dir.join("permission-probe");
-        std::fs::write(&probe, b"x").expect("write probe");
-        let mut perms = std::fs::metadata(&probe)
-            .expect("probe metadata")
-            .permissions();
-        perms.set_mode(0o000);
-        std::fs::set_permissions(&probe, perms).expect("chmod probe");
-        let enforced = std::fs::read_to_string(&probe).is_err();
-        let _ = std::fs::remove_file(&probe);
-        enforced
     }
 
     #[cfg(unix)]

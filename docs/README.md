@@ -2,8 +2,8 @@
 
 Plain markdown, no site generator. The public website lives in the separate
 [relate-web](https://github.com/relatedb/relate-web) repository (ADR-0546);
-the release pipeline attaches `releases.json` and `install.sh` to each
-release's assets and pokes relate-web to pull them.
+the release pipeline attaches `releases.json`, `install.sh` and `install.ps1`
+to each release's assets and pokes relate-web to pull them.
 
 ## Layout
 
@@ -22,6 +22,9 @@ release's assets and pokes relate-web to pull them.
 | [`limitations.md`](limitations.md) | Known gaps and unsupported surfaces |
 | [`PUBLISHING.md`](PUBLISHING.md) | Release runbook |
 
-The installer lives at [`../distribution/install.sh`](../distribution/install.sh)
-(offline harness: `make test-install-sh`). Documented function examples are
+The installers live at [`../distribution/install.sh`](../distribution/install.sh)
+(offline harness: `make test-install-sh`, which also drift-guards the Windows
+installer's constants) and [`../distribution/install.ps1`](../distribution/install.ps1)
+(offline harness: `scripts/tests/test_install_ps1.ps1` over `scripts/tests/lib/install_ps1_harness.ps1`, run on the Windows CI
+lane under PowerShell 5.1 and 7). Documented function examples are
 executed in CI via `scripts/check-doc-examples.sh`.

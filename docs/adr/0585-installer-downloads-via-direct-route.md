@@ -97,3 +97,9 @@ browser route `upgrade` probes (ADR-0358 §1), unauthenticated.
   spelling in the script.
 - The website serves the installer, so users see the fix when its copy
   of the script is redeployed.
+
+## Later references
+
+ADR-0586 extends the `https://` gate to the metadata seam
+(`RELATE_RELEASES_JSON_URL`) in both installers, and pins `install.sh`'s
+metadata fetch to https across redirects like its asset downloads.

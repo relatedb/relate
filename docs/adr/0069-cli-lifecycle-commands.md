@@ -188,3 +188,9 @@ when `GITHUB_TOKEN` is set), and `GITHUB_TOKEN` is reduced to an optional
 sent on the metadata request. The version comparison, the ADR-0115 SSHSIG
 verification, the atomic self-replace, and the §7 skill refresh are
 unchanged.
+
+ADR-0586 changes §6's Windows refusal: it now points at the PowerShell
+installer, `install.ps1`, instead of the manual `.exe` download, and is
+raised only for the replace. `upgrade --check` downloads and replaces
+nothing, so it runs on Windows too and carries the refusal as its advice
+line. Self-replace on Windows remains out of scope.

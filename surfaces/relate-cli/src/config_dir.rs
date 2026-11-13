@@ -10,6 +10,8 @@
 
 use std::path::PathBuf;
 
+use crate::home_dir::absolute_base;
+
 /// The config directory's name under whichever base resolves — the one
 /// segment every config-dir join shares (the resolution below, the
 /// registry's extensions dir, the test kit's fixture installs), so the
@@ -21,8 +23,9 @@ pub(crate) const CONFIG_DIR_NAME: &str = "relate";
 /// `~/.config/relate/`, else `%APPDATA%\relate\`, else
 /// `%USERPROFILE%\.config\relate\`. `None` when no base resolves.
 ///
-/// A relative `$XDG_CONFIG_HOME` is treated as unset, exactly like an
-/// empty one: a config dir resolved against the current working
+/// A relative `$XDG_CONFIG_HOME` (or any other base, through the shared
+/// `home_dir::absolute_base` rule), or any base holding a `..` component, is
+/// treated as unset, exactly like an empty one: a config dir resolved against the current working
 /// directory would make every consumer of this rule cwd-dependent —
 /// for the registry's walk that is the drive-by-execution guard undone
 /// (ADR-0429 §6: the grammar is a property of the machine, never of the
@@ -55,26 +58,6 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
 #[cfg(any(feature = "telemetry", feature = "extensions"))]
 pub(crate) const NO_BASE_HINT: &str = "set $XDG_CONFIG_HOME, $HOME, $APPDATA, or $USERPROFILE";
 
-/// One base read's shared half: set and non-empty — the module's one
-/// spelling of that rule (see the module doc for why an empty value
-/// never names a base).
-fn non_empty(env: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<String> {
-    env(key).filter(|v| !v.is_empty())
-}
-
-/// The absolute-reading tiers' shared read: set, non-empty, and absolute
-/// — a relative value never names a base, and a Windows host's native
-/// `%APPDATA%` / `%USERPROFILE%` values are absolute by construction.
-/// `$HOME` deliberately reads through [`non_empty`] alone: its
-/// pre-ADR-0545 contract accepts any non-empty value, including the
-/// POSIX-shell spellings (`/c/Users/…`) a Windows host cannot classify
-/// as absolute.
-fn absolute_base(env: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<PathBuf> {
-    non_empty(env, key)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-}
-
 /// Injectable-env variant of [`config_dir`]: the same resolution with
 /// the base read through `env`, so tests and the registry's injectable
 /// loader can pin it against a fixture environment.
@@ -82,8 +65,8 @@ pub(crate) fn config_dir_with(env: &dyn Fn(&str) -> Option<String>) -> Option<Pa
     if let Some(xdg) = absolute_base(env, "XDG_CONFIG_HOME") {
         return Some(xdg.join(CONFIG_DIR_NAME));
     }
-    if let Some(home) = non_empty(env, "HOME") {
-        return Some(PathBuf::from(home).join(".config").join(CONFIG_DIR_NAME));
+    if let Some(home) = absolute_base(env, "HOME") {
+        return Some(home.join(".config").join(CONFIG_DIR_NAME));
     }
     // The Windows bases (ADR-0545 §6), reached only when the POSIX pair
     // is absent — stock Windows sets neither, and its native values are
@@ -97,6 +80,7 @@ pub(crate) fn config_dir_with(env: &dyn Fn(&str) -> Option<String>) -> Option<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::home_dir::host_absolute;
     use crate::telemetry::env_of;
 
     #[test]
@@ -150,6 +134,27 @@ mod tests {
         let appdata = host_absolute("appdata");
         let dir = config_dir_with(&env_of(&[("APPDATA", appdata.as_str())]));
         assert_eq!(dir, Some(PathBuf::from(appdata).join("relate")));
+    }
+
+    #[test]
+    fn a_traversing_base_falls_through_to_the_next_tier() {
+        // CWE-22: a `..` component disqualifies a base (the shared
+        // home_dir rule), so APPDATA's traversing value yields to
+        // USERPROFILE instead of steering the config dir elsewhere.
+        let appdata = host_absolute("appdata/../windows");
+        let profile = host_absolute("users/u");
+        let pairs = [
+            ("APPDATA", appdata.as_str()),
+            ("USERPROFILE", profile.as_str()),
+        ];
+        assert_eq!(
+            config_dir_with(&env_of(&pairs)),
+            Some(
+                PathBuf::from(profile.as_str())
+                    .join(".config")
+                    .join("relate")
+            )
+        );
     }
 
     #[test]
@@ -209,15 +214,5 @@ mod tests {
             None,
             "a relative USERPROFILE must not resolve"
         );
-    }
-
-    /// A base value `is_absolute` accepts on the host running the test:
-    /// Windows wants a drive prefix, everything else a leading slash.
-    fn host_absolute(rest: &str) -> String {
-        if cfg!(windows) {
-            format!("C:\\{rest}")
-        } else {
-            format!("/{rest}")
-        }
     }
 }

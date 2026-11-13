@@ -156,3 +156,10 @@ ADR-0585 supersedes §6's authentication model for the installer: the
 repository is public, `install.sh` downloads every asset from the direct
 release route unauthenticated, reads no `GITHUB_TOKEN`, and consults no
 GitHub API endpoint; §7's token-prefixed invocation is historical.
+
+ADR-0586 lifts §3's macOS/Linux-only platform scope for Windows: a
+PowerShell installer, `install.ps1`, ships beside `install.sh` with the same
+resolution, transport, and fail-closed verification chain, and installs to
+`%LOCALAPPDATA%\Programs\relate`. `install.sh` itself still installs only on
+macOS and Linux; under Git Bash, MSYS2 and Cygwin it now exits naming the
+PowerShell one-liner instead of `unsupported OS`.

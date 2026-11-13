@@ -26,6 +26,10 @@ const RELEASES_JSON_URL_ENV: &str = "RELATE_RELEASES_JSON_URL";
 /// held: `upgrade` does not print it.
 #[derive(Debug)]
 pub(super) struct Release {
+    /// The tag, stripped of control characters at the parse boundary: it is
+    /// the one copy every consumer reads — the console lines, the download
+    /// URLs, the manifest binding, this type's own refusals — and a
+    /// compromised document could embed ESC/CSI sequences to spoof output.
     pub(super) tag: String,
     assets: Vec<String>,
 }
@@ -204,7 +208,12 @@ fn parse_release_object(value: &serde_json::Value, path: &str) -> Result<Release
     let wire = ReleaseObject::deserialize(value).map_err(derive_err)?;
     // Check order is the pinned §4 behavior: each key's presence and type
     // checks complete before the next key is looked at.
-    let tag = required::<String>(wire.tag, &format!("{path}.tag"))?;
+    // Sanitized before any check, so validation and every consumer see the
+    // same value: a tag of only control characters is an empty tag.
+    let tag = relate_formatter::strip_unsafe_output_chars(&required::<String>(
+        wire.tag,
+        &format!("{path}.tag"),
+    )?);
     if tag.is_empty() {
         return Err(malformed(format!("{path}.tag is empty")));
     }
@@ -311,6 +320,30 @@ mod tests {
     /// the website publisher writes. The parser tests below read this file,
     /// not an inline copy.
     const FIXTURE: &str = include_str!("../../tests/fixtures/releases.json");
+
+    #[test]
+    fn release_tag_is_sanitized_at_the_parse_boundary() {
+        // The one sanitizing site: a control character in a release tag never
+        // survives into the `Release` every consumer reads.
+        let object = serde_json::json!({
+            "tag": "v0.5.0\u{1b}[31m",
+            "published_at": "2026-10-15T11:58:00Z",
+            "notes": "",
+            "prerelease": false,
+            "assets": [],
+        });
+        let release = parse_release_object(&object, "latest_prerelease").unwrap();
+        assert_eq!(release.tag, "v0.5.0[31m");
+        // Validation reads the sanitized value: control characters alone
+        // are an empty tag.
+        let mut only_controls = object.clone();
+        only_controls["tag"] = serde_json::json!("\u{1b}\u{7}");
+        let err = parse_release_object(&only_controls, "latest_prerelease").unwrap_err();
+        assert!(
+            err.to_string().contains("latest_prerelease.tag is empty"),
+            "{err}"
+        );
+    }
 
     /// The fixture's `latest` object, on one line, as the mutation anchor for
     /// the malformed-document cases.

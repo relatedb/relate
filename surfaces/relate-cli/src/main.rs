@@ -27,6 +27,17 @@ mod eggs;
 mod errors;
 mod examples;
 mod exec_query;
+// The per-user base reads (`$HOME`, `%USERPROFILE%`, the absolute rule):
+// shared by the config directory and the agent catalog's `~` expansion,
+// compiled exactly when one of them is.
+#[cfg(any(
+    feature = "telemetry",
+    feature = "extensions",
+    feature = "eggs",
+    feature = "skill",
+    feature = "upgrade"
+))]
+mod home_dir;
 // The usage(2)/runtime(1) exit split, stated once for every typed error
 // carrier (round 4, F-2-12): `--load`'s errors and the extension install
 // flow's classify through the same class, each adding only its own

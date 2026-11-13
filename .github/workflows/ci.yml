@@ -729,7 +729,7 @@ jobs:
           cargo test --no-run -p relate-mcp --test stdio_tools
           cargo test --no-run -p relate-bolt --lib
           cargo test --no-run -p relate-http --lib
-          cargo test --no-run -p relate-cli --test e2e_bundles
+          cargo test --no-run -p relate-cli --test e2e_bundles --test e2e_skill --test e2e_upgrade
 
       # Windows subset of the macOS surface smokes (`os_surface_smokes`):
       # the four one-query surface smokes, the C compile example, and the
@@ -762,6 +762,41 @@ jobs:
           )
           export CGO_LDFLAGS="-L${RELATE_LIB%/*} -lrelate_ffi"
           go test -C clients/go -count=1 -run '^TestReturnOne$' .
+
+      # The PowerShell installer's offline harness (ADR-0586) under both
+      # shells it promises: Windows PowerShell 5.1 and PowerShell 7. Real
+      # ssh-keygen verifies real signatures through the installer's
+      # cmd.exe redirection; the network, PATH and arch seams are stubbed.
+      # Native shells, not Git Bash: Git Bash puts its own MSYS ssh-keygen
+      # first on PATH, and a user's PowerShell resolves the inbox Windows
+      # OpenSSH client, which is the one these steps must exercise.
+      - name: install.ps1 harness (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          & ./scripts/tests/test_install_ps1.ps1
+          exit $LASTEXITCODE
+
+      - name: install.ps1 harness (PowerShell 7)
+        shell: pwsh
+        run: |
+          & ./scripts/tests/test_install_ps1.ps1
+          exit $LASTEXITCODE
+
+      # Stock PowerShell sets no HOME, while every other step here runs under
+      # Git Bash, which does. So the CLI's home-relative agent paths and the
+      # Windows upgrade paths also run from pwsh with HOME removed. The
+      # home_dir unit tests read an injected environment and run here for
+      # their Windows outcomes (drive rules, verbatim prefixes).
+      - name: CLI e2e under PowerShell (HOME unset)
+        shell: pwsh
+        run: |
+          Remove-Item Env:HOME -ErrorAction SilentlyContinue
+          cargo test -p relate-cli --bin relate -- home_dir::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p relate-cli --test e2e_skill -- --exact test_skill_install_resolves_userprofile_without_home
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p relate-cli --test e2e_upgrade -- --exact test_upgrade_check_on_windows_advises_the_powershell_installer test_upgrade_on_windows_refuses_with_the_powershell_installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Disk headroom (telemetry)
         if: always() && runner.os == 'Linux'
