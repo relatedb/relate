@@ -6,7 +6,7 @@
 //! One row or scratch entity is charged at 1024 bytes, so the stretch
 //! queries are sized against that charge, not against payload width.
 
-use crate::bolt::Session;
+use relate_test_support::bolt::client::Session;
 
 pub const ORG_DEPTH: i64 = 8;
 pub const ACCOUNTS_PER_ORG: i64 = 12;

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use relate_datasets::harness::default_bolt_bin;
 use relate_datasets::memory_shape::{default_store_uri, format_report, run, MemoryShapeConfig};
 use relate_datasets::shapes::{IndexCounts, DEFAULT_LOGICAL_TARGET_BYTES, DEFAULT_NODE_ATTRIBUTES};
+use relate_test_support::relate_bin_or_default;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -17,8 +17,8 @@ struct Args {
     #[arg(long)]
     uri: Option<PathBuf>,
     /// Path to the `relate` product binary (its `serve --bolt` child is
-    /// measured). Default: sibling of this executable, then
-    /// target/release/relate.
+    /// measured). Default: `RELATE_BIN`, then the sibling of this
+    /// executable, then target/release/relate.
     #[arg(long)]
     bolt_bin: Option<PathBuf>,
     /// Report JSON path
@@ -52,7 +52,7 @@ fn main() {
         std::process::exit(1);
     };
     let cfg = MemoryShapeConfig {
-        bolt_bin: args.bolt_bin.unwrap_or_else(default_bolt_bin),
+        bolt_bin: args.bolt_bin.unwrap_or_else(relate_bin_or_default),
         store: args.uri.unwrap_or_else(default_store_uri),
         out: Some(args.out.clone()),
         logical_target_bytes,

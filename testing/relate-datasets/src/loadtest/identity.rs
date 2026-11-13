@@ -8,9 +8,10 @@ use rand::{Rng, SeedableRng};
 use relate::{Connection, Result};
 
 use super::{
-    choose_usecase, exec_statements, pick_one, scalar, Catalog, ExecOutcome, Knobs, LoadtestConfig,
+    choose_usecase, exec_statements, pick_one, Catalog, ExecOutcome, Knobs, LoadtestConfig,
     LoadtestDataset, OpKind, Param, PlannedSelection, PlannedStatement,
 };
+use crate::harness::scalar;
 use crate::identity::{generate, IdentityConfig, IdentityGraph, GRANTABLE_ROLE_IDS, ROOT_USER_ID};
 use crate::load::load_identity;
 

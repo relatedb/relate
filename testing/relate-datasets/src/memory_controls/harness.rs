@@ -17,8 +17,8 @@ use chrono::{SecondsFormat, Utc};
 use relate_test_support::sampling::process_status;
 use serde::Serialize;
 
-use crate::bolt::Session;
 use crate::serve_child::{free_ports, serve_command, ServeChild, READY_DEADLINE};
+use relate_test_support::bolt::client::Session;
 
 /// The cases `--case` names, in run order: the memory control verifications, the
 /// logical-byte calibration, then the configured workload (which also runs by

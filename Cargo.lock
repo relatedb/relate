@@ -2291,7 +2291,6 @@ dependencies = [
  "proptest",
  "rand",
  "relate",
- "relate-bolt",
  "relate-core",
  "relate-storage",
  "relate-test-support",

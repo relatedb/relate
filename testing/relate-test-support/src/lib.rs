@@ -269,6 +269,22 @@ pub fn relate_bin() -> Option<std::path::PathBuf> {
     manifest_relative.is_file().then_some(manifest_relative)
 }
 
+/// The `relate` binary for harnesses that spawn `relate serve` and may run
+/// without `RELATE_BIN` (the memory-shape and processing-memory cases):
+/// [`relate_bin`] first, else the binary beside the harness's own
+/// executable, else the workspace's release build. The one resolution rule,
+/// so the knob and its fallback cannot disagree.
+pub fn relate_bin_or_default() -> std::path::PathBuf {
+    relate_bin()
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join("relate")))
+                .filter(|sibling| sibling.is_file())
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("target/release/relate"))
+}
+
 /// How to provide the binary when [`relate_bin`] comes back empty.
 pub fn relate_bin_missing_message() -> String {
     "RELATE_BIN is unset or does not point at a built relate binary; \

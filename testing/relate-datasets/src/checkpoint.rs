@@ -8,6 +8,7 @@ use relate_test_support::sampling::process_rss_bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::fraud::{generate, FraudConfig};
+use crate::harness::scalar;
 use crate::load::load_fraud;
 
 #[derive(Debug, Clone)]
@@ -111,13 +112,4 @@ pub fn run(cfg: &CheckpointConfig) -> Result<CheckpointReport> {
         crate::report::write_report(path, &report).map_err(relate::Error::storage)?;
     }
     Ok(report)
-}
-
-fn scalar(conn: &mut relate::Connection, cypher: &str) -> Result<i64> {
-    let r = conn.query(cypher)?;
-    Ok(r.rows
-        .first()
-        .and_then(|row| row.first())
-        .and_then(relate::Value::as_int)
-        .unwrap_or(0))
 }

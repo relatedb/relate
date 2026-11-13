@@ -4,6 +4,11 @@
 //! crate's own unit tests keep their paths via testutil re-exports).
 //! Client sockets should arm a read timeout so a wedged server fails the
 //! test instead of hanging the suite.
+//!
+//! [`client`] is the one real Bolt session client (handshake, auth, RUN/PULL
+//! pipelining) every harness that needs a live session shares.
+
+pub mod client;
 
 use std::io::{Read, Write};
 

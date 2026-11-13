@@ -264,6 +264,99 @@ fn wait_for_addr(
 mod tests {
     use super::*;
 
+    /// A live session against a spawned `relate serve`: the 5.4
+    /// negotiation, one parameterized statement, one pipelined batch, and a
+    /// batch whose failure the drain absorbs as IGNORED pairs before its
+    /// RESET recovers the session.
+    #[test]
+    fn live_session_runs_parameterized_and_pipelined_statements() {
+        let Some(bin) = relate_test_support::relate_bin() else {
+            eprintln!(
+                "skipping the live Bolt session test: {}",
+                relate_test_support::relate_bin_missing_message()
+            );
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // The memory-shape bolt case's serve child: the shared spawn under the
+        // harness's logical graph size limit.
+        let server = ServeChild::spawn_bolt(&bin, &dir.path().join("store"), 1 << 30).unwrap();
+        let mut session =
+            relate_test_support::bolt::client::Session::connect(&server.addr).unwrap();
+        assert_eq!(
+            session.version(),
+            relate_test_support::bolt::client::BoltVersion::V5_4,
+            "the server speaks both versions and the client proposes 5.4 first"
+        );
+
+        session
+            .run_with_params("CREATE (:ParamProbe {id: $id})", &[("id", 7)])
+            .unwrap();
+        assert_eq!(
+            session
+                .run_records("MATCH (n:ParamProbe) RETURN n")
+                .unwrap(),
+            1
+        );
+        // The count probe: one row, one integer, read as the value itself.
+        assert_eq!(
+            session
+                .run_count("MATCH (n:ParamProbe) RETURN count(n)")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            session
+                .run_count("MATCH ()-[r:Missing]->() RETURN count(r)")
+                .unwrap(),
+            0
+        );
+
+        // One batch: every pair queued, one flush, one drain.
+        for id in 0..3 {
+            session
+                .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", id)])
+                .unwrap();
+        }
+        session.flush().unwrap();
+        assert_eq!(
+            session.drain_batch(3).unwrap(),
+            relate_test_support::bolt::client::BatchDrain {
+                applied: 3,
+                errors: 0,
+                failure: None,
+            }
+        );
+        assert_eq!(
+            session
+                .run_records("MATCH (n:BatchProbe) RETURN n")
+                .unwrap(),
+            3
+        );
+
+        // The middle pair's RUN fails: its PULL and the pair queued behind it
+        // answer IGNORED, and the drain's RESET leaves the session usable.
+        session
+            .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", 99)])
+            .unwrap();
+        session.enqueue_run_pull("NOT A STATEMENT", &[]).unwrap();
+        session
+            .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", 100)])
+            .unwrap();
+        session.flush().unwrap();
+        let drained = session.drain_batch(3).unwrap();
+        assert_eq!(drained.applied, 1);
+        assert_eq!(drained.errors, 2);
+        assert!(!drained.failure.unwrap().is_empty());
+        assert_eq!(
+            session
+                .run_records("MATCH (n:BatchProbe) RETURN n")
+                .unwrap(),
+            4
+        );
+        session.goodbye().unwrap();
+    }
+
     /// Two ports reserved together stay distinct. Reserved one after
     /// another, Linux can reissue the port the first probe just released.
     #[test]

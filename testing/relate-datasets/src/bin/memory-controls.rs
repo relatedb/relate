@@ -2,11 +2,11 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
-use relate_datasets::harness::default_bolt_bin;
 use relate_datasets::memory_controls::harness::{default_store, run, CaseReport, Config};
 use relate_datasets::memory_controls::workload::{
     parse_index_mode, parse_ratio, parse_read_query, Controls, IndexMode, ReadQuery, WorkloadReport,
 };
+use relate_test_support::relate_bin_or_default;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -17,8 +17,8 @@ struct Args {
     /// Directory for this run. Each case uses a subdirectory.
     #[arg(long)]
     uri: Option<PathBuf>,
-    /// Path to the relate CLI (`serve`). Default: sibling of this
-    /// executable, then target/release/relate.
+    /// Path to the relate CLI (`serve`). Default: `RELATE_BIN`, then the sibling
+    /// of this executable, then target/release/relate.
     #[arg(long)]
     serve_bin: Option<PathBuf>,
     /// Report JSON path
@@ -241,7 +241,7 @@ fn main() {
         }
     };
     let cfg = Config {
-        serve_bin: args.serve_bin.clone().unwrap_or_else(default_bolt_bin),
+        serve_bin: args.serve_bin.clone().unwrap_or_else(relate_bin_or_default),
         store: args.uri.clone().unwrap_or_else(default_store),
         out: args.out.clone(),
         controls: controls.clone(),

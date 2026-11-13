@@ -19,6 +19,7 @@ use relate::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::harness::scalar;
 use crate::report::{LatencyNs, Rank};
 
 mod args;
@@ -28,7 +29,7 @@ mod memory;
 mod report;
 
 pub use args::{parse_cli_size, CommonArgs, StorageArgs};
-pub use fraud::{planned_cypher, FraudKnobsArgs, FraudLoadtest, Planned, Workload, CATALOG};
+pub use fraud::{FraudKnobsArgs, FraudLoadtest};
 pub use identity::{IdentityKnobsArgs, IdentityLoadtest};
 pub use memory::{
     build_memory_report, sample_rss, GraphMemory, MemoryPoint, MemoryReport, MemoryWorkloadDelta,
@@ -559,16 +560,6 @@ fn snapshot<D: LoadtestDataset>(conn: &mut Connection, dataset: D) -> Result<Gra
         relationships: scalar(conn, "MATCH ()-[r]->() RETURN count(r) AS n")?,
         scalars: dataset.snapshot_scalars(conn)?,
     })
-}
-
-/// `SELECT` a single integer (`AS n`).
-pub fn scalar(conn: &mut Connection, cypher: &str) -> Result<i64> {
-    let r = conn.query(cypher)?;
-    Ok(r.rows
-        .first()
-        .and_then(|row| row.first())
-        .and_then(Value::as_int)
-        .unwrap_or(0))
 }
 
 pub fn summarize<W, P>(ops: &[OpRecord], catalog: &[Catalog<W, P>]) -> Vec<UsecaseSummary> {

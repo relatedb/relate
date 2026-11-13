@@ -13,21 +13,17 @@ relate-core = { workspace = true }
 relate-storage = { workspace = true, features = ["parquet"] }
 # The canonical platform samplers and harness helpers (R4:
 # testing/* may depend on any workspace package).
-relate-test-support = { workspace = true }
+relate-test-support = { workspace = true, features = ["bolt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 rand = { workspace = true }
 chrono = { workspace = true }
-relate-bolt = { path = "../../surfaces/relate-bolt" }
 
 [dev-dependencies]
 tempfile = "3"
 # Same pin as relate-storage (ADR-0268): one proptest version workspace-wide.
 proptest = { workspace = true }
-# The bolt client's tests drive the workspace's shared client-side Bolt
-# exchange helpers (`bolt`: message reads, map field lookups).
-relate-test-support = { workspace = true, features = ["bolt"] }
 
 # The crate's binaries are auto-discovered from src/bin/*.rs (every name
 # matches its file); no [[bin]] table — a partial one would be a second,

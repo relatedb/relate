@@ -19,9 +19,9 @@ use chrono::{SecondsFormat, Utc};
 use relate_test_support::sampling::process_status;
 use serde::{Deserialize, Serialize};
 
-use crate::bolt::Session;
-use crate::harness::default_bolt_bin;
 use crate::serve_child::ServeChild;
+use relate_test_support::bolt::client::Session;
+use relate_test_support::relate_bin_or_default;
 
 mod progress;
 use crate::shapes::{
@@ -53,7 +53,7 @@ pub struct MemoryShapeConfig {
 impl Default for MemoryShapeConfig {
     fn default() -> Self {
         Self {
-            bolt_bin: default_bolt_bin(),
+            bolt_bin: relate_bin_or_default(),
             store: default_store_uri(),
             out: None,
             logical_target_bytes: DEFAULT_LOGICAL_TARGET_BYTES,

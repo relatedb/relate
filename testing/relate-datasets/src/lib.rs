@@ -1,7 +1,6 @@
 //! Dataset generators and loaders for Relate (synthetic fraud and IAM).
 
 pub mod bench;
-pub mod bolt;
 pub mod bulk;
 pub mod checkpoint;
 pub mod codec;

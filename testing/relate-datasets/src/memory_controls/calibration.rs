@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::bolt::Session;
 use crate::memory_controls::harness::{
     self, connect_addr, CaseReport, Config, ServeLimits, Server,
 };
+use relate_test_support::bolt::client::Session;
 
 const BATCH: i64 = 500;
 const PAYLOAD_BYTES: usize = 256;

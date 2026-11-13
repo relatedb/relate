@@ -43,7 +43,8 @@ use relate::{Database, DurabilityMode, Error, OpenOptions, Result, Value};
 use relate_test_support::sampling::process_rss_bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::loadtest::{scalar, unix_ms};
+use crate::harness::scalar;
+use crate::loadtest::unix_ms;
 use crate::report::{LatencyNs, Rank};
 use relate_test_support::profiler::{sample, DEFAULT_FREQUENCY};
 

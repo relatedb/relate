@@ -13,11 +13,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::bolt::Session;
 use crate::memory_controls::harness::{
     connect_addr, finish, CaseReport, Config, Sample, ServeLimits, Server,
 };
 use crate::processing_graph;
+use relate_test_support::bolt::client::Session;
 
 const REPEATS: usize = 3;
 const HOLD_MS: u64 = 400;

@@ -15,11 +15,11 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::Serialize;
 
-use crate::bolt::Session;
 use crate::memory_controls::harness::{
     self, connect_addr, CaseReport, Config, ServeLimits, Server,
 };
 use crate::processing_graph::{self, Ledger};
+use relate_test_support::bolt::client::Session;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

@@ -195,6 +195,9 @@ impl Session {
         })?;
         match (records, count) {
             (1, Some(count)) => Ok(count),
+            (1, None) => Err(format!(
+                "{cypher}: the single row is not one integer column"
+            )),
             _ => Err(format!(
                 "{cypher}: expected one row with one integer, got {records} rows"
             )),
@@ -343,104 +346,10 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use relate_test_support::bolt::{field, try_read_msg};
+    use crate::bolt::{field, try_read_msg};
 
     use super::super::messages::USER_AGENT;
     use super::*;
-
-    /// A live session against a spawned `relate serve`: the 5.4
-    /// negotiation, one parameterized statement, one pipelined batch, and a
-    /// batch whose failure the drain absorbs as IGNORED pairs before its
-    /// RESET recovers the session.
-    #[test]
-    fn live_session_runs_parameterized_and_pipelined_statements() {
-        let Some(bin) = relate_test_support::relate_bin() else {
-            eprintln!(
-                "skipping the live Bolt session test: {}",
-                relate_test_support::relate_bin_missing_message()
-            );
-            return;
-        };
-        let dir = tempfile::tempdir().unwrap();
-        // The memory-shape bolt case's serve child: the shared spawn under the
-        // harness's logical graph size limit.
-        let server =
-            crate::serve_child::ServeChild::spawn_bolt(&bin, &dir.path().join("store"), 1 << 30)
-                .unwrap();
-        let mut session = Session::connect(&server.addr).unwrap();
-        assert_eq!(
-            session.version(),
-            BoltVersion::V5_4,
-            "the server speaks both versions and the client proposes 5.4 first"
-        );
-
-        session
-            .run_with_params("CREATE (:ParamProbe {id: $id})", &[("id", 7)])
-            .unwrap();
-        assert_eq!(
-            session
-                .run_records("MATCH (n:ParamProbe) RETURN n")
-                .unwrap(),
-            1
-        );
-        // The count probe: one row, one integer, read as the value itself.
-        assert_eq!(
-            session
-                .run_count("MATCH (n:ParamProbe) RETURN count(n)")
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            session
-                .run_count("MATCH ()-[r:Missing]->() RETURN count(r)")
-                .unwrap(),
-            0
-        );
-
-        // One batch: every pair queued, one flush, one drain.
-        for id in 0..3 {
-            session
-                .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", id)])
-                .unwrap();
-        }
-        session.flush().unwrap();
-        assert_eq!(
-            session.drain_batch(3).unwrap(),
-            BatchDrain {
-                applied: 3,
-                errors: 0,
-                failure: None,
-            }
-        );
-        assert_eq!(
-            session
-                .run_records("MATCH (n:BatchProbe) RETURN n")
-                .unwrap(),
-            3
-        );
-
-        // The middle pair's RUN fails: its PULL and the pair queued behind it
-        // answer IGNORED, and the drain's RESET leaves the session usable.
-        session
-            .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", 99)])
-            .unwrap();
-        session.enqueue_run_pull("NOT A STATEMENT", &[]).unwrap();
-        session
-            .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", 100)])
-            .unwrap();
-        session.flush().unwrap();
-        let drained = session.drain_batch(3).unwrap();
-        assert_eq!(drained.applied, 1);
-        assert_eq!(drained.errors, 2);
-        assert!(!drained.failure.unwrap().is_empty());
-        assert_eq!(
-            session
-                .run_records("MATCH (n:BatchProbe) RETURN n")
-                .unwrap(),
-            4
-        );
-        session.goodbye().unwrap();
-    }
 
     /// What one fake-server connection saw: the client's four handshake
     /// proposal slots and every message it sent after them.

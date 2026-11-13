@@ -11,10 +11,11 @@ use rand::{Rng, SeedableRng};
 use relate::{Connection, Result};
 
 use super::{
-    choose_usecase, exec_statements, pick_one, scalar, Catalog, ExecOutcome, Knobs, LoadtestConfig,
+    choose_usecase, exec_statements, pick_one, Catalog, ExecOutcome, Knobs, LoadtestConfig,
     LoadtestDataset, OpKind, Param, PlannedSelection, PlannedStatement,
 };
 use crate::fraud::{generate, round_cents, FraudConfig, FraudGraph};
+use crate::harness::scalar;
 use crate::load::load_fraud;
 
 /// Fraud dataset hook for [`super::run`].

@@ -82,23 +82,19 @@ pub fn build_shape(
     Ok(db)
 }
 
-/// The `relate` product binary (ADR-0368): every harness that spawns
-/// `relate serve` — the memory-shape and processing-memory cases — measures
-/// that one product binary's process
-/// (the standalone Bolt server is retired; serve carries the storage flags
-/// those cases pass, ADR-0390), and finds it the same way: beside the
-/// harness's own executable when it is there, else the workspace's release
-/// build.
-pub fn default_bolt_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join("relate");
-            if sibling.is_file() {
-                return sibling;
-            }
-        }
+/// `SELECT` a single integer (`AS n`) — the one scalar-count helper the
+/// dataset harnesses (mixed workload, bulk ladder, checkpoint) share.
+pub fn scalar(conn: &mut relate::Connection, cypher: &str) -> relate::Result<i64> {
+    let r = conn.query(cypher)?;
+    match r.rows.as_slice() {
+        [row] => row.first().and_then(relate::Value::as_int).ok_or_else(|| {
+            relate::Error::semantic(format!("{cypher}: the single row is not an integer"))
+        }),
+        rows => Err(relate::Error::semantic(format!(
+            "{cypher}: expected one row with one integer, got {} rows",
+            rows.len()
+        ))),
     }
-    PathBuf::from("target/release/relate")
 }
 
 /// CPU/OS line recorded in the report: `machdep.cpu.brand_string` on macOS,

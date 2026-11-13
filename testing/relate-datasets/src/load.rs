@@ -97,7 +97,78 @@ pub fn load_fraud(conn: &mut Connection, graph: &FraudGraph) -> Result<()> {
     Ok(())
 }
 
+/// Load order: the five entity sets first, then the edges, which `MATCH`
+/// their endpoints and so need every entity present.
 pub fn load_identity(conn: &mut Connection, graph: &IdentityGraph) -> Result<()> {
+    load_users(conn, graph)?;
+    load_named(
+        conn,
+        graph.groups.iter().map(|g| (&g.id, &g.name)),
+        "UNWIND $rows AS g CREATE (:Group {id: g.id, name: g.name})",
+    )?;
+    load_named(
+        conn,
+        graph.roles.iter().map(|r| (&r.id, &r.name)),
+        "UNWIND $rows AS r CREATE (:Role {id: r.id, name: r.name})",
+    )?;
+    load_named(
+        conn,
+        graph.permissions.iter().map(|p| (&p.id, &p.name)),
+        "UNWIND $rows AS p CREATE (:Permission {id: p.id, name: p.name})",
+    )?;
+    load_named(
+        conn,
+        graph.apps.iter().map(|a| (&a.id, &a.name)),
+        "UNWIND $rows AS a CREATE (:App {id: a.id, name: a.name})",
+    )?;
+    load_devices(conn, graph)?;
+
+    load_edges(
+        conn,
+        &graph.user_memberships,
+        ["u", "g"],
+        "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (g:Group {id: r.g}) CREATE (u)-[:MEMBER_OF]->(g)",
+    )?;
+    load_edges(
+        conn,
+        &graph.group_memberships,
+        ["c", "p"],
+        "UNWIND $rows AS r MATCH (c:Group {id: r.c}) MATCH (p:Group {id: r.p}) CREATE (c)-[:MEMBER_OF]->(p)",
+    )?;
+    load_user_roles(conn, graph)?;
+    load_edges(
+        conn,
+        &graph.group_roles,
+        ["g", "r"],
+        "UNWIND $rows AS r MATCH (g:Group {id: r.g}) MATCH (role:Role {id: r.r}) CREATE (g)-[:HAS_ROLE]->(role)",
+    )?;
+    load_edges(
+        conn,
+        &graph.grants,
+        ["r", "p"],
+        "UNWIND $rows AS r MATCH (role:Role {id: r.r}) MATCH (p:Permission {id: r.p}) CREATE (role)-[:GRANTS]->(p)",
+    )?;
+    load_edges(
+        conn,
+        &graph.ons,
+        ["p", "a"],
+        "UNWIND $rows AS r MATCH (p:Permission {id: r.p}) MATCH (a:App {id: r.a}) CREATE (p)-[:ON]->(a)",
+    )?;
+    load_edges(
+        conn,
+        &graph.reports_to,
+        ["u", "m"],
+        "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (m:User {id: r.m}) CREATE (u)-[:REPORTS_TO]->(m)",
+    )?;
+    load_edges(
+        conn,
+        &graph.owns,
+        ["u", "d"],
+        "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (d:Device {id: r.d}) CREATE (u)-[:OWNS]->(d)",
+    )
+}
+
+fn load_users(conn: &mut Connection, graph: &IdentityGraph) -> Result<()> {
     let users: Vec<Value> = graph
         .users
         .iter()
@@ -129,72 +200,27 @@ pub fn load_identity(conn: &mut Connection, graph: &IdentityGraph) -> Result<()>
         conn,
         &users,
         "UNWIND $rows AS u CREATE (:User {id: u.id, name: u.name, email: u.email, status: u.status, hired: u.hired, emails: u.emails, planted: u.planted})",
-    )?;
+    )
+}
 
-    let groups: Vec<Value> = graph
-        .groups
-        .iter()
-        .map(|g| {
+/// One entity set of `(id, name)` rows.
+fn load_named<'a>(
+    conn: &mut Connection,
+    rows: impl Iterator<Item = (&'a String, &'a String)>,
+    cypher: &str,
+) -> Result<()> {
+    let rows: Vec<Value> = rows
+        .map(|(id, name)| {
             map([
-                ("id", Value::String(g.id.as_str().into())),
-                ("name", Value::String(g.name.as_str().into())),
+                ("id", Value::String(id.as_str().into())),
+                ("name", Value::String(name.as_str().into())),
             ])
         })
         .collect();
-    unwind_create(
-        conn,
-        &groups,
-        "UNWIND $rows AS g CREATE (:Group {id: g.id, name: g.name})",
-    )?;
+    unwind_create(conn, &rows, cypher)
+}
 
-    let roles: Vec<Value> = graph
-        .roles
-        .iter()
-        .map(|r| {
-            map([
-                ("id", Value::String(r.id.as_str().into())),
-                ("name", Value::String(r.name.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &roles,
-        "UNWIND $rows AS r CREATE (:Role {id: r.id, name: r.name})",
-    )?;
-
-    let perms: Vec<Value> = graph
-        .permissions
-        .iter()
-        .map(|p| {
-            map([
-                ("id", Value::String(p.id.as_str().into())),
-                ("name", Value::String(p.name.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &perms,
-        "UNWIND $rows AS p CREATE (:Permission {id: p.id, name: p.name})",
-    )?;
-
-    let apps: Vec<Value> = graph
-        .apps
-        .iter()
-        .map(|a| {
-            map([
-                ("id", Value::String(a.id.as_str().into())),
-                ("name", Value::String(a.name.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &apps,
-        "UNWIND $rows AS a CREATE (:App {id: a.id, name: a.name})",
-    )?;
-
+fn load_devices(conn: &mut Connection, graph: &IdentityGraph) -> Result<()> {
     let devices: Vec<Value> = graph
         .devices
         .iter()
@@ -204,40 +230,31 @@ pub fn load_identity(conn: &mut Connection, graph: &IdentityGraph) -> Result<()>
         conn,
         &devices,
         "UNWIND $rows AS d CREATE (:Device {id: d.id})",
-    )?;
+    )
+}
 
-    let um: Vec<Value> = graph
-        .user_memberships
+/// One edge set of `(from, to)` id pairs, bound to the two row keys `cols`
+/// the statement reads.
+fn load_edges(
+    conn: &mut Connection,
+    pairs: &[(String, String)],
+    cols: [&str; 2],
+    cypher: &str,
+) -> Result<()> {
+    let rows: Vec<Value> = pairs
         .iter()
-        .map(|(u, g)| {
+        .map(|(from, to)| {
             map([
-                ("u", Value::String(u.as_str().into())),
-                ("g", Value::String(g.as_str().into())),
+                (cols[0], Value::String(from.as_str().into())),
+                (cols[1], Value::String(to.as_str().into())),
             ])
         })
         .collect();
-    unwind_create(
-        conn,
-        &um,
-        "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (g:Group {id: r.g}) CREATE (u)-[:MEMBER_OF]->(g)",
-    )?;
+    unwind_create(conn, &rows, cypher)
+}
 
-    let gm: Vec<Value> = graph
-        .group_memberships
-        .iter()
-        .map(|(child, parent)| {
-            map([
-                ("c", Value::String(child.as_str().into())),
-                ("p", Value::String(parent.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &gm,
-        "UNWIND $rows AS r MATCH (c:Group {id: r.c}) MATCH (p:Group {id: r.p}) CREATE (c)-[:MEMBER_OF]->(p)",
-    )?;
-
+/// `HAS_ROLE` from users carries the optional `until` date.
+fn load_user_roles(conn: &mut Connection, graph: &IdentityGraph) -> Result<()> {
     let ur: Vec<Value> = graph
         .user_roles
         .iter()
@@ -258,88 +275,7 @@ pub fn load_identity(conn: &mut Connection, graph: &IdentityGraph) -> Result<()>
         conn,
         &ur,
         "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (role:Role {id: r.r}) CREATE (u)-[:HAS_ROLE {until: r.until}]->(role)",
-    )?;
-
-    let gr: Vec<Value> = graph
-        .group_roles
-        .iter()
-        .map(|(g, r)| {
-            map([
-                ("g", Value::String(g.as_str().into())),
-                ("r", Value::String(r.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &gr,
-        "UNWIND $rows AS r MATCH (g:Group {id: r.g}) MATCH (role:Role {id: r.r}) CREATE (g)-[:HAS_ROLE]->(role)",
-    )?;
-
-    let grants: Vec<Value> = graph
-        .grants
-        .iter()
-        .map(|(role, perm)| {
-            map([
-                ("r", Value::String(role.as_str().into())),
-                ("p", Value::String(perm.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &grants,
-        "UNWIND $rows AS r MATCH (role:Role {id: r.r}) MATCH (p:Permission {id: r.p}) CREATE (role)-[:GRANTS]->(p)",
-    )?;
-
-    let ons: Vec<Value> = graph
-        .ons
-        .iter()
-        .map(|(perm, app)| {
-            map([
-                ("p", Value::String(perm.as_str().into())),
-                ("a", Value::String(app.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &ons,
-        "UNWIND $rows AS r MATCH (p:Permission {id: r.p}) MATCH (a:App {id: r.a}) CREATE (p)-[:ON]->(a)",
-    )?;
-
-    let reports: Vec<Value> = graph
-        .reports_to
-        .iter()
-        .map(|(u, m)| {
-            map([
-                ("u", Value::String(u.as_str().into())),
-                ("m", Value::String(m.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &reports,
-        "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (m:User {id: r.m}) CREATE (u)-[:REPORTS_TO]->(m)",
-    )?;
-
-    let owns: Vec<Value> = graph
-        .owns
-        .iter()
-        .map(|(u, d)| {
-            map([
-                ("u", Value::String(u.as_str().into())),
-                ("d", Value::String(d.as_str().into())),
-            ])
-        })
-        .collect();
-    unwind_create(
-        conn,
-        &owns,
-        "UNWIND $rows AS r MATCH (u:User {id: r.u}) MATCH (d:Device {id: r.d}) CREATE (u)-[:OWNS]->(d)",
-    )?;
-    Ok(())
+    )
 }
 
 fn date_value(iso: &str) -> Value {

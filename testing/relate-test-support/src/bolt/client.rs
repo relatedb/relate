@@ -1,4 +1,4 @@
-//! Minimal Bolt client for the loadtests: Bolt 5.4 with a 4.4 fallback.
+//! Minimal Bolt client for the harnesses (loadtests, memory cases): Bolt 5.4 with a 4.4 fallback.
 //!
 //! Speaks just enough of the wire to run statements against a
 //! `relate-bolt` child: handshake, HELLO, LOGON, RUN, PULL, RESET,
