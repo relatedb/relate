@@ -44,6 +44,9 @@ try db.checkpoint()
 let n = try await db.read { tx in try tx.run("MATCH (n) RETURN count(n)").scalar(as: Int.self) }
 try await db.write { tx in try tx.run("CREATE (:A {name: \(name)})") }   // one transaction
 try await db.write(try "CREATE (:A {name: \(name)})")                    // single statement
+
+db.setTraceHandler { t in log(t.statement, t.wallMs) }                    // every statement; names, never values
+for await commit in db.commits() where commit.tags.contains("notes") { reload() }  // writes via db.write(tags: ["notes"])
 ```
 
 `CypherValue` is an enum — `null bool int float string list map node
@@ -78,6 +81,10 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   throws `misuse`); writes run one at a time. The body and its result must be
   `Sendable`; the `Transaction` does not leave the body. A running statement
   cannot be cancelled.
+- **Observation is in-process** — `commits()` and the trace handler see
+  only this `Database` object's writes and statements, not another
+  process's. The engine does not say which labels a commit touched: tag
+  writes (`tags:`) to route them.
 - **`Connection` is not `Sendable`** — the compiler stops you sharing one
   across actors. If you use `connect()` directly, own the connection inside
   one actor; `Database` is shareable.

@@ -35,11 +35,15 @@ public final class Database: Sendable {
 
     // Managed asynchronous access — see "Managed asynchronous access" below.
     public func read<T: Sendable>(_ body: @escaping @Sendable (Transaction) throws -> T) async throws -> T
-    @discardableResult public func write<T: Sendable>(retries: Int = 0, _ body: @escaping @Sendable (Transaction) throws -> T) async throws -> T
+    @discardableResult public func write<T: Sendable>(retries: Int = 0, tags: Set<String> = [], _ body: @escaping @Sendable (Transaction) throws -> T) async throws -> T
     public func read(_ statement: Statement) async throws -> QueryResult
-    @discardableResult public func write(_ statement: Statement, retries: Int = 0) async throws -> QueryResult
-    @discardableResult public func write(_ statements: [Statement], retries: Int = 0) async throws -> [QueryResult]
+    @discardableResult public func write(_ statement: Statement, retries: Int = 0, tags: Set<String> = []) async throws -> QueryResult
+    @discardableResult public func write(_ statements: [Statement], retries: Int = 0, tags: Set<String> = []) async throws -> [QueryResult]
     public func checkpointInBackground() async throws
+
+    // Observation — see "Observation" below.
+    public func setTraceHandler(_ handler: (@Sendable (QueryTrace) -> Void)?)
+    public func commits() -> AsyncStream<Commit>
 }
 
 public final class Connection {                  // NOT Sendable
@@ -50,9 +54,9 @@ public final class Connection {                  // NOT Sendable
     public func begin() throws(RelateError)
     @discardableResult public func commit() throws(RelateError) -> String?  // the transaction's bookmark; nil when it committed nothing
     public func rollback() throws(RelateError)
-    public func transaction<T>(retries: Int = 0, _ body: (Transaction) throws -> T) throws -> T
+    public func transaction<T>(retries: Int = 0, tags: Set<String> = [], _ body: (Transaction) throws -> T) throws -> T
     public func read<T>(_ body: (Transaction) throws -> T) throws -> T               // always rolled back
-    @discardableResult public func runInTransaction(_ statements: [Statement], retries: Int = 0) throws(RelateError) -> [QueryResult]
+    @discardableResult public func runInTransaction(_ statements: [Statement], retries: Int = 0, tags: Set<String> = []) throws(RelateError) -> [QueryResult]
     public func isPoisoned() -> Bool                                                 // probes with RETURN 1
 }
 
@@ -264,6 +268,50 @@ try await db.write { tx in
 
 The synchronous `connect()` API is unchanged and may be used alongside; a
 connection made that way is a writer outside the pool.
+
+## Observation
+
+```swift
+public struct QueryTrace: Sendable {
+    public let statement: String           // the text the engine received
+    public let parameterNames: [String]    // sorted; values are never included
+    public let rowCount: Int               // 0 when the statement failed
+    public let queryType: QueryType?       // nil when it failed
+    public let elapsedMs, parseMs, planMs, executeMs: Double  // engine-reported; 0 when it failed
+    public let wallMs: Double              // the whole call: binding, engine, copying the result out
+    public let error: RelateError?         // its message is the engine's and may quote a value
+}
+
+public struct Commit: Sendable, Hashable {
+    public let bookmark: String            // "relate:<n>"
+    public let stats: QueryStats           // summed over the transaction's statements
+    public let tags: Set<String>           // what the writer attached; empty for an auto-commit statement
+}
+```
+
+- **Tracing.** `setTraceHandler` installs one handler per database (`nil`
+  clears it). It is called once for every statement run on any connection
+  of that database — a caller's own or a pooled one — synchronously on the
+  thread that ran the statement, after it finished, failures included. A
+  trace carries parameter names and never parameter values.
+- **Signposts.** Every statement is also bracketed by an `os_signpost`
+  interval named `statement` (subsystem `ai.relatedb.relate`, category
+  `Query`), with no configuration. The package's tests do not assert on
+  signposts.
+- **Commits.** `commits()` returns a new `AsyncStream` per call. A stream
+  receives, in commit order, each auto-commit statement that returned a
+  bookmark and each explicit transaction whose `commit()` returned one,
+  made after the stream was created. A read, a rolled-back transaction and a
+  write that changed nothing report nothing; a retried transaction reports
+  once. Events are buffered without bound until consumed. The stream ends
+  when the store closes, and releasing a stream unsubscribes it.
+- **Tags** are the caller's routing labels: `db.write(tags: ["notes"]) { … }`
+  or `conn.transaction(tags:)`. The engine does not report which labels a
+  commit touched, so an observer that wants to react selectively relies on
+  the writer's tags or on `stats`.
+- **Scope.** Both are in-process and per `Database` object. A write by
+  another process, or through a second `Database` opened on the same store,
+  is not seen.
 
 ## Records
 

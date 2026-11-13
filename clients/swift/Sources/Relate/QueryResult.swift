@@ -128,6 +128,28 @@ public struct QueryStats: Sendable, Hashable, Decodable {
     public let constraintsRemoved: Int
 }
 
+extension QueryStats {
+    static let zero = QueryStats(
+        nodesCreated: 0, nodesDeleted: 0, relationshipsCreated: 0, relationshipsDeleted: 0,
+        propertiesSet: 0, labelsAdded: 0, labelsRemoved: 0, indexesAdded: 0, indexesRemoved: 0,
+        constraintsAdded: 0, constraintsRemoved: 0)
+
+    static func + (lhs: QueryStats, rhs: QueryStats) -> QueryStats {
+        QueryStats(
+            nodesCreated: lhs.nodesCreated + rhs.nodesCreated,
+            nodesDeleted: lhs.nodesDeleted + rhs.nodesDeleted,
+            relationshipsCreated: lhs.relationshipsCreated + rhs.relationshipsCreated,
+            relationshipsDeleted: lhs.relationshipsDeleted + rhs.relationshipsDeleted,
+            propertiesSet: lhs.propertiesSet + rhs.propertiesSet,
+            labelsAdded: lhs.labelsAdded + rhs.labelsAdded,
+            labelsRemoved: lhs.labelsRemoved + rhs.labelsRemoved,
+            indexesAdded: lhs.indexesAdded + rhs.indexesAdded,
+            indexesRemoved: lhs.indexesRemoved + rhs.indexesRemoved,
+            constraintsAdded: lhs.constraintsAdded + rhs.constraintsAdded,
+            constraintsRemoved: lhs.constraintsRemoved + rhs.constraintsRemoved)
+    }
+}
+
 /// A notification's severity (ADR-0363): a closed vocabulary. A wire value
 /// outside it is an ABI contract violation at decode, never a lenient string.
 public enum NotificationSeverity: String, Sendable, Hashable, Decodable {

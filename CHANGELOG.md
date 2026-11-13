@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   thread on connections the database owns (one writer, up to
   `Options.maxReaders` readers), with single-statement forms and
   `checkpointInBackground()`. A poisoned pooled connection is replaced.
+- Swift: `Database.setTraceHandler` reports every statement with its
+  timings and parameter names (never values), and every statement is an
+  `os_signpost` interval. `Database.commits()` is an `AsyncStream` of
+  committed writes with their bookmark, summed counters and the tags the
+  writer attached (`db.write(tags:)`, `transaction(tags:)`).
 - Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
   `setNamespace(_:)` taking the typed namespace, and error predicates on
   `EngineError` (`isConstraintViolation`, `isSyntaxError`,

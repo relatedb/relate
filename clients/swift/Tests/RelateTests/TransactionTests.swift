@@ -67,27 +67,17 @@ import Testing
         #expect(try count(conn, "Kept") == 1)
     }
 
-    private static let increment: Statement = "MATCH (c:Counter) SET c.v = c.v + 1 RETURN c.v"
-
-    /// Two connections on one database that holds a counter at zero.
-    private func racers() throws -> (winner: Connection, loser: Connection) {
-        let db = try Database.inMemory()
-        let winner = try db.connect()
-        try winner.query("CREATE (:Counter {v: 0})")
-        return (winner, try db.connect())
-    }
-
     @Test func aRetryableConflictRunsTheBodyAgain() throws {
-        let (winner, loser) = try racers()
+        let (winner, loser) = try counterRacers()
         var attempts = 0
         let seen = try loser.transaction(retries: 1) { tx in
             attempts += 1
             if attempts == 1 {
                 // The other connection updates the same node and commits
                 // first: this attempt's commit loses.
-                try winner.run(Self.increment)
+                try winner.run(incrementCounter)
             }
-            return try tx.run(Self.increment).scalar(as: Int.self)
+            return try tx.run(incrementCounter).scalar(as: Int.self)
         }
         #expect(attempts == 2 && seen == 2)
         #expect(try winner.query("MATCH (c:Counter) RETURN c.v").scalar() == 2)
@@ -96,17 +86,17 @@ import Testing
     /// A count below one is no retry: the conflict surfaces after one
     /// attempt, marked retryable, and leaves no transaction open.
     @Test(arguments: [0, -1]) func withoutRetriesAConflictSurfaces(retries: Int) throws {
-        let (winner, loser) = try racers()
+        let (winner, loser) = try counterRacers()
         var attempts = 0
         let error = try #require(throws: RelateError.self) {
             try loser.transaction(retries: retries) { tx in
                 attempts += 1
-                try winner.run(Self.increment)
-                try tx.run(Self.increment)
+                try winner.run(incrementCounter)
+                try tx.run(incrementCounter)
             }
         }
         #expect(attempts == 1 && error.isRetryable && error.engineError?.isWriteConflict == true)
-        try loser.transaction { tx in try tx.run(Self.increment) }
+        try loser.transaction { tx in try tx.run(incrementCounter) }
         #expect(try winner.query("MATCH (c:Counter) RETURN c.v").scalar() == 2)
     }
 

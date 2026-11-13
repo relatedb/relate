@@ -35,13 +35,14 @@ extension Database {
     /// each other. `retries` covers a conflict with a writer outside the
     /// pool (a connection from ``connect()``, another process): a failure
     /// the engine marks retryable runs `body` again, up to that many more
-    /// times.
+    /// times. `tags` travel with the commit to ``commits()``.
     @discardableResult
     public func write<T: Sendable>(
-        retries: Int = 0, _ body: @escaping @Sendable (Transaction) throws -> T
+        retries: Int = 0, tags: Set<String> = [],
+        _ body: @escaping @Sendable (Transaction) throws -> T
     ) async throws -> T {
         try await onWriter("write") { connection in
-            try connection.transaction(retries: retries, body)
+            try connection.transaction(retries: retries, tags: tags, body)
         }
     }
 
@@ -53,14 +54,18 @@ extension Database {
 
     /// Runs one statement as a write transaction.
     @discardableResult
-    public func write(_ statement: Statement, retries: Int = 0) async throws -> QueryResult {
-        try await write(retries: retries) { tx in try tx.run(statement) }
+    public func write(
+        _ statement: Statement, retries: Int = 0, tags: Set<String> = []
+    ) async throws -> QueryResult {
+        try await write(retries: retries, tags: tags) { tx in try tx.run(statement) }
     }
 
     /// Runs statements in one write transaction: all commit, or none do.
     @discardableResult
-    public func write(_ statements: [Statement], retries: Int = 0) async throws -> [QueryResult] {
-        try await write(retries: retries) { tx in try tx.run(statements) }
+    public func write(
+        _ statements: [Statement], retries: Int = 0, tags: Set<String> = []
+    ) async throws -> [QueryResult] {
+        try await write(retries: retries, tags: tags) { tx in try tx.run(statements) }
     }
 
     /// Writes a checkpoint off the caller's thread, on the writer's queue,

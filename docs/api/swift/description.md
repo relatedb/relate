@@ -49,6 +49,14 @@ a suspension. The synchronous `connect()` API remains for command-line tools,
 tests and code that wants to own its connection, as the iOS example in
 [`examples/ios-snotel`](../../../examples/ios-snotel/) shows.
 
+Two hooks let an app watch its own store. A trace handler sees every
+statement with its timings (and never its parameter values), which replaces
+the logging wrapper apps otherwise write around each query; statements also
+appear as signpost intervals in Instruments. A commit stream reports each
+committed write with the tags its writer attached, so a view model can
+refresh when the data it shows changes, without every write having to go
+through one controller.
+
 For iOS apps, keep the store in Application Support (not Documents), give the
 directory `FileProtectionType.completeUntilFirstUserAuthentication` if the app
 writes while locked, and call `checkpoint()` after bulk loads so the next

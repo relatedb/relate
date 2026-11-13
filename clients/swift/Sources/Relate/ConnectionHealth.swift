@@ -5,14 +5,16 @@ extension Connection {
     /// replaced.
     ///
     /// The error channel carries no typed poison signal, so this probes:
-    /// it runs `RETURN 1`, and a boundary-stage failure of that statement
-    /// means every call on the handle now fails. Call it after an error
+    /// it runs `RETURN 1` (unobserved: the probe is the package's own
+    /// statement, not the caller's, so no trace reports it), and a
+    /// boundary-stage failure of that statement means every call on the
+    /// handle now fails. Call it after an error
     /// whose stage is `.internal`; on `true`, release this connection and
     /// open another from the same ``Database``. Never retry the work that
     /// failed.
     public func isPoisoned() -> Bool {
         do throws(RelateError) {
-            _ = try query("RETURN 1")
+            _ = try execute("RETURN 1")
             return false
         } catch {
             // A statement that trivial cannot fail at the boundary stage
