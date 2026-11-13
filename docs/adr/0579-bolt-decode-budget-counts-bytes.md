@@ -19,8 +19,13 @@ threshold.
 
 ## Decision
 
-The per-message budget is the size the message decodes to, in bytes, set at
-64 MiB:
+The per-message budget is the size the message decodes to, in bytes. It has
+two limits, chosen by whether the session is open: 64 MiB once it is, and
+1 MiB before it is (the HELLO and LOGON an unauthenticated peer may send are a
+few kilobytes). A peer can open connections freely, so a connection that has
+not authenticated yet must not be able to pin the open-session limit; the limit
+is read per message, so a HELLO or LOGON that opens the session lifts it for
+the rest of its batch. The counting rules below are the same for both:
 
 - Every decoded value is charged one node, which also covers the slot it takes
   in its parent container, so containers, both halves of each map entry and
@@ -30,13 +35,16 @@ The per-message budget is the size the message decodes to, in bytes, set at
   refused before any child is decoded, so a hostile header allocates nothing.
 - The decoder still reports the budget as its own typed error and the session
   still answers with the failure of ADR-0577; the failure text now states the
-  measured size and the limit in MiB, with a worked example of a row batch.
+  measured size and the limit in MiB (rounded down, since the measured size is
+  a lower bound), with a worked example of a row batch; the pre-auth text
+  tells the client to authenticate first instead.
 - The wire-size cap and the nesting-depth cap are unchanged.
 
 Lists and maps grow by pushing, so their allocation can reach about twice the
 charged slots; the worst-case heap for one message is therefore about twice
-the budget. The budget is per message and per connection thread, so the
-server-wide bound is that figure times the connection cap.
+the limit. The budget is per message and per connection thread, so the
+server-wide bound is that figure times the connection cap; before
+authentication it is about 2 MiB per connection, not 128 MiB.
 
 ## Alternatives considered
 
@@ -57,5 +65,8 @@ server-wide bound is that figure times the connection cap.
   the old count loads without error.
 - The Bolt specification's description of the limit changes from a value count
   to this byte budget.
+- A pre-auth message over 1 MiB is refused by the gate it reaches (the
+  unauthorized close before HELLO, the limit FAILURE and close in the 5.x
+  AUTHENTICATION state) naming the pre-auth limit.
 - ADR-0082's counting rule is superseded; its reasoning and the structure of
   the check stand.

@@ -26,6 +26,7 @@ mod requests;
 mod results;
 pub mod server;
 mod session;
+mod session_batch;
 pub mod signal;
 mod summary;
 pub mod tls;

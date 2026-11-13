@@ -3,7 +3,7 @@
 //! instead of closing it (which a driver retries as a transient failure).
 
 use crate::failures::{decode_budget_message, REQUEST_INVALID_CODE};
-use crate::packstream::{decode_message, encode, DecodeError, Pack, MAX_DECODE_BYTES, NODE_BYTES};
+use crate::packstream::{decode_message, encode, DecodeError, DecodeLimit, Pack, NODE_BYTES};
 use crate::protocol::ConnConfig;
 use crate::requests::Message;
 use crate::testutil::{
@@ -82,27 +82,40 @@ fn the_notebook_batch_shape_runs() {
 
 #[test]
 fn the_decoder_reports_the_budget_as_its_own_typed_error() {
-    let fits = MAX_DECODE_BYTES / NODE_BYTES;
+    let fits = DecodeLimit::Open.bytes() / NODE_BYTES;
     let over = encode(&Pack::List(vec![Pack::Null; fits])).unwrap();
-    match decode_message(&over) {
-        Err(DecodeError::BudgetExceeded { at_least_bytes }) => {
-            assert!(at_least_bytes > MAX_DECODE_BYTES)
+    match decode_message(&over, DecodeLimit::Open) {
+        Err(DecodeError::BudgetExceeded {
+            at_least_bytes,
+            limit,
+        }) => {
+            assert!(at_least_bytes > DecodeLimit::Open.bytes());
+            assert_eq!(limit, DecodeLimit::Open);
         }
         other => panic!("expected the decode budget, got {other:?}"),
     }
     assert!(matches!(
-        decode_message(&[0xC4]),
+        decode_message(&[0xC4], DecodeLimit::Open),
         Err(DecodeError::Malformed(_))
     ));
 }
 
 #[test]
 fn the_message_names_the_measured_size_the_limit_and_the_remedy() {
-    let text = decode_budget_message(70 * 1024 * 1024 + 1, 6_201_334);
+    let text = decode_budget_message(70 * 1024 * 1024 + 1, DecodeLimit::Open, 6_201_334);
     assert!(text.contains("6201334 bytes"), "{text}");
+    // A lower bound rounds down: 70 MiB and one byte is at least 70 MiB.
     assert!(text.contains("at least 70 MiB"), "{text}");
     assert!(text.contains("limit of 64 MiB"), "{text}");
     assert!(text.contains("UNWIND"), "{text}");
+}
+
+#[test]
+fn the_pre_auth_message_names_its_limit_and_says_to_authenticate() {
+    let text = decode_budget_message(2 * 1024 * 1024, DecodeLimit::PreAuth, 400_000);
+    assert!(text.contains("limit of 1 MiB"), "{text}");
+    assert!(text.contains("until the session is open"), "{text}");
+    assert!(!text.contains("UNWIND"), "{text}");
 }
 
 #[test]
@@ -134,6 +147,53 @@ fn in_the_authentication_state_an_over_budget_message_fails_and_closes() {
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     assert!(field(&failure, "message").contains("per-message limit"));
     assert_closes(&mut client, "closes after the AUTHENTICATION-state refusal");
+}
+
+/// About 2.7 MiB decoded: far over the pre-auth limit, a small fraction of the
+/// open-session one.
+const MID_SIZED_ROWS: usize = 12_000;
+
+#[test]
+fn before_authentication_a_mid_sized_message_is_over_the_small_pre_auth_limit() {
+    // ADR-0579: an unauthenticated peer holds 1 MiB, not the open limit, so
+    // a message the open session admits is refused in the AUTHENTICATION
+    // state, naming the pre-auth limit.
+    let mut client = awaiting_logon_client(ConnConfig::default());
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(MID_SIZED_ROWS),
+    );
+    let failure = failure_map(read_msg(&mut client));
+    assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
+    let message = field(&failure, "message");
+    assert!(message.contains("limit of 1 MiB"), "{message}");
+    assert!(message.contains("until the session is open"), "{message}");
+    assert_closes(&mut client, "closes after the AUTHENTICATION-state refusal");
+}
+
+#[test]
+fn the_same_mid_sized_message_runs_once_the_session_is_open() {
+    let mut client = connected_client();
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(MID_SIZED_ROWS),
+    );
+    success_map(read_msg(&mut client));
+}
+
+#[test]
+fn before_hello_a_mid_sized_message_is_the_unauthorized_close() {
+    let mut client = handshaken_at(ConnConfig::default(), BoltVersion::V5_4);
+    send_struct(
+        &mut client,
+        Message::Run.signature(),
+        run_with_rows(MID_SIZED_ROWS),
+    );
+    let failure = failure_map(read_msg(&mut client));
+    assert_eq!(field(&failure, "code"), crate::failures::UNAUTHORIZED_CODE);
+    assert_closes(&mut client, "closes after the pre-HELLO refusal");
 }
 
 #[test]

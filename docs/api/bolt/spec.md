@@ -410,7 +410,9 @@ during long requests ([HELLO](#hello-adr-0293-adr-0312-adr-0313)), so a raw
 client must skip them between messages. Malformed PackStream input
 also terminates its connection without aborting the server; other clients
 can keep connecting. PackStream decoding is bounded to 128 nested levels and
-a 64 MiB per-message decode budget (ADR-0579): every decoded value is charged
+a per-message decode budget of 64 MiB once the session is open and 1 MiB
+before it is (ADR-0579; the HELLO and LOGON an unauthenticated peer sends are a
+few kilobytes): every decoded value is charged
 one node, string and byte payloads are charged their length on top, and a
 declared container size that cannot fit is refused before its children are
 decoded. A 3-integer-field row costs about 230 bytes, so batches of 100,000+
@@ -423,7 +425,7 @@ behind it answer IGNORED until RESET, and the same connection then serves the
 next request. Before the session is open each gate answers in its own policy:
 the pre-HELLO gate sends the unauthorized FAILURE and closes, the
 rejected-HELLO state answers IGNORED, and the 5.x AUTHENTICATION gate sends the
-limit FAILURE and closes.
+limit FAILURE (naming the 1 MiB pre-authentication limit) and closes.
 
 Per ADR-0259 and ADR-0504, every `RUN` query executes on a 64 MiB stack:
 the served connection's own thread carries that budget explicitly

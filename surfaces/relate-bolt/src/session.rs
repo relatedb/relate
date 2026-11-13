@@ -24,7 +24,7 @@ use crate::fields::{
     metadata_notifications_failure, patch_names, ConsumeRequest, NotificationConfig, RunRequest,
 };
 use crate::keepalive::{run_statement, with_keep_alive};
-use crate::packstream::{chunk_message, decode_message, encode, encode_error, struct_tag, Pack};
+use crate::packstream::{chunk_message, decode_message, encode, encode_error, DecodeLimit, Pack};
 use crate::patches::BoltPatches;
 use crate::protocol::{ConnConfig, QueryOutcome};
 use crate::requests::{breach_text, request, Message, OverBudget, Refused, Undecodable};
@@ -143,6 +143,15 @@ impl Session {
         }
     }
 
+    /// The decode limit the next message is read under (ADR-0579): the full
+    /// one only once the session is open, read per message.
+    fn decode_limit(&self) -> DecodeLimit {
+        match self.gate {
+            Gate::Open => DecodeLimit::Open,
+            Gate::AwaitingHello | Gate::HelloRejected | Gate::AwaitingLogon => DecodeLimit::PreAuth,
+        }
+    }
+
     fn note_query(&self, outcome: QueryOutcome) {
         if let Some(on_query) = &self.on_query {
             on_query(outcome);
@@ -152,7 +161,7 @@ impl Session {
     /// Serve one batch of framed messages (ADR-0317): every message queued
     /// ahead of the batch's last reachable RESET that has not started
     /// answers IGNORED; the RESETs and everything after the last one run
-    /// normally ([`last_reset`] locates that RESET).
+    /// normally ([`crate::session_batch::last_reset`] locates that RESET).
     ///
     /// Messages are decoded one at a time, never as a batch: the RESET
     /// pre-scan decodes the decodable prefix one message at a time, and the
@@ -165,10 +174,10 @@ impl Session {
         batch: Vec<Vec<u8>>,
         config: &ConnConfig,
     ) -> Result<Flow, Box<dyn std::error::Error + Send + Sync>> {
-        let last_reset = last_reset(&batch);
+        let last_reset = crate::session_batch::last_reset(&batch, self.decode_limit());
         for (index, payload) in batch.iter().enumerate() {
             let queued_ahead_of_reset = last_reset.is_some_and(|reset| index < reset);
-            let decoded = match decode_message(payload) {
+            let decoded = match decode_message(payload, self.decode_limit()) {
                 Ok(pack) => request(pack, self.dialect.version).map_err(Refused::Undecodable),
                 Err(error) => Err(Refused::from_decode(error, payload, self.dialect.version)?),
             };
@@ -935,27 +944,6 @@ impl Session {
 fn undecodable_exit(undecodable: Undecodable) -> Flow {
     eprintln!("bolt: {undecodable}; closing connection");
     Flow::Close
-}
-
-/// The batch's last reachable RESET (0x0F), by index (ADR-0317): the last
-/// RESET inside the prefix before the first fatal decode error (an
-/// over-budget message is not fatal, ADR-0577). A message after the first
-/// fatal one is never reached — the fatal decode (ADR-0315) closes the session
-/// first — so a RESET there queues nothing ahead of it. The prefix bound is
-/// found by decoding the prefix one message at a time and dropping each
-/// before the next: the single-message peak again, never the batch
-/// (SEC-serve-batch).
-fn last_reset(batch: &[Vec<u8>]) -> Option<usize> {
-    // The one spelling of "this payload is a RESET": two wire bytes, no
-    // decode and no allocation, and the tag hoisted out of the per-payload
-    // closure.
-    let reset_tag = Message::Reset.signature();
-    let is_reset = |payload: &Vec<u8>| struct_tag(payload) == Some(reset_tag);
-    let prefix_end = batch
-        .iter()
-        .position(|payload| decode_message(payload).is_err_and(|e| e.is_fatal()))
-        .unwrap_or(batch.len());
-    batch[..prefix_end].iter().rposition(is_reset)
 }
 
 /// Apply the `db` of a RUN or BEGIN extra map as the session namespace
