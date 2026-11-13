@@ -182,7 +182,7 @@ temporals become bindable from every client at once.
 
 No `GEOMETRY`, `UUID` or `BINARY` values are reserved. The engine has no
 such `CypherValue` kinds on this surface today (bytes cross as
-`LIST<INTEGER>`, ADR-0219; UUIDs as `STRING`, CIP-246). Adding an enum
+`LIST<INTEGER>`, ADR-0219; UUIDs as `STRING`). Adding an enum
 value after the public freeze is additive and safe — a client meeting an
 unknown kind treats it as a defined, reportable case — so reserving names
 now buys nothing.

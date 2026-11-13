@@ -68,8 +68,8 @@ Bolt 4.4 PackStream structures, at any nesting depth, never as strings:
    example a duration whose seconds exceed i64, fails the encode with an
    error naming the structure. It never falls back to a string or a
    clamped value.
-5. Vector and UUID results are unchanged: they stay strings (ADR-0272,
-   CIP-246). Point results are ADR-0326.
+5. Vector and UUID results are unchanged: they stay strings (ADR-0272).
+   Point results are ADR-0326.
 
 ## Alternatives considered
 

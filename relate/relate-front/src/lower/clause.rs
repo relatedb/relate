@@ -452,7 +452,7 @@ fn lower_search_clause(
     })
 }
 
-/// Lowers a CIP-278 `<source specification clause>`: one index
+/// Lowers a `<source specification clause>`: one index
 /// specification or a (possibly nested) combined one.
 fn lower_search_spec(binding_var: &SmallName, spec: &cl::SearchSpec) -> Result<mdb::SearchSpec> {
     Ok(match spec {

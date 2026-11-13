@@ -160,7 +160,7 @@ pub(super) fn gpm_expand_quantified(
     // A name a predicate of this quantification references that neither
     // the entering row nor the quantification itself binds — a non-local
     // singleton declared later in the pattern — reads as null inside the
-    // quantification (CIP-28 [5], Neo4j-verified); binding it on the
+    // quantification (Neo4j-verified); binding it on the
     // walk's base row states that once instead of the evaluator
     // fabricating it (ADR-0335).
     for name in qpp_unbound_predicate_names(qpp, &state.row, &names) {
@@ -180,7 +180,7 @@ pub(super) fn gpm_expand_quantified(
     // (`Row::stamp`'s prefix invariant); an accept that bound in any
     // other order — a sorted map's alphabetical one, say — would give
     // the zero-repetition row a differently ordered schema and corrupt
-    // every later completion's row (CIP-28 [11]'s `p2` sorted before
+    // every later completion's row (the original failure sorted `p2` before
     // `x`/`z`).
     let groups = names
         .iter()

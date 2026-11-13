@@ -19,7 +19,7 @@ expected-pass allowlist and a skip list that only shrank — beside
 
 Keeping the pin honest was a recurring cost, not a one-off: the four 2024.3
 ORDER BY expectations Neo4j's Cypher 25 reverses were re-pinned (ADR-0458,
-ADR-0472), the CIP-271-superseded `toString()` outline was removed from the
+ADR-0472), the superseded `toString()` outline was removed from the
 pin itself (ADR-0188), three fixture setups were re-pinned when Cypher 25
 made a same-clause created-entity reference illegal (ADR-0513), and the
 allowlist was regenerated with every change. The pin is a snapshot of
@@ -40,8 +40,8 @@ The corpora moved to the harness on 2026-11-05:
 `labs-1049-move-cypher-tests@2c1002de5901b1c644d5aa3e19c8cd63e810bf08`
 transfers `testdata/relate-tck/*.feature` → `features/relate-tck/` (11
 files / 489 scenarios), `testdata/cip-eval/CIP-*` → `features/cip-eval/`
-(139 directories / 501 feature files / 5917 scenarios, plus each CIP's
-`NOTES.md`), and `testdata/cip-docs-md/*.md` → `cip-docs-md/` (43 CIP
+(139 directories / 501 feature files / 5917 scenarios), and
+`testdata/cip-docs-md/*.md` → `cip-docs-md/` (43 CIP
 documents). The file sets are exact in both directions, and no scenario
 step, table or expectation changed — only the behave-parse normalization
 the harness already applies to its synced suites.
@@ -135,8 +135,8 @@ the harness already applies to its synced suites.
 - **Delete the engine corpora outright instead of moving them.**
   Rejected: `relate-tck`'s 489 scenarios cover engine-owned semantics the
   upstream TCK cannot — aggregate-then-slice postfix expressions, the
-  CIP-55 `inf`/`nan`/`infinity` keyword resolution — and `cip-eval` is the
-  CIP implementation tracker; deleting them loses the signal instead of
+  `inf`/`nan`/`infinity` keyword resolution — and `cip-eval` is the
+  proposal tracker; deleting them loses the signal instead of
   moving it.
 
 - **Measure the floor against the retired pin inside the harness.**
@@ -152,7 +152,7 @@ the harness already applies to its synced suites.
   trade, now the only language measurement.
 - `docs/tck/compliance.md` no longer publishes a pass count; it points at
   the harness and keeps the retired pin's history.
-- A new CIP's scenarios and `NOTES.md`, a new TCK extension, or a re-pin of
+- A new CIP's scenarios, a new TCK extension, or a re-pin of
   a scenario are harness-side changes; the engine's ADR trail no longer
   records each re-pin.
 - The 41 `relate-tck` expected fails are harness contract gaps — closing

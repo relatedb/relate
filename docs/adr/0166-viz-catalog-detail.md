@@ -159,7 +159,7 @@ do.
   note on ADR-0153 records the reversal. Every other ADR-0153 decision —
   scan-inferred schema, one virtual node per label sorted alphabetically,
   triple expansion over multi-label endpoints, negative virtual ids and the
-  CIP-257 side table, zero-rows empty behavior, property-less virtual
+  virtual-node side table, zero-rows empty behavior, property-less virtual
   relationships — stays in force.
 - The coupling concern ADR-0153 raised (three renderings of the same
   catalog facts) is now **accepted**, mitigated by deriving all three from

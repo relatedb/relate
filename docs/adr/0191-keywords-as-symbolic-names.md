@@ -133,7 +133,7 @@ spellings. They stay unchanged and are listed in Consequences.
    5. `clauses.rs::parse_foreach` -- the FOREACH loop variable
    6. `clauses.rs::parse_call_scope` -- the `CALL (<var>, ...)` import list
    7. `clauses.rs::parse_let` -- the LET binding variable (already
-      `is_schema_name()`, CIP-206; unchanged)
+      `is_schema_name()`; unchanged)
    8. `expressions.rs::parse_quantifier_or_function` -- the quantifier
       variable (`all(x IN ...)`)
    9. `expressions.rs::parse_reduce_expr` -- the reduce accumulator and
@@ -236,8 +236,8 @@ spellings. They stay unchanged and are listed in Consequences.
 
    - The SEARCH binding read's literal-NULL carve-out is dropped: Neo4j
      parses `SEARCH NULL IN (...)` as a variable reference and rejects it
-     semantically ("Variable `NULL` not defined" -- exactly what CIP-224
-     binding-variable scenario [4], `@neo4j-verified`, expects), and
+     semantically ("Variable `NULL` not defined" -- exactly what the
+     `@neo4j-verified` search binding-variable scenario expects), and
      cypherlite-front's `InvalidSearchVariableReference` check rejects an
      unbound reference at the same layer. A backticked `` `NULL` `` bound
      by the MATCH is accepted by both engines.
@@ -304,7 +304,7 @@ spellings. They stay unchanged and are listed in Consequences.
   is the acceptance test: every gap row accepts except `exception_rows`,
   and every `exception_rows` id keeps its recorded outcome.
 - The official openCypher TCK must not regress: 3892 of 3892 pinned
-  scenarios passing with zero skips (the CIP-271-superseded
+  scenarios passing with zero skips (the superseded
   `TypeConversion4 [10]` outline is removed from the pin itself, ADR-0188).
   The CIP-eval baselines (`baselines/cip-eval.json`) must not regress
   either. If a pinned TCK or frozen CIP-eval scenario requires a keyword

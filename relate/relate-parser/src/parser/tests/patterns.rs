@@ -331,7 +331,7 @@ fn test_inline_where_on_legacy_var_length_accepted() {
     // `-[r WHERE ...]->{1,5}` normalizes to (CIP-28 Form 5), so the old
     // bracket-only rejection was a syntax-gap (Neo4j
     // GpmSyntaxMixingAcceptance "Var-length relationship with inline
-    // predicate - OK"; the CIP-40 quantifier-mixing [14] DEVIATION row is
+    // predicate - OK"; the quantifier-mixing DEVIATION row is
     // retired with it).
     let stmt = parse("MATCH ()-[r*1..5 WHERE r.p > 30]->() RETURN r").unwrap();
     match &stmt.clauses[0] {
@@ -586,9 +586,9 @@ fn test_explicit_match_mode_still_rejects_a_shortest_path_function() {
 #[test]
 fn test_match_mode_phrase_before_path_variable_is_not_a_path_mode() {
     // A match-mode phrase never satisfies the *path*-mode prefix, so the
-    // CIP-51 Deviation D1 order check keeps firing for real path modes:
+    // The path-variable-order check keeps firing for real path modes:
     // `MATCH TRAIL p = ...` stays an authored InvalidPathModePosition
-    // error (the spec harness's `cip-eval` suite, CIP-51 syntax [13],
+    // error (the spec harness's `cip-eval` suite,
     // Neo4j-verified).
     let err = parse("MATCH TRAIL p = (x)--{2}(x) RETURN count(*) AS count")
         .expect_err("expected InvalidPathModePosition");
@@ -603,8 +603,8 @@ fn test_match_mode_phrase_before_path_variable_is_not_a_path_mode() {
 fn test_match_mode_path_variable_first_honors_the_combination_rules() {
     // The var-first spelling runs through the same combination checks as
     // the mode-after-MATCH spelling: REPEATABLE ELEMENTS only combines
-    // with WALK (CIP-51 rule 4) and rejects unbounded quantified path
-    // patterns (Deviation D2).
+    // with WALK and rejects unbounded quantified path
+    // patterns.
     let err = parse("MATCH p = REPEATABLE ELEMENTS TRAIL (a)-[r]->(b) RETURN p")
         .expect_err("expected UnsupportedCombinationOfMatchModeAndPathMode");
     assert!(
@@ -639,7 +639,7 @@ fn test_path_mode_keywords_set_the_path_mode() {
         assert_eq!(match_clause(&stmt).pattern[0].mode, Some(want), "{q}");
     }
     // No keyword: the implicit WALK default is left unset here and
-    // resolved at validation (CIP-51 rule 1).
+    // resolved at validation.
     let stmt = parse_ok("MATCH (a)-[r]->(b) RETURN a");
     assert_eq!(match_clause(&stmt).pattern[0].mode, None);
 }

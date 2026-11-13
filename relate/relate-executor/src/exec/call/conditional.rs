@@ -33,8 +33,8 @@ pub(crate) fn exec_conditional(
     qctx: QueryCtx<'_>,
 ) -> Result<(Vec<Row>, QueryResult)> {
     // One bucket per branch plus `ELSE`: the conditional's output is grouped
-    // by branch in the branches' written order (Neo4j's observed order — see
-    // the CIP-213 PE3.2 note), while each row is still driven on its own.
+    // by branch in the branches' written order (Neo4j's observed order),
+    // while each row is still driven on its own.
     let mut buckets: Vec<Vec<Row>> = vec![Vec::new(); branches.len() + 1];
     // CIP-135's conditional is a per-row operator: a driving row's branch
     // predicate is evaluated against the state its predecessors left (the
@@ -54,7 +54,7 @@ pub(crate) fn exec_conditional(
         // stay visible through the body's whole NEXT chain (CIP-213), exactly
         // as a `CALL (…) { … }` body's imports do
         // (`NextStatementAcceptance` "By-table semantics: CALL and WHEN no
-        // special behavior"). No Rule 10 exclusion applies, so this is the
+        // special behavior"). No star exclusion applies, so this is the
         // public scoped entry with no import set.
         let result = execute_query_scoped(graph, query, params, row, None, qctx)?;
         // A body that projects no statement result (a write-only / `FINISH`

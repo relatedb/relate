@@ -90,8 +90,8 @@ docker rm -f "$C" >/dev/null
 The probe refutes the issue's guess. Neo4j saturates floats exactly like
 CypherLite already does — `toInteger()`, `toIntegerOrNull()` and
 `toIntegerList()` map NaN to 0 and ±Infinity, ±1e300 and ±9.3e18 to the
-`i64` limits — and CIP-52 cip-eval scenarios [11]–[13] pin the same
-values (`@neo4j-verified`; the CIP-52 scoreboard in
+`i64` limits — and the cip-eval non-finite-conversion scenarios pin the
+same values (`@neo4j-verified`; that suite's scoreboard in
 `baselines/cip-eval.json` is 40/40 and only ratchets up). The real
 divergences are elsewhere:
 
@@ -288,8 +288,9 @@ errors.
 ## Alternatives considered
 
 - **Non-finite floats → null (the issue's guess).** Rejected: the probe
-  refutes it — Neo4j returns `0` and the `i64` limits — and CIP-52
-  scenarios [11]–[13] (`@neo4j-verified`, passing today) pin those values;
+  refutes it — Neo4j returns `0` and the `i64` limits — and the
+  non-finite-conversion scenarios (`@neo4j-verified`, passing today) pin
+  those values;
   null would regress the cip-eval scoreboard and diverge from the
   reference.
 - **Keep saturating out-of-range numeric strings.** Rejected: Neo4j raises
@@ -297,7 +298,7 @@ errors.
   `toIntegerOrNull('1e300')`. Saturation silently turns an overflowing
   input into the largest integer — a wrong answer `toIntegerOrNull()`
   cannot even surface. Float saturation stays only because the reference
-  saturates floats (Java's `(long)` cast) and CIP-52 pins it.
+  saturates floats (Java's `(long)` cast) and those scenarios pin it.
 - **Null instead of an error from `toInteger()` on out-of-range strings.**
   Rejected: null is `toIntegerOrNull()`'s contract; folding the two makes
   the `OrNull` variant pointless for this input, and Neo4j errors. Today's

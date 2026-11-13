@@ -547,7 +547,7 @@ mod tests {
         }
     }
 
-    /// The CIP-250 showcase query: the graduated `FOR` clause is default
+    /// The `FOR` clause showcase query: the clause is default
     /// dialect, so it lowers with no preview opt-in.
     const GQL_FOR_QUERY: &str = "FOR x IN [1, 2, 3] RETURN x";
 
@@ -607,7 +607,7 @@ mod tests {
         );
     }
 
-    /// The CIP-225 Rule 0 showcase: two components and a two-hop pattern, the
+    /// The complex-pattern showcase: two components and a two-hop pattern, the
     /// shape `FulltextSearchWithComplexPatternAcceptance` admits under
     /// Neo4j's complex-pattern mode.
     const COMPLEX_SEARCH_QUERY: &str = "MATCH (seed:Person {name: 'Alice'}), (p:Person) \
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn complex_search_patterns_gate_keeps_rule_0_without_the_opt_in() {
         // The gate widens validation instead of detecting a construct: with
-        // the row off, CIP-225 Rule 0's own rejection is what a complex
+        // the row off, the plain-shape rejection is what a complex
         // SEARCH pattern gets.
         let error = match parse_and_lower_statement_with_preview(
             COMPLEX_SEARCH_QUERY,

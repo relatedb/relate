@@ -43,10 +43,10 @@ pub fn resolve_ref_label(
 }
 
 /// Registers `a` as denoting `(is_edge, label)` in the shared element-type-
-/// alias namespace (Rule 3/4), or confirms it already does. Only errors
+/// alias namespace, or confirms it already does. Only errors
 /// when `a` is already bound to a genuinely different `(is_edge, label)`
-/// pair -- a repeated in-situ reference restating its own identity (CS[8]:
-/// `(st:Site => ...)` then `FOR (st:Site =>)`) is not a conflict.
+/// pair -- a repeated in-situ reference restating its own identity
+/// (`(st:Site => ...)` then `FOR (st:Site =>)`) is not a conflict.
 pub(super) fn declare_alias<'a>(
     aliases: &mut HashMap<&'a SmallName, (bool, &'a SmallName)>,
     a: &'a SmallName,
@@ -87,7 +87,7 @@ pub(super) fn gate(preview: PreviewFeatures, feature: PreviewFeature) -> Result<
 /// whole-body context (alias/label uniqueness, reference resolution, the
 /// constraint-only rules 1/2/13-16/22/23), plus the CIP graph-type trio's
 /// semantic rules: CIP-283's optional (`prop :: ANY`) properties,
-/// CIP-262's `DEFAULT ON COMMIT` shape/storable/conformance and
+/// the `DEFAULT ON COMMIT` shape/storable/conformance and
 /// inheritance-interaction rules, and CIP-266's inheritance rules (cycle
 /// freedom, restriction-only re-specification, instantiable diamond
 /// intersections). Called by `CREATE GRAPH TYPE`'s clause handler and the
@@ -102,10 +102,11 @@ pub(super) fn gate(preview: PreviewFeatures, feature: PreviewFeature) -> Result<
 ///
 /// `canonicalizer_input` marks CIP-180's `AS` spelling, whose own corpus
 /// pins the canonical *rendering* rather than a valid declaration. It
-/// exempts exactly two rules, each because a CIP-180 scenario exercises the
-/// renderer with a body a declaration would reject: Rule 9's ineffectual
+/// exempts exactly two of the body's checks, each because a CIP-180
+/// scenario exercises the
+/// renderer with a body a declaration would reject: the ineffectual
 /// single-label edge type (`{ ()-[:REL =>]->() }`) and the
-/// one-index-backing-per-subject clash that scenario [8] creates on purpose
+/// one-index-backing-per-subject clash that the scenario creates on purpose
 /// (`REQUIRE p.a IS UNIQUE` beside `REQUIRE p.a IS KEY`, to pin the type
 /// rank). Every other body rule still applies to both spellings.
 pub fn validate_graph_type_body(
@@ -152,7 +153,7 @@ pub(crate) fn body_has_default_values(body: &GraphTypeBody) -> bool {
 /// property type constraint, a top-level `NOT NULL` on the property itself
 /// is fine here, so this doesn't call `validate_property_type` wholesale).
 /// CIP-283: a bare `ANY` value type is allowed behind the
-/// `graph-type-opt-props` preview gate. CIP-262: a `DEFAULT ON COMMIT`
+/// `graph-type-opt-props` preview gate. A `DEFAULT ON COMMIT`
 /// value must be a literal or an allowed type constructor, storable on a
 /// property, and conforming to the property's declared value type.
 pub(super) fn validate_property_set(
@@ -272,7 +273,7 @@ pub(super) fn constraint_rank(kind: &GraphTypeConstraintVerb) -> u8 {
 }
 
 // ---------------------------------------------------------------------
-// CIP-182/183: `ALTER CURRENT GRAPH TYPE DROP` element matching -- a drop
+// `ALTER CURRENT GRAPH TYPE DROP` element matching -- a drop
 // element must specify either just the identifying label/type (matches
 // regardless of the stored definition's other fields) or the *exact*
 // stored definition (implied label set + property set, order-insensitive).
@@ -281,7 +282,7 @@ pub(super) fn constraint_rank(kind: &GraphTypeConstraintVerb) -> u8 {
 /// Order-insensitive equality of two property-type sets: same names, and
 /// for each name the same rendered canonical property type (including
 /// `NOT NULL` and, per CIP-262, the `DEFAULT ON COMMIT` value -- a DROP
-/// must restate a default it stored, FE4).
+/// must restate a default it stored).
 pub(crate) fn property_sets_equal(
     a: &[relate_parser::GraphTypePropertyType],
     b: &[relate_parser::GraphTypePropertyType],
@@ -290,7 +291,7 @@ pub(crate) fn property_sets_equal(
         return false;
     }
     // An unrenderable restated default cannot match the stored one: the
-    // drop is not the exact restatement FE4 demands (the typed
+    // drop is not the exact restatement demanded (the typed
     // "node element type specified incorrectly" error the exact-match
     // check raises), never a renderer panic.
     let render = |p: &relate_parser::GraphTypePropertyType| -> Option<(String, String)> {

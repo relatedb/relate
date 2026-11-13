@@ -379,7 +379,7 @@ fn binding_arm(
         Binding::Unbound(v) => v,
     };
     if np.force_scan {
-        // CIP-79 `USING SCAN`: no seek may answer this variable. The
+        // `USING SCAN`: no seek may answer this variable. The
         // scan policy ([`scan_ids`]) with no property map IS the scan;
         // `node_ok` and the residual conjuncts then apply `=` to every
         // candidate — for a zoned-datetime DST overlap that matches both

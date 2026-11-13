@@ -6,7 +6,7 @@ use crate::ast::Expr;
 
 use crate::BinaryOp;
 
-/// CIP-278 `<source specification clause>`:
+/// `<source specification clause>`:
 /// `<index specification clause> | <combined specification clause>`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchSpec {
@@ -16,7 +16,7 @@ pub enum SearchSpec {
     Combine(SearchCombineSpec),
 }
 
-/// CIP-225 `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX
+/// `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX
 /// <index name> <index for and control clause>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchIndexSpec {
@@ -24,17 +24,17 @@ pub struct SearchIndexSpec {
     pub kind: SearchKind,
     pub index_name: String,
     pub for_expr: Expr,
-    /// CIP-225 `WITH ANALYZER <expr>` (fulltext only; parsed, accepted, and
+    /// `WITH ANALYZER <expr>` (fulltext only; parsed, accepted, and
     /// not differentiated -- Relate has one tokenizer). Boxed to keep
     /// the enclosing `Clause` enum variant small.
     pub analyzer: Option<Box<Expr>>,
-    /// CIP-240: the inner `WHERE <search condition>` decomposed once, at
+    /// The inner `WHERE <search condition>` decomposed once, at
     /// the front's lowering boundary, into its filter predicates (the
     /// `NOT <property>` and flipped-operand rewrites applied); empty when
     /// the clause carries no inner WHERE. The raw where expression does
     /// not travel past lowering.
     pub filters: Vec<SearchFilterPred>,
-    /// CIP-225 `<offset clause>` (`SKIP`/`OFFSET`), shared with vector.
+    /// `<offset clause>` (`SKIP`/`OFFSET`), shared with vector.
     pub offset_expr: Option<Box<Expr>>,
     pub limit_expr: Expr,
 }
@@ -46,8 +46,9 @@ pub struct SearchIndexSpec {
 /// the accepted `VectorFilterExpression` forms: a property comparison, a
 /// property existence check, a property-in-set membership test, and the
 /// entity-set match filter (`<binding variable> IN <expr>`). The LHS
-/// variable is not carried: Rule 1 is enforced at lowering and every
-/// predicate is evaluated against the candidate entity.
+/// variable is not carried: lowering already enforced the
+/// binding-variable-only rule, and every predicate is evaluated against
+/// the candidate entity.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchFilterPred {
     /// `<property> <comp op> <rhs>`.
@@ -70,7 +71,7 @@ pub enum SearchFilterPred {
 impl SearchFilterPred {
     /// The indexed-property name this predicate reads, if it reads one.
     /// [`SearchFilterPred::EntityInSet`] matches on candidate identity, so
-    /// it has no property (Rule 2's membership check skips it).
+    /// it has no property (the index-property-membership check skips it).
     pub fn property_name(&self) -> Option<&str> {
         match self {
             SearchFilterPred::Comparison { property, .. }
@@ -93,8 +94,8 @@ impl SearchFilterPred {
     }
 }
 
-/// The five `<simple comp op>`s CIP-240 Rule 0 admits (Rule 7 bans the
-/// rest) — the typed subset the filter predicates carry, so the op
+/// The five `<simple comp op>`s the search-filter grammar admits (the
+/// rest are banned) — the typed subset the filter predicates carry, so the op
 /// vocabulary is stated once and every downstream match is exhaustive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchOp {
@@ -106,7 +107,7 @@ pub enum SearchOp {
 }
 
 impl SearchOp {
-    /// The mirror for Rule 0's flipped-operand rewrite — total over the
+    /// The mirror for the flipped-operand rewrite — total over the
     /// subset, panic-free (`flip_cmp` serves the wider `BinaryOp`
     /// vocabulary, where the operand-asymmetry decline is real).
     pub fn flip(self) -> Self {
@@ -120,7 +121,7 @@ impl SearchOp {
     }
 
     /// The one construction site: where a `BinaryOp` narrows into the
-    /// simple subset. `None` is Rule 7's decline.
+    /// simple subset. `None` is the decline of everything else.
     pub fn from_binary(op: BinaryOp) -> Option<Self> {
         Some(match op {
             BinaryOp::Eq => SearchOp::Eq,
@@ -145,31 +146,31 @@ impl From<SearchOp> for BinaryOp {
     }
 }
 
-/// CIP-225 `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX`.
+/// `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchKind {
     Vector,
     Fulltext,
 }
 
-/// CIP-278 `<combined specification clause>`: `COMBINE ( <weighted source
+/// `<combined specification clause>`: `COMBINE ( <weighted source
 /// clause>, ... ) USING WRRF [ WITH CONSTANT <expr> ] [ LIMIT <expr> ]`.
-/// Rule 5: two or more weighted sources (the parser rejects fewer).
+/// Two or more weighted sources (the parser rejects fewer).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCombineSpec {
     pub sources: Vec<SearchWeightedSource>,
-    /// Rule 4: `None` means the default WRRF constant 60.
+    /// `None` means the default WRRF constant 60.
     pub constant_expr: Option<Box<Expr>>,
-    /// Rule 7: `None` keeps all fused results.
+    /// `None` keeps all fused results.
     pub limit_expr: Option<Box<Expr>>,
 }
 
-/// CIP-278 `<weighted source clause>`:
+/// `<weighted source clause>`:
 /// `<source specification clause> [ WEIGHT <value expression> ]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchWeightedSource {
     pub spec: SearchSpec,
-    /// Rule 2: `None` means the default weight 1.
+    /// `None` means the default weight 1.
     pub weight_expr: Option<Box<Expr>>,
 }
 

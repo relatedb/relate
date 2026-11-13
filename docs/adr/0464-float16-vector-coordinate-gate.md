@@ -7,7 +7,7 @@ Claim: 3fd54950ae0d2c6b3fb7215bf0ffa4e0630e184d
 ## Context
 
 The Neo4j acceptance corpus models the two narrow vector coordinate types
-(CIP-280: `FLOAT16`, `BFLOAT16`) as a *deployable switch*, Neo4j's own
+(`FLOAT16`, `BFLOAT16`) as a *deployable switch*, Neo4j's own
 configuration flag. `VectorValueAcceptance`
 pins both sides — six scenarios under the suite's disabled `@conf` rows expect a
 rejection when a `VECTOR<…>` type expression or a `vector(<list>, <dim>,
@@ -35,7 +35,7 @@ on per store through `CYPHERLITE_PREVIEW`.
   feature when either
   - a `<value type>` names `FLOAT16`/`BFLOAT16` as a vector coordinate
     kind, at any nesting depth — a type predicate (`x IS :: VECTOR<FLOAT16>(3)`),
-    a CIP-85 property-type constraint, or a graph-type element property
+    a property-type constraint, or a graph-type element property
     type; or
   - the `vector()` constructor's third argument is one of the two kinds
     (the parser stores that keyword as a coordinate-name string, resolved
@@ -48,7 +48,7 @@ on per store through `CYPHERLITE_PREVIEW`.
   `preview feature 'float16-coordinate-types' is not enabled: set
   CYPHERLITE_PREVIEW=float16-coordinate-types`. `FLOAT32`, `FLOAT`,
   `INTEGER32` and the other coordinate kinds stay on the dialect floor —
-  the gate covers only the CIP-280 pair.
+  the gate covers only the `FLOAT16`/`BFLOAT16` pair.
 
 ## Alternatives considered
 
@@ -65,7 +65,7 @@ on per store through `CYPHERLITE_PREVIEW`.
   switch is modeled, not skipped.
 - **Reject FLOAT16/BFLOAT16 always (drop the positive rows from the
   pin).** Rejected: the positive rows are already-passing identities of the
-  same suite, and CIP-280 is accepted into the language; losing them would
+  same suite, and the pair is accepted into the language; losing them would
   trade one unrepresented configuration for the other.
 
 ## Consequences

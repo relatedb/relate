@@ -6,7 +6,7 @@ Claim: 40a1857f9d056df922fc98af095752f9a2d23037
 
 ## Context
 
-PR #474 (LABS-483, CIP-245 GQL function aliases) introduced a
+PR #474 (the GQL function-alias change) introduced a
 spelling-dependent rendering asymmetry: `toString(<GQL snake_case
 temporal constructor call>)` — `toString(local_datetime(...))`,
 `toString(zoned_datetime(...))`, `toString(local_time(...))`,
@@ -48,7 +48,7 @@ the call-site spelling:
    every string-producing surface — `Value::to_display_string`'s
    temporal arm (so a temporal nested in a map or accepted list renders
    identically to a top-level one), and the executor's shared scalar
-   writer `write_scalar` (so the coercion path and the CIP-261
+   writer `write_scalar` (so the coercion path and the
    interpolated-string scalars render identically too).
 2. The `tostring_full` internal function is deleted: the executor
    registry row and builtin, the lowering's precision rename

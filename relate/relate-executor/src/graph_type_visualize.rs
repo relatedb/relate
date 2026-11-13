@@ -1,4 +1,4 @@
-//! CIP-257: `SHOW CURRENT GRAPH TYPE AS GRAPH` -- renders the current graph
+//! `SHOW CURRENT GRAPH TYPE AS GRAPH` -- renders the current graph
 //! type as a set of virtual nodes/relationships suitable for visualization
 //! (mirroring `db.schema.visualization`), rather than the CIP-180 canonical
 //! specification string plain `SHOW CURRENT GRAPH TYPE` reports (see
@@ -66,8 +66,8 @@ fn vis_property_text(p: &GraphTypePropertyType) -> Result<String, relate_core::E
         p.name.with_str(quote_identifier_shaped),
         render_canon(&type_expr_to_canon(&p.value_type))
     );
-    // CIP-262: the property string carries the default value (ME5's
-    // `id :: UUID NOT NULL DEFAULT ON COMMIT uuid()`), through the one
+    // The property string carries the default value
+    // (`id :: UUID NOT NULL DEFAULT ON COMMIT uuid()`), through the one
     // canonical default-value rendering the graph-type body form uses.
     if let Some(expr) = &p.default_value {
         // The same persisted-bytes rule as every stored-spec consumer
@@ -328,7 +328,7 @@ fn collect_node_side(
             // element type targets that type's own `NodeElementType`
             // node (it is already in `element_types` from its own
             // declaration) -- only a non-identifying implied label gets
-            // a `NodeLabel` node (SGTE2).
+            // a `NodeLabel` node.
             if node_id_labels.contains(implied) {
                 continue;
             }
@@ -337,7 +337,7 @@ fn collect_node_side(
     }
     // A bare (non-`=>`) node endpoint reference on an edge type introduces
     // a plain label too, even with no other declaration or constraint of
-    // its own (CIP-257 relationships[3]).
+    // its own.
     for et in &body.edge_types {
         for endpoint in [&et.source, &et.target] {
             if let GraphTypeElementRef::InSitu {

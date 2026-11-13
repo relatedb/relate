@@ -58,7 +58,7 @@ pub(crate) fn exec_call_in_transactions(
             // after the row loop covers every produced row.
             BatchOutcome::Committed { id: tx_id.clone() }
                 .stamp(&mut batch_out, status_name.as_deref());
-            // CIP-262: each `CALL { ... } IN TRANSACTIONS` batch is its
+            // Each `CALL { ... } IN TRANSACTIONS` batch is its
             // own transaction boundary, so the property default values
             // land here -- after the batch's writes, before the batch's
             // constraint validation.

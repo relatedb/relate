@@ -245,13 +245,11 @@ fn vector_to_string_uses_the_value_constructor() {
     );
 }
 
-/// CIP-240's post-filtering rule: a *plain* SEARCH MATCH shape (the search
+/// The post-filtering rule: a *plain* SEARCH MATCH shape (the search
 /// element alone) keeps the `LIMIT` as a hard candidate window, so its
 /// outer `WHERE` — before or after the SEARCH — and the MATCH's label
 /// post-filter the window instead of widening it. Probed on live Neo4j
-/// 2026.10.1 (SearchWithSingleStageAcceptance "outer WHERE clause",
-/// SearchAcceptance "search with outer where clause", FulltextSearch
-/// [37], CIP-224 [8]/[9]): `LIMIT 2` over Alpha (1950), Beta (2013) with
+/// 2026.10.1: `LIMIT 2` over Alpha (1950), Beta (2013) with
 /// `year < 2000` returns Alpha alone — the deeper Gamma (1995) never
 /// enters.
 fn post_filter_store() -> relate::Connection {

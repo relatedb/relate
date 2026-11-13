@@ -128,7 +128,7 @@ pub(crate) use self::writes::validate_param_property_shorthand;
 
 /// The store's resolved preview set, carried into validation so the gates
 /// that do not parse syntax can read it: today the `complex-search-patterns`
-/// opt-in, which lifts CIP-225 Rule 0's SEARCH pattern-shape restriction,
+/// opt-in, which lifts the SEARCH pattern-shape restriction,
 /// and the ADR-0497 function-name admission gate. The default is every gate
 /// closed -- the dialect floor. One struct so a nested or speculative
 /// lowering inherits its caller's dialect by plain field copy; a gate that
@@ -560,8 +560,8 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
         &mut |node| validate_statement_node(node, options, policy),
         // A subquery body is its own statement, so `validate_statement_node`
         // cannot tell it from a top-level one; the 42I39 mixing rule applies
-        // only inside those bodies (CIP-40 path-selector-mixing [11]/[13]/
-        // [18] keep separate top-level MATCH clauses legal).
+        // only inside those bodies; separate top-level MATCH clauses stay
+        // legal.
         &mut |clause| match clause {
             Clause::CallSubquery(csq) => {
                 validate_subquery_body(&csq.statement, false)?;

@@ -12,7 +12,7 @@ row: a 195-row built-in `SHOW FUNCTIONS` table
 (`features/correctness/ShowFunctions.feature:61-201`) and a 93-row
 `SHOW PROCEDURES EXECUTABLE` table
 (`features/correctness/ShowProceduresPart2.feature:73-167`), asserting each
-row's name, category, mode, `worksOnSystem` flag, description and CIP-113
+row's name, category, mode, `worksOnSystem` flag, description and
 signature.
 
 The engine's inventories have diverged from it in three directions.
@@ -92,11 +92,11 @@ surface.
 
 ### 3. The three preview rows
 
-| Feature | Variant | Names | CIP | Gated surface |
-| --- | --- | --- | --- | --- |
-| `coll-zip` | `CollectionZip` | `coll.zip` | CIP-274 (approved 2026-09-03, unreleased) | callable and `SHOW`-listed |
-| `coll-has` | `CollectionHas` | `coll.hasAnyOf`, `coll.hasAllOf`, `coll.hasNoneOf` | CIP-286 (approved 2026-10-15, unreleased) | callable and `SHOW`-listed |
-| `gql-stddev-aliases` | `GqlStddevAliases` | `stddev_pop`, `stddev_samp` | CIP-245 (stddev half: aggregation [19]-[26], show_functions [7]-[8]) | callable and `SHOW`-listed |
+| Feature | Variant | Names | Gated surface |
+| --- | --- | --- | --- |
+| `coll-zip` | `CollectionZip` | `coll.zip` | callable and `SHOW`-listed |
+| `coll-has` | `CollectionHas` | `coll.hasAnyOf`, `coll.hasAllOf`, `coll.hasNoneOf` | callable and `SHOW`-listed |
+| `gql-stddev-aliases` | `GqlStddevAliases` | `stddev_pop`, `stddev_samp` | callable and `SHOW`-listed |
 
 Each of the three gates a catalogue row: hidden from `SHOW FUNCTIONS` while
 off, listed while on. (A fourth row, `apoc-coll-sort`, was deleted outright on
@@ -108,20 +108,22 @@ name, appended, never renumbered) and one `GATED_CIPS` row in
 `testing/cypherlite-cip-eval/tests/cip_eval.rs:18`, whose one table derives
 both the phase's directory filter and its `CYPHERLITE_PREVIEW` value:
 
-| CIP | testdata directory | Flag |
-| --- | --- | --- |
-| CIP-274 | `CIP-274-collection-functions-coll-zip` | `coll-zip` |
-| CIP-286 | `CIP-286-collection-functions-coll-has` | `coll-has` |
-| CIP-245 | `CIP-245-gql-function-aliases` | `gql-stddev-aliases` |
+| testdata directory | Flag |
+| --- | --- |
+| `collection-functions-coll-zip` | `coll-zip` |
+| `collection-functions-coll-has` | `coll-has` |
+| `gql-function-aliases` | `gql-stddev-aliases` |
 
-No baseline drops: `baselines/cip-eval.json` keeps CIP-245 at 78/78, CIP-150 at
-28/28, CIP-274 at 13/13 and CIP-286 at 44/44, and every frozen CIP-245 (76)
-identity keeps passing in the gated phase. Each row is temporary by
-construction; it and its gate are deleted when the CIP ships in a reference
-release (CIP-274, CIP-286, CIP-245). CIP-150 left `GATED_CIPS` on 2026-11-04
-with the `apoc-coll-sort` deletion (§5.3): its scenarios now run in the
-ungated phase, where scenario [5] was re-pinned to 42N48 and
-`ENGINE_PASSING.json` gained that identity.
+No baseline drops: `baselines/cip-eval.json` keeps `gql-function-aliases` at
+78/78, `cypher-versions-selection` at 28/28, `collection-functions-coll-zip`
+at 13/13 and `collection-functions-coll-has` at 44/44, and every frozen
+`gql-function-aliases` (76) identity keeps passing in the gated phase. Each
+row is temporary by construction; it and its gate are deleted when the
+feature ships in a reference release (`coll-zip`, `coll-has`,
+`gql-stddev-aliases`). The `cypher-versions-selection` suite left
+`GATED_CIPS` on 2026-11-04 with the `apoc.coll.sort` deletion (§5.3): its
+scenarios now run in the ungated phase, where the `apoc.coll.sort` scenario
+was re-pinned to 42N48 and `ENGINE_PASSING.json` gained that identity.
 
 ### 4. Gate locality: the function-name admission gate
 
@@ -200,31 +202,31 @@ policy text matches the registry.
 #### 5.1 `stddev_samp` / `stddev_pop` — gate
 
 Final action: the default dialect advertises and dispatches `stdev_samp` /
-`stdev_pop`; the CIP-245 spellings stay callable and `SHOW`-listed only under
-`CYPHERLITE_PREVIEW=gql-stddev-aliases`, and CIP-245's directory joins
-`GATED_CIPS`.
+`stdev_pop`; the `stddev_samp`/`stddev_pop` spellings stay callable and
+`SHOW`-listed only under `CYPHERLITE_PREVIEW=gql-stddev-aliases`, and the
+`gql-function-aliases` directory joins `GATED_CIPS`.
 
 Reason: the corpus is first-tier and lists only the `stdev_*` rows
-(`features/correctness/ShowFunctions.feature:207-208`). CIP-245's stddev
-scenarios are `@doc`-derived — Neo4j 2026.05 answers 42N48, and their expected
-values were computed from `stDevP`/`stDev`
-(`testdata/cip-eval/CIP-245-gql-function-aliases/NOTES.md` Deviation 1) --
-while `baselines/cip-eval.json` holds CIP-245 at 78/78. Re-pinning CIP-245 is
-out of scope and the ratchet only moves up (ADR-0001), so the gate keeps both:
-a corpus-faithful default dialect and CIP-245's 78/78, with its 76 frozen
-identities passing in the gated phase.
+(`features/correctness/ShowFunctions.feature:207-208`). The
+`gql-function-aliases` suite's stddev scenarios are `@doc`-derived — Neo4j
+2026.05 answers 42N48, and their expected values were computed from
+`stDevP`/`stDev` -- while `baselines/cip-eval.json` holds the suite at 78/78.
+Re-pinning it is out of scope and the ratchet only moves up (ADR-0001), so the
+gate keeps both: a corpus-faithful default dialect and the suite's 78/78, with
+its 76 frozen identities passing in the gated phase.
 
 Rejected: keep `stddev_*` advertised — contradicts the corpus catalogue, and
 the two extra rows break the whole-catalogue and ordering scenarios. Keep them
-only as `UNADVERTISED_FUNCTIONS` — CIP-245 `show_functions` [7]/[8] then fail
-(76/78) because they assert the `SHOW` rows. Re-pin CIP-245 (drop aggregation
-[19]-[26] and `show_functions` [7]-[8], lower `baselines/cip-eval.json`) — out
-of scope, and it lowers a frozen ratchet.
+only as `UNADVERTISED_FUNCTIONS` — the suite's `show_functions` catalogue
+scenarios then fail (76/78) because they assert the `SHOW` rows. Re-pin the
+suite (drop its aggregation and `show_functions` catalogue scenarios, lower
+`baselines/cip-eval.json`) — out of scope, and it lowers a frozen ratchet.
 
 #### 5.2 `coll.zip` — gate
 
 Final action: callable and `SHOW`-listed only under
-`CYPHERLITE_PREVIEW=coll-zip`; CIP-274's directory joins `GATED_CIPS`. In the
+`CYPHERLITE_PREVIEW=coll-zip`; the `collection-functions-coll-zip` directory
+joins `GATED_CIPS`. In the
 default dialect it is an unknown function (42N48) with no `SHOW FUNCTIONS` row.
 
 Reason: the corpus contradicts itself here, and the engine-observable probe
@@ -233,13 +235,13 @@ The corpus's function-expressions acceptance rows record a live
 probe — `coll.zip` registered in the front end but unreachable:
 `SHOW FUNCTIONS` lists no row and both CYPHER 5 and CYPHER 25 raise 42N48 --
 while the generated table at `ShowFunctions.feature:90` still carries the row.
-CIP-274 was approved on 2026-09-03 and no release ships it, so advertising the
-name would claim surface the reference server does not have (rule (b) against
+The proposal is accepted but no release ships it, so advertising the name
+would claim surface the reference server does not have (rule (b) against
 rule (a)).
 
 Rejected: advertise and call it unconditionally, following
 `ShowFunctions.feature:90` — contradicts the only live probe and ADR-0371's
-accepted-but-unreleased split. Delete the implementation and CIP-274's testdata
+accepted-but-unreleased split. Delete the implementation and the suite's testdata
 -- throws away a passing 13/13 ratchet for a name that is already implemented.
 
 #### 5.3 `apoc.coll.sort` — remove (amended 2026-11-04)
@@ -248,30 +250,31 @@ Amended final action (2026-11-04, LABS-912): delete the spelling outright — th
 registry row, the executor dispatch alias, and the `apoc-coll-sort` preview
 name gate, together with the `validate_no_apoc_coll_sort` dialect gate. A call
 is now the binder's ordinary unknown-function rejection (42N48) in every
-dialect, `CYPHER 5` included. CIP-150 leaves `GATED_CIPS` and runs in the
-ungated phase; its scenario [5] is re-pinned to the same 42N48 that scenario
-[6] asserts (a Cypher-5 expectation that conflicts with Cypher 25 goes to the
-latter), so it turns green and its identity joins `ENGINE_PASSING.json`. No
-baseline count drops: CIP-150 stays 28/28.
+dialect, `CYPHER 5` included. The `cypher-versions-selection` suite leaves
+`GATED_CIPS` and runs in the ungated phase; its `apoc.coll.sort` scenario is
+re-pinned to the same 42N48 the suite's other Cypher-5 rejection asserts (a
+Cypher-5 expectation that conflicts with Cypher 25 goes to the latter), so it
+turns green and its identity joins `ENGINE_PASSING.json`. No baseline count
+drops: the suite stays 28/28.
 
 Reason: the original decision below gated the name behind
 `CYPHERLITE_PREVIEW=apoc-coll-sort` and admitted it only under `CYPHER 5`,
 keeping the dialect gate for Cypher 25. Retaining an APOC library name in the
 Cypher surface at all — even behind a preview opt-in and a dialect — is the
-wrong shape once CIP-222's `coll.sort` covers the need: the name is absent
+wrong shape once the built-in `coll.sort` covers the need: the name is absent
 from the corpus catalogue and is not a Cypher built-in. The one scenario that
-justified the gate, CIP-150 [5], is a `@doc`-derived transcription its own
-notes say could not be verified, because APOC is not installed on the eval
-server
-(`testdata/cip-eval/CIP-150-cypher-versions-selection/NOTES.md`); re-pinning
-it to the observed error keeps the ratchet intact. The spelling can return
+justified the gate — the suite's `apoc.coll.sort` scenario — is a `@doc`-
+derived transcription its own notes say could not be verified, because APOC
+is not installed on the eval server; re-pinning it to the observed error
+keeps the ratchet intact. The spelling can return
 later as an extension if needed.
 
 Superseded action (original decision, 2026-11-04): callable only under
-`CYPHERLITE_PREVIEW=apoc-coll-sort`, and only in the CYPHER 5 dialect;
-CIP-150's directory joined `GATED_CIPS`. Without the flag it was an unknown
-function in every dialect; under it, CYPHER 5 accepted it (CIP-150 [5]) while
-CYPHER 25 rejected it through the unchanged dialect gate
+`CYPHERLITE_PREVIEW=apoc-coll-sort`, and only in the CYPHER 5 dialect; the
+suite's directory joined `GATED_CIPS`. Without the flag it was an unknown
+function in every dialect; under it, CYPHER 5 accepted it (the suite's
+`apoc.coll.sort` scenario) while CYPHER 25 rejected it through the
+unchanged dialect gate
 (`validate_no_apoc_coll_sort`). It was never `SHOW`-listed in either dialect,
 so the flag changed callability only.
 
@@ -344,8 +347,8 @@ rejection (42N48), so an alias would be a documented divergence.
 - **Six callable-but-unlisted driver rows become listed**: `tx.getMetaData`,
   `tx.setMetaData`, `dbms.components`, `dbms.info`, `dbms.showCurrentUser`,
   `dbms.listConfig`.
-- **Metadata is filled from the corpus**: description, category, CIP-113
-  signature, mode, `worksOnSystem` and `listed` follow the corpus row by row.
+- **Metadata is filled from the corpus**: description, category, signature,
+  mode, `worksOnSystem` and `listed` follow the corpus row by row.
   The corpus pins description text verbatim — `db.awaitIndex` expects
   `Wait for an index to come online (for example: CALL db.awaitIndex("MyIndex", 300)).`
   and signature `db.awaitIndex(indexName :: STRING, timeOutSeconds = 300 :: INTEGER)`
@@ -452,8 +455,8 @@ audits them on both axes; the change itself is the registry-row deletion in §6.
 | `collect_list` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:92 (Cypher 25 catalogue row `collect_list`) |
 | `stdev_samp` | keep | — | keep; canonical advertised spelling and dispatch target of the `stddev_samp` gate/rename (corpus row features/correctness/ShowFunctions.feature:208) |
 | `stdev_pop` | keep | — | keep; canonical advertised spelling and dispatch target of the `stddev_pop` gate/rename (corpus row features/correctness/ShowFunctions.feature:207) |
-| `stddev_samp` | gate | `gql-stddev-aliases`, canonical `stdev_samp` | gate (conflict `stddev_samp/stddev_pop`): the canonical advertised spelling is `stdev_samp` (corpus row features/correctness/ShowFunctions.feature:208); `stddev_samp` stays callable and SHOW-listed only under CYPHERLITE_PREVIEW=gql-stddev-aliases so CIP-245 keeps its 78/78 in the gated phase |
-| `stddev_pop` | gate | `gql-stddev-aliases`, canonical `stdev_pop` | gate (conflict `stddev_samp/stddev_pop`): the canonical advertised spelling is `stdev_pop` (corpus row features/correctness/ShowFunctions.feature:207); `stddev_pop` stays callable and SHOW-listed only under CYPHERLITE_PREVIEW=gql-stddev-aliases so CIP-245 keeps its 78/78 in the gated phase |
+| `stddev_samp` | gate | `gql-stddev-aliases`, canonical `stdev_samp` | gate (conflict `stddev_samp/stddev_pop`): the canonical advertised spelling is `stdev_samp` (corpus row features/correctness/ShowFunctions.feature:208); `stddev_samp` stays callable and SHOW-listed only under CYPHERLITE_PREVIEW=gql-stddev-aliases so the `gql-function-aliases` suite keeps its 78/78 in the gated phase |
+| `stddev_pop` | gate | `gql-stddev-aliases`, canonical `stdev_pop` | gate (conflict `stddev_samp/stddev_pop`): the canonical advertised spelling is `stdev_pop` (corpus row features/correctness/ShowFunctions.feature:207); `stddev_pop` stays callable and SHOW-listed only under CYPHERLITE_PREVIEW=gql-stddev-aliases so the `gql-function-aliases` suite keeps its 78/78 in the gated phase |
 | `percentile_cont` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:172 (Cypher 25 catalogue row `percentile_cont`) |
 | `percentile_disc` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:173 (Cypher 25 catalogue row `percentile_disc`) |
 | `nodes` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:164 (Cypher 25 catalogue row `nodes`) |
@@ -583,7 +586,7 @@ audits them on both axes; the change itself is the registry-row deletion in §6.
 | `path_length` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:169 (Cypher 25 catalogue row `path_length`) |
 | `coll.flatten` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:82 (Cypher 25 catalogue row `coll.flatten`) |
 | `coll.sort` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:89 (Cypher 25 catalogue row `coll.sort`) |
-| `apoc.coll.sort` | remove (amended 2026-11-04, §5.3) | — | deleted outright (LABS-912): no registry row, no executor alias, no `apoc-coll-sort` preview gate and no dialect gate. The binder's ordinary unknown-function rejection (42N48) fires in every dialect; CIP-150 leaves `GATED_CIPS` and its re-pinned scenario [5] passes. Original disposition was `gate`; see §5.3 for the superseded text |
+| `apoc.coll.sort` | remove (amended 2026-11-04, §5.3) | — | deleted outright: no registry row, no executor alias, no `apoc-coll-sort` preview gate and no dialect gate. The binder's ordinary unknown-function rejection (42N48) fires in every dialect; the `cypher-versions-selection` suite leaves `GATED_CIPS` and its re-pinned `apoc.coll.sort` scenario passes. Original disposition was `gate`; see §5.3 for the superseded text |
 | `coll.indexof` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:84 (Cypher 25 catalogue row `coll.indexOf`) |
 | `coll.insert` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:85 (Cypher 25 catalogue row `coll.insert`) |
 | `coll.remove` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:88 (Cypher 25 catalogue row `coll.remove`) |
@@ -597,10 +600,10 @@ audits them on both axes; the change itself is the registry-row deletion in §6.
 | `cardinality` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:75 (Cypher 25 catalogue row `cardinality`) |
 | `property_exists` | keep | — | keep as-is; features/correctness/ShowFunctions.feature:179 (Cypher 25 catalogue row `property_exists`) |
 | `graph.byname` | keep | — | keep; stays unadvertised in the binder and catalog-only through GRAPH_SELECTOR_FUNCTIONS (cypherlite/cypherlite-core/src/namespace.rs:98-103) — the corpus row is a USE-clause selector, not a callable |
-| `string.interp` | keep | — | keep; stays in UNADVERTISED_FUNCTIONS — it is the CIP-261 interpolated-string literal's lowered form, never a user-written call |
+| `string.interp` | keep | — | keep; stays in UNADVERTISED_FUNCTIONS — it is the interpolated-string literal's lowered form, never a user-written call |
 | `trim_spec` | keep | — | keep; stays in UNADVERTISED_FUNCTIONS — it is the comma-form trim lowering's internal call |
 | `toBooleanList` | add | `toBooleanList` | add: lowercase registry row `tobooleanlist` (SHOW display `toBooleanList` via the row's `display` spelling, §11; corpus row features/correctness/ShowFunctions.feature:231, category List) plus its convert dispatch — it is the list form, not an alias of toBoolean |
-| `allreduce` | add | `allReduce` | add: lowercase registry row `allreduce` (SHOW display `allReduce` via the row's `display` spelling, §11; corpus row features/correctness/ShowFunctions.feature:66, category Predicate, CIP-217); parsing and evaluation already exist, so only the registry row plus its metadata is missing |
+| `allreduce` | add | `allReduce` | add: lowercase registry row `allreduce` (SHOW display `allReduce` via the row's `display` spelling, §11; corpus row features/correctness/ShowFunctions.feature:66, category Predicate); parsing and evaluation already exist, so only the registry row plus its metadata is missing |
 | `db.indexes` | remove | — | remove: this row is the procedure, not a function — the change lands in procedure_rows (delete the registry row); the corpus reaches the surface through SHOW INDEXES |
 | `db.constraints` | remove | — | remove: this row is the procedure, not a function — the change lands in procedure_rows (delete the registry row); the corpus reaches the surface through SHOW CONSTRAINTS |
 
@@ -763,11 +766,11 @@ The single-row catalogue skew is also residual: the corpus catalogue's 177
 distinct names minus the gated-off `coll.zip` row is 176 default-listed names,
 so the whole-catalogue, count and full-ordering scenarios
 (`ShowFunctions.feature:61`, `:201`, `:2221`, `:2438`) stay harness-gap until
-CIP-274 ships. Enabling `coll-zip` restores the row.
+the feature ships in a reference release. Enabling `coll-zip` restores the row.
 
 ### 11. Display spellings (amended 2026-11-04)
 
-Function calls match case-insensitively (CIP-230), so `KNOWN_FUNCTIONS` and
+Function calls match case-insensitively, so `KNOWN_FUNCTIONS` and
 every admission key stay lowercase (§4); the executor's metadata table below
 matches each row's name case-insensitively instead. The user-facing spelling is a
 separate fact: a reference server prints 42 of the 176 advertised names in
@@ -782,7 +785,7 @@ reference's; only the display case differed.
   *is* its display spelling: the 42 recased names carry their reference casing
   as the row's name, every other name is the lowercase spelling, and the single
   renderer (`show_catalog::function_row`) names each row from its own `name`
-  for both the `name` cell and the CIP-113 signature -- the hand-written
+  for both the `name` cell and the signature -- the hand-written
   `special_signature` rows store only the signature tail after the name, so
   the row and its signature cannot disagree. No second name column exists
   beside the row's name.
@@ -800,7 +803,7 @@ reference's; only the display case differed.
   `function_registry`'s alias test ties the four recased aggregate names to
   `AGGREGATE_ALIASES`' display column, the spelling the lowering emits.
 - **Gated families.** `coll.zip` and the `gql-stddev-aliases` rows keep their
-  registered spelling: CIP-274 and CIP-245 spell them lowercase, so neither is
+  registered spelling: the proposals spell them lowercase, so neither is
   a reference spelling to recase. `graph.names` stays lowercase as well — the
   reference agrees, and only the three other catalog-only `graph.*` rows and
   `db.nameFromElementId` take mixed case.
@@ -862,15 +865,17 @@ reference's; only the display case differed.
   RELATIONSHIP-type function (catalogue row 246), so that rename silently
   changes every existing `type()` call; `vector_distance` is a metric-taking
   vector function, a false alias for point distance; and a plain `stddev`
-  rename drops ten frozen CIP-245 scenarios. The corpus settles all five
-  conflicts (§5).
-- **Re-pin CIP-245 and CIP-150** — drop the `@doc`-derived scenarios and lower
+  rename drops ten frozen `gql-function-aliases` scenarios. The corpus settles
+all five conflicts (§5).
+- **Re-pin `gql-function-aliases` and `cypher-versions-selection`** — drop the
+  `@doc`-derived scenarios and lower
   `baselines/cip-eval.json`. Rejected: re-pinning is out of scope for this
   feature and the cip-eval ratchet only moves up (ADR-0001); lowering a frozen
   baseline trades a catalogue fix for an evaluation regression, while the
   preview gate keeps both.
-- **Delete the CIP-274/CIP-286 implementations and their testdata.** Rejected:
-  both are approved CIPs with passing ratchets (13/13 and 44/44); deleting
+- **Delete the `coll-zip` and `coll-has` implementations and their testdata.**
+  Rejected: both are accepted proposals with passing ratchets (13/13 and
+  44/44); deleting
   verified work needs the same baseline edits as re-pinning and throws away
   surface users can already opt into.
 - **Advertise `coll.zip` and the `coll.has*` trio unconditionally**, following
@@ -917,11 +922,14 @@ reference's; only the display case differed.
   mode (26 executable, 14 catalog-only) with their metadata aligned to the
   corpus. The registry grows from 42 rows to 94 (27 executable, 67
   catalog-only).
-- cip-eval: CIP-274, CIP-286, CIP-245 and CIP-150 joined `GATED_CIPS` (four
-  rows); CIP-150 left again on 2026-11-04 with the `apoc.coll.sort` deletion
-  (§5.3) and its re-pinned scenario [5] added an `ENGINE_PASSING.json`
-  identity. `baselines/cip-eval.json` is not lowered: CIP-245 78/78, CIP-150
-  28/28, CIP-274 13/13 and CIP-286 44/44 all keep passing.
+- cip-eval: the `coll-zip`, `coll-has`, `gql-stddev-aliases` and
+  `cypher-versions-selection` suites joined `GATED_CIPS` (four rows);
+  `cypher-versions-selection` left again on 2026-11-04 with the
+  `apoc.coll.sort` deletion (§5.3) and its re-pinned scenario added an
+  `ENGINE_PASSING.json` identity. `baselines/cip-eval.json` is not lowered:
+  `gql-function-aliases` 78/78, `cypher-versions-selection` 28/28,
+  `collection-functions-coll-zip` 13/13 and `collection-functions-coll-has`
+  44/44 all keep passing.
 - Preview registry: four rows were appended to `PREVIEW_FEATURE_TABLE`, four
   `Ok(false)` arms added to the front's exhaustive gate-loop match, one
   `PREVIEW_FUNCTIONS` row per gated name, and `validate_function_admission`'s
@@ -931,14 +939,14 @@ reference's; only the display case differed.
   alias table. Each row is temporary by construction -- §3's removal
   conditions — and the live gated-feature list grew from twelve to sixteen
   (fifteen after the 2026-11-04 amendment below).
-- Amended 2026-11-04 (LABS-912): `apoc-coll-sort` is deleted outright (§5.3),
-  so `PREVIEW_FEATURE_TABLE` carries three ADR-0497 rows (fifteen live gated
-  features), CIP-150 leaves `GATED_CIPS` and runs in the ungated phase, and
-  its re-pinned scenario [5] joins `ENGINE_PASSING.json`; CIP-150's baseline
-  count is unchanged at 28/28.
+- Amended 2026-11-04: `apoc-coll-sort` is deleted outright (§5.3), so
+  `PREVIEW_FEATURE_TABLE` carries three ADR-0497 rows (fifteen live gated
+  features), the `cypher-versions-selection` suite leaves `GATED_CIPS` and
+  runs in the ungated phase, and its re-pinned scenario joins
+  `ENGINE_PASSING.json`; that suite's baseline count is unchanged at 28/28.
 - Amended 2026-11-04 (LABS-912, display spellings): `SHOW FUNCTIONS` renders
   the reference catalogue's casing — 42 default names in mixed case plus the
-  three gated `coll.has*` rows (§11) — in both the `name` cell and the CIP-113
+  three gated `coll.has*` rows (§11) — in both the `name` cell and the
   signature. Matching is unchanged: every name still binds in any casing,
   because admission stays lowercase and the metadata table's row names (the
   display spellings) are matched case-insensitively — a rendering fact, never

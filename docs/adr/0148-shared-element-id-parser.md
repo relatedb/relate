@@ -25,7 +25,7 @@ its `Namespace` via the existing `Namespace::from_element_id_segment`.
 Both former call sites delegate. Behavior and error texts are unchanged:
 `db.nameFromElementId` keeps its own kind-prefix/empty-entity checks on
 top of the shared split and still does not validate the entity segment's
-contents (CIP-95 frozen scenario uses `4:cypherlite:999999`); the 42NA7
+contents (a frozen eval scenario uses `4:cypherlite:999999`); the 42NA7
 text of `USE graph.byElementId` is byte-identical (fixture-pinned in
 `testdata/ce-errors/neo4j-ce.json`).
 

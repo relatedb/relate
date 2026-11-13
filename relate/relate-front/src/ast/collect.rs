@@ -98,14 +98,13 @@ fn source_text_name(item: &ReturnItem) -> Option<SmallName> {
     item.source_text.as_deref().map(SmallName::from_name)
 }
 
-/// CIP-224: the `SCORE AS <var>` variable a `<search clause>` optionally
+/// The `SCORE AS <var>` variable a `<search clause>` optionally
 /// introduces, on top of its `<binding variable reference>` (already one of
 /// the MATCH clause's own pattern element variables, so already covered by
 /// `collect_pattern_element_vars`). Every "which variables does this MATCH
 /// clause bind" scope tracker in this module and in `call_scope` folds this
 /// in too, so a later WHERE/WITH/RETURN/ORDER BY can reference the score
-/// variable regardless of which side of SEARCH the WHERE was written on
-/// (Rule 6).
+/// variable regardless of which side of SEARCH the WHERE was written on.
 pub(crate) fn search_score_var(mc: &MatchClause) -> Option<&SmallName> {
     mc.search.as_ref()?.score_var.as_ref()
 }
@@ -114,7 +113,7 @@ pub(crate) fn search_score_var(mc: &MatchClause) -> Option<&SmallName> {
 /// into scope: a node's or relationship's own `variable`, or -- for a
 /// CIP-28 `Quantified` element -- every named element inside its operand
 /// (which become "group variables" in the enclosing scope) plus its own
-/// subpath variable, if any (CIP-28 Section 3.3). Used by every "which
+/// subpath variable, if any. Used by every "which
 /// variables does this MATCH/CREATE/MERGE pattern bind" scope-tracking
 /// check in this module so a group variable is visible to the rest of the
 /// query exactly like any other pattern variable.
@@ -316,7 +315,7 @@ pub(crate) fn pattern_vars(patterns: &[PatternPath]) -> Vec<&SmallName> {
 /// offender raises the canonical `UndefinedVariable` error. The one
 /// expression-scope check: [`crate::validate::expressions`] uses it at every
 /// expression position and [`crate::call_scope`] uses it for its strict
-/// Rule 4/5 clause checks.
+/// undefined-variable clause checks.
 pub(crate) fn check_expr_vars_defined(
     expr: &Expr,
     scope: &IdentHashSet<SmallName>,
@@ -364,7 +363,7 @@ fn is_dead_boolean_operand(parent: &Expr, child: &Expr) -> bool {
 
 /// Whether a pattern is relationship-bearing: a `Relationship` element, or
 /// a `Quantified` element (which always wraps a relationship-bearing body —
-/// CIP-28 Rule 3, which the parser already enforces). The one test every
+/// the parser already enforces that). The one test every
 /// "is this a single-node pattern" gate consults.
 pub(crate) fn has_relationship(pattern: &PatternPath) -> bool {
     pattern.elements.iter().any(|e| {
@@ -560,14 +559,14 @@ pub(crate) fn bind_node_name_refs(clause: &Clause, out: &mut IdentHashSet<SmallN
 /// MATCH/CREATE/MERGE, the alias for UNWIND/LOAD CSV, the alias-resolved
 /// YIELD names for a procedure call, and the catalog columns for the
 /// SHOW/TERMINATE family. The canonical per-clause introduction fact: the
-/// composed-SHOW `WHERE` check, [`crate::validate::search`]'s Rule 5 scope
-/// walk and `validate::expressions`'s catalog arm all derive from it.
+/// composed-SHOW `WHERE` check, [`crate::validate::search`]'s SCORE-conflict
+/// scope walk and `validate::expressions`'s catalog arm all derive from it.
 /// `call_scope` derives every arm except its catalog arm, which iterates
 /// [`crate::show_columns::catalog_output_columns`] directly — its ordered
 /// `Vec` fixes the shadow-error order, which this set-typed fold cannot.
 /// Consumers that
 /// need *more* than introduction — a WITH replaces the scope (a projection,
-/// [`crate::validate::search`]'s Rule 5 walk) and a `CALL { }` body's
+/// [`crate::validate::search`]'s SCORE-conflict walk) and a `CALL { }` body's
 /// exports depend on the enclosing scope — spell those arms themselves.
 pub(crate) fn clause_introduced_names(clause: &Clause) -> IdentHashSet<SmallName> {
     let mut names = IdentHashSet::default();

@@ -38,7 +38,7 @@ The query path today is `Database::connect()` →
 `exec_call(ctx, …)` → `builtin_procedure(graph, name)`. No session-context
 struct exists; the statement-level `QueryCtx`/`ExecCtx`
 (`cypherlite/cypherlite-executor/src/ctx.rs`) carry the graph view,
-params, and the CIP-150 version only. On the Bolt side the engine
+params, and the Cypher version only. On the Bolt side the engine
 `Connection` is created **before** HELLO arrives
 (`surfaces/cypherlite-bolt/src/protocol.rs`, `db.connect()?` ahead of the
 message loop), and the validated HELLO principal is currently discarded

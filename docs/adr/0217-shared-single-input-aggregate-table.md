@@ -83,7 +83,7 @@ One table, one contract, both layers:
 
 ## Consequences
 
-- `RETURN stdev()` / `stdevp()` (and their CIP-128 alias spellings) is now
+- `RETURN stdev()` / `stdevp()` (and their alias spellings) is now
   the front's typed `InvalidNumberOfArguments` error instead of the
   executor's string-style one — same rejection, one shape.
 - `RETURN sum(x, y)` is rejected at validation; an IR construction that

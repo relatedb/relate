@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn name_from_element_id_does_not_validate_the_third_segment() {
-        // CIP-95 frozen scenario [4]: the entity segment is opaque to
+        // The entity segment is opaque to
         // db.nameFromElementId — only shape and namespace are checked.
         let g = Graph::default();
         let graph = ExecGraph::read(&g);

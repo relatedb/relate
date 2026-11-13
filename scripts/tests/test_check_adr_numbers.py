@@ -15,16 +15,21 @@ asserting git runner, and the run-script-under-test helper all come from
 adr_fixtures.py.
 """
 
+import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
 from adr_fixtures import (
+    CHECK_SCRIPT,
     AdrFixture,
     COUNTER_BRANCH,
     GIT_ENV,
+    ROOT,
     run_git,
 )
+from script_loader import load
 
 
 def adr_body(number: str, claim: str | None, context: str = "fixture") -> str:
@@ -465,6 +470,273 @@ class PublicRecordTests(FixtureTestBase):
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("LABS-9", result.stderr)
+
+
+class InternalMarkerTests(FixtureTestBase):
+    """The repo-wide proposal-detail marker scan: any tracked line, in
+    any file, existing or added — the no-internal-references rule
+    beyond docs/adr/.
+
+    The marker literals below are this suite's own inputs, and this
+    file is one of the scan's two exempt fixtures (the other is the
+    mint suite): they may sit here verbatim, and nowhere else under
+    scripts/ may a marker literal appear — the last test enforces that.
+    """
+
+    # Each entry is (kind, marker, bare): the marker line ties a
+    # proposal id to proposal-internal detail and fails; the bare form
+    # is the same content with the detail stripped and passes — a bare
+    # identifier outside docs/adr/ passes, only the detail-bearing
+    # shapes fail, never the id alone.
+    MARKER_AND_BARE_LINES = {
+        "grammar-production": (
+            "grammar-production",
+            "per CIP-274: the `SEARCH <pattern>` clause",
+            "per CIP-274 the search clause",
+        ),
+        "rule-section-label": (
+            "rule-section-label",
+            "CIP-274 Rule 5 defines the terminal labels",
+            "CIP-274 defines the terminal labels",
+        ),
+        "notes-md-pointer": (
+            "notes-md-pointer",
+            "CIP-274 NOTES.md records the vote",
+            "CIP-274 records the vote",
+        ),
+        "attribution-phrase": (
+            "attribution-phrase",
+            "the clause follows CIP-274's own wording",
+            "the clause follows CIP-274 and its public wording",
+        ),
+        "approval-process-fact": (
+            "approval-process-fact",
+            "CIP-274 was approved on 2026-01-01",
+            "CIP-274 covers the clause",
+        ),
+        "cip-title": (
+            "cip-title",
+            'CIP-274 ("Local Callables") names the surface',
+            "CIP-274 names the surface",
+        ),
+        "harness-corpus-dir": (
+            "harness-corpus-dir",
+            "the corpus in features/cip-eval/CIP-274-local-callables/ grew",
+            "the CIP-274 corpus grew",
+        ),
+    }
+    # The shapes that escaped the catalog before it learned them, each
+    # seeded from a line the tree carried: a quoted section title after
+    # NOTES.md, a deviation pointer in its two spellings, and the
+    # comma-form label before an id. Same (kind, marker, bare) entry
+    # shape, one kind per shape.
+    ESCAPED_MARKER_AND_BARE_LINES = {
+        "quoted notes title": (
+            "notes-md-pointer",
+            'CIP-218 NOTES.md "interaction with existing features" [1]-[3]',
+            "CIP-218 names the interaction",
+        ),
+        "quoted deviation pointer": (
+            "rule-section-label",
+            'see CIP-168 NOTES.md "Deviations" #1',
+            "CIP-168 records the deviation",
+        ),
+        "plain deviation pointer": (
+            "rule-section-label",
+            "CIP-73 Deviation #5/#6: confirmed for ALL",
+            "CIP-73 confirms the rejection for ALL",
+        ),
+        "comma-form label": (
+            "rule-section-label",
+            "*before* the expression (GQ10, CIP-250):",
+            "*before* the expression (CIP-250):",
+        ),
+    }
+
+    def assert_marker_fails_and_bare_passes(
+        self, kind: str, marker: str, bare: str
+    ) -> None:
+        """Seed the marker line — the run fails naming its file, line
+        and kind — then the bare line in its place, which passes."""
+        self.fx.commit("feature", {"notes/spec-detail.md": marker + "\n"})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("notes/spec-detail.md:1", result.stderr)
+        self.assertIn(kind, result.stderr)
+        self.assertIn("internal spec reference", result.stderr)
+        self.fx.commit("feature", {"notes/spec-detail.md": bare + "\n"})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "no internal spec references on tracked lines", result.stdout
+        )
+
+    def test_marker_line_fails_and_bare_line_passes(self) -> None:
+        # Both directions, one kind at a time: the marker line fails
+        # naming its file, line and kind, and the same tree with the
+        # bare line in its place passes — the detail, not the id, is
+        # what fails.
+        for name, (kind, marker, bare) in self.MARKER_AND_BARE_LINES.items():
+            with self.subTest(kind=name):
+                self.assert_marker_fails_and_bare_passes(kind, marker, bare)
+
+    def test_escaped_marker_shape_fails_and_bare_form_passes(self) -> None:
+        # Each shape the catalog learned late: the seeded line fails
+        # naming its file, line and the kind that catches it, and the
+        # same content with the proposal detail dropped passes.
+        for shape, (kind, marker, bare) in (
+            self.ESCAPED_MARKER_AND_BARE_LINES.items()
+        ):
+            with self.subTest(shape=shape):
+                self.assert_marker_fails_and_bare_passes(kind, marker, bare)
+
+    def test_split_line_pair_fails_and_bare_pair_passes(self) -> None:
+        # A citation the line break split: the id ends one line, the
+        # label opens the next and the citation's ) closes behind it —
+        # one failure at the id's line. The same citation with the
+        # label dropped keeps only the bare id and passes.
+        pair = (
+            "precedes a path-mode/selector prefix (`p = TRAIL (...)`, CIP-51\n"
+            "Section 3.1.2). Recognized up front by lookahead\n"
+        )
+        self.fx.commit("feature", {"notes/spec-detail.md": pair})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("notes/spec-detail.md:1", result.stderr)
+        self.assertIn("split-line-pair", result.stderr)
+        bare = (
+            "precedes a path-mode/selector prefix (`p = TRAIL (...)`, CIP-51\n"
+            "). Recognized up front by lookahead\n"
+        )
+        self.fx.commit("feature", {"notes/spec-detail.md": bare})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no internal spec references on tracked lines", result.stdout)
+
+    def test_split_pair_reports_at_the_id_line(self) -> None:
+        # The window joins every line with its successor, and a marker
+        # reports at the line its matched text begins on: a pair on
+        # lines 2-3 fails at line 2, and line 1 stays clean.
+        body = (
+            "an intro line with no marker at all\n"
+            "prefix (`p = TRAIL (...)`, CIP-51\n"
+            "Section 3.1.2). Recognized\n"
+        )
+        self.fx.commit("feature", {"notes/spec-detail.md": body})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("notes/spec-detail.md:2", result.stderr)
+        self.assertIn("split-line-pair", result.stderr)
+        self.assertNotIn("spec-detail.md:1:", result.stderr)
+
+    def test_a_notes_pointer_at_line_end_ties_to_no_successor_id(self) -> None:
+        # The notes pointer's trailing witness stops at the newline
+        # joining the window's two lines, so a line merely ending in
+        # NOTES.md never ties to a bare id on the line after it; the
+        # genuine pointer — the quoted section title after the
+        # document name — still fails.
+        split = "see NOTES.md\nCIP-100 covers the clause\n"
+        self.fx.commit("feature", {"notes/spec-detail.md": split})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no internal spec references on tracked lines", result.stdout)
+        genuine = 'CIP-218 NOTES.md "interaction with existing features" [1]-[3]'
+        self.fx.commit("feature", {"notes/spec-detail.md": genuine + "\n"})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("notes/spec-detail.md:1", result.stderr)
+        self.assertIn("notes-md-pointer", result.stderr)
+
+    def test_spaced_scenario_index_is_not_a_rule_pointer(self) -> None:
+        # The bracket atom is word-adjacent only: `TypeConversion4 [10]`
+        # is a public TCK scenario index (a space before the bracket),
+        # so an id citing one passes, while `REF[6]` — a proposal's
+        # bracket pointer — fails.
+        self.fx.commit(
+            "feature",
+            {"notes/spec-detail.md": "CIP-100 TypeConversion4 [10] was dropped\n"},
+        )
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no internal spec references on tracked lines", result.stdout)
+        self.fx.commit(
+            "feature",
+            {"notes/spec-detail.md": "CIP-100 REF[6] names the in-situ reference\n"},
+        )
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("notes/spec-detail.md:1", result.stderr)
+        self.assertIn("rule-section-label", result.stderr)
+
+    def test_existing_marker_line_outside_the_change_fails(self) -> None:
+        # The scan is not diff-aware: a line already on the base, in a
+        # file this change never touches, still fails.
+        _, marker, _ = self.MARKER_AND_BARE_LINES["grammar-production"]
+        self.fx.commit("main", {"notes/spec-detail.md": marker + "\n"})
+        run_git(self.fx.work, "branch", "-f", "feature", "main", env=GIT_ENV)
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("notes/spec-detail.md:1", result.stderr)
+        self.assertIn("grammar-production", result.stderr)
+
+    def test_existing_marker_line_in_an_adr_fails_despite_grandfathering(self) -> None:
+        # Inside docs/adr/ the added-line rule grandfathers existing
+        # internal references (removing one is a fix); the repo-wide
+        # scan does not — a seeded marker line fails through the
+        # marker message, never the added-line one.
+        _, marker, _ = self.MARKER_AND_BARE_LINES["attribution-phrase"]
+        self.fx.commit(
+            "main",
+            {
+                "docs/adr/0002-legacy-decision.md": adr_body(
+                    "0002", None, context=marker
+                )
+            },
+        )
+        run_git(self.fx.work, "branch", "-f", "feature", "main", env=GIT_ENV)
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("docs/adr/0002-legacy-decision.md:7", result.stderr)
+        self.assertIn("attribution-phrase", result.stderr)
+        self.assertNotIn("on an added line", result.stderr)
+
+    def test_bare_identifier_outside_docs_adr_passes(self) -> None:
+        # The same text test_added_adr_with_a_cip_reference_fails
+        # rejects on an added docs/adr/ line passes anywhere else:
+        # outside docs/adr/ only the detail-bearing shapes fail.
+        self.fx.commit("feature", {"notes/spec-detail.md": "per CIP-274\n"})
+        result = self.fx.run("--base", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no internal spec references on tracked lines", result.stdout)
+
+    def test_marker_literals_appear_only_in_the_exempt_fixtures(self) -> None:
+        # The scan must not trip on its own fixtures: every pattern, run
+        # against the real scripts/ tree through the scan's own line
+        # walk (marker_hits — windows included), may hit only the exempt
+        # paths — whose id-bearing lines are the inputs these tests
+        # reject. The checker's own pattern table lives in that tree,
+        # so this also proves no pattern's source line matches itself.
+        # Bytecode caches mirror their sources' literals but are never
+        # tracked, and the checker never sees them.
+        checker = load("check_adr_numbers", CHECK_SCRIPT)
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(ROOT / "scripts"):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for name in sorted(filenames):
+                path = Path(dirpath, name)
+                relative = path.relative_to(ROOT).as_posix()
+                if relative in checker.MARKER_EXEMPT_PATHS:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for line, kind, _matched in checker.marker_hits(text.split("\n")):
+                    hits.append(f"{relative}:{line} ({kind})")
+        self.assertEqual(
+            hits, [], "marker literals outside the exempt fixtures: " + "; ".join(hits)
+        )
+        # The exemption cannot rot into a no-op: both fixture paths
+        # exist, so the names the scan skips name real files.
+        for relative in checker.MARKER_EXEMPT_PATHS:
+            self.assertTrue((ROOT / relative).is_file(), relative)
 
 
 if __name__ == "__main__":

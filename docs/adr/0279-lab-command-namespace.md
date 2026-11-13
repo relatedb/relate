@@ -44,7 +44,7 @@ ADR-0157); its first hidden action is `neo`.
    stays reachable via a `./` prefix or after `--`, exactly as ADR-0069
    provides for `skill`, `upgrade`, and `update`.
 2. **`lab` is reserved in every build, including builds where its feature is
-   compiled out** (ADR-0104 rule 4). A build without the `lab` feature
+   compiled out** (ADR-0104). A build without the `lab` feature
    recognizes `cypherlite lab …` as a command and prints the shared
    not-included error with exit 2; it never falls through to opening a
    database named `lab`. The escape hatch (`./lab` or `-- lab`) is identical

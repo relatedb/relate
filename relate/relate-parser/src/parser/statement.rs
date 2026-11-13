@@ -12,7 +12,7 @@ impl<'a> Parser<'a> {
         }
         // Any token left unconsumed here means `parse_regular_query`
         // returned without absorbing the rest of the input -- e.g. a bare
-        // CIP-135 `<when query>` cannot be UNIONed (syntax_placement.feature
+        // `WHEN ... THEN ...` query (CIP-135) cannot be UNIONed (syntax_placement.feature
         // scenarios 16/17), and two brace-enclosed `<single query>`s
         // juxtaposed with no `UNION`/`NEXT` connector between them
         // (scenario 12/13) leave the second `{...}` sitting here. Every
@@ -193,7 +193,7 @@ impl<'a> Parser<'a> {
     /// `<RegularQuery>` and must therefore accept a UNION chain between their
     /// braces, not just a single statement.
     ///
-    /// CIP-146: each `<SingleQuery>` is now parsed via `parse_single_query`,
+    /// CIP-146: each single query is now parsed via `parse_single_query`,
     /// which additionally accepts the brace-enclosed
     /// `[ USE <graph-expr> ] '{' <RegularQuery> '}'` form. Per the CIP's
     /// Semantics Step 3 (Unwrap), a brace-enclosed arm is transparent
@@ -352,7 +352,7 @@ impl<'a> Parser<'a> {
         // `stmt` may already carry its own `.next` chain -- e.g. a
         // brace-enclosed nested procedure specification
         // (`parse_braced_single_query`) whose own content is itself a
-        // multi-stage NEXT chain (CIP-213 PE8.1). Find the *true* current
+        // multi-stage NEXT chain (CIP-213). Find the *true* current
         // tail before appending anything more, so an outer NEXT here
         // extends that chain instead of clobbering it.
         let mut tail = &mut stmt;
@@ -663,7 +663,7 @@ impl<'a> Parser<'a> {
         Ok(stmt)
     }
 
-    /// CIP-126 Examples 5/6: within a single SET clause (or a single REMOVE
+    /// CIP-126: within a single SET clause (or a single REMOVE
     /// clause), `IS` and a colon-conjunction (`:A:B`, i.e. more than one
     /// label in one item) cannot both be used across that one clause's
     /// label-set items -- single-label items of either syntax may freely

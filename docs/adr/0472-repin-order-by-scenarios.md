@@ -83,6 +83,6 @@ the allowlist gate at exact set equality.
 - ADR-0453's "awaits explicit human approval" consequence bullet and
   ADR-0458 §12 and its Consequences bullet are superseded by this decision;
   both carry a Later references note.
-- The 2024.3 pin is still not unmodified upstream: one CIP-271-superseded
+- The 2024.3 pin is still not unmodified upstream: one superseded
   outline remains removed (ADR-0188), and these four scenarios encode
   Cypher 25 expectations rather than 2024.3 ones.

@@ -124,7 +124,7 @@ fn triangle_graph() -> Built {
 /// store-scale re-run (the main checkout's checksum-verified SF0.1
 /// cache, degree-median Person seed, the spike's own policy) measured
 /// the same three numbers on the real store: engine trail 855,
-/// default pool with the rule 855, walk pool 856.
+/// default pool with the rule applied 855, walk pool 856.
 #[test]
 fn measured_divergence_shape_answers_like_the_dfs_default_pool() {
     let built = triangle_graph();

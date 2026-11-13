@@ -137,11 +137,10 @@ fn a_non_deterministic_disjoint_by_key_is_rejected() {
     .expect("a deterministic DISJOINT BY key stays legal");
 }
 
-/// FulltextSearchAcceptance "[11] Search clause with multiple bound
-/// variables", "[12] ... predicates on another element", "[13] ... multiple
-/// pattern parts" (CIP-225 Rule 0): the pattern-shape restriction covers a
-/// FULLTEXT source, not only a vector one. No index is created here — the
-/// rejection is a compile-time rule.
+/// The pattern-shape restriction covers a FULLTEXT source, not only a
+/// vector one: multiple bound variables, predicates on another element,
+/// and multiple pattern parts are all rejected. No index is created
+/// here — the rejection is a compile-time rule.
 #[test]
 fn fulltext_search_clauses_keep_the_rule_0_pattern_shape() {
     let mut c = connection();

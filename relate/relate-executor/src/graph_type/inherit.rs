@@ -11,7 +11,7 @@
 //! Everything here is a pure function of the *whole* body (the merged
 //! body, for `ALTER CURRENT GRAPH TYPE`: `apply_add`/`apply_alter` merge
 //! before validating), so an `ADD` that turns an existing implied label
-//! into an identifying one (CIP-266 PAGTE6) and a child declared in one
+//! into an identifying one and a child declared in one
 //! statement with its parent in another are the same graph.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -337,7 +337,7 @@ fn inheritance_cycle_error(x: &str, y: &str) -> EngineError {
 /// One resolved default value with the node element types that declare
 /// it: one declaring type is the healthy case (an inherited default
 /// carries its declaring ancestor); more than one, or two disagreeing
-/// values, is the multiple-default conflict (CIP-262 FE8).
+/// values, is the multiple-default conflict.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveDefault {
     /// The resolved default value.
@@ -351,7 +351,7 @@ pub struct EffectiveDefault {
 /// type's own declared one, or -- for a property the type declares no
 /// default for -- the one inherited from its parents. Two *declaring*
 /// node element types in the child's ancestry (identical values
-/// included, CIP-262 FE8) or two ancestors' disagreeing values are the
+/// included) or two ancestors' disagreeing values are the
 /// multiple-default conflict: the child must declare its own default.
 pub fn effective_default_map(
     body: &GraphTypeBody,
@@ -380,7 +380,7 @@ pub fn effective_default_map(
 /// the shared fold: a property's default is the type's own declared one,
 /// or -- for a property the type declares no default for -- the one
 /// inherited from its parents. Two *declaring* node element types in the
-/// child's ancestry (identical values included, CIP-262 FE8) or two
+/// child's ancestry (identical values included) or two
 /// ancestors' disagreeing values are the multiple-default conflict: the
 /// child must declare its own default.
 fn effective_defaults_of(
@@ -417,7 +417,7 @@ fn effective_defaults_of(
             // Two inherited contributions must be the same declaring
             // element type's same value -- the same ancestor reached
             // through two parents -- or they are two declaring element
-            // types, the CIP-262 FE8 conflict (identical values
+            // types, the multiple-default conflict (identical values
             // included); the child's own declaration never reaches the
             // merge (the fold's own-wins rule handles it).
             if existing.value != parent.value || existing.declared_by != parent.declared_by {
@@ -437,7 +437,7 @@ fn inheritance_depth_exceeded() -> EngineError {
     ))
 }
 
-/// The CIP-262 FE8 conflict error: the property inherits default values
+/// The multiple-default conflict error: the property inherits default values
 /// from more than one implied node element type; the child element type
 /// must specify the default value itself.
 fn multiple_defaults(label: &str, property: &str) -> EngineError {

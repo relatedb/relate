@@ -1,28 +1,30 @@
-//! CIP-141 `CALL (...) { ... }` variable scope clause + CIP-218 `RETURN *`
-//! exclusion, shared between `validate.rs` (compile-time Rule 1/4/5/8/9/10
-//! checks) and `engine.rs` (execution: scoped row seeding, Rule 7 "always
-//! referenceable" reinjection, Rule 10 star-exclusion filtering).
+//! The `CALL (...) { ... }` variable scope clause + `RETURN *`
+//! exclusion, shared between `validate.rs` (compile-time reference
+//! visibility, shadowing and star-exclusion checks) and `engine.rs`
+//! (execution: scoped row seeding, always-referenceable import
+//! reinjection, star-exclusion filtering).
 //!
 //! Core model: a scope-clause `CALL (...) { ... }` body is walked clause by
 //! clause, threading two sets alongside the ordinary projected columns:
 //!
 //! - `imported`: the fixed set of variable names the scope clause pulled in
 //!   (from `CallScope::Vars`/`Wildcard`), constant for the whole body.
-//! - `excluded`: the subset of `imported` that CIP-218 Rule 10 still hides
+//! - `excluded`: the subset of `imported` that star exclusion still hides
 //!   from a `RETURN *`/`WITH *` star expansion -- initially all of
 //!   `imported`, and removed from (i.e. "promoted" to star-visible) only
 //!   when a `WITH` clause consists *solely* of bare pass-through references
-//!   to already-excluded imported names (mirroring the CIP-218 doc's own
+//!   to already-excluded imported names (mirroring the reference
 //!   `WITH a` example). A name bundled into a larger WITH item list
 //!   alongside anything else (a computed expression, a fresh binding, or a
 //!   `*`) is not promoted -- matching the observed (if not fully
 //!   doc-justified) Neo4j behavior in the nested-scope-subquery case, where
 //!   an inner CALL's imported variable resurfaces via a `WITH x, y, z`
-//!   pass-through mixed with newly-computed names without tripping Rule 9.
+//!   pass-through mixed with newly-computed names without tripping the
+//!   export-collision check.
 //!
 //! `imported` is also *always* layered back on top of the ordinary
-//! projected scope after every clause (Rule 7: "globally referenced ...
-//! cannot be delisted by a later WITH"), independent of `excluded`.
+//! projected scope after every clause (a globally referenced import
+//! cannot be delisted by a later WITH), independent of `excluded`.
 
 use crate::ident_hash::{IdentBuildHasher, IdentHashSet};
 use relate_names::SmallName;
@@ -56,7 +58,8 @@ pub(crate) fn duplicate_outer_variable(name: &str) -> EngineError {
     )
 }
 
-/// The colliding export reported when a Rule 9 / 3.3(f) check fires: the
+/// The colliding export reported when an outer-scope collision check
+/// fires: the
 /// lexicographically smallest colliding name, not whichever a hash
 /// iteration yields first — the rejection set is unchanged, the error
 /// text is run-to-run deterministic.
@@ -69,7 +72,7 @@ fn smallest_collision<'a>(
 
 /// Resolves a `CALL (...)` clause's scope against `outer_scope` (the set of
 /// variables bound in the enclosing query immediately before this CALL),
-/// enforcing Rule 1 (every explicit reference must already be in scope).
+/// enforcing that every explicit reference is already in scope.
 /// Returns `None` for a naked `CALL { ... }` (no new restrictions -- the
 /// legacy importing-WITH behavior is unaffected by this module).
 fn resolve_import_set(
@@ -94,7 +97,7 @@ fn resolve_import_set(
 }
 
 /// Inserts a freshly-bound variable name (MATCH/MERGE pattern var, UNWIND
-/// alias, CALL procedure yield) into `local_scope`, raising Rule 8's
+/// alias, CALL procedure yield) into `local_scope`, raising the
 /// shadowing error (when `strict`) if it collides with an imported name --
 /// these binding forms can never be a legitimate pass-through the way a
 /// `WITH` item can.
@@ -125,7 +128,7 @@ fn shadow_error(name: &str) -> EngineError {
 /// imported or bound earlier in this same body) in a pattern position is a
 /// *reference* -- constraining the pattern to that already-known node/
 /// relationship, or attaching a new relationship to it -- never a fresh
-/// declaration, so it's never Rule 8 shadowing (the same "pattern reuse
+/// declaration, so it's never import shadowing (the same "pattern reuse
 /// isn't shadowing" carve-out the planner applies to EXISTS/COUNT/COLLECT
 /// bodies on the lowered IR). Only a name genuinely new to this pattern
 /// goes through the real shadow check.
@@ -177,16 +180,16 @@ fn branch_seed(
 /// of a scope-clause CALL subquery body, seeding `local_scope` from
 /// `imported` (plus `carry` when the caller has one). Invokes `sink` for
 /// every `Clause::Return`/`Clause::Finish` encountered with the exported
-/// name set that clause produces. When `strict`, also enforces Rule 4/5
-/// (undefined variable references), Rule 8 (shadowing), and Rule 10's
-/// `NoVariablesInScope`.
+/// name set that clause produces. When `strict`, also enforces the
+/// undefined-variable-reference checks, shadowing, and the
+/// star-exclusion `NoVariablesInScope` rejection.
 ///
 /// `carry` seeds extra reference-visible names beyond `imported` -- used
 /// by CIP-213's NEXT-chain handling, where a later stage's clauses must
 /// see whatever an earlier stage in the *same* body declared (its own
 /// bound/projected names), without those carried names being treated as
-/// CIP-141 "imported from the outer scope" for Rule 8 shadow-checking or
-/// CIP-218 Rule 10 star-exclusion purposes -- only genuine `imported`
+/// "imported from the outer scope" for shadow-checking or
+/// star-exclusion purposes -- only genuine `imported`
 /// names get that treatment; `carry` is purely reference-visibility.
 fn walk_branch_seeded(
     clauses: &[Clause],
@@ -304,11 +307,11 @@ fn walk_branch_seeded(
 /// comment), so nothing beyond the seeded `imported ∪ carry` could have
 /// been bound where it stands — the seed is derived here, once, and the
 /// predicates are checked against exactly the visibility each branch
-/// body is then walked with (`imported` for the Rule 8/10 policy sets,
-/// `carry` for reference-visibility). Rule 9/10 (enforced on the
-/// lowered IR by the planner's `validate_conditional_returns`)
-/// guarantees every branch reports the same exported names, so the
-/// resulting union-of-exports is exactly that one shared set.
+/// body is then walked with (`imported` for the shadowing and
+/// star-exclusion policy sets, `carry` for reference-visibility). Every
+/// branch reports the same exported names (enforced on the
+/// lowered IR by the planner's `validate_conditional_returns`),
+/// so the resulting union-of-exports is exactly that one shared set.
 fn walk_conditional_bodies(
     cc: &ConditionalClause,
     imported: &IdentHashSet<SmallName>,
@@ -336,11 +339,10 @@ fn walk_conditional_bodies(
     Ok(())
 }
 
-/// The alias policy a pass-through check runs under: Rule 10's star
-/// promotion accepts bare pass-throughs only, Rule 8's redeclaration
-/// check also accepts the redundant self-alias — the module's subtlest
-/// invariant, named at the type level so each rule's call site states
-/// its own policy.
+/// The alias policy a pass-through check runs under: star promotion
+/// accepts bare pass-throughs only, the redeclaration check also accepts
+/// the redundant self-alias — the module's subtlest invariant, named at
+/// the type level so each call site states its own policy.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AliasPolicy {
     /// `WITH a` — no alias.
@@ -403,9 +405,9 @@ fn return_exports(
     Ok(exported)
 }
 
-/// Rule 1's strict pre-check over a projection item list, the one
-/// spelling both projection arms share: every non-star item's
-/// expression must reference only visible names.
+/// The strict reference-visibility pre-check over a projection item
+/// list, the one spelling both projection arms share: every non-star
+/// item's expression must reference only visible names.
 fn check_non_star_items_defined(
     items: &[ReturnItem],
     scope: &IdentHashSet<SmallName>,
@@ -420,9 +422,9 @@ fn check_non_star_items_defined(
 
 /// The WITH arm's four named policies, one sibling helper so the
 /// walker stays a clause dispatch (LABS-518): the strict pre-check
-/// (Rule 1 — every referenced name visible), the Rule 8
-/// imported-name-redeclaration check, the Rule 10 star-exclusion
-/// promotion, and the Rule 7 scope rebuild over [`projected_names`].
+/// (every referenced name visible), the imported-name-redeclaration
+/// check, the star-exclusion promotion, and the always-referenceable
+/// scope rebuild over [`projected_names`].
 fn apply_with_to_scope(
     wc: &WithClause,
     imported: &IdentHashSet<SmallName>,
@@ -430,7 +432,7 @@ fn apply_with_to_scope(
     local_scope: &mut IdentHashSet<SmallName>,
     strict: bool,
 ) -> Result<(), EngineError> {
-    // Rule 1 (strict pre-check) and Rule 8 (the redeclaration check)
+    // The strict pre-check and the redeclaration check
     // share one gate: both are strict-only policies, spelled one way.
     if strict {
         check_non_star_items_defined(&wc.items, local_scope)?;
@@ -438,7 +440,7 @@ fn apply_with_to_scope(
             check_expr_vars_defined(w, local_scope)?;
         }
 
-        // Rule 8: a non-pass-through item whose output name equals
+        // A non-pass-through item whose output name equals
         // an imported name is a forbidden redeclaration — a bare
         // `WITH a` or a redundant self-alias `WITH a AS a` of an
         // imported name is not one.
@@ -453,7 +455,7 @@ fn apply_with_to_scope(
         }
     }
 
-    // Rule 10 promotion: only when this WITH consists *solely*
+    // Star promotion: only when this WITH consists *solely*
     // of bare pass-throughs of currently-excluded names (see
     // module doc) do those names become star-visible. A `*` item counts
     // as "anything else": `WITH *, x` re-lists an imported name but leaves
@@ -479,10 +481,10 @@ fn apply_with_to_scope(
 
     // The star projection is [`projected_names`] (a `*` item
     // passes the incoming local scope through, every other
-    // item contributes its effective name) plus the Rule 7
+    // item contributes its effective name) plus the import
     // stickiness: the imported names stay referenceable.
     let mut new_scope = projected_names(&wc.items, local_scope);
-    new_scope.extend(imported.iter().cloned()); // Rule 7 stickiness
+    new_scope.extend(imported.iter().cloned()); // import stickiness
     *local_scope = new_scope;
     Ok(())
 }
@@ -491,8 +493,8 @@ fn apply_with_to_scope(
 /// found *inside* a scope-clause body, returning the set of names it
 /// exports back into the enclosing body's local scope. For a naked
 /// (`CallScope::None`) nested call, falls back to the pre-existing lenient
-/// `compute_subquery_output_vars` (this module's new Rule 1/8/9/10 checks
-/// only apply to scope-clause CALLs).
+/// `compute_subquery_output_vars` (this module's new strict checks
+/// apply only to scope-clause CALLs).
 fn resolve_nested_call(
     csq: &CallSubqueryClause,
     outer_scope: &IdentHashSet<SmallName>,
@@ -514,8 +516,8 @@ fn resolve_nested_call(
 }
 
 /// Computes the union of every branch's (this statement plus its `UNION`
-/// chain) exported names for a scope-clause body, enforcing Rule 9 (no
-/// exported name may collide with `outer_scope`) when `strict`.
+/// chain) exported names for a scope-clause body, enforcing that no
+/// exported name may collide with `outer_scope` when `strict`.
 ///
 /// CIP-213: each branch may itself be a NEXT chain (`s.next`) —
 /// [`stage_exports`] walks it — mirroring
@@ -543,8 +545,8 @@ fn branch_exports_with_union(
 /// 4/5/8/10 are checked throughout), then either hand its projection to
 /// the following stage as `carry` — an earlier stage's export is consumed
 /// by the next stage, not exposed to the enclosing scope — or, for the
-/// final stage, check Rule 9 and return its exports. Rule 3 (imported
-/// names visible in every statement of the chain) holds via
+/// final stage, check the export collision and return its exports. Imported
+/// names stay visible in every statement of the chain via
 /// [`walk_branch_seeded`] seeding `local_scope` from
 /// `imported.union(carry)` — the one owner of that invariant.
 fn stage_exports(
@@ -765,8 +767,8 @@ fn walk_top_level(
             }
             // CIP-135: recurse into every branch/ELSE body (and their own
             // UNION chains) so a nested scope-clause `CALL (...) { ... }`
-            // inside a `WHEN`/`ELSE` body still gets Rule 1/4/5/8/9/10
-            // checked. `Clause::Conditional` is always the sole clause of
+            // inside a `WHEN`/`ELSE` body still gets every scope-clause
+            // check. `Clause::Conditional` is always the sole clause of
             // whatever list it's in, so there is no "after" scope to
             // thread back out from it.
             Clause::Conditional(cc) => {

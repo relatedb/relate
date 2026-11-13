@@ -390,7 +390,7 @@ fn walk_clause_operands(clauses: &[Clause], env: &mut OperandEnv<'_>) -> Result<
                 inner.vars.remove(&f.variable);
                 walk_clause_operands(&f.clauses, &mut inner)?;
             }
-            // CIP-135 `WHEN … THEN <statement>` / `ELSE <statement>`:
+            // `WHEN … THEN <statement>` / `ELSE <statement>`:
             // executed subquery positions, walked with the enclosing
             // bindings.
             Clause::Conditional(conditional) => {

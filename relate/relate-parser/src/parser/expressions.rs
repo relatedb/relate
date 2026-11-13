@@ -1258,7 +1258,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_count_subquery(&mut self) -> ParseResult<Expr> {
         self.next_token(); // consume {
         if self.peek_type() == TokenType::RightBrace {
-            // CIP-31 count_standalone[6]: `COUNT { }` is a compile-time
+            // `COUNT { }` is a compile-time
             // syntax error, not a valid (empty) subquery -- unlike EXISTS
             // and COLLECT, which this batch leaves alone (out of scope).
             return Err(
@@ -1282,7 +1282,7 @@ impl<'a> Parser<'a> {
         }
         let stmt = self.parse_statement_block()?;
         self.expect(TokenType::RightBrace)?;
-        // CIP-66's own UNION rules (verified against Neo4j): a *distinct*
+        // The UNION rules (verified against Neo4j): a *distinct*
         // UNION inside COUNT can never omit RETURN in any branch (its
         // dedup needs comparable, named columns), unlike EXISTS below,
         // which only cares about row existence and has no such need.
@@ -1523,7 +1523,7 @@ impl<'a> Parser<'a> {
                 // A numeric literal (as opposed to the Infinity/NaN keyword
                 // literals, which are their own token types) that overflows
                 // to +-infinity is a compile-time error, not a valid way to
-                // spell Infinity (CIP-52 NOTES.md: `RETURN 1e400` is rejected
+                // spell Infinity (`RETURN 1e400` is rejected
                 // by live Neo4j with "numeric value out of range").
                 if val.is_infinite() {
                     return Err(self
@@ -1793,7 +1793,7 @@ impl<'a> Parser<'a> {
             // `SHOW CONSTRAINTS YIELD name AS constraint WHERE constraint
             // = ...` -- same treatment as `TokenType::INDEX` above.
             | TokenType::CONSTRAINT
-            // CIP-150 NOTES.md Q2: `RETURN` is a non-reserved word usable
+            // `RETURN` is a non-reserved word usable
             // as an ordinary variable reference (e.g. `RETURN RETURN AS
             // r`, where the second token names the variable bound by an
             // earlier `WITH ... AS RETURN`) -- reached here only when a

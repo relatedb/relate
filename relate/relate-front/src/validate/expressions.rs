@@ -205,8 +205,8 @@ fn validate_call_body(
     for arm in union_chain(&csq.statement) {
         let (mut scope, leak_scope): (IdentHashSet<SmallName>, Option<&IdentHashSet<SmallName>>) =
             match &csq.scope {
-                // A scope clause's imports stay visible for the whole body
-                // (CIP-141 Rule 7), so a later WITH dropping one is not a
+                // A scope clause's imports stay visible for the whole body,
+                // so a later WITH dropping one is not a
                 // leak; the planner's binder owns unimported names there.
                 CallScope::Vars(vars) => (vars.iter().cloned().collect(), None),
                 CallScope::Wildcard => (outer_scope.clone(), None),
@@ -262,10 +262,9 @@ fn validate_match_clause(
     //
     // The same path variable cannot be assigned to more than one
     // top-level path pattern of a single MATCH clause's
-    // comma-separated graph pattern (CIP-60 Section 4.2 Rule 1 /
-    // 3.3 point 4: a path variable is always an unconditional
-    // singleton and cannot appear in a later constituent of the
-    // conjunction).
+    // comma-separated graph pattern: a path variable is always an
+    // unconditional singleton and cannot appear in a later constituent
+    // of the conjunction.
     let mut path_vars_this_match: IdentHashSet<SmallName> = IdentHashSet::default();
     for path in &mc.pattern {
         for name in path.path_names() {
@@ -279,7 +278,7 @@ fn validate_match_clause(
             collect_pattern_element_vars(elem, &mut *scope);
         }
     }
-    // Rule 6: a WHERE on either side of SEARCH may reference the
+    // A WHERE on either side of SEARCH may reference the
     // score variable -- add it to scope before any WHERE below
     // (element-pattern, path-pattern, or this MATCH's own) is
     // checked.
@@ -314,7 +313,7 @@ fn validate_match_clause(
             }
         }
         // Validate the parenthesized path pattern's own WHERE,
-        // e.g. `((n)-[r]->(m) WHERE n.p > m.q)` (CIP-19 Rule 5).
+        // e.g. `((n)-[r]->(m) WHERE n.p > m.q)`.
         // It may reference element variables local to the same
         // path, variables from a prior clause, or unconditional
         // singleton variables of the same MATCH -- all already
@@ -498,19 +497,19 @@ fn validate_callsubquery_clause(
 ) -> Result<(), EngineError> {
     // CIP-141/CIP-218: what a CALL clause exports depends on
     // its scope clause (a scope-clause `RETURN *` excludes
-    // imported names per Rule 10); delegate to the shared
+    // imported names per the star exclusion); delegate to the shared
     // analysis rather than assuming `RETURN *` always inherits
     // outer scope (only true for a naked `CALL { ... }`).
     let exports = crate::call_scope::call_subquery_exports(csq, scope);
     scope.extend(exports);
-    // CIP-30: `REPORT STATUS AS <var>` binds `<var>` into scope
+    // `REPORT STATUS AS <var>` binds `<var>` into scope
     // for every clause after the CALL (newness of the name
     // itself is checked separately by `validate_variable_types`).
     if let Some(cit) = &csq.in_transactions {
         if let Some(var) = &cit.report_status {
             scope.insert(var.clone());
         }
-        // CIP-260: a `DISJOINT BY` key partitions the batch's rows by
+        // A `DISJOINT BY` key partitions the batch's rows by
         // value, which only holds when the key is deterministic per row —
         // `randomUUID()` would put every row in its own partition (42N7B).
         if let Some(relate_parser::DisjointBy::Expressions(keys)) = &cit.disjoint {

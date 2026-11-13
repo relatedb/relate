@@ -62,9 +62,9 @@ const AWAIT_INDEX_TIMEOUT: ProcArgMeta = ProcArgMeta::with_default(
 /// `catalog-only` entries below are inventory rows the corpus lists but
 /// never calls — listed, with no engine operation behind them.
 pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
-    // CIP-123 boundaries[5]: Neo4j 2026.05 still lists the pre-CIP-79
-    // singular `db.awaitIndex` alongside the current plural
-    // `db.awaitIndexes` (see the CIP-123 doc's own worked "Combining all
+    // Neo4j 2026.05 still lists the older singular
+    // `db.awaitIndex` alongside the current plural
+    // `db.awaitIndexes` (see the worked "Combining all
     // commands" example table, which lists both as distinct real
     // procedures) -- kept here purely as a catalog entry, like every other
     // `SHOW PROCEDURES`-only name in this list.
@@ -103,14 +103,14 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
     ProcSignature::write("db.createRelationshipType")
         .described("Create a RelationshipType")
         .executable(false),
-    // CIP-113 procedure-signatures.feature [6]/[16]: no input
+    // No input
     // parameters, no return columns -- the reachable `::VOID`-
     // replacement (no suffix at all) case.
     ProcSignature::read("db.index.fulltext.awaitEventuallyConsistentIndexRefresh")
         .works_on_system()
         .described("Wait for the updates from recently committed transactions to be applied to any eventually-consistent full-text indexes.")
         .executable(false),
-    // CIP-113 procedure-signatures.feature [11]: a `LIST<STRING>` return
+    // A `LIST<STRING>` return
     // column (the old `LIST? OF STRING` -> `LIST<STRING>` rename).
     ProcSignature::read("db.index.fulltext.listAvailableAnalyzers")
         .works_on_system()

@@ -12,7 +12,7 @@ hand-rolls validation against exactly that schema, and §7 gates documents
 on the exact root `schema` URI
 `https://neo4j.com/ontology-graph-spec/1.0.0/schema.json`. ADR-0226 §2
 (with ADR-0228's list correction) compiles a validated document into the
-CIP-176 graph type that `db.ontology.apply` sets. ADR-0227 §2/§3 store
+graph type that `db.ontology.apply` sets. ADR-0227 §2/§3 store
 the submitted bytes verbatim and return them unchanged in the stored
 format.
 
@@ -136,7 +136,7 @@ typed model; the retained root value tree keeps the author's exact
 
 Validation answers one question — does the document match main's
 document schema — and `apply` answers a different one: can the ADR-0226
-converter express this document as a CIP-176 graph type. A main-valid
+converter express this document as a graph type. A main-valid
 document is storable and readable even when it is not convertible; the
 conversion failure is loud, at `apply`, never a silent coercion. This
 keeps one notion of document validity instead of two, and matches the
@@ -212,11 +212,11 @@ the flag-derived constraint so the object (and its name) survives.
 | Token(s) | Declaration in the graph-type body |
 |---|---|
 | `ANY`, `LIST<ANY>`, absent `type` | Declares nothing (ADR-0228): no property declaration; `must_exist` becomes a standalone `EXISTS` constraint. This is semantically faithful, not lossy — the document says "unconstrained". |
-| `BOOLEAN`, `DATE`, `DURATION`, `FLOAT`, `INTEGER`, `LOCAL DATETIME`, `LOCAL TIME`, `POINT`, `STRING`, `ZONED DATETIME`, `ZONED TIME` | The CIP-176 predefined kind of the same name. |
-| `LIST<X>` for each mapped `X` above | `LIST<X NOT NULL>` — CIP-176 property types have no nullable inner type (ADR-0228). |
-| `UUID` | `PredefinedKind::Uuid` (CIP-246), the parser's existing token. |
+| `BOOLEAN`, `DATE`, `DURATION`, `FLOAT`, `INTEGER`, `LOCAL DATETIME`, `LOCAL TIME`, `POINT`, `STRING`, `ZONED DATETIME`, `ZONED TIME` | The graph-type predefined kind of the same name. |
+| `LIST<X>` for each mapped `X` above | `LIST<X NOT NULL>` — graph-type property types have no nullable inner type (ADR-0228). |
+| `UUID` | `PredefinedKind::Uuid`, the parser's existing token. |
 | `VECTOR<FLOAT>` / `VECTOR<FLOAT32>` / `VECTOR<INTEGER>` / `VECTOR<INTEGER32>` / `VECTOR<INTEGER16>` / `VECTOR<INTEGER8>` | `VectorCoordKind` `Float64` / `Float32` / `Int64` / `Int32` / `Int16` / `Int8`, with the property's `dimension` when present. |
-| `FLOAT32`, `LIST<FLOAT32>`, `INTEGER8`, `LIST<INTEGER8>`, `INTEGER16`, `LIST<INTEGER16>`, `INTEGER32`, `LIST<INTEGER32>` | **Fail loudly** with an `OntologyError::Mapping` naming the owner, property id and token. The parser's `PredefinedKind` has no plain 8/16/32-bit scalar and no plain `FLOAT32`; these exist only as vector coordinates (CIP-216). Widening them to `FLOAT`/`INTEGER` or declaring nothing would silently change the declared constraint, which the no-silent-fallbacks rule forbids. This is not the `ANY` case: `ANY` means unconstrained, while `FLOAT32` asserts a specific type the body cannot express. |
+| `FLOAT32`, `LIST<FLOAT32>`, `INTEGER8`, `LIST<INTEGER8>`, `INTEGER16`, `LIST<INTEGER16>`, `INTEGER32`, `LIST<INTEGER32>` | **Fail loudly** with an `OntologyError::Mapping` naming the owner, property id and token. The parser's `PredefinedKind` has no plain 8/16/32-bit scalar and no plain `FLOAT32`; these exist only as vector coordinates. Widening them to `FLOAT`/`INTEGER` or declaring nothing would silently change the declared constraint, which the no-silent-fallbacks rule forbids. This is not the `ANY` case: `ANY` means unconstrained, while `FLOAT32` asserts a specific type the body cannot express. |
 
 The old bare `TIME`, `DATETIME`, `LOCALTIME`, `LOCALDATETIME` and
 `BYTES` tokens no longer exist in main's closed enum, so documents using
@@ -240,7 +240,7 @@ Constraint `extensions` are carried and validated, never converted.
 
 `apply` fails with `OntologyError::Mapping` (never a warning, silent
 skip or default) for: an endpoint with no `node`; a node with no
-identifying label; a property token with no plain CIP-176 counterpart
+identifying label; a property token with no plain graph-type counterpart
 (`FLOAT32`, `INTEGER8`/`INTEGER16`/`INTEGER32` and their list forms); an
 empty-named property that would be declared or constrained; an empty
 constraint property list; a `PROPERTY_TYPE` constraint; a node

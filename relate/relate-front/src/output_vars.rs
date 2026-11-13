@@ -120,7 +120,7 @@ fn local_stage_output_vars(
             // of these clauses -- needed so a naked `CALL { SHOW
             // CONSTRAINTS }` (no RETURN inside the body at all) correctly
             // reports its SHOW clause's own default columns as what the
-            // CALL exports, rather than nothing (CIP-187 01[1]: `CALL {
+            // CALL exports, rather than nothing (`CALL {
             // SHOW CONSTRAINTS } RETURN name, enforcedLabel`).
             c if is_catalog_clause(c) => {
                 // Pre-sized (ADR-0505 §4): the catalog column list is the
@@ -133,9 +133,9 @@ fn local_stage_output_vars(
                 last_projection = Some(cols);
             }
             // CIP-135: a conditional clause is always the sole clause of
-            // its list, so `bound` here is exactly `seed`. Rule 9/10
-            // guarantee every branch/ELSE body projects the same output
-            // names, so any one of them (preferring the first WHEN branch,
+            // its list, so `bound` here is exactly `seed`. Every
+            // branch/ELSE body projects the same output names (validated
+            // separately), so any one of them (preferring the first WHEN branch,
             // falling back to ELSE) represents the whole clause's output.
             Clause::Conditional(cc) => {
                 let inner = cc

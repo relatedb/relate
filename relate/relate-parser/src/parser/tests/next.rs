@@ -50,7 +50,7 @@ fn test_next_double_next_is_a_syntax_error() {
 
 #[test]
 fn test_next_bare_when_chain_after_next_no_braces() {
-    // CIP-213 PE3.4: a bare (non-brace) WHEN/THEN/ELSE chain
+    // A bare (non-brace) WHEN/THEN/ELSE chain
     // immediately following NEXT, with bare (non-brace) branch bodies.
     let stmt =
         parse("RETURN 1 AS a NEXT WHEN a = 1 THEN RETURN 2 AS a ELSE RETURN 3 AS a").unwrap();
@@ -83,7 +83,7 @@ fn test_next_bare_multi_when_chain_after_next_no_braces() {
 
 #[test]
 fn test_bare_mid_clause_when_after_match_is_still_a_hard_error() {
-    // CIP-135 syntax_placement.feature [8]: unrelated to the
+    // syntax_placement.feature: unrelated to the
     // NEXT-branch-body WHEN-stop-token mechanism above -- a WHEN
     // appearing after an ordinary clause, outside any WHEN-branch
     // body, must remain a parse error.
@@ -103,7 +103,7 @@ fn test_next_call_scope_body_parses_as_next_chain() {
 
 #[test]
 fn test_next_forbidden_inside_naked_importing_with_call() {
-    // Rule 4: NEXT cannot be used inside a CALL subquery that uses the
+    // NEXT cannot be used inside a CALL subquery that uses the
     // deprecated importing WITH syntax.
     assert!(
         parse("WITH 1 AS x CALL { WITH x RETURN x AS y NEXT RETURN y + 1 AS z } RETURN z").is_err()
@@ -112,7 +112,7 @@ fn test_next_forbidden_inside_naked_importing_with_call() {
 
 #[test]
 fn test_next_allowed_inside_naked_call_without_importing_with() {
-    // Rule 4 only forbids the *importing WITH* shape specifically --
+    // Only the *importing WITH* shape is forbidden specifically --
     // an ordinary naked CALL body (whole outer row implicitly visible,
     // no leading `WITH`) combines with NEXT freely.
     assert!(parse("CALL { RETURN 1 AS a NEXT RETURN a + 1 AS b } RETURN b").is_ok());

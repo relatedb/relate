@@ -370,7 +370,7 @@ where
 /// rows for row-producing commands (the SHOW family and `TERMINATE
 /// TRANSACTIONS`), `None` for schema/admin DDL, which updates the catalog
 /// and finishes with an empty result — zero rows, zero columns — matching
-/// Neo4j and CIP-161's `CREATE CONSTRAINT` expectation. The row-producing
+/// Neo4j's `CREATE CONSTRAINT` expectation. The row-producing
 /// classification is the canonical `relate-front` predicate, so this
 /// module never re-enumerates the command set.
 pub(crate) fn catalog_result(rows: &[Row], clause: &relate_parser::Clause) -> Option<QueryResult> {

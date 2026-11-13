@@ -40,7 +40,7 @@ number of distinct answers or groups, is a defect, not a tuning problem.
    is equally allowed.
 2. **An unbounded result is never accumulated.** No operator may return,
    or hold, a vector whose length grows with the number of intermediate
-   rows, unless it is a declared breaker (rule 3).
+   rows, unless it is a declared, charged breaker.
 3. **Breakers are explicit and charged.** Sorting without a limit, a
    retaining aggregate (collect, percentiles), a distinct set, and a hash
    join build side may hold state proportional to their input. Each does

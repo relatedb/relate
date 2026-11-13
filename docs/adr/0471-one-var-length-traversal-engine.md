@@ -7,7 +7,7 @@ Claim: a7f0aa02311c9b2500f45bfede6e9a09d4e03d08
 ## Context
 
 A variable-length relationship can be spelled four ways: the legacy
-bracket form `-[r:T*m..n]-`, the CIP-28 Form 5 postfix quantifier
+bracket form `-[r:T*m..n]-`, the postfix quantifier
 `-[r:T]->{m,n}`, the parenthesized quantified group
 `(()-[r:T]-()){m,n}`, and any of those under a path-mode prefix
 (`p = TRAIL …`, `p = WALK …`). Until this decision they lowered onto two
@@ -73,8 +73,8 @@ trap that no planner hint can excuse.
    bounds).
 
 4. **Var-length rel variables keep the legacy reuse rules; group
-   variables keep CIP-28's.** The group-name collection distinguishes
-   the two origins: the rel variable of a quantified var-length
+   variables keep the quantified-path rules.** The group-name collection
+   distinguishes the two origins: the rel variable of a quantified var-length
    relationship may repeat across patterns and may be pre-bound to a
    list (`WITH [r1, r2] AS rs MATCH (a)-[rs*]->(b)` pins the exact
    trail — the QPP accept now checks the accumulated list against that

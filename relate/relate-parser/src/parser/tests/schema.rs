@@ -200,7 +200,7 @@ fn test_parse_create_index_keyword_name() {
     }
 }
 
-// CIP-134 [19]/[20]: `$$param` (double-dollar) is not recognized
+// `$$param` (double-dollar) is not recognized
 // parameter syntax and must be rejected as a parse error.
 #[test]
 fn test_parse_create_index_double_dollar_name_rejected() {
@@ -341,7 +341,7 @@ fn test_parse_show_constraints_type_filter() {
             ConstraintEntityFilter::Node,
             Some(ConstraintKindFilter::Existence),
         ),
-        // CIP-187: `PROPERTY EXIST[ENCE]` is its own kind variant —
+        // `PROPERTY EXIST[ENCE]` is its own kind variant —
         // property existence only, never the label/endpoint-label kinds
         // the bare form also admits.
         (
@@ -412,7 +412,7 @@ fn test_parse_create_index_multi_label() {
     }
 }
 
-/// CIP-11 CR[10]: the paren-less single-property `ON n.prop` form.
+/// The paren-less single-property `ON n.prop` form.
 #[test]
 fn test_parse_create_index_paren_less_on() {
     let stmt = parse("CREATE TEXT INDEX ti FOR (n:Book) ON n.character").unwrap();
@@ -425,7 +425,7 @@ fn test_parse_create_index_paren_less_on() {
     }
 }
 
-/// CIP-38 S8: `ON EACH [p.title, p.title]` is rejected as a duplicated
+/// `ON EACH [p.title, p.title]` is rejected as a duplicated
 /// index key, not silently accepted.
 #[test]
 fn test_parse_create_fulltext_index_rejects_duplicate_on_each_property() {
@@ -434,20 +434,20 @@ fn test_parse_create_fulltext_index_rejects_duplicate_on_each_property() {
     assert!(err.to_string().contains("duplicate"), "{err}");
 }
 
-/// CIP-38 S7: `ON EACH []` (empty list) is rejected.
+/// `ON EACH []` (empty list) is rejected.
 #[test]
 fn test_parse_create_fulltext_index_rejects_empty_on_each() {
     assert!(parse("CREATE FULLTEXT INDEX fi FOR (p:Post) ON EACH []").is_err());
 }
 
-/// CIP-11 CR[18]: `CREATE BTREE INDEX` is a hard syntax error, not
+/// `CREATE BTREE INDEX` is a hard syntax error, not
 /// silently accepted as some other kind.
 #[test]
 fn test_parse_create_btree_index_rejected() {
     assert!(parse("CREATE BTREE INDEX bi FOR (n:Person) ON (n.name)").is_err());
 }
 
-/// CIP-11: `SHOW RANGE INDEXES` / `SHOW ALL INDEXES` parse with the
+/// `SHOW RANGE INDEXES` / `SHOW ALL INDEXES` parse with the
 /// right kind filter.
 #[test]
 fn test_parse_show_indexes_kind_filter() {
@@ -529,7 +529,7 @@ fn test_parse_show_user_defined_functions_routing() {
     }
 }
 
-// CIP-116 CR[4]: `OPTIONS $param` is a legal spelling wherever `OPTIONS
+// `OPTIONS $param` is a legal spelling wherever `OPTIONS
 // { ... }` is -- on all three CREATE CONSTRAINT verb paths, on CREATE INDEX,
 // and inside a graph-type body. The parameter resolves at execution time.
 #[test]

@@ -19,8 +19,8 @@ fixed graph type — implemented in
 Neo4j's own document→graph mapping is still unpublished: the persistence
 proposal's JSON-to-graph section remains TODO, and ADR-0226 §1 is
 CypherLite's design, meant as input to Neo4j's WS2 work, not a copy of its
-output. CIP-287 ("Ontology privileges", revised 8 Oct 2026) meanwhile
-steers away from a visible namespace: the `system_ontologies` database is
+output. Neo4j's ontology-privileges proposal (revised 8 Oct 2026)
+meanwhile steers away from a visible namespace: the `system_ontologies` database is
 to be "not initially visible through any SHOW command or Cypher clause".
 
 Phase 2 of this workstream probed a live `neo4j:2026.09-community`
@@ -140,14 +140,14 @@ replaces the surface.
 
 ## Alternatives considered
 
-- **Full invisibility — remove the `SHOW DATABASES` row too, CIP-287's
-  direction.** Rejected: the row keeps CE parity with the ADR-0116 model —
+- **Full invisibility — remove the `SHOW DATABASES` row too, the
+  proposal's direction.** Rejected: the row keeps CE parity with the ADR-0116 model —
   three fixed namespaces, one catalog, one element-id decode — and hiding
   it is the larger surface churn: `SHOW DATABASES` consumers, §6's values
   and the routing surfaces would all need their own rules for a name that
   still parses. A listed-but-not-queryable row answers "what is this
-  database" without exposing a guessed shape. Following CIP-287 the rest
-  of the way is a new ADR.
+  database" without exposing a guessed shape. Following the proposal the
+  rest of the way is a new ADR.
 - **Keep the derived graph, hidden behind the new gate.** Rejected: it
   pays the build cost at open and after every set or drop for a graph no
   statement can ever read, and it keeps an unpublished shape compiled into
@@ -174,7 +174,7 @@ replaces the surface.
 
 - **Deliberate divergence from live CE, stated plainly:** phase 2 verified
   that live Neo4j CE 2026.09 allows reads on `system_ontologies`.
-  CypherLite now rejects reads too, moving toward CIP-287's "not
+  CypherLite now rejects reads too, moving toward the proposal's "not
   initially visible through any SHOW command or Cypher clause" while
   keeping the `SHOW` listing for CE parity with the ADR-0116 model. The
   fixture (`testdata/ce-errors/neo4j-ce.json`) gains no case for this

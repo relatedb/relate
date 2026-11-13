@@ -277,7 +277,7 @@ pub struct IndexFacts {
     pub relationship: bool,
     pub labels: Vec<String>,
     pub properties: Vec<String>,
-    /// CIP-235 `WITH [...]` single-stage-filtering properties (VECTOR).
+    /// `WITH [...]` single-stage-filtering properties (VECTOR).
     pub with_properties: Vec<String>,
 }
 
@@ -373,7 +373,7 @@ pub struct IndexDetailSpec {
     pub labels: Vec<String>,
     #[serde(default)]
     pub properties: Vec<String>,
-    /// CIP-235 `WITH [...]` single-stage-filtering properties (VECTOR).
+    /// `WITH [...]` single-stage-filtering properties (VECTOR).
     #[serde(default)]
     pub with_properties: Vec<String>,
 }

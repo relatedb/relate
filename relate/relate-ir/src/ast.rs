@@ -206,11 +206,11 @@ pub enum Clause {
         match_mode: MatchMode,
         patterns: Vec<PathPattern>,
         where_clause: Option<Expr>,
-        /// CIP-79 `USING INDEX [SEEK]` hints, carried for the plan-time
+        /// `USING INDEX [SEEK]` hints, carried for the plan-time
         /// notification that reports a hint no catalog index can serve
         /// (`01N31`, ADR-0363); the planner itself steers nothing by them.
         using_index: Vec<relate_parser::IndexHint>,
-        /// CIP-79 `USING JOIN ON` hints, carried for the same purpose: the
+        /// `USING JOIN ON` hints, carried for the same purpose: the
         /// planner never fulfils one, so the `01N30` notification reports
         /// each.
         using_join: Vec<relate_parser::JoinHint>,
@@ -313,15 +313,15 @@ pub enum Clause {
 }
 
 /// Native Relate representation of a SEARCH subclause (CIP-224, the
-/// CIP-278 `<source specification clause>` extension).
+/// `<source specification clause>` extension).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchClause {
     pub binding_var: SmallName,
-    /// CIP-278 `<source specification clause>`: one index search, or a
+    /// `<source specification clause>`: one index search, or a
     /// `COMBINE` of two or more weighted sources fused with WRRF.
     pub spec: SearchSpec,
     pub score_var: Option<SmallName>,
-    /// The MATCH's pattern goes beyond CIP-225 Rule 0's plain shape (the
+    /// The MATCH's pattern goes beyond the plain shape (the
     /// `complex-search-patterns` family) -- classified once at lowering by
     /// the same shape test the preview gate rejects. The executor's top-K
     /// rule keys on it: a plain pattern's `LIMIT` is a hard candidate

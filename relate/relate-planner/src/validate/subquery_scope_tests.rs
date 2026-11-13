@@ -1,4 +1,4 @@
-//! The CALL-scope `RETURN *` rule (CIP-218 Rule 10): the star must expand
+//! The CALL-scope `RETURN *` rule: the star must expand
 //! at least one variable the body itself introduces. Pinned at the planner
 //! backstop, whose body walk is the one per-clause scope fold — so a
 //! `CALL … YIELD` export counts like any other binding, not only the clause
@@ -45,7 +45,7 @@ fn a_search_score_variable_satisfies_the_scoped_return_star_rule() {
     .expect("a SEARCH SCORE AS variable is a non-imported variable");
 }
 
-/// Rule 10 itself stays: a body that introduces nothing but imports is
+/// The star exclusion itself stays: a body that introduces nothing but imports is
 /// still rejected.
 #[test]
 fn a_star_over_imports_only_is_still_rejected() {
@@ -53,7 +53,7 @@ fn a_star_over_imports_only_is_still_rejected() {
         .expect_err("a star over imports only is rejected");
     assert!(
         error.contains("NoVariablesInScope"),
-        "expected the Rule 10 rejection, got: {error}"
+        "expected the NoVariablesInScope rejection, got: {error}"
     );
 }
 
@@ -70,7 +70,7 @@ fn a_star_union_arm_excludes_the_body_imports() {
     .expect("the star arm exports only `x`, matching the explicit arm");
 }
 
-/// LABS-712: the Rule 10 star refusal walks the whole `NEXT` chain — a
+/// The star-exclusion refusal walks the whole `NEXT` chain — a
 /// final stage's `RETURN *` over an import-only scope is rejected even when
 /// the first stage has no star to check.
 #[test]
@@ -79,7 +79,7 @@ fn a_next_chained_star_over_imports_only_is_rejected() {
         .expect_err("the chain's final star is import-only");
     assert!(
         error.contains("NoVariablesInScope"),
-        "expected the Rule 10 rejection, got: {error}"
+        "expected the NoVariablesInScope rejection, got: {error}"
     );
 }
 
@@ -92,7 +92,7 @@ fn a_next_chained_star_over_a_body_export_is_accepted() {
 }
 
 /// Validate one body and return its export set, given the body's seed and
-/// its CIP-218 Rule 10 exclusion set.
+/// its import exclusion set.
 fn body_exports(
     body: &str,
     env_names: &[String],
@@ -113,7 +113,7 @@ fn body_exports(
 
 /// LABS-712: the two name lists a `CALL { … }` body validates with come
 /// from one derivation. A naked body's seed is the whole outer scope — so
-/// its `RETURN *` expands those names — while its Rule 10 exclusion set is
+/// its `RETURN *` expands those names — while its star-exclusion set is
 /// empty.
 #[test]
 fn a_naked_call_body_star_exports_the_outer_scope() {
@@ -131,7 +131,7 @@ fn a_naked_call_body_star_exports_the_outer_scope() {
     );
 }
 
-/// LABS-712: a scope-clause body's seed and its Rule 10 exclusion set are
+/// A scope-clause body's seed and its star-exclusion set are
 /// both its named imports, so its `RETURN *` expands only what the body
 /// itself binds.
 #[test]

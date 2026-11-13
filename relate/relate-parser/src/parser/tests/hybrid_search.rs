@@ -118,8 +118,8 @@ fn parses_a_nested_combine_source() {
 
 #[test]
 fn a_single_source_fails_the_rule_5_parse_check() {
-    // Rule 5 / Example R5.1: the combined specification body must hold
-    // two or more weighted source clauses -- the cardinality is a parse
+    // The combined specification body must hold two or more weighted
+    // source clauses -- the cardinality is a parse
     // error at the list itself.
     let query = "MATCH (node) \
         SEARCH node IN ( \
@@ -139,7 +139,7 @@ fn a_single_source_fails_the_rule_5_parse_check() {
 
 #[test]
 fn combine_sources_keep_their_own_control_clauses() {
-    // The CIP-225 `<index for and control clause>` keeps its own inner
+    // The `<index for and control clause>` keeps its own inner
     // WHERE / SKIP / WITH ANALYZER slots inside a COMBINE source, exactly
     // as at the top level.
     let query = "MATCH (node) \

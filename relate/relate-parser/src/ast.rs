@@ -71,9 +71,8 @@ pub struct Statement {
     pub definitions: Vec<LocalDefinition>,
 }
 
-/// Manual `PartialEq`: deliberately ignores `brace_wrapped`. CIP-146's own
-/// "Semantics Step 3, Unwrap Case 1" -- and the parser tests pinning it
-/// (`test_brace_enclosed_top_level_query_is_transparent` and friends) --
+/// Manual `PartialEq`: deliberately ignores `brace_wrapped`. The unwrap
+/// rule -- and the parser tests pinning it (`test_brace_enclosed_top_level_query_is_transparent` and friends) --
 /// treat a brace-wrapped `SingleQuery` as producing an AST indistinguishable
 /// from its unbraced spelling; `brace_wrapped` is out-of-band provenance a
 /// couple of CIP-242 composability checks read directly off the field
@@ -128,7 +127,7 @@ pub struct LocalParam {
     pub name: SmallName,
     /// The written value type, `None` when omitted (implicitly ANY).
     /// Parsed and syntactically validated, deliberately not enforced at
-    /// runtime (ADR-0382, NOTES.md).
+    /// runtime (ADR-0382).
     pub type_expr: Option<TypeExpr>,
     /// `= <value expression>`; `None` for a mandatory parameter. Defaults
     /// may not reference variables (checked at parse time).
@@ -339,8 +338,8 @@ pub struct AlterDatabaseClause {
     pub name: SchemaName,
     pub if_exists: bool,
     /// The `SET DEFAULT LANGUAGE CYPHER <n>` digits (e.g. `5`, `25`, or an
-    /// unsupported value like `6`), unvalidated at parse time -- CIP-170
-    /// NOTES.md Deviations #2: an out-of-range version here is a *runtime*
+    /// unsupported value like `6`), unvalidated at parse time (CIP-170):
+    /// an out-of-range version here is a *runtime*
     /// data exception (`22N04`), unlike the CIP-150 statement-preamble
     /// `CYPHER <version>` prefix, which rejects at compile time.
     pub default_language: u32,
@@ -457,7 +456,7 @@ pub struct ShowCurrentGraphTypeClause {
     /// CIP-184: an optional trailing `WHERE <expr>`, permitted with or
     /// without an explicit `YIELD` (mirrors `ShowDatabasesClause`).
     pub where_expr: Option<Expr>,
-    /// CIP-257: `AS GRAPH [SINGLE | SEPARATE]` -- renders the current graph
+    /// `AS GRAPH [SINGLE | SEPARATE]` -- renders the current graph
     /// type as `nodes`/`relationships` columns instead of the plain
     /// `specification` string column. `None` when `AS GRAPH` wasn't
     /// written at all.
@@ -478,7 +477,7 @@ pub enum AnyNodeMode {
 
 /// The four `ALTER CURRENT GRAPH TYPE` verbs (CIP-176/CIP-182 overview
 /// scope): `SET` replaces the whole current graph type (and, as observed
-/// live, every constraint in the database -- CIP-187 NOTES.md); `ADD`
+/// live, every constraint in the database); `ADD`
 /// extends it; `ALTER` replaces an existing element type (matched by
 /// identifying label) with a new declaration; `DROP` removes the element
 /// types named in its body.
@@ -495,14 +494,15 @@ pub enum AlterGraphTypeVerb {
 pub struct CreateGraphTypeClause {
     pub name: SmallName,
     pub body: GraphTypeBody,
-    /// Whether the `AS` spelling was used (CIP-180's own scaffolding form,
+    /// Whether the `AS` spelling was used (the scaffolding form,
     /// `CREATE GRAPH TYPE <name> AS { <body> }`, vs. CIP-178's plain
-    /// `CREATE GRAPH TYPE <name> { <body> }`). CIP-180's own worked
+    /// `CREATE GRAPH TYPE <name> { <body> }`). The worked
     /// example (`()-[:REL =>]->()`, no properties, both endpoints the any
-    /// type) violates CIP-178 Rule 9 (an ineffectual single-label edge
-    /// type) -- the `AS` form exists to exercise the CIP-180 canonicalizer,
-    /// so the engine's `CreateGraphType` handler exempts it from Rule 9 and
-    /// the one-index-backing-per-subject clash (both shapes CIP-180's own
+    /// type) is an ineffectual single-label edge
+    /// type -- the `AS` form exists to exercise the CIP-180 canonicalizer,
+    /// so the engine's `CreateGraphType` handler exempts it from the
+    /// ineffectual-type rejection and
+    /// the one-index-backing-per-subject clash (both shapes the canonicalizer's own
     /// scenarios use), and validates every other body rule normally.
     pub via_as: bool,
 }
@@ -529,7 +529,7 @@ pub struct GraphTypeBody {
     pub node_types: Vec<GraphTypeNodeTypeSpec>,
     pub edge_types: Vec<GraphTypeEdgeTypeSpec>,
     pub constraints: Vec<GraphTypeConstraintSpec>,
-    /// CIP-182 `<constraint drop specification>` = `CONSTRAINT <name>` (bare,
+    /// `<constraint drop specification>` = `CONSTRAINT <name>` (bare,
     /// no `FOR ...`) -- only allowed in an `ALTER CURRENT GRAPH TYPE DROP {
     /// ... }` body. The parser reads it in any body, and every other verb
     /// rejects a non-empty list as a parse error
@@ -540,7 +540,7 @@ pub struct GraphTypeBody {
 
 /// `'(' [alias] (':'|IS) <identifying label> ('=>'|IMPLIES) [(':'|IS)
 /// <implied label> ('&' <implied label>)*] ['{' <property types> '}'] ')'`
-/// (CIP-178 `<node type specification>`).
+/// (`<node type specification>`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphTypeNodeTypeSpec {
     pub alias: Option<SmallName>,
@@ -551,7 +551,7 @@ pub struct GraphTypeNodeTypeSpec {
 
 /// `<source endpoint> '-' '[' [alias] (':'|IS) <identifying label>
 /// ('=>'|IMPLIES) ['{' <property types> '}'] ']' '->' <destination
-/// endpoint>` (CIP-178 `<edge type specification>`).
+/// endpoint>` (`<edge type specification>`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphTypeEdgeTypeSpec {
     pub alias: Option<SmallName>,
@@ -585,8 +585,8 @@ pub struct GraphTypePropertyType {
 /// An inline property-type constraint (`{prop :: TYPE IS [qualifier]
 /// KEY|UNIQUE}`). `qualifier` records which (if any) `NODE`/`REL`/
 /// `RELATIONSHIP` keyword was written, so the graph-type validator can
-/// enforce CIP-178 Rule 2 (a node type must not contain `REL`/
-/// `RELATIONSHIP`; an edge type must not contain `NODE`).
+/// enforce that a node type must not contain `REL`/
+/// `RELATIONSHIP`; an edge type must not contain `NODE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphTypeInlineConstraint {
     pub verb: GraphTypeInlineVerb,
@@ -613,13 +613,13 @@ pub enum GraphTypeElementRef {
     /// `()` -- the any node/edge type.
     Any,
     /// `(alias)` / `()-[alias]->()` -- resolves to a previously declared
-    /// node/edge type alias (Rule 1.1.3: must already be declared).
+    /// node/edge type alias (it must already be declared).
     AliasRef(SmallName),
     /// `[alias] (':'|IS) <label> ['=>'|IMPLIES]` -- an in-situ reference.
     /// `implies` (`=>`/`IMPLIES` present) requires `label` to name an
-    /// already-declared identifying label (Rule 1.2.3); without it, the
+    /// already-declared identifying label; without it, the
     /// label need not be declared. `alias` is only legal in constraint
-    /// `FOR`-clause context (Rules 3/4 forbid it on an edge type's own
+    /// `FOR`-clause context (forbidden on an edge type's own
     /// endpoint references).
     InSitu {
         alias: Option<SmallName>,
@@ -647,7 +647,7 @@ pub struct GraphTypeConstraintSpec {
     /// `None` for every other kind.
     pub property_type: Option<TypeExpr>,
     /// The `OPTIONS` tail: absent, a literal map, or a whole-map parameter
-    /// (CIP-116 CR[4]) resolved before the body is captured/persisted.
+    /// (resolved before the body is captured/persisted).
     pub options: OptionsForm,
 }
 
@@ -709,7 +709,7 @@ pub struct MatchClause {
     /// to that detector.
     pub using_join: Vec<JoinHint>,
     pub where_expr: Option<Expr>,
-    /// CIP-224 `<search clause>`: `SEARCH <binding var ref> IN (VECTOR
+    /// `<search clause>`: `SEARCH <binding var ref> IN (VECTOR
     /// INDEX <index name> FOR <expr> LIMIT <expr>) [SCORE AS <var>]`, a
     /// subclause of `<match statement>`. The grammar allows the `<graph
     /// pattern where clause>` to appear either before or after the search
@@ -756,7 +756,7 @@ pub struct JoinHint {
     pub variables: Vec<SmallName>,
 }
 
-/// CIP-224 `<search clause>`: the `SEARCH ... IN (<source specification
+/// `<search clause>`: the `SEARCH ... IN (<source specification
 /// clause>) [SCORE AS ...]` subclause of `MatchClause`.
 ///
 /// `binding_var`/`score_var` (and each nested `index_name`) are plain
@@ -767,9 +767,9 @@ pub struct JoinHint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchClause {
     /// `<binding variable reference>`: must name a variable declared by the
-    /// same `<match statement>`'s own pattern (Rule 4).
+    /// same `<match statement>`'s own pattern.
     pub binding_var: SmallName,
-    /// CIP-278 `<source specification clause>`: one index search, or a
+    /// `<source specification clause>`: one index search, or a
     /// `COMBINE` of two or more weighted sources fused with WRRF.
     pub spec: SearchSpec,
     /// `[SCORE AS <binding variable>]` -- `None` when the score column is
@@ -777,7 +777,7 @@ pub struct SearchClause {
     pub score_var: Option<SmallName>,
 }
 
-/// CIP-278 `<source specification clause>`:
+/// `<source specification clause>`:
 /// `<index specification clause> | <combined specification clause>`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchSpec {
@@ -785,7 +785,7 @@ pub enum SearchSpec {
     Combine(SearchCombineSpec),
 }
 
-/// CIP-225 `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX
+/// `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX
 /// <index name> <index for and control clause>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchIndexSpec {
@@ -795,7 +795,7 @@ pub struct SearchIndexSpec {
     pub index_name: SmallName,
     /// `<for clause>`'s `<value expression>` -- the search query.
     pub for_expr: Expr,
-    /// CIP-225 `WITH ANALYZER <expr>` (fulltext only).
+    /// `WITH ANALYZER <expr>` (fulltext only).
     pub analyzer: Option<Expr>,
     /// CIP-240 "Vector Search with Single-stage Filtering": the optional
     /// inner `WHERE <search condition>` between `FOR <expr>` and `LIMIT
@@ -807,43 +807,43 @@ pub struct SearchIndexSpec {
     /// the parser accepts any general `<expression>` here, exactly like
     /// `MatchClause.where_expr`.
     pub inner_where: Option<Expr>,
-    /// CIP-225 `<offset clause>` (`SKIP`/`OFFSET`).
+    /// `<offset clause>` (`SKIP`/`OFFSET`).
     pub offset_expr: Option<Expr>,
     /// `<limit clause>`'s `<value expression>` (mandatory for an index
     /// source, in and out of a COMBINE).
     pub limit_expr: Expr,
 }
 
-/// CIP-225 `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX`.
+/// `<index specification clause>`: `{ VECTOR | FULLTEXT } INDEX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchKind {
     Vector,
     Fulltext,
 }
 
-/// CIP-278 `<combined specification clause>`: `COMBINE ( <weighted source
+/// `<combined specification clause>`: `COMBINE ( <weighted source
 /// clause>, ... ) USING WRRF [ WITH CONSTANT <expr> ] [ LIMIT <expr> ]`.
 ///
-/// Rule 5: `sources` holds two or more weighted source clauses (fewer is a
+/// `sources` holds two or more weighted source clauses (fewer is a
 /// parse error, raised where the list is parsed). A source may itself be a
-/// nested `<combined specification clause>` (Example P3).
+/// nested `<combined specification clause>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCombineSpec {
     pub sources: Vec<SearchWeightedSource>,
     /// `<constant specification clause>`'s `<value expression>` -- the WRRF
-    /// dampening constant; `None` means the default 60 (Rule 4).
+    /// dampening constant; `None` means the default 60.
     pub constant_expr: Option<Expr>,
     /// The optional `<limit clause>` of the combined specification -- the n
-    /// highest-scoring results kept; `None` keeps all (Rule 7).
+    /// highest-scoring results kept; `None` keeps all.
     pub limit_expr: Option<Expr>,
 }
 
-/// CIP-278 `<weighted source clause>`:
+/// `<weighted source clause>`:
 /// `<source specification clause> [ WEIGHT <value expression> ]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchWeightedSource {
     pub spec: SearchSpec,
-    /// Rule 2: `None` means the default weight 1.
+    /// `None` means the default weight 1.
     pub weight_expr: Option<Expr>,
 }
 
@@ -859,13 +859,13 @@ pub enum MatchMode {
     /// `MATCH REPEATABLE ELEMENTS ...`: relaxes the relationship-uniqueness
     /// pool entirely -- nodes and relationships may repeat freely, subject
     /// only to each path's own path mode (which must resolve to `WALK`
-    /// under this match mode, CIP-51 Section 3.1.3 rule 4).
+    /// under this match mode).
     RepeatableElements,
 }
 
 /// CIP-51 path mode: an explicit restrictor on one path pattern's candidate
 /// bindings. `PatternPath::mode` is `None` when no explicit keyword was
-/// written -- Rule 1: the resolved default is `Walk`.
+/// written -- the resolved default is `Walk`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathMode {
     /// Nodes and relationships may repeat freely (subject to the enclosing
@@ -884,8 +884,8 @@ pub enum PathMode {
     Simple,
 }
 
-/// The `<number of paths>`/`<number of groups>` non-terminal (CIP-73 Rule 0,
-/// extended by CIP-191 to accept a `$parameter`). A literal is validated
+/// The `<number of paths>`/`<number of groups>` non-terminal (extended
+/// by CIP-191 to accept a `$parameter`). A literal is validated
 /// (`> 0`) at parse time; a parameter is validated at runtime once its value
 /// is known (CIP-191 "Non-negative integer" rule).
 #[derive(Debug, Clone, PartialEq)]
@@ -895,25 +895,25 @@ pub enum PathCount {
 }
 
 /// CIP-73 path selector prefix (`<path search prefix>`). `PatternPath` has
-/// no selector when this is `None` -- Rule 3: the path pattern is then
+/// no selector when this is `None` -- the path pattern is then
 /// non-selective, equivalent to an implicit `ALL`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathSelector {
     /// `ALL [path mode] [PATH|PATHS]` -- also the implicit default.
     All,
     /// `ANY [<number of paths>] [path mode] [PATH|PATHS]`; `None` count
-    /// defaults to 1 (Rule 0).
+    /// defaults to 1.
     Any(Option<PathCount>),
     /// `ANY SHORTEST [path mode] [PATH|PATHS]` -- normalizes to `SHORTEST 1
-    /// [path mode] PATH` (Rule 2).
+    /// [path mode] PATH`.
     AnyShortest,
     /// `ALL SHORTEST [path mode] [PATH|PATHS]` -- normalizes to `SHORTEST 1
-    /// [path mode] GROUP` (Rule 2).
+    /// [path mode] GROUP`.
     AllShortest,
     /// `SHORTEST <number of paths> [path mode] [PATH|PATHS]` (`group` false)
     /// or `SHORTEST [<number of groups>] [path mode] [PATH|PATHS]
     /// (GROUP|GROUPS)` (`group` true); `count` is `None` only in the GROUP
-    /// form (defaults to 1, Rule 0).
+    /// form (defaults to 1).
     Shortest {
         count: Option<PathCount>,
         group: bool,
@@ -972,7 +972,7 @@ pub struct SetItem {
     /// same statement.
     pub is_keyword: bool,
     /// CIP-162 "Alternatives" section: `SET labels(<expr>) = / += / -=
-    /// <expr>`. Per the CIP's own text this was never shipped in Neo4j
+    /// <expr>`. Per the proposal's own text this was never shipped in Neo4j
     /// ("we have decided to implement the rest first, and leave this as a
     /// potential future extension") -- Relate implements it anyway as
     /// the CIP's stated target semantics. `Some((target_expr, op))` when
@@ -982,7 +982,7 @@ pub struct SetItem {
     pub labels_function: Option<(Expr, LabelsFunctionOp)>,
 }
 
-/// The operator of a CIP-162 `SET labels(<expr>) <op> <expr>` item.
+/// The operator of a `SET labels(<expr>) <op> <expr>` item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelsFunctionOp {
     /// `=` -- replace the full label set.
@@ -1055,7 +1055,7 @@ pub enum WithOrigin {
     Filter,
 }
 
-/// CIP-236 `<group by clause>` on RETURN/WITH.
+/// `<group by clause>` on RETURN/WITH.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GroupBySpec {
     /// `GROUP BY <expr> [, <expr>...]`
@@ -1083,9 +1083,9 @@ pub struct WithClause {
 /// Neo4j 2026.05 accepts `ORDER BY`/`OFFSET`/`SKIP`/`LIMIT` in any order
 /// at the start of the clause and applies them sequentially in the order
 /// written -- not the fixed ORDER-BY-then-OFFSET-then-LIMIT semantic
-/// order the CIP text describes (see CIP-168 NOTES.md "Deviations" #1,
-/// e.g. `LIMIT 3 OFFSET 1` keeps 3 rows then drops the first 1 of those,
-/// rather than offsetting first). A `Vec<PageStage>` records exactly the
+/// order the CIP-168 text describes (e.g. `LIMIT 3 OFFSET 1` keeps 3
+/// rows then drops the first 1 of those, rather than offsetting first).
+/// A `Vec<PageStage>` records exactly the
 /// written sequence so execution can replay it faithfully.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageStage {
@@ -1101,7 +1101,7 @@ pub struct StandaloneOrderByClause {
     pub stages: Vec<PageStage>,
 }
 
-/// UNWIND clause. CIP-250 (GQ10): a `FOR <variable> IN <expression>`
+/// UNWIND clause. A `FOR <variable> IN <expression>`
 /// clause normalizes here at parse time -- the same expr/alias pair with
 /// [`UnwindClause::for_syntax`] recording the source spelling -- so every
 /// downstream consumer (validation, lowering, planning, execution) treats
@@ -1194,8 +1194,8 @@ pub enum SchemaName {
     Parameter(String),
 }
 
-/// The optional `OPTIONS` tail of a schema DDL command (CIP-116 CR[4],
-/// ADR-0489): the three states the old `options` + `options_param` pair
+/// The optional `OPTIONS` tail of a schema DDL command (ADR-0489):
+/// the three states the old `options` + `options_param` pair
 /// encoded in a comment only.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OptionsForm {
@@ -1260,7 +1260,7 @@ pub struct CreateIndexClause {
     /// and for a vector index that doesn't use the clause.
     pub with_properties: Vec<SmallName>,
     /// The `OPTIONS` tail: absent, a literal map, or a whole-map parameter
-    /// (CIP-116 CR[4]) resolved at execution time.
+    /// (resolved at execution time).
     pub options: OptionsForm,
 }
 
@@ -1302,9 +1302,9 @@ pub struct CreateConstraintClause {
     /// every other `constraint_type`.
     pub property_type: Option<TypeExpr>,
     /// The `OPTIONS` tail: absent, a literal map, or a whole-map parameter
-    /// (CIP-116 CR[4]) resolved at execution time.
+    /// (resolved at execution time).
     pub options: OptionsForm,
-    /// The target label for a CIP-177 `REQUIRE <alias>:<Label>` label
+    /// The target label for a `REQUIRE <alias>:<Label>` label
     /// existence constraint (`constraint_type` one of `"labelExistence"`/
     /// `"sourceLabelExistence"`/`"targetLabelExistence"`), `None` for
     /// every other `constraint_type`.
@@ -1344,7 +1344,7 @@ pub struct CallSubqueryClause {
     /// subquery's own first clause is the only way to correlate outer
     /// variables in); `Some(CallScope::...)` for `CALL (...) { ... }`.
     pub scope: CallScope,
-    /// CIP-159: `OPTIONAL CALL { ... }` -- when the inline subquery yields
+    /// `OPTIONAL CALL { ... }` -- when the inline subquery yields
     /// zero rows for a given outer row, that outer row is null-padded
     /// (every column the subquery would export set to `NULL`) instead of
     /// being dropped.
@@ -1383,7 +1383,7 @@ pub struct InTransactionsClause {
     pub disjoint: Option<DisjointBy>,
 }
 
-/// CIP-260 `DISJOINT BY` operand.
+/// `DISJOINT BY` operand.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DisjointBy {
     /// `DISJOINT BY (<expr>, ...)`: partition rows by these deterministic
@@ -1398,7 +1398,7 @@ pub enum DisjointBy {
 impl InTransactionsClause {
     /// Every value expression of the `IN TRANSACTIONS` tail, in visit
     /// order: the CIP-34 concurrency value, the CIP-32 batch size, the
-    /// CIP-198 retry duration and the CIP-260 `DISJOINT BY` key
+    /// CIP-198 retry duration and the `DISJOINT BY` key
     /// expressions. The exhaustive matches on the three operand enums are
     /// the slot list: a new operand variant is a compile error here until
     /// its expression is enumerated, so a consumer cannot drift from the
@@ -1434,7 +1434,7 @@ pub enum Concurrency {
     Value(Expr),
 }
 
-/// CIP-30/CIP-198 `ON ERROR ...` mode.
+/// `ON ERROR ...` mode.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OnErrorMode {
     /// The default when `ON ERROR` is omitted entirely.
@@ -1494,7 +1494,7 @@ pub struct ShowFunctionsClause {
     pub yields: YieldList,
     pub where_expr: Option<Expr>,
     /// The YIELD's own paging sub-grammar, written between the YIELD list
-    /// and the trailing `WHERE` (CIP-74 filtering[8]/[9]; live Neo4j
+    /// and the trailing `WHERE` (live Neo4j
     /// accepts that order for every SHOW command).
     pub stages: Vec<PageStage>,
     /// `[ALL | BUILT IN | USER DEFINED]` scope filter (CIP-84/CIP-157
@@ -1542,7 +1542,7 @@ pub struct ShowConstraintsClause {
     pub type_filter: ConstraintTypeFilter,
     /// `ORDER BY`/`SKIP`/`LIMIT` written directly on the `YIELD` (before
     /// any trailing `WHERE`) as part of the `YIELD`'s own paging
-    /// sub-grammar (CIP-74 filtering[8]/[9]), e.g. `YIELD name ORDER BY
+    /// sub-grammar, e.g. `YIELD name ORDER BY
     /// name WHERE ... RETURN ...` -- distinct from a `SHOW ... YIELD ...`
     /// followed by a separate top-level `ORDER BY`/`RETURN ... ORDER BY`
     /// clause, which parses as its own `StandaloneOrderBy`/`Return` clause
@@ -1569,7 +1569,7 @@ pub enum ConstraintKindFilter {
     /// matches `constraint_type == "unique"`.
     Unique,
     /// `KEY` -- matches `constraint_type == "key"`. Never combines with
-    /// `PROPERTY` (CIP-74 SD[12]/SD[13]).
+    /// `PROPERTY`.
     Key,
     /// `TYPE`, optionally `PROPERTY`-prefixed -- matches `constraint_type
     /// == "propertyType"` (CIP-85/CIP-100).
@@ -1766,14 +1766,14 @@ pub struct PatternPath {
     pub where_expr: Option<Expr>,
     /// CIP-51 explicit path mode prefix (`WALK`/`TRAIL`/`ACYCLIC`/`SIMPLE`),
     /// written directly or nested inside a `selector`'s own `[path mode]`
-    /// slot. `None` means no explicit keyword (Rule 1: resolves to `Walk`).
+    /// slot. `None` means no explicit keyword (resolves to `Walk`).
     pub mode: Option<PathMode>,
     /// CIP-73/CIP-191 path selector prefix (`ALL`/`ANY`/`SHORTEST`/...).
     /// `None` means no explicit selector (equivalent to an implicit `ALL`).
     pub selector: Option<PathSelector>,
     /// True if this path pattern is sugar for the pre-GPM
-    /// `shortestPath(...)`/`allShortestPaths(...)` function (CIP-40/CIP-73
-    /// Section 3.3), rather than an explicit `SHORTEST`/`ALL SHORTEST`
+    /// `shortestPath(...)`/`allShortestPaths(...)` function (CIP-40/CIP-73),
+    /// rather than an explicit `SHORTEST`/`ALL SHORTEST`
     /// selector keyword -- even though both normalize to the same
     /// `selector` value. The two are NOT interchangeable for CIP-40's
     /// mixing rules: the legacy function forms are exempt from the
@@ -1805,21 +1805,21 @@ pub enum PatternElement {
 
 /// The `{min, max}` bounds of a CIP-28 quantifier (`*`, `+`, `{m,n}`, `{m,}`,
 /// `{,n}`, `{,}`, `{n}`). `max = None` means unbounded. Bounds are already
-/// normalized and validated by the parser: Rule 1 (`{,}` -> `{0,}`) and
-/// Rule 2 (upper bound > 0, lower bound <= upper bound) are enforced at
-/// parse time, so every `PathQuantifier` that reaches the AST is legal.
+/// normalized and validated by the parser: `{,}` -> `{0,}` and the
+/// bounds checks (upper bound > 0, lower bound <= upper bound) are
+/// enforced at parse time, so every `PathQuantifier` that reaches the AST
+/// is legal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PathQuantifier {
     pub min: u32,
     pub max: Option<u32>,
 }
 
-/// A quantified path pattern (CIP-28 Section 3.1): a parenthesized subpath
-/// (`elements`), optionally assigned a subpath variable (CIP-28 Section 3.3,
-/// e.g. `(p2 = (x)-->(y))*`) and/or a trailing `WHERE` evaluated once per
+/// A quantified path pattern: a parenthesized subpath (`elements`),
+/// optionally assigned a subpath variable (e.g. `(p2 = (x)-->(y))*`) and/or a trailing `WHERE` evaluated once per
 /// iteration, followed by a quantifier. Appears as a `PatternElement`
 /// alongside plain `Node`/`Relationship` elements so it composes freely with
-/// them by concatenation (CIP-28 Section 3.1.7).
+/// them by concatenation.
 ///
 /// A bare quantified relationship (`-[r]->*`, Form 5) does *not* produce this
 /// variant: it normalizes directly into the ordinary variable-length
@@ -1862,7 +1862,7 @@ pub struct RelPattern {
     /// Whether a property specification was *written*, in either spelling.
     /// The rel twin of [`NodePattern`]'s field: set for `{}` too, so
     /// `-[] {}]-` and `(a {})` agree wherever "has predicates" is asked
-    /// (CIP-225 Rule 7, 42N56) — live-verified against Neo4j.
+    /// (42N56) — live-verified against Neo4j.
     pub has_properties: bool,
     /// The `$paramName` whole-property-map shorthand -- see
     /// `NodePattern::properties_param`.
@@ -2281,7 +2281,7 @@ impl TypeExpr {
 /// re-exported here under its original name/location.
 pub use relate_model::VectorCoordKind;
 
-/// The predefined leaf type names from CIP-86's `<value type>` grammar.
+/// The predefined leaf type names from the `<value type>` grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PredefinedKind {
     Nothing,
@@ -2302,7 +2302,7 @@ pub enum PredefinedKind {
     Relationship,
     Path,
     Map,
-    /// CIP-246 `UUID [NOT NULL]`.
+    /// `UUID [NOT NULL]`.
     Uuid,
 }
 
@@ -2486,7 +2486,7 @@ pub struct HasLabelExpr {
     /// negate the *whole* expression (unlike an inline `!` inside `label_expr`,
     /// which negates only the following primary).
     pub negated: bool,
-    /// True for the CIP-249 `IS [NOT] LABELED <LE>` forms (and the `IS NOT
+    /// True for the `IS [NOT] LABELED <LE>` forms (and the `IS NOT
     /// <LE>` shorthand), which raise a runtime type error for a non-node/
     /// relationship LHS. False for the pre-existing `:`/bare `IS <LE>`
     /// forms (CIP-14), which fall back to `false` for a non-entity LHS,

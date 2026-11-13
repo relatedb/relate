@@ -1,5 +1,5 @@
-//! `Predicate` function rows: the list-comprehension quantifiers (CIP-113
-//! F18/F19), `allReduce` (CIP-217) and the boolean tests.
+//! `Predicate` function rows: the list-comprehension quantifiers,
+//! `allReduce` and the boolean tests.
 
 use super::{FunctionCategory, FunctionMeta};
 use crate::catalog_meta::ProcArgMeta;

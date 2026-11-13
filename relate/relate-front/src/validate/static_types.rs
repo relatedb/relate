@@ -809,7 +809,7 @@ mod tests {
 
     #[test]
     fn tostring_static_gate_applies_under_every_preamble_spelling() {
-        // CIP-271's static `LIST<T>` rejection is the one rule under every
+        // The static `LIST<T>` rejection (CIP-271) is the one rule under every
         // spelling: the homogeneous list literal is rejected exactly like
         // the unprefixed form under the one admitted `CYPHER 25` preamble.
         for query in [

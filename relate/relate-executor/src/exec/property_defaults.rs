@@ -15,7 +15,7 @@
 //! boundary, so the default applies), plus the relationships created
 //! with their type. A property already holding a non-null value is never
 //! touched, and -- when more than one element type in the node's gained
-//! labels declares a default for the same property (CIP-262 FE10) -- the
+//! labels declares a default for the same property -- the
 //! statement fails instead of picking one.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,7 +146,7 @@ pub(crate) fn apply_property_defaults(graph: &ExecGraph<'_>) -> Result<()> {
 /// of another gained label's type also declares wins over the ancestor's
 /// (CE9: the child element type's re-specified default overrides the
 /// parent's); two declaring element types that are unrelated both
-/// defaulting the same property (CIP-262 FE10) fails the statement;
+/// defaulting the same property fails the statement;
 /// otherwise the one default is evaluated and written.
 fn apply_node_defaults(
     graph: &ExecGraph<'_>,

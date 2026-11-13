@@ -55,7 +55,7 @@ pub(super) fn validate_definition(definition: &LocalDefinition) -> Result<()> {
 }
 
 /// A default expression sees the unit record only: no variable references
-/// anywhere in it (CIP-231 `<callable input signature>` SR 3). The error
+/// anywhere in it (the `<callable input signature>` constant-default rule). The error
 /// is raised at the detection point -- no defer-through-flag detour.
 fn check_default_is_constant(default: &Expr) -> Result<()> {
     let mut visit = |expr: &Expr| -> std::result::Result<(), EngineError> {
@@ -137,7 +137,7 @@ fn check_no_use(body: &Statement, kind: &str) -> Result<()> {
 
 /// NEXT stages inside a local callable body are not supported: the
 /// parameters bind once at the body's head, so a later stage could not
-/// see them (NOTES.md records the deferral).
+/// see them.
 fn check_no_next(body: &Statement) -> Result<()> {
     reject_link(
         body,

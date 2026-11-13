@@ -218,14 +218,14 @@ Rules, matching Neo4j:
 - `SKIP`/`OFFSET` is **full-text only**; on a vector search it is rejected
 - `WITH ANALYZER <expr>` is accepted on full-text searches (analyzers are not
   differentiated: Relate tokenizes lowercase alphanumeric terms)
-- the searched `MATCH` pattern is CIP-225 Rule 0's single node or single-hop
+- the searched `MATCH` pattern is a single node or single-hop
   relationship, binding one variable, with predicates only on it. The
   `RELATE_PREVIEW=complex-search-patterns` preview gate (ADR-0371 /
   ADR-0467; mirrors
   Neo4j's own mode) lifts that
   shape restriction, admitting multi-component, multi-hop, variable-length,
   quantified, selected and multi-variable patterns; without the opt-in the
-  Rule 0 rejections stay (`SearchClauseTooComplexPattern`,
+  base-shape rejections stay (`SearchClauseTooComplexPattern`,
   `SearchClauseMultipleBoundVariables`, `SearchClauseInvalidPredicates`)
 
 #### Hybrid search (COMBINE, preview)
@@ -262,7 +262,7 @@ Rules:
   (0-based rank within each source's own ranked, limited result list); an
   entity missing from a source gets nothing from that source. Results are
   ordered by fused score descending, ties on entity id ascending
-  (implementation-dependent tie-break, CLG-102), then the combined `LIMIT`
+  (implementation-dependent tie-break), then the combined `LIMIT`
   keeps the n highest
 
 ## Writing clauses
@@ -392,8 +392,7 @@ RETURN x;
 #### FOR
 
 The GQL-compliant successor spelling of UNWIND, with the binding variable
-*before* the expression (CIP-250, GQ10; graduated from the `gql-for`
-preview gate after live verification against Neo4j 2026.09 and 2026.10.1):
+*before* the expression (CIP-250):
 
 ```cypher
 FOR x IN [1, 2, 3]
@@ -1079,7 +1078,7 @@ CALL createPersonNode(memberName) YIELD person AS node
 RETURN isEven(2), node.name;
 ```
 
-Rules (CIP-231; every deviation is recorded in the CIP-231 NOTES.md):
+Rules (CIP-231):
 
 - definitions are visible from their own position onward, only inside the
   statement block that contains them (and blocks nested within it); a

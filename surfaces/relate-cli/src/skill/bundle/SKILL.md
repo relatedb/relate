@@ -71,7 +71,8 @@ RELATE_PREVIEW=ontology relate query "CALL db.ontology.get()" --database ./mydat
 `null` means no ontology is set. Without the opt-in the call fails with
 `preview feature 'ontology' is not enabled` and `SHOW PROCEDURES` omits the
 four `db.ontology.*` rows; if you cannot set it, fall back to schema
-discovery (Agent rule 4).
+discovery and take labels, relationship types, and property names from
+what the graph actually holds.
 
 - `-d` / `--database` sets the store (directory, `.rl` bundle, or `:memory:`;
   default `:memory:`). The same flag is the store on `query`, the path-first

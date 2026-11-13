@@ -24,7 +24,7 @@ fn depth_cap_message() -> String {
     )
 }
 
-/// The CIP-150 `CYPHER <version>` preamble is a parse-level no-op
+/// The optional `CYPHER <version>` statement preamble is a parse-level no-op
 /// (ADR-0584: CYPHER 25 is the one admitted spelling): the formerly
 /// gated Cypher-25-only forms — string interpolation (CIP-261), the
 /// `vector()` value function (CIP-214), the `SEARCH` clause (CIP-224),
@@ -369,7 +369,7 @@ fn nested_call_subquery_limit_is_rejected_like_top_level() {
 
 #[test]
 fn conditional_and_foreach_bodies_are_validated_like_top_level() {
-    // CIP-135 `WHEN ... THEN { ... }` branch bodies are full statements.
+    // `WHEN ... THEN { ... }` branch bodies are full statements.
     let err = lower_err("WHEN true THEN { RETURN 1 AS x LIMIT -1 } ELSE { RETURN 2 AS x }");
     assert!(err.contains("NegativeIntegerArgument"), "{err}");
     // FOREACH bodies share the enclosing scope and take the write rules.

@@ -60,7 +60,7 @@ classified once at its construction site.**
    HTTP → 400. No surface scans a message prefix.
 2. Statement-shape rules become `Error::syntax`: the property-type
    restrictions, a non-`indexConfig` `OPTIONS` key, the single-property index
-   kinds' property count, and the whole CIP-178 graph-type body-validation
+   kinds' property count, and the whole graph-type body-validation
    family (`CREATE`/`ALTER`/`SET`/`ADD`/`DROP` reference and shape rules,
    mapped through `Error::syntax` from every `validate_graph_type_body` call
    site).
@@ -117,7 +117,7 @@ classified once at its construction site.**
   residual below (the remaining failures are SHOW-output shapes and missing
   validations, tracked separately).
 - The graph-type body-validation family's preview-gate failures inherit the
-  family's `SyntaxError` class (they are part of the same CIP-178 body
+  family's `SyntaxError` class (they are part of the same body
   validation); preview gates outside that family keep their existing class.
 - Out of scope, reported rather than forced: the 20 `CREATE CONSTRAINT …
   OPTIONS $param` scenarios, which fail at the parser before any class could

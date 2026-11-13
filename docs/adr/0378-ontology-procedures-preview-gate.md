@@ -24,8 +24,8 @@ Ontology Graph Spec 1.0.0, which is still a draft: ADR-0227 §6 pinned
 `neo4j/graph-spec` @ `2f8dcbdf2dab51ebf2d760e00904a8f2b0518f59`, and
 ADR-0364 had to move the pin to `main` (`066515593ae59317d758bcf2cef54195e74bde39`)
 because upstream's draft and `main` both call themselves 1.0.0 while
-differing in 25 structural places. CIP-287 ("Ontology privileges") is
-likewise still Under Review (first version 6 Oct 2026, revised 8 Oct
+differing in 25 structural places. The ontology-privileges proposal is
+likewise still under review (first version 6 Oct 2026, revised 8 Oct
 2026). A caller can therefore write documents, parse `get`'s output, or
 build tooling against a shape that upstream may change again — the same
 "surface may change under us" condition that made ADR-0229 remove the
@@ -52,7 +52,7 @@ lives.
 - **One owner for the resolved set.** The set lives on the store-level
   executor services (`StoreServices`, ADR-0116 §10), installed at open and
   carried by a follow reload. `Shared.preview` is gone; the statement
-  admission that gates CIP-278 `COMBINE` (ADR-0379) captures
+  admission that gates hybrid-search `COMBINE` (ADR-0379) captures
   `Graph::preview()` under a read guard before parsing, and the `CALL`
   gate and the `SHOW PROCEDURES` catalog read the same bundle. ADR-0379's
   "first production reader of `Shared.preview`" sentence is superseded
@@ -103,7 +103,7 @@ lives.
   spec** may gate even though it does not extend syntax. The exception is
   not general — additive function names and procedure families on our own
   pinned contract still do not gate — and it ends with this family.
-- **Removal.** Once the Ontology Graph Spec and CIP-287 are final and the
+- **Removal.** Once the Ontology Graph Spec is final and the
   document/format contract is pinned, the registry row and the gate are
   removed in that same change and the four procedures become
   unconditional again, exactly as ADR-0371 requires when a feature

@@ -658,7 +658,7 @@ fn cip_expression_types_reductions_and_values() {
 }
 /// A deleted entity stays addressable through the variable that bound it:
 /// the row keeps an **empty tombstone** (the same id, no labels, no
-/// properties — a returned deleted node renders `()`, CIP-202 [21]-[24]),
+/// properties — a returned deleted node renders `()`),
 /// so a later `MATCH` on the same variable still matches it while the
 /// store no longer holds the node. Property *reads* against the deleted
 /// entity are refused (`DeletedEntityAccess`).

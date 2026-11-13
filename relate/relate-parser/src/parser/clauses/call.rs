@@ -22,7 +22,7 @@ impl<'a> Parser<'a> {
 
     pub(in crate::parser) fn parse_call(&mut self, optional: bool) -> ParseResult<Clause> {
         self.next_token(); // consume CALL
-                           // CIP-141 `CALL (...) { ... }` variable scope clause.
+                           // The `CALL (...) { ... }` variable scope clause (CIP-141).
         if self.peek_type() == TokenType::LeftParen {
             let scope = self.parse_call_scope()?;
             self.expect(TokenType::LeftBrace)?;
@@ -42,7 +42,7 @@ impl<'a> Parser<'a> {
             self.next_token(); // consume {
             let stmt = self.parse_call_subquery_statement()?;
             self.expect(TokenType::RightBrace)?;
-            // CIP-213 Rule 4: NEXT cannot be used inside a CALL subquery
+            // CIP-213: NEXT cannot be used inside a CALL subquery
             // that uses the (deprecated) importing WITH syntax -- a naked
             // `CALL { ... }` (no scope-clause parens) whose body's very
             // first clause is a `WITH` (the legacy "import these outer
@@ -128,7 +128,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `<scope clause> ::= "(" ")" | "(" "*" ")" | "(" <var> ("," <var>)* ")"`
-    /// -- the CIP-141 `CALL (...)` variable scope clause. The leading `(`
+    /// -- the `CALL (...)` variable scope clause (CIP-141). The leading `(`
     /// has not been consumed yet.
     pub(in crate::parser) fn parse_call_scope(&mut self) -> ParseResult<CallScope> {
         self.next_token(); // consume (
@@ -185,7 +185,7 @@ impl<'a> Parser<'a> {
     /// `THEN`/`AS` are the only real tokens reused here (reserving new
     /// keywords for the rest would regress the TCK). Returns `None` when
     /// the clause has no `IN TRANSACTIONS` trailer at all (an ordinary
-    /// CALL subquery). Only CIP-32's own base semantics (sequential
+    /// CALL subquery). Only CIP-32's base semantics (sequential
     /// batching, nesting/preceding-write restrictions) are enforced by the
     /// engine today; concurrency, retry, and status/error output are
     /// parsed into the AST here so later CIPs only need to add

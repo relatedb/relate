@@ -140,8 +140,8 @@ pub fn validate_show_column_names(stmt: &Statement) -> Result<(), EngineError> {
 }
 
 /// True when a `USE` clause's graph expression is the bare literal name
-/// `system` (`USE system`) -- the one spelling CIP-123 errors[8]/[9] test
-/// the `SHOW INDEXES`/`SHOW CONSTRAINTS`-on-`system` restriction with.
+/// `system` (`USE system`) -- the one spelling the
+/// `SHOW INDEXES`/`SHOW CONSTRAINTS`-on-`system` restriction tests.
 /// Namespace names match case-insensitively (ADR-0116 §1), so `USE SYSTEM`
 /// composes under the same rule now that `USE` routes (ADR-0116 §3).
 /// Doesn't attempt to resolve `graph.byName(...)`/parameterized forms to
@@ -299,7 +299,7 @@ fn validate_show_composability_clauses(
         return Ok(());
     }
 
-    // CIP-123 errors[8]/[9]: the graph-schema catalogs (`SHOW INDEXES`,
+    // The graph-schema catalogs (`SHOW INDEXES`,
     // `SHOW CONSTRAINTS`) are per-database, so `USE system` rejects them
     // outright -- composed or not (live corpus: `ShowConstraintCommands`
     // Part2's `USE system SHOW CONSTRAINTS YIELD name RETURN name`; the
@@ -316,7 +316,7 @@ fn validate_show_composability_clauses(
         ));
     }
 
-    // CIP-123 errors[7]: once any SHOW/TERMINATE clause is present, a
+    // Once any SHOW/TERMINATE clause is present, a
     // RETURN clause may only be the statement's very last clause -- it
     // can't be followed by a further composed command (or anything else).
     if let Some(return_idx) = clauses.iter().position(|c| matches!(c, Clause::Return(_))) {
@@ -340,7 +340,7 @@ fn validate_show_composability_clauses(
         .skip_while(|clause| matches!(clause, Clause::Use(_)))
         .collect();
 
-    // CIP-242 errors[1]: explicit top-level braces (`{ SHOW INDEXES }`) mark
+    // Explicit top-level braces (`{ SHOW INDEXES }`) mark
     // the body as a `SingleQuery` known to be composed/embedded per CIP-146,
     // even when its clause list alone would otherwise qualify for the
     // lenient "canonical standalone" leniency below -- so a brace-wrapped
@@ -356,8 +356,7 @@ fn validate_show_composability_clauses(
     }
 
     // Composed: every SHOW/TERMINATE clause needs its own explicit,
-    // non-`*` YIELD (CIP-123 errors[1]/[2]/[4]/[5]/[11], CIP-242
-    // errors[1]/[2]/[3]).
+    // non-`*` YIELD.
     for clause in &body {
         match show_yield_state(clause) {
             Some(YieldMode::Default) => {
@@ -382,11 +381,11 @@ fn validate_show_composability_clauses(
 
     // Composed: a SHOW/TERMINATE clause can never be the statement's own
     // final clause -- its yielded columns would otherwise just vanish
-    // (CIP-123 errors[3]: `SHOW PROCEDURES YIELD ... SHOW FUNCTIONS YIELD
-    // ...` with no trailing RETURN; CIP-242 errors[4]: `MATCH (n) SHOW
+    // (`SHOW PROCEDURES YIELD ... SHOW FUNCTIONS YIELD
+    // ...` with no trailing RETURN; `MATCH (n) SHOW
     // INDEXES YIELD name` ending on a bare YIELD). Any *other* clause is a
     // legitimate terminal clause on its own ordinary terms -- a trailing
-    // write clause with no RETURN (CIP-242 comp[9]: `SHOW INDEXES YIELD
+    // write clause with no RETURN (`SHOW INDEXES YIELD
     // ... CREATE (...)`) is exactly as valid after a composed SHOW as it
     // is anywhere else in Cypher, so this deliberately does *not* require
     // RETURN unconditionally, only that a SHOW/TERMINATE clause never has

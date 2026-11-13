@@ -587,7 +587,7 @@ fn test_parse_oversized_hop_and_path_bounds_are_errors() {
 
 #[test]
 fn test_parse_default_value_expression_hits_depth_limit() {
-    // ADR-0079: the CIP-262 `DEFAULT ON COMMIT <value expression>` clause
+    // ADR-0079: the `DEFAULT ON COMMIT <value expression>` clause
     // reuses the ordinary expression parser, so it joins the existing
     // depth-guarded expression recursion family -- no new family of its
     // own. A crafted deeply nested default value is a clean typed error

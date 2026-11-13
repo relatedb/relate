@@ -81,7 +81,7 @@ nodes until it has `k`, or until the set is exhausted. It returns
    visible nodes**.
 4. **`label_on_snapshot(L)`** is a probe with `k = 1`. Its callers run it
    only after a negative `in_use` probe for the same label, so the memo
-   (rule 7) answers it without new checks.
+   answers it without new checks.
 5. **Stale ids.** A `label_index` id is counted only if its newest version
    visible at `snapshot_ts` exists and carries `L`'s label id. Check label
    ids, not label strings (ADR-0075's facet rule). Ids that are not
@@ -98,9 +98,9 @@ nodes until it has `k`, or until the set is exhausted. It returns
    works in rounds:
    1. Take a `label_index` read guard on `L`.
    2. Copy at most `c` ids out of the set (`c = 64` for the label's first
-      copy in the scratch, doubled on each later copy). Record in `whole`
-      (rule 7) whether the set length was `≤ c`, meaning the copy took the
-      whole set.
+      copy in the scratch, doubled on each later copy). Record in the
+      memo's `whole` whether the set length was `≤ c`, meaning the copy
+      took the whole set.
    3. Drop the guard.
    4. Check each copied id under its own short `nodes` guard, holding no
       `label_index` guard.
@@ -110,7 +110,7 @@ nodes until it has `k`, or until the set is exhausted. It returns
    `snapshot_label_n` and holds:
    - `checked`: ids already inspected.
    - `pending`: ids copied but not yet checked, kept in copy order.
-   - `visible`: the count of checked ids that passed rule 5.
+   - `visible`: the count of checked ids that passed the stale-id check.
    - `whole`: whether the latest copy took the whole set.
    - `complete`: whether the whole set has been checked.
 
@@ -120,8 +120,8 @@ nodes until it has `k`, or until the set is exhausted. It returns
    3. Otherwise, check ids from `pending` in order, and answer positive as
       soon as `visible = k`.
    4. When `pending` is empty: if `whole`, set `complete` and answer from
-      `visible`. Otherwise copy again (rule 6), make the ids not in
-      `checked` the new `pending`, and continue at step 3.
+      `visible`. Otherwise copy again (same lock order), make the ids not
+      in `checked` the new `pending`, and continue at step 3.
 
    `complete` is set only after every id of a whole-set copy has been
    checked. Only then may a probe conclude "fewer than `k`". Each id is
@@ -132,8 +132,9 @@ nodes until it has `k`, or until the set is exhausted. It returns
    it rather than deep-copying it. A restore keeps what was learned.
 8. **Explicit transactions** probe at the **transaction's `snapshot_ts`**
    with the transaction's scratch, which holds its `D` and its memo.
-   Concurrent commits after `begin` can add only ids that rule 5 skips,
-   because an id visible with `L` at the snapshot is already in the set.
+   Concurrent commits after `begin` can add only ids that the stale-id
+   check skips, because an id visible with `L` at the snapshot is already
+   in the set.
    GC cannot drop ids of versions visible at the pinned snapshot. Let
    `need` be 1 for a gain and 2 for a loss. Each answer `min(S, k) ≥ k`
    with `k = need − D` is equivalent to the census's `S + D ≥ need`, and

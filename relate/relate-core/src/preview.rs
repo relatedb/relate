@@ -141,9 +141,9 @@ preview_feature_registry! {
         "Neo4j's vector-search complex-pattern mode: \
          a SEARCH clause's MATCH statement keeps its own pattern shape -- several components, \
          variable-length hops, quantified and selected paths, several bound variables, \
-         predicates outside the binding -- instead of CIP-225 Rule 0's single node or \
+         predicates outside the binding -- instead of the floor's single node or \
          single-hop relationship. Widens the front's SEARCH validation; disabled, every \
-         Rule 0 rejection keeps firing.",
+         pattern-shape rejection keeps firing.",
         "complex-search-patterns"
     ),
     (
@@ -152,7 +152,7 @@ preview_feature_registry! {
          `SHOW`-listed only under this opt-in (ADR-0497). A live Neo4j probe \
          records the name as front-end registered but unreachable \
          -- no `SHOW FUNCTIONS` row, 42N48 under CYPHER 5 and 25 -- so the default dialect must \
-         not advertise it. Row and gate are deleted when CIP-274 ships in a release.",
+         not advertise it. Row and gate are deleted when a Neo4j release ships the function.",
         "coll-zip"
     ),
     (
@@ -167,7 +167,7 @@ preview_feature_registry! {
         "CIP-245's `stddev_samp`/`stddev_pop` spellings (ADR-0497): the corpus catalogue lists \
          only the canonical `stdev_samp`/`stdev_pop`, and Neo4j 2026.05 answers 42N48 for the \
          GQL spellings, so the default dialect advertises and dispatches only the `stdev_*` \
-         rows. The gate keeps CIP-245's `@doc`-derived 78/78 reachable. Deleted when a release \
+         rows. The gate keeps the `@doc`-derived 78/78 reachable. Deleted when a release \
          registers the spellings (or the scenarios are re-pinned).",
         "gql-stddev-aliases"
     ),

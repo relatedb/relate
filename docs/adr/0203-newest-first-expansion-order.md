@@ -62,8 +62,8 @@ order, with one addition for the GPM selector:
   enumeration order. Neo4j's stateful shortest path pops its priority
   queue by cost and then by node id, so the selected walk is the one
   with the smallest node-id sequence — not the one the (newest-first)
-  expansion enumerated first. Evidence: CIP-73's @neo4j-verified
-  scenario [14] (`SHORTEST 1 WALK` closed walk) returns `[1, 2, 1]`
+  expansion enumerated first. Evidence: an @neo4j-verified
+  scenario (`SHORTEST 1 WALK` closed walk) returns `[1, 2, 1]`
   although node 4's relationship is the newest; and LABS-255's tied
   trails share one node sequence, so their parallel-relationship choice
   is still the expansion order's (newest rel wins). The node-sequence

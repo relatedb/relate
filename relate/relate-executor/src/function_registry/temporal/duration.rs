@@ -1,5 +1,4 @@
-//! Duration constructors and the `duration.*` unit accessors
-//! (CIP-113 F10-F13).
+//! Duration constructors and the `duration.*` unit accessors.
 
 use super::super::{FunctionCategory, FunctionMeta};
 use crate::catalog_meta::ProcArgMeta;

@@ -40,7 +40,7 @@
 //! and folds the `WHERE` in, and the engine's CALL-subquery column-add
 //! semantics keep every outer variable flowing around the rewritten
 //! clause. A `WHERE` whose outer-variable reference sits *inside* a
-//! correlated subquery of its own is deferred (NOTES.md): the mapping
+//! correlated subquery of its own is deferred: the mapping
 //! `WITH`'s projection cannot forward a name it cannot see.
 
 use relate_core::{Error, Result};
@@ -266,11 +266,11 @@ impl Resolver {
     /// exactly one row. Returned as the replacement `FunctionCallExpr`
     /// (`head(...)`).
     ///
-    /// The shape (the CIP's own "argument materialization with upfront
+    /// The shape (the proposal's own "argument materialization with upfront
     /// projection" sketch): the arguments are evaluated once and bound to
     /// *fresh* internal names (`WITH a1 AS _lc1, ...` -- call-by-value,
     /// and a fresh name can never collide with an outer variable, which
-    /// the CIP's own same-name-parameter examples would otherwise), then
+    /// the proposal's own same-name-parameter examples would otherwise), then
     /// the body runs behind a scope clause importing exactly those names,
     /// with the parameters rebound from them -- so the body sees its
     /// parameters and nothing else (REFERENCE-OUTER-DEFINITION-SCOPE-NO,
@@ -420,7 +420,7 @@ impl Resolver {
 
         if call.where_expr.is_some() {
             // CIP-159's YIELD WHERE on a *local* procedure call is
-            // deferred (NOTES.md): the faithful rewrite would have to fold
+            // deferred: the faithful rewrite would have to fold
             // a WHERE referencing both the mapped columns and the outer
             // row into a scope the engine's subquery rebind rules cannot
             // express.

@@ -190,7 +190,7 @@ an unlimited control warns on a non-loopback bind.
   silent, following the ADR-0333 warning posture.
 - The implementing change updates `docs/api/http/spec.md` (managed
   transactions and the error table), the hand-written `serve --help`
-  text, and the flag table in the same change (AGENTS.md rule 3).
+  text, and the flag table in the same change (AGENTS.md §3).
 
 ## Alternatives considered
 
@@ -271,4 +271,4 @@ an unlimited control warns on a non-loopback bind.
   the cap is never exceeded — including under a burst of concurrent
   begins.
 - `docs/api/http/spec.md`, the `serve --help` text, and the flag table
-  change in the same change as the code (AGENTS.md rule 3).
+  change in the same change as the code (AGENTS.md §3).

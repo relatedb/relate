@@ -458,9 +458,9 @@ fn the_gpm_walk_counts_its_traversed_rels() {
     assert_eq!(walks, 2, "one neighbor walk per traversed rel");
 }
 
-// ---- The quantified group's one bind order (CIP-28 [11]) ----
+// ---- The quantified group's one bind order ----
 
-/// The CIP-28 [11] graph: `X → A → A:B → A:B`, the two `A:B` nodes
+/// The bind-order graph: `X → A → A:B → A:B`, the two `A:B` nodes
 /// clearing the `h > 2` inline predicate, so the named quantified group
 /// `(p2 = (x:A)-[:R]->(z:B WHERE z.h > 2))*` makes exactly three stops
 /// after the fixed-length prefix: 0, 1, and 2 repetitions.
@@ -485,12 +485,12 @@ fn subpath_group_graph() -> Graph {
 /// a sorted accumulator's alphabetical order put `p2` before `x`/`z`,
 /// while every count≥1 stop's iteration walk binds `x`/`z` in pattern
 /// order and appends `p2` last — desynchronized the complete states'
-/// schemas: the debug assert fired (CIP-28 [11], the cip-eval ratchet's
+/// schemas: the debug assert fired (the eval suite's
 /// 88→87) and a release build silently re-keyed every later row. The
 /// pin is the bindings at every stop, so a regressed order fails on the
 /// values (a re-keyed row reads another list under `p2`), not only on
 /// the assert: the unfiltered enumeration returns one row per stop with
-/// its group sizes, and the CIP-28 [11] filtered spelling answers
+/// its group sizes, and the filtered spelling answers
 /// `[1, 1]`.
 #[test]
 fn quantified_subpath_group_binds_one_schema_across_its_stops() {
@@ -510,7 +510,7 @@ fn quantified_subpath_group_binds_one_schema_across_its_stops() {
         ],
         "every stop binds its group lists, the zero-rep empty ones included"
     );
-    // The CIP-28 [11] spelling the ratchet pins: the size filter keeps
+    // The filtered spelling: the size filter keeps
     // the 2-repetition stop and projects the subpath list's lengths.
     assert_eq!(
         query_rows(

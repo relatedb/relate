@@ -254,7 +254,7 @@ pub(super) fn exec_call_subquery_shared(
     // One fact, one read: the checked names are the seed's keys, computed
     // before the seed moves into the one scoped entry.
     let check = plan.check();
-    // Same CIP-218 Rule 10 import set as the per-row path: only a scope
+    // Same import set as the per-row path: only a scope
     // clause shapes its arms onto the exported names. (The shared plan only
     // reaches here for `(vars)`/naked scopes, so `check` is exactly that
     // import set.)

@@ -8,7 +8,7 @@
 //! where the CIP-262 shape restriction lands: a literal (boolean, string,
 //! integer, float, a list of those, or a map -- a map is a literal shape
 //! that no storable property type accepts, so the *storable* check, not
-//! the shape check, rejects it, CIP-283 NE3) or one of the allowed type
+//! the shape check, rejects it) or one of the allowed type
 //! constructors (`uuid()`, the temporal constructors, `duration()`,
 //! `point()`, `vector()`), each with literal/constructor arguments.
 //! Everything else -- variables, parameters, general function calls,
@@ -32,8 +32,8 @@ use relate_parser::type_normalize::{type_expr_to_canon, CanonKind, CanonType};
 use relate_parser::{Expr, FunctionCallExpr, LiteralValue, MapPair, PredefinedKind, TypeExpr};
 use serde::{Deserialize, Serialize};
 
-/// The restricted `<value expression>` of a `DEFAULT ON COMMIT` clause
-/// (CIP-262 Ap1): one typed form for validation, rendering, persistence,
+/// The restricted `<value expression>` of a `DEFAULT ON COMMIT` clause:
+/// one typed form for validation, rendering, persistence,
 /// and evaluation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DefaultValue {
@@ -58,7 +58,7 @@ pub enum DefaultValue {
     },
 }
 
-/// The allowed type constructors with their return types (CIP-262 Ap1):
+/// The allowed type constructors with their return types:
 /// the one table both the shape check (`from_expr`) and the static typing
 /// (`static_canon`) consult, so a constructor can never be admitted
 /// without a type or typed without being admitted. `vector()` is the one
@@ -106,7 +106,7 @@ fn is_admitted_constructor(name: &str) -> bool {
 impl DefaultValue {
     /// Captures the parser expression's restricted shape (CIP-262): a
     /// literal (a map among them -- a literal *shape* whose storable
-    /// check, not its shape, rejects it, CIP-283 NE3), a list/map of
+    /// check, not its shape, rejects it), a list/map of
     /// allowed values, or an allowed type constructor with allowed
     /// arguments. `null` and every other expression shape are the two
     /// CIP-262 rejection cases, as typed errors (the two CIP texts,
@@ -310,7 +310,7 @@ impl DefaultValue {
     }
 }
 
-/// The typed CIP-262 shape error: the message is the CIP's own text,
+/// The typed shape error: the message is the reference engine's wording,
 /// the kind the graph-type layer's (`SyntaxError`, the same class every
 /// other graph-type rejection carries).
 fn default_shape_error(message: String) -> EngineError {

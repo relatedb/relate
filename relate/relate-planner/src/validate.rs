@@ -248,9 +248,9 @@ pub(crate) fn validate_stage_with_env(
     // stage's own incoming scope seeds the computation: a bare `RETURN *`
     // stage projects exactly the variables passed through the previous
     // `NEXT` (CIP-213), so an empty seed here would drop them. The
-    // exclusion set is CIP-218 Rule 10: a scope-clause body's imports are in
-    // scope but a star must not re-expand them (and every UNION arm must
-    // agree on that shape).
+    // exclusion set is the scope-clause import exclusion: a scope-clause
+    // body's imports are in scope but a star must not re-expand them
+    // (and every UNION arm must agree on that shape).
     crate::names::parts_output_names(&query.parts, seed_names.to_vec(), excluded_imports)
 }
 
@@ -264,7 +264,7 @@ pub(crate) fn validate_stage_with_env(
 /// The two name lists are different facts and stay separate parameters:
 /// `seed_names` is what the body's own scope sees, so it is what a
 /// body-level `RETURN *` expands (the whole outer scope for a naked
-/// `CALL { … }`); `excluded_imports` is the CIP-218 Rule 10 exclusion set
+/// `CALL { … }`); `excluded_imports` is the scope-clause import exclusion set
 /// (non-empty only for a scope clause, whose star must not re-expand the
 /// imports). They coincide for a scope clause and differ for a naked body.
 /// `call_body_names` derives the exclusion set once; this entry threads it
@@ -301,7 +301,7 @@ fn validate_query_chain(
         excluded_imports,
         is_write_procedure,
     )?;
-    // CIP-218 Rule 10's star rule for this stage, folded into the one chain
+    // The scope-clause star rule for this stage, folded into the one chain
     // walk: a scope-clause body's star arm must expand at least one name the
     // body itself introduces. Running it here (rather than in a second
     // recursion over the same chain) walks each stage once and reuses the
@@ -319,7 +319,7 @@ fn validate_query_chain(
     }
 }
 
-/// CIP-218 Rule 10's star rule for one stage: every UNION arm whose terminal
+/// The scope-clause star rule for one stage: every UNION arm whose terminal
 /// `RETURN` carries a `*` must expand at least one name that is not an
 /// import, and no arm may re-list an import as a bare `WITH x`. The stage's
 /// seed names come from the enclosing chain walk (`validate_query_chain`),
@@ -340,7 +340,8 @@ fn validate_stage_star_rule(
         check_bare_import_redeclaration(&part.clauses, excluded)?;
         // The star expands through the output-name fold, so every clause
         // kind a CALL-scope body can export (a `CALL … YIELD` included)
-        // counts, not a hand-spelled subset. Rule 10 wants one name that is
+        // counts, not a hand-spelled subset. The star exclusion wants one
+        // name that is
         // not an import — an empty export set after the exclusion is that
         // failure.
         let expanded =

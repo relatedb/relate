@@ -17,9 +17,8 @@ mechanism, or the version gate's exact rule. ADR-0121 §5's mapping deferral
 is resolved by ADR-0226, whose mappings need a validated, parsed document
 model to build on.
 
-Since those ADRs, Neo4j has published CIP-287 ("Ontology privileges",
-Hannes Sandberg, Google Doc `1cRX91ZfPKHvnoWDHGmf29ojy7lBprT3Wfs1YVSxX2X8`,
-status Under Review; first version 6 Oct 2026, revised 8 Oct 2026 — the
+Since those ADRs, Neo4j has published its ontology-privileges proposal
+(first version 6 Oct 2026, revised 8 Oct 2026 — the
 revision that removed the database argument from the procedures). Its
 procedure surface is `db.ontology.set(ontology :: STRING)`,
 `db.ontology.get(format = "yaml" :: STRING) :: (ontology :: STRING)`,
@@ -30,7 +29,7 @@ ontology *in the requested format*, defaulting to YAML because it is more
 compact in agent context. An optional database argument is a documented
 future extension ("can be added later without breaking anything"). Per
 ADR-0121 §1's own rule — "Where Neo4j's final signatures differ …
-CypherLite follows Neo4j" — CypherLite follows CIP-287. CIP-287's privilege
+CypherLite follows Neo4j" — CypherLite follows the proposal. Its privilege
 machinery (`SHOW ONTOLOGY`, `SET ONTOLOGY`, `ONTOLOGY MANAGEMENT`,
 `EXECUTE BOOSTED`) stays out of scope per ADR-0121 §4.
 
@@ -45,7 +44,7 @@ heavy-dependency decision (ADR-0103) recorded here.
 
 ## Decision
 
-1. **Signatures follow CIP-287.** `db.ontology.set(ontology :: STRING)`,
+1. **Signatures follow the proposal.** `db.ontology.set(ontology :: STRING)`,
    `db.ontology.get(format = "yaml" :: STRING) :: (ontology :: STRING)`,
    `db.ontology.drop()` and `db.ontology.apply()`. There is no database
    argument: each procedure acts on the database it is executed against —
@@ -64,8 +63,8 @@ heavy-dependency decision (ADR-0103) recorded here.
    regardless of syntax. The store records no JSON-vs-YAML marker — only
    the bytes.
 3. **`get` returns the requested format.** `format` is `"yaml"` (the
-   default — CIP-287's choice: more compact than JSON, so cheaper in agent
-   context) or `"json"`; any other value fails with an argument error
+   default — the proposal's choice: more compact than JSON, so cheaper in
+   agent context) or `"json"`; any other value fails with an argument error
    naming the two. When the requested format matches the stored one, `get`
    returns the stored bytes unchanged — YAML in, YAML out, comments and
    formatting included; likewise JSON. Otherwise it parses the stored
@@ -126,11 +125,11 @@ heavy-dependency decision (ADR-0103) recorded here.
 ## Alternatives considered
 
 - **Keep the database argument** (ADR-0121 §1 as written). Rejected:
-  CIP-287's 8 Oct 2026 revision removed it, and ADR-0121 §1 binds
+  The proposal's 8 Oct 2026 revision removed it, and ADR-0121 §1 binds
   CypherLite to Neo4j's signatures; the session/USE-target rule preserves
   §2's `neo4j`-only restriction without an argument.
 - **JSON only.** Rejected: the spec's human wire format reads as YAML — its
-  proposal writes every example in YAML, and CIP-287's `get` defaults to
+  proposal writes every example in YAML, and its `get` defaults to
   YAML — and verbatim storage makes YAML support cheap: it changes the
   parse step, not the store.
 - **Normalize to canonical JSON on `set` and return that from `get`.**
@@ -142,7 +141,7 @@ heavy-dependency decision (ADR-0103) recorded here.
   change ADR-0120's store formats for one bit that a strict-JSON sniff
   derives exactly — any stored document that parses as JSON is JSON.
 - **Convert on every `get`, even when the formats match.** Rejected: it
-  breaks the verbatim round-trip for no benefit; CIP-287 asks for the
+  breaks the verbatim round-trip for no benefit; the proposal asks for the
   ontology in a format, not for normalization.
 - **`serde_yaml`** (the original). Rejected: the repository was archived in
   2024 and receives no fixes; a new engine dependency must not start

@@ -262,7 +262,7 @@ fn test_parse_union_all() {
 
 #[test]
 fn test_parse_union_distinct() {
-    // CIP-154: `UNION DISTINCT` is a synonym of plain UNION's set
+    // `UNION DISTINCT` is a synonym of plain UNION's set
     // semantics -- represented identically as `all: false` so the
     // existing ALL/non-ALL consistency check rejects mixing it with
     // `UNION ALL` for free.
@@ -272,7 +272,7 @@ fn test_parse_union_distinct() {
 
 #[test]
 fn test_parse_union_distinct_chain_mixed_with_plain_union() {
-    // Test cases 3/6 (CIP-154 NOTES.md): a RegularQuery may freely mix
+    // A RegularQuery may freely mix
     // plain UNION and UNION DISTINCT throughout.
     let stmt = parse("RETURN 1 AS x UNION DISTINCT RETURN 2 AS x UNION RETURN 3 AS x").unwrap();
     assert!(!stmt.union.as_ref().unwrap().all);
@@ -410,7 +410,7 @@ fn test_parse_return_star_alone_still_works() {
 
 #[test]
 fn test_parse_return_all_modifier() {
-    // CIP-199: `RETURN ALL <items>` is an explicit, semantically no-op
+    // `RETURN ALL <items>` is an explicit, semantically no-op
     // spelling of plain RETURN -- `distinct: false`, same as omitting
     // the keyword entirely.
     let with_all = parse("MATCH (n) RETURN ALL n.prop AS prop").unwrap();
@@ -704,7 +704,7 @@ fn test_group_by_spec_forms() {
     }
 }
 
-/// CIP-236: `GROUP BY ()` immediately before a subquery's closing brace
+/// `GROUP BY ()` immediately before a subquery's closing brace
 /// is the empty grouping set -- `RightBrace` must end the grouping-key
 /// clause. Without it the `()` parses as a parenthesized key and fails.
 #[test]
@@ -757,7 +757,7 @@ fn test_set_remove_target_starting_with_list_comprehension() {
 }
 
 // Every SHOW command takes the YIELD paging sub-grammar between its YIELD
-// list and its trailing WHERE (CIP-74 filtering[8]/[9]); live Neo4j accepts
+// list and its trailing WHERE; live Neo4j accepts
 // `ORDER BY … SKIP … LIMIT … WHERE …` in that order for all of them.
 #[test]
 fn test_show_family_paging_before_where() {

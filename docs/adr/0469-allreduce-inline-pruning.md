@@ -86,7 +86,7 @@ Four fixed properties:
     variable at all**, and every name it does reference must be bound
     before the quantification. The `initial` is evaluated on the
     entering walk row — *before* the fold binds those names — so a
-    reference to one of them can read a CIP-28 non-local-singleton null
+    reference to one of them can read a non-local-singleton null
     pre-binding mid-path (ADR-0335) where the post-filter's completed
     row holds the pattern's final binding; the two `initial` values
     then disagree and the mid-path fold tracks a different accumulator
@@ -168,6 +168,6 @@ allReduce folds to plain MATCH-WHERE conjuncts evaluated at the walk's
 binding points, and adds a selector stand-down **inside this inliner**:
 under any path selector `inlined_all_reduces` returns nothing — a
 selector chooses among the pattern's full candidate set and mid-path
-pruning would change which path it picks (CIP-60 scenario 8) — so a
+pruning would change which path it picks (selective-path scenario 8) — so a
 selective pattern keeps the pure post-filter behavior this decision's
 declined-conjunct rule describes.

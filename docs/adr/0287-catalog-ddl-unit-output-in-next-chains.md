@@ -7,7 +7,7 @@
 
 ## Context
 
-CIP-213 sequential statement composition (`stmt1 NEXT stmt2`) executes the
+Sequential statement composition (`stmt1 NEXT stmt2`) executes the
 stages in order and seeds each stage with the previous stage's result rows.
 A stage whose result is empty would starve the next stage entirely, so the
 executor compensates for stages that produce no rows *by nature*: data
@@ -20,8 +20,8 @@ is why `CREATE (n) NEXT MATCH (m) RETURN m` works.
 
 The schema-commands-zero-records work on this branch (LABS-184) made
 schema/administration DDL return zero rows and zero columns — the "omitted
-result" shape of a statement without `RETURN` (Neo4j parity; CIP-161
-scenarios [15]–[17]). Before that change a catalog DDL stage finished with
+result" shape of a statement without `RETURN` (Neo4j parity; the
+omitted-result scenarios pin it). Before that change a catalog DDL stage finished with
 one zero-column bug row, which happened to seed the next `NEXT` stage; the
 fix removed that row but did not extend `stage_has_unit_output`, so a
 non-final catalog-DDL stage now yields zero seed rows and starves the next

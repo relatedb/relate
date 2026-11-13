@@ -230,10 +230,11 @@ fn resolve_vector_index(
     Ok((detail, property, metric))
 }
 
-/// The CIP-240 filter preparation: Rule 2 (index property membership --
-/// the one catalog-dependent rule), the RHS value-type gate, and the
-/// per-search RHS evaluation. Rules 1/6 fired at lowering, Rules 3/7 at
-/// the grammar walk.
+/// The vector filter preparation: the index property membership check
+/// (the one catalog-dependent check), the RHS value-type gate, and the
+/// per-search RHS evaluation. The binding-variable and RHS-shape checks
+/// fired at lowering, the per-property combination limits and the
+/// comparison-operator ban at the grammar walk.
 fn prepare_vector_filters<'a>(
     filters: &'a [SearchFilterPred],
     detail: &crate::redo::IndexDetailSpec,
@@ -246,7 +247,7 @@ fn prepare_vector_filters<'a>(
     let invalid_rhs = || Error::ty("InvalidValueType: invalid vector search filter RHS type");
     let mut evaluated = Vec::with_capacity(filters.len());
     for filter in filters {
-        // Rule 2 first: the catalog-dependent property check keeps its
+        // The catalog-dependent property check runs first: it keeps its
         // error precedence over RHS evaluation.
         if let Some(property) = filter.property_name() {
             if !additional.contains(property) {

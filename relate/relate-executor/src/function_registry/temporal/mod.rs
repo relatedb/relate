@@ -1,4 +1,4 @@
-//! `Temporal` function rows (CIP-113 F5-F14), split by family so no one
+//! `Temporal` function rows, split by family so no one
 //! table carries the whole catalogue: the instant constructors and their
 //! clocks, the truncation family, the GQL alias spellings, the duration
 //! family, the epoch constructors and `format`. Each sub-table is listed in

@@ -123,7 +123,7 @@ fn validate_variable_types_in_clauses(
             // exactly like a `CALL proc() YIELD ...`'s (see the
             // `apply_call_procedure` policy, which this mirrors): a
             // name that's already bound by an earlier clause in this same
-            // statement (CIP-242 errors.feature [5]/[6]: a preceding
+            // statement (a preceding
             // `MATCH`'s pattern variable colliding with a plain or
             // `AS`-aliased YIELD column) is a compile-time
             // VariableAlreadyBound error, not a silent shadow.
@@ -337,7 +337,7 @@ fn apply_call_subquery(
     let exports = crate::call_scope::call_subquery_exports(csq, bound_vars);
     bound_vars.extend(exports);
 
-    // CIP-30 syntax [7]: `REPORT STATUS AS <var>` must bind a
+    // `REPORT STATUS AS <var>` must bind a
     // NEW variable name -- one not already in scope when the
     // CALL clause is reached.
     if let Some(cit) = &csq.in_transactions {
@@ -508,7 +508,7 @@ fn collect_element_usages(
             Ok(())
         }
         PatternElement::Quantified(_) if qpp_inner => {
-            // The parser rejects nested QPPs (CIP-28 Rule 4), but a
+            // The parser rejects nested QPPs, but a
             // hand-built AST can still reach this validator — return a
             // typed error, never abort (LABS-70).
             Err(EngineError::semantic(
@@ -593,12 +593,11 @@ fn check_usage_conflicts(
 /// subquery's very first clause. When the subquery's terminal projection
 /// re-exposes one of those imported names, the CALL block's output column
 /// collides with the already-bound outer variable on the join back
-/// (CIP-218 NOTES.md "interaction with existing features" [1]-[3]: Neo4j
-/// rejects this with "already declared in outer scope"). `WITH *` alone is
-/// also a valid legacy importing form — it pulls in every outer variable,
-/// same as naming them all explicitly (interaction [3]) — and is the one
-/// predicate that picks both the import set and the seeded output
-/// computation.
+/// (per CIP-218: Neo4j rejects this with "already declared in outer scope").
+/// `WITH *` alone is also a valid legacy importing form — it pulls in every
+/// outer variable, same as naming them all explicitly (interaction [3]) —
+/// and is the one predicate that picks both the import set and the seeded
+/// output computation.
 /// The legacy-importing form a subquery's leading WITH takes: a lone `*`
 /// item imports every outer variable, a list of plain unaliased variable
 /// references imports exactly those, and any other shape is not the
@@ -764,9 +763,9 @@ mod tests {
 
     #[test]
     fn test_call_subquery_legacy_importing_with_return_star_rebinds_outer_var() {
-        // CIP-218 NOTES.md "interaction with existing features" [2]: a bare
-        // `WITH a` (no scope-clause parens) imports the outer `a`; `RETURN *`
-        // re-exposes it, colliding with the already-bound outer `a`.
+        // Per CIP-218, a bare `WITH a` (no scope-clause parens) imports the
+        // outer `a`; `RETURN *` re-exposes it, colliding with the
+        // already-bound outer `a`.
         let result = parse_and_validate("WITH 1 AS a CALL { WITH a RETURN * } RETURN a");
         assert!(result.is_err(), "Expected VariableAlreadyBound");
         assert!(result.unwrap_err().contains("VariableAlreadyBound"));
@@ -774,7 +773,7 @@ mod tests {
 
     #[test]
     fn test_call_subquery_legacy_importing_with_star_and_extra_item() {
-        // CIP-218 interaction [1]: `WITH *, a AS x` re-selects the imported
+        // `WITH *, a AS x` re-selects the imported
         // `a` before the terminal `RETURN *` re-exports it.
         let result = parse_and_validate(
             "WITH 1 AS a, 2 AS b CALL { WITH a WITH *, a AS x RETURN * } RETURN *",
@@ -857,7 +856,7 @@ mod tests {
 
     #[test]
     fn nested_quantified_path_pattern_is_a_typed_error_not_a_panic() {
-        // LABS-70: the parser forbids nested QPPs (CIP-28 Rule 4), but a
+        // LABS-70: the parser forbids nested QPPs, but a
         // hand-built AST can still reach this validator through the pub
         // entry point — it must return a typed error, never `unreachable!`.
         use relate_parser::{MatchClause, MatchMode, PathQuantifier, QuantifiedPathPattern};

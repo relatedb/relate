@@ -252,7 +252,7 @@ fn walk_clauses_at<'a>(
     }
 }
 
-/// Walk every expression of a CIP-278 `<source specification clause>`.
+/// Walk every expression of a `<source specification clause>`.
 /// The slot enumeration and its exhaustive-match compile guarantee live
 /// in `SearchSpec::exprs` (ADR-0379); the planner consumes the same
 /// exactly `SearchSpec::exprs()`'s consumer, so there is no second

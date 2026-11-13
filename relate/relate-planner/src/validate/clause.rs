@@ -69,7 +69,7 @@ pub(super) fn check_match_clause(
         // binds (`(seed:Person), (p:Person) SEARCH p IN (… FOR seed.bio …)`),
         // so it is checked after the pattern variables enter scope — the
         // same scope the executor's per-row, pattern-first evaluation sees.
-        // The binding variable itself is excluded by the CIP-224 Rule 2
+        // The binding variable itself is excluded by the
         // self-reference check in the front end, which runs first.
         for expr in search.spec.exprs() {
             check_expr(env, is_write_procedure, expr)?;

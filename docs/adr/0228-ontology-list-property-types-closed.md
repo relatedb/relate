@@ -1,4 +1,4 @@
-# 0228. Ontology list property types map to closed CIP-176 list types
+# 0228. Ontology list property types map to closed graph-type list types
 
 - **Status**: Accepted
 - **Date**: 2026-10-12
@@ -6,11 +6,11 @@
 
 ## Context
 
-ADR-0226 §2 maps ontology property `type` tokens to CIP-176 value types:
+ADR-0226 §2 maps ontology property `type` tokens to graph-type value types:
 "`LIST<X>` to the corresponding list type, `LIST<ANY>` to `LIST<ANY>`".
 Implementing `db.ontology.apply` (ADR-0121) exposed that the literal
 reading produces graph-type bodies the engine's own validator rejects:
-CIP-176 property types are closed, so a list's inner type is mandatory
+Graph-type property types are closed, so a list's inner type is mandatory
 `NOT NULL` (`LIST<STRING>` fails validation with "Lists cannot have a
 nullable inner type"), and `LIST<ANY>` is rejected in both spellings
 (`LIST<ANY>` for the nullable inner type, `LIST<ANY NOT NULL>` as an
@@ -23,11 +23,11 @@ property fails `db.ontology.apply` at body validation.
 
 In the ADR-0226 §2 mapping (`cypherlite_ontology::to_graph_type_body`):
 
-- `LIST<X>` maps to its closed CIP-176 form `LIST<X NOT NULL>` — the only
+- `LIST<X>` maps to its closed graph-type form `LIST<X NOT NULL>` — the only
   spelling of the token a graph type accepts, matching the parser's own
   rule for property types.
 - `LIST<ANY>` declares nothing — like bare `ANY` and `BYTES`, it has no
-  CIP-176 property-type counterpart, so the property is unconstrained. It
+  graph-type property-type counterpart, so the property is unconstrained. It
   remains queryable in `system_ontologies` through the ADR-0226 §1
   mapping.
 
@@ -38,7 +38,7 @@ In the ADR-0226 §2 mapping (`cypherlite_ontology::to_graph_type_body`):
   for a document with a list property.
 - **Map `LIST<ANY>` to `LIST<ANY NOT NULL>`.** Rejected: not a supported
   property type either — the validator rejects it outright.
-- **Make CIP-176 property types accept nullable inner list types.**
+- **Make graph-type property types accept nullable inner list types.**
   Rejected: that changes the engine's Cypher dialect for one mapping; the
   closed form is the language's own spelling of the same constraint.
 
@@ -61,7 +61,7 @@ In the ADR-0226 §2 mapping (`cypherlite_ontology::to_graph_type_body`):
 - ADR-0364 re-bases the token vocabulary on main's 39-token
   `Neo4jType` enum. This ADR's rules stand: `ANY`/`LIST<ANY>` declare
   nothing, and `LIST<X>` still maps to the closed `LIST<X NOT NULL>`.
-  Main's `UUID` maps to CIP-246 `UUID`; `FLOAT32`, `INTEGER8`,
+  Main's `UUID` maps to the `UUID` predefined kind; `FLOAT32`, `INTEGER8`,
   `INTEGER16` and `INTEGER32` (and their list forms) have no plain
-  CIP-176 counterpart and fail loudly at `apply` instead of declaring
+  graph-type counterpart and fail loudly at `apply` instead of declaring
   nothing or widening.

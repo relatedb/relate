@@ -5,10 +5,10 @@ use relate_names::SmallName;
 
 #[test]
 fn test_let_accepts_distinct_and_as_as_variable_names() {
-    // CIP-206 PE6.1/PE6.2: LET's grammar has no modifier position after
+    // LET's grammar has no modifier position after
     // the keyword, so normally-reserved words are valid binding names.
     // Both are only referenced via `RETURN *` here (matching CIP-206's
-    // own PE6.1/PE6.2 scenarios) since a bare `AS`/`DISTINCT` token is
+    // scenarios) since a bare `AS`/`DISTINCT` token is
     // not accepted as a variable *reference* expression elsewhere --
     // only LET's own binding-name position is this permissive.
     let stmt = parse("LET DISTINCT = 1 RETURN *").unwrap();
@@ -31,7 +31,7 @@ fn test_let_accepts_distinct_and_as_as_variable_names() {
 
 #[test]
 fn test_let_wrong_syntax_is_rejected() {
-    // NE1.1-NE1.4: not a valid `<binding variable> = <expr>` form.
+    // Not a valid `<binding variable> = <expr>` form.
     assert!(parse("LET 1 RETURN a").is_err());
     assert!(parse("MATCH (a) LET a RETURN a").is_err());
     assert!(parse("LET 1 AS a RETURN a").is_err());
@@ -63,6 +63,6 @@ fn test_filter_where_keyword_is_optional() {
 
 #[test]
 fn test_bare_where_without_filter_is_a_syntax_error() {
-    // CIP-203 NE1: WHERE has no clause-start dispatch of its own.
+    // WHERE has no clause-start dispatch of its own.
     assert!(parse("WHERE true RETURN 1 AS x").is_err());
 }

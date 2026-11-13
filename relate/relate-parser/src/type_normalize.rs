@@ -11,7 +11,7 @@
 //! - CIP-90's `valueType()`, which renders a *runtime value's* dynamic
 //!   type (built bottom-up from the value's own shape by the engine, see
 //!   `relate-executor`'s `value_type_name`).
-//! - CIP-100's own normalization of a *parsed* `TypeExpr` (property type
+//! - The normalization of a *parsed* `TypeExpr` (property type
 //!   constraints, exposed via `SHOW CONSTRAINTS.propertyType`).
 //!
 //! Note: `TypeExpr` (CIP-86 grammar), the type predicate evaluator, and

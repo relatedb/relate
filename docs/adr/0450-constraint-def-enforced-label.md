@@ -20,9 +20,10 @@ if !identity_includes_enforced_label && ... { reject }
 ```
 
 The skip was correct as a *policy*: a label-existence constraint's identity
-is not its constrained label and kind alone — CIP-177's
-`REQUIRE n:Q` and `REQUIRE n:R` on the same `:P` are two rules, and CIP-266's
-multi-parent element type `(:A => :B&C)` derives exactly such a pair. The
+is not its constrained label and kind alone — the constraint grammar's
+`REQUIRE n:Q` and `REQUIRE n:R` on the same `:P` are two rules, and the
+implied-label multi-parent element type `(:A => :B&C)` derives exactly
+such a pair. The
 skip was wrong as a *mechanism*: it was a kind-shaped bypass of a comparison
 that lacked one of the rule's fields, so the catalog and the executor
 disagreed. `catalog_create_constraint` already compared property type through

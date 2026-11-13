@@ -39,7 +39,7 @@
 use super::*;
 use relate_names::SmallName;
 
-/// CIP-231 `<typed>`: the `::` separator or the `TYPED` marker word.
+/// `<typed>`: the `::` separator or the `TYPED` marker word.
 const TYPED_MARKER: &str = "typed";
 
 impl<'a> Parser<'a> {

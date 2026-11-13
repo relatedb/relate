@@ -146,8 +146,8 @@ pub const DEFAULT_DATABASE_COLUMNS: &[&str] = &[
 ];
 
 /// CIP-42's four new columns, all documented `Default column = n` -- only
-/// reachable via an explicit `YIELD`/`YIELD *`, never a bare clause (CIP-42
-/// show-databases-new-columns.feature S13). CIP-170 adds a fifth,
+/// reachable via an explicit `YIELD`/`YIELD *`, never a bare clause
+/// (show-databases-new-columns.feature). CIP-170 adds a fifth,
 /// `defaultLanguage` ("The defaultLanguage column is not shown by
 /// default", 03/[1]), which belongs in the same non-default bucket.
 pub const NON_DEFAULT_DATABASE_COLUMNS: &[&str] = &[
@@ -227,7 +227,7 @@ pub fn full_setting_columns() -> Vec<String> {
 pub const GRAPH_TYPE_COLUMNS: &[&str] = &["name", "body"];
 
 /// `SHOW CURRENT GRAPH TYPE`'s columns: a fixed single `specification`
-/// column (CIP-184), or -- under CIP-257's `AS GRAPH` extension -- the
+/// column (CIP-184), or -- under the `AS GRAPH` extension -- the
 /// fixed `nodes`/`relationships` pair instead.
 pub const CURRENT_GRAPH_TYPE_COLUMNS: &[&str] = &["specification"];
 pub const CURRENT_GRAPH_TYPE_AS_GRAPH_COLUMNS: &[&str] = &["nodes", "relationships"];

@@ -56,7 +56,8 @@ a different passing scenario while keeping the same count.
 
 ## Later references
 
-ADR-0119 supersedes Decision 1 for 24 frozen CIP-eval identities, in CIP-170
-and CIP-141, that need Neo4j Enterprise database administration or composite
+ADR-0119 supersedes Decision 1 for 24 frozen CIP-eval identities, in the
+cypher-versions-default-language and call-variable-scope-clause suites,
+that need Neo4j Enterprise database administration or composite
 graphs. ADR-0116's Community Edition semantics reject those. Every other
 frozen identity remains a hard gate.

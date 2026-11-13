@@ -225,7 +225,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
 - **Make `system` a readable data graph now.** Rejected: CE rejects data
   clauses there. Relaxing an error later is backward compatible; tightening
   one is not.
-- **`ALTER DATABASE … SET ACCESS READ ONLY | READ WRITE` (CIP-13).** Rejected:
+- **`ALTER DATABASE … SET ACCESS READ ONLY | READ WRITE`.** Rejected:
   CE rejects it, and read-only is a fixed property of `system_ontologies`.
 - **One namespace per transaction.** Rejected: it would forbid reading the
   ontology and writing data that follows it in one transaction. Since only

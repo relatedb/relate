@@ -16,7 +16,7 @@ pub(crate) fn query_output_names(query: &Query) -> Result<Vec<String>> {
 
 /// Output names of one stage chain, from a running scope seed.
 ///
-/// `excluded_imports` is the CIP-218 Rule 10 exclusion set: the names a
+/// `excluded_imports` is the scope-clause import exclusion set: the names a
 /// scope-clause `CALL (…) { … }` body imports, which its export set must not
 /// contain — neither through a `RETURN *`/`WITH *` star re-expansion nor as
 /// an explicitly projected pass-through. An empty set means no exclusion —
@@ -138,7 +138,7 @@ pub(crate) fn stage_output_names<'a>(
 /// per-clause scan [`stage_output_names`] folds over the arms. A `RETURN *`
 /// expands the running scope, so the result is the arm's *exported* names —
 /// which is also what a CALL-scope body's star rule compares against its
-/// imports (CIP-218 Rule 10).
+/// imports.
 ///
 /// The excluded imports stay in the running scope (a later clause may
 /// reference them) but never appear in the returned export set — neither
@@ -245,7 +245,7 @@ fn query_projects(query: &Query) -> bool {
 }
 
 /// The names a `WHEN` clause exports: every branch body carries the same
-/// shape (Rule 9/10), so the first one stands in for the whole clause; a
+/// shape (validated separately), so the first one stands in for the whole clause; a
 /// clause with no body (no branch, no `ELSE`) exports nothing.
 ///
 /// The seeded form is for the planner's own scope fold
@@ -301,7 +301,7 @@ pub(crate) fn projected_scope(items: &[Projection], names: Vec<String>) -> Vec<S
 /// `seed` is what the body's own scope sees, so it is what a body-level
 /// `RETURN *` expands: the whole incoming scope for a naked `CALL { … }` and
 /// for `CALL (*) { … }`, the named variables for `CALL (a, b) { … }`.
-/// `imports` is the CIP-218 Rule 10 exclusion set — the same names for a
+/// `imports` is the scope-clause import exclusion set — the same names for a
 /// scope clause, empty for a naked body, which imports the whole row without
 /// one. The two coincide for a scope clause and differ for a naked body, so
 /// callers pass them on as separate values.
@@ -354,7 +354,7 @@ pub(crate) fn clause_bindings(
             for path in patterns {
                 pattern_names(path, push);
             }
-            // CIP-224: a `<search clause>`'s `SCORE AS` variable is bound by
+            // A `<search clause>`'s `SCORE AS` variable is bound by
             // this MATCH like its pattern variables are (the same binding
             // `validate/clause.rs` and `rewrite.rs` record).
             if let Some(score_var) = search.as_ref().and_then(|search| search.score_var.as_ref()) {
@@ -383,12 +383,13 @@ pub(crate) fn clause_bindings(
             ..
         } => {
             // The body's two name lists, derived once (seed = what the body
-            // sees; imports = the CIP-218 Rule 10 exclusion set).
+            // sees; imports = the scope-clause import exclusion set).
             let (seed, excluded_imports) = call_body_names(scope, &incoming());
-            // CIP-218 Rule 10: the body's export set carries none of the
-            // names the scope clause imported, so the star exclusion is
-            // part of the UNION-arm agreement itself (a star arm must not
-            // disagree with a sibling explicit arm on the import columns).
+            // The scope clause's import exclusion: the body's export set
+            // carries none of the names the scope clause imported, so the
+            // star exclusion is part of the UNION-arm agreement itself (a
+            // star arm must not disagree with a sibling explicit arm on
+            // the import columns).
             // The exclusion is applied by the name computation, so the
             // returned names are the export set verbatim.
             for name in query_output_names_with_seed(query, seed, &excluded_imports)? {

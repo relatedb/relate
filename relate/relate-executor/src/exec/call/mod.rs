@@ -222,7 +222,7 @@ pub(crate) fn call_subquery_row(
     // scoped clause loop preserves the same bindings without altering the
     // body's `WITH` items.
     //
-    // The seed's own keys ARE the CIP-218 Rule 10 import set (the `(vars)`
+    // The seed's own keys ARE the scope clause's import set (the `(vars)`
     // list it was built from, or the outer row's visible names the naked and
     // `(*)` forms bind) — one derivation, not a parallel walk. A naked
     // `CALL { … }` keeps the legacy whole-row star expansion, so only a
@@ -281,7 +281,7 @@ fn stage_projects_rows(parts: &[relate_ir::SingleQuery]) -> bool {
         .any(|part| super::part_projects_rows(&part.clauses))
 }
 
-/// The importing scope a body runs under, with the CIP-218 Rule 10 import
+/// The importing scope a body runs under, with the scope clause's import
 /// set as a property of the mode rather than a second parallel parameter:
 /// only a scope clause has one, so the invalid "imports without a scope"
 /// combination is unrepresentable.
@@ -289,12 +289,12 @@ fn stage_projects_rows(parts: &[relate_ir::SingleQuery]) -> bool {
 enum BodyScope<'a> {
     /// No importing scope: the statement's own rows ([`execute_query_seeded`]).
     Unscoped,
-    /// The driving row is the body's importing scope but there is no Rule 10
-    /// import exclusion: a `WHEN` branch body, and the naked `CALL { … }`
+    /// The driving row is the body's importing scope but there is no import
+    /// exclusion: a `WHEN` branch body, and the naked `CALL { … }`
     /// form (which keeps the legacy whole-row star expansion).
     RowScope(&'a Row),
     /// A scope-clause `CALL (vars) { … }` / `CALL (*) { … }` body: the
-    /// importing scope plus the Rule 10 import set its UNION arms drop
+    /// importing scope plus the import set its UNION arms drop
     /// before they are compared.
     Call {
         scope: &'a Row,
@@ -311,7 +311,7 @@ impl BodyScope<'_> {
         }
     }
 
-    /// The Rule 10 import set, when the body has one.
+    /// The scope clause's import set, when the body has one.
     fn imports(&self) -> Option<&HashSet<String>> {
         match self {
             BodyScope::Call { imports, .. } => Some(imports),
@@ -337,7 +337,7 @@ pub(crate) fn execute_query_seeded(
 /// private because only the internal NEXT-stage recursion derives seeds
 /// that legitimately diverge from the scope.
 ///
-/// `imports` is the scope-clause body's CIP-218 Rule 10 import set (`None`
+/// `imports` is the scope-clause body's import set (`None`
 /// for the naked `CALL { … }` form). Each stage's UNION arms drop those
 /// import columns before they are compared, since a row-derived arm result
 /// carries the whole row (imports included) while the planner's agreement is
@@ -351,7 +351,7 @@ pub(crate) fn execute_query_scoped(
     qctx: QueryCtx<'_>,
 ) -> Result<QueryResult> {
     // The seed is both the input row and the importing scope; only a scope
-    // clause adds the Rule 10 exclusion on top of it.
+    // clause adds the import exclusion on top of it.
     let scope = match imports {
         Some(imports) => BodyScope::Call {
             scope: &seed,
@@ -363,7 +363,7 @@ pub(crate) fn execute_query_scoped(
 }
 
 /// How one scope-clause body's UNION arms join the fold — decided once per
-/// stage from the stage's three facts (its Rule 10 import set, whether it
+/// stage from the stage's three facts (its import set, whether it
 /// projects rows, and whether a NEXT stage consumes its output), so the fold
 /// body carries no booleans.
 #[derive(Clone, Copy)]
@@ -371,8 +371,8 @@ enum UnionArmPolicy<'a> {
     /// No imports to drop: compare each arm as produced (the naked
     /// `CALL { … }` and conditional callers' historical rule).
     AsIs,
-    /// A scope-clause body that exports rows: drop the Rule 10 imports,
-    /// then compare — the caller's merge is over exported names only.
+    /// A scope-clause body that exports rows: drop the star-excluded
+    /// imports, then compare — the caller's merge is over exported names only.
     StripImports(&'a HashSet<String>),
     /// A scope-clause body whose result never reaches a caller: its arms
     /// are neither stripped nor compared, because their shape is arbitrary.
@@ -422,7 +422,7 @@ fn execute_query_seeded_in_scope(
     let projects_rows = stage_projects_rows(&query.parts);
     let imports = scope.imports();
     // One arm policy for the whole stage: a scope body that projects rows
-    // strips its Rule 10 imports and compares; one whose result never
+    // strips its star-excluded imports and compares; one whose result never
     // reaches a caller neither strips nor compares; a NEXT stage compares
     // (rectangular arms) but, matching the projection guard, does not strip
     // a unit body.
@@ -456,8 +456,8 @@ fn execute_query_seeded_in_scope(
             Some(result) => result,
             None => super::rows_as_result(graph, &rows),
         };
-        // The stage's one arm policy (computed above): strip the Rule 10
-        // imports where the caller's merge is over exported names, compare
+        // The stage's one arm policy (computed above): strip the
+        // star-excluded imports where the caller's merge is over exported names, compare
         // against the fold, or leave a discarded body's arms alone.
         let (result, align) = arm_policy.apply(result);
         fold.merge(result, align)?;
@@ -482,7 +482,7 @@ fn execute_query_seeded_in_scope(
 }
 
 /// Drop one UNION arm's imported columns — names *and* row values — the
-/// runtime half of CIP-218 Rule 10. A row-derived arm result
+/// runtime half of the import rule. A row-derived arm result
 /// (`rows_as_result`) carries every binding of the row, the body's imports
 /// among them, while the exported shape excludes them; without this the
 /// fold compares unlike shapes and the caller's merge would see columns it
@@ -538,7 +538,7 @@ pub(crate) fn call_export_columns(
 }
 
 /// One stage's exported names: the shared [`return_columns`] set of its
-/// terminal `RETURN` minus the stage's CIP-218 Rule 10 imports. Empty when
+/// terminal `RETURN` minus the stage's imports. Empty when
 /// the stage's last clause is not a `RETURN` (a `WHEN` body, `FINISH`, a
 /// write) — such a stage has no projected export shape to agree on.
 fn stage_export_columns(stage: &Query, imported: &HashSet<String>) -> Vec<String> {

@@ -23,7 +23,7 @@ use super::ddl_options::{parameter_map, ADMITTED_OPTION_KEYS};
 const OPTIONS_NOT_A_MAP: &str =
     "Could not create graph type constraint with options: expected a map value.";
 
-/// Resolve and validate every constraint's `OPTIONS` (CIP-116 CR[4]) in an
+/// Resolve and validate every constraint's `OPTIONS` in an
 /// `ALTER` body, in both spellings: a literal map's value expressions are
 /// evaluated, and a whole-map `OPTIONS $param` is resolved (absent →
 /// `ParameterMissing`, non-MAP → `ArgumentError`). The map is resolved

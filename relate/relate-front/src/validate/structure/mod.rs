@@ -19,7 +19,7 @@ mod traversal;
 use crate::ast::stmt_ref::StmtRef;
 pub use traversal::{validate_expr_traversal_bounds, validate_traversal_bounds};
 
-/// CIP-202 scenario [7]: `USE` has its own placement restriction (unrelated
+/// `USE` has its own placement restriction (unrelated
 /// to and not lifted by CIP-202's removal of the update-boundary rule) --
 /// within any one linear statement body (the top-level query, or a `CALL {}`
 /// subquery body, checked recursively so a nested `CALL` inside a `CALL`
@@ -78,14 +78,14 @@ fn check_use_placement_in_body(clauses: &[Clause]) -> Result<(), EngineError> {
     }
     Ok(())
 }
-/// CIP-213 NE1.4: an administrative command (`SHOW DATABASES`/`SHOW
+/// An administrative command (`SHOW DATABASES`/`SHOW
 /// ROLES`/`SHOW SERVERS`/`SHOW USERS`/`TERMINATE TRANSACTIONS`) cannot
 /// participate in a NEXT chain. In live Neo4j this isn't actually a
 /// NEXT-grammar rule -- these commands require the `system` database
 /// (`51N28` if run elsewhere), and `NEXT` is separately disallowed on the
 /// system database itself (`42N17`) -- so the combination is rejected in
-/// both directions for different underlying reasons (CIP-213 NOTES.md
-/// Deviations #4). Modeled here as a single compile-time check on any
+/// both directions for different underlying reasons.
+/// Modeled here as a single compile-time check on any
 /// statement that is part of a NEXT chain (has a `.next`, or is reached by
 /// following one): non-admin SHOW commands (FUNCTIONS/CONSTRAINTS/INDEXES/
 /// PROCEDURES/SETTINGS/TRANSACTIONS) are schema/catalog introspection, not
@@ -227,8 +227,8 @@ fn union_branch_shape(clauses: &[Clause]) -> UnionBranchShape {
     //
     // CIP-135: a `{ WHEN ... }`/`{ WHEN ... ELSE ... }` UNION arm has no
     // direct `Clause::Return` of its own -- its shape is whatever its
-    // branches project. Rule 9/10 (validated separately) guarantees every
-    // branch/ELSE body has the same shape, so any one of them stands in
+    // branches project. Every branch/ELSE body has the same shape
+    // (validated separately), so any one of them stands in
     // for the whole clause.
     if let [Clause::Conditional(cc)] = clauses {
         let inner = cc
@@ -487,7 +487,7 @@ fn check_projected_names(items: &[ReturnItem], require_alias: bool) -> Result<()
 /// (a)-[r]->()-[r]->(a)`): a compile-time `RelationshipUniquenessViolation`.
 /// The TCK is this project's language floor and wins over the newer Neo4j
 /// acceptance behavior (an empty result plus the 01N63 warning). CIP-19's
-/// own D4 deviation, and CIP-51/CIP-60's worked examples, say Neo4j (CYPHER
+/// deviation record and the GPM worked examples say Neo4j (CYPHER
 /// 25 GPM) no longer raises this error for a repeated relationship variable
 /// in general (e.g. `MATCH (n)-[r]->(m)-[r]->(o)`, with no repeated node
 /// variable) -- those still compile and return no rows at runtime, via the
@@ -499,7 +499,7 @@ fn check_projected_names(items: &[ReturnItem], require_alias: bool) -> Result<()
 pub fn validate_relationship_uniqueness(clauses: &[Clause]) -> Result<(), EngineError> {
     for clause in clauses {
         if let Clause::Match(mc) = clause {
-            // CIP-51 Section 2.1.3/2.4: under the `REPEATABLE ELEMENTS` match
+            // Under the `REPEATABLE ELEMENTS` match
             // mode, a relationship variable declared twice is a legitimate
             // equijoin (the same relationship bound at both positions), not
             // a compile-time error.

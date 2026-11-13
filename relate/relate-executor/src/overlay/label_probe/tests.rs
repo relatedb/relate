@@ -120,7 +120,7 @@ fn parity_with_the_census() {
 }
 
 /// A scratch keeps answering at its own `snapshot_ts`, as an explicit
-/// transaction does while other commits land (ADR-0171 rule 8).
+/// transaction does while other commits land (ADR-0171).
 #[test]
 fn old_snapshot_ignores_later_commits() {
     let g = Graph::default();

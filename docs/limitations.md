@@ -238,7 +238,7 @@ deviations (ADR-0188, ADR-0458, ADR-0472, ADR-0513):
 
 | Scenario | Why it was out of the pin |
 |----------|--------------------------|
-| `TypeConversion4 [10]` — *"Fail `toString()` on invalid types"* | Superseded by CIP-271 (ADR-0002): Neo4j 2026.09 (verified live under `CYPHER 25`) renders LIST/MAP/NODE/RELATIONSHIP/PATH in `toString()` instead of erroring, an intentional Cypher 25 semantic change over the 2024.3 TCK floor. The scenario can never pass without regressing, so it is removed from the pinned corpus (kept as a `#`-commented reference in the feature file) rather than skipped forever. |
+| `TypeConversion4 [10]` — *"Fail `toString()` on invalid types"* | Superseded by Cypher 25 (ADR-0002): Neo4j 2026.09 (verified live under `CYPHER 25`) renders LIST/MAP/NODE/RELATIONSHIP/PATH in `toString()` instead of erroring, an intentional Cypher 25 semantic change over the 2024.3 TCK floor. The scenario can never pass without regressing, so it is removed from the pinned corpus (kept as a `#`-commented reference in the feature file) rather than skipped forever. |
 
 Four further scenarios were **in the pin asserting Cypher 25 behaviour**
 instead of the 2024.3 expectation (ADR-0002, ADR-0472):

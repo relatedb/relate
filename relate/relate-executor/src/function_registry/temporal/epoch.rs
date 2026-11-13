@@ -1,4 +1,4 @@
-//! Epoch constructors (CIP-113 F8-F9).
+//! Epoch constructors.
 
 use super::super::{FunctionCategory, FunctionMeta};
 use crate::catalog_meta::ProcArgMeta;

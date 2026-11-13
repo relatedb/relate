@@ -106,8 +106,8 @@ fn fulltext_index_candidates(
         &index.index_name,
         crate::redo::IndexKindSpec::Fulltext,
     )?;
-    // The per-row `WITH ANALYZER` expression (CIP-225 Rule 7,
-    // FulltextSearchAcceptance [57]); an absent slot means the standard
+    // The per-row `WITH ANALYZER` expression
+    // (FulltextSearchAcceptance); an absent slot means the standard
     // analyzer, and the value's own NULL/unknown-name/type rejections are
     // `Analyzer::from_value`'s.
     let query_override = index
@@ -156,7 +156,7 @@ fn push_optional_null_row(
     out.push(row);
 }
 
-/// The candidates one CIP-278 `<source specification clause>` yields for
+/// The candidates one `<source specification clause>` yields for
 /// one incoming row of the driving table, ranked best-first
 /// ([`ranked_better_cmp`]'s order: score descending, entity id ascending).
 /// `None`: the source's query evaluated absent (a NULL or non-list VECTOR
@@ -180,7 +180,7 @@ fn search_spec_candidates(
     }
 }
 
-/// One CIP-225 `<index specification clause>`'s candidates for one
+/// One `<index specification clause>`'s candidates for one
 /// incoming row -- the pre-CIP-278 top-level index behavior, unchanged,
 /// now also serving as a weighted source inside a COMBINE.
 fn search_index_candidates(
@@ -194,7 +194,7 @@ fn search_index_candidates(
     // The caller's growth demand widens the fetched window only; the
     // clause's LIMIT stays the number of survivors it keeps.
     let window = limit.saturating_add(extra_candidates);
-    // CIP-225 `<offset clause>`, shared by both kinds.
+    // The `<offset clause>`, shared by both kinds.
     let offset = match &index.offset_expr {
         Some(expr) => eval_window_int(graph, input, expr.as_ref(), params, "SKIP/OFFSET")?,
         None => 0,
@@ -244,7 +244,7 @@ fn search_index_candidates(
     }))
 }
 
-/// One CIP-278 `<combined specification clause>`'s fused candidates for
+/// One `<combined specification clause>`'s fused candidates for
 /// one incoming row: weighted reciprocal rank fusion (WRRF) over the
 /// ranked lists of its weighted sources (which may themselves be nested
 /// combined specifications, Example P3). Each source's own list is ranked
@@ -253,10 +253,10 @@ fn search_index_candidates(
 /// `weight / (rrfConstant + rankIndex + 1)`), and an entity missing from a
 /// source contributes nothing from that source. The fused list is ordered
 /// by the fused score (the CIP's documented tie-breaker was removed --
-/// implementation-dependent, CLG-102; this engine ties on the entity id,
+/// implementation-dependent; this engine ties on the entity id,
 /// ascending, via [`ranked_better_cmp`]) and windowed by the combined
-/// specification's own optional LIMIT (Rule 7). `None`: every source's
-/// query evaluated absent.
+/// specification's own optional LIMIT (the n best fused results).
+/// `None`: every source's query evaluated absent.
 fn search_combine_candidates(
     ctx: ExecCtx<'_>,
     input: &Row,
@@ -279,7 +279,7 @@ fn search_combine_candidates(
             continue;
         };
         let source_kind = fetched.kind;
-        // "Compatibility of indexes"/Example O1.1: every source must index
+        // "Compatibility of indexes": every source must index
         // the same entity kind as the first.
         match kind {
             Some(kind) => {
@@ -316,7 +316,7 @@ fn search_combine_candidates(
         .map(|(id, (score, candidate))| (id, score, candidate))
         .collect();
     ranked.sort_by(|a, b| ranked_better_cmp(b.1, b.0, a.1, a.0));
-    // Rule 7: the combined specification's own optional LIMIT keeps the n
+    // The combined specification's own optional LIMIT keeps the n
     // highest-scoring fused results.
     let ExecCtx { graph, params, .. } = ctx;
     let limit = match &combine.limit_expr {
@@ -332,16 +332,16 @@ fn search_combine_candidates(
         kind,
         candidates,
         limit,
-        // The fused window is a user constraint (Rule 7: keep the n best
+        // The fused window is a user constraint (keep the n best
         // fused results), not a fetched slice, so it never widens.
         may_widen: false,
     }))
 }
 
-/// Evaluates a CIP-278 Rule 1/Rule 3 control expression (a WEIGHT or the
+/// Evaluates a combined specification's control expression (a WEIGHT or the
 /// WRRF WITH CONSTANT): INTEGER NOT NULL or FLOAT NOT NULL, at least 0 and
 /// at most Java's `Integer.MAX_VALUE` (2147483647). Any other value (NULL
-/// included) is the CIP's invalid-type error.
+/// included) is the authored invalid-type error.
 fn eval_wrrf_number(ctx: ExecCtx<'_>, input: &Row, expr: &Expr, clause: &str) -> Result<f64> {
     let ExecCtx { graph, params, .. } = ctx;
     let value = eval(graph, input, expr, params)?;

@@ -145,7 +145,7 @@ engine cannot represent, and an unknown tag must be handled too.
 6. **Vector coordinates map by their declared kind.**
    `coordinatesType` is one of the six Neo4j spellings `FLOAT64`,
    `FLOAT32`, `INT64`, `INT32`, `INT16`, `INT8`; the decoder resolves it
-   with `VectorCoordKind::from_alias`, whose CIP-200 alias vocabulary
+   with `VectorCoordKind::from_alias`, whose alias vocabulary
    accepts exactly those six (`from_canonical_name` does not — it knows
    `FLOAT`/`INTEGER`, not `FLOAT64`/`INT64`). `coordinates` is a JSON
    array of strings; each element is parsed as `i64` for the integer

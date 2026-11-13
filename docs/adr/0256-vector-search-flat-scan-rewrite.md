@@ -36,7 +36,7 @@ real 90k×768 MRL-trained `MongoDB/mdbr-leaf-ir` embeddings):
   prefilter is the only approximate path that beat the flat scan on real
   data (0.5-1.0 ms at 0.888-0.998 recall@10) — a possible opt-in follow-up,
   not part of this change.
-- `WITH`-pushdown (CIP-235) stays exact and free on a flat scan, which an
+- `WITH`-pushdown stays exact and free on a flat scan, which an
   ANN structure cannot promise for filtered queries.
 
 ## Decision
@@ -49,7 +49,7 @@ lookup, which the packed-matrix follow-up below removes:
 
 1. **No per-row Value clones.** The scan collects `(element_id, score)` pairs
    only. `Value::Node`/`Value::Relationship` is materialized solely for the
-   ≤ `offset + limit` window survivors at the end. When CIP-235 `WITH`
+   ≤ `offset + limit` window survivors at the end. When a `WITH`
    filters are present, a `Value` is materialized per *filter-checked*
    candidate (as before) because `vector_filter_passes` evaluates properties
    through the expression evaluator — the filtered path keeps today's
@@ -65,7 +65,7 @@ lookup, which the packed-matrix follow-up below removes:
    or the squared distance — with the query norm hoisted once per search.
    The per-candidate `Vec<f64>` allocation of `vector_operand` is gone from
    the scan (query-side parsing keeps it). The float32-rounding contract of
-   the CIP-121/CIP-214 scores (Neo4j parity) is preserved: an equivalence
+   vector-search suite scores (Neo4j parity) is preserved: an equivalence
    test asserts the kernels round to the same `f32` value as the sequential
    pre-ADR-0256 reference over random, tail-carrying, and scale-varied
    inputs, and a second test pins the candidate-skip contracts (non-number

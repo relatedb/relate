@@ -17,14 +17,14 @@ fn test_qpp_quantifier_plus_is_one_or_more() {
 
 #[test]
 fn test_qpp_quantifier_normalizes_empty_braces_to_zero_unbounded() {
-    // Rule 1: `{,}` normalizes to `{0,}`.
+    // `{,}` normalizes to `{0,}`.
     let q = qpp_quantifier("MATCH (x)((a)-->(b)){,}(y) RETURN 1");
     assert_eq!(q, PathQuantifier { min: 0, max: None });
 }
 
 #[test]
 fn test_qpp_quantifier_fixed_braces_equivalent_to_matching_bounds() {
-    // Rule 2: `{m,m}` is a fixed quantifier, same as `{m}`.
+    // `{m,m}` is a fixed quantifier, same as `{m}`.
     let fixed = qpp_quantifier("MATCH (x)((a)-->(b)){2}(y) RETURN 1");
     let general = qpp_quantifier("MATCH (x)((a)-->(b)){2,2}(y) RETURN 1");
     assert_eq!(fixed, general);
@@ -50,7 +50,7 @@ fn test_qpp_quantifier_lower_exceeds_upper_rejected() {
 
 #[test]
 fn test_qpp_top_level_star_alone_is_minimum_node_count_zero() {
-    // Rule 6: a lone star-quantified pattern has no guaranteed node.
+    // A lone star-quantified pattern has no guaranteed node.
     assert!(parse("MATCH ((a)-[]->(b))* RETURN 1").is_err());
     // But anchored on either side, it's fine (Form 2/3/4).
     assert!(parse("MATCH (x)((a)-[]->(b))* RETURN 1").is_ok());
@@ -59,13 +59,13 @@ fn test_qpp_top_level_star_alone_is_minimum_node_count_zero() {
 
 #[test]
 fn test_qpp_single_node_operand_is_minimum_path_length_zero() {
-    // Rule 3: the operand must have a minimum path length > 0.
+    // The operand must have a minimum path length > 0.
     assert!(parse("MATCH ((a)){1,5} RETURN 1").is_err());
 }
 
 #[test]
 fn test_qpp_nested_quantification_rejected() {
-    // Rule 4: no nesting, whether direct or through a quantified
+    // No nesting, whether direct or through a quantified
     // relationship inside the operand.
     assert!(parse("MATCH (((a)-[b]->(c))*)+ RETURN 1").is_err());
     assert!(parse("MATCH ((a)-->(b)-[r]->*(c))+ RETURN 1").is_err());
@@ -117,7 +117,7 @@ fn test_qpp_subpath_variable_inside_quantification_parses() {
 fn test_qpp_zero_lower_bound_braces_keep_their_bounds() {
     // Cypher 25 zero-lower-bound quantifiers: `{0,3}` is zero-or-more-up-to
     // 3, `{0,}` is the braces spelling of `*`. Both keep a zero lower
-    // bound distinct from `+`/`{1,}` (Rule 1/2 normalization).
+    // bound distinct from `+`/`{1,}`.
     let bounded = qpp_quantifier("MATCH (x)((a)-->(b)){0,3}(y) RETURN 1");
     assert_eq!(
         bounded,

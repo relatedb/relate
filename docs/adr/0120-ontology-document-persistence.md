@@ -126,7 +126,8 @@ persisted change needed it.
   wait-for-Neo4j stance.
 - ADR-0227 amends §1: the stored state is the validated ontology document,
   JSON or YAML, kept verbatim (not only JSON). Storage stays verbatim;
-  following CIP-287, `db.ontology.get` returns the stored bytes unchanged
+  following the ontology-privileges proposal, `db.ontology.get` returns
+  the stored bytes unchanged
   when the requested format matches the stored one and converts canonically
   otherwise. The §5 snapshot object and §3 envelope limit are unaffected.
 - ADR-0229 supersedes §2: no `system_ontologies` graph is built at open or

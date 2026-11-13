@@ -75,7 +75,7 @@ this.
    `--help` matches the spec for that feature set.
 6. CI builds, runs clippy on, and tests every named bundle (`full`, `agent`,
    `minimal`), not only the default. Tests for a gated command are gated on
-   the same feature. The compiled-out path (rule 4) is tested in the bundles
+   the same feature. The compiled-out path is tested in the bundles
    that exclude the command.
 7. Later engine-level features (for example Parquet checkpoints or a `.cl`
    bundle VFS) follow the same rules. Each gets its own ADR that names the
@@ -132,7 +132,7 @@ databases.
   are still landing. The CLI features are self-contained within one crate and
   directly serve the agent-sandbox use case. Rejected as the starting point:
   the CLI proves the rules at low risk, and engine features follow later
-  under rule 7, each with its own ADR.
+  under the same rules, each with its own ADR.
 
 ## Consequences
 

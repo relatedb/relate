@@ -1,4 +1,4 @@
-//! `format()` (CIP-113 F15).
+//! `format()`.
 
 use super::super::{FunctionCategory, FunctionMeta};
 use crate::catalog_meta::ProcArgMeta;

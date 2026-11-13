@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail when the current change introduces a conflicting or unproven ADR
-number, or an internal reference into ``docs/adr/``.
+number, or an internal reference — into ``docs/adr/``, or as
+proposal-detail markers anywhere in the tree.
 
 ADR files are ``docs/adr/NNNN-*.md`` with a four-digit, never-reused
 prefix (AGENTS.md §1). A change conflicts when it adds a file whose
@@ -32,6 +33,39 @@ re-slot is diffed against its deleted pre-image — the number rule's
 own rename policy. Person names and sensitive information are review
 rules there, not mechanically checkable patterns.
 
+The same no-internal-references principle also covers the whole tree:
+any tracked line, in any file, that ties a CIP proposal id to
+proposal-internal detail — quoted grammar, a rule, section or
+deviation label, a NOTES.md pointer (a quoted section title after the
+document name included), an attribution phrase, an approval fact, a
+quoted proposal title, an eval-corpus name — fails wherever it sits,
+existing lines included: unlike the docs/adr rule this scan is not
+diff-aware, because the detail shapes leak the proposal document
+whether or not this change introduced them. Only the detail-bearing
+shapes fail; a bare proposal id outside ``docs/adr/`` (nothing but
+the id) does not. The check's own fixture suites
+(``scripts/tests/test_check_adr_numbers.py``,
+``scripts/tests/test_adr_mint.py``) keep their id-bearing text: it is
+the input their tests must reject, so the scan exempts exactly those
+two paths.
+
+The scan's line granularity: each line is searched as the head of a
+two-line window, the line joined to its successor by a newline, and
+a failure reports at the line its matched text begins on. The join
+exists for ``split-line-pair``, the pattern built to cross it: a
+citation the line break split — the proposal id ends one line, the
+citation's rule or section label opens the next (after the comment
+marker), and the citation's closing parenthesis follows the label.
+Neighboring lines of running prose are not a pair; the closing
+parenthesis is what marks the second line as the citation's own
+continuation. Two atoms admit the joining newline as a side effect
+and can carry a match onto the successor line: the notes pointer's
+leading non-slash character — a ``NOTES.md`` opening a line still
+ties to an id above it — and the quoted-title body of ``cip-title``,
+which runs from the opening quote to the closing one. Every other
+atom stops at the newline, so every other match is exactly the
+per-line one.
+
     python3 scripts/check_adr_numbers.py [--base REF]
 
 ``--base`` defaults to ``origin/main``. Added files are computed with
@@ -49,9 +83,10 @@ prove a number was minted.
 
 Exit codes: 0 when no conflict, every added number is proven and no
 internal reference is added; 1 on a conflict, a missing or unproven
-claim, an absent ledger, or an internal reference on an added
+claim, an absent ledger, an internal reference on an added
 ``docs/adr/`` line (the number failures name the offending number and
-point at scripts/adr_mint.py to mint a fresh one); 2 on a usage error
+point at scripts/adr_mint.py to mint a fresh one), or a
+proposal-detail marker on any tracked line; 2 on a usage error
 such as an unresolvable base ref.
 """
 
@@ -91,6 +126,99 @@ CLAIM_LINE = re.compile(r"^Claim: ([0-9a-fA-F]{40})[ \t]*$", re.MULTILINE)
 # sensitive information are review rules there, not patterns a checker
 # can pin down.
 INTERNAL_REFERENCE = re.compile(r"\b(?:LABS-\d+|CIP-\d+|linear\.app)\b")
+
+# A rule, section or deviation label as proposal documents cite them: a
+# numbered rule, a deviation pointer (``#N`` or ``DN``, the quoted
+# section-title spelling included), a bracket pointer (chained, or
+# word-adjacent — a spaced ``Name [N]`` is a public TCK scenario index,
+# never a pointer), a lettered requirement id, a section number, or a
+# numbered example. Both orders of the rule-section-label marker below
+# cite this one vocabulary.
+_RULE_LABELS = (
+    r"[Rr]ule [0-9]|[\w`]\[[0-9]+\]|\[[0-9]+\]\[[0-9]+\]"
+    r"|\b(?:NE|FE|PAGTE|PE|ME|SGTE)[0-9]+(?:\.[0-9]+)?\b"
+    r"|\bO[0-9]+\.[0-9]+\b|GQ[0-9]+[,)]"
+    r"|\b(?:B|D|F|R|S)[0-9]+(?:\.[0-9]+)?\b|\bAp[0-9]+\b"
+    r"|\bSection [0-9]+(?:\.[0-9]+)*\b|[Ee]xamples? [0-9]+"
+    r"|Deviations?\"? [D#][0-9]+"
+)
+# A NOTES.md pointer as a document reference, either side of the id —
+# a quoted section title after the document name points into it too.
+_NOTES_POINTER = r"((?:^|[^/])NOTES\.md([^ \n]| .|$))"
+# An attribution phrase about a proposal, either side of the id.
+_ATTRIBUTION_PHRASE = r"the CIP'?s'? own|the CIPs' own"
+# An approval or gating fact about a proposal, either side of the id.
+_PROCESS_FACT = (
+    r"(approved (?:on |[0-9])|approved CIPs|\bunreleased\b|CLG-[0-9]"
+    r"|ships in a release|Deleted when a release|graduated)"
+)
+# An eval-corpus name, either side of the id.
+_CORPUS_DIR = r"cip-eval/|cip-eval\.json"
+
+
+def _either_order(detail: str) -> str:
+    """The both-orders disjunction the detail markers share: the id
+    before the detail, or the detail before the id."""
+    return r"CIP-[0-9]+.*(" + detail + r")|(" + detail + r").*CIP-[0-9]+"
+
+# The proposal-detail markers, scanned across every tracked file in the
+# tree (the no-internal-references rule beyond docs/adr/): each pattern
+# ties a proposal id to proposal-internal detail — quoted grammar, a
+# rule, section or deviation label, a NOTES.md pointer, an attribution
+# phrase, an approval fact, a quoted title, or an eval-corpus name. A
+# bare id carries none of that detail and only fails under the
+# added-line docs/adr rule above. No atom's text crosses a newline
+# except three: ``split-line-pair``'s explicit pair join, which
+# matches a citation the line break split; the notes pointer's
+# leading non-slash character; and the quoted-title body of
+# ``cip-title``. The scan joins each line with its successor
+# (``marker_hits`` below) so those atoms can see past the join;
+# every other atom stops at the newline, keeping its matches exactly
+# per-line.
+INTERNAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("grammar-production", re.compile(
+        r"CIP-[0-9]+[:';/]? ?(?:[a-z0-9]{1,7}:? ){0,2}"
+        r"(?:`[^`\n]*<[^`\n]*>`|`[A-Z][^a-z`\n]* [^a-z`\n]*`)"
+    )),
+    ("rule-section-label", re.compile(
+        _either_order(_RULE_LABELS)
+    )),
+    # A citation the line break split: the id ends one line, the label
+    # opens the next (after the comment marker), and the citation's
+    # closing parenthesis follows the label.
+    ("split-line-pair", re.compile(
+        r"CIP-[0-9]+[ \t]*\n[ \t]*(?://[/!]*[ \t]*)?(?:" + _RULE_LABELS + r")"
+        r"[ \t]*\)"
+    )),
+    ("notes-md-pointer", re.compile(
+        _either_order(_NOTES_POINTER)
+    )),
+    ("attribution-phrase", re.compile(
+        _either_order(_ATTRIBUTION_PHRASE)
+        + r"|CIP-[0-9]+'s own|CIP-[0-9]+ examples?"
+        r"|CIP-[0-9]+'s prose|CIP-[0-9]+'s text|CIP-[0-9]+'s wording"
+        r"|CIP-[0-9]+ doc's|CIP-[0-9]+ worked example"
+    )),
+    ("approval-process-fact", re.compile(
+        _either_order(_PROCESS_FACT)
+        + r"|CIP-[0-9]+-superseded"
+    )),
+    ("cip-title", re.compile(r'CIP-[0-9]+\*{0,2} \(\"[^\"]+\"')),
+    ("harness-corpus-dir", re.compile(
+        _either_order(_CORPUS_DIR)
+        + r"|CIP-[0-9]+-[a-z][a-zA-Z0-9-]*/"
+        + r"|`CIP-[0-9]+-[a-z][a-zA-Z0-9-]*`"
+    )),
+)
+
+# The scan's own fixtures: both suites' id-bearing lines are the inputs
+# their tests must reject, so the repo-wide scan skips exactly these
+# two paths — any other exemption would be a hole the scan cannot see.
+MARKER_EXEMPT_PATHS = frozenset({
+    "scripts/tests/test_check_adr_numbers.py",
+    "scripts/tests/test_adr_mint.py",
+})
+
 # A unified-diff hunk header: the new-file start line is the only line
 # number source the added-line scan needs.
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -405,6 +533,72 @@ def internal_reference_failures(
     return failures
 
 
+def marker_hits(lines: list[str]) -> Iterator[tuple[int, str, str]]:
+    """(line, kind, matched text) for every marker beginning on each line.
+
+    The docstring's line granularity as one walk: each line is searched
+    as the head of a two-line window — the line joined to its successor
+    by a newline — and only a match beginning on the head line is
+    yielded; a match beginning on the joined tail is yielded when that
+    line becomes a head itself, so every marker is reported exactly
+    once, at the line its matched text begins on. The join exists for
+    ``split-line-pair``, the pattern built to cross it; the notes
+    pointer's leading non-slash character and the quoted-title body
+    of ``cip-title`` admit the newline as a side effect, and every
+    other atom stops there, so every other match is exactly the
+    per-line one.
+    """
+    for line, content in enumerate(lines, start=1):
+        window = content if line >= len(lines) else content + "\n" + lines[line]
+        for kind, pattern in INTERNAL_MARKERS:
+            found = pattern.search(window)
+            if found is not None and found.start() < len(content):
+                yield line, kind, found.group(0)
+
+
+def internal_marker_failures() -> list[str]:
+    """Failures for proposal-detail markers on tracked lines, repo-wide.
+
+    The complement of ``internal_reference_failures``: that rule reads
+    the change's added docs/adr lines; this one reads the whole tracked
+    tree, every line of it, so a marker sitting on the base fails too —
+    the detail shapes name the proposal document, not the language, and
+    are wrong wherever they live, not only where a change introduces
+    them. Files come from one ``ls-files -z`` walk (the tracked set,
+    root-relative after the anchor, so the exempt-path spellings match
+    verbatim) and are read from the working tree, the copy under
+    review, the same read ``claim_sha`` gives an added ADR. A tracked
+    path that is not a regular file carries no content of its own — a
+    symlink's blob is the pointer text, and its target, when tracked,
+    is scanned under its own path — so only regular files are read; a
+    tracked regular file that cannot be read is an infrastructure
+    failure, never a silent skip. Lines split on ``\\n`` only (the
+    added-line walk's own policy), matched through ``marker_hits``
+    (the docstring's line-granularity policy), and ``errors=replace``
+    reads what a strict decoder would refuse, its ``--text`` policy.
+    """
+    listed = checked_git(PROGRAM, "cannot list tracked files", "ls-files", "-z")
+    failures: list[str] = []
+    for path in sorted(nul_split(listed.stdout)):
+        if path in MARKER_EXEMPT_PATHS:
+            continue
+        if not Path(path).is_file():
+            continue
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            die(PROGRAM, f"cannot read tracked file {path}: {exc}")
+        for line, kind, matched in marker_hits(text.split("\n")):
+            failures.append(
+                f"{path}:{line}: internal spec reference "
+                f"({kind}) {matched!r} — keep the "
+                f"behavior, drop the proposal detail "
+                f"(AGENTS.md §1); cite ADR-NNNN or the public "
+                f"spec instead"
+            )
+    return failures
+
+
 def main() -> int:
     # Anchor before parse_args: argparse applies the base_ref type to the
     # origin/main default too, and the type's rev-parse needs the repo root.
@@ -469,6 +663,10 @@ def main() -> int:
     # sensitive information stay review rules.
     failures.extend(internal_reference_failures(args.base, deleted))
 
+    # The same principle, repo-wide: every tracked file, every line —
+    # the proposal-detail markers fail wherever they sit.
+    failures.extend(internal_marker_failures())
+
     if failures:
         for failure in failures:
             print(f"{PROGRAM}: {failure}", file=sys.stderr)
@@ -477,7 +675,8 @@ def main() -> int:
         f"ok: {len(added)} ADR file(s) added "
         f"({sum(1 for number, _ in added if number in renamed)} re-slotted "
         f"rename(s)), no number conflicts, every added number minted, "
-        f"no internal references on added docs/adr/ lines"
+        f"no internal references on added docs/adr/ lines, "
+        f"no internal spec references on tracked lines"
     )
     return 0
 

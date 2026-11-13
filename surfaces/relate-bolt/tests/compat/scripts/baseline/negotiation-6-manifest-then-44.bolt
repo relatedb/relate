@@ -1,7 +1,7 @@
 # Baseline B-06 (negotiation-6): a manifest-v1 slot (00 00 01 FF) never
 # matches, so the 4.4 slot after it is answered with the plain version
 # 00 00 04 04, and the connection then serves a session: HELLO succeeds
-# (ADR-0303 rule 4; the manifest answer of F-06 is deferred). The leading
+# (ADR-0303; the manifest answer of F-06 is deferred). The leading
 # C: <RAW> is the script's own handshake, so there is no automatic one and
 # no !: AUTO HELLO.
 !: AUTO GOODBYE

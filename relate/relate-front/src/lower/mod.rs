@@ -213,10 +213,10 @@ fn lower_clauses(clauses: &[cl::Clause]) -> Result<Vec<mdb::Clause>> {
     Ok(out)
 }
 
-/// Lower a CIP-236 `<group by clause>`: explicit keys replace the
+/// Lower a `<group by clause>`: explicit keys replace the
 /// inference from non-aggregating items (that is the *only* semantic
 /// difference). A grouping element that is a bare variable matching a
-/// projection alias resolves to that item's expression (Rule 4.2); `()`
+/// projection alias resolves to that item's expression; `()`
 /// lowers to the empty key set (global aggregation) and `ALL` to the
 /// non-aggregating items (which equals inference).
 fn lower_group_by(
@@ -236,7 +236,7 @@ fn lower_group_by(
             for k in keys {
                 out.push(match k {
                     // Alias reference: resolve to the aliased item's
-                    // expression (Rule 4.2) — through the one shared alias
+                    // expression — through the one shared alias
                     // predicate (`crate::validate::is_aliased`).
                     cl::Expr::Variable(name) => items
                         .iter()

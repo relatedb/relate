@@ -97,7 +97,7 @@ statement, lexed with the same `ParseOptions` the real parse would use):
   folding (a temporal constructor's argument, string, list or map form
   alike, folds to a constant at lowering; a parameter there stays a
   per-row call, measured 3.5× slower on the GBL q8 shape before the
-  guard). A statement carrying a CIP-261 interpolated string bails
+  guard). A statement carrying an interpolated string bails
   whole: its payload embeds expressions — including parameter
   references the token-level reserved-name check cannot see, which
   could collide with the rewritten text's own placeholders (found in

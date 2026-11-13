@@ -240,7 +240,7 @@ fn alter_and_system_session_show_databases_agree_on_default_language() {
     system.query("SHOW DATABASES").unwrap();
 }
 
-/// ADR-0116 §2 / CIP-213 NE1.4: `SHOW DATABASES` composed with a `NEXT`
+/// ADR-0116 §2: `SHOW DATABASES` composed with a `NEXT`
 /// stage is rejected before execution (`SystemDatabaseRequired`). The
 /// front-end's NEXT-chain validation fires first; the connection's
 /// post-EXPLAIN gates keep the execution-phase backstop.

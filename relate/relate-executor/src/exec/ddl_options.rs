@@ -210,7 +210,7 @@ pub(crate) fn resolve_options(
     Ok(options)
 }
 
-/// The `CREATE CONSTRAINT` options shape (ADR-0489, CIP-116 CR[4]): an
+/// The `CREATE CONSTRAINT` options shape (ADR-0489): an
 /// index-backed constraint admits only `indexConfig`, and any other literal
 /// key is the front end's syntax error, rejected before the value
 /// expression is lowered and before the schema-conflict checks run. A

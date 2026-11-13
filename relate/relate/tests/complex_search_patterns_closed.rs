@@ -1,5 +1,5 @@
-//! The `complex-search-patterns` preview gate, CLOSED side (ADR-0371,
-//! CIP-225 Rule 0): without the opt-in a SEARCH clause's MATCH statement
+//! The `complex-search-patterns` preview gate, CLOSED side (ADR-0371):
+//! without the opt-in a SEARCH clause's MATCH statement
 //! keeps the floor's pattern-shape rejections — the detailed
 //! `SearchClauseTooComplexPattern` / `SearchClauseMultipleBoundVariables` /
 //! `SearchClauseInvalidPredicates` errors `FulltextSearchAcceptance`
@@ -13,7 +13,8 @@ mod common;
 
 use common::{connection, err_text};
 
-/// The ruled-out shapes and the Rule 0 detail each keeps: the gate widens
+/// The ruled-out shapes and the closed-form detail each keeps: the gate
+/// widens
 /// acceptance, so the closed form stays these rejections rather than the
 /// authored preview error.
 const RULE_0_REJECTIONS: &[(&str, &str)] = &[
@@ -53,7 +54,7 @@ fn every_rule_0_shape_keeps_its_rejection_ungated() {
         );
         assert!(
             !error.contains("preview feature"),
-            "{query}: the closed form is the Rule 0 rejection, not the authored \
+            "{query}: the closed form is the pattern-shape rejection, not the authored \
              preview error: {error}"
         );
     }

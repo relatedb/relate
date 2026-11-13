@@ -173,7 +173,7 @@ fn when_in_a_next_chain_sees_a_property_its_predecessor_removed() {
 }
 
 /// The conditional's output is grouped by branch in written order, not in
-/// driving-row order (CIP-213 PE3.2's observed Neo4j order).
+/// driving-row order (Neo4j's observed order).
 #[test]
 fn when_in_a_next_chain_groups_its_output_by_branch() {
     let graph = seeded("CREATE (:L1 {x: 1}), (:L1 {x: 2}), (:L2 {x: 3})");
@@ -187,7 +187,7 @@ fn when_in_a_next_chain_groups_its_output_by_branch() {
     )
     .unwrap();
     // Branch-major in written order, not the ascending driving-row order
-    // (CIP-213 PE3.2's observed conditional output order).
+    // (Neo4j's observed conditional output order).
     assert_eq!(
         strings(&result, "msg"),
         vec!["large number", "small number", "tiny number"]

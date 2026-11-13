@@ -200,7 +200,7 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "coll.distinct",
     // GQL collection functions (CIP-274, CIP-286): preview-gated
     // (`coll-zip` / `coll-has`, ADR-0497) — the live probe records the
-    // `coll.zip` name as unreachable and CIP-286 is unreleased, so neither
+    // `coll.zip` name as unreachable, so neither
     // family may be default surface.
     "coll.zip",
     "coll.hasanyof",

@@ -27,7 +27,7 @@ round.
   and assert results for SEARCH MATCH statements whose patterns are
   multi-component, multi-hop, variable-length, quantified, selected,
   multi-variable, or carry predicates outside the binding.
-  `FulltextSearchAcceptance` [11]-[13] pins the off side: CIP-225 Rule 0's
+  `FulltextSearchAcceptance` scenarios 11-13 pin the off side: the
   detailed pattern-shape rejections. The front rejects the whole shape
   family unconditionally (`validate_search_pattern_shape`), so all 17
   acceptance rows are `class-syntax-error` — while the executor already
@@ -54,7 +54,7 @@ off form is decided.
    threads it through `resolve_and_lower` → `lower_statement_with_options` →
    `validate_statement_tree_with_options` → `validate_search_clauses`. With
    the row off, `validate_search_pattern_shape` runs exactly as before and
-   every Rule 0 rejection keeps its authored detail
+   every pattern-shape rejection keeps its authored detail
    (`SearchClauseTooComplexPattern`, `SearchClauseMultipleBoundVariables`,
    `SearchClauseInvalidPredicates`); with it on, the shape family is
    skipped. Everything else the SEARCH rules check — the binding-variable
@@ -62,9 +62,9 @@ off form is decided.
    rules — holds in both states.
 
 3. **Both rows cover every SEARCH source kind.** The pattern-shape family is
-   kind-agnostic (the engine's Rule 0 checked FULLTEXT exactly as VECTOR
-   before this ADR), and Neo4j's setting is named for the search feature,
-   not one index kind.
+   kind-agnostic (the engine's pattern-shape check covered FULLTEXT
+   exactly as VECTOR before this ADR), and Neo4j's setting is named for
+   the search feature, not one index kind.
 
 4. **One ADR, two rows.** The two switches are independent; they share the
    round, the precedent and nothing else.
@@ -78,8 +78,8 @@ off form is decided.
   resolved preview knowledge inside the parser crate for no corpus gain.
 - **Gate `complex-search-patterns` with an authored-error AST detector.**
   Rejected: the floor's off form is not "the construct is invisible to the
-  parser" — it is CIP-225 Rule 0's own detailed rejections, pinned by
-  `FulltextSearchAcceptance` [11]-[13] and the front's unit tests. Replacing
+  parser" — it is those same detailed rejections, pinned by
+  `FulltextSearchAcceptance` and the front's unit tests. Replacing
   them with the authored preview error would trade the corpus's ruled-out
   shapes for a different error contract; the gate must widen validation.
 - **One registry row for both switches.** Rejected: a single
@@ -99,7 +99,7 @@ off form is decided.
   `TemporalChronologicalCompareDisabled` exists to pin.
 - `docs/reference/cypher-syntax.md` gains a chronological-comparisons
   subsection under the comparison operators and the SEARCH section names
-  Rule 0's pattern shape beside the new opt-in.
+  the pattern-shape rejections beside the new opt-in.
 - Repo pins are four test binaries, split by gate state because
   `CYPHERLITE_PREVIEW` is process-global and read once per `Database::open`:
   `chronological_comparisons_gate.rs` / `chronological_comparisons_closed.rs`
@@ -115,7 +115,7 @@ off form is decided.
   enabled suites only pass with the flag exported for the run.
 - Measured on this change: all 17 `FulltextSearchWithComplexPatternAcceptance`
   rows pass with `CYPHERLITE_PREVIEW=complex-search-patterns` and all 17 fail
-  with the Rule 0 rejections without it; `FulltextSearchAcceptance`'s closed
+  with the pattern-shape rejections without it; `FulltextSearchAcceptance`'s closed
   suite is unchanged and [11]-[13] pass; the `chronological-comparisons`
   enabled suite stays at its pre-existing 41 of 43 (the two failures are
   temporal-fidelity rows — an out-of-range year literal and a DST-gap named

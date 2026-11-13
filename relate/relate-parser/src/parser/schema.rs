@@ -36,8 +36,8 @@ impl<'a> Parser<'a> {
         // this DDL grammar (`FOR ()-[r:TYPE]-()`, `FOR ()<-[r:TYPE]-()`, ...)
         // -- distinguished from the node form by a `)` immediately followed
         // by a dash/left-arrow. Unlike `parse_constraint_for_target_ext`
-        // (CIP-177's own, more permissive `FOR (m)-[...]->()` grammar),
-        // this stays strict: `CREATE INDEX`/`CREATE VECTOR INDEX` reject a
+        // (a more permissive `FOR (m)-[...]->()` grammar), this stays
+        // strict: `CREATE INDEX`/`CREATE VECTOR INDEX` reject a
         // labelled or aliased endpoint on either side (CIP-116 create-
         // index-errors[18]/[19]).
         if self.peek_at(1).ty == TokenType::RightParen
@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `ON (n.prop1, n.prop2, ...)` / paren-less single-property `ON
-    /// n.prop` (CIP-11 CR[10]).
+    /// n.prop`.
     pub(super) fn parse_on_property_list(&mut self) -> ParseResult<Vec<SmallName>> {
         let paren = self.peek_type() == TokenType::LeftParen;
         if paren {
@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
 
     /// `ON EACH [n.prop1, n.prop2, ...]` (CIP-38 FULLTEXT): a bracketed list
     /// of plain property references -- Neo4j's actual grammar is narrower
-    /// than the CIP's own `EACH <expression>` text (Deviation: no general
+    /// than the proposal's own `EACH <expression>` text (Deviation: no general
     /// expressions, e.g. `p.title + p.abstract`, are accepted), and the
     /// list may never be empty.
     pub(super) fn parse_on_each_bracket_list(&mut self) -> ParseResult<Vec<SmallName>> {
@@ -186,8 +186,8 @@ impl<'a> Parser<'a> {
         Ok(properties)
     }
 
-    /// `ON EACH labels(n)` / `ON EACH type(r)` (CIP-11 CR[19]/OPT[8]): the
-    /// LOOKUP token-index target. The argument is the FOR-pattern's own
+    /// `ON EACH labels(n)` / `ON EACH type(r)`: the LOOKUP token-index
+    /// target. The argument is the FOR-pattern's own
     /// variable; a LOOKUP index has no fixed property/label list, so
     /// nothing beyond syntax is captured here.
     pub(super) fn parse_lookup_each_target(
@@ -306,8 +306,8 @@ impl<'a> Parser<'a> {
     }
 
     /// `<language name> ::= CYPHER <digit>...` -- the version digits are
-    /// *not* range-checked here (CIP-170 NOTES.md Deviations #2: an
-    /// unsupported value inside `DEFAULT LANGUAGE` is a runtime data
+    /// *not* range-checked here (an unsupported value inside
+    /// `DEFAULT LANGUAGE` is a runtime data
     /// exception, not a compile-time syntax error, unlike CIP-150's
     /// statement-preamble `CYPHER <version>` prefix -- the value is
     /// checked where the command executes, the executor's
@@ -384,8 +384,7 @@ impl<'a> Parser<'a> {
 
     /// The one supported `<alter database set item>`: `DEFAULT LANGUAGE
     /// CYPHER <n>` (ADR-0116 §2). The digits are unvalidated at parse time
-    /// -- CIP-170 NOTES.md Deviations #2: an out-of-range version is a
-    /// *runtime* data exception (`22N04`).
+    /// -- an out-of-range version is a *runtime* data exception (`22N04`).
     pub(super) fn parse_alter_database_default_language(&mut self) -> ParseResult<u32> {
         self.next_token(); // DEFAULT
         self.expect_keyword_ident("LANGUAGE")?;
@@ -465,7 +464,7 @@ impl<'a> Parser<'a> {
 
         // CIP-235: `WITH [var.prop1, var.prop2, ...]` -- a VECTOR-only
         // clause listing additional filtering properties, positioned
-        // between `ON` and `OPTIONS`. Reuses the CIP-38 `ON EACH [...]`
+        // between `ON` and `OPTIONS`. Reuses the `ON EACH [...]`
         // bracket-list parser, which already rejects an empty list (CF3)
         // and duplicate properties within the list (CF8) with exactly the
         // shape this clause needs.
@@ -492,9 +491,9 @@ impl<'a> Parser<'a> {
     }
 
     /// The optional `OPTIONS` tail shared by every schema DDL command:
-    /// `OPTIONS { ... }` (a literal map), `OPTIONS $param` (CIP-116 CR[4],
-    /// resolved against the query's parameter map at execution time), or no
-    /// clause at all.
+    /// `OPTIONS { ... }` (a literal map), `OPTIONS $param` (resolved
+    /// against the query's parameter map at execution time), or no clause
+    /// at all.
     pub(super) fn parse_options_tail(&mut self) -> ParseResult<OptionsForm> {
         if self.peek_type() != TokenType::OPTIONS {
             return Ok(OptionsForm::Absent);
@@ -587,11 +586,11 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenType::REQUIRE)?;
 
-        // CIP-177: `REQUIRE <alias>:<Label>` -- a label existence
+        // `REQUIRE <alias>:<Label>` -- a label existence
         // constraint (NLABELEXIST / ESRCLABELEXIST / EDESTLABELEXIST),
         // distinct from every other REQUIRE form (all of which continue
         // with `.` into a property path). Neo4j has no runtime for this
-        // (CIP-177's own DDL is explicitly illustrative, not normative),
+        // (the DDL sketch is explicitly illustrative, not normative),
         // so this is Relate's implementation target derived from the
         // CIP's notation: a node-entity `alias:Label` requires the FOR
         // target's own label to co-occur with `Label`; a relationship
@@ -853,7 +852,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `'{' [ <graph type spec element> (',' <graph type spec element>)*
-    /// ] '}'` (CIP-178 `<graph type specification body>`). Grammar-only:
+    /// ] '}'` (`<graph type specification body>`). Grammar-only:
     /// see `GraphTypeBody`'s doc comment for why the CIP-178 semantic
     /// rules live elsewhere. Returns the consumed opening `{` with the body,
     /// the token `reject_bare_constraint_drops` and
@@ -875,7 +874,7 @@ impl<'a> Parser<'a> {
         Ok((open, body))
     }
 
-    /// Rejects a parsed `body` holding a CIP-182 bare `CONSTRAINT <name>`
+    /// Rejects a parsed `body` holding a bare `CONSTRAINT <name>`
     /// drop-by-name element: only an `ALTER CURRENT GRAPH TYPE DROP` body's
     /// grammar has one, every other body's `CONSTRAINT` needs its `FOR ...`
     /// specification. The error points at `open`, the body's `{`.
@@ -897,9 +896,9 @@ impl<'a> Parser<'a> {
 
     /// Rejects an `ALTER CURRENT GRAPH TYPE DROP` `body` holding an
     /// undesignated (unnamed) `CONSTRAINT FOR ...` specification: such a
-    /// constraint can only be dropped by name (CIP-183 drop [12]). A
-    /// standalone specification's reference always has an alias (Rule 2,
-    /// `parse_graph_type_constraint_spec`), which tells it apart from the
+    /// constraint can only be dropped by name. A
+    /// standalone specification's reference always has an alias
+    /// (`parse_graph_type_constraint_spec` enforces this), which tells it apart from the
     /// unnamed constraints a node/edge type specification owns
     /// (`parse_graph_type_owned_constraints`). The error points at `open`,
     /// the body's `{`.
@@ -939,10 +938,10 @@ impl<'a> Parser<'a> {
             implied_labels.push(self.parse_label_name()?);
             while self.peek_type() == TokenType::Ampersand {
                 self.next_token();
-                // CIP-180 F1[5]: each subsequent `&`-joined label may
-                // repeat its own `:`/IS introducer (`:Zebra&:Mango`), or
-                // omit it (CIP-178 NTS[4]: `:Happy&Employed`) -- both
-                // spellings denote the same implied label set.
+                // Each subsequent `&`-joined label may repeat its own
+                // `:`/IS introducer (`:Zebra&:Mango`), or omit it
+                // (`:Happy&Employed`) -- both spellings denote the same
+                // implied label set.
                 if matches!(self.peek_type(), TokenType::Colon | TokenType::IS) {
                     self.next_token();
                 }
@@ -955,8 +954,8 @@ impl<'a> Parser<'a> {
         if self.peek_type() == TokenType::Dash {
             // Edge type specification: the just-parsed `(...)` was its
             // source endpoint reference (`implies` is significant here --
-            // Rule 1.2.3/REF[6] -- so it's threaded through rather than
-            // discarded).
+            // an implies reference must name a declared node type -- so
+            // it's threaded through rather than discarded).
             let source = Self::build_graph_type_ref_implies(alias, label, implies);
             return self.parse_graph_type_edge_tail(body, source);
         }
@@ -976,7 +975,7 @@ impl<'a> Parser<'a> {
         &mut self,
         body: &mut GraphTypeBody,
     ) -> ParseResult<()> {
-        // CIP-182 `<constraint drop specification>` ::= `CONSTRAINT
+        // `<constraint drop specification>` ::= `CONSTRAINT
         // <name>` -- a bare name with no `FOR ...`, so the element ends
         // right after the name. It is read in every body; the callers of
         // every verb but `DROP` reject it (`reject_bare_constraint_drops`).
@@ -1119,7 +1118,7 @@ impl<'a> Parser<'a> {
     /// `'{' [ <property type> (',' <property type>)* ] '}'` (CIP-178
     /// `<property types specification>`). `<property type> ::= <name>
     /// [('::'|TYPED)] <value type> [DEFAULT ON COMMIT <value expression>]
-    /// [<inline constraint>]` (CIP-262 adds the `DEFAULT ON COMMIT` clause;
+    /// [<inline constraint>]` (with the `DEFAULT ON COMMIT` clause;
     /// grammar-only here, the shape and the preview gate live in the
     /// semantic layer and statement admission).
     pub(super) fn parse_graph_type_property_types(
@@ -1258,7 +1257,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `IS [NODE|REL|RELATIONSHIP] (KEY|UNIQUE)` -- an inline property-type
-    /// constraint (CIP-178 PT[8]-[12]).
+    /// constraint.
     pub(super) fn parse_graph_type_inline_property_constraint(
         &mut self,
     ) -> ParseResult<GraphTypeInlineConstraint> {
@@ -1330,7 +1329,7 @@ impl<'a> Parser<'a> {
             property_type,
             options,
         } = self.parse_graph_type_constraint_verb()?;
-        // CIP-178 grammar: `<node/edge type inline constraint require>` is
+        // In the grammar, `<node/edge type inline constraint require>` is
         // only ever a KEY or UNIQUE constraint require -- existence
         // (`IS NOT NULL`) and property type (`:: T`) constraints are not
         // grammatically reachable when attached directly to a node/edge
@@ -1364,12 +1363,11 @@ impl<'a> Parser<'a> {
     /// `CONSTRAINT [<name>] FOR <node/edge type reference> REQUIRE
     /// <property name spec> <verb> [OPTIONS <map>]` (CIP-178 `<constraint
     /// specification>`). Enforces the purely-local rules that don't need
-    /// cross-element context: Rule 1 (the any type is forbidden), Rule 2
-    /// (a labelled reference requires an element type alias), Rule 13
-    /// (the property name spec's own alias must match the reference's),
-    /// Rule 16-of-CS (no duplicate property name in the spec), and the
-    /// "existence/property-type constraints are not allowed on a
-    /// structurally-identified reference" rule (Rules 22/23). Rules needing
+    /// cross-element context: the any type is forbidden, a labelled
+    /// reference requires an element type alias, the property name spec's
+    /// own alias must match the reference's, no duplicate property name in
+    /// the spec, and the "existence/property-type constraints are not
+    /// allowed on a structurally-identified reference" rule. Rules needing
     /// the *whole* body (5-9, 14, 15/16, reference resolution) are checked
     /// by the engine's graph-type validator.
     pub(super) fn parse_graph_type_constraint_spec(
@@ -1483,9 +1481,12 @@ impl<'a> Parser<'a> {
     /// Builds a `GraphTypeElementRef` from a parsed alias/label/implies
     /// triple -- shared by node/edge type spec endpoints and constraint
     /// `FOR`-targets, where `=>` presence is semantically meaningful
-    /// (Rules 1.2.3, 22/23). CIP-178 Rules 3/4 (an edge type's own in-situ
+    /// (an implies reference must name a declared identifying label;
+    /// existence/property-type constraints are not allowed on a
+    /// structurally-identified reference). CIP-178's edge-endpoint rule
+    /// (an edge type's own in-situ
     /// endpoint reference may not carry an alias) and the constraint
-    /// `FOR`-target rules (Rule 1/2: the any type is forbidden, a labelled
+    /// `FOR`-target rules (the any type is forbidden, a labelled
     /// reference requires an alias) are cross-referential/context-dependent
     /// and are checked by the engine's graph-type validator, not here.
     pub(super) fn build_graph_type_ref_implies(
@@ -1505,7 +1506,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `<alias>.<prop>` / `'(' <alias>.<prop> (',' <alias>.<prop>)* ')'`
-    /// (CIP-178 `<property name specification>`), returning the raw
+    /// (`<property name specification>`), returning the raw
     /// `(alias, property)` pairs in source order without any alias
     /// validation -- shared by `parse_graph_type_property_name_spec` (the
     /// standalone `CONSTRAINT FOR` form, which already knows a single
@@ -1539,10 +1540,9 @@ impl<'a> Parser<'a> {
     }
 
     /// `<alias>.<prop>` / `'(' <alias>.<prop> (',' <alias>.<prop>)* ')'`
-    /// (CIP-178 `<property name specification>`). When `expected_alias` is
-    /// given, every entry's alias must match it (Rule 13); duplicate
-    /// property names within the spec are always rejected (Rule 16 of the
-    /// constraint-specification section).
+    /// (`<property name specification>`). When `expected_alias` is
+    /// given, every entry's alias must match it; duplicate
+    /// property names within the spec are always rejected.
     pub(super) fn parse_graph_type_property_name_spec(
         &mut self,
         expected_alias: Option<&SmallName>,

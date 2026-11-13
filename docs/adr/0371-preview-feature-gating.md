@@ -6,9 +6,9 @@ Claim: 178ecb332c29ceada32771c6ae1cb9c991605dba
 
 ## Context
 
-Upcoming Cypher work — CIP-278 hybrid search `COMBINE`, CIP-231 local
+Upcoming Cypher work — hybrid search `COMBINE`, local
 callables, and the graph-type optional properties / default values /
-implied labels — is accepted into a CIP but not part of our pinned dialect
+implied labels — is accepted into the language but not part of our pinned dialect
 floor (the openCypher TCK 2024.3 pin, ADR-0188). Two bad options existed:
 shipping the syntax unconditionally (it would widen the dialect floor
 before the TCK pin moves, breaking the "TCK is the floor" contract in
@@ -90,7 +90,7 @@ knobs, fail-closed on a bad value).
 - This PR ships the engine wiring with no production reader of the
   resolved set yet; the `Shared` field carries a documented
   `cfg_attr(not(test), allow(dead_code))` until the first feature PR
-  (CIP-278) lands its call site. No dead wrapper method ships — the
+  (hybrid search) lands its call site. No dead wrapper method ships — the
   first real call site arrives with the feature it gates.
 - The env var is documented in `docs/api/cli/spec.md`'s environment table
   and in AGENTS.md's Cypher dialect section; no CLI flag is added, so no
@@ -101,7 +101,7 @@ knobs, fail-closed on a bad value).
 - ADR-0378 amends the scope policy: a built-in procedure family whose
   contract tracks a non-final external spec may gate even though it does
   not extend syntax. The one row is `ontology` (the `db.ontology.*` family,
-  Ontology Graph Spec 1.0.0 / CIP-287 not final); it and its gate are
+  Ontology Graph Spec 1.0.0 not final); it and its gate are
   removed once that spec is final. Syntax-only remains the default.
 - ADR-0497 (the Cypher-25 catalogue alignment) adds a further exception and
   the first **name** gate: a built-in function name an approved CIP adds but

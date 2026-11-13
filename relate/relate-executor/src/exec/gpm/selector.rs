@@ -184,7 +184,7 @@ pub(super) fn complete_and_select_candidates(
 /// (ADR-0203): Neo4j's stateful shortest path pops its priority queue by
 /// cost and then by node id, so among equal-length, equal-type walks it is
 /// the lexicographically smallest node-id sequence that is selected — e.g.
-/// CIP-73's `SHORTEST 1 WALK` closed walk returns `[1, 2, 1]`, not the
+/// a `SHORTEST 1 WALK` closed walk returns `[1, 2, 1]`, not the
 /// walk the (newest-first) expansion enumerated first. Expansion order
 /// still decides fully tied members (parallel relationships share the node
 /// sequence).
@@ -236,7 +236,7 @@ mod tests {
         }
     }
 
-    /// CIP-73 [14] (@neo4j-verified): equal-length, equal-type closed walks
+    /// (@neo4j-verified): equal-length, equal-type closed walks
     /// `[1,2,1]` / `[1,3,1]` / `[1,4,1]` — the reference selects the
     /// lexicographically smallest node-id sequence regardless of the
     /// (newest-first) enumeration order (ADR-0203, LABS-255/LABS-258).

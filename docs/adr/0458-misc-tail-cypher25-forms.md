@@ -24,7 +24,7 @@ procedure and conformance-pin decisions.
    (`Parser::all_is_set_quantifier`) states the rule for every
    set-quantifier site.
 
-2. **CIP-260 `DISJOINT BY`.** `CALL (...) { ... } IN CONCURRENT TRANSACTIONS
+2. **`DISJOINT BY`.** `CALL (...) { ... } IN CONCURRENT TRANSACTIONS
    ... DISJOINT BY (<exprs> | AUTO | NONE)` parses and executes; it is legal
    only on the `CONCURRENT` form. The clauses are a batching hint that never
    changes results, and the engine already executes `IN TRANSACTIONS`
@@ -88,7 +88,7 @@ procedure and conformance-pin decisions.
    `(relationship, score)`. The Cypher 25 deprecation notification is
    deliberately not attached: the engine derives notifications at plan time
    only, and deprecating the pair would contradict the @neo4j-verified
-   CIP-157 `deprecatedBy` inventory (7 replacements). The acceptance
+   `deprecatedBy` inventory (7 replacements). The acceptance
    scenarios that expect the notification stay notification-missing, not
    syntax errors.
 
@@ -117,7 +117,7 @@ procedure and conformance-pin decisions.
   Boolean1-3 [8] pins the compile-time error, and only a runtime value can
   take the deprecated conversion.
 - **Attach the fulltext deprecation to both query procedures.** Rejected:
-  CIP-157's @neo4j-verified inventory of `deprecatedBy` replacements is a
+  The @neo4j-verified inventory of `deprecatedBy` replacements is a
   hard ratchet, and the notification model cannot express the runtime-only
   list/path conversion either; the two acceptance scenarios stay
   notification-missing by design.

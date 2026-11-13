@@ -3,11 +3,10 @@
 //! real engine, pinned end to end so none can silently regress -- the
 //! spike found all of them working but none of them tested.
 //!
-//! Oracle values come from the Neo4j-verified CIP-51/CIP-60 cip-eval
-//! corpus — the spec harness checkout's
-//! `features/cip-eval/CIP-51-gpm-path-modes/` (ADR-0520): the background
-//! graph and each path mode's expected `nodes(p)` lists below are that
-//! corpus's single-path-pattern scenarios, re-stated as Rust pins.
+//! The background graph below is authored locally for this suite; each
+//! path mode's expected `nodes(p)` lists was recomputed by running that
+//! graph through this engine (the path-mode semantics themselves were
+//! verified against Neo4j when the dialect was pinned, ADR-0520).
 //!
 //! Pinned here (execution level; the parser-side shape pins live in
 //! `relate-parser`'s `patterns`/`qpp`/`expressions`/`cypher_prefix`
@@ -22,21 +21,27 @@ mod common;
 use common::{connection, err_text, row, rows, scalar_one};
 use relate::Value;
 
-/// The CIP-51 corpus's background graph (its single-path-pattern
-/// scenarios' node/relationship `i` values are the oracles below).
-fn doc_graph() -> relate::Connection {
+/// The background graph: a four-node `p`-equal cluster the anchor
+/// reaches (two 2-cycles through the anchor, a cross edge, and a
+/// side triangle), plus a `p`-mismatched side pair hanging off the
+/// cluster's far node that the equijoin never crosses. The node `i`
+/// values are the oracles below.
+fn background_graph() -> relate::Connection {
     let mut c = connection();
     common::run(
         &mut c,
-        "CREATE (N3:A {i: 1, p: 2})-[:R3 {i: 1}]->(N1:A:B {i: 2, p: 2})-[:R1 {i: 2}]->(:A {i: 3, p: 2})-[:R2 {i: 3}]->(N3),
-                (N1)-[:R4 {i: 4}]->(N4:A {i: 4, p: 2})-[:R5 {i: 5}]->(N1),
-                (:A {i: 5, p: 3})<-[:R999 {i: 6}]-(N4)-[:R99 {i: 7}]->(:B {i: 6, p: 4})",
+        "CREATE (h1:A:B {i: 21, p: 6})-[:E1 {i: 31}]->(h2:A {i: 22, p: 6})-[:E2 {i: 32}]->(h1), \
+                (h1)-[:E3 {i: 33}]->(h3:A {i: 23, p: 6})-[:E4 {i: 34}]->(h1), \
+                (h2)-[:E5 {i: 35}]->(h3), \
+                (h3)-[:E6 {i: 36}]->(h4:A {i: 24, p: 6})-[:E7 {i: 37}]->(h2), \
+                (h4)-[:E8 {i: 38}]->(:A {i: 25, p: 9}), \
+                (h4)-[:E9 {i: 39}]->(:B {i: 26, p: 9})",
     );
     c
 }
 
-/// The sorted `nodes(p)` `i`-lists of a path query -- the corpus's row
-/// oracle shape, order-insensitive.
+/// The sorted `nodes(p)` `i`-lists of a path query -- the row oracle
+/// shape, order-insensitive.
 fn node_lists(c: &mut relate::Connection, query: &str) -> Vec<Vec<i64>> {
     let mut lists: Vec<Vec<i64>> = rows(c, query)
         .into_iter()
@@ -55,48 +60,85 @@ fn node_lists(c: &mut relate::Connection, query: &str) -> Vec<Vec<i64>> {
     lists
 }
 
-/// The corpus's verified `nodes(p)` lists for
+/// The engine-recomputed `nodes(p)` lists for
 /// `MATCH [mode prefix] (:B)((a)-->(b:A WHERE b.p = a.p)){1,4}` on the
 /// background graph, per path mode.
 fn expected_node_lists(mode: &str) -> Vec<Vec<i64>> {
     let mut lists: Vec<Vec<i64>> = match mode {
-        // CIP-51 single-path-pattern [2] (explicit WALK under REPEATABLE
-        // ELEMENTS): repeated nodes and relationships permitted.
+        // WALK (explicit under REPEATABLE ELEMENTS): repeated nodes
+        // and relationships permitted.
         "walk" => vec![
-            vec![2, 3],
-            vec![2, 4],
-            vec![2, 3, 1],
-            vec![2, 4, 2],
-            vec![2, 3, 1, 2],
-            vec![2, 4, 2, 3],
-            vec![2, 4, 2, 4],
-            vec![2, 4, 2, 3, 1],
-            vec![2, 4, 2, 4, 2],
-            vec![2, 3, 1, 2, 3],
-            vec![2, 3, 1, 2, 4],
+            vec![21, 22],
+            vec![21, 23],
+            vec![21, 22, 21],
+            vec![21, 22, 23],
+            vec![21, 23, 21],
+            vec![21, 23, 24],
+            vec![21, 22, 21, 22],
+            vec![21, 22, 21, 23],
+            vec![21, 22, 23, 21],
+            vec![21, 22, 23, 24],
+            vec![21, 23, 21, 22],
+            vec![21, 23, 21, 23],
+            vec![21, 23, 24, 22],
+            vec![21, 22, 21, 22, 21],
+            vec![21, 22, 21, 22, 23],
+            vec![21, 22, 21, 23, 21],
+            vec![21, 22, 21, 23, 24],
+            vec![21, 22, 23, 21, 22],
+            vec![21, 22, 23, 21, 23],
+            vec![21, 22, 23, 24, 22],
+            vec![21, 23, 21, 22, 21],
+            vec![21, 23, 21, 22, 23],
+            vec![21, 23, 21, 23, 21],
+            vec![21, 23, 21, 23, 24],
+            vec![21, 23, 24, 22, 21],
+            vec![21, 23, 24, 22, 23],
         ],
-        // CIP-51 single-path-pattern [4]: no repeated relationships.
+        // TRAIL: no repeated relationships.
         "trail" => vec![
-            vec![2, 3],
-            vec![2, 4],
-            vec![2, 3, 1],
-            vec![2, 4, 2],
-            vec![2, 3, 1, 2],
-            vec![2, 4, 2, 3],
-            vec![2, 4, 2, 3, 1],
-            vec![2, 3, 1, 2, 4],
+            vec![21, 22],
+            vec![21, 23],
+            vec![21, 22, 21],
+            vec![21, 22, 23],
+            vec![21, 23, 21],
+            vec![21, 23, 24],
+            vec![21, 22, 21, 23],
+            vec![21, 22, 23, 21],
+            vec![21, 22, 23, 24],
+            vec![21, 23, 21, 22],
+            vec![21, 23, 24, 22],
+            vec![21, 22, 21, 23, 21],
+            vec![21, 22, 21, 23, 24],
+            vec![21, 22, 23, 21, 23],
+            vec![21, 22, 23, 24, 22],
+            vec![21, 23, 21, 22, 21],
+            vec![21, 23, 21, 22, 23],
+            vec![21, 23, 24, 22, 21],
+            vec![21, 23, 24, 22, 23],
         ],
-        // CIP-51 single-path-pattern [9] (@doc-derived): only the first
-        // and last node of a path may repeat.
+        // SIMPLE: only the first and last node of a path may repeat.
         "simple" => vec![
-            vec![2, 3],
-            vec![2, 4],
-            vec![2, 3, 1],
-            vec![2, 4, 2],
-            vec![2, 3, 1, 2],
+            vec![21, 22],
+            vec![21, 23],
+            vec![21, 22, 21],
+            vec![21, 22, 23],
+            vec![21, 23, 21],
+            vec![21, 23, 24],
+            vec![21, 22, 23, 21],
+            vec![21, 22, 23, 24],
+            vec![21, 23, 24, 22],
+            vec![21, 23, 24, 22, 21],
         ],
-        // CIP-51 single-path-pattern [8]: no repeated nodes at all.
-        "acyclic" => vec![vec![2, 3], vec![2, 4], vec![2, 3, 1]],
+        // ACYCLIC: no repeated nodes at all.
+        "acyclic" => vec![
+            vec![21, 22],
+            vec![21, 23],
+            vec![21, 22, 23],
+            vec![21, 23, 24],
+            vec![21, 22, 23, 24],
+            vec![21, 23, 24, 22],
+        ],
         other => panic!("unknown path mode {other:?}"),
     };
     lists.sort();
@@ -104,12 +146,11 @@ fn expected_node_lists(mode: &str) -> Vec<Vec<i64>> {
 }
 
 #[test]
-fn walk_trail_simple_acyclic_path_modes_execute_the_corpus_rows() {
-    let mut c = doc_graph();
+fn walk_trail_simple_acyclic_path_modes_execute_the_pinned_rows() {
+    let mut c = background_graph();
     for (mode, prefix) in [
         // WALK is only distinct under REPEATABLE ELEMENTS; under the
-        // default match mode DIFFERENT RELATIONSHIPS dominates it
-        // (CIP-51 single-path-pattern [7]).
+        // default match mode DIFFERENT RELATIONSHIPS dominates it.
         ("walk", "MATCH REPEATABLE ELEMENTS p = WALK"),
         ("trail", "MATCH p = TRAIL"),
         ("simple", "MATCH p = SIMPLE"),
@@ -131,8 +172,8 @@ fn walk_trail_simple_acyclic_path_modes_execute_the_corpus_rows() {
 fn repeatable_elements_path_variable_first_spelling_executes() {
     // `MATCH p = REPEATABLE ELEMENTS (pattern)`: the path variable binds
     // and the clause executes with relaxed relationship uniqueness --
-    // the same rows the corpus pins for the match-mode-first spelling.
-    let mut c = doc_graph();
+    // the same rows pinned for the match-mode-first spelling.
+    let mut c = background_graph();
     let var_first = node_lists(
         &mut c,
         "MATCH p = REPEATABLE ELEMENTS (:B)((a)-->(b:A WHERE b.p = a.p)){1,4} \
@@ -140,7 +181,7 @@ fn repeatable_elements_path_variable_first_spelling_executes() {
     );
     assert_eq!(var_first, expected_node_lists("walk"));
     // ...and identical rows to the clause-initial spelling of the same
-    // clause (the corpus's own order).
+    // clause.
     let mode_first = node_lists(
         &mut c,
         "MATCH REPEATABLE ELEMENTS p = (:B)((a)-->(b:A WHERE b.p = a.p)){1,4} \

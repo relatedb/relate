@@ -242,7 +242,7 @@ fn derive_constraints_splits_not_null_and_generates_neo4j_names() {
     assert_eq!(label.name, "constraint_69e8c8ea");
 }
 
-/// CIP-266 PAGTE3: a child property that further restricts its parent's
+/// A child property that further restricts its parent's
 /// declared type derives its own property-type constraint, carrying the bare
 /// `BOOLEAN` (the outer `NOT NULL` is the separate existence constraint).
 /// Identified by label + property, not by the generated name, so the

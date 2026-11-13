@@ -1,11 +1,12 @@
 //! CIP-240 "Vector Search with Single-stage Filtering": the one grammar
 //! walk over a `SEARCH` clause's inner `WHERE <search condition>`, run at
 //! this module's lowering boundary, emitting the IR `SearchFilterPred`
-//! list directly (Rules 0, 1, 3, 6, 7 enforced here; the RHS lowered, the
-//! `NOT <property>` rewrite's FALSE literal supplied). Rule 2 (index
-//! property membership) needs the resolved index and is checked at
-//! execution, matching how Rule 4's NODE/RELATIONSHIP entity-type check
-//! already works for the outer CIP-224 `SEARCH` surface.
+//! list directly (the predicate-form, binding-variable, per-property,
+//! self-reference and simple-operator rules enforced here; the RHS
+//! lowered, the `NOT <property>` rewrite's FALSE literal supplied). The
+//! index-property-membership check needs the resolved index and is
+//! checked at execution, matching how the NODE/RELATIONSHIP entity-type
+//! check already works for the outer CIP-224 `SEARCH` surface.
 
 use crate::ident_hash::IdentHashMap;
 use relate_names::SmallName;
@@ -19,15 +20,15 @@ use super::expr::{bin_op, cmp_op, unary_op};
 use super::lower_expr;
 
 /// Decompose and lower a `SEARCH` clause's inner `WHERE <search condition>`
-/// into its Rule 0 predicate list against the clause's `binding_var` and
+/// into its predicate list against the clause's `binding_var` and
 /// the index source's `FOR <expr>`:
 /// flattens top-level `AND`, applies the `NOT <property>` and
 /// flipped-operand rewrites (the short-form-range rewrite, e.g.
 /// `a < x.prop <= b`, needs no extra work here -- the parser's own
 /// chained-comparison desugaring, `Parser::parse_comparison`, already
 /// turns it into an `AND` of two ordinary comparisons before this ever
-/// runs), then enforces Rule 1, Rule 3's per-property AND-combination
-/// limits, Rule 6, and Rule 7's ban on `<>`.
+/// runs), then enforces the binding-variable-only rule, the per-property
+/// AND-combination limits, the self-reference check, and the ban on `<>`.
 pub(super) fn lower_search_filters(
     binding_var: &SmallName,
     for_expr: &Expr,
@@ -37,7 +38,7 @@ pub(super) fn lower_search_filters(
         // No inner WHERE: an empty predicate list (empty = no filters).
         return Ok(Vec::new());
     };
-    // CIP-240 Rule 1: a property predicate's LHS names the clause's binding
+    // Predicate shape: a property predicate's LHS names the clause's binding
     // variable, or the index source's own entity variable (`FOR m.embedding`
     // -> `m.rating`) with the binding variable on the RHS. An entity-set
     // predicate (`<variable> IN <expr>`) must name the binding variable
@@ -71,7 +72,7 @@ fn for_entity_var(for_expr: &Expr) -> Option<SmallName> {
     var_property(for_expr).map(|(var, _)| var)
 }
 
-/// A bare `<var>.<prop>` reference (Rule 0's "static property reference" --
+/// A bare `<var>.<prop>` reference (a "static property reference" --
 /// never a dynamic `n[expr]` bracket access, which leaves `property` empty
 /// and carries a `key_expr` instead).
 fn var_property(e: &Expr) -> Option<(SmallName, SmallName)> {
@@ -102,7 +103,7 @@ fn invalid_predicate_error() -> Error {
     )
 }
 
-/// The Rule 1 violation (Neo4j's 42I74): the predicate names a variable
+/// The wrong-variable violation (Neo4j's 42I74): the predicate names a variable
 /// other than the binding variable (see [`validate_property_rule`]).
 fn wrong_variable_error() -> Error {
     Error::syntax("WrongVariableForVectorSearchFilter")
@@ -154,14 +155,14 @@ fn to_predicate(
     for_var: Option<&SmallName>,
     term: &Expr,
 ) -> Result<SearchFilterPred> {
-    // Each arm recognizes one accepted `VectorFilterExpression` form; Rule 1
-    // is then stated once per LHS kind before the single predicate
-    // construction.
+    // Each arm recognizes one accepted `VectorFilterExpression` form; the
+    // binding-variable rule is then stated once per LHS kind before the
+    // single predicate construction.
     match term {
-        // Rule 0 rewrite: `NOT <property>` -> `<property> = FALSE`.
-        // Anything else under a `NOT` (an equality, a range, an arbitrary
-        // expression) isn't rewritable and is rejected -- Examples
-        // R0.5/IPF:8.
+        // The `NOT <property>` rewrite: `NOT <property>` ->
+        // `<property> = FALSE`. Anything else under a `NOT` (an equality,
+        // a range, an arbitrary expression) isn't rewritable and is
+        // rejected.
         Expr::Unary(u) if matches!(unary_op(u.op), Ok(relate_ir::UnaryOp::Not)) => {
             let Some((var, prop)) = var_property(&u.expr) else {
                 return Err(invalid_predicate_error());
@@ -177,7 +178,7 @@ fn to_predicate(
             })
         }
         Expr::Comparison(c) => {
-            // Rule 7: only a `<simple comp op>` serves (`<>` and `=~` are
+            // Only a `<simple comp op>` serves (`<>` and `=~` are
             // typed ops the canonical lowering recognizes, declined here
             // at the one construction site).
             let Some(op) =
@@ -185,14 +186,14 @@ fn to_predicate(
             else {
                 return Err(invalid_predicate_error());
             };
-            // Rule 0's flipped-operand rewrite: the predicate's candidate
+            // The flipped-operand rewrite: the predicate's candidate
             // side is the searched entity's own property, so a side naming
-            // the binding variable wins -- Rule 1's independent-property
+            // the binding variable wins -- the independent-property
             // form `q.rating <= p.rating` filters the candidates on
             // `p.rating >= q.rating`, with `q.rating` the per-row RHS (live
             // Neo4j 2026.10.1 returns the same rows either way round).
             // Otherwise the canonical left property reference wins and the
-            // right side is an ordinary RHS expression -- Rule 6's
+            // right side is an ordinary RHS expression -- the
             // self-reference check below then catches it if it depends on
             // the LHS variable (e.g. `movie.year = movie.rating`).
             let left_property = var_property(&c.left);
@@ -255,11 +256,11 @@ fn to_predicate(
     }
 }
 
-/// Rule 3: one property admits a single predicate, or exactly one
+/// One property admits a single predicate, or exactly one
 /// lower-bound and one upper-bound range forming a bounded range. Anything
 /// else -- two lower bounds, two equalities, an equality beside a range --
-/// is rejected (Neo4j's `queryExpressionForOneProperty`). Rule 3's
-/// "contradictory predicates return no results" note (Example R3.4) still
+/// is rejected (Neo4j's `queryExpressionForOneProperty`). The
+/// "contradictory predicates return no results" note still
 /// holds: contradictory *bounds* are a legal two-predicate range.
 /// The entity-set match filter appears at most once (Neo4j's
 /// `queryExpressionFromWhereClause`).
@@ -406,8 +407,7 @@ mod tests {
     fn for_entity_lhs_without_a_binding_variable_rhs_is_rejected() {
         // The FOR entity variable on the LHS is only the accepted
         // "independent property as LHS" form when the RHS names the
-        // binding variable; a constant RHS is the wrong-variable error
-        // (CIP-240 R1.1).
+        // binding variable; a constant RHS is the wrong-variable error.
         expect_error(
             "MATCH (m:Movie) MATCH (movie:Movie) \
              SEARCH movie IN (VECTOR INDEX moviePlots FOR m.embedding \
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn property_predicate_on_an_unrelated_variable_is_rejected() {
         // Without a FOR entity variable only the binding variable is
-        // accepted (CIP-240 Rule 1, Neo4j 42I74).
+        // accepted (Neo4j 42I74).
         expect_error(
             "MATCH (m:Movie) MATCH (movie:Movie) \
              SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \

@@ -175,7 +175,7 @@ pub(crate) enum ElementFilter {
     /// A Relationship element's filter.
     Rel(RelFilter),
     /// A Quantified element: its own elements' table (quantified groups
-    /// cannot nest — the parser's Rule 4 — so one level is exact).
+    /// cannot nest, so one level is exact).
     Group(Vec<ElementFilter>),
 }
 
@@ -201,8 +201,8 @@ impl GpmFilters {
                 }
                 PatternElement::Quantified(qpp) => {
                     let inner = Self::resolve_elements(graph, &qpp.elements);
-                    // Postcondition of the parser's Rule 4 (no nested
-                    // quantification): the inner table holds no Group.
+                    // Postcondition of the parser's no-nesting check: the
+                    // inner table holds no Group.
                     assert!(
                         inner.iter().all(|e| !matches!(e, ElementFilter::Group(_))),
                         "quantified path patterns cannot be nested (parser Rule 4)"

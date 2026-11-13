@@ -151,7 +151,7 @@ fn indexed_seek_does_not_find_the_equal_half() {
     );
 }
 
-/// CIP-79 `USING SCAN` is honoured even beside a range index: the scan
+/// `USING SCAN` is honoured even beside a range index: the scan
 /// applies `=` and finds the equal partner, while the same predicate forced
 /// through the index does not (Neo4j 2026.09 answers 2 and 1 respectively).
 #[test]

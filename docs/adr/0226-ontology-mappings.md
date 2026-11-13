@@ -98,7 +98,7 @@ preserved, so an unchanged document yields the same graph with the same
 element ids (ADR-0116 §7) across restarts, and ids change only when the
 ontology is replaced (ADR-0120 §2).
 
-**Fixed graph type.** The derived graph carries a fixed CIP-176 graph type
+**Fixed graph type.** The derived graph carries a fixed graph type
 — an engine constant in `cypherlite/cypherlite-ontology` — describing the
 shapes above: the six labels with their mandatory properties `NOT NULL`
 (`key`, `label`, `type`, `name`, `constraint_type` where the table lists
@@ -115,10 +115,10 @@ The split follows the spec's enforcement table. **Enforceable** fields
 compile into the graph-type body:
 
 - Node entries: identifying label from `label` or `labels.identifier`,
-  implied labels from `labels.implied` — the CIP-176
+  implied labels from `labels.implied` — the graph-type
   `(:<Ident> => :<Implied&…> { … })` form, with the local id as the element
   alias where endpoint references need it.
-- Property `type` tokens map to the CIP-176 value type of the same name:
+- Property `type` tokens map to the graph-type value type of the same name:
   bare scalars as-is, `LIST<X>` to the corresponding list type, `LIST<ANY>`
   to `LIST<ANY>`, `VECTOR<INTEGER|FLOAT>` to the vector type, with
   `dimension` as its dimension when present (absent = unconstrained).
@@ -145,7 +145,8 @@ queryable in `system_ontologies` through the mapping in (1).
 
 ### 3. How apply fails on violating data
 
-Like all four procedures (ADR-0227, following CIP-287),
+Like all four procedures (ADR-0227, following the
+ontology-privileges proposal),
 `db.ontology.apply` takes no database argument: it reads the stored
 ontology of, and sets the graph type on, the database it is executed
 against — the session database or the `USE` target — which ADR-0121 §2's
@@ -203,7 +204,7 @@ that can see the data.
   theater (`TheaterData.derived_constraints`).
 - **Make SET itself validate existing data instead of adding an apply-only
   scan.** Rejected: SET's non-validating behavior matches Neo4j, and
-  changing it would break the CIP-176 corpus; the scan belongs to apply
+  changing it would break the graph-type corpus; the scan belongs to apply
   alone.
 
 ## Consequences
@@ -228,8 +229,8 @@ that can see the data.
 ## Later references
 
 - ADR-0228 corrects §2's list-token mapping: `LIST<X>` maps to the closed
-  `LIST<X NOT NULL>` (CIP-176 property types have no nullable inner type)
-  and `LIST<ANY>` declares nothing, having no CIP-176 property-type
+  `LIST<X NOT NULL>` (graph-type property types have no nullable inner
+  type) and `LIST<ANY>` declares nothing, having no graph-type property-type
   counterpart. The rest of §2 stands.
 - ADR-0229 removes §1 from the shipped crate: the
   document→`system_ontologies` mapping, its deterministic build and its
@@ -247,7 +248,7 @@ that can see the data.
   `PROPERTY_TYPE`, plain `FLOAT32`/`INTEGER8`/`INTEGER16`/`INTEGER32`,
   label-only or empty endpoints, empty property names that would be
   declared and empty constraint property lists fail loudly at `apply`;
-  `UUID` and the vector coordinate types map to their CIP-176 forms.
+  `UUID` and the vector coordinate types map to their graph-type forms.
 - ADR-0487 re-bases §2 again on the published 1.1.0 shapes: constraints
   of both owners are one closed shape with no `label`, so a constraint
   always compiles against its owning element; node and relationship

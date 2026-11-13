@@ -57,12 +57,12 @@ undefined-variable error, never a `null` value.
    `null` there; each site now states that binding itself instead of
    relying on the evaluator's fallback:
    - a quantification predicate sees a non-local singleton declared later
-     in the pattern as `null` (CIP-28 [5], Neo4j-verified), so
+     in the pattern as `null` (Neo4j-verified), so
      `gpm/qpp.rs` binds the predicate's unbound names to `null` for the
      evaluation row;
    - a void `OPTIONAL CALL` over a zero-row driving table yields one unit
-     row on which every variable in scope is `null` (CIP-159 [12],
-     Neo4j-verified), so `dispatch.rs` seeds that row with the scope's
+     row on which every variable in scope is `null`
+     (Neo4j-verified), so `dispatch.rs` seeds that row with the scope's
      names bound to `null`.
    A name that is neither in scope nor bound at one of these sites is
    still a typed error.
@@ -94,7 +94,7 @@ undefined-variable error, never a `null` value.
 - A planner/executor binding bug now fails loudly instead of fabricating
   `null` rows.
 - The two incomplete-row sites (QPP predicates, the void optional-call
-  unit row) keep their Neo4j-verified results (CIP-28 [5], CIP-159 [12])
+  unit row) keep their Neo4j-verified results
   through the explicit null binding, so the frozen CIP-eval identities do
   not move.
 - Tests: `eval/mod.rs` unit tests pin the error for both arms;

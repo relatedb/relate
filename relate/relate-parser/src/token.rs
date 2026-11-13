@@ -238,8 +238,8 @@ impl TokenType {
 /// `WHERE` as the element variable. ADR-0169: they are still label and
 /// relationship-type names (`is_schema_name()`).
 ///
-/// `RETURN` is not one of them. CIP-150 NOTES.md Q2 (`@neo4j-verified`
-/// against live Neo4j 2026.05, both CYPHER 5 and CYPHER 25): `RETURN` is a
+/// `RETURN` is not one of them. Verified
+/// against live Neo4j 2026.05 (both CYPHER 5 and CYPHER 25): `RETURN` is a
 /// non-reserved word usable as an ordinary variable/alias name (e.g.
 /// `WITH 1 AS RETURN RETURN RETURN AS r`) -- `is_ident_like()` is only
 /// checked in positions the grammar already knows unambiguously expect an
@@ -308,7 +308,7 @@ pub const CLAUSE_STARTER_TOKENS: &[TokenType] = &[
     TokenType::SET,
     TokenType::REMOVE,
     TokenType::UNWIND,
-    // CIP-250 (GQ10): `FOR <variable> IN <expression>`.
+    // `FOR <variable> IN <expression>`.
     TokenType::FOR,
     TokenType::FOREACH,
     TokenType::CALL,
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn test_is_ident_like() {
         assert!(TokenType::Identifier.is_ident_like());
-        // CIP-150 NOTES.md Q2 (`@neo4j-verified`): `RETURN` is a
+        // `RETURN` is a
         // non-reserved word usable as an ordinary variable/alias name.
         for ty in [
             TokenType::RETURN,

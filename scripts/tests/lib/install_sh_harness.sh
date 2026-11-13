@@ -28,7 +28,7 @@ TEST_TAG=v9.9.9
 # it in the header, and the assertion expects the mismatch.
 SUMS_WRONG_TAG=v9.9.8
 
-# The ADR-0457 header prefix as the fixture writer spells it. Section 0 of
+# The ADR-0457 header prefix as the fixture writer spells it. The top of
 # the harness holds this and install.sh's copy to manifest.rs's constant.
 SUMS_VERSION_PREFIX='# relate-release-version: '
 

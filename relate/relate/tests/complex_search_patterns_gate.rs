@@ -1,5 +1,5 @@
-//! The `complex-search-patterns` preview gate, ENABLED side (ADR-0371,
-//! CIP-225 Rule 0): with `RELATE_PREVIEW=complex-search-patterns` a
+//! The `complex-search-patterns` preview gate, ENABLED side (ADR-0371):
+//! with `RELATE_PREVIEW=complex-search-patterns` a
 //! SEARCH clause's MATCH statement keeps its own pattern shape — several
 //! components, multi-hop and variable-length relationships, several bound
 //! variables, predicates outside the binding — for a FULLTEXT source
@@ -7,7 +7,7 @@
 //!
 //! `RELATE_PREVIEW` is process-global and read once per `Database::open`
 //! (ADR-0371), so the enabled and closed sides are separate test binaries:
-//! `complex_search_patterns_closed.rs` pins the Rule 0 rejections and must
+//! `complex_search_patterns_closed.rs` pins the pattern-shape rejections and must
 //! never share a process with this file.
 
 mod common;

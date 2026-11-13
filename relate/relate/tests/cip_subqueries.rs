@@ -450,11 +450,12 @@ fn call_subquery_import_keeps_the_non_grouping_identity_row() {
     );
 }
 
-/// Rule 10's promotion policy, pinned (LABS-518): a name bundled into a
+/// The star-promotion policy, pinned: a name bundled into a
 /// larger WITH item list alongside a `*` is NOT promoted to star-visible,
 /// so a correlated `CALL (x) { WITH x, * RETURN * }` finds no star-visible
 /// variable and fails `NoVariablesInScope`. (Pre-change, the promotion
-/// made the body re-export `x`, which Rule 9 then rejected as an
+/// made the body re-export `x`, which the outer-scope collision check
+/// then rejected as an
 /// outer-scope collision — both reject the shape, this pins which error
 /// owns it now.)
 #[test]

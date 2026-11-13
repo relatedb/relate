@@ -171,7 +171,7 @@ RESOLUTIONS: list[tuple[str, str]] = [
     ("res-count-ref", "WITH 1 AS `count` RETURN count AS r"),
     ("res-exists-ref", "WITH 1 AS `exists` RETURN exists AS r"),
     ("res-collect-ref", "WITH 1 AS `collect` RETURN collect AS r"),
-    # CIP-17/18 element patterns, without and with a keyword variable.
+    # Element patterns, without and with a keyword variable.
     ("res-node-where-anon", "MATCH (WHERE 1 = 1) RETURN 1 AS r"),
     ("res-node-where-kwvar", "MATCH (where WHERE true) RETURN `where` AS r"),
     ("res-rel-where-anon", "MATCH ()-[WHERE true]->() RETURN 1 AS r"),

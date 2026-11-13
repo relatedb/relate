@@ -33,8 +33,8 @@ statement-engine passes therefore compounds exponentially with nesting
 depth — roughly doubling per +1 level for the canonical doubling bombs.
 Nested `CALL` is pinned openCypher (the TCK floor), un-gated and available
 on every surface — Rust, Bolt, HTTP, the CLI, the C ABI — so any client of
-an embedded engine can submit one; chained `DEFINE` bodies (CIP-231,
-preview-gated, ADR-0382) reach the same curve with per-body state.
+an embedded engine can submit one; chained `DEFINE` bodies (local
+callables, preview-gated, ADR-0382) reach the same curve with per-body state.
 
 Nothing bounds the curve. The measurements behind LABS-416: a bare
 nested-CALL doubling bomb costs ~7.7 µs per nested pass in release, a

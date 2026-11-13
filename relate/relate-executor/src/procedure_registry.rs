@@ -235,7 +235,7 @@ mod signatures;
 pub use signatures::BUILTIN_PROCEDURE_SIGNATURES;
 
 /// Looks up a built-in procedure signature by name, case-sensitively.
-/// CIP-230 ("Casing sensitivity"): built-in *function* names are
+/// Casing sensitivity: built-in *function* names are
 /// case-insensitive, but built-in *procedure* names are case-sensitive --
 /// `CALL DB.LABELS()` is an UnknownProcedure error, only the exact declared
 /// casing (`CALL db.labels()`) resolves. The validator must agree.

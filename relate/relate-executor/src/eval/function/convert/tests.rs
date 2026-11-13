@@ -72,7 +72,7 @@ fn to_boolean_or_null_and_to_string_or_null_match_neo4j() {
 }
 
 /// The dispatcher converts by value: a list read from a variable renders,
-/// whatever its element types. CIP-271's static `LIST<T>` rejection is the
+/// whatever its element types. The static `LIST<T>` rejection is the
 /// front's job (it sees the argument expression); the executor does not.
 #[test]
 fn tostring_of_a_list_read_from_a_variable_renders() {

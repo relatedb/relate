@@ -19,7 +19,7 @@ use crate::binding::Env;
 /// name it does not read (`GroupByAcceptance` [29] "A COUNT subquery variable
 /// shadowing a non-grouping variable is allowed": `COUNT { UNWIND range(1,
 /// a.p) AS b RETURN b }` reads outer `a`). An uncorrelated body may not
-/// shadow at all (`VariableAlreadyBound`, CIP-65 [5] and CIP-71 [9]).
+/// shadow at all (`VariableAlreadyBound`).
 fn body_imports_other_outer(query: &Query, env: &Env, shadowed: &SmallName) -> bool {
     let mut correlated = false;
     relate_ir::walk_query(query, &mut |_| {}, &mut |e| {

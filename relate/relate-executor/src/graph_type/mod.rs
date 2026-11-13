@@ -39,7 +39,7 @@ fn syn(msg: impl Into<String>) -> EngineError {
 /// Which corpus contract a graph-type body is validated against. The
 /// declaration form (`CREATE GRAPH TYPE`) is the CIP-178/180/181 surface,
 /// whose doc-derived corpus pins the legacy `indexProvider` OPTIONS key and
-/// Rule 3c/4c's constraint-alias/element-type-alias collision. The alteration
+/// the constraint-alias/element-type-alias collision. The alteration
 /// form (`ALTER CURRENT GRAPH TYPE`) follows Neo4j 2026.09's Cypher 25 rules:
 /// the OPTIONS policy of `CREATE CONSTRAINT` applies, and a constraint's
 /// `(alias:Label)` reference is its own schema-variable namespace (Neo4j's

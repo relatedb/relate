@@ -262,7 +262,7 @@ fn test_parse_infinity_usable_as_label_and_property_key() {
 #[test]
 fn test_parse_infinity_wins_over_variable_of_same_name() {
     // The literal takes precedence over an in-scope variable named
-    // `infinity` in expression position (CIP-55 usage[5]/[6]).
+    // `infinity` in expression position.
     let stmt = parse("WITH 0 AS infinity RETURN infinity AS x").unwrap();
     match &stmt.clauses[1] {
         Clause::Return(r) => assert_eq!(
@@ -422,7 +422,7 @@ fn test_parse_overflowing_float_literal_is_rejected() {
 #[test]
 fn test_parse_set_property_named_after_keyword() {
     // `limit` collides with the LIMIT keyword but must still be usable
-    // as a property name in a SET target (CIP-55 usage[8]).
+    // as a property name in a SET target.
     let stmt = parse("MATCH (n) SET n.limit = Infinity").unwrap();
     match stmt.clauses.last().unwrap() {
         Clause::Set(sc) => {

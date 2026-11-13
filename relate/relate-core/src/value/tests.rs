@@ -189,9 +189,9 @@ fn to_display_string_quotes_special_names_and_sorts_labels() {
     );
 }
 
-// CIP-271 / TypeConversion4 [6][8][10]: `toString(path)` is the bare
-// traversal chain — no enclosing `<…>` and no properties — while the
-// round-trippable literal keeps both. Verified against Neo4j 2026.10.1:
+// `toString(path)` is the bare traversal chain — no enclosing `<…>` and
+// no properties — while the round-trippable literal keeps both. Verified
+// against Neo4j 2026.10.1:
 // `toString(p)` of (:A {name:'a'})-[:FIRST]->(:B)<-[:SECOND]-(:C) is
 // `(:A)-[:FIRST]->(:B)<-[:SECOND]-(:C)`.
 #[test]

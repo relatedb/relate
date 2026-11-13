@@ -8,7 +8,7 @@
 ## Context
 
 LABS-165 reports that variables named `inf`, `nan`, or `infinity` bind in
-pattern position but resolve as CIP-55 float literals in expression position,
+pattern position but resolve as float literals in expression position,
 with three confusing repros: a `DETACH DELETE` of such a variable failing with
 a misleading message, a property access on such a variable failing with a type
 error, and `RETURN inf AS x` rendering as `{"x": null}` in JSON mode.
@@ -33,7 +33,7 @@ compatibility target:
 6. `SET n.inf = 1` and `{nan: 1}.nan` work — property keys after a dot and
    map keys are unaffected.
 
-So in Neo4j the CIP-55 literal **always** wins in expression/operand
+So in Neo4j the float literal **always** wins in expression/operand
 position, bound or not; binding such a name is legal and silent; every
 expression-position use of such a variable reads the literal and fails (if at
 all) at runtime with a type-mismatch GQLSTATUS, never a syntax error; and
@@ -84,8 +84,9 @@ CypherLite v0.10.1 is in the same class everywhere, via these sites:
   (`cypherlite/src/binding.rs:180-185`), CLI wire golden tests, and cookbook
   recordings (which parse wire envelopes).
 
-This is consistent with CIP-55 usage[5]/[6] (the literal wins in ordinary
-expression position); the fresh Neo4j evidence does not diverge from CIP-55.
+This is consistent with the language's own usage examples (the literal
+wins in ordinary expression position); the fresh Neo4j evidence does not
+diverge from them.
 The user mandate (LABS-165): align with verified Neo4j behavior, fix genuine
 divergences and usability bugs, and pin everything in tests. Diagnostics are
 not a compatibility surface, so improving our error text is allowed;
@@ -93,17 +94,17 @@ changing resolution semantics to diverge from Neo4j is not.
 
 ## Decision
 
-One coherent ruling: **CypherLite keeps Neo4j-aligned CIP-55 resolution
+One coherent ruling: **CypherLite keeps Neo4j-aligned float-literal resolution
 semantics in every position, fixes the two genuine usability bugs (the
 misleading static DELETE message and the JSON null rendering), documents the
 backtick escape, and pins every ruled position in tests.**
 
 1. **Resolution semantics — pin current behavior (matches Neo4j 2026.09 and
-   CIP-55 usage[5]/[6]).** Per position:
+   its usage examples).** Per position:
 
    | Position | Rule | Ruling |
    |---|---|---|
-   | Bare reference (`RETURN inf`) | CIP-55 float literal; never "undefined variable" | pin-current |
+   | Bare reference (`RETURN inf`) | float literal; never "undefined variable" | pin-current |
    | Bound-variable expression reference (`WITH 0 AS nan RETURN nan`) | Literal wins over the in-scope variable, silently | pin-current |
    | Property-access base (`inf.v`) | Literal wins; runtime InvalidArgumentType | pin-current |
    | Function argument (`labels(nan)`) | Literal wins; runtime type error | pin-current |
@@ -119,7 +120,7 @@ backtick escape, and pins every ruled position in tests.**
 
 2. **DELETE diagnostic — fix.** `check_delete_expr` gains a dedicated arm
    for non-finite float literal targets whose message names the cause and
-   the workaround: `inf`/`nan`/`infinity` are CIP-55 float-literal keywords,
+   the workaround: `inf`/`nan`/`infinity` are float-literal keywords,
    and backtick-escaping (`` DELETE `inf` ``) references a variable of that
    name. The check stays static and keeps `ErrorKind::InvalidArgumentType`
    (TCK Delete5 scenario 9 pins the compile-time class); only the message
@@ -153,7 +154,7 @@ backtick escape, and pins every ruled position in tests.**
    contains scenarios for these positions they join the allowlist per the
    AGENTS.md §4 procedure; no scenario moves to the skip list.
 
-5. **Documentation.** `inf`/`nan`/`infinity` are documented as CIP-55
+5. **Documentation.** `inf`/`nan`/`infinity` are documented as
    float-literal keywords that resolve to literals in expression position
    even when a variable of that name is in scope, with the backtick escape
    as the workaround, alongside the JSON-mode encoding note in
@@ -163,8 +164,9 @@ backtick escape, and pins every ruled position in tests.**
 
 - **Scope-aware fallback** (a bound variable wins over the literal in
   expression position). Rejected: Neo4j 2026.09 probe 2 shows the literal
-  wins even when bound, under both CYPHER_25 and CYPHER 5, and CIP-55
-  usage[5]/[6] says the literal wins in ordinary expression position.
+  wins even when bound, under both CYPHER_25 and CYPHER 5, and the
+  language's usage examples say the literal wins in ordinary expression
+  position.
   Diverging here breaks the compatibility target the user set.
 - **Reject binding `inf`/`nan`/`infinity` as variable names.** Rejected:
   Neo4j binds them legally and silently; rejecting the bind would fail
@@ -188,7 +190,7 @@ backtick escape, and pins every ruled position in tests.**
   `serde_json` and every strict parser (including the recordings reader and
   browser `JSON.parse`) rejects them, so the output would be unparseable
   rather than merely lossy.
-- **`"Infinity"`/`"-Infinity"` string spellings** (CIP-55 keyword spelling)
+- **`"Infinity"`/`"-Infinity"` string spellings** (the keyword spelling)
   instead of the `Display` spellings. Rejected: the JSON string is a
   rendering, not a re-parseable literal — the `.mode cypher` renderer
   already owns the parseable spelling — and matching `Display`

@@ -1,4 +1,4 @@
-//! The CIP-224 `<search clause>` rule family: the SEARCH-clause
+//! The `<search clause>` rule family: the SEARCH-clause
 //! binding-variable, SCORE-conflict, and scope rules of
 //! [`validate_search_clauses`].
 
@@ -15,17 +15,17 @@ use crate::ast::collect::{
 use crate::ast::search_spec::{walk_search_spec, SearchSlot};
 use crate::validate::ValidateOptions;
 
-/// CIP-224 `<search clause>` rules that don't fit any existing generic
+/// `<search clause>` rules that don't fit any existing generic
 /// scope tracker:
-/// - Rule 2's self-reference sub-case (the search query can't reference the
-///   binding variable it's about to produce, Examples SQ1/SQ2).
-/// - Rule 4 (the binding variable reference must be declared by this same
-///   MATCH statement's own pattern -- Rule 4's NODE/RELATIONSHIP value-type
+/// - The search query's self-reference ban (the search query can't
+///   reference the binding variable it's about to produce).
+/// - The binding variable reference must be declared by this same
+///   MATCH statement's own pattern (its NODE/RELATIONSHIP value-type
 ///   half is checked at runtime, see `match_clause::execute_search_for_row`).
-/// - Rule 5 (the SCORE AS variable must not conflict with anything already
-///   in scope, including the binding variable reference itself).
+/// - The SCORE AS variable must not conflict with anything already
+///   in scope, including the binding variable reference itself.
 ///
-/// CIP-225 Rule 0's pattern-shape restriction applies to every source kind
+/// The plain pattern-shape restriction applies to every source kind
 /// (see [`validate_search_pattern_shape`]): a SEARCH MATCH statement binds
 /// one variable, in a single node or single-hop relationship pattern, with
 /// predicates only on that variable. The `complex-search-patterns` preview
@@ -34,7 +34,7 @@ use crate::validate::ValidateOptions;
 /// one gate that lifts it; [`ValidateOptions`] carries the store's preview
 /// set, and the gate reads its own feature from it.
 ///
-/// Rule 5's scope check builds `scope` by walking the body's clauses from
+/// The SCORE-conflict scope check builds `scope` by walking the body's clauses from
 /// empty, deriving each clause's introduced names from
 /// [`clause_introduced_names`]: a SEARCH clause sees the names earlier
 /// clauses of the same linear body declared. (A CIP-213 NEXT stage starts a
@@ -50,8 +50,8 @@ pub fn validate_search_clauses(
         match clause {
             // A searching MATCH is the one arm this fold spells itself: the
             // CIP-224 rules need the clause's own pattern variables *before*
-            // they enter the scope (Rule 4's binding reference and Rule 5's
-            // SCORE conflict both test against them), while
+            // they enter the scope (the binding-reference and
+            // SCORE-conflict checks both test against them), while
             // [`clause_introduced_names`] folds the pattern variables and the
             // SCORE variable together.
             Clause::Match(mc) => match mc.search.as_ref() {
@@ -66,7 +66,7 @@ pub fn validate_search_clauses(
                         options,
                     )?;
                     scope.extend(this_match_vars);
-                    // Rule 5, checked where the scope lifecycle lives: after
+                    // The SCORE conflict, checked where the scope lifecycle lives: after
                     // this MATCH's own variables have entered the scope, one
                     // `insert` decides the conflict (and binds on win).
                     if let Some(sv) = search_score_var(mc) {
@@ -98,13 +98,13 @@ pub fn validate_search_clauses(
 }
 
 /// The CIP-224 SEARCH rules proper, extracted from the MATCH arm's scope
-/// bookkeeping: the binding-variable reference (Rule 4), and the
+/// bookkeeping: the binding-variable reference, and the
 /// source-specification rules -- the per-index
 /// CIP-225/240 kind×option compatibility (on the index) and the
-/// CIP-224/278 self-reference rules (Rule 2's `FOR` query and Rule 6's
+/// self-reference rules (the `FOR` query and the
 /// WEIGHT/CONSTANT controls, by slot) -- as one slot-tagged pass over the
 /// (possibly nested, CIP-278) source tree, the first violation in walk
-/// order stopping it. The Rule 5 SCORE-conflict check stays with the
+/// order stopping it. The SCORE-conflict check stays with the
 /// caller, which owns the scope lifecycle.
 fn validate_search_clause_rules(
     pattern: &[PatternPath],
@@ -113,7 +113,7 @@ fn validate_search_clause_rules(
     scope: &IdentHashSet<SmallName>,
     options: ValidateOptions,
 ) -> Result<(), EngineError> {
-    // CIP-225 Rule 0: one bound variable, one node or single-hop
+    // Plain shape: one bound variable, one node or single-hop
     // relationship pattern, predicates only on the bound element — for a
     // FULLTEXT source exactly as for a VECTOR one (FulltextSearchAcceptance
     // [11]-[13]). The `complex-search-patterns` opt-in is the one gate that
@@ -180,8 +180,8 @@ fn validate_search_clause_rules(
             }
             Ok(())
         },
-        // The self-reference rules, dispatched by slot: Rule 2's search
-        // query (`FOR`), CIP-278 Rule 6's WEIGHT/CONSTANT controls and the
+        // The self-reference rules, dispatched by slot: the search
+        // query (`FOR`), the WEIGHT/CONSTANT controls and the
         // per-row `WITH ANALYZER` expression may reference any incoming
         // variable but not the search clause's own binding variable
         // (FulltextSearchAcceptance [59]/[60]). The inner WHERE is
@@ -256,7 +256,7 @@ fn validate_search_clause_rules(
 /// validation verdict: a new shape rule lands here once, and both the
 /// gate and the top-K rule follow it.
 pub(crate) enum SearchPatternShape {
-    /// CIP-225 Rule 0's plain shape.
+    /// The plain shape.
     Plain,
     /// Everything beyond it — the `complex-search-patterns` family, with
     /// the gate's rejection detail.
@@ -294,7 +294,7 @@ pub(crate) fn search_pattern_shape(pattern: &[PatternPath]) -> SearchPatternShap
                 );
             }
             // The bound variable is the only element that may carry
-            // predicates (Rule 7) -- one spelling of the rejection,
+            // predicates -- one spelling of the rejection,
             // checked over every element position.
             let unbound_with_predicates = [
                 (n0.variable.is_none(), has_node_pattern_predicates(n0)),
@@ -316,7 +316,7 @@ pub(crate) fn search_pattern_shape(pattern: &[PatternPath]) -> SearchPatternShap
     }
 }
 
-/// Whether a SEARCH clause's MATCH statement goes beyond CIP-225 Rule 0's
+/// Whether a SEARCH clause's MATCH statement goes beyond the
 /// plain shape -- the `complex-search-patterns` family ([`SearchPatternShape`]).
 pub(crate) fn search_pattern_is_complex(pattern: &[PatternPath]) -> bool {
     matches!(
@@ -340,7 +340,7 @@ fn has_rel_pattern_predicates(rp: &relate_parser::RelPattern) -> bool {
 mod tests {
     use super::*;
 
-    /// CIP-225 Rule 0 holds for a FULLTEXT source exactly as for a VECTOR
+    /// The plain shape holds for a FULLTEXT source exactly as for a VECTOR
     /// one: multi-component, variable-length and QPP patterns are rejected
     /// (FulltextSearchAcceptance [11]-[13]).
     #[test]
@@ -378,7 +378,7 @@ mod tests {
     }
 
     /// An *empty* property map is a written specification, not an absent
-    /// one: `-[] {}]-` counts exactly like `(a {})` under Rule 7
+    /// one: `-[] {}]-` counts exactly like `(a {})`
     /// (live-verified — Neo4j rejects both with 42I71).
     #[test]
     fn a_limit_reading_a_pattern_variable_is_rejected() {

@@ -430,7 +430,7 @@ fn test_in_transactions_on_error_forms() {
 fn test_in_transactions_report_status_and_ordering() {
     for q in [
         "CALL { RETURN 1 AS x } IN TRANSACTIONS ON ERROR CONTINUE REPORT STATUS AS s RETURN x",
-        // REPORT STATUS may precede ON ERROR (CIP-34 concurrent-error-handling[7]).
+        // REPORT STATUS may precede ON ERROR.
         "CALL { RETURN 1 AS x } IN TRANSACTIONS REPORT STATUS AS s ON ERROR CONTINUE RETURN x",
     ] {
         let stmt = parse_ok(q);

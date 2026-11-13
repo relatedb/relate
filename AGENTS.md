@@ -25,7 +25,17 @@ stylistic or trivially reversible edits.
   maintainers"). No sensitive information of any kind: credentials,
   tokens, internal URLs, unreleased plans, customer or personal data.
   The `adr-numbers` CI check fails any line a change adds under
-  `docs/adr/` carrying `LABS-###`, `CIP-###`, or a `linear.app` link
+  `docs/adr/` carrying `LABS-###`, `CIP-###`, or a `linear.app` link —
+  and, repo-wide, any tracked line that ties a `CIP-###` id to
+  proposal-internal detail: quoted grammar, rule, section or deviation
+  labels, `NOTES.md` pointers, attribution phrases, approval facts,
+  quoted titles, or eval-corpus names. The repo-wide scan is not
+  diff-aware (existing lines fail too) and reads each line with its
+  successor, so a citation a line wrap splits mid-way fails as one
+  marker; a bare `CIP-###` id outside `docs/adr/`
+  does not fail, and the check's own fixtures
+  `scripts/tests/test_check_adr_numbers.py` and
+  `scripts/tests/test_adr_mint.py` are exempt
 - Status starts `Proposed`; set `Accepted` only when agreed. Accepted ADRs
   immutable — later change = new ADR + **Later references** note on old one
 - Mint number via `python3 scripts/adr_mint.py` (atomic claim; never list

@@ -1,4 +1,4 @@
-# 0188. Remove the CIP-271-superseded toString() TCK scenario from the pinned corpus
+# 0188. Remove the superseded toString() TCK scenario from the pinned corpus
 
 - **Status**: Accepted
 - **Date**: 2026-10-08
@@ -7,8 +7,8 @@
 ## Context
 
 The pinned openCypher TCK corpus (2024.3, ADR-0056/ADR-0006, vendored under
-`testdata/tck/`) contains one scenario whose expectation CIP-271
-deliberately reversed:
+(`testdata/tck/`) contains one scenario whose expectation the 2026.09
+display-form change deliberately reversed:
 
 ```gherkin
 Scenario Outline: [10] Fail `toString()` on invalid types #Example: <exampleName>
@@ -27,20 +27,22 @@ Scenario Outline: [10] Fail `toString()` on invalid types #Example: <exampleName
 (`testdata/tck/expressions/typeConversion/TypeConversion4.feature`.)
 
 The outline expects `toString()` to raise a `TypeError` on
-LIST/MAP/NODE/RELATIONSHIP/PATH. CIP-271 — implemented in Neo4j 2026.09,
-verified live under `CYPHER 25` — made `toString()` render those types in
-display form instead. CypherLite implements the CIP-271 semantics (ADR-0002
-records the authority ordering: a CIP-verified Neo4j behavior is
-authoritative over the 2024.3 TCK floor), and cip-eval's CIP-271 suite
-carries the current contract, including the `LIST<ANY>`-only acceptance rule
-under which the homogeneous lists of these examples still error.
+LIST/MAP/NODE/RELATIONSHIP/PATH. The display-form change — implemented in
+Neo4j 2026.09, verified live under `CYPHER 25` — made `toString()` render
+those types in display form instead. CypherLite implements the display-form
+semantics (ADR-0002 records the authority ordering: a live-verified Neo4j
+behavior is authoritative over the 2024.3 TCK floor), and the cip-eval
+display-form suite carries the current contract, including the
+`LIST<ANY>`-only acceptance rule under which the homogeneous lists of these
+examples still error.
 
 The scenario was therefore carried as the skip list's single entry
 (`runner::skip_reason`), collapsed into one counted skip record for its five
 Examples rows. The public claim read "3892 of 3893 pass, 1 documented skip",
 and the skip list "only shrinks" (ADR-0006) — but this entry could never
 shrink away: it does not encode an engine limitation that work can remove;
-it encodes *pre-CIP-271 semantics* the dialect has deliberately outgrown.
+it encodes *pre-display-form semantics* the dialect has deliberately
+outgrown.
 Every future conformance claim would carry a permanent "1 skip" that no
 engine change can ever legitimately fix.
 
@@ -52,7 +54,7 @@ file as a `#`-commented reference with the removal reason inline
 reported skip machinery (`skip_reason`, `EXPECTED_TCK_SKIPS`, the exact-set
 skip gate) stays armed for any future skip. The claim becomes **3892 of
 3892 pinned scenarios pass, 0 skips** — a 100% pass of the pin — with the
-pin explicitly described as "2024.3 minus one CIP-271-superseded outline"
+pin explicitly described as "2024.3 minus one superseded outline"
 rather than unmodified upstream 2024.3.
 
 ## Alternatives considered
@@ -60,10 +62,10 @@ rather than unmodified upstream 2024.3.
 - **Keep the skip forever.** Rejected: the entry is permanent by nature (a
   reversed expectation, not a missing capability), so it would sit in every
   future claim and invite exactly the "just make it pass" regression that
-  re-introducing the pre-CIP-271 `toString()` error would be.
+  re-introducing the older `toString()` error would be.
 - **Fix it by reverting `toString()` to error on those types.** Rejected:
-  a deliberate regression of a CIP-271 Cypher 25 semantic change that
-  Neo4j itself made (verified live) — the wrong direction for a
+  a deliberate regression of a Cypher 25 semantic change that Neo4j
+  itself made (verified live) — the wrong direction for a
   Neo4j-parity dialect.
 - **Re-pin the corpus to a newer upstream TCK that encodes Cypher 25
   semantics.** Rejected for now: a full re-pin is a large conformance surface
@@ -87,7 +89,7 @@ rather than unmodified upstream 2024.3.
   the claim appears (`docs/tck/compliance.md`, `docs/limitations.md`,
   README, AGENTS.md). The claim remains against *our* pin, not blanket
   upstream-2024.3 parity.
-- Later references: ADR-0002 (CIP-271 authority ordering), ADR-0006
+- Later references: ADR-0002 (display-form authority ordering), ADR-0006
   (skip-list policy — the list reached its natural empty end state, and the
   shrink-only rule is upheld), ADR-0056 (the 2024.3 pin itself, now with a
   documented local deviation).

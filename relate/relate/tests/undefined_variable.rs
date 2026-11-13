@@ -30,7 +30,7 @@ fn show_where_with_a_yielded_column_still_filters() {
     assert_eq!(result.rows, vec![vec![Value::String("idx".into())]]);
 }
 
-/// ADR-0335 decision 5 (CIP-159 [12], Neo4j-verified): the unit row a void
+/// ADR-0335 decision 5 (Neo4j-verified): the unit row a void
 /// `OPTIONAL CALL` yields over a zero-row driving table binds the outer
 /// scope's variables to null, so the following projection reads null
 /// instead of an unbound reference.
@@ -45,7 +45,7 @@ fn a_void_optional_call_over_an_empty_table_reads_outer_variables_as_null() {
     assert_eq!(result.rows, vec![vec![Value::Null]]);
 }
 
-/// ADR-0335 decision 5 (CIP-28 [5], Neo4j-verified): a non-local singleton
+/// ADR-0335 decision 5 (Neo4j-verified): a non-local singleton
 /// declared later in the pattern reads as null inside the quantification
 /// predicate, so only the zero-repetition matches survive.
 #[test]

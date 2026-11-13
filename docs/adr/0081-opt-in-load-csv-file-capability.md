@@ -18,8 +18,8 @@ read by an executing query.
 Using the database location as the CSV root would exclude `:memory:` and
 `.cl` bundle databases and would implicitly grant access to files beside the
 database. The file capability instead needs a separately configured root.
-The existing CIP-202 `artists.csv` case is a canned in-memory fixture for the
-CIP evaluation suite, not a general network or file loader.
+The existing `artists.csv` case is a canned in-memory fixture for the
+evaluation suite, not a general network or file loader.
 
 ## Decision
 
@@ -83,7 +83,7 @@ most once; each input row still produces its own CSV result rows. A later
 statement gets a new memo, so the first successful read is a stable snapshot
 only for that statement. The exact
 `https://data.neo4j.com/bands/artists.csv` URL remains a hardcoded,
-in-memory CIP-202 fixture, even without a file root. It does not issue a
+in-memory fixture, even without a file root. It does not issue a
 network request and does not enable other URLs or local filesystem access.
 
 ## Alternatives considered
@@ -98,7 +98,7 @@ network request and does not enable other URLs or local filesystem access.
 - **Validate only metadata size and then read the entire file.** Rejected:
   size can change after inspection and special files may not report a useful
   length; only a bounded actual read enforces the limit.
-- **Remove the CIP-202 URL or enable arbitrary HTTP to support it.**
+- **Remove the canned URL or enable arbitrary HTTP to support it.**
   Rejected: removing it regresses the existing CIP evaluation case, while
   network fetching creates a new, unrelated capability. An exact canned
   fixture preserves the test without granting either file or network access.
@@ -118,7 +118,7 @@ network request and does not enable other URLs or local filesystem access.
 - A statement holds at most one bounded copy of each distinct successfully
   referenced source in its memo; repeated input rows do not multiply file
   reads. The per-file cap is not a total query-memory or output-row governor.
-- The exact CIP-202 artists fixture continues to work without a configured
+- The exact artists fixture continues to work without a configured
   root; other HTTPS URLs stay unavailable.
 
 ## Later references

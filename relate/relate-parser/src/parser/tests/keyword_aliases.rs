@@ -381,7 +381,7 @@ const CLAUSE_KEYWORD_SPELLINGS: [&str; 22] = [
     "require", "drop",
 ];
 
-/// The leading MATCH clause's CIP-224 `<search clause>`.
+/// The leading MATCH clause's `<search clause>`.
 fn search_clause(s: &Statement) -> &SearchClause {
     match_clause(s).search.as_ref().expect("SEARCH clause")
 }
@@ -434,7 +434,7 @@ fn keyword_search_binding_variable() {
 
     // NULL reads as a variable too: Neo4j parses `SEARCH NULL IN (...)`
     // and rejects it semantically ("Variable `NULL` not defined" --
-    // exactly what CIP-224 binding-variable scenario [4] expects). The
+    // exactly what the binding-variable rule expects). The
     // unbound-reference rejection is relate-front's
     // `InvalidSearchVariableReference` check, not this read.
     let stmt =
@@ -442,7 +442,6 @@ fn keyword_search_binding_variable() {
     assert_eq!(search_clause(&stmt).binding_var, "null");
 
     // A non-name token is still rejected, as is a property access
-    // (CIP-224 Example B2).
     assert!(
         parse("MATCH (n:Doc) SEARCH 5 IN (VECTOR INDEX docs FOR [1.0] LIMIT 2) RETURN 1").is_err()
     );

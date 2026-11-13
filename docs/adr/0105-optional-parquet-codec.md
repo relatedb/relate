@@ -8,9 +8,9 @@
 
 LABS-103 asks for a small, lean engine core. ADR-0103 made the engine
 boundary enforceable (`cypherlite/` depends only on `cypherlite/`), and
-ADR-0104 introduced additive feature bundles for the CLI. Its rule 7 says
-engine-level features follow the same rules, each with its own ADR. This is
-the first one.
+ADR-0104 introduced additive feature bundles for the CLI and extends the
+same policy to engine-level features, each with its own ADR. This is the
+first one.
 
 The engine's dependency tree is dominated by one component: the Parquet
 snapshot codec in `cypherlite-storage` (ADR-0004, ADR-0022, ADR-0050).
@@ -111,7 +111,7 @@ explicitly. ADR-0104 rules 1, 2, 6 and 7 apply unchanged.
    `OpenOptions.snapshot_codec`, `CYPHERLITE_SNAPSHOT_FORMAT=parquet`, or the
    CLI `--snapshot-format parquet` in a build without the codec returns the
    same error. The CLI `--help` lists only the codecs compiled into the
-   binary (ADR-0104 rule 5).
+   binary (ADR-0104).
 
 ### Pull does not require Parquet
 
@@ -195,7 +195,7 @@ This applies on every target and in every build, with or without
 - **Parquet off by default (opt-in).** A plain `cargo build` or a new
   embedder would silently get JSON checkpoints, and existing Parquet stores
   would fail to open after a routine dependency bump. Rejected: ADR-0104
-  rule 2 keeps defaults equal to today's behaviour.
+  keeps defaults equal to today's behaviour.
 - **Move the codec into its own crate behind a runtime codec registry**
   (for example a `cypherlite-parquet` surface crate that registers itself).
   The engine would need a stable, public codec trait and registration at

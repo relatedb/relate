@@ -213,8 +213,7 @@ fn test_parse_list_and_union_types() {
 /// a type expression -- it must produce the exact same `TypeExpr` as
 /// the word form, everywhere `NOT NULL` is accepted (scalars, list
 /// inner/outer, union members), and it must tolerate whitespace before
-/// it (Neo4j-verified deviation from the CIP text; see CIP-102
-/// NOTES.md).
+/// it (Neo4j-verified deviation from the CIP text).
 #[test]
 fn test_parse_not_null_bang_shorthand() {
     // Scalar: `!` and `NOT NULL` parse to an identical TypeExpr.

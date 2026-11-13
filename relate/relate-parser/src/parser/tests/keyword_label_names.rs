@@ -358,7 +358,7 @@ fn test_keyword_label_names_in_schema_commands_and_hints() {
             other => panic!("{q}: expected CREATE CONSTRAINT, got {other:?}"),
         }
 
-        // CIP-177 `REQUIRE <alias>:<Label>`.
+        // `REQUIRE <alias>:<Label>`.
         let q = format!("CREATE CONSTRAINT FOR (n:A) REQUIRE n:{k}");
         match &parse_ok(&q).clauses[0] {
             Clause::CreateConstraint(cc) => {

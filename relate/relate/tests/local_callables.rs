@@ -1,30 +1,30 @@
-//! CIP-231 local callables: `DEFINE PROCEDURE`/`DEFINE FUNCTION` behind
-//! the ADR-0371 `local-callables` preview gate. The queries and every
-//! expected table are the CIP's own "In this proposal: Basics" example
-//! tables (doc-derived: the first implementation is not in a release, so
-//! there is no live instance to verify against).
+//! Local callables: `DEFINE PROCEDURE`/`DEFINE FUNCTION` behind
+//! the ADR-0371 `local-callables` preview gate. The corpus and every
+//! example below are authored locally for this suite, and every
+//! expected table was recomputed by running these fixtures through
+//! this engine.
 
 mod common;
 
 use relate::Value;
 
-/// The CIP-231 preview gate is process-level (ADR-0371: `Database::open`
-/// resolves `RELATE_PREVIEW` once), and an integration-test crate is
-/// its own process -- set it before any store opens and keep every test
-/// in this crate behind the gate.
+/// The local-callables preview gate is process-level (ADR-0371:
+/// `Database::open` resolves `RELATE_PREVIEW` once), and an
+/// integration-test crate is its own process -- set it before any store
+/// opens and keep every test in this crate behind the gate.
 fn gated_connection() -> relate::Connection {
     std::env::set_var("RELATE_PREVIEW", "local-callables");
     common::connection()
 }
 
-/// The CIP's band fixture: The ABCDs with Alice, Barb, Cheng and Donni in
-/// it (the `createPersonNode` example's own data).
-fn band_store() -> relate::Connection {
+/// The cast fixture: the film "Harbour Lights" with Ines, Jules, Kai
+/// and Marta in it.
+fn film_store() -> relate::Connection {
     let mut c = gated_connection();
     c.query(
-        "CREATE (b:Band {name: \"The ABCDs\"}) \
-         UNWIND [\"Alice\", \"Barb\", \"Cheng\", \"Donni\"] AS member \
-         CREATE (p:Person {name: member})-[:IN]->(b)",
+        "CREATE (f:Film {name: \"Harbour Lights\"}) \
+         UNWIND [\"Ines\", \"Jules\", \"Kai\", \"Marta\"] AS member \
+         CREATE (a:Actor {name: member})-[:IN]->(f)",
     )
     .unwrap();
     c
@@ -44,20 +44,20 @@ fn strings(result: &relate::QueryResult) -> Vec<String> {
 
 #[test]
 fn local_procedure_creates_per_row() {
-    // The CIP's `createPersonNode` example table: the band, all four
-    // members, in order.
+    // A per-row procedure call: the film, all four cast members, in
+    // order.
     let mut c = gated_connection();
     let result = c
         .query(
-            "DEFINE PROCEDURE createPersonNode(name) { \
-               CREATE (p:Person {name: name}) \
-               RETURN p AS person \
+            "DEFINE PROCEDURE createCastMember(name) { \
+               CREATE (a:Actor {name: name}) \
+               RETURN a AS castMember \
              } \
-             CREATE (b:Band {name: \"The ABCDs\"}) \
-             UNWIND [\"Alice\", \"Barb\", \"Cheng\", \"Donni\"] AS bandMemberName \
-             CALL createPersonNode(bandMemberName) YIELD person AS bandMember \
-             CREATE (bandMember)-[:IN]->(b) \
-             RETURN b.name AS band, bandMember.name AS member",
+             CREATE (f:Film {name: \"Harbour Lights\"}) \
+             UNWIND [\"Ines\", \"Jules\", \"Kai\", \"Marta\"] AS castMemberName \
+             CALL createCastMember(castMemberName) YIELD castMember \
+             CREATE (castMember)-[:IN]->(f) \
+             RETURN f.name AS film, castMember.name AS member",
         )
         .unwrap();
     let rows: Vec<String> = result
@@ -68,16 +68,16 @@ fn local_procedure_creates_per_row() {
     assert_eq!(
         rows,
         vec![
-            "The ABCDs/Alice",
-            "The ABCDs/Barb",
-            "The ABCDs/Cheng",
-            "The ABCDs/Donni",
+            "Harbour Lights/Ines",
+            "Harbour Lights/Jules",
+            "Harbour Lights/Kai",
+            "Harbour Lights/Marta",
         ]
     );
 }
 
-/// The int-column extractor of the CIP table tests (the `show` family:
-/// one canonical per-shape extractor, not one per test).
+/// The int-column extractor (the `show` family: one canonical
+/// per-shape extractor, not one per test).
 fn ints(result: &relate::QueryResult) -> Vec<i64> {
     result
         .rows
@@ -96,23 +96,46 @@ fn show(value: &Value) -> String {
     }
 }
 
+/// The (int, bool) row pair (columns 0 and 1), as tuples.
+fn int_bool_pairs(result: &relate::QueryResult) -> Vec<(i64, bool)> {
+    result
+        .rows
+        .iter()
+        .map(|row| match (&row[0], &row[1]) {
+            (Value::Int(x), Value::Bool(b)) => (*x, *b),
+            other => panic!("expected (int, bool), got {other:?}"),
+        })
+        .collect()
+}
+
+/// The (bool, bool) row pair (columns 1 and 2), as tuples.
+fn bool_bool_pairs(result: &relate::QueryResult) -> Vec<(bool, bool)> {
+    result
+        .rows
+        .iter()
+        .map(|row| match (&row[1], &row[2]) {
+            (Value::Bool(a), Value::Bool(b)) => (*a, *b),
+            other => panic!("expected (bool, bool), got {other:?}"),
+        })
+        .collect()
+}
+
 #[test]
 fn typed_signatures_accept_the_bare_type_form() {
-    // The CIP-231 implementation grammar's field signatures
-    // (`symbolicNameString (typed? type)?`) make the `::`/TYPED marker
-    // optional: the doc's own canonical output spelling
-    // `:: (count INTEGER)` and a bare input `(band STRING)` must parse
-    // exactly like the marked forms.
+    // The field-signature grammar makes the `::`/TYPED marker
+    // optional: the canonical output spelling `:: (count INTEGER)` and
+    // a bare input `(film STRING)` must parse exactly like the marked
+    // forms.
     let mut c = gated_connection();
     let result = c
         .query(
-            "DEFINE PROCEDURE getNumberOfBandMembers(band STRING) \
+            "DEFINE PROCEDURE getCastSize(film STRING) \
                :: (count INTEGER) { \
-                 MATCH (b:Band {name: band})<-[:IN]-(m) \
+                 MATCH (f:Film {name: film})<-[:IN]-(m) \
                  RETURN count(m) AS count \
                } \
-               CREATE (:Band {name: 'Nirvana'})<-[:IN]-(:Person {name: 'Krist'}) \
-               CALL getNumberOfBandMembers('Nirvana') YIELD count \
+               CREATE (:Film {name: 'Tidewater'})<-[:IN]-(:Actor {name: 'Ruth'}) \
+               CALL getCastSize('Tidewater') YIELD count \
                RETURN count",
         )
         .unwrap();
@@ -134,15 +157,7 @@ fn union_arms_yield_their_own_items_not_the_head_arm_stamp() {
              RETURN a",
         )
         .unwrap();
-    let rows: Vec<i64> = result
-        .rows
-        .iter()
-        .map(|row| match &row[0] {
-            Value::Int(n) => *n,
-            other => panic!("expected an int, got {other:?}"),
-        })
-        .collect();
-    assert_eq!(rows, vec![1, 2]);
+    assert_eq!(ints(&result), vec![1, 2]);
 }
 
 #[test]
@@ -241,67 +256,69 @@ fn chained_definition_bombs_hit_the_nested_evaluation_budget() {
 }
 
 #[test]
-fn simple_function_matches_the_cip_table() {
+fn simple_function_matches_its_table() {
     let mut c = gated_connection();
     let result = c
         .query(
-            "DEFINE FUNCTION isEven(num) = \
-               CASE WHEN num % 2 = 0 THEN true ELSE false END \
-             UNWIND range(1,4) AS x \
-             RETURN x, isEven(x) AS isEven",
+            "DEFINE FUNCTION isFiver(num) = \
+               CASE WHEN num % 5 = 0 THEN true ELSE false END \
+             UNWIND range(1,6) AS x \
+             RETURN x, isFiver(x) AS isFiver",
         )
         .unwrap();
-    let rows: Vec<(i64, bool)> = result
-        .rows
-        .iter()
-        .map(|row| match (&row[0], &row[1]) {
-            (Value::Int(x), Value::Bool(b)) => (*x, *b),
-            other => panic!("expected (int, bool), got {other:?}"),
-        })
-        .collect();
-    assert_eq!(rows, vec![(1, false), (2, true), (3, false), (4, true)]);
+    assert_eq!(
+        int_bool_pairs(&result),
+        vec![
+            (1, false),
+            (2, false),
+            (3, false),
+            (4, false),
+            (5, true),
+            (6, false),
+        ]
+    );
 }
 
 #[test]
-fn optional_parameters_default_per_the_cip() {
-    // The CIP's `isEven(num, radix = 2)` table, including the radix-3
-    // call: one evaluation per argument and invocation.
+fn optional_parameters_default_per_declaration() {
+    // An optional parameter with a default, including the
+    // overridden-modulus call: one evaluation per argument and
+    // invocation.
     let mut c = gated_connection();
     let result = c
         .query(
-            "DEFINE FUNCTION isEven(num, radix = 2) = \
-               CASE WHEN num % radix = 0 THEN true ELSE false END \
-             UNWIND range(1,4) AS x \
-             RETURN x, isEven(x) AS even2, isEven(x, 3) AS even3",
+            "DEFINE FUNCTION isFiver(num, modulus = 5) = \
+               CASE WHEN num % modulus = 0 THEN true ELSE false END \
+             UNWIND range(1,6) AS x \
+             RETURN x, isFiver(x) AS byFive, isFiver(x, 3) AS byThree",
         )
         .unwrap();
-    let rows: Vec<(bool, bool)> = result
-        .rows
-        .iter()
-        .map(|row| match (&row[1], &row[2]) {
-            (Value::Bool(a), Value::Bool(b)) => (*a, *b),
-            other => panic!("expected (bool, bool), got {other:?}"),
-        })
-        .collect();
     assert_eq!(
-        rows,
-        vec![(false, false), (true, false), (false, true), (true, false),]
+        bool_bool_pairs(&result),
+        vec![
+            (false, false),
+            (false, false),
+            (false, true),
+            (false, false),
+            (true, false),
+            (false, true),
+        ]
     );
 }
 
 #[test]
 fn query_body_function_nulls_on_zero_rows() {
-    // The CIP's `getBandName` scalar-subquery semantics: zero rows -> null,
-    // matched rows -> the first row's value.
-    let mut c = band_store();
+    // Scalar-subquery semantics: zero rows -> null, matched rows -> the
+    // first row's value.
+    let mut c = film_store();
     let result = c
         .query(
-            "DEFINE FUNCTION getBandName(name) { \
-               OPTIONAL MATCH (p:Person {name: name})-[:IN]->(b:Band) \
-               RETURN b.name LIMIT 1 \
+            "DEFINE FUNCTION getFilmTitle(name) { \
+               OPTIONAL MATCH (a:Actor {name: name})-[:IN]->(f:Film) \
+               RETURN f.name LIMIT 1 \
              } \
-             UNWIND [\"Billy\", \"Donni\", \"Barb\", \"Cheer\"] AS name \
-             RETURN name, getBandName(name) AS band",
+             UNWIND [\"Petra\", \"Marta\", \"Jules\", \"Noor\"] AS name \
+             RETURN name, getFilmTitle(name) AS film",
         )
         .unwrap();
     let rows: Vec<(String, Option<String>)> = result
@@ -318,25 +335,25 @@ fn query_body_function_nulls_on_zero_rows() {
     assert_eq!(
         rows,
         vec![
-            ("Billy".into(), None),
-            ("Donni".into(), Some("The ABCDs".into())),
-            ("Barb".into(), Some("The ABCDs".into())),
-            ("Cheer".into(), None),
+            ("Petra".into(), None),
+            ("Marta".into(), Some("Harbour Lights".into())),
+            ("Jules".into(), Some("Harbour Lights".into())),
+            ("Noor".into(), None),
         ]
     );
 }
 
 #[test]
 fn query_body_function_aggregates() {
-    // The CIP's `getNumberOfBandMembers` example (4 members of The ABCDs).
-    let mut c = band_store();
+    // An aggregating query body (4 cast members of Harbour Lights).
+    let mut c = film_store();
     let result = c
         .query(
-            "DEFINE FUNCTION getNumberOfBandMembers(band) { \
-               MATCH (p:Person)-[:IN]->(b:Band {name: band}) \
-               RETURN count(p) \
-             } \
-             RETURN getNumberOfBandMembers(\"The ABCDs\") AS num",
+            "DEFINE FUNCTION getCastSize(film) { \
+                MATCH (a:Actor)-[:IN]->(f:Film {name: film}) \
+                RETURN count(a) \
+              } \
+              RETURN getCastSize(\"Harbour Lights\") AS num",
         )
         .unwrap();
     let rows: Vec<i64> = result
@@ -352,64 +369,60 @@ fn query_body_function_aggregates() {
 
 #[test]
 fn functions_invoke_each_other_and_nest() {
-    // The CIP's `hasEvenNumberOfDigits` example (both the flat and the
-    // nested-definition spellings produce the same table).
+    // Composed functions (both the flat and the nested-definition
+    // spellings produce the same table).
     let expected = vec![
-        (-11, true),
-        (-1, false),
-        (0, false),
-        (17, true),
-        (100, false),
-        (1234, true),
-        (3516835, false),
+        (-7, true),
+        (-20, false),
+        (0, true),
+        (5, true),
+        (321, true),
+        (400, true),
+        (999999, false),
     ];
     for query in [
-        "DEFINE FUNCTION numberOfDigits(num) = \
+        "DEFINE FUNCTION digitCount(num) = \
            CASE WHEN num = 0 THEN 1 \
                 ELSE toInteger(ceil(log10(abs(num)+1))) END \
-         DEFINE FUNCTION isEven(num) = \
-           CASE WHEN num % 2 = 0 THEN true ELSE false END \
-         DEFINE FUNCTION hasEvenNumberOfDigits(num) = isEven(numberOfDigits(num)) \
-         UNWIND [-11, -1, 0, 17, 100, 1234, 3516835] AS x \
-         RETURN x, hasEvenNumberOfDigits(x) AS e",
-        "DEFINE FUNCTION hasEvenNumberOfDigits(num) { \
-           DEFINE FUNCTION numberOfDigits(num) = \
+         DEFINE FUNCTION isOdd(num) = \
+           CASE WHEN num % 2 = 1 THEN true ELSE false END \
+         DEFINE FUNCTION hasOddDigitCount(num) = isOdd(digitCount(num)) \
+         UNWIND [-7, -20, 0, 5, 321, 400, 999999] AS x \
+         RETURN x, hasOddDigitCount(x) AS e",
+        "DEFINE FUNCTION hasOddDigitCount(num) { \
+           DEFINE FUNCTION digitCount(num) = \
              CASE WHEN num = 0 THEN 1 \
                   ELSE toInteger(ceil(log10(abs(num)+1))) END \
-           DEFINE FUNCTION isEven(num) = \
-             CASE WHEN num % 2 = 0 THEN true ELSE false END \
-           RETURN isEven(numberOfDigits(num)) LIMIT 1 \
+           DEFINE FUNCTION isOdd(num) = \
+             CASE WHEN num % 2 = 1 THEN true ELSE false END \
+           RETURN isOdd(digitCount(num)) LIMIT 1 \
          } \
-         UNWIND [-11, -1, 0, 17, 100, 1234, 3516835] AS x \
-         RETURN x, hasEvenNumberOfDigits(x) AS e",
+         UNWIND [-7, -20, 0, 5, 321, 400, 999999] AS x \
+         RETURN x, hasOddDigitCount(x) AS e",
     ] {
         let mut c = gated_connection();
         let result = c.query(query).unwrap();
-        let rows: Vec<(i64, bool)> = result
-            .rows
-            .iter()
-            .map(|row| match (&row[0], &row[1]) {
-                (Value::Int(x), Value::Bool(b)) => (*x, *b),
-                other => panic!("expected (int, bool), got {other:?}"),
-            })
-            .collect();
-        assert_eq!(rows, expected);
+        assert_eq!(int_bool_pairs(&result), expected);
     }
+}
+
+fn assert_evaluated_once(result: &relate::QueryResult) {
+    let Value::String(str) = &result.rows[0][0] else {
+        panic!("expected a string");
+    };
+    let (left, right) = str.split_once(" ~ ").expect("the equation separator");
+    assert_eq!(left, right, "the argument must be evaluated exactly once");
 }
 
 #[test]
 fn call_by_value_evaluates_arguments_once() {
-    // The CIP's `foo(a) = a + " = " + a` call-by-value pin: the argument
-    // is evaluated once, so the equation holds.
+    // The call-by-value pin: the argument is evaluated once, so the
+    // equation holds.
     let mut c = gated_connection();
     let result = c
-        .query("DEFINE FUNCTION foo(a) = a + \" = \" + a RETURN foo(rand()) AS str")
+        .query("DEFINE FUNCTION bar(a) = a + \" ~ \" + a RETURN bar(rand()) AS str")
         .unwrap();
-    let Value::String(str) = &result.rows[0][0] else {
-        panic!("expected a string");
-    };
-    let (left, right) = str.split_once(" = ").expect("the equation separator");
-    assert_eq!(left, right, "the argument must be evaluated exactly once");
+    assert_evaluated_once(&result);
 }
 
 #[test]
@@ -417,15 +430,11 @@ fn procedure_call_by_value_evaluates_arguments_once() {
     let mut c = gated_connection();
     let result = c
         .query(
-            "DEFINE PROCEDURE foo(a) { RETURN a + \" = \" + a AS str } \
-             CALL foo(rand()) YIELD str RETURN str",
+            "DEFINE PROCEDURE bar(a) { RETURN a + \" ~ \" + a AS str } \
+             CALL bar(rand()) YIELD str RETURN str",
         )
         .unwrap();
-    let Value::String(str) = &result.rows[0][0] else {
-        panic!("expected a string");
-    };
-    let (left, right) = str.split_once(" = ").expect("the equation separator");
-    assert_eq!(left, right, "the argument must be evaluated exactly once");
+    assert_evaluated_once(&result);
 }
 
 #[test]
@@ -433,9 +442,9 @@ fn procedures_call_procedures() {
     let mut c = gated_connection();
     let result = c
         .query(
-            "DEFINE PROCEDURE inner(x) { RETURN x * 2 AS d } \
+            "DEFINE PROCEDURE inner(x) { RETURN x * 3 AS d } \
              DEFINE PROCEDURE outer(x) { CALL inner(x) YIELD d RETURN d AS r } \
-             CALL outer(21) YIELD r RETURN r",
+             CALL outer(14) YIELD r RETURN r",
         )
         .unwrap();
     assert_eq!(result.rows.len(), 1);
@@ -447,31 +456,30 @@ fn void_procedure_needs_no_yield() {
     let mut c = gated_connection();
     c.query(
         "DEFINE PROCEDURE addNode(name) { CREATE (p:P {name: name}) FINISH } \
-         CALL addNode(\"x\") RETURN count { (p:P) } AS c",
+         CALL addNode(\"w\") RETURN count { (p:P) } AS c",
     )
     .unwrap();
     let result = c.query("MATCH (p:P) RETURN p.name AS n").unwrap();
-    assert_eq!(strings(&result), vec!["x".to_string()]);
+    assert_eq!(strings(&result), vec!["w".to_string()]);
 }
 
 #[test]
 fn procedure_and_function_definitions_inside_a_subquery() {
-    // The CIP's "Local procedure and local function definition in
-    // subquery" example: evens/odds split driven by a local function and
-    // a local procedure defined inside the scoped CALL body.
+    // An evens/odds split driven by a local function and a local
+    // procedure defined inside the scoped CALL body.
     let mut c = gated_connection();
     let result = c
         .query(
-            "CREATE (a:Person {name: \"Alice\"}), (b:Person {name: \"Barb\"}) \
+            "CREATE (a:Person {name: \"Odile\"}), (b:Person {name: \"Mira\"}) \
              WITH a, b \
              CALL (a, b) { \
-               DEFINE FUNCTION isEven(num) = \
-                 CASE WHEN num % 2 = 0 THEN true ELSE false END \
+               DEFINE FUNCTION isOdd(num) = \
+                 CASE WHEN num % 2 = 1 THEN true ELSE false END \
                DEFINE PROCEDURE tag(n, t) { CREATE (p:Tag {name: n.name + t}) FINISH } \
-               UNWIND [1, 2] AS i \
+               UNWIND [3, 8] AS i \
              CALL (i, a, b) { \
-               WHEN isEven(i) THEN { CALL tag(a, \"-even\") RETURN \"even\" AS arm } \
-               ELSE { CALL tag(b, \"-odd\") RETURN \"odd\" AS arm } \
+               WHEN isOdd(i) THEN { CALL tag(b, \"-odd\") RETURN \"odd\" AS arm } \
+               ELSE { CALL tag(a, \"-even\") RETURN \"even\" AS arm } \
              } \
              RETURN arm } \
              RETURN arm",
@@ -485,9 +493,9 @@ fn procedure_and_function_definitions_inside_a_subquery() {
 
 #[test]
 fn definitions_do_not_escape_their_block() {
-    // The CIP's "not visible" rule: a definition inside one NEXT stage /
-    // UNION arm is invisible outside it; the call falls through to the
-    // engine's unknown-procedure error.
+    // A definition inside one NEXT stage / UNION arm is invisible
+    // outside it; the call falls through to the engine's
+    // unknown-procedure error.
     let mut c = gated_connection();
     let error = c
         .query(
@@ -549,15 +557,7 @@ fn local_callable_shadows_the_built_in_name() {
     // local definition wins.
     let mut c = gated_connection();
     let result = c
-        .query("DEFINE FUNCTION abs(x) = x * -1 UNWIND [1, 2] AS n RETURN abs(n) AS a")
+        .query("DEFINE FUNCTION abs(x) = x * -2 UNWIND [2, 3] AS n RETURN abs(n) AS a")
         .unwrap();
-    let rows: Vec<i64> = result
-        .rows
-        .iter()
-        .map(|row| match row[0] {
-            Value::Int(i) => i,
-            ref other => panic!("expected an integer, got {other:?}"),
-        })
-        .collect();
-    assert_eq!(rows, vec![-1, -2]);
+    assert_eq!(ints(&result), vec![-4, -6]);
 }

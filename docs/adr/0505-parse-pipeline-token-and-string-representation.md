@@ -178,7 +178,7 @@ they are.
 user-visible choice made from a hashed collection — the name an error
 reports, an item that reaches output — selects deterministically:
 `.min()` or sorted-first, never first-found. Enforcement sites: the
-CIP-156 dynamic-label self-reference offender
+dynamic-label self-reference offender
 (`validate/writes.rs::check_dynamic_label_scope`), the CALL-subquery
 `VariableAlreadyBound` collision (`validate/scope.rs`, imported ∩ exported
 ∩ bound), and the GROUP BY alias-reference error

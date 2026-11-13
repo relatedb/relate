@@ -13,7 +13,7 @@ clause.") for every spelling:
 ```
 CREATE (a {prop: 7})-[r:R {prop: a.prop}]->(b)   // same pattern, later element
 CREATE (a), (b {prop: a.prop})                   // separate patterns, one clause
-INSERT (a {prop: 7})-[r:R {prop: a.prop}]->(b)   // the CIP-114 spelling
+INSERT (a {prop: 7})-[r:R {prop: a.prop}]->(b)   // the Cypher 25 spelling
 ```
 
 Live-verified against `neo4j:2026.10.1-enterprise` under `CYPHER 25`

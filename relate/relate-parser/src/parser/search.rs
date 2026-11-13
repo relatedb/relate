@@ -18,14 +18,14 @@ impl<'a> Parser<'a> {
             && self.peek().literal.eq_ignore_ascii_case("search")
     }
 
-    /// Parses a CIP-224 `<search clause>`:
+    /// Parses a `<search clause>`:
     /// `SEARCH <binding var ref> IN ( <source specification clause> )
     /// [SCORE AS <var>]` -- the source is a CIP-225 index specification or,
     /// per CIP-278, a combined (COMBINE) specification.
     pub(super) fn parse_search_clause(&mut self) -> ParseResult<SearchClause> {
         self.next_token(); // consume SEARCH
 
-        // Rule 4's `<binding variable reference>` is a variable name
+        // The `<binding variable reference>` is a variable name
         // reference to a variable already in scope. ADR-0191 (Decision
         // point 7's follow-up probe): Neo4j 2026.09 reads every keyword
         // spelling here as a variable name -- `NULL` included (`SEARCH
@@ -39,7 +39,7 @@ impl<'a> Parser<'a> {
         let binding_var =
             self.parse_schema_name("a single binding variable reference after SEARCH")?;
 
-        // Example 11 / basic-syntax[6]: exactly one variable after SEARCH.
+        // Exactly one variable after SEARCH.
         if self.peek_type() == TokenType::Comma {
             return Err(
                 self.error("InvalidSyntax: SEARCH accepts exactly one binding variable reference")
@@ -73,7 +73,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parses a CIP-278 `<source specification clause>`: a CIP-225
+    /// Parses a `<source specification clause>`: a CIP-225
     /// `<index specification clause>` or a `<combined specification
     /// clause>`. `COMBINE` is a new non-reserved word (never added to
     /// `token.rs`'s keyword table), recognized by spelling like `SEARCH`
@@ -104,14 +104,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parses a CIP-225 `<index specification clause>`:
+    /// Parses a `<index specification clause>`:
     /// `{ VECTOR | FULLTEXT } INDEX <index name> FOR <expr>
     /// [WITH ANALYZER <expr>] [WHERE <expr>] [SKIP/OFFSET <expr>]
     /// LIMIT <expr>` -- everything between the SEARCH (or COMBINE) parens
     /// except the parens themselves, so the same body serves a top-level
     /// source and a weighted source inside a COMBINE.
     fn parse_search_index_spec(&mut self) -> ParseResult<SearchIndexSpec> {
-        // CIP-225: `{ VECTOR | FULLTEXT } INDEX <index name specification>`.
+        // `{ VECTOR | FULLTEXT } INDEX <index name specification>`.
         // FULLTEXT lexes as an identifier (a new non-reserved word per the
         // CIP); VECTOR is a keyword token.
         let kind = if self.peek_is_ident("FULLTEXT") {
@@ -123,11 +123,11 @@ impl<'a> Parser<'a> {
         };
         self.expect(TokenType::INDEX)?;
 
-        // Rule 1: the index name must be a literal identifier, not a
-        // general expression (Example IN3) and not a parameter (Example
-        // IN8). `is_ident_like()` (rather than plain `Identifier`) lets it
-        // be written as a keyword-shaped name too, e.g. `VECTOR INDEX null`
-        // (Example IN7), matching how index/variable names elsewhere in
+        // The index name must be a literal identifier, not a
+        // general expression and not a parameter.
+        // `is_ident_like()` (rather than plain `Identifier`) lets it
+        // be written as a keyword-shaped name too, e.g. `VECTOR INDEX null`,
+        // matching how index/variable names elsewhere in
         // this grammar accept non-reserved keywords.
         let index_tok = self.peek().clone();
         if !index_tok.ty.is_ident_like() {
@@ -154,8 +154,8 @@ impl<'a> Parser<'a> {
         };
 
         // CIP-240: the optional inner `WHERE <search condition>` between
-        // `FOR <expr>` and `LIMIT <expr>`. The rewrite/shape rules (Rule 0,
-        // 3, 6, 7) are enforced by the engine, not here -- the grammar
+        // `FOR <expr>` and `LIMIT <expr>`. The rewrite/shape rules are
+        // enforced by the engine, not here -- the grammar
         // slot accepts any general expression, exactly like the ordinary
         // `<graph pattern where clause>` above.
         let inner_where = if self.peek_type() == TokenType::WHERE {
@@ -188,13 +188,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parses a CIP-278 `<combined specification clause>`:
+    /// Parses a `<combined specification clause>`:
     /// `COMBINE ( <weighted source clause> [, <weighted source clause>]... )
     /// USING WRRF [ WITH CONSTANT <expr> ] [ LIMIT <expr> ]`.
     /// `COMBINE`/`WRRF`/`CONSTANT`/`WEIGHT` are new non-reserved words
     /// (never added to `token.rs`'s keyword table), recognized by spelling;
     /// `USING`/`WITH`/`LIMIT` are the existing keyword/contextual reads.
-    /// Rule 5: the body must hold two or more weighted source clauses --
+    /// The body must hold two or more weighted source clauses --
     /// fewer is a parse error here, at the list itself.
     fn parse_search_combine_spec(&mut self) -> ParseResult<SearchCombineSpec> {
         self.next_token(); // consume COMBINE
@@ -231,7 +231,7 @@ impl<'a> Parser<'a> {
             None
         };
         // The combined specification's own optional `<limit clause>`: the n
-        // highest-scoring fused results kept (Rule 7).
+        // highest-scoring fused results kept.
         let limit_expr = if self.peek_type() == TokenType::LIMIT {
             self.next_token();
             Some(self.parse_expression()?)
@@ -245,7 +245,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parses a CIP-278 `<weighted source clause>`:
+    /// Parses a `<weighted source clause>`:
     /// `<source specification clause> [ WEIGHT <value expression> ]` -- a
     /// source may itself be a nested combined specification (Example P3),
     /// and the optional WEIGHT follows it either way.

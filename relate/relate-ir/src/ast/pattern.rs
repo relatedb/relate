@@ -227,7 +227,7 @@ pub struct NodePattern {
     /// map does not spell literally has no entry here and reads by name.
     pub prop_keys: Vec<NamedToken>,
     pub where_clause: Option<Expr>,
-    /// CIP-79 `USING SCAN <var>:<Label>`: candidate selection must take the
+    /// `USING SCAN <var>:<Label>`: candidate selection must take the
     /// label scan, never an index seek. Unlike the other hints this is not
     /// merely a plan preference — an indexed equality seek and a scan
     /// genuinely answer differently for a zoned-datetime DST overlap (the

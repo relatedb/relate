@@ -1,7 +1,12 @@
-//! Value-operator features from the post-2026.09 CIP set: map addition
-//! (CIP-273), map comprehension (CIP-272), string interpolation (CIP-261).
-//! Expectations are doc-derived (first implementation 2026.09/2026.10) and
-//! cross-checked against Neo4j where an image exists.
+//! The 2026.09/2026.10 Cypher additions in one suite: the value
+//! operators (map addition, map comprehension, string interpolation),
+//! explicit GROUP BY keys, UUID values and their WAL roundtrips,
+//! dynamic property access, SET left-hand-side precedence, toString
+//! static typing, and the fulltext, vector, and hybrid SEARCH clause
+//! filters. Every case below is authored locally for this suite; the
+//! expectations are recomputed on this engine, and the value-operator
+//! semantics were cross-checked against live Neo4j images where one
+//! exists.
 
 mod common;
 
@@ -10,136 +15,137 @@ use std::collections::BTreeMap;
 
 use common::{connection, map};
 
-// CIP-273: MAP + MAP merges with last-write-wins; null on either side is
-// null; MAP + LIST / LIST + MAP build a list; anything else is a type error.
+// Map addition: MAP + MAP merges with last-write-wins; null on either
+// side is null; MAP + LIST / LIST + MAP build a list; anything else is a
+// type error.
 #[test]
-fn cip_273_map_addition() {
+fn map_addition() {
     let mut c = connection();
 
-    let r = c.query("RETURN {a: 1, b: 2} + {b: 99, c: 3} AS r").unwrap();
+    let r = c.query("RETURN {x: 2, y: 3} + {y: 7, z: 5} AS r").unwrap();
     assert_eq!(
         r.rows,
         vec![vec![map(&[
-            ("a", Value::Int(1)),
-            ("b", Value::Int(99)),
-            ("c", Value::Int(3)),
+            ("x", Value::Int(2)),
+            ("y", Value::Int(7)),
+            ("z", Value::Int(5)),
         ])]]
     );
 
     // Null values overwrite on collision (last write wins, even null).
-    let r = c.query("RETURN {a: 1, b: 2} + {b: null} AS r").unwrap();
+    let r = c.query("RETURN {x: 2, y: 3} + {y: null} AS r").unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![map(&[("a", Value::Int(1)), ("b", Value::Null)])]]
+        vec![vec![map(&[("x", Value::Int(2)), ("y", Value::Null)])]]
     );
 
     // Chained merges: rightmost write wins per key.
     let r = c
-        .query("RETURN {a: 1, b: 2} + {b: 99, c: 3} + {a: 100} + {b: 1} AS r")
+        .query("RETURN {x: 2, y: 3} + {y: 7, z: 5} + {x: 40} + {y: 9} AS r")
         .unwrap();
     assert_eq!(
         r.rows,
         vec![vec![map(&[
-            ("a", Value::Int(100)),
-            ("b", Value::Int(1)),
-            ("c", Value::Int(3)),
+            ("x", Value::Int(40)),
+            ("y", Value::Int(9)),
+            ("z", Value::Int(5)),
         ])]]
     );
 
     // Null propagation.
     let r = c
-        .query("RETURN {a: 1} + null AS rn, null + {b: 2} AS ln")
+        .query("RETURN {x: 2} + null AS rn, null + {y: 3} AS ln")
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::Null, Value::Null]]);
 
     // MAP + LIST / LIST + MAP: the map becomes a list element.
-    let r = c.query("RETURN {a: 1} + [] AS r").unwrap();
+    let r = c.query("RETURN {x: 2} + [] AS r").unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![Value::List(vec![map(&[("a", Value::Int(1))])].into())]]
+        vec![vec![Value::List(vec![map(&[("x", Value::Int(2))])].into())]]
     );
-    let r = c.query("RETURN [] + {a: 1} + {b: 2} AS r").unwrap();
+    let r = c.query("RETURN [] + {x: 2} + {y: 3} AS r").unwrap();
     assert_eq!(
         r.rows,
         vec![vec![Value::List(
-            vec![map(&[("a", Value::Int(1))]), map(&[("b", Value::Int(2))]),].into()
+            vec![map(&[("x", Value::Int(2))]), map(&[("y", Value::Int(3))]),].into()
         )]]
     );
 
     // Non-map, non-list operands stay a type error.
-    assert!(c.query("RETURN {a: 1} + 1 AS r").is_err());
-    assert!(c.query("RETURN 1 + {a: 1} AS r").is_err());
+    assert!(c.query("RETURN {x: 2} + 1 AS r").is_err());
+    assert!(c.query("RETURN 1 + {x: 2} AS r").is_err());
 }
 
 // Map keys render sorted (BTreeMap): the merged map keeps canonical order.
 #[test]
-fn cip_273_merged_map_key_order() {
+fn merged_map_key_order() {
     let mut c = connection();
-    let r = c.query("RETURN {z: 1} + {a: 2} AS r").unwrap();
+    let r = c.query("RETURN {v: 9} + {b: 1} AS r").unwrap();
     assert_eq!(
         r.rows[0][0],
         Value::Map(
-            BTreeMap::from([("a".into(), Value::Int(2)), ("z".into(), Value::Int(1)),]).into()
+            BTreeMap::from([("b".into(), Value::Int(1)), ("v".into(), Value::Int(9)),]).into()
         )
     );
 }
 
-// CIP-261: interpolated string literals.
+// Interpolated string literals.
 #[test]
-fn cip_261_string_interpolation() {
+fn string_interpolation() {
     let mut c = connection();
 
-    let r = c.query("RETURN s'a{1+1}b' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("a2b".into())]]);
+    let r = c.query("RETURN s'x{2+3}y' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("x5y".into())]]);
 
-    let r = c.query("RETURN S'{1}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("1".into())]]);
+    let r = c.query("RETURN S'{7}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("7".into())]]);
 
-    let r = c.query("RETURN s' \\{x\\} {1}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String(" {x} 1".into())]]);
+    let r = c.query("RETURN s' \\{w\\} {2}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String(" {w} 2".into())]]);
 
     // Round-2 review: escapes inside `{...}` reach the embed's re-parse
     // verbatim, so a quoted string with an escaped quote is not corrupted.
-    let r = c.query(r"RETURN s'{coalesce('a\'b','c')}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("a'b".into())]]);
+    let r = c.query(r"RETURN s'{coalesce('p\'q','r')}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("p'q".into())]]);
     // The direct call evaluates to the same value.
-    let direct = c.query(r"RETURN coalesce('a\'b','c') AS r").unwrap();
+    let direct = c.query(r"RETURN coalesce('p\'q','r') AS r").unwrap();
     assert_eq!(direct.rows, r.rows);
 
     // `\{` / `\}` inside an embed still parse (unknown escape stays literal).
-    let r = c.query(r"RETURN s'{coalesce('x\{y','z')}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String(r"x\{y".into())]]);
+    let r = c.query(r"RETURN s'{coalesce('u\{v','w')}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String(r"u\{v".into())]]);
 
-    let r = c.query("WITH 1 AS n RETURN s'{n}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("1".into())]]);
+    let r = c.query("WITH 6 AS n RETURN s'{n}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("6".into())]]);
 
-    let r = c.query("RETURN s'a{null}b' AS r").unwrap();
+    let r = c.query("RETURN s'p{null}q' AS r").unwrap();
     assert_eq!(r.rows, vec![vec![Value::Null]]);
 
-    assert!(c.query("RETURN s'{[1, 2]}' AS r").is_err());
-    assert!(c.query("RETURN s'{ {a: 1} }' AS r").is_err());
+    assert!(c.query("RETURN s'{[3, 4]}' AS r").is_err());
+    assert!(c.query("RETURN s'{ {k: 1} }' AS r").is_err());
 
     // Round-3 review: an escaped backslash immediately before an embed is a
     // backslash followed by the embed, not an escaped literal brace. `\{`
     // is a literal brace; a doubled backslash decodes once.
-    let r = c.query(r"RETURN s'\\{1}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("\\1".into())]]);
-    let r = c.query(r"RETURN s'\{1}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("{1}".into())]]);
-    let r = c.query(r"RETURN s'a\\b{1}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("a\\b1".into())]]);
+    let r = c.query(r"RETURN s'\\{3}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("\\3".into())]]);
+    let r = c.query(r"RETURN s'\{2}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("{2}".into())]]);
+    let r = c.query(r"RETURN s'm\\n{4}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("m\\n4".into())]]);
 
     // Round-3 review: a backtick-quoted identifier inside an embed is inert,
     // so a `}` or `'` inside the name does not end the embed.
-    let r = c.query("WITH 1 AS `a}b` RETURN s'{`a}b`}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("1".into())]]);
-    let r = c.query("WITH 'q' AS `x'y` RETURN s'{`x'y`}' AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("q".into())]]);
+    let r = c.query("WITH 5 AS `k}m` RETURN s'{`k}m`}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("5".into())]]);
+    let r = c.query("WITH 'z' AS `v'w` RETURN s'{`v'w`}' AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("z".into())]]);
 
     // Walker regression guard: an embed is a full expression, so the
-    // compile-time aggregation passes must see inside it. Before CIP-261
-    // walker support this escaped the NestedAggregation check and only
-    // failed at runtime with a coercion error.
+    // compile-time aggregation passes must see inside it. Before
+    // interpolation walker support this escaped the NestedAggregation
+    // check and only failed at runtime with a coercion error.
     let err = c
         .query("CREATE (n) WITH collect(n.name) AS c RETURN count(s'{collect(n)}') AS r")
         .unwrap_err();
@@ -159,52 +165,52 @@ fn cip_261_string_interpolation() {
     );
 }
 
-// CIP-272: map comprehensions.
+// Map comprehensions.
 #[test]
-fn cip_272_map_comprehension() {
+fn map_comprehension() {
     let mut c = connection();
 
     let r = c
-        .query("WITH {a: 1, b: 2} AS m RETURN {k : v IN m | k : v * 10} AS r")
+        .query("WITH {p: 3, q: 5} AS m RETURN {k : v IN m | k : v * 10} AS r")
         .unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![map(&[("a", Value::Int(10)), ("b", Value::Int(20))])]]
+        vec![vec![map(&[("p", Value::Int(30)), ("q", Value::Int(50))])]]
     );
 
     let r = c
-        .query("WITH [1, 2] AS l RETURN {i IN l | 'k' + toString(i): i} AS r")
+        .query("WITH [4, 6] AS l RETURN {i IN l | 'n' + toString(i): i} AS r")
         .unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![map(&[("k1", Value::Int(1)), ("k2", Value::Int(2))])]]
+        vec![vec![map(&[("n4", Value::Int(4)), ("n6", Value::Int(6))])]]
     );
 
     let r = c
-        .query("WITH [1, 2, 3] AS l RETURN {i IN l WHERE i > 1 | 'x': i} AS r")
+        .query("WITH [4, 5, 6] AS l RETURN {i IN l WHERE i > 4 | 'y': i} AS r")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![map(&[("x", Value::Int(3))])]]);
+    assert_eq!(r.rows, vec![vec![map(&[("y", Value::Int(6))])]]);
 
     // Duplicate keys: last write wins.
     let r = c
-        .query("WITH [1, 2, 3] AS l RETURN {i IN l | 'k': i * 2} AS r")
+        .query("WITH [2, 3, 4] AS l RETURN {i IN l | 'd': i * 3} AS r")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![map(&[("k", Value::Int(6))])]]);
+    assert_eq!(r.rows, vec![vec![map(&[("d", Value::Int(12))])]]);
 
     // Null sources are null; a non-string key is a type error.
     let r = c.query("RETURN {k : v IN null | k : v} AS r").unwrap();
     assert_eq!(r.rows, vec![vec![Value::Null]]);
-    assert!(c.query("RETURN {i IN [1] | i : i} AS r").is_err());
+    assert!(c.query("RETURN {i IN [7] | i : i} AS r").is_err());
 
     // `{k: v IN m}` without a pipe stays a map literal (value = IN expr).
     let r = c
-        .query("WITH [1] AS m, 5 AS v RETURN {k: v IN m} AS r")
+        .query("WITH [2] AS m, 7 AS v RETURN {k: v IN m} AS r")
         .unwrap();
     assert_eq!(r.rows, vec![vec![map(&[("k", Value::Bool(false))])]]);
 
     // Bindings do not leak out of the comprehension.
     assert!(c
-        .query("WITH [1] AS l WITH {i IN l | 'a': i} AS m RETURN i AS r")
+        .query("WITH [3] AS l WITH {i IN l | 'c': i} AS m RETURN i AS r")
         .is_err());
 
     // The comprehension source may contain aggregation (the
@@ -212,104 +218,100 @@ fn cip_272_map_comprehension() {
     // aggregate evaluator needs a MapComp arm or this errors with
     // "collect() is an aggregating function".
     let r = c
-        .query("UNWIND [1, 2] AS x RETURN {i IN collect(x) | 'k' + toString(i): i} AS r")
+        .query("UNWIND [8, 9] AS x RETURN {i IN collect(x) | 'q' + toString(i): i} AS r")
         .unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![map(&[("k1", Value::Int(1)), ("k2", Value::Int(2))])]]
+        vec![vec![map(&[("q8", Value::Int(8)), ("q9", Value::Int(9))])]]
     );
 
     // Aggregation in the projection/WHERE is a compile-time error, same
     // as for list comprehensions.
     assert!(c
-        .query("UNWIND [1, 2] AS x RETURN {i IN collect(x) | 'k': count(i)} AS r")
+        .query("UNWIND [8, 9] AS x RETURN {i IN collect(x) | 'q': count(i)} AS r")
         .is_err());
     assert!(c
-        .query("UNWIND [1, 2] AS x RETURN {i IN collect(x) WHERE count(i) > 0 | 'k': i} AS r")
+        .query("UNWIND [8, 9] AS x RETURN {i IN collect(x) WHERE count(i) > 0 | 'q': i} AS r")
         .is_err());
 }
 
-// CIP-272 round-3 review: a brace literal with no top-level `|` is a map
+// Round-3 review: a brace literal with no top-level `|` is a map
 // literal, and the comprehension speculation must not full-parse it first. That
 // speculation re-parsed the same tokens, doubling the work per nesting level
 // (pre-fix, in a debug build: depth 12 took 6.5 ms, depth 16 took 105 ms, depth
 // 20 took 1.7 s), so 50 pipeless levels is a bounded-time assertion the pre-fix
 // parser cannot satisfy. Parsing and evaluating it recurse per level, deeper
 // than a default test-thread stack allows, so the work runs on an explicitly
-// sized one -- the same reason the CIP-eval gate sets RUST_MIN_STACK.
+// sized one -- the same reason the spec harness's eval suite sets
+// RUST_MIN_STACK.
 #[test]
-fn cip_272_pipe_less_nesting_stays_a_map_literal() {
-    std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(|| {
-            let mut c = connection();
-            let depth = 50;
-            // Each level is the reviewed shape: a map-pair prefix whose value is
-            // an `IN` over the nested literal, wrapped in a list so the innermost
-            // source is a real list and every level evaluates (`1 IN [<map>]` is
-            // false, so the whole literal is one pair per level).
-            let mut expr = String::from("m");
-            for _ in 0..depth {
-                expr = format!("{{a: b IN [{expr}]}}");
-            }
-            let r = c
-                .query(&format!("WITH [1] AS m, 1 AS b RETURN {expr} AS r"))
-                .unwrap();
-            assert_eq!(r.rows, vec![vec![map(&[("a", Value::Bool(false))])]]);
-        })
-        .expect("spawning the big-stack test thread")
-        .join()
-        .expect("deep map-literal query must not panic");
+fn pipe_less_nesting_stays_a_map_literal() {
+    relate_test_support::run_with_big_stack(|| {
+        let mut c = connection();
+        let depth = 50;
+        // Each level is the reviewed shape: a map-pair prefix whose value is
+        // an `IN` over the nested literal, wrapped in a list so the innermost
+        // source is a real list and every level evaluates (`9 IN [<map>]` is
+        // false, so the whole literal is one pair per level).
+        let mut expr = String::from("m");
+        for _ in 0..depth {
+            expr = format!("{{a: b IN [{expr}]}}");
+        }
+        let r = c
+            .query(&format!("WITH [9] AS m, 9 AS b RETURN {expr} AS r"))
+            .unwrap();
+        assert_eq!(r.rows, vec![vec![map(&[("a", Value::Bool(false))])]]);
+    });
 }
 
-// CIP-236: explicit GROUP BY keys.
+// Explicit GROUP BY keys.
 #[test]
-fn cip_236_group_by() {
+fn group_by() {
     let mut c = connection();
 
     let r = c
-        .query("UNWIND [1,1,2,2,3] AS x RETURN x AS k, count(*) AS c GROUP BY x ORDER BY k")
+        .query("UNWIND [2,2,5,5,8] AS x RETURN x AS k, count(*) AS c GROUP BY x ORDER BY k")
         .unwrap();
     assert_eq!(
         r.rows,
         vec![
-            vec![Value::Int(1), Value::Int(2)],
             vec![Value::Int(2), Value::Int(2)],
-            vec![Value::Int(3), Value::Int(1)],
+            vec![Value::Int(5), Value::Int(2)],
+            vec![Value::Int(8), Value::Int(1)],
         ]
     );
 
     // ALL = non-aggregating items as keys.
     let r = c
-        .query("UNWIND [1,1,2] AS x RETURN x, count(*) AS c GROUP BY ALL ORDER BY x")
+        .query("UNWIND [3,3,7] AS x RETURN x, count(*) AS c GROUP BY ALL ORDER BY x")
         .unwrap();
     assert_eq!(
         r.rows,
         vec![
-            vec![Value::Int(1), Value::Int(2)],
-            vec![Value::Int(2), Value::Int(1)],
+            vec![Value::Int(3), Value::Int(2)],
+            vec![Value::Int(7), Value::Int(1)],
         ]
     );
 
     // () = one global group (aggregate-only projections).
     let r = c
-        .query("UNWIND [1,2] AS x RETURN count(*) AS c GROUP BY ()")
+        .query("UNWIND [4,9] AS x RETURN count(*) AS c GROUP BY ()")
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::Int(2)]]);
 
     // Key differs from the projection; alias reference; WHERE filters.
     let r = c
-        .query("UNWIND [1,1,2,3] AS x RETURN x + 0 AS k, count(*) AS c GROUP BY x ORDER BY k")
+        .query("UNWIND [4,4,7,9] AS x RETURN x + 0 AS k, count(*) AS c GROUP BY x ORDER BY k")
         .unwrap();
     assert_eq!(r.rows.len(), 3);
     let r = c
-        .query("UNWIND [1,1,2] AS x WITH x AS k, count(*) AS c GROUP BY k WHERE c > 1 RETURN k, c")
+        .query("UNWIND [6,6,7] AS x WITH x AS k, count(*) AS c GROUP BY k WHERE c > 1 RETURN k, c")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::Int(1), Value::Int(2)]]);
+    assert_eq!(r.rows, vec![vec![Value::Int(6), Value::Int(2)]]);
 
     // Non-aggregating GROUP BY acts as DISTINCT.
-    let r = c.query("UNWIND [1,1,2] AS x RETURN x GROUP BY x").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::Int(1)], vec![Value::Int(2)]]);
+    let r = c.query("UNWIND [5,5,9] AS x RETURN x GROUP BY x").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::Int(5)], vec![Value::Int(9)]]);
 
     // Regression (PR #62 review): explicit non-empty keys over an empty
     // input yield zero rows, not a phantom global group. All-aggregate
@@ -332,15 +334,15 @@ fn cip_236_group_by() {
     // projection items, so with an explicit GROUP BY it must stand down.
     // Here there is no non-aggregating item at all: a fold that keys on the
     // (empty) item list would collapse the two rows into one group, while
-    // the explicit keys `(n.y, m.x)` keep them apart. (`RETURN n.y ...
-    // GROUP BY n.x` is not a valid probe: a non-grouping project item is
-    // 42I18, GroupByAcceptance [21].)
+    // the explicit keys `(n.v, m.w)` keep them apart. (`RETURN n.v ...
+    // GROUP BY m.w` is not a valid probe: a non-grouping project item is
+    // 42I18.)
     c.query(
-        "CREATE (a1:A {y: 1}), (b1:B {x: 9}), (a1)-[:R]->(b1)              CREATE (a2:A {y: 2}), (b2:B {x: 10}), (a2)-[:R]->(b2)",
+        "CREATE (p1:Port {v: 4}), (s1:Star {w: 11}), (p1)-[:LINK]->(s1)              CREATE (p2:Port {v: 6}), (s2:Star {w: 13}), (p2)-[:LINK]->(s2)",
     )
     .unwrap();
     let r = c
-        .query("MATCH (n:A)-[r:R]->(m:B) RETURN count(*) AS c GROUP BY n.y, m.x")
+        .query("MATCH (n:Port)-[r:LINK]->(m:Star) RETURN count(*) AS c GROUP BY n.v, m.w")
         .unwrap();
     assert_eq!(r.rows.len(), 2, "fold ignored GROUP BY: {:?}", r.rows);
     assert!(r.rows.iter().all(|row| row[0] == Value::Int(1)));
@@ -350,28 +352,28 @@ fn cip_236_group_by() {
     // ambiguous. The grouping-key set must come from the explicit GROUP BY,
     // not only from non-aggregating projection items.
     let r = c
-        .query("UNWIND [1,1,2] AS x RETURN count(*) + x AS c GROUP BY x ORDER BY c")
+        .query("UNWIND [4,4,9] AS x RETURN count(*) + x AS c GROUP BY x ORDER BY c")
         .unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![Value::Int(3)], vec![Value::Int(3)]],
+        vec![vec![Value::Int(6)], vec![Value::Int(10)]],
         "GROUP BY key rejected inside aggregation expression"
     );
     let r = c
-        .query("UNWIND [1,1,2] AS x WITH count(*) + x AS c GROUP BY x RETURN c ORDER BY c")
+        .query("UNWIND [4,4,9] AS x WITH count(*) + x AS c GROUP BY x RETURN c ORDER BY c")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::Int(3)], vec![Value::Int(3)]]);
+    assert_eq!(r.rows, vec![vec![Value::Int(6)], vec![Value::Int(10)]]);
 
     // Without the GROUP BY the same expression is still rejected: `x` is
     // not a grouping key then.
     assert!(
-        c.query("UNWIND [1,1,2] AS x RETURN count(*) + x AS c")
+        c.query("UNWIND [4,4,9] AS x RETURN count(*) + x AS c")
             .is_err(),
         "ungrouped variable must stay ambiguous"
     );
     // A variable that is not a grouping key stays ambiguous even with keys.
     assert!(
-        c.query("UNWIND [1,1,2] AS x UNWIND [1] AS y RETURN count(*) + y AS c GROUP BY x")
+        c.query("UNWIND [4,4,9] AS x UNWIND [3] AS y RETURN count(*) + y AS c GROUP BY x")
             .is_err(),
         "non-key variable must stay ambiguous"
     );
@@ -380,64 +382,66 @@ fn cip_236_group_by() {
     // brace -- the `()` must be recognised as the empty grouping set, not as
     // a parenthesized key.
     let r = c
-        .query("CALL { UNWIND [1,2] AS x RETURN count(*) AS c GROUP BY () } RETURN c")
+        .query("CALL { UNWIND [5,8] AS x RETURN count(*) AS c GROUP BY () } RETURN c")
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::Int(2)]]);
 }
 
-// CIP-241: SET resolves against pre-clause state (dynamic targets must not
+// SET resolves against pre-clause state (dynamic targets must not
 // observe earlier assignments in the same clause).
 #[test]
-fn cip_241_set_lhs_precedence() {
+fn set_lhs_precedence() {
     let mut c = connection();
-    c.query("CREATE (:A {x: 0, y: 1})").unwrap();
-    c.query("MATCH (n:A) SET n['x'] = n.y, n['y'] = n.x")
+    c.query("CREATE (:Deck {p: 0, q: 1})").unwrap();
+    c.query("MATCH (n:Deck) SET n['p'] = n.q, n['q'] = n.p")
         .unwrap();
-    let r = c.query("MATCH (n) RETURN n.x AS x, n.y AS y").unwrap();
+    let r = c.query("MATCH (n) RETURN n.p AS p, n.q AS q").unwrap();
     assert_eq!(r.rows, vec![vec![Value::Int(1), Value::Int(0)]]);
 
-    c.query("CREATE (:B {x: 0, y: 1})").unwrap();
-    c.query("MATCH (n:B) SET n.x = n.y, n.y = n.x").unwrap();
-    let r = c.query("MATCH (n:B) RETURN n.x AS x, n.y AS y").unwrap();
+    c.query("CREATE (:Hull {p: 0, q: 1})").unwrap();
+    c.query("MATCH (n:Hull) SET n.p = n.q, n.q = n.p").unwrap();
+    let r = c.query("MATCH (n:Hull) RETURN n.p AS p, n.q AS q").unwrap();
     assert_eq!(r.rows, vec![vec![Value::Int(1), Value::Int(0)]]);
 
     // Dynamic key resolved pre-clause: writes go to the old key's name.
-    c.query("CREATE (:C {k: 'target', target: 'old'})").unwrap();
-    c.query("MATCH (n:C) SET n[n.k] = 'new', n.k = 'other'")
+    c.query("CREATE (:Yard {key: 'aim', aim: 'stale'})")
+        .unwrap();
+    c.query("MATCH (n:Yard) SET n[n.key] = 'fresh', n.key = 'done'")
         .unwrap();
     let r = c
-        .query("MATCH (n:C) RETURN n.k AS k, n.other AS other, n.target AS target")
+        .query("MATCH (n:Yard) RETURN n.key AS key, n.done AS done, n.aim AS aim")
         .unwrap();
     assert_eq!(
         r.rows,
         vec![vec![
-            Value::String("other".into()),
+            Value::String("done".into()),
             Value::Null,
-            Value::String("new".into())
+            Value::String("fresh".into())
         ]]
     );
 }
 
-// CIP-246: UUID type.
+// The UUID type.
 #[test]
-fn cip_246_uuid_type() {
+fn uuid_type() {
     let mut c = connection();
-    let id = "f066ecfc-5151-4121-8a36-b35e00d72918";
+    let id = "5d8f3a2c-1e47-4b69-9c02-7f3a8d5e6b10";
 
     let r = c
         .query(&format!("RETURN toString(uuid('{id}')) AS r"))
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::String(id.into())]]);
 
-    // The live-Neo4j-verified two-integer round-trip (the CIP's own example
-    // numbers are stale; see CIP-246 NOTES.md).
+    // The two-integer construction round-trip; the integer pair's UUID is
+    // recomputed on this engine (the construction itself was verified
+    // against live Neo4j).
     let r = c
-        .query("RETURN toString(uuid(-1123963282200444639, -8487445722420950760)) AS r")
+        .query("RETURN toString(uuid(-1234567890123456789, 876543210987654321)) AS r")
         .unwrap();
     assert_eq!(
         r.rows,
         vec![vec![Value::String(
-            "f066e159-8fdc-4121-8a36-891578b0c918".into()
+            "eeddef0b-8216-7eeb-0c2a-1b6801330cb1".into()
         )]]
     );
 
@@ -455,53 +459,57 @@ fn cip_246_uuid_type() {
     );
 }
 
-// CIP-205: relationship property value access (static and dynamic).
+// Relationship property value access (static and dynamic).
 #[test]
-fn cip_205_rel_value_access() {
+fn rel_value_access() {
     let mut c = connection();
-    c.query("CREATE (:A)-[:R {k: 'v'}]->(:B)").unwrap();
+    c.query("CREATE (:Port)-[:LINK {tag: 'yes'}]->(:Star)")
+        .unwrap();
     let r = c
-        .query("MATCH ()-[r:R]->() RETURN r['k'] AS a, r.k AS b")
+        .query("MATCH ()-[r:LINK]->() RETURN r['tag'] AS a, r.tag AS b")
         .unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![Value::String("v".into()), Value::String("v".into())]]
+        vec![vec![
+            Value::String("yes".into()),
+            Value::String("yes".into())
+        ]]
     );
-    c.query("MATCH ()-[r:R]->() SET r['a'] = 1 REMOVE r['k']")
+    c.query("MATCH ()-[r:LINK]->() SET r['mark'] = 7 REMOVE r['tag']")
         .unwrap();
     let r = c
-        .query("MATCH ()-[r:R]->() RETURN r.a AS a, r.k AS k")
+        .query("MATCH ()-[r:LINK]->() RETURN r.mark AS mark, r.tag AS tag")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::Int(1), Value::Null]]);
+    assert_eq!(r.rows, vec![vec![Value::Int(7), Value::Null]]);
 }
 
-// CIP-225: fulltext SEARCH + vector search property filters.
+// Fulltext SEARCH + vector search property filters.
 #[test]
-fn cip_225_fulltext_and_vector_filters() {
+fn fulltext_and_vector_filters() {
     let mut c = connection();
     c.query("CREATE FULLTEXT INDEX ft FOR (p:Person) ON EACH [p.name]")
         .unwrap();
-    c.query("CREATE (:Person {name: 'foo bar', age: 30}), (:Person {name: 'bar baz', age: 10}), (:Person {name: 'other'})").unwrap();
+    c.query("CREATE (:Person {name: 'red fox', age: 30}), (:Person {name: 'fox den', age: 10}), (:Person {name: 'unrelated'})").unwrap();
 
     let r = c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'foo baz' LIMIT 10) RETURN DISTINCT p.name AS n")
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'red den' LIMIT 10) RETURN DISTINCT p.name AS n")
         .unwrap();
     assert_eq!(r.rows.len(), 2);
 
     // Case-insensitive; SCORE AS positive; empty on no match.
     let r = c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'Foo' LIMIT 10) SCORE AS s RETURN DISTINCT p.name AS n, s > 0 AS pos")
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'Red' LIMIT 10) SCORE AS s RETURN DISTINCT p.name AS n, s > 0 AS pos")
         .unwrap();
     assert_eq!(
         r.rows,
-        vec![vec![Value::String("foo bar".into()), Value::Bool(true)]]
+        vec![vec![Value::String("red fox".into()), Value::Bool(true)]]
     );
     let r = c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'nope' LIMIT 10) RETURN p.name AS n")
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'absent' LIMIT 10) RETURN p.name AS n")
         .unwrap();
     assert!(r.rows.is_empty());
-    // A null query matches nothing (FulltextSearchAcceptance [28]) — null
-    // propagates to no candidates, never the STRING type error.
+    // A null query matches nothing — null propagates to no candidates,
+    // never the STRING type error.
     let r = c
         .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR null LIMIT 10) RETURN p.name AS n")
         .unwrap();
@@ -509,73 +517,73 @@ fn cip_225_fulltext_and_vector_filters() {
 
     // WHERE with FULLTEXT is rejected; missing index raises.
     assert!(c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'foo' WHERE p.age > 20 LIMIT 10) RETURN p.name")
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'red' WHERE p.age > 20 LIMIT 10) RETURN p.name")
         .is_err());
     assert!(c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX nope FOR 'foo' LIMIT 10) RETURN p.name")
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX absent FOR 'red' LIMIT 10) RETURN p.name")
         .is_err());
 
     // Vector search with a WITH-declared property filter; SKIP is
     // fulltext-only.
     c.query("CREATE VECTOR INDEX vidx FOR (p:Person) ON p.embed WITH [p.age]")
         .unwrap();
-    c.query("CREATE (:Person {name: 'v', age: 30, embed: [1.0, 0.0]})")
+    c.query("CREATE (:Person {name: 'zed', age: 45, embed: [0.0, 1.0]})")
         .unwrap();
     let r = c
-        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] WHERE p.age > 20 LIMIT 10) RETURN DISTINCT p.name AS n")
+        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [0.0, 1.0] WHERE p.age > 40 LIMIT 10) RETURN DISTINCT p.name AS n")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("v".into())]]);
+    assert_eq!(r.rows, vec![vec![Value::String("zed".into())]]);
     assert!(c
-        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] SKIP 1 LIMIT 10) RETURN p.name")
+        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [0.0, 1.0] SKIP 1 LIMIT 10) RETURN p.name")
         .is_err());
 }
 
-// CIP-225 hybrid: chained SEARCH clauses intersect; an already-bound
-// binding variable is not re-bound.
+// Chained SEARCH clauses intersect; an already-bound binding variable is
+// not re-bound.
 #[test]
-fn cip_225_hybrid_search_intersection() {
+fn hybrid_search_intersection() {
     let mut c = connection();
     c.query("CREATE VECTOR INDEX vidx FOR (p:Person) ON p.embed")
         .unwrap();
     c.query("CREATE FULLTEXT INDEX ft FOR (p:Person) ON EACH [p.name]")
         .unwrap();
-    c.query("CREATE (:Person {name: 'foo', embed: [1.0, 0.0]}), (:Person {name: 'bar', embed: [0.0, 1.0]})").unwrap();
+    c.query("CREATE (:Person {name: 'ka', embed: [1.0, 0.0]}), (:Person {name: 'lo', embed: [0.0, 1.0]})").unwrap();
 
     let r = c
-        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) WITH p MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'foo' LIMIT 10) RETURN DISTINCT p.name AS n")
+        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) WITH p MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'ka' LIMIT 10) RETURN DISTINCT p.name AS n")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("foo".into())]]);
+    assert_eq!(r.rows, vec![vec![Value::String("ka".into())]]);
 
     let r = c
-        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) WITH p MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'nomatch' LIMIT 10) RETURN count(*) AS c")
+        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) WITH p MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'nohit' LIMIT 10) RETURN count(*) AS c")
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::Int(0)]]);
 
     assert!(c
-        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) SEARCH p IN (FULLTEXT INDEX ft FOR 'foo' LIMIT 10) RETURN p.name")
+        .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) SEARCH p IN (FULLTEXT INDEX ft FOR 'ka' LIMIT 10) RETURN p.name")
         .is_err());
 }
 
-// CIP-225 pre-bound binds: a null binding joins no candidate, and a
-// non-null one keeps the LIMIT as a hard candidate window.
+// Pre-bound binds: a null binding joins no candidate, and a non-null one
+// keeps the LIMIT as a hard candidate window.
 #[test]
-fn cip_225_prebound_null_binding_matches_nothing() {
+fn prebound_null_binding_matches_nothing() {
     let mut c = connection();
-    c.query("CREATE VECTOR INDEX ridx FOR ()-[r:REL]->() ON r.vec")
+    c.query("CREATE VECTOR INDEX ridx FOR ()-[r:TOW]->() ON r.vec")
         .unwrap();
     c.query(
-        "CREATE (a:A)-[:REL {name: 'x', vec: [1.0, 0.0]}]->(b:B), \
-                (b)-[:REL {name: 'y', vec: [0.9, 0.1]}]->(a), \
-                (:Book)",
+        "CREATE (d:Deck)-[:TOW {name: 'alpha', vec: [1.0, 0.0]}]->(h:Hull), \
+                (h)-[:TOW {name: 'beta', vec: [0.9, 0.1]}]->(d), \
+                (:Log)",
     )
     .unwrap();
 
-    // SearchAcceptance "pre-bound relationship search with a null
-    // relationship from OPTIONAL MATCH": the null binding matches nothing
-    // (live Neo4j 2026.10.1: no rows), never every candidate.
+    // A pre-bound relationship search with a null relationship from
+    // OPTIONAL MATCH: the null binding matches nothing (live Neo4j
+    // 2026.10.1: no rows), never every candidate.
     let r = c
         .query(
-            "OPTIONAL MATCH (:Book)-[r:REL]->() MATCH ()-[r]->() \
+            "OPTIONAL MATCH (:Log)-[r:TOW]->() MATCH ()-[r]->() \
              SEARCH r IN (VECTOR INDEX ridx FOR [1.0, 0.0] LIMIT 2) RETURN r.name AS name",
         )
         .unwrap();
@@ -585,23 +593,23 @@ fn cip_225_prebound_null_binding_matches_nothing() {
         r.rows
     );
 
-    // Pre-bound rows keep their window: `y` is pre-bound on one incoming
+    // Pre-bound rows keep their window: `beta` is pre-bound on one incoming
     // row but ranks below `LIMIT 1`, so it is dropped rather than widening
-    // the search (live Neo4j 2026.10.1: `x` alone).
+    // the search (live Neo4j 2026.10.1: `alpha` alone).
     let r = c
         .query(
-            "MATCH ()-[r:REL]->() MATCH ()-[r]->() \
+            "MATCH ()-[r:TOW]->() MATCH ()-[r]->() \
              SEARCH r IN (VECTOR INDEX ridx FOR [1.0, 0.0] LIMIT 1) RETURN r.name AS name",
         )
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("x".into())]]);
+    assert_eq!(r.rows, vec![vec![Value::String("alpha".into())]]);
 }
 
-// CIP-246: UUID type (cherry-picked from #55).
+// UUID property values (cherry-picked from #55).
 #[test]
-fn cip_246_uuid_property_values() {
+fn uuid_property_values() {
     let mut c = connection();
-    let id = "f066ecfc-5151-4121-8a36-b35e00d72918";
+    let id = "5d8f3a2c-1e47-4b69-9c02-7f3a8d5e6b10";
     let other = "00000000-0000-0000-0000-00000000000a";
 
     // CREATE with a UUID property.
@@ -639,7 +647,7 @@ fn cip_246_uuid_property_values() {
     // Relationship property.
     let r = c
         .query(&format!(
-            "CREATE (:A)-[rel:R {{u: uuid('{id}')}}]->(:B) RETURN toString(rel.u) AS r"
+            "CREATE (:Port)-[rel:LINK {{u: uuid('{id}')}}]->(:Star) RETURN toString(rel.u) AS r"
         ))
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::String(id.into())]]);
@@ -662,10 +670,10 @@ fn cip_246_uuid_property_values() {
     assert!(c.query("CREATE (n:Bad {m: {a: 1}})").is_err());
 }
 
-// CIP-246: a UUID property survives a durable WAL replay (file reopen).
+// A UUID property survives a durable WAL replay (file reopen).
 #[test]
-fn cip_246_uuid_property_wal_roundtrip() {
-    let id = "f066ecfc-5151-4121-8a36-b35e00d72918";
+fn uuid_property_wal_roundtrip() {
+    let id = "5d8f3a2c-1e47-4b69-9c02-7f3a8d5e6b10";
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_str().unwrap();
     {
@@ -680,35 +688,30 @@ fn cip_246_uuid_property_wal_roundtrip() {
     assert_eq!(r.rows, vec![vec![Value::String(id.into())]]);
 }
 
-// CIP-246: persistence round-trip of the UUID value through the WAL tag.
+// Persistence round-trip of the UUID value through the WAL tag.
 #[test]
-fn cip_246_uuid_wal_roundtrip() {
-    let id = "f066ecfc-5151-4121-8a36-b35e00d72918";
-    let v = Value::Uuid(relate::uuid_parse(id).unwrap());
-    assert_eq!(
-        relate::uuid_hyphenated(match &v {
-            Value::Uuid(u) => *u,
-            _ => unreachable!(),
-        }),
-        id
-    );
+fn uuid_wal_roundtrip() {
+    let id = "5d8f3a2c-1e47-4b69-9c02-7f3a8d5e6b10";
+    let parsed = relate::uuid_parse(id).unwrap();
+    let v = Value::Uuid(parsed);
+    assert_eq!(relate::uuid_hyphenated(parsed), id);
     let tagged = v.to_json_tagged();
     assert_eq!(Value::from_json_tagged(&tagged).unwrap(), v);
 }
 
-// CIP-271: a homogeneous list literal is a static `LIST<T>`, not the
-// `LIST<ANY>` the `toString` family accepts. The rejection is a compile-time
-// one — it fires under EXPLAIN and in a CASE arm that never evaluates — while
+// A homogeneous list literal is a static `LIST<T>`, not the `LIST<ANY>`
+// the `toString` family accepts. The rejection is a compile-time one —
+// it fires under EXPLAIN and in a CASE arm that never evaluates — while
 // a dynamically typed list renders.
 #[test]
-fn cip_271_tostring_rejects_a_static_list_at_compile_time() {
+fn tostring_rejects_a_static_list_at_compile_time() {
     let mut c = connection();
 
     for query in [
-        "RETURN toString([1, 2]) AS r",
-        "RETURN toStringOrNull([1, 2]) AS r",
-        "EXPLAIN RETURN toString([1, 2]) AS r",
-        "RETURN CASE WHEN false THEN toString([1, 2]) ELSE 'x' END AS r",
+        "RETURN toString([4, 6]) AS r",
+        "RETURN toStringOrNull([4, 6]) AS r",
+        "EXPLAIN RETURN toString([4, 6]) AS r",
+        "RETURN CASE WHEN false THEN toString([4, 6]) ELSE 'x' END AS r",
     ] {
         let err = c.query(query).expect_err(query);
         assert!(
@@ -719,13 +722,13 @@ fn cip_271_tostring_rejects_a_static_list_at_compile_time() {
 
     // A list read from a variable has no statically known element type.
     let r = c
-        .query("UNWIND [[1, 2]] AS xs RETURN toString(xs) AS r")
+        .query("UNWIND [[4, 6]] AS xs RETURN toString(xs) AS r")
         .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("[1, 2]".into())]]);
+    assert_eq!(r.rows, vec![vec![Value::String("[4, 6]".into())]]);
 
     // Mixed classes (and a null element) are `LIST<ANY>`.
-    let r = c.query("RETURN toString([1, 'a']) AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("[1, a]".into())]]);
-    let r = c.query("RETURN toString([1, null, 2]) AS r").unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("[1, null, 2]".into())]]);
+    let r = c.query("RETURN toString([4, 'k']) AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("[4, k]".into())]]);
+    let r = c.query("RETURN toString([4, null, 6]) AS r").unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("[4, null, 6]".into())]]);
 }

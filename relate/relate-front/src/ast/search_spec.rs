@@ -6,7 +6,7 @@ use relate_parser::{Expr, SearchIndexSpec, SearchSpec};
 
 /// One grammar slot of a `<source specification clause>` expression, the
 /// tag [`walk_search_spec`] yields -- the slot identity consumers that
-/// must treat one slot differently (the CIP-278 Rule 6 control check
+/// must treat one slot differently (the combined-source control check
 /// selects WEIGHT/CONSTANT only) match on instead of hand-rolling a
 /// second recursion over the same tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

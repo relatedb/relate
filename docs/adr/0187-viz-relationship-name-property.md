@@ -60,7 +60,7 @@ Everything else in ADR-0153, as amended by ADR-0166, is unchanged:
   `indexes`/`constraints` populated from the catalog at call time
   (ADR-0166).
 - **Negative virtual ids** stay allocated from `-1` down (nodes first,
-  then relationships), and virtual nodes stay registered in the CIP-257
+  then relationships), and virtual nodes stay registered in the
   virtual-node side table so `startNode()`/`endNode()` resolve endpoints.
 - **Triple expansion** stays: one virtual relationship per distinct
   `(startLabel, relType, endLabel)` triple, with multi-label endpoints
@@ -70,8 +70,8 @@ Everything else in ADR-0153, as amended by ADR-0166, is unchanged:
 - **Zero-rows empty behavior** stays: a graph with no stored labels
   returns no rows.
 
-The CIP-257 `SHOW CURRENT GRAPH TYPE AS GRAPH` producer is untouched: its
-virtual relationships keep their own CIP-257 property shapes
+The `SHOW CURRENT GRAPH TYPE AS GRAPH` producer is untouched: its
+virtual relationships keep their own property shapes
 (`{relationshipType, properties, constraints}` and friends), which are
 pinned by that surface's own scenarios.
 
@@ -83,27 +83,28 @@ pinned by that surface's own scenarios.
   a graph containing relationships diverges from the oracle, and clients
   that label edges by `name` render unlabeled edges.
 - **Add further properties beyond `name`** (copy stored relationship
-  properties onto the virtual relationship, or add the CIP-257
+  properties onto the virtual relationship, or add that view's
   `properties`/`constraints` lists). Rejected: Neo4j's virtual
   relationship carries exactly `{name}`; any extra key re-creates the
   mismatch, and there is no stored-entity fact for a virtual relationship
   to expose — it is a schema triple, not a stored relationship, so copied
   values would be arbitrary (which stored relationship's?) or invented.
-  The richer CIP-257 property shape belongs to that producer, not this
+  The richer property shape belongs to that producer, not this
   one.
 - **Widen the shared virtual-entity machinery so every producer emits
   `name`** (including `SHOW CURRENT GRAPH TYPE AS GRAPH`). Rejected:
-  CIP-257's relationship shapes are pinned by the CIP and its scenarios
-  (`testdata/cip-eval/CIP-257-*`); LABS-185 is scoped to
-  `db.schema.visualization()`, and changing a surface the differential
-  suite does not compare would be an unrelated behavior change.
+  the graph-type view's relationship shapes are pinned by its own
+  scenarios (`testdata/cip-eval/` visualization suites); the
+  differential mismatch is scoped to `db.schema.visualization()` only,
+  and changing a surface the differential suite does not compare would
+  be an unrelated behavior change.
 
 ## Consequences
 
-- CIP-257 write rules still apply to these virtual relationships:
-  `SET r.name = ...` / `REMOVE r.name` on a virtual relationship is a
-  no-op (the write never reaches a store row), matching the CIP-257
-  "Write behavior on virtual entities" scenarios; only reads of the
+- Schema-visualization write rules still apply to these virtual
+  relationships: `SET r.name = ...` / `REMOVE r.name` on a virtual
+  relationship is a no-op (the write never reaches a store row), matching
+  the "Write behavior on virtual entities" scenarios; only reads of the
   returned value see the new property.
 - `properties(r)`/`keys(r)` on virtual entities still read the store by
   id and return empty (`{}` / `[]`), so they do not report the new `name`

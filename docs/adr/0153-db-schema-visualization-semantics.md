@@ -21,11 +21,11 @@ return columns with no CypherLite-specific additions.
 `db.schema.visualization()` follows both rules; what needs pinning is the
 shape of the virtual entities it returns and its empty-graph behavior,
 because the returned `nodes`/`relationships` values flow back through the
-Cypher value system (`startNode()`/`endNode()`, writes) where CIP-257's
+Cypher value system (`startNode()`/`endNode()`, writes) where the
 virtual-entity rules apply.
 
-The implementation reuses the CIP-257 virtual-entity machinery from
-`SHOW CURRENT GRAPH TYPE AS GRAPH`
+The implementation reuses the schema-visualization virtual-entity
+machinery from `SHOW CURRENT GRAPH TYPE AS GRAPH`
 (`cypherlite/cypherlite-executor/src/graph_type_visualize.rs`): a
 thread-local side table mapping negative ids to full node values, consulted
 by `startNode()`/`endNode()` as a fallback once the store lookup misses.
@@ -58,10 +58,10 @@ db.schema.visualization() ::
 - **Virtual entities carry negative ids**, allocated from `-1` down
   (nodes first, then relationships). Real, store-backed entities start at
   `0` and count up, so a negative id unambiguously marks "no real backing";
-  writes against these entities follow the CIP-257 virtual-entity rules
+  writes against these entities follow the virtual-entity rules
   (`DELETE` / property `SET`/`REMOVE` are no-ops, label `SET`/`REMOVE` and
   `CREATE` off of one fail).
-- **Virtual nodes are registered in the CIP-257 virtual-node side table**
+- **Virtual nodes are registered in the virtual-node side table**
   (`graph_type_visualize::register_virtual_node`), so
   `startNode()`/`endNode()` on a virtual relationship resolve its endpoints
   without a store lookup.
@@ -107,10 +107,10 @@ db.schema.visualization() ::
   requirement is satisfied for `db.schema.visualization()`; the procedure
   is no longer an undocumented extension of the ADR-0112 surface.
 - The virtual-entity contract (negative ids from `-1` down, side-table
-  registration, CIP-257 write behavior) is pinned: changing it, or the
+  registration, virtual-entity write behavior) is pinned: changing it, or the
   zero-rows empty behavior, requires a new ADR.
 - `startNode()`/`endNode()` correctness for these results depends on the
-  CIP-257 thread-local side table; the table is per-thread, so virtual
+  thread-local side table; the table is per-thread, so virtual
   node resolution is valid within the query execution that produced them.
 - Schema inference costs a scan of stored nodes and relationships at call
   time; there is no cached or declared-schema fast path (same cost model

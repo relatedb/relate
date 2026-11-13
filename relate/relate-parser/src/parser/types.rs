@@ -82,7 +82,7 @@ impl<'a> Parser<'a> {
     /// returns whether it was found. Whitespace (including newlines) before
     /// `!` is permitted since the lexer already discards it between tokens
     /// — matching observed Neo4j behavior rather than the CIP text, which
-    /// says whitespace should be disallowed (see CIP-102 NOTES.md Deviations).
+    /// says whitespace should be disallowed.
     fn maybe_consume_not_null(&mut self) -> bool {
         if self.peek_type() == TokenType::Bang {
             self.next_token();
@@ -400,7 +400,7 @@ impl<'a> Parser<'a> {
 
     /// Consumes the `TIME ZONE` tail of a `WITH[OUT] TIME ZONE` type
     /// suffix, accepting both the two-word spelling and the single-word
-    /// `TIMEZONE` alias (both appear in the wild, e.g. CIP-100's own
+    /// `TIMEZONE` alias (both appear in the wild, e.g.
     /// `TIMESTAMP WITHOUT TIMEZONE`).
     fn expect_time_zone_words(&mut self) -> ParseResult<()> {
         if self.peek_is_ident("TIMEZONE") {

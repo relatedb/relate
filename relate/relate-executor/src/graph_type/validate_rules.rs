@@ -91,7 +91,7 @@ pub(super) fn check_alias_namespace(
     // reference's own alias (e.g. `CONSTRAINT FOR (p:City) REQUIRE ...`, an
     // ad-hoc reference that need not resolve to a declared type at all) must
     // not collide with an unrelated node/edge type specification's alias
-    // (CIP-178 CS[9]/[11]). `=>`-qualified references (a pure local rename of
+    // (CIP-178). `=>`-qualified references (a pure local rename of
     // an already-fully-identified target) and plain alias references (which
     // always resolve to a declared type) are excluded. An `ALTER` body
     // deliberately skips this rule: Neo4j's verified acceptance corpus pairs
@@ -118,8 +118,8 @@ pub(super) fn check_alias_namespace(
     Ok(())
 }
 
-/// Rule 7 and CIP-266: implied labels and their (preview-gated, acyclic)
-/// inheritance, returned for the property rules that follow.
+/// Implied labels and their (preview-gated, acyclic) inheritance (CIP-266),
+/// returned for the property rules that follow.
 pub(super) fn check_implied_labels(
     body: &GraphTypeBody,
     preview: PreviewFeatures,
@@ -131,7 +131,7 @@ pub(super) fn check_implied_labels(
             return Err(syn("identifying label repeated in implied label set"));
         }
     }
-    // CIP-266 (replacing CIP-178 Rule 7's GTSB half): an implied label
+    // CIP-266 (replacing CIP-178's earlier implied-label rule): an implied label
     // may name another node element type's identifying label --
     // inheritance -- behind the `graph-type-implied-labels` preview gate
     // (ADR-0371). The in-body half of the gate lives at statement
@@ -153,7 +153,7 @@ pub(super) fn check_implied_labels(
     Ok(inheritance)
 }
 
-/// Rule 8, the property-set rules, and the CIP-266/CIP-262 inheritance and
+/// The property-set rules and the CIP-266/CIP-262 inheritance and
 /// default-value rules.
 pub(super) fn check_property_rules(
     body: &GraphTypeBody,
@@ -168,7 +168,7 @@ pub(super) fn check_property_rules(
         }
     }
 
-    // PT Rule 3a/3b: duplicate property names; CIP-283's optional
+    // Duplicate property names; CIP-283's optional
     // (bare `ANY`) properties and CIP-262's default values, behind their
     // preview gates.
     for nt in &body.node_types {
@@ -290,7 +290,7 @@ pub(super) fn check_edge_endpoints(
     Ok(())
 }
 
-/// Rule 9: an ineffectual single-label edge type. Skipped for CIP-180's
+/// An ineffectual single-label edge type. Skipped for CIP-180's
 /// canonicalizer input, which is exactly this shape.
 pub(super) fn check_ineffectual_edge_types(body: &GraphTypeBody) -> Result<(), EngineError> {
     // Rule 9: an ineffectual single-label edge type (empty props, any

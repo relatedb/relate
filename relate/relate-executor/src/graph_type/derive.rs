@@ -254,7 +254,7 @@ fn derive_property_constraint(
         type_canon.not_null = false;
         let mut property_type = render_canon(&type_canon);
         // CIP-262: the derived property-type constraint carries the default
-        // value in its stored `property_type` string (ME5: SHOW CONSTRAINTS
+        // value in its stored `property_type` string (SHOW CONSTRAINTS
         // renders `STRING DEFAULT ON COMMIT 'Hello'`); the post-statement
         // constraint check parses the type prefix and ignores the suffix.
         if let Some(expr) = &p.default_value {

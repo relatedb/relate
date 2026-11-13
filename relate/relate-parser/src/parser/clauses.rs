@@ -17,7 +17,7 @@ pub(super) struct UsingHints {
 impl<'a> Parser<'a> {
     /// Label-expression mixing (`InvalidLabelExpression`/
     /// `MixedIsAndColonConjunction` for pattern-position label exprs) is
-    /// scoped to one *top-level clause* (CIP-40 Section 3.6) -- but a
+    /// scoped to one *top-level clause* -- but a
     /// clause containing an `EXISTS {}`/`COUNT {}` subquery expression is
     /// one clause together with everything nested inside that subquery's
     /// own statement body: `statement_depth == 1` exactly while parsing a
@@ -110,7 +110,7 @@ impl<'a> Parser<'a> {
         let tok = self.peek().clone();
         match tok.ty {
             TokenType::MATCH => self.parse_match(false),
-            // CIP-159: `OPTIONAL MATCH` (pre-existing) and `OPTIONAL CALL`
+            // `OPTIONAL MATCH` (pre-existing) and `OPTIONAL CALL`
             // (inline subquery or named procedure call) -- `OPTIONAL` must
             // immediately precede one of these two clause keywords.
             TokenType::OPTIONAL => {
@@ -134,7 +134,7 @@ impl<'a> Parser<'a> {
                 self.backup();
                 self.parse_delete(true)
             }
-            // CIP-122: `NODETACH DELETE <delete item list>` -- an explicit
+            // `NODETACH DELETE <delete item list>` -- an explicit
             // spelling of the (already-default) plain, non-detaching DELETE.
             // Not a reserved keyword (recognized by spelling, like
             // `SHOW`/`USE`/`LET`/`FILTER` above) so it stays usable as an
@@ -151,7 +151,7 @@ impl<'a> Parser<'a> {
             TokenType::RETURN => self.parse_return(),
             TokenType::WITH => self.parse_with(),
             TokenType::UNWIND => self.parse_unwind(),
-            // CIP-250 (GQ10): `FOR <variable> IN <expression>`, the
+            // `FOR <variable> IN <expression>`, the
             // GQL-compliant spelling of UNWIND -- valid wherever UNWIND is
             // valid. `FOREACH` is its own token, so the two never collide.
             TokenType::FOR => self.parse_for_clause(),
@@ -210,16 +210,16 @@ impl<'a> Parser<'a> {
             "show" => self.parse_show_dispatch(),
             // CIP-68: `TERMINATE TRANSACTION[S] <ids> [YIELD ...]`.
             "terminate" => self.parse_terminate_transactions(),
-            // CIP-141: `USE <graph-expr>` graph-selector clause.
+            // `USE <graph-expr>` graph-selector clause.
             "use" => self.parse_use().map(Clause::Use),
             // CIP-206: `LET <var> = <expr>, ...` mid-query projection.
             "let" => self.parse_let(),
-            // CIP-203: `FILTER [WHERE] <search condition>`.
+            // `FILTER [WHERE] <search condition>`.
             "filter" => self.parse_filter(),
             // CIP-140: `FINISH` terminal clause.
             "finish" => self.parse_finish(),
             "alter" => {
-                // CIP-170: `ALTER DATABASE ...` is distinguished by the word
+                // `ALTER DATABASE ...` is distinguished by the word
                 // directly after `ALTER` (`DATABASE` vs `CURRENT`).
                 if self.peek_at_is_ident(1, "database") {
                     self.parse_alter_database()
@@ -230,7 +230,7 @@ impl<'a> Parser<'a> {
                     let start = self.pos;
                     self.unsupported_admin_clause(start)
                 } else {
-                    // CIP-182/CIP-187: `ALTER CURRENT GRAPH TYPE SET { ... }`.
+                    // `ALTER CURRENT GRAPH TYPE SET { ... }`.
                     self.parse_alter_current_graph_type()
                 }
             }
@@ -242,12 +242,12 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         self.next_token(); // consume CREATE
 
-        // CIP-170: `CREATE [OR REPLACE] DATABASE ...` / `CREATE [OR
+        // `CREATE [OR REPLACE] DATABASE ...` / `CREATE [OR
         // REPLACE] COMPOSITE DATABASE ...`. Checked before the general
         // dispatch below -- a plain `CREATE (...)` node pattern can never
         // start with `OR`. `database`/`composite` aren't reserved words
         // though, so they *can* legitimately be a named-path variable
-        // (`CREATE database = (a)-[:X]->(b)`, CIP-146's `<named path>`
+        // (`CREATE database = (a)-[:X]->(b)`, the `<named path>`
         // form) -- disambiguated by checking the token immediately after
         // isn't `=`, which a `<create database>`'s `<name>` position can
         // never be followed by.
@@ -365,7 +365,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// The GQL `INSERT` clause (CIP-40 Section 2.3.3 / Section 4.1 DML row):
+    /// The GQL `INSERT` clause (the GQL DML row form):
     /// a legal alternate to `CREATE`, executed identically, but its label
     /// set specifications may not use the legacy colon-conjunction shorthand
     /// (`:A:B`) -- only `IS`-introduced (optionally `&`-composed) or a
@@ -654,7 +654,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// CIP-236 `<group by clause>`: `GROUP BY <expr>...`, `GROUP BY ()`
+    /// `<group by clause>`: `GROUP BY <expr>...`, `GROUP BY ()`
     /// (empty grouping set), or `GROUP BY ALL`. `None` when the next token
     /// is not `GROUP`.
     pub(super) fn parse_group_by(&mut self) -> ParseResult<Option<GroupBySpec>> {
@@ -725,12 +725,12 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// CIP-250 (GQ10): `FOR <binding variable> IN <expression>` -- the
+    /// `FOR <binding variable> IN <expression>` -- the
     /// GQL-compliant successor spelling of `UNWIND <expression> AS
     /// <binding variable>`, with the binding variable *before* the
     /// expression. Normalized here into the same [`Clause::Unwind`] the
     /// UNWIND parse produces (`for_syntax: true`), so the clause validates,
-    /// lowers, plans and executes identically to UNWIND -- the CIP's own
+    /// lowers, plans and executes identically to UNWIND -- the proposal's own
     /// "no new logical plan operators" rule. UNWIND is not deprecated; the
     /// two spellings coexist. Default dialect since its graduation from
     /// the `gql-for` preview row (verified unlocked in live Neo4j 2026.09
@@ -851,8 +851,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The clause-level label-mixing rejections (CIP-40 Section 3.6,
-    /// CIP-14): mixing colon-conjunction with a GQL label-expression symbol
+    /// The clause-level label-mixing rejections:
+    /// mixing colon-conjunction with a GQL label-expression symbol
     /// or with the `IS` introducer in one scope. The read and write sides
     /// are checked independently — Neo4j keeps them apart across the clauses
     /// of one subquery scope. The `mixed-label-syntax` preview opt-in

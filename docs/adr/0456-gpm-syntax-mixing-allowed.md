@@ -17,9 +17,9 @@ diagnosis, 51 scenarios):
    `%`) and the `IS` introducer may mix across the label expressions of one
    clause (`(n:A:B)-[]-(m) WHERE m:(A&B)|C`, `(n IS S:R)`,
    `RETURN n:A&B, n:A:B`). Without the switch Neo4j — and CypherLite's
-   CIP-14/CIP-40 deviation rejections — error these combinations. Within a
-   *single* label expression the mixing stays illegal even under the switch
-   (`(n:A|B:C)`, `CREATE (n:A:B&C)`: 42I10).
+   frozen GPM syntax-mixing deviation rejections — error these combinations.
+   Within a *single* label expression the mixing stays illegal even under
+   the switch (`(n:A|B:C)`, `CREATE (n:A:B&C)`: 42I10).
 2. **Ungated acceptances.** A `CALL {}` subquery body is one label-mixing
    scope of its own (mixing colon-conjunction in one of its statements with
    `IS`/GQL symbols in another is illegal, while the body never combines
@@ -30,15 +30,16 @@ diagnosis, 51 scenarios):
    bracket-syntax variable-length form accepts both an inline `WHERE`
    predicate (`-[r*1..5 WHERE ...]->`) and a type expression containing
    negation or the wildcard (`-[r:!A&!B*1..5]->`) — each is the same AST the
-   GPM postfix form (CIP-28 Form 5) already normalizes to and executes.
+   GPM postfix form already normalizes to and executes.
 3. **Frozen-set fallout.** Accepting (2)'s type-expression forms makes four
-   frozen cip-eval identities stop passing — CIP-14
-   relationship-type-expressions [18]/[19] and CIP-40 quantifier-mixing
-   [12]/[14] DEVIATION — because the queries now succeed where the scenarios
+   frozen cip-eval identities stop passing — the
+   relationship-type-expression and quantifier-mixing deviation scenarios —
+   because the queries now succeed where the scenarios
    expect a `SyntaxError` (cip-eval's lenient error matching counts only "an
    error occurred"). ADR-0119 set the precedent: retiring a frozen identity
    for a dialect decision is an ADR-level change, not a silent baseline edit.
-   The [14] identity follows from ADR-0471: one traversal engine for every
+   The quantifier-mixing identity follows from ADR-0471: one traversal
+   engine for every
    var-length spelling evaluates the legacy bracket inline-`WHERE` form
    exactly like its GPM twin, so it now yields `count(*)` 0 instead of the
    incidental evaluation error that used to satisfy the scenario leniently.
@@ -61,7 +62,7 @@ diagnosis, 51 scenarios):
   `label_expr_saw_gql_symbol`) around each label expression, so
   `(n:A|B:C)` and `CREATE (n:A:B&C)` keep their 42I10 while
   `(n:A:B)-[]-(m) WHERE m:(A&B)|C` is accepted. Off (the floor), every
-  CIP-14/CIP-40 mixing rejection keeps firing unchanged.
+  syntax-mixing rejection keeps firing unchanged.
 - **A `CALL {}` body is one label-mixing scope, ungated.**
   `parse_call_subquery_statement` saves the clause flags, clears them for
   the body, and checks them once at the body's end, so two clauses of one
@@ -69,12 +70,13 @@ diagnosis, 51 scenarios):
   separate statements within a CALL subquery") while the body never
   combines with the enclosing clause. `EXISTS {}`/`COUNT {}`/`COLLECT {}`
   subquery *expressions* keep bubbling their label usage into the enclosing
-  clause (CIP-40 label-expression-mixing scenario 12 stays an error).
+  clause (label-expression mixing into the enclosing clause stays an error).
 - **Pattern comprehensions isolate quantifier context, ungated.** The
   clause-level quantifier-mixing flags split: a comprehension's inner
   pattern accumulates into comprehension-scoped flags that never combine
   with the clause's own forms but do combine across comprehensions of the
-  same clause (CIP-40 quantifier-mixing scenario 10 stays an error).
+  same clause (quantifier mixing across comprehensions of one clause stays
+an error).
 - **Bracket var-length accepts inline WHERE and full type expressions,
   ungated.** The `RelationshipPatternPredicateInVariableLength` and
   `VariableLengthRelationshipWithTypeExpression` parser rejections are
@@ -85,7 +87,8 @@ diagnosis, 51 scenarios):
   which both satisfies the CIP text and retires the last lenient pass.
 - **Frozen set and baseline.** The four identities above are removed from
   `testdata/cip-eval/ENGINE_PASSING.json`; `baselines/cip-eval.json` lowers
-  CIP-14 to 87/89 and CIP-40 to 109/111.
+  the relationship-type-expression suite to 87/89 and the
+  quantifier-mixing suite to 109/111.
 
 ## Alternatives considered
 
@@ -103,8 +106,8 @@ diagnosis, 51 scenarios):
 - **Keep the bracket var-length rejections and retire only the label-mixing
   half of the node.** Rejected: the acceptance corpus pins the bracket forms
   as the same ASTs their GPM twins normalize to; keeping a spelling-only
-  rejection contradicts CIP-28 Form 5's own normalization rule.
-- **Relax the label mixing ungated.** Rejected: CIP-14/CIP-40 frozen
+  rejection contradicts the postfix form's own normalization rule.
+- **Relax the label mixing ungated.** Rejected: the frozen
   error-expecting identities (locations.feature [22],
   node-label-expressions [24]/[25], the whole label-expression-mixing
   deviation family) would stop passing without any opt-in, a much larger

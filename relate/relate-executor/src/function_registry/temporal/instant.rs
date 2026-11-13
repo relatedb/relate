@@ -1,5 +1,5 @@
 //! Temporal instant constructors and their `.transaction` /
-//! `.statement` / `.realtime` clock spellings (CIP-113 F5-F7).
+//! `.statement` / `.realtime` clock spellings.
 
 use super::super::{FunctionCategory, FunctionMeta};
 use crate::catalog_meta::ProcArgMeta;

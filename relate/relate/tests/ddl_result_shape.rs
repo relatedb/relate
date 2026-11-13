@@ -1,6 +1,6 @@
 //! Schema and administration DDL returns zero rows and zero columns —
 //! the "omitted result" shape of a statement without `RETURN` (Neo4j
-//! parity; CIP-161 scenarios [15]-[17]). Only row-producing catalog
+//! parity). Only row-producing catalog
 //! commands (the SHOW family and `TERMINATE TRANSACTIONS`) project catalog
 //! rows into the statement result.
 

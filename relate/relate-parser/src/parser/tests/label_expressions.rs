@@ -272,7 +272,7 @@ fn test_label_expr_dynamic_label_in_case_when_colon_form() {
 fn test_list_comprehension_dynamic_label_where_then_map_pipe_not_swallowed() {
     // The `|` after `x:$('A')` must be the comprehension's map
     // separator, not a label-disjunction continuation that would eat
-    // `x` from `x.name` (CIP-221 scoped-expressions [1]).
+    // `x` from `x.name`.
     let stmt = parse("MATCH (n) RETURN [x IN [n] WHERE x:$('A') | x.name] AS filtered").unwrap();
     match &stmt.clauses[1] {
         Clause::Return(rc) => match &rc.items[0].expr {
@@ -346,7 +346,7 @@ fn test_is_not_labeled_negates_whole_expression() {
 #[test]
 fn test_set_label_set_colon_and_is_forms() {
     // Single-label colon and single-label IS items may coexist on the
-    // same statement (CIP-126 Example 3).
+    // same statement.
     let stmt = parse("MATCH (n) SET n:A, n IS B RETURN n").unwrap();
     match &stmt.clauses[1] {
         Clause::Set(sc) => {

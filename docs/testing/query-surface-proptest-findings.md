@@ -430,12 +430,12 @@ need **one engine only** and no reference implementation.
 1. **Direction reversal.** `(a)-[r]->(b)` ≡ `(b)<-[r]-(a)` with the returned columns mapped
    accordingly. (GraphQE rewrite rules; GDsmith generation symmetry.)
 2. **Undirected ≡ union of directions.** `MATCH (a)-[r]-(b) RETURN a.name` ≡
-   `MATCH (a)-[r]->(b) RETURN a.name UNION ALL MATCH (a)<-[r]-(b) RETURN a.name`. (GraphQE Table II
-   rule 1; standard Cypher semantics.)
+   `MATCH (a)-[r]->(b) RETURN a.name UNION ALL MATCH (a)<-[r]-(b) RETURN a.name`. (GraphQE Table II;
+   standard Cypher semantics.)
 
 **Pattern and path length**
 3. **Variable-length ≡ union of fixed lengths.** `(a)-[*1..2]->(b)` ≡ one-hop `UNION ALL` two-hop
-   (with relationship-uniqueness handled). (GraphQE rule 2; PATHTest's whole thesis.)
+   (with relationship-uniqueness handled). (GraphQE; PATHTest's whole thesis.)
 4. **Pattern fusion.** `MATCH p1` + `MATCH p2` (as union) ≡ a single query whose pattern is the union
    of p1 and p2 (when they share no conflicting variables). Gamera's highest-yield MR (30/39 bugs).
 5. **Pattern partitioning.** The inverse: a query over a union pattern ≡ union of queries over the
@@ -455,7 +455,7 @@ need **one engine only** and no reference implementation.
 
 **Projection / aggregation**
 11. **WITH-rename transparency.** `MATCH (x) WITH x.name AS y RETURN y` ≡ `MATCH (x) RETURN x.name`
-    (no intervening aggregation). (GraphQE rule 4.)
+    (no intervening aggregation). (GraphQE.)
 12. **DISTINCT idempotence.** `RETURN DISTINCT` applied twice ≡ once; `UNION ALL` preserves
     duplicates, `UNION` deduplicates. (GraphQE UNION axioms; standard.)
 13. **Aggregation additivity.** `count()` over a partitioned row set equals the sum over partitions;
@@ -503,7 +503,7 @@ false positives) is the warning against validating an oracle by intuition.
   `graph_op_sequence()`, `config()`). The query surface is **greenfield** — no query-level proptest
   yet.
 - **Seed corpus:** the language **floor** is the openCypher TCK — 1,615 raw scenarios in
-  `testdata/tck` at the time of this study (3,892 cucumber-expanded, all passing; one CIP-271-superseded
+  `testdata/tck` at the time of this study (3,892 cucumber-expanded, all passing; one superseded
   outline removed from the pin per ADR-0188; allowlist of 3,892 exactly-passing ids) — and the
   **stretch** corpus was the CIP-derived (Cypher 25 / CIP) suite —
   **5,409 scenarios across 491 `.feature` files** in `testdata/cip-eval` (ratcheting scoreboard in

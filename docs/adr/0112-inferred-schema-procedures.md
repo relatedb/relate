@@ -113,7 +113,7 @@ that must reference ADR-0058.
 - ADR-0153 adds `db.schema.visualization()` as the third `db.schema.*`
   procedure, satisfying this ADR's follow-up-ADR requirement for additional
   schema procedures, and pins its virtual-entity semantics (negative ids,
-  CIP-257 side-table registration, `{name, indexes, constraints}` node
+  virtual-node side-table registration, `{name, indexes, constraints}` node
   shape, zero rows when no stored labels exist).
 
 ## Consequences

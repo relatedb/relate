@@ -533,7 +533,7 @@ fn check_grouping_element_aliases(
     };
     for key in keys {
         // A bare variable naming an alias is the valid form (it resolves to
-        // the item expression, Rule 4.2).
+        // the item expression).
         if matches!(key, Expr::Variable(_)) {
             continue;
         }
@@ -712,7 +712,7 @@ mod tests {
                 "{query}: {err:?}"
             );
         }
-        // A bare alias reference resolves to the aliased item (Rule 4.2).
+        // A bare alias reference resolves to the aliased item.
         assert!(validate_semantics("WITH 1 AS a RETURN a, count(*) GROUP BY a").is_ok());
     }
 

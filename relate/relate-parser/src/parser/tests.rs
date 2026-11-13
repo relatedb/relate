@@ -92,7 +92,7 @@ fn return_group_by(q: &str) -> Option<GroupBySpec> {
 
 /// The `CALL { ... }` clause of a parsed statement. `find_map` locates the
 /// clause regardless of how many `WITH`/`MATCH` clauses precede it, so the
-/// CIP-141 scope and CIP-32 `IN TRANSACTIONS` tests share one extraction
+/// `CALL` scope and `IN TRANSACTIONS` tests share one extraction
 /// instead of re-matching the clause chain at a varying index; each caller
 /// selects the field it cares about (`scope`, `in_transactions`).
 fn call_subquery_of(s: &Statement) -> &CallSubqueryClause {

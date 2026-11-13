@@ -8,7 +8,7 @@ Claim: 40f21a6d20282427e4f9fa243e8915e51ef17ac8
 
 The openCypher TCK 2024.3 pin (3892/3892) carries **zero quantified path
 pattern (QPP) scenarios** — verified 2026-10-31 — so the engine's QPP
-support (CIP-51 path modes, quantified groups, the ADR-0468/0471/0475
+support (path modes, quantified groups, the ADR-0468/0471/0475
 traversal work) has no contract net beyond hand-written unit pins. The
 2026-11-01 PathDB spike (LABS-646 pre-work) translated the 142 regular
 path queries of dbgutalca/pathdb-eval1 (Apache-2.0, `e62e33c2`) into

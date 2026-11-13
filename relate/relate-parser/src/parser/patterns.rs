@@ -88,7 +88,7 @@ impl<'a> Parser<'a> {
         outer_var: Option<SmallName>,
     ) -> ParseResult<PatternPath> {
         // Pre-GPM `shortestPath(...)`/`allShortestPaths(...)` used as a
-        // top-level MATCH pattern (CIP-40/CIP-73 Section 3.3): sugar for
+        // top-level MATCH pattern: sugar for
         // `SHORTEST 1 PATH (...)` / `ALL SHORTEST (...)` respectively.
         // Checked before `parse_path_prefix` -- a bare `shortestPath`
         // identifier can never otherwise start a pattern (every path
@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
 
         let (selector, mode) = self.parse_path_prefix()?;
 
-        // CIP-51 Section 3.1.2 / Deviation D1: the path variable declaration
+        // The path variable declaration
         // must precede the mode/selector prefix. If another `name =`
         // follows the prefix we just consumed, the input was actually
         // `MODE p = ...` (mode before the variable) -- reject it explicitly
@@ -184,7 +184,7 @@ impl<'a> Parser<'a> {
         self.finish_pattern_path(path)
     }
 
-    /// Shared tail of `parse_pattern_path`: CIP-28 Section 4.2 Rule 6, a
+    /// Shared tail of `parse_pattern_path`: the rule that a
     /// top-level path pattern must have a minimum node count > 0 -- it
     /// cannot consist entirely of zero-lower-bound quantified path patterns
     /// (which could all collapse to zero iterations, leaving no node at
@@ -210,7 +210,7 @@ impl<'a> Parser<'a> {
     /// (`ident = `, recognized both at the top level and for a subpath
     /// variable inside a quantification, e.g. `(p2 = (x)-->(y))*`) followed
     /// by a sequence of node, relationship, and quantified-path-pattern
-    /// factors (CIP-28 Section 3.1.7 concatenation). Node and quantified
+    /// factors (by concatenation). Node and quantified
     /// factors may be juxtaposed directly (no relationship between them,
     /// e.g. `(x)((a)-->(b))*` or `((a)-->(b))*((c)-->(d))*`); a relationship
     /// factor must always be preceded by an already-parsed element and
@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
                     ) {
                         self.side_effects.quantifiers.gpm_form = true;
                         let quantifier = self.parse_quantifier()?;
-                        // Rule 3: the operand's minimum path length must be
+                        // The operand's minimum path length must be
                         // > 0 -- a single node pattern cannot be quantified.
                         let has_relationship = inner
                             .elements
@@ -277,7 +277,7 @@ impl<'a> Parser<'a> {
                                 "MinimumPathLengthZero: the operand of a quantified path pattern must have a minimum path length greater than zero",
                             ));
                         }
-                        // Rule 4: quantified path patterns cannot be nested,
+                        // Quantified path patterns cannot be nested,
                         // directly or through concatenation.
                         if contains_quantification(&inner.elements) {
                             return Err(self.error(
@@ -412,10 +412,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parses the CIP-73 `<number of paths>`/`<number of groups>`
+    /// Parses the `<number of paths>`/`<number of groups>`
     /// non-terminal, extended by CIP-191's `<dynamic parameter
-    /// specification>`: an unsigned integer literal (validated `> 0` here,
-    /// Rule 0) or a bare `$parameter` (validated at runtime, once its value
+    /// specification>`: an unsigned integer literal (validated `> 0` here)
+    /// or a bare `$parameter` (validated at runtime, once its value
     /// is known). Returns `None` if neither is present.
     pub(super) fn parse_number_of_paths(&mut self) -> ParseResult<Option<PathCount>> {
         if self.peek_type() == TokenType::Integer {
@@ -441,7 +441,7 @@ impl<'a> Parser<'a> {
 
     /// Parses the optional CIP-51 path-mode-only prefix or CIP-73/CIP-191
     /// path-search (selector) prefix that may precede a path pattern's body
-    /// (`<path pattern prefix>`, CIP-51 Section 3.1.2). Returns
+    /// (`<path pattern prefix>`). Returns
     /// `(selector, mode)`; both `None` when neither is written.
     pub(super) fn parse_path_prefix(
         &mut self,
@@ -491,7 +491,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `(name = (` when the group itself carries a subpath variable
-    /// (CIP-28 Section 3.3, e.g. `(p2 = (x)-->(y))*`). Distinguishes this
+    /// (e.g. `(p2 = (x)-->(y))*`). Distinguishes this
     /// from a plain node pattern, whose own label/property spec never
     /// starts with `(`. The subpath variable is a symbolic name, so any
     /// keyword spelling works unquoted too (ADR-0191).
@@ -507,9 +507,9 @@ impl<'a> Parser<'a> {
 
     /// Parses a CIP-28 quantifier: `*`, `+`, `{m,n}`, `{m,}`, `{,n}`, `{,}`,
     /// or `{n}`. The current token must be `Star`, `Plus`, or `LeftBrace`.
-    /// Applies Rule 1 normalization (`{,}` -> `{0,}`, an absent lower bound
-    /// defaults to 0) and Rule 2 validation (upper bound > 0 if present,
-    /// lower bound <= upper bound).
+    /// Applies the `{,}` -> `{0,}` normalization (an absent lower bound
+    /// defaults to 0) and the bounds validation (upper bound > 0 if
+    /// present, lower bound <= upper bound).
     pub(super) fn parse_quantifier(&mut self) -> ParseResult<PathQuantifier> {
         match self.peek_type() {
             TokenType::Star => {
@@ -646,7 +646,7 @@ impl<'a> Parser<'a> {
         // meaning cannot apply (`peek_pattern_name_is_variable`, which folds
         // in the symbolic-name check): a leading `WHERE` otherwise starts
         // the inline element predicate and a leading `IS` otherwise starts a
-        // variable-less GPM label spec (`(IS A&B)`, CIP-40 Section 2.3.3).
+        // variable-less GPM label spec (`(IS A&B)`).
         if self.peek_pattern_name_is_variable(0) {
             node.variable = Some(SmallName::from_name(&tok.literal));
             self.next_token();
@@ -777,7 +777,7 @@ impl<'a> Parser<'a> {
             // form `-[r WHERE ...]->{1,5}` normalizes to, so the old
             // bracket-only rejection was a syntax-gap (Neo4j
             // GpmSyntaxMixingAcceptance "Var-length relationship with inline
-            // predicate - OK"; the CIP-40 quantifier-mixing [14] DEVIATION row
+            // predicate - OK"; the quantifier-mixing DEVIATION row
             // captured the older rejection and is retired with it).
             let tail = self.parse_element_property_and_where()?;
             rel.has_properties = tail.has_properties;
@@ -825,7 +825,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // CIP-28 Section 3.1.3 Form 5 / Rule 5: a quantifier directly
+        // A quantifier directly
         // following the relationship pattern (`-[r]->*`, `-->+`,
         // `-[]->{1,6}`, `<-[:R]-{1,3}`, `-[:R]-{2}`) normalizes to an
         // ordinary variable-length relationship pattern with implicit

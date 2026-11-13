@@ -11,9 +11,7 @@ use relate_core::{Error, Result};
 /// specification body>` string: component groups in order (node types,
 /// edge types, node type constraints, edge type constraints), each
 /// internally sorted per the CIP-180 canonical sort order, joined with
-/// `", "` (see CIP-180 NOTES.md's whitespace/separator convention -- the
-/// doc's own newline/`\` line-continuation rendering is a presentation
-/// artifact, not asserted by any scenario).
+/// `", "`.
 pub fn canonicalize_graph_type_body(body: &GraphTypeBody) -> Result<String> {
     let (types, node_c, edge_c, _node_id_labels, _edge_id_labels) =
         graph_type_components(body, false, true)?;
@@ -87,7 +85,7 @@ pub(super) fn auto_constraint_name(c: &GraphTypeConstraintSpec, label: &str) -> 
 /// independently-created constraints into these same two groups before
 /// sorting each and rendering the final `specification` string (CIP-184).
 ///
-/// `auto_name_constraints`: CIP-180's own canonical form (used by
+/// `auto_name_constraints`: the canonical form (used by
 /// `canonicalize_graph_type_body` for CIP-182/183's fragment assertions)
 /// renders an unnamed constraint with no name at all, matching the literal
 /// declared specification; `SHOW CURRENT GRAPH TYPE` (CIP-184) instead
@@ -193,7 +191,7 @@ pub(crate) fn edge_id_label_set(body: &GraphTypeBody) -> HashSet<&SmallName> {
         .collect()
 }
 
-/// CIP-184: `SHOW CURRENT GRAPH TYPE`'s `specification` column. Unlike
+/// `SHOW CURRENT GRAPH TYPE`'s `specification` column. Unlike
 /// `canonicalize_graph_type_body` (CIP-180's single-line, `", "`-joined
 /// form, used for CIP-182/183's `CONTAINS`-based fragment assertions),
 /// this renders the CIP-184-observed pretty multi-line form (`{\n  ` +
@@ -281,8 +279,8 @@ pub(crate) fn resolved_constraint_label(
 /// The CIP-180 canonical constraint sort key: identified references (sort
 /// label 1) before unidentified ones (sort label 2), then by resolved
 /// label, then by the declared property-name list (order-sensitive, not
-/// re-sorted -- this is what breaks the KEY-before-UNIQUE rank tie in the
-/// CIP-180 worked example), then by constraint-type rank.
+/// re-sorted -- this is what breaks the KEY-before-UNIQUE rank tie), then
+/// by constraint-type rank.
 pub(super) fn constraint_sort_key(
     c: &GraphTypeConstraintSpec,
     alias_table: &HashMap<&SmallName, &SmallName>,

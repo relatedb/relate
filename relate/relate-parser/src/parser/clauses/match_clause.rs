@@ -5,8 +5,8 @@ impl<'a> Parser<'a> {
         // Cypher 25 (Neo4j 2025.06, CIP-60): the path variable declaration
         // may precede the clause-level match-mode phrase --
         // `MATCH p = REPEATABLE ELEMENTS (pattern)` -- exactly as it
-        // precedes a path-mode/selector prefix (`p = TRAIL (...)`, CIP-51
-        // Section 3.1.2). Recognized up front by lookahead (`name =`
+        // precedes a path-mode/selector prefix (`p = TRAIL (...)`, CIP-51).
+        // Recognized up front by lookahead (`name =`
         // followed by a match-mode phrase) so the phrase itself is still
         // consumed by `parse_match_mode_prefix` and the declared variable
         // lands on the first parsed path pattern.
@@ -27,8 +27,8 @@ impl<'a> Parser<'a> {
         };
         self.validate_path_modes(&pattern, match_mode, match_mode_explicit)?;
 
-        // CIP-79: `USING INDEX`/`USING INDEX SEEK`/`USING JOIN ON`/`USING
-        // SCAN` query-planner hints, written directly after the pattern
+        // Query-planner hints (CIP-79) -- `USING INDEX`/`USING INDEX SEEK`/`USING
+        // SCAN`, written directly after the pattern
         // and before WHERE. Relate has no cost-based planner to steer,
         // so a JOIN hint is never fulfilled — it is kept for the `01N30`
         // plan-time notification that reports each one. `USING SCAN` is
@@ -40,7 +40,7 @@ impl<'a> Parser<'a> {
         // at compile time); it still steers nothing.
         let hints = self.parse_using_hints()?;
 
-        // CIP-224: the `<graph pattern where clause>` may appear either
+        // The pattern's WHERE clause (CIP-224) may appear either
         // before or after the `<search clause>` with no semantic
         // difference -- check for a leading WHERE first, then SEARCH, then
         // (only if no WHERE was seen yet) a trailing WHERE.
@@ -204,7 +204,7 @@ impl<'a> Parser<'a> {
         Ok((MatchMode::DifferentRelationships, false))
     }
 
-    /// CIP-51 Section 3.1.3 rules 2-4, checked once a whole graph pattern
+    /// The path-shape rules (CIP-51), checked once a whole graph pattern
     /// (one MATCH clause's comma-separated path pattern list) has been
     /// parsed. Each `EXISTS { MATCH ... }` subquery gets its own independent
     /// call (a different "depth", rule 3), since it routes back through
@@ -218,7 +218,7 @@ impl<'a> Parser<'a> {
         match_mode: MatchMode,
         match_mode_explicit: bool,
     ) -> ParseResult<()> {
-        // CIP-40 Section 2.6 last paragraph: an explicit match-mode keyword
+        // CIP-40: an explicit match-mode keyword
         // cannot combine with a `shortestPath()`/`allShortestPaths()`
         // legacy function pattern in the same MATCH clause (path-selector-
         // mixing.feature scenarios 8/9) -- but combines freely with an
@@ -229,7 +229,7 @@ impl<'a> Parser<'a> {
                 "MixingShortestPathAndMatchMode: an explicit match mode cannot be combined with a shortestPath()/allShortestPaths() pattern",
             ));
         }
-        // CIP-73 Section 3.3 / path-selector-mixing.feature scenario 14: a
+        // CIP-73, path-selector-mixing.feature scenario 14: a
         // MATCH clause with more than one path pattern cannot have a
         // *selective* selector (anything but the implicit/explicit `ALL`)
         // written as an explicit keyword on any of them -- but the legacy
@@ -285,9 +285,9 @@ impl<'a> Parser<'a> {
             // (42N53 "unsafe usage of repeatable elements"), because the
             // pattern may yield infinitely many rows. It is rejected
             // unconditionally, regardless of any path selector that might
-            // otherwise bound it (CIP-73 Deviation #5/#6: confirmed for ALL,
+            // otherwise bound it (CIP-73: confirmed for ALL,
             // ANY, and SHORTEST alike). The doc's own claimed SHORTEST
-            // relaxation (CIP-51 Section 2.3.3.3) is intentionally *not*
+            // relaxation (CIP-51) is intentionally *not*
             // implemented: without real relationship-uniqueness pruning
             // (which REPEATABLE ELEMENTS disables), evaluating it would mean
             // brute-force enumerating every candidate up to the group's

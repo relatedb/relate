@@ -462,8 +462,7 @@ File budgets:
     WithSkipLimit1, MatchWhere4, Merge9, Graph8 and
     CountingSubgraphMatches1.
   - Match4-6, Quantifier1-12, Merge5 and Create2.
-  - cip-eval CIP-222 `coll-distinct.feature` and CIP-154
-    `union-distinct.feature`.
+  - cip-eval `coll-distinct.feature` and `union-distinct.feature`.
   - The full TCK, 3892/3892, must not regress.
 - **Bench.** Run the qloop-852 harness shapes with digests identical to
   the baseline. The target is the distinct share of `expansion_4`

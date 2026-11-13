@@ -33,7 +33,7 @@ Parameter conversion (`py_to_cypher_value_at`) now accepts:
 
 - **`uuid.UUID`** → `STRING` of the canonical lowercase hyphenated form
   (`str(uuid)`), matching this surface's existing stance that UUIDs stay
-  strings (CIP-246; `value_to_cypher` already renders engine UUIDs as
+  strings (`value_to_cypher` already renders engine UUIDs as
   strings).
 - **`bytes` / `bytearray`** → `LIST<INTEGER>` of byte values 0–255.
   This is the only lossless representation the engine can store today;
@@ -84,7 +84,8 @@ pyo3's internal conversion wording.
   PEP 249 mandates a usable `Binary` constructor and the data is
   representable losslessly today; the mapping is recorded here so it can
   be re-pointed at a future engine byte-array value without a new API.
-- **`uuid.UUID` → two 64-bit integer halves (CIP-246 storage form)** —
+- **`uuid.UUID` → two 64-bit integer halves (the engine's UUID storage
+  form)** —
   rejected: the surface's documented stance is that UUIDs cross as their
   canonical string form; introducing a second representation only on the
   parameter path would split the dialect.

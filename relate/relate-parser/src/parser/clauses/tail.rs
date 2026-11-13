@@ -32,7 +32,7 @@ impl<'a> Parser<'a> {
             // (unlike `WITH DISTINCT`/`RETURN ... AS`), so accepting any
             // word-shaped token -- including normally-reserved ones like
             // DISTINCT/AS -- as the binding variable is unambiguous.
-            // CIP-206 PE6.1/PE6.2 rely on exactly this (`LET DISTINCT = 1`,
+            // CIP-206 relies on exactly this (`LET DISTINCT = 1`,
             // `LET AS = 1` are both valid).
             let name = self.parse_schema_name("a variable name after LET")?;
             self.expect(TokenType::Equals)?;
@@ -101,7 +101,7 @@ impl<'a> Parser<'a> {
     /// behavior, not the CIP's own fixed grammar order -- see `PageStage`)
     /// any order. Shared by the standalone paging clause (CIP-168,
     /// `parse_standalone_order_by_page`) and the SHOW family's YIELD
-    /// paging (CIP-46 con[15]/CIP-74 filtering[8]/[9]) -- the one place
+    /// paging (CIP-46/CIP-74) -- the one place
     /// the SKIP/OFFSET policy is decided: OFFSET is accepted everywhere
     /// SKIP is (`peek_is_offset`, CIP-168), including inside SHOW paging.
     pub(in crate::parser) fn parse_page_stages(&mut self) -> ParseResult<Vec<PageStage>> {

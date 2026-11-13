@@ -15,7 +15,7 @@ stored in `system_ontologies`:
 - `db.ontology.drop` deletes it;
 - `db.ontology.apply` converts it to a graph type and applies it to the target
   database, replacing that database's current graph type like
-  `ALTER CURRENT GRAPH TYPE SET { … }` (CIP-176).
+  `ALTER CURRENT GRAPH TYPE SET { … }`.
 
 Neo4j limits who may write with `EXECUTE BOOSTED` privileges, and plans
 `ontology.fromGraphType()` and `ontology.fromGraph()` as extensions. The
@@ -115,7 +115,8 @@ CypherLite has no role-based access control.
   data violates the resulting graph type" is implemented (validate the
   captured `neo4j` snapshot against the derived constraints before
   committing the `SetCurrentGraphType` op).
-- ADR-0227 amends §1 and §2, following CIP-287 (revision of 8 Oct 2026)
+- ADR-0227 amends §1 and §2, following the ontology-privileges proposal
+  (revision of 8 Oct 2026)
   under §1's own follow-Neo4j rule: the database argument is removed — the
   procedures act on the database they are executed against (the session
   database or the `USE` target), so §2's `Ontologies can only be stored
@@ -137,7 +138,7 @@ CypherLite has no role-based access control.
   only be stored for the user database 'neo4j'.` is reached; run against
   `neo4j` they are unchanged.
 - ADR-0378 gates §6's four procedures behind `CYPHERLITE_PREVIEW=ontology`
-  while the Ontology Graph Spec / CIP-287 contract is not final: with the
+  while the Ontology Graph Spec contract is not final: with the
   opt-in off, `db.ontology.set`, `get`, `drop` and `apply` fail with the
   ADR-0371 authored preview error and `SHOW PROCEDURES` omits their rows;
   §6 still holds for the code (every build compiles it in), not for

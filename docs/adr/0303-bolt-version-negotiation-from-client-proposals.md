@@ -47,7 +47,7 @@ version it speaks only when the client proposed it, and otherwise replies
    starting a session. The server logs one stderr line naming the
    proposals.
 4. **Manifest proposals never match.** `00 00 01 FF` has `MM = 0xFF`, so
-   rule 1 rejects it. The server does not speak the manifest handshake,
+   the covering test rejects it. The server does not speak the manifest handshake,
    and a client that sends a manifest proposal next to `00 00 04 04` (or
    a range covering it) gets the plain 4.4 reply.
 5. The selection is a pure function of the 16 proposal bytes. The
@@ -96,7 +96,7 @@ version it speaks only when the client proposed it, and otherwise replies
   the driver's standard "no supported protocol version" error.
 - The negotiation rule is part of the Bolt client contract and is
   documented on the Protocol line of `docs/api/bolt/spec.md`.
-- Adding another Bolt version later (for example 5.x or the manifest
+- Adding another Bolt version later (for example, 5.x or the manifest
   handshake) changes the selection function and needs its own ADR. The
   typed handshake outcome already has the "unsupported" branch that such
   a change would extend.

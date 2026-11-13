@@ -151,7 +151,7 @@ fn test_graph_type_bare_constraint_drop_only_under_drop() {
     assert_eq!(cgt.body.constraints.len(), 1);
     assert_eq!(cgt.body.constraints[0].name, None);
 
-    // CIP-183 drop [12]: a DROP body cannot drop that unnamed specification,
+    // A DROP body cannot drop that unnamed specification,
     // but still takes a named one and a type's own unnamed constraints.
     let q =
         "ALTER CURRENT GRAPH TYPE DROP { CONSTRAINT FOR (n:Person =>) REQUIRE (n.name) IS KEY }";

@@ -64,7 +64,7 @@ pub(super) fn check_call_subquery_clause(
     // shadowing check, the star rule, validation, and the export-set
     // insertion): the seed is what the body sees (the whole outer scope for
     // a naked `CALL { … }`, whose `RETURN *` expands it), while the CIP-218
-    // Rule 10 exclusion set is non-empty only for a scope clause.
+    // star-exclusion set is non-empty only for a scope clause.
     let incoming: Vec<String> = imported.keys().cloned().collect();
     let (seed_names, import_names) = crate::names::call_body_names(scope, &incoming);
     // 42N07: the one shadowing policy, shared with every other subquery
@@ -96,11 +96,11 @@ pub(super) fn check_call_subquery_clause(
     // Validate the body against the imports it may read — the same
     // stage driver the planner runs, without planning anything. The seed is
     // what the body's own `RETURN *` expands (the whole outer scope for a
-    // naked body); the import list is CIP-218 Rule 10, so a scope clause's
-    // star arms do not re-expand the imports and every UNION arm agrees on
-    // the export shape. Its returned names are the body's export set, read
-    // again below — the walk is not repeated, and both lists come from the
-    // one `call_body_names` derivation.
+    // naked body); the import list is the scope-clause import set, so a
+    // scope clause's star arms do not re-expand the imports and every
+    // UNION arm agrees on the export shape. Its returned names are the
+    // body's export set, read again below — the walk is not repeated, and
+    // both lists come from the one `call_body_names` derivation.
     let output_names = crate::validate::validate_query_with_env(
         &scoped_query,
         &imported,
@@ -122,7 +122,7 @@ pub(super) fn check_call_subquery_clause(
         .as_ref()
         .and_then(|tx| tx.report_status.as_ref());
     reject_post_call_collisions(env, &explicit, &output_names, status_name)?;
-    // CIP-218 Rule 10 shapes the body's export set: the exclusion is part of
+    // The import exclusion shapes the body's export set: the exclusion is part of
     // the name computation (the walk just run), so the `RETURN *` arms agree
     // with their explicit siblings and no imported name survives in it.
     for name in output_names {

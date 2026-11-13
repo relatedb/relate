@@ -44,11 +44,11 @@ fn count_label_probe_check() {
 fn count_label_probe_check() {}
 
 /// Ids in a label's first `label_index` copy within a scratch. Each later
-/// copy of that label doubles it (ADR-0171 rule 6).
+/// copy of that label doubles it (ADR-0171's lock-order rounds).
 const FIRST_COPY: usize = 64;
 
-/// What one scratch has learned about one label at its snapshot (ADR-0171
-/// rule 7). Rule 7's `complete` is `whole && pending.is_empty()`: every id
+/// What one scratch has learned about one label at its snapshot (ADR-0171's
+/// memo). The memo's `complete` is `whole && pending.is_empty()`: every id
 /// of a whole-set copy has been checked, so `visible` is `S`.
 struct LabelMemo {
     /// Ids already inspected.
@@ -112,25 +112,27 @@ impl LabelProbe {
     /// `label`, `None` once `k` of them do, which is at once for `k <= 0`.
     /// `S` is exact whenever it is returned (ADR-0171).
     ///
-    /// - Callers probe only a label the current operation gains or loses
-    ///   (rule 1), once per label, with `k = need - D` from
+    /// - Callers probe only a label the current operation gains or loses,
+    ///   once per label, with `k = need - D` from
     ///   `live_label_delta` taken before the operation (`need` 1 for a gain,
-    ///   2 for a loss; rules 2-3). A `None` means the label stays live; an
-    ///   exact `S` also tells whether the snapshot carried it (rule 4).
+    ///   2 for a loss; ADR-0171's gain and loss checks). A `None` means the
+    ///   label stays live; an
+    ///   exact `S` also tells whether the snapshot carried it (the
+    ///   `label_on_snapshot` probe).
     /// - An id of `Graph::label_index` counts only if its newest version
     ///   visible at the snapshot exists and carries `label`'s interned id.
     ///   Ids that are not visible, or whose visible version lacks the label
     ///   (created or relabeled after the snapshot, awaiting GC), are checked
     ///   and skipped. The scratch overlay is ignored: its effects are all in
-    ///   `D`. An uninterned label has `S = 0` and needs no probe (rule 5).
-    /// - Lock order (rule 6): this holds at most one of the `label_index`
+    ///   `D`. An uninterned label has `S = 0` and needs no probe.
+    /// - Lock order: this holds at most one of the `label_index`
     ///   and `nodes` guards at a time. It copies at most `c` ids (64 for the
     ///   label's first copy in the scratch, doubled on each later copy) under
     ///   one `label_index` read guard, drops it, and then checks each id
     ///   under its own short `nodes` guard. It never holds a `label_index`
     ///   guard while acquiring a `nodes` guard, so it cannot reverse
     ///   `Graph::index_add`'s `nodes` -> `label_index` order.
-    /// - Memo (rule 7): each id is checked at most once per scratch, and only
+    /// - Memo: each id is checked at most once per scratch, and only
     ///   a fully checked whole-set copy may conclude "fewer than `k`".
     ///
     /// Every node visible with `label` at a pinned snapshot stays in the
@@ -138,7 +140,7 @@ impl LabelProbe {
     /// at apply, before publication, and leave only at GC, which keeps
     /// versions visible at a pinned snapshot. So a `None` equals the old
     /// census's `S + D >= need`, for autocommit statements and explicit
-    /// transactions alike (rule 8).
+    /// transactions alike (ADR-0171).
     pub(crate) fn carriers_below(&self, graph: &Graph, label: &str, k: i64) -> Option<i64> {
         let Some(lid) = graph.label_id(label) else {
             return (k > 0).then_some(0);

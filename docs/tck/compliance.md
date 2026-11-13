@@ -43,7 +43,7 @@ and seven scenarios were re-pinned to current Neo4j behaviour:
 
 | Scenario | Deviation from unmodified 2024.3 |
 | --- | --- |
-| `TypeConversion4 [10]` — *Fail `toString()` on invalid types* | Removed from the pin: CIP-271 (ADR-0002) renders LIST/MAP/NODE/RELATIONSHIP/PATH instead of erroring, so the outline can never pass without regressing (ADR-0188). |
+| `TypeConversion4 [10]` — *Fail `toString()` on invalid types* | Removed from the pin: Cypher 25 (ADR-0002) renders LIST/MAP/NODE/RELATIONSHIP/PATH instead of erroring, so the outline can never pass without regressing (ADR-0188). |
 | `WithOrderBy4 [13]`, `[14]` — *Fail on sorting by a non-projected aggregation …* | Re-pinned to Cypher 25's recompute-over-the-group behaviour (ADR-0458, ADR-0472). |
 | `WithOrderBy4 [20]` — *… complex expressions inside an order by item with an aggregation* | Re-pinned to the unaliased-`WITH`-item error 42N21 (ADR-0458, ADR-0472). |
 | `ReturnOrderBy6 [5]` — *… complex returned expressions inside an order by item with an aggregation* | Re-pinned to Cypher 25's acceptance of the decomposed ORDER BY key (ADR-0458, ADR-0472). |
@@ -52,5 +52,5 @@ and seven scenarios were re-pinned to current Neo4j behaviour:
 The skip list only shrank and ended empty (ADR-0006, ADR-0188). The
 per-scenario rationale is recorded in ADR-0188, ADR-0458, ADR-0472 and
 ADR-0513. The engine's own extension corpus and CIP-derived suite moved to
-the harness (ADR-0520); its `features/expected_fail_list.txt` and per-CIP
-`NOTES.md` carry their markings.
+the harness (ADR-0520); its `features/expected_fail_list.txt`
+carries its markings.

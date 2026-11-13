@@ -21,7 +21,7 @@ the same mistake as the removed `--skill` flag.
 The first `pull` implementation always `CREATE`d. Extract interned Neo4j
 `elementId` strings to integers for wiring start/end *inside one HTTP
 response*, then discarded the strings. A second `pull` of the same query
-therefore doubled the graph (for example 41/42 nodes/rels, then 82/84).
+therefore doubled the graph (for example, 41/42 nodes/rels, then 82/84).
 Incremental pulls of a *different* overlapping query must add only the
 new remote elements.
 

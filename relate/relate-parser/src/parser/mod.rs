@@ -210,7 +210,7 @@ struct Parser<'a> {
     /// (non-brace) body's own clause loop (`parse_statement`) must stop at
     /// a following `WHEN` too, not just `ELSE`/EOF/etc, so control returns
     /// to `parse_when_query`'s own loop to see the next branch (CIP-213
-    /// `next_conditional_interactions.feature` PE3.1: `WHEN a THEN RETURN
+    /// `next_conditional_interactions.feature`: `WHEN a THEN RETURN
     /// x WHEN b THEN RETURN y ELSE RETURN z`, no braces anywhere). Scoped
     /// to *this* mechanism only -- a bare `WHEN` appearing after an
     /// ordinary clause outside any WHEN-body context (e.g. `MATCH (n)
@@ -865,7 +865,7 @@ mod tests;
 /// quantified -- directly (`PatternElement::Quantified`) or via a
 /// variable-length/quantified relationship (`RelPattern` with hop bounds,
 /// whether legacy `*min..max` or the CIP-28 postfix form) -- which CIP-28
-/// Rule 4 forbids (no nested quantification).
+/// forbids (no nested quantification).
 fn contains_quantification(elements: &[PatternElement]) -> bool {
     elements.iter().any(|e| match e {
         PatternElement::Quantified(_) => true,

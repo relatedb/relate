@@ -26,7 +26,7 @@ store handle is lost, and no surface can report anything.
 Two facts shape the fix.
 
 - **An explicit bound is reachable in two syntaxes.** Besides the legacy
-  bracket form (`-[*1..N]->`, `-[*..N]->`), a CIP-28 quantified path
+  bracket form (`-[*1..N]->`, `-[*..N]->`), a quantified path
   pattern carries a group quantifier (`((a)-[e]->(b)){1,N}`). The parser
   rejects only the *unbounded* group form under `REPEATABLE ELEMENTS`
   (`UnsafeRepeatableElements`, `parser/clauses.rs`). A bounded
@@ -56,7 +56,8 @@ stack, and cannot rely on a server-sized thread stack.
 
 1. **Default limit 500.** `cypherlite_core::MAX_TRAVERSAL_DEPTH` is 500
    hops: an explicit `max_hops` (a `RelPattern`'s `max_hops`, including
-   CIP-28 Form 5, or a `QuantifiedPathPattern`'s `quantifier.max`) above
+   the postfix quantifier form, or a `QuantifiedPathPattern`'s
+   `quantifier.max`) above
    it fails at statement admission. 500 is five times the largest
    legitimate explicit bound anywhere in the repo, corpus, and docs
    (100), and far below every measured abort bound, including the

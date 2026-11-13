@@ -492,7 +492,7 @@ mod shared_subquery {
                 vec![Value::Int(2), Value::Int(2)]
             ]
         );
-        // Rule 7 reinjection: an import referenced after a WITH dropped it
+        // Import stickiness: an import referenced after a WITH dropped it
         // still resolves to the outer binding (this shape computes from the
         // import, so it runs per-row — the pin is the semantics, not the
         // path taken).

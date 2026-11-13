@@ -57,7 +57,7 @@ whose `binding_arm` answers a `Mismatch` with zero candidates; the
 engine is asymmetric on the null today — start matches nothing, end
 rebinds. The policy's doc cites ADR-0335 for null-is-fresh, but
 ADR-0335's Decision names only two null-binding sites, both
-machinery-seeded: the CIP-28 non-local singleton (a predicate-referenced
+machinery-seeded: the non-local singleton (a predicate-referenced
 name that neither the entering row nor the quantification binds reads as
 null — `gpm/qpp.rs` seeds it on the walk's base row) and the void
 `OPTIONAL CALL` unit row. `prebound()` generalized null ⇒ fresh to every
@@ -109,11 +109,11 @@ end side. The recommendation's grounding, in order of weight:
    behavior ever asked an entering-row null to rebind.
 
 The carve-out, stated so the implementation cannot break it:
-**ADR-0335's two null sites keep fresh semantics** — the CIP-28
+**ADR-0335's two null sites keep fresh semantics** — the
 non-local singleton's machinery-seeded null and the void `OPTIONAL CALL`
 unit row. The ruling splits on the null's *source*: machinery-seeded
 nulls rebind (they are the pattern's own forward references,
-Neo4j-verified by CIP-28 [5]); entering-row nulls match nothing. The
+Neo4j-verified); entering-row nulls match nothing. The
 seeding site's own contract — qpp.rs seeds null only for names the
 entering row does not bind and the quantification will not — makes the
 distinction decidable at the reconciliation sites (entering-row snapshot

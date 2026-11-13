@@ -36,7 +36,7 @@ The exclusion exists because `is_ident_like()` also decides variables,
 aliases, property keys, map keys and optional variable slots. In those
 positions the words would collide with clause and element-pattern syntax.
 For example, the optional element variable in `(WHERE …)` or `[WHERE …]`
-(CIP-17/18) would read `WHERE` as the variable name.
+would read `WHERE` as the variable name.
 
 A Neo4j 2026.09 community docker probe ran all 71 keyword spellings that
 `lookup_keyword` recognizes (every spelling that lexes to a keyword token,
@@ -92,7 +92,7 @@ CypherLite gives a syntax error where Neo4j succeeds for:
       `DROP INDEX ON :K(<prop>)`
    9. `parse_create_index` (schema.rs): the label in legacy
       `CREATE INDEX ON :K(<prop>, …)`
-   10. `parse_create_constraint` (schema.rs): the label in CIP-177
+   10. `parse_create_constraint` (schema.rs): the label in
        `REQUIRE <alias>:K`
    11. `parse_graph_type_ref_inner` (schema.rs): the label after `:`/`IS` in
        graph-type node/edge type specifications and references

@@ -109,7 +109,7 @@ pub(super) fn walk_clause_exprs_tree(
                 // Every expression of the `IN TRANSACTIONS` tail, through the
                 // parser's one slot enumeration (`InTransactionsClause::exprs`):
                 // the concurrency value, the batch size, the retry duration and
-                // the CIP-260 `DISJOINT BY` keys.
+                // the `DISJOINT BY` keys.
                 for expr in cit.exprs() {
                     walk_expr_at(expr, depths, walk)?;
                 }

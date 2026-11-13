@@ -1,4 +1,4 @@
-//! Temporal truncation rows (CIP-113 F5).
+//! Temporal truncation rows.
 
 use super::super::{FunctionCategory, FunctionMeta};
 use crate::catalog_meta::ProcArgMeta;

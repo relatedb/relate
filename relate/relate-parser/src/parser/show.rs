@@ -77,7 +77,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The optional trailing `WHERE expr` shared by every `parse_show_*`
-    /// parser (CIP-184 syntax[6]/[7]: permitted whether or not an explicit
+    /// parser (permitted whether or not an explicit
     /// `YIELD` precedes it). Returns `None` when no `WHERE` was written.
     fn parse_show_where_tail(&mut self) -> ParseResult<Option<Expr>> {
         if self.peek_type() == TokenType::WHERE {
@@ -108,7 +108,7 @@ impl<'a> Parser<'a> {
     /// lookahead on the kind word(s) following SHOW; the exact
     /// singular-vs-plural validation happens inside each parser.
     pub(super) fn parse_show_dispatch(&mut self) -> ParseResult<Clause> {
-        // CIP-62/CIP-64/CIP-74: the `<type filter>` prefix (`[ALL]
+        // The `<type filter>` prefix (`[ALL]
         // [NODE|REL[ATIONSHIP]] [PROPERTY]?
         // (UNIQUE[NESS]|KEY|EXIST[ENCE]|TYPE)`) can push CONSTRAINT(S)
         // up to 4 tokens ahead of SHOW -- scan forward through only
@@ -159,13 +159,13 @@ impl<'a> Parser<'a> {
                 self.parse_show_roles()
             }
             (Some("server" | "servers"), _) => self.parse_show_servers(),
-            // CIP-176/CIP-184: `SHOW CURRENT GRAPH TYPE`, checked before
+            // `SHOW CURRENT GRAPH TYPE`, checked before
             // the general `current` -> `SHOW CURRENT USER` fallback
             // below.
             (Some("current"), Some("graph")) => self.parse_show_current_graph_type(),
             // CIP-178/CIP-180: `SHOW GRAPH TYPE <name> [YIELD ...]`.
             (Some("graph"), Some("type")) => self.parse_show_graph_type(),
-            // CIP-68: `SHOW USER[S]`. The `defined` guard is a
+            // `SHOW USER[S]`. The `defined` guard is a
             // load-bearing negative lookahead: it lets `SHOW USER
             // DEFINED FUNCTIONS` fall through to the
             // `parse_show_functions` catch-all below (where it parses as
@@ -174,7 +174,7 @@ impl<'a> Parser<'a> {
             (Some("user" | "users"), second) if second != Some("defined") => {
                 self.parse_show_users()
             }
-            // CIP-68: `SHOW CURRENT USER`.
+            // `SHOW CURRENT USER`.
             (Some("current"), _) => self.parse_show_users(),
             (Some("procedure" | "procedures"), _) => self.parse_show_procedures(),
             (Some("setting" | "settings"), _) => self.parse_show_settings(),
@@ -236,8 +236,8 @@ impl<'a> Parser<'a> {
     }
 
     /// `SHOW [<type filter>] CONSTRAINTS [YIELD col [, col ...] | YIELD *]
-    /// [WHERE expr]` (CIP-85's observation surface for `propertyType`,
-    /// needed by CIP-100; the `<type filter>` grammar is CIP-62/CIP-64/
+    /// [WHERE expr]` (CIP-85's observation surface for `propertyType`;
+    /// the `<type filter>` grammar is CIP-62/CIP-64/
     /// CIP-74's `[ALL] [NODE|REL[ATIONSHIP]] [PROPERTY]?
     /// (UNIQUE[NESS]|KEY|EXIST[ENCE]|TYPE)`). Mirrors `parse_show_functions`
     /// otherwise.
@@ -255,7 +255,7 @@ impl<'a> Parser<'a> {
 
         let yields = self.parse_show_yield_list()?;
 
-        // CIP-74 filtering[8]/[9]: the YIELD's own `ORDER BY`/`SKIP`/
+        // The YIELD's own `ORDER BY`/`SKIP`/
         // `LIMIT` paging sub-grammar, written directly after the YIELD
         // list and before any trailing `WHERE` -- distinct from a
         // `RETURN ... ORDER BY ...` (or a separate standalone
@@ -279,8 +279,7 @@ impl<'a> Parser<'a> {
     /// (UNIQUE[NESS]|KEY|EXIST[ENCE]|TYPE)`, or nothing at all (bare `SHOW
     /// CONSTRAINTS`, equivalent to `ALL`). `PROPERTY` is only meaningful
     /// directly before `UNIQUE[NESS]`/`EXIST[ENCE]`/`TYPE` -- it never
-    /// combines with `KEY` and never stands alone (CIP-74 filtering[12]/
-    /// [13]).
+    /// combines with `KEY` and never stands alone.
     pub(super) fn parse_constraint_type_filter(&mut self) -> ParseResult<ConstraintTypeFilter> {
         if self.peek_type() == TokenType::ALL {
             self.next_token();
@@ -308,7 +307,7 @@ impl<'a> Parser<'a> {
         // existence only), so the `PROPERTY` prefix folds into the
         // `EXIST[ENCE]` arm at parse time -- no side-channel bool on the
         // filter. `PROPERTY` never combines with `KEY` and never stands
-        // alone (CIP-74 filtering[12]/[13]).
+        // alone.
         let kind: Option<ConstraintKindFilter> = if self.peek_is_ident("key") {
             Some(ConstraintKindFilter::Key)
         } else if self.peek_type() == TokenType::UNIQUE || self.peek_is_ident("uniqueness") {
@@ -348,7 +347,7 @@ impl<'a> Parser<'a> {
     /// `SHOW [ALL|RANGE|POINT|TEXT|FULLTEXT|VECTOR|LOOKUP] INDEXES [YIELD
     /// col [, col ...] | YIELD *] [WHERE expr]` (CIP-11). `SHOW BTREE
     /// INDEXES` is dispatched here too, purely to raise a clean
-    /// `UnsupportedIndexType` error (CIP-11 SD[6]: BTREE was removed, not
+    /// `UnsupportedIndexType` error (BTREE was removed, not
     /// deprecated).
     pub(super) fn parse_show_indexes(&mut self) -> ParseResult<Clause> {
         self.next_token(); // consume SHOW
@@ -400,7 +399,7 @@ impl<'a> Parser<'a> {
 
         let yields = self.parse_show_yield_list()?;
 
-        // CIP-46 con[15]/CIP-74 filtering[8]/[9]: the YIELD's own `ORDER
+        // The YIELD's own `ORDER
         // BY`/`SKIP`/`LIMIT` paging sub-grammar, written directly after the
         // YIELD list and before any trailing `WHERE` -- shared with
         // `parse_show_constraints` via `parse_page_stages`.
@@ -427,14 +426,14 @@ impl<'a> Parser<'a> {
     }
 
     /// `SHOW CURRENT GRAPH TYPE [AS GRAPH [SINGLE | SEPARATE]] [YIELD ...]
-    /// [WHERE ...]` (CIP-176 overview / CIP-184 / CIP-257's `AS GRAPH`
+    /// [WHERE ...]` (CIP-176 overview / CIP-184 / the `AS GRAPH`
     /// visualization extension).
     pub(super) fn parse_show_current_graph_type(&mut self) -> ParseResult<Clause> {
         self.next_token(); // consume SHOW
         self.expect_keyword_ident("CURRENT")?;
         self.expect_keyword_ident("GRAPH")?;
         self.expect_keyword_ident("TYPE")?;
-        // CIP-257: `AS GRAPH` is a contextual, non-reserved extension --
+        // `AS GRAPH` is a contextual, non-reserved extension --
         // `AS` is a real keyword token, but the following `GRAPH` (and the
         // optional `SINGLE`/`SEPARATE` any-node keyword after it) are plain
         // identifiers, so this only commits once both `AS` and an

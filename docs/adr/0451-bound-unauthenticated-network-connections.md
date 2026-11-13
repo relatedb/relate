@@ -232,4 +232,4 @@ spec states this.
   refusal.
 - `docs/api/http/spec.md`, `docs/api/mcp/spec.md`,
   `docs/api/cli/spec.md`, and `serve --help` carry the new knobs and
-  defaults in the same change (AGENTS.md rule 3).
+  defaults in the same change (AGENTS.md §3).

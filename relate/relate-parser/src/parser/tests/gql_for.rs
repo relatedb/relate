@@ -1,7 +1,7 @@
-//! CIP-250 (GQ10) parse tests: `FOR <variable> IN <expression>` — the
+//! `FOR <variable> IN <expression>` — the
 //! GQL-compliant successor spelling of `UNWIND <expression> AS <variable>`,
 //! normalized into the same UNWIND clause at parse time (`for_syntax: true`)
-//! so everything downstream is shared. Accept shapes from the CIP's own
+//! so everything downstream is shared. Accept shapes from the reference
 //! example table, reject its error shapes, and pin the normalization
 //! (identical AST to the UNWIND spelling, spelling flag preserved).
 
@@ -22,7 +22,7 @@ fn for_parses_as_unwind(query: &str, alias: &str) {
 
 #[test]
 fn test_parse_for_accept_shapes() {
-    // The CIP-250 example table's accepting shapes, one per grammar slot:
+    // The accepting shapes, one per grammar slot:
     // a bare list, a variable source, a function call (range), a non-list
     // value (the singleton coercion happens at runtime, not parse), null,
     // and chained FOR clauses.
@@ -47,7 +47,7 @@ fn test_parse_for_accept_shapes() {
 
 #[test]
 fn test_parse_for_reject_shapes() {
-    // The CIP-250 example table's error shapes: a missing IN, a missing
+    // The error shapes: a missing IN, a missing
     // binding variable, and the UNWIND-shaped `FOR <expr> AS <var>` (the
     // binding variable must precede the expression). The IN-less
     // `FOR x [1, 2, 3]` fails on the expected-IN read; the missing variable
@@ -66,7 +66,7 @@ fn test_parse_for_reject_shapes() {
 
 #[test]
 fn test_parse_for_normalizes_to_the_unwind_ast() {
-    // CIP-250's own rule: FOR reuses the UNWIND infrastructure — the two
+    // FOR reuses the UNWIND infrastructure — the two
     // spellings of the same statement produce the identical clause AST
     // except the spelling flag.
     let for_stmt = parse("FOR x IN [1, 2, 3] RETURN x").unwrap();

@@ -1,4 +1,4 @@
-//! The CIP-150 `CYPHER <version>` preamble under the one-version contract
+//! The `CYPHER <version>` preamble (CIP-150) under the one-version contract
 //! (ADR-0584): `CYPHER 25` is an accepted no-op — the engine implements one
 //! dialect, so an explicit `CYPHER 25` and no preamble at all execute
 //! identically — while every other `CYPHER <n>` integer fails at parse with

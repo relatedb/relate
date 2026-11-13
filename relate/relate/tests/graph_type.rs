@@ -240,7 +240,7 @@ fn the_graph_type_trio_fails_closed_ungated() {
         err.contains(&gated_off_error("graph-type-opt-props")),
         "{err}"
     );
-    // CIP-262: a `DEFAULT ON COMMIT` clause.
+    // A `DEFAULT ON COMMIT` clause.
     let err = err_text(c.query(
         "ALTER CURRENT GRAPH TYPE SET { (:Label => {id :: UUID NOT NULL DEFAULT ON COMMIT uuid()}) }",
     ));
@@ -258,7 +258,7 @@ fn the_graph_type_trio_fails_closed_ungated() {
     // The ADD half of the CIP-266 gate: an ADD whose identifying label a
     // stored node element type already implies -- the construct only
     // materializes against stored state, so the executor's graph-type
-    // layer fails closed with the same authored error (PAGTE6 ungated).
+    // layer fails closed with the same authored error (ungated).
     let mut c = connection();
     run(
         &mut c,

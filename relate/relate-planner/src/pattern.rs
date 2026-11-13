@@ -417,8 +417,8 @@ pub(crate) fn collect_qpp_group_names(
                     .and_then(|rel| rel.variable.as_ref());
                 // The local sweep below IS the whole policy for everything
                 // named inside the quantified element: a nested quantified
-                // pattern cannot occur (parser rule 4,
-                // NestedQuantification, rejects it at parse time; the
+                // pattern cannot occur (the parser's
+                // NestedQuantification rejection refuses it at parse time; the
                 // lowering quantifies top level only), so there is nothing
                 // left to recurse into.
                 // Document order, not per-run HashSet order: the first
@@ -438,8 +438,8 @@ pub(crate) fn collect_qpp_group_names(
                     let name = match inner {
                         PatternElement::Node(node) => node.variable.as_ref(),
                         PatternElement::Relationship(rel) => rel.variable.as_ref(),
-                        // out of contract, stated as an invariant: parser
-                        // rule 4 (NestedQuantification) rejects a
+                        // out of contract, stated as an invariant: the
+                        // parser's NestedQuantification rejection refuses a
                         // quantified element inside another, and the
                         // lowering never synthesizes one — a violation
                         // here is a parser/lowering bug, not a query

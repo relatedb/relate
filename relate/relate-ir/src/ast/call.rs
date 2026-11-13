@@ -53,7 +53,7 @@ impl CallArgs {
 impl CallScope {
     /// Whether the subquery is a scope clause (`CALL (…) { … }` /
     /// `CALL (*) { … }`) rather than the naked `CALL { … }`. Only a scope
-    /// clause carries a CIP-218 Rule 10 import set; the naked form imports
+    /// clause carries an import set; the naked form imports
     /// the whole row without one. The one statement of that fact.
     pub fn has_scope_clause(&self) -> bool {
         !matches!(self, Self::None)
@@ -66,7 +66,7 @@ pub struct InTransactions {
     pub batch_size: Option<Expr>,
     pub on_error: OnError,
     pub report_status: Option<SmallName>,
-    /// CIP-260 `DISJOINT BY` operand (a concurrent-batching hint).
+    /// `DISJOINT BY` operand (a concurrent-batching hint).
     pub disjoint: DisjointBy,
 }
 
@@ -97,7 +97,7 @@ impl InTransactions {
     }
 }
 
-/// CIP-260 `DISJOINT BY` operand: absent, the key expressions that
+/// `DISJOINT BY` operand: absent, the key expressions that
 /// partition the input rows, or the `AUTO`/`NONE` keyword forms.
 ///
 /// Absence is a variant rather than an `Option` wrapper so the parser

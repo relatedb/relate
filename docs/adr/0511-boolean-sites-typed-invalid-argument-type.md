@@ -17,7 +17,7 @@ spells `InvalidArgumentType`:
 - `cypherlite/cypherlite-executor/src/eval/mod.rs` — `bool_or_null`'s
   non-boolean arm. This is the one runtime policy every requiring site
   reads: the list-quantifier `WHERE` predicate (`eval/quantifier.rs`,
-  context `quantifier WHERE`) and the CIP-135 `WHEN` predicate
+  context `quantifier WHERE`) and the `WHEN` predicate
   (`exec/call/conditional.rs`, context `WHEN predicate`). The four boolean
   operators layer the deprecated list/path conversion above it through
   `bool_operand` (ADR-0458 §7), so their residual non-boolean arm is the

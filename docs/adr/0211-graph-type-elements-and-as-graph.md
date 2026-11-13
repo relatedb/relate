@@ -4,16 +4,16 @@ Status: Proposed
 
 ## Context
 
-LABS-265. Three gaps in the graph-type surface (CIP-176/178/180/182/184/257):
+Three gaps in the graph-type surface:
 
 1. **Property-declared elements fail to parse.** `CREATE GRAPH TYPE
    SOGraph AS { (:Tag => {name IS STRING}) }` fails: the `{ <property
-   types> }` block's property declarations only accepted the CIP-86 `::`
+   types> }` block's property declarations only accepted the `::`
    (or TYPED) introducer, so the GQL-standard `IS <value type>` spelling a
    user reaches for first was rejected. (The ticket's original example
    dropped the `=>` marker too — `(:Tag {name IS STRING})` — but current
    Neo4j rejects that form as well: the marker is what makes the label an
-   explicitly denoted identifying label, per CIP-178/181/183, so it stays
+   explicitly denoted identifying label, so it stays
    mandatory and the parse error now says so.)
 2. **A declared (named) graph type can never become current.**
    `CREATE GRAPH TYPE X { ... }` registers a catalog artifact that `SHOW
@@ -21,7 +21,7 @@ LABS-265. Three gaps in the graph-type surface (CIP-176/178/180/182/184/257):
    "current" graph type: `SHOW CURRENT GRAPH TYPE` still reports `{}`, and
    the natural `ALTER CURRENT GRAPH TYPE SET GRAPH TYPE X` failed to parse
    (the `SET` grammar expected a `{` body immediately).
-3. **`SHOW CURRENT GRAPH TYPE AS GRAPH`** (CIP-257) — Neo4j's visual form
+3. **`SHOW CURRENT GRAPH TYPE AS GRAPH`** — Neo4j's visual form
    from the Cypher cheat sheet — was already implemented
    (`cypherlite-executor/src/graph_type_visualize.rs`) but had no
    end-to-end coverage at the `cypherlite` crate level.
@@ -39,7 +39,7 @@ asks for a supported path if none exists.
 1. **Element grammar keeps the `=>` requirement.** In a node/edge type
    specification the `{ <property types> }` block is accepted only after
    the `=>`/`IMPLIES` marker — current Neo4j behavior, pinned by the
-   CIP-178/181/183 negative scenarios: without the marker the label is not
+   negative scenarios: without the marker the label is not
    an explicitly denoted identifying label and the statement is a
    compile-time syntax error (the error message says exactly that).
    Canonical rendering is unchanged (`(:`Tag` => {`name` :: STRING})`).
@@ -65,8 +65,8 @@ asks for a supported path if none exists.
 ## Alternatives considered
 
 - **Also drop the `=>` requirement (accept `(:Tag {name IS STRING})`).**
-  Rejected: current Neo4j (docs, cheat sheet, and the CIP-178/181/183
-  corpus) rejects a property block without the marker — the marker denotes
+  Rejected: current Neo4j (docs, cheat sheet, and the
+  acceptance corpus) rejects a property block without the marker — the marker denotes
   the identifying label. Accepting it would diverge from Neo4j and fail
   the CIP-eval gate, for a convenience the `=>` spelling already provides.
 - **Make `CREATE GRAPH TYPE` implicitly set the current graph type.**
@@ -92,5 +92,5 @@ asks for a supported path if none exists.
   types), `ALTER CURRENT GRAPH TYPE SET GRAPH TYPE <name>`. No
   previously-valid spelling changes meaning — the relaxed productions only
   accept inputs that were errors before.
-- `SHOW CURRENT GRAPH TYPE AS GRAPH` (CIP-257) gains crate-level test
+- `SHOW CURRENT GRAPH TYPE AS GRAPH` gains crate-level test
   coverage.

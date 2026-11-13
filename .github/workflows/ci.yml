@@ -767,7 +767,7 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
-  # ADR-0104 rule 6: every named CLI bundle is tested; the default `full`
+  # ADR-0104: every named CLI bundle is tested; the default `full`
   # bundle runs in the `test` job. ADR-0105: the engine also builds and
   # tests without its default `parquet` feature (JSON-only). A separate job
   # so the extra feature builds do not exhaust the `test` runner's disk.

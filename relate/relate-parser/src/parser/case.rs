@@ -173,7 +173,7 @@ impl<'a> Parser<'a> {
         let predicate = match self.peek_type() {
             TokenType::IS => {
                 // Simple-CASE `WHEN IS ...` (CIP-249 label predicate, plus
-                // the CIP-143/CIP-190 `<when operand>` completion covering
+                // the `<when operand>` completion covering
                 // the other IS-introduced `<advanced comparison predicate
                 // part 2>` forms): evaluated directly against the CASE
                 // operand, not compared for equality with it.
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenType::IN => {
-                // CIP-143/CIP-190 `<when operand>` completion: `WHEN IN
+                // `<when operand>` completion: `WHEN IN
                 // <list>` is `<operand> IN <list>` with the CASE operand as
                 // the implicit LHS.
                 self.next_token();

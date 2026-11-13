@@ -431,7 +431,7 @@ pub(crate) fn carry_scope_bindings(rows: &mut [Row], scope: &Row) {
 /// Fold a write clause's effects back into the rows that drove it: a bound
 /// entity the write updated is re-read from the store, and one the write
 /// deleted becomes an **empty tombstone** — the same id, no labels, no
-/// properties (CIP-202 `[21]`-`[24]`: a returned deleted node renders `()`).
+/// properties (a returned deleted node renders `()`).
 /// The tombstone keeps the identity a later pattern needs: the clause
 /// engine still matches a deleted-but-bound variable through it
 /// (`node_ok`'s snapshot path), while a fresh scan of the store finds

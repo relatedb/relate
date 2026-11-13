@@ -317,7 +317,7 @@ client, not the server.
   (LABS-598).** None of neo4j-go-driver v5.28.5's Bolt 5 handshake
   extras break Relate's 4.4 path: the manifest-marker proposal
   (`00 00 01 FF`) is answered by the plain `00 00 04 04` the
-  negotiation-6 baseline pins (F-06, ADR-0303 rule 4), and the
+  negotiation-6 baseline pins (F-06, ADR-0303), and the
   `patch_bolt: ["utc"]` HELLO extra echoes only when negotiated
   (F-10, ADR-0329). The same binary, default pool config, default
   timeouts, and basic auth ran unchanged against both engines. The

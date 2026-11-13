@@ -24,8 +24,8 @@ Two further costs of the post-filter-only discipline remained beside it:
   behind it expanded the whole graph first.
 
 And one correctness trap surfaced when early evaluation was first tried
-under a path selector: CIP-60's selective path patterns, scenario 8
-(`testdata/cip-eval/CIP-60-gpm-graph-patterns/05-selective-path-patterns.feature`)
+under a path selector: the selective path patterns suite, scenario 8
+(`testdata/cip-eval/gpm-graph-patterns/05-selective-path-patterns.feature`)
 — a MATCH-WHERE predicate on a selective pattern is a **post-filter
 over the selector's chosen paths**: `MATCH p = ALL SHORTEST (…) WHERE
 q1.blocked = true` returns *empty*, because the blocked route is still
@@ -56,7 +56,7 @@ to plain conjuncts:
    side; a false or null verdict drops the state there — the **branch
    abort**: the prefix behind it enumerates no further hops. Null
    bindings never decide: a null binding of a pattern variable may be a
-   CIP-28 non-local singleton pre-binding (ADR-0335) or a deleted
+   non-local singleton pre-binding (ADR-0335) or a deleted
    entity's tombstone, and either value differs from the post-filter's —
    such a conjunct stays a post-filter.
 2. **Errors defer, never prune — walk-wide.** A conjunct that raises is
@@ -69,7 +69,7 @@ to plain conjuncts:
    k`, `ALL SHORTEST`, …) no conjunct evaluates early and the ADR-0469
    allReduce inliner stands down too: a selector chooses among the
    pattern's FULL candidate set and a MATCH-WHERE predicate narrows the
-   already-selected path (CIP-60 scenario 8) — mid-path pruning would
+   already-selected path (selective-path scenario 8) — mid-path pruning would
    change which path the selector picks. Every conjunct stays a
    post-filter.
 4. **Riders** (`exec/gpm/emit.rs`). With no selector choosing across
@@ -97,8 +97,8 @@ to plain conjuncts:
      the same rows without enumerating the rest. Declines: DISTINCT
      (the distinct cap's shape), any `ORDER BY` (the ordered cap's
      shape — a sort's top rows are not the walk's prefix), an explicit
-     `GROUP BY`, a following `WHERE`, `*`, and aggregate items (CIP-236:
-     grouped output is not one row per match).
+     `GROUP BY`, a following `WHERE`, `*`, and aggregate items (grouped
+     output is not one row per match).
 
 Each conjunct is evaluated exactly once per binding: within one
 rel+target accept the rel variable binds first, so the rel event runs
@@ -113,7 +113,7 @@ ready only at the target's own event.
   and leaves ADR-0471's recorded EXISTS early-exit loss and the
   full-enumeration-before-LIMIT cost in place.
 - **Prune under selectors as well** (apply the early evaluation
-  uniformly, selector or not). Rejected: CIP-60 scenario 8 pins the
+  uniformly, selector or not). Rejected: the selective-path scenario pins the
   opposite semantics — the predicate narrows the already-selected path
   and can return nothing where pruning would hand the selector a
   different path; the answers differ, not just the cost.
@@ -145,7 +145,7 @@ ready only at the target's own event.
 - Exactness is pinned differentially: the early run, the
   evaluation-disabled run of the very same statement (test hook), and
   the WITH-WHERE post-filter spelling must answer identically —
-  including the rebinding-name decline, the CIP-28 null pre-binding,
+  including the rebinding-name decline, the null pre-binding,
   and the raising conjunct (deferred; errors surface exactly where the
   post-filter raises them, and a raising dead-end prefix surfaces
   nothing).
