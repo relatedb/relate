@@ -359,6 +359,18 @@ pub enum WithOrigin {
     Explicit,
     Let,
     Filter,
+    /// The horizon a standalone `<order by and page statement>` lowers to:
+    /// a `WITH *` carrying the clause's `ORDER BY`/`SKIP`/`LIMIT`.
+    ///
+    /// Distinct from [`WithOrigin::Explicit`] because the two are not the
+    /// same clause to a reader of the plan — a body opening with a page
+    /// statement imports nothing *by name*, while a user-written `WITH *`
+    /// does pull the enclosing scope in. Live keeps them apart
+    /// (`CALL { ORDER BY 1 RETURN 1 AS x }` is accepted, with the
+    /// scopeless-subquery deprecation; `CALL { WITH * ORDER BY 1 RETURN 1
+    /// AS x }` is the importing-`WITH` rejection), and this origin is what
+    /// lets the rules see that difference after lowering.
+    Page,
 }
 
 #[derive(Debug, Clone, PartialEq)]

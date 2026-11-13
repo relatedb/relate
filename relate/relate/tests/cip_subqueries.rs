@@ -2,7 +2,7 @@ mod common;
 
 use relate::Value;
 
-use common::connection;
+use common::{connection, run};
 
 #[test]
 fn count_collect_and_exists_subqueries_are_scalar_expressions() {
@@ -680,4 +680,31 @@ fn call_body_with_multiple_next_stages_projects_its_final_stage() {
         .unwrap();
     assert_eq!(result.header.columns, vec!["data".to_string()]);
     assert_eq!(result.rows, vec![vec![Value::Int(1)], vec![Value::Int(2)]]);
+}
+
+/// A standalone `<order by and page statement>` opening a `CALL` subquery
+/// body is the page horizon, not an importing `WITH`: live accepts
+/// `CALL { ORDER BY 1 RETURN 1 AS x }` (with the scopeless-subquery
+/// deprecation) while `CALL { WITH * ORDER BY 1 RETURN 1 AS x }` is the
+/// importing-`WITH` rejection. Lowering both to one `With` shape hid that
+/// difference, so the page clause was refused as an importing WITH.
+#[test]
+fn a_page_statement_opens_a_subquery_body_without_importing() {
+    let mut connection = connection();
+    connection.query("CREATE (:A {x: 1}), (:A {x: 2})").unwrap();
+
+    // Every page form is accepted at the body's head.
+    for page in ["ORDER BY 1", "SKIP 0", "SKIP 1", "LIMIT 0", "LIMIT 1"] {
+        run(
+            &mut connection,
+            &format!("MATCH (a:A) CALL {{ {page} RETURN 1 AS x }} RETURN x"),
+        );
+    }
+
+    // The explicit importing WITH keeps its own rejection: the two are
+    // different clauses to a reader of the plan, and to live.
+    let err = connection
+        .query("MATCH (a:A) CALL { WITH * ORDER BY 1 RETURN 1 AS x } RETURN x")
+        .expect_err("an importing WITH with a page subclause stays refused");
+    assert!(format!("{err}").contains("InvalidImportingWith"), "{err}");
 }

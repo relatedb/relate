@@ -203,7 +203,9 @@ fn lower_clauses(clauses: &[cl::Clause]) -> Result<Vec<mdb::Clause>> {
                     skip,
                     limit,
                     where_clause: None,
-                    origin: mdb::WithOrigin::Explicit,
+                    // A page statement is not an importing WITH: the
+                    // origin keeps that distinction for the subquery rules.
+                    origin: mdb::WithOrigin::Page,
                 });
             }
             continue;
