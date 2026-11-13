@@ -389,10 +389,7 @@ fn plain_rel(rel: &RelPattern) -> Option<()> {
         // disjunctions are exactly what the `types` list already carries
         // (single label or `Or`-chain of labels); anything dynamic,
         // negated, or conjunctive keeps the walker's type evaluation.
-        || !rel
-            .type_expr
-            .as_ref()
-            .is_none_or(|_| rel.type_expr_is_static_types())
+        || (rel.type_expr.is_some() && !rel.type_expr_is_static_types())
     {
         return None;
     }

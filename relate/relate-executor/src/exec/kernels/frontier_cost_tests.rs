@@ -11,6 +11,7 @@ use crate::exec::test_support::{
 };
 use crate::frontier_decline::{FrontierDecline, FrontierDeclineReason};
 use crate::graph::Graph;
+use crate::pattern_engine::PatternEngine;
 
 /// One uniform label: `nodes` nodes whose out-degree moments are fixed.
 struct Uniform {
@@ -18,6 +19,26 @@ struct Uniform {
     moments: Option<DegreeMoments>,
     /// Degree-moments consults made, each a histogram scan on the live graph.
     consults: std::cell::Cell<usize>,
+}
+
+impl Uniform {
+    /// `nodes` nodes whose degree moments are `sum` and `sum_sq`.
+    fn new(nodes: u64, sum: u128, sum_sq: u128) -> Self {
+        Self {
+            nodes,
+            moments: Some(DegreeMoments { sum, sum_sq }),
+            consults: Default::default(),
+        }
+    }
+
+    /// No histogram: nothing to price with.
+    fn unpriceable(nodes: u64) -> Self {
+        Self {
+            nodes,
+            moments: None,
+            consults: Default::default(),
+        }
+    }
 }
 
 impl PatternStats for Uniform {
@@ -102,14 +123,7 @@ fn degree_moments_price_mean_and_excess() {
 /// chain exceed the directed chain's by the doubling on each hop.
 #[test]
 fn an_undirected_hop_counts_twice() {
-    let stats = Uniform {
-        nodes: 100,
-        moments: Some(DegreeMoments {
-            sum: 300,
-            sum_sq: 1200,
-        }),
-        consults: Default::default(),
-    };
+    let stats = Uniform::new(100, 300, 1200);
     let directed = rel(Direction::Outgoing);
     let undirected = rel(Direction::Both);
     let one = |rel: &RelPattern| estimate(&stats, 100, 100, 100, &start(), &[rel]).unwrap();
@@ -128,14 +142,7 @@ fn an_undirected_hop_counts_twice() {
 /// the trails.
 #[test]
 fn pairs_and_probes_are_capped() {
-    let stats = Uniform {
-        nodes: 10,
-        moments: Some(DegreeMoments {
-            sum: 80,
-            sum_sq: 800,
-        }),
-        consults: Default::default(),
-    };
+    let stats = Uniform::new(10, 80, 800);
     let both = rel(Direction::Both);
     let hops = [&both, &both, &both, &both];
     let cost = estimate(&stats, 10, 10, 10, &start(), &hops).unwrap();
@@ -148,11 +155,7 @@ fn pairs_and_probes_are_capped() {
 /// No histogram: nothing to price with.
 #[test]
 fn unpriceable_statistics_have_no_estimate() {
-    let stats = Uniform {
-        nodes: 10,
-        moments: None,
-        consults: Default::default(),
-    };
+    let stats = Uniform::unpriceable(10);
     let both = rel(Direction::Both);
     assert!(estimate(&stats, 10, 10, 10, &start(), &[&both]).is_none());
 }
@@ -167,6 +170,19 @@ fn ring(n: usize, reach: usize) -> Graph {
     build(&labels, &rels).graph
 }
 
+/// Run `cypher` under `engine`, leaving the graph on the default routing.
+fn rows_under(g: &mut Graph, engine: PatternEngine, cypher: &str) -> Vec<Vec<crate::exec::Value>> {
+    g.configure_pattern_engine(engine);
+    let rows = exec_cypher(g, cypher).rows;
+    g.configure_pattern_engine(PatternEngine::Auto);
+    rows
+}
+
+/// The distinct-endpoint count statement over `pattern`.
+fn distinct_reach(pattern: &str) -> String {
+    format!("MATCH {pattern} WHERE a <> b WITH DISTINCT a, b RETURN count(*) AS c")
+}
+
 /// The auto gate end to end: a dense graph's bounded distinct-endpoint
 /// recursion rides the frontier (typed and untyped, directed or not),
 /// where a short bound over a sparse ring keeps the walker with the typed
@@ -179,18 +195,19 @@ fn the_auto_gate_engages_dense_distinct_reach_and_holds_short_bounds() {
         let rung = served(&profiled(g, cypher)).kernel;
         rung == Some(KernelRung::FrontierNfa)
     };
-    for (pattern, dense_rides) in [
-        ("(a:File)-[:T*1..4]-(b:File)", Some(true)),
-        ("(a:File)-[*1..4]-(b)", Some(true)),
-        ("(a:File)-[*1..4]->(b)", Some(true)),
-        ("(a:File)-[:T*1..2]-(b:File)", None),
-        ("(a:File)-[*1..2]-(b)", None),
-    ] {
-        let cypher =
-            format!("MATCH {pattern} WHERE a <> b WITH DISTINCT a, b RETURN count(*) AS c");
-        if let Some(rides) = dense_rides {
-            assert_eq!(engaged(&dense, &cypher), rides, "dense {cypher}");
-        }
+    // Dense rides the frontier on the long bounds; the short bounds sit
+    // near the break-even, so only the sparse side is pinned for them.
+    let long_bounds = [
+        "(a:File)-[:T*1..4]-(b:File)",
+        "(a:File)-[*1..4]-(b)",
+        "(a:File)-[*1..4]->(b)",
+    ];
+    let short_bounds = ["(a:File)-[:T*1..2]-(b:File)", "(a:File)-[*1..2]-(b)"];
+    for pattern in long_bounds {
+        assert!(engaged(&dense, &distinct_reach(pattern)), "dense {pattern}");
+    }
+    for pattern in long_bounds.into_iter().chain(short_bounds) {
+        let cypher = distinct_reach(pattern);
         assert!(!engaged(&sparse, &cypher), "sparse {cypher}");
         assert_eq!(
             frontier_decline_of(&sparse, &cypher),
@@ -199,10 +216,8 @@ fn the_auto_gate_engages_dense_distinct_reach_and_holds_short_bounds() {
         );
         // The routing never changes the answer.
         for g in [&mut dense, &mut sparse] {
-            let auto = exec_cypher(g, &cypher).rows;
-            g.configure_pattern_engine(crate::pattern_engine::PatternEngine::Walk);
-            let walk = exec_cypher(g, &cypher).rows;
-            g.configure_pattern_engine(crate::pattern_engine::PatternEngine::Auto);
+            let auto = rows_under(g, PatternEngine::Auto, &cypher);
+            let walk = rows_under(g, PatternEngine::Walk, &cypher);
             assert_eq!(auto, walk, "{cypher}");
         }
     }
@@ -213,7 +228,6 @@ fn the_auto_gate_engages_dense_distinct_reach_and_holds_short_bounds() {
 /// routing (the walker, the cost-gated default, the forced rung).
 #[test]
 fn every_routing_agrees_on_untyped_and_typed_reach() {
-    use crate::pattern_engine::PatternEngine;
     let mut g = ring(7, 2);
     for pattern in [
         "(a:File)-[*]-(b)",
@@ -224,16 +238,12 @@ fn every_routing_agrees_on_untyped_and_typed_reach() {
         "(a:File)-[:T*1..3]->(b)",
         "(a:File)-[:T|U*1..3]-(b)",
     ] {
-        let cypher =
-            format!("MATCH {pattern} WHERE a <> b WITH DISTINCT a, b RETURN count(*) AS c");
-        let mut answers = Vec::new();
-        for engine in [PatternEngine::Walk, PatternEngine::Auto, PatternEngine::Nfa] {
-            g.configure_pattern_engine(engine);
-            answers.push(exec_cypher(&g, &cypher).rows);
-        }
-        g.configure_pattern_engine(PatternEngine::Auto);
-        assert_eq!(answers[0], answers[1], "auto: {cypher}");
-        assert_eq!(answers[0], answers[2], "nfa: {cypher}");
+        let cypher = distinct_reach(pattern);
+        let walk = rows_under(&mut g, PatternEngine::Walk, &cypher);
+        let auto = rows_under(&mut g, PatternEngine::Auto, &cypher);
+        let nfa = rows_under(&mut g, PatternEngine::Nfa, &cypher);
+        assert_eq!(walk, auto, "auto: {cypher}");
+        assert_eq!(walk, nfa, "nfa: {cypher}");
     }
 }
 
@@ -242,14 +252,7 @@ fn every_routing_agrees_on_untyped_and_typed_reach() {
 /// hop, so a crafted bounded pattern cannot inflate plan-time scans.
 #[test]
 fn the_estimate_consults_per_distinct_rel_not_per_hop() {
-    let stats = Uniform {
-        nodes: 100,
-        moments: Some(DegreeMoments {
-            sum: 300,
-            sum_sq: 1200,
-        }),
-        consults: Default::default(),
-    };
+    let stats = Uniform::new(100, 300, 1200);
     let both = rel(Direction::Both);
     let hops: Vec<&RelPattern> = vec![&both; 1000];
     let cost = estimate(&stats, 100, 100, 100, &start(), &hops).unwrap();

@@ -60,7 +60,9 @@ impl CostEstimate {
     }
 }
 
-/// The frontier family's cost gate — see the module doc. `population` is
+/// The frontier family's cost gate — see the module doc. `bounded` is
+/// whether the compiled spine has a maximum hop count (an unbounded one
+/// engages on shape alone). `population` is
 /// the store's node-id span, the ceiling on any endpoint count (an
 /// unlabeled target's estimate is the ladder's rank sentinel, an ordering
 /// fact no path count can reach).
@@ -71,9 +73,9 @@ pub(super) fn frontier_engages(
     start: &NodePattern,
     target: &NodePattern,
     elements: &[PatternElement],
-    max_hops: Option<u32>,
+    bounded: bool,
 ) -> bool {
-    if max_hops.is_none() {
+    if !bounded {
         return true;
     }
     let Some(hops) = expand_max_hops(elements) else {
@@ -164,12 +166,9 @@ pub(super) fn excess_degree(moments: DegreeMoments) -> f64 {
 
 /// The rels of `elements` with every quantifier expanded to its maximum
 /// count — the trail estimate's input for the DFS's path multiplicity.
-/// `None` when the expansion passes [`MAX_ESTIMATE_HOPS`]: the
-/// multiplicity is saturated beyond pricing, and the caller engages
-/// rather than underestimates it. Every quantifier is bounded here: the
-/// gate returns before pricing an unbounded spine (the compiled
-/// `max_hops` is `None` exactly then), and the NFA compile declines a
-/// nested unbounded one.
+/// `None` when the expansion cannot be priced — it passes
+/// [`MAX_ESTIMATE_HOPS`] (the multiplicity is saturated) or a quantifier
+/// is unbounded — and the caller engages rather than underestimates it.
 fn expand_max_hops(elements: &[PatternElement]) -> Option<Vec<&RelPattern>> {
     let mut hops = Vec::new();
     for element in elements {
@@ -182,9 +181,7 @@ fn expand_max_hops(elements: &[PatternElement]) -> Option<Vec<&RelPattern>> {
             PatternElement::Node(_) => {}
             PatternElement::Relationship(rel) => hops.push(rel),
             PatternElement::Quantified(qpp) => {
-                let max = qpp
-                    .max
-                    .expect("the cost gate prices bounded quantifiers only");
+                let max = qpp.max?;
                 // The body expands once; a body with no rel adds no
                 // hops, and every repetition of one that does grows the
                 // spine, so the ceiling bounds the loop.

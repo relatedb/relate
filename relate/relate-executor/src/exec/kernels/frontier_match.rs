@@ -350,7 +350,7 @@ pub(crate) fn compile_frontier<'a>(
             start_node,
             target_node,
             &pattern.elements,
-            nfa.max_hops,
+            nfa.max_hops.is_some(),
         )
     {
         return Err(FrontierDecline::Cost);
