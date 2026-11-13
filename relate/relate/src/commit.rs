@@ -616,11 +616,9 @@ fn admit_slot(
     // stages above — never deferred to a sentinel the group-wide preflight
     // must remember to catch — and runs before the capacity reservation, so
     // a slot rejected here leaves no reserved bytes behind.
-    let last = accepted
+    let commit_ts = accepted
         .last()
-        .map(|(_, a)| a.record.commit_ts)
-        .unwrap_or_else(|| shared.graph.commit_ts());
-    let commit_ts = last
+        .map_or_else(|| shared.graph.commit_ts(), |(_, a)| a.record.commit_ts)
         .checked_add(1)
         .map(|next| next.max(slot.txn_id))
         .ok_or_else(|| Error::storage("commit timestamp overflow"))?;
