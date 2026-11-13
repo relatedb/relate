@@ -2,7 +2,7 @@
 
 Status: Accepted
 Claim: 3da31eeb8266d64db2f36842612d9fa923a641bd
-Later references: ADR-0380 scopes the no-new-Cargo-dependency rule to external crates and corrects the CO_CHANGED pair-memory arithmetic recorded in §2 and Consequences. ADR-0392 raises §2's pair cap to 5,000,000 and supersedes §2's "no partial import to resume" with the idempotent re-run; every refusal keeps firing before the range-index DDL and the first write batch.
+Later references: ADR-0380 scopes the no-new-Cargo-dependency rule to external crates and corrects the CO_CHANGED pair-memory arithmetic recorded in §2 and Consequences. ADR-0392 raises §2's pair cap to 5,000,000 and supersedes §2's "no partial import to resume" with the idempotent re-run; every refusal keeps firing before the range-index DDL and the first write batch. ADR-0597 adds --until to §1's refusal hint — the LogTooLarge message names it among the flags that read a smaller window; the caps and every other refusal text stand.
 
 ## Context
 

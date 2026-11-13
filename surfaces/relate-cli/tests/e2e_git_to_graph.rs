@@ -33,6 +33,22 @@ use support::importers::{
 };
 use support::{query_count, query_row, query_rows};
 
+/// The import summary's stdout, byte for byte: the counts sentence the
+/// child reports — `imported <counts> into the store — try:` — then every
+/// starter query and the catalog pointer, each two-space indented as the
+/// summary record's shape carries them (ADR-0447). One builder, so every
+/// summary-pinning test in this suite shares one spelling of the
+/// rendering.
+fn expected_import_stdout(counts: &str) -> String {
+    let mut expected = format!("imported {counts} into the store — try:\n");
+    for starter in GIT_STARTERS.iter().chain(std::iter::once(&REFERENCE_LINE)) {
+        expected.push_str("  ");
+        expected.push_str(starter);
+        expected.push('\n');
+    }
+    expected
+}
+
 #[test]
 fn git_to_graph_imports_the_history_and_prints_the_starter_queries() {
     let home = tempfile::tempdir().unwrap();
@@ -46,16 +62,11 @@ fn git_to_graph_imports_the_history_and_prints_the_starter_queries() {
     // The summary, byte for byte: the compiled-in importer's counts and
     // phrases, the wire-forced store label and starter placement, and the
     // queries plus the catalog pointer the crate itself owns.
-    let mut expected = String::from(
-        "imported 3 commits, 2 people, 4 files (6 TOUCHED, 3 CO_CHANGED edges) \
-         into the store — try:\n",
+    assert_eq!(
+        stdout,
+        expected_import_stdout("3 commits, 2 people, 4 files (6 TOUCHED, 3 CO_CHANGED edges)"),
+        "the summary and its starters"
     );
-    for starter in GIT_STARTERS.iter().chain(std::iter::once(&REFERENCE_LINE)) {
-        expected.push_str("  ");
-        expected.push_str(starter);
-        expected.push('\n');
-    }
-    assert_eq!(stdout, expected, "the summary and its starters");
 
     // The printed advice must be true: every starter query runs on the
     // graph the summary just described and finds a row.
@@ -154,6 +165,90 @@ fn git_to_graph_reimport_is_idempotent() {
             "MATCH ()-[r:CO_CHANGED]->() RETURN sum(r.count) AS n"
         ),
         sum_before
+    );
+}
+
+/// The ADR-0597 era shape: `--until` alone reads a window that need not
+/// end at HEAD, through the real mount — the manifest row, the host's
+/// parse and the child's envelope all carry the flag. The fixture's three
+/// commits sit at JAN_1, JAN_2 and JAN_3 (committer dates), so an era cut
+/// at JAN_2 keeps the two older commits and cannot be spelled with
+/// `--since` and `--max-commits` alone.
+#[test]
+fn an_until_window_imports_an_era_that_stops_before_head() {
+    let home = tempfile::tempdir().unwrap();
+    let (root, _repo) = history_fixture();
+    let db = tempfile::tempdir().unwrap();
+    let db_path = db.path().join("graph");
+
+    let (status, stdout, stderr) = run_import(
+        "git-to-graph",
+        root.path(),
+        &db_path,
+        &["--until", "2026-01-02T00:00:00Z"],
+    );
+    assert!(status.success(), "era import failed: {stderr}");
+    assert_eq!(
+        stdout,
+        expected_import_stdout("2 commits, 2 people, 3 files (4 TOUCHED, 2 CO_CHANGED edges)"),
+        "the era summary and its starters"
+    );
+    assert_eq!(graph_counts(home.path(), &db_path), [2, 2, 3, 4, 2]);
+    assert_eq!(
+        query_rows(
+            home.path(),
+            &db_path,
+            &[],
+            "MATCH (c:Commit) RETURN c.subject AS subject ORDER BY subject"
+        )
+        .iter()
+        .map(|row| row["subject"].as_str().expect("subject is a string"))
+        .collect::<Vec<_>>(),
+        [
+            "fix: repair the shared module",
+            "one: add the shared module"
+        ],
+        "the era stops before the newest commit"
+    );
+}
+
+/// The ADR-0597 closed range: `--since A --until B` reads exactly the
+/// slice between the bounds, reproducible forever — the same command reads
+/// the same commits however much history lands after B.
+#[test]
+fn a_closed_since_until_range_imports_only_the_middle_slice() {
+    let home = tempfile::tempdir().unwrap();
+    let (root, _repo) = history_fixture();
+    let db = tempfile::tempdir().unwrap();
+    let db_path = db.path().join("graph");
+
+    let (status, stdout, stderr) = run_import(
+        "git-to-graph",
+        root.path(),
+        &db_path,
+        &[
+            "--since",
+            "2026-01-01T00:00:01Z",
+            "--until",
+            "2026-01-02T00:00:01Z",
+        ],
+    );
+    assert!(status.success(), "closed-range import failed: {stderr}");
+    assert_eq!(
+        stdout,
+        expected_import_stdout("1 commits, 1 people, 2 files (2 TOUCHED, 1 CO_CHANGED edges)"),
+        "the closed-range summary and its starters"
+    );
+    assert_eq!(graph_counts(home.path(), &db_path), [1, 1, 2, 2, 1]);
+    assert_eq!(
+        query_count(
+            home.path(),
+            &db_path,
+            &[],
+            "MATCH (c:Commit {subject: 'fix: repair the shared module'}) RETURN count(c) AS n"
+        ),
+        1,
+        "the closed range keeps exactly the middle commit"
     );
 }
 

@@ -2,7 +2,8 @@
 //! (ADR-0279, ADR-0376).
 //!
 //! One `std::process::Command` runs git with no shell and a null stdin, using
-//! the argv pinned in ADR-0376, and [`parse_log`] turns its `-z` output into
+//! the argv pinned in ADR-0376 and windowed by ADR-0597's `--until`, and
+//! [`parse_log`] turns its `-z` output into
 //! a typed commit list. The parser is a pure function over the raw stdout bytes:
 //! a malformed record is an error naming that record, never a dropped path or
 //! a fabricated default.
@@ -109,27 +110,31 @@ fn has_git_author_date_shape(value: &str) -> bool {
 
 /// Read `HEAD`'s history of `dir` with the ADR-0376 invocation.
 ///
-/// `max_commits` becomes `--max-count=N`, `since` becomes `--since=DATE`;
-/// both are omitted when `None`. Merge commits are excluded. The child's
+/// The [`Opts`] window becomes `--max-count=N`, `--since=DATE` and
+/// `--until=DATE` (ADR-0597); each bound is omitted when `None`. The
+/// reader takes the options whole — the fs-to-graph `walk(root, &Opts)`
+/// house shape — so the three bounds have one struct and a `since`/
+/// `until` swap cannot compile. Merge commits are excluded. The child's
 /// stdout is read through a cap of `log_limit` bytes (ADR-0377): the byte
 /// that would exceed it fails the read and terminates the child, and no
-/// partial output is parsed. A missing git, a directory git refuses, or any
-/// non-zero exit is an `Err`; a non-zero exit carries git's trimmed stderr.
+/// partial output is parsed. A missing git, a directory git refuses, or
+/// any non-zero exit is an `Err`; a non-zero exit carries git's trimmed
+/// stderr.
 pub fn read_history(
     dir: &Path,
-    max_commits: Option<u64>,
-    since: Option<&str>,
+    opts: &crate::Opts,
     log_limit: u64,
 ) -> Result<Vec<GitCommit>, ImportError> {
-    let args = log_args(dir, max_commits, since);
+    let args = log_args(dir, opts);
     let mut command = Command::new("git");
     command.args(&args);
     let stdout = run_command(&mut command, log_limit)?;
     parse_log(&stdout).map_err(ImportError::Failed)
 }
 
-/// The exact `git` argv of ADR-0376, program name excluded.
-fn log_args(dir: &Path, max_commits: Option<u64>, since: Option<&str>) -> Vec<OsString> {
+/// The exact `git` argv of ADR-0376, program name excluded, with the
+/// optional window elements ADR-0376 and ADR-0597 append.
+fn log_args(dir: &Path, opts: &crate::Opts) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-C".into(),
         dir.as_os_str().to_owned(),
@@ -146,11 +151,14 @@ fn log_args(dir: &Path, max_commits: Option<u64>, since: Option<&str>) -> Vec<Os
         "-z".into(),
         "--format=%x1e%H%x1f%aN%x1f%aE%x1f%aI%x1f%s".into(),
     ];
-    if let Some(max_commits) = max_commits {
+    if let Some(max_commits) = opts.max_commits {
         args.push(format!("--max-count={max_commits}").into());
     }
-    if let Some(since) = since {
+    if let Some(since) = opts.since.as_deref() {
         args.push(format!("--since={since}").into());
+    }
+    if let Some(until) = opts.until.as_deref() {
+        args.push(format!("--until={until}").into());
     }
     args.push("--".into());
     args.push(".".into());

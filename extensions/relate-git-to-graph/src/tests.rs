@@ -33,7 +33,7 @@ fn person_name(built: &plan::Plan, email: &str) -> String {
 
 /// Read and plan `dir`'s whole history under the shipped caps.
 fn plan_for(dir: &Path) -> plan::Plan {
-    let history = git_log::read_history(dir, None, None, Caps::ADR.log_bytes).unwrap();
+    let history = git_log::read_history(dir, &Opts::default(), Caps::ADR.log_bytes).unwrap();
     plan::build(dir, history, DEFAULT_MAX_CHANGESET, Caps::ADR.pairs).unwrap()
 }
 
@@ -53,7 +53,7 @@ fn the_committed_manifest_declares_the_contract_this_child_speaks() {
     assert_eq!(manifest["commit"], "per-batch");
     assert_eq!(manifest["positional"]["name"], "DIR");
     assert!(!manifest["requires-fresh-store"].as_bool().unwrap());
-    let flags: Vec<(String, &str)> = manifest["flags"]
+    let flags: Vec<(String, &str, Value)> = manifest["flags"]
         .as_array()
         .expect("the flag table is an array")
         .iter()
@@ -61,26 +61,27 @@ fn the_committed_manifest_declares_the_contract_this_child_speaks() {
             (
                 flag["name"].as_str().unwrap().to_string(),
                 flag["kind"].as_str().unwrap(),
+                flag["default"].clone(),
             )
         })
         .collect();
+    // One row per flag — name, kind and default in one spelling: the
+    // defaults the child lowers are `0` max-commits is all history, an
+    // empty `since` or `until` is no bound (the envelope contract), and
+    // the changeset default is the lib's own constant.
     assert_eq!(
         flags,
         [
-            ("max-commits".to_string(), "integer"),
-            ("max-changeset".to_string(), "integer"),
-            ("since".to_string(), "string"),
+            ("max-commits".to_string(), "integer", serde_json::json!(0)),
+            (
+                "max-changeset".to_string(),
+                "integer",
+                serde_json::json!(DEFAULT_MAX_CHANGESET)
+            ),
+            ("since".to_string(), "string", serde_json::json!("")),
+            ("until".to_string(), "string", serde_json::json!("")),
         ]
     );
-    // The defaults the child lowers: `0` max-commits is all history and
-    // an empty `since` is no bound (the envelope contract), and the
-    // changeset default is the lib's own constant.
-    assert_eq!(manifest["flags"][0]["default"], 0);
-    assert_eq!(
-        manifest["flags"][1]["default"],
-        serde_json::json!(DEFAULT_MAX_CHANGESET)
-    );
-    assert_eq!(manifest["flags"][2]["default"], "");
 }
 
 /// The bin's envelope reads the flag names the manifest declares — the
@@ -95,6 +96,7 @@ fn the_envelope_keys_match_the_manifest_flag_names() {
         max_commits: 0,
         max_changeset: DEFAULT_MAX_CHANGESET as i64,
         since: String::new(),
+        until: String::new(),
     })
     .unwrap();
     let manifest: Value = serde_json::from_str(include_str!("../package/extension.json")).unwrap();
@@ -105,7 +107,8 @@ fn the_envelope_keys_match_the_manifest_flag_names() {
 /// negative commit window and a changeset outside `1..=1000` are
 /// child-side refusals (the host's kind-checked parse cannot see value
 /// ranges, ADR-0429 §5), and the optional-with-no-bound flags ride their
-/// defaults — `0` commits is all history, an empty `since` no bound.
+/// defaults — `0` commits is all history, an empty `since` or `until` no
+/// bound.
 #[test]
 fn the_envelope_refuses_values_the_flag_kinds_cannot() {
     let base = Envelope {
@@ -113,6 +116,7 @@ fn the_envelope_refuses_values_the_flag_kinds_cannot() {
         max_commits: 0,
         max_changeset: DEFAULT_MAX_CHANGESET as i64,
         since: String::new(),
+        until: String::new(),
     };
     assert_eq!(base.opts().unwrap(), Opts::default());
     let no_bound = Envelope {
@@ -126,6 +130,36 @@ fn the_envelope_refuses_values_the_flag_kinds_cannot() {
             max_commits: Some(5),
             max_changeset: DEFAULT_MAX_CHANGESET,
             since: Some("2026-01-01T00:00:00Z".to_string()),
+            until: None,
+        }
+    );
+    // The closed range the ADR-0597 window exists for: both bounds lower
+    // together, and either alone is still a bound.
+    let closed = Envelope {
+        since: "2018-01-01".to_string(),
+        until: "2020-01-01".to_string(),
+        ..base.clone()
+    };
+    assert_eq!(
+        closed.opts().unwrap(),
+        Opts {
+            max_commits: None,
+            max_changeset: DEFAULT_MAX_CHANGESET,
+            since: Some("2018-01-01".to_string()),
+            until: Some("2020-01-01".to_string()),
+        }
+    );
+    let until_only = Envelope {
+        until: "2026-01-01T00:00:00Z".to_string(),
+        ..base.clone()
+    };
+    assert_eq!(
+        until_only.opts().unwrap(),
+        Opts {
+            max_commits: None,
+            max_changeset: DEFAULT_MAX_CHANGESET,
+            since: None,
+            until: Some("2026-01-01T00:00:00Z".to_string()),
         }
     );
     let negative = Envelope {
@@ -177,7 +211,7 @@ fn person_name_is_the_greatest_author_date_across_a_rebase() {
         "rebased with an older author date",
     );
 
-    let history = git_log::read_history(dir.path(), None, None, MAX_LOG_BYTES).unwrap();
+    let history = git_log::read_history(dir.path(), &Opts::default(), MAX_LOG_BYTES).unwrap();
     assert_eq!(
         history
             .iter()
@@ -217,7 +251,7 @@ fn person_name_compares_instants_across_offset_author_dates() {
         "the later local date string",
     );
 
-    let history = git_log::read_history(dir.path(), None, None, MAX_LOG_BYTES).unwrap();
+    let history = git_log::read_history(dir.path(), &Opts::default(), MAX_LOG_BYTES).unwrap();
     assert_eq!(
         history
             .iter()

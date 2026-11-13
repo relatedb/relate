@@ -1,12 +1,13 @@
 {
   "kind": "command",
   "name": "git-to-graph",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "protocol": "2025-06-18",
   "flags": [
     {"kind": "integer", "name": "max-commits", "default": 0},
     {"kind": "integer", "name": "max-changeset", "default": 50},
-    {"kind": "string", "name": "since", "default": ""}
+    {"kind": "string", "name": "since", "default": ""},
+    {"kind": "string", "name": "until", "default": ""}
   ],
   "positional": {"name": "DIR"},
   "requires-fresh-store": false,

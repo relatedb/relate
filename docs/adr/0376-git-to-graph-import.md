@@ -2,7 +2,7 @@
 
 Status: Accepted
 Claim: 5d4c39232aa32a00de4adc354258b68e247b58bc
-Later references: ADR-0377 bounds the import's git-log bytes, CO_CHANGED pairs, --max-changeset maximum and path components. ADR-0380 scopes the no-new-Cargo-dependency rule to external crates and corrects the pair-memory arithmetic. ADR-0383 renames the importer's --db flag to -d / --database on both lab actions; the supersession is the flag spelling only. ADR-0392 moves the write to one explicit transaction per 1,000-row batch over lazily generated rows: the range-index-before, full-text-after order, schema, path rule and MERGE/SET semantics stand, and the idempotent re-run replaces the whole-import rollback at the scales the store's WAL payload cap makes uncommittable.
+Later references: ADR-0377 bounds the import's git-log bytes, CO_CHANGED pairs, --max-changeset maximum and path components. ADR-0380 scopes the no-new-Cargo-dependency rule to external crates and corrects the pair-memory arithmetic. ADR-0383 renames the importer's --db flag to -d / --database on both lab actions; the supersession is the flag spelling only. ADR-0392 moves the write to one explicit transaction per 1,000-row batch over lazily generated rows: the range-index-before, full-text-after order, schema, path rule and MERGE/SET semantics stand, and the idempotent re-run replaces the whole-import rollback at the scales the store's WAL payload cap makes uncommittable. ADR-0597 adds the --until window flag to the command shape and the git argv — the flag table and the invocation each gain one optional element; everything else pinned here stands.
 
 ## Context
 
