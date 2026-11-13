@@ -32,9 +32,14 @@ extension CypherValue.Vector {
 
     /// The coordinates of a float-typed vector as `Float`s; `nil` for an
     /// integer-typed vector. Exact for `FLOAT32`, `FLOAT16` and `BFLOAT16`;
-    /// a `FLOAT` (64-bit) vector is narrowed to the nearest `Float`.
+    /// a `FLOAT` (64-bit) vector is narrowed to the nearest `Float`, and is
+    /// `nil` when a finite coordinate lies outside `Float`'s range (it
+    /// would read back as an infinity the vector never held).
     public var float32Values: [Float]? {
-        doubleValues?.map { Float($0) }
+        guard let values = doubleValues else { return nil }
+        let narrowed = values.map { Float($0) }
+        guard zip(values, narrowed).allSatisfy({ $0.isFinite == $1.isFinite }) else { return nil }
+        return narrowed
     }
 
     /// The coordinates of a float-typed vector; `nil` for an integer-typed

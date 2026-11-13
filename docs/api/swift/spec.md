@@ -197,7 +197,7 @@ CypherValue.DateTime.foundationDate: Foundation.Date                            
 CypherValue.LocalDateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError)
 CypherValue.LocalDateTime.foundationDate(in: TimeZone) -> Foundation.Date?       // nil in a daylight-saving gap; the earlier instant in an overlap
 CypherValue.Date.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the calendar day there
-CypherValue.Date.init?(_ components: DateComponents)                             // needs year, month and day; nil for a non-Gregorian calendar's components
+CypherValue.Date.init?(_ components: DateComponents)                             // needs year, month and day; nil for a non-Gregorian calendar's components; era 0 is BCE (1 BCE = year 0)
 CypherValue.Date.dateComponents: DateComponents                                  // carries the Gregorian calendar
 CypherValue.Date.startOfDay(in: TimeZone) -> Foundation.Date?
 
@@ -211,7 +211,7 @@ CypherValue.init(vector: [Float])                                               
 CypherValue.init(vector: [Double])                                               // FLOAT
 CypherValue.Vector.float32(_: [Float]), .float64(_: [Double])
 CypherValue.Vector.dtype: DType, .count: Int
-CypherValue.Vector.float32Values: [Float]?                                       // nil for an integer dtype; a FLOAT vector is narrowed
+CypherValue.Vector.float32Values: [Float]?                                       // nil for an integer dtype; a FLOAT vector is narrowed (nil if a coordinate exceeds Float's range)
 CypherValue.Vector.doubleValues: [Double]?                                       // nil for an integer dtype
 CypherValue.Vector.init(_: MLShapedArray<Float>)                                 // Core ML: scalars in row-major order, any shape
 CypherValue.Vector.init(_: MLMultiArray) throws(RelateError)                     // float16/float32 → FLOAT32, double → FLOAT, int32 → INTEGER32

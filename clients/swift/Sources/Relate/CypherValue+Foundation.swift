@@ -124,14 +124,24 @@ extension CypherValue.Date {
     /// carry a calendar which counts years or months differently (a
     /// Buddhist, Hebrew or Islamic calendar's fields are not a Cypher
     /// date's). Components without a calendar are taken as Gregorian.
+    ///
+    /// An `era`, when present, is part of the year: era 1 is the common
+    /// era, and era 0 counts years before it, so year 1 of era 0 (1 BCE) is
+    /// Cypher's year 0. Any other era is `nil`.
     public init?(_ components: DateComponents) {
         if let calendar = components.calendar,
             ![Calendar.Identifier.gregorian, .iso8601].contains(calendar.identifier)
         {
             return nil
         }
-        guard let year = components.year, let month = components.month, let day = components.day
+        guard let eraYear = components.year, let month = components.month, let day = components.day
         else { return nil }
+        let year: Int
+        switch components.era {
+        case nil, 1: year = eraYear
+        case 0: year = 1 - eraYear
+        default: return nil
+        }
         self.init(year: Int64(year), month: Int64(month), day: Int64(day))
     }
 
