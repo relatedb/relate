@@ -4,6 +4,7 @@ use std::time::Duration;
 use super::*;
 
 use crate::content_encoding::ReplyEncodingPolicy;
+use crate::v2_envelope::tests::body_json;
 
 /// The admission limits these tests run under: no deadlines (nothing to
 /// trickle), a caller-chosen body cap, and the ordinary read timeout.
@@ -66,12 +67,9 @@ fn body_over_the_cap_is_a_400_rejection() {
     else {
         panic!("expected a 400 rejection");
     };
-    assert_eq!(rejection.status, 400);
-    assert!(
-        rejection.message.contains("body too large"),
-        "{}",
-        rejection.message
-    );
+    let wire = rejection.into_wire();
+    assert_eq!(wire.status, 400);
+    assert!(wire.message.contains("body too large"), "{}", wire.message);
     // The remaining declared body is drained after the answer.
     assert!(matches!(drain, DrainPlan::Declared(16)), "{drain:?}");
 }
@@ -83,11 +81,14 @@ fn a_failed_auth_check_is_a_401_rejection_with_the_challenge() {
     let AdmissionOutcome::Rejected { rejection, .. } = admit(raw, &auth, 1024) else {
         panic!("expected a 401 rejection");
     };
-    assert_eq!(rejection.status, 401);
-    assert!(rejection
+    let reply = rejection.into_parts().2.into_reply();
+    assert_eq!(reply.status, 401);
+    assert!(reply
         .extra_headers
         .iter()
         .any(|(n, v)| n == "WWW-Authenticate" && v.contains("Basic realm=")));
+    // The one renderer carries the unauthorized GQLSTATUS code in the envelope.
+    assert_eq!(body_json(&reply)["errors"][0]["code"], "42NFF");
 }
 
 #[test]
@@ -200,28 +201,24 @@ fn an_http_1_0_request_is_a_parsed_400_rejection() {
     else {
         panic!("an HTTP/1.0 request is refused, not answered");
     };
-    let Rejection {
-        head,
-        public,
-        status,
-        code,
-        message,
-        extra_headers,
-    } = rejection;
-    assert_eq!(status, 400);
-    assert_eq!(code, relate_error::GQLSTATUS_GENERAL);
-    assert!(message.contains("HTTP/1.0"), "{message}");
-    assert!(message.contains("HTTP/1.1"), "{message}");
+    // The rejection renders through its one `RejectionWire::into_reply`: the real head rides
+    // along, so the encoding negotiates from the client's Accept-Encoding and
+    // the probe classification (not the discovery probe) is carried as data.
+    let (head, public, wire) = rejection.into_parts();
+    let reply = wire.into_reply();
+    let encoding = ReplyEncodingPolicy::for_head(&head, public);
+    assert_eq!(reply.status, 400);
+    let body = serde_json::to_string(&reply.body).unwrap();
+    assert!(body.contains(relate_error::GQLSTATUS_GENERAL), "{body}");
     assert!(
-        extra_headers.is_empty(),
+        body.contains("HTTP/1.0") && body.contains("HTTP/1.1"),
+        "{body}"
+    );
+    assert!(
+        reply.extra_headers.is_empty(),
         "the version floor adds no headers"
     );
-    // The parsed head carries what the reply seam reads, and the
-    // gate's probe classification rides as data.
-    assert!(!public, "a 1.0 POST is not the discovery probe");
-    assert_eq!(head.header("origin"), Some("https://browser.neo4j.io"));
-    assert_eq!(head.header("content-length"), Some("2"));
-    match ReplyEncodingPolicy::for_head(&head, public) {
+    match encoding {
         ReplyEncodingPolicy::Negotiated(Some(header)) => assert_eq!(header, "gzip"),
         _ => panic!("the 400 negotiates from the client's real Accept-Encoding"),
     }

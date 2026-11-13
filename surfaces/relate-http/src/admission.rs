@@ -125,21 +125,31 @@ impl ReadLimits {
     }
 }
 
-/// A rejection's reply payload: the status, message and extra headers travel
-/// with the parsed head and its public classification, so a surface renders
-/// the answer without re-deriving any of it.
+/// A rejection's reply payload: the status, GQLSTATUS code, message and extra
+/// headers travel with the parsed head and its public classification. The
+/// fields are private: a surface renders the answer through
+/// [`Rejection::into_parts`] (the Query API envelope, rendered by
+/// [`RejectionWire::into_reply`]) or [`Rejection::into_wire`] (a transport
+/// with its own body shape), never by re-deriving any of it.
 pub struct Rejection {
-    /// The parsed head (the Origin echo and encoding policy read it).
-    pub head: RequestHead,
-    /// The surface's public-probe route matched.
-    pub public: bool,
+    head: RequestHead,
+    public: bool,
+    wire: RejectionWire,
+}
+
+/// What a surface renders for a [`Rejection`]: the status, the GQLSTATUS
+/// code, the message and the extra response headers (the `WWW-Authenticate`
+/// challenge on a 401). The Query API renders it as its error envelope
+/// (`RejectionWire::into_reply`, in the reply module); a transport with its
+/// own body shape reads the fields.
+pub struct RejectionWire {
     /// The HTTP status (400 for the version floor, 401, 403, 415).
     pub status: u16,
     /// The GQLSTATUS code the error envelope carries.
     pub code: &'static str,
-    /// The human-readable reason.
+    /// The human-readable message.
     pub message: String,
-    /// Extra response headers (`WWW-Authenticate` on a 401).
+    /// Extra response headers.
     pub extra_headers: Vec<(String, String)>,
 }
 
@@ -150,10 +160,12 @@ impl Rejection {
         Self {
             head,
             public,
-            status,
-            code: GQLSTATUS_GENERAL,
-            message,
-            extra_headers: Vec::new(),
+            wire: RejectionWire {
+                status,
+                code: GQLSTATUS_GENERAL,
+                message,
+                extra_headers: Vec::new(),
+            },
         }
     }
 
@@ -163,11 +175,25 @@ impl Rejection {
         Self {
             head,
             public,
-            status: failure.failure.status,
-            code: failure.code,
-            message: failure.failure.message.to_string(),
-            extra_headers: failure.failure.challenge.into_iter().collect(),
+            wire: RejectionWire {
+                status: failure.failure.status,
+                code: failure.code,
+                message: failure.failure.message.to_string(),
+                extra_headers: failure.failure.challenge.into_iter().collect(),
+            },
         }
+    }
+
+    /// Take the rejection apart: the parsed head and public-probe bit the
+    /// reply-encoding policy reads, and the [`RejectionWire`] to render.
+    pub(crate) fn into_parts(self) -> (RequestHead, bool, RejectionWire) {
+        (self.head, self.public, self.wire)
+    }
+
+    /// The status, code, message and extra headers, for a transport that
+    /// renders its own body (the MCP surface).
+    pub fn into_wire(self) -> RejectionWire {
+        self.wire
     }
 }
 

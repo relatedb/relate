@@ -16,7 +16,7 @@ use relate_error::GQLSTATUS_GENERAL;
 use crate::content_encoding::{self, BodyEncoding, ReplyEncodingPolicy, VARY_ACCEPT_ENCODING};
 use crate::http::{
     drain_reader, read_admitted_request, write_head, AdmissionError, AdmissionOutcome, Cors,
-    DrainPlan, Framing, OriginAllowlist, ReadLimits, Rejection, REJECT_DRAIN_TIMEOUT,
+    DrainPlan, Framing, OriginAllowlist, ReadLimits, REJECT_DRAIN_TIMEOUT,
 };
 use crate::query_api;
 use crate::reply::Reply;
@@ -436,16 +436,8 @@ fn dispatch<S: Read>(
             ReplyEncodingPolicy::for_unparsed_head(),
         ),
         AdmissionOutcome::Rejected { rejection, drain } => {
-            let Rejection {
-                head,
-                public,
-                status,
-                code,
-                message,
-                extra_headers,
-            } = rejection;
-            let mut reply = crate::reply::error_envelope(status, code, &message);
-            reply.extra_headers = extra_headers;
+            let (head, public, wire) = rejection.into_parts();
+            let reply = wire.into_reply();
             let encoding = ReplyEncodingPolicy::for_head(&head, public);
             (reply, drain, encoding)
         }

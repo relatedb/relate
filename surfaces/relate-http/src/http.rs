@@ -29,7 +29,7 @@ use std::io::{self, Write};
 // keep one import path.
 pub use crate::admission::{
     drain_reader, read_admitted_request, AdmissionError, AdmissionOutcome, Cors, DrainPlan,
-    ReadLimits, Rejection, FAILED_AUTH_DELAY, REJECT_DRAIN_TIMEOUT,
+    ReadLimits, Rejection, RejectionWire, FAILED_AUTH_DELAY, REJECT_DRAIN_TIMEOUT,
 };
 
 // The accept loop and admission defaults (ADR-0238, ADR-0451) live in

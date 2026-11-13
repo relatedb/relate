@@ -100,6 +100,15 @@ impl AuthFailure {
     }
 }
 
+impl crate::admission::RejectionWire {
+    /// The answer in the Query API error envelope, extra headers included.
+    pub(crate) fn into_reply(self) -> Reply {
+        let mut reply = error_envelope(self.status, self.code, &self.message);
+        reply.extra_headers = self.extra_headers;
+        reply
+    }
+}
+
 /// The 400 envelope for a body that does not parse: one mapping both
 /// routers (the auto-commit route and the tx routes) consult.
 pub(crate) fn invalid_request_body(e: serde_json::Error) -> Reply {

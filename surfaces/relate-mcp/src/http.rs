@@ -206,8 +206,9 @@ fn handle_connection(
             (HttpResponse::error(400, message), drain)
         }
         AdmissionOutcome::Rejected { rejection, drain } => {
-            let mut response = HttpResponse::error(rejection.status, rejection.message);
-            response.headers = rejection.extra_headers;
+            let wire = rejection.into_wire();
+            let mut response = HttpResponse::error(wire.status, wire.message);
+            response.headers = wire.extra_headers;
             (response, drain)
         }
         AdmissionOutcome::Request { request, .. } => {

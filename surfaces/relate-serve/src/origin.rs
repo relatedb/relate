@@ -35,14 +35,41 @@ pub const HOSTED_WEB_APP_ORIGINS: [&str; 2] =
 /// pieces every consumer projects — the scheme, carried in its canonical
 /// lowercase spelling, the host as written (the canonical serialization
 /// lowercases it), the bracketed-host decision carried as data, and the
-/// port suffix — so the loopback classification, the canonical
+/// port (a `u16`, parsed once; an out-of-range port is outside the shape,
+/// and a leading-zero spelling canonicalizes to the plain number) — so the loopback classification, the canonical
 /// serialization, and the origin flags' grammars all read the same
 /// parse, not one per surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Origin<'a> {
-    scheme: &'a str,
+    scheme: Scheme,
     host: OriginHost<'a>,
-    port_suffix: &'a str,
+    port: Option<u16>,
+}
+
+/// The origin shape's scheme: a two-element domain, decided once in
+/// [`Origin::parse`] and rendered back by [`Origin::canonical`] — never
+/// re-derived from text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scheme {
+    Http,
+    Https,
+}
+
+impl Scheme {
+    /// The scheme named by `text`, case-insensitively (RFC 3986 §3.1).
+    fn parse(text: &str) -> Option<Self> {
+        [Self::Http, Self::Https]
+            .into_iter()
+            .find(|scheme| text.eq_ignore_ascii_case(scheme.as_str()))
+    }
+
+    /// The canonical lowercase spelling.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
 }
 
 /// The origin-shape parse's host token: whether the host is bracketed is
@@ -91,7 +118,7 @@ impl<'a> Origin<'a> {
     /// the guards classify are one grammar, not two: an `http(s)://`
     /// scheme, then the authority — `host[:port]`, no userinfo, no query,
     /// no fragment, at most an empty path — with a non-empty host and a
-    /// numeric-or-absent port (`port_suffix_ok`). The host arms own their
+    /// `u16`-or-absent port (`parse_port_suffix`). The host arms own their
     /// emptiness (round 10, F-10-2): the name arm rejects an empty name
     /// (`http://`), the bracketed arm an empty bare host (`http://[]` —
     /// the brackets always span at least `[]`, so only the bare host
@@ -103,13 +130,7 @@ impl<'a> Origin<'a> {
         // `HTTP://localhost` and `http://localhost` are one Origin
         // (round 11, F-11-1).
         let (scheme, rest) = origin.split_once("://")?;
-        let scheme = if scheme.eq_ignore_ascii_case("http") {
-            "http"
-        } else if scheme.eq_ignore_ascii_case("https") {
-            "https"
-        } else {
-            return None;
-        };
+        let scheme = Scheme::parse(scheme)?;
         // An Origin serializes as scheme://host[:port] with at most an
         // empty path; refuse anything beyond that rather than guessing at
         // its meaning.
@@ -153,17 +174,12 @@ impl<'a> Origin<'a> {
                 (OriginHost::Name(name), &authority[name.len()..])
             }
         };
-        // After the host: a colon plus digits only (a non-numeric port
-        // makes the whole Origin invalid, not "any port"). The arms above
-        // own the host's emptiness, so only the port is checked here.
-        if !port_suffix_ok(port_suffix) {
-            return None;
-        }
-        Some(Self {
-            scheme,
-            host,
-            port_suffix,
-        })
+        // After the host: a colon plus a `u16`'s digits only (a non-numeric
+        // or out-of-range port makes the whole Origin invalid, not "any
+        // port"). The arms above own the host's emptiness, so only the port
+        // is checked here.
+        let port = parse_port_suffix(port_suffix)?;
+        Some(Self { scheme, host, port })
     }
 
     /// The canonical serialization (round 7, F-7-4): the parsed pieces
@@ -171,12 +187,12 @@ impl<'a> Origin<'a> {
     /// spelling the exact matchers byte-compare, so a stored origin and
     /// the incoming Origin agree on one spelling.
     pub fn canonical(&self) -> String {
-        format!(
-            "{}://{}{}",
-            self.scheme,
-            self.host.token().to_ascii_lowercase(),
-            self.port_suffix
-        )
+        let host = self.host.token().to_ascii_lowercase();
+        let scheme = self.scheme.as_str();
+        match self.port {
+            Some(port) => format!("{scheme}://{host}:{port}"),
+            None => format!("{scheme}://{host}"),
+        }
     }
 
     /// True for the loopback hosts of the ADR-0266 set, on the bare-host
@@ -213,13 +229,18 @@ impl<'a> Origin<'a> {
     }
 }
 
-/// After the host: empty, or a colon plus digits only (a non-numeric port
-/// makes the whole Origin invalid, not "any port").
-fn port_suffix_ok(rest: &str) -> bool {
-    rest.is_empty()
-        || rest
-            .strip_prefix(':')
-            .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+/// The port after the host: `Some(None)` for no port, `Some(Some(port))` for
+/// a colon plus the digits of a `u16`, `None` for anything else (a
+/// non-numeric, empty or out-of-range port invalidates the whole Origin).
+fn parse_port_suffix(rest: &str) -> Option<Option<u16>> {
+    if rest.is_empty() {
+        return Some(None);
+    }
+    let digits = rest.strip_prefix(':')?;
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u16>().ok().map(Some)
 }
 
 /// The wildcard origin spelling: every Origin, stated once here — both
@@ -319,28 +340,53 @@ mod tests {
     #[test]
     fn parse_yields_the_origin_shape_pieces() {
         let parsed = Origin::parse("http://localhost:7474").unwrap();
-        assert_eq!(parsed.scheme, "http");
+        assert_eq!(parsed.scheme, Scheme::Http);
         assert_eq!(parsed.host, OriginHost::Name("localhost"));
-        assert_eq!(parsed.port_suffix, ":7474");
+        assert_eq!(parsed.port, Some(7474));
         assert_eq!(parsed.canonical(), "http://localhost:7474");
         let parsed = Origin::parse("https://[::1]:8080").unwrap();
-        assert_eq!(parsed.scheme, "https");
+        assert_eq!(parsed.scheme, Scheme::Https);
         assert_eq!(parsed.host, OriginHost::Bracketed("[::1]"));
         assert_eq!(parsed.host.bare(), "::1");
-        assert_eq!(parsed.port_suffix, ":8080");
+        assert_eq!(parsed.port, Some(8080));
         assert_eq!(parsed.canonical(), "https://[::1]:8080");
         // The canonical rebuild lowercases the host, brackets kept:
         let parsed = Origin::parse("http://LOCALhost").unwrap();
         assert_eq!(parsed.canonical(), "http://localhost");
         // The scheme is case-insensitive (RFC 3986 §3.1) and canonical:
         let parsed = Origin::parse("HTTP://LOCALHOST:7474").unwrap();
-        assert_eq!(parsed.scheme, "http");
+        assert_eq!(parsed.scheme, Scheme::Http);
         assert_eq!(parsed.canonical(), "http://localhost:7474");
         let parsed = Origin::parse("hTTps://[::1]").unwrap();
-        assert_eq!(parsed.scheme, "https");
+        assert_eq!(parsed.scheme, Scheme::Https);
         assert_eq!(parsed.canonical(), "https://[::1]");
         // An empty path is the shape's one allowed path spelling:
         assert!(Origin::parse("https://host.example/").is_some());
+    }
+
+    #[test]
+    fn the_port_is_a_u16_parsed_once() {
+        // A leading-zero spelling canonicalizes to the number a browser
+        // would emit; an out-of-range port is outside the shape.
+        let parsed = Origin::parse("http://localhost:0080").unwrap();
+        assert_eq!(parsed.port, Some(80));
+        assert_eq!(parsed.canonical(), "http://localhost:80");
+        assert_eq!(
+            Origin::parse("http://localhost").unwrap().port,
+            None,
+            "no port is no port"
+        );
+        assert_eq!(
+            Origin::parse("http://localhost:65535").unwrap().port,
+            Some(65535)
+        );
+        for outside in [
+            "http://localhost:65536",
+            "http://localhost:99999",
+            "http://[::1]:100000",
+        ] {
+            assert!(Origin::parse(outside).is_none(), "{outside}");
+        }
     }
 
     #[test]
