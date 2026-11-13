@@ -99,11 +99,7 @@ fn read_query_scope(conn: &mut Connection, arg: &str) -> Result<ScopeGraph, Load
 /// The whole-store scope (`PushScope::All`, an explicit arm — never a
 /// `Labels(vec![])` sentinel): every node, then every relationship.
 fn read_all_scope(conn: &mut Connection) -> Result<ScopeGraph, LoadError> {
-    let mut nodes: HashMap<NodeId, LocalNode> = HashMap::new();
-    for node in query_nodes(conn, "MATCH (n) RETURN n")? {
-        nodes.insert(node.id, node);
-    }
-    read_rels_between_scope_nodes(conn, nodes)
+    read_node_scope(conn, "MATCH (n) RETURN n")
 }
 
 /// The `--labels` scope: one node read for the whole list (an OR'd label
@@ -111,17 +107,22 @@ fn read_all_scope(conn: &mut Connection) -> Result<ScopeGraph, LoadError> {
 /// filtered to the ones between two in-scope nodes. Relationships with an
 /// out-of-scope endpoint are counted dangling — the scope stays explicit.
 fn read_labels_scope(conn: &mut Connection, labels: &[String]) -> Result<ScopeGraph, LoadError> {
-    let mut nodes: HashMap<NodeId, LocalNode> = HashMap::new();
-    let mut predicate = String::new();
-    for (index, label) in labels.iter().enumerate() {
-        if index > 0 {
-            predicate.push_str(" OR ");
-        }
-        predicate.push_str(&format!("n:{}", super::wire::quote_ident(label)?));
-    }
-    for node in query_nodes(conn, &format!("MATCH (n) WHERE {predicate} RETURN n"))? {
-        nodes.insert(node.id, node);
-    }
+    let predicate = labels
+        .iter()
+        .map(|label| Ok(format!("n:{}", super::wire::quote_ident(label)?)))
+        .collect::<Result<Vec<_>, LoadError>>()?
+        .join(" OR ");
+    read_node_scope(conn, &format!("MATCH (n) WHERE {predicate} RETURN n"))
+}
+
+/// The node-first scopes' one body: the nodes one `RETURN n` read
+/// selects (deduplicated by id), then [`read_rels_between_scope_nodes`].
+/// The whole-store and `--labels` scopes differ only in that read.
+fn read_node_scope(conn: &mut Connection, node_query: &str) -> Result<ScopeGraph, LoadError> {
+    let nodes: HashMap<NodeId, LocalNode> = query_nodes(conn, node_query)?
+        .into_iter()
+        .map(|node| (node.id, node))
+        .collect();
     read_rels_between_scope_nodes(conn, nodes)
 }
 

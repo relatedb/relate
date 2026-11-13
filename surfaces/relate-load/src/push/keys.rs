@@ -21,16 +21,14 @@ pub(crate) struct MergeKeys {
 }
 
 impl MergeKeys {
-    /// The key properties for a node label: the `--merge-key` override
-    /// when one was given (explicit user intent wins), else the
-    /// constraint-derived key, else none — unkeyed.
+    /// The key properties for a node label, or none — unkeyed. The table
+    /// already holds the winner; [`read_merge_keys`] decides precedence.
     pub(crate) fn node_key(&self, label: &str) -> Option<&[String]> {
         self.nodes.get(label).map(Vec::as_slice)
     }
 
-    /// The key properties for a relationship type: the `--rel-key`
-    /// override when one was given, else the constraint-derived key,
-    /// else none — structural (ADR-0401 §5).
+    /// The key properties for a relationship type, or none — structural
+    /// (ADR-0401 §5). Precedence is decided in [`read_merge_keys`].
     pub(crate) fn rel_key(&self, rel_type: &str) -> Option<&[String]> {
         self.rels.get(rel_type).map(Vec::as_slice)
     }
@@ -41,8 +39,9 @@ impl MergeKeys {
 /// uniqueness, so both are merge keys — projected per label/type. A label
 /// with several such constraints uses the alphabetically-first constraint
 /// name's properties. `node_overrides` / `rel_overrides` are the parsed
-/// `--merge-key` / `--rel-key` values; both win over the
-/// constraint-derived key for their label or type (ADR-0401 §5).
+/// `--merge-key` / `--rel-key` values; precedence is decided here, once:
+/// an override (explicit user intent) beats the constraint-derived key
+/// for its label or type, which beats no key (ADR-0401 §5).
 pub(crate) fn read_merge_keys(
     conn: &mut Connection,
     node_overrides: &BTreeMap<String, Vec<String>>,

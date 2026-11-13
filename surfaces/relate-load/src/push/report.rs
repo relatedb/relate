@@ -134,6 +134,15 @@ impl EntityReport {
     /// all rows apply-or-not, totals filled, counters zeroed. `batches`
     /// counts batches actually sent — zero until a write lands (a partial
     /// push's never-attempted entities are exactly this shape).
+    ///
+    /// Which path owns which counter: the plan alone fills `total`, the
+    /// skipped-unkeyed and skipped-dangling counters, the merge key, the
+    /// policy and the statement; a dry run then fills `created` (and the
+    /// planned `batches`) because it cannot tell created from updated;
+    /// a real run's classification fills `created`, `updated`, the
+    /// policy/remote-newer skips and `incomparable`, and `batches` as
+    /// writes land. An entity no run reached keeps this shape — the
+    /// zeroed counters and `batches == 0` name "never attempted".
     pub(crate) fn planned(entity: &PlannedEntity) -> Self {
         let kind = &entity.kind;
         Self {
