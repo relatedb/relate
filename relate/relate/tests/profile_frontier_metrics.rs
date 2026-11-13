@@ -8,7 +8,8 @@
 
 mod common;
 
-use common::{connection, plan};
+use common::{connection, plan, wire_arg};
+use relate_model::wire::plan_keys;
 
 /// The first operator node of the tree whose metrics satisfy `pred` —
 /// the one traversal every finder below shares (the `tree_hops` idiom's
@@ -31,20 +32,6 @@ fn find_operator<'a>(
 /// family declined everywhere.
 fn frontier_run(node: &relate::PlanNode) -> Option<&relate::PlanNode> {
     find_operator(node, &|m| m.frontier.levels > 0)
-}
-
-/// One wire arg of the given plan node (the expression-bytes test's
-/// extraction, spelled once for the frontier-args tests): the node's
-/// serialized `args` map entry, cloned out — `None` when the producer
-/// emitted no such key.
-fn wire_arg(node: &relate::PlanNode, key: &str) -> Option<relate::Value> {
-    let relate::Value::Map(map) = node.to_value() else {
-        panic!("to_value is a map");
-    };
-    let Some(relate::Value::Map(args)) = map.get("args") else {
-        panic!("args is a map");
-    };
-    args.get(key).cloned()
 }
 
 /// The frontier-NFA rung's own PROFILE facts on a SERVED run
@@ -114,29 +101,29 @@ fn profile_reports_the_frontier_rung_counters_on_a_served_run() {
     // surfaces read — the fraction as the one float metric, the verdict
     // counts as integers, no decline reason beside a served run.
     assert_eq!(
-        wire_arg(run, "FrontierBudgetFraction"),
+        wire_arg(run, plan_keys::FRONTIER_BUDGET_FRACTION),
         Some(relate::Value::Float(
             2.0 / relate::REARRIVAL_WORK_BUDGET as f64
         )),
         "the budget fraction rides the args"
     );
     assert_eq!(
-        wire_arg(run, "FrontierMemoMisses"),
+        wire_arg(run, plan_keys::FRONTIER_MEMO_MISSES),
         Some(relate::Value::Int(1)),
         "the memo misses ride the args"
     );
     assert_eq!(
-        wire_arg(run, "FrontierRepresentativeProofs"),
+        wire_arg(run, plan_keys::FRONTIER_REPRESENTATIVE_PROOFS),
         Some(relate::Value::Int(5)),
         "the representative proofs ride the args"
     );
     assert_eq!(
-        wire_arg(run, "FrontierCells"),
+        wire_arg(run, plan_keys::FRONTIER_CELLS),
         Some(relate::Value::Int(6)),
         "the cells ride the args"
     );
     assert_eq!(
-        wire_arg(run, "FrontierDeclineReason"),
+        wire_arg(run, plan_keys::FRONTIER_DECLINE_REASON),
         None,
         "a served run carries no decline reason"
     );
@@ -232,17 +219,17 @@ fn profile_reports_the_frontier_rung_counters_on_a_declined_run() {
     // The wire args on the same operator row: the drained-budget
     // fraction and the typed decline reason beside the counters.
     assert_eq!(
-        wire_arg(run, "FrontierBudgetFraction"),
+        wire_arg(run, plan_keys::FRONTIER_BUDGET_FRACTION),
         Some(relate::Value::Float(1.0)),
         "the drained budget rides the args"
     );
     assert_eq!(
-        wire_arg(run, "FrontierDeclineReason"),
+        wire_arg(run, plan_keys::FRONTIER_DECLINE_REASON),
         Some(relate::Value::String("rearrival-budget".into())),
         "the typed decline reason rides the args"
     );
     assert_eq!(
-        wire_arg(run, "FrontierDeclinedExhausted"),
+        wire_arg(run, plan_keys::FRONTIER_DECLINED_EXHAUSTED),
         Some(relate::Value::Int(3)),
         "the cut asks ride the args"
     );
@@ -300,12 +287,12 @@ fn profile_names_the_plan_time_decline_on_a_walker_served_run() {
             "a plan-time decline never ran the rung: {query}"
         );
         assert_eq!(
-            wire_arg(node, "FrontierDeclineReason"),
+            wire_arg(node, plan_keys::FRONTIER_DECLINE_REASON),
             Some(relate::Value::String(reason.into())),
             "the typed reason rides the wire args: {query}"
         );
         assert_eq!(
-            wire_arg(node, "FrontierEdges"),
+            wire_arg(node, plan_keys::FRONTIER_EDGES),
             None,
             "no run counters beside a plan-time reason: {query}"
         );

@@ -87,8 +87,10 @@ pub(crate) enum Consumer {
     /// y`, `collect(DISTINCT y)`, `min`/`max` over the endpoint — one row
     /// per accepting arrival over the boundary variables, running to
     /// fixpoint or `max` (a riding `LIMIT` only truncates the endpoint
-    /// rows afterwards, a contract-free prefix either way).
-    DistinctEndpoints,
+    /// rows afterwards, a contract-free prefix either way). Carries the
+    /// clause's [`BoundaryPair`]: only this consumer's answer is the pair
+    /// set the comparison filters, so no other consumer can hold one.
+    DistinctEndpoints { pair: BoundaryPair },
     /// A walk count (`count(*)`/`count(<boundary var>)`, no DISTINCT)
     /// under the bounded WALK pool with an unfiltered target — the
     /// counting arm (`frontier_count`): the walk multiset contracts to
@@ -137,6 +139,20 @@ impl BoundaryPair {
     }
 }
 
+impl Consumer {
+    /// The boundary-pair comparison this consumer's answer filters by:
+    /// the distinct-endpoint consumer's payload, [`BoundaryPair::Unconstrained`]
+    /// for every consumer that cannot carry one.
+    pub(crate) fn pair(self) -> BoundaryPair {
+        match self {
+            Consumer::DistinctEndpoints { pair } => pair,
+            Consumer::Exists | Consumer::WalkCount | Consumer::Capped { .. } => {
+                BoundaryPair::Unconstrained
+            }
+        }
+    }
+}
+
 /// The plan-time artifact the matcher returns: everything the BFS runner
 /// (`frontier-core`) and the wiring (`rider-integration`) run on. Built
 /// once per clause and shared by every seed of the run — the capped
@@ -159,10 +175,6 @@ pub(crate) struct FrontierContract<'a> {
     /// The answer shape the runner serves (the answer-shape gate's
     /// survivor).
     pub(crate) consumer: Consumer,
-    /// The boundary-pair comparison the clause's `WHERE` stated, applied
-    /// to every (seed, admitted endpoint) pair the distinct-endpoint row
-    /// pass emits.
-    pub(crate) pair: BoundaryPair,
     /// The pool a run of this contract answers in (ADR-0478 §3), set
     /// once here from the match mode and the written path mode — the
     /// typed fact every driver reads, never re-derived: `Walk` for the
@@ -284,15 +296,15 @@ pub(crate) fn compile_frontier<'a>(
     // Text render: the compiled boundary programs are keyed by the
     // variable's String spelling (sorted iteration stays text order).
     let mut progs: BTreeMap<String, Prog> = BTreeMap::new();
-    let mut pair = BoundaryPair::Unconstrained;
+    let mut consumer = consumer;
     for conjunct in conjuncts {
         if is_boundary_pair_neq(conjunct, start_node, target_node) {
             // The pair comparison rides only the consumer whose answer is
             // the pair set; the others keep their old decline.
-            if consumer != Consumer::DistinctEndpoints {
+            let Consumer::DistinctEndpoints { pair } = &mut consumer else {
                 return Err(FrontierDecline::Conjunct);
-            }
-            pair = BoundaryPair::Distinct;
+            };
+            *pair = BoundaryPair::Distinct;
             continue;
         }
         let Some((var, prog)) = decode_conjunct(conjunct) else {
@@ -342,6 +354,8 @@ pub(crate) fn compile_frontier<'a>(
     // replaces enumerates every walk.
     if engine != PatternEngine::Nfa
         && consumer != Consumer::WalkCount
+        // An unbounded spine engages on shape alone: no gate to run.
+        && nfa.max_hops.is_some()
         && !frontier_engages(
             stats,
             u128::try_from(graph.next_node_id())
@@ -350,7 +364,6 @@ pub(crate) fn compile_frontier<'a>(
             start_node,
             target_node,
             &pattern.elements,
-            nfa.max_hops.is_some(),
         )
     {
         return Err(FrontierDecline::Cost);
@@ -361,7 +374,6 @@ pub(crate) fn compile_frontier<'a>(
         start,
         target,
         consumer,
-        pair,
         pool,
     })
 }
@@ -458,13 +470,17 @@ pub(crate) fn decode_consumer(
             // (`min(length(p))`) reads bindings only witnesses carry.
             return Err(FrontierDecline::PathConsumer);
         }
-        return Ok(Consumer::DistinctEndpoints);
+        return Ok(Consumer::DistinctEndpoints {
+            pair: BoundaryPair::Unconstrained,
+        });
     }
     if s.distinct {
         if !names_boundary_only(&referenced) {
             return Err(FrontierDecline::PathConsumer);
         }
-        return Ok(Consumer::DistinctEndpoints);
+        return Ok(Consumer::DistinctEndpoints {
+            pair: BoundaryPair::Unconstrained,
+        });
     }
     // The capped shape: `LIMIT` without `ORDER BY`, the cap rider's own
     // `Plain` want (`SKIP + LIMIT`). Any projection rides — the ≤ want

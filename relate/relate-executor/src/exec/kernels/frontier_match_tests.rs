@@ -13,7 +13,12 @@ use relate_ir::{MatchMode, NodePattern, PatternElement, RelPattern};
 
 use super::super::graph_stats::GraphStats;
 use super::super::test_support::Builder;
-use super::frontier_match::{compile_frontier, Consumer};
+use super::frontier_match::{compile_frontier, BoundaryPair, Consumer};
+
+/// The distinct-endpoint consumer with no boundary-pair comparison.
+const DISTINCT: Consumer = Consumer::DistinctEndpoints {
+    pair: BoundaryPair::Unconstrained,
+};
 use super::nfa::Pool;
 use crate::exec::test_support::{
     complete_graph, decide, declines_with, line_graph, named_node, one_hop_rel, path_pattern,
@@ -128,7 +133,13 @@ fn engages_distinct_endpoint_answers() {
     ] {
         decide(cypher, &graph, false, &Row::new(), |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("{cypher} engages: {e:?}"));
-            assert_eq!(contract.consumer, Consumer::DistinctEndpoints, "{cypher}");
+            assert_eq!(
+                contract.consumer,
+                Consumer::DistinctEndpoints {
+                    pair: BoundaryPair::Unconstrained
+                },
+                "{cypher}"
+            );
         });
     }
 }
@@ -177,7 +188,7 @@ fn the_cost_gate_prices_the_dedup_ratio() {
         &Row::new(),
         |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("the bounded ratio engages: {e:?}"));
-            assert_eq!(contract.consumer, Consumer::DistinctEndpoints);
+            assert_eq!(contract.consumer, DISTINCT);
             assert_eq!(
                 contract.nfa.max_hops,
                 Some(3),
@@ -231,7 +242,13 @@ fn the_cost_gate_engages_a_branching_recursion_onto_an_unlabeled_target() {
     ] {
         decide(cypher, &graph, false, &Row::new(), |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("{cypher} engages: {e:?}"));
-            assert_eq!(contract.consumer, Consumer::DistinctEndpoints, "{cypher}");
+            assert_eq!(
+                contract.consumer,
+                Consumer::DistinctEndpoints {
+                    pair: BoundaryPair::Unconstrained
+                },
+                "{cypher}"
+            );
         });
     }
 }

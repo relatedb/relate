@@ -35,7 +35,7 @@ use relate_core::{NodeId, RelId, Value};
 
 use super::frontier::FrontierRun;
 use super::frontier_emit::{capped_rows, CappedRun};
-use super::frontier_match::{boundary, BoundaryPair, Consumer, FrontierContract};
+use super::frontier_match::{boundary, Consumer, FrontierContract};
 use super::frontier_tables::fresh_tables;
 use super::nfa::{compile, Pool};
 use super::program::{NodeTarget, Prog};
@@ -89,7 +89,6 @@ fn capped_answer(graph: &Graph, cypher: &str, seed: NodeId, pool: Pool, want: us
         start: bare(start),
         target: bare(target),
         consumer: Consumer::Capped { want },
-        pair: BoundaryPair::Unconstrained,
         pool,
     };
     let view = ExecGraph::read(graph);

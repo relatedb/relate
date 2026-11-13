@@ -136,8 +136,13 @@ fn the_distinct_endpoint_consumer_admits_the_boundary_pair_comparison() {
     ] {
         decide(cypher, &complete_graph(), false, &Row::new(), |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("{cypher} engages: {e:?}"));
-            assert_eq!(contract.consumer, Consumer::DistinctEndpoints, "{cypher}");
-            assert_eq!(contract.pair, BoundaryPair::Distinct, "{cypher}");
+            assert_eq!(
+                contract.consumer,
+                Consumer::DistinctEndpoints {
+                    pair: BoundaryPair::Distinct
+                },
+                "{cypher}"
+            );
         });
     }
     // No comparison, no constraint.
@@ -148,7 +153,7 @@ fn the_distinct_endpoint_consumer_admits_the_boundary_pair_comparison() {
         &Row::new(),
         |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("engages: {e:?}"));
-            assert_eq!(contract.pair, BoundaryPair::Unconstrained);
+            assert_eq!(contract.consumer.pair(), BoundaryPair::Unconstrained);
         },
     );
 }

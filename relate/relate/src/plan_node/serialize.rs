@@ -163,6 +163,40 @@ impl PlanNode {
         args
     }
 
+    /// The frontier family's integer counters by wire key, one table for
+    /// the cluster (the budget fraction, the one float, rides beside it).
+    fn frontier_counters(
+        frontier: &relate_executor::FrontierCounters,
+    ) -> [(&'static str, u128); 10] {
+        [
+            (plan_keys::FRONTIER_EDGES, frontier.edge_visits as u128),
+            (plan_keys::FRONTIER_LEVELS, frontier.levels as u128),
+            (plan_keys::FRONTIER_ENDPOINTS, frontier.endpoints as u128),
+            (plan_keys::FRONTIER_CELLS, frontier.cells as u128),
+            (plan_keys::FRONTIER_MEMO_HITS, frontier.memo_hits as u128),
+            (
+                plan_keys::FRONTIER_MEMO_MISSES,
+                frontier.memo_misses as u128,
+            ),
+            (
+                plan_keys::FRONTIER_REPRESENTATIVE_PROOFS,
+                frontier.representative_proofs as u128,
+            ),
+            (
+                plan_keys::FRONTIER_SEARCH_PROVEN,
+                frontier.search_proven as u128,
+            ),
+            (
+                plan_keys::FRONTIER_SEARCH_DISPROVEN,
+                frontier.search_disproven as u128,
+            ),
+            (
+                plan_keys::FRONTIER_DECLINED_EXHAUSTED,
+                frontier.declined_exhausted as u128,
+            ),
+        ]
+    }
+
     /// The PROFILE metrics' arg emission (ADR-0344 phase 2 + metric
     /// fields, LABS-369's kinds and start, LABS-448's phase times): one
     /// helper every metrics feature extends, so base_args reads as base
@@ -244,48 +278,9 @@ impl PlanNode {
         // counter's own derivation, never a re-spelled division.
         if metrics.frontier.levels > 0 {
             let frontier = &metrics.frontier;
-            put_metric(
-                args,
-                plan_keys::FRONTIER_EDGES,
-                frontier.edge_visits as u128,
-            );
-            put_metric(args, plan_keys::FRONTIER_LEVELS, frontier.levels as u128);
-            put_metric(
-                args,
-                plan_keys::FRONTIER_ENDPOINTS,
-                frontier.endpoints as u128,
-            );
-            put_metric(args, plan_keys::FRONTIER_CELLS, frontier.cells as u128);
-            put_metric(
-                args,
-                plan_keys::FRONTIER_MEMO_HITS,
-                frontier.memo_hits as u128,
-            );
-            put_metric(
-                args,
-                plan_keys::FRONTIER_MEMO_MISSES,
-                frontier.memo_misses as u128,
-            );
-            put_metric(
-                args,
-                plan_keys::FRONTIER_REPRESENTATIVE_PROOFS,
-                frontier.representative_proofs as u128,
-            );
-            put_metric(
-                args,
-                plan_keys::FRONTIER_SEARCH_PROVEN,
-                frontier.search_proven as u128,
-            );
-            put_metric(
-                args,
-                plan_keys::FRONTIER_SEARCH_DISPROVEN,
-                frontier.search_disproven as u128,
-            );
-            put_metric(
-                args,
-                plan_keys::FRONTIER_DECLINED_EXHAUSTED,
-                frontier.declined_exhausted as u128,
-            );
+            for (key, count) in Self::frontier_counters(frontier) {
+                put_metric(args, key, count);
+            }
             args.insert(
                 plan_keys::FRONTIER_BUDGET_FRACTION.to_string(),
                 Value::Float(frontier.budget_fraction()),
