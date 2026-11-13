@@ -9,7 +9,7 @@ use relate_names::SmallName;
 use relate_parser::IndexKind;
 
 use crate::overlay::ExecGraph;
-use crate::redo::{IndexDetailSpec, IndexKindSpec, RedoOp};
+use crate::redo::{backing_constraint_by_name, IndexDetailSpec, IndexKindSpec, RedoOp};
 
 pub(crate) fn default_index_name(label: &str, property: &str) -> String {
     format!("{label}_{property}")
@@ -479,11 +479,8 @@ pub(crate) fn exec_drop_index(
     // A constraint's backing index is part of the constraint: it cannot be
     // dropped on its own (`DROP CONSTRAINT` owns its lifecycle). `IF EXISTS`
     // does not change that.
-    if graph
-        .named_constraints()
-        .iter()
-        .any(|constraint| constraint.name == name && constraint.is_index_backed())
-    {
+    let constraints = graph.named_constraints();
+    if backing_constraint_by_name(&name, &constraints).is_some() {
         return Err(Error::execution(format!(
             "Unable to drop '{name}': the index belongs to a constraint."
         )));

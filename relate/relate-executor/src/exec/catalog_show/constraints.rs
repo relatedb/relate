@@ -11,7 +11,7 @@ use crate::row::Row;
 
 use super::entity_variable;
 use crate::exec::catalog::{
-    catalog_row, constraint_binding, optional_string_cell, string_list, ConstraintBinding,
+    backtick, catalog_row, constraint_binding, optional_string_cell, string_list, ConstraintBinding,
 };
 
 /// The `SHOW CONSTRAINTS` `type` column: Neo4j's underscore-style kind
@@ -91,18 +91,18 @@ fn constraint_create_statement(
     let verb = crate::graph_type::standalone_verb(kind, def.property_type.as_deref())?;
     let variable = entity_variable(entity);
     let pattern = match entity {
-        EntityKind::Node => format!("({variable}:`{}`)", def.label),
-        EntityKind::Relationship => format!("()-[{variable}:`{}`]-()", def.label),
+        EntityKind::Node => format!("({variable}:{})", backtick(&def.label)),
+        EntityKind::Relationship => format!("()-[{variable}:{}]-()", backtick(&def.label)),
     };
     let properties = def
         .properties
         .iter()
-        .map(|property| format!("{variable}.`{property}`"))
+        .map(|property| format!("{variable}.{}", backtick(property)))
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "CREATE CONSTRAINT `{}` FOR {pattern} REQUIRE ({properties}) {verb}",
-        def.name
+        "CREATE CONSTRAINT {} FOR {pattern} REQUIRE ({properties}) {verb}",
+        backtick(&def.name)
     ))
 }
 

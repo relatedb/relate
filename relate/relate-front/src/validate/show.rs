@@ -346,10 +346,11 @@ fn validate_show_composability_clauses(
     // lenient "canonical standalone" leniency below -- so a brace-wrapped
     // bare SHOW/TERMINATE still needs its own explicit YIELD.
     let canonical_standalone = !brace_wrapped
-        && (body.len() == 1
-            || (body.len() == 2
-                && is_show_or_terminate(body[0])
-                && matches!(body[1], Clause::Return(_))));
+        && match body.as_slice() {
+            [_] => true,
+            [show, Clause::Return(_)] => is_show_or_terminate(show),
+            _ => false,
+        };
     if canonical_standalone {
         return Ok(());
     }

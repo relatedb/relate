@@ -491,10 +491,10 @@ pub(crate) fn execute_catalog(
         C::ShowFunctions(c) => visible_catalog(
             !matches!(c.scope, FunctionScope::UserDefined)
                 && executable_by_user(c.executable.as_ref()),
-            || crate::show_catalog::function_catalog_rows(graph.base().preview()),
+            || crate::show_catalog::function_catalog_rows(graph.preview()),
         ),
         C::ShowProcedures(c) => visible_catalog(executable_by_user(c.executable.as_ref()), || {
-            crate::show_catalog::procedure_catalog_rows(graph.base().preview())
+            crate::show_catalog::procedure_catalog_rows(graph.preview())
         }),
         C::ShowRoles(c) => catalog_show::show_roles_rows(c),
         C::ShowServers(_) => vec![catalog_row([(

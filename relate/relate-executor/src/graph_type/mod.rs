@@ -61,6 +61,7 @@ mod inherit;
 mod name;
 mod storage_constraint;
 mod validate;
+mod validate_rules;
 
 pub(crate) use alter::*;
 pub(crate) use canonicalize::*;

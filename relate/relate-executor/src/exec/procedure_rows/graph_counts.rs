@@ -12,7 +12,7 @@ use relate_model::{ConstraintType, EnforcedLabelSite, EntityKind};
 
 use crate::overlay::ExecGraph;
 
-use crate::exec::catalog::{constraint_binding, string_list};
+use crate::exec::catalog::{constraint_binding, string_list, ConstraintBinding};
 use crate::redo::backing_constraint_by_name;
 use crate::redo::IndexFacts;
 
@@ -36,12 +36,11 @@ fn graph_counts_constraint_type(kind: Option<ConstraintType>) -> &'static str {
 /// `enforcedLabel` and, for the endpoint-label kinds, `endpointType`.
 /// `enforcedLabel` reads the derived-constraint record of the same name, the
 /// one `SHOW CONSTRAINTS`'s `enforcedLabel` column reads.
-fn constraint_entry(
-    def: &relate_catalog::ConstraintDef,
-    kind: Option<ConstraintType>,
-    entity: EntityKind,
-    enforced_label: Option<&str>,
-) -> Value {
+fn constraint_entry(def: &relate_catalog::ConstraintDef, binding: &ConstraintBinding<'_>) -> Value {
+    let (kind, entity) = (binding.kind, binding.entity);
+    let enforced_label = binding
+        .detail
+        .and_then(|constraint| constraint.enforced_label.as_deref());
     let mut entry = BTreeMap::new();
     let (entity_key, entity_value) = match entity {
         EntityKind::Node => ("label", def.label.clone()),
@@ -110,16 +109,7 @@ pub(crate) fn graph_counts_row(
     let constraints = graph.named_constraints();
     let constraint_entries: Vec<Value> = constraints
         .iter()
-        .map(|def| {
-            let binding = constraint_binding(def, derived);
-            let (kind, entity, detail) = (binding.kind, binding.entity, binding.detail);
-            constraint_entry(
-                def,
-                kind,
-                entity,
-                detail.and_then(|constraint| constraint.enforced_label.as_deref()),
-            )
-        })
+        .map(|def| constraint_entry(def, &constraint_binding(def, derived)))
         .collect();
     let index_entries: Vec<Value> = graph
         .named_indexes()

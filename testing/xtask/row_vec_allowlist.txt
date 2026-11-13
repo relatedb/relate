@@ -32,7 +32,7 @@ exec/catalog_show/indexes.rs::show_indexes_rows # bounded catalog/admin/procedur
 exec/catalog_show/mod.rs::show_current_graph_type_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/mod.rs::show_graph_type_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_show/mod.rs::show_roles_rows # bounded catalog/admin/procedure result, not graph-sized
-exec/catalog_show/mod.rs::show_settings_rows # bounded catalog/admin/procedure result, not graph-sized
+exec/catalog_show/settings.rs::show_settings_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/chunk.rs::to_rows # row-chunk or seed conversion at an operator boundary
 exec/clause_arms.rs::exec_create # clause arm materializes its output rows; to be replaced by streaming
 exec/clause_arms.rs::exec_delete # clause arm materializes its output rows; to be replaced by streaming
