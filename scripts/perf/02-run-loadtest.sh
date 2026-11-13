@@ -8,60 +8,49 @@
 #           bottleneck hunting. Disk is ~97% fsync and hides engine cost.)
 # disk    --uri /tmp/lt-disk (durability-path profiling; mostly fsync).
 #
-# Output:
-#   /tmp/lt-<mode>.perf      raw perf.data (binary)
-#   /tmp/lt-<mode>.out       loadtest stdout (the Throughput section greps it)
-#   /tmp/lt-<mode>.report    perf report text
-#   /tmp/lt-<mode>.folded    folded stacks (inferno / flamegraph.pl input)
+# Output (LT is the /tmp/lt-<mode> base):
+#   LT.perf      raw perf.data (binary)
+#   LT.out       loadtest stdout (the Throughput section greps it)
+#   LT.report    perf report text
+#   LT.folded    folded stacks (inferno / flamegraph.pl input)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/perf/_common.sh
 
 perf_invocation "$@"
 
-lt="/tmp/lt-${MODE}"  # one base for every artifact path derived below
-data="$lt.perf"
 echo "Profiling ($MODE): ${LOADTEST_ARGS[*]}"
 # The loadtest's stdout (its throughput line) is captured, not leaked to the
 # terminal — the Throughput section below greps it here, not the symbol
 # profile, which never contains it.
-perf record -F 997 --call-graph dwarf -o "$data" -- "$LOADTEST_BIN" "${LOADTEST_ARGS[@]}" > "$lt.out"
+perf record -F 997 --call-graph dwarf -o "$LT.perf" -- "$LOADTEST_BIN" "${LOADTEST_ARGS[@]}" > "$LT.out"
 
-# perf report's stderr stays visible: a failed report is named as skipped
-# by the echo below instead of a listing row. `sed -n '1,60p'` (not `head`)
-# consumes the whole stream, so the pipeline status is honest under pipefail
-# and the report block takes the folded block's exact decide-at-production
-# shape.
-report_ok=0
-if perf report -i "$data" --stdio --no-children | sed -n '1,60p' > "$lt.report" && [[ -s "$lt.report" ]]; then
-  report_ok=1
-else
-  perf_skip "perf report" "it produced no output for $lt.report; see error above"
-fi
-# Folded stacks need inferno; without it the flamegraph step is skipped
-# loudly rather than half-done.
-# The folded-stacks outcome is decided exactly once, here, before any
-# consumer: folded_ok=1 only when the pipeline succeeded and the file is
-# non-empty (the if-condition evaluates the pipeline status natively under
-# pipefail — no status variable to re-derive). Both artifact blocks share
-# this decide-at-production shape.
-folded_ok=0
-if command -v inferno-collapse-perf >/dev/null 2>&1; then
-  if perf script -i "$data" | inferno-collapse-perf > "$lt.folded" && [[ -s "$lt.folded" ]]; then
-    folded_ok=1
-  else
-    perf_skip "folded stacks" "perf script | inferno-collapse-perf produced no $lt.folded; see error above"
-  fi
-else
-  perf_skip "folded stacks" "install inferno for $lt.folded"
-fi
+# The two conditional artifacts, each a producer perf_produce runs under its
+# own if — so a failed pipeline is a reported skip, never a set -e abort.
+# Both are best-effort (`|| true`): the run's own artifacts are already
+# written, so a skip is reported and the listing continues.
+# `sed -n '1,60p'` (not `head`) consumes the whole stream, so the report
+# block's pipeline status is honest under pipefail.
+collapser=$(pick_stage inferno-collapse-perf stackcollapse-perf.pl)
+produce_report() { perf report -i "$LT.perf" --stdio --no-children | sed -n '1,60p'; }
+produce_folded() { perf script -i "$LT.perf" | "$collapser"; }
 
 echo
 echo "wrote:"
-perf_announce "$data" "perf record data"
-perf_announce "$lt.out" "loadtest stdout"
-(( report_ok )) && perf_announce "$lt.report" "top functions"
-(( folded_ok )) && perf_announce "$lt.folded" "folded stacks for a flamegraph"
+perf_announce "$LT.perf" "perf record data"
+perf_announce "$LT.out" "loadtest stdout"
+# perf report's stderr stays visible: a failed report is named as skipped
+# instead of a listing row.
+perf_produce "$LT.report" "top functions" \
+  "perf report produced no output for $LT.report; see error above" produce_report || true
+# Folded stacks need a collapser; without one the flamegraph step is skipped
+# loudly rather than half-done.
+if [[ -n "$collapser" ]]; then
+  perf_produce "$LT.folded" "folded stacks for a flamegraph" \
+    "perf script | $collapser produced no $LT.folded; see error above" produce_folded || true
+else
+  perf_skip "folded stacks" "install inferno or set FLAMEGRAPH_DIR for $LT.folded"
+fi
 echo
 echo "Throughput:"
-grep -m1 "throughput" "$lt.out" || echo "(no throughput line in $lt.out)"
+grep -m1 "throughput" "$LT.out" || echo "(no throughput line in $LT.out)"
