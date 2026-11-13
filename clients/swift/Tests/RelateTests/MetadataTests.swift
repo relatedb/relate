@@ -22,13 +22,13 @@ import Testing
         // The closed vocabularies (ADR-0162, ADR-0117): every listed value
         // decodes, anything else is an ABI contract violation.
         for raw in ["r", "w", "rw", "s"] { _ = try QueryType.decode(raw) }
-        for raw in ["neo4j", "system", "system_ontologies"] { _ = try Namespace.decode(raw) }
-        #expect(try Namespace.decode("system_ontologies") == .systemOntologies)
+        for raw in ["neo4j", "system", "system_ontologies"] { _ = try DatabaseNamespace.decode(raw) }
+        #expect(try DatabaseNamespace.decode("system_ontologies") == .systemOntologies)
         for bad in ["", "R", "x", "read"] {
             #expect(throws: RelateError.self) { try QueryType.decode(bad) }
         }
         for bad in ["", "Neo4j", "other"] {
-            #expect(throws: RelateError.self) { try Namespace.decode(bad) }
+            #expect(throws: RelateError.self) { try DatabaseNamespace.decode(bad) }
         }
         do {
             _ = try QueryType.decode("x")
@@ -48,22 +48,22 @@ import Testing
         // ADR-0363: severity and category are closed, like query type and
         // namespace — every listed value decodes typed, anything else (and a
         // missing or null key) is refused naming the key and the value.
-        let sevs: [String: Severity] = ["INFORMATION": .information, "WARNING": .warning]
-        let cats: [String: Relate.Category] = [
+        let sevs: [String: NotificationSeverity] = ["INFORMATION": .information, "WARNING": .warning]
+        let cats: [String: NotificationCategory] = [
             "PERFORMANCE": .performance, "UNRECOGNIZED": .unrecognized,
             "DEPRECATION": .deprecation, "SCHEMA": .schema, "HINT": .hint,
         ]
         for (sev, wantSev) in sevs {
             for (cat, wantCat) in cats {
                 let json = notifications(severity: "\"\(sev)\"", category: "\"\(cat)\"")
-                let n = try decodeMetadata([Relate.Notification].self, json, what: "notifications")
+                let n = try decodeMetadata([QueryNotification].self, json, what: "notifications")
                 #expect(n.count == 1 && n[0].severity == wantSev && n[0].category == wantCat)
             }
         }
         for bad in ["", "warning", "ERROR"] {
             do {
                 _ = try decodeMetadata(
-                    [Relate.Notification].self, notifications(severity: "\"\(bad)\"", category: "\"HINT\""),
+                    [QueryNotification].self, notifications(severity: "\"\(bad)\"", category: "\"HINT\""),
                     what: "notifications")
                 Issue.record("severity '\(bad)' decoded")
             } catch {
@@ -71,7 +71,7 @@ import Testing
             }
             do {
                 _ = try decodeMetadata(
-                    [Relate.Notification].self, notifications(severity: "\"WARNING\"", category: "\"\(bad)\""),
+                    [QueryNotification].self, notifications(severity: "\"WARNING\"", category: "\"\(bad)\""),
                     what: "notifications")
                 Issue.record("category '\(bad)' decoded")
             } catch {
@@ -84,7 +84,7 @@ import Testing
             #"[{"code":"c","gql_status":"g","category":"HINT","title":"t","description":"d","remedy":"r"}]"#,
         ] {
             #expect(throws: RelateError.self) {
-                try decodeMetadata([Relate.Notification].self, json, what: "notifications")
+                try decodeMetadata([QueryNotification].self, json, what: "notifications")
             }
         }
     }
@@ -109,7 +109,7 @@ import Testing
             #expect(error.message.contains("\\u0027") && error.message.contains("\\u005c"))
         }
         do {
-            _ = try Namespace.decode(hostile)
+            _ = try DatabaseNamespace.decode(hostile)
             Issue.record("hostile namespace decoded")
         } catch {
             assertSanitized(error.message)
@@ -117,7 +117,7 @@ import Testing
         let jsonHostile = "INFO\\r\\nFAKE\\u2028\\u0000"
         do {
             _ = try decodeMetadata(
-                [Relate.Notification].self, notifications(severity: "\"\(jsonHostile)\"", category: "\"HINT\""),
+                [QueryNotification].self, notifications(severity: "\"\(jsonHostile)\"", category: "\"HINT\""),
                 what: "notifications")
             Issue.record("hostile severity decoded")
         } catch {
@@ -125,7 +125,7 @@ import Testing
             #expect(error.message.contains("unknown severity"))
         }
         do {
-            _ = try Namespace.decode(String(repeating: "a", count: 500))
+            _ = try DatabaseNamespace.decode(String(repeating: "a", count: 500))
             Issue.record("long namespace decoded")
         } catch {
             #expect(error.message.contains("...(truncated)"))
@@ -164,6 +164,11 @@ import Testing
         let sys = try conn.database.connect(namespace: "system")
         #expect(try sys.query("SHOW DATABASES").namespace == .system)
         #expect(throws: RelateError.self) { try conn.database.connect(namespace: "nope") }
+        // The typed forms name the same namespaces.
+        let typed = try conn.database.connect(namespace: .system)
+        #expect(try typed.query("SHOW DEFAULT DATABASE").namespace == .system)
+        try typed.setNamespace(.neo4j)
+        #expect(try typed.query("RETURN 1").namespace == .neo4j)
     }
 
     @Test func explainAndProfileCarryAPlan() throws {

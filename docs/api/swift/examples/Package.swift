@@ -4,7 +4,9 @@
 // all with `make swift-examples`.
 import PackageDescription
 
-let examples = ["quickstart", "transactions", "result-metadata", "namespaces", "persistence"]
+let examples = [
+    "quickstart", "transactions", "result-metadata", "namespaces", "persistence", "errors",
+]
 
 let package = Package(
     name: "RelateSwiftExamples",

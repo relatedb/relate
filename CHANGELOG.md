@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
+  `setNamespace(_:)` taking the typed namespace, and error predicates on
+  `EngineError` (`isConstraintViolation`, `isSyntaxError`,
+  `isMissingParameter`, `isWriteConflict`, `classification`) plus
+  `RelateError.isRetryable`.
+
 ### Changed
 
 - The `system_ontologies` namespace is now visible only under
@@ -22,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queryable, only the administration commands run from it). Stored
   databases are unaffected: the durable catalog row stays and the listing
   returns when the opt-in is set.
+- Swift: the result-metadata types are renamed so they no longer collide
+  with Apple's. `Notification` is now `QueryNotification` and `Namespace`
+  is now `DatabaseNamespace`; both old names are removed, a source-breaking
+  change for code that spelled them. `Severity` and `Category` are now
+  `NotificationSeverity` and `NotificationCategory`, with deprecated aliases.
+- Swift: calls that can only fail with the package's own error are
+  `throws(RelateError)`.
 
 ## [1.0.1] — 2026-11-12
 

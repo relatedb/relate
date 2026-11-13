@@ -36,6 +36,51 @@ public struct EngineError: Sendable, Hashable {
     }
 }
 
+// MARK: - Classification read off the engine's code
+
+extension EngineError {
+    /// The class the engine's status code names — its second segment
+    /// (`Neo.<Classification>.<Category>.<Title>`).
+    public enum Classification: String, Sendable, Hashable {
+        /// The statement or its input is at fault; re-running it unchanged
+        /// fails the same way.
+        case clientError = "ClientError"
+        /// A condition that may clear: the retry verdict is ``EngineError/retryable``.
+        case transientError = "TransientError"
+        /// The engine or its storage failed.
+        case databaseError = "DatabaseError"
+    }
+
+    /// The status codes the predicates below test for, spelled once. The
+    /// engine's table is the source of truth; the package's tests provoke
+    /// each of these from a live engine, so a drift fails there.
+    public enum StatusCode {
+        public static let constraintValidationFailed = "Neo.ClientError.Schema.ConstraintValidationFailed"
+        public static let syntaxError = "Neo.ClientError.Statement.SyntaxError"
+        public static let parameterMissing = "Neo.ClientError.Statement.ParameterMissing"
+        public static let transactionOutdated = "Neo.TransientError.Transaction.Outdated"
+    }
+
+    /// The code's classification segment, `nil` when the code does not have
+    /// the four-segment `Neo.` shape or names a class this client does not
+    /// know.
+    public var classification: Classification? {
+        let segments = code.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count == 4, segments[0] == "Neo" else { return nil }
+        return Classification(rawValue: String(segments[1]))
+    }
+
+    /// A uniqueness or existence constraint refused the write.
+    public var isConstraintViolation: Bool { code == StatusCode.constraintValidationFailed }
+    /// The statement did not parse.
+    public var isSyntaxError: Bool { code == StatusCode.syntaxError }
+    /// The statement names a `$parameter` the call did not bind.
+    public var isMissingParameter: Bool { code == StatusCode.parameterMissing }
+    /// A write-write conflict with another transaction: re-run the
+    /// transaction (``retryable`` is `true`).
+    public var isWriteConflict: Bool { code == StatusCode.transactionOutdated }
+}
+
 /// Every error the Swift surface throws.
 public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConvertible {
     /// The engine (or the C boundary) refused the call; the typed shape
@@ -57,6 +102,10 @@ public enum RelateError: LocalizedError, Sendable, Equatable, CustomStringConver
     public var engineError: EngineError? {
         if case .engine(let e) = self { e } else { nil }
     }
+
+    /// Whether re-running the same work may succeed: the engine's own
+    /// verdict, `false` for the two client-side cases.
+    public var isRetryable: Bool { engineError?.retryable ?? false }
 
     public var description: String {
         switch self {

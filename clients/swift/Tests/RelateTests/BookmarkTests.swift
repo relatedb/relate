@@ -50,16 +50,7 @@ import Testing
         // channel like every other call — no NULL special case. The
         // retryable write-write conflict (ADR-0439) surfaces on the losing
         // commit with the classification a retry loop needs.
-        let db = try Database.inMemory()
-        let winner = try db.connect()
-        try winner.query("CREATE CONSTRAINT p_id FOR (n:P) REQUIRE n.id IS UNIQUE")
-        let loser = try db.connect()
-        try winner.begin()
-        try loser.begin()
-        try winner.query("CREATE (:P {id: 77})")
-        try loser.query("CREATE (:P {id: 77})")
-        _ = try winner.commit()
-        let error = try #require(throws: RelateError.self) { try loser.commit() }
+        let error = try losingCommitError()
         let engine = try #require(error.engineError)
         #expect(engine.code == "Neo.TransientError.Transaction.Outdated")
         #expect(engine.retryable)

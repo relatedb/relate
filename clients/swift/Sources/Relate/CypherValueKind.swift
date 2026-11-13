@@ -10,7 +10,7 @@ public enum CypherValueKind: UInt32, Sendable, Hashable, CaseIterable {
     /// return: a negative raw (a NULL handle) never reaches here, and an
     /// enumerator this client does not know (a later, additive ABI) is a
     /// defined, reportable error — never a silent null.
-    init(abi raw: Int32) throws {
+    init(abi raw: Int32) throws(RelateError) {
         guard raw >= 0, let kind = CypherValueKind(rawValue: UInt32(raw)) else {
             throw RelateError.decoding("unsupported value kind \(raw) from the C ABI")
         }

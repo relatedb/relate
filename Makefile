@@ -66,10 +66,15 @@ bindings: binding-java binding-js
 # The Swift targets link the locally built XCFramework, never a release binary
 # (Package.swift reads this; SwiftPM keys its manifest cache on the env).
 SWIFT_ENV := RELATE_LOCAL_XCFRAMEWORK=1
-SWIFT_EXAMPLES := quickstart transactions result-metadata namespaces persistence
+# Every example the examples package has: one directory per executable
+# target (docs/api/swift/examples/Package.swift is the inventory). Globbed,
+# not listed, so an example added there cannot be left out of the run; a
+# directory without a target fails `swift run` loudly.
+SWIFT_EXAMPLES = $(sort $(notdir $(wildcard docs/api/swift/examples/Sources/*)))
 
 ## swift-examples: Run every docs/api/swift example (each asserts its own output)
 swift-examples:
+	@test -n "$(SWIFT_EXAMPLES)" || { echo "swift-examples: no example directories under docs/api/swift/examples/Sources"; exit 2; }
 	cd docs/api/swift/examples && for e in $(SWIFT_EXAMPLES); do \
 		echo "== $$e"; $(SWIFT_ENV) swift run -q $$e || exit 1; done
 

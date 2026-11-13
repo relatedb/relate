@@ -8,7 +8,7 @@ import Foundation
 /// remains, so nothing here depends on the calling thread.
 func check(
     _ status: relate_status, _ err: UnsafeMutablePointer<CChar>?, _ what: String
-) throws {
+) throws(RelateError) {
     guard status != RELATE_OK else { return }
     throw takeError(err, what)
 }
@@ -49,17 +49,30 @@ func takeError(_ err: UnsafeMutablePointer<CChar>?, _ what: String) -> RelateErr
 
 /// An FFI call that returned OK must have written its out-handle; NULL is
 /// a contract violation.
-func requireHandle(_ out: OpaquePointer?, _ what: String) throws -> OpaquePointer {
+func requireHandle(_ out: OpaquePointer?, _ what: String) throws(RelateError) -> OpaquePointer {
     guard let out else {
         throw RelateError.decoding("\(what) returned OK without a handle")
     }
     return out
 }
 
+/// The module's one bridge for a typed throw through a standard-library
+/// scope function. `String.withCString`, `Array.withUnsafeBufferPointer` and
+/// their kin only rethrow an untyped error, so a body that throws
+/// `RelateError` runs inside them through this, crosses as a `Result`, and
+/// the caller rethrows it typed with `.get()`.
+func typedResult<R>(_ body: () throws(RelateError) -> R) -> Result<R, RelateError> {
+    do throws(RelateError) {
+        return .success(try body())
+    } catch {
+        return .failure(error)
+    }
+}
+
 /// `withCString` stops at the first NUL, which would silently truncate the
 /// text the engine sees. The refusal lives inside the crossing helpers, so
 /// no call site can forget it.
-private func rejectNUL(_ text: String, what: String) throws {
+private func rejectNUL(_ text: String, what: String) throws(RelateError) {
     if text.utf8.contains(0) {
         throw RelateError.invalidParameter("\(what) contains a NUL byte")
     }
@@ -69,10 +82,11 @@ private func rejectNUL(_ text: String, what: String) throws {
 /// the one crossing for a caller-supplied string, interior-NUL refusal
 /// built in.
 func withCString<R>(
-    _ text: String, what: String, _ body: (UnsafePointer<CChar>) throws -> R
-) throws -> R {
+    _ text: String, what: String, _ body: (UnsafePointer<CChar>) throws(RelateError) -> R
+) throws(RelateError) -> R {
     try rejectNUL(text, what: what)
-    return try text.withCString { try body($0) }
+    return try text.withCString { pointer in typedResult { () throws(RelateError) in try body(pointer) } }
+        .get()
 }
 
 /// The length-prefixed twin of `withCString`: crosses a string's UTF-8
@@ -95,10 +109,10 @@ func withUTF8<R>(
 /// refusal. The params builder uses it for a child's name and a datetime's
 /// zone; `connect` uses it for the session namespace.
 func withOptionalCString<R>(
-    _ text: String?, what: String, _ body: (UnsafePointer<CChar>?) throws -> R
-) throws -> R {
+    _ text: String?, what: String, _ body: (UnsafePointer<CChar>?) throws(RelateError) -> R
+) throws(RelateError) -> R {
     guard let text else { return try body(nil) }
-    return try withCString(text, what: what) { try body($0) }
+    return try withCString(text, what: what) { (pointer) throws(RelateError) in try body(pointer) }
 }
 
 /// The pointer-shaped twin of `withOptionalCString`: runs `body` with an

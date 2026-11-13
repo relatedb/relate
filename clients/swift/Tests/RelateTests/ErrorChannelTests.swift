@@ -38,4 +38,52 @@ import Testing
             #expect(write.engineError?.retryable == false)
         }
     }
+
+    // Each predicate is provoked from the live engine, so a code the engine
+    // renames fails here rather than silently never matching.
+
+    @Test func aConstraintViolationIsRecognized() throws {
+        let conn = try Database.inMemory().connect()
+        try conn.query("CREATE CONSTRAINT p_id FOR (n:P) REQUIRE n.id IS UNIQUE")
+        try conn.query("CREATE (:P {id: 1})")
+        let error = try #require(throws: RelateError.self) { try conn.query("CREATE (:P {id: 1})") }
+        let engine = try #require(error.engineError)
+        #expect(engine.isConstraintViolation)
+        #expect(engine.classification == .clientError)
+        #expect(!engine.isSyntaxError && !engine.isMissingParameter && !engine.isWriteConflict)
+    }
+
+    @Test func aSyntaxErrorIsRecognized() throws {
+        let conn = try Database.inMemory().connect()
+        let error = try #require(throws: RelateError.self) { try conn.query("RETURN nope(") }
+        let engine = try #require(error.engineError)
+        #expect(engine.isSyntaxError && engine.classification == .clientError)
+    }
+
+    @Test func aMissingParameterIsRecognized() throws {
+        let conn = try Database.inMemory().connect()
+        let error = try #require(throws: RelateError.self) { try conn.query("RETURN $absent") }
+        let engine = try #require(error.engineError)
+        #expect(engine.isMissingParameter && engine.classification == .clientError)
+    }
+
+    @Test func aWriteConflictIsRecognizedAndRetryable() throws {
+        let error = try losingCommitError()
+        let engine = try #require(error.engineError)
+        #expect(engine.isWriteConflict && engine.retryable && error.isRetryable)
+        #expect(engine.classification == .transientError)
+    }
+
+    @Test func aCodeOutsideTheNeoShapeHasNoClassification() throws {
+        func engine(code: String) -> EngineError {
+            EngineError(code: code, gqlStatus: "50N42", stage: .runtime, retryable: false, message: "m")
+        }
+        #expect(engine(code: "Neo.DatabaseError.General.UnknownError").classification == .databaseError)
+        #expect(engine(code: "Neo.FutureClass.General.Something").classification == nil)
+        #expect(engine(code: "not.a.neo.code").classification == nil)
+        #expect(engine(code: "Neo.ClientError.TooFew").classification == nil)
+        // The client-side cases carry no engine code at all, and are never retryable.
+        #expect(RelateError.invalidParameter("x").engineError == nil)
+        #expect(!RelateError.decoding("x").isRetryable)
+    }
 }
