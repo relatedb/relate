@@ -372,6 +372,8 @@ impl<'a> BoundedSink<'a> {
 pub(crate) struct CappedSink<'a> {
     core: BoundCore,
     out: &'a mut Vec<u8>,
+    /// The bound narrowed to allocation space once, at construction.
+    cap: usize,
 }
 
 #[cfg(test)]
@@ -392,6 +394,7 @@ impl<'a> CappedSink<'a> {
         Self {
             core: BoundCore::new(bound, refusal),
             out: output,
+            cap: usize::try_from(bound).expect("the capped capture's bound fits allocation space"),
         }
     }
 
@@ -426,7 +429,7 @@ impl Write for CappedSink<'_> {
         // far — the core's own running total, equal to the buffer's
         // length under the constructor's empty-buffer invariant —
         // recorded and rendered by the one refusal path.
-        if append_bounded(self.out, buf, self.core.limit).is_err() {
+        if append_bounded(self.out, buf, self.cap).is_err() {
             return Err(self.core.refuse_at(self.core.bytes));
         }
         self.core.commit(total);
@@ -479,9 +482,7 @@ fn bound_refusal(refusal: &Error) -> io::Error {
 /// path ([`BoundCore::refuse_at`]) — never re-derived from the buffer
 /// here.
 #[cfg(test)]
-fn append_bounded(out: &mut Vec<u8>, buf: &[u8], limit: u64) -> std::result::Result<(), ()> {
-    // A bound beyond usize space caps no allocation a Vec can hold.
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+fn append_bounded(out: &mut Vec<u8>, buf: &[u8], limit: usize) -> std::result::Result<(), ()> {
     if out.capacity() > limit {
         return Err(());
     }
