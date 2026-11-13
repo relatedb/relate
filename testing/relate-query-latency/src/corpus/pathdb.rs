@@ -119,7 +119,8 @@ impl CorpusLane for PathdbLane {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ok_query, pin_query, query, Classification};
+    use super::super::fixtures::{ok_query, pin_query, query};
+    use super::super::Classification;
     use super::*;
     use crate::workload::ScaleFactor;
 

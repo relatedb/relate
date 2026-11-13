@@ -69,7 +69,7 @@ impl GraphHandle {
 
     /// A graph opened from the graph-benchmark-ldbc-store options — the
     /// open-connect wrap every graph-benchmark-ldbc-store lane runs
-    /// (pathdb, snb-bi, agg-stress), the connect step owned by the
+    /// (pathdb, snb-bi, agg-stress, equi-join), the connect step owned by the
     /// suite layer's [`connect`]. The store origin rides along for the
     /// lane's provenance line
     /// ([`super::report::graph_benchmark_ldbc_store_line`]).
@@ -82,7 +82,7 @@ impl GraphHandle {
 /// An executed entry's answer check as ONE value the runner applies
 /// uniformly: the difference when the answer does not match, `None`
 /// when it does. The fraud lane's value holds its own check and
-/// planted-cycle data, the ukrailway and agg-stress lanes' their
+/// planted-cycle data, the ukrailway, agg-stress and equi-join lanes' their
 /// verified-rows checks; the pathdb and snb-bi lanes attach none
 /// (pathdb's oracle is the row count, snb-bi's entries run with no
 /// answer oracle).
@@ -91,7 +91,7 @@ pub(super) type AnswerCheck<'a> = Box<dyn Fn(&QueryResult) -> Option<String> + '
 /// An entry's execution target: the connection it runs on, the
 /// parameters it runs with (the lane resolves them at route — the
 /// pathdb lane's seed and the snb-bi lane's recorded table; the
-/// fraud, ukrailway and agg-stress lanes' literal-anchored entries
+/// fraud, ukrailway, agg-stress and equi-join lanes' literal-anchored entries
 /// carry none),
 /// and, when the lane answer-checks executed entries, its
 /// [`AnswerCheck`].
@@ -135,7 +135,7 @@ impl<'a> Routed<'a> {
     }
 
     /// The rows-oracle lanes' full disposition, stated ONCE for both
-    /// (ukrailway, agg-stress): an `ok` entry runs
+    /// (ukrailway, agg-stress, equi-join): an `ok` entry runs
     /// answer-checked against its oracle entry (resolved through the one
     /// lookup, [`row_of`]), everything else resolving through the shared
     /// non-executing table. The constant-inline lanes' queries genuinely
@@ -210,8 +210,9 @@ pub(super) fn evaluate_table(
 
 /// A corpus lane: the one interface every workload's lane module
 /// implements (`pathdb::PathdbLane`, `fraud::FraudGraphs`,
-/// `snbbi::SnbBiLane`, `ukrailway::UkrailwayLane`,
-/// `aggstress::AggStressLane`), so the runner holds
+/// `snbbi::SnbBiLane`, `ukrailway::UkrailwayLane`, and the shared
+/// `oracle_store::RowsOracleStoreLane` the rows-oracle workloads
+/// build), so the runner holds
 /// ONE lane — built once, routed per entry, read once for the report —
 /// with no lane enum to thread through a match per fact. Construction
 /// stays each lane's own `new` (a lane's setup reads its own knobs, so
@@ -243,11 +244,11 @@ pub(super) trait CorpusLane {
 #[cfg(test)]
 mod tests {
     use super::super::files::OracleEntry;
-    use super::super::{ok_query, query};
+    use super::super::fixtures::{ok_query, query};
     use super::*;
 
     /// The rows-oracle route, the one disposition every rows-oracle lane
-    /// (ukrailway, agg-stress) resolves through: an `ok` entry runs
+    /// (ukrailway, agg-stress, equi-join) resolves through: an `ok` entry runs
     /// with its oracle entry as the answer check and the parameters its
     /// lane resolved (`None` here — this test's lane binds none), a kept
     /// entry plans, and an `ok` id with no oracle row is refused naming

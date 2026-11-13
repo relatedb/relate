@@ -1,0 +1,36 @@
+{
+ "_source": {
+  "what": "Oracle answers for the equi-join workload at SF0.1. The queries are IN-HOUSE synthetic join-stress shapes (no upstream query of this form exists), so every value is the answer this build returns over the pinned graph-benchmark-ldbc SF0.1 store \u2014 verified by execution 2026-11-13 (release build, reused store copy; see the workload README). Rows compare with the graph-benchmark-ldbc lane's no-coercion rules (answers::compare).",
+  "data": "the pinned graph-benchmark-ldbc store at SF0.1 (graph-benchmark-ldbc CsvBasic-StringDateFormatter, CC BY 4.0 \u2014 the same data the graph-benchmark-ldbc, pathdb, snb-bi and agg-stress lanes run; workloads/graph-benchmark-ldbc/data.sha256)",
+  "why": "an engine-self oracle, recorded so the ratchet catches answer regressions in the join itself (a rewrite that drops or double-counts the product's surviving pairs fails the run); it is NOT an upstream answer and never gates on upstream behaviour",
+  "regenerate": "re-freezing the graph-benchmark-ldbc data set regenerates this file: run the lane, review each answer, re-record (the product and output sizes in the README's table move with the data). Per scale factor: a store at another SF resolves its own oracle-sf<SF>.json and fails loudly until one exists.",
+  "verified": "2026-11-13, by execution over the graph-benchmark-ldbc SF0.1 store: e01 2184 birthday-equal Person pairs; e02 723576 browser-equal Person pairs; e03 3537568 (Comment, Person) pairs with comment length over 100 and equal browsers"
+ },
+ "e01-selective-equi-join": {
+  "rows": [
+   {
+    "n": 2184
+   }
+  ],
+  "order_sensitive": false,
+  "query_sha256": "414e09d05c93fe091f1eca640e65eb3d7926b9478a12e102ca20f539c5bfb552"
+ },
+ "e02-fanout-equi-join": {
+  "rows": [
+   {
+    "n": 723576
+   }
+  ],
+  "order_sensitive": false,
+  "query_sha256": "f9a76291e5be540b8d6211c5d791c78611013ccd639c5e18c41dafa5e8c24c1b"
+ },
+ "e03-cross-product-equi-join": {
+  "rows": [
+   {
+    "n": 3537568
+   }
+  ],
+  "order_sensitive": false,
+  "query_sha256": "8a646bbc37ef6c77e45370c45969cf8c97658a699fb0dfcc6d7b3a008f4ee61a"
+ }
+}

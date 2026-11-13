@@ -3,7 +3,8 @@
 //! the shapes `report-corpus-<workload>[-sf<SF>].json` writes — plus
 //! the report-side shared vocabulary the lanes consume: the graph-benchmark-ldbc store
 //! origin's one-line provenance ([`graph_benchmark_ldbc_store_line`]), the one spelling
-//! of that fact the graph-benchmark-ldbc-store lanes (pathdb, snb-bi, agg-stress)
+//! of that fact the graph-benchmark-ldbc-store lanes (pathdb, snb-bi,
+//! agg-stress, equi-join)
 //! share.
 
 use std::path::Path;
@@ -18,7 +19,8 @@ use crate::Result;
 
 /// The report's one-line graph provenance for a graph-benchmark-ldbc
 /// store origin — the one spelling of the fact, shared by the lanes that
-/// run over the graph-benchmark-ldbc store (pathdb, snb-bi, agg-stress).
+/// run over the graph-benchmark-ldbc store (pathdb, snb-bi, agg-stress,
+/// equi-join).
 pub(super) fn graph_benchmark_ldbc_store_line(origin: StoreOrigin) -> String {
     match origin {
         StoreOrigin::Loaded { store, .. } => {

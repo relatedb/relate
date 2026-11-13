@@ -90,7 +90,6 @@ fn a_file_without_one_status_marker_is_rejected() {
 /// every name round-trips through `FromStr`.
 #[test]
 fn the_all_list_is_the_variants() {
-    assert_eq!(Workload::ALL.len(), 5);
     for w in Workload::ALL {
         assert_eq!(Workload::from_str(w.as_str()).unwrap(), w);
         assert!(!w.dir().as_os_str().is_empty());
@@ -154,47 +153,47 @@ fn the_committed_workloads_load() {
     );
 }
 
+/// One lane per workload, in [`Workload::ALL`] order — the ONE fixture
+/// the lane-fact tests below build from: the match is exhaustive over
+/// the workload vocabulary and the list derives from `ALL`, so a new
+/// workload fails to compile here rather than leaving a test that
+/// silently never sees its lane.
+fn every_lane(sf: ScaleFactor) -> Vec<Lane> {
+    Workload::ALL
+        .iter()
+        .map(|w| match w {
+            Workload::Pathdb => Lane::Pathdb {
+                graph: graph_opts(sf),
+                seed_policy: SeedPolicy::Recorded,
+            },
+            Workload::FraudQpp => Lane::Fraud {
+                fraud: FraudConfig::ci(),
+            },
+            Workload::SnbBi => Lane::SnbBi {
+                graph: graph_opts(sf),
+            },
+            Workload::Ukrailway => Lane::Ukrailway {
+                data_root: PathBuf::from("/nonexistent"),
+                download: false,
+            },
+            Workload::AggStress => Lane::AggStress {
+                graph: graph_opts(sf),
+            },
+            Workload::EquiJoin => Lane::EquiJoin {
+                graph: graph_opts(sf),
+            },
+        })
+        .collect()
+}
+
 /// The derived workload of each lane never disagrees with the lane
-/// itself — the derivation is the only statement of the fact.
+/// itself — the derivation is the only statement of the fact, and the
+/// fixture's order is `ALL`'s own, so the pairing cannot drift.
 #[test]
 fn the_derived_workload_of_each_lane_is_the_lane_itself() {
-    assert_eq!(
-        Lane::Pathdb {
-            graph: graph_opts(ScaleFactor::Sf0_1),
-            seed_policy: SeedPolicy::Recorded,
-        }
-        .workload(),
-        Workload::Pathdb
-    );
-    assert_eq!(
-        Lane::Fraud {
-            fraud: FraudConfig::ci()
-        }
-        .workload(),
-        Workload::FraudQpp
-    );
-    assert_eq!(
-        Lane::SnbBi {
-            graph: graph_opts(ScaleFactor::Sf0_1)
-        }
-        .workload(),
-        Workload::SnbBi
-    );
-    assert_eq!(
-        Lane::Ukrailway {
-            data_root: PathBuf::from("/nonexistent"),
-            download: false,
-        }
-        .workload(),
-        Workload::Ukrailway
-    );
-    assert_eq!(
-        Lane::AggStress {
-            graph: graph_opts(ScaleFactor::Sf0_1),
-        }
-        .workload(),
-        Workload::AggStress
-    );
+    for (lane, w) in every_lane(ScaleFactor::Sf0_1).iter().zip(Workload::ALL) {
+        assert_eq!(lane.workload(), w);
+    }
 }
 
 fn graph_opts(sf: ScaleFactor) -> GraphOptions {
@@ -209,17 +208,23 @@ fn graph_opts(sf: ScaleFactor) -> GraphOptions {
 
 /// Each lane's default report name, byte-identical to the names the
 /// binary writes: the graph-benchmark-ldbc-store lanes carry their own graph scale
-/// factor in the name; the one-size lanes record none.
+/// factor in the name; the one-size lanes record none. Driven from the
+/// one fixture, so a new lane is covered without touching this test.
 #[test]
 fn report_names_carry_the_workload_and_scale_factor() {
-    assert_eq!(
-        (Lane::Pathdb {
-            graph: graph_opts(ScaleFactor::Sf0_1),
-            seed_policy: SeedPolicy::Recorded,
-        })
-        .report_name(),
-        "report-corpus-pathdb-sf0.1.json"
-    );
+    for lane in every_lane(ScaleFactor::Sf0_1) {
+        let w = lane.workload();
+        let expected = match w {
+            // The one-size lanes — fraud-qpp's generator knobs,
+            // ukrailway's single-size data set — have no scale factor to
+            // record.
+            Workload::FraudQpp | Workload::Ukrailway => format!("report-corpus-{w}.json"),
+            _ => format!("report-corpus-{w}-sf0.1.json"),
+        };
+        assert_eq!(lane.report_name(), expected, "{w}");
+    }
+    // The scale factor really is read from the lane: the same workload
+    // at SF1 names its report for SF1.
     assert_eq!(
         (Lane::SnbBi {
             graph: graph_opts(ScaleFactor::Sf1),
@@ -227,91 +232,42 @@ fn report_names_carry_the_workload_and_scale_factor() {
         .report_name(),
         "report-corpus-snb-bi-sf1.json"
     );
-    // The one-size lanes — fraud-qpp's generator knobs, ukrailway's
-    // single-size data set — have no scale factor to record.
-    assert_eq!(
-        (Lane::Fraud {
-            fraud: FraudConfig::ci(),
-        })
-        .report_name(),
-        "report-corpus-fraud-qpp.json"
-    );
-    // The agg-stress lane runs the graph-benchmark-ldbc store's scale factor, so its
-    // report name carries it like the other graph-benchmark-ldbc-store lanes'.
-    assert_eq!(
-        (Lane::AggStress {
-            graph: graph_opts(ScaleFactor::Sf0_1),
-        })
-        .report_name(),
-        "report-corpus-agg-stress-sf0.1.json"
-    );
-    assert_eq!(
-        (Lane::Ukrailway {
-            data_root: PathBuf::from("/nonexistent"),
-            download: false,
-        })
-        .report_name(),
-        "report-corpus-ukrailway.json"
-    );
 }
 
 /// Each lane's default per-entry timeout is its own
 /// [`Lane::default_timeout`], which reads its own facts — the one home
 /// of every lane's bound, so no lane-class summary is restated here to
-/// go stale when a lane joins.
+/// go stale when a lane joins. Driven from the one fixture, and each
+/// lane's bound stated exactly once in the exhaustive match below.
 #[test]
 fn each_lanes_default_timeout_reads_its_own_facts() {
-    for sf in [ScaleFactor::Sf0_1, ScaleFactor::Sf1] {
-        let want = match sf {
-            ScaleFactor::Sf0_1 => Duration::from_secs(10),
-            ScaleFactor::Sf1 => Duration::from_secs(20),
+    // Each lane's own facts: the two table-recorded lanes scale their
+    // bound off their graph (10 s at SF0.1), every other lane carries a
+    // flat bound — its const's doc holds the why (the fraud graphs are
+    // generator-sized; ukrailway's r02 is minutes-scale over the
+    // imported graph; agg-stress's slowest entry measures 15.3 s;
+    // equi-join's headline is product-dominated and machine-sensitive
+    // at 7.2 s).
+    for lane in every_lane(ScaleFactor::Sf0_1) {
+        let want = match lane.workload() {
+            Workload::Pathdb | Workload::SnbBi => Duration::from_secs(10),
+            Workload::FraudQpp => Duration::from_secs(10),
+            Workload::Ukrailway => Duration::from_secs(600),
+            Workload::AggStress => Duration::from_secs(60),
+            Workload::EquiJoin => Duration::from_secs(30),
         };
-        assert_eq!(
-            (Lane::Pathdb {
-                graph: graph_opts(sf),
-                seed_policy: SeedPolicy::Recorded,
-            })
-            .default_timeout(),
-            want,
-            "pathdb at {sf}"
-        );
-        assert_eq!(
-            (Lane::SnbBi {
-                graph: graph_opts(sf),
-            })
-            .default_timeout(),
-            want,
-            "snb-bi at {sf}"
-        );
+        assert_eq!(lane.default_timeout(), want, "{}", lane.workload());
     }
-    // The fraud graphs are generator-sized — no scale factor, a
-    // flat bound.
-    assert_eq!(
-        (Lane::Fraud {
-            fraud: FraudConfig::ci(),
-        })
-        .default_timeout(),
-        Duration::from_secs(10),
-        "fraud runs no scale factor — a flat bound"
-    );
-    // The ukrailway lane's r02 entry is minutes-scale over the
-    // imported graph: its own generous bound.
-    assert_eq!(
-        (Lane::Ukrailway {
-            data_root: PathBuf::from("/nonexistent"),
-            download: false,
-        })
-        .default_timeout(),
-        Duration::from_secs(600)
-    );
-    // The agg-stress lane's slowest entry (a02, 15.3 s measured) is
-    // past the graph-benchmark-ldbc-store lanes' 10 s SF0.1 default: its own flat,
-    // generous bound.
-    assert_eq!(
-        (Lane::AggStress {
-            graph: graph_opts(ScaleFactor::Sf0_1),
-        })
-        .default_timeout(),
-        Duration::from_secs(60)
-    );
+    // The scale factor really is read from the lane: the two
+    // table-recorded lanes at SF1 bound themselves at 20 s.
+    for lane in every_lane(ScaleFactor::Sf1) {
+        if matches!(lane.workload(), Workload::Pathdb | Workload::SnbBi) {
+            assert_eq!(
+                lane.default_timeout(),
+                Duration::from_secs(20),
+                "{} at SF1",
+                lane.workload()
+            );
+        }
+    }
 }

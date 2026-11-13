@@ -1,17 +1,18 @@
 //! The QPP/LDBC corpus lane (ADR-0479, LABS-646): the translated PathDB
 //! RPQ workload, the in-house fraud QPP suite, the translated LDBC SNB BI
-//! analytics workload, the verified UK railway graph workload, and the
-//! in-house agg-stress aggregation workload — the first, third and fifth
-//! executed beside the graph-benchmark-ldbc lane over the same store machinery, the
-//! second over generated and fixture graphs, the fourth over its own
-//! imported graph.
+//! analytics workload, the verified UK railway graph workload, the
+//! in-house agg-stress aggregation workload, and the in-house equi-join
+//! workload — the first, third, fifth and sixth executed beside the
+//! graph-benchmark-ldbc lane over the same store machinery, the second
+//! over generated and fixture graphs, the fourth over its own imported
+//! graph.
 //!
 //! What this module tree owns, in the order a run uses them:
 //!
 //! - [`Workload`] names a directory under `workloads/`, its
 //!   sub-directories ([`Workload::query_dirs`]) and what it runs on (the
-//!   graph-benchmark-ldbc store for `pathdb`, `snb-bi` and `agg-stress`, generated or
-//!   fixture graphs for `fraud-qpp` — whose oracle and checks live in
+//!   graph-benchmark-ldbc store for `pathdb`, `snb-bi`, `agg-stress` and `equi-join`,
+//!   generated or fixture graphs for `fraud-qpp` — whose oracle and checks live in
 //!   `fraud` — and the workload's own imported graph for `ukrailway`);
 //! - this root module owns the query-file side of the format:
 //!   [`load_queries`] reads a workload's query files, classifying each
@@ -32,10 +33,16 @@
 //!   onto), `snbbi::SnbBiLane` (the graph-benchmark-ldbc store, its recorded parameter
 //!   table, the run-vs-plan rule over it), `ukrailway::UkrailwayLane`
 //!   (the fetched data set, the import script's `:memory:` graph, the
-//!   verified rows oracle) and `aggstress::AggStressLane` (the graph-benchmark-ldbc
-//!   store, its per-scale-factor verified rows oracle — LABS-733's
-//!   measuring net for the planned chunk-native streaming fold) — so
-//!   the runner's lane match is a one-line delegation per arm;
+//!   verified rows oracle) and `oracle_store::RowsOracleStoreLane` (the
+//!   graph-benchmark-ldbc store, the per-scale-factor verified rows
+//!   oracle — the ONE lane every in-house scale-table rows-oracle
+//!   workload builds (`new` takes the workload and derives its one
+//!   oracle path; ukrailway's one-size data set keeps its own lane and
+//!   its single `oracle.json`):
+//!   agg-stress, LABS-733's measuring net for the planned chunk-native
+//!   streaming fold; equi-join, LABS-1531's measuring net for the
+//!   planned hash-join operator) — so the runner's lane match is a
+//!   one-line delegation per arm;
 //! - `runner::run_corpus` executes every entry under the watchdog —
 //!   `ok` runs and is answer-checked where an oracle exists, `kept` is
 //!   parse- and EXPLAIN-checked but never executed (frontier-NFA
@@ -68,8 +75,9 @@
 //! `graph`, and the workload-JSON file-format helpers in `files`, so
 //! each lane
 //! depends only on the corpus tree's shared modules: `runner → fraud`,
-//! `runner → pathdb`, `runner → ukrailway` and `runner → aggstress`
-//! are the edges into the lanes, never lane → lane.
+//! `runner → pathdb`, `runner → snbbi`, `runner → ukrailway` and
+//! `runner → oracle_store` (the rows-oracle lanes) are the edges into
+//! the lanes, never lane → lane.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -81,9 +89,13 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 mod aggstress;
+mod equijoin;
 mod files;
+#[cfg(test)]
+mod fixtures;
 mod fraud;
 mod graph;
+mod oracle_store;
 mod pathdb;
 mod report;
 mod runner;
@@ -126,6 +138,24 @@ const FRAUD_TIMEOUT: Duration = Duration::from_secs(10);
 /// recorded scale. A timeout is still a ratchet failure for an `ok`
 /// entry: the bound is generous, not absent.
 const AGG_STRESS_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The equi-join lane's own flat per-entry default (LABS-1531): its
+/// slowest entry — e03, the cross-product headline — measures 7.2 s over
+/// the graph-benchmark-ldbc SF0.1 store on a loaded machine, inside the
+/// graph-benchmark-ldbc-store lanes' 10 s SF0.1 default but
+/// product-dominated and therefore machine-sensitive — the workload
+/// README's measured ladder has the same shape's next bound at 59.6 s
+/// (the unbounded form 102 s), and a 2-vCPU-capped runner moves a
+/// product entry several-fold. The lane carries its own generous bound
+/// at ~4x the slowest recorded entry, because a corpus lane reports
+/// timings and never gates on them; the bound only has to catch an
+/// unbounded product, not a join rewrite's regression. Flat, not
+/// scale-factor-scaled, because the workload is recorded at SF0.1 only —
+/// an SF1 run fails loudly at its oracle load (no `oracle-sf1.json`
+/// exists), so the bound serves exactly the one recorded scale. A
+/// timeout is still a ratchet failure for an `ok` entry: the bound is
+/// generous, not absent.
+const EQUI_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The workload vocabulary, spelled ONCE: the enum, its `ALL` list and
 /// its directory names are all emitted from this table, so adding a
@@ -197,6 +227,12 @@ spell_workloads! {
         " fold, the measuring net for the planned chunk-native streaming"
         " fold)."
     ) = "agg-stress";
+    EquiJoin(
+        "The three in-house equi-join queries over the graph-benchmark-ldbc store"
+        " (LABS-1531: two patterns sharing no anchor joined by a WHERE"
+        " equality, the measuring net for the planned hash-join"
+        " operator)."
+    ) = "equi-join";
 }
 
 impl Workload {
@@ -204,6 +240,24 @@ impl Workload {
     /// [`crate::workloads_dir`] root, the one derivation of it.
     pub(crate) fn dir(self) -> PathBuf {
         crate::workloads_dir().join(self.as_str())
+    }
+
+    /// This workload's rows-oracle file, or `None` when it has none —
+    /// the ONE derivation every site consults (each rows-oracle lane's
+    /// loader, its build-time validation, its route's miss text and the
+    /// tests), so no call site re-spells the convention and no workload
+    /// is told a file that does not exist. Both conventions are stated
+    /// here: the one-size data sets (ukrailway, fraud-qpp) keep a single
+    /// `workloads/<name>/oracle.json`, while the two scale-table
+    /// workloads resolve `workloads/<name>/oracle-sf<SF>.json`. pathdb
+    /// and snb-bi answer against recorded params and seeds rather than a
+    /// rows table, so they have no oracle at all.
+    pub(crate) fn oracle_path(self, sf: ScaleFactor) -> Option<PathBuf> {
+        match self {
+            Self::Ukrailway | Self::FraudQpp => Some(self.dir().join("oracle.json")),
+            Self::AggStress | Self::EquiJoin => Some(self.scale_table("oracle", sf)),
+            Self::Pathdb | Self::SnbBi => None,
+        }
     }
 
     /// A workload's per-scale-factor side-table path —
@@ -222,7 +276,9 @@ impl Workload {
     pub(crate) fn query_dirs(self) -> &'static [&'static str] {
         match self {
             Self::Pathdb => &["queries", "restrictors"],
-            Self::FraudQpp | Self::SnbBi | Self::Ukrailway | Self::AggStress => &["queries"],
+            Self::FraudQpp | Self::SnbBi | Self::Ukrailway | Self::AggStress | Self::EquiJoin => {
+                &["queries"]
+            }
         }
     }
 }
@@ -321,64 +377,6 @@ pub struct CorpusQuery {
     pub sha256: String,
 }
 
-/// A fixture [`CorpusQuery`] for the corpus tree's tests — the one
-/// constructor home: no file behind it, so no sha256.
-#[cfg(test)]
-fn query(id: &str, classification: Classification, text: &str) -> CorpusQuery {
-    CorpusQuery {
-        id: id.into(),
-        classification,
-        text: text.into(),
-        sha256: String::new(),
-    }
-}
-
-/// A fixture `ok` entry.
-#[cfg(test)]
-fn ok_query(id: &str, text: &str) -> CorpusQuery {
-    query(id, Classification::Ok, text)
-}
-
-/// The lane-routing contract every rows-oracle lane's committed-entry
-/// test asserts — the one spelling, beside the other shared test
-/// fixtures: each `ok` entry of the workload RUNS answer-checked (the
-/// constant-inline lanes bind no parameters, so the target's map is
-/// empty) and a kept entry PLANS, never runs.
-#[cfg(test)]
-fn assert_routes_every_committed_entry(lane: &mut dyn graph::CorpusLane, queries: &[CorpusQuery]) {
-    for q in queries
-        .iter()
-        .filter(|q| q.classification == Classification::Ok)
-    {
-        let graph::Routed::Run(target) = lane.route(q).unwrap() else {
-            panic!("{}: an ok entry runs", q.id);
-        };
-        assert!(target.params.is_empty(), "{}: no parameters", q.id);
-        assert!(target.check.is_some(), "{}: answer-checked", q.id);
-    }
-    // A kept entry plans, never runs — a synthetic probe: a Kept
-    // classification resolves through the shared non-executing table,
-    // which never reads the id or text.
-    assert!(matches!(
-        lane.route(&query("a-kept-probe", Classification::Kept, "RETURN 1"))
-            .unwrap(),
-        graph::Routed::Plan(_)
-    ));
-}
-
-/// A fixture `error-pin` entry pinning the one authored error the
-/// corpus's pins carry.
-#[cfg(test)]
-fn pin_query(id: &str, text: &str) -> CorpusQuery {
-    query(
-        id,
-        Classification::ErrorPin {
-            error: "UnsafeRepeatableElements".into(),
-        },
-        text,
-    )
-}
-
 /// Read every `*.cypher` file of `dir/<sub>/` as a corpus query, in file
 /// name order. Every file must carry exactly one `// status:` marker. A
 /// directory entry that cannot be read fails the run — a vanished
@@ -456,6 +454,28 @@ pub fn workload_queries(workload: Workload) -> Result<Vec<CorpusQuery>> {
     Ok(queries)
 }
 
+/// The rows-oracle build sequence every lane runs: derive the workload's
+/// oracle path ([`Workload::oracle_path`], the one home of the
+/// convention), load the table and validate the workload against it. One
+/// home, so no lane — and no test lane — can derive, load or validate
+/// differently from another; a workload that carries no oracle file
+/// fails loudly here rather than at the call site. Stated in this root —
+/// beside [`Workload::oracle_path`], the derivation it composes first —
+/// because it is root policy over the `files` submodule's format
+/// surface, never a piece of that leaf.
+fn load_oracle(
+    workload: Workload,
+    sf: ScaleFactor,
+    queries: &[CorpusQuery],
+) -> Result<(files::Oracle, PathBuf)> {
+    let path = workload
+        .oracle_path(sf)
+        .ok_or_else(|| format!("the {workload} workload carries no rows oracle"))?;
+    let oracle = files::load_rows_oracle(&path)?;
+    files::validate_rows_oracle(&oracle, queries, &path)?;
+    Ok((oracle, path))
+}
+
 /// How the run picks its seeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedPolicy {
@@ -492,16 +512,10 @@ impl SeedPolicy {
 
 /// The lane-specific setup of a run: exactly the knobs its workload
 /// uses, so a run matches its workload once and every knob has one
-/// home — the scale factor and the seed policy are the pathdb lane's
-/// own knobs (carried by its graph options and here), the fraud lane
-/// carries the generator's, the snb-bi lane carries only the graph-benchmark-ldbc
-/// graph options (its parameters are the workload's recorded table,
-/// not a run knob), the ukrailway lane carries its data cache and
-/// download knobs (its queries carry their constants inline — no
-/// parameters, no seeds), and the agg-stress lane only the graph-benchmark-ldbc graph
-/// options (its queries carry their constants inline too, and its
-/// oracle is the workload's recorded table, not a run knob) — never
-/// shared config a lane would record without running.
+/// home — each variant's own doc carries its payload's why (which
+/// knobs are the lane's own and which are the workload's recorded
+/// tables), never shared config a lane would record without running;
+/// the variants are the list, no prose re-counts them.
 #[derive(Debug, Clone)]
 pub enum Lane {
     /// The PathDB RPQs over the graph-benchmark-ldbc store.
@@ -540,6 +554,14 @@ pub enum Lane {
         /// of that fact; the workload is recorded at SF0.1 only).
         graph: GraphOptions,
     },
+    /// The in-house equi-join queries over the graph-benchmark-ldbc store
+    /// (LABS-1531).
+    EquiJoin {
+        /// The graph-benchmark-ldbc graph options — the same store machinery as the
+        /// `run` lane, carrying the run's scale factor (the one home
+        /// of that fact; the workload is recorded at SF0.1 only).
+        graph: GraphOptions,
+    },
 }
 
 impl Lane {
@@ -551,6 +573,7 @@ impl Lane {
             Self::SnbBi { .. } => Workload::SnbBi,
             Self::Ukrailway { .. } => Workload::Ukrailway,
             Self::AggStress { .. } => Workload::AggStress,
+            Self::EquiJoin { .. } => Workload::EquiJoin,
         }
     }
 
@@ -564,7 +587,9 @@ impl Lane {
     fn report_facts(&self) -> (Option<ScaleFactor>, Option<SeedPolicy>) {
         match self {
             Self::Pathdb { graph, seed_policy } => (Some(graph.sf), Some(*seed_policy)),
-            Self::SnbBi { graph } | Self::AggStress { graph } => (Some(graph.sf), None),
+            Self::SnbBi { graph } | Self::AggStress { graph } | Self::EquiJoin { graph } => {
+                (Some(graph.sf), None)
+            }
             Self::Fraud { .. } | Self::Ukrailway { .. } => (None, None),
         }
     }
@@ -575,12 +600,8 @@ impl Lane {
     /// off their own graph scale factor (10 s at SF0.1, 20 s at SF1,
     /// the one home of that fact being the lane's graph options). Every
     /// other lane carries its own flat bound, each const's doc holding
-    /// its why: the fraud lane [`FRAUD_TIMEOUT`] (generator-sized, no
-    /// scale factor), the ukrailway lane [`UKRAILWAY_TIMEOUT`] (its r02
-    /// entry is minutes-scale over the imported graph) and the
-    /// agg-stress lane [`AGG_STRESS_TIMEOUT`] (recorded at SF0.1 only —
-    /// an SF1 run fails loudly at its oracle load, so there is exactly
-    /// one scale to bound). A timeout is a recorded outcome for a `kept` entry's
+    /// its why (the arms below are the list, no prose re-counts them).
+    /// A timeout is a recorded outcome for a `kept` entry's
     /// history, and a failure for an `ok` one — the ratchet.
     pub fn default_timeout(&self) -> Duration {
         match self {
@@ -591,6 +612,7 @@ impl Lane {
             Self::Fraud { .. } => FRAUD_TIMEOUT,
             Self::Ukrailway { .. } => UKRAILWAY_TIMEOUT,
             Self::AggStress { .. } => AGG_STRESS_TIMEOUT,
+            Self::EquiJoin { .. } => EQUI_JOIN_TIMEOUT,
         }
     }
 

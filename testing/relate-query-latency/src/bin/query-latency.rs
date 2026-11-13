@@ -53,22 +53,22 @@ impl DataArgs {
 }
 
 /// The graph-benchmark-ldbc-store flags, shared by the workloads that
-/// run over the graph-benchmark-ldbc store (`--workload pathdb`,
-/// `--workload snb-bi` and `--workload agg-stress`): the group's own
-/// clap arguments are the one home of which flags belong to which lane
-/// — the wrong-lane check enumerates them from here, never a second
+/// run over the graph-benchmark-ldbc store: which workloads those are is
+/// [`flag_groups`]'s one home (each group's `served` list is derived
+/// from it); the flag docs below spell their `(<workloads> only)` help
+/// tags, and the lane-tag test keeps those tags in step with that
 /// table.
 #[derive(ClapArgs, Debug)]
 struct GraphBenchmarkLdbcStoreArgs {
-    /// Scale factor (pathdb, snb-bi and agg-stress only): pathdb's
-    /// params file and the store it loads — SF1 runs the 26-query
-    /// subset recorded for it; snb-bi's params file and store,
-    /// recorded at SF0.1 only; agg-stress's oracle file and
-    /// store, recorded at SF0.1 only.
+    /// Scale factor (pathdb, snb-bi, agg-stress and equi-join only):
+    /// pathdb's params file and the store it loads — SF1 runs the
+    /// 26-query subset recorded for it; snb-bi's params file and store,
+    /// recorded at SF0.1 only; agg-stress's and equi-join's oracle
+    /// files and stores, recorded at SF0.1 only.
     #[arg(long, default_value = "0.1")]
     sf: ScaleFactor,
-    /// Reuse the graph-benchmark-ldbc store at PATH (pathdb, snb-bi and agg-stress
-    /// only) — opened
+    /// Reuse the graph-benchmark-ldbc store at PATH (pathdb, snb-bi,
+    /// agg-stress and equi-join only) — opened
     /// read-only; when PATH does not exist, load into it, checkpoint it
     /// and mark it complete for the next run (same marker rules as
     /// `run`).
@@ -93,24 +93,23 @@ impl GraphBenchmarkLdbcStoreArgs {
 }
 
 /// The data-cache flags, shared by the corpus workloads that fetch a
-/// data set (`--workload pathdb`, `--workload snb-bi`,
-/// `--workload ukrailway` and `--workload agg-stress`): the group's own clap
-/// arguments are the one home of which
-/// flags belong to which lanes — the wrong-lane check enumerates them
-/// from here, never a second table. The `RELATE_QUERY_LATENCY_DATA`
+/// data set: which workloads those are is [`flag_groups`]'s one home
+/// (each group's `served` list is derived from it); the flag docs below
+/// spell their `(<workloads> only)` help tags, and the lane-tag test
+/// keeps those tags in step with that table. The `RELATE_QUERY_LATENCY_DATA`
 /// fallback lives in [`data_root`], not the clap arg — a relocated cache
 /// via the env var is not a passed `--data` (the corpus lane check reads
 /// passed-ness from clap's value_source).
 #[derive(ClapArgs, Debug)]
 struct DataLaneArgs {
     /// Data cache directory the data sets fetch and load from (pathdb,
-    /// snb-bi, ukrailway and agg-stress only). Default:
+    /// snb-bi, ukrailway, agg-stress and equi-join only). Default:
     /// $RELATE_QUERY_LATENCY_DATA,
     /// else target/query-latency/data.
     #[arg(long = "data")]
     data: Option<PathBuf>,
     /// Fail instead of downloading a data set that is not cached
-    /// (pathdb, snb-bi, ukrailway and agg-stress only).
+    /// (pathdb, snb-bi, ukrailway, agg-stress and equi-join only).
     #[arg(long)]
     offline: bool,
 }
@@ -273,17 +272,18 @@ enum Command {
         out: Option<PathBuf>,
     },
     /// Run a QPP/LDBC corpus workload (ADR-0479, LABS-646): the PathDB
-    /// RPQ translations, the LDBC SNB BI analytics queries or the
-    /// in-house aggregation-stress queries over the graph-benchmark-ldbc store, the
-    /// in-house fraud QPP suite over generated and fixture graphs, or
-    /// the verified UK railway graph queries over the workload's own
-    /// imported graph. `ok` entries must run (and
+    /// RPQ translations, the LDBC SNB BI analytics queries, the
+    /// in-house aggregation-stress queries and the in-house equi-join
+    /// queries over the graph-benchmark-ldbc store, the in-house fraud QPP suite
+    /// over generated and fixture graphs, or the verified UK railway
+    /// graph queries over the workload's own imported graph. `ok`
+    /// entries must run (and
     /// answer-match where an oracle exists), `kept` entries must plan,
     /// `error-pin` entries must fail with their authored error. Exit 1
     /// when any entry misses its expectation.
     Corpus {
-        /// The workload: pathdb, snb-bi, fraud-qpp, ukrailway or
-        /// agg-stress.
+        /// The workload: pathdb, snb-bi, fraud-qpp, ukrailway,
+        /// agg-stress or equi-join.
         #[arg(long, default_value = "pathdb")]
         workload: Workload,
         /// Per-entry timeout in seconds (default: the lane's own
@@ -344,7 +344,7 @@ fn seconds_parser(s: &str) -> Result<Duration, String> {
 /// never a second hand-maintained one.
 struct LaneGroup {
     cmd: ClapCommand,
-    served: &'static [Workload],
+    served: Vec<Workload>,
     name: String,
     #[cfg(test)]
     tag: String,
@@ -358,63 +358,117 @@ impl LaneGroup {
     /// served workload is impossible by construction (every row of
     /// [`lane_groups`] serves at least one) and enforced here, never
     /// papered over with a fabricated lane name.
-    fn new(cmd: ClapCommand, served: &'static [Workload]) -> Self {
+    fn new(cmd: ClapCommand, served: Vec<Workload>) -> Self {
         let names: Vec<&str> = served.iter().map(|w| w.as_str()).collect();
-        // `split_last` yields the last element and the head before it.
+        // `split_last` yields the last element and the head before it;
+        // an empty head is the same fact as "serves exactly one
+        // workload", read once and driving both renderings.
         let (last, head) = names
             .split_last()
             .expect("a lane group serves at least one workload");
-        let joined = if head.is_empty() {
-            (*last).to_string()
+        let (joined, lanes) = if head.is_empty() {
+            ((*last).to_string(), "")
         } else {
-            format!("{} and {last}", head.join(", "))
+            (format!("{} and {last}", head.join(", ")), "s")
         };
         Self {
             cmd,
             served,
-            name: format!(
-                "the {joined} lane{}",
-                if served.len() > 1 { "s" } else { "" }
-            ),
+            name: format!("the {joined} lane{lanes}"),
             #[cfg(test)]
             tag: format!("({joined} only)"),
         }
     }
 }
 
-/// The lane groups, one row per flag group of the corpus subcommand:
-/// the graph-benchmark-ldbc-store group (the workloads over the graph-benchmark-ldbc
-/// store — the scale factor their tables run at and the store they
-/// reuse), the data-cache group (the workloads that fetch a data set —
-/// the cache directory and the offline refusal), the pathdb group, the
-/// fraud group. The `served` arrays below are the one home of the
-/// membership; this prose never counts it.
+/// The corpus subcommand's flag groups, spelled ONCE: the enum, its
+/// `ALL` list and each group's clap command are all emitted from this
+/// table, so adding a flag group cannot leave a hand-maintained list
+/// behind — a variant only in the enum fails `flag_group_cmd`'s
+/// exhaustive match, and one missing from `ALL` never reaches
+/// [`lane_groups`]. One per group of lane-scoped clap arguments: the
+/// graph-benchmark-ldbc-store group (the scale factor the store-backed
+/// tables run at and the store they reuse), the data-cache group (the
+/// cache directory and the offline refusal), the pathdb group (the seed
+/// policy), the fraud group (the generator knobs).
+macro_rules! spell_flag_groups {
+    ($($variant:ident)*) => {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum FlagGroup {
+            $($variant,)*
+        }
+
+        impl FlagGroup {
+            /// Every flag group, derived from the same spelling as the
+            /// variants — never a second list to keep in step. The
+            /// length counts the same tokens (`stringify!` keeps each a
+            /// literal), so a variant added to the table appears in ALL
+            /// or the array does not type-check.
+            const ALL: [FlagGroup; [$(stringify!($variant)),*].len()] = [$(Self::$variant),*];
+        }
+    };
+}
+
+spell_flag_groups! {
+    GraphBenchmarkLdbcStore
+    DataCache
+    Pathdb
+    Fraud
+}
+
+/// The one group's own clap arguments — exhaustive over [`FlagGroup`],
+/// so a new variant fails this match until its command is stated.
+fn flag_group_cmd(group: FlagGroup) -> ClapCommand {
+    match group {
+        FlagGroup::GraphBenchmarkLdbcStore => GraphBenchmarkLdbcStoreArgs::augment_args(
+            ClapCommand::new("graph-benchmark-ldbc-store"),
+        ),
+        FlagGroup::DataCache => DataLaneArgs::augment_args(ClapCommand::new("data-cache")),
+        FlagGroup::Pathdb => PathdbLaneArgs::augment_args(ClapCommand::new("pathdb")),
+        FlagGroup::Fraud => FraudLaneArgs::augment_args(ClapCommand::new("fraud")),
+    }
+}
+
+/// Which flag groups a workload carries — the ONE home of the
+/// lane-group membership, exhaustive over the workload vocabulary (a
+/// new [`Workload`] variant fails this match until its groups are
+/// stated, so a graph-carrying workload can never again be silently
+/// absent from a group's served list). [`lane_groups`] derives every
+/// group's served list from this table and [`Workload::ALL`]; no site
+/// re-spells the membership.
+fn flag_groups(w: Workload) -> &'static [FlagGroup] {
+    match w {
+        Workload::Pathdb => &[
+            FlagGroup::GraphBenchmarkLdbcStore,
+            FlagGroup::DataCache,
+            FlagGroup::Pathdb,
+        ],
+        Workload::FraudQpp => &[FlagGroup::Fraud],
+        Workload::SnbBi | Workload::AggStress | Workload::EquiJoin => {
+            &[FlagGroup::GraphBenchmarkLdbcStore, FlagGroup::DataCache]
+        }
+        Workload::Ukrailway => &[FlagGroup::DataCache],
+    }
+}
+
+/// The lane groups, one row per flag group of the corpus subcommand.
+/// Every group's `served` list is derived — [`Workload::ALL`] filtered
+/// through [`flag_groups`] — so the membership lives once, in the
+/// exhaustive table, and a group with no served workload is refused by
+/// [`LaneGroup::new`] rather than silently rendering a fabricated lane
+/// name.
 fn lane_groups() -> Vec<LaneGroup> {
-    vec![
-        LaneGroup::new(
-            GraphBenchmarkLdbcStoreArgs::augment_args(ClapCommand::new(
-                "graph-benchmark-ldbc-store",
-            )),
-            &[Workload::Pathdb, Workload::SnbBi, Workload::AggStress],
-        ),
-        LaneGroup::new(
-            DataLaneArgs::augment_args(ClapCommand::new("data-cache")),
-            &[
-                Workload::Pathdb,
-                Workload::SnbBi,
-                Workload::Ukrailway,
-                Workload::AggStress,
-            ],
-        ),
-        LaneGroup::new(
-            PathdbLaneArgs::augment_args(ClapCommand::new("pathdb")),
-            &[Workload::Pathdb],
-        ),
-        LaneGroup::new(
-            FraudLaneArgs::augment_args(ClapCommand::new("fraud")),
-            &[Workload::FraudQpp],
-        ),
-    ]
+    FlagGroup::ALL
+        .into_iter()
+        .map(|group| {
+            let served: Vec<Workload> = Workload::ALL
+                .iter()
+                .copied()
+                .filter(|w| flag_groups(*w).contains(&group))
+                .collect();
+            LaneGroup::new(flag_group_cmd(group), served)
+        })
+        .collect()
 }
 
 /// Each lane carries only its own flags: a flag of a lane the workload
@@ -554,6 +608,7 @@ fn run() -> Result<i32, String> {
                 },
                 Workload::SnbBi => Lane::SnbBi { graph },
                 Workload::AggStress => Lane::AggStress { graph },
+                Workload::EquiJoin => Lane::EquiJoin { graph },
                 Workload::FraudQpp => Lane::Fraud {
                     fraud: fraud.into_config(),
                 },
@@ -691,6 +746,7 @@ mod tests {
             vec!["corpus", "--workload", "fraud-qpp"],
             vec!["corpus", "--workload", "ukrailway"],
             vec!["corpus", "--workload", "agg-stress"],
+            vec!["corpus", "--workload", "equi-join"],
             vec![
                 "corpus",
                 "--workload",

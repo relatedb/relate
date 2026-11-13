@@ -1224,7 +1224,7 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 No environment variables beyond cargo's own. A bad argument exits 2 with the
 generated usage error.
 
-## QPP/LDBC corpus: PathDB, SNB BI, fraud-qpp, the UK railway graph and agg-stress (ADR-0479)
+## QPP/LDBC corpus: PathDB, SNB BI, fraud-qpp, the UK railway graph, agg-stress and equi-join (ADR-0479)
 
 `query-latency corpus` (LABS-646) runs the corpora that live beside the
 graph-benchmark-ldbc lane in `testing/relate-query-latency/workloads/`:
@@ -1298,6 +1298,27 @@ graph-benchmark-ldbc lane in `testing/relate-query-latency/workloads/`:
   materialized fold streams — the exact target shape), so the gated
   lane test is a local invocation, not a CI one.
 
+- **equi-join** — three IN-HOUSE equi-join queries over the SAME pinned
+  graph-benchmark-ldbc store (LABS-1531, landed 2026-11-13): two MATCH
+  patterns sharing no anchor, joined by a WHERE equality on a shared
+  property — the shape the engine today multiplies as a cross product
+  inside the Expand (the `CartesianProduct` notification, 03N90), the
+  measuring net for the planned hash-join operator. No parameters
+  (constants inline), no seed policy; the oracle is engine-self — the
+  answers this build returns over the pinned data, verified by
+  execution 2026-11-13 and recorded in
+  `workloads/equi-join/oracle-sf<SF>.json` (recorded at SF0.1 only —
+  `--sf 1` fails loudly until an SF1 oracle exists). The three entries
+  share the ladder: e01/e02 the same 2.33M-row Person x Person product
+  with 2,184 selective vs 723,576 fan-out output pairs, e03 the
+  cross-product headline (11.6M-row `length > 100` Comment x Person
+  product, 3.5M output pairs, 7.2 s measured) — the README records the
+  measured ladder behind the bound (`length > 50` at 59.6 s and the
+  unbounded form at 102 s sit past the timeout budget). Run-and-report
+  like every corpus lane, with the same ratchet; the lane's own flat
+  30 s per-entry timeout replaces the graph-benchmark-ldbc-store lanes' 10 s
+  SF0.1 default.
+
 Every query file carries one machine-read `// status:` marker that the
 run gates on:
 
@@ -1323,6 +1344,7 @@ cargo run --release -p relate-query-latency -- corpus --workload snb-bi --sf 0.1
 cargo run --release -p relate-query-latency -- corpus --workload fraud-qpp
 cargo run --release -p relate-query-latency -- corpus --workload ukrailway
 cargo run --release -p relate-query-latency -- corpus --workload agg-stress --sf 0.1
+cargo run --release -p relate-query-latency -- corpus --workload equi-join --sf 0.1
 # the gated SF0.1 pathdb and snb-bi corpus tests (load the graph-benchmark-ldbc SF0.1 graph):
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus pathdb
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus snb_bi
@@ -1330,6 +1352,8 @@ RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --tes
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus ukrailway
 # the gated agg-stress corpus test (loads the graph-benchmark-ldbc SF0.1 graph; needs ~11 GB RAM):
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus agg_stress
+# the gated equi-join corpus test (same graph; the lane run peaks under ~1 GB):
+RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus equi_join
 # every corpus file plans, no data needed (normal test lane):
 cargo test -p relate-query-latency --test corpus
 ```
@@ -1339,13 +1363,13 @@ cargo test -p relate-query-latency --test corpus
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--workload <NAME>` | `pathdb` | `pathdb`: the PathDB RPQ corpus over the graph-benchmark-ldbc store; `snb-bi`: the LDBC SNB BI analytics queries over the graph-benchmark-ldbc store; `fraud-qpp`: the in-house fraud suite over generated and fixture graphs; `ukrailway`: the two verified UK railway graph queries over the workload's own imported graph; `agg-stress`: the five in-house aggregation-stress queries over the graph-benchmark-ldbc store (LABS-733) |
-| `--timeout <SECS>` | `10` s at SF0.1 and `20` s at SF1 for pathdb and snb-bi, `10` s for fraud-qpp, `600` s for ukrailway, `60` s for agg-stress | Per-entry timeout; a timed-out `ok` entry fails the run (the ratchet), a timeout of anything else is a recorded outcome. ukrailway's r02 entry is minutes-scale (~3.5 min measured) and agg-stress's slowest entry is tens-of-seconds (a02, 15.3 s), so their lane defaults are their own |
+| `--workload <NAME>` | `pathdb` | `pathdb`: the PathDB RPQ corpus over the graph-benchmark-ldbc store; `snb-bi`: the LDBC SNB BI analytics queries over the graph-benchmark-ldbc store; `fraud-qpp`: the in-house fraud suite over generated and fixture graphs; `ukrailway`: the two verified UK railway graph queries over the workload's own imported graph; `agg-stress`: the five in-house aggregation-stress queries over the graph-benchmark-ldbc store (LABS-733); `equi-join`: the three in-house equi-join queries over the graph-benchmark-ldbc store (LABS-1531) |
+| `--timeout <SECS>` | `10` s at SF0.1 and `20` s at SF1 for pathdb and snb-bi, `10` s for fraud-qpp, `600` s for ukrailway, `60` s for agg-stress, `30` s for equi-join | Per-entry timeout; a timed-out `ok` entry fails the run (the ratchet), a timeout of anything else is a recorded outcome. ukrailway's r02 entry is minutes-scale (~3.5 min measured), agg-stress's slowest entry is tens-of-seconds (a02, 15.3 s) and equi-join's headline is product-dominated and machine-sensitive (e03, 7.2 s measured, the same shape's next bound at 59.6 s), so their lane defaults are their own |
 | `--repeats <N>` | `2` | Extra timed executions of entries faster than 1.5 s, for the `min_ms`/`med_ms` columns (`0` measures once) |
-| `--sf <SF>` | `0.1` | Scale factor (pathdb, snb-bi and agg-stress only): `0.1` or `1` — pathdb's params file and the store it loads (SF1 runs the 26-query subset recorded for it), snb-bi's params file and store, and agg-stress's oracle file and store (the last two recorded at SF0.1 only — SF1 fails loudly until their SF1 files exist). A passed `--sf` on a fraud-qpp or ukrailway run is refused: neither lane runs a scale factor (the ukrailway data set has one size, the fraud graphs are generator-sized); an unpassed one stays the default |
-| `--store <PATH>` | unset (`:memory:`, loaded every run) | Reuse the graph-benchmark-ldbc store at `PATH` (pathdb, snb-bi and agg-stress only), opened read-only; when `PATH` does not exist, load into it, checkpoint it and mark it complete for the next run — same marker rules as `run` |
-| `--data <DIR>` | `RELATE_QUERY_LATENCY_DATA`, else `target/query-latency/data` | Data cache directory the data sets fetch and load from (pathdb, snb-bi, ukrailway and agg-stress only) |
-| `--offline` | off | Fail instead of downloading a data set that is not cached (pathdb, snb-bi, ukrailway and agg-stress only) |
+| `--sf <SF>` | `0.1` | Scale factor (pathdb, snb-bi, agg-stress and equi-join only): `0.1` or `1` — pathdb's params file and the store it loads (SF1 runs the 26-query subset recorded for it), snb-bi's params file and store, and agg-stress's and equi-join's oracle files and stores (the last three recorded at SF0.1 only — SF1 fails loudly until their SF1 files exist). A passed `--sf` on a fraud-qpp or ukrailway run is refused: neither lane runs a scale factor (the ukrailway data set has one size, the fraud graphs are generator-sized); an unpassed one stays the default |
+| `--store <PATH>` | unset (`:memory:`, loaded every run) | Reuse the graph-benchmark-ldbc store at `PATH` (pathdb, snb-bi, agg-stress and equi-join only), opened read-only; when `PATH` does not exist, load into it, checkpoint it and mark it complete for the next run — same marker rules as `run` |
+| `--data <DIR>` | `RELATE_QUERY_LATENCY_DATA`, else `target/query-latency/data` | Data cache directory the data sets fetch and load from (pathdb, snb-bi, ukrailway, agg-stress and equi-join only) |
+| `--offline` | off | Fail instead of downloading a data set that is not cached (pathdb, snb-bi, ukrailway, agg-stress and equi-join only) |
 | `--seed-policy <POLICY>` | `median` | Seed policy (pathdb only): `median`: re-resolves every seed key with the degree-median policy and report the diffs from the recorded seeds (the regeneration rule after a data re-freeze; a diff is expected, never a failure); `recorded`: run the pinned params file as-is |
 | `--fraud-scale <F64>` | the datasets crate's env-gated scale (`RELATE_FULL_DATA=1` → `1.0`, else the CI scale `0.05`) | Fraud generator scale (fraud-qpp only; `1.0` = 10,000 accounts) |
 | `--fraud-seed <U64>` | the datasets crate's CI seed (`42`) | Fraud generator seed; planted ids are stable per seed |
@@ -1357,8 +1381,8 @@ generated and fixture graphs and the ukrailway lane imports its own
 `:memory:` graph, no graph-benchmark-ldbc store is reused, and neither lane runs a scale
 factor; a `--data` or `--offline` on
 a fraud-qpp run, no data set is read; a `--seed-policy` on a snb-bi,
-fraud-qpp, ukrailway or agg-stress run, a `--fraud-scale` on pathdb,
-snb-bi, ukrailway or agg-stress): a mistyped command line fails
+fraud-qpp, ukrailway, agg-stress or equi-join run, a `--fraud-scale` on
+pathdb, snb-bi, ukrailway, agg-stress or equi-join): a mistyped command line fails
 loudly, never a silently ignored knob.
 
 The report (`schema` 2) records the workload, the lane-scoped facts of

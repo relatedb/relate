@@ -48,11 +48,14 @@ pub enum FraudCheck {
     None,
 }
 
-/// The fraud workload's oracle file, `workloads/fraud-qpp/oracle.json`
-/// — the ONE derivation of the path, shared by the parser and the row
-/// lookup's miss text.
+/// The fraud workload's oracle file, `workloads/fraud-qpp/oracle.json` —
+/// [`Workload::oracle_path`]'s derivation, the one home of the
+/// convention, unwrapped once here: this workload carries one. Shared by
+/// the parser and the row lookup's miss text.
 fn oracle_path() -> PathBuf {
-    Workload::FraudQpp.dir().join("oracle.json")
+    Workload::FraudQpp
+        .oracle_path(crate::workload::ScaleFactor::Sf0_1)
+        .expect("the fraud workload carries a rows oracle")
 }
 
 /// Parse the fraud workload's oracle (`workloads/fraud-qpp/oracle.json`).
@@ -193,6 +196,11 @@ pub(super) struct FraudGraphs {
     oracle: BTreeMap<String, FraudCheck>,
     config: FraudConfig,
     graphs: BTreeMap<FraudGraphKind, FraudGraph>,
+    /// The oracle file's path, derived once at build and stored — the
+    /// row lookup names the file in its miss text, never re-derives the
+    /// path per entry (the same discipline `RowsOracleStoreLane` and
+    /// `UkrailwayLane` follow).
+    oracle_path: PathBuf,
 }
 
 impl FraudGraphs {
@@ -207,8 +215,9 @@ impl FraudGraphs {
     /// the graphs open on first use.
     pub(super) fn new(config: FraudConfig, queries: &[CorpusQuery]) -> Result<Self> {
         let oracle = fraud_oracle()?;
+        let path = oracle_path();
         for q in queries {
-            let check = row_of(&oracle, &q.id, &oracle_path())?;
+            let check = row_of(&oracle, &q.id, &path)?;
             match (&q.classification, check) {
                 (Classification::Ok, FraudCheck::None) => {
                     return Err(format!(
@@ -250,6 +259,7 @@ impl FraudGraphs {
             oracle,
             config,
             graphs: BTreeMap::new(),
+            oracle_path: path,
         })
     }
 }
@@ -269,8 +279,9 @@ impl CorpusLane for FraudGraphs {
             oracle,
             config,
             graphs,
+            oracle_path,
         } = self;
-        let check = row_of(oracle, &q.id, &oracle_path())?;
+        let check = row_of(oracle, &q.id, oracle_path)?;
         // `new`'s validation locked every kept or pin entry to a `none`
         // check, so the check alone decides the graph — `graph_kind`'s
         // table is the one home of check → graph.
@@ -354,7 +365,8 @@ fn read_fixture() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{query, workload_queries, Workload};
+    use super::super::fixtures::query;
+    use super::super::{workload_queries, Workload};
     use super::*;
 
     #[test]

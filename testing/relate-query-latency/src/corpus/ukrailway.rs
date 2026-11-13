@@ -21,26 +21,22 @@
 //! resolve through) and the `files` submodule's rows-oracle machinery
 //! (the [`Oracle`] table type, the one loader and validation) — and the
 //! crate's fetch machinery; it never imports the runner or the other
-//! lanes. What the lane owns itself is the oracle path derivation, the
-//! import script and its loader, and the lane's own facts.
+//! lanes. What the lane owns itself is the import script and its
+//! loader, and the lane's own facts — its oracle file comes from the
+//! shared build sequence ([`super::load_oracle`]), which derives
+//! the path through [`Workload::oracle_path`].
 
 use std::path::{Path, PathBuf};
 
 use relate::Connection;
 
-use super::files::{load_rows_oracle, validate_rows_oracle, Oracle};
+use super::files::Oracle;
 use super::graph::{CorpusLane, GraphHandle, Routed};
+use super::load_oracle;
 use super::{CorpusQuery, Workload};
 use crate::fetch::{ensure_ukrailway, PINNED_COMMIT};
+use crate::workload::ScaleFactor;
 use crate::{read, Result};
-
-/// The workload's rows oracle (`workloads/ukrailway/oracle.json`): the
-/// 2026-11-02 verified values, recorded once — the ONE derivation of the
-/// path, shared by the loader, the build-time validation and the route's
-/// miss text.
-fn oracle_path() -> PathBuf {
-    Workload::Ukrailway.dir().join("oracle.json")
-}
 
 /// The committed import script's path — the ONE derivation of the fact,
 /// shared by the loader and every error label that names the script (never
@@ -88,17 +84,27 @@ fn load_graph(dir: &Path) -> Result<GraphHandle> {
 pub(super) struct UkrailwayLane {
     graph: Box<GraphHandle>,
     oracle: Oracle,
+    /// The oracle file's path, derived once at build and stored — the
+    /// route's lookup names the file in its miss text, never re-derives
+    /// the path per entry (the same discipline
+    /// `oracle_store::RowsOracleStoreLane` follows).
+    oracle_path: PathBuf,
 }
 
 impl UkrailwayLane {
     /// The tests' lane over a memory graph — the Box lives here once,
     /// never in a test's struct literal.
     #[cfg(test)]
-    fn for_test(graph: GraphHandle, oracle: Oracle) -> Self {
-        Self {
+    fn for_test(graph: GraphHandle, queries: &[CorpusQuery]) -> Result<Self> {
+        // The same shared build sequence `new` runs, so a test lane is
+        // `new` minus the fetch and the import, never a lookalike that
+        // skips the validation step.
+        let (oracle, oracle_path) = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
+        Ok(Self {
             graph: Box::new(graph),
             oracle,
-        }
+            oracle_path,
+        })
     }
 }
 
@@ -109,16 +115,18 @@ impl UkrailwayLane {
     /// fetches), ensure the pinned data set is under the cache root, and
     /// import it into the lane's `:memory:` store.
     pub(super) fn new(data_root: &Path, download: bool, queries: &[CorpusQuery]) -> Result<Self> {
-        let path = oracle_path();
-        let oracle = load_rows_oracle(&path)?;
-        validate_rows_oracle(&oracle, queries, &path)?;
+        let (oracle, oracle_path) = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
         let dir = ensure_ukrailway(
             data_root,
             &Workload::Ukrailway.dir().join("data.sha256"),
             download,
         )?;
         let graph = Box::new(load_graph(&dir)?);
-        Ok(Self { graph, oracle })
+        Ok(Self {
+            graph,
+            oracle,
+            oracle_path,
+        })
     }
 }
 
@@ -144,36 +152,28 @@ impl CorpusLane for UkrailwayLane {
     /// resolves through the shared non-executing table, and an `ok` id
     /// with no row is refused.
     fn route<'a>(&'a mut self, q: &'a CorpusQuery) -> Result<Routed<'a>> {
-        let Self { graph, oracle } = self;
-        Routed::rows_checked(&mut graph.conn, None, oracle, &oracle_path(), q)
+        let Self {
+            graph,
+            oracle,
+            oracle_path,
+        } = self;
+        Routed::rows_checked(&mut graph.conn, None, oracle, oracle_path, q)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::files::row_of;
-
     use super::super::workload_queries;
     use super::*;
 
+    /// The verified values are the oracle's substance: r02's one row of
+    /// two counts, r03's one row of hops and the station list — one
+    /// verified row per entry, two entries. The body is the shared one
+    /// (`super::super::the_oracle_covers`); this workload's one-size data
+    /// set keeps the single-file oracle path.
     #[test]
     fn the_committed_oracle_covers_every_executable_entry() {
-        let queries = workload_queries(Workload::Ukrailway).unwrap();
-        let oracle = load_rows_oracle(&oracle_path()).unwrap();
-        validate_rows_oracle(&oracle, &queries, &oracle_path()).unwrap();
-        for q in &queries {
-            let expected = row_of(&oracle, &q.id, &oracle_path()).unwrap();
-            // The verified values are the oracle's substance: r02's one
-            // row of two counts, r03's one row of hops and the station
-            // list.
-            assert_eq!(
-                expected.expected.rows.len(),
-                1,
-                "{}: one verified row",
-                q.id
-            );
-        }
-        assert_eq!(oracle.len(), 2, "r02 and r03");
+        super::super::fixtures::the_oracle_covers(Workload::Ukrailway, 2, 1);
     }
 
     /// The loader over the committed import script: its statements split
@@ -212,14 +212,15 @@ mod tests {
     #[test]
     fn the_lane_routes_every_committed_entry() {
         let queries = workload_queries(Workload::Ukrailway).unwrap();
-        let oracle = load_rows_oracle(&oracle_path()).unwrap();
         // The lane's graph and Box are built through the one constructor
-        // home — the struct literal lives only in the lane itself.
+        // home, and the lane derives and loads its own oracle — the
+        // struct literal lives only in the lane itself.
         let mut lane = UkrailwayLane::for_test(
             GraphHandle::memory("the route test's graph").unwrap(),
-            oracle,
-        );
-        super::super::assert_routes_every_committed_entry(&mut lane, &queries);
+            &queries,
+        )
+        .unwrap();
+        super::super::fixtures::assert_routes_every_committed_entry(&mut lane, &queries);
     }
 
     /// The graph line names the pin: the report's provenance carries the
@@ -227,10 +228,12 @@ mod tests {
     /// pin in the fetch module.
     #[test]
     fn the_graph_line_names_the_pinned_commit() {
-        let lane = UkrailwayLane {
-            graph: Box::new(GraphHandle::memory("the graph line test's graph").unwrap()),
-            oracle: Oracle::new(),
-        };
+        let queries = workload_queries(Workload::Ukrailway).unwrap();
+        let lane = UkrailwayLane::for_test(
+            GraphHandle::memory("the graph line test's graph").unwrap(),
+            &queries,
+        )
+        .unwrap();
         assert_eq!(
             lane.graph_line(),
             "the UK railway graph, imported into :memory: from the fetched \

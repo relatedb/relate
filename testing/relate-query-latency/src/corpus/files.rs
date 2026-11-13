@@ -2,7 +2,8 @@
 //! conventions and entry parsers every lane's side-table loader reads
 //! through — a lane's params table, the pathdb seed tables, an oracle
 //! file — the rows-oracle machinery the rows-oracle lanes (ukrailway,
-//! agg-stress) share whole (the [`Oracle`] table type, its one loader
+//! agg-stress and equi-join) share whole (the [`Oracle`] table type,
+//! its one loader
 //! ([`load_rows_oracle`]) and its one build-time contract
 //! ([`validate_rows_oracle`])) and the parameter-table machinery the
 //! snb-bi lane uses whole ([`ParamsTable`], its one
@@ -43,7 +44,7 @@ fn query_entries_of(
 /// A workload's per-scale-factor side table, `<stem>-sf<SF>.json` — the
 /// one home of the per-scale file-name convention every lane's loader
 /// reads through (the pathdb seed tables' and snb-bi parameter table's
-/// `params` files, the agg-stress workload's `oracle` files): a side
+/// `params` files, the rows-oracle workloads' `oracle` files): a side
 /// table whose rows are store-specific is recorded per scale factor, so
 /// a store at another scale factor resolves its own file — and a scale
 /// factor with no file fails loudly at load, never silently reusing
@@ -125,7 +126,7 @@ pub(super) struct OracleEntry {
 
 /// A rows-oracle lane's oracle table: per query id, the entry a run
 /// checks the executed result with — the ONE table type the rows-oracle
-/// lanes (ukrailway's and agg-stress's verified rows)
+/// lanes (ukrailway's, agg-stress's and equi-join's verified rows)
 /// hold, so the loader, the validation and the
 /// route all speak one type, never a lane-local re-spelling of it.
 pub(super) type Oracle = BTreeMap<String, OracleEntry>;
@@ -313,7 +314,7 @@ pub(super) fn validate_params(table: &ParamsTable, queries: &[CorpusQuery]) -> R
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ok_query, pin_query, query};
+    use super::super::fixtures::{ok_query, pin_query, query};
     use super::*;
 
     #[test]

@@ -82,9 +82,9 @@ impl CorpusLane for SnbBiLane {
 mod tests {
     use crate::workload::ScaleFactor;
 
+    use super::super::fixtures::ok_query;
+    use super::super::fixtures::query;
     use super::super::graph::evaluate;
-    use super::super::ok_query;
-    use super::super::query;
     use super::*;
 
     /// A temp workload dir holding one scale factor's params file, named

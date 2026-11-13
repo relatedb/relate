@@ -26,6 +26,12 @@
 //!   tens-of-seconds-scale timeout and matches the verified oracle
 //!   exactly (an engine-self oracle: the LABS-733 workload's own
 //!   recorded answers over the pinned data).
+//! - The equi-join corpus at SF0.1: gated on the same
+//!   `RELATE_QUERY_LATENCY=1` (the same graph-benchmark-ldbc graph), asserting its
+//!   ratchet — every `ok` entry answers within the lane's own timeout
+//!   and matches the verified oracle exactly (an engine-self oracle:
+//!   the LABS-1531 workload's own recorded pair counts over the pinned
+//!   data).
 //! - The pathdb SF1 subset (26 queries, the spike's recorded seeds):
 //!   gated on `RELATE_QUERY_LATENCY_SF1=1`, local only — the same
 //!   data cost as the graph-benchmark-ldbc lane's SF1 test.
@@ -36,6 +42,7 @@
 //! RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus snb_bi
 //! RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus ukrailway
 //! RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus agg_stress
+//! RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus equi_join
 //! RELATE_QUERY_LATENCY_SF1=1 cargo test --profile corpus -p relate-query-latency --test corpus sf1
 //! ```
 
@@ -85,6 +92,7 @@ fn corpus_config(workload: Workload, sf: ScaleFactor) -> CorpusConfig {
             download: true,
         },
         Workload::AggStress => Lane::AggStress { graph: graph() },
+        Workload::EquiJoin => Lane::EquiJoin { graph: graph() },
     };
     CorpusConfig {
         timeout: lane.default_timeout(),
@@ -257,20 +265,60 @@ fn the_ukrailway_workload_meets_its_ratchet() {
 /// behaviour.
 #[test]
 fn the_agg_stress_workload_meets_its_ratchet_at_sf0_1() {
-    if !enabled("RELATE_QUERY_LATENCY", "the SF0.1 agg-stress corpus") {
+    // Ten compact rows per entry, a04's complete fold output among them.
+    assert_store_lane_ratchet(
+        "the SF0.1 agg-stress corpus",
+        Workload::AggStress,
+        5,
+        "a01..a05",
+        10,
+    );
+}
+
+/// The equi-join workload at SF0.1 (LABS-1531): the three anchorless
+/// two-pattern entries run answer-checked against the engine-self
+/// oracle — a single count row each, the pair counts the product
+/// admits — so it gates answer regressions in the join itself, never
+/// upstream behaviour.
+#[test]
+fn the_equi_join_workload_meets_its_ratchet_at_sf0_1() {
+    // One count row each — e01 2184 selective pairs, e02 723576 fan-out
+    // pairs, e03 3537568 output pairs.
+    assert_store_lane_ratchet(
+        "the SF0.1 equi-join corpus",
+        Workload::EquiJoin,
+        3,
+        "e01..e03",
+        1,
+    );
+}
+
+/// The store-lane ratchet's shared body: run the lane, then the four
+/// facts every rows-oracle store lane asserts — the entry count, the
+/// ratchet, the recorded rows per executed entry, and the lane-scoped
+/// facts (the graph-benchmark-ldbc store's scale factor recorded, no seed
+/// policy, which none of these lanes runs). The gate variable is part of
+/// this body, not a caller choice: every rows-oracle store lane gates on
+/// the same one, so leaving it open would invite a test that silently
+/// skips. Each workload's test is one call with its own counts and its
+/// own prose about what its oracle gates.
+fn assert_store_lane_ratchet(
+    what: &str,
+    workload: Workload,
+    entries: usize,
+    ids: &str,
+    rows_per_entry: usize,
+) {
+    if !enabled("RELATE_QUERY_LATENCY", what) {
         return;
     }
-    let report = run_corpus(&corpus_config(Workload::AggStress, ScaleFactor::Sf0_1)).unwrap();
-    assert_eq!(report.entries.len(), 5, "a01..a05");
+    let report = run_corpus(&corpus_config(workload, ScaleFactor::Sf0_1)).unwrap();
+    assert_eq!(report.entries.len(), entries, "{ids}");
     assert_ratchet(&report);
-    // Every entry executed and was answer-checked: the compact recorded
-    // rows (ten per entry, a04's complete fold output among them).
     for e in &report.entries {
         assert_eq!(e.status, Status::Ok, "{}: {:?}", e.id, e.detail);
-        assert_eq!(e.rows, Some(10), "{}: its recorded rows", e.id);
+        assert_eq!(e.rows, Some(rows_per_entry), "{}: its recorded rows", e.id);
     }
-    // The lane ran over the graph-benchmark-ldbc store and recorded the scale factor —
-    // and no seed policy, which it does not run.
     assert_eq!(report.sf, Some(ScaleFactor::Sf0_1));
     assert_eq!(report.seed_policy, None);
 }

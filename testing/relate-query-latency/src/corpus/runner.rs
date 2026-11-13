@@ -5,7 +5,8 @@
 //! The lane reframe in one breath: [`build_lane`] matches the workload
 //! ONCE, each arm a one-line delegation into its lane module
 //! (`pathdb::PathdbLane`, `fraud::FraudGraphs`, `snbbi::SnbBiLane`,
-//! `ukrailway::UkrailwayLane`, `aggstress::AggStressLane`), which owns
+//! `ukrailway::UkrailwayLane`, the shared
+//! `oracle_store::RowsOracleStoreLane` the rows-oracle workloads build), which owns
 //! its own construction and routing policy — after which the run holds
 //! ONE [`CorpusLane`] and the entry loop is flat:
 //! [`CorpusLane::route`] resolves the entry's full disposition (one
@@ -22,9 +23,9 @@ use relate::Connection;
 
 use relate_test_support::sampling::process_peak_rss_bytes;
 
-use super::aggstress;
 use super::fraud;
 use super::graph::{CorpusLane, Routed, Target};
+use super::oracle_store;
 use super::pathdb;
 use super::report;
 use super::snbbi;
@@ -53,7 +54,12 @@ fn build_lane(cfg: &CorpusConfig, queries: &[CorpusQuery]) -> Result<Box<dyn Cor
         } => Box::new(ukrailway::UkrailwayLane::new(
             data_root, *download, queries,
         )?),
-        Lane::AggStress { graph } => Box::new(aggstress::AggStressLane::new(graph, queries)?),
+        // The two rows-oracle workloads share the one lane: its own
+        // workload (derived, never re-stated per arm) drives the oracle
+        // path; the workload modules own their facts and tests only.
+        Lane::AggStress { graph } | Lane::EquiJoin { graph } => Box::new(
+            oracle_store::RowsOracleStoreLane::new(cfg.lane.workload(), graph, queries)?,
+        ),
     })
 }
 
@@ -225,8 +231,8 @@ fn pin_entry(
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::{ok_query, pin_query};
     use super::super::fraud::{answer_diff, FraudCheck};
-    use super::super::{ok_query, pin_query};
     use super::*;
     use crate::answers::Expected;
     use relate::Database;
