@@ -168,6 +168,88 @@ fn inline_node_where_stays_on_gpm() {
     assert_stays_on_gpm(&g, q, &[2]);
 }
 
+/// LABS-1590: an end `WHERE` reading the relationship (group) variable is a
+/// search predicate, so the route takes the pattern; a start `WHERE`, or an
+/// end `WHERE` that reads no relationship or path variable, stays on GPM.
+#[test]
+fn end_where_over_the_group_variable_takes_the_route() {
+    assert!(guard_accepts(
+        "MATCH p = SHORTEST 1 (m)-[bs:R]->*(m WHERE size(bs) = 1) RETURN size(bs)"
+    ));
+    assert!(guard_accepts(
+        "MATCH p = ANY SHORTEST (a)-[bs:R*]->(b WHERE size(bs) > 1) RETURN size(bs)"
+    ));
+    assert!(guard_accepts(
+        "MATCH p = ANY SHORTEST (a)-[:R*]->(b WHERE length(p) > 1) RETURN 1"
+    ));
+    assert!(!guard_accepts(
+        "MATCH p = ANY SHORTEST (a WHERE size(bs) = 1)-[bs:R*]->(b) RETURN 1"
+    ));
+    assert!(!guard_accepts(
+        "MATCH p = ANY SHORTEST (a)-[bs:R*]->(b WHERE b.id = 3) RETURN 1"
+    ));
+}
+
+/// Self-loops on one node: enumerating every trail before the selection
+/// grows about tenfold per loop (19 s at ten), the route answers the first
+/// length that satisfies the end `WHERE`.
+#[test]
+fn end_where_over_the_group_variable_is_not_exponential_in_self_loops() {
+    let g = plain(1, &[(0, 0); 12]);
+    for q in [
+        "MATCH p = SHORTEST 1 (m)-[bs:R]->*(m WHERE size(bs) = 1) RETURN size(bs)",
+        "MATCH p = ANY SHORTEST (m)-[bs:R*]->(m WHERE size(bs) = 1) RETURN size(bs)",
+    ] {
+        let (rows, counts) = run(&g, q);
+        assert!(counts.route_runs > 0, "expected the BFS route for {q}");
+        assert_eq!(rows, vec![vec![Value::Int(1)]], "{q}");
+    }
+}
+
+/// The route against GPM's enumerate-then-select, on a graph whose shortest
+/// satisfying trail is longer than the shortest one.
+#[test]
+fn end_where_over_the_group_variable_agrees_with_gpm() {
+    let g = shortcut();
+    for selector in [
+        "ANY SHORTEST",
+        "SHORTEST 1",
+        "ALL SHORTEST",
+        "SHORTEST 1 GROUP",
+    ] {
+        for pred in [
+            "size(bs) >= 3",
+            "size(bs) = 2",
+            "size(bs) > 9",
+            "size(bs) % 2 = 1",
+        ] {
+            for q in [
+                format!(
+                    "MATCH p = {selector} (a {{id: 0}})-[bs:R]->*(b WHERE {pred}) \
+                     RETURN b.id, size(bs) ORDER BY b.id, size(bs)"
+                ),
+                format!(
+                    "MATCH p = {selector} (a {{id: 0}})-[bs:R*]->(b {{id: 3}} WHERE {pred}) \
+                     RETURN size(bs)"
+                ),
+                format!(
+                    "MATCH p = {selector} (a)-[bs:R*]->(b WHERE {pred}) \
+                     RETURN a.id, b.id, size(bs)"
+                ),
+            ] {
+                let (rows, counts) = run(&g, &q);
+                assert!(counts.route_runs > 0, "expected the BFS route for {q}");
+                assert_eq!(sorted(rows), gpm(&g, &q), "{q}");
+            }
+        }
+    }
+    // The shortest 0 -> 3 trail has two relationships; the shortest one of
+    // three or more is 0-1-2-3.
+    let q = "MATCH p = ANY SHORTEST (a {id: 0})-[bs:R]->*(b {id: 3} WHERE size(bs) >= 3) \
+             RETURN size(bs)";
+    assert_eq!(on_route(&g, q), vec![vec![Value::Int(3)]]);
+}
+
 /// A clause-level `WHERE` over the path is a postfilter for the postfix
 /// spelling: the selector picks the one shortest path, then the predicate
 /// drops it, so the route yields to GPM's enumeration here.

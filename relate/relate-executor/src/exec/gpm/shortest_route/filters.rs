@@ -26,7 +26,7 @@
 use std::collections::HashSet;
 
 use relate_core::{Error, NodeId, Result};
-use relate_ir::{Expr, NodePattern, PathPattern};
+use relate_ir::{Expr, NodePattern, PathPattern, PatternElement};
 
 use crate::ctx::ExecCtx;
 use crate::eval::expr_vars;
@@ -41,7 +41,8 @@ use crate::row::Row;
 /// [`crate::exec::pushdown::conjunct_ready`]).
 pub(super) struct PathFilter<'a> {
     conjuncts: Vec<&'a Expr>,
-    inline: Option<&'a Expr>,
+    /// The pattern's own inline `WHERE`s: the path's, then the end node's.
+    inline: Vec<&'a Expr>,
     scope: &'a HashSet<String>,
 }
 
@@ -55,7 +56,10 @@ impl<'a> PathFilter<'a> {
     /// The union the search must decide: the path-reading clause conjuncts,
     /// then the pattern's inline `WHERE`.
     fn predicates(&self) -> impl Iterator<Item = &'a Expr> + '_ {
-        self.conjuncts.iter().copied().chain(self.inline)
+        self.conjuncts
+            .iter()
+            .copied()
+            .chain(self.inline.iter().copied())
     }
 
     /// Whether every predicate is ready on `probe`, a row carrying every
@@ -153,12 +157,19 @@ impl<'p> RouteFilters<'p> {
                 vars.iter().any(|name| carriers.contains(name.as_str()))
             });
         let scope = residual.scope;
-        let path_filter =
-            (path.where_clause.is_some() || !conjuncts.is_empty()).then_some(PathFilter {
-                conjuncts,
-                inline: path.where_clause.as_deref(),
-                scope,
-            });
+        // The end node's inline `WHERE` rides the search too: the guard
+        // admits it only when it reads the relationship or path variable.
+        let inline: Vec<&Expr> = path
+            .where_clause
+            .as_deref()
+            .into_iter()
+            .chain(route_end(path).and_then(|end| end.where_clause.as_ref()))
+            .collect();
+        let path_filter = (!inline.is_empty() || !conjuncts.is_empty()).then_some(PathFilter {
+            conjuncts,
+            inline,
+            scope,
+        });
         Self {
             path: path_filter,
             pair: (!endpoint_only.is_empty()).then_some(PairFilter {
@@ -166,5 +177,14 @@ impl<'p> RouteFilters<'p> {
                 scope,
             }),
         }
+    }
+}
+
+/// The routed pattern's end node: the last element of its three-element
+/// shape (the guard admitted nothing else).
+fn route_end(path: &PathPattern) -> Option<&NodePattern> {
+    match path.elements.last() {
+        Some(PatternElement::Node(end)) => Some(end),
+        _ => None,
     }
 }

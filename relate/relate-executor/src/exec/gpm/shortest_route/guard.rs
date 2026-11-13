@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use relate_core::Value;
 use relate_ir::{
-    MatchMode, NodePattern, PathMode, PathPattern, PathSelector, PatternElement, RelPattern,
+    Expr, MatchMode, NodePattern, PathMode, PathPattern, PathSelector, PatternElement, RelPattern,
 };
 
 use crate::eval::expr_vars;
@@ -136,19 +136,32 @@ pub(super) fn route_shape<'p>(
         .into_iter()
         .chain(path.path_names().map(|name| name.to_string()))
         .collect();
-    let endpoint_ok = |np: &NodePattern| {
+    let reads_late = |expr: &Expr| {
+        let mut vars = HashSet::new();
+        expr_vars(expr, &mut vars);
+        late.iter().any(|v| vars.contains(v.as_str()))
+    };
+    // The end's inline `WHERE` is admitted only when it reads the
+    // relationship or path variable (LABS-1590): it is then a search
+    // predicate, decided on each bound trail like the pattern's own inline
+    // `WHERE` (`PathFilter`), since enumerating every trail before the
+    // selection is exponential in the hop count. An endpoint-only `WHERE`
+    // stays on GPM, and so does any start `WHERE`.
+    let endpoint_ok = |np: &NodePattern, where_ok: bool| {
         let mut vars = HashSet::new();
         if let Some(props) = &np.properties {
             expr_vars(props, &mut vars);
         }
-        np.where_clause.is_none()
+        np.where_clause
+            .as_ref()
+            .is_none_or(|w| where_ok && reads_late(w))
             && np
                 .variable
                 .as_ref()
                 .is_none_or(|v| matches!(row.get_name(v), None | Some(Value::Node(_))))
             && !late.iter().any(|v| vars.contains(v.as_str()))
     };
-    (endpoint_ok(hop.start) && endpoint_ok(hop.end)).then_some(hop)
+    (endpoint_ok(hop.start, false) && endpoint_ok(hop.end, true)).then_some(hop)
 }
 
 /// The routed var-length hop of a three-element pattern decoded into the
