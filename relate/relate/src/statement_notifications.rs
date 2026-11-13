@@ -82,8 +82,8 @@ mod shape;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use relate_executor::{
-    builtin_function_deprecation, builtin_procedure_deprecation, DeprecatedBy, DeprecationForm,
-    ExecGraph, IndexFacts,
+    builtin_function_deprecation, builtin_procedure_deprecation, is_void_procedure, DeprecatedBy,
+    DeprecationForm, ExecGraph, IndexFacts, Procedure,
 };
 use relate_ir::{
     expr_vars, walk_pattern_payloads, Clause, Expr, ExprRole, LabelExpr, MapProjectionItem,
@@ -222,9 +222,11 @@ struct Facts {
 
 impl Facts {
     /// One clause's contributions: a `MATCH` pattern's read payloads, a
-    /// `CALL` deprecation, and the scope-less `CALL { … }` subquery. A
-    /// `CREATE`/`MERGE` target pattern contributes nothing (ADR-0363
-    /// decision 13): its names are the write's own output.
+    /// `CALL` deprecation, the redundant-`OPTIONAL` kinds (`03N61` over a
+    /// void procedure, `03N62` over a unit subquery), and the scope-less
+    /// `CALL { … }` subquery. A `CREATE`/`MERGE` target pattern contributes
+    /// nothing (ADR-0363 decision 13): its names are the write's own
+    /// output.
     fn observe_clause(
         &mut self,
         clause: &Clause,
@@ -283,7 +285,17 @@ impl Facts {
                 ..
             } => shape::observe_projection(&mut self.notifications, items, order, None, *distinct),
             Clause::Create { patterns } => shape::observe_create(&mut self.notifications, patterns),
-            Clause::Call { name, .. } => self.observe_call(view, name),
+            Clause::Call { name, optional, .. } => {
+                // One lookup serves both readers: the deprecation detector's
+                // shadow check and the redundant-`OPTIONAL` void check. Each
+                // `ExecGraph::procedure` is an owned clone, so the arm
+                // resolves the name once rather than twice.
+                let registered = name.with_str(|text| view.procedure(text));
+                self.observe_call(registered.as_ref(), name);
+                if *optional {
+                    self.observe_redundant_optional_procedure(registered.as_ref(), name);
+                }
+            }
             // A MERGE property map reading the entity it merges
             // (`MERGE (a {prop: a.prop})`) is the deprecated self-reference
             // (MergeAcceptance [6]). The shape is a deprecation fact, not
@@ -301,11 +313,22 @@ impl Facts {
                     ));
                 }
             }
-            Clause::CallSubquery { scope, .. } => {
+            Clause::CallSubquery {
+                scope,
+                optional,
+                query,
+                ..
+            } => {
                 if !scope.has_scope_clause() {
                     self.notifications.push(Notification::new(
                         NotificationKind::CallSubqueryWithoutScope,
                         "The `CALL { … }` subquery has no variable scope clause.",
+                    ));
+                }
+                if *optional && !query.projects_columns() {
+                    self.notifications.push(Notification::new(
+                        NotificationKind::RedundantOptionalSubquery,
+                        "The use of `OPTIONAL` is redundant as `CALL` is a unit subquery.",
                     ));
                 }
             }
@@ -398,8 +421,8 @@ impl Facts {
     /// built-in for validation and execution, so it shadows its
     /// deprecation fact too; a non-deprecated or unknown name contributes
     /// nothing.
-    fn observe_call(&mut self, view: &ExecGraph<'_>, name: &SmallName) {
-        if name.with_str(|text| view.procedure(text)).is_some() {
+    fn observe_call(&mut self, registered: Option<&Procedure>, name: &SmallName) {
+        if registered.is_some() {
             return;
         }
         let Some(replacement) = name.with_str(builtin_procedure_deprecation) else {
@@ -412,6 +435,26 @@ impl Facts {
             )
             .with_remedy(deprecation_remedy(replacement)),
         );
+    }
+
+    /// `OPTIONAL CALL <void procedure>` — the `OPTIONAL` adds nothing
+    /// because the procedure declares no return columns (03N62's procedure
+    /// sibling, 03N61). Voidness is the shared
+    /// [`is_void_procedure`] predicate the `CALL` contract already reads,
+    /// not a second spelling of it.
+    fn observe_redundant_optional_procedure(
+        &mut self,
+        registered: Option<&Procedure>,
+        name: &SmallName,
+    ) {
+        if name.with_str(|text| is_void_procedure(registered, text)) {
+            self.notifications.push(Notification::new(
+                NotificationKind::RedundantOptionalProcedure,
+                format!(
+                    "The use of `OPTIONAL` is redundant as `CALL {name}()` is a void procedure."
+                ),
+            ));
+        }
     }
 
     /// One read path pattern's node and relationship payloads, through the

@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use relate_executor::Graph;
+use relate_executor::{is_void_procedure, Graph};
 use relate_ir::{Clause, Expr};
 use relate_planner::LogicalPlan;
 
@@ -84,24 +84,21 @@ fn validate_call_positions(graph: &Graph, logical: &LogicalPlan, result: &mut Re
             else {
                 continue;
             };
-            if !yield_items.has_yield() && !is_void_procedure(graph, name) {
-                *result = Err(Error::syntax(
-                    "MissingYield: 42N25 a procedure call inside a query must name its results with YIELD",
-                ));
-                return;
+            // The registry lookup clones the whole procedure (its stored
+            // rows included), so it is resolved only where the answer
+            // decides: a YIELDed call never pays for it.
+            if !yield_items.has_yield() {
+                let void =
+                    name.with_str(|text| is_void_procedure(graph.procedure(text).as_ref(), text));
+                if !void {
+                    *result = Err(Error::syntax(
+                        "MissingYield: 42N25 a procedure call inside a query must name its results with YIELD",
+                    ));
+                    return;
+                }
             }
         }
     });
-}
-
-/// Whether the procedure behind `name` declares no return columns — the
-/// registry's own answer, from the same table the CALL contract reads.
-fn is_void_procedure(graph: &Graph, name: &relate_names::SmallName) -> bool {
-    if let Some(proc) = name.with_str(|text| graph.procedure(text)) {
-        return proc.yield_names.is_empty();
-    }
-    name.with_str(relate_executor::builtin_procedure_signature)
-        .is_some_and(|signature| signature.return_columns().next().is_none())
 }
 
 /// The per-clause validation body of [`validate_calls`]: a no-op for

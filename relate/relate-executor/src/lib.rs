@@ -160,7 +160,8 @@ pub use memory::EXPRESSION_BUDGET_BYTES;
 pub use procedure_gate::procedure_preview_feature;
 pub use procedure_registry::{
     builtin_procedure_deprecation, builtin_procedure_signature, call_is_write,
-    is_ontology_procedure, is_ontology_store_op, is_ontology_write_procedure, ProcSignature,
+    is_ontology_procedure, is_ontology_store_op, is_ontology_write_procedure, is_void_procedure,
+    ProcSignature,
 };
 pub use redo::{
     legacy_property_encoding, props_from_json, split_legacy_property_encoding, IndexDetailSpec,

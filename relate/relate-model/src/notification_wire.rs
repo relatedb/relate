@@ -149,6 +149,10 @@ pub enum NotificationKind {
     HintedIndexNotFound,
     /// A `USING JOIN ON` hint the planner could not fulfil (`01N30`).
     JoinHintUnfulfillable,
+    /// An `OPTIONAL CALL` over a procedure that produces no rows (`03N61`).
+    RedundantOptionalProcedure,
+    /// An `OPTIONAL CALL { … }` whose body projects no columns (`03N62`).
+    RedundantOptionalSubquery,
 }
 
 /// One row of the notification vocabulary (ADR-0363 decision 1). The
@@ -505,6 +509,30 @@ const VECTOR_INDEX_DIMENSIONS_NOT_SPECIFIED_ROW: NotificationRow = NotificationR
     occurrence_scoped: false,
 };
 
+const REDUNDANT_OPTIONAL_PROCEDURE_ROW: NotificationRow = NotificationRow {
+    code: "Neo.ClientNotification.Statement.RedundantOptionalProcedure",
+    gql_status: "03N61",
+    severity: NotificationSeverity::Information,
+    category: NotificationCategory::Performance,
+    title: "Redundant optional procedure",
+    remedy: "Drop `OPTIONAL`: the procedure declares no return columns, so the call yields \
+             the same single row either way.",
+    plan_warning: false,
+    occurrence_scoped: true,
+};
+
+const REDUNDANT_OPTIONAL_SUBQUERY_ROW: NotificationRow = NotificationRow {
+    code: "Neo.ClientNotification.Statement.RedundantOptionalSubquery",
+    gql_status: "03N62",
+    severity: NotificationSeverity::Information,
+    category: NotificationCategory::Performance,
+    title: "Redundant optional subquery",
+    remedy: "Drop `OPTIONAL`: the subquery projects no columns, so the call yields the same \
+             single row either way.",
+    plan_warning: false,
+    occurrence_scoped: true,
+};
+
 impl NotificationKind {
     /// The vocabulary row for this kind — the one lookup every metadata
     /// accessor reads, so no accessor re-spells a code or status. The
@@ -543,6 +571,8 @@ impl NotificationKind {
                 &SEARCH_IDENTIFIER_SHADOWING_VARIABLE_ROW
             }
             NotificationKind::ExhaustiveShortestPath => &EXHAUSTIVE_SHORTEST_PATH_ROW,
+            NotificationKind::RedundantOptionalProcedure => &REDUNDANT_OPTIONAL_PROCEDURE_ROW,
+            NotificationKind::RedundantOptionalSubquery => &REDUNDANT_OPTIONAL_SUBQUERY_ROW,
             NotificationKind::SchemaIndexOrConstraintAlreadyExists => {
                 &INDEX_OR_CONSTRAINT_ALREADY_EXISTS_ROW
             }
