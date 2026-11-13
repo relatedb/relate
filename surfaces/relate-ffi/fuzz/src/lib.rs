@@ -145,3 +145,15 @@ extern "C" {
         error_json: *mut *mut c_char,
     ) -> relate_status;
 }
+
+/// Take the caller-owned error channel back: free the string if the call
+/// filled one, and reset the out-param — the one reclaim policy every
+/// site in this harness shares.
+pub fn reclaim(err: &mut *mut c_char) {
+    if !err.is_null() {
+        // SAFETY: a non-null error string was handed out by the ABI and is
+        // freed exactly once here before the out-param is reset.
+        unsafe { relate_free_string(*err) };
+        *err = std::ptr::null_mut();
+    }
+}

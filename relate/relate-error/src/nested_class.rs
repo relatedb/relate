@@ -71,13 +71,56 @@ const GQLSTATUS_NOT_SYSTEM_DATABASE: &str = "51N28";
 /// element-id format rejections carry it.
 const GQLSTATUS_EXECUTION_FAILED: &str = "50N00";
 
-/// The closed vocabulary of that scan: one variant per class name the
-/// engine's CE formatters (`relate_core::ce_messages`,
-/// ADR-0116 §9/ADR-0117 §6) and the legacy constraint classes embed. The
-/// token parsing stays at the scan's one boundary; every consumer matches
-/// the typed variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NestedErrorClass {
+/// Generates [`NestedErrorClass`], its [`NestedErrorClass::ALL`] roster
+/// and its [`as_str`](NestedErrorClass::as_str) spelling from the one
+/// variant list, so a new variant cannot miss the roster or the spelling.
+macro_rules! nested_error_classes {
+    ($($(#[$meta:meta])* $variant:ident,)+) => {
+        /// The closed vocabulary of that scan: one variant per class name the
+        /// engine's CE formatters (`relate_core::ce_messages`,
+        /// ADR-0116 §9/ADR-0117 §6) and the legacy constraint classes embed. The
+        /// token parsing stays at the scan's one boundary; every consumer matches
+        /// the typed variant.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum NestedErrorClass {
+            $($(#[$meta])* $variant,)+
+        }
+
+        impl NestedErrorClass {
+            /// Every class the scan recognizes, in enum order — the one
+            /// list the scan's exact-match half and the round-trip test
+            /// derive from; generated from the variant list, so it cannot
+            /// drift from the enum.
+            pub(crate) const ALL: &'static [NestedErrorClass] =
+                &[$(NestedErrorClass::$variant,)+];
+
+            /// The one string spelling of the class — the `<Class>:` token
+            /// the engine embeds and the bindings report. Generated from
+            /// the variant name, so the spelling is single-sourced.
+            ///
+            /// ```
+            /// use relate_error::{nested_error_class, NestedErrorClass};
+            ///
+            /// assert_eq!(
+            ///     NestedErrorClass::ConstraintVerificationFailed.as_str(),
+            ///     "ConstraintVerificationFailed"
+            /// );
+            /// assert_eq!(
+            ///     nested_error_class("ArgumentError: bad options"),
+            ///     Some(NestedErrorClass::ArgumentError)
+            /// );
+            /// assert_eq!(NestedErrorClass::ArgumentError.as_str(), "ArgumentError");
+            /// ```
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(NestedErrorClass::$variant => stringify!($variant),)+
+                }
+            }
+        }
+    };
+}
+
+nested_error_classes! {
     /// The legacy constraint family (`ConstraintValidationFailed:` /
     /// `ConstraintVerificationFailed:` tokens, anywhere in the payload).
     ConstraintVerificationFailed,
@@ -131,87 +174,6 @@ pub enum NestedErrorClass {
 }
 
 impl NestedErrorClass {
-    /// Every class the scan recognizes, in enum order — the one list the
-    /// scan's exact-match half and the round-trip test derive from, so a
-    /// new variant lands in both by construction and the spellings are
-    /// written exactly once (in [`as_str`](Self::as_str)).
-    pub(crate) const ALL: [NestedErrorClass; 22] = [
-        NestedErrorClass::ConstraintVerificationFailed,
-        NestedErrorClass::ArgumentError,
-        NestedErrorClass::EntityNotFound,
-        NestedErrorClass::ProcedureError,
-        NestedErrorClass::SyntaxError,
-        NestedErrorClass::SemanticError,
-        NestedErrorClass::UnsupportedAdministrationCommand,
-        NestedErrorClass::WriteOnReadOnlyAccessDatabase,
-        NestedErrorClass::DatabaseNotFound,
-        NestedErrorClass::TransactionError,
-        NestedErrorClass::ConstraintAlreadyExists,
-        NestedErrorClass::EquivalentConstraintAlreadyExists,
-        NestedErrorClass::ConstraintConflict,
-        NestedErrorClass::ConstraintNotFound,
-        NestedErrorClass::DependentConstraintManagedIndividually,
-        NestedErrorClass::DuplicatedIndexName,
-        NestedErrorClass::IndexAlreadyExists,
-        NestedErrorClass::EquivalentSchemaRuleAlreadyExists,
-        NestedErrorClass::IncompatibleGraphTypeDependence,
-        NestedErrorClass::IndexDoesNotExist,
-        NestedErrorClass::SystemDatabaseRequired,
-        NestedErrorClass::ElementIdUnexpectedFormat,
-    ];
-
-    /// The one string spelling of the class — the `<Class>:` token the
-    /// engine embeds and the bindings report. Derived from the enum, so
-    /// the spelling is single-sourced.
-    ///
-    /// ```
-    /// use relate_error::{nested_error_class, NestedErrorClass};
-    ///
-    /// assert_eq!(
-    ///     NestedErrorClass::ConstraintVerificationFailed.as_str(),
-    ///     "ConstraintVerificationFailed"
-    /// );
-    /// assert_eq!(
-    ///     nested_error_class("ArgumentError: bad options"),
-    ///     Some(NestedErrorClass::ArgumentError)
-    /// );
-    /// assert_eq!(NestedErrorClass::ArgumentError.as_str(), "ArgumentError");
-    /// ```
-    pub fn as_str(self) -> &'static str {
-        match self {
-            NestedErrorClass::ConstraintVerificationFailed => "ConstraintVerificationFailed",
-            NestedErrorClass::ArgumentError => "ArgumentError",
-            NestedErrorClass::EntityNotFound => "EntityNotFound",
-            NestedErrorClass::ProcedureError => "ProcedureError",
-            NestedErrorClass::SyntaxError => "SyntaxError",
-            NestedErrorClass::SemanticError => "SemanticError",
-            NestedErrorClass::UnsupportedAdministrationCommand => {
-                "UnsupportedAdministrationCommand"
-            }
-            NestedErrorClass::WriteOnReadOnlyAccessDatabase => "WriteOnReadOnlyAccessDatabase",
-            NestedErrorClass::DatabaseNotFound => "DatabaseNotFound",
-            NestedErrorClass::TransactionError => "TransactionError",
-            NestedErrorClass::ConstraintAlreadyExists => "ConstraintAlreadyExists",
-            NestedErrorClass::EquivalentConstraintAlreadyExists => {
-                "EquivalentConstraintAlreadyExists"
-            }
-            NestedErrorClass::ConstraintConflict => "ConstraintConflict",
-            NestedErrorClass::ConstraintNotFound => "ConstraintNotFound",
-            NestedErrorClass::DependentConstraintManagedIndividually => {
-                "DependentConstraintManagedIndividually"
-            }
-            NestedErrorClass::DuplicatedIndexName => "DuplicatedIndexName",
-            NestedErrorClass::IndexAlreadyExists => "IndexAlreadyExists",
-            NestedErrorClass::EquivalentSchemaRuleAlreadyExists => {
-                "EquivalentSchemaRuleAlreadyExists"
-            }
-            NestedErrorClass::IncompatibleGraphTypeDependence => "IncompatibleGraphTypeDependence",
-            NestedErrorClass::IndexDoesNotExist => "IndexDoesNotExist",
-            NestedErrorClass::SystemDatabaseRequired => "SystemDatabaseRequired",
-            NestedErrorClass::ElementIdUnexpectedFormat => "ElementIdUnexpectedFormat",
-        }
-    }
-
     /// The openCypher class the language bindings report for this token, or
     /// `None` for a schema/DDL condition token — those are classified for
     /// their GQLSTATUS while the bindings keep the class they had before
@@ -263,8 +225,9 @@ pub fn nested_error_class(payload: &str) -> Option<NestedErrorClass> {
         .map_or(payload, |(name, _)| name)
         .trim();
     let leading = NestedErrorClass::ALL
-        .into_iter()
-        .find(|&class| class.as_str() == name);
+        .iter()
+        .copied()
+        .find(|class| class.as_str() == name);
     if leading.is_some() {
         return leading;
     }
@@ -379,7 +342,7 @@ mod tests {
     /// the wire spelling cannot drift.
     #[test]
     fn every_nested_class_renders_its_embedded_token() {
-        for class in NestedErrorClass::ALL {
+        for &class in NestedErrorClass::ALL {
             let token = class.as_str();
             let scanned = nested_error_class(&format!("{token}: x"))
                 .unwrap_or_else(|| panic!("token {token} not recognized by the scan"));

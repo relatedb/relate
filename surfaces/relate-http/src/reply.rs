@@ -163,10 +163,10 @@ pub(crate) fn namespace_connect_failure(e: &Error) -> Reply {
     // namespace is the client's own doing); an internal-class failure
     // during connect is the server's own, and files exactly as
     // `run_error` files it (500, genericized) — one engine-error policy.
-    match error_info(e).stage {
+    let info = error_info(e);
+    match info.stage {
         ErrorStage::Internal => run_error(e),
         ErrorStage::Compile | ErrorStage::Runtime => {
-            let info = error_info(e);
             error_envelope(404, info.gql_status, &client_message(e))
         }
     }
