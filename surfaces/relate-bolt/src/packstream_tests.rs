@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 struct DecodeAllocationGuard;
 static COUNT_DECODE_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
 static REQUESTED_DECODE_BYTES: AtomicUsize = AtomicUsize::new(0);
+// The open-session limit the budget tests below size their messages by.
+const MAX_DECODE_BYTES: usize = DecodeLimit::Open.bytes();
 // What an over-budget decode reports through `decode`.
 const OVER_BUDGET: &str = "packstream decode budget exceeded";
 const MAX_REQUESTED_DECODE_BYTES: usize = 128 * 1024 * 1024;
@@ -447,4 +449,71 @@ fn map32_roundtrips_and_oversized_struct_is_an_error() {
     })
     .is_err());
     assert!(try_struct_msg(0x70, vec![Pack::Null; 16]).is_err());
+}
+
+#[test]
+fn the_pre_auth_limit_is_a_small_fraction_of_the_open_limit() {
+    assert_eq!(DecodeLimit::PreAuth.bytes(), 1024 * 1024);
+    assert_eq!(DecodeLimit::Open.bytes(), 64 * 1024 * 1024);
+}
+
+#[test]
+fn a_message_over_the_pre_auth_limit_is_refused_there_and_accepted_when_open() {
+    let fits = DecodeLimit::PreAuth.bytes() / NODE_BYTES;
+    // The root list node plus `fits` nulls is one node past the limit.
+    let message = encode(&Pack::List(vec![Pack::Null; fits])).unwrap();
+    match decode_message(&message, DecodeLimit::PreAuth) {
+        Err(DecodeError::BudgetExceeded {
+            at_least_bytes,
+            limit,
+        }) => {
+            assert_eq!(limit, DecodeLimit::PreAuth);
+            assert!(at_least_bytes > DecodeLimit::PreAuth.bytes());
+        }
+        other => panic!("expected the pre-auth budget, got {other:?}"),
+    }
+    assert!(decode_message(&message, DecodeLimit::Open).is_ok());
+}
+
+#[test]
+fn the_pre_auth_boundary_is_exact_in_nodes() {
+    let fits = DecodeLimit::PreAuth.bytes() / NODE_BYTES;
+    let accepted = encode(&Pack::List(vec![Pack::Null; fits - 1])).unwrap();
+    assert!(decode_message(&accepted, DecodeLimit::PreAuth).is_ok());
+    let rejected = encode(&Pack::List(vec![Pack::Null; fits])).unwrap();
+    assert!(matches!(
+        decode_message(&rejected, DecodeLimit::PreAuth),
+        Err(DecodeError::BudgetExceeded { .. })
+    ));
+}
+
+#[test]
+fn a_realistic_hello_and_logon_fit_the_pre_auth_limit() {
+    // A HELLO's extra map and a LOGON's auth token with a long bearer
+    // credential are the largest messages an unauthenticated peer sends.
+    let token = "x".repeat(16 * 1024);
+    let logon = Pack::Struct {
+        tag: 0x6A,
+        fields: vec![Pack::Map(vec![
+            (Pack::String("scheme".into()), Pack::String("bearer".into())),
+            (Pack::String("credentials".into()), Pack::String(token)),
+        ])],
+    };
+    assert!(decode_message(&encode(&logon).unwrap(), DecodeLimit::PreAuth).is_ok());
+}
+
+#[test]
+fn at_least_bytes_is_a_lower_bound_on_the_true_decoded_size() {
+    for limit in [DecodeLimit::PreAuth, DecodeLimit::Open] {
+        let n = limit.bytes() / NODE_BYTES + 10;
+        let message = encode(&Pack::List(vec![Pack::Null; n])).unwrap();
+        let Err(DecodeError::BudgetExceeded { at_least_bytes, .. }) =
+            decode_message(&message, limit)
+        else {
+            panic!("expected the budget for {limit:?}");
+        };
+        assert!(at_least_bytes > limit.bytes());
+        // The true size is one node per value plus the root.
+        assert!(at_least_bytes <= (n + 1) * NODE_BYTES);
+    }
 }

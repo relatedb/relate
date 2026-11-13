@@ -6,7 +6,7 @@
 //! gates and handlers over this vocabulary; the request-field decoders
 //! live in `fields.rs`.
 
-use crate::packstream::Pack;
+use crate::packstream::{DecodeLimit, Pack};
 use crate::version::BoltVersion;
 
 /// The Bolt request messages (ADR-0315; the 5.x additions per
@@ -178,6 +178,7 @@ impl std::fmt::Display for Undecodable {
 /// decoding, so the session's ignore classifications still apply.
 pub(crate) struct OverBudget {
     pub(crate) at_least_bytes: usize,
+    pub(crate) limit: DecodeLimit,
     pub(crate) bytes: usize,
     pub(crate) message: Option<Message>,
 }
@@ -185,9 +186,15 @@ pub(crate) struct OverBudget {
 impl OverBudget {
     /// The one constructor: the refusal of `payload` at `version`, naming
     /// the request its structure tag reads as without decoding it.
-    pub(crate) fn of_payload(at_least_bytes: usize, payload: &[u8], version: BoltVersion) -> Self {
+    pub(crate) fn of_payload(
+        at_least_bytes: usize,
+        limit: DecodeLimit,
+        payload: &[u8],
+        version: BoltVersion,
+    ) -> Self {
         OverBudget {
             at_least_bytes,
+            limit,
             bytes: payload.len(),
             message: crate::packstream::struct_tag(payload)
                 .and_then(|tag| Message::from_signature(tag, version)),
@@ -196,7 +203,7 @@ impl OverBudget {
 
     /// The FAILURE text naming what was measured, the limit and the remedy.
     pub(crate) fn failure_text(&self) -> String {
-        crate::failures::decode_budget_message(self.at_least_bytes, self.bytes)
+        crate::failures::decode_budget_message(self.at_least_bytes, self.limit, self.bytes)
     }
 
     /// Whether queued ahead of a batch's last RESET this message answers
@@ -231,9 +238,15 @@ impl Refused {
         version: BoltVersion,
     ) -> Result<Self, crate::packstream::DecodeError> {
         match error {
-            crate::packstream::DecodeError::BudgetExceeded { at_least_bytes } => Ok(
-                Refused::OverBudget(OverBudget::of_payload(at_least_bytes, payload, version)),
-            ),
+            crate::packstream::DecodeError::BudgetExceeded {
+                at_least_bytes,
+                limit,
+            } => Ok(Refused::OverBudget(OverBudget::of_payload(
+                at_least_bytes,
+                limit,
+                payload,
+                version,
+            ))),
             // Exhaustive on purpose: a new `DecodeError` variant must
             // choose its class here, beside `is_fatal`.
             fatal @ crate::packstream::DecodeError::Malformed(_) => Err(fatal),
