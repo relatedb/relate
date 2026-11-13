@@ -4,7 +4,7 @@
 //! Not to be confused with [`crate::adjacency`], the store tier these
 //! accessors read and write: the typed hop chunks, the sealed stream, and
 //! the fold between them.
-use super::hop_counts;
+use super::accounting::hop_counts;
 use super::id_vec::IdVec;
 use super::shard;
 use super::*;

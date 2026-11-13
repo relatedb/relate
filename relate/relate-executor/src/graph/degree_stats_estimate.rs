@@ -17,9 +17,10 @@ use std::collections::{HashMap, HashSet};
 
 use relate_core::{NodeId, RelId};
 
+use super::accounting::FreshIds;
 use super::count_state::CountDelta;
 use super::degree_stats_incident::IncidentRel;
-use super::{fill_labels, FreshIds, Graph};
+use super::{fill_labels, Graph};
 use crate::redo::RedoOp;
 
 impl Graph {

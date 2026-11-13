@@ -6,6 +6,7 @@
 //! (ids, pins, charging, catalog reads); the seams that install a version,
 //! maintain the indexes/adjacency/counts, and push redo live here.
 
+use super::accounting::adj_floor;
 use super::adjacency::adj_tombstone_deleted;
 use super::id_vec::IdVec;
 use super::*;
