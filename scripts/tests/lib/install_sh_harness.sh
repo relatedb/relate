@@ -200,7 +200,9 @@ EOF
 # direct sums arm serves; legacy_tag and publisher_doc select both arms
 # together, serving one release end to end; sums_404, sums_403, sig_404
 # and binary_404 fail one direct-route asset with the named status;
-# corrupt and sig_invalid fail the binary body and the signature check.
+# corrupt and sig_invalid fail the binary body and the signature check;
+# metadata_unreachable aborts every request, so the metadata fetch dies
+# first and no download is ever attempted.
 # `ok` is the neutral value reset_case restores.
 
 # Build the PATH stubs under $stubbin and sets `nosshbin` (the same stubs
@@ -258,7 +260,7 @@ darwin_body="$STUB_FIXTURES/relate-darwin-arm64"
 darwin_status=200
 case "$STUB_MODE" in
 ok | sig_invalid) ;;
-lookup_404) exit 22 ;;
+metadata_unreachable) exit 22 ;;
 releases_malformed) metadata_doc=releases-malformed.json ;;
 releases_null_latest) metadata_doc=releases-null-latest.json ;;
 releases_bad_tag) metadata_doc=releases-bad-tag.json ;;

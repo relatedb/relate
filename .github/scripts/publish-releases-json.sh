@@ -28,6 +28,11 @@ export LC_ALL=C.UTF-8
 #   - `notes` is the release body markdown VERBATIM (the empty string,
 #     never null, when the release has no body).
 #
+# install.sh's latest_tag_of reads this document with a dependency-free
+# awk parse over jq's default pretty-print (one key per line, two-space
+# indents), so a change to this script's serialization must move with
+# that parser or the installer's release selection silently strands.
+#
 # Run this AFTER .github/workflows/release-notes.yml has prepended
 # the agent-written narrative notes to the release body: release.yml
 # chains the publisher with `needs: [..., release-notes]` precisely so

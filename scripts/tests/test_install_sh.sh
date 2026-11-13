@@ -557,7 +557,7 @@ assert_resolution_failure() { # $1 = case label, $2 = stderr needle
 }
 
 reset_case
-STUB_MODE=lookup_404
+STUB_MODE=metadata_unreachable
 install_run metadata-unreachable
 assert_resolution_failure \
 	"metadata unreachable" \
