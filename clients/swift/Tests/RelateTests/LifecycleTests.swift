@@ -61,12 +61,7 @@ import Testing
     @Test func aURLThatIsNotALocalFileIsRefusedBeforeTheEngine() throws {
         func refusal(_ text: String) throws -> String {
             let url = try #require(URL(string: text))
-            let error = try #require(throws: RelateError.self) { try Database(url: url) }
-            guard case .invalidParameter(let message) = error else {
-                Issue.record("expected invalidParameter for \(text), got \(error)")
-                throw error
-            }
-            return message
+            return try invalidParameterMessage { _ = try Database(url: url) }
         }
         #expect(try refusal("https://example.com/store.rl").contains("scheme 'https'"))
         // A file URL naming another host: its path alone would open (or,

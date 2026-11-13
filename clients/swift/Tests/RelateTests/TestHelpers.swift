@@ -37,3 +37,14 @@ func losingCommitError() throws -> RelateError {
     _ = try winner.commit()
     return try #require(throws: RelateError.self) { try loser.commit() }
 }
+
+/// The message of the `invalidParameter` that `body` must throw: any other
+/// outcome fails the test.
+func invalidParameterMessage(_ body: () throws -> Void) throws -> String {
+    let error = try #require(throws: RelateError.self) { try body() }
+    guard case .invalidParameter(let message) = error else {
+        Issue.record("expected invalidParameter, got \(error)")
+        throw error
+    }
+    return message
+}
