@@ -450,6 +450,70 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
 
+      # Authenticode-sign the windows binary with the shared composite action
+      # (ADR-0594) so SmartScreen shows a signed publisher. Same invocation
+      # point as the macOS leg — after the rename, before upload — but the
+      # signing is remote (DigiCert Software Trust Manager): the action
+      # installs the smctl client, authenticates a DigiCert ONE API user
+      # from the SM_* step env, and signs with a keypair held in DigiCert's
+      # key management, so no code-signing certificate material exists on
+      # the runner. The API user's client-authentication certificate — the
+      # one credential smctl needs as a file — is decoded here, by the
+      # caller, because the action itself never writes certificate material
+      # to disk (ADR-0594); this is DigiCert's documented CI pattern of a
+      # base64 secret decoded to the runner temp dir. The prepare and sign
+      # steps below self-skip with a warning while WINDOWS_SIGN_API_KEY is
+      # unset — the cleanup runs either way — and once the key is set the
+      # leg fails closed. They are skipped on the linux and darwin legs.
+      - name: Prepare the DigiCert client certificate (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          WINDOWS_SIGN_CLIENT_CERT_FILE_B64: ${{ secrets.WINDOWS_SIGN_CLIENT_CERT_FILE_B64 }}
+        run: |
+          set -euo pipefail
+          # Nothing to decode while the DigiCert credentials are unset: the
+          # signing action skips on an empty SM_API_KEY (ADR-0594).
+          if [ -z "${WINDOWS_SIGN_CLIENT_CERT_FILE_B64:-}" ]; then
+            echo "WINDOWS_SIGN_CLIENT_CERT_FILE=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Key material must never be world/group-readable, even
+          # transiently (same guard as the SSHSIG step in the
+          # create-release job).
+          umask 077
+          mkdir -p "$RUNNER_TEMP/relate-windows-signing"
+          cert="$RUNNER_TEMP/relate-windows-signing/client-auth.p12"
+          printf '%s' "$WINDOWS_SIGN_CLIENT_CERT_FILE_B64" | base64 --decode > "$cert"
+          echo "WINDOWS_SIGN_CLIENT_CERT_FILE=$cert" >> "$GITHUB_ENV"
+
+      - name: Sign with Authenticode (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/windows-sign
+        with:
+          binary: ${{ matrix.artifact }}.exe
+        env:
+          SM_HOST: ${{ vars.WINDOWS_SIGN_SM_HOST }}
+          SM_API_KEY: ${{ secrets.WINDOWS_SIGN_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ env.WINDOWS_SIGN_CLIENT_CERT_FILE }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGN_CLIENT_CERT_PASSWORD }}
+          WINDOWS_SIGN_KEYPAIR_ALIAS: ${{ vars.WINDOWS_SIGN_KEYPAIR_ALIAS }}
+          WINDOWS_SIGN_CERT_FINGERPRINT: ${{ vars.WINDOWS_SIGN_CERT_FINGERPRINT }}
+
+      - name: Clean up the decoded DigiCert client certificate (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          # The decoded client-authentication certificate lives only for
+          # this leg and is removed even when signing failed (ADR-0594);
+          # the literal fallback covers a failure before the path was
+          # exported to $GITHUB_ENV.
+          cert="${WINDOWS_SIGN_CLIENT_CERT_FILE:-$RUNNER_TEMP/relate-windows-signing/client-auth.p12}"
+          if [ -n "$cert" ] && [ -f "$cert" ]; then
+            rm -f "$cert"
+            echo "Removed the decoded DigiCert client certificate."
+          fi
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}

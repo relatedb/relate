@@ -1,0 +1,150 @@
+name: Windows Authenticode signing
+description: >-
+  Sign a built Windows executable with an Authenticode signature carrying an
+  RFC 3161 timestamp, then verify it on the runner. The signature is produced
+  remotely by DigiCert Software Trust Manager: the action installs a
+  version- and SHA-256-pinned smctl client, authenticates a DigiCert ONE
+  API user from the API key, client certificate and client-certificate
+  password passed as step env (a composite action cannot read repository
+  secrets directly), and signs against a keypair held in DigiCert's key
+  management, selected by its alias
+  and its certificate fingerprint — no code-signing certificate material
+  exists on the runner. Implements ADR-0594. While the API key is unset the
+  action skips with a warning and leaves the binary untouched (ADR-0594);
+  once it is set the leg fails closed.
+
+inputs:
+  binary:
+    description: Path to the already-built Windows executable to sign
+    required: true
+
+runs:
+  # Composite steps each run in their own shell, so the steps share state
+  # through $GITHUB_ENV / $GITHUB_PATH: the install step downloads the
+  # pinned client and puts it on PATH before any SM_* credential is read
+  # by the action, and the validation step then exports SIGN_DIR and
+  # WINDOWS_SIGN_SKIP for the sign and verify steps to read back.
+  using: composite
+  steps:
+    - name: Install the pinned DigiCert signing client
+      shell: pwsh
+      # Supply-chain pin (ADR-0594), the pattern of
+      # .github/scripts/install-opencode.sh: the client's version and
+      # SHA-256 are constants in this source, and the downloaded binary is
+      # verified against the pinned hash before anything from the download
+      # origin runs on the runner — no checksum is fetched from the origin,
+      # which would only vouch for whatever it serves. The origin serves
+      # only its latest build, so the pinned hash is the gate: a new
+      # upstream release fails the check until the pin is bumped
+      # (RELEASING.md). This step declares no SM_* env and reads no
+      # credential value — the gate below probes the API key's emptiness
+      # only, so the skip-open path never downloads anything.
+      run: |
+        if ([string]::IsNullOrEmpty($env:SM_API_KEY)) { exit 0 }
+        $ErrorActionPreference = 'Stop'
+        $SMCTL_VERSION = '1.67.1'
+        $SMCTL_SHA256 = '29074da9caca70295d2b9ff305d9bc8f0f02af93fbad70219210433fd8c40dd2'
+
+        # smctl is the whole client for remote signing (ADR-0594): no
+        # third-party signing tool, no DigiCert KSP library, no Windows
+        # certificate-store sync — simple signing needs the client alone.
+        $cdn = 'https://pki-downloads.digicert.com/stm/latest'
+        # The same literal the validation step below exports as SIGN_DIR;
+        # this step runs before that export exists.
+        $signDir = Join-Path $env:RUNNER_TEMP 'relate-windows-signing'
+        New-Item -ItemType Directory -Force -Path $signDir | Out-Null
+        $smctl = Join-Path $signDir 'smctl.exe'
+        Invoke-WebRequest -Uri "$cdn/smctl.exe" -OutFile $smctl
+        $actual = (Get-FileHash -Path $smctl -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $SMCTL_SHA256) {
+          Write-Error "smctl pin mismatch: expected version $SMCTL_VERSION with SHA-256 $SMCTL_SHA256, got $actual (the DigiCert client-tool repository serves its latest build). Bump SMCTL_VERSION and SMCTL_SHA256 together (RELEASING.md)."
+          exit 1
+        }
+        & $smctl --version
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        Write-Output "Installed the pinned smctl client $SMCTL_VERSION; SHA-256 verified against the action's pin."
+        Add-Content -Path $env:GITHUB_PATH -Value $signDir
+
+    - name: Validate signing credentials
+      shell: bash
+      # Skip-open, then fail closed (ADR-0594): with the DigiCert API key
+      # unset the leg ships the binary as built behind a prominent warning;
+      # with it set, every companion credential must be present too — a
+      # half-configured leg must fail, never ship an unsigned binary from a
+      # green run. Both WINDOWS_SIGN_SKIP and SIGN_DIR are written
+      # explicitly on every path, so no job-wide inherited value can skip
+      # a credentialed leg or redirect the steps that follow.
+      run: |
+        set -euo pipefail
+        # Derive the signing temp dir unconditionally; $GITHUB_ENV carries
+        # it to every later step of the job (the install step above
+        # derives the same path locally — it runs before this export
+        # exists).
+        echo "SIGN_DIR=$RUNNER_TEMP/relate-windows-signing" >> "$GITHUB_ENV"
+        if [ -z "${SM_API_KEY:-}" ]; then
+          echo "::warning::SM_API_KEY is not set - skipping Windows Authenticode signing; the binary ships as built (ADR-0594)."
+          echo "WINDOWS_SIGN_SKIP=1" >> "$GITHUB_ENV"
+          exit 0
+        fi
+        missing=()
+        for var in SM_API_KEY SM_HOST SM_CLIENT_CERT_FILE SM_CLIENT_CERT_PASSWORD WINDOWS_SIGN_KEYPAIR_ALIAS WINDOWS_SIGN_CERT_FINGERPRINT; do
+          if [ -z "${!var:-}" ]; then
+            missing+=("$var")
+          fi
+        done
+        if [ "${#missing[@]}" -gt 0 ]; then
+          echo "SM_API_KEY is set but ${missing[*]} are not; refusing to ship an unsigned Windows binary (ADR-0594)." >&2
+          exit 1
+        fi
+        # Credentials complete: clear any inherited skip flag so a
+        # job-wide WINDOWS_SIGN_SKIP=1 cannot silently skip signing.
+        echo "WINDOWS_SIGN_SKIP=0" >> "$GITHUB_ENV"
+
+    - name: Sign the binary
+      shell: pwsh
+      env:
+        BINARY: ${{ inputs.binary }}
+      # Never trace this step: the SM_* credentials live in the environment
+      # only and never on the command line, and this step adds no tracing
+      # of its own (it would leak them, ADR-0594).
+      run: |
+        if ($env:WINDOWS_SIGN_SKIP -eq '1') { exit 0 }
+        $ErrorActionPreference = 'Stop'
+
+        # Remote signing (ADR-0594): smctl authenticates the DigiCert ONE
+        # API user from the SM_* environment, resolves the keypair by its
+        # alias and the exact certificate by SHA-1 fingerprint, and the
+        # signature — SHA-256 digest, RFC 3161 timestamp — is produced by
+        # DigiCert's key management. Any failure, including the user not
+        # being authorized as a signer on the keypair, fails the leg.
+        smctl sign --verbose --simple `
+          --keypair-alias "$env:WINDOWS_SIGN_KEYPAIR_ALIAS" `
+          --fingerprint "$env:WINDOWS_SIGN_CERT_FINGERPRINT" `
+          --input "$env:BINARY" `
+          --digalg SHA256 --timestamp --exit-non-zero-on-fail
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "smctl sign failed with exit code $LASTEXITCODE."
+          exit 1
+        }
+        Write-Output 'Remote Authenticode signature applied through DigiCert Software Trust Manager.'
+
+    - name: Verify the signature
+      shell: pwsh
+      env:
+        BINARY: ${{ inputs.binary }}
+      # The authoritative gate (ADR-0594): a signature that is not Valid or
+      # carries no RFC 3161 timestamp fails the leg before the upload — an
+      # unverified binary must never leave the runner as green.
+      run: |
+        if ($env:WINDOWS_SIGN_SKIP -eq '1') { exit 0 }
+        $ErrorActionPreference = 'Stop'
+        $signature = Get-AuthenticodeSignature -FilePath $env:BINARY
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+          Write-Error "Authenticode verification failed: status '$($signature.Status)' ($($signature.StatusMessage))."
+          exit 1
+        }
+        if ($null -eq $signature.TimeStamperCertificate) {
+          Write-Error "Authenticode signature is Valid but carries no RFC 3161 timestamp."
+          exit 1
+        }
+        Write-Output "Authenticode signature verified on the runner: status Valid, RFC 3161 timestamp present."

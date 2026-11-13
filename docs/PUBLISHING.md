@@ -73,6 +73,18 @@ artifact landed on that first release:
   install section links to), with its first line
   `# relate-release-version: vX.Y.Z` naming the release tag (ADR-0457).
 - [ ] `SHA256SUMS.sig` over those exact bytes (ADR-0115).
+- [ ] Windows signing (ADR-0594): while `WINDOWS_SIGN_API_KEY` is unset
+  the windows leg skips signing with a workflow warning and
+  `relate-windows-amd64.exe` ships as built; set the three
+  `WINDOWS_SIGN_*` secrets and the three `WINDOWS_SIGN_*` variables to
+  turn it on — signing is remote, through DigiCert Software Trust
+  Manager, so no code-signing certificate material ever exists on the
+  runner. See [Windows signing in
+  RELEASING.md](../RELEASING.md#windows-signing) for first-time setup.
+  From then on a missing companion credential, a signing failure, or a
+  failed on-runner verification (`Get-AuthenticodeSignature` `Valid`
+  with an RFC 3161 time-stamper) fails the release, so no unsigned
+  Windows binary ships from a green run.
 - [ ] Python wheels (and sdist) publish to PyPI as **`relate-db`** (not
   `relate`, which is taken) via trusted publishing (ADR-0560). The one-time
   setup needs no first publish: on PyPI, add a *pending publisher* for

@@ -7,6 +7,17 @@ GitHub release.
 The versioning and process policy is recorded in
 [ADR-0067](docs/adr/0067-release-versioning-and-process.md).
 
+## Contents
+
+1. [Dispatch a release](#dispatch-a-release)
+2. [What the run does, in order](#what-the-run-does-in-order)
+3. [Registry publishing](#registry-publishing)
+4. [Extension package releases](#extension-package-releases)
+5. [Signing key](#signing-key)
+6. [Apple signing and notarization](#apple-signing-and-notarization)
+7. [Windows signing](#windows-signing)
+8. [Failure recovery](#failure-recovery)
+
 ## Dispatch a release
 
 From the CLI:
@@ -55,7 +66,11 @@ from this repository; the old repository’s tags never came across.
    [`.github/actions/macos-notarize/action.yml`](.github/actions/macos-notarize/action.yml),
    so Gatekeeper accepts it (see
    [Apple signing and notarization](#apple-signing-and-notarization),
-   [ADR-0123](docs/adr/0123-macos-codesign-notarize.md)).
+   [ADR-0123](docs/adr/0123-macos-codesign-notarize.md)). The windows leg
+   Authenticode-signs its binary at the same invocation point, remotely
+   through DigiCert Software Trust Manager (see
+   [Windows signing](#windows-signing),
+   [ADR-0594](docs/adr/0594-windows-authenticode-signing.md)).
 4. **Tag** — once the builds are green, tag `vX.Y.Z` is pushed.
 5. **Sign** — `SHA256SUMS` is generated with the release tag as its first
    line (`# relate-release-version: vX.Y.Z`), then signed with the
@@ -352,16 +367,146 @@ without an execute bit.
 The first execution must run with no Gatekeeper warning, and `codesign --verify
 -R` must pass.
 
+## Windows signing
+
+The Windows CLI binary (`relate-windows-amd64.exe`) is signed with an
+Authenticode signature so SmartScreen shows a signed publisher instead of
+"unknown publisher" ([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)).
+One shared composite action —
+[`.github/actions/windows-sign/action.yml`](.github/actions/windows-sign/action.yml)
+— runs in the windows leg of the `cli` job, after the binary is renamed and
+before it is uploaded, the same invocation point as the macOS action
+(ADR-0123).
+
+Signing is remote, through DigiCert Software Trust Manager: the
+organization's code-signing keypairs are non-exportable and held by
+DigiCert's key management, so no code-signing certificate material exists
+on the runner or in the repository's secrets. The action installs
+DigiCert's `smctl` client — its version and SHA-256 pinned in the action
+source and verified before the client runs — authenticates a DigiCert ONE
+API user from the `SM_*` step env, and signs the binary with the keypair
+selected by its alias and its certificate pinned by SHA-1 fingerprint,
+using a SHA-256 digest and an RFC 3161 timestamp (the signature stays
+valid after the certificate expires). The signed binary is then verified
+on the runner with `Get-AuthenticodeSignature`: the status must be
+`Valid` and a time-stamper certificate present, or the leg fails.
+
+The action is skip-open, then fail-closed — the deliberate asymmetry with
+the macOS action recorded in ADR-0594: while `WINDOWS_SIGN_API_KEY` is
+unset it prints a workflow warning and leaves the binary untouched, so
+the release pipeline runs before the DigiCert credentials exist. Once it
+is set, the leg fails closed: a missing companion credential, a stale
+client pin, any `smctl` failure — including the API user not being an
+authorized signer on the keypair — or a failed verification fails the
+release before tagging, and no unsigned Windows binary can ship from a
+green run. The API user's client-authentication certificate, the one
+credential `smctl` needs as a file, is decoded from its base64 secret by
+the workflow — not by the action, which never writes certificate
+material to disk — and is deleted from the runner in an `always()`
+cleanup step. No credential is ever echoed.
+
+### Windows secrets and variables
+
+Three repository secrets and three repository variables:
+
+| Name | Kind | Holds |
+| --- | --- | --- |
+| `WINDOWS_SIGN_API_KEY` | secret | the DigiCert ONE API key for the signing user (first factor) |
+| `WINDOWS_SIGN_CLIENT_CERT_FILE_B64` | secret | the base64-encoded DigiCert ONE client-authentication certificate (`.p12`, second factor) for that user |
+| `WINDOWS_SIGN_CLIENT_CERT_PASSWORD` | secret | the password for that client-authentication certificate |
+| `WINDOWS_SIGN_SM_HOST` | variable | the DigiCert ONE client-authentication host, e.g. `https://clientauth.one.digicert.com` |
+| `WINDOWS_SIGN_KEYPAIR_ALIAS` | variable | the alias of the code-signing keypair in Software Trust Manager |
+| `WINDOWS_SIGN_CERT_FINGERPRINT` | variable | the SHA-1 fingerprint of the code-signing certificate that must sign |
+
+### Windows first-time setup
+
+1. In DigiCert ONE, create the signing user's API key and client
+   authentication certificate (each is shown once at creation; DigiCert's
+   public documentation walks through both), then store them:
+
+   ```sh
+   gh secret set WINDOWS_SIGN_API_KEY   # the DigiCert ONE API key
+   base64 < client-auth.p12 | gh secret set WINDOWS_SIGN_CLIENT_CERT_FILE_B64
+   gh secret set WINDOWS_SIGN_CLIENT_CERT_PASSWORD   # the certificate password
+   ```
+
+2. Set the host, keypair alias, and certificate fingerprint as repository
+   variables (the alias and fingerprint come from the keypair's details
+   in Software Trust Manager):
+
+   ```sh
+   gh variable set WINDOWS_SIGN_SM_HOST --body 'https://clientauth.one.digicert.com'
+   gh variable set WINDOWS_SIGN_KEYPAIR_ALIAS --body '<keypair alias>'
+   gh variable set WINDOWS_SIGN_CERT_FINGERPRINT --body '<certificate SHA-1 fingerprint>'
+   ```
+
+3. Delete the local `client-auth.p12` copy; the secrets are the only copy
+   kept. The code-signing keypair itself never leaves DigiCert.
+
+### Rotating Windows credentials
+
+- **API key or client certificate:** create a fresh API key (or client
+  authentication certificate) in DigiCert ONE, update the corresponding
+  secret, then cut a release to prove the new credential.
+- **Renewed code-signing certificate:** the keypair stays, but the new
+  certificate carries a new SHA-1 fingerprint — update
+  `WINDOWS_SIGN_CERT_FINGERPRINT` and cut a release. The leg fails
+  closed when the pinned fingerprint no longer matches the keypair's
+  certificate, so a half-done rotation cannot ship an unsigned binary.
+
+### Bumping the pinned smctl client
+
+The action installs `smctl` from DigiCert's client-tool repository, which
+serves only its latest build, and verifies the download against the
+version and SHA-256 pinned as constants in
+[the action](.github/actions/windows-sign/action.yml) (`SMCTL_VERSION`,
+`SMCTL_SHA256`). When DigiCert publishes a new client release, the hash
+check fails the windows leg by design — the pin only ever trusts the
+bytes it names. To bump it:
+
+```sh
+curl -fsSL -o smctl.exe https://pki-downloads.digicert.com/stm/latest/smctl.exe
+shasum -a 256 smctl.exe      # the new SMCTL_SHA256
+```
+
+Read the new version from the client itself on a Windows host
+(`.\smctl.exe --version`), update both constants together, and commit;
+the next release proves the new pin (ADR-0594). While the DigiCert
+credentials are unset the action installs nothing, so a stale pin never
+breaks the skip-open path — the bump only matters once the leg starts
+downloading the client.
+
+### Windows runbook item
+
+After the first signed release, fresh-download the Windows binary and
+confirm the signature is valid, timestamped, and from the expected
+publisher:
+
+```powershell
+curl.exe -LO https://github.com/relatedb/relate/releases/latest/download/relate-windows-amd64.exe
+Get-AuthenticodeSignature .\relate-windows-amd64.exe |
+  Format-List Status, TimeStamperCertificate,
+    @{ Label = 'SignerSubject'; Expression = { $_.SignerCertificate.Subject } }
+.\relate-windows-amd64.exe --version
+```
+
+The status must be `Valid` with a `TimeStamperCertificate` present, the
+`SignerSubject` must be the subject of the code-signing certificate held
+for the `WINDOWS_SIGN_KEYPAIR_ALIAS` keypair in DigiCert Software Trust
+Manager, and the binary must report its version.
+
 ## Failure recovery
 
 - **Failed before the tag was pushed:** safe to re-dispatch the same bump.
   No tag exists to clean up. The version-bump commit may already be on
   `main`, but the version is recomputed from git tags, so a tagless rerun
   derives the same version.
-- **Notarization rejected or signing failed:** the darwin leg fails, so no
+- **Notarization rejected or signing failed:** the darwin leg — or the
+  windows leg, once the Windows credentials exist — fails, so no
   artifact is uploaded and the tag job never ran. Fix the cause — a rejection
   prints the notary log, an expired credential is a
-  [rotation](#rotating-apple-credentials) — then re-dispatch the same bump: no tag exists, so the
+  [rotation](#rotating-apple-credentials) ([Windows](#rotating-windows-credentials)
+  too) — then re-dispatch the same bump: no tag exists, so the
   tagless-rerun bullet above applies and the re-dispatch is safe.
 - **Failed after the tag was pushed:** do **not** delete or reuse the pushed
   tag. Re-dispatching computes the *next* version forward from the existing
