@@ -529,3 +529,88 @@ fn parameter_concurrency_is_type_checked_only() {
         "unexpected error: {error}"
     );
 }
+
+/// LABS-1589: a `NEXT` stage after a batched write must read properties
+/// through the same key ids the batches created.
+#[test]
+fn next_after_batched_create_reads_properties() {
+    let mut c = connection();
+    let r = c
+        .query(
+            "UNWIND [1, 2, 3] AS i CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+             RETURN count(*) AS _ NEXT MATCH (z:Z) RETURN z.i AS zi ORDER BY zi",
+        )
+        .unwrap();
+    let got: Vec<Value> = r.rows.iter().map(|row| row[0].clone()).collect();
+    assert_eq!(got, vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+}
+
+fn column(c: &mut relate::Connection, q: &str) -> Vec<Value> {
+    c.query(q)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| r[0].clone())
+        .collect()
+}
+
+fn ints(v: &[i64]) -> Vec<Value> {
+    v.iter().map(|i| Value::Int(*i)).collect()
+}
+
+/// LABS-1589: MERGE ... SET in the batched body, read after `NEXT`.
+#[test]
+fn next_after_batched_merge_set_reads_properties() {
+    let mut c = connection();
+    let got = column(
+        &mut c,
+        "UNWIND [1, 2, 3] AS i CALL (i) { MERGE (z:Z {k: i}) SET z.i = i } \
+         IN TRANSACTIONS OF 1 ROW RETURN count(*) AS _ \
+         NEXT MATCH (z:Z) RETURN z.i AS zi ORDER BY zi",
+    );
+    assert_eq!(got, ints(&[1, 2, 3]));
+}
+
+/// LABS-1589: ON ERROR BREAK / CONTINUE keep the committed batches visible
+/// to the property reads after `NEXT`.
+#[test]
+fn next_after_batched_on_error_reads_properties() {
+    for mode in ["BREAK", "CONTINUE"] {
+        let mut c = connection();
+        let got = column(
+            &mut c,
+            &format!(
+                "UNWIND [1, 2, 3] AS i CALL (i) {{ CREATE (z:Z {{i: i}}) }} \
+                 IN TRANSACTIONS OF 1 ROW ON ERROR {mode} RETURN count(*) AS _ \
+                 NEXT MATCH (z:Z) RETURN z.i AS zi ORDER BY zi"
+            ),
+        );
+        assert_eq!(got, ints(&[1, 2, 3]), "ON ERROR {mode}");
+    }
+}
+
+/// LABS-1589: a label and a relationship type first created by the batched
+/// body resolve after `NEXT` too (not only property keys).
+#[test]
+fn next_after_batched_create_resolves_label_and_rel_type() {
+    let mut c = connection();
+    let got = column(
+        &mut c,
+        "UNWIND [1, 2, 3] AS i CALL (i) { CREATE (:Fresh {i: i})-[:LINKED {w: i}]->(:Other) } \
+         IN TRANSACTIONS OF 1 ROW RETURN count(*) AS _ \
+         NEXT MATCH (a:Fresh)-[r:LINKED]->(:Other) RETURN r.w AS w ORDER BY w",
+    );
+    assert_eq!(got, ints(&[1, 2, 3]));
+}
+
+/// LABS-1589: the non-transactional write-before-NEXT form stays correct.
+#[test]
+fn next_after_plain_write_reads_properties() {
+    let mut c = connection();
+    let got = column(
+        &mut c,
+        "UNWIND [1, 2, 3] AS i CALL (i) { CREATE (z:Z {i: i}) } RETURN count(*) AS _ \
+         NEXT MATCH (z:Z) RETURN z.i AS zi ORDER BY zi",
+    );
+    assert_eq!(got, ints(&[1, 2, 3]));
+}

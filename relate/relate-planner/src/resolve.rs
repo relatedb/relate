@@ -20,6 +20,26 @@ use relate_ir::{
 };
 use relate_names::{NamedToken, SmallName, Token, TokenResolver};
 
+/// The resolver a statement that commits mid-flight resolves through.
+///
+/// `Token::Id` is the store's id for the name, assigned once and never
+/// reassigned, so a commit cannot invalidate it. `Token::Absent` — "the
+/// store has never interned this name" — is the one arm a mid-statement
+/// commit can falsify: a batch interns a name an earlier-planned read
+/// called absent, and that read then misses the committed data. Reported
+/// as `Unresolved`, the name is looked up by text at run time instead, and
+/// every already-interned name keeps its id.
+pub(crate) struct FreshAbsent<'a>(pub(crate) &'a dyn TokenResolver);
+
+impl TokenResolver for FreshAbsent<'_> {
+    fn resolve(&self, name: &str) -> Token {
+        match self.0.resolve(name) {
+            Token::Absent => Token::Unresolved,
+            resolved => resolved,
+        }
+    }
+}
+
 /// Resolve every covered name in `query` against `resolver`.
 pub(crate) fn resolve_query(query: &mut Query, resolver: &dyn TokenResolver) {
     for part in &mut query.parts {
@@ -241,6 +261,55 @@ mod tests {
         assert_eq!(labels[0].0, "Person");
         assert_eq!(labels[0].1, Token::Id(TokenId(0)));
         assert_eq!(labels[1].0, "Employee");
+    }
+
+    /// A statement that commits mid-flight keeps the ids it can: an
+    /// interned name stays an `Id` (assigned once, so a commit cannot
+    /// invalidate it), and only a name the store has not interned — the one
+    /// arm a mid-statement commit can falsify — is reported `Unresolved`
+    /// and looked up by text at run time (LABS-1589).
+    #[test]
+    fn a_committing_statement_keeps_ids_and_softens_absent() {
+        let plan = plan_of(
+            "MATCH (n:Person)-[:KNOWS]->(m) WHERE n.age > 1 \
+             CALL (n) { CREATE (:Employee) } IN TRANSACTIONS OF 1 ROW RETURN m",
+        );
+        let (node, rel) = first_hop(&plan);
+        assert_eq!(
+            node.labels[0].1,
+            Token::Id(TokenId(0)),
+            "Person is interned"
+        );
+        assert_eq!(rel.types[0].1, Token::Id(TokenId(1)), "KNOWS is interned");
+        let Clause::Match {
+            where_clause: Some(Expr::Binary { left, .. }),
+            ..
+        } = &plan.parts[0][0]
+        else {
+            panic!("expected a WHERE comparison");
+        };
+        let Expr::Property { key_id, .. } = left.as_ref() else {
+            panic!("expected a property read");
+        };
+        assert_eq!(*key_id, Token::Id(TokenId(2)), "age is interned");
+    }
+
+    /// The same statement without the commit keeps the plain resolution:
+    /// the softened arm is the mid-statement commit's, not the default's.
+    #[test]
+    fn a_statement_without_a_commit_reports_absent_as_absent() {
+        let plan = plan_of("MATCH (n:Person)-[:KNOWS]->(m) WHERE n.nope > 1 RETURN m");
+        let Clause::Match {
+            where_clause: Some(Expr::Binary { left, .. }),
+            ..
+        } = &plan.parts[0][0]
+        else {
+            panic!("expected a WHERE comparison");
+        };
+        let Expr::Property { key_id, .. } = left.as_ref() else {
+            panic!("expected a property read");
+        };
+        assert_eq!(*key_id, Token::Absent, "nope is not interned");
     }
 
     #[test]

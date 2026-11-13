@@ -305,7 +305,27 @@ pub fn plan_with_tokens(
     stats: &dyn PatternStats,
     resolver: &dyn TokenResolver,
 ) -> Result<LogicalPlan> {
-    crate::resolve::resolve_query(&mut query, resolver);
+    // A batched `CALL { … } IN TRANSACTIONS` commits mid-statement and
+    // interns the names its writes create, so an `Absent` carried by a
+    // later read (a `NEXT` stage, the rest of the statement) goes stale and
+    // reads the committed data as missing (LABS-1589). Such a statement
+    // resolves through [`crate::resolve::FreshAbsent`]: an id stays (ids are
+    // assigned once), `Absent` is reported as `Unresolved` and looked up by
+    // text at run time. Only the names that could be interned mid-flight
+    // pay that lookup; the rest keep their plan-time ids.
+    let mut commits_mid_statement = false;
+    relate_ir::walk_query(
+        &query,
+        &mut |clause| {
+            commits_mid_statement |= crate::clause_kind::clause_is_in_transactions(clause)
+        },
+        &mut |_| {},
+    );
+    if commits_mid_statement {
+        crate::resolve::resolve_query(&mut query, &crate::resolve::FreshAbsent(resolver));
+    } else {
+        crate::resolve::resolve_query(&mut query, resolver);
+    }
     plan_with_stats(query, is_write_procedure, stats)
 }
 
