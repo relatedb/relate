@@ -57,7 +57,7 @@ relate --mode envelope --max-rows 2 "UNWIND range(1, 5) AS i RETURN i"
 ```
 
 ```text
-warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows
+warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows, or page with SKIP/LIMIT
 101
 250
 {"columnTypes":["INTEGER"],"columns":["i"],"notifications":[],"planCache":"miss","rowCap":{"kept":2,"total":5},"rows":[{"i":1},{"i":2}],"timings":{...},"truncated":true}

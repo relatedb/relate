@@ -317,5 +317,11 @@ docs/api/python/spec.md#visualization-relateviz-optional).
 - **One writer at a time** — single-process engine; use the Bolt server for
   multi-client access, or `relate serve --read-only[=snapshot|live]` to serve
   a store beside the process writing it (ADR-0306).
+- **A pipe hides failure** — `relate query ... | head` exits with `head`'s
+  status, and `tail` can cut the error itself. Prefer `--max-rows`, `LIMIT`
+  and `SKIP` over piping; if you must pipe, `set -o pipefail`, and judge
+  success by the exit code or the JSON `error` envelope, never the last
+  lines. A capped result still exits `0`: read `rowCap` (or the stderr
+  warning) before treating rows as complete.
 - **Destructive DDL is silent** — `DROP INDEX`/`DROP CONSTRAINT` print
   nothing on success; list first.

@@ -389,7 +389,7 @@ mod render_failure_tests {
             lines.first().copied(),
             Some(
                 "warning: result truncated to 1 rows (the statement returned 2); \
-                 pass --max-rows 0 for all rows"
+                 pass --max-rows 0 for all rows, or page with SKIP/LIMIT"
             ),
             "the cap warning goes to the diagnostic writer: {diagnostics:?}"
         );

@@ -1777,7 +1777,7 @@ A statement whose result is cut prints its first `N` rows, then writes one
 line to stderr and still exits `0` — truncation is not a failure:
 
 ```text
-warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows
+warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows, or page with SKIP/LIMIT
 ```
 
 The cut also rides **in-band** (ADR-0403) in every mode that can carry it,
@@ -1791,6 +1791,12 @@ naming both counts, so a capped result never reads as a complete one:
 | `toon` | a terminal `rowCap:` entry with the counts as one inline compact JSON value |
 | `markdown` | one footer line after the table: `> truncated: 100 of 250 rows shown` (counts only — the `--max-rows` opt-out stays in the stderr warning, the channel the CLI owns) |
 | `csv`, `cypher`, `table` | no in-band record — the strict formats' streams stay pure and the human table keeps stderr; the warning above is their only channel |
+
+Page past the cap in the query itself with `SKIP`/`LIMIT` (a stable
+`ORDER BY` keeps the pages disjoint). A pipeline such as `relate query … |
+head` reports the last command's exit status unless the shell sets
+`pipefail`; read the exit code or the [JSON error envelope](#query-run-errors),
+not the tail of the output, to decide whether a run failed.
 
 Each statement of a multi-statement run is capped and reported on its own.
 `.info` catalog output is never capped.
