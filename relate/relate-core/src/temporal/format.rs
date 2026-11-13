@@ -4,7 +4,7 @@ use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 
 use crate::{Error, Result};
 
-use super::zone::add_offset;
+use super::zone::{add_offset, zone_display};
 use super::{time_to_nanos, Temporal};
 
 mod duration;
@@ -122,7 +122,11 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 match len {
                     3 => full.chars().take(3).collect(),
                     4 => full.to_string(),
-                    5 => full.chars().next().unwrap().to_string(),
+                    5 => full
+                        .chars()
+                        .next()
+                        .expect("month names are non-empty")
+                        .to_string(),
                     _ => return Err(invalid_pattern_character()),
                 }
             } else {
@@ -165,7 +169,11 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
         'w' => supported_field(date)?.iso_week().week().to_string(),
         'W' => {
             let date = supported_field(date)?;
-            let first = date.with_day(1).unwrap().weekday().num_days_from_sunday();
+            let first = date
+                .with_day(1)
+                .expect("every month has a first day")
+                .weekday()
+                .num_days_from_sunday();
             ((date.day() + first - 1) / 7 + 1).to_string()
         }
         'F' => (supported_field(date)?.day0() / 7 + 1).to_string(),
@@ -220,8 +228,7 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 1..=3 => format_offset(offset).replace(':', ""),
                 4 if offset == 0 => "GMT".into(),
                 4 => format!("GMT{}", format_offset(offset)),
-                5 if offset == 0 => "Z".into(),
-                5 => format_offset(offset),
+                5 => format_zone_offset(offset),
                 _ => return Err(invalid_pattern_character()),
             }
         }
@@ -263,12 +270,12 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
             if (c == 'z' && len > 4) || (c == 'v' && !matches!(len, 1 | 4)) {
                 return Err(invalid_pattern_character());
             }
-            match (zone, c, len) {
-                ("Europe/Paris", 'z', 4) => "Central European Summer Time".into(),
-                ("Europe/Paris", 'v', 4) => "Central European Time".into(),
-                ("Europe/Paris", 'z', _) => "CEST".into(),
-                ("Europe/Paris", 'v', _) => "CET".into(),
-                _ => zone.into(),
+            match (zone_display(zone), c, len) {
+                (Some(d), 'z', 4) => d.long_summer.into(),
+                (Some(d), 'v', 4) => d.long_generic.into(),
+                (Some(d), 'z', _) => d.short_summer.into(),
+                (Some(d), _, _) => d.short_generic.into(),
+                (None, ..) => zone.into(),
             }
         }
         // `V` (zone id) needs an actual zone: a zoned time or local

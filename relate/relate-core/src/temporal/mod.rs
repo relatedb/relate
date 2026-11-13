@@ -14,6 +14,7 @@ mod component;
 mod construct;
 mod duration;
 mod duration_pattern;
+mod duration_tokens;
 mod exact;
 mod field;
 mod field_rules;
@@ -38,6 +39,8 @@ mod tests_fields;
 mod tests_pattern;
 #[cfg(test)]
 mod tests_ranges;
+#[cfg(test)]
+mod tests_zone;
 mod truncate;
 mod zone;
 

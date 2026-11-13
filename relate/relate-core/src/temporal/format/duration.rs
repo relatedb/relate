@@ -6,96 +6,21 @@ use std::collections::BTreeSet;
 use crate::{Error, Result};
 
 use super::super::checked_lane;
+use super::super::duration_tokens::{self as tokens, Token, UnclosedEscape};
 use super::super::field::{DurationField, DurationTier, PatternSymbol, NANOS_PER_SECOND};
 use super::fraction_width;
 
-#[derive(Clone)]
-enum Token {
-    Literal(String),
-    /// One pattern run: its symbol and the run's width. A run is a
-    /// contiguous stretch of the *same token type*, not the same letter:
-    /// `ML` is one two-wide month run, `Yuy` one three-wide year run
-    /// (Neo4j's `DurationToken` counters).
-    Symbol(PatternSymbol, usize),
-}
-
-impl Token {
-    /// The duration field this token names, if any — the token stream is the
-    /// one record of which fields the pattern mentions.
-    fn field(&self) -> Option<DurationField> {
-        match self {
-            Token::Literal(_) => None,
-            Token::Symbol(symbol, _) => Some(symbol.field()),
-        }
-    }
-}
-
-/// The pattern's token stream. Escaping follows Neo4j's
-/// `DurationValue.format` state machine: a quote opens an escape, a quote
-/// inside one closes it (emitting nothing), and a doubled quote inside one
-/// emits a literal quote and stays escaped. An unclosed escape is Neo4j's
-/// pattern-parsing failure. A fraction run is width-checked here, so the
-/// renderer never has to re-validate its slice.
+/// The pattern's token stream from the shared tokenizer, with each fraction
+/// run width-checked here so the renderer never re-validates its slice.
 fn tokenize(pattern: &str) -> Result<Vec<Token>> {
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut tokens = Vec::new();
-    let mut literal = String::new();
-    let mut i = 0;
-    let mut escaped = false;
-    while i < chars.len() {
-        let c = chars[i];
-        if escaped {
-            if c == '\'' {
-                if chars.get(i + 1) == Some(&'\'') {
-                    literal.push('\'');
-                    i += 2;
-                } else {
-                    escaped = false;
-                    i += 1;
-                }
-            } else {
-                literal.push(c);
-                i += 1;
-            }
-            continue;
+    let tokens = tokens::tokenize(pattern).map_err(|UnclosedEscape| {
+        Error::syntax("pattern parsing failed: make sure that an even number of escapes are used")
+    })?;
+    let tokens = tokens::merge_symbol_runs(tokens);
+    for token in &tokens {
+        if let Token::Symbol(PatternSymbol::FractionDigits, width) = token {
+            fraction_width(*width)?;
         }
-        if c == '\'' {
-            escaped = true;
-            i += 1;
-            continue;
-        }
-        match DurationField::pattern_symbol(c) {
-            Some(symbol) => {
-                if !literal.is_empty() {
-                    tokens.push(Token::Literal(std::mem::take(&mut literal)));
-                }
-                let mut count = 1;
-                while i + count < chars.len()
-                    && DurationField::pattern_symbol(chars[i + count]) == Some(symbol)
-                {
-                    count += 1;
-                }
-                if matches!(symbol, PatternSymbol::FractionDigits) {
-                    fraction_width(count)?;
-                }
-                tokens.push(Token::Symbol(symbol, count));
-                i += count;
-            }
-            None => {
-                // A letter outside the duration alphabet is literal text
-                // (Neo4j's NOT_A_COMPONENT_TOKEN).
-                literal.push(c);
-                i += 1;
-            }
-        }
-    }
-    if escaped {
-        return Err(Error::syntax(
-            "pattern parsing failed: make sure that an even number of escapes are used",
-        ));
-    }
-    if !literal.is_empty() {
-        tokens.push(Token::Literal(literal));
     }
     Ok(tokens)
 }

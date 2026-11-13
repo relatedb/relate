@@ -9,16 +9,18 @@ use std::collections::BTreeSet;
 
 use crate::Result;
 
+use super::duration_tokens::{self as tokens, Token, UnclosedEscape};
 use super::exact::DurationTiers;
-use super::field::{PatternSymbol, NANOS_PER_SECOND};
+use super::field::PatternSymbol;
 use super::pattern::{
     invalid_value, mismatch, nanos_from_fraction, note_field, read_literal, read_number,
 };
 use super::{range_err, DurationField, Temporal};
 
-/// One compiled duration-pattern token. Only the duration alphabet is a
-/// field token; every other character (including letters) is literal text,
-/// as in Neo4j's `DurationValue.parsePattern`.
+/// One compiled duration-pattern token, read off the shared token stream.
+/// Only the duration alphabet is a field token; every other character
+/// (including letters) is literal text, as in Neo4j's
+/// `DurationValue.parsePattern`. Run widths do not matter when parsing.
 #[derive(Debug, Clone)]
 enum DurationToken {
     Field(DurationField),
@@ -27,58 +29,17 @@ enum DurationToken {
 }
 
 fn tokenize_duration(pattern: &str) -> Result<Vec<DurationToken>> {
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut tokens = Vec::new();
-    let mut literal = String::new();
-    let mut index = 0;
-    let mut escaped = false;
-    let flush = |literal: &mut String, tokens: &mut Vec<DurationToken>| {
-        if !literal.is_empty() {
-            tokens.push(DurationToken::Literal(std::mem::take(literal)));
-        }
-    };
-    while index < chars.len() {
-        let c = chars[index];
-        if escaped {
-            if c == '\'' {
-                if chars.get(index + 1) == Some(&'\'') {
-                    literal.push('\'');
-                    index += 2;
-                    continue;
-                }
-                escaped = false;
-                index += 1;
-                continue;
-            }
-            literal.push(c);
-            index += 1;
-            continue;
-        }
-        if c == '\'' {
-            escaped = true;
-            index += 1;
-            continue;
-        }
-        if let Some(symbol) = DurationField::pattern_symbol(c) {
-            while chars.get(index) == Some(&c) {
-                index += 1;
-            }
-            flush(&mut literal, &mut tokens);
-            tokens.push(match symbol {
-                PatternSymbol::Field(field) => DurationToken::Field(field),
-                PatternSymbol::FractionDigits => DurationToken::Fraction,
-            });
-            continue;
-        }
-        literal.push(c);
-        index += 1;
-    }
     // An unpaired `'` is a malformed pattern, not a value mismatch
     // (Neo4j reports `pattern parsing failed`).
-    if escaped {
-        return Err(invalid_value("pattern parsing failed"));
-    }
-    flush(&mut literal, &mut tokens);
+    let tokens = tokens::tokenize(pattern)
+        .map_err(|UnclosedEscape| invalid_value("pattern parsing failed"))?
+        .into_iter()
+        .map(|token| match token {
+            Token::Literal(text) => DurationToken::Literal(text),
+            Token::Symbol(PatternSymbol::Field(field), _) => DurationToken::Field(field),
+            Token::Symbol(PatternSymbol::FractionDigits, _) => DurationToken::Fraction,
+        })
+        .collect::<Vec<_>>();
     reject_duplicate_duration_fields(&tokens)?;
     Ok(tokens)
 }
@@ -131,12 +92,8 @@ pub(super) fn parse_duration_pattern(value: &str, pattern: &str) -> Result<Tempo
                 // width check; the calendar fields' final widths are then
                 // checked by `finish` and the stored-range contract.
                 let (accumulator, scale) = field.scaled(&mut tiers);
-                let check_unit = i64::try_from(if scale >= NANOS_PER_SECOND {
-                    scale / NANOS_PER_SECOND
-                } else {
-                    scale
-                })
-                .map_err(|_| range_err())?;
+                let (_, unit) = field.lane_and_unit();
+                let check_unit = i64::try_from(unit).expect("every lane unit fits i64");
                 number.value.checked_mul(check_unit).ok_or_else(range_err)?;
                 accumulator.add_whole(i128::from(number.value), scale)?;
             }

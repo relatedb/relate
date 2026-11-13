@@ -39,7 +39,12 @@ fn concat_scalar_string(
 fn is_concat_scalar(v: &Value) -> bool {
     matches!(
         v,
-        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Temporal(_) | Value::Point(_)
+        Value::Int(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::Temporal(_)
+            | Value::Point(_)
+            | Value::Uuid(_)
     )
 }
 
@@ -85,14 +90,12 @@ pub(crate) fn add(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value> {
             o.extend(Arc::unwrap_or_clone(b));
             Value::checked_list(o)?
         }
-        (Value::Temporal(a), Value::Temporal(b)) => {
-            if matches!(b, temporal::Temporal::Duration { .. }) {
-                Value::Temporal(temporal::add_duration(&a, &b)?)
-            } else if matches!(a, temporal::Temporal::Duration { .. }) {
-                Value::Temporal(temporal::add_duration(&b, &a)?)
-            } else {
-                return Err(Error::ty("+ type mismatch"));
-            }
+        // `temporal + duration` and `duration + temporal` (the duration
+        // operand is the one added); any other temporal pair falls through
+        // to the shared `+` type mismatch.
+        (Value::Temporal(t), Value::Temporal(d @ temporal::Temporal::Duration { .. }))
+        | (Value::Temporal(d @ temporal::Temporal::Duration { .. }), Value::Temporal(t)) => {
+            Value::Temporal(temporal::add_duration(&t, &d)?)
         }
         (Value::Int(a), Value::Int(b)) => Value::Int(
             // Checked like Sub/Mul/Div/Mod: integer overflow is an honest

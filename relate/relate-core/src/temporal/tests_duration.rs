@@ -433,6 +433,20 @@ fn duration_pattern_runs_group_by_token_type() {
     );
 }
 
+/// The parser groups runs by letter: mixed letters naming one field (`yY`)
+/// or the fraction (`nS`) are duplicate fields, not one wider run — only the
+/// formatter merges them.
+#[test]
+fn duration_pattern_parse_rejects_mixed_letter_duplicate_fields() {
+    for (value, pattern) in [("1", "yY"), ("12", "nS"), ("1", "dD")] {
+        assert!(
+            parse_pattern("duration", value, pattern).is_err(),
+            "{pattern}"
+        );
+    }
+    assert!(parse_pattern("duration", "11", "yy").is_ok());
+}
+
 /// LABS-711: duration-pattern escaping follows Neo4j's state machine — a
 /// single quote opens, a lone quote closes (emitting nothing), and a doubled
 /// quote inside emits one quote and stays escaped. An unclosed escape is a

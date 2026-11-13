@@ -74,6 +74,17 @@ pub(super) enum DurationTier {
     Nanos,
 }
 
+/// The storage lane a duration field sums in under Neo4j's lane arithmetic:
+/// the nanosecond tier splits at whole seconds, its time-of-day fields
+/// counting in seconds and its sub-second fields in nanoseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DurationLane {
+    Months,
+    Days,
+    Seconds,
+    SubSecond,
+}
+
 /// One resolved CIP-223 duration-pattern spelling: either a duration field
 /// (rendered as that field's cascade share) or the sub-second fraction
 /// digits. The pattern alphabet resolves each letter to this once, so the
@@ -152,6 +163,22 @@ impl DurationField {
             Self::Millis => (DurationTier::Nanos, NANOS_PER_MILLI),
             Self::Micros => (DurationTier::Nanos, NANOS_PER_MICRO),
             Self::Nanos => (DurationTier::Nanos, 1),
+        }
+    }
+
+    /// The field's `(storage lane, unit in that lane)`, derived from
+    /// [`Self::tier_and_scale`]: the one place the nanosecond tier's
+    /// seconds/sub-second split lives. The unit is also the width a
+    /// pattern component is checked against in `i64`.
+    pub(super) fn lane_and_unit(self) -> (DurationLane, i128) {
+        let (tier, scale) = self.tier_and_scale();
+        match tier {
+            DurationTier::Months => (DurationLane::Months, scale),
+            DurationTier::Days => (DurationLane::Days, scale),
+            DurationTier::Nanos if scale >= NANOS_PER_SECOND => {
+                (DurationLane::Seconds, scale / NANOS_PER_SECOND)
+            }
+            DurationTier::Nanos => (DurationLane::SubSecond, scale),
         }
     }
 

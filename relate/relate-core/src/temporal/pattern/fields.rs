@@ -239,11 +239,8 @@ fn read_field(
             true
         }
         FieldKind::Era => {
-            let era = read_alpha(input, p).and_then(era_from_name);
-            if era.is_some() {
-                fields.era = era;
-            }
-            era.is_some()
+            fields.era = read_alpha(input, p).and_then(era_from_name);
+            fields.era.is_some()
         }
         FieldKind::ZoneId => read_zone_id(input, p, fields),
         FieldKind::ZoneName => read_zone_name(input, p, fields),
