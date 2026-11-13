@@ -62,7 +62,7 @@ pub(crate) fn effective_max_rows_from_env(
 /// modes have.
 pub(crate) fn truncation_warning(cap: RowCap, kept: usize) -> String {
     format!(
-        "warning: result truncated to {kept} rows (the statement returned {}); pass --max-rows 0 for all rows",
+        "warning: result truncated to {kept} rows (the statement returned {}); pass --max-rows 0 for all rows, or page with SKIP/LIMIT",
         cap.total
     )
 }
@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(cut.total, 5);
         assert_eq!(
             truncation_warning(cut, kept),
-            "warning: result truncated to 2 rows (the statement returned 5); pass --max-rows 0 for all rows"
+            "warning: result truncated to 2 rows (the statement returned 5); pass --max-rows 0 for all rows, or page with SKIP/LIMIT"
         );
     }
 

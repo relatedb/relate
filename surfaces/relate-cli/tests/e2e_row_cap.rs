@@ -31,7 +31,7 @@ fn test_agent_harness_caps_at_100_and_warns_on_stderr() {
     );
     assert!(
         stderr.contains(
-            "warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows"
+            "warning: result truncated to 100 rows (the statement returned 250); pass --max-rows 0 for all rows, or page with SKIP/LIMIT"
         ),
         "stderr: {stderr}"
     );
