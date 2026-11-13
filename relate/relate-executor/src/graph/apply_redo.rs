@@ -306,6 +306,12 @@ impl Graph {
         self.set_commit_ts(commit_ts);
         self.in_write.store(false, Ordering::Release);
         self.record_redo.store(true, Ordering::Release);
+        // ADR-0595: reclaim the label postings the removal sites
+        // suspected — here, the single-writer apply's tail, after every
+        // op of this commit is installed, so no concurrent `index_add`
+        // can race the removal. An empty candidate set is one horizon
+        // read.
+        self.drain_label_suspects();
         if legacy_created {
             self.mark_legacy_unenforced();
         }

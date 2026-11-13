@@ -425,17 +425,29 @@ impl Graph {
         self.constraint_keys_delete_node(id);
         let ts = self.tombstone_ts();
         let mut found = false;
+        // The tombstone's dying labels, carried out of the `nodes` guard
+        // so the reclamation candidates (ADR-0595) are appended after it
+        // is released — the lock contract `suspect_postings` states, and
+        // the shape the label twins' sites already have.
+        let mut dying: Option<Vec<u32>> = None;
         let before_shape = self.node_chain_shape(id);
         if let Some(mut vers) = self.nodes.get_mut(&id) {
             if let Some(live) = vers.tombstone(ts) {
                 // LABS-370 (v1 follow-up) / LABS-851: the exact label
                 // counts and the total node count follow every delete —
-                // the label index keeps the tombstoned id until GC, the
-                // count state does not. The node-liveness seam's one
-                // call.
+                // the count state does not. The node-liveness seam's
+                // one call.
                 self.bump_node_population_stats(&live.labels, CountDelta::Remove);
+                dying = Some(live.labels.clone());
                 found = true;
             }
+        }
+        if let Some(dying) = dying {
+            // ADR-0595: the tombstone's dying buckets — the labels the
+            // record carried, or the empty-label bucket when it carried
+            // none — become reclamation candidates here, at the removal
+            // site, for the apply's tail drain.
+            self.suspect_postings(id, &dying);
         }
         if found {
             self.charge(

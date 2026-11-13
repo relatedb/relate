@@ -69,6 +69,12 @@ impl Graph {
             .record_labels(added.iter().cloned());
         self.push_redo(RedoOp::add_labels(id, added));
         self.mark_node_dirty(id);
+        // ADR-0595: a first label takes the node out of the empty-label
+        // bucket — that posting dies here, at the removal site, so the
+        // tail drain reclaims it.
+        if live.is_empty() {
+            self.suspect_postings(id, &[]);
+        }
         self.index_add(id);
         for &lid in &added_ids {
             for &kid in &string_kids {
@@ -143,6 +149,10 @@ impl Graph {
                 .collect();
             self.push_redo(RedoOp::remove_labels(id, lost));
             self.mark_node_dirty(id);
+            // ADR-0595: the dropped labels' postings become reclamation
+            // candidates here, at the removal site — the apply's tail
+            // drain decides their fate, not a probe's walk.
+            self.suspect_postings(id, &actually_removed);
         }
         self.index_add(id);
         self.charge_node_after_edit(id, before.as_ref(), before_shape);

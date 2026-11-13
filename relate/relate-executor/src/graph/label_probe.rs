@@ -137,8 +137,10 @@ impl LabelProbe {
     ///
     /// Every node visible with `label` at a pinned snapshot stays in the
     /// label's `label_index` set while the snapshot is pinned: ids are added
-    /// at apply, before publication, and leave only at GC, which keeps
-    /// versions visible at a pinned snapshot. So a `None` equals the old
+    /// at apply, before publication, and leave only at a horizon-respecting
+    /// reclamation — the checkpoint GC or the apply drain (ADR-0595), both
+    /// of which keep versions visible at a pinned snapshot. So a `None`
+    /// equals the old
     /// census's `S + D >= need`, for autocommit statements and explicit
     /// transactions alike (ADR-0171).
     pub(crate) fn carriers_below(&self, graph: &Graph, label: &str, k: i64) -> Option<i64> {
