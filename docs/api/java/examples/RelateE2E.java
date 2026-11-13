@@ -1,12 +1,12 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
-//DEPS com.relate:relate:0.1.0
+//DEPS ai.relatedb:relate:0.1.0
 //SOURCES HydratedValues.java
-package com.relate.examples;
+package ai.relatedb.examples;
 
-import com.relate.Database;
-import com.relate.Database.Result;
-import com.relate.Node;
-import com.relate.Relationship;
+import ai.relatedb.Database;
+import ai.relatedb.Database.Result;
+import ai.relatedb.Node;
+import ai.relatedb.Relationship;
 
 import java.time.LocalDate;
 import java.util.List;

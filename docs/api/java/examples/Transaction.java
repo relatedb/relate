@@ -1,6 +1,6 @@
-package com.relate.examples;
+package ai.relatedb.examples;
 
-import com.relate.Database;
+import ai.relatedb.Database;
 
 public class Transaction {
     public static void main(String[] args) {

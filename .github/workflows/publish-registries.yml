@@ -557,7 +557,8 @@ jobs:
             test -s "natives/$key/$lib"
           done
           # The Central Portal credentials ride a settings.xml server entry
-          # (the pom's publishingServerId is `central`); the GPG key is
+          # (the pom's publishingServerId is `central`); Maven reads the
+          # environment through ${env.NAME}, not a bare ${NAME}. The GPG key is
           # imported into the runner's keyring for maven-gpg-plugin.
           mkdir -p ~/.m2
           cat > ~/.m2/settings.xml <<SETTINGS
@@ -565,8 +566,8 @@ jobs:
             <servers>
               <server>
                 <id>central</id>
-                <username>\${MAVEN_CENTRAL_USERNAME}</username>
-                <password>\${MAVEN_CENTRAL_TOKEN}</password>
+                <username>\${env.MAVEN_CENTRAL_USERNAME}</username>
+                <password>\${env.MAVEN_CENTRAL_TOKEN}</password>
               </server>
             </servers>
           </settings>

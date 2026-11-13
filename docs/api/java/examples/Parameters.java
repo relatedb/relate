@@ -1,7 +1,7 @@
-package com.relate.examples;
+package ai.relatedb.examples;
 
-import com.relate.ClientException;
-import com.relate.Database;
+import ai.relatedb.ClientException;
+import ai.relatedb.Database;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -38,7 +38,7 @@ public class Parameters {
                     Map.of(
                             "at", ZonedDateTime.of(2026, 11, 4, 9, 30, 0, 0, ZoneId.of("Europe/Berlin")),
                             "tags", List.of("x", 2L),
-                            "emb", new com.relate.VectorValue("FLOAT32", List.of(0.25, -1.0))));
+                            "emb", new ai.relatedb.VectorValue("FLOAT32", List.of(0.25, -1.0))));
             Object at = typed.rows().get(0).get(0);
             if (!(at instanceof ZonedDateTime zoned)
                     || !zoned.getZone().equals(ZoneId.of("Europe/Berlin"))) {

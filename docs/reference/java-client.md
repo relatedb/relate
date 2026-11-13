@@ -1,6 +1,6 @@
 # Java Client
 
-The Java client (`clients/java`, artifact `com.relate:relate`) binds the
+The Java client (`clients/java`, artifact `ai.relatedb:relate`) binds the
 product **C ABI** through JNA. Java 17+. The jar bundles the native library
 for darwin-arm64, darwin-x64, linux-arm64, linux-x64 and win32-x64 and
 extracts the running platform's copy to a per-user cache on first use — no
@@ -12,7 +12,7 @@ bundled library for development only.
 ## Open, query, close
 
 ```java
-import com.relate.Database;
+import ai.relatedb.Database;
 
 Database db = Database.open(":memory:");   // or a directory / .rl bundle
 Connection conn = db.connect();

@@ -1,16 +1,16 @@
-# Java client: com.relate:relate
+# Java client: ai.relatedb:relate
 
 ## Install
 
 ```xml
 <dependency>
-  <groupId>com.relate</groupId>
+  <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
   <version>0.1.0</version>
 </dependency>
 ```
 
-Gradle: `implementation("com.relate:relate:0.1.0")`. Java 17+;
+Gradle: `implementation("ai.relatedb:relate:0.1.0")`. Java 17+;
 wraps the C ABI via JNA. The jar bundles the native library for all five
 supported platforms — no environment variable, no library path.
 
@@ -21,7 +21,7 @@ checkout: `cargo build -p relate-ffi --release`, then
 ## Minimal usage
 
 ```java
-import com.relate.Database;
+import ai.relatedb.Database;
 
 try (Database db = Database.open(":memory:");          // or "./mydata" / "./task.rl"
      Database.Connection conn = db.connect()) {         // or db.connect("system")
@@ -73,7 +73,7 @@ exceptions — see gotchas.
   vocabulary). Each carries one platform's native; depend on the fat jar
   **or** one classifier jar. A classpath missing the running platform's
   native fails with `relate: no bundled native library for platform
-  <key> … add the classifier artifact com.relate:relate:<ver>:<classifier>`.
+  <key> … add the classifier artifact ai.relatedb:relate:<ver>:<classifier>`.
 - **Java 24+ warning** — JEP 472 prints a "restricted method" warning when
   JNA loads native code; `--enable-native-access=ALL-UNNAMED` silences it.
 - **Typed ABI v2 required** — the client checks

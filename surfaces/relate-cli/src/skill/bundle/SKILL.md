@@ -29,7 +29,7 @@ it:
 | Git history: coupling, ownership, churn, reviewers from a checkout | [run-git-to-graph](references/run-git-to-graph.md) |
 | Command-kind extensions: author, install, or run `relate run <name>` packages | [client-extensions](references/client-extensions.md) |
 | Node.js client: `@relate/relate` install, native-lib resolution | [client-javascript](references/client-javascript.md) |
-| Java client: `com.relate:relate` dependency, bundled natives, classifier jars | [client-java](references/client-java.md) |
+| Java client: `ai.relatedb:relate` dependency, bundled natives, classifier jars | [client-java](references/client-java.md) |
 | Go client: cgo link, typed values, numeric + element ids, typed errors | [client-go](references/client-go.md) |
 | Browser/WASM client: `@relate/relate-wasm` init, OPFS, traps | [client-wasm](references/client-wasm.md) |
 | iOS/macOS Swift client: SwiftPM `Relate`, XCFramework, concurrency traps | [client-swift](references/client-swift.md) |

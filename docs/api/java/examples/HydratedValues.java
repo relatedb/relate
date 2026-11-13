@@ -1,4 +1,4 @@
-package com.relate.examples;
+package ai.relatedb.examples;
 
 /**
  * The one canonical hydrated-value comparison for the docs examples. The

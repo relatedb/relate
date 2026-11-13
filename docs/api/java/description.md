@@ -1,7 +1,7 @@
 # Java client — description
 
-`com.relate.Database` wraps the C ABI for JVM embedders through JNA.
-The jar is self-contained (ADR-0490): the plain `com.relate:relate`
+`ai.relatedb.Database` wraps the C ABI for JVM embedders through JNA.
+The jar is self-contained (ADR-0490): the plain `ai.relatedb:relate`
 artifact bundles `relate_ffi` for all five supported platforms and
 loads the right one with no environment variable or library path; a
 per-platform classifier jar (`osx-aarch_64`, `linux-x86_64`, …) carries one

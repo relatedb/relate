@@ -2,7 +2,7 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.relate</groupId>
+  <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
   <version>1.0.2</version>
   <name>relate</name>
@@ -43,7 +43,7 @@
         ${relate.ffi.dir} (default ../../target/release, so build the
         relate-ffi crate in release mode first); the build fails when it
         is missing.
-    The key / library / classifier rows mirror com.relate.NativePlatform;
+    The key / library / classifier rows mirror ai.relatedb.NativePlatform;
     PackagedJarIT fails when they drift.
   -->
   <properties>
@@ -78,14 +78,14 @@
         <directory>src/main/resources</directory>
         <filtering>true</filtering>
         <includes>
-          <include>com/relate/relate.properties</include>
+          <include>ai/relatedb/relate.properties</include>
         </includes>
       </resource>
       <resource>
         <directory>src/main/resources</directory>
         <filtering>false</filtering>
         <excludes>
-          <exclude>com/relate/relate.properties</exclude>
+          <exclude>ai/relatedb/relate.properties</exclude>
         </excludes>
       </resource>
     </resources>
@@ -240,7 +240,7 @@
                 <configuration>
                   <classifier>osx-aarch_64</classifier>
                   <includes>
-                    <include>com/**</include>
+                    <include>ai/**</include>
                     <include>.agents/**</include>
                     <include>native/darwin-arm64/**</include>
                   </includes>
@@ -252,7 +252,7 @@
                 <configuration>
                   <classifier>osx-x86_64</classifier>
                   <includes>
-                    <include>com/**</include>
+                    <include>ai/**</include>
                     <include>.agents/**</include>
                     <include>native/darwin-x64/**</include>
                   </includes>
@@ -264,7 +264,7 @@
                 <configuration>
                   <classifier>linux-aarch_64</classifier>
                   <includes>
-                    <include>com/**</include>
+                    <include>ai/**</include>
                     <include>.agents/**</include>
                     <include>native/linux-arm64/**</include>
                   </includes>
@@ -276,7 +276,7 @@
                 <configuration>
                   <classifier>linux-x86_64</classifier>
                   <includes>
-                    <include>com/**</include>
+                    <include>ai/**</include>
                     <include>.agents/**</include>
                     <include>native/linux-x64/**</include>
                   </includes>
@@ -288,7 +288,7 @@
                 <configuration>
                   <classifier>windows-x86_64</classifier>
                   <includes>
-                    <include>com/**</include>
+                    <include>ai/**</include>
                     <include>.agents/**</include>
                     <include>native/win32-x64/**</include>
                   </includes>
@@ -360,7 +360,7 @@
                 <configuration>
                   <classifier>${relate.host.classifier}</classifier>
                   <includes>
-                    <include>com/**</include>
+                    <include>ai/**</include>
                     <include>.agents/**</include>
                     <include>native/${relate.host.key}/**</include>
                   </includes>
@@ -435,14 +435,14 @@
       Maven Central publication (dormant). Activated only by
       `-Pcentral-publish`; no other build touches it. Central requires
       sources and javadoc jars beside the binaries, a GPG signature on
-      every artifact, and the verified `com.relate` namespace on the
+      every artifact, and the verified `ai.relatedb` namespace on the
       Central Portal. The profile enforces the staged five-platform
       natives (ADR-0490): -Pcentral-publish alone fails loudly rather
-      than signing and uploading a host-native-only bundle. The release
-      workflow's `java-central` job runs
-      `mvn deploy -Pcentral-publish` once the repository variable
-      MAVEN_CENTRAL_ENABLED is 'true' and the secrets it reads exist
-      (see clients/java/README.md, "Publishing to Maven Central").
+      than signing and uploading a host-native-only bundle. The
+      publish-registries workflow's `maven-central` job runs
+      `mvn deploy -Pcentral-publish` when dispatched with maven=true and
+      the `release` environment's secrets exist (see
+      clients/java/README.md, "Publishing to Maven Central").
       autoPublish stays false: the first deployments are validated and
       released by hand from the Central Portal.
     -->

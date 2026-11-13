@@ -91,19 +91,17 @@ Everything needed ships in the repo, off by default:
   central-publishing-maven-plugin upload with `autoPublish=false` — the
   first deployments are validated and released by hand from the Central
   Portal;
-- the release workflow's `java-central` job, skipped unless the
-  repository variable `MAVEN_CENTRAL_ENABLED` is `'true'`.
+- the `maven-central` job in `publish-registries.yml`: it downloads the
+  release's five FFI archives, verifies their build attestations, stages
+  the natives and runs `mvn deploy -Pcentral-publish`. It runs only on a
+  manual dispatch of that workflow with `maven` on, so Maven can be
+  published alone without touching npm, PyPI or crates.io.
 
-Turning it on is an owner action, in this order: verify the `com.relate`
-namespace on the Central Portal; set the repository variable
-`MAVEN_CENTRAL_ENABLED=true` and the secrets `MAVEN_GPG_KEY` (base64
-armored), `MAVEN_GPG_PASSPHRASE`, `MAVEN_CENTRAL_USERNAME`, and
-`MAVEN_CENTRAL_TOKEN`; then cut a release — the `java-central` job
-deploys the fat jar and the five classifier jars (sources and javadoc
-attached, signed) alongside the GitHub-release jars.
-
-Until then `mvn package` and the release `java` job are unchanged: no
-signing, no upload, jars only on the GitHub release.
+The coordinates are `ai.relatedb:relate` (the fat jar) plus one
+classifier jar per platform. Turning it on is an owner action — Central
+account, namespace verification, signing key and the four secrets — and
+the step-by-step is "Maven Central" in
+[`docs/PUBLISHING.md`](../../docs/PUBLISHING.md).
 
 ### Cross-building the five natives
 

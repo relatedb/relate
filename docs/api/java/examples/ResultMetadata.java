@@ -1,10 +1,10 @@
-package com.relate.examples;
+package ai.relatedb.examples;
 
-import com.relate.Category;
-import com.relate.Database;
-import com.relate.Namespace;
-import com.relate.QueryType;
-import com.relate.Severity;
+import ai.relatedb.Category;
+import ai.relatedb.Database;
+import ai.relatedb.Namespace;
+import ai.relatedb.QueryType;
+import ai.relatedb.Severity;
 
 public class ResultMetadata {
     public static void main(String[] args) {

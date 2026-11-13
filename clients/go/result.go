@@ -1,7 +1,7 @@
 package relate
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../surfaces/relate-ffi/include
+#cgo CFLAGS: -I${SRCDIR}/include
 #cgo LDFLAGS: -L${SRCDIR}/../../target/debug -L${SRCDIR}/../../target/release -lrelate_ffi
 #include <stdlib.h>
 #include "relate.h"

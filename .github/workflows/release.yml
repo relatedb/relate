@@ -912,6 +912,13 @@ jobs:
           git tag -a "${{ needs.version.outputs.tag }}" \
             -m "Release ${{ needs.version.outputs.tag }}"
           git push origin "${{ needs.version.outputs.tag }}"
+          # The Go client is a nested module (clients/go), which the Go
+          # toolchain resolves only from a tag carrying the module's
+          # directory prefix (ADR-0592): `clients/go/vX.Y.Z` on the same
+          # commit makes `go get .../clients/go@vX.Y.Z` work.
+          git tag -a "clients/go/${{ needs.version.outputs.tag }}" \
+            -m "Go client ${{ needs.version.outputs.tag }}"
+          git push origin "clients/go/${{ needs.version.outputs.tag }}"
 
   # The server image (Dockerfile) for the tag this run just pushed. Built and
   # smoked in a job with no AWS access, so nothing the build installs or

@@ -274,13 +274,32 @@ overlapping. Use one `Connection` per goroutine for parallelism. A `Database` or
 its finalizer, which is a backstop, not a substitute: a file store cannot be
 reopened in the process until the `Database` is closed or collected.
 
-The package links `librelate_ffi` (ABI version 2, ADR-0502). Build it with
+The package links `librelate_ffi` (ABI version 2, ADR-0502).
+
+**Consuming the module** (ADR-0592). The module path is
+`github.com/relatedb/relate/clients/go`; each release carries a matching
+`clients/go/vX.Y.Z` tag, so `go get github.com/relatedb/relate/clients/go@vX.Y.Z`
+resolves. The module ships its own copy of the C header but not the native
+library: download the release's `relate-ffi-<triple>.tar.gz` for your
+platform, extract it, and point the linker at it. cgo needs a C toolchain.
+
+```sh
+tar xzf relate-ffi-x86_64-unknown-linux-gnu.tar.gz -C /opt/relate-ffi
+export CGO_LDFLAGS="-L/opt/relate-ffi"
+go build ./...
+# run: LD_LIBRARY_PATH=/opt/relate-ffi (DYLD_LIBRARY_PATH on macOS)
+```
+
+**Building inside the repository.** Build the library with
 `cargo build --release -p relate-ffi` from the repository root; the cgo
 directives search `target/debug` and `target/release`. On macOS the linker
 needs `librelate_ffi.dylib` (a Linux `.so` left in `target/debug` will
 fail with `unknown file type`). Set `DYLD_LIBRARY_PATH` (or `LD_LIBRARY_PATH`
 on Linux) to the FFI library directory when running a binary outside the
-build tree. The C contract is [`docs/api/c/spec.md`](../c/spec.md).
+build tree. `clients/go/include/relate.h` is a copy of
+`surfaces/relate-ffi/include/relate.h`; after a header change, run
+`cp surfaces/relate-ffi/include/relate.h clients/go/include/relate.h`
+(a test fails on drift). The C contract is [`docs/api/c/spec.md`](../c/spec.md).
 
 Fraud and identity load-test binaries (`cmd/fraud-loadtest`,
 `cmd/identity-loadtest`) wrap this client. Flags, mix, and report JSON are

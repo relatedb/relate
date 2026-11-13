@@ -7,11 +7,14 @@ go get github.com/relatedb/relate/clients/go   # import relate
 ```
 
 Go 1.22+; cgo over the C ABI (`librelate_ffi`, ABI version 2, ADR-0502),
-so `CGO_ENABLED=1` and a C toolchain are required. The module is not on a
-proxy yet; until the first tagged release, build from a repo checkout: clone
-the repository, `cargo build --release -p relate-ffi`, then `go build`
-from `clients/go` — the cgo directives search the checkout's `target/debug`
-and `target/release` for the library.
+so `CGO_ENABLED=1` and a C toolchain are required. The module ships its own
+header but not the native library: download the release's
+`relate-ffi-<triple>.tar.gz` for your platform, extract it, and build with
+`CGO_LDFLAGS="-L<dir>"`; at run time put the same directory on
+`LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). Pin a release with
+`go get github.com/relatedb/relate/clients/go@vX.Y.Z` (ADR-0592). In a repo
+checkout, `cargo build --release -p relate-ffi` and `go build` from
+`clients/go` find the library in `target/` with no flags.
 
 ## Minimal usage
 

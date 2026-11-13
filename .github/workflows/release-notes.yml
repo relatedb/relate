@@ -180,7 +180,7 @@ jobs:
           # alive when there is no prior tag (very first release) — PREV_TAG is
           # then exported as an empty string and the prompt falls back to a
           # bounded `git log` range.
-          PREV_TAG=$(git describe --tags --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)
+          PREV_TAG=$(git describe --tags --match "v[0-9]*" --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)
           echo "PREV_TAG=${PREV_TAG}" >> "$GITHUB_ENV"
           echo "[release-notes] PREV_TAG=${PREV_TAG:-<none>}"
 

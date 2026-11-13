@@ -1,6 +1,6 @@
-package com.relate.examples;
+package ai.relatedb.examples;
 
-import com.relate.Database;
+import ai.relatedb.Database;
 
 /**
  * Packaging (ADR-0490): with the all-platform jar (or this platform's
@@ -10,7 +10,7 @@ import com.relate.Database;
  *
  * <pre>
  * java -cp relate-0.1.0.jar:jna-5.14.0.jar:jackson-databind-2.17.2.jar:... \
- *      com.relate.examples.BundledNative
+ *      ai.relatedb.examples.BundledNative
  * </pre>
  */
 public class BundledNative {

@@ -1,7 +1,7 @@
-package com.relate.examples;
+package ai.relatedb.examples;
 
-import com.relate.RelateException;
-import com.relate.Database;
+import ai.relatedb.RelateException;
+import ai.relatedb.Database;
 
 public class Namespace {
     public static void main(String[] args) {

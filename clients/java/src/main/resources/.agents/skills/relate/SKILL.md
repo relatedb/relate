@@ -18,7 +18,7 @@ no environment variable, no library path:
 
 ```xml
 <dependency>
-  <groupId>com.relate</groupId>
+  <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
   <version>${relate.version}</version>
 </dependency>
@@ -34,7 +34,7 @@ and the classifier to add.
 ## Connect and query
 
 ```java
-import com.relate.Database;
+import ai.relatedb.Database;
 
 try (Database db = Database.open("./mydata");      // or ":memory:" / "./task.rl"
      Database.Connection conn = db.connect()) {    // or db.connect("system")

@@ -241,7 +241,7 @@ fallible call reports through one typed error channel. Contract:
 
 ### Java
 
-`com.relate:relate` — Java 17+, JNA over the C ABI, with the native
+`ai.relatedb:relate` — Java 17+, JNA over the C ABI, with the native
 library bundled in the jar (one fat jar, or one of five platform
 classifiers):
 

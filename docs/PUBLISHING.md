@@ -209,6 +209,56 @@ public; the `relatedb.ai/...` links resolve once relate-web serves them
 Once every box is checked, the first release is fully published:
 binaries and checksums downloadable, and the documentation site live.
 
+## Maven Central (Java client, `ai.relatedb:relate`)
+
+Unlike PyPI, npm and crates.io, Maven Central has no trusted publishing:
+the `maven-central` job in `publish-registries.yml` signs with a GPG key
+and uploads with a Central Portal token, both stored as secrets in the
+`release` environment. One-time owner setup, in this order:
+
+1. **Central Portal account.** Sign in at <https://central.sonatype.com>
+   (GitHub, Google or email). Use a shared team account, not a personal
+   one, so the token outlives any one person.
+2. **Claim and verify the namespace.** Portal → Namespaces → Add
+   Namespace → `ai.relatedb`. The Portal shows only a verification key.
+   Add a DNS record of type `TXT`, host `@` (the domain root of
+   `relatedb.ai`), value = the key, without quotes; keep the domain's
+   other TXT records. Check it with `dig +short TXT relatedb.ai`, then
+   press Verify. This requires control of the domain; keep the record
+   afterwards, the Portal may re-check it.
+3. **Create a user token.** Portal → Account → Generate User Token. It
+   shows a username and a password once; they become
+   `MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_TOKEN`.
+4. **Create the signing key.** On a trusted machine:
+
+   ```sh
+   gpg --full-generate-key            # RSA 4096, no expiry (or 2 years), a team address
+   gpg --list-secret-keys --keyid-format LONG   # note the key ID after rsa4096/
+   gpg --keyserver keyserver.ubuntu.com --send-keys <KEYID>   # Central must find the public key
+   gpg --armor --export-secret-keys <KEYID> | base64 | tr -d '\n' | pbcopy
+   ```
+
+   The clipboard now holds the secret key as one base64 line — that is
+   `MAVEN_GPG_KEY`. The key's passphrase is `MAVEN_GPG_PASSPHRASE`. Keep
+   an offline backup of the private key and revocation certificate; the
+   key cannot be replaced for artifacts already published.
+5. **Store the four secrets** (Settings → Environments → `release` →
+   Environment secrets): `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_TOKEN`,
+   `MAVEN_GPG_KEY`, `MAVEN_GPG_PASSPHRASE`.
+6. **Publish Maven only**, against an existing release tag:
+
+   ```sh
+   gh workflow run publish-registries.yml -f tag=vX.Y.Z \
+     -f maven=true -f npm=false -f pypi=false -f crates-io=false
+   ```
+
+   The job verifies the five FFI archives' build attestations, stages the
+   natives, signs and uploads the fat jar plus the five classifier jars.
+   The pom sets `autoPublish=false`: nothing goes live until you open
+   Portal → Deployments, check the validation result and press Publish.
+   Do that by hand for the first releases. Published versions are
+   immutable.
+
 ## Between releases
 
 After a release, the workspace version on `main` is the **next

@@ -3,6 +3,19 @@
 A Go client over Relate's typed C ABI v2 (ADR-0502) via cgo.
 API contract: [`docs/api/go/spec.md`](../../docs/api/go/spec.md).
 
+## Using the module from another project
+
+```sh
+go get github.com/relatedb/relate/clients/go@vX.Y.Z
+tar xzf relate-ffi-<triple>.tar.gz -C /opt/relate-ffi   # from the release assets
+CGO_LDFLAGS="-L/opt/relate-ffi" go build ./...
+```
+
+The module carries its own header (`include/relate.h`, kept byte-equal to
+`surfaces/relate-ffi/include/relate.h` by a test); the native library comes
+from the release archive (ADR-0592). The sections below are for working in
+this repository.
+
 ## Prerequisites
 
 - Go 1.22+

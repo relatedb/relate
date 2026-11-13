@@ -1,6 +1,6 @@
 # Java client — spec
 
-Artifact: `com.relate:relate` (`clients/java`). The client speaks
+Artifact: `ai.relatedb:relate` (`clients/java`). The client speaks
 the typed C ABI v2 (ADR-0502) through JNA: a library that is not v2 fails
 at first use with `incompatible librelate_ffi …` — never at a missing
 walker symbol later.
@@ -148,12 +148,12 @@ jackson-databind):
 
 | Coordinate | Natives carried |
 | --- | --- |
-| `com.relate:relate:<ver>` | all five platforms (the fat jar, ~40 MB) |
-| `com.relate:relate:<ver>:osx-aarch_64` | `darwin-arm64` only |
-| `com.relate:relate:<ver>:osx-x86_64` | `darwin-x64` only |
-| `com.relate:relate:<ver>:linux-aarch_64` | `linux-arm64` only (glibc) |
-| `com.relate:relate:<ver>:linux-x86_64` | `linux-x64` only (glibc) |
-| `com.relate:relate:<ver>:windows-x86_64` | `win32-x64` only |
+| `ai.relatedb:relate:<ver>` | all five platforms (the fat jar, ~40 MB) |
+| `ai.relatedb:relate:<ver>:osx-aarch_64` | `darwin-arm64` only |
+| `ai.relatedb:relate:<ver>:osx-x86_64` | `darwin-x64` only |
+| `ai.relatedb:relate:<ver>:linux-aarch_64` | `linux-arm64` only (glibc) |
+| `ai.relatedb:relate:<ver>:linux-x86_64` | `linux-x64` only (glibc) |
+| `ai.relatedb:relate:<ver>:windows-x86_64` | `win32-x64` only |
 
 Every jar carries the same classes and the library skill; depend on the
 fat jar **or** one classifier jar, not both. The classifiers are the
@@ -162,7 +162,7 @@ os-maven-plugin / Gradle osdetector vocabulary:
 ```xml
 <!-- Maven: zero configuration -->
 <dependency>
-  <groupId>com.relate</groupId>
+  <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
   <version>0.1.0</version>
 </dependency>
@@ -178,7 +178,7 @@ os-maven-plugin / Gradle osdetector vocabulary:
   </extensions>
 </build>
 <dependency>
-  <groupId>com.relate</groupId>
+  <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
   <version>0.1.0</version>
   <classifier>${os.detected.classifier}</classifier>
@@ -187,12 +187,12 @@ os-maven-plugin / Gradle osdetector vocabulary:
 
 ```kotlin
 // Gradle (Kotlin DSL)
-dependencies { implementation("com.relate:relate:0.1.0") }
+dependencies { implementation("ai.relatedb:relate:0.1.0") }
 
 // or one platform, via the osdetector plugin
 plugins { id("com.google.osdetector") version "1.7.3" }
 dependencies {
-    implementation("com.relate:relate:0.1.0:${osdetector.classifier}")
+    implementation("ai.relatedb:relate:0.1.0:${osdetector.classifier}")
 }
 ```
 
@@ -226,7 +226,7 @@ JVM:
    unwrapped, not just the first — no `ExceptionInInitializerError`):
 
    ```
-   relate: no bundled native library for platform <key> (os.name=<os.name>, os.arch=<os.arch>): the classpath has no /native/<key>/<library>. Depend on the all-platform jar com.relate:relate:<ver> or add the classifier artifact com.relate:relate:<ver>:<classifier>. (RELATE_LIB=<path to a relate_ffi you built> overrides the bundled library for development only.)
+   relate: no bundled native library for platform <key> (os.name=<os.name>, os.arch=<os.arch>): the classpath has no /native/<key>/<library>. Depend on the all-platform jar ai.relatedb:relate:<ver> or add the classifier artifact ai.relatedb:relate:<ver>:<classifier>. (RELATE_LIB=<path to a relate_ffi you built> overrides the bundled library for development only.)
    ```
 
    An unsupported platform fails earlier with
@@ -298,7 +298,7 @@ the local Maven repository first — `cargo build -p relate-ffi
 jbang docs/api/java/examples/RelateE2E.java
 ```
 
-The example resolves `com.relate:relate` through JBang, loads the
+The example resolves `ai.relatedb:relate` through JBang, loads the
 bundled native for the running platform and runs queries, typed graph
 entities, a `java.time` date property, a parameterised query and an
 explicit transaction with its bookmark — with `RELATE_LIB` unset (it
@@ -362,7 +362,7 @@ See `examples/ResultMetadata.java`.
 ## The structured plan (LABS-418, ADR-0381)
 
 `Result.getPlan()` returns the statement's `relate.plan/v1` document as
-typed values — the top-level `com.relate` classes `PlanDocument`
+typed values — the top-level `ai.relatedb` classes `PlanDocument`
 (`schema`, `profiled`, `statement`, `root`),
 `PlanNode` (`operator`, `details`, `identifiers`, `estimatedRows`, `actual`,
 `children`, `warnings` — the operator's remedy-bearing notifications,
@@ -383,7 +383,7 @@ rung only and null otherwise; nullable).
 ## Query notifications (ADR-0363)
 
 `Result.getNotifications()` returns the statement's query notifications as a
-`List<Notification>` (the top-level `com.relate.Notification` class),
+`List<Notification>` (the top-level `ai.relatedb.Notification` class),
 read from `relate_result_notifications` (a
 result-owned JSON array string, copied by JNA) while the native result is
 alive. The list is always present and empty on a plain run: derivation is
