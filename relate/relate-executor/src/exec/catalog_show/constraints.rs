@@ -9,7 +9,7 @@ use relate_parser::{ConstraintEntityFilter, ConstraintKindFilter};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::entity_variable;
+use super::{entity_pattern, entity_variable};
 use crate::exec::catalog::{
     backtick, catalog_row, constraint_binding, optional_string_cell, string_list, ConstraintBinding,
 };
@@ -90,10 +90,7 @@ fn constraint_create_statement(
     // standalone CREATE form and for an untyped `propertyType`.
     let verb = crate::graph_type::standalone_verb(kind, def.property_type.as_deref())?;
     let variable = entity_variable(entity);
-    let pattern = match entity {
-        EntityKind::Node => format!("({variable}:{})", backtick(&def.label)),
-        EntityKind::Relationship => format!("()-[{variable}:{}]-()", backtick(&def.label)),
-    };
+    let pattern = entity_pattern(entity, std::slice::from_ref(&def.label));
     let properties = def
         .properties
         .iter()
