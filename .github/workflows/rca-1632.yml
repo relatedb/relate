@@ -1,0 +1,82 @@
+name: RCA pokec shortest family (scratch)
+on:
+  pull_request:
+    paths: ['.github/workflows/rca-1632.yml', '.rca/**']
+env:
+  DO_NOT_TRACK: "1"
+  RELATE_TELEMETRY: "off"
+jobs:
+  rca:
+    runs-on: linux-4-core-x86
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: relate, fetch-depth: 0, persist-credentials: false }
+      - uses: actions/checkout@v7
+        with:
+          repository: relatedb/relate-benchmarks-private
+          token: ${{ secrets.BENCHMARKS_READ_TOKEN }}
+          path: relate-benchmarks-private
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: astral-sh/setup-uv@v6
+      - name: Machine
+        run: |
+          nproc; free -g | head -2; df -h . | tail -1
+          sudo apt-get install -y linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" >/dev/null 2>&1 || true
+          sudo sysctl kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0 || true
+          ls /usr/lib/linux-tools*/perf 2>/dev/null | head -2 || true
+      - name: Fetch, build engine, load
+        working-directory: relate-benchmarks-private/benchmarks/pokec
+        env:
+          RELATE_SRC: ${{ github.workspace }}/relate
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+          CARGO_PROFILE_RELEASE_STRIP: none
+          RUSTFLAGS: -C force-frame-pointers=yes
+        run: |
+          ./run.sh fetch
+          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev "$GITHUB_SHA" || true
+          ./run.sh load --relate-src "$RELATE_SRC" --relate-rev "$GITHUB_SHA" 2>&1 | grep -v -i "token" | tail -5
+      - name: Measure
+        run: |
+          B=relate-benchmarks-private
+          CLI=$(ls $B/.cache/engines/*/relate | head -1)
+          STORE=$(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1)
+          echo "cli=$CLI store=$STORE"; ls -la "$STORE" | head -3
+          mkdir -p rca-out
+          python3 -I relate/.rca/measure.py "$(realpath $CLI)" "$(realpath $STORE)" "$(realpath $B/benchmarks/pokec/queries)" "$(realpath rca-out)" 2>&1 | tail -40
+      - name: Sample slow cases with perf
+        continue-on-error: true
+        run: |
+          B=relate-benchmarks-private
+          CLI=$(realpath $(ls $B/.cache/engines/*/relate | head -1))
+          STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
+          PERF=$(ls /usr/lib/linux-tools*/perf | head -1)
+          for n in 19 20 21 22 28 30 31; do
+            rm -rf "$STORE.perf"; cp -r "$STORE" "$STORE.perf"
+            (printf '%s\n' "$(cat $B/benchmarks/pokec/queries/q$n.cypher)") > q.cypher
+            RELATE_MAX_ROWS=0 sudo -E $PERF record -F 299 -g -o rca-out/perf-q$n.data -- timeout -s KILL 50 "$CLI" query --mode jsonl -d "$STORE.perf" < q.cypher >/dev/null 2>&1 || true
+            sudo $PERF report -i rca-out/perf-q$n.data --stdio --no-children -g none --percent-limit 1.2 2>/dev/null | grep -v '^#' | grep -v '^$' | head -30 > rca-out/perf-q$n.self.txt || true
+            sudo $PERF report -i rca-out/perf-q$n.data --stdio --children -g none --percent-limit 4 2>/dev/null | grep -v '^#' | grep -v '^$' | head -40 > rca-out/perf-q$n.children.txt || true
+            sudo rm -f rca-out/perf-q$n.data
+            rm -rf "$STORE.perf"
+          done
+      - name: Summary
+        if: always()
+        run: |
+          python3 -I - <<'PY'
+          import json
+          try:
+              r=json.load(open('rca-out/results.json'))
+              for k,v in r.items():
+                  print(k, v['wall_s'], 'TIMEOUT' if v['timeout'] else 'ok', 'hwm_mib', v['hwm_mib'], 'rc', v['rc'], 'lines', v['out_lines'], 'profile_s', v.get('profile_wall_s'))
+          except Exception as e: print('no results', e)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rca-1632
+          path: |
+            rca-out/**
+            !rca-out/**/*.out
+          retention-days: 7
