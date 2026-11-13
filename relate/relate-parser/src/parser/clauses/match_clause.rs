@@ -165,14 +165,17 @@ impl<'a> Parser<'a> {
     /// (`parse_match_mode_prefix`) and after a path variable declaration
     /// (`p = REPEATABLE ELEMENTS (...)`, looked ahead in `parse_match`).
     /// Both keyword pairs are contextual -- plain identifiers everywhere
-    /// else in the grammar. The `DIFFERENT RELATIONSHIPS` pair is also
-    /// admitted in the singular (`DIFFERENT RELATIONSHIP`, MatchModes
-    /// [1.2]).
+    /// else in the grammar -- and both are admitted in the singular too
+    /// (`DIFFERENT RELATIONSHIP` per MatchModes [1.2]; `REPEATABLE
+    /// ELEMENT` verified against live Neo4j 2026.10, which parses and
+    /// executes it exactly like the plural).
     pub(in crate::parser) fn peek_match_mode_at(&self, offset: usize) -> Option<MatchMode> {
         // The first keyword is an identifier by construction; the second is
         // matched on its literal alone (it may lex as a keyword token).
         let second = &self.peek_at(offset + 1).literal;
-        if self.peek_at_is_ident(offset, "repeatable") && second.eq_ignore_ascii_case("elements") {
+        if self.peek_at_is_ident(offset, "repeatable")
+            && (second.eq_ignore_ascii_case("element") || second.eq_ignore_ascii_case("elements"))
+        {
             Some(MatchMode::RepeatableElements)
         } else if self.peek_at_is_ident(offset, "different")
             && (second.eq_ignore_ascii_case("relationship")

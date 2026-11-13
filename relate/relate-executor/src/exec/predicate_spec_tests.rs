@@ -10,7 +10,8 @@ use relate_core::Value;
 
 use super::predicate_spec::{take_spec_gates, with_spec_disabled};
 use super::test_support::{
-    error_of, exec_cypher, exec_write_uncommitted, try_exec_cypher, try_exec_cypher_params,
+    column, error_of, exec_cypher, exec_write_batched, exec_write_uncommitted, int_cell,
+    try_exec_cypher, try_exec_cypher_params, write_scratch, ApplySink,
 };
 use crate::graph::Graph;
 use crate::test_support::config_with_floor;
@@ -550,4 +551,41 @@ fn in_and_regex_errors_match_the_generic_path() {
         specialized.contains("invalid regular expression"),
         "{specialized}"
     );
+}
+
+/// ADR-0210 × ADR-0541 (LABS-1584 gap 4): the compiled gate's property
+/// read resolves a key the statement's own `IN TRANSACTIONS` batches
+/// interned after the plan resolved it as `Absent`. The gate settles the
+/// NEXT part's scan on the key's real value, not the null a stale token
+/// would answer — and the specialized rows are the generic path's rows.
+#[test]
+fn the_gate_reads_a_key_interned_by_the_statement_own_batches() {
+    let g = Graph::default();
+    let scratch = write_scratch(&g);
+    let sink = ApplySink {
+        graph: &g,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let query = "UNWIND [1, 2, 3] AS i \
+                 CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+                 RETURN count(*) AS _ \
+                 NEXT \
+                 MATCH (z:Z) WHERE z.i >= 2 RETURN z.i AS zi ORDER BY zi";
+    let _ = take_spec_gates();
+    let specialized = exec_write_batched(&g, &scratch, query, &sink).unwrap();
+    assert!(
+        take_spec_gates() > 0,
+        "the compiled gate must settle the NEXT part's scan"
+    );
+    assert_eq!(column(&specialized, "zi", int_cell), vec![2, 3]);
+    // The generic path (no compiled gate) reads the same key through the
+    // overlay's resolved read and answers the same rows.
+    let g2 = Graph::default();
+    let scratch2 = write_scratch(&g2);
+    let sink2 = ApplySink {
+        graph: &g2,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let generic = with_spec_disabled(|| exec_write_batched(&g2, &scratch2, query, &sink2).unwrap());
+    assert_eq!(specialized.rows, generic.rows);
 }

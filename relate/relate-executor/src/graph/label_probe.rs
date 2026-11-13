@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use relate_core::{NodeId, RelId};
 use relate_ir::RelPattern;
+use relate_names::Token;
 
 use crate::store::{LiveNode, RelTypes};
 
@@ -209,10 +210,19 @@ impl Graph {
         RelTypes::resolve(&self.interner, names)
     }
 
-    /// [`Self::rel_types`] for a planned pattern, reading the type ids the
-    /// planner resolved onto it.
-    pub(crate) fn rel_types_of(&self, rel: &RelPattern) -> RelTypes {
-        RelTypes::of_pattern(&self.interner, rel)
+    /// [`Self::rel_types`] for a planned pattern, with the caller's
+    /// token→id resolution: the planner's resolved ids (ADR-0541) are
+    /// the caller's to interpret — the overlay view's arm resolves a
+    /// stale `Absent` token by name (the `prop_key_id_resolved` twin
+    /// for types), keeping every other token's `id_or_else` policy.
+    /// The interner stays inside this module; the caller supplies only
+    /// the token policy.
+    pub(crate) fn rel_types_of(
+        &self,
+        rel: &RelPattern,
+        resolve: impl Fn(&str, Token) -> Option<u32>,
+    ) -> RelTypes {
+        RelTypes::of_pattern_resolved(&self.interner, rel, resolve)
     }
 
     /// The name of interned rel-type id `tid` — the reverse of

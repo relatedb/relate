@@ -390,6 +390,8 @@ fn slice_bounds(
     Ok(Some(s..e.max(s)))
 }
 
+/// The row-scalar CASE evaluation: the shared [`eval_case_with`] policy
+/// over `eval` against one row.
 pub(crate) fn eval_case(
     graph: &ExecGraph<'_>,
     row: &Row,
@@ -397,19 +399,31 @@ pub(crate) fn eval_case(
     when_then: &[(Expr, Expr)],
     else_expr: &Option<Box<Expr>>,
 ) -> Result<Value> {
-    // Every arm's condition is a predicate — the one canonical helper the
-    // other predicate positions read ([`predicate_value_holds`]): the
-    // parser lowers a simple-CASE test operand into the arm's equality
-    // comparison, so first-true wins and an arm that is not true falls
-    // through to the next; a runtime non-boolean condition is the typed
-    // rejection, never a silent fall-through to ELSE.
+    eval_case_with(when_then, else_expr, |expr| eval(graph, row, expr, params))
+}
+
+/// The one CASE selection policy, read by both CASE evaluations — the
+/// row-scalar [`eval_case`] and the aggregating projection's CASE arm —
+/// so the two cannot drift on laziness or predicate policy. Every arm's
+/// condition is a predicate — the one canonical helper the other
+/// predicate positions read ([`predicate_value_holds`]): the parser
+/// lowers a simple-CASE test operand into the arm's equality comparison,
+/// so first-true wins and an arm that is not true falls through to the
+/// next; a runtime non-boolean condition is the typed rejection, never a
+/// silent fall-through to ELSE. Only the selected branch evaluates
+/// through `eval_expr`: an unselected THEN or ELSE never runs.
+pub(crate) fn eval_case_with<'e>(
+    when_then: &'e [(Expr, Expr)],
+    else_expr: &'e Option<Box<Expr>>,
+    mut eval_expr: impl FnMut(&'e Expr) -> Result<Value>,
+) -> Result<Value> {
     for (when, then) in when_then {
-        if predicate_value_holds(&eval(graph, row, when, params)?)? {
-            return eval(graph, row, then, params);
+        if predicate_value_holds(&eval_expr(when)?)? {
+            return eval_expr(then);
         }
     }
     match else_expr {
-        Some(e) => eval(graph, row, e, params),
+        Some(e) => eval_expr(e),
         None => Ok(Value::Null),
     }
 }

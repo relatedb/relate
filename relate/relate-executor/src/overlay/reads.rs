@@ -217,10 +217,42 @@ impl ExecGraph<'_> {
             .resolve(None, || self.base.node_prop_at(id, self.snapshot_ts(), key))
     }
 
+    /// The plan token as this view must read it — the one rebase policy
+    /// every token domain reads (ADR-0541 × ADR-0210): an `Absent` token
+    /// records a plan-time fact, the store had never interned the name,
+    /// and a `CALL { … } IN TRANSACTIONS` statement's own batch commits
+    /// intern names mid-statement, after the plan resolved them but
+    /// before its later parts read. A scratch rebased past this view's
+    /// admission pin — the state only those mid-statement commits
+    /// produce — therefore turns `Absent` into `Unresolved`, so the
+    /// caller's by-name lookup answers it; every other view keeps the
+    /// plan's answer (a view reading at its own pin cannot see data
+    /// committed after it). `Id` passes through: the interner is
+    /// append-only, so a plan-time id stays the name's id. The label
+    /// twin of this re-check is [`Self::node_has_uninterned_label`].
+    pub(crate) fn live_token(&self, token: Token) -> Token {
+        if token == Token::Absent && self.snapshot_ts() != self.pinned_ts {
+            Token::Unresolved
+        } else {
+            token
+        }
+    }
+
+    /// The store id a plan-resolved property-key token names (ADR-0541):
+    /// the token through [`Self::live_token`]'s rebase policy, then the
+    /// documented `Token::id_or_else` dispatch with the base's by-name
+    /// lookup.
+    pub(crate) fn prop_key_id_resolved(&self, text: &str, token: Token) -> Option<u32> {
+        self.live_token(token)
+            .id_or_else(|| self.base.prop_key_id(text))
+    }
+
     /// [`Self::node_prop`] reading a plan-resolved key: no interner lookup
     /// per call on the snapshot arm. An `Unresolved` key falls back to the
     /// string lookup and an `Absent` one answers `None` without a store
-    /// read; the scratch arm is string-keyed either way.
+    /// read — unless the scratch was rebased past this view's pin
+    /// ([`Self::prop_key_id_resolved`]); the scratch arm is string-keyed
+    /// either way.
     pub(crate) fn node_prop_resolved(
         &self,
         id: NodeId,
@@ -232,8 +264,7 @@ impl ExecGraph<'_> {
             }
             self.node_prologue(id, |n| n.properties.get(text).cloned())
                 .resolve(None, || {
-                    token
-                        .id()
+                    self.prop_key_id_resolved(text, *token)
                         .and_then(|kid| self.base.node_prop_id_at(id, self.snapshot_ts(), kid))
                 })
         })
@@ -251,8 +282,7 @@ impl ExecGraph<'_> {
             }
             self.rel_prologue(id, |r| r.properties.get(text).cloned())
                 .resolve(None, || {
-                    token
-                        .id()
+                    self.prop_key_id_resolved(text, *token)
                         .and_then(|kid| self.base.rel_prop_id_at(id, self.snapshot_ts(), text, kid))
                 })
         })

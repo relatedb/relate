@@ -141,14 +141,32 @@ pub(super) fn route_shape<'p>(
         if let Some(props) = &np.properties {
             expr_vars(props, &mut vars);
         }
-        np.where_clause.is_none()
-            && np
-                .variable
-                .as_ref()
-                .is_none_or(|v| matches!(row.get_name(v), None | Some(Value::Node(_))))
+        np.variable
+            .as_ref()
+            .is_none_or(|v| matches!(row.get_name(v), None | Some(Value::Node(_))))
             && !late.iter().any(|v| vars.contains(v.as_str()))
     };
-    (endpoint_ok(hop.start) && endpoint_ok(hop.end)).then_some(hop)
+    // The start's inline WHERE keeps GPM: GPM checks it once at the start
+    // binding, before the relationship variable exists, and the route binds
+    // no start predicate of its own.
+    // The end's inline WHERE rides the route's path filter instead
+    // ([`super::filters::PathFilter`]): GPM checks it at every arrival with
+    // the relationship variable bound but no path name bound yet, and the
+    // route answers the same predicate against each bound trail — so a
+    // WHERE that names a path variable keeps GPM's spelling of the check.
+    // A predicate whose reading cannot complete against a bound trail (a
+    // later pattern's variable) declines in `Route::try_new`.
+    let end_where_ok = hop.end.where_clause.as_ref().is_none_or(|predicate| {
+        let mut vars = HashSet::new();
+        expr_vars(predicate, &mut vars);
+        path.path_names()
+            .all(|name| name.with_str(|text| !vars.contains(text)))
+    });
+    (endpoint_ok(hop.start)
+        && hop.start.where_clause.is_none()
+        && endpoint_ok(hop.end)
+        && end_where_ok)
+        .then_some(hop)
 }
 
 /// The routed var-length hop of a three-element pattern decoded into the

@@ -162,11 +162,30 @@ fn min_hops_above_one_stays_on_gpm() {
     assert_stays_on_gpm(&g, q, &[2]);
 }
 
+/// The end node's inline WHERE rides the route's path filter: GPM checks
+/// it at every arrival with the relationship variable bound, the route
+/// against each bound trail, so the route runs and answers what the GPM
+/// route answers.
 #[test]
-fn inline_node_where_stays_on_gpm() {
+fn inline_end_node_where_takes_the_route() {
     let g = shortcut();
     let q = "MATCH p = ANY SHORTEST (a {id: 0})-[*]->(b WHERE b.id = 3) RETURN length(p)";
-    assert_stays_on_gpm(&g, q, &[2]);
+    let (rows, counts) = run(&g, q);
+    assert!(counts.route_runs > 0, "route declined {q}");
+    let rows = sorted(rows);
+    assert_eq!(rows, gpm(&g, q), "{q}");
+    assert_eq!(rows, vec![vec![Value::Int(2)]]);
+}
+
+/// The end node's inline WHERE that names the path variable keeps GPM's
+/// spelling: no arrival row binds the path yet, so GPM defers the check
+/// past the selector (the reduce tail's candidate pass), which the route's
+/// in-search predicate would not do.
+#[test]
+fn inline_end_node_where_reading_the_path_name_stays_on_gpm() {
+    let g = shortcut();
+    let q = "MATCH p = ANY SHORTEST (a {id: 0})-[*]->(b WHERE length(p) = 2) RETURN length(p)";
+    assert_stays_on_gpm(&g, q, &[2, 2]);
 }
 
 /// A clause-level `WHERE` over the path is a postfilter for the postfix

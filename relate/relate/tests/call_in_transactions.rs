@@ -1,8 +1,10 @@
 //! LABS-264 / ADR-0210: `CALL { … } IN TRANSACTIONS` — the legacy
 //! importing-WITH form, concluding-subquery results, OF N ROWS batch
 //! boundaries, per-batch commits (a failed batch leaves earlier batches
-//! committed), WAL durability of batches, and the LABS-263 cross-product
-//! CREATE repro completing with bounded memory under batching.
+//! committed), WAL durability of batches, the LABS-263 cross-product
+//! CREATE repro completing with bounded memory under batching, and the
+//! LABS-1584 gap-4 cross-part property visibility (a NEXT part reading
+//! the properties the statement's own batches committed).
 
 mod common;
 
@@ -10,7 +12,7 @@ use std::collections::BTreeSet;
 
 use relate::Value;
 
-use common::{connection, err_text, params, scalar};
+use common::{connection, err_text, first_column, params, scalar};
 
 /// The standard importing-WITH form of a batched write: previously
 /// rejected with `VariableAlreadyBound` (LABS-264 probe).
@@ -240,6 +242,126 @@ fn cross_product_create_completes_batched() {
             "batched cross-product peak RSS growth {growth_mb} MiB exceeds the bounded-memory budget"
         );
     }
+}
+
+/// LABS-1584 gap 4: property reads in a `NEXT` part return the values the
+/// statement's own `IN TRANSACTIONS` batches committed. The plan resolved
+/// the property key as never-interned (`Absent`, ADR-0541), the batch
+/// commits intern it mid-statement (ADR-0210), and the later part must
+/// read the committed values, not the nulls the stale token answered.
+/// Live Neo4j answers zi = 1, 2, 3.
+#[test]
+fn next_part_reads_properties_committed_by_earlier_batches() {
+    let mut c = connection();
+    let result = c
+        .query(
+            "UNWIND [1, 2, 3] AS i \
+             CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+             RETURN count(*) AS _ \
+             NEXT \
+             MATCH (z:Z) RETURN z.i AS zi, properties(z) AS props ORDER BY zi",
+        )
+        .unwrap();
+    assert_eq!(
+        result.header.columns,
+        vec!["zi".to_string(), "props".to_string()]
+    );
+    assert_eq!(
+        first_column(&result),
+        vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+    );
+    for row in &result.rows {
+        let Value::Map(props) = &row[1] else {
+            panic!("properties(z) is not a map: {:?}", row[1]);
+        };
+        assert_eq!(
+            props.get("i"),
+            Some(&row[0]),
+            "z.i and properties(z) disagree on the row: {row:?}"
+        );
+    }
+}
+
+/// The same statement with the property key interned before planning (a
+/// prior statement wrote it): the plan's token is an `Id`, and the NEXT
+/// part reads the batch-committed values through it — the fixed path and
+/// the always-working path agree.
+#[test]
+fn next_part_reads_properties_with_the_key_interned_before_planning() {
+    let mut c = connection();
+    c.query("CREATE (:Z {i: 0})").unwrap();
+    c.query("MATCH (z:Z {i: 0}) DELETE z").unwrap();
+    let result = c
+        .query(
+            "UNWIND [1, 2, 3] AS i \
+             CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+             RETURN count(*) AS _ \
+             NEXT \
+             MATCH (z:Z) RETURN z.i AS zi ORDER BY zi",
+        )
+        .unwrap();
+    assert_eq!(
+        first_column(&result),
+        vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+    );
+}
+
+/// The MERGE … SET variant of the gap report: every batch merges the one
+/// `Z` node the first batch committed and sets its property, and the NEXT
+/// part reads the final value.
+#[test]
+fn next_part_reads_properties_set_by_merge_in_batches() {
+    let mut c = connection();
+    let result = c
+        .query(
+            "UNWIND [1, 2, 3] AS i \
+             CALL (i) { MERGE (z:Z) SET z.i = i } IN TRANSACTIONS OF 1 ROW \
+             RETURN count(*) AS _ \
+             NEXT \
+             MATCH (z:Z) RETURN z.i AS zi ORDER BY zi",
+        )
+        .unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0][0], Value::Int(3));
+}
+
+/// The ON ERROR BREAK variant of the gap report: the batches before the
+/// failing one stay committed, and the NEXT part reads their properties.
+#[test]
+fn next_part_after_on_error_break_reads_committed_batch_properties() {
+    let mut c = connection();
+    let result = c
+        .query(
+            "UNWIND [1, 2, 3] AS i \
+             CALL (i) { \
+                 WHEN i = 3 THEN { CREATE (:X {e: 1/0}) } \
+                 ELSE { CREATE (z:Z {i: i}) } \
+             } IN TRANSACTIONS OF 1 ROW ON ERROR BREAK \
+             RETURN count(*) AS _ \
+             NEXT \
+             MATCH (z:Z) RETURN z.i AS zi ORDER BY zi",
+        )
+        .unwrap();
+    assert_eq!(first_column(&result), vec![Value::Int(1), Value::Int(2)]);
+}
+
+/// The gap report's control: the part after `NEXT` run as its own
+/// statement plans fresh, resolves the now-interned key to an id, and
+/// stays correct.
+#[test]
+fn the_after_next_part_as_its_own_statement_stays_correct() {
+    let mut c = connection();
+    c.query(
+        "UNWIND [1, 2, 3] AS i \
+         CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+         RETURN count(*) AS _",
+    )
+    .unwrap();
+    let result = c.query("MATCH (z:Z) RETURN z.i AS zi ORDER BY zi").unwrap();
+    assert_eq!(
+        first_column(&result),
+        vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+    );
 }
 
 /// Peak-RSS sampler: polls `ps` on a helper thread until stopped. Returns

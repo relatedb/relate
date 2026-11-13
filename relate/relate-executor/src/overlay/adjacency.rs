@@ -119,9 +119,16 @@ impl ExecGraph<'_> {
         self.base.rel_types(names)
     }
 
-    /// [`Self::rel_types`] for a planned pattern.
+    /// [`Self::rel_types`] for a planned pattern, through
+    /// [`Self::live_token`]'s rebase policy — the
+    /// [`Self::prop_key_id_resolved`] twin for types: a type the plan
+    /// saw as never interned resolves by name when the statement's own
+    /// `IN TRANSACTIONS` batches interned it mid-statement.
     pub(crate) fn rel_types_of(&self, rel: &RelPattern) -> RelTypes {
-        self.base.rel_types_of(rel)
+        self.base.rel_types_of(rel, |name, token| {
+            self.live_token(token)
+                .id_or_else(|| self.base.rel_type_id(name))
+        })
     }
 
     /// Overlay-visible neighbors under the resolved type filter

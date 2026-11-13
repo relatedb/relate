@@ -10,7 +10,7 @@ use relate_core::{Error, Result, Value};
 use relate_ir::{walk_scope_children, ChildScope, Expr};
 use relate_names::SmallName;
 
-use crate::eval::{eval, expr_vars};
+use crate::eval::{eval, eval_case_with, expr_vars};
 use crate::exec::scope::uncolliding_prefix;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -215,22 +215,46 @@ pub(crate) fn agg_eval<'e>(
             }
             Value::checked_list(out)
         }
+        // ADR-0198 ruling 2: an aggregate call in any CASE arm belongs to
+        // this enclosing projection, so the discovery pass walks every
+        // WHEN condition, THEN result and ELSE — which arm a group takes
+        // is not knowable before it folds. Discovery therefore rides the
+        // one bind-and-rebuild ([`agg_eval_compound`], the canonical walk
+        // every compound takes) rather than a second listing of CASE's
+        // child layout; the folded pass then reads the one shared CASE
+        // policy ([`eval_case_with`]) with this evaluator, so a CASE over
+        // an aggregate selects as lazily as the row-scalar form: an
+        // unselected arm's scalar expression — an erroring division, say
+        // — never evaluates, while the aggregate call it carries was
+        // still folded with the group.
+        Expr::Case {
+            when_then,
+            else_expr,
+        } => {
+            if scope.is_discovery() {
+                return agg_eval_compound(graph, scope, expr, params);
+            }
+            eval_case_with(when_then, else_expr, |expr| {
+                agg_eval(graph, scope, expr, params)
+            })
+        }
         // Every compound arm rides the one bind-and-rebuild
         // ([`bind_enclosing_children`]): each enclosing-scope child is
         // recursively `agg_eval`'d and bound under its synthetic
         // `__agg_c{i}` name, and the rebuilt expression — which references
         // those names — runs as scalar `eval` over a row seeded from the
         // scope's seed row (a harmless superset of whatever the child
-        // leaves read). ADR-0198 ruling 2: an aggregate call in a CASE arm
-        // belongs to the enclosing aggregating projection, so every WHEN
-        // condition, THEN result and ELSE is an enclosing child. The
-        // per-element bodies of the comprehension/quantifier/reduce forms
-        // stay their original subtrees (the scope model's classification),
-        // and the single-wrapper positions (LABS-744 — unary, property,
-        // IS TYPE, IS NORMALIZED, the chrono comparisons, subscripts,
-        // slices, map projections, non-aggregate calls) bind every child:
-        // the front leaves them open (its `agg_enter_child` vocabulary is
-        // narrower); this is the executor's classification.
+        // leaves read). The per-element bodies of the
+        // comprehension/quantifier/reduce forms stay their original
+        // subtrees (the scope model's classification), and the
+        // single-wrapper positions (LABS-744 — unary, property, IS TYPE,
+        // IS NORMALIZED, the chrono comparisons, subscripts, slices, map
+        // projections, non-aggregate calls) bind every child: the front
+        // leaves them open (its `agg_enter_child` vocabulary is
+        // narrower); this is the executor's classification. CASE keeps an
+        // arm above for the folded pass only — its arms must select
+        // before they evaluate; its discovery rides this shared walk
+        // with every other compound (ADR-0198 ruling 2).
         Expr::ListComp { .. }
         | Expr::MapComp { .. }
         | Expr::Quantifier { .. }
@@ -244,7 +268,6 @@ pub(crate) fn agg_eval<'e>(
         | Expr::ChronoCompare { .. }
         | Expr::Subscript { .. }
         | Expr::Slice { .. }
-        | Expr::Case { .. }
         | Expr::MapProjection { .. } => agg_eval_compound(graph, scope, expr, params),
         Expr::Int(i) => Ok(Value::Int(*i)),
         Expr::Float(f) => Ok(Value::Float(*f)),

@@ -7,7 +7,7 @@ use crate::exec::test_support::{build, fan_in, Builder};
 use crate::graph::Graph;
 use crate::test_support::ints;
 
-use super::fixtures::{gpm, on_route, plain, run, shortcut, sorted, Counts};
+use super::fixtures::{gpm, on_route, plain, run, self_loops, shortcut, sorted, Counts, SELECTORS};
 use super::with_forced_gpm;
 
 fn expect(rows: &[&[Value]]) -> Vec<Vec<Value>> {
@@ -410,6 +410,47 @@ fn where_predicate_with_subquery_local_variable_still_filters() {
              WHERE EXISTS { MATCH (z:A) WHERE length(p) = 3 } \
              RETURN [n IN nodes(p) | n.id]";
     assert_eq!(on_route(&g, q), expect(&[&[ints(&[0, 1, 2, 3])]]));
+}
+
+/// The end node's inline `WHERE` over the relationship list rides the
+/// route's path filter, where GPM checks it at every arrival: the
+/// self-loop shape answers `len = 1` for every selector, and exactly what
+/// the forced GPM enumeration answers (an all-shortest selector keeps
+/// every one-hop self-loop).
+#[test]
+fn end_node_where_over_the_relationship_list_matches_gpm() {
+    for s in SELECTORS {
+        let loops = 3;
+        let g = self_loops(loops);
+        let q = format!(
+            "MATCH p = {}(m:M)-[bs:B]->*(m WHERE size(bs) = 1){} \
+             RETURN size(bs) AS len",
+            s.open, s.close
+        );
+        let want = |rows: usize| {
+            let one: &[Value] = &[Int(1)];
+            expect(&vec![one; rows])
+        };
+        assert_eq!(on_route(&g, &q), want(if s.all { loops } else { 1 }), "{q}");
+        assert_eq!(gpm(&g, &q), want(if s.all { loops } else { 1 }), "{q}");
+    }
+}
+
+/// The end node's inline `WHERE` can demand a trail longer than the BFS
+/// shortest: the predicate-filtered walk answers at the first length that
+/// satisfies it (`size(bs) = loops` over self-loops: every shorter trail
+/// fails), never the closed-trail length a plain search would return.
+#[test]
+fn end_node_where_for_a_longer_trail_walks_ascending_lengths() {
+    for loops in [2, 3] {
+        let g = self_loops(loops);
+        let q = format!(
+            "MATCH p = SHORTEST 1 (m:M)-[bs:B]->*(m WHERE size(bs) = {loops}) \
+             RETURN size(bs) AS len"
+        );
+        assert_eq!(on_route(&g, &q), expect(&[&[Int(loops as i64)]]), "{q}");
+        assert_eq!(gpm(&g, &q), expect(&[&[Int(loops as i64)]]), "{q}");
+    }
 }
 
 /// `ALL SHORTEST` stops at the shortest SATISFYING length: when a longer

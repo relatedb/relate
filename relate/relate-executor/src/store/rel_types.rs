@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use relate_ir::RelPattern;
+use relate_names::Token;
 
 use super::Interner;
 
@@ -97,15 +98,21 @@ impl RelTypes {
         )
     }
 
-    /// [`Self::resolve`] for a planned pattern: the type ids the planner
-    /// resolved onto `rel` (ADR-0541) are read as they are. An unresolved
-    /// plan falls back to the interner lookup; a type the plan saw as never
-    /// interned has no id.
-    pub(crate) fn of_pattern(interner: &Interner, rel: &RelPattern) -> Self {
+    /// [`Self::resolve`] for a planned pattern, with the caller's
+    /// token→id resolution: the planner's resolved ids (ADR-0541) are the
+    /// caller's to interpret — the overlay view's arm re-resolves a
+    /// stale `Absent` token by name (the `prop_key_id_resolved` twin for
+    /// types: a `CALL { … } IN TRANSACTIONS` statement's own batch
+    /// commits intern types mid-statement, after the plan resolved
+    /// them), keeping every other token's documented `id_or_else`
+    /// policy.
+    pub(crate) fn of_pattern_resolved(
+        interner: &Interner,
+        rel: &RelPattern,
+        resolve: impl Fn(&str, Token) -> Option<u32>,
+    ) -> Self {
         Self::only(rel.types.iter().map(|(name, token)| {
-            name.with_str(|name| {
-                Self::entry(interner, name, token.id_or_else(|| interner.get_id(name)))
-            })
+            name.with_str(|name| Self::entry(interner, name, resolve(name, *token)))
         }))
     }
 

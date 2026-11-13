@@ -118,6 +118,13 @@ pub fn first_column_strings(result: &relate::QueryResult) -> Vec<String> {
         .collect()
 }
 
+/// The first column of every result row as a `Value` — the Value twin of
+/// [`first_column_strings`], the shape the LABS-1584 gap-4 visibility
+/// assertions spelled inline four times over.
+pub fn first_column(result: &relate::QueryResult) -> Vec<relate::Value> {
+    result.rows.iter().map(|row| row[0].clone()).collect()
+}
+
 /// Opens a fresh in-memory store with `RELATE_PATTERN_ENGINE` forced to
 /// `engine` (ADR-0519). The switch is read once at open and the variable
 /// is process-global, so the lock keeps the `set_var` + open pair atomic

@@ -11,7 +11,8 @@
 //! Pinned here (execution level; the parser-side shape pins live in
 //! `relate-parser`'s `patterns`/`qpp`/`expressions`/`cypher_prefix`
 //! test modules): the WALK/TRAIL/SIMPLE/ACYCLIC path-mode family, the
-//! `p = REPEATABLE ELEMENTS (...)` spelling, the allReduce three-argument
+//! `p = REPEATABLE ELEMENTS (...)` spelling and the singular `REPEATABLE
+//! ELEMENT` match-mode phrase, the allReduce three-argument
 //! expression form, the `CYPHER 25` header (with `runtime=` value
 //! validation), NEXT chains carrying rows between stages, zero-lower-bound
 //! quantified path patterns, and chained comparisons.
@@ -216,6 +217,23 @@ fn repeatable_elements_permits_relationship_equijoins() {
             Value::Int(want),
             "{q}: relationship equijoin"
         );
+    }
+}
+
+#[test]
+fn repeatable_element_singular_spelling_executes_like_the_plural() {
+    // Live Neo4j accepts the singular `REPEATABLE ELEMENT` spelling
+    // exactly like the plural (verified against 2026.10). The statements
+    // are the gap report's own repro, verbatim: one self-loop traversed
+    // exactly {3} times under relaxed relationship uniqueness returns
+    // length(p) = 3 from both spellings.
+    let mut c = connection();
+    common::run(&mut c, "CYPHER 25 CREATE (m:M)-[:B]->(m)");
+    for q in [
+        "CYPHER 25 MATCH REPEATABLE ELEMENT p = (m:M)-[:B]->{3}(m) RETURN length(p) AS len",
+        "CYPHER 25 MATCH REPEATABLE ELEMENTS p = (m:M)-[:B]->{3}(m) RETURN length(p) AS len",
+    ] {
+        assert_eq!(scalar_one(&mut c, q), Value::Int(3), "{q}: spelling");
     }
 }
 

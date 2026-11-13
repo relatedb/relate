@@ -237,6 +237,22 @@ fn case_when_rejects_a_runtime_non_boolean_condition() {
     }
 }
 
+/// A CASE without an aggregate keeps its lazy branches: only the taken
+/// arm evaluates, so the plain form's unselected `1/0` never runs — the
+/// behavior the aggregating projection's CASE arm must match (the shared
+/// [`eval_case_with`] policy is what holds the two together).
+#[test]
+fn plain_case_evaluates_only_the_taken_branch() {
+    use crate::exec::test_support::try_exec_cypher;
+    use crate::graph::Graph;
+    let result = try_exec_cypher(
+        &Graph::default(),
+        "RETURN CASE 1 WHEN 1 THEN 1 ELSE 1/0 END AS x",
+    )
+    .expect("the unselected ELSE arm must not evaluate");
+    assert_eq!(result.rows, vec![vec![Value::Int(1)]]);
+}
+
 /// ADR-0463 regression (rust review round 1): a mixed list+string
 /// operand pair builds a **list** (`other + 1` slots), not a string, so
 /// its charge must be the list buffer. The former estimator's wildcard

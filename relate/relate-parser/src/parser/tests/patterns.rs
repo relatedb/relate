@@ -485,6 +485,19 @@ fn test_different_relationship_singular_match_mode() {
 }
 
 #[test]
+fn test_repeatable_element_singular_match_mode() {
+    // The gap-report repro shape: live Neo4j accepts the singular
+    // spelling exactly like the plural (`MATCH REPEATABLE ELEMENT p =
+    // (m:M)-[:B]->{3}(m)` returning length(p) = 3).
+    let stmt =
+        parse("MATCH REPEATABLE ELEMENT p = (m:M)-[:B]->{3}(m) RETURN length(p) AS len").unwrap();
+    let Clause::Match(mc) = &stmt.clauses[0] else {
+        panic!("expected match");
+    };
+    assert_eq!(mc.match_mode, MatchMode::RepeatableElements);
+}
+
+#[test]
 fn test_unbounded_qpp_allowed_inside_exists_but_not_at_top_level() {
     // REPEATABLE ELEMENTS rejects an unbounded quantified path pattern in a
     // top-level match, but an EXISTS body is an existence probe and accepts
@@ -519,6 +532,20 @@ fn test_match_mode_spellings_resolve_to_their_mode() {
         ),
         (
             "MATCH p = REPEATABLE ELEMENTS (a)-[r]->(b) RETURN p",
+            MatchMode::RepeatableElements,
+        ),
+        // The singular spelling of the same mode, in every position the
+        // plural is admitted (live Neo4j accepts it like the plural).
+        (
+            "MATCH REPEATABLE ELEMENT (a)-[r]->(b) RETURN a",
+            MatchMode::RepeatableElements,
+        ),
+        (
+            "MATCH REPEATABLE ELEMENT p = (a)-[r]->(b) RETURN p",
+            MatchMode::RepeatableElements,
+        ),
+        (
+            "MATCH p = REPEATABLE ELEMENT (a)-[r]->(b) RETURN p",
             MatchMode::RepeatableElements,
         ),
         (

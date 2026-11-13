@@ -2,11 +2,12 @@
 //! split by what they read: the path itself, or only the endpoints.
 //!
 //! A conjunct that reads the *path* (the named path variable or the
-//! relationship variable), and the pattern's own inline `WHERE`, must hold
-//! **during** the search: a route that only filtered the selected shortest
-//! path afterwards answered zero rows whenever that path violated such a
-//! predicate, instead of the shortest path that satisfies it
-//! ([`PathFilter`]).
+//! relationship variable), the pattern's own inline `WHERE`, and the end
+//! node pattern's inline `WHERE` (admitted by the guard when it names no
+//! path variable) must hold **during** the search: a route that only
+//! filtered the selected shortest path afterwards answered zero rows
+//! whenever that path violated such a predicate, instead of the shortest
+//! path that satisfies it ([`PathFilter`]).
 //!
 //! An endpoint-only conjunct is deliberately **not** a search filter: the
 //! route answers one shortest path per `(start, end)` partition, so a
@@ -35,13 +36,19 @@ use crate::exec::pushdown::{conjunct_ready, residual_ok, Residual};
 use crate::row::Row;
 
 /// The predicates a routed shortest path must satisfy during the search:
-/// the MATCH-level `WHERE` conjuncts that read the path itself, plus the
-/// pattern's own inline `WHERE`. `scope` is the MATCH's bound-variable
-/// scope, the readiness rule's input (see
-/// [`crate::exec::pushdown::conjunct_ready`]).
+/// the MATCH-level `WHERE` conjuncts that read the path itself, the
+/// pattern's own inline `WHERE`, and the end node pattern's inline `WHERE`
+/// (GPM checks that one at every arrival; the route answers it against
+/// each bound trail, which binds the same names — the guard admits it only
+/// when it reads no path variable, the one name no arrival row carries).
+/// `scope` is the MATCH's bound-variable scope, the readiness rule's input
+/// (see [`crate::exec::pushdown::conjunct_ready`]).
 pub(super) struct PathFilter<'a> {
     conjuncts: Vec<&'a Expr>,
-    inline: Option<&'a Expr>,
+    /// The pattern's own inline `WHERE` and the end node's, held as one
+    /// list — they play one role (the search answers both per arrival),
+    /// so no consumer ever reads them apart.
+    inline: Vec<&'a Expr>,
     scope: &'a HashSet<String>,
 }
 
@@ -53,9 +60,13 @@ impl<'a> PathFilter<'a> {
     }
 
     /// The union the search must decide: the path-reading clause conjuncts,
-    /// then the pattern's inline `WHERE`.
+    /// then the inline predicates — the pattern's `WHERE` and the end
+    /// node's, one list chained once.
     fn predicates(&self) -> impl Iterator<Item = &'a Expr> + '_ {
-        self.conjuncts.iter().copied().chain(self.inline)
+        self.conjuncts
+            .iter()
+            .copied()
+            .chain(self.inline.iter().copied())
     }
 
     /// Whether every predicate is ready on `probe`, a row carrying every
@@ -134,7 +145,11 @@ pub(super) struct RouteFilters<'a> {
 }
 
 impl<'p> RouteFilters<'p> {
-    pub(super) fn split(path: &'p PathPattern, residual: &'p Residual<'_>) -> Self {
+    pub(super) fn split(
+        path: &'p PathPattern,
+        end: &'p NodePattern,
+        residual: &'p Residual<'_>,
+    ) -> Self {
         // Text render: the carrier set compares against the String variable
         // sets of the filter walk.
         // The IR's one enumeration of the pattern's relationship variables,
@@ -153,12 +168,20 @@ impl<'p> RouteFilters<'p> {
                 vars.iter().any(|name| carriers.contains(name.as_str()))
             });
         let scope = residual.scope;
-        let path_filter =
-            (path.where_clause.is_some() || !conjuncts.is_empty()).then_some(PathFilter {
-                conjuncts,
-                inline: path.where_clause.as_deref(),
-                scope,
-            });
+        // The two inline predicates — the pattern's own `WHERE` and the
+        // end node's — are one role in the filter, so one list.
+        let mut inline: Vec<&Expr> = Vec::new();
+        if let Some(where_clause) = path.where_clause.as_deref() {
+            inline.push(where_clause);
+        }
+        if let Some(where_clause) = end.where_clause.as_ref() {
+            inline.push(where_clause);
+        }
+        let path_filter = (!conjuncts.is_empty() || !inline.is_empty()).then_some(PathFilter {
+            conjuncts,
+            inline,
+            scope,
+        });
         Self {
             path: path_filter,
             pair: (!endpoint_only.is_empty()).then_some(PairFilter {
