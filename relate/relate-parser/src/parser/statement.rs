@@ -273,8 +273,7 @@ impl<'a> Parser<'a> {
     /// variable/label name everywhere else (e.g. `MATCH (next) RETURN
     /// next`).
     pub(in crate::parser) fn at_next_keyword(&self) -> bool {
-        self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("next")
+        self.peek_is_ident("next")
     }
 
     /// CIP-213 `<statement block> ::= <statement> [<next statement>...]`,
@@ -460,9 +459,7 @@ impl<'a> Parser<'a> {
         if self.peek_type() == TokenType::LeftBrace {
             return self.parse_braced_single_query(None);
         }
-        if self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("use")
-        {
+        if self.peek_is_ident("use") {
             // Could be the new `USE <graph-expr> { ... }` brace-prefixed
             // SingleQuery, or an ordinary leading `USE` clause of a plain
             // statement (pre-CIP-146, e.g. `USE db RETURN 1`) -- parse the

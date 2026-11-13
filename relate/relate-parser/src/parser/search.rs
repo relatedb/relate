@@ -14,8 +14,7 @@ impl<'a> Parser<'a> {
     /// exactly like the `FILTER`/`FINISH`/match-mode-prefix contextual
     /// keywords elsewhere in this parser.
     pub(super) fn is_search_clause_start(&self) -> bool {
-        self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("search")
+        self.peek_is_ident("search")
     }
 
     /// Parses a `<search clause>`:
@@ -51,9 +50,7 @@ impl<'a> Parser<'a> {
         let spec = self.parse_search_spec()?;
         self.expect(TokenType::RightParen)?;
 
-        let score_var = if self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("score")
-        {
+        let score_var = if self.peek_is_ident("score") {
             self.next_token(); // consume SCORE
             self.expect(TokenType::AS)?;
             // ADR-0191 (Decision point 7's follow-up probe): Neo4j 2026.09

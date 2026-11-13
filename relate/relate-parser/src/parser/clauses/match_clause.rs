@@ -17,7 +17,8 @@ impl<'a> Parser<'a> {
             self.next_token(); // consume =
             lead_path_var = Some(SmallName::from_name(&tok.literal));
         }
-        let (match_mode, match_mode_explicit) = self.parse_match_mode_prefix()?;
+        let explicit_mode = self.parse_match_mode_prefix();
+        let match_mode = explicit_mode.unwrap_or(MatchMode::DifferentRelationships);
         // The one path-variable production parses the leading variable with
         // the path (it wins over any inner subpath variable, the same
         // precedence `parse_pattern_path` gives its own outer-var binding).
@@ -25,7 +26,7 @@ impl<'a> Parser<'a> {
             Some(variable) => self.parse_pattern_after_leading_variable(variable)?,
             None => self.parse_pattern()?,
         };
-        self.validate_path_modes(&pattern, match_mode, match_mode_explicit)?;
+        self.validate_path_modes(&pattern, match_mode, explicit_mode.is_some())?;
 
         // Query-planner hints (CIP-79) -- `USING INDEX`/`USING INDEX SEEK`/`USING
         // SCAN`, written directly after the pattern
@@ -87,18 +88,14 @@ impl<'a> Parser<'a> {
     /// [`MatchClause::using_index`] / [`MatchClause::using_join`]).
     pub(in crate::parser) fn parse_using_hints(&mut self) -> ParseResult<UsingHints> {
         let mut hints = UsingHints::default();
-        while self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("using")
-        {
+        while self.peek_is_ident("using") {
             self.next_token(); // consume USING
             let kind_tok = self.next_token();
             match kind_tok.literal.to_ascii_lowercase().as_str() {
                 "index" => {
                     // Optional `SEEK` after `INDEX` (`USING INDEX SEEK
                     // n:Label(prop)`) -- same hint, just a stronger one.
-                    if self.peek_type() == TokenType::Identifier
-                        && self.peek().literal.eq_ignore_ascii_case("seek")
-                    {
+                    if self.peek_is_ident("seek") {
                         self.next_token();
                     }
                     let variable = self.parse_bare_name("identifier")?; // variable
@@ -193,18 +190,15 @@ impl<'a> Parser<'a> {
     /// identifiers everywhere else); since a graph pattern always begins
     /// with `(`, a bare identifier immediately after `MATCH` can only be one
     /// of these two phrases, so no lookahead ambiguity is possible.
-    /// Returns `(mode, explicit)` -- `explicit` is true only when a
-    /// `REPEATABLE ELEMENTS`/`DIFFERENT RELATIONSHIPS` keyword was actually
-    /// written, distinguishing it from the identical-valued implicit
-    /// default (needed for CIP-40's explicit-match-mode-vs-shortestPath-
-    /// function mixing check).
-    pub(in crate::parser) fn parse_match_mode_prefix(&mut self) -> ParseResult<(MatchMode, bool)> {
-        if let Some(mode) = self.peek_match_mode_at(0) {
-            self.next_token();
-            self.next_token();
-            return Ok((mode, true));
-        }
-        Ok((MatchMode::DifferentRelationships, false))
+    /// Returns `Some(mode)` only when a `REPEATABLE ELEMENTS`/`DIFFERENT
+    /// RELATIONSHIPS` keyword was actually written, distinguishing it from
+    /// the identical-valued implicit default (needed for the
+    /// explicit-match-mode-vs-shortestPath-function mixing check).
+    pub(in crate::parser) fn parse_match_mode_prefix(&mut self) -> Option<MatchMode> {
+        let mode = self.peek_match_mode_at(0)?;
+        self.next_token();
+        self.next_token();
+        Some(mode)
     }
 
     /// The path-shape rules (CIP-51), checked once a whole graph pattern

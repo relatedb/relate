@@ -445,8 +445,7 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenType::ON)?;
 
-        let each_next = self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("each");
+        let each_next = self.peek_is_ident("each");
         let (properties, on_each) = match self.classify_on_target(kind, entity_type, each_next)? {
             OnTargetForm::LookupTarget => {
                 if each_next {

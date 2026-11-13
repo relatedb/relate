@@ -194,15 +194,11 @@ impl<'a> Parser<'a> {
         let scope = if self.peek_type() == TokenType::ALL {
             self.next_token();
             FunctionScope::All
-        } else if self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("built")
-        {
+        } else if self.peek_is_ident("built") {
             self.next_token(); // consume BUILT
             self.expect(TokenType::IN)?;
             FunctionScope::BuiltIn
-        } else if self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("user")
-        {
+        } else if self.peek_is_ident("user") {
             self.next_token(); // consume USER
             self.expect_kind_word(TokenType::Identifier, "defined", None, "DEFINED after USER")?;
             FunctionScope::UserDefined

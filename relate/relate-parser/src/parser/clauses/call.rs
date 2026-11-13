@@ -409,7 +409,6 @@ impl<'a> Parser<'a> {
     /// so existing uses like the property access `d.offset` (TCK
     /// Temporal5) keep working.
     pub(in crate::parser) fn peek_is_offset(&self) -> bool {
-        let tok = self.peek();
-        tok.ty == TokenType::Identifier && tok.literal.eq_ignore_ascii_case("offset")
+        self.peek_is_ident("offset")
     }
 }

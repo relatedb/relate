@@ -144,21 +144,24 @@ fn push_interp_escape(text: &mut String, chars: &[char], i: usize) -> Result<usi
                 return Err("invalid unicode escape sequence".into());
             }
             let hex: String = chars[i + 2..i + 6].iter().collect();
-            match u32::from_str_radix(&hex, 16) {
-                Ok(cp) => {
-                    // A UTF-16 surrogate pair escape (`𐀀`) is one
-                    // supplementary code point, same as in a plain string
-                    // literal (see the lexer's `surrogate_pair_codepoint`).
-                    if let Some(pair) = interp_surrogate_pair(cp, chars, i) {
-                        text.push(pair.0);
-                        return Ok(pair.1);
-                    }
-                    if let Some(ch) = char::from_u32(cp) {
-                        text.push(ch);
-                    }
+            let invalid = || Err(format!("invalid unicode escape sequence: \\u{hex}"));
+            let Ok(cp) = u32::from_str_radix(&hex, 16) else {
+                return invalid();
+            };
+            // A UTF-16 surrogate pair escape (`\uD800\uDC00`) is one
+            // supplementary code point, same as in a plain string
+            // literal (see the lexer's `surrogate_pair_codepoint`).
+            if let Some(pair) = interp_surrogate_pair(cp, chars, i) {
+                text.push(pair.0);
+                return Ok(pair.1);
+            }
+            match char::from_u32(cp) {
+                Some(ch) => {
+                    text.push(ch);
                     Ok(6)
                 }
-                Err(_) => Err(format!("invalid unicode escape sequence: \\u{hex}")),
+                // A lone surrogate is not a scalar value.
+                None => invalid(),
             }
         }
         other => {
