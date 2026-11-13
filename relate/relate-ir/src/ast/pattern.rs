@@ -212,6 +212,12 @@ pub struct NodePattern {
     /// Static conjunction, retained for catalog/index candidate selection,
     /// each name beside its token (`Unresolved` until planning resolves the
     /// pattern against a store, ADR-0541).
+    ///
+    /// An empty list is ambiguous on its own: it means both "the node
+    /// names no label" and "the label expression is not a plain
+    /// conjunction" (a disjunction, negation or wildcard keeps its shape
+    /// only in `label_expr`). A consumer that must tell the two apart reads
+    /// `label_expr`; one that only wants candidate labels reads this.
     pub labels: Vec<NamedToken>,
     /// Complete CIP-14/CIP-156 label expression.
     pub label_expr: Option<LabelExpr>,

@@ -14,9 +14,8 @@ use super::{as_u32, nanos_from_fraction, read_literal, read_number, Digits};
 
 /// The era a pattern's `G` field named; a year-of-era under `Bc` is
 /// shifted by one (44 BC is proleptic year -43).
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Era {
-    #[default]
     Ad,
     Bc,
 }
@@ -48,8 +47,9 @@ pub(super) struct Fields {
     pub(super) am_pm: Option<bool>,
     /// The `y` spelling is year-of-era; `u` is the proleptic year.
     pub(super) year_of_era: bool,
-    /// A parsed `BC`/`BCE` era shifts a year-of-era by one.
-    pub(super) era: Era,
+    /// The parsed era, when the pattern named one: `BC`/`BCE` shifts a
+    /// year-of-era by one, an absent era reads as `AD`.
+    pub(super) era: Option<Era>,
     pub(super) offset: Option<i32>,
     pub(super) zone: Option<Tz>,
 }
@@ -59,7 +59,7 @@ impl Fields {
     /// one (44 BC is year -43); a proleptic `u` year is already absolute.
     pub(super) fn proleptic_year(&self) -> Option<i64> {
         self.year.map(|year| {
-            if self.year_of_era && self.era == Era::Bc {
+            if self.year_of_era && self.era == Some(Era::Bc) {
                 1 - year
             } else {
                 year
@@ -239,13 +239,8 @@ fn read_field(
             true
         }
         FieldKind::Era => {
-            let era =
-                read_alpha(input, p).and_then(|era| match era.to_ascii_uppercase().as_str() {
-                    "AD" | "CE" => Some(Era::Ad),
-                    "BC" | "BCE" => Some(Era::Bc),
-                    _ => None,
-                });
-            if let Some(era) = era {
+            let era = read_alpha(input, p).and_then(era_from_name);
+            if era.is_some() {
                 fields.era = era;
             }
             era.is_some()
@@ -402,6 +397,14 @@ fn match_name(name: &str, table: &[&str]) -> Option<usize> {
     table.iter().position(|full| {
         full.eq_ignore_ascii_case(name) || (name.len() == 3 && full[..3].eq_ignore_ascii_case(name))
     })
+}
+
+fn era_from_name(name: &str) -> Option<Era> {
+    match name.to_ascii_uppercase().as_str() {
+        "AD" | "CE" => Some(Era::Ad),
+        "BC" | "BCE" => Some(Era::Bc),
+        _ => None,
+    }
 }
 
 fn month_from_name(name: &str) -> Option<u32> {

@@ -23,6 +23,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 mod aggregate;
+mod arithmetic;
 mod collection;
 mod expr;
 mod fold;

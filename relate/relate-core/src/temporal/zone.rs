@@ -87,6 +87,19 @@ pub(super) enum LocalResolution {
     None,
 }
 
+impl LocalResolution {
+    /// The one ADR-0178 overlap fold: a unique wall clock is itself, a DST
+    /// overlap keeps its earliest (pre-transition) occurrence, a gap has
+    /// none — each caller maps `None` to its own error.
+    pub(super) fn earliest(self) -> Option<DateTime<Tz>> {
+        match self {
+            LocalResolution::Unique(dt) => Some(dt),
+            LocalResolution::Ambiguous { earlier, .. } => Some(earlier),
+            LocalResolution::None => None,
+        }
+    }
+}
+
 /// Resolve the wall clock `local` in `tz` — the one call site of chrono's
 /// `from_local_datetime`. Each consumer spells its own policy on the
 /// outcome: [`zone_offset_at`] keeps the earliest occurrence (ADR-0178),
@@ -110,13 +123,9 @@ pub(super) fn resolve_local(tz: Tz, local: NaiveDateTime) -> LocalResolution {
 /// time inside a DST gap are the two error outcomes.
 pub fn zone_offset_at(zone: &str, local: NaiveDateTime) -> std::result::Result<i32, ZoneError> {
     let tz: Tz = zone.parse().map_err(|_| ZoneError::UnknownZone)?;
-    let dt = match resolve_local(tz, local) {
-        LocalResolution::Unique(dt) => dt,
-        // ADR-0178: an overlap resolves to its earliest (pre-transition)
-        // occurrence.
-        LocalResolution::Ambiguous { earlier, .. } => earlier,
-        LocalResolution::None => return Err(ZoneError::NonexistentWallTime),
-    };
+    let dt = resolve_local(tz, local)
+        .earliest()
+        .ok_or(ZoneError::NonexistentWallTime)?;
     Ok(dt.offset().fix().local_minus_utc())
 }
 

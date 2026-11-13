@@ -7,9 +7,7 @@ use crate::Result;
 
 use super::super::clock::zoned;
 use super::super::construct::date_from_week;
-use super::super::zone::{
-    ambiguous_datetime_err, resolve_local, sub_offset, LocalResolution, ResolvedZone,
-};
+use super::super::zone::{ambiguous_datetime_err, resolve_local, sub_offset, ResolvedZone};
 use super::super::Temporal;
 use super::super::{
     range_err, NANOS_PER_DAY, NANOS_PER_HOUR, NANOS_PER_MILLI, NANOS_PER_MINUTE, NANOS_PER_SECOND,
@@ -32,10 +30,16 @@ pub(super) fn weekday_from_localized(value: u32) -> Result<Weekday> {
         _ => return Err(invalid_value("day-of-week out of range")),
     })
 }
-/// The one civil-date constructor: narrows the `i64` year to chrono's
-/// `i32` (a range error) and maps an impossible date to `invalid date`.
+/// The one year narrowing: a pattern year (`i64`) to chrono's `i32`, a
+/// range error beyond it.
+fn year_i32(year: i64) -> Result<i32> {
+    i32::try_from(year).map_err(|_| range_err())
+}
+
+/// The one civil-date constructor: narrows the year through [`year_i32`]
+/// and maps an impossible date to `invalid date`.
 fn ymd(year: i64, month: u32, day: u32) -> Result<NaiveDate> {
-    let year = i32::try_from(year).map_err(|_| range_err())?;
+    let year = year_i32(year)?;
     NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| invalid_value("invalid date"))
 }
 
@@ -49,12 +53,12 @@ pub(super) fn resolve_date(fields: &Fields) -> Result<NaiveDate> {
     }
     if let (Some(year), Some(week), Some(day)) = (fields.week_year, fields.week, fields.day_of_week)
     {
-        let year = i32::try_from(year).map_err(|_| range_err())?;
+        let year = year_i32(year)?;
         return date_from_week(year, week, weekday_from_localized(day)?);
     }
     let year = fields.proleptic_year();
     if let (Some(year), Some(ordinal)) = (year, fields.day_of_year) {
-        let date = NaiveDate::from_yo_opt(i32::try_from(year).map_err(|_| range_err())?, ordinal)
+        let date = NaiveDate::from_yo_opt(year_i32(year)?, ordinal)
             .ok_or_else(|| invalid_value("invalid date"))?;
         check_day_of_week(fields, date)?;
         return Ok(date);
@@ -186,12 +190,9 @@ pub(super) fn resolve_datetime(fields: &Fields) -> Result<Temporal> {
     let time = resolve_time(fields)?;
     let local = date.and_time(time);
     if let Some(tz) = fields.zone {
-        let resolved = match resolve_local(tz, local) {
-            LocalResolution::Unique(dt) => dt,
-            // ADR-0178's overlap rule: the earlier occurrence.
-            LocalResolution::Ambiguous { earlier, .. } => earlier,
-            LocalResolution::None => return Err(ambiguous_datetime_err()),
-        };
+        let resolved = resolve_local(tz, local)
+            .earliest()
+            .ok_or_else(ambiguous_datetime_err)?;
         return Ok(zoned(
             resolved.naive_utc(),
             ResolvedZone {
