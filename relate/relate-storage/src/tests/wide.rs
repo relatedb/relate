@@ -71,8 +71,9 @@ fn a_legacy_store_upgrades_wide_at_its_next_checkpoint_and_sticks() {
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
         let (opened, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
         assert!(
-            report.migration().is_none(),
-            "a current v3 store does not migrate: {report}"
+            report.migrations.migration().is_none(),
+            "a current v3 store does not migrate: {:?}",
+            report.migrations
         );
         assert_eq!(opened.live_node_count(), 6);
         checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
@@ -106,7 +107,11 @@ fn a_legacy_store_upgrades_wide_at_its_next_checkpoint_and_sticks() {
     {
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
         let (opened, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
-        assert!(report.migration().is_none(), "{report}");
+        assert!(
+            report.migrations.migration().is_none(),
+            "{:?}",
+            report.migrations
+        );
         let before = on_disk_manifest(&target).node_parts[0].path.clone();
         checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
         let manifest = on_disk_manifest(&target);

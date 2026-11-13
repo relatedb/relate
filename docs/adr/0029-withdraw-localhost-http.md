@@ -41,3 +41,10 @@ ADR-0008 is withdrawn here, not edited in place.
 - Local use is the CLI and the embed API.
 - CI no longer builds or tests `memorydb-http`.
 - A later return of engine HTTP would be a new ADR.
+
+## Later references
+
+ADR-0232 (network surfaces charter) restored an HTTP Query API v2 endpoint as
+a product surface alongside Bolt and MCP, superseding this decision's
+withdrawal; ADR-0237 defines its transaction routes. The decision text above
+is the historical record and is unchanged.

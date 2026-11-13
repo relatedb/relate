@@ -150,7 +150,7 @@ pub use plan_cache::PlanCacheOutcome;
 pub use result::{QueryResult, ResultHeader};
 #[cfg(test)]
 pub(crate) use shared::ReadPause;
-pub(crate) use shared::{check_loaded_graph, ensure_writable, Shared};
+pub(crate) use shared::{check_loaded_graph, ensure_writable, report_trimmed_tails, Shared};
 pub use token_budget::TokenPoolSnapshot;
 
 use checkpoint::checkpoint_now;

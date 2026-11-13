@@ -93,13 +93,25 @@ pub(super) fn open_append(vfs: &dyn Vfs, path: &str) -> Result<Box<dyn VfsFile>>
     vfs.open(path, VfsOpen::append_create())
 }
 
-/// Copy the intact prefix into an atomic replacement. Truncating the original
-/// in place could lose committed records if reading or sync fails.
-pub(super) fn replace_torn_tail(vfs: &dyn Vfs, path: &str, end: u64) -> Result<()> {
+/// Copy the intact prefix into an atomic replacement, returning the number of
+/// bytes it discarded. Truncating the original in place could lose committed
+/// records if reading or sync fails.
+///
+/// The discarded size is read from the handle that copies the prefix, so the
+/// caller never re-derives it: a file shorter than the scanned prefix (a
+/// truncation between the scan and the trim) is a typed error, not a wrapped
+/// subtraction.
+pub(super) fn replace_torn_tail(vfs: &dyn Vfs, path: &str, end: u64) -> Result<u64> {
     atomic_write_stream(vfs, path, |destination| {
         // Scoped inside the producer: the source closes before the helper's
         // rename, including on Windows where open-file replacement fails.
         let mut source = vfs.open(path, VfsOpen::read_only())?;
+        let total = source.len()?;
+        let discarded = total.checked_sub(end).ok_or_else(|| {
+            Error::storage(format!(
+                "torn-tail trim of {path}: physical length {total} is below the scanned prefix {end}"
+            ))
+        })?;
         let mut left = end;
         let mut buf = [0u8; 64 * 1024];
         while left > 0 {
@@ -108,7 +120,7 @@ pub(super) fn replace_torn_tail(vfs: &dyn Vfs, path: &str, end: u64) -> Result<(
             destination.write_all(&buf[..size])?;
             left -= size as u64;
         }
-        Ok(())
+        Ok(discarded)
     })
 }
 

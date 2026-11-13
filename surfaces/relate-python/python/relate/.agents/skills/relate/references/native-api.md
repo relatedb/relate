@@ -51,7 +51,7 @@ keeps all six attributes.
 ## Arrow IPC
 
 `Database.execute_arrow(query, params=None)` runs the query and returns
-Arrow IPC **bytes** — the zero-copy path to pandas/polars/duckdb:
+Arrow IPC **bytes** — one serialized conversion from engine rows, the bulk-conversion path to pandas/polars/duckdb:
 
 ```python
 import pyarrow as pa

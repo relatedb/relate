@@ -17,7 +17,10 @@ Bolt, HTTP, and MCP. No server to babysit, no infrastructure to operate.
 📖 **Documentation: [relatedb.ai](https://relatedb.ai/)** — tutorials, guides,
 and the CLI / Cypher / Rust / C API references. The deep references live in
 [`docs/`](docs/) in this repository, and the honest list of what Relate does
-not do yet is [`docs/limitations.md`](docs/limitations.md).
+not do is [`docs/limitations.md`](docs/limitations.md). Several entries there
+are deliberate scope, not missing features: the working set fits in memory,
+one graph per store, a single user or agent per process — Relate is not a
+larger-than-memory warehouse, an analytics engine, or a multi-tenant server.
 
 ## Install
 
@@ -71,9 +74,6 @@ npm install @relate/relate-wasm   # browser (WebAssembly)
 cargo add --git https://github.com/relatedb/relate relate
 ```
 
-> Until the PyPI and npm publishes land, Python wheels are on the
-> [releases page](https://github.com/relatedb/relate/releases) and every
-> package builds from source — see [Development](#development).
 
 ## Quick start
 
@@ -157,8 +157,8 @@ for row in db.execute("MATCH (p:Person)-[:FRIENDS_WITH]->(f) RETURN p.name, f.na
     print(f"{row['p.name']} -> {row['f.name']}")   # Alice -> Bob
 ```
 
-A native `Database` class adds `execute_arrow()` — zero-copy Arrow IPC into
-pandas or Polars. Spec: [`docs/api/python/`](docs/api/python/); runnable
+A native `Database` class adds `execute_arrow()` — the result as Arrow IPC
+stream bytes (one serialized conversion from engine rows) for pandas or Polars. Spec: [`docs/api/python/`](docs/api/python/); runnable
 example: [`examples/python/python_demo.py`](examples/python/python_demo.py).
 
 ### Node.js

@@ -67,7 +67,7 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
             let (graph, wal, _, report) =
                 open_store_with_report::<relate_executor::Graph>(&target).unwrap();
             assert_eq!(
-                report.migration(),
+                report.migrations.migration(),
                 Some((
                     Subsystem::Manifest,
                     u64::from(version),
@@ -101,8 +101,9 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
             let (graph, _wal, _, report) =
                 open_store_with_report::<relate_executor::Graph>(&target).unwrap();
             assert!(
-                report.migration().is_none(),
-                "second open must not migrate: {report}"
+                report.migrations.migration().is_none(),
+                "second open must not migrate: {}",
+                report.migrations
             );
             assert_eq!(graph.live_node_count(), 2);
             assert_eq!(
@@ -129,8 +130,9 @@ fn memory_open_performs_no_migration_writes() {
         // the planted manifest is byte-identical, and no v3 shard dirs
         // appeared.
         assert!(
-            report.migration().is_none(),
-            ":memory: must not migrate: {report}"
+            report.migrations.migration().is_none(),
+            ":memory: must not migrate: {}",
+            report.migrations
         );
         assert_eq!(
             snapshot::get_object(&store, "manifest.json").unwrap(),
@@ -187,7 +189,7 @@ fn open_migrates_legacy_json_value_encoding_then_takes_zero_hops() {
         let (graph, wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
         assert_eq!(
-            report.migration(),
+            report.migrations.migration(),
             Some((
                 Subsystem::ValueEncoding,
                 1,
@@ -214,8 +216,9 @@ fn open_migrates_legacy_json_value_encoding_then_takes_zero_hops() {
         let (graph, _wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
         assert!(
-            report.migration().is_none(),
-            "second open must not migrate: {report}"
+            report.migrations.migration().is_none(),
+            "second open must not migrate: {}",
+            report.migrations
         );
         assert_eq!(graph.live_node_count(), 1);
     }
@@ -233,8 +236,9 @@ fn memory_json_open_performs_no_migration_writes() {
         open_store_with_report::<relate_executor::Graph>(&store).unwrap();
     assert_eq!(graph.live_node_count(), 1);
     assert!(
-        report.migration().is_none(),
-        ":memory: must not migrate: {report}"
+        report.migrations.migration().is_none(),
+        ":memory: must not migrate: {}",
+        report.migrations
     );
     assert_eq!(
         snapshot::get_object(&store, "graph.json").unwrap(),
@@ -287,7 +291,7 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
         let (graph, wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
         assert_eq!(
-            report.migration(),
+            report.migrations.migration(),
             Some((
                 Subsystem::Manifest,
                 2,
@@ -313,8 +317,9 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
         let (graph, _wal, _, report) =
             open_store_with_report::<relate_executor::Graph>(&target).unwrap();
         assert!(
-            report.migration().is_none(),
-            "post-crash re-open must not migrate: {report}"
+            report.migrations.migration().is_none(),
+            "post-crash re-open must not migrate: {}",
+            report.migrations
         );
         assert_eq!(graph.live_node_count(), 2);
     }
@@ -436,8 +441,9 @@ fn current_json_open_reads_graph_json_exactly_once() {
         open_store_with_report::<relate_executor::Graph>(&counted).unwrap();
     assert_eq!(graph.live_node_count(), 1);
     assert!(
-        report.migration().is_none(),
-        "current store must not migrate: {report}"
+        report.migrations.migration().is_none(),
+        "current store must not migrate: {}",
+        report.migrations
     );
     assert_eq!(
         counting.read_opens("graph.json"),

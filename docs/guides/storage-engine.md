@@ -1,7 +1,7 @@
 # Storage Engine
 
 The matcher runs on an **in-memory** labeled property graph (interned records,
-typed CSR, MVCC). Disk is for crash recovery, not for scanning.
+typed adjacency chunks, MVCC). Disk is for crash recovery, not for scanning.
 
 There is **one** write path ([ADR-0014](https://github.com/relatedb/relate/blob/main/docs/adr/0014-single-wal-write-path.md)):
 
@@ -284,7 +284,7 @@ openCypher TCK scenarios stay auto-commit.
 ## Live graph
 
 - Labels, relationship types, and property keys are **interned**.
-- Adjacency is **typed CSR**: `type_id → Vec<RelId>`. Deletes do not punch
+- Adjacency is **typed chunks**: per node, `type_id → Vec<RelId>`. Deletes do not punch
   holes; visibility is `rel_at` / `node_at` at `snapshot_ts`.
 - Versions carry `xmin` / `xmax`. Incremental GC drops versions no pin still
   needs.

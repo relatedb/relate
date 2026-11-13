@@ -208,7 +208,10 @@ fn adopt_writer(shared: &Shared) -> Result<()> {
         let wal = shared.wal.lock()?;
         wal.lsn
     };
-    let mut wal = relate_storage::open_writer_wal(&shared.store)?;
+    let (mut wal, trimmed_tails) = relate_storage::open_writer_wal_with_report(&shared.store)?;
+    // A promote trims a torn tail exactly as a bootstrap open does, so it
+    // reports it the same way (LABS-1535) — one helper, both writable opens.
+    crate::report_trimmed_tails(&trimmed_tails);
     if wal.lsn != applied {
         return Err(Error::storage(format!(
             "promote WAL LSN {} does not match the applied LSN {applied}",

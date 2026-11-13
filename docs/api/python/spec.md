@@ -311,8 +311,9 @@ Cursor-level conveniences (same semantics as the driver's `Result`):
 `to_df()` builds the frame from the already-materialized rows with pandas'
 own from-rows constructor; `to_arrow()` does the same through
 `pyarrow.Table.from_pylist` (an empty result keeps the column shape with
-null-typed columns). Neither re-runs the query. For zero-copy engine
-output use the native `Database.execute_arrow()` (Arrow IPC bytes) instead.
+null-typed columns). Neither re-runs the query. For a single bulk conversion
+of a large result use the native `Database.execute_arrow()` instead — it
+returns Arrow IPC stream bytes (one serialized conversion from engine rows).
 
 The package ships `py.typed` (PEP 561): type checkers and IDEs see the
 binding's annotations in the installed wheel. It also bundles a library

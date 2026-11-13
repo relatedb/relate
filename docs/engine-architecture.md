@@ -97,8 +97,9 @@ shape (`id` / `amount` / `ts`) used by the fraud graph. Public
 `Node` / `Relationship` maps are materialized at `node_at` / `rel_at`,
 checkpoint encode, and overlay copy-on-write.
 
-**Adjacency.** Out- and in-edges are **typed CSR chunks**: interned
-`type_id → Vec<RelId>`. An expand with `[:TRANSFER]` walks that
+**Adjacency.** Out- and in-edges are **typed adjacency chunks**: per node,
+interned `type_id → Vec<RelId>` — sorted hop vectors per (node, type), not a
+shared-offset CSR layout. An expand with `[:TRANSFER]` walks that
 partition only. A bare `-[]-` visits every partition. The lists are a
 **visibility superset**: delete does not punch a hole; `rel_at` at
 `snapshot_ts` decides if the edge is live.
@@ -119,7 +120,7 @@ still needs (`xmax` at or below the horizon).
 [0018](adr/0018-concurrent-snapshot-reads.md) apply during reads,
 [0023](adr/0023-incremental-version-gc.md) GC horizon,
 [0031](adr/0031-typed-adjacency.md) per-type adj,
-[0033](adr/0033-compact-live-records-typed-csr.md) intern + CSR,
+[0033](adr/0033-compact-live-records-typed-csr.md) intern + typed adjacency,
 [0038](adr/0038-lock-free-snapshot-pins.md) pin table.
 
 ## Persistence
@@ -280,7 +281,7 @@ without executing. The planner emits a `LogicalPlan`. The executor
 interprets that plan against the pinned snapshot.
 
 **MATCH.** After rewrite (below), the first node is an index seek, a
-label scan, or an all-node scan. Each hop expands the typed CSR
+label scan, or an all-node scan. Each hop expands the typed adjacency
 partition and checks `rel_at` visibility. Residual `WHERE` conjuncts
 run when every variable they mention is bound, not only after the
 full path. Relationship equality in `WHERE` folds into the rel map

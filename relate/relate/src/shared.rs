@@ -340,6 +340,22 @@ pub(crate) fn check_loaded_graph(graph: &Graph) -> Result<()> {
     Ok(())
 }
 
+/// Report torn WAL tails a writable open trimmed (LABS-1535): one stderr
+/// line per trimmed segment, the same channel and `relate: ` prefix the
+/// resize and staged-degrade notices use. Both writable opens — the
+/// bootstrap open (`crate::open`) and a follower's promote
+/// (`crate::resize`) — report through this one helper, so a trimmed tail
+/// is never a silent repair on either path. Read-only opens never trim,
+/// so they have nothing to report.
+pub(crate) fn report_trimmed_tails(trims: &[relate_storage::TrimmedTail]) {
+    for tail in trims {
+        eprintln!(
+            "relate: WAL recovery trimmed a torn tail in {}: {} bytes discarded (unacknowledged frames, ADR-0114)",
+            tail.path, tail.discarded_bytes
+        );
+    }
+}
+
 /// The single write-admission gate every commit path calls before it
 /// enqueues anything (ADR-0042, ADR-0440): draining refuses retryably, a
 /// non-writable handle (frozen read-only, or a follower that was never

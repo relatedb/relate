@@ -90,6 +90,18 @@ multi-process or multi-writer client/server. Bolt (`relate-bolt`) is still
 one engine. Concurrent **threads** in that process may read together; overlapping
 writers get `write-write conflict` at WAL append (no silent retry).
 
+Concurrent readers are bounded by the process-wide snapshot-pin table:
+**256 in-flight statements** across everything in the process — embedded
+calls, the CLI, and every served surface share one table
+([ADR-0038](https://github.com/relatedb/relate/blob/main/docs/adr/0038-lock-free-snapshot-pins.md),
+[ADR-0111](https://github.com/relatedb/relate/blob/main/docs/adr/0111-engine-bounded-execution.md)).
+A statement that cannot claim a slot after a bounded retry budget fails with
+the typed execution error `snapshot pin: all 256 slots are held` — run fewer
+statements concurrently. The serve connection cap's default (128,
+`--max-connections`) is deliberately half the table, leaving the other half
+for auto-commit statements and every other pin consumer
+([HTTP spec](api/http/spec.md)).
+
 ## Constraints are checked per statement, plus at commit for constrained values
 
 Each write statement (and each `CALL { … } IN TRANSACTIONS` batch) checks
@@ -116,7 +128,8 @@ read/write dependencies that do not touch a constrained tuple still commit.
 
 ## Whole graph held in memory
 
-The live graph is **in RAM**. Traversal is typed CSR; persistence is WAL + a
+The live graph is **in RAM**. Traversal walks per-node, per-type adjacency
+vectors; persistence is WAL + a
 snapshot. **The working set must fit in memory.** There is no paging, buffer
 pool, or spill-to-disk. An optional logical cap
 ([ADR-0042](https://github.com/relatedb/relate/blob/main/docs/adr/0042-graph-memory-limit.md)) fails growing writes with

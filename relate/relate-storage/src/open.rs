@@ -179,18 +179,6 @@ pub fn open_store<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G, Wal)> {
     Ok((graph, wal))
 }
 
-/// [`open_store`] plus the store's current ontology document (ADR-0120):
-/// the snapshot's document folded with the WAL-pending ontology ops the
-/// replay walked (the last op wins), so a set that no checkpoint covered
-/// yet survives the reopen. `None` when the store holds no ontology.
-#[doc(hidden)]
-pub fn open_store_with_ontology<G: SnapshotGraph>(
-    target: &StoreTarget,
-) -> Result<(G, Wal, Option<String>)> {
-    let (graph, wal, ontology, _) = open_store_with_report(target)?;
-    Ok((graph, wal, ontology))
-}
-
 /// [`open_store`] for a read-only handle (ADR-0136).
 ///
 /// Skips migrate-on-open, orphan sweep, and torn-tail trim. Retries when the
@@ -201,7 +189,7 @@ pub fn open_store_readonly<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G,
 }
 
 /// [`open_store_readonly`] plus the store's current ontology document
-/// (ADR-0120), folded exactly as in [`open_store_with_ontology`].
+/// (ADR-0120), folded exactly as in [`open_store_with_report`].
 #[doc(hidden)]
 pub fn open_store_readonly_with_ontology<G: SnapshotGraph>(
     target: &StoreTarget,
@@ -247,9 +235,19 @@ pub fn open_follower_wal(target: &StoreTarget) -> Result<Wal> {
 /// follower that has applied through the tip swaps this handle in and
 /// keeps the loaded graph (ADR-0440).
 pub fn open_writer_wal(target: &StoreTarget) -> Result<Wal> {
+    Ok(open_writer_wal_with_report(target)?.0)
+}
+
+/// [`open_writer_wal`] plus the torn-tail report (ADR-0114): the tails
+/// this open trimmed, for the promoting caller to report — empty when
+/// recovery found none. The doc-hidden reporting twin, mirroring the
+/// [`Wal::open`] / [`Wal::open_with_report`] split so the published
+/// signature keeps its shape.
+#[doc(hidden)]
+pub fn open_writer_wal_with_report(target: &StoreTarget) -> Result<(Wal, Vec<crate::TrimmedTail>)> {
     let checkpoint_lsn = crate::published_checkpoint_lsn(target)?;
     let (vfs, prefix) = target.wal_vfs();
-    Wal::open(vfs, prefix, checkpoint_lsn)
+    Wal::open_with_report(vfs, prefix, checkpoint_lsn)
 }
 
 fn manifest_stamp(target: &StoreTarget) -> Result<Option<Vec<u8>>> {
@@ -281,11 +279,29 @@ fn open_store_readonly_once<G: SnapshotGraph>(
     Ok((graph, wal, ontology))
 }
 
-/// [`open_store`] plus the folded ontology document (ADR-0120; see
-/// [`open_store_with_ontology`]) and the `pub(crate)` migration report
-/// (ADR-0127 Decision 8). The crate has no logging facility, so the report
-/// surfaces only through this internal channel; its `Display` impl is the
-/// trace line a future logging facility would emit on open.
+/// The open path's report: what a writable open did beyond loading — the
+/// version migrations it ran (ADR-0127) and the torn WAL tails recovery
+/// trimmed (ADR-0114). Open-time output, never handle state: the opener
+/// reports it once and drops it.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct OpenReport {
+    /// ADR-0127's migration trace — internal to `relate-storage` (the
+    /// crate has no logging facility, so it surfaces only through this
+    /// channel; its `Display` impl is the trace line a future logging
+    /// facility would emit on open).
+    pub(crate) migrations: version::MigrationReport,
+    /// The torn tails this open trimmed (ADR-0114), for the opener to
+    /// report — empty when recovery found none.
+    pub trimmed_tails: Vec<crate::TrimmedTail>,
+}
+
+/// [`open_store`] plus the store's current ontology document (ADR-0120)
+/// and the open report — the one report-returning name in the family: the
+/// opener reads `report.trimmed_tails` (ADR-0114) off the named outcome,
+/// and the migration trace stays crate-internal (ADR-0127 Decision 8 —
+/// the crate has no logging facility, so its `Display` impl is the trace
+/// line a future logging facility would emit on open).
 ///
 /// ADR-0127 Decisions 2–4: one open flow. The codec loaders report the
 /// version marker they decoded, so detection costs no extra I/O; a legacy
@@ -298,9 +314,10 @@ fn open_store_readonly_once<G: SnapshotGraph>(
 /// `:memory:` never migrates (Decision 7). A store with an unreadable
 /// marker (newer binary, unknown magic) fails at the ADR-0114 gate inside
 /// the load, before any byte mutates.
-pub(crate) fn open_store_with_report<G: SnapshotGraph>(
+#[doc(hidden)]
+pub fn open_store_with_report<G: SnapshotGraph>(
     target: &StoreTarget,
-) -> Result<(G, Wal, Option<String>, version::MigrationReport)> {
+) -> Result<(G, Wal, Option<String>, OpenReport)> {
     let LoadedSnapshot::<G> {
         graph,
         checkpoint_lsn,
@@ -309,13 +326,16 @@ pub(crate) fn open_store_with_report<G: SnapshotGraph>(
         deferred,
     } = load_snapshot_with_schema_guard::<G>(target)?;
     let (wal_vfs, wal_prefix) = target.wal_vfs();
-    let mut wal = Wal::open(wal_vfs, wal_prefix, checkpoint_lsn)?;
+    let (mut wal, trimmed_tails) = Wal::open_with_report(wal_vfs, wal_prefix, checkpoint_lsn)?;
     // The writable-open tail (ADR-0406 §5), codec-owned through the ops
     // table: the dirty-WAL guard first, then — no WAL deltas pending
     // over the loaded base — the load's deferred action runs.
     finish_open(target, &wal, checkpoint_lsn, deferred)?;
     let ontology = replay_after_ontology(&graph, &wal, checkpoint_lsn, ontology)?;
-    let mut report = version::MigrationReport::default();
+    let mut report = OpenReport {
+        migrations: version::MigrationReport::default(),
+        trimmed_tails,
+    };
     if let version::SnapshotMarker::Legacy(subsystem, from) = marker {
         if target.is_fully_durable() {
             // The published version from the same codec/ontology facts
@@ -331,7 +351,7 @@ pub(crate) fn open_store_with_report<G: SnapshotGraph>(
                     version::value_encoding::version_for_write(ontology.is_some())
                 }
             };
-            report.record(subsystem, from, to);
+            report.migrations.record(subsystem, from, to);
             // The migration checkpoint carries the loaded ontology document
             // so a content-mismatched marker (ADR-0120 §8) is normalized,
             // never dropped. It publishes at the graph's own commit

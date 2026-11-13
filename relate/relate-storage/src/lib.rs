@@ -30,15 +30,15 @@ pub use codec::SnapshotCodecKind;
 #[cfg(not(target_arch = "wasm32"))]
 pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
 pub use manifest::Manifest;
-pub use relate_core::{cypher_to_value, value_to_cypher};
-// Used by the crate's migration tests; open_store serves production.
-#[cfg(test)]
-pub(crate) use open::open_store_with_report;
 pub use open::{
     load, load_with_wal, open_follower_wal, open_store, open_store_readonly, open_writer_wal,
 };
 #[doc(hidden)]
-pub use open::{open_store_readonly_with_ontology, open_store_with_ontology};
+pub use open::{
+    open_store_readonly_with_ontology, open_store_with_report, open_writer_wal_with_report,
+    OpenReport,
+};
+pub use relate_core::{cypher_to_value, value_to_cypher};
 #[cfg(parquet_codec)]
 pub use snapshot::native::{window_width, DEFAULT_SHARD_TARGET_BYTES};
 pub use snapshot::ShardPart;
@@ -50,7 +50,9 @@ pub use vfs::{
 pub use vfs::{BundleVfs, NativeVfs};
 #[doc(hidden)]
 pub use wal::MAGIC;
-pub use wal::{AppendCommitStats, EncodedOps, Wal, WalCatchUp, WalPreflight, WalRecord};
+pub use wal::{
+    AppendCommitStats, EncodedOps, TrimmedTail, Wal, WalCatchUp, WalPreflight, WalRecord,
+};
 
 /// Parquet snapshot + WAL on a [`Vfs`] (ADR-0072). `:memory:` is `MemoryVfs`.
 #[derive(Clone)]

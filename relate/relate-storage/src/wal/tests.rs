@@ -278,12 +278,21 @@ fn wal_torn_closed_tail_is_trimmed_but_existing_magic_must_be_complete() {
         .unwrap();
     write_magic(&*vfs, "00000002.log", MAGIC, true).unwrap();
 
-    let wal = Wal::open(Arc::clone(&vfs) as Arc<dyn Vfs>, "", 0).unwrap();
+    let (wal, trimmed_tails) =
+        Wal::open_with_report(Arc::clone(&vfs) as Arc<dyn Vfs>, "", 0).unwrap();
     assert!(wal.replay(0).unwrap().is_empty());
     assert_eq!(
         vfs.metadata("00000001.log").unwrap().len,
         MAGIC.len() as u64,
         "closed torn suffix must be trimmed to the committed prefix"
+    );
+    assert_eq!(
+        trimmed_tails,
+        vec![TrimmedTail {
+            path: "00000001.log".to_string(),
+            discarded_bytes: 2,
+        }],
+        "a trimmed torn tail is reported by the open, not repaired silently"
     );
 
     // A previously existing segment whose magic is empty or an incomplete
@@ -1178,9 +1187,19 @@ fn open_trims_torn_final_record_before_append() {
         file.write_all(&100u32.to_le_bytes()).unwrap();
         file.write_all(b"{\"").unwrap();
     }
+    let torn_len = std::fs::metadata(&path).unwrap().len();
 
-    let mut wal = Wal::open(Arc::new(NativeVfs::new(dir.path())), "", 0).unwrap();
+    let (mut wal, trimmed_tails) =
+        Wal::open_with_report(Arc::new(NativeVfs::new(dir.path())), "", 0).unwrap();
     assert_eq!(wal.lsn, 1);
+    assert_eq!(
+        trimmed_tails,
+        vec![TrimmedTail {
+            path: "00000001.log".to_string(),
+            discarded_bytes: torn_len - valid_len,
+        }],
+        "the trim is reported with its segment and discarded byte count"
+    );
     assert_eq!(std::fs::metadata(&path).unwrap().len(), valid_len);
     assert_eq!(wal.append_commit(2, &[]).unwrap(), 2);
     assert_eq!(wal.replay(0).unwrap().len(), 2);

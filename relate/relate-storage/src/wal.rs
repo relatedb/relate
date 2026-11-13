@@ -149,6 +149,14 @@ pub enum WalCatchUp {
     Gap,
 }
 
+/// One torn WAL tail trimmed at open (ADR-0114's tolerated cases): the
+/// segment and how many bytes of it recovery discarded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrimmedTail {
+    pub path: String,
+    pub discarded_bytes: u64,
+}
+
 pub struct Wal {
     inner: FileWal,
     pub lsn: u64,
@@ -214,7 +222,16 @@ impl Wal {
         Tip::after(self.lsn, self.last_commit_ts)
     }
 
-    pub fn open(vfs: Arc<dyn Vfs>, prefix: &str, checkpoint_lsn: u64) -> Result<Self> {
+    /// Open for append, returning the handle plus the open-time report: the
+    /// torn tails this open trimmed (ADR-0114's tolerated cases). The trims
+    /// are open-time output, not handle state — the opener that wants to
+    /// report the durability event takes them from the return; every other
+    /// caller uses [`open`](Self::open), which drops them.
+    pub fn open_with_report(
+        vfs: Arc<dyn Vfs>,
+        prefix: &str,
+        checkpoint_lsn: u64,
+    ) -> Result<(Self, Vec<TrimmedTail>)> {
         vfs.create_dir_all(prefix)?;
         let mut ids = list_segment_ids(&*vfs, prefix)?;
         if ids.is_empty() {
@@ -229,8 +246,13 @@ impl Wal {
         // scanned without error: a hard failure must leave all WAL bytes
         // untouched (ADR-0114).
         let scan = scan_segments(&*vfs, prefix, &ids, checkpoint_lsn, true)?;
+        let mut trimmed_tails = Vec::new();
         for (path, end) in &scan.trims {
-            replace_torn_tail(&*vfs, path, *end)?;
+            let discarded_bytes = replace_torn_tail(&*vfs, path, *end)?;
+            trimmed_tails.push(TrimmedTail {
+                path: path.clone(),
+                discarded_bytes,
+            });
         }
         let active_path = segment_path(prefix, current_id);
         let file = open_append(&*vfs, &active_path)?;
@@ -266,7 +288,14 @@ impl Wal {
         if scan.trimmed_active {
             wal.rotate_away_from_trimmed_active()?;
         }
-        Ok(wal)
+        Ok((wal, trimmed_tails))
+    }
+
+    /// [`open_with_report`](Self::open_with_report) for callers that do not
+    /// report the trimmed tails: the report is dropped, the handle is the
+    /// same.
+    pub fn open(vfs: Arc<dyn Vfs>, prefix: &str, checkpoint_lsn: u64) -> Result<Self> {
+        Ok(Self::open_with_report(vfs, prefix, checkpoint_lsn)?.0)
     }
 
     /// Scan an existing WAL without creating segments or trimming a torn tail

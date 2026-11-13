@@ -10,7 +10,7 @@ use std::sync::Arc;
 use relate_core::{Error, PreviewFeatures, Result};
 use relate_executor::{CsvPolicy, Graph, PatternEngine};
 use relate_storage::{
-    open_store_readonly_with_ontology, open_store_with_ontology, parse_uri_opening_with_config,
+    open_store_readonly_with_ontology, open_store_with_report, parse_uri_opening_with_config,
     CodecOpenConfig, SnapshotCodecKind, StoreTarget, Vfs, Wal,
 };
 
@@ -24,7 +24,10 @@ use super::open_config::{
 };
 use super::shared::{OpenResolved, SharedOpenState};
 use super::token_budget;
-use super::{check_loaded_graph, Database, DurabilityMode, OpenMode, OpenOptions, Shared};
+use super::{
+    check_loaded_graph, report_trimmed_tails, Database, DurabilityMode, OpenMode, OpenOptions,
+    Shared,
+};
 
 /// [`open_store_readonly_with_ontology`] plus the screen every consumer of a
 /// loaded ontology document owes it: a stored document must parse before it
@@ -35,6 +38,39 @@ pub(crate) fn open_store_readonly_screened(
     target: &StoreTarget,
 ) -> Result<(Graph, Wal, Option<String>)> {
     let (graph, wal, ontology) = open_store_readonly_with_ontology(target)?;
+    ontology::validate_stored_document(ontology.as_deref())?;
+    Ok((graph, wal, ontology))
+}
+
+/// The one loader selection for a store open: every read-only-mode open
+/// (`ReadOnly`, `Follow`, or `Ephemeral`) of a **durable** store loads
+/// through the non-trimming read-only loader (ADR-0136 — it opens no WAL
+/// for append and repairs nothing); a writable open, and any open of a
+/// `:memory:`-shaped store (which has no existing WAL for the read-only
+/// loader to open), loads through the writable loader, which reports the
+/// tails it trimmed. The predicate is named here so the two loaders'
+/// doc'd policies and the choice between them cannot drift apart.
+fn open_store_screened(
+    target: &StoreTarget,
+    read_only: bool,
+) -> Result<(Graph, Wal, Option<String>)> {
+    if read_only && target.vfs().durable() {
+        open_store_readonly_screened(target)
+    } else {
+        open_store_writable_screened(target)
+    }
+}
+
+/// The writable twin of [`open_store_readonly_screened`]: the whole
+/// writable post-load policy in one place — load through the
+/// report-returning open, emit the trimmed-tail notice **before** the
+/// fallible screen (the tails were already trimmed when the loader
+/// returned, so a later failure must not swallow the durability event —
+/// the same order the promote path reports in), then screen the ontology
+/// document where it is produced.
+fn open_store_writable_screened(target: &StoreTarget) -> Result<(Graph, Wal, Option<String>)> {
+    let (graph, wal, ontology, report) = open_store_with_report(target)?;
+    report_trimmed_tails(&report.trimmed_tails);
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }
@@ -235,17 +271,7 @@ impl Database {
             bulk_batch_limits: (bulk_batch_threshold, bulk_batch_budget),
             token_limits,
         } = knobs;
-        let (mut graph, mut wal, ontology) = if read_only && store.vfs().durable() {
-            open_store_readonly_screened(&store)?
-        } else {
-            // The writable loader screens here, where the document is
-            // produced: every loaded document must parse before it is
-            // trusted, and collocating the screen with its loader keeps the
-            // branch predicate in one place.
-            let (graph, wal, ontology) = open_store_with_ontology(&store)?;
-            ontology::validate_stored_document(ontology.as_deref())?;
-            (graph, wal, ontology)
-        };
+        let (mut graph, mut wal, ontology) = open_store_screened(&store, read_only)?;
         check_loaded_graph(&graph)?;
         graph.configure_load_csv(csv_policy);
         // ADR-0463: the per-allocation expression cap rides the same

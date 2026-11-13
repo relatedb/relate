@@ -10,8 +10,10 @@
 //! `Relate` row the honest workspace version), the
 //! `edition` output (`community` on all rows; Relate has no enterprise
 //! tier), the `dbms.info` Desktop-compat row, the ADR-0143 fixed
-//! rows, the ADR-0273 `Connection::set_principal` behavior, and `YIELD`
-//! validation.
+//! rows, the ADR-0273 `Connection::set_principal` behavior, `YIELD`
+//! validation, and the ADR-0557 cluster-stub removal pin:
+//! `dbms.cluster.*` / `dbms.routing.*` calls fail with the typed
+//! unknown-procedure error and stay unlisted in `SHOW PROCEDURES`.
 
 mod common;
 
@@ -366,5 +368,57 @@ fn dbms_license_agreement_details_yield_of_unknown_column_fails_validation() {
     assert_unknown_output_fails(
         "CALL dbms.licenseAgreementDetails() YIELD noSuchColumn RETURN noSuchColumn",
         "noSuchColumn",
+    );
+}
+
+/// ADR-0557 removed the `dbms.cluster.*` signature-compatibility stubs —
+/// an embedded engine cannot answer cluster procedures — so a call fails
+/// with the typed unknown-procedure error instead of a silent no-op, and
+/// `SHOW PROCEDURES` lists no cluster row. The Neo4j CE compatibility that
+/// remains is listing-level: `SHOW SETTINGS` still reports the cluster
+/// config names a CE tool reads. Both halves are driven by one table, so
+/// the call list and the listing filter cannot drift apart.
+#[test]
+fn dbms_cluster_procedures_fail_loudly_and_stay_unlisted() {
+    let mut conn = connection();
+    let cases = [
+        (
+            "CALL dbms.cluster.checkConnectivity()",
+            "dbms.cluster.checkConnectivity",
+        ),
+        (
+            "CALL dbms.cluster.cordonServer('s')",
+            "dbms.cluster.cordonServer",
+        ),
+        (
+            "CALL dbms.routing.getRoutingTable()",
+            "dbms.routing.getRoutingTable",
+        ),
+    ];
+    for (call, _) in cases {
+        let error = conn
+            .query(call)
+            .err()
+            .unwrap_or_else(|| panic!("{call} must fail"));
+        assert_eq!(
+            relate::binding_error_metadata(&error).0,
+            "ProcedureNotFound",
+            "{call}: {error}"
+        );
+    }
+    let names = cases
+        .iter()
+        .map(|(_, name)| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let result = conn
+        .query(&format!(
+            "SHOW PROCEDURES YIELD name WHERE name IN [{names}] RETURN name"
+        ))
+        .unwrap();
+    assert!(
+        result.rows.is_empty(),
+        "no procedure rows for [{names}]: {:?}",
+        result.rows
     );
 }

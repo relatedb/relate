@@ -409,14 +409,17 @@ pub fn atomic_write(vfs: &dyn Vfs, path: &str, bytes: &[u8]) -> Result<()> {
 }
 
 /// Produce a replacement directly into an exclusive temporary file. The
-/// producer finishes (and drops any source handles it owns) before rename.
+/// producer finishes (and drops any source handles it owns) before rename;
+/// its return value is the stream's own return value, so a producer with a
+/// real output (the torn-tail trim's discarded byte count) carries it
+/// through the type instead of a captured out-parameter.
 /// Before publication, errors retain the original destination and clean up
 /// the temporary file; directory-sync errors occur after publication.
-pub(crate) fn atomic_write_stream(
+pub(crate) fn atomic_write_stream<R>(
     vfs: &dyn Vfs,
     path: &str,
-    produce: impl FnOnce(&mut dyn VfsFile) -> Result<()>,
-) -> Result<()> {
+    produce: impl FnOnce(&mut dyn VfsFile) -> Result<R>,
+) -> Result<R> {
     let parent = virt_parent(path).unwrap_or("");
     vfs.create_dir_all_for_atomic(parent)?;
     for _ in 0..TEMP_ATTEMPTS {
@@ -424,17 +427,18 @@ pub(crate) fn atomic_write_stream(
         let Some(mut file) = vfs.open_exclusive(&tmp)? else {
             continue;
         };
-        let written = produce(&mut *file).and_then(|()| file.sync_all());
+        let written = produce(&mut *file).and_then(|value| file.sync_all().map(|()| value));
         // In particular, Windows requires the write handle closed before rename.
         drop(file);
-        if let Err(e) = written {
-            return Err(cleanup_temp(vfs, &tmp, e));
-        }
+        let value = match written {
+            Ok(value) => value,
+            Err(e) => return Err(cleanup_temp(vfs, &tmp, e)),
+        };
         if let Err(e) = vfs.rename(&tmp, path) {
             return Err(cleanup_temp(vfs, &tmp, e));
         }
         // Once published, never clean up or retry after a failed directory sync.
-        return vfs.sync_dir(parent);
+        return vfs.sync_dir(parent).map(|()| value);
     }
     Err(Error::io(format!(
         "could not create an exclusive temporary file for {path} after {TEMP_ATTEMPTS} collisions"

@@ -230,7 +230,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
     let (_, _, _, report) =
         crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
-        report.migration(),
+        report.migrations.migration(),
         Some((
             crate::version::Subsystem::ValueEncoding,
             2,
@@ -264,7 +264,7 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
     let (_, _, _, report) =
         crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
     assert_eq!(
-        report.migration(),
+        report.migrations.migration(),
         Some((
             crate::version::Subsystem::ValueEncoding,
             3,

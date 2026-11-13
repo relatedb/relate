@@ -519,7 +519,7 @@ print(result.data)     # [{'name': 'Alice', 'age': 30}]
 
 ### Arrow interop
 
-`execute_arrow()` returns results as Arrow IPC stream bytes, enabling zero-copy transfer to PyArrow, Pandas, or Polars:
+`execute_arrow()` returns results as Arrow IPC stream bytes — one serialized conversion from engine rows, read directly by PyArrow, Pandas, or Polars:
 
 ```python
 from relate import Database

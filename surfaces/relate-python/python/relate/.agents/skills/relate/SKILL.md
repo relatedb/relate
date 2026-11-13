@@ -95,7 +95,7 @@ convert to networkx/igraph without a bridge dependency (see
 ## The native API
 
 `relate.Database` is the thin native handle under `connect()` — use it
-for `execute_arrow()` (zero-copy Arrow IPC bytes), engine lifecycle
+for `execute_arrow()` (Arrow IPC stream bytes), engine lifecycle
 (`flush`, explicit transactions), or its `QueryResult` (dict rows
 plus `namespace` / `query_type` / `bookmark` / `column_types` /
 `notifications` / `plan`).
