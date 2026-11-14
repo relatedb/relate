@@ -35,6 +35,11 @@ const RING: u64 = 575_784;
 const FANOUT: u64 = 520_046;
 const FLAT: u64 = 222_688;
 const DENSE_RING: u64 = 2_256_986;
+/// One label set like ring and dense ring (ADR-0589's +148), one node
+/// label count entry, and the same per-relationship terms as dense ring
+/// at 96,512 relationships — 12× dense ring's volume. The adjacency is
+/// the dominant term: 96 average hops on both endpoints of every node.
+const MID_DEGREE: u64 = 28_850_522;
 /// Flat, one attribute, one range index on `id`. `1,000 × 62` on top of [`FLAT`].
 const FLAT_RANGE: u64 = 284_688;
 /// Flat, one attribute, plus one text, one point, and one range index.
@@ -102,10 +107,11 @@ fn small_shapes_pin_logical_bytes() {
     let fanout = load(GraphShape::Fanout);
     let ring = load(GraphShape::Ring);
     let dense = load(GraphShape::DenseRing);
+    let mid = load(GraphShape::MidDegree);
     assert_eq!(
-        (base, flat, fanout, ring, dense),
-        (BASE, FLAT, FANOUT, RING, DENSE_RING),
-        "measured base={base} flat={flat} fanout={fanout} ring={ring} dense={dense}"
+        (base, flat, fanout, ring, dense, mid),
+        (BASE, FLAT, FANOUT, RING, DENSE_RING, MID_DEGREE),
+        "measured base={base} flat={flat} fanout={fanout} ring={ring} dense={dense} mid={mid}"
     );
 }
 

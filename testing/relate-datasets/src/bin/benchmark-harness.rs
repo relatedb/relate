@@ -20,8 +20,9 @@ struct Args {
     /// manifest.json is benchmarked under its directory name. Repeatable.
     #[arg(long)]
     graph_examples_dir: Vec<PathBuf>,
-    /// Synthetic memory shape to build and benchmark: ring, fanout, flat, or
-    /// dense-ring. Repeatable. Default when absent: ring and fanout.
+    /// Synthetic memory shape to build and benchmark: ring, fanout, flat,
+    /// dense-ring, or mid-degree. Repeatable. Default when absent: ring and
+    /// fanout.
     #[arg(long, default_values_t = [GraphShape::Ring, GraphShape::Fanout])]
     shape: Vec<GraphShape>,
     /// Logical graph memory for each synthetic shape, in MB (1024×1024 bytes).

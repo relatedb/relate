@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 200" width="440" role="img" aria-label="Mid-degree ladder of one 16-node group: degrees 512, 256, 128, 128, 64, 64, 64, 64, then 32 for the remaining eight nodes.">
+  <title>Mid-degree ladder of one 16-node group</title>
+  <desc>Sixteen columns, one per node in a 16-node group, each column as tall as its out-degree. The first eight nodes carry the head rungs 512, 256, 128, 128, 64, 64, 64, 64; the remaining eight carry the 32 floor. The pattern repeats every 16 nodes.</desc>
+  <style>
+    .bar { fill: #0969da; }
+    .floor { fill: #6e7781; }
+    .label { font: 11px ui-monospace, monospace; fill: #24292f; text-anchor: middle; }
+    .axis { stroke: #d0d7de; stroke-width: 1; }
+    .caption { font: 12px -apple-system, sans-serif; fill: #57606a; text-anchor: middle; }
+  </style>
+  <line x1="30" y1="160" x2="410" y2="160" class="axis" />
+  <line x1="30" y1="160" x2="30" y2="30" class="axis" />
+  <g>
+    <rect x="34"  y="40"  width="16" height="120" rx="2" class="bar" />
+    <rect x="56"  y="70"  width="16" height="90"  rx="2" class="bar" />
+    <rect x="78"  y="100" width="16" height="60"  rx="2" class="bar" />
+    <rect x="100" y="100" width="16" height="60"  rx="2" class="bar" />
+    <rect x="122" y="130" width="16" height="30"  rx="2" class="bar" />
+    <rect x="144" y="130" width="16" height="30"  rx="2" class="bar" />
+    <rect x="166" y="130" width="16" height="30"  rx="2" class="bar" />
+    <rect x="188" y="130" width="16" height="30"  rx="2" class="bar" />
+    <rect x="210" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="232" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="254" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="276" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="298" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="320" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="342" y="145" width="16" height="15"  rx="2" class="floor" />
+    <rect x="364" y="145" width="16" height="15"  rx="2" class="floor" />
+  </g>
+  <g>
+    <text x="42"  y="155" class="label">512</text>
+    <text x="64"  y="155" class="label">256</text>
+    <text x="86"  y="155" class="label">128</text>
+    <text x="108" y="155" class="label">128</text>
+    <text x="130" y="155" class="label">64</text>
+    <text x="152" y="155" class="label">64</text>
+    <text x="174" y="155" class="label">64</text>
+    <text x="196" y="155" class="label">64</text>
+    <text x="218" y="155" class="label">32</text>
+    <text x="240" y="155" class="label">32</text>
+    <text x="262" y="155" class="label">32</text>
+    <text x="284" y="155" class="label">32</text>
+    <text x="306" y="155" class="label">32</text>
+    <text x="328" y="155" class="label">32</text>
+    <text x="350" y="155" class="label">32</text>
+    <text x="372" y="155" class="label">32</text>
+  </g>
+  <text x="30" y="24" class="label" text-anchor="start">out-degree per node (one 16-node group)</text>
+  <text x="220" y="185" class="caption">node 0 … node 15 — the ladder repeats every 16 nodes, average degree 96</text>
+</svg>

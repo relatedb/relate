@@ -26,9 +26,9 @@ struct Args {
     /// manifest.json is measured under its directory name. Repeatable.
     #[arg(long)]
     graph_examples_dir: Vec<PathBuf>,
-    /// Synthetic memory shape to build and measure: ring, fanout, flat, or
-    /// dense-ring. Repeatable. Default when absent: ring, fanout, and
-    /// dense-ring (the baseline's shape set).
+    /// Synthetic memory shape to build and measure: ring, fanout, flat,
+    /// dense-ring, or mid-degree. Repeatable. Default when absent: ring,
+    /// fanout, and dense-ring (the baseline's shape set).
     #[arg(long, default_values_t = [GraphShape::Ring, GraphShape::Fanout, GraphShape::DenseRing])]
     shape: Vec<GraphShape>,
     /// Logical graph memory for each synthetic shape, in MB (1024×1024 bytes).
