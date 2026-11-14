@@ -3,9 +3,10 @@
 //! decide-then-execute bulk plan (`BulkBatchPlan::prepare` probes,
 //! `run` commits batch-by-batch through the group-commit pipeline).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use relate_executor::{
     analyze_bulk_write, BulkCursor, BulkTargets, BulkWrite, ExecGraph, QueryResult as ExecResult,
@@ -25,11 +26,12 @@ use crate::{CancelToken, Error, Result, Shared, Value};
 /// previous batch's commit (or the statement's start for the first).
 pub(super) struct GroupBatchCommit {
     pub(super) shared: Arc<Shared>,
-    /// The last batch's assigned commit timestamp (ADR-0502 §7): the sink's
-    /// commits land mid-statement, so the statement's bookmark — when no
-    /// final redo follows — is this value, read by `commit_optimistic`
-    /// after execution. `None` until a batch commits.
-    last_commit_ts: Mutex<Option<u64>>,
+    /// Whether any batch has committed (ADR-0502 §7). The scratch already
+    /// carries the last batch's timestamp (`commit_batch` hands it back and
+    /// the scratch rebases onto it), so the sink records only the fact:
+    /// `commit_optimistic` reads the sequence off the scratch's base when
+    /// this is set. The sink is single-threaded inside one statement.
+    committed: Cell<bool>,
 }
 
 impl relate_executor::BatchCommit for GroupBatchCommit {
@@ -42,26 +44,26 @@ impl relate_executor::BatchCommit for GroupBatchCommit {
         // commit, letting later batches observe another transaction's
         // mid-statement writes.
         let commit_ts = try_wal_commit(&self.shared, snapshot_ts, txn_id, ops, 0, 0)?;
-        *self.last_commit_ts.lock()? = Some(commit_ts);
+        self.committed.set(true);
         Ok(commit_ts)
     }
 }
 
 impl GroupBatchCommit {
     /// A sink over `shared` with no batch committed yet — the one
-    /// construction, so the tracker always starts `None`.
+    /// construction, so the tracker always starts unset.
     pub(super) fn new(shared: Arc<Shared>) -> Self {
         Self {
             shared,
-            last_commit_ts: Mutex::new(None),
+            committed: Cell::new(false),
         }
     }
 
-    /// The last batch's commit timestamp, or `None` when no batch committed
-    /// (ADR-0502 §7) — the statement's commit sequence when the statement's
-    /// final redo is empty.
-    pub(super) fn committed_sequence(&self) -> Result<Option<u64>> {
-        Ok(*self.last_commit_ts.lock()?)
+    /// Whether any batch committed through this sink (ADR-0502 §7): when
+    /// the statement's final redo is empty, the commit sequence is the
+    /// scratch's rebased base exactly when this holds.
+    pub(super) fn committed(&self) -> bool {
+        self.committed.get()
     }
 }
 
@@ -124,8 +126,7 @@ impl BulkBatchPlan {
         let mut stats = relate_executor::QueryStats::default();
         // ADR-0402 Decision 2: a batched bulk write is a mutation by
         // construction (that is what made it eligible), and it applied a
-        // change iff any batch committed redo.
-        let mut applied = false;
+        // change iff any batch committed redo (`sequence` below is `Some`).
         let mut cursor = BulkCursor::default();
         // One-shot: the first *committed* batch carries the statement's
         // parse/plan time; later batches take None and record 0.
@@ -164,7 +165,6 @@ impl BulkBatchPlan {
                     Ok((done, execute_ns))
                 })?;
             if !ops.is_empty() {
-                applied = true;
                 sequence = Some(try_wal_commit(
                     shared,
                     snapshot_ts,
@@ -183,15 +183,16 @@ impl BulkBatchPlan {
         }
         shared.check_healthy()?;
         // The ADR-0209 batched bulk write is its own statement boundary (no
-        // clause loop runs): the batch loop pushed its own redo, so `applied`
-        // is the second fact and the attempt is structural — both go through
-        // the effect type's own constructor, never a literal.
+        // clause loop runs): the batch loop pushed its own redo, so a
+        // committed sequence is the applied fact and the attempt is
+        // structural — both go through the effect type's own constructor,
+        // never a literal.
         Ok((
             ExecResult::finished(
                 Vec::new(),
                 Vec::new(),
                 stats,
-                StatementEffect::from_applied(applied),
+                StatementEffect::from_applied(sequence.is_some()),
             ),
             sequence,
         ))
