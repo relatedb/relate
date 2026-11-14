@@ -66,6 +66,8 @@ mod fixtures;
 #[cfg(test)]
 mod parity_tests;
 #[cfg(test)]
+mod postfilter_tests;
+#[cfg(test)]
 mod reach_tests;
 #[cfg(test)]
 mod reject_tests;

@@ -197,16 +197,17 @@ fn inline_end_node_where_reading_the_path_name_stays_on_gpm() {
     assert_stays_on_gpm(&g, q, &[2, 2]);
 }
 
-/// A clause-level `WHERE` over the path is a postfilter for the postfix
-/// spelling: the selector picks the one shortest path, then the predicate
-/// drops it, so the route yields to GPM's enumeration here.
+/// A clause-level `WHERE` over the path is a postfilter for every keyword
+/// selector, the postfix spelling included: the selector picks the one
+/// shortest path, then the predicate drops it. The route answers it as the
+/// residual's post-filter and agrees with GPM's enumeration.
 #[test]
 fn postfix_quantified_relationship_with_outer_path_where_agrees_with_gpm() {
     let g = shortcut();
     let q = "MATCH p = ANY SHORTEST (a {id: 0})-[:R]->{1,3}(b {id: 3}) \
              WHERE none(r IN relationships(p) WHERE r.w = 1) RETURN count(*)";
     let (rows, counts) = run(&g, q);
-    assert_eq!(counts.route_runs, 0, "route ran for {q}");
+    assert!(counts.route_runs > 0, "expected the route for {q}");
     assert_eq!(sorted(rows), gpm(&g, q), "{q}");
 }
 

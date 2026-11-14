@@ -1,13 +1,19 @@
 //! The `MATCH`-level `WHERE` conjuncts a routed shortest path reads,
 //! split by what they read: the path itself, or only the endpoints.
 //!
-//! A conjunct that reads the *path* (the named path variable or the
-//! relationship variable), the pattern's own inline `WHERE`, and the end
-//! node pattern's inline `WHERE` (admitted by the guard when it names no
-//! path variable) must hold **during** the search: a route that only
-//! filtered the selected shortest path afterwards answered zero rows
-//! whenever that path violated such a predicate, instead of the shortest
-//! path that satisfies it ([`PathFilter`]).
+//! The pattern's own inline `WHERE` and the end node pattern's inline
+//! `WHERE` (admitted by the guard when it names no path variable) must hold
+//! **during** the search, and so must a clause-level conjunct that reads the
+//! *path* (the named path variable or the relationship variable) of the
+//! function spellings (`shortestPath()` / `allShortestPaths()`): live Neo4j
+//! answers the shortest path that satisfies them ([`PathFilter`]).
+//!
+//! A clause-level conjunct that reads the path of a **keyword selector**
+//! (`SHORTEST k`, `ANY SHORTEST`, `ALL SHORTEST`, `SHORTEST k GROUPS`) is
+//! not a search filter: live Neo4j selects first and filters the selected
+//! paths afterwards, so a selected path that violates it leaves no row
+//! instead of promoting a longer one. Such a conjunct rides the residual
+//! the caller applies to every emitted row, like an endpoint-only one.
 //!
 //! An endpoint-only conjunct is deliberately **not** a search filter: the
 //! route answers one shortest path per `(start, end)` partition, so a
@@ -35,8 +41,11 @@ use crate::exec::gpm::gpm_bind_node;
 use crate::exec::pushdown::{conjunct_ready, residual_ok, Residual};
 use crate::row::Row;
 
+use super::guard::Shape;
+
 /// The predicates a routed shortest path must satisfy during the search:
-/// the MATCH-level `WHERE` conjuncts that read the path itself, the
+/// the MATCH-level `WHERE` conjuncts that read the path itself (function
+/// spellings only; a keyword selector post-filters them), the
 /// pattern's own inline `WHERE`, and the end node pattern's inline `WHERE`
 /// (GPM checks that one at every arrival; the route answers it against
 /// each bound trail, which binds the same names — the guard admits it only
@@ -44,29 +53,18 @@ use crate::row::Row;
 /// `scope` is the MATCH's bound-variable scope, the readiness rule's input
 /// (see [`crate::exec::pushdown::conjunct_ready`]).
 pub(super) struct PathFilter<'a> {
-    conjuncts: Vec<&'a Expr>,
-    /// The pattern's own inline `WHERE` and the end node's, held as one
-    /// list — they play one role (the search answers both per arrival),
-    /// so no consumer ever reads them apart.
-    inline: Vec<&'a Expr>,
+    /// The search's predicates in one list: the path-reading clause
+    /// conjuncts (function spellings only), then the pattern's own inline
+    /// `WHERE` and the end node's — they play one role (the search answers
+    /// each per arrival), so no consumer reads them apart.
+    predicates: Vec<&'a Expr>,
     scope: &'a HashSet<String>,
 }
 
 impl<'a> PathFilter<'a> {
-    /// Whether a clause-level `WHERE` conjunct reads the path (as opposed
-    /// to only the pattern's inline `WHERE` filtering the search).
-    pub(super) fn has_clause_conjuncts(&self) -> bool {
-        !self.conjuncts.is_empty()
-    }
-
-    /// The union the search must decide: the path-reading clause conjuncts,
-    /// then the inline predicates — the pattern's `WHERE` and the end
-    /// node's, one list chained once.
+    /// The predicates the search must decide.
     fn predicates(&self) -> impl Iterator<Item = &'a Expr> + '_ {
-        self.conjuncts
-            .iter()
-            .copied()
-            .chain(self.inline.iter().copied())
+        self.predicates.iter().copied()
     }
 
     /// Whether every predicate is ready on `probe`, a row carrying every
@@ -145,11 +143,42 @@ pub(super) struct RouteFilters<'a> {
 }
 
 impl<'p> RouteFilters<'p> {
+    /// Split the residual by what each conjunct reads. `shape` carries the
+    /// end node and the spelling: a keyword selector selects first, so its
+    /// clause-level conjuncts all stay the residual's post-filter and only
+    /// the inline predicates filter the search; it needs no pair filter
+    /// either (it never rejects a same-node pair, 51N23). The function and
+    /// expression spellings classify the conjuncts by whether they read
+    /// the path.
     pub(super) fn split(
         path: &'p PathPattern,
-        end: &'p NodePattern,
+        shape: &Shape<'p>,
         residual: &'p Residual<'_>,
     ) -> Self {
+        let scope = residual.scope;
+        let (path_reading, endpoint_only) = if shape.spelling.filters_search_by_clause_where() {
+            Self::classify(path, residual)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        // The two inline predicates — the pattern's own `WHERE` and the
+        // end node's — are one role in the filter, so one list.
+        let mut predicates = path_reading;
+        predicates.extend(path.where_clause.as_deref());
+        predicates.extend(shape.end.where_clause.as_ref());
+        Self {
+            path: (!predicates.is_empty()).then_some(PathFilter { predicates, scope }),
+            pair: (!endpoint_only.is_empty()).then_some(PairFilter {
+                conjuncts: endpoint_only.into_iter().cloned().collect(),
+                scope,
+            }),
+        }
+    }
+
+    /// The residual's conjuncts partitioned into those that read the path
+    /// (the named path variable or a relationship variable) and the
+    /// endpoint-only rest.
+    fn classify(path: &PathPattern, residual: &'p Residual<'_>) -> (Vec<&'p Expr>, Vec<&'p Expr>) {
         // Text render: the carrier set compares against the String variable
         // sets of the filter walk.
         // The IR's one enumeration of the pattern's relationship variables,
@@ -161,33 +190,10 @@ impl<'p> RouteFilters<'p> {
         for name in path.path_names() {
             carriers.insert(name.to_string());
         }
-        let (conjuncts, endpoint_only): (Vec<&Expr>, Vec<&Expr>) =
-            residual.conjuncts.iter().partition(|conjunct| {
-                let mut vars = HashSet::new();
-                expr_vars(conjunct, &mut vars);
-                vars.iter().any(|name| carriers.contains(name.as_str()))
-            });
-        let scope = residual.scope;
-        // The two inline predicates — the pattern's own `WHERE` and the
-        // end node's — are one role in the filter, so one list.
-        let mut inline: Vec<&Expr> = Vec::new();
-        if let Some(where_clause) = path.where_clause.as_deref() {
-            inline.push(where_clause);
-        }
-        if let Some(where_clause) = end.where_clause.as_ref() {
-            inline.push(where_clause);
-        }
-        let path_filter = (!conjuncts.is_empty() || !inline.is_empty()).then_some(PathFilter {
-            conjuncts,
-            inline,
-            scope,
-        });
-        Self {
-            path: path_filter,
-            pair: (!endpoint_only.is_empty()).then_some(PairFilter {
-                conjuncts: endpoint_only.into_iter().cloned().collect(),
-                scope,
-            }),
-        }
+        residual.conjuncts.iter().partition(|conjunct| {
+            let mut vars = HashSet::new();
+            expr_vars(conjunct, &mut vars);
+            vars.iter().any(|name| carriers.contains(name.as_str()))
+        })
     }
 }

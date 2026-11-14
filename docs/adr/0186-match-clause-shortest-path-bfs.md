@@ -255,3 +255,7 @@ above `--max-traversal-depth` (default 500, ceiling 2000). That limit
 applies only to an explicit `max_hops`; the uncapped unbounded `[*]`
 route this ADR describes is unchanged, and remains bounded by the
 relationship count rather than by a hop cap.
+
+ADR-0600: for the keyword selectors, a clause-level `WHERE` that reads the
+path is a post-filter of the selected paths, as this ADR first recorded; the
+function spellings and inline `WHERE`s filter the search.
