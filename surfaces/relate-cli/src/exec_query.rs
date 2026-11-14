@@ -270,7 +270,7 @@ fn exec_relate_query_to(
 #[cfg(test)]
 mod render_failure_tests {
     use super::*;
-    use relate_formatter::Mode;
+    use relate_formatter::{Mode, RowCap};
     use std::io::Write;
 
     /// A writer whose every write fails: a closed stdout, the one way the
@@ -387,10 +387,7 @@ mod render_failure_tests {
         let lines: Vec<&str> = diagnostics.lines().collect();
         assert_eq!(
             lines.first().copied(),
-            Some(
-                "warning: result truncated to 1 rows (the statement returned 2); \
-                 pass --max-rows 0 for all rows, or page with SKIP/LIMIT"
-            ),
+            Some(row_cap::truncation_warning(RowCap { total: 2 }, 1).as_str()),
             "the cap warning goes to the diagnostic writer: {diagnostics:?}"
         );
         assert_eq!(
