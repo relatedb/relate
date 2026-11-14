@@ -6,13 +6,13 @@
 //! their parameters.
 //!
 //! The runner's [`CommitFraming`] policy is the one difference between
-//! import shapes: a `whole-import` extension (like the first-party
-//! `fs-to-graph`) keeps ADR-0157's one explicit transaction around its
-//! whole import, while a `per-batch` one (like `git-to-graph`) commits
-//! each batch as its own transaction (ADR-0392) — one whole-import
-//! transaction would serialise its entire redo as a single WAL record
-//! past the store's 64 MiB payload cap at the history scale ADR-0392's
-//! pair cap admits.
+//! import shapes: a `whole-import` extension keeps one explicit
+//! transaction around its whole import, while a `per-batch` one (both
+//! first-party importers — `git-to-graph`, ADR-0392; `fs-to-graph`,
+//! ADR-0602) commits each batch as its own transaction — one
+//! whole-import transaction would serialise its entire redo as a single
+//! WAL record past the store's 64 MiB payload cap at the scales the
+//! importers' caps admit.
 //!
 //! The framing is generic over the caller's error type — anything the
 //! engine's typed error converts into: the extension host reports its
@@ -28,13 +28,12 @@ use relate_wire::mcp::CommitFacts;
 /// The commit framing a run's policy decides — one vocabulary, the wire
 /// kit's [`CommitFacts`] (ADR-0447 §3): the manifest decodes `commit` into
 /// it, the `initialize` result publishes it, and this trait is the one place
-/// the policy becomes a runner action. A `whole-import` extension (like the
-/// first-party `fs-to-graph`) keeps ADR-0157's one explicit transaction
-/// around its whole import; a `per-batch` one (like `git-to-graph`) commits
-/// each call as its own transaction (ADR-0392) — one whole-import
+/// the policy becomes a runner action. A `whole-import` extension keeps one
+/// explicit transaction around its whole import; a `per-batch` one (both
+/// first-party importers — `git-to-graph`, ADR-0392; `fs-to-graph`,
+/// ADR-0602) commits each call as its own transaction — one whole-import
 /// transaction would serialise its entire redo as a single WAL record past
-/// the store's 64 MiB payload cap at the history scale ADR-0392's pair cap
-/// admits.
+/// the store's 64 MiB payload cap at the scales the importers' caps admit.
 ///
 /// The framing is generic over the caller's error type — anything the
 /// engine's typed error converts into: the extension host reports its own

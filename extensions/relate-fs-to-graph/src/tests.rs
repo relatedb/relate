@@ -359,7 +359,7 @@ fn the_committed_manifest_declares_the_contract_this_child_speaks() {
         manifest.get("wire").is_none(),
         "the manifest carries no wire field: the mount speaks MCP stdio only"
     );
-    assert_eq!(manifest["commit"], "whole-import");
+    assert_eq!(manifest["commit"], relate_wire::PER_BATCH);
     assert_eq!(manifest["positional"]["name"], "DIR");
     assert!(!manifest["requires-fresh-store"].as_bool().unwrap());
     let flags: Vec<(String, &str)> = manifest["flags"]

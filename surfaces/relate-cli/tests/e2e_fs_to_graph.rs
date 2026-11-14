@@ -24,8 +24,11 @@ mod support;
 
 use relate_fs_to_graph::STARTER_QUERIES as FS_STARTERS;
 use relate_test_support::write_file;
+// The statement cap the staged refusal names — the one constant the
+// oversized fixture and its expected refusal text both derive from.
+use relate_wire::MAX_STATEMENT_BYTES;
 
-use support::importers::{fixture, run_import, run_import_memory, run_importer};
+use support::importers::{fixture, fs_counts, run_import, run_import_memory, run_importer};
 use support::{query_count, query_row, tempdir};
 
 #[test]
@@ -412,6 +415,89 @@ fn reimport_drops_stale_content_when_a_file_becomes_oversized() {
             .iter()
             .any(|k| k == "content"),
         "the content property must be removed, not merely null: {row}"
+    );
+}
+
+/// Per-batch failure semantics (ADR-0602, ADR-0392 §3's shape for the fs
+/// importer): a run that fails after a phase's calls committed leaves that
+/// phase's graph in the store — the folders phase lands before the files
+/// phase refuses — and a re-run over the partially imported store completes
+/// it to a clean import's counts.
+///
+/// The staged failure is real and deterministic: a `--max-content-bytes`
+/// above the 8 MiB statement cap makes one file's row too large for any
+/// single `write_cypher` call, so the child's chunker refuses it (a pinned
+/// refusal) after the folders phase's call has already committed under the
+/// per-batch framing. The completion re-run drops back under the statement
+/// cap, so the oversized file imports metadata-only and every row fits.
+#[test]
+fn a_failed_import_keeps_committed_batches_and_a_rerun_completes() {
+    let home = tempdir();
+    let root = tempdir();
+    write_file(&root.path().join("alpha.txt"), b"alpha");
+    // One file whose row cannot fit a single `write_cypher` call: its
+    // size is the wire kit's statement cap plus a MiB of margin, so the
+    // boundary under test reads from the one constant the refusal names —
+    // and the flag below hands the child the file's own size, so the
+    // content is captured (the row built) rather than filtered.
+    let huge_bytes = MAX_STATEMENT_BYTES + 1024 * 1024;
+    write_file(
+        &root.path().join("huge.txt"),
+        &vec![b'x'; huge_bytes as usize],
+    );
+    let cap = huge_bytes.to_string();
+    let db = tempdir();
+    let db_path = db.path().join("graph");
+
+    // One row that cannot fit a call: the import fails with the child's
+    // pinned refusal, exit 1.
+    let (status, stdout, stderr) = run_import(
+        "fs-to-graph",
+        root.path(),
+        &db_path,
+        &["--max-content-bytes", cap.as_str()],
+    );
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert_eq!(
+        stderr.trim(),
+        format!(
+            "Error: the extension child exited with 1: a single row exceeds the \
+             {MAX_STATEMENT_BYTES}-byte statement cap"
+        ),
+        "stderr: {stderr}"
+    );
+
+    // The folders phase committed before the files phase refused: the
+    // walked root is in the store, nothing else is — no files, no
+    // `CONTAINS` edges. Under whole-import this state was [0, 0, 0] — the
+    // whole session rolled back.
+    assert_eq!(
+        fs_counts(home.path(), &db_path),
+        [1, 0, 0],
+        "the committed folders phase stays after the failed run"
+    );
+
+    // A re-run over the partially imported store completes it: MERGE by
+    // path keeps the committed root, adds both files (the oversized one
+    // metadata-only under the default cap) and both CONTAINS edges.
+    let (status, _stdout, stderr) = run_import("fs-to-graph", root.path(), &db_path, &[]);
+    assert!(status.success(), "re-run failed: {stderr}");
+    assert_eq!(
+        fs_counts(home.path(), &db_path),
+        [1, 2, 2],
+        "the completing re-run reaches a clean import's counts"
+    );
+    assert!(
+        query_row(
+            home.path(),
+            &db_path,
+            &[],
+            "MATCH (f:File {name: 'huge.txt'}) RETURN f.size_bytes AS s"
+        )["s"]
+            .as_i64()
+            .is_some(),
+        "the oversized file imports metadata-only on the completing re-run"
     );
 }
 

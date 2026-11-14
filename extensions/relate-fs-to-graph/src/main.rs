@@ -3,8 +3,8 @@
 //! the resolved flag values the host parsed from the committed manifest's
 //! flag table — and its whole output is the MCP session it drives as the
 //! client: the `initialize` handshake, the three write phases as
-//! `write_cypher` calls with their rows, the post-commit `file_content`
-//! index as one `update_schema`, and the run's summary through
+//! `write_cypher` calls with their rows, the `file_content` index as one
+//! `update_schema` after the write phases, and the run's summary through
 //! `report_output`.
 //!
 //! It carries no `Database` and never touches a store (ADR-0447 §4): the

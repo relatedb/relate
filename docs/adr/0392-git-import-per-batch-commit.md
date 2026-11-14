@@ -2,7 +2,7 @@
 
 Status: Accepted
 Claim: e65df3fdb2494c37856798c44e5915fde785ff0f
-Later references: ADR-0394 adds the fresh-store `CREATE` edge statements on top of this ADR's batch design — a store with no nodes writes `CREATE` (the rows are distinct by construction), every populated store keeps this ADR's `MERGE` path and its re-run completion.
+Later references: ADR-0394 adds the fresh-store `CREATE` edge statements on top of this ADR's batch design — a store with no nodes writes `CREATE` (the rows are distinct by construction), every populated store keeps this ADR's `MERGE` path and its re-run completion. ADR-0602 moves fs-to-graph onto this ADR's per-batch framing, superseding this ADR's consequence that kept fs-to-graph on whole-import and its rollback.
 
 ## Context
 
