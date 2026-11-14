@@ -11,6 +11,19 @@ use crate::hash_seed::IdMap;
 
 use super::{unique_rels, Search};
 
+impl Search<'_, '_> {
+    /// The pair answer as trails: every shortest trail for an all-path
+    /// search (`all`), the one [`pair`] picks (or none) otherwise. Order
+    /// unspecified for the all-path form. Same precondition as [`pair`].
+    pub(crate) fn pair_trails(&self, start: NodeId, end: NodeId) -> Result<Vec<Vec<RelId>>> {
+        if self.all {
+            self.all_shortest_trails(start, end)
+        } else {
+            Ok(pair(self, start, end)?.into_iter().collect())
+        }
+    }
+}
+
 /// One shortest trail from `start` to `end`, start first, of length 1 to
 /// `max`; `None` when there is none. The only home of the dispatch rule:
 /// the shallow intersection for a directed pattern with `min` 1 and `max`
@@ -20,7 +33,7 @@ use super::{unique_rels, Search};
 /// shortest length is always a trail, which the bidirectional search's stop
 /// rule relies on; closed trails go to [`Search::closed`] and larger
 /// minimums to enumeration (ADR-0189).
-pub(crate) fn pair(s: &Search<'_, '_>, start: NodeId, end: NodeId) -> Result<Option<Vec<RelId>>> {
+pub(super) fn pair(s: &Search<'_, '_>, start: NodeId, end: NodeId) -> Result<Option<Vec<RelId>>> {
     debug_assert!(
         start != end && s.min <= 1,
         "pair search needs distinct ends and min_hops <= 1"
