@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-11-14
+
 ### Added
 
 - Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
@@ -89,8 +91,9 @@ First release of Relate — the embedded, in-memory property graph engine
 with an openCypher query contract, WAL + snapshot durability, and Bolt
 serving. See the README for the full surface list.
 
-[Unreleased]: https://github.com/relatedb/relate/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/relatedb/relate/compare/v1.0.2...HEAD
 
+[1.0.2]: https://github.com/relatedb/relate/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/relatedb/relate/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/relatedb/relate/compare/v0.1.3...v1.0.0
 [0.1.3]: https://github.com/relatedb/relate/compare/v0.1.2...v0.1.3
