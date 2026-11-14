@@ -29,44 +29,41 @@ jobs:
             relate-benchmarks-private/.cache/engines
             relate-benchmarks-private/.cache/bench-env
             relate-benchmarks-private/.cache/pkc/stores
-          key: rca1655-v1-${{ github.event.pull_request.head.sha }}
-          restore-keys: rca1655-v1-
-      - name: Fetch, build before engine, load store
+          key: rca1655-v3-${{ github.event.pull_request.head.sha }}
+          restore-keys: |
+            rca1655-v3-
+            rca1655-v1-
+      - name: Ensure engine and store (cache normally hits)
         working-directory: relate-benchmarks-private/benchmarks/pokec
         env:
           RELATE_SRC: ${{ github.workspace }}/relate
-          BEFORE_REV: 39a9b627c63fd3b2cfdec0c1e0428f98e01fbc17
         run: |
-          ./run.sh fetch || true
-          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev "$BEFORE_REV" || true
-          ./run.sh load --relate-src "$RELATE_SRC" --relate-rev "$BEFORE_REV" 2>&1 | grep -v -i "token" | tail -5
-          ls ../../.cache/engines/*/relate | xargs realpath > ../../../engines-before.txt
-          cat ../../../engines-before.txt
-      - name: Build after engine
-        working-directory: relate-benchmarks-private/benchmarks/pokec
-        env:
-          RELATE_SRC: ${{ github.workspace }}/relate
-          AFTER_REV: ${{ github.event.pull_request.head.sha }}
-        run: |
-          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev "$AFTER_REV" 2>&1 | tail -3 || true
-          ls ../../.cache/engines/*/relate | xargs realpath > ../../../engines-after.txt
-          cat ../../../engines-after.txt
-      - name: Measure
-        env:
-          RCA_TIMEOUT: '330'
-          RCA_PLAN: '{"before":[16,17,18,23,24,25,26,27,29,32,34,19,20,33,28],"after":[16,17,18,23,24,25,26,27,28,29,32,34,19,20,33]}'
+          ls -d ../../.cache/engines/*/ ../../.cache/pkc/stores/*/ || true
+          if ! ls ../../.cache/engines/1.0.2-gf6589cb/relate >/dev/null 2>&1 || ! ls -d ../../.cache/pkc/stores/relate-*-pokec/graph.rl >/dev/null 2>&1; then
+            ./run.sh fetch || true
+            ./run.sh env --relate-src "$RELATE_SRC" --relate-rev f6589cbd75208a92a4755ccf91c083c27369badf || true
+            ./run.sh load --relate-src "$RELATE_SRC" --relate-rev f6589cbd75208a92a4755ccf91c083c27369badf 2>&1 | grep -v -i token | tail -3
+          fi
+      - name: Time q28 and q27 in-process (no perf, no sudo)
         run: |
           B=relate-benchmarks-private
-          NEWENG=$(comm -13 <(sort engines-before.txt) <(sort engines-after.txt) | head -1)
-          OLDENG=$(head -1 engines-before.txt)
-          echo "before=$OLDENG after=$NEWENG"
-          test -n "$NEWENG"
-          STORE=$(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1)
-          python3 -I relate/.rca/measure.py "$(realpath $OLDENG)" "$(realpath $NEWENG)" "$(realpath $STORE)" "$(realpath $B/benchmarks/pokec/queries)" "$(realpath rca-out)" 2>&1 | tail -60
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: rca-1655
-          path: |
-            rca-out/results.json
-          retention-days: 7
+          CLI=$(realpath $B/.cache/engines/1.0.2-gf6589cb/relate)
+          STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
+          mkdir -p rca-out
+          for n in 28 27 28; do
+            rm -rf "$STORE.t.rl"; cp "$STORE" "$STORE.t.rl"
+            { echo ".timer on"; grep -v '^//' $B/benchmarks/pokec/queries/q$n.cypher; } > q.cypher
+            echo "=== q$n (comment lines stripped)"; cat q.cypher | head -8
+            RELATE_MAX_ROWS=0 /usr/bin/time -v timeout -s KILL 400 "$CLI" query --mode jsonl -d "$STORE.t.rl" < q.cypher > rca-out/t$n.out 2> rca-out/t$n.err || echo "rc=$?"
+            grep -E "Elapsed|User time|System time|Maximum resident|Exit status" rca-out/t$n.err
+            grep -iE "elapsed_ms|execute_ms|timer|planCache" rca-out/t$n.err rca-out/t$n.out | head -6
+            head -c 400 rca-out/t$n.out; echo
+            rm -rf "$STORE.t.rl"
+          done
+      - name: Baseline RETURN 1
+        run: |
+          B=relate-benchmarks-private
+          CLI=$(realpath $B/.cache/engines/1.0.2-gf6589cb/relate)
+          STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
+          cp "$STORE" "$STORE.b.rl"
+          printf '.timer on\nRETURN 1 AS x;\n' | RELATE_MAX_ROWS=0 /usr/bin/time -v "$CLI" query --mode jsonl -d "$STORE.b.rl" 2>&1 | grep -E "Elapsed|User time|System time|Maximum resident|elapsed_ms"
