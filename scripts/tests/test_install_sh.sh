@@ -49,6 +49,20 @@ installer_literal() { # $1 = variable name
 	sed -n "s/^$1='\\(.*\\)'\$/\\1/p" "$INSTALLER"
 }
 
+# The one extraction idiom for a Rust `const NAME: &str = "VALUE";`
+# declaration (an optional `pub(crate) ` visibility prefix): the value,
+# empty when the constant is absent.
+rust_str_const() { # $1 = constant name, $2 = file
+	sed -n "s/^\(pub(crate) \)\{0,1\}const $1: &str = \"\(.*\)\";\$/\2/p" "$2"
+}
+
+# The one extraction idiom for install.sh's override seams: the env var
+# name in a `VAR=${ENV:-$CONST}` assignment line, empty when the seam is
+# absent.
+installer_override_env() { # $1 = install.sh variable, $2 = its default constant
+	sed -n "s/^$1=\${\([A-Z_]*\):-\$$2}\$/\1/p" "$INSTALLER"
+}
+
 # The pinned SIGNING_KEY in install.sh must match the canonical public key
 # committed at distribution/release-signing-key.pub; a release that rotates one
 # without the other breaks verification for every user.
@@ -75,8 +89,7 @@ assert_same "drift guard: install.sh's LEGACY_MANIFEST_CEILING matches manifest.
 # carries, and install.sh's case pattern must match the header through that
 # one variable rather than a re-spelled literal.
 installer_prefix=$(installer_literal SUMS_VERSION_PREFIX)
-rust_prefix=$(sed -n 's/^const SUMS_VERSION_PREFIX: &str = "\(.*\)";$/\1/p' \
-	"$manifest_rs")
+rust_prefix=$(rust_str_const SUMS_VERSION_PREFIX "$manifest_rs")
 release_prefix=$(sed -n "s/^[[:space:]]*printf '\(.*\)%s\\\\n'.*> SHA256SUMS\$/\1/p" \
 	"$ROOT/.github/workflows/release.yml")
 assert_same "drift guard: the ADR-0457 sums header prefix is one literal in install.sh, manifest.rs, release.yml and the harness fixture" \
@@ -92,8 +105,7 @@ tap_check "drift guard: install.sh matches the header through the shared prefix"
 # different metadata sources.
 releases_rs="$ROOT/surfaces/relate-cli/src/upgrade_cmd/releases_json.rs"
 installer_releases_url=$(installer_literal RELEASES_JSON_URL)
-rust_releases_url=$(sed -n "s/^const RELEASES_JSON_URL: &str = \"\\(.*\\)\";\$/\\1/p" \
-	"$releases_rs")
+rust_releases_url=$(rust_str_const RELEASES_JSON_URL "$releases_rs")
 assert_same "drift guard: install.sh's RELEASES_JSON_URL matches releases_json.rs (ADR-0571)" \
 	"$installer_releases_url" "$rust_releases_url"
 
@@ -101,10 +113,8 @@ assert_same "drift guard: install.sh's RELEASES_JSON_URL matches releases_json.r
 # releases_json.rs reads it through RELEASES_JSON_URL_ENV and install.sh
 # references it on the metadata_url line — one spelling, held equal here
 # so the two consumers cannot drift onto different seam names.
-rust_releases_env=$(sed -n 's/^const RELEASES_JSON_URL_ENV: &str = "\(.*\)";$/\1/p' \
-	"$releases_rs")
-installer_releases_env=$(sed -n 's/^metadata_url=${\([A-Z_]*\):-\$RELEASES_JSON_URL}$/\1/p' \
-	"$INSTALLER")
+rust_releases_env=$(rust_str_const RELEASES_JSON_URL_ENV "$releases_rs")
+installer_releases_env=$(installer_override_env metadata_url RELEASES_JSON_URL)
 assert_same "drift guard: install.sh's override env var matches releases_json.rs (ADR-0571)" \
 	"$rust_releases_env" "$installer_releases_env"
 
@@ -126,7 +136,7 @@ tap_check "drift guard: install.sh consults no GitHub API endpoint (ADR-0585)" $
 # the installer's base follows.
 route_rs="$ROOT/surfaces/relate-cli/src/release_channel/download_route.rs"
 channel_rs="$ROOT/surfaces/relate-cli/src/release_channel/mod.rs"
-repo_slug=$(sed -n 's/^pub(crate) const REPO: &str = "\(.*\)";$/\1/p' "$channel_rs")
+repo_slug=$(rust_str_const REPO "$channel_rs")
 installer_download_base=$(installer_literal DOWNLOAD_BASE)
 rust_base_template=$(sed -n 's|.*format!("\([^"]*\)/{repo}/releases/download").*|\1|p' "$route_rs")
 assert_same "drift guard: install.sh's DOWNLOAD_BASE matches download_route.rs's canonical base (ADR-0585)" \
@@ -136,9 +146,8 @@ assert_same "drift guard: install.sh's DOWNLOAD_BASE matches download_route.rs's
 # reads it through DOWNLOAD_URL_ENV and install.sh references it on the
 # download_base line — one spelling, held equal here so the two
 # consumers cannot drift onto different seam names.
-rust_download_env=$(sed -n 's/^const DOWNLOAD_URL_ENV: &str = "\(.*\)";$/\1/p' "$route_rs")
-installer_download_env=$(sed -n 's/^download_base=${\([A-Z_]*\):-\$DOWNLOAD_BASE}$/\1/p' \
-	"$INSTALLER")
+rust_download_env=$(rust_str_const DOWNLOAD_URL_ENV "$route_rs")
+installer_download_env=$(installer_override_env download_base DOWNLOAD_BASE)
 assert_same "drift guard: install.sh's override env var matches download_route.rs (ADR-0585)" \
 	"$rust_download_env" "$installer_download_env"
 
@@ -224,8 +233,6 @@ grep -qF "$installer_download_base/$TEST_TAG/relate-darwin-arm64" "$RUN_LOG"
 tap_check "Darwin/arm64: downloads relate-darwin-arm64 over the direct route" $?
 ! grep -qF "$installer_download_base/$TEST_TAG/relate-linux-amd64" "$RUN_LOG"
 tap_check "Darwin/arm64: does not download the linux-amd64 asset" $?
-[ "$(api_call_count)" -eq 0 ]
-tap_check "Darwin/arm64: no GitHub API request anywhere in the install" $?
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
 tap_check "Darwin/arm64: installed content is the darwin-arm64 fixture" $?
 
@@ -308,24 +315,28 @@ install_run token-set
 tap_check "token set: installer exits 0 — the token is not read" $?
 ! grep -q "Authorization" "$RUN_LOG"
 tap_check "token set: no Authorization header anywhere (GITHUB_TOKEN never rides a request)" $?
-[ "$(api_call_count)" -eq 0 ]
-tap_check "token set: no GitHub API request — the token selects nothing" $?
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
 tap_check "token set: installs the fixture binary" $?
 
 # --- 2a. Direct-route failures --------------------------------------------------
 #
 # The one assertion shape every installer-failure case shares: the
-# installer dies non-zero, its stderr carries the case's needle, and
-# nothing lands at the install path. Each case keeps only what is
-# specific to it beside the call — the sibling of
-# assert_resolution_failure below, serving section 2a's route failures
-# and section 3b/3b''s verification and version-binding failures alike.
-assert_download_failure() { # $1 = case label, $2 = stderr needle
+# installer dies non-zero and its stderr carries the case's needle (the
+# authored failure message, matched as a fixed string). Each section wraps
+# it with its own postcondition — assert_download_failure here,
+# assert_resolution_failure in section 5 — and each case keeps only what
+# is specific to it beside the call.
+assert_install_failure() { # $1 = case label, $2 = stderr needle
 	[ "$RUN_STATUS" -ne 0 ]
 	tap_check "$1: installer dies non-zero" $?
 	grep -qF "$2" "$RUN_ERR"
 	tap_check "$1: stderr carries the expected message" $?
+}
+
+# A direct-route failure: the shared shape plus nothing landing at the
+# install path.
+assert_download_failure() { # $1 = case label, $2 = stderr needle
+	assert_install_failure "$1" "$2"
 	[ ! -e "$RUN_HOME/.local/bin/relate" ]
 	tap_check "$1: nothing installed" $?
 }
@@ -338,8 +349,6 @@ assert_download_failure \
 	"GET $installer_download_base/$TEST_TAG/SHA256SUMS: http status: 404"
 [ "$(direct_call_count)" -eq 1 ]
 tap_check "manifest 404: only the manifest request was made" $?
-[ "$(api_call_count)" -eq 0 ]
-tap_check "manifest 404: no GitHub API request — there is no fallback" $?
 
 reset_case
 STUB_MODE=sums_403
@@ -349,8 +358,6 @@ assert_download_failure \
 	"GET $installer_download_base/$TEST_TAG/SHA256SUMS: http status: 403"
 ! grep -qF "private" "$RUN_ERR"
 tap_check "manifest 403 (rate-limit shape): no private-repository advice — that is not the failure" $?
-[ "$(api_call_count)" -eq 0 ]
-tap_check "manifest 403 (rate-limit shape): no GitHub API request" $?
 
 reset_case
 STUB_MODE=sig_404
@@ -392,7 +399,7 @@ install_run download-url-override-http
 assert_download_failure \
 	"download URL override, http scheme" \
 	"RELATE_RELEASE_DOWNLOAD_URL must be an https:// URL"
-[ "$(direct_call_count)" -eq 0 ] && [ "$(api_call_count)" -eq 0 ]
+[ "$(direct_call_count)" -eq 0 ]
 tap_check "download URL override, http scheme: no request of any kind is attempted" $?
 ! grep -qF "$installer_releases_url" "$RUN_LOG"
 tap_check "download URL override, http scheme: not even the metadata fetch runs — the gate precedes every request" $?
@@ -403,7 +410,7 @@ install_run download-url-override-loopback
 assert_download_failure \
 	"download URL override, loopback http (the CLI seam's dev carve-out)" \
 	"RELATE_RELEASE_DOWNLOAD_URL must be an https:// URL"
-[ "$(direct_call_count)" -eq 0 ] && [ "$(api_call_count)" -eq 0 ]
+[ "$(direct_call_count)" -eq 0 ]
 tap_check "download URL override, loopback http: the installer's https-only narrowing is deliberate — refused before any request" $?
 reset_case
 RELATE_RELEASE_DOWNLOAD_URL=
@@ -427,8 +434,6 @@ cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
 tap_check "happy path: installed content matches the fixture" $?
 [ "$(ls -A "$RUN_HOME/.local/bin")" = "relate" ]
 tap_check "happy path: bin dir holds exactly the installed binary (no temp leftovers)" $?
-[ "$(api_call_count)" -eq 0 ]
-tap_check "happy path: zero GitHub API requests — a shared-IP rate limit cannot break the install" $?
 grep -q '^-Y$' "$RUN_KEYGEN_LOG" && grep -q '^verify$' "$RUN_KEYGEN_LOG" &&
 	grep -qxF "$INSTALLER_SIGNER" "$RUN_KEYGEN_LOG"
 tap_check "happy path: ssh-keygen -Y verify ran under the relate-release identity" $?
@@ -585,51 +590,44 @@ tap_check "ssh-keygen absent: no download is attempted" $?
 # --- 3c. Real ssh-keygen roundtrip ---------------------------------------------
 # The keypair, signing and patched-installer machinery lives in the harness
 # (build_real_roundtrip_fixtures); these cases only assert over its result.
+# The seven checks' descriptions are spelled once, in the list below, and
+# the one probe branch drives both arms off them: the run arm asserts under
+# $1..$7 in order, the skip arm skips the same list.
 
-build_real_roundtrip_fixtures
+set -- \
+	"real ssh-keygen: patched copy differs only in the SIGNING_KEY line" \
+	"real ssh-keygen: installer exits 0 with a real signature" \
+	"real ssh-keygen: installed content matches the fixture" \
+	"real ssh-keygen: stub ssh-keygen was not invoked" \
+	"real ssh-keygen, wrong signer key: installer dies non-zero" \
+	"real ssh-keygen, wrong signer key: error mentions signature verification" \
+	"real ssh-keygen, wrong signer key: nothing installed"
 
-# Case 1: the patched copy differs from the shipped installer in exactly
-# the SIGNING_KEY line. Each case spells its descriptions once (the d_
-# variables) and skips under them when the probe failed.
-d_patch="real ssh-keygen: patched copy differs only in the SIGNING_KEY line"
-if [ -n "$real_roundtrip" ]; then
+if build_real_roundtrip_fixtures; then
+	# Case 1: the patched copy differs from the shipped installer in
+	# exactly the SIGNING_KEY line.
 	[ "$(diff "$INSTALLER" "$patched_installer" | grep -c '^[<>]')" -eq 2 ]
-	tap_check "$d_patch" $?
-else
-	skip_real_case "$d_patch"
-fi
-
-# Case 2: a real signature verifies and installs.
-d_ok_status="real ssh-keygen: installer exits 0 with a real signature"
-d_ok_content="real ssh-keygen: installed content matches the fixture"
-d_ok_stub="real ssh-keygen: stub ssh-keygen was not invoked"
-if [ -n "$real_roundtrip" ]; then
+	tap_check "$1" $?
+	# Case 2: a real signature verifies and installs.
 	real_install_run real-sig-ok "$real_fixtures"
 	[ "$RUN_STATUS" -eq 0 ]
-	tap_check "$d_ok_status" $?
+	tap_check "$2" $?
 	cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-	tap_check "$d_ok_content" $?
+	tap_check "$3" $?
 	[ ! -s "$RUN_KEYGEN_LOG" ]
-	tap_check "$d_ok_stub" $?
-else
-	skip_real_case "$d_ok_status" "$d_ok_content" "$d_ok_stub"
-fi
-
-# Case 3: the second key's own fixture tree fails closed — verification
-# against the first key must reject its differently-signed manifest.
-d_wrong_status="real ssh-keygen, wrong signer key: installer dies non-zero"
-d_wrong_err="real ssh-keygen, wrong signer key: error mentions signature verification"
-d_wrong_installed="real ssh-keygen, wrong signer key: nothing installed"
-if [ -n "$real_roundtrip" ]; then
+	tap_check "$4" $?
+	# Case 3: the second key's own fixture tree fails closed —
+	# verification against the first key must reject its
+	# differently-signed manifest.
 	real_install_run real-sig-wrong-key "$wrong_fixtures"
 	[ "$RUN_STATUS" -ne 0 ]
-	tap_check "$d_wrong_status" $?
+	tap_check "$5" $?
 	grep -q "signature verification failed" "$RUN_ERR"
-	tap_check "$d_wrong_err" $?
+	tap_check "$6" $?
 	[ ! -e "$RUN_HOME/.local/bin/relate" ]
-	tap_check "$d_wrong_installed" $?
+	tap_check "$7" $?
 else
-	skip_real_case "$d_wrong_status" "$d_wrong_err" "$d_wrong_installed"
+	skip_real_case "$@"
 fi
 
 # --- 4. Checksum failure --------------------------------------------------------
@@ -648,17 +646,13 @@ tap_check "checksum fail: no temp names left in the bin dir" $?
 
 # --- 5. Resolution failure ------------------------------------------------------
 
-# The one assertion shape every resolution-failure case shares: the
-# installer dies non-zero, its stderr carries the case's needle (the
-# authored failure message, matched as a fixed string), and no download
-# is attempted — resolution dies before any request beyond the metadata
-# fetch. Each case keeps only what is specific to it beside this call.
+# A resolution failure: the shared shape (assert_install_failure, section
+# 2a) plus no download attempted — resolution dies before any request
+# beyond the metadata fetch. Each case keeps only what is specific to it
+# beside this call.
 assert_resolution_failure() { # $1 = case label, $2 = stderr needle
-	[ "$RUN_STATUS" -ne 0 ]
-	tap_check "$1: installer dies non-zero" $?
-	grep -qF "$2" "$RUN_ERR"
-	tap_check "$1: stderr carries the authored failure message" $?
-	[ "$(direct_call_count)" -eq 0 ] && [ "$(api_call_count)" -eq 0 ]
+	assert_install_failure "$1" "$2"
+	[ "$(direct_call_count)" -eq 0 ]
 	tap_check "$1: no download is attempted" $?
 }
 
@@ -695,6 +689,13 @@ assert_resolution_failure \
 	"is not a vX.Y.Z release tag"
 
 # --- 6. Cleanliness -------------------------------------------------------------
+
+# The installer consults no GitHub API endpoint (ADR-0585): the section-0
+# static guard pins its spelling and the stub's unexpected-URL arm fails any
+# API request loudly, so one assertion over every case's curl log covers the
+# whole run instead of a per-case repeat.
+! grep -q 'api\.github\.com' "$sandbox"/curl-*.log
+tap_check "no case made a GitHub API request (ADR-0585)" $?
 
 [ -z "$(ls -A "$itmp")" ]
 tap_check "cleanliness: installer temp dirs removed (TMPDIR empty after all runs)" $?
