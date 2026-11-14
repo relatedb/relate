@@ -24,14 +24,25 @@ jobs:
         run: |
           sudo apt-get update -qq; sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-azure 2>&1 | tail -1 || true
           sudo sysctl kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0 || true
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache@v4
         id: cache
         with:
           path: |
             relate-benchmarks-private/.cache/engines
             relate-benchmarks-private/.cache/bench-env
             relate-benchmarks-private/.cache/pkc/stores
-          key: perf1654-v1
+          key: perf1654-v2
+      - name: Fetch, build both engines, load
+        working-directory: relate-benchmarks-private/benchmarks/pokec
+        env:
+          RELATE_SRC: ${{ github.workspace }}/relate
+        run: |
+          echo "cache-hit=${{ steps.cache.outputs.cache-hit }}"
+          if [ "${{ steps.cache.outputs.cache-hit }}" != true ]; then ./run.sh fetch; fi
+          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev 39a9b627 || true
+          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev 657aac43 || true
+          ./run.sh load --relate-src "$RELATE_SRC" --relate-rev 657aac43 2>&1 | grep -v -i "token" | tail -3
+          ls ../../.cache/engines ../../.cache/pkc/stores
       - name: Wall vs CPU per process
         run: |
           B=relate-benchmarks-private
