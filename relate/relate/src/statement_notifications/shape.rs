@@ -21,30 +21,58 @@ use relate_model::wire::{Notification, NotificationKind};
 use super::collect_label_names;
 use crate::plan_node::patterns_share_an_anchor;
 
-/// The statement-shape checks' shared work budget, in pair comparisons.
+/// The statement-shape checks' work budget, in pair comparisons.
 ///
-/// Two detectors cost the product of two attacker-widenable dimensions: the
-/// type-expression satisfiability check tries every named type against the
-/// whole expression (names × expression nodes), and the complex-reference
-/// check tests every visited expression node against every projection item
-/// (nodes × items). Both products are quadratic in a statement's width, and
-/// the parser caps nesting depth, not width; a crafted `EXPLAIN` statement
-/// within the transport's statement cap would otherwise spin for hours while
-/// the per-query cancellation token goes unobserved by the tight loop.
+/// Three detector families cost the product of two attacker-widenable
+/// dimensions: the type-expression satisfiability check (names x expression
+/// nodes), the complex-reference check (nodes x projection items), and the
+/// scans over created names, shadowing aliases and subquery name sets. The
+/// parser caps nesting depth, not width, and these tight loops never
+/// observe the per-query cancellation token, so a crafted `EXPLAIN`
+/// statement within the transport's statement cap would otherwise spin for
+/// hours.
 ///
-/// Past this budget a detector declines the check and emits nothing. A
-/// missed deprecation hint is the conservative direction — the notification
-/// is advisory — and the decline is silent by construction: the detectors
-/// return before appending. The bound sits above realistic statements (a
-/// 2000-item projection ordered by a 2000-element list is ~8M) and well
+/// The policy, stated once: every detector here raises an advisory
+/// deprecation hint only, never a correctness notification, so silence is
+/// the conservative direction. A detector that cannot afford its scan
+/// declines it and emits nothing. The bound sits above realistic statements
+/// (a 2000-item projection ordered by a 2000-element list is ~8M) and well
 /// below the pathological widths the statement cap admits (~10^12).
 const SHAPE_CHECK_WORK_BUDGET: u64 = 16 * 1024 * 1024;
 
-/// Whether a detector may spend `units` pair comparisons, or must decline
-/// the check silently. One policy for every shape detector, so the bound
-/// cannot drift between them.
-fn within_work_budget(units: u64) -> bool {
-    units <= SHAPE_CHECK_WORK_BUDGET
+/// The one work meter of a statement's shape pass. It is threaded through
+/// every detector that scans a product of two statement dimensions, so the
+/// bound is a property of the pass: the budget is shared across detectors
+/// and a new detector must take the meter to scan at all.
+pub(super) struct WorkMeter {
+    remaining: u64,
+}
+
+impl Default for WorkMeter {
+    fn default() -> Self {
+        Self {
+            remaining: SHAPE_CHECK_WORK_BUDGET,
+        }
+    }
+}
+
+impl WorkMeter {
+    /// Spend `units` pair comparisons, or return `false` (spending
+    /// nothing) when the pass cannot afford them and the detector must
+    /// decline its scan silently.
+    fn charge(&mut self, units: u64) -> bool {
+        if units > self.remaining {
+            return false;
+        }
+        self.remaining -= units;
+        true
+    }
+
+    /// [`Self::charge`] for the product of two statement dimensions, the
+    /// one shape every detector spends in.
+    fn charge_pairs(&mut self, a: u64, b: usize) -> bool {
+        self.charge(a.saturating_mul(u64::try_from(b).unwrap_or(u64::MAX)))
+    }
 }
 
 /// The `MATCH`-shape notifications: a nested multi-pattern cartesian (the
@@ -53,6 +81,7 @@ fn within_work_budget(units: u64) -> bool {
 /// exhaustive-shortest-path predicate.
 pub(super) fn observe_match(
     notifications: &mut Vec<Notification>,
+    meter: &mut WorkMeter,
     patterns: &[PathPattern],
     where_clause: Option<&Expr>,
     nested: bool,
@@ -75,7 +104,7 @@ pub(super) fn observe_match(
                 *repeated.entry(variable.to_string()).or_default() += 1;
             }
             if let Some(expression) = &rel.type_expr {
-                if type_expression_unsatisfiable(expression) {
+                if type_expression_unsatisfiable(expression, meter) {
                     notifications.push(Notification::new(
                         NotificationKind::UnsatisfiableRelationshipTypeExpression,
                         "The relationship type expression cannot be satisfied because \
@@ -169,7 +198,11 @@ impl ExhaustivePredicateVars {
 /// any entity created in this clause reading another (or the same) entity
 /// created in the same clause. One notification per (referencing property
 /// expression, referenced entity) pair.
-pub(super) fn observe_create(notifications: &mut Vec<Notification>, patterns: &[PathPattern]) {
+pub(super) fn observe_create(
+    notifications: &mut Vec<Notification>,
+    meter: &mut WorkMeter,
+    patterns: &[PathPattern],
+) {
     // One post-rewrite walk collects both facts the scan needs: the created
     // names and the property maps that may read them.
     let mut created: BTreeSet<String> = BTreeSet::new();
@@ -199,7 +232,7 @@ pub(super) fn observe_create(notifications: &mut Vec<Notification>, patterns: &[
     // with a wide property map and many created entities cannot pin a core
     // before execution.
     let values: u64 = property_maps.iter().map(|items| items.len() as u64).sum();
-    if !within_work_budget(values.saturating_mul(created.len() as u64)) {
+    if !meter.charge_pairs(values, created.len()) {
         return;
     }
     for items in property_maps {
@@ -236,6 +269,7 @@ pub(super) fn observe_create(notifications: &mut Vec<Notification>, patterns: &[
 /// the pre-projection scope.
 pub(super) fn observe_projection(
     notifications: &mut Vec<Notification>,
+    meter: &mut WorkMeter,
     items: &[Projection],
     order: &[OrderItem],
     where_clause: Option<&Expr>,
@@ -280,9 +314,9 @@ pub(super) fn observe_projection(
     // scan tests: declined past the shared budget, while the complex-reference
     // pass below keeps its own guard. One wide dimension therefore never
     // silences the other family.
-    let shadowing_scan = within_work_budget(
-        (order.len() as u64 + u64::from(where_clause.is_some()))
-            .saturating_mul(shadowing.len() as u64),
+    let shadowing_scan = meter.charge_pairs(
+        order.len() as u64 + u64::from(where_clause.is_some()),
+        shadowing.len(),
     );
     for expr in order.iter().map(|item| &item.expr).chain(where_clause) {
         let bare_alias = matches!(expr, Expr::Variable(variable)
@@ -303,10 +337,12 @@ pub(super) fn observe_projection(
                 }
             }
         }
-        if complex.is_empty() {
-            continue;
-        }
-        for (index, item) in complex_references(expr, &complex) {
+    }
+    if complex.is_empty() {
+        return;
+    }
+    for expr in order.iter().map(|item| &item.expr).chain(where_clause) {
+        for (index, item) in complex_references(meter, expr, &complex) {
             let text = item
                 .source_text
                 .clone()
@@ -343,7 +379,11 @@ pub(super) fn observe_projection(
 /// same `CALL` shape shadowing an enclosing-statement name raises nothing).
 /// Every such body is therefore analysed with a fresh frame, wherever it
 /// sits, including inside another expression subquery's body.
-pub(super) fn observe_subquery_scopes(notifications: &mut Vec<Notification>, parts: &[&[Clause]]) {
+pub(super) fn observe_subquery_scopes(
+    notifications: &mut Vec<Notification>,
+    meter: &mut WorkMeter,
+    parts: &[&[Clause]],
+) {
     // The per-subquery work scales with the statement-wide name set (a
     // wildcard import clones it): declined past the shared budget, like the
     // sibling detectors. The SEARCH family stays checked — its cost is per
@@ -368,7 +408,7 @@ pub(super) fn observe_subquery_scopes(notifications: &mut Vec<Notification>, par
         );
     }
     subqueries += expression_bodies.len() as u64;
-    let subquery_scan = within_work_budget(subqueries.saturating_mul(declared.len() as u64));
+    let subquery_scan = meter.charge_pairs(subqueries, declared.len());
     // A UNION arm and a `NEXT` stage are independent statements: each is its
     // own clause list, so neither sees the other's names.
     for part in parts {
@@ -662,7 +702,7 @@ fn is_complex_projection_item(expr: &Expr) -> bool {
 /// (expression, item) pair.
 ///
 /// The walk's cost is nodes × items, so it declines once that product passes
-/// [`SHAPE_CHECK_WORK_BUDGET`]: a wide projection ordered by a wide
+/// [`WorkMeter`]: a wide projection ordered by a wide
 /// expression would otherwise pin a core, and a partial answer (some
 /// references reported) would be no more truthful than none.
 ///
@@ -675,6 +715,7 @@ fn is_complex_projection_item(expr: &Expr) -> bool {
 /// the same expression reaches this check as a structural copy rather than a
 /// shared node.
 fn complex_references<'a>(
+    meter: &mut WorkMeter,
     expr: &Expr,
     candidates: &[(usize, &'a Projection)],
 ) -> Vec<(usize, &'a Projection)> {
@@ -688,7 +729,7 @@ fn complex_references<'a>(
     for child in expr.children() {
         child.visit(&mut |_| nodes += 1);
     }
-    if !within_work_budget(nodes.saturating_mul(candidates.len() as u64)) {
+    if !meter.charge_pairs(nodes, candidates.len()) {
         return Vec::new();
     }
     let mut matched = vec![false; candidates.len()];
@@ -716,13 +757,13 @@ fn complex_references<'a>(
 /// The check tries every candidate type against the whole expression, so its
 /// cost is candidates × expression nodes. Every candidate can fail — that is
 /// what an unsatisfiable expression is — so nothing short-circuits. Past
-/// [`SHAPE_CHECK_WORK_BUDGET`] the check declines (returns `false`, emitting
+/// [`WorkMeter`] the check declines (returns `false`, emitting
 /// no notification): a wide crafted conjunction must not pin a core.
-fn type_expression_unsatisfiable(expr: &LabelExpr) -> bool {
+fn type_expression_unsatisfiable(expr: &LabelExpr, meter: &mut WorkMeter) -> bool {
     let mut names = BTreeSet::new();
     collect_label_names(expr, &mut names);
-    let candidates = names.len() as u64 + 1;
-    if !within_work_budget(candidates.saturating_mul(label_expression_size(expr) as u64)) {
+    let candidate_count = names.len() as u64 + 1;
+    if !meter.charge_pairs(candidate_count, label_expression_size(expr)) {
         return false;
     }
     let mut candidates: Vec<Option<&str>> = names.iter().map(|name| Some(name.as_str())).collect();

@@ -156,7 +156,7 @@ pub(crate) fn statement_notifications(
         part_clauses.push(group);
     });
     let mut facts = Facts::default();
-    shape::observe_subquery_scopes(&mut facts.notifications, &parts);
+    shape::observe_subquery_scopes(&mut facts.notifications, &mut facts.meter, &parts);
     // One typed-index snapshot per statement (catalog state is
     // statement-scoped, not part- or clause-scoped): every part's fire
     // reads the same slice.
@@ -209,6 +209,8 @@ fn category_rank(category: NotificationCategory) -> u8 {
 /// the catalog/interner lookups decide which names are unknown.
 #[derive(Default)]
 struct Facts {
+    /// The shape pass's one work meter (see [`shape::WorkMeter`]).
+    meter: shape::WorkMeter,
     labels: BTreeSet<String>,
     rel_types: BTreeSet<String>,
     property_keys: BTreeSet<String>,
@@ -255,6 +257,7 @@ impl Facts {
                 }
                 shape::observe_match(
                     &mut self.notifications,
+                    &mut self.meter,
                     patterns,
                     where_clause.as_ref(),
                     nested,
@@ -273,6 +276,7 @@ impl Facts {
                 ..
             } => shape::observe_projection(
                 &mut self.notifications,
+                &mut self.meter,
                 items,
                 order,
                 where_clause.as_ref(),
@@ -283,8 +287,17 @@ impl Facts {
                 items,
                 order,
                 ..
-            } => shape::observe_projection(&mut self.notifications, items, order, None, *distinct),
-            Clause::Create { patterns } => shape::observe_create(&mut self.notifications, patterns),
+            } => shape::observe_projection(
+                &mut self.notifications,
+                &mut self.meter,
+                items,
+                order,
+                None,
+                *distinct,
+            ),
+            Clause::Create { patterns } => {
+                shape::observe_create(&mut self.notifications, &mut self.meter, patterns)
+            }
             Clause::Call { name, optional, .. } => {
                 // One lookup serves both readers: the deprecation detector's
                 // shadow check and the redundant-`OPTIONAL` void check. Each
