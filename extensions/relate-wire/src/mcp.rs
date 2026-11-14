@@ -7,7 +7,7 @@
 //! child is the MCP client (it drives the import), the host is the MCP
 //! server (it owns the store).
 //!
-//! The kit has three parts, one module each:
+//! The kit has four parts, one module each:
 //!
 //! - `protocol` — the JSON-RPC 2.0 records ([`Request`], [`Response`],
 //!   [`RpcError`]) with their strict decode, the error codes, the MCP
@@ -18,6 +18,11 @@
 //!   revision, capabilities and server identity, plus the mount's store
 //!   facts — the commit policy, the caps, and the store's [`Capacity`]),
 //!   and the request framing bound derived from the statement cap;
+//! - `budget` — the whole-run [`StreamBudget`] both sides of the mount
+//!   charge their request lines against under whole-import framing
+//!   (ADR-0598): the one derivation of whether a session's stream
+//!   answers to a cap, and the one line-cost rule a written or read
+//!   line charges;
 //! - `tools` — the one tool table both MCP surfaces serve ([`TOOL_TABLE`],
 //!   [`tools_for`], [`tools_list`]): every name, description, input schema
 //!   and annotation, plus the pinned rejection texts; the extension mount
@@ -40,10 +45,12 @@
 //! The kit stays pure std + serde_json: a child links it, and a child never
 //! touches a store.
 
+mod budget;
 mod child;
 mod protocol;
 mod tools;
 
+pub use budget::{StreamBudget, StreamCapExceeded};
 pub use child::{serve, McpChild, McpChildError, StdioChild};
 pub use protocol::{
     decode_request, is_notification, object_member, request_bytes_cap, Capacity, CapsFacts,
@@ -55,6 +62,6 @@ pub use protocol::{
 pub use tools::{
     extension_tools_list, tool_result, tools_for, tools_list, BatchCypherResult, Mount, Served,
     ToolCallResult, ToolContent, ToolSpec, WriteCypherResult, BATCH_CYPHER, GET_SCHEMA,
-    READ_CYPHER, READ_ONLY_REJECTION, REPORT_OUTPUT, SCHEMA_ONLY_REJECTION, TOOL_TABLE,
-    UPDATE_SCHEMA, WRITE_CYPHER, WRITE_ONLY_REJECTION,
+    READ_CYPHER, READ_ONLY_REJECTION, REPORT_OUTPUT, SCHEMA_ONLY_REJECTION, STREAM_CAP_REMEDY,
+    TOOL_TABLE, UPDATE_SCHEMA, WRITE_CYPHER, WRITE_ONLY_REJECTION,
 };

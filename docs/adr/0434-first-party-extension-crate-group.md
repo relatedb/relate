@@ -2,6 +2,10 @@
 
 Status: Proposed
 Claim: aa485534a8d3704237ccba501dd4351a7e7f4784
+Later references: ADR-0598 scopes the whole-run stream cap this ADR's
+  importer-bounding consequence records to `whole-import` sessions; a
+  `per-batch` importer runs uncapped across the session, bounded by the
+  per-call caps and the store's live-graph limit.
 
 ## Context
 

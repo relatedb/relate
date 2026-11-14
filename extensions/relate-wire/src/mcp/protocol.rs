@@ -372,7 +372,11 @@ pub struct CapsFacts {
     pub max_rows_per_statement: usize,
     /// The statements-per-call cap.
     pub max_statements: usize,
-    /// The total stream byte cap.
+    /// The whole-run stream byte cap — the cap a `whole-import` session's
+    /// request stream answers to (ADR-0598). A `per-batch` session does
+    /// not enforce it: the commit policy the handshake carries beside
+    /// this number is what says whether it applies — one derivation,
+    /// [`StreamBudget::under`](super::StreamBudget::under)'s match.
     pub max_stream_bytes: u64,
     /// The per-request framing cap: the most bytes one request line may
     /// carry, derived from [`Self::max_statement_bytes`] by

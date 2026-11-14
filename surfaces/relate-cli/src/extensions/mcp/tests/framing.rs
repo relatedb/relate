@@ -210,3 +210,49 @@ fn a_failed_exit_is_classified_inside_the_frame() {
     );
     assert_eq!(node_count(&db), 0);
 }
+
+// ---------------------------------------------------------------------
+// The whole-run stream budget the framing decides (ADR-0598)
+// ---------------------------------------------------------------------
+
+/// Under whole-import framing a session whose request bytes cross the
+/// whole-run stream cap fails the run, and the refusal names the framing
+/// it guards and the remedy.
+#[test]
+fn the_stream_cap_is_fatal_under_whole_import_framing() {
+    let tight = Caps {
+        stream_bytes: 16,
+        ..Caps::MOUNT
+    };
+    let mut input = opened();
+    input.push(request(2, mcp::METHOD_TOOLS_LIST, json!({})));
+    let outcome = run_with(input, "whole-import", tight);
+    assert_eq!(
+        outcome.result.unwrap_err().to_string(),
+        "the extension MCP request stream exceeds the 16-byte whole-import \
+         stream cap; window the import or move the package to per-batch framing"
+    );
+}
+
+/// A per-batch session retains nothing between calls, so the whole-run
+/// stream cap does not apply to it (ADR-0598): however tight, every call
+/// streams — the per-call caps and the store's live-graph limit are that
+/// session's bounds, never a whole-run byte count.
+#[test]
+fn the_stream_cap_does_not_bound_a_per_batch_session() {
+    let tight = Caps {
+        stream_bytes: 16,
+        ..Caps::MOUNT
+    };
+    let mut input = opened();
+    for id in 2..12 {
+        input.push(request(id, mcp::METHOD_TOOLS_LIST, json!({})));
+    }
+    let outcome = run_with(input, "per-batch", tight);
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(
+        outcome.responses.len(),
+        11,
+        "the initialize answer and every tools/list answer streamed"
+    );
+}

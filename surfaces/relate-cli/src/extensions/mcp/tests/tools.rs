@@ -564,18 +564,3 @@ fn the_record_cap_is_fatal() {
         format!("the extension MCP request exceeds the {limit}-byte record cap")
     );
 }
-
-#[test]
-fn the_stream_cap_is_fatal() {
-    let tight = Caps {
-        stream_bytes: 16,
-        ..Caps::MOUNT
-    };
-    let mut input = opened();
-    input.push(request(2, mcp::METHOD_TOOLS_LIST, json!({})));
-    let outcome = run_with(input, "per-batch", tight);
-    assert_eq!(
-        outcome.result.unwrap_err().to_string(),
-        "the extension MCP request stream exceeds the 16-byte stream cap"
-    );
-}

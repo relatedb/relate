@@ -422,7 +422,7 @@ mod driver {
         let db = relate::Database::open(":memory:").unwrap();
         let mut conn = db.connect_typed(relate::Namespace::Neo4j).unwrap();
         let exe = entry.package_dir.join("run.sh");
-        let process = crate::extensions::mcp::spawn(
+        let process = crate::extensions::mcp::process::spawn(
             &exe,
             &serde_json::Map::new(),
             Caps::MOUNT,

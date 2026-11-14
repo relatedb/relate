@@ -192,10 +192,13 @@ package to version, no lockfile to pin, and nothing to publish.
    (`-32602`), never a closed pipe.
 4. **Stay inside the caps** of [The caps](#the-caps): 8 MiB per statement and
    per response line, 1000 rows per writing call, 4096 statements per batch
-   call, 128 MiB across the whole session. The `initialize` result republishes
+   call, and — under `whole-import` framing only — 128 MiB across the
+   session. The `initialize` result republishes
    them (`maxStatementBytes`, `maxRowsPerStatement`, `maxStatements`,
    `maxStreamBytes`) together with the store's capacity, so a child sizes its
-   chunks from the handshake instead of hard-coding numbers.
+   chunks from the handshake instead of hard-coding numbers; a `per-batch`
+   session has no whole-run cap (ADR-0598) — its bounds are the per-call
+   caps and the store's live-graph limit.
 5. **End quietly.** The last call is `report_output` (the run's summary);
    the child then ends its stdout and exits 0. A non-zero exit, a killed
    child, or a stream that never initializes fails the run — and under
@@ -230,12 +233,23 @@ fed:
 | Statement bytes (and the same bound per response line) | 8 MiB |
 | Rows per `write_cypher` call | 1000 |
 | Statements per `batch_cypher` call | 4096 |
-| Total stream bytes across the whole session | 128 MiB |
+| Stream bytes across the session — `whole-import` framing only | 128 MiB |
 
 The numbers are the wire kit's (`relate_wire`), the handshake publishes
 them as `maxStatementBytes`, `maxRowsPerStatement`, `maxStatements` and
 `maxStreamBytes`, and the child kit chunks its rows against them so a
 first-party import refuses loudly instead of being killed.
+
+The stream cap is scoped by the commit policy (ADR-0598): it guards the
+one framing that retains work across calls — a `whole-import` session's
+single transaction, whose overlay holds every write until its one commit.
+A `per-batch` session retains nothing between calls, so it has no
+whole-run cap at all: every call is bounded by the per-call caps, and
+the retained work is bounded by the store's live-graph limit, which the
+write engine enforces with a typed capacity refusal. That is what lets a
+per-batch import (git-to-graph) stream a history whose wire bytes exceed
+128 MiB — and lets re-running the same command complete a partially
+imported store, the contract per-batch framing exists to keep.
 
 ### Handshake
 
@@ -378,7 +392,9 @@ fails the run and — under `whole-import` — rolls the session back, so a
 failed run never leaves a committed store.
 
 The caps bound every call: the statement byte cap, the rows-per-statement
-cap, the statements-per-call cap, the total stream cap, the per-request
+cap, the statements-per-call cap, the whole-import stream cap (scoped by
+the commit policy — a `per-batch` session runs uncapped across the
+session, ADR-0598), the per-request
 framing cap (derived from the statement cap plus its JSON envelope
 allowance), and — in the response direction — the statement cap one
 response line may carry (the same 8 MiB the child's capped response read
@@ -402,12 +418,16 @@ an engine failure are JSON-RPC error responses:
 | A tool result over the response line cap | `-32602` | `the tools/call result would exceed the <n>-byte response cap` |
 | An engine refusal | `-32602` | `engine error: <engine text>` |
 
-The per-request framing cap (`maxRequestBytes`), the total stream cap, a
+The per-request framing cap (`maxRequestBytes`), the whole-import stream
+cap (a `per-batch` session is never refused on it — its retained work is
+bounded by the store's live-graph limit, ADR-0598), a
 request that needs an answer but carries no id, a failed `batch_cypher`
 under `whole-import`, a session that never initializes, and a child that
 writes no first request within ten seconds are fatal: the host kills and
 reaps the child (`the extension MCP request exceeds the <n>-byte record
-cap`, `the extension MCP request stream exceeds the <n>-byte stream cap`,
+cap`, `the extension MCP request stream exceeds the <n>-byte
+whole-import stream cap; window the import or move the package to
+per-batch framing`,
 `the MCP request '<method>' carries no id; only notifications may omit
 it`, `the extension MCP batch failed inside the whole-import transaction:
 <detail>`, `the extension child ended its MCP session without an
@@ -466,7 +486,7 @@ ADR-0430 §5's split, the CLI's closed map:
 | --- | --- | --- |
 | `0` | success | The session ended clean (with or without a report) |
 | `2` | usage | The invocation was malformed before anything ran: a manifest problem (unknown kind/field, a collision, an escaping executable, a protocol this host does not speak, a duplicate or store-spelling flag), a flag problem (unknown flag, a value that does not parse as its kind), an uninstalled name, a missing name, a registry load refusal |
-| `1` | runtime | The work was invited and failed: a protocol violation (a request before `initialize`, an id-less request that needs an answer, a fatal framing or stream cap), a non-zero child exit, a killed child, a failed `batch_cypher` under `whole-import`, a fresh-store refusal. Per-call refusals (a malformed line, an unknown method, an unknown tool, a cap on one payload, a read or DDL guard, an engine failure) are answered as JSON-RPC errors and do not fail the run |
+| `1` | runtime | The work was invited and failed: a protocol violation (a request before `initialize`, an id-less request that needs an answer, a fatal framing or whole-import stream cap), a non-zero child exit, a killed child, a failed `batch_cypher` under `whole-import`, a fresh-store refusal. Per-call refusals (a malformed line, an unknown method, an unknown tool, a cap on one payload, a read or DDL guard, an engine failure) are answered as JSON-RPC errors and do not fail the run |
 
 A runtime failure renders as one `Error:` line and exits 1; a usage
 error renders the refusal, the relevant synopsis (`run`'s own, or the

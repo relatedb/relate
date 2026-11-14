@@ -68,12 +68,16 @@ pub const MAX_ROWS_PER_STATEMENT: usize = 1000;
 /// cap set has one home.
 pub const MAX_STATEMENTS: usize = 4096;
 
-/// The total stream cap (ADR-0430 §4): 128 MiB of JSON-RPC across the whole
-/// session — the same bound ADR-0377 caps `git log`'s untrusted stdout at,
-/// one bound for every child stream the host reads. The host refuses the
-/// stream past it; the child kit counts what it writes and refuses first
-/// with an importer-flavored message, so a legitimate-but-oversized import
-/// fails before the host kills the child mid-call.
+/// The whole-run stream cap (ADR-0430 §4, scoped by ADR-0598): 128 MiB of
+/// JSON-RPC across a `whole-import` session — the framing that retains
+/// every call in one transaction until its single commit, the one thing
+/// the per-call caps cannot bound. A `per-batch` session has no whole-run
+/// cap: its bounds are the per-call caps and the host store's live-graph
+/// limit, so a long per-batch import streams every chunk they admit. The
+/// host refuses the stream past it; the child kit counts what it writes
+/// against the published cap and refuses first with an importer-flavored
+/// message, so a legitimate-but-oversized whole-import fails before the
+/// host kills the child mid-call.
 pub const MAX_STREAM_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The `whole-import` commit intent's wire spelling (ADR-0430 §1: one

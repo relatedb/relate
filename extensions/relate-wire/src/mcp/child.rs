@@ -18,13 +18,16 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::read_cap::{read_line_capped, write_line, CappedLine};
-use crate::{MAX_ROWS_PER_STATEMENT, MAX_STATEMENT_BYTES, MAX_STREAM_BYTES};
+use crate::{MAX_ROWS_PER_STATEMENT, MAX_STATEMENT_BYTES};
 
+use super::budget::{StreamBudget, StreamCapExceeded};
 use super::protocol::{
     Request, Response, ResponseError, ServerFacts, JSONRPC_VERSION, MCP_PROTOCOL_VERSION,
     METHOD_INITIALIZE, METHOD_INITIALIZED, METHOD_TOOLS_CALL,
 };
-use super::tools::{ToolCallResult, ToolContent, REPORT_OUTPUT, UPDATE_SCHEMA, WRITE_CYPHER};
+use super::tools::{
+    ToolCallResult, ToolContent, REPORT_OUTPUT, STREAM_CAP_REMEDY, UPDATE_SCHEMA, WRITE_CYPHER,
+};
 
 /// The framing bytes a chunk's own serialization adds around the rows it
 /// carries: serde_json's compact form brackets an array with exactly `[`
@@ -53,7 +56,11 @@ pub enum McpChildError {
         /// The I/O refusal, verbatim.
         detail: String,
     },
-    /// The child's whole request stream would exceed the stream cap.
+    /// The child's whole request stream would exceed the stream cap
+    /// the handshake published (ADR-0598) — the refusal names the
+    /// framing it guards and the two ways out. A `per-batch` session is
+    /// never refused on it: the per-call caps and the store's live-graph
+    /// limit are its bounds.
     StreamTooLarge {
         /// The cap the stream would have exceeded, in bytes.
         limit: u64,
@@ -106,7 +113,8 @@ impl std::fmt::Display for McpChildError {
             Self::Read { detail } => write!(f, "failed to read an MCP response: {detail}"),
             Self::StreamTooLarge { limit } => write!(
                 f,
-                "the MCP request stream exceeds the {limit}-byte stream cap"
+                "the whole-import MCP request stream exceeds the {limit}-byte stream cap; \
+                 {STREAM_CAP_REMEDY}"
             ),
             Self::RowTooLarge { limit } => {
                 write!(f, "a single row exceeds the {limit}-byte statement cap")
@@ -131,6 +139,17 @@ impl std::fmt::Display for McpChildError {
 }
 
 impl std::error::Error for McpChildError {}
+
+impl From<StreamCapExceeded> for McpChildError {
+    /// The kit's stream-cap refusal: the budget's typed payload, rendered
+    /// with the framing it guards and the remedy (ADR-0598) — the one
+    /// conversion both charge sites convert through.
+    fn from(refused: StreamCapExceeded) -> Self {
+        Self::StreamTooLarge {
+            limit: refused.limit,
+        }
+    }
+}
 
 impl From<McpChildError> for String {
     /// The `Display` text channel a child's failure report rides: a child's
@@ -172,79 +191,84 @@ where
     T: DeserializeOwned,
     F: FnOnce(&mut StdioChild, T) -> Result<(), String>,
 {
-    let mut child = McpChild::stdio();
-    let outcome = child
-        .start::<T>(name, version)
-        .map_err(String::from)
-        .and_then(|(_facts, envelope)| import(&mut child, envelope));
+    let outcome = StdioChild::start(
+        BufReader::new(std::io::stdin()),
+        std::io::stdout(),
+        name,
+        version,
+    )
+    .map_err(String::from)
+    .and_then(|(mut child, _facts, envelope)| import(&mut child, envelope));
     if let Some(text) = outcome.err() {
         eprintln!("{text}");
         std::process::exit(1);
     }
 }
 
-/// The child's MCP client: one request envelope, then JSON-RPC requests on
-/// `out` and the host's responses from `input`.
+/// The child's MCP client: constructed by the `initialize` handshake
+/// ([`Self::start`]), then JSON-RPC requests on `out` and the host's
+/// responses from `input`.
 ///
-/// [`Self::start`] reads the envelope and performs the `initialize`
-/// handshake, returning the host facts and the decoded envelope;
 /// [`Self::call`] sends one `tools/call` and returns the tool's result
 /// JSON; [`Self::write_rows`] is the chunked `write_cypher`; and
-/// [`Self::report_output`] is the `report_output` convenience. The output
-/// side counts its bytes against [`MAX_STREAM_BYTES`] and refuses before it
-/// would cross the cap, so a runaway child fails loudly instead of being
-/// killed by the host.
+/// [`Self::report_output`] is the `report_output` convenience. The
+/// session's whole-run budget is framed by the handshake that builds
+/// the client, so every written line charges it: under `whole-import`
+/// framing the output side refuses before it would cross the published
+/// stream cap, and under `per-batch` framing there is no whole-run cap —
+/// a long import streams every chunk the per-call caps admit instead of
+/// refusing at a byte the host would admit (ADR-0598).
 pub struct McpChild<I: BufRead, O: Write> {
     input: I,
     out: O,
     next_id: u64,
-    stream_bytes: u64,
-}
-
-impl McpChild<BufReader<std::io::Stdin>, std::io::Stdout> {
-    /// The child's real stdio pair — what a first-party MCP child uses.
-    pub fn stdio() -> Self {
-        Self::new(BufReader::new(std::io::stdin()), std::io::stdout())
-    }
+    /// The whole-run request-stream budget [`Self::send`] charges every
+    /// written line against — framed by the handshake that constructed
+    /// the client ([`StreamBudget::under`], ADR-0598), with the
+    /// handshake's own initialize line already charged, so a
+    /// whole-import child's accounting matches the host's line-1-onward
+    /// counting. Capped exactly under `whole-import` framing, cap-free
+    /// under `per-batch`, whose bounds are the per-call caps and the
+    /// store's live-graph limit.
+    budget: StreamBudget,
 }
 
 impl<I: BufRead, O: Write> McpChild<I, O> {
-    /// Build the client over an explicit pair (the tests' seam).
-    pub fn new(input: I, out: O) -> Self {
-        Self {
-            input,
-            out,
-            next_id: 0,
-            stream_bytes: 0,
-        }
-    }
-
-    /// Read the request envelope (one line, bounded) and perform the
-    /// `initialize` handshake: send the MCP revision this kit speaks with
-    /// its client identity, decode the host's
-    /// [`ServerFacts`](super::protocol::ServerFacts), and confirm the
-    /// handshake with `notifications/initialized`.
+    /// Build the client by reading the request envelope (one line,
+    /// bounded) over `input` and performing the `initialize` handshake:
+    /// send the MCP revision this kit speaks with its client identity on
+    /// `out`, decode the host's
+    /// [`ServerFacts`](super::protocol::ServerFacts), frame the
+    /// session's whole-run budget from them, and confirm the handshake
+    /// with `notifications/initialized` — returning the started client
+    /// beside the facts and the decoded envelope. The only construction:
+    /// a client exists only with its budget framed, so every later send
+    /// charges it (ADR-0598).
     ///
     /// The envelope is read first because the host writes it before it
-    /// starts reading requests; the order is the wire's, not a choice. The
-    /// facts are returned here and not retained: the handshake happens once,
-    /// so a second copy on the client would be parallel state. A host that
-    /// answers with another MCP revision fails the handshake — the mount
-    /// speaks one published revision, never a silent downgrade.
+    /// starts reading requests; the order is the wire's, not a choice.
+    /// The facts are returned here and not retained — with one
+    /// exception: the commit policy and its stream cap stay on the
+    /// client, the one session-long fact the kit's own output
+    /// accounting consumes (ADR-0598), so the child's whole-run guard
+    /// and the host's admit the same bytes under the same framing. A
+    /// host that answers with another MCP revision fails the handshake —
+    /// the mount speaks one published revision, never a silent
+    /// downgrade.
     pub fn start<T: DeserializeOwned>(
-        &mut self,
+        mut input: I,
+        mut out: O,
         name: &str,
         version: &str,
-    ) -> Result<(ServerFacts, T), McpChildError> {
-        let envelope = self.read_envelope_line()?;
+    ) -> Result<(Self, ServerFacts, T), McpChildError> {
+        let envelope = Self::read_envelope_line(&mut input)?;
         let envelope: T =
             serde_json::from_slice(&envelope).map_err(|e| McpChildError::Envelope {
                 detail: e.to_string(),
             })?;
-        let id = self.next_id();
         let request = Request {
             jsonrpc: JSONRPC_VERSION.to_string(),
-            id: Some(Value::from(id)),
+            id: Some(Value::from(1)),
             method: METHOD_INITIALIZE.to_string(),
             params: Some(json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -252,8 +276,16 @@ impl<I: BufRead, O: Write> McpChild<I, O> {
                 "clientInfo": {"name": name, "version": version},
             })),
         };
-        self.send(&request)?;
-        let result = self.read_result(id)?;
+        // The handshake's initialize line is written before the budget
+        // exists — the policy that frames the session is inside the
+        // answer — so it ships unguarded: only the host's own counting
+        // enforces a cap on it. Its cost is charged into the budget once
+        // the framing is known (ADR-0598), so every line after the
+        // handshake counts exactly as the host counts, and the child
+        // refuses those before the host kills it.
+        let initialize = request.to_line();
+        Self::write_request_line(&mut out, &initialize)?;
+        let result = Self::read_result(&mut input, 1)?;
         let facts: ServerFacts =
             serde_json::from_value(result).map_err(|e| McpChildError::MalformedResponse {
                 detail: e.to_string(),
@@ -264,11 +296,23 @@ impl<I: BufRead, O: Write> McpChild<I, O> {
                 expected: MCP_PROTOCOL_VERSION,
             });
         }
+        // The session's whole-run stream budget, framed by the one fact
+        // that says whether the session retains work across calls
+        // (ADR-0598) — capped exactly under `whole-import`, cap-free
+        // under `per-batch` — with the initialize line charged into it.
+        let mut budget = StreamBudget::under(facts.commit_policy, facts.caps.max_stream_bytes);
+        budget.charge_written_line(&initialize)?;
+        let mut client = Self {
+            input,
+            out,
+            next_id: 1,
+            budget,
+        };
         // MCP's handshake ends with the client's confirmation. It is the
         // protocol's shape, not a host requirement — the host reads every
         // notification and answers none.
-        self.notify(METHOD_INITIALIZED)?;
-        Ok((facts, envelope))
+        client.notify(METHOD_INITIALIZED)?;
+        Ok((client, facts, envelope))
     }
 
     /// Send one `tools/call` and return the tool's result JSON.
@@ -281,7 +325,7 @@ impl<I: BufRead, O: Write> McpChild<I, O> {
             params: Some(json!({"name": tool, "arguments": arguments})),
         };
         self.send(&request)?;
-        let result = self.read_result(id)?;
+        let result = Self::read_result(&mut self.input, id)?;
         decode_tool_result(result)
     }
 
@@ -380,25 +424,25 @@ impl<I: BufRead, O: Write> McpChild<I, O> {
     /// One capped line off the input, its terminator stripped: the read the
     /// envelope and every response share, so the cap, the newline strip and
     /// the I/O fan-out exist once. Each caller words its own refusal for
-    /// the three outcomes.
-    fn read_capped_line(&mut self) -> std::io::Result<LineRead> {
-        Ok(
-            match read_line_capped(&mut self.input, MAX_STATEMENT_BYTES)? {
-                CappedLine::Line(mut line) => {
-                    if line.last() == Some(&b'\n') {
-                        line.pop();
-                    }
-                    LineRead::Line(line)
+    /// the three outcomes. An associated function so the handshake can
+    /// read before the client it constructs exists
+    /// ([`Self::start`](McpChild::start)).
+    fn read_capped_line(input: &mut I) -> std::io::Result<LineRead> {
+        Ok(match read_line_capped(input, MAX_STATEMENT_BYTES)? {
+            CappedLine::Line(mut line) => {
+                if line.last() == Some(&b'\n') {
+                    line.pop();
                 }
-                CappedLine::Eof => LineRead::Eof,
-                CappedLine::Exceeded => LineRead::Exceeded,
-            },
-        )
+                LineRead::Line(line)
+            }
+            CappedLine::Eof => LineRead::Eof,
+            CappedLine::Exceeded => LineRead::Exceeded,
+        })
     }
 
     /// Read the one-line request envelope under the statement cap.
-    fn read_envelope_line(&mut self) -> Result<Vec<u8>, McpChildError> {
-        match self.read_capped_line() {
+    fn read_envelope_line(input: &mut I) -> Result<Vec<u8>, McpChildError> {
+        match Self::read_capped_line(input) {
             Ok(LineRead::Line(line)) => Ok(line),
             Ok(LineRead::Eof) => Err(McpChildError::Envelope {
                 detail: "the host wrote no request envelope".to_string(),
@@ -426,25 +470,36 @@ impl<I: BufRead, O: Write> McpChild<I, O> {
         self.send(&request)
     }
 
-    /// Write one request line, enforcing the stream cap before the write.
+    /// Write one request line, charging the whole-run stream budget
+    /// before the write — under `whole-import` framing only (ADR-0598):
+    /// the budget owns the one line-cost rule
+    /// ([`StreamBudget::charge_written_line`]), and a `per-batch`
+    /// session writes without a whole-run bound — the per-call caps and
+    /// the host store's live-graph limit are its bounds.
     fn send(&mut self, request: &Request) -> Result<(), McpChildError> {
         let line = request.to_line();
-        let cost = line.len() as u64 + 1;
-        if self.stream_bytes + cost > MAX_STREAM_BYTES {
-            return Err(McpChildError::StreamTooLarge {
-                limit: MAX_STREAM_BYTES,
-            });
-        }
-        write_line(&mut self.out, &line).map_err(|e| McpChildError::Write {
+        self.budget.charge_written_line(&line)?;
+        Self::write_request_line(&mut self.out, &line)
+    }
+
+    /// Write one serialized request line, mapping the pipe failure to
+    /// the kit's one [`McpChildError::Write`] refusal — the writer both
+    /// [`Self::send`] and the handshake's initialize line share, so the
+    /// pipe-failure mapping exists once. An associated function over
+    /// `out`, the write-side twin of [`Self::read_capped_line`]'s shape
+    /// over the input: the handshake writes before the client it
+    /// constructs exists.
+    fn write_request_line(out: &mut O, line: &str) -> Result<(), McpChildError> {
+        write_line(out, line).map_err(|e| McpChildError::Write {
             detail: e.to_string(),
-        })?;
-        self.stream_bytes += cost;
-        Ok(())
+        })
     }
 
     /// Read one response, correlate it with `id`, and return its result.
-    fn read_result(&mut self, id: u64) -> Result<Value, McpChildError> {
-        let line = match self.read_capped_line() {
+    /// An associated function so the handshake can read the initialize
+    /// answer before the client it constructs exists.
+    fn read_result(input: &mut I, id: u64) -> Result<Value, McpChildError> {
+        let line = match Self::read_capped_line(input) {
             Ok(LineRead::Line(line)) => line,
             Ok(LineRead::Eof) => {
                 return Err(McpChildError::MalformedResponse {
@@ -513,345 +568,8 @@ fn decode_tool_result(result: Value) -> Result<Value, McpChildError> {
     })
 }
 
+// The kit's tests live in `child/tests.rs` (the dir-module pattern the
+// importer children's plan and reader use, LABS-421) so this file stays
+// under the repo's 1k-line budget.
 #[cfg(test)]
-mod tests {
-    use super::super::protocol::{request_bytes_cap, ServerFacts};
-    use super::super::tools::{tool_result, READ_CYPHER, READ_ONLY_REJECTION, WRITE_CYPHER};
-    use super::*;
-    use crate::{MAX_ROWS_PER_STATEMENT, MAX_STATEMENTS, PER_BATCH};
-    use serde_json::json;
-    use std::io::Cursor;
-
-    /// The host's initialize result for the fixture manifest facts.
-    fn facts_json() -> Value {
-        json!({
-            "serverInfo": {"name": "relate", "version": "0.13.0"},
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {"tools": {"listChanged": false}},
-            "freshStoreRequired": false,
-            "commitPolicy": PER_BATCH,
-            "caps": {
-                "maxStatementBytes": MAX_STATEMENT_BYTES,
-                "maxRowsPerStatement": MAX_ROWS_PER_STATEMENT,
-                "maxStatements": MAX_STATEMENTS,
-                "maxStreamBytes": MAX_STREAM_BYTES,
-                "maxRequestBytes": request_bytes_cap(MAX_STATEMENT_BYTES),
-            },
-            "capacity": {
-                "storeLimitBytes": 1 << 20,
-                "storeUsedBytes": 1024,
-                "storeRemainingBytes": (1 << 20) - 1024,
-            },
-        })
-    }
-
-    /// The scripted host side for the kit's tests: a response line for the
-    /// id the child is about to send.
-    fn response_line(id: u64, result: Value) -> String {
-        Response::success(json!(id), result).to_line() + "\n"
-    }
-
-    /// A child whose handshake already succeeded: the host's empty envelope,
-    /// the initialize response, then `tail` — the scripted responses the
-    /// test's calls consume. Returns the child and the facts the handshake
-    /// decoded.
-    fn started_child(tail: &str) -> (McpChild<Cursor<Vec<u8>>, Vec<u8>>, ServerFacts) {
-        let mut input = String::new();
-        input.push_str("{}\n");
-        input.push_str(&response_line(1, facts_json()));
-        input.push_str(tail);
-        let mut child = McpChild::new(Cursor::new(input.into_bytes()), Vec::new());
-        let (facts, envelope): (ServerFacts, Value) = child.start("greet", "0.1.0").unwrap();
-        assert_eq!(envelope, json!({}));
-        (child, facts)
-    }
-
-    #[test]
-    fn the_server_facts_decode_the_initialize_result() {
-        let (_child, facts) = started_child("");
-        assert_eq!(facts.protocol_version, MCP_PROTOCOL_VERSION);
-        assert!(!facts.capabilities.tools.list_changed);
-        assert!(!facts.fresh_store_required);
-        assert_eq!(facts.commit_policy.spelling(), PER_BATCH);
-        assert_eq!(facts.caps.max_rows_per_statement, MAX_ROWS_PER_STATEMENT);
-        assert_eq!(facts.caps.max_statements, MAX_STATEMENTS);
-        assert_eq!(facts.caps.max_statement_bytes, MAX_STATEMENT_BYTES);
-        assert_eq!(
-            facts.caps.max_request_bytes,
-            request_bytes_cap(MAX_STATEMENT_BYTES)
-        );
-        // The child sees the store's capacity in the same handshake: the
-        // baseline its own write results count down from.
-        assert_eq!(facts.capacity.store_limit_bytes, 1 << 20);
-        assert_eq!(facts.capacity.store_used_bytes, 1024);
-        assert_eq!(facts.capacity.store_remaining_bytes, (1 << 20) - 1024);
-    }
-
-    #[test]
-    fn the_child_reads_the_envelope_then_initializes_and_calls() {
-        let (mut child, _facts) = started_child(&response_line(
-            2,
-            tool_result("{\"counts\":{\"nodes_created\":3}}"),
-        ));
-        let result = child
-            .call(
-                WRITE_CYPHER,
-                json!({"statement": "UNWIND $rows AS row CREATE (n:N) RETURN 1"}),
-            )
-            .unwrap();
-        assert_eq!(result, json!({"counts": {"nodes_created": 3}}));
-        let written = String::from_utf8(child.out).unwrap();
-        let lines: Vec<Value> = written
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        // MCP's handshake: initialize with the revision and the client
-        // identity, then the id-less initialized confirmation, then tools.
-        assert_eq!(lines[0]["method"], "initialize");
-        assert_eq!(lines[0]["jsonrpc"], JSONRPC_VERSION);
-        assert_eq!(lines[0]["id"], json!(1));
-        assert_eq!(
-            lines[0]["params"]["protocolVersion"],
-            json!(MCP_PROTOCOL_VERSION)
-        );
-        assert_eq!(lines[0]["params"]["clientInfo"]["name"], json!("greet"));
-        assert_eq!(lines[1]["method"], METHOD_INITIALIZED);
-        assert_eq!(lines[1]["jsonrpc"], JSONRPC_VERSION);
-        assert!(
-            lines[1].get("id").is_none(),
-            "a notification carries no id: {}",
-            lines[1]
-        );
-        assert_eq!(lines[2]["method"], "tools/call");
-        assert_eq!(lines[2]["params"]["name"], WRITE_CYPHER);
-    }
-
-    #[test]
-    fn a_tool_error_surfaces_its_text() {
-        let failure = json!({
-            "content": [{"type": "text", "text": READ_ONLY_REJECTION}],
-            "isError": true,
-        });
-        let (mut child, _facts) = started_child(&response_line(2, failure));
-        let err = child
-            .call(READ_CYPHER, json!({"statement": "CREATE (n)"}))
-            .unwrap_err();
-        assert_eq!(
-            err,
-            McpChildError::Tool {
-                text: READ_ONLY_REJECTION.to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn a_second_content_item_is_refused_not_dropped() {
-        let two_items = json!({
-            "content": [
-                {"type": "text", "text": "{}"},
-                {"type": "text", "text": "{}"},
-            ],
-            "isError": false,
-        });
-        let (mut child, _facts) = started_child(&response_line(2, two_items));
-        let err = child.call(REPORT_OUTPUT, json!({"text": "x"})).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "malformed MCP response: the tools/call result must carry exactly one content item, got 2"
-        );
-    }
-
-    #[test]
-    fn an_id_mismatch_is_a_pinned_refusal() {
-        let (mut child, _facts) = started_child(&response_line(99, json!({})));
-        let err = child.call(REPORT_OUTPUT, json!({"text": "x"})).unwrap_err();
-        assert_eq!(
-            err,
-            McpChildError::IdMismatch {
-                expected: 2,
-                got: json!(99)
-            }
-        );
-        assert_eq!(
-            err.to_string(),
-            "the host answered id 99, but the child sent id 2"
-        );
-    }
-
-    #[test]
-    fn a_missing_envelope_is_a_pinned_refusal() {
-        let mut child = McpChild::new(Cursor::new(Vec::new()), Vec::new());
-        let err = child.start::<Value>("greet", "0.1.0").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "invalid request envelope: the host wrote no request envelope"
-        );
-    }
-
-    #[test]
-    fn a_protocol_mismatch_is_a_pinned_refusal() {
-        let mut facts = facts_json();
-        facts["protocolVersion"] = json!("1999-01-01");
-        let mut input = String::new();
-        input.push_str("{}\n");
-        input.push_str(&response_line(1, facts));
-        let mut child = McpChild::new(Cursor::new(input.into_bytes()), Vec::new());
-        let err = child.start::<Value>("greet", "0.1.0").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            format!("the host speaks MCP protocol '1999-01-01'; this child speaks '{MCP_PROTOCOL_VERSION}'")
-        );
-    }
-
-    /// The `tools/call` requests a started child wrote, in order.
-    fn calls(written: &[u8]) -> Vec<Value> {
-        String::from_utf8_lossy(written)
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .filter(|line: &Value| line["method"] == METHOD_TOOLS_CALL)
-            .collect()
-    }
-
-    /// A started child whose host answers every call with `result`.
-    fn answering_child<T>(answers: usize, result: T) -> McpChild<Cursor<Vec<u8>>, Vec<u8>>
-    where
-        T: Fn() -> Value,
-    {
-        let mut tail = String::new();
-        for id in 2..(2 + answers as u64) {
-            tail.push_str(&response_line(id, result()));
-        }
-        started_child(&tail).0
-    }
-
-    #[test]
-    fn write_rows_chunks_at_the_row_cap() {
-        // More rows than one call carries: the overflow opens the next
-        // call, every row lands, and no call exceeds the row cap.
-        let ids = 0..(MAX_ROWS_PER_STATEMENT as i64 + 5);
-        let expected_calls = 2;
-        let mut child = answering_child(expected_calls, || tool_result("{\"counts\":{}}"));
-        child
-            .write_rows(
-                "UNWIND $rows AS row CREATE (n:N {id: row.id})",
-                ids.map(|id| json!({"id": id})),
-            )
-            .expect("the chunker writes both calls");
-        let calls = calls(&child.out);
-        assert_eq!(calls.len(), expected_calls, "{calls:?}");
-        let rows = |call: &Value| {
-            call["params"]["arguments"]["parameters"]["rows"]
-                .as_array()
-                .expect("the call carries a rows array")
-                .len()
-        };
-        assert_eq!(rows(&calls[0]), MAX_ROWS_PER_STATEMENT);
-        assert_eq!(rows(&calls[1]), 5);
-        // Every call names the statement and the tool.
-        for call in &calls {
-            assert_eq!(call["params"]["name"], WRITE_CYPHER);
-            assert_eq!(
-                call["params"]["arguments"]["statement"],
-                json!("UNWIND $rows AS row CREATE (n:N {id: row.id})")
-            );
-        }
-    }
-
-    #[test]
-    fn write_rows_joins_one_chunks_rows_under_the_statement_cap() {
-        let mut child = answering_child(1, || tool_result("{\"counts\":{}}"));
-        child
-            .write_rows("X", [json!({"id": 1}), json!({"id": 2})].into_iter())
-            .unwrap();
-        let calls = calls(&child.out);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0]["params"]["arguments"]["parameters"]["rows"],
-            json!([{"id": 1}, {"id": 2}]),
-            "one call carries the whole array, never a row per call"
-        );
-    }
-
-    #[test]
-    fn a_row_over_the_cap_behind_a_nonempty_chunk_refuses() {
-        // The hole the first-row test cannot see: a SMALL row already sits
-        // in the chunk when the oversized one arrives, so the byte-cap
-        // branch would flush the small chunk and then — without the
-        // single-row bound — open a fresh chunk that ships the oversized
-        // row over the cap. The refusal must land BEFORE anything ships.
-        let mut child = answering_child(0, || tool_result("{\"counts\":{}}"));
-        let huge = "x".repeat(MAX_STATEMENT_BYTES as usize);
-        let rows = [json!({ "id": 0 }), json!({ "blob": huge })];
-        let err = child.write_rows("X", rows.into_iter()).unwrap_err();
-        assert_eq!(
-            err,
-            McpChildError::RowTooLarge {
-                limit: MAX_STATEMENT_BYTES
-            },
-            "an oversized row behind a non-empty chunk is refused before any flush"
-        );
-        // Nothing shipped: the small chunk never left the child.
-        assert!(calls(&child.out).is_empty());
-    }
-
-    #[test]
-    fn write_rows_writes_nothing_for_an_empty_phase() {
-        // A zero-row phase is a no-op: no call, no transaction.
-        let mut child = answering_child(0, || tool_result("{\"counts\":{}}"));
-        child.write_rows("X", std::iter::empty()).unwrap();
-        assert!(calls(&child.out).is_empty());
-    }
-
-    #[test]
-    fn a_single_row_over_the_statement_cap_refuses() {
-        // A row whose serialized bytes alone fill the statement cap: no
-        // chunk can carry it, and the refusal names the cap.
-        let mut child = answering_child(0, || tool_result("{\"counts\":{}}"));
-        let huge = "x".repeat(MAX_STATEMENT_BYTES as usize);
-        let err = child
-            .write_rows("X", [json!({"blob": huge})].into_iter())
-            .unwrap_err();
-        assert_eq!(
-            err,
-            McpChildError::RowTooLarge {
-                limit: MAX_STATEMENT_BYTES
-            }
-        );
-        assert_eq!(
-            err.to_string(),
-            format!("a single row exceeds the {MAX_STATEMENT_BYTES}-byte statement cap")
-        );
-        assert!(calls(&child.out).is_empty(), "nothing was sent");
-    }
-
-    /// The row the chunker measures is the row the call carries: the
-    /// byte arithmetic counts the array, both brackets included, so a
-    /// chunk that fits the cap is the chunk the host admits.
-    #[test]
-    fn the_counted_chunk_is_the_written_chunk() {
-        let mut child = answering_child(1, || tool_result("{\"counts\":{}}"));
-        let rows = [json!({"id": 1}), json!({"id": 2}), json!({"id": 3})];
-        child.write_rows("X", rows.clone().into_iter()).unwrap();
-        let calls = calls(&child.out);
-        let sent = serde_json::to_string(&calls[0]["params"]["arguments"]["parameters"]["rows"])
-            .expect("the array serializes");
-        assert_eq!(
-            sent,
-            serde_json::to_string(&Value::Array(rows.to_vec())).unwrap()
-        );
-    }
-
-    #[test]
-    fn update_schema_sends_the_ddl_statement() {
-        let mut child = answering_child(1, || tool_result("{\"created\":[\"file_content\"]}"));
-        let result = child
-            .update_schema(
-                "CREATE FULLTEXT INDEX file_content IF NOT EXISTS FOR (f:File) ON EACH [f.name]",
-            )
-            .unwrap();
-        assert_eq!(result, json!({"created": ["file_content"]}));
-        let calls = calls(&child.out);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["params"]["name"], UPDATE_SCHEMA);
-    }
-}
+mod tests;

@@ -48,6 +48,13 @@ pub const WRITE_ONLY_REJECTION: &str = "Only write queries are allowed for write
 /// carries no schema clause is refused before it reaches the graph.
 pub const SCHEMA_ONLY_REJECTION: &str = "Only DDL queries are allowed for update-schema";
 
+/// The stream-cap refusals' remedy tail (ADR-0598) — the one spelling
+/// both the host's fatal refusal and the child kit's earlier refusal
+/// print, so the advice cannot drift between the two sides of the mount.
+/// The cap it answers is whole-import framing's whole-run bound; a
+/// `per-batch` session never sees either text.
+pub const STREAM_CAP_REMEDY: &str = "window the import or move the package to per-batch framing";
+
 /// Which mount serves a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mount {

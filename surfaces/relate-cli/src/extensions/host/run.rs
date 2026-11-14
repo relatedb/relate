@@ -149,11 +149,16 @@ pub(crate) fn run_action(
     // child as its client, under the host-owned store, the fresh-store
     // check, the manifest's commit policy, the summary rendering and the
     // checkpoint.
-    let process =
-        match crate::extensions::mcp::spawn(&exe, &run.envelope, Caps::MOUNT, command, None) {
-            Ok(process) => process,
-            Err(e) => return fail(HostError::from(e)),
-        };
+    let process = match crate::extensions::mcp::process::spawn(
+        &exe,
+        &run.envelope,
+        Caps::MOUNT,
+        command,
+        None,
+    ) {
+        Ok(process) => process,
+        Err(e) => return fail(HostError::from(e)),
+    };
     let summary = match process.drive(&db, &mut conn) {
         Ok(summary) => summary,
         Err(e) => return fail(e),

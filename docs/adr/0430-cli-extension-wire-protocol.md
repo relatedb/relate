@@ -8,7 +8,9 @@ Later references: **superseded by [ADR-0447](0447-extension-single-wire.md)**
 handshake, the manifest `wire` field and the v1 child kit are retired.
 The caps (§4), the commit-intent vocabulary (§7), the request envelope
 (§6) and the exit classification (§5) survive in substance under the MCP
-mount.
+mount. ADR-0598 narrows §4's total stream cap to `whole-import`
+sessions; a `per-batch` session keeps the per-call caps and the store's
+live-graph limit.
 
 ## Context
 
