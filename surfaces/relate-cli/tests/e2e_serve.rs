@@ -408,9 +408,9 @@ fn test_bolt_surface_serves_a_session_and_is_advertised() {
 #[cfg(feature = "bolt")]
 #[test]
 fn test_bolt_port_zero_advertises_the_bound_port() {
-    use relate_bolt::packstream::Pack;
     use support::bolt::{
-        assert_run_pull_returns_one_row, connect_and_hello, failure_map, read_msg, success_map,
+        assert_run_pull_returns_one_row, connect_and_hello, failure_map, field, read_msg,
+        success_map,
     };
 
     let dir = tempdir();
@@ -446,11 +446,8 @@ fn test_bolt_port_zero_advertises_the_bound_port() {
     // A wrong credential against the same advertised port is the
     // Unauthorized FAILURE (the ADR-0139 delay applies), never a session.
     let mut client = connect_and_hello(port, "neo4j:not-the-password");
-    let failure = Pack::Map(failure_map(read_msg(&mut client)));
-    let message = failure
-        .get("message")
-        .and_then(Pack::as_str)
-        .expect("FAILURE metadata carries a message");
+    let failure = failure_map(read_msg(&mut client));
+    let message = field(&failure, "message");
     assert!(message.contains("authentication failed"), "{message}");
 
     child.stop();

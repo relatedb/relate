@@ -15,31 +15,17 @@ use super::field::PatternSymbol;
 use super::pattern::{
     invalid_value, mismatch, nanos_from_fraction, note_field, read_literal, read_number,
 };
-use super::{range_err, DurationField, Temporal};
+use super::{DurationField, Temporal};
 
-/// One compiled duration-pattern token, read off the shared token stream.
-/// Only the duration alphabet is a field token; every other character
-/// (including letters) is literal text, as in Neo4j's
-/// `DurationValue.parsePattern`. Run widths do not matter when parsing.
-#[derive(Debug, Clone)]
-enum DurationToken {
-    Field(DurationField),
-    Fraction,
-    Literal(String),
-}
-
-fn tokenize_duration(pattern: &str) -> Result<Vec<DurationToken>> {
+/// The duration pattern's token stream. Only the duration alphabet is a
+/// field token; every other character (including letters) is literal text,
+/// as in Neo4j's `DurationValue.parsePattern`. Run widths do not matter when
+/// parsing.
+fn tokenize_duration(pattern: &str) -> Result<Vec<Token>> {
     // An unpaired `'` is a malformed pattern, not a value mismatch
     // (Neo4j reports `pattern parsing failed`).
     let tokens = tokens::tokenize(pattern)
-        .map_err(|UnclosedEscape| invalid_value("pattern parsing failed"))?
-        .into_iter()
-        .map(|token| match token {
-            Token::Literal(text) => DurationToken::Literal(text),
-            Token::Symbol(PatternSymbol::Field(field), _) => DurationToken::Field(field),
-            Token::Symbol(PatternSymbol::FractionDigits, _) => DurationToken::Fraction,
-        })
-        .collect::<Vec<_>>();
+        .map_err(|UnclosedEscape| invalid_value("pattern parsing failed"))?;
     reject_duplicate_duration_fields(&tokens)?;
     Ok(tokens)
 }
@@ -54,13 +40,13 @@ enum DuplicateSlot {
     Fraction,
 }
 
-fn reject_duplicate_duration_fields(tokens: &[DurationToken]) -> Result<()> {
+fn reject_duplicate_duration_fields(tokens: &[Token]) -> Result<()> {
     let mut seen = BTreeSet::new();
     for token in tokens {
         let slot = match token {
-            DurationToken::Field(field) => DuplicateSlot::Field(*field),
-            DurationToken::Fraction => DuplicateSlot::Fraction,
-            DurationToken::Literal(_) => continue,
+            Token::Symbol(PatternSymbol::Field(field), _) => DuplicateSlot::Field(*field),
+            Token::Symbol(PatternSymbol::FractionDigits, _) => DuplicateSlot::Fraction,
+            Token::Literal(_) => continue,
         };
         note_field(&mut seen, slot)?;
     }
@@ -76,12 +62,12 @@ pub(super) fn parse_duration_pattern(value: &str, pattern: &str) -> Result<Tempo
     let mut pos = 0usize;
     for token in &tokens {
         match token {
-            DurationToken::Literal(text) => {
+            Token::Literal(text) => {
                 if read_literal(value, &mut pos, text).is_none() {
                     return Err(mismatch());
                 }
             }
-            DurationToken::Field(field) => {
+            Token::Symbol(PatternSymbol::Field(field), _) => {
                 let number = match read_number(value, &mut pos, None, true)? {
                     Some(number) => number,
                     None => return Err(mismatch()),
@@ -91,13 +77,11 @@ pub(super) fn parse_duration_pattern(value: &str, pattern: &str) -> Result<Tempo
                 // the sub-second fields into a nanosecond count. Keep that
                 // width check; the calendar fields' final widths are then
                 // checked by `finish` and the stored-range contract.
-                let (accumulator, scale) = field.scaled(&mut tiers);
-                let (_, unit) = field.lane_and_unit();
-                let check_unit = i64::try_from(unit).expect("every lane unit fits i64");
-                number.value.checked_mul(check_unit).ok_or_else(range_err)?;
-                accumulator.add_whole(i128::from(number.value), scale)?;
+                let slot = field.slot(&mut tiers);
+                slot.accumulator
+                    .add_whole_in_lane(number.value, slot.scale, slot.lane_unit)?;
             }
-            DurationToken::Fraction => {
+            Token::Symbol(PatternSymbol::FractionDigits, _) => {
                 let number = match read_number(value, &mut pos, None, false)? {
                     Some(number) => number,
                     None => return Err(mismatch()),

@@ -157,13 +157,7 @@ impl From<DynamicAccessError> for Error {
 /// The one dynamic property-key rule: the key must be a non-empty, NUL-free
 /// `STRING`.
 pub fn dynamic_property_key(value: &Value) -> Result<String, DynamicAccessError> {
-    match value {
-        Value::String(key) => validated_name(DynamicNameToken::PropertyKey, key),
-        other => Err(DynamicAccessError::wrong_type(
-            DynamicNameToken::PropertyKey,
-            bare_type_name(other),
-        )),
-    }
+    string_name(DynamicNameToken::PropertyKey, value)
 }
 
 /// The one dynamic label/type rule: the operand must be a `STRING` or a
@@ -179,12 +173,16 @@ pub fn dynamic_label_names(value: &Value) -> Result<Vec<String>, DynamicAccessEr
 /// a scalar operand is one name, a list operand applies it per element, so a
 /// wrong element and a wrong scalar report the identical 22NB1 detail.
 fn label_name(item: &Value) -> Result<String, DynamicAccessError> {
-    match item {
-        Value::String(name) => validated_name(DynamicNameToken::Label, name),
-        other => Err(DynamicAccessError::wrong_type(
-            DynamicNameToken::Label,
-            bare_type_name(other),
-        )),
+    string_name(DynamicNameToken::Label, item)
+}
+
+/// The one string-or-wrong-type rule both dynamic name positions share: a
+/// `STRING` is validated as a name for `token`; any other value is the
+/// wrong-type rejection naming `token`.
+fn string_name(token: DynamicNameToken, value: &Value) -> Result<String, DynamicAccessError> {
+    match value {
+        Value::String(name) => validated_name(token, name),
+        other => Err(DynamicAccessError::wrong_type(token, bare_type_name(other))),
     }
 }
 

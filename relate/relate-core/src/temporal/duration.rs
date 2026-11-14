@@ -196,8 +196,9 @@ fn parse_duration_part(
             ('S', Part::Time) => DurationField::Seconds,
             _ => return Err(Error::ty("invalid duration component")),
         };
-        let (accumulator, scale) = field.scaled(tiers);
-        accumulator.add_unit(component.whole, component.frac, scale)?;
+        let slot = field.slot(tiers);
+        slot.accumulator
+            .add_unit(component.whole, component.frac, slot.scale)?;
     }
     Ok(())
 }

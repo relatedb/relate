@@ -60,7 +60,7 @@ pub fn composite_only_graph_function(attempted: &str) -> Error {
 /// spelling is shared by the planner's `USE`-target resolver and its
 /// expression checker. `attempted` is the call as written
 /// (`graph.byElementId()`).
-pub fn graph_selector_arity_error(attempted: &str, expected: usize, got: usize) -> Error {
+pub(crate) fn graph_selector_arity_error(attempted: &str, expected: usize, got: usize) -> Error {
     Error::syntax(format!(
         "{}: {attempted} expects {expected} argument(s), got {got}",
         ErrorKind::InvalidNumberOfArguments.as_str()
@@ -74,7 +74,7 @@ pub fn graph_selector_arity_error(attempted: &str, expected: usize, got: usize) 
 /// `USE`-target resolver and the expression checker) call this, and a
 /// correct arity is a no-op (the composite-database refusal is theirs).
 pub fn check_graph_selector_arity(attempted: &str, name: &str, got: usize) -> Result<(), Error> {
-    match crate::graph_selector_arity(name) {
+    match crate::namespace::graph_selector_arity(name) {
         Some(expected) if got != expected => {
             Err(graph_selector_arity_error(attempted, expected, got))
         }

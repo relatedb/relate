@@ -95,8 +95,9 @@ pub fn expected_value_type_detail(expected: &str, value: &Value) -> String {
     )
 }
 
-/// The CIP-100 union type name of a list's element types: an empty (or
-/// all-null) list renders `LIST<NOTHING>`; otherwise the element types
+/// The CIP-100 union type name of a list's element types: an empty list
+/// renders `LIST<NOTHING>`, an all-null list `LIST<NULL>` (its null
+/// members are the only element type); otherwise the element types
 /// are built once ([`ElementType::of`]), sorted ([`sort_union_members`]),
 /// deduplicated, subtype-subsumed ([`retain_not_subsumed`]) and joined —
 /// a null sibling's outer suffix strip applied once, here, where the
@@ -476,6 +477,13 @@ mod tests {
     /// empty-row-set marker vs the surviving NULL row).
     #[test]
     fn unions_elide_empty_sequences_but_keep_all_null_elements() {
+        // The top-level contract: an empty list is NOTHING, an all-null
+        // list keeps its NULL element type.
+        assert_eq!(value_type_name(&list(Vec::new())), "LIST<NOTHING> NOT NULL");
+        assert_eq!(
+            value_type_name(&list(vec![Value::Null, Value::Null])),
+            "LIST<NULL> NOT NULL"
+        );
         // [[], [1]] and [[null], []]: the empty element drops, the
         // all-null one stays.
         assert_eq!(

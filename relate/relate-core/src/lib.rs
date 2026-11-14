@@ -6,6 +6,7 @@
 /// surfaces can never disagree). Fixed constant, no knob (ADR-0514).
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
+mod arity;
 mod auto_literal;
 mod cancel;
 pub mod ce_messages;
@@ -28,6 +29,11 @@ mod traversal;
 mod typename;
 mod value;
 
+pub use arity::{
+    builtin_arity, ArityContract, CHAR_LENGTH_ARITY, FORMAT_ARITY,
+    FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS, FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
+    NULLIF_ARITY, NULLIF_REQUIRES_TWO_ARGUMENTS, VECTOR_ARITY, VECTOR_REQUIRES_THREE_ARGUMENTS,
+};
 pub use auto_literal::{auto_literal, AutoLiteralGuard};
 pub use cancel::CancelToken;
 pub use convert::{column_type_name, cypher_to_value, value_to_cypher};
@@ -35,11 +41,8 @@ pub use dynamic::{
     dynamic_label_names, dynamic_property_key, DynamicAccessError, DynamicNameToken,
 };
 pub use error::{
-    builtin_arity, expected_type_detail, negative_page_bound_text, uniqueness_violation_detail,
-    ArithmeticFailure, ArityContract, CapacityKind, Error, Result, CHAR_LENGTH_ARITY, FORMAT_ARITY,
-    FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS, FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
-    NEGATIVE_PAGE_BOUND_DETAIL, NULLIF_ARITY, NULLIF_REQUIRES_TWO_ARGUMENTS, VECTOR_ARITY,
-    VECTOR_REQUIRES_THREE_ARGUMENTS,
+    expected_type_detail, negative_page_bound_text, uniqueness_violation_detail, ArithmeticFailure,
+    CapacityKind, Error, Result, NEGATIVE_PAGE_BOUND_DETAIL,
 };
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
@@ -50,8 +53,8 @@ pub use memory_limit::{
     require_positive_memory_limit,
 };
 pub use namespace::{
-    graph_selector_arity, is_graph_selector_function_name, node_element_id, parse_node_element_id,
-    parse_rel_element_id, rel_element_id, ElementIdRef, Namespace, GRAPH_SELECTOR_FUNCTIONS,
+    is_graph_selector_function_name, node_element_id, parse_node_element_id, parse_rel_element_id,
+    rel_element_id, ElementIdRef, Namespace, GRAPH_SELECTOR_FUNCTIONS,
     GRAPH_SELECTOR_FUNCTION_NAMES,
 };
 pub use preview::{

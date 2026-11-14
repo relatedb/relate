@@ -3,6 +3,7 @@
 //! ADR-0489, ADR-0492), and the shared class/detail helpers.
 
 use super::*;
+use crate::arity::*;
 
 #[test]
 fn capacity_display_is_stable() {

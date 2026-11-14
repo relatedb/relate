@@ -660,8 +660,8 @@ fn duration_from_map(m: &Fields) -> Result<Temporal> {
     }
     let mut tiers = DurationTiers::default();
     for (field, number) in &values {
-        let (accumulator, scale) = field.scaled(&mut tiers);
-        accumulator.add(*number, scale)?;
+        let slot = field.slot(&mut tiers);
+        slot.accumulator.add(*number, slot.scale)?;
     }
     let (months, days, nanos) = tiers.finish()?;
     Temporal::duration_checked(months, days, nanos)
@@ -683,7 +683,7 @@ fn integral_duration(
     // all-integral guard makes every present field an Int; an absent field
     // contributes zero. The nanosecond tier splits at whole seconds: its
     // seconds lane counts in seconds, its sub-second lane in nanoseconds.
-    let (mut months, mut days, mut seconds, mut subsecond) = (0i128, 0i128, 0i128, 0i128);
+    let mut lanes = [0i128; DurationLane::COUNT];
     for field in DurationField::CASCADE {
         let Some(number) = values.get(&field) else {
             continue;
@@ -692,17 +692,13 @@ fn integral_duration(
             .as_int()
             .expect("the all-integral guard makes every present field an Int");
         let (lane, unit) = field.lane_and_unit();
-        match lane {
-            DurationLane::Months => months += n * unit,
-            DurationLane::Days => days += n * unit,
-            DurationLane::Seconds => seconds += n * unit,
-            DurationLane::SubSecond => subsecond += n * unit,
-        }
+        lanes[lane as usize] += n * unit;
     }
-    let months = checked_lane(months, "duration()")?;
-    let days = checked_lane(days, "duration()")?;
-    let seconds = checked_lane(seconds, "duration()")?;
-    let subsecond = checked_lane(subsecond, "duration()")?;
+    let lane = |lane: DurationLane| checked_lane(lanes[lane as usize], "duration()");
+    let months = lane(DurationLane::Months)?;
+    let days = lane(DurationLane::Days)?;
+    let seconds = lane(DurationLane::Seconds)?;
+    let subsecond = lane(DurationLane::SubSecond)?;
     Temporal::duration_checked_exact(
         months,
         days,

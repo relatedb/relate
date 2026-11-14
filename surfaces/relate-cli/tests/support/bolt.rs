@@ -63,8 +63,18 @@ pub fn success_map(msg: Pack) -> Vec<(Pack, Pack)> {
     tagged_map(msg, 0x70, "SUCCESS")
 }
 
-pub fn failure_map(msg: Pack) -> Vec<(Pack, Pack)> {
-    tagged_map(msg, 0x7F, "FAILURE")
+/// The FAILURE metadata as a [`Pack::Map`], so a test reads fields through
+/// [`field`] (or the canonical `Pack::get`) without re-wrapping the pairs.
+pub fn failure_map(msg: Pack) -> Pack {
+    Pack::Map(tagged_map(msg, 0x7F, "FAILURE"))
+}
+
+/// A string field of a metadata [`Pack::Map`]; panics when absent or not a
+/// string.
+pub fn field<'a>(map: &'a Pack, key: &str) -> &'a str {
+    map.get(key)
+        .and_then(Pack::as_str)
+        .unwrap_or_else(|| panic!("missing string field {key}"))
 }
 
 pub fn handshake<S: Read + Write>(stream: &mut S) {

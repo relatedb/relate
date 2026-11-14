@@ -180,7 +180,9 @@ fn test_read_only_serve_sigint_is_clean_and_writes_nothing() {
 #[test]
 fn test_bolt_write_on_a_read_only_serve_fails() {
     use relate_bolt::packstream::Pack;
-    use support::bolt::{connect_and_hello, failure_map, read_msg, send_struct, success_map};
+    use support::bolt::{
+        connect_and_hello, failure_map, field, read_msg, send_struct, success_map,
+    };
 
     let dir = tempdir();
     let db = dir.path().join("graph").to_str().unwrap().to_string();
@@ -218,12 +220,9 @@ fn test_bolt_write_on_a_read_only_serve_fails() {
     );
     success_map(read_msg(&mut client));
     send_struct(&mut client, 0x3F, vec![Pack::Map(vec![])]);
-    // Metadata reads go through the canonical Pack::get accessor.
-    let failure = Pack::Map(failure_map(read_msg(&mut client)));
-    let message = failure
-        .get("message")
-        .and_then(Pack::as_str)
-        .expect("FAILURE metadata carries a message");
+    // Metadata reads go through the canonical `field` accessor.
+    let failure = failure_map(read_msg(&mut client));
+    let message = field(&failure, "message");
     assert!(message.contains("read-only"), "{message}");
 
     child.stop();

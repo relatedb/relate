@@ -33,7 +33,8 @@ payload carries its own documented code, resolved by the same canonical
 scan the bindings use. The per-class code constants
 (`relate_error::SYNTAX_ERROR_CODE`, …) are the classification's own
 data, defined and exported by `relate_error` (the `relate` facade
-re-exports only `error_info`, `ErrorInfo` and `ErrorStage`); the
+re-exports `error_info`, `ErrorInfo`, `ErrorStage`, `client_message`,
+`log_internal_original`, `INTERNAL_ERROR_INFO` and `INTERNAL_MESSAGE`); the
 GQLSTATUS values HTTP's envelope restates are likewise public there
 (`relate_error::GQLSTATUS_GENERAL`, `GQLSTATUS_SYNTAX`,
 `GQLSTATUS_DATABASE_NOT_FOUND`).

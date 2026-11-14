@@ -12,7 +12,7 @@ mod support;
 
 use relate_bolt::packstream::Pack;
 use relate_test_support::loopback::{exchange, post};
-use support::bolt::{connect_and_hello, failure_map, read_msg, send_struct, success_map};
+use support::bolt::{connect_and_hello, failure_map, field, read_msg, send_struct, success_map};
 use support::serve::{auth_header, free_port, spawn_serve_with, wait_for_ports, AUTH};
 use support::{run_cli, tempdir, CliRunOptions};
 
@@ -58,11 +58,9 @@ fn test_bolt_explicit_commit_over_the_cap_is_a_capacity_failure() {
     success_map(read_msg(&mut client));
     // The refusal arrives at COMMIT, after the whole transaction streamed.
     send_struct(&mut client, 0x12, vec![]); // COMMIT
-    let failure = Pack::Map(failure_map(read_msg(&mut client)));
-    let code = failure.get("code").and_then(Pack::as_str).unwrap();
-    assert_eq!(code, CAPACITY_CODE);
-    assert_ne!(code, "Neo.DatabaseError.General.UnknownError");
-    assert_names_the_cap_and_the_remedy(failure.get("message").and_then(Pack::as_str).unwrap());
+    let failure = failure_map(read_msg(&mut client));
+    assert_eq!(field(&failure, "code"), CAPACITY_CODE);
+    assert_names_the_cap_and_the_remedy(field(&failure, "message"));
 
     child.stop();
 }

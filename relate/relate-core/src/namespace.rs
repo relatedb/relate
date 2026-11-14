@@ -183,7 +183,7 @@ pub fn is_graph_selector_function_name(name: &str) -> bool {
 /// rather than the composite-database 42N72 refusal (SemanticErrorPart3
 /// "graph.byElementId with no argument is rejected"). `None` for a name
 /// that is not a selector.
-pub fn graph_selector_arity(name: &str) -> Option<usize> {
+pub(crate) fn graph_selector_arity(name: &str) -> Option<usize> {
     GRAPH_SELECTOR_FUNCTIONS
         .iter()
         .find(|(selector, _)| name.eq_ignore_ascii_case(selector))

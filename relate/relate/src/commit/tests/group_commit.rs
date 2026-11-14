@@ -160,6 +160,16 @@ fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_afte
     // ADR-0494: the refusal is the capacity family's WalPayload kind, its
     // communicative line naming the WAL record and the cap (both figures
     // in MiB).
+    assert!(
+        matches!(
+            error,
+            relate_core::Error::Capacity {
+                kind: relate_core::CapacityKind::WalPayload,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
     assert!(error.to_string().contains("single WAL record"), "{error}");
     assert!(error.to_string().contains("64 MiB"), "{error}");
     assert_eq!(shared.wal.lock().unwrap().lsn, 1);

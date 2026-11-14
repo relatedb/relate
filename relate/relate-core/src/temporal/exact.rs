@@ -85,6 +85,21 @@ impl ExactAccumulator {
         )
     }
 
+    /// [`Self::add_whole`] for a pattern component, after the stored-width
+    /// check: Neo4j's pattern parser scales each component in a `long`, so
+    /// `whole * lane_unit` (the field's unit in its storage lane) must fit
+    /// `i64` before the component is summed.
+    pub(super) fn add_whole_in_lane(
+        &mut self,
+        whole: i64,
+        scale: i128,
+        lane_unit: i128,
+    ) -> Result<()> {
+        let width = i64::try_from(lane_unit).expect("every lane unit fits i64");
+        whole.checked_mul(width).ok_or_else(range_err)?;
+        self.add_whole(i128::from(whole), scale)
+    }
+
     /// Add one parsed numeral component: [`Self::add_whole`] for the integer
     /// part, plus the fractional part `frac * scale` through
     /// [`Self::add_float`] — the one unit helper (hour/minute/second and the
