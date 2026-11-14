@@ -126,7 +126,34 @@ private struct Embedded: Decodable, Equatable {
                 "RETURN 'k' AS key, 't' AS title, [] AS subjects, datetime() AS addedOn, 'burned' AS shelf"
             ).decode(Book.self)
         }
-        #expect(failure.path == ["shelf"])
+        #expect(failure.path == ["shelf"] && failure.found == "a value the type refuses")
+        #expect(failure.reason?.contains("burned") == true)
+    }
+
+    @Test func anErrorFromATypesOwnDecodingIsAMismatch() throws {
+        struct Unhappy: Error {}
+        struct Picky: Decodable {
+            enum Keys: String, CodingKey { case n }
+            init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: Keys.self)
+                let n = try container.decode(Int.self, forKey: .n)
+                guard n > 0 else {
+                    throw DecodingError.typeMismatch(
+                        UInt.self,
+                        .init(codingPath: container.codingPath + [Keys.n], debugDescription: "\(n) is not positive"))
+                }
+                guard n < 10 else { throw Unhappy() }
+            }
+        }
+        let decoder = CypherValueDecoder()
+        _ = try decoder.decode([Picky].self, from: [["n": 1]])
+        var failure = try resultMismatch { _ = try decoder.decode([Picky].self, from: [["n": 1], ["n": 0]]) }
+        #expect(failure.path == ["[1]", "n"] && failure.expected == "UInt")
+        #expect(failure.found == "a value of another type" && failure.reason == "0 is not positive")
+        // An error that is not a `DecodingError` names no path of its own.
+        failure = try resultMismatch { _ = try decoder.decode(Picky.self, from: ["n": 10]) }
+        #expect(failure.path.isEmpty && failure.found == "an error from the type's decoding")
+        #expect(failure.reason?.contains("Unhappy") == true)
     }
 
     @Test func anEncodeFailureIsAnInvalidParameter() throws {
@@ -171,23 +198,17 @@ private struct Embedded: Decodable, Equatable {
         #expect(try CypherValue(encoding: [String]()) == .list([]))
         #expect(try CypherValue(encoding: Optional<Int>.none) == .null)
         struct Explicit: Encodable {
+            enum Keys: String, CodingKey { case gone, list, k }
             func encode(to encoder: any Encoder) throws {
-                var container = encoder.container(keyedBy: AnyKey.self)
-                try container.encodeNil(forKey: AnyKey(stringValue: "gone")!)
-                var list = container.nestedUnkeyedContainer(forKey: AnyKey(stringValue: "list")!)
+                var container = encoder.container(keyedBy: Keys.self)
+                try container.encodeNil(forKey: .gone)
+                var list = container.nestedUnkeyedContainer(forKey: .list)
                 try list.encode(1)
                 try list.encodeNil()
-                var inner = list.nestedContainer(keyedBy: AnyKey.self)
-                try inner.encode("v", forKey: AnyKey(stringValue: "k")!)
+                var inner = list.nestedContainer(keyedBy: Keys.self)
+                try inner.encode("v", forKey: .k)
             }
         }
         #expect(try CypherValue(encoding: Explicit()) == ["gone": nil, "list": [1, nil, ["k": "v"]]])
     }
-}
-
-private struct AnyKey: CodingKey {
-    var stringValue: String
-    var intValue: Int? { nil }
-    init?(stringValue: String) { self.stringValue = stringValue }
-    init?(intValue: Int) { nil }
 }

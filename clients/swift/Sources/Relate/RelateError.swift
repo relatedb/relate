@@ -91,7 +91,8 @@ public struct ResultMismatch: Sendable, Hashable {
     public let expected: String
     /// What was there: a value kind (`null`, `string`), or a shape.
     public let found: String
-    /// Why an in-kind value still did not convert (`300 is out of range`).
+    /// Why an in-kind value still did not convert (`300 is out of range`),
+    /// or the text of the error a type's own `init(from:)` threw.
     public let reason: String?
 
     init(path: [String], expected: String, found: String, reason: String? = nil) {

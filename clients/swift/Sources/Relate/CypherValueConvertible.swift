@@ -38,9 +38,13 @@ func payload<T, Payload>(
 }
 
 /// The one mismatch a result of the wrong shape reports: a missing column,
-/// a row count other than the one asked for.
-func shapeMismatch(path: [String] = [], expected: String, found: String) -> RelateError {
-    .unexpectedResult(ResultMismatch(path: path, expected: expected, found: found))
+/// a row count other than the one asked for, a value a `Decodable` type
+/// does not decode from. Text that may quote a result value goes in
+/// `reason`, which the message sanitizes.
+func shapeMismatch(
+    path: [String] = [], expected: String, found: String, reason: String? = nil
+) -> RelateError {
+    .unexpectedResult(ResultMismatch(path: path, expected: expected, found: found, reason: reason))
 }
 
 /// The one nested conversion: `value` as a `T`, with `component` (a column

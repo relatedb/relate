@@ -48,37 +48,40 @@ public struct CypherValueDecoder: Sendable {
     }
 
     /// Runs a decode, turning whatever it throws into the package's error:
-    /// its own passes through, a `DecodingError` (thrown by a type's
-    /// hand-written `init(from:)`) becomes a mismatch at its coding path.
+    /// its own passes through, anything else (thrown by a type's
+    /// hand-written `init(from:)`) becomes a mismatch.
     private func typed<T>(_ body: () throws -> T) throws(RelateError) -> T {
         do {
             return try body()
         } catch let error as RelateError {
             throw error
-        } catch let error as DecodingError {
-            throw RelateError.unexpectedResult(mismatch(for: error))
         } catch {
-            throw shapeMismatch(expected: "a decodable value", found: "\(error)")
+            throw mismatch(for: error)
         }
     }
 
-    private func mismatch(for error: DecodingError) -> ResultMismatch {
-        switch error {
+    /// The mismatch for an error a type's own `init(from:)` threw: at its
+    /// coding path when it is a `DecodingError`. The error's own text can
+    /// quote the value it refused, so it travels as the reason, which the
+    /// message sanitizes; `found` stays a fixed phrase.
+    private func mismatch(for error: any Error) -> RelateError {
+        switch error as? DecodingError {
         case .keyNotFound(let key, let context):
-            ResultMismatch(
-                path: mismatchPath(context.codingPath + [key]), expected: "a value", found: "no such key")
+            missingKey(at: context.codingPath + [key])
         case .typeMismatch(let type, let context):
-            ResultMismatch(
+            shapeMismatch(
                 path: mismatchPath(context.codingPath), expected: "\(type)",
-                found: context.debugDescription)
+                found: "a value of another type", reason: context.debugDescription)
         case .valueNotFound(let type, let context):
-            ResultMismatch(path: mismatchPath(context.codingPath), expected: "\(type)", found: "null")
+            shapeMismatch(path: mismatchPath(context.codingPath), expected: "\(type)", found: "null")
         case .dataCorrupted(let context):
-            ResultMismatch(
+            shapeMismatch(
                 path: mismatchPath(context.codingPath), expected: "a valid value",
-                found: context.debugDescription)
-        @unknown default:
-            ResultMismatch(path: [], expected: "a decodable value", found: "\(error)")
+                found: "a value the type refuses", reason: context.debugDescription)
+        default:
+            shapeMismatch(
+                expected: "a decodable value", found: "an error from the type's decoding",
+                reason: "\(error)")
         }
     }
 }
@@ -134,11 +137,10 @@ private enum Source {
     case record(Record)
 }
 
-private func failure(
-    _ codingPath: [any CodingKey], expected: String, found: String, reason: String? = nil
-) -> RelateError {
-    .unexpectedResult(
-        ResultMismatch(path: mismatchPath(codingPath), expected: expected, found: found, reason: reason))
+/// The one mismatch for a key that is not there: `codingPath` ends in the
+/// missing key.
+private func missingKey(at codingPath: [any CodingKey]) -> RelateError {
+    shapeMismatch(path: mismatchPath(codingPath), expected: "a value", found: "no such key")
 }
 
 /// Decodes one `T` from a source: through `CypherValueConvertible` when the
@@ -171,7 +173,9 @@ private func singleValue(
         return value
     case .record(let record):
         guard record.count == 1 else {
-            throw failure(codingPath, expected: expected, found: "a record of \(record.count) columns")
+            throw shapeMismatch(
+                path: mismatchPath(codingPath), expected: expected,
+                found: "a record of \(record.count) columns")
         }
         return record[0]
     }
@@ -191,7 +195,9 @@ private struct SourceDecoder: Decoder {
             return record.dictionary
         case .value(let value):
             guard let entries = value.entries else {
-                throw failure(codingPath, expected: "a map, node or relationship", found: value.kind.name)
+                throw shapeMismatch(
+                    path: mismatchPath(codingPath), expected: "a map, node or relationship",
+                    found: value.kind.name)
             }
             return entries
         }
@@ -205,7 +211,7 @@ private struct SourceDecoder: Decoder {
     func unkeyedContainer() throws -> any UnkeyedDecodingContainer {
         let value = try singleValue(of: source, codingPath: codingPath, expected: "a list")
         guard let items = value.sequenceItems else {
-            throw failure(codingPath, expected: "a list", found: value.kind.name)
+            throw shapeMismatch(path: mismatchPath(codingPath), expected: "a list", found: value.kind.name)
         }
         return UnkeyedSource(items: items, codingPath: codingPath, keyStrategy: keyStrategy)
     }
@@ -229,16 +235,18 @@ private struct KeyedSource<Key: CodingKey>: KeyedDecodingContainerProtocol {
         keyStrategy.lookupKeys(for: key.stringValue)
     }
 
-    func contains(_ key: Key) -> Bool {
-        names(key).contains { entries[$0] != nil }
+    /// The one lookup: the entry under the first of `names` that exists.
+    private func entry(named names: [String]) -> CypherValue? {
+        names.lazy.compactMap { entries[$0] }.first
     }
 
-    /// The entry under the first of `names` that exists; a missing one is
-    /// reported at `key`.
+    func contains(_ key: Key) -> Bool {
+        entry(named: names(key)) != nil
+    }
+
+    /// The entry `names` finds; a missing one is reported at `key`.
     private func value(at key: any CodingKey, named names: [String]) throws -> CypherValue {
-        guard let value = names.lazy.compactMap({ entries[$0] }).first else {
-            throw failure(codingPath + [key], expected: "a value", found: "no such key")
-        }
+        guard let value = entry(named: names) else { throw missingKey(at: codingPath + [key]) }
         return value
     }
 
@@ -298,7 +306,9 @@ private struct UnkeyedSource: UnkeyedDecodingContainer {
 
     private func next(expecting expected: String) throws -> CypherValue {
         guard !isAtEnd else {
-            throw failure(nextPath, expected: expected, found: "the end of a list of \(items.count)")
+            throw shapeMismatch(
+                path: mismatchPath(nextPath), expected: expected,
+                found: "the end of a list of \(items.count)")
         }
         return items[currentIndex]
     }

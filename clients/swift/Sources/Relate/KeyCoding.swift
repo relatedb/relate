@@ -49,7 +49,8 @@ func snakeCased(_ key: String) -> String {
     return out
 }
 
-/// A coding key made at run time (a list position, a dynamic map key).
+/// A coding key made at run time: a column or map key under its own name,
+/// a list position as `[2]`.
 struct AnyCodingKey: CodingKey {
     let stringValue: String
     let intValue: Int?
@@ -69,8 +70,8 @@ struct AnyCodingKey: CodingKey {
 /// (the name `JSONEncoder` uses).
 let superCodingKey = AnyCodingKey(stringValue: "super")
 
-/// A coding path as a ``ResultMismatch`` path: key names, and list
-/// positions as `[2]`.
+/// A coding path as a ``ResultMismatch`` path: each key as it spells
+/// itself (``AnyCodingKey`` spells a list position `[2]`).
 func mismatchPath(_ codingPath: [any CodingKey]) -> [String] {
-    codingPath.map { $0.intValue.map { "[\($0)]" } ?? $0.stringValue }
+    codingPath.map(\.stringValue)
 }

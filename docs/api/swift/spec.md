@@ -91,7 +91,7 @@ public struct ResultMismatch: Sendable, Hashable {
     public let path: [String]      // the column, then map keys and list positions ("[2]") below it; [] for a whole-result shape
     public let expected: String    // a Swift type name, or a shape ("exactly one record")
     public let found: String       // a value kind ("null", "string"), or a shape ("2 records")
-    public let reason: String?     // why an in-kind value did not convert ("300 is out of range")
+    public let reason: String?     // why an in-kind value did not convert ("300 is out of range"), or the text of a type's own decoding error
     public var message: String     // "rating: expected Double, found null"
 }
 
@@ -326,7 +326,9 @@ QueryResult.decode<T: Decodable>(_: T.Type = T.self, column: String, using: Cyph
 - **Failures** throw `.unexpectedResult` with the full path:
   `["shelf", "books", "[1]", "n"]` is column `shelf`, key `books`, second
   element, key `n`. A `DecodingError` thrown by a type's own `init(from:)`
-  is reported the same way at its coding path.
+  is reported the same way at its coding path, and any other error it throws
+  with an empty path. The error's own text, which can quote the value it
+  refused, is the mismatch's `reason`; `found` is a fixed phrase.
 
 ## Bridges
 

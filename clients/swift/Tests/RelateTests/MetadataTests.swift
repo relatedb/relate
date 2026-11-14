@@ -8,6 +8,11 @@ private enum HostileRawValue: String, CypherValueConvertible {
     case calm
 }
 
+/// A raw-value type decoded by Foundation, whose error quotes the raw value.
+private enum HostileDecodable: String, Decodable {
+    case calm
+}
+
 @Suite struct MetadataTests {
     let conn = try! Database.inMemory().connect()
 
@@ -126,11 +131,14 @@ private enum HostileRawValue: String, CypherValueConvertible {
         let nested = try resultMismatch { _ = try record.get(hostile, as: [String: Int].self) }
         let absent = try resultMismatch { _ = try record.get("absent", as: Int.self) }
         let raw = try resultMismatch { _ = try HostileRawValue(cypherValue: .string(hostile)) }
+        let decoded = try resultMismatch {
+            _ = try CypherValueDecoder().decode(HostileDecodable.self, from: .string(hostile))
+        }
         // The fields hold the strings as they are; only the message is sanitized.
         #expect(nested.path == [hostile, hostile])
         #expect(absent.path == ["absent"])
-        #expect(raw.reason?.contains(hostile) == true)
-        for mismatch in [nested, absent, raw] {
+        #expect(raw.reason?.contains(hostile) == true && decoded.reason?.contains(hostile) == true)
+        for mismatch in [nested, absent, raw, decoded] {
             assertSanitized(mismatch.message)
             #expect(mismatch.message.contains("\\u000d\\u000a"))
             #expect(RelateError.unexpectedResult(mismatch).message == mismatch.message)
