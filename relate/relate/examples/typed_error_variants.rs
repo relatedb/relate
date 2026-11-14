@@ -69,7 +69,7 @@ fn main() {
     ));
     assert!(err
         .to_string()
-        .contains("per-record WAL payload cap is 64 MB"));
+        .contains("per-commit WAL payload cap is 64 MiB"));
     // ADR-0567: a shortest-path statement whose two endpoint maps each match
     // more than the listing limit is refused, never truncated. Reaching the
     // limit needs over a million nodes, so the example builds the refusal

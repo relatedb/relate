@@ -749,6 +749,7 @@ HTTP status and `code` by failure:
 | 400 | `51N27` | unsupported database-administration command (ADR-0116) |
 | 400 | `42N18` | write against the read-only `system_ontologies` namespace |
 | 400 | `42000` | any other caller-facing engine error |
+| 507 | `42000` | engine `Capacity`: the graph cap, the 256 MiB expression cap, or the 64 MiB per-commit WAL payload cap (ADR-0494) — the message names the cap and, for the commit cap, the batching remedy (`CALL { … } IN TRANSACTIONS OF n ROWS` or client-side batches); never the generic 500 |
 | 500 | `50N42` | engine-internal error; the message is genericized per the ADR-0260 trust-boundary rule (OPLANE_REQ-00340359) |
 | 500 | `42000` | IO, storage and locked failures — the server's own failure, previously mis-filed as a 400; the message is genericized the same way |
 

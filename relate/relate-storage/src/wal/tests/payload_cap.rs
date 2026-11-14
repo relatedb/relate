@@ -72,7 +72,7 @@ fn wal_oversize_append_leaves_lsn_and_file_unchanged() {
     assert!(err.to_string().contains("single WAL record"), "{err}");
     assert!(
         err.to_string()
-            .contains("per-record WAL payload cap is 64 MB"),
+            .contains("per-commit WAL payload cap is 64 MiB"),
         "{err}"
     );
     assert_eq!(wal.lsn, 0);

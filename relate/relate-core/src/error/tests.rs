@@ -63,8 +63,8 @@ fn locked_is_distinct_from_storage_and_io() {
 /// `WalPayload` kind — the memory-limit class on every surface — and its
 /// Display is the communicative capacity line: what hit the limit (a
 /// single WAL commit record), the counted lower bound, and the knob (the
-/// per-record cap), both figures rendered through the one `human_bytes`
-/// policy from the `limit` the check consulted (`WAL_PAYLOAD_CAP_BYTES`
+/// per-record cap), both figures rendered in MiB through `wal_mib`
+/// (the unit ADR-0086 states the cap in) from the `limit` the check consulted (`WAL_PAYLOAD_CAP_BYTES`
 /// at both refusal sites).
 #[test]
 fn wal_payload_cap_renders_the_capacity_memory_limit_line() {
@@ -75,9 +75,10 @@ fn wal_payload_cap_renders_the_capacity_memory_limit_line() {
     assert_eq!(
         error.to_string(),
         "This statement tried to commit a single WAL record of at least \
-         66 MB. This is a safety limit protecting against memory \
-         exhaustion — the per-record WAL payload cap is 64 MB; commit \
-         the data in smaller transactions."
+         66 MiB. This is a safety limit protecting against memory \
+         exhaustion — the per-commit WAL payload cap is 64 MiB (ADR-0086); \
+         commit the data in smaller transactions (CALL { … } IN \
+         TRANSACTIONS OF n ROWS, or client-side batches)."
     );
     assert!(matches!(
         &error,

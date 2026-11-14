@@ -45,13 +45,17 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              it with --expression-memory-limit.",
             human_bytes(used)
         ),
+        // The cap is named in the binary unit ADR-0086 states it in
+        // (`64 MiB`), so the message and the spec agree; the remedy names
+        // the batching forms that stay under it.
         CapacityKind::WalPayload => format!(
             "This statement tried to commit a single WAL record of at \
              least {}. This is a safety limit protecting against memory \
-             exhaustion — the per-record WAL payload cap is {}; commit the \
-             data in smaller transactions.",
-            human_bytes(used),
-            human_bytes(limit)
+             exhaustion — the per-commit WAL payload cap is {} (ADR-0086); \
+             commit the data in smaller transactions (CALL {{ … }} IN \
+             TRANSACTIONS OF n ROWS, or client-side batches).",
+            wal_mib(used),
+            wal_mib(limit)
         ),
         CapacityKind::SeekCandidates => format!(
             "A shortest-path endpoint pattern matches at least {used} nodes; \
@@ -60,6 +64,16 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              endpoint or narrow it with an indexed property."
         ),
     }
+}
+
+/// A WAL-cap figure in whole MiB, rounded down so an "at least" lower bound
+/// never overstates the record. Both callers' figures are at or above the
+/// 64 MiB cap (the cap itself and the byte count where the bounded
+/// serializer stopped), so no sub-MiB form exists; it is not
+/// [`human_bytes`] because the cap is stated in the binary unit (ADR-0086),
+/// which `human_bytes` renders as `MB`.
+fn wal_mib(bytes: u64) -> String {
+    format!("{} MiB", bytes / (1024 * 1024))
 }
 
 /// A user-facing byte size: MB/GB at whole units, never the raw byte count.
