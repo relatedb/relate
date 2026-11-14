@@ -77,10 +77,8 @@ class CheckAdrNumbersTests(FixtureTestBase):
         """On feature: add 0001-renamed-slug.md, delete 0001-existing, commit."""
         self.fx.commit(
             "feature",
-            {
-                "docs/adr/0001-renamed-slug.md": body,
-                "docs/adr/0001-existing-decision.md": None,
-            },
+            {"docs/adr/0001-renamed-slug.md": body},
+            deletes=("docs/adr/0001-existing-decision.md",),
         )
 
     def test_same_number_rename_passes(self) -> None:
@@ -405,10 +403,8 @@ class PublicRecordTests(FixtureTestBase):
         )
         self.fx.commit(
             "feature",
-            {
-                "docs/adr/0001-existing-decision.md": "# ADR-0001: amended\n",
-                "docs/adr/0002-legacy-decision.md": None,
-            },
+            {"docs/adr/0001-existing-decision.md": "# ADR-0001: amended\n"},
+            deletes=("docs/adr/0002-legacy-decision.md",),
         )
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -423,10 +419,8 @@ class PublicRecordTests(FixtureTestBase):
         self.seed_reference_on_main(body)
         self.fx.commit(
             "feature",
-            {
-                "docs/adr/0002-renamed-decision.md": body,
-                "docs/adr/0002-legacy-decision.md": None,
-            },
+            {"docs/adr/0002-renamed-decision.md": body},
+            deletes=("docs/adr/0002-legacy-decision.md",),
         )
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -441,10 +435,8 @@ class PublicRecordTests(FixtureTestBase):
         new_body = old_body + "\nand LABS-8 too\n"
         self.fx.commit(
             "feature",
-            {
-                "docs/adr/0002-renamed-decision.md": new_body,
-                "docs/adr/0002-legacy-decision.md": None,
-            },
+            {"docs/adr/0002-renamed-decision.md": new_body},
+            deletes=("docs/adr/0002-legacy-decision.md",),
         )
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 1, result.stderr)

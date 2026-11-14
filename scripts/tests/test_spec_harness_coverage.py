@@ -1,9 +1,10 @@
 """Unit-test the ADR-0482 spec-harness coverage report
 (scripts/spec-harness-coverage.py): the shape contract (the @fails
-exclusion invariant, one totals vocabulary), the coverage math, the
-traffic-light bands, the markdown rendering, the step-summary append, and
-the exit codes — 0 for any coverage number (reporting, not gating), 1 only
-for a summary the contract does not recognize.
+exclusion invariant, one totals vocabulary, the two category rollups), the
+coverage math, the traffic-light bands, the markdown rendering (including
+the skip breakdown), the step-summary append, and the exit codes — 0 for
+any coverage number (reporting, not gating), 1 only for a summary the
+contract does not recognize.
 
 The subprocess helper scrubs the Actions reporting pair the way the
 sibling suites do (scripts/tests/child_env.py, the one home of the
@@ -52,14 +53,23 @@ REAL_CATEGORIES = {
     "setup-failed-syntax": 2,
     "setup-failed-semantic": 1,
 }
+# The per-reason rollup behind REAL_TOTALS's `skipped: 1766` (the harness's
+# `skip_categories`): the by-design graphengine suite, the Cypher-5-era
+# expectations, and the skip-list's process-aborting skips.
+REAL_SKIPS = {
+    "graphengine": 1024,
+    "cypher-5": 612,
+    "skip-list": 130,
+}
 
 
-def summary(totals=None, categories=None):
+def summary(totals=None, categories=None, skips=None):
     """A summary.json in the harness's shape. The totals vocabulary is the
     module's own [`TOTALS_KEYS`] (every bucket present, zero unless
     overridden), so a new bucket is exercised by default and the fixture
     cannot drift from the vocabulary. Categories default to the
-    genuine-failure breakdown that sums to `failed`."""
+    genuine-failure breakdown that sums to `failed`; `skips` defaults to
+    the empty rollup an older harness emits."""
     values = {key: 0 for key, _ in coverage_script.TOTALS_KEYS}
     values.update(totals or {})
     if categories is None:
@@ -71,16 +81,16 @@ def summary(totals=None, categories=None):
         "totals": values,
         "suites": {},
         "failure_categories": categories,
-        "skip_categories": {},
+        "skip_categories": {} if skips is None else skips,
         "features": {},
     }
 
 
-def summary_absent(key, totals=None, categories=None):
-    """A summary whose `key` bucket is absent — the one absence-fixture
-    policy for every optional bucket: build the prefilled fixture, then
-    delete the key the way a real summary omits it (delete, don't zero)."""
-    fixture = summary(totals, categories)
+def summary_absent(key, totals=None):
+    """A summary whose totals bucket `key` is absent — the one
+    absence-fixture policy: build the prefilled fixture, then delete the
+    key the way a real summary omits it (delete, don't zero)."""
+    fixture = summary(totals)
     del fixture["totals"][key]
     return fixture
 
@@ -103,7 +113,7 @@ class Shape(unittest.TestCase):
 
     def test_a_contract_honoring_summary_parses(self):
         parsed, diags = coverage_script.parse_summary(
-            summary(REAL_TOTALS, REAL_CATEGORIES)
+            summary(REAL_TOTALS, REAL_CATEGORIES, REAL_SKIPS)
         )
         self.assertEqual(diags, [])
         self.assertEqual((parsed.passed, parsed.failed), (13097, 960))
@@ -112,6 +122,9 @@ class Shape(unittest.TestCase):
         # The non-zero filter is the parser's policy: a zero context
         # bucket is not reported at all.
         self.assertNotIn("untested", parsed.context)
+        # The skip breakdown rides the summary beside the skipped total —
+        # it is what makes that one number legible.
+        self.assertEqual(parsed.skip_categories, REAL_SKIPS)
 
     def test_categories_summing_past_failed_breaks_the_fails_exclusion(self):
         # The pre-patch harness shape: @fails failures inside the rollup.
@@ -170,6 +183,36 @@ class Shape(unittest.TestCase):
         fixture = summary({"passed": 10, "failed": 2})
         fixture["failure_categories"] = None
         self.assert_shape_failure(fixture, "is not a map")
+
+    def test_a_non_identifier_skip_category_name_is_rejected(self):
+        # Same shape contract as the failure rollup: the names travel into
+        # the bot's PR comment.
+        self.assert_shape_failure(
+            summary({"passed": 1, "failed": 1}, skips={"bad name!": 1}),
+            "skip_categories",
+        )
+
+    def test_a_misshapen_skip_category_count_is_rejected(self):
+        self.assert_shape_failure(
+            summary({"passed": 1, "failed": 1}, skips={"graphengine": "many"}),
+            "skip_categories",
+        )
+
+    def test_an_absent_skip_categories_rollup_is_fine(self):
+        # Older harnesses predate the member: absence is not a shape
+        # failure, and the summary still parses with an empty breakdown.
+        fixture = summary({"passed": 10, "failed": 0}, skips=REAL_SKIPS)
+        del fixture["skip_categories"]
+        parsed, diags = coverage_script.parse_summary(fixture)
+        self.assertEqual(diags, [])
+        self.assertEqual(parsed.skip_categories, {})
+
+    def test_a_null_skip_categories_is_malformed_not_absent(self):
+        # A JSON null is *present*, so it is malformed — the same
+        # distinction the totals walk draws for a null context bucket.
+        fixture = summary({"passed": 10, "failed": 0})
+        fixture["skip_categories"] = None
+        self.assert_shape_failure(fixture, "skip_categories")
 
     def test_a_malformed_error_total_is_a_shape_failure(self):
         # The errored bucket is counted, so a malformed value is a shape
@@ -264,6 +307,32 @@ class Rendering(unittest.TestCase):
         # Zero-count context buckets are the parser's policy to omit, so
         # they never reach the table.
         self.assertNotIn("nondeterministic", text)
+
+    def test_the_skip_breakdown_renders_as_its_own_table(self):
+        # The `skipped` bullet stays one total; the breakdown behind it is
+        # its own table, ordered by descending count then name (the
+        # failure table's order).
+        text = coverage_script.render_markdown(
+            parse(summary({"passed": 10, "skipped": 1766}, skips=REAL_SKIPS)),
+            harness_sha=None,
+        )
+        self.assertIn("skipped (not counted): 1766", text)
+        self.assertIn("| skipped category | count |", text)
+        self.assertIn("| graphengine | 1024 |", text)
+        self.assertIn("| cypher-5 | 612 |", text)
+        self.assertLess(text.index("| graphengine |"), text.index("| cypher-5 |"))
+        # The failure table keeps its own header: the two breakdowns never
+        # share one table.
+        self.assertNotIn("| failure category | count |", text)
+
+    def test_the_skip_table_renders_only_when_the_rollup_has_rows(self):
+        # An empty (or absent) rollup renders no table — an empty table
+        # would be noise, not visibility.
+        empty = coverage_script.render_markdown(
+            parse(summary({"passed": 10, "skipped": 5})), harness_sha=None
+        )
+        self.assertIn("skipped (not counted): 5", empty)
+        self.assertNotIn("skipped category", empty)
 
     def test_the_errored_row_renders_only_when_nonzero(self):
         # Value gating is the policy: the row appears for a non-zero

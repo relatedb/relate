@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::{slash_path, walk_files};
+
 /// The published crate's copy, relative to the workspace root.
 const FACADE: &str = "relate/relate/tests/fixtures/pre_adr0084_default_wal";
 /// The tree that owns the bytes, relative to the workspace root.
@@ -20,38 +22,21 @@ const SOURCE: &str = "relate/relate-storage/tests/fixtures/pre_adr0084_default_w
 
 /// Every file under `root`, keyed by its exact path relative to `root` —
 /// `PathBuf`, not a lossy string, so distinct non-UTF-8 names stay
-/// distinct keys and a comparison can never collapse them.
+/// distinct keys and a comparison can never collapse them. The walk is
+/// [`walk_files`], xtask's one directory walker.
 fn tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            if file_type.is_dir() {
-                stack.push(path);
-            } else {
-                let rel = path.strip_prefix(root).expect("walked path is under root");
-                let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                files.insert(rel.to_path_buf(), bytes);
-            }
-        }
-    }
+    walk_files(root, &mut |path, rel| {
+        let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        files.insert(rel.to_path_buf(), bytes);
+        Ok(())
+    })?;
     Ok(files)
 }
 
-/// The message rendering of a fixture-relative path: forward slashes on
-/// every platform, matching the check's other path spellings.
-fn show(rel: &Path) -> String {
-    rel.display().to_string().replace('\\', "/")
-}
-
 /// One violation per file that is missing, extra, or drifted on either
-/// side of the pair.
+/// side of the pair. Paths render through [`slash_path`], the crate's one
+/// spelling.
 pub fn check(root: &Path) -> Result<Vec<String>, String> {
     let facade = tree(&root.join(FACADE))?;
     let source = tree(&root.join(SOURCE))?;
@@ -61,11 +46,11 @@ pub fn check(root: &Path) -> Result<Vec<String>, String> {
             Some(facade_bytes) if facade_bytes == source_bytes => {}
             Some(_) => violations.push(format!(
                 "{FACADE}/{}: drifted from {SOURCE} — recopy it",
-                show(rel)
+                slash_path(rel)
             )),
             None => violations.push(format!(
                 "{FACADE}/{}: missing from the copy — recopy it",
-                show(rel)
+                slash_path(rel)
             )),
         }
     }
@@ -73,7 +58,7 @@ pub fn check(root: &Path) -> Result<Vec<String>, String> {
         if !source.contains_key(rel) {
             violations.push(format!(
                 "{FACADE}/{}: not in {SOURCE} — stale file in the copy",
-                show(rel)
+                slash_path(rel)
             ));
         }
     }

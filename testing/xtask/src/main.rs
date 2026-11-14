@@ -4,6 +4,8 @@ mod package_check;
 mod row_vec;
 mod workspace;
 
+use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -192,6 +194,46 @@ fn check_dependencies() -> Outcome {
 /// The workspace root, from this crate's directory at `testing/xtask`.
 fn workspace_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// A path's forward-slash rendering — the one spelling of a path that
+/// goes into a message or a scan key, so a walk on Windows and one on
+/// POSIX produce the same strings (row_vec's test-file test splits on
+/// `/`, so the shape is load-bearing there).
+fn slash_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
+/// Walk every file under `root` and hand each one to `leaf` — with its
+/// path, and with its path relative to `root` — in directory order. The
+/// one directory walker the guards' collectors express themselves
+/// through, so no second `read_dir`/`strip_prefix` skeleton grows beside
+/// it; an unreadable directory is an `Err` naming it.
+fn walk_files(
+    root: &Path,
+    leaf: &mut dyn FnMut(&Path, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        leaf: &mut dyn FnMut(&Path, &Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            if file_type.is_dir() {
+                walk(&path, root, leaf)?;
+            } else {
+                let rel = path.strip_prefix(root).expect("walked path is under root");
+                leaf(&path, rel)?;
+            }
+        }
+        Ok(())
+    }
+    walk(root, root, leaf)
 }
 
 /// The one guard-report shape: clean on stdout under the check's label,

@@ -21,6 +21,13 @@ the table back. Both comparator suites previously carried their own copy
 takes the superset: extra flags are appended after `--render-only` and the
 same env scrub applies, re-addable through `extra_env`.
 
+`run_comparator` is the one pair-write + invoke primitive both bindings
+share: it materializes a (baseline, current) report pair in a temp dir and
+runs a comparator over it. `run_pair` is its compare-loadtest.py binding
+(positional pair arguments); the query-latency gate suite binds the same
+primitive to compare-query-latency.py's `--baseline`/`--report` spelling
+instead of carrying a third copy of the temp-dir-and-two-reports core.
+
 Imported as a plain sibling module: the Makefile runs each test file
 directly with `python3`, so `sys.path[0]` is `scripts/tests/`.
 """
@@ -30,6 +37,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from child_env import child_env
@@ -63,6 +71,57 @@ def scrubbed_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     return child_env(scrub, extra_env)
 
 
+def run_comparator(
+    script: Path,
+    baseline: dict,
+    current: dict,
+    pair_argv: Callable[[Path, Path], list[str]],
+    flags: tuple[str, ...] = (),
+    *,
+    extra_env: dict[str, str] | None = None,
+    sidecars: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str | None]]:
+    """The one pair-write + invoke primitive: materialize `baseline` and
+    `current` as JSON reports in a temp dir and run `script` over them as
+    `[python, script, *pair_argv(base_path, current_path), *flags]`.
+
+    `pair_argv` is the comparator's own spelling of the report pair — the
+    positional `BASE CURRENT` of compare-loadtest.py, the
+    `--baseline B --report R` of compare-query-latency.py — so one
+    primitive serves both CLIs and no caller re-rolls the temp dir and its
+    two report files.
+
+    `sidecars` maps a comparator flag to the file name it writes inside
+    the temp dir (compare-loadtest.py's `--markdown-out` / `--status-out`
+    are one binding's, never the primitive's); the returned map is keyed
+    by that flag, holding the file's contents or None when the comparator
+    never wrote it — empty for a comparator without sidecars. The child
+    environment is `scrubbed_env`, so the comparator's documented defaults
+    apply no matter what the developer's shell exports; a test re-adds
+    either through `extra_env`.
+    """
+    env = scrubbed_env(extra_env)
+    with tempfile.TemporaryDirectory() as tmp:
+        base_path = Path(tmp) / "base.json"
+        current_path = Path(tmp) / "current.json"
+        base_path.write_text(json.dumps(baseline))
+        current_path.write_text(json.dumps(current))
+        cmd = [sys.executable, str(script), *pair_argv(base_path, current_path), *flags]
+        sidecar_paths = {}
+        for flag, name in (sidecars or {}).items():
+            path = Path(tmp) / name
+            sidecar_paths[flag] = path
+            cmd += [flag, str(path)]
+        result = subprocess.run(
+            cmd, text=True, capture_output=True, check=False, env=env
+        )
+        written = {
+            flag: path.read_text() if path.exists() else None
+            for flag, path in sidecar_paths.items()
+        }
+    return result, written
+
+
 def run_pair(
     baseline: dict,
     current: dict,
@@ -72,41 +131,33 @@ def run_pair(
     status: bool = False,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str | None, str | None]:
-    """Run the comparator CLI on a report pair; return (process, table,
-    status token).
+    """Run `scripts/compare-loadtest.py` on a report pair; return
+    (process, table, status token).
+
+    The compare-loadtest.py binding of `run_comparator`: it states the
+    comparator's positional pair spelling and its own sidecar flags
+    (compare-query-latency.py takes neither), while the temp dir, the
+    report pair, the child environment and the run stay the primitive's.
 
     `table`/`token` are the --markdown-out/--status-out file contents when
     the corresponding kwarg is set (None when the flag was absent or the
     file was never written).
-
-    The child environment is `scrubbed_env` above, so the comparator's
-    documented defaults apply no matter what the developer's shell
-    exports; a test re-adds either through `extra_env`.
     """
-    env = scrubbed_env(extra_env)
-    with tempfile.TemporaryDirectory() as tmp:
-        base_path = Path(tmp) / "base.json"
-        current_path = Path(tmp) / "current.json"
-        base_path.write_text(json.dumps(baseline))
-        current_path.write_text(json.dumps(current))
-        cmd = [sys.executable, str(COMPARE), str(base_path), str(current_path), *flags]
-        table_path = status_path = None
-        if markdown:
-            table_path = Path(tmp) / "table.md"
-            cmd += ["--markdown-out", str(table_path)]
-        if status:
-            status_path = Path(tmp) / "status.txt"
-            cmd += ["--status-out", str(status_path)]
-        result = subprocess.run(
-            cmd, text=True, capture_output=True, check=False, env=env
-        )
-        table = (
-            table_path.read_text() if table_path is not None and table_path.exists() else None
-        )
-        token = (
-            status_path.read_text() if status_path is not None and status_path.exists() else None
-        )
-    return result, table, token
+    sidecars = {}
+    if markdown:
+        sidecars["--markdown-out"] = "table.md"
+    if status:
+        sidecars["--status-out"] = "status.txt"
+    result, written = run_comparator(
+        COMPARE,
+        baseline,
+        current,
+        lambda base, cur: [str(base), str(cur)],  # compare-loadtest: BASE CURRENT
+        flags,
+        extra_env=extra_env,
+        sidecars=sidecars,
+    )
+    return result, written.get("--markdown-out"), written.get("--status-out")
 
 
 def render(

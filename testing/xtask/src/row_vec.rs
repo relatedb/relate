@@ -8,6 +8,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use crate::{slash_path, walk_files};
+
 /// Executor sources scanned, relative to the workspace root.
 pub const SCAN_DIR: &str = "relate/relate-executor/src";
 /// Committed allowlist, relative to the workspace root.
@@ -211,35 +213,23 @@ fn is_test_file(rel: &str) -> bool {
             .is_some_and(|f| f == "tests.rs" || f.ends_with("_tests.rs"))
 }
 
-fn collect_files(dir: &Path, root: &Path, out: &mut Vec<String>) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.is_dir() {
-            collect_files(&path, root, out)?;
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            let rel = path
-                .strip_prefix(root)
-                .expect("under root")
-                .to_string_lossy()
-                .replace('\\', "/");
-            if !is_test_file(&rel) {
-                out.push(rel);
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Every `<file>::<fn>` site under `SCAN_DIR`, file relative to `SCAN_DIR`.
+///
+/// One [`walk_files`] pass: each non-test `.rs` file is read where the
+/// walk yields it, so no intermediate file list (and no re-joined path)
+/// stands between the walk and the scan.
 fn scan(root: &Path) -> Result<BTreeSet<String>, String> {
     let base = root.join(SCAN_DIR);
-    let mut files = Vec::new();
-    collect_files(&base, &base, &mut files)?;
     let mut sites = BTreeSet::new();
-    for rel in files {
-        let src = fs::read_to_string(base.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
+    walk_files(&base, &mut |path, rel| {
+        let rel = slash_path(rel);
+        if path.extension().is_none_or(|e| e != "rs") || is_test_file(&rel) {
+            return Ok(());
+        }
+        let src = fs::read_to_string(path).map_err(|e| format!("{rel}: {e}"))?;
         sites.extend(row_vec_fns(&src).into_iter().map(|f| format!("{rel}::{f}")));
-    }
+        Ok(())
+    })?;
     Ok(sites)
 }
 

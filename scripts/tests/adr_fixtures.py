@@ -253,24 +253,30 @@ class AdrFixture:
         """Run scripts/check_adr_numbers.py in the work repo, as a caller would."""
         return run_script(CHECK_SCRIPT, *args, cwd=cwd or self.work)
 
-    def commit(self, branch: str, files: dict[str, str | None]) -> None:
-        """Check out branch and commit files onto it (the checker suite).
+    def commit(
+        self, branch: str, writes: dict[str, str], deletes: tuple[str, ...] = ()
+    ) -> None:
+        """Check out branch and commit writes (and deletes) onto it.
 
-        A ``None`` value deletes the path, so one call carries the mixed
-        add+delete change a re-slotting rename is — no suite re-rolls the
-        git ceremony beside the fixture's own.
+        Writes and deletions are separate arguments — a ``None`` value in
+        the write map would overload the write path with a nullable
+        delete mode, and every caller would have to decode it. One call
+        still carries the mixed add+delete change a re-slotting rename
+        is, so no suite re-rolls the git ceremony beside the fixture's
+        own.
         """
         run_git(self.work, "checkout", "-q", branch, env=GIT_ENV)
-        self._write_and_commit(files)
+        self._write_and_commit(writes, deletes)
 
-    def _write_and_commit(self, files: dict[str, str | None]) -> None:
-        for rel, text in files.items():
+    def _write_and_commit(
+        self, writes: dict[str, str], deletes: tuple[str, ...]
+    ) -> None:
+        for rel, text in writes.items():
             path = self.work / rel
-            if text is None:
-                path.unlink()
-                continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
+        for rel in deletes:
+            (self.work / rel).unlink()
         run_git(self.work, "add", "-A", env=GIT_ENV)
         run_git(self.work, "commit", "-q", "-m", "fixture commit", env=GIT_ENV)
 

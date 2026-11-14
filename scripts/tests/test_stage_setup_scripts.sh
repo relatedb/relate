@@ -16,6 +16,10 @@
 # - the lib-shard count has one derivation: the leg axis's lib-N cells
 #   equal the bolt stage's partition denominator
 #
+# - the Sonic image tag has one derivation: every `relate-sonic-*:<tag>`
+#   spelling in .sonic/ci.yml and the Dockerfiles agrees, and it is the
+#   Rust toolchain's major.minor the rust image installs
+#
 # Assertions use the shared TAP harness (scripts/tests/lib/tap.sh).
 
 set -u
@@ -112,6 +116,9 @@ for spec in \
   '.sonic/ci.yml:source scripts/ffi-lib.sh:1' \
   '.sonic/ci.yml:bash /workspace/scripts:0' \
   '.sonic/ci.yml:source scripts/install-wasm-toolchain.sh:1' \
+  '.sonic/ci.yml:relate-sonic-:4' \
+  '.sonic/docker/sonic-polyglot.Dockerfile:relate-sonic-rust:1' \
+  '.sonic/docker/sonic-rust.Dockerfile:default-toolchain:1' \
   '.github/workflows/ci.yml:^ *crates::0' \
   '.github/workflows/ci.yml:LIB_SHARDS:0' \
   '.sonic/ci.yml:bash scripts/bolt-smoke.sh:1' \
@@ -159,6 +166,37 @@ lib_cells=$(grep -cE '^ *- name: lib-[0-9]+$' "$ROOT/.sonic/ci.yml")
 denominator=$(grep -oE 'count:.\{shard\}/[0-9]+' "$ROOT/.sonic/ci.yml" | head -n 1 | grep -oE '[0-9]+$')
 [ "$lib_cells" -eq "$denominator" ]
 tap_check "lib-shard count: $lib_cells axis cells == partition denominator $denominator" $?
+
+# --- .sonic: the image tag has one derivation -------------------------------
+
+# The Sonic image reference is spelled five times — both runner images and
+# both `docker build -t` commands in .sonic/ci.yml, plus the polyglot
+# Dockerfile's FROM; the site counts above pin how many each file carries.
+# What the counts cannot see is the derivation itself: every spelling must
+# carry the same tag, and that tag must be the major.minor of the
+# toolchain the rust image installs (its `--default-toolchain`, which
+# follows rust-toolchain.toml). A toolchain bump that misses one spelling
+# fails here instead of silently running two toolchains in one pipeline.
+sonic_tag_spellings=$(grep -ohE 'relate-sonic-[a-z]+:[^[:space:]]+' \
+	"$ROOT/.sonic/ci.yml" \
+	"$ROOT/.sonic/docker/sonic-rust.Dockerfile" \
+	"$ROOT/.sonic/docker/sonic-polyglot.Dockerfile" \
+	| sed 's/.*://' | sort -u)
+sonic_tags=$(printf '%s\n' "$sonic_tag_spellings" | sed '/^$/d' | wc -l | tr -d ' ')
+# The message is built before the assertion: a command substitution in a
+# tap_check argument would reset $? for the status argument beside it.
+sonic_tag_list=$(printf '%s' "$sonic_tag_spellings" | tr '\n' ' ')
+[ "$sonic_tags" -eq 1 ]
+tap_check "the Sonic image tag is spelled once ($sonic_tag_list)" $?
+
+sonic_toolchain=$(grep -oE -- '--default-toolchain [0-9.]+' \
+	"$ROOT/.sonic/docker/sonic-rust.Dockerfile" \
+	| head -n 1 | sed 's/.* //' | cut -d. -f1,2)
+# The harness's equality assertion: both values must be non-empty and
+# equal, so a failed toolchain extraction fails here too.
+assert_same \
+	"the Sonic image tag ($sonic_tag_list) is the rust toolchain's major.minor" \
+	"$sonic_tag_spellings" "$sonic_toolchain"
 
 # --- the two _topology policy modules: identical policy text ----------------
 

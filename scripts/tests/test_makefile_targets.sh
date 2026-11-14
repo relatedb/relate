@@ -66,6 +66,22 @@ must_be_empty() { # $1 = difference file, $2 = description
 	fi
 }
 
+# One gated comparison: a difference only means something when BOTH of
+# its inventories extracted — an empty side compares as an empty
+# difference, a vacuous pass printed beside the extraction failure above.
+# An unextracted side skips the comparison instead (the extraction
+# already failed the run), so the ok line never stands in for a
+# comparison that never happened. $1 = comm mode, $2/$3 = inventories,
+# $4 = description; the difference lands in $sandbox/diff.
+gated_diff() {
+	if [ -s "$2" ] && [ -s "$3" ]; then
+		comm "$1" "$2" "$3" | tr -d '\t' | sed '/^$/d' >"$sandbox/diff"
+		must_be_empty "$sandbox/diff" "$4"
+	else
+		tap_skip "$4" "an inventory is empty (extraction failed above)"
+	fi
+}
+
 # --- the three inventories, each a checked step -----------------------------
 
 # Target definitions: literal target lines only — the shape carries the
@@ -102,18 +118,16 @@ must_be_non_empty "$sandbox/targets" "the target inventory is non-empty"
 must_be_non_empty "$sandbox/annotated" "the annotated inventory is non-empty"
 must_be_non_empty "$sandbox/phony" "the phony inventory is non-empty"
 
-comm -23 "$sandbox/targets" "$sandbox/annotated" >"$sandbox/unannotated"
-must_be_empty "$sandbox/unannotated" "every target carries a ## annotation"
+gated_diff -23 "$sandbox/targets" "$sandbox/annotated" \
+	"every target carries a ## annotation"
 
-comm -13 "$sandbox/targets" "$sandbox/annotated" >"$sandbox/orphaned"
-must_be_empty "$sandbox/orphaned" "no annotation names a missing target"
+gated_diff -13 "$sandbox/targets" "$sandbox/annotated" \
+	"no annotation names a missing target"
 
 # The symmetric difference: names in the annotation inventory but not
 # phony, and phony but not annotated, in one file (comm -3 marks the
 # second column with a tab).
-comm -3 "$sandbox/annotated" "$sandbox/phony" | tr -d '\t' | sed '/^$/d' \
-	>"$sandbox/phony-drift"
-must_be_empty "$sandbox/phony-drift" \
+gated_diff -3 "$sandbox/annotated" "$sandbox/phony" \
 	".PHONY is exactly the annotated inventory (both directions)"
 
 # --- every suite runner hangs off the one owner ------------------------------
@@ -122,16 +136,46 @@ must_be_empty "$sandbox/phony-drift" \
 # line naming scripts/tests/). Continuation lines of prerequisite lists
 # are tab-indented too but never name scripts/tests/, so they cannot
 # masquerade as suite runners.
-awk -v line="$TARGET_LINE" '
-	$0 ~ line { name = $1; sub(/:.*$/, "", name) }
-	/^\t/ && /scripts\/tests\// { print name }
-' "$MAKEFILE" | sort -u >"$sandbox/suite-runners"
+#
+# The recipe context is the last rule-start seen, and an unindented line
+# that is not one (an assignment, a conditional, a comment) ends it — so
+# a tab-indented scripts/tests/ line under an unrecognized construct is
+# never credited to an unrelated target. Such a line is reported instead
+# of dropped: an unattributed suite runner must not vanish from the
+# inventory below and pass the ownership comparison by absence.
+#
+# The scan is a checked step of its own, like the make -p step above: a
+# pipeline would report only sort's status, so a failed awk (a syntax
+# error, an unreadable Makefile) would read as "no offenders" — its
+# status is asserted here and its stderr stays stderr, never the
+# offenders file.
+if awk -v line="$TARGET_LINE" -v offenders="$sandbox/unattributed" '
+	/^\t/ {
+		if (/scripts\/tests\//) {
+			if (name == "") { print $0 >offenders; next }
+			print name
+		}
+		next
+	}
+	$0 ~ line { name = $1; sub(/:.*$/, "", name); next }
+	/^[[:space:]]*$/ { next }
+	{ name = "" }
+' "$MAKEFILE" >"$sandbox/suite-runners-raw" 2>"$sandbox/scan-err"; then
+	tap_ok "the suite-runner scan ran"
+else
+	tap_not_ok "the suite-runner scan ran ($(head -n 1 "$sandbox/scan-err" 2>/dev/null))"
+fi
+sort -u "$sandbox/suite-runners-raw" >"$sandbox/suite-runners"
+
+# The same difference guard as every comparison above: the unattributed
+# lines are the offenders, and an empty file is the pass.
+must_be_empty "$sandbox/unattributed" \
+	"every scripts/tests recipe line sits under a named target"
 
 must_be_non_empty "$sandbox/suite-runners" "the suite-runner inventory is non-empty"
 must_be_non_empty "$sandbox/owned" "the test-scripts member inventory is non-empty"
 
-comm -23 "$sandbox/suite-runners" "$sandbox/owned" >"$sandbox/unowned"
-must_be_empty "$sandbox/unowned" \
+gated_diff -23 "$sandbox/suite-runners" "$sandbox/owned" \
 	"every scripts/tests suite runner is a test-scripts prerequisite"
 
 tap_done

@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from comparator_runner import scrubbed_env
+from comparator_runner import run_comparator, scrubbed_env
 from script_loader import ROOT, load
 
 FREEZE = ROOT / "scripts" / "freeze-query-latency-envelope.py"
@@ -197,16 +197,22 @@ class QueryLatencyCompareTests(unittest.TestCase):
         self.assertTrue(any("q1/upstream not ok" in d for d in diags))
 
     def run_compare(self, baseline, rep, extra_env=None):
-        with tempfile.TemporaryDirectory() as tmp:
-            b = Path(tmp) / "base.json"
-            r = Path(tmp) / "report.json"
-            b.write_text(json.dumps(baseline))
-            r.write_text(json.dumps(rep))
-            return subprocess.run(
-                [sys.executable, str(COMPARE), "--baseline", str(b), "--report", str(r)],
-                text=True, capture_output=True, check=False,
-                env=scrubbed_env(extra_env),
-            )
+        """The gate's subprocess run, through the shared comparator
+        primitive: only the pair spelling differs from `run_pair` (this
+        CLI takes --baseline/--report)."""
+        result, _ = run_comparator(
+            COMPARE,
+            baseline,
+            rep,
+            lambda base, report_path: [
+                "--baseline",
+                str(base),
+                "--report",
+                str(report_path),
+            ],
+            extra_env=extra_env,
+        )
+        return result
 
     def test_subprocess_exit_codes(self):
         ok = report([query(1, "upstream", 200_000), query(19, "upstream", 130_000_000)])

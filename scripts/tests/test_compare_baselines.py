@@ -46,9 +46,17 @@ class CompareBaselinesTestBase(BaselineReportTreeMixin, unittest.TestCase):
 
     def write_stub(self, body: str) -> Path:
         """An executable bash stub: every invocation is the comparator
-        call and runs `body`."""
+        call and runs `body`.
+
+        The aggregator invokes the comparator as
+        `$PYTHON <compare-loadtest.py> <flags…>`, so the stub consumes
+        the script path itself: `body` sees only the comparator flags and
+        never has to re-state that shift.
+        """
         stub = Path(self._tmp.name) / "stub-compare"
-        stub.write_text("#!/usr/bin/env bash\n" + body)
+        stub.write_text(
+            "#!/usr/bin/env bash\nshift  # $1 is the compare-loadtest.py path\n" + body
+        )
         stub.chmod(0o755)
         return stub
 
@@ -267,7 +275,6 @@ class CompareBaselinesRenderTests(CompareBaselinesTestBase):
         self.default_tree()
         self.write_report("fraud-loadtest.json", report(p99=1_000_000))
         stub = self.write_stub(
-            "shift  # the compare-loadtest.py path\n"
             "while [[ $# -gt 0 ]]; do\n"
             '  if [[ "$1" == "--status-out" ]]; then\n'
             '    printf "bogus-token\\n" >"$2"\n'

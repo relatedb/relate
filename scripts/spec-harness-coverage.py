@@ -23,6 +23,16 @@ asserts `sum(failure_categories) == failed` and returns only a validated
 [`Summary`] — a shape the contract does not recognize is a diagnostic,
 never a silent pass on defaults (the no-silent-fallbacks rule).
 
+The `skipped` bucket is one opaque number on its own; the harness's
+`skip_categories` rollup says *why* the scenarios did not run (the
+graphengine suite skipped by design, Cypher-5-era expectations, the
+skip-list process-aborting skips, …). `parse_summary` validates it with
+the same shape contract as `failure_categories` (absent stays fine —
+older harnesses predate the member) and `render_markdown` prints it as
+its own small table, so the step summary and the upserted PR comment
+carry the breakdown. Visibility only: ADR-0482 §3 keeps every skip out of
+the coverage number, so nothing here gates.
+
 Reporting, not gating: the report leads with a traffic light — 🟢 at
 zero genuine failures, 🟡 while the failure share stays within 10% of the
 executed scenarios, 🔴 beyond it (ADR-0482 §4) — and the process exits 0
@@ -101,6 +111,35 @@ def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _rollup_member(
+    raw: dict, member: str, *, required: bool
+) -> tuple[dict[str, int] | None, list[str]]:
+    """The one lookup for a name -> count rollup member, owning every
+    policy the members share: the absence rule (`required` — a missing
+    required member is named as absence, an optional one absent is the
+    empty rollup) and the shape check with its diagnostic. A valid member
+    is a map of identifier-shaped names to non-negative ints; anything
+    else (a list, a null, a non-identifier name, a bool, a negative
+    count) is a shape failure. A third rollup member is one more call,
+    never another block."""
+    if member not in raw:
+        if required:
+            return None, [f"{member} is missing (required member)"]
+        return {}, []
+    value = raw[member]
+    if not isinstance(value, dict) or not all(
+        isinstance(name, str)
+        and CATEGORY_NAME.fullmatch(name)
+        and _is_count(count)
+        for name, count in value.items()
+    ):
+        return None, [
+            f"{member} is not a map of identifier-shaped names "
+            "to non-negative ints"
+        ]
+    return value, []
+
+
 def _non_negative_seconds(text: str) -> int:
     """The `--run-seconds` argparse type: an int of at least zero, or the
     parser's own usage error (exit 2, the one path every bad flag takes)."""
@@ -127,9 +166,11 @@ class Summary:
     """The validated rollup the verdict reads (ADR-0482 §2/§3): the two
     required totals, behave's step-crash count (`errored` — counted like
     a failure, kept out of the category rollup), the not-counted context
-    buckets reported (present and non-zero), and the assertion-failure
+    buckets reported (present and non-zero), the assertion-failure
     category breakdown (it sums to `failed` only — errored scenarios
-    carry no category; `defect_count` is the headline population).
+    carry no category; `defect_count` is the headline population), and
+    the per-reason skip breakdown behind the `skipped` total (visibility
+    only — skips never count).
 
     Built only by [`Summary.validated`], so the executed-scenario count
     is non-zero by construction and no consumer re-reads the raw dict."""
@@ -139,6 +180,7 @@ class Summary:
     errored: int
     categories: dict[str, int]
     context: dict[str, int]
+    skip_categories: dict[str, int]
 
     @classmethod
     def validated(
@@ -148,11 +190,19 @@ class Summary:
         errored: int,
         categories: dict[str, int],
         context: dict[str, int],
+        skip_categories: dict[str, int],
     ) -> tuple[Summary | None, list[str]]:
         """The one construction path, owning the non-empty-run invariant:
         a Summary exists at all only when the run executed something, and
         it owns its rollups (copies, never the caller's live dicts)."""
-        summary = cls(passed, failed, errored, dict(categories), dict(context))
+        summary = cls(
+            passed,
+            failed,
+            errored,
+            dict(categories),
+            dict(context),
+            dict(skip_categories),
+        )
         if summary.size == 0:
             return None, [
                 "the run executed no scenarios "
@@ -212,9 +262,11 @@ def parse_summary(raw: object) -> tuple[Summary | None, list[str]]:
     object; a missing or misshapen total (the roles' absence rules live on
     [`TotalRole`]); a totals key outside the [`TOTALS_KEYS`] vocabulary; a
     missing `failure_categories`, or one that is not a str -> count map of
-    identifier-shaped names; a rollup that breaks the @fails exclusion
-    (`sum(failure_categories) != failed` — ADR-0482 §3); or a run that
-    executed no scenarios. Total over its input; never a silent default.
+    identifier-shaped names; a `skip_categories` that is not that shape
+    (absent is fine — older harnesses predate it); a rollup that breaks
+    the @fails exclusion (`sum(failure_categories) != failed` —
+    ADR-0482 §3); or a run that executed no scenarios. Total over its
+    input; never a silent default.
 
     The one walk over [`TOTALS_KEYS`] validates every total and collects
     everything the Summary is built from — the counted roles into one
@@ -248,8 +300,13 @@ def parse_summary(raw: object) -> tuple[Summary | None, list[str]]:
         if role is TotalRole.CONTEXT:
             if value:
                 context[key] = value
-        else:
+        elif role is TotalRole.REQUIRED or role is TotalRole.ERRORED:
             counted[key] = value
+        else:
+            # The one dispatch over the role vocabulary must be exhaustive
+            # for real: a new TotalRole member has to be classified here
+            # rather than absorbed by an `else`.
+            raise AssertionError(f"unhandled TotalRole {role}")
     # The vocabulary boundary is checked in both directions: an unknown
     # total (a harness-side rename like `skipped` -> `not_run`) must not be
     # silently ignored — the contract's vocabulary is exhaustive.
@@ -260,22 +317,17 @@ def parse_summary(raw: object) -> tuple[Summary | None, list[str]]:
             "vocabulary (ADR-0482 §3)"
             for key in sorted(unknown)
         ]
-    # Absence is named as absence, like the totals walk above: a missing
-    # `failure_categories` is a different fact from a present-but-malformed
-    # one, and each carries its own diagnostic.
-    if "failure_categories" not in raw:
-        return None, ["failure_categories is missing (required member)"]
-    categories = raw["failure_categories"]
-    if not isinstance(categories, dict) or not all(
-        isinstance(name, str)
-        and CATEGORY_NAME.fullmatch(name)
-        and _is_count(count)
-        for name, count in categories.items()
-    ):
-        return None, [
-            "failure_categories is not a map of identifier-shaped names "
-            "to non-negative ints"
-        ]
+    # Both rollup members go through the one lookup: they differ only in
+    # their absence rule — the failure breakdown is required (the @fails
+    # contract is read off it), the skip breakdown is optional (a harness
+    # older than the rollup omits it) — while a present-but-malformed
+    # member of either is the same shape failure, named as such.
+    categories, diags = _rollup_member(raw, "failure_categories", required=True)
+    if categories is None:
+        return None, diags
+    skip_categories, diags = _rollup_member(raw, "skip_categories", required=False)
+    if skip_categories is None:
+        return None, diags
     # The ADR-0482 §3 contract: @fails failures stay out of the category
     # rollup, so it sums to exactly the assertion-failure count. A mismatch
     # means the harness's rollup changed — update this gate with it.
@@ -288,8 +340,30 @@ def parse_summary(raw: object) -> tuple[Summary | None, list[str]]:
             "failures out of the category rollup (ADR-0482 §3 contract)"
         ]
     return Summary.validated(
-        counted["passed"], failed, counted["error"], categories, context
+        counted["passed"],
+        failed,
+        counted["error"],
+        categories,
+        context,
+        skip_categories,
     )
+
+
+def _count_table(header: str, counts: dict[str, int]) -> list[str]:
+    """One name -> count markdown table, rows by descending count then
+    name — the shape the skip and failure breakdowns share, so the two
+    cannot drift apart."""
+    return [
+        "",
+        f"| {header} | count |",
+        "| --- | --- |",
+        *[
+            f"| {name} | {count} |"
+            for name, count in sorted(
+                counts.items(), key=lambda kv: (-kv[1], kv[0])
+            )
+        ],
+    ]
 
 
 def render_markdown(
@@ -298,8 +372,9 @@ def render_markdown(
     run_seconds: int | None = None,
 ) -> str:
     """The step-summary table: the traffic-light verdict, the not-counted
-    context buckets, the per-category defect breakdown (reconciled with
-    the headline by the uncategorized errored row), and — when the caller
+    context buckets, the per-reason skip breakdown behind the `skipped`
+    total, the per-category defect breakdown (reconciled with the
+    headline by the uncategorized errored row), and — when the caller
     measured it — how long the suite took."""
     legend = " · ".join(f"{emoji} {label}" for _, emoji, label in BANDS)
     lines = [
@@ -320,18 +395,10 @@ def render_markdown(
     ]
     if harness_sha:
         lines.append(f"- harness ref: `{harness_sha}`")
+    if summary.skip_categories:
+        lines += _count_table("skipped category", summary.skip_categories)
     if summary.defect_count:
-        lines += [
-            "",
-            "| failure category | count |",
-            "| --- | --- |",
-        ]
-        lines += [
-            f"| {name} | {count} |"
-            for name, count in sorted(
-                summary.categories.items(), key=lambda kv: (-kv[1], kv[0])
-            )
-        ]
+        lines += _count_table("failure category", summary.categories)
         if summary.errored:
             # The headline counts errored scenarios as genuine failures;
             # this row reconciles the table with it (errored steps carry
