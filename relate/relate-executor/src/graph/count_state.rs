@@ -280,6 +280,31 @@ impl Graph {
         self.count_stats.lock().unwrap().rel.pair_counts.clone()
     }
 
+    /// The estimated sum of in-degrees of nodes carrying `label_id` (or,
+    /// for `None`, any label) over `type_ids` (`None`: every type): the
+    /// pair counts' (start, type, end) triples summed over the end side.
+    /// A rel counts once per start-label it leaves, so a multi-labeled
+    /// start node overstates the sum (the estimate family's scale, like
+    /// the out-degree moments); unlabeled endpoints sit in no triple.
+    pub(crate) fn pattern_in_degree_sum(
+        &self,
+        label_id: Option<u32>,
+        type_ids: Option<&[u32]>,
+    ) -> u128 {
+        let stats = self.count_stats.lock().unwrap();
+        stats
+            .rel
+            .pair_counts
+            .iter()
+            .filter(|(&(_, type_id, end), _)| {
+                label_id.is_none_or(|wanted| wanted == end)
+                    && type_ids.is_none_or(|wanted| wanted.contains(&type_id))
+            })
+            .fold(0u128, |sum, (_, &count)| {
+                sum.saturating_add(u128::from(count))
+            })
+    }
+
     /// The endpoint cross-product charge loop the pair-count family
     /// shares: one start-set × end-set walk over the
     /// pair map, `count_entry` per triple, the charge batched for the

@@ -77,6 +77,16 @@ impl GraphStats<'_> {
     fn id_of(&self, name: &SmallName, token: Token) -> Option<u32> {
         token.id_or_else(|| name.with_str(|text| self.graph.resolve(text).id()))
     }
+
+    /// The interned ids of `rel_types`; a name the store never interned
+    /// selects nothing, so it drops out (the moments' "selects nothing"
+    /// contract, not a fabricated id).
+    fn type_ids(&self, rel_types: &[NamedToken]) -> Vec<u32> {
+        rel_types
+            .iter()
+            .filter_map(|(name, token)| self.id_of(name, *token))
+            .collect()
+    }
 }
 
 impl relate_planner::PatternStats for GraphStats<'_> {
@@ -195,15 +205,8 @@ impl relate_planner::PatternStats for GraphStats<'_> {
         labels: &[NamedToken],
         rel_types: &[NamedToken],
     ) -> Option<DegreeMoments> {
-        let type_ids: Vec<u32> = rel_types
-            .iter()
-            .filter_map(|(name, token)| self.id_of(name, *token))
-            .collect();
-        let types = if rel_types.is_empty() {
-            None
-        } else {
-            Some(type_ids.as_slice())
-        };
+        let type_ids = self.type_ids(rel_types);
+        let types = (!rel_types.is_empty()).then_some(type_ids.as_slice());
         if labels.is_empty() {
             return Some(self.graph.pattern_degree_moments(None, types));
         }
@@ -216,5 +219,22 @@ impl relate_planner::PatternStats for GraphStats<'_> {
                     })
             })
             .min_by_key(|moments| moments.sum)
+    }
+
+    /// The live pair counts' in-degree sum, bounded the same way as
+    /// [`PatternStats::degree_moments`]: the smallest per-label sum.
+    fn in_degree_sum(&self, labels: &[NamedToken], rel_types: &[NamedToken]) -> Option<u128> {
+        let type_ids = self.type_ids(rel_types);
+        let types = (!rel_types.is_empty()).then_some(type_ids.as_slice());
+        if labels.is_empty() {
+            return Some(self.graph.pattern_in_degree_sum(None, types));
+        }
+        labels
+            .iter()
+            .map(|(name, token)| {
+                self.id_of(name, *token)
+                    .map_or(0, |id| self.graph.pattern_in_degree_sum(Some(id), types))
+            })
+            .min()
     }
 }

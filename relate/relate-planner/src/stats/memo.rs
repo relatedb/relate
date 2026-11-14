@@ -341,4 +341,8 @@ impl PatternStats for StatsMemo<'_> {
     ) -> Option<DegreeMoments> {
         self.inner.degree_moments(labels, rel_types)
     }
+
+    fn in_degree_sum(&self, labels: &[NamedToken], rel_types: &[NamedToken]) -> Option<u128> {
+        self.inner.in_degree_sum(labels, rel_types)
+    }
 }
