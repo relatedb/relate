@@ -16,10 +16,10 @@ the pair every suite whose subject touches the step summary must scrub;
 suites with more to scrub derive from it rather than re-spelling the pair.
 
 This is the reporting-env policy specifically. A suite with a different
-ambient vocabulary keeps its own scrub beside that vocabulary — the
-comparator suites' knob prefixes (`LOADTEST_*`, `QUERY_LATENCY_*`) live in
-comparator_runner.scrubbed_env, which builds its child env from the same
-copy-scrub-override shape for a different set of names.
+ambient vocabulary names it at its own call site — the comparator suites'
+knob prefixes (`LOADTEST_*`, `QUERY_LATENCY_*`) are matched in
+comparator_runner.scrubbed_env, which then routes the matched names through
+`child_env` so the copy-scrub-override shape stays here alone.
 
 The suites previously carried a copy each — `test_spec_harness_coverage.py`
 and `test_compare_baselines.py` the reporting pair, `test_update_pr_comment.py`

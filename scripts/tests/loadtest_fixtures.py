@@ -17,11 +17,40 @@ Imported as a plain sibling module: the Makefile runs each test file
 directly with `python3`, so `sys.path[0]` is `scripts/tests/`.
 """
 
+import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 
 from child_env import REPORTING_ENV, child_env
+
+
+class BaselineReportTreeMixin:
+    """The baselines/ + reports/ fixture tree and the two JSON-dump helpers
+    that write into it.
+
+    The aggregator suites (`test_compare_baselines.py`) and the round-trip
+    suite (`test_update_pr_comment.py`) previously carried byte-identical
+    copies of these helpers and re-derived the tree in each `setUp`; the
+    tree and the pair now live here, once."""
+
+    baselines: Path
+    reports: Path
+
+    def make_tree(self, root: Path) -> None:
+        """Point the fixture at `root`'s baselines/ + reports/ pair, created
+        here — the one home for the tree contract, so a case that needs a
+        different root composes with it instead of re-deriving the pair."""
+        self.baselines = root / "baselines"
+        self.reports = root / "reports"
+        self.baselines.mkdir()
+        self.reports.mkdir()
+
+    def write_baseline(self, name: str, doc: dict) -> None:
+        (self.baselines / name).write_text(json.dumps(doc))
+
+    def write_report(self, name: str, doc: dict) -> None:
+        (self.reports / name).write_text(json.dumps(doc))
 
 
 def aggregator_env(

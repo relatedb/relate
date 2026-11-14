@@ -27,30 +27,31 @@ line by exact match (2-space indent, the old value) so comments, attribute
 style, and every other byte of the file survive untouched — ElementTree
 serialization would drop the pom's comments. The file is read once and both
 the parse and the rewrite derive from those bytes; the rewritten text lands
-through a sibling temp and an atomic rename, so a failure mid-write never
-truncates the pom.
+through the shared atomic sidecar writer (scripts/lib/atomic_write.py), so
+a failure mid-write never truncates the pom.
+
+Every refusal is a [`PomError`] raised by a helper and caught once in
+`main`, which prints the module's one diagnostic shape (`pom.py: <path>:
+<message>`, exit 1).
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
-import stat
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from atomic_write import atomic_write
+
+
+class PomError(Exception):
+    """A refusal: the pom does not carry what the verb needs."""
 
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
-
-
-def _fail(message: str) -> int:
-    """The module's one diagnostic: `pom.py: <message>` on stderr, exit 1."""
-    print(f"pom.py: {message}", file=sys.stderr)
-    return 1
 
 
 def _version_text(value: str) -> str:
@@ -92,27 +93,29 @@ def _project_version(root: ET.Element) -> str | None:
     return None
 
 
-def _replace(pom: Path, text: str) -> None:
-    """Write `text` over `pom` through a sibling temp and an atomic rename.
-
-    The temp carries the `<target>.tmp.XXXXXX` sidecar shape release-bump.sh's
-    rollback sweeps, and the rename preserves the target's mode (mkstemp
-    creates 0600) — the same shape toml.sh's writer uses.
-    """
-    fd, tmp = tempfile.mkstemp(prefix=f"{pom.name}.tmp.", dir=pom.parent)
+def _load(pom: Path) -> tuple[str, bytes]:
+    """Read `pom`, validate its shape, and return its project <version>
+    text and its raw bytes — every refusal a [`PomError`]."""
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.chmod(tmp, stat.S_IMODE(pom.stat().st_mode))
-        os.replace(tmp, pom)
-    finally:
-        # A no-op once the rename landed; otherwise the interrupted write
-        # leaves nothing behind.
-        Path(tmp).unlink(missing_ok=True)
+        raw = pom.read_bytes()
+    except OSError as exc:
+        raise PomError(f"{pom}: cannot read: {exc}") from exc
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise PomError(f"{pom}: not well-formed XML: {exc}") from exc
+    tag = _local(root.tag)
+    if tag != "project":
+        raise PomError(f"{pom}: root element is <{tag}>, not <project>")
+    old = _project_version(root)
+    if old is None:
+        raise PomError(f"{pom}: no project <version> entry")
+    return old, raw
 
 
-def _rewrite(pom: Path, text: str, old: str, new: str) -> bool:
-    """Rewrite the project-level <version> line; False when it is not there.
+def _rewrite(pom: Path, text: str, old: str, new: str) -> None:
+    """Rewrite the project-level <version> line, or raise [`PomError`] when
+    it is not there.
 
     The anchor is the 2-space indent the project's own <version> sits at, so
     an exact 2-space + old-value match cannot hit a dependency's
@@ -127,9 +130,31 @@ def _rewrite(pom: Path, text: str, old: str, new: str) -> bool:
         lambda _: f"  <version>{new}</version>", text, count=1
     )
     if not found:
-        return False
-    _replace(pom, rewritten)
-    return True
+        raise PomError(f"{pom}: no 2-space <version>{old}</version> line to rewrite")
+    atomic_write(pom, rewritten)
+
+
+def _get(args: argparse.Namespace) -> int:
+    """Print the project <version>."""
+    old, _ = _load(args.pom)
+    print(old)
+    return 0
+
+
+def _set(args: argparse.Namespace) -> int:
+    """Rewrite the project <version> to `args.version`."""
+    old, raw = _load(args.pom)
+    # The bytes are text only on this arm, so the decode lives here: `get`
+    # reads `old` off the parse and never needs the whole file decoded.
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PomError(f"{args.pom}: cannot read: {exc}") from exc
+    try:
+        _rewrite(args.pom, text, old, args.version)
+    except OSError as exc:
+        raise PomError(f"{args.pom}: cannot write: {exc}") from exc
+    return 0
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -137,55 +162,34 @@ def _parser() -> argparse.ArgumentParser:
         prog="pom.py",
         description="Read or rewrite the Maven pom's project <version>.",
     )
-    commands = parser.add_subparsers(dest="command", required=True)
+    # No dest: dispatch is per-subparser (set_defaults(run=...) below), so
+    # nothing reads the parsed verb name.
+    commands = parser.add_subparsers(required=True)
 
     get_cmd = commands.add_parser(
         "get", help="print /project/version; exit 1 when absent"
     )
     get_cmd.add_argument("pom", type=Path, metavar="POM")
+    # One handler per subparser: argparse owns the verb dispatch, so `main`
+    # never re-tests the verb as a string.
+    get_cmd.set_defaults(run=_get)
 
     set_cmd = commands.add_parser("set", help="rewrite /project/version to VERSION")
     set_cmd.add_argument("pom", type=Path, metavar="POM")
     set_cmd.add_argument("version", type=_version_text, metavar="VERSION")
+    set_cmd.set_defaults(run=_set)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-
     try:
-        raw = args.pom.read_bytes()
-    except OSError as exc:
-        return _fail(f"{args.pom}: cannot read: {exc}")
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as exc:
-        return _fail(f"{args.pom}: not well-formed XML: {exc}")
-
-    root_tag = _local(root.tag)
-    if root_tag != "project":
-        return _fail(f"{args.pom}: root element is <{root_tag}>, not <project>")
-    old = _project_version(root)
-    if old is None:
-        return _fail(f"{args.pom}: no project <version> entry")
-
-    if args.command == "get":
-        print(old)
-        return 0
-
-    # The bytes are text only on the rewrite arm, so the decode lives here:
-    # `get` reads `old` off the parse and never needs the whole file decoded.
-    try:
-        text = raw.decode("utf-8")
-        found = _rewrite(args.pom, text, old, args.version)
-    except UnicodeDecodeError as exc:
-        return _fail(f"{args.pom}: cannot read: {exc}")
-    except OSError as exc:
-        return _fail(f"{args.pom}: cannot write: {exc}")
-    if found:
-        return 0
-    return _fail(f"{args.pom}: no 2-space <version>{old}</version> line to rewrite")
+        return args.run(args)
+    except PomError as exc:
+        # The module's one diagnostic: `pom.py: <message>` on stderr, exit 1.
+        print(f"pom.py: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

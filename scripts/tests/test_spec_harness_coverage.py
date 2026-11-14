@@ -157,6 +157,20 @@ class Shape(unittest.TestCase):
             "failure_categories",
         )
 
+    def test_a_missing_failure_categories_is_named_as_absence(self):
+        # Absence is named as absence, like the totals walk: a missing
+        # member is a different fact from a present-but-malformed one.
+        fixture = summary({"passed": 10, "failed": 2})
+        del fixture["failure_categories"]
+        self.assert_shape_failure(fixture, "failure_categories is missing")
+
+    def test_a_null_failure_categories_is_malformed_not_missing(self):
+        # A JSON null is *present*, so it is malformed, not absent — the
+        # same distinction the totals walk draws for a null context bucket.
+        fixture = summary({"passed": 10, "failed": 2})
+        fixture["failure_categories"] = None
+        self.assert_shape_failure(fixture, "is not a map")
+
     def test_a_malformed_error_total_is_a_shape_failure(self):
         # The errored bucket is counted, so a malformed value is a shape
         # failure like any required total — not a silent zero.

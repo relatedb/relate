@@ -15,7 +15,6 @@ flag) compares the registry's gated members: fraud and identity
 unconditionally.
 """
 
-import json
 import subprocess
 import tempfile
 import unittest
@@ -23,6 +22,7 @@ from pathlib import Path
 
 from loadtest_fixtures import (
     ENV,
+    BaselineReportTreeMixin,
     aggregator_env,
     checkpoint_report,
     memory_report,
@@ -34,27 +34,18 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "compare-baselines.sh"
 
 
-class CompareBaselinesTestBase(unittest.TestCase):
+class CompareBaselinesTestBase(BaselineReportTreeMixin, unittest.TestCase):
     """Fixture tree (temp baselines/ + reports/) and script runner."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.baselines = Path(self._tmp.name) / "baselines"
-        self.reports = Path(self._tmp.name) / "reports"
-        self.baselines.mkdir()
-        self.reports.mkdir()
+        self.make_tree(Path(self._tmp.name))
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def write_baseline(self, name: str, doc: dict) -> None:
-        (self.baselines / name).write_text(json.dumps(doc))
-
-    def write_report(self, name: str, doc: dict) -> None:
-        (self.reports / name).write_text(json.dumps(doc))
-
     def write_stub(self, body: str) -> Path:
-        """An executable PYTHON stub: every invocation is the comparator
+        """An executable bash stub: every invocation is the comparator
         call and runs `body`."""
         stub = Path(self._tmp.name) / "stub-compare"
         stub.write_text("#!/usr/bin/env bash\n" + body)
@@ -105,9 +96,9 @@ class CompareBaselinesRenderTests(CompareBaselinesTestBase):
     """--render-only: one combined document, per-pair sections, never a gate."""
 
     def render(
-        self, **kw
+        self, *, extra_env: dict[str, str] | None = None
     ) -> tuple[subprocess.CompletedProcess[str], str]:
-        result = self.run_script("--render-only", **kw)
+        result = self.run_script("--render-only", extra_env=extra_env)
         doc = (self.reports / "loadtest-comparison.md").read_text()
         return result, doc
 
@@ -305,15 +296,11 @@ class CompareBaselinesRenderTests(CompareBaselinesTestBase):
         with tempfile.TemporaryDirectory(dir=str(repo_target)) as tmp:
             # Point the fixture tree at the temp dir inside the repo, so
             # the base class's one runner is what invokes the aggregator.
-            self.baselines = Path(tmp) / "baselines"
-            self.reports = Path(tmp) / "reports"
-            self.baselines.mkdir()
-            self.reports.mkdir()
+            self.make_tree(Path(tmp))
             self.write_baseline("fraud-loadtest.json", report(p99=1_000_000))
             self.write_report("fraud-loadtest.json", report(p99=1_100_000))
-            result = self.run_script("--render-only")
+            result, doc = self.render()
             self.assertEqual(result.returncode, 0, result.stderr)
-            doc = (self.reports / "loadtest-comparison.md").read_text()
             rel = f"target/{Path(tmp).name}"
             self.assertIn(
                 f"`{rel}/baselines/fraud-loadtest.json` → "
