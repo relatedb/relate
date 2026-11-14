@@ -224,9 +224,7 @@ impl<'a> Route<'a> {
     /// — the decision happens here, before the sink exists in the caller's
     /// hands, so a declined pattern can never have had a row pushed into
     /// it. A pattern whose predicate the search cannot decide against the
-    /// rows it binds (or the postfix quantified spelling with a clause
-    /// WHERE, which the reference reads as a postfilter) enumerates
-    /// instead.
+    /// rows it binds enumerates instead.
     pub(super) fn try_new(
         ctx: ExecCtx<'a>,
         path: &'a PathPattern,
@@ -241,7 +239,7 @@ impl<'a> Route<'a> {
         // correspondences are established here, not by two caller-supplied
         // arguments that must happen to agree.
         let halt = sink.halt_cell();
-        let filters = RouteFilters::split(path, shape.end, sink.residual());
+        let filters = RouteFilters::split(path, shape.end, sink.residual(), shape.spelling);
         let rel = shape.rel;
         let search = Search {
             graph: ctx.graph,
@@ -265,14 +263,9 @@ impl<'a> Route<'a> {
             path_rung: Cell::new(None),
         };
         if let Some(filter) = &route.filters.path {
-            // The postfix `->{m,n}` spelling with a clause-level `WHERE` over
-            // the path keeps enumerating: the reference reads that predicate
-            // as a postfilter (the selector picks first), which the route's
-            // in-search predicate does not do. The other spellings'
-            // behaviour here is unchanged.
-            if (route.shape.rel.quantified && filter.has_clause_conjuncts())
-                || !route.predicates_decidable(filter)
-            {
+            // A predicate the search cannot decide against the rows it
+            // binds enumerates instead (see `predicates_decidable`).
+            if !route.predicates_decidable(filter) {
                 return None;
             }
         }

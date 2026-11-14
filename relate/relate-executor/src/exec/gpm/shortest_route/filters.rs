@@ -1,13 +1,19 @@
 //! The `MATCH`-level `WHERE` conjuncts a routed shortest path reads,
 //! split by what they read: the path itself, or only the endpoints.
 //!
-//! A conjunct that reads the *path* (the named path variable or the
-//! relationship variable), the pattern's own inline `WHERE`, and the end
-//! node pattern's inline `WHERE` (admitted by the guard when it names no
-//! path variable) must hold **during** the search: a route that only
-//! filtered the selected shortest path afterwards answered zero rows
-//! whenever that path violated such a predicate, instead of the shortest
-//! path that satisfies it ([`PathFilter`]).
+//! The pattern's own inline `WHERE` and the end node pattern's inline
+//! `WHERE` (admitted by the guard when it names no path variable) must hold
+//! **during** the search, and so must a clause-level conjunct that reads the
+//! *path* (the named path variable or the relationship variable) of the
+//! function spellings (`shortestPath()` / `allShortestPaths()`): live Neo4j
+//! answers the shortest path that satisfies them ([`PathFilter`]).
+//!
+//! A clause-level conjunct that reads the path of a **keyword selector**
+//! (`SHORTEST k`, `ANY SHORTEST`, `ALL SHORTEST`, `SHORTEST k GROUPS`) is
+//! not a search filter: live Neo4j selects first and filters the selected
+//! paths afterwards, so a selected path that violates it leaves no row
+//! instead of promoting a longer one. Such a conjunct rides the residual
+//! the caller applies to every emitted row, like an endpoint-only one.
 //!
 //! An endpoint-only conjunct is deliberately **not** a search filter: the
 //! route answers one shortest path per `(start, end)` partition, so a
@@ -35,8 +41,11 @@ use crate::exec::gpm::gpm_bind_node;
 use crate::exec::pushdown::{conjunct_ready, residual_ok, Residual};
 use crate::row::Row;
 
+use super::guard::Spelling;
+
 /// The predicates a routed shortest path must satisfy during the search:
-/// the MATCH-level `WHERE` conjuncts that read the path itself, the
+/// the MATCH-level `WHERE` conjuncts that read the path itself (function
+/// spellings only; a keyword selector post-filters them), the
 /// pattern's own inline `WHERE`, and the end node pattern's inline `WHERE`
 /// (GPM checks that one at every arrival; the route answers it against
 /// each bound trail, which binds the same names — the guard admits it only
@@ -53,12 +62,6 @@ pub(super) struct PathFilter<'a> {
 }
 
 impl<'a> PathFilter<'a> {
-    /// Whether a clause-level `WHERE` conjunct reads the path (as opposed
-    /// to only the pattern's inline `WHERE` filtering the search).
-    pub(super) fn has_clause_conjuncts(&self) -> bool {
-        !self.conjuncts.is_empty()
-    }
-
     /// The union the search must decide: the path-reading clause conjuncts,
     /// then the inline predicates — the pattern's `WHERE` and the end
     /// node's, one list chained once.
@@ -149,6 +152,7 @@ impl<'p> RouteFilters<'p> {
         path: &'p PathPattern,
         end: &'p NodePattern,
         residual: &'p Residual<'_>,
+        spelling: Spelling,
     ) -> Self {
         // Text render: the carrier set compares against the String variable
         // sets of the filter walk.
@@ -161,12 +165,19 @@ impl<'p> RouteFilters<'p> {
         for name in path.path_names() {
             carriers.insert(name.to_string());
         }
-        let (conjuncts, endpoint_only): (Vec<&Expr>, Vec<&Expr>) =
+        let (path_reading, endpoint_only): (Vec<&Expr>, Vec<&Expr>) =
             residual.conjuncts.iter().partition(|conjunct| {
                 let mut vars = HashSet::new();
                 expr_vars(conjunct, &mut vars);
                 vars.iter().any(|name| carriers.contains(name.as_str()))
             });
+        // A keyword selector selects first: its path-reading clause
+        // conjuncts are the residual's post-filter, never the search's.
+        let conjuncts = if spelling.filters_search_by_clause_where() {
+            path_reading
+        } else {
+            Vec::new()
+        };
         let scope = residual.scope;
         // The two inline predicates — the pattern's own `WHERE` and the
         // end node's — are one role in the filter, so one list.

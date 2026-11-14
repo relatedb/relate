@@ -982,6 +982,15 @@ MATCH p = ANY SHORTEST (a)-[:R]->+(b) RETURN p;   -- selector: ANY / ALL / SHORT
 MATCH p = SHORTEST 3 (a)-[:R]->+(b) RETURN p;
 ```
 
+Where a `WHERE` that reads the path applies depends on the spelling, as in
+Neo4j. For a keyword selector (`SHORTEST k`, `ANY SHORTEST`, `ALL SHORTEST`,
+`SHORTEST k GROUPS`) a `MATCH`-clause `WHERE` over the path filters the
+selected paths afterwards: `MATCH p = SHORTEST 1 (a)-[*]-(b) WHERE length(p) >= 2`
+returns no row for a pair whose shortest path is one hop. The function
+spellings (`shortestPath()`, `allShortestPaths()`) and an inline `WHERE`
+inside the pattern restrict the search itself and return the shortest path
+that satisfies the predicate.
+
 ### Dynamic labels, types, and properties
 
 Use `$(expr)` (or `$all(expr)`) where a static label/type goes, and `n[keyExpr]` for a dynamic property key. The expression must evaluate to a string or list of strings.
