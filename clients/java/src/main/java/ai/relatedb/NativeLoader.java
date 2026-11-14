@@ -32,6 +32,9 @@ import java.util.function.UnaryOperator;
  * The system library path is never searched.
  */
 final class NativeLoader {
+    /** The published Maven coordinate (groupId:artifactId), spelled once. */
+    static final String COORDINATE = "ai.relatedb:relate";
+
     /** The system property that relocates the extraction cache root. */
     static final String CACHE_PROPERTY = "relate.native.cache";
 
@@ -65,7 +68,8 @@ final class NativeLoader {
         String version = version();
         URL resource = NativeLoader.class.getClassLoader().getResource(platform.resourcePath());
         if (resource == null) {
-            throw new RelateException(missingNativeMessage(platform, version));
+            throw new RelateException(missingNativeMessage(platform, version,
+                    System.getProperty("os.name"), System.getProperty("os.arch")));
         }
         Path root = cacheRoot(platform, System.getProperty(CACHE_PROPERTY),
                 System.getProperty("user.home"), System::getenv);
@@ -100,14 +104,18 @@ final class NativeLoader {
         return path.toString();
     }
 
-    /** The loud error for a classpath carrying no native for this platform. */
-    static String missingNativeMessage(NativePlatform platform, String version) {
+    /**
+     * The loud error for a classpath carrying no native for this platform;
+     * a pure function of its arguments (the detection facts are passed in).
+     */
+    static String missingNativeMessage(NativePlatform platform, String version,
+                                       String osName, String osArch) {
         return "relate: no bundled native library for platform " + platform.key()
-                + " (os.name=" + System.getProperty("os.name") + ", os.arch="
-                + System.getProperty("os.arch") + "): the classpath has no /"
+                + " (os.name=" + osName + ", os.arch="
+                + osArch + "): the classpath has no /"
                 + platform.resourcePath() + ". Depend on the all-platform jar"
-                + " ai.relatedb:relate:" + version + " or add the classifier artifact"
-                + " ai.relatedb:relate:" + version + ":" + platform.classifier()
+                + " " + COORDINATE + ":" + version + " or add the classifier artifact"
+                + " " + COORDINATE + ":" + version + ":" + platform.classifier()
                 + ". (" + NativePlatform.OVERRIDE_ENV + "=<path to a relate_ffi you built> overrides the"
                 + " bundled library for development only.)";
     }

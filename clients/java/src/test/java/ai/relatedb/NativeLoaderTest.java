@@ -131,10 +131,12 @@ public class NativeLoaderTest {
 
     @Test
     void missingNativeErrorNamesPlatformAndClassifier() {
-        String msg = NativeLoader.missingNativeMessage(NativePlatform.LINUX_ARM64, "9.9.9");
+        String msg = NativeLoader.missingNativeMessage(NativePlatform.LINUX_ARM64, "9.9.9",
+                "Linux", "aarch64");
         assertTrue(msg.contains("platform linux-arm64"), msg);
         assertTrue(msg.contains("/native/linux-arm64/librelate_ffi.so"), msg);
-        assertTrue(msg.contains("ai.relatedb:relate:9.9.9:linux-aarch_64"), msg);
+        assertTrue(msg.contains(NativeLoader.COORDINATE + ":9.9.9:linux-aarch_64"), msg);
+        assertTrue(msg.contains("os.name=Linux, os.arch=aarch64"), msg);
         assertTrue(msg.contains("RELATE_LIB"), msg);
     }
 

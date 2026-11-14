@@ -49,6 +49,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
+    <relate.version.resource>ai/relatedb/relate.properties</relate.version.resource>
     <relate.ffi.dir>${project.basedir}/../../target/release</relate.ffi.dir>
   </properties>
 
@@ -78,14 +79,14 @@
         <directory>src/main/resources</directory>
         <filtering>true</filtering>
         <includes>
-          <include>ai/relatedb/relate.properties</include>
+          <include>${relate.version.resource}</include>
         </includes>
       </resource>
       <resource>
         <directory>src/main/resources</directory>
         <filtering>false</filtering>
         <excludes>
-          <exclude>ai/relatedb/relate.properties</exclude>
+          <exclude>${relate.version.resource}</exclude>
         </excludes>
       </resource>
     </resources>
