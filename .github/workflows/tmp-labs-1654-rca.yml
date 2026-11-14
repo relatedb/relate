@@ -7,6 +7,10 @@ env:
   RELATE_TELEMETRY: "off"
 jobs:
   prof:
+    strategy:
+      fail-fast: false
+      matrix:
+        rev: ['39a9b627', '657aac43']
     runs-on: linux-4-core-x86
     timeout-minutes: 240
     steps:
@@ -24,7 +28,7 @@ jobs:
         run: |
           sudo apt-get update -qq; sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-azure 2>&1 | tail -1 || true
           sudo sysctl kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0 || true
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         id: cache
         with:
           path: |
@@ -43,28 +47,22 @@ jobs:
           ./run.sh env --relate-src "$RELATE_SRC" --relate-rev 657aac43 || true
           ./run.sh load --relate-src "$RELATE_SRC" --relate-rev 657aac43 2>&1 | grep -v -i "token" | tail -3
           ls ../../.cache/engines ../../.cache/pkc/stores
-      - name: Are the two engines the same binary
-        run: |
-          B=relate-benchmarks-private
-          sha256sum $B/.cache/engines/*/relate; ls -la $B/.cache/engines/*/relate | awk '{print $5, $9}'
-      - name: Rebuild after-engine alone, then time q19 q20 q33
+      - name: Build this rev alone, then time q19 q20 q33
         working-directory: relate-benchmarks-private/benchmarks/pokec
         env:
           RELATE_SRC: ${{ github.workspace }}/relate
         run: |
-          rm -rf ../../.cache/engines/*g657aac4*
-          git -C "$RELATE_SRC" rev-parse HEAD
-          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev 657aac43 || true
+          echo "cache-hit=${{ steps.cache.outputs.cache-hit }}"
+          rm -rf ../../.cache/engines
+          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev ${{ matrix.rev }} 2>&1 | tail -3
           cd ../..
           sha256sum .cache/engines/*/relate
           STORE=$(realpath $(ls -d .cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
           Q=$(realpath benchmarks/pokec/queries)
-          for e in .cache/engines/*/; do
-            CLI=$(realpath $e/relate); echo "=== $(basename $e)"
-            for n in 19 20 33; do
-              (echo ".timer on"; grep -v '^//' $Q/q$n.cypher) > q.cypher
-              rm -rf "$STORE.w.rl"; cp -r "$STORE" "$STORE.w.rl"
-              echo "q$n: $(RELATE_MAX_ROWS=0 "$CLI" query --mode jsonl -d "$STORE.w.rl" < q.cypher | grep -E '^Time')"
-              rm -rf "$STORE.w.rl"
-            done
+          CLI=$(realpath $(ls .cache/engines/*/relate | head -1))
+          for n in 19 20 33; do
+            (echo ".timer on"; grep -v '^//' $Q/q$n.cypher) > q.cypher
+            rm -rf "$STORE.w.rl"; cp -r "$STORE" "$STORE.w.rl"
+            echo "rev=${{ matrix.rev }} q$n: $(RELATE_MAX_ROWS=0 "$CLI" query --mode jsonl -d "$STORE.w.rl" < q.cypher | grep -E '^Time')"
+            rm -rf "$STORE.w.rl"
           done
