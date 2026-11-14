@@ -322,7 +322,7 @@ fn next_part_reads_properties_set_by_merge_in_batches() {
         )
         .unwrap();
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0][0], Value::Int(3));
+    assert_eq!(first_column(&result), vec![Value::Int(3)]);
 }
 
 /// The ON ERROR BREAK variant of the gap report: the batches before the

@@ -409,24 +409,26 @@ mod tests {
     /// an added variant must pass through.
     #[test]
     fn outcome_spellings_are_the_complete_kebab_vocabulary() {
-        let expected = [
+        // One wildcard-free match: a new variant fails to compile here until
+        // its spelling is pinned.
+        let pinned = |outcome: PlanCacheOutcome| match outcome {
+            PlanCacheOutcome::HitTemplate => "hit-template",
+            PlanCacheOutcome::HitRawFastPath => "hit-raw-fastpath",
+            PlanCacheOutcome::ReplanGenerationMismatch => "replan-generation-mismatch",
+            PlanCacheOutcome::Miss => "miss",
+            PlanCacheOutcome::Bypassed => "bypassed",
+        };
+        let all = [
             PlanCacheOutcome::HitTemplate,
             PlanCacheOutcome::HitRawFastPath,
             PlanCacheOutcome::ReplanGenerationMismatch,
             PlanCacheOutcome::Miss,
             PlanCacheOutcome::Bypassed,
         ];
-        let spellings: Vec<&str> = expected.iter().map(|o| o.as_str()).collect();
-        assert_eq!(
-            spellings,
-            [
-                "hit-template",
-                "hit-raw-fastpath",
-                "replan-generation-mismatch",
-                "miss",
-                "bypassed",
-            ]
-        );
+        let spellings: Vec<&str> = all.iter().map(|o| o.as_str()).collect();
+        for outcome in all {
+            assert_eq!(outcome.as_str(), pinned(outcome));
+        }
         for spelling in &spellings {
             assert!(
                 !spelling.contains(|c: char| c.is_uppercase() || c == '_'),

@@ -91,19 +91,13 @@ impl PhaseTimings {
     /// the fine sub-windows as the stages that own them measured them. A
     /// split is never built half-measured, so no stage ever carries a
     /// zero placeholder for work still ahead of it.
-    fn complete(
-        parse: Duration,
-        plan: Duration,
-        execute: Duration,
-        stages: ParseStages,
-        result_generation: Duration,
-    ) -> Self {
+    fn complete(admission: AdmissionTiming, windows: DispatchWindows) -> Self {
         Self {
-            parse,
-            plan,
-            execute,
-            parse_stages: stages,
-            result_generation,
+            parse: admission.parse,
+            plan: admission.plan,
+            execute: windows.execute,
+            parse_stages: admission.stages,
+            result_generation: windows.result_generation,
         }
     }
 
@@ -207,13 +201,7 @@ impl TimingStamp {
     ) -> Self {
         Self {
             elapsed: started.elapsed(),
-            phases: PhaseTimings::complete(
-                admission.parse,
-                admission.plan,
-                windows.execute,
-                admission.stages,
-                windows.result_generation,
-            ),
+            phases: PhaseTimings::complete(admission, windows),
             plan_cache: admission.plan_cache,
         }
     }

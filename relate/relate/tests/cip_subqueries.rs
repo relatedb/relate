@@ -566,8 +566,8 @@ fn call_subquery_return_items_must_be_aliased() {
 /// scope directly, so a `WITH` inside a correlated subquery must not drop the
 /// arm's imported name. An earlier cut of the 42N62 import check rejected this
 /// query ("Variable `x` not defined") by re-deriving a fresh scope at every
-/// nested statement. This pins the lenient baseline until the check is
-/// re-implemented with a per-statement scope frame.
+/// nested statement; the live check (`validate_call_body`) seeds one scope
+/// per arm.
 #[test]
 fn naked_call_nested_body_keeps_its_scope() {
     let mut connection = connection();
@@ -589,9 +589,8 @@ fn naked_call_nested_body_keeps_its_scope() {
 
 /// LABS-816 guard: each `UNION` arm of a naked `CALL { }` body imports its
 /// own names. An earlier cut of the 42N62 import check rejected this query on
-/// arm 2's `WITH y` by checking every arm against the previous arm's scope.
-/// This pins the lenient baseline until the check is re-implemented with a
-/// per-statement scope frame.
+/// arm 2's `WITH y` by checking every arm against the previous arm's scope; the
+/// live check seeds each arm from its own leading clause.
 #[test]
 fn naked_call_union_arms_import_their_own_names() {
     let mut connection = connection();
@@ -603,6 +602,30 @@ fn naked_call_union_arms_import_their_own_names() {
         )
         .unwrap();
     assert_eq!(result.rows, vec![vec![Value::Int(1)], vec![Value::Int(2)]]);
+}
+
+/// LABS-816 guard: a naked `CALL { }` arm starts with no outer variables in
+/// scope — only its leading importing `WITH` pulls them in — and a later
+/// `WITH` that drops an import, even one whose own items carry a subquery,
+/// makes the dropped name unreadable again (Neo4j 42N62).
+#[test]
+fn naked_call_unimported_or_dropped_names_are_rejected() {
+    let mut connection = connection();
+    for query in [
+        "WITH 1 AS x CALL { RETURN x AS v } RETURN v",
+        "WITH 1 AS x CALL { WITH x MATCH (n:N) WITH n, COUNT { MATCH (m) RETURN m } AS c \
+         RETURN x AS y } RETURN y",
+        "WITH 1 AS x, 2 AS y CALL { WITH x, COUNT { MATCH (m) RETURN m } AS c \
+         MATCH (n) WHERE n.v = y RETURN c } RETURN c",
+    ] {
+        let err = connection
+            .query(query)
+            .expect_err(&format!("must be rejected: {query}"));
+        assert!(
+            format!("{err:?}").contains("not defined"),
+            "{query}: unexpected error {err:?}"
+        );
+    }
 }
 
 /// UNION part-0 dedup through the subquery fold (LABS-852): the body's

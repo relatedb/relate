@@ -248,8 +248,8 @@ impl ExecGraph<'_> {
     }
 
     /// [`Self::node_prop`] reading a plan-resolved key: no interner lookup
-    /// per call on the snapshot arm. An `Unresolved` key falls back to the
-    /// string lookup and an `Absent` one answers `None` without a store
+    /// per call on the snapshot arm. An `Unresolved` key resolves by name
+    /// through [`Self::prop_key_id_resolved`] and an `Absent` one answers `None` without a store
     /// read — unless the scratch was rebased past this view's pin
     /// ([`Self::prop_key_id_resolved`]); the scratch arm is string-keyed
     /// either way.
@@ -259,9 +259,6 @@ impl ExecGraph<'_> {
         (name, token): &relate_names::NamedToken,
     ) -> Option<Value> {
         name.with_str(|text| {
-            if *token == Token::Unresolved {
-                return self.node_prop(id, text);
-            }
             self.node_prologue(id, |n| n.properties.get(text).cloned())
                 .resolve(None, || {
                     self.prop_key_id_resolved(text, *token)
@@ -277,9 +274,6 @@ impl ExecGraph<'_> {
         (name, token): &relate_names::NamedToken,
     ) -> Option<Value> {
         name.with_str(|text| {
-            if *token == Token::Unresolved {
-                return self.rel_prop(id, text);
-            }
             self.rel_prologue(id, |r| r.properties.get(text).cloned())
                 .resolve(None, || {
                     self.prop_key_id_resolved(text, *token)

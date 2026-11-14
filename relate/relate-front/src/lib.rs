@@ -496,15 +496,10 @@ mod tests {
             // Min of three per entry: the first call through a cold path
             // pays warmup the second entry does not, and min-of-same-work
             // is the stable estimator of the span itself.
-            let min_lex_parse = |gated: bool| {
+            let min_lex_parse = |lower: &dyn Fn(&str) -> Result<LoweredStatement>| {
                 (0..3)
                     .map(|_| {
-                        let lowered = if gated {
-                            parse_and_lower_statement_with_preview(src, enabled)
-                        } else {
-                            parse_and_lower_statement(src)
-                        };
-                        lowered
+                        lower(src)
                             .expect("the sample statement lowers")
                             .stages
                             .lex_parse
@@ -513,7 +508,10 @@ mod tests {
                     .min()
                     .expect("three samples")
             };
-            let (plain_ns, gated_ns) = (min_lex_parse(false), min_lex_parse(true));
+            let (plain_ns, gated_ns) = (
+                min_lex_parse(&parse_and_lower_statement),
+                min_lex_parse(&|s| parse_and_lower_statement_with_preview(s, enabled)),
+            );
             let ratio = plain_ns.max(gated_ns) as f64 / plain_ns.min(gated_ns).max(1) as f64;
             assert!(
                 ratio <= 3.0,

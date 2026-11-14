@@ -21,7 +21,7 @@ use relate_error::{EngineError, ErrorKind};
 use relate_parser::{
     CallProcedureClause, CallSubqueryClause, Clause, CreateClause, Expr, ForeachClause,
     LiteralValue, MatchClause, MergeClause, PatternElement, PatternPath, ReturnItem, Statement,
-    UnwindClause, WithClause, YieldMode,
+    WithClause, YieldMode,
 };
 
 use super::self_reference::validate_create_self_reference;
@@ -29,7 +29,9 @@ use super::writes::{
     declare_new_name, validate_create_bindings, validate_dynamic_label_no_any,
     validate_dynamic_label_scope, validate_merge_bindings,
 };
-use crate::ast::collect::{bind_pattern_vars, effective_name, projected_names, search_score_var};
+use crate::ast::collect::{
+    bind_pattern_vars, clause_introduced_names, effective_name, projected_names,
+};
 use crate::call_scope::duplicate_outer_variable;
 use crate::output_vars::{compute_subquery_output_vars, compute_subquery_output_vars_seeded};
 use crate::show_columns::{catalog_output_names, is_catalog_clause};
@@ -109,15 +111,21 @@ fn validate_variable_types_in_clauses(
 ) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
-            Clause::Match(mc) => apply_match(mc, var_types, bound_vars)?,
+            Clause::Match(mc) => apply_match(clause, mc, var_types, bound_vars)?,
             Clause::With(wc) => apply_with(wc, var_types, bound_vars),
-            Clause::Unwind(uw) => apply_unwind(uw, bound_vars, shadowable)?,
+            Clause::Unwind(uw) => {
+                declare_binding(&uw.alias, clause, bound_vars, shadowable)?;
+            }
             Clause::LoadCSV(lc) => {
-                bound_vars.insert(lc.alias.clone());
+                declare_binding(&lc.alias, clause, bound_vars, shadowable)?;
             }
             Clause::Create(cc) => apply_create(cc, bound_vars, shadowable)?,
             Clause::Merge(mc) => apply_merge(mc, bound_vars, shadowable)?,
-            Clause::CallProcedure(cp) => apply_call_procedure(cp, clauses, bound_vars)?,
+            Clause::CallProcedure(cp) => {
+                // `YIELD *` is for a standalone CALL only: in-query means
+                // other clauses ride beside it.
+                apply_call_procedure(cp, clauses.len() > 1, bound_vars)?;
+            }
             Clause::CallSubquery(csq) => apply_call_subquery(csq, bound_vars)?,
             // A SHOW/TERMINATE clause's output columns are new bindings,
             // exactly like a `CALL proc() YIELD ...`'s (see the
@@ -142,18 +150,16 @@ fn validate_variable_types_in_clauses(
 }
 
 /// The MATCH policy: every variable usage in the clause's patterns is
-/// type-checked, then the pattern's names (and a SEARCH score variable)
-/// become bound.
+/// type-checked, then the clause's introduced names (the pattern's, and a
+/// SEARCH score variable) become bound.
 fn apply_match(
+    clause: &Clause,
     mc: &MatchClause,
     var_types: &mut IdentHashMap<SmallName, VarType>,
     bound_vars: &mut IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
     validate_match_patterns(&mc.pattern, var_types)?;
-    bind_pattern_vars(&mc.pattern, bound_vars);
-    if let Some(sv) = search_score_var(mc) {
-        bound_vars.insert(sv.clone());
-    }
+    bound_vars.extend(clause_introduced_names(clause));
     Ok(())
 }
 
@@ -226,21 +232,25 @@ fn apply_with(
     *bound_vars = projected_names(&wc.items, bound_vars);
 }
 
-/// The UNWIND policy: a binding clause introduces a NEW variable.
-fn apply_unwind(
-    uw: &UnwindClause,
+/// The UNWIND / LOAD CSV policy: a binding clause introduces a NEW
+/// variable, so re-using an in-scope name is 42N59 ("variable already
+/// defined"), not a silent shadow (`WITH 1 AS x UNWIND [1] AS x`,
+/// AggregationAcceptance "Should not duplicate errors"); only a name a
+/// FOREACH body may shadow is exempt. One rule through
+/// [`declare_new_name`], then the clause's names become bound.
+fn declare_binding(
+    alias: &SmallName,
+    clause: &Clause,
     bound_vars: &mut IdentHashSet<SmallName>,
     shadowable: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    // A binding clause introduces a NEW variable: re-using an
-    // in-scope name is 42N59 ("variable already defined"), not a
-    // silent shadow (`WITH 1 AS x UNWIND [1] AS x`,
-    // AggregationAcceptance "Should not duplicate errors"). Only
-    // a name a FOREACH body may shadow is exempt.
-    if bound_vars.contains(&uw.alias) && !shadowable.contains(&uw.alias) {
-        return Err(uw.alias.with_str(EngineError::duplicate_variable));
-    }
-    bound_vars.insert(uw.alias.clone());
+    declare_new_name(
+        alias,
+        |name| bound_vars.contains(name),
+        |name| shadowable.contains(name),
+        false,
+    )?;
+    bound_vars.extend(clause_introduced_names(clause));
     Ok(())
 }
 
@@ -294,18 +304,15 @@ fn apply_merge(
     Ok(())
 }
 
-/// The CALL-procedure policy: `YIELD *` is in-query-context only, and the
-/// yielded names (alias-resolved, decoded once) follow the one
-/// yield-binding policy.
+/// The CALL-procedure policy: `YIELD *` is standalone-only (`in_query`,
+/// resolved by the dispatcher that owns the clause list), and the yielded
+/// names (alias-resolved, decoded once) follow the one yield-binding policy.
 fn apply_call_procedure(
     cp: &CallProcedureClause,
-    clauses: &[Clause],
+    in_query: bool,
     bound_vars: &mut IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    // Check for YIELD * in in-query context (not standalone)
-    // In-query = there are other clauses besides this CALL
-    let is_in_query = clauses.len() > 1;
-    if cp.yields.mode() == YieldMode::Star && is_in_query {
+    if cp.yields.mode() == YieldMode::Star && in_query {
         return Err(EngineError::semantic(
             ErrorKind::UnexpectedSyntax,
             "YIELD * is not allowed in in-query CALL".to_string(),
@@ -356,8 +363,8 @@ fn apply_call_subquery(
 /// cloned state.
 fn apply_foreach(
     f: &ForeachClause,
-    var_types: &mut IdentHashMap<SmallName, VarType>,
-    bound_vars: &mut IdentHashSet<SmallName>,
+    var_types: &IdentHashMap<SmallName, VarType>,
+    bound_vars: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
     let mut body_types = var_types.clone();
     let mut body_bound = bound_vars.clone();

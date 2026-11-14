@@ -449,6 +449,9 @@ fn apply_with_to_scope(
     local_scope: &mut IdentHashSet<SmallName>,
     strict: bool,
 ) -> Result<(), EngineError> {
+    // The WITH's own output names over the incoming scope: computed once,
+    // read by the strict WHERE visibility and the scope rebuild below.
+    let projected = projected_names(&wc.items, local_scope);
     // The strict pre-check and the redeclaration check
     // share one gate: both are strict-only policies, spelled one way.
     if strict {
@@ -464,7 +467,7 @@ fn apply_with_to_scope(
                 IdentBuildHasher,
             );
             where_scope.extend(local_scope.iter().cloned());
-            where_scope.extend(projected_names(&wc.items, local_scope));
+            where_scope.extend(projected.iter().cloned());
             check_expr_vars_defined(w, &where_scope)?;
         }
 
@@ -511,7 +514,7 @@ fn apply_with_to_scope(
     // passes the incoming local scope through, every other
     // item contributes its effective name) plus the import
     // stickiness: the imported names stay referenceable.
-    let mut new_scope = projected_names(&wc.items, local_scope);
+    let mut new_scope = projected;
     new_scope.extend(imported.iter().cloned()); // import stickiness
     *local_scope = new_scope;
     Ok(())
