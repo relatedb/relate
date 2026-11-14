@@ -116,6 +116,7 @@ docs_version_files=(
   "docs/reference/rust-library.md"
   "docs/reference/cli-flags.md"
   "docs/api/cli/examples/agents.md"
+  "docs/api/java/examples/RelateE2E.java"
 )
 touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_pom" "$js_main_pkg" "$js_lockfile" "${js_platform_pkgs[@]}" "${docs_version_files[@]}")
 # The rollback flag; when the EXIT trap restores is the failure policy's one

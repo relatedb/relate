@@ -1,5 +1,5 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
-//DEPS ai.relatedb:relate:0.1.0
+//DEPS ai.relatedb:relate:1.0.2
 //SOURCES HydratedValues.java
 package ai.relatedb.examples;
 

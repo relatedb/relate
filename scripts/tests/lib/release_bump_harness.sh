@@ -78,7 +78,7 @@ build_fixture() {
 	local fx="$1" changelog_src="$2" p doc
 	mkdir -p "$fx/scripts" "$fx/surfaces/relate-python/python/relate" \
 		"$fx/clients/java" "$fx/clients/javascript/platforms" \
-		"$fx/docs/reference" "$fx/docs/api/cli/examples"
+		"$fx/docs/reference" "$fx/docs/api/cli/examples" "$fx/docs/api/java/examples"
 	cp "$ROOT/scripts/release-bump.sh" "$fx/scripts/"
 	cp "$ROOT/scripts/changelog_rotate.py" "$fx/scripts/"
 	cp -R "$ROOT/scripts/lib" "$fx/scripts/lib"
@@ -170,7 +170,8 @@ EOF
 EOF
 	done
 	for doc in README.md docs/limitations.md docs/reference/rust-library.md \
-		docs/reference/cli-flags.md docs/api/cli/examples/agents.md; do
+		docs/reference/cli-flags.md docs/api/cli/examples/agents.md \
+		docs/api/java/examples/RelateE2E.java; do
 		echo "Release 0.16.1 notes." >"$fx/$doc"
 	done
 	cp "$changelog_src" "$fx/CHANGELOG.md"

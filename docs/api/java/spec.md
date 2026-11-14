@@ -164,7 +164,7 @@ os-maven-plugin / Gradle osdetector vocabulary:
 <dependency>
   <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
-  <version>0.1.0</version>
+  <version>X.Y.Z</version>
 </dependency>
 
 <!-- Maven: one platform, picked at build time -->
@@ -180,19 +180,19 @@ os-maven-plugin / Gradle osdetector vocabulary:
 <dependency>
   <groupId>ai.relatedb</groupId>
   <artifactId>relate</artifactId>
-  <version>0.1.0</version>
+  <version>X.Y.Z</version>
   <classifier>${os.detected.classifier}</classifier>
 </dependency>
 ```
 
 ```kotlin
 // Gradle (Kotlin DSL)
-dependencies { implementation("ai.relatedb:relate:0.1.0") }
+dependencies { implementation("ai.relatedb:relate:X.Y.Z") }
 
 // or one platform, via the osdetector plugin
 plugins { id("com.google.osdetector") version "1.7.3" }
 dependencies {
-    implementation("ai.relatedb:relate:0.1.0:${osdetector.classifier}")
+    implementation("ai.relatedb:relate:X.Y.Z:${osdetector.classifier}")
 }
 ```
 
