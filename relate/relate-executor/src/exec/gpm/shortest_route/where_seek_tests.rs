@@ -10,9 +10,8 @@ use relate_core::{CapacityKind, Error};
 use crate::exec::test_support::{exec_autocommit, try_exec_cypher};
 use crate::graph::Graph;
 
-use super::fixtures::{counting, gpm, run, sorted, Selector, SELECTORS};
-use super::route::{with_list_limit, AnchorArm};
-use super::with_forced_gpm;
+use super::anchor::{with_list_limit, AnchorArm};
+use super::fixtures::{counting, gpm, parity, run, sorted, Selector, SELECTORS};
 
 /// 200 `:N` nodes (`id` text, `g` parity) on a ring with `*3` chords;
 /// `indexed` declares the RANGE index the point seeks need.
@@ -45,24 +44,6 @@ fn list_with_noise(ids: std::ops::Range<usize>) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// The route's answer to `q` is the GPM walk's — rows, or the same error —
-/// and returns the route's anchor arms and expansion count.
-fn parity(g: &Graph, q: &str) -> (Vec<AnchorArm>, u64) {
-    let (routed, counts) = counting(|| try_exec_cypher(g, q));
-    let (oracle, oracle_counts) = counting(|| with_forced_gpm(|| try_exec_cypher(g, q)));
-    assert_eq!(
-        oracle_counts.route_runs, 0,
-        "the oracle must bypass the route for {q}"
-    );
-    match (routed, oracle) {
-        (Ok(r), Ok(o)) => assert_eq!(sorted(r.rows), sorted(o.rows), "rows differ for {q}"),
-        (Err(r), Err(o)) => assert_eq!(r, o, "errors differ for {q}"),
-        (r, o) => panic!("route {:?} vs gpm {:?} for {q}", r.is_ok(), o.is_ok()),
-    }
-    assert!(counts.route_runs > 0, "the route must take {q}");
-    (counts.arms, counts.expands)
-}
-
 const BODY: &str = "-[:R*..6]->";
 
 #[test]
@@ -84,6 +65,31 @@ fn a_where_equality_end_seeks_the_pair() {
         expands, map_expands,
         "the WHERE form must cost the map form"
     );
+}
+
+/// LABS-1394's shape: the function spelling with a `WHERE` equality on the
+/// end seeks it like the inline map form — the same pair, the same
+/// expansions — instead of building rows for every reachable end.
+#[test]
+fn a_function_spelling_where_equality_seeks_the_end() {
+    let g = ring(true);
+    let (by_where, where_expands) = parity(
+        &g,
+        &format!(
+            "MATCH p = shortestPath((a:N {{id: '0'}}){BODY}(b:N)) WHERE b.id = '150' \
+             RETURN length(p)"
+        ),
+    );
+    let (by_map, map_expands) = parity(
+        &g,
+        &format!(
+            "MATCH p = shortestPath((a:N {{id: '0'}}){BODY}(b:N {{id: '150'}})) \
+             RETURN length(p)"
+        ),
+    );
+    assert_eq!(by_where, vec![AnchorArm::Pair]);
+    assert_eq!(by_map, by_where);
+    assert_eq!(where_expands, map_expands);
 }
 
 /// The q31 shape: an UNWIND of ids, each bound into a WHERE equality on

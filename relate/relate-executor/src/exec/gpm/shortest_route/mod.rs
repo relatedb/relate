@@ -21,6 +21,7 @@ use crate::ctx::ExecCtx;
 use crate::exec::pushdown::Residual;
 use crate::row::Row;
 
+mod anchor;
 mod filters;
 mod guard;
 mod reach_cache;

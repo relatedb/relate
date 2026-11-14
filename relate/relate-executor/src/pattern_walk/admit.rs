@@ -63,16 +63,16 @@ pub(crate) fn map_from_expr(
 }
 
 /// What a pattern element's property map is evaluated for — the one fact
-/// that picks its [`NullPolicy`]. Only the two pattern policies are
-/// representable: a pattern map is never `SET +=`'s removal map, so the
-/// evaluator cannot be handed a policy whose null source it rejects.
+/// that picks its [`NullPolicy`]. The evaluator owns the null source (a
+/// null map is the empty map for both roles) and the non-map error text,
+/// so the policy carries the entry half alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PatternMapRole {
     /// CREATE/MERGE materialization: the map is stored ([`NullPolicy::Drop`]
     /// — a null is not stored).
     Create,
     /// Every match reader: the map is a conjunction of equalities
-    /// ([`NullPolicy::KeepAsUnmatchable`] — `{k: null}` matches nothing).
+    /// ([`NullPolicy::Keep`] — `{k: null}` matches nothing).
     Match,
 }
 
@@ -81,7 +81,7 @@ impl PatternMapRole {
     pub(crate) fn nulls(self) -> NullPolicy {
         match self {
             PatternMapRole::Create => NullPolicy::Drop,
-            PatternMapRole::Match => NullPolicy::KeepAsUnmatchable,
+            PatternMapRole::Match => NullPolicy::Keep,
         }
     }
 }

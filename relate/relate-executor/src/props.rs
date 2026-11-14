@@ -156,54 +156,26 @@ fn list_item_kind(v: &Value) -> Option<ListItemKind> {
 }
 
 /// How the one property-map admission walk ([`admit_props`]) treats a null
-/// entry — the single policy on which the admitting clauses and the
-/// pattern-map readers differ (null itself is storable and transparent,
-/// [`check_property_value`]).
+/// entry — the entry half of the policy only (null itself is storable and
+/// transparent, [`check_property_value`]). What a null *source* means and
+/// which error text a non-map earns belong to the reader, not here
+/// (`SetMapForm` in the write module; the pattern evaluator).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NullPolicy {
     /// Drop the entry: a null is not stored. The policy of the
     /// CREATE/MERGE materialization maps and `SET n = <map>` (full
     /// replacement).
     Drop,
-    /// Keep the entry: `SET n += <map>` feeds the map to
-    /// `merge_properties_*`, which runs each entry through the set verb —
-    /// a kept null records the key's *removal* (`SET n += {k: null}`
-    /// removes `k`), so the entry must survive admission.
-    KeepAsRemoval,
-    /// Keep the entry: a pattern's *match* map (MATCH, pattern predicates
-    /// and comprehensions, shortest paths, a WHERE equality pushed into
-    /// the map) is a conjunction of equalities, and `n.k = null` is never
-    /// true — a kept null equals nothing under [`props_all_match`]'s
-    /// `eq_non_null`, so the element matches nothing (LABS-1086).
-    /// Dropping it, as storage must, silently widened `{k: null}` into
-    /// "any value of k".
-    KeepAsUnmatchable,
-}
-
-impl NullPolicy {
-    /// The null-*source* half of the policy: the map a null source coerces
-    /// to, or `None` when a null source is not admissible (the `+=` arm —
-    /// a null source fails like every other non-map source). Exhaustive
-    /// over the variants, so a future policy decides this here, not at a
-    /// call site's re-derived negative match.
-    pub(crate) fn null_source_map(&self) -> Option<BTreeMap<String, Value>> {
-        match self {
-            NullPolicy::Drop => Some(BTreeMap::new()),
-            NullPolicy::KeepAsRemoval => None,
-            // A null *map* constrains nothing — the absent-map meaning;
-            // only a null *entry* is unsatisfiable.
-            NullPolicy::KeepAsUnmatchable => Some(BTreeMap::new()),
-        }
-    }
-
-    /// Whether the admission walk drops a null entry — the entry half of
-    /// the policy, decided here once.
-    fn drops_null_entries(&self) -> bool {
-        match self {
-            NullPolicy::Drop => true,
-            NullPolicy::KeepAsRemoval | NullPolicy::KeepAsUnmatchable => false,
-        }
-    }
+    /// Keep the entry. For `SET n += <map>` the kept null feeds
+    /// `merge_properties_*`, which runs each entry through the set verb
+    /// and so records the key's *removal*. For a pattern's *match* map
+    /// (MATCH, pattern predicates and comprehensions, shortest paths, a
+    /// WHERE equality pushed into the map) it is a conjunction of
+    /// equalities, and `n.k = null` is never true — a kept null equals
+    /// nothing under [`props_all_match`]'s `eq_non_null`, so the element
+    /// matches nothing (LABS-1086); dropping it, as storage must,
+    /// silently widened `{k: null}` into "any value of k".
+    Keep,
 }
 
 /// The one property-map admission walk (LABS-818): every entry's value is
@@ -213,7 +185,7 @@ pub(crate) fn admit_props(
     map: BTreeMap<String, Value>,
     nulls: NullPolicy,
 ) -> Result<BTreeMap<String, Value>> {
-    let drop_nulls = nulls.drops_null_entries();
+    let drop_nulls = nulls == NullPolicy::Drop;
     let mut out = BTreeMap::new();
     for (k, v) in map {
         if drop_nulls && v.is_null() {
@@ -347,7 +319,7 @@ mod tests {
     }
 
     /// LABS-818: the one admission walk's two null policies — `Drop`
-    /// removes the entry, `KeepAsRemoval` keeps it (a `SET n += {k: null}`
+    /// removes the entry, `Keep` keeps it (a `SET n += {k: null}`
     /// records `k`'s removal downstream); both validate every non-null
     /// value the same way.
     #[test]
@@ -363,11 +335,11 @@ mod tests {
             BTreeMap::from([("a".into(), Value::Int(1))])
         );
         assert_eq!(
-            admit_props(map(), NullPolicy::KeepAsRemoval).unwrap(),
+            admit_props(map(), NullPolicy::Keep).unwrap(),
             BTreeMap::from([("a".into(), Value::Int(1)), ("b".into(), Value::Null)])
         );
         let bad = BTreeMap::from([("a".to_string(), Value::Null), ("b".to_string(), bytes())]);
-        for nulls in [NullPolicy::Drop, NullPolicy::KeepAsRemoval] {
+        for nulls in [NullPolicy::Drop, NullPolicy::Keep] {
             assert_eq!(
                 admit_props(bad.clone(), nulls).unwrap_err(),
                 Error::type_error(BYTES_PROPERTY_DETAIL)

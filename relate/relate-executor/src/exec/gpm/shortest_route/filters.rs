@@ -32,13 +32,13 @@
 
 use std::collections::HashSet;
 
-use relate_core::{Error, NodeId, Result};
+use relate_core::{NodeId, Result};
 use relate_ir::{Expr, NodePattern, PathPattern};
 
 use crate::ctx::ExecCtx;
 use crate::eval::expr_vars;
 use crate::exec::gpm::gpm_bind_node;
-use crate::exec::pushdown::{conjunct_ready, residual_ok, Residual};
+use crate::exec::pushdown::{conjunct_ready, conjuncts_hold, residual_ok, Residual};
 use crate::row::Row;
 
 use super::guard::Shape;
@@ -76,25 +76,15 @@ impl<'a> PathFilter<'a> {
 
     /// Whether one bound trail row satisfies every predicate. Each is
     /// decidable against a trail row (`decidable_on` established that before
-    /// the search started), so one that is not ready here is a broken
-    /// invariant, reported as a typed internal error rather than silently
-    /// counted as satisfied.
+    /// the search started).
     pub(super) fn holds(&self, ctx: ExecCtx<'_>, row: &Row) -> Result<bool> {
-        for predicate in self.predicates() {
-            if !conjunct_ready(predicate, row, self.scope) {
-                return Err(Error::internal(
-                    "shortest-path route: predicate not decidable against a bound trail",
-                ));
-            }
-            // The one predicate policy (ADR-0458 §7): a list/path converts
-            // (live: `ANY SHORTEST ... -[r WHERE r.ls]-> ...` accepts a
-            // non-empty list), a non-boolean is the typed rejection live
-            // raises (22N01).
-            if !crate::eval::predicate_holds(ctx.graph, row, predicate, ctx.params)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        // The one predicate policy (ADR-0458 §7): a list/path converts
+        // (live: `ANY SHORTEST ... -[r WHERE r.ls]-> ...` accepts a
+        // non-empty list), a non-boolean is the typed rejection live
+        // raises (22N01). Readiness was fixed route-wide by
+        // `decidable_on`, so the canonical conjunct loop evaluates the
+        // list as it stands.
+        conjuncts_hold(ctx.graph, row, &self.predicates, ctx.params)
     }
 }
 
@@ -179,15 +169,17 @@ impl<'p> RouteFilters<'p> {
         // gates only the search predicates and the pair filter.
         let filters_search = shape.spelling.filters_search_by_clause_where();
         let endpoint: Vec<Expr> = endpoint_only.into_iter().cloned().collect();
-        // The two inline predicates — the pattern's own `WHERE` and the
-        // end node's — are one role in the filter, so one list.
-        let mut predicates = if filters_search {
-            path_reading
-        } else {
-            Vec::new()
-        };
-        predicates.extend(path.where_clause.as_deref());
-        predicates.extend(shape.end.where_clause.as_ref());
+        // One list, one role (the search answers each per arrival): the
+        // path-reading clause conjuncts of a spelling whose clause `WHERE`
+        // filters the search (a keyword selector's ride the caller's
+        // residual instead), then the pattern's own inline `WHERE` and
+        // the end node's.
+        let predicates: Vec<&Expr> = path_reading
+            .into_iter()
+            .filter(|_| filters_search)
+            .chain(path.where_clause.as_deref())
+            .chain(shape.end.where_clause.as_ref())
+            .collect();
         Self {
             pair: (filters_search && !endpoint.is_empty()).then_some(PairFilter { scope }),
             endpoint,

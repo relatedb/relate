@@ -7,11 +7,11 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_ir::Direction;
 
-use crate::exec::test_support::{build, try_exec_cypher_params, Builder};
+use crate::exec::test_support::{build, try_exec_cypher, try_exec_cypher_params, Builder};
 use crate::graph::Graph;
 use crate::shortest::test_support::counting_expands;
 
-use super::route::{take_anchor_arms, AnchorArm};
+use super::anchor::{take_anchor_arms, AnchorArm};
 use super::{take_route_runs, with_forced_gpm};
 
 /// Relationships shortest-path searches followed, (pattern, input row)
@@ -107,6 +107,24 @@ pub(super) fn gpm_params(g: &Graph, q: &str, params: &BTreeMap<String, Value>) -
     sorted(with_forced_gpm(|| {
         try_exec_cypher_params(g, q, params).unwrap().rows
     }))
+}
+
+/// The route's answer to `q` is the GPM walk's — rows, or the same error —
+/// and returns the route's anchor arms and expansion count.
+pub(super) fn parity(g: &Graph, q: &str) -> (Vec<AnchorArm>, u64) {
+    let (routed, counts) = counting(|| try_exec_cypher(g, q));
+    let (oracle, oracle_counts) = counting(|| with_forced_gpm(|| try_exec_cypher(g, q)));
+    assert_eq!(
+        oracle_counts.route_runs, 0,
+        "the oracle must bypass the route for {q}"
+    );
+    match (routed, oracle) {
+        (Ok(r), Ok(o)) => assert_eq!(sorted(r.rows), sorted(o.rows), "rows differ for {q}"),
+        (Err(r), Err(o)) => assert_eq!(r, o, "errors differ for {q}"),
+        (r, o) => panic!("route {:?} vs gpm {:?} for {q}", r.is_ok(), o.is_ok()),
+    }
+    assert!(counts.route_runs > 0, "the route must take {q}");
+    (counts.arms, counts.expands)
 }
 
 /// `rows` in [`Value::order_by_cmp`] order, for order-insensitive

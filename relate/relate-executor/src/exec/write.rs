@@ -169,52 +169,69 @@ fn current_properties(graph: &ExecGraph<'_>, value: &Value) -> Option<BTreeMap<S
     }
 }
 
+/// The two SET map forms: `=` replaces every property, `+=` merges. The
+/// form owns everything the arms differ by — the entry null policy
+/// ([`NullPolicy`]), what a null *source* coerces to, and the expected-map
+/// error text — so the three can never disagree.
+#[derive(Clone, Copy)]
+enum SetMapForm {
+    Replace,
+    Merge,
+}
+
+impl SetMapForm {
+    /// The null-*entry* policy of the admission walk: `=` stores no null;
+    /// `+=` keeps it — it records the key's removal (`merge_properties_*`
+    /// runs it through the set verb).
+    fn nulls(self) -> NullPolicy {
+        match self {
+            SetMapForm::Replace => NullPolicy::Drop,
+            SetMapForm::Merge => NullPolicy::Keep,
+        }
+    }
+
+    /// The map a null source coerces to, or `None` when it is not
+    /// admissible: `SET n = null` clears (the empty map); `+=` fails a
+    /// null source like every other non-map source.
+    fn null_source(self) -> Option<BTreeMap<String, Value>> {
+        match self {
+            SetMapForm::Replace => Some(BTreeMap::new()),
+            SetMapForm::Merge => None,
+        }
+    }
+
+    /// The expected-map error text of the form.
+    fn expected_map_error(self) -> &'static str {
+        match self {
+            SetMapForm::Replace => "SET all properties requires a map",
+            SetMapForm::Merge => "+= requires a map",
+        }
+    }
+}
+
 /// One SET map item's source coercion and admission, spelled once for the
 /// `=` and `+=` arms of [`resolve_sets`]: a Cypher map is the raw admission
 /// input, an entity-shaped value re-reads its current properties as the
 /// map (the openCypher TCK's `ON MATCH SET r = a` copy scenarios pin this;
 /// live Neo4j 2026 rejects it, so the engine keeps the TCK floor), and
-/// anything else fails with the arm's expected-map error (derived from the
-/// policy — the pair can never disagree). The [`NullPolicy`] owns the
-/// whole null semantics, both halves read from it — the entry half via
-/// [`admit_props`], the source half via [`NullPolicy::null_source_map`] —
-/// and the raw map is admitted with that same policy, so `=` and `+=`
-/// differ by exactly the typed null policy and each arm sees the admitted
-/// map.
+/// anything else fails with the form's expected-map error. The
+/// [`SetMapForm`] owns the whole null semantics — the source half via
+/// [`SetMapForm::null_source`], the entry half via the [`NullPolicy`]
+/// [`admit_props`] applies — so `=` and `+=` differ by exactly the form.
 fn set_map_source(
     graph: &ExecGraph<'_>,
     v: Value,
-    nulls: NullPolicy,
+    form: SetMapForm,
 ) -> Result<BTreeMap<String, Value>> {
+    let not_a_map = || Error::ty(form.expected_map_error());
     let raw = match v {
         // By value: a uniquely-owned map Arc unwraps into the raw map
         // (zero-copy) instead of deep-cloning through a borrowed Value.
         Value::Map(m) => Arc::unwrap_or_clone(m),
-        // The policy owns the null-source half: `Drop` coerces a null
-        // source to the empty map (`SET n = null` clears); `KeepAsRemoval`
-        // treats it like every other non-map source — the arm's error.
-        Value::Null => match nulls.null_source_map() {
-            Some(map) => map,
-            None => return Err(Error::ty(expected_map_error(nulls))),
-        },
-        v => match current_properties(graph, &v) {
-            Some(props) => props,
-            None => return Err(Error::ty(expected_map_error(nulls))),
-        },
+        Value::Null => form.null_source().ok_or_else(not_a_map)?,
+        v => current_properties(graph, &v).ok_or_else(not_a_map)?,
     };
-    admit_props(raw, nulls)
-}
-
-/// The arm's expected-map error text — a total function of the policy, so
-/// the message can never disagree with the null semantics it travels with.
-/// SET passes its two policies; the match policy's reader is the pattern
-/// evaluator, whose text this arm states for totality.
-fn expected_map_error(nulls: NullPolicy) -> &'static str {
-    match nulls {
-        NullPolicy::Drop => "SET all properties requires a map",
-        NullPolicy::KeepAsRemoval => "+= requires a map",
-        NullPolicy::KeepAsUnmatchable => "pattern properties must be a map",
-    }
+    admit_props(raw, form.nulls())
 }
 
 fn resolve_sets(
@@ -244,7 +261,7 @@ fn resolve_sets(
                 // null clears them, any other entity-shaped value re-reads
                 // its current properties as the replacement map.
                 let val = eval(graph, row, value, params)?;
-                let map = set_map_source(graph, val, NullPolicy::Drop)?;
+                let map = set_map_source(graph, val, SetMapForm::Replace)?;
                 resolved.push(ResolvedSet::ReplaceAllProps(
                     eval(graph, row, target, params)?,
                     map,
@@ -252,11 +269,9 @@ fn resolve_sets(
             }
             SetItem::MergeMap { target, value } => {
                 let val = eval(graph, row, value, params)?;
-                // `+=`'s null policy: a null entry survives admission and
-                // records the key's removal (`merge_properties_*` runs it
-                // through the set verb) — the one typed difference from
-                // the `=` arm's `NullPolicy::Drop` above.
-                let map = set_map_source(graph, val, NullPolicy::KeepAsRemoval)?;
+                // `+=`: a null entry survives admission and records the
+                // key's removal (see [`SetMapForm::nulls`]).
+                let map = set_map_source(graph, val, SetMapForm::Merge)?;
                 resolved.push(ResolvedSet::MergeMap(
                     eval(graph, row, target, params)?,
                     map,
