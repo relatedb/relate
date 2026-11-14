@@ -107,6 +107,22 @@ impl Indexes {
     }
 }
 
+/// Dirty-mark `id` on `key`'s pair when that pair is already built. An
+/// unbuilt pair costs nothing: its build walks the live records. The one
+/// spelling of the lazy-posting dirty policy the node and relationship
+/// write paths share.
+pub(super) fn dirty_mark_built(
+    pairs: &CoreMap<(u32, u32), PropPairIndex>,
+    key: (u32, u32),
+    id: NodeId,
+) {
+    if let Some(mut st) = pairs.get_mut(&key) {
+        if st.built {
+            st.dirty.insert(id);
+        }
+    }
+}
+
 impl Graph {
     /// The buckets a live record's label set posts into: a label-less
     /// record posts into the empty-label bucket, a labelled one into
@@ -261,11 +277,7 @@ impl Graph {
         // `(label, key)` pairs already materialized by a seek. A pair nobody
         // seeks costs nothing on the write path.
         for (lid, kid) in self.declared_dirty_pairs(live) {
-            if let Some(mut st) = self.indexes.prop_pairs.get_mut(&(lid, kid)) {
-                if st.built {
-                    st.dirty.insert(id);
-                }
-            }
+            dirty_mark_built(&self.indexes.prop_pairs, (lid, kid), id);
             self.declared_dirty(lid, kid, id);
         }
     }
