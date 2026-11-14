@@ -9,7 +9,10 @@
 //! is the server (it alone owns the `Database`).
 //!
 //! This module is the session: the request loop, the handshake, the caps,
-//! the commit framing and the refusal surface. The *tools* are not
+//! the commit framing and the refusal surface. The process half — the
+//! spawned child, its stderr drain, and the exit-classifying end hook —
+//! lives in `process`, and the tool bodies this mount adds to the shared
+//! layer's in `tools_impl`. The *tools* are not
 //! re-implemented here — `write_cypher`, `read_cypher`, `update_schema` and
 //! `batch_cypher` are the product MCP server's one implementation
 //! ([`relate_mcp::tools::Tools`]), run against the host-owned connection
@@ -25,10 +28,12 @@
 //!
 //! Caps are the wire kit's numbers, re-anchored per call (ADR-0430 §4): the
 //! statement byte cap, the rows-per-statement cap, the statements-per-call
-//! cap, the total stream cap, and — in the response direction — the
+//! cap, the whole-import stream cap (ADR-0598: a `per-batch` session has no
+//! whole-run stream cap — its bounds are the per-call caps and the host
+//! store's live-graph limit), and — in the response direction — the
 //! statement cap one response line may carry. A per-call cap is a JSON-RPC
-//! refusal the child can see and react to; the stream cap and the
-//! per-request framing cap are fatal (the host kills the child). The
+//! refusal the child can see and react to; the whole-import stream cap and
+//! the per-request framing cap are fatal (the host kills the child). The
 //! per-call caps themselves are the shared tool layer's
 //! ([`relate_mcp::tools::Limits`], built from [`Caps`]).
 //!
@@ -61,24 +66,25 @@
 //! bounds every stage, where the mount bounds only the handshake.
 
 use std::io::{BufRead, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin};
 use std::time::Duration;
 
 use relate::{Connection, Database};
 use relate_mcp::tools::{self as tool_layer, Limits, ToolError, ToolOutcome};
 use relate_wire::mcp::{
     self, Capacity, CommitFacts, RequestError, Response, ServerCapabilities, ServerFacts,
-    ServerInfo, INVALID_PARAMS, MCP_PROTOCOL_VERSION, METHOD_NOT_FOUND,
+    ServerInfo, StreamBudget, StreamCapExceeded, INVALID_PARAMS, MCP_PROTOCOL_VERSION,
+    METHOD_NOT_FOUND, STREAM_CAP_REMEDY,
 };
 use relate_wire::read_cap::{write_line, DeadlineReader, LineArrival};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::extensions::host::{HostError, RunSummary};
 use crate::extensions::manifest::CommandManifest;
 use crate::extensions::protocol::{self, Caps};
 use crate::extensions::write::CommitFraming;
+use process::{EndHook, SessionEnd};
 
+pub(crate) mod process;
 mod tools_impl;
 
 /// The pinned refusals a single `tools/call` can answer with — the typed,
@@ -188,7 +194,11 @@ pub(crate) enum McpError {
         /// The cap, in bytes.
         limit: u64,
     },
-    /// The request stream exceeded the total stream cap.
+    /// The request stream exceeded the whole-import stream cap (ADR-0598) —
+    /// the one framing that retains every call in one transaction. A
+    /// `per-batch` session is never refused on it: its bounds are the
+    /// per-call caps and the store's live-graph limit, never a whole-run
+    /// byte count.
     StreamTooLarge {
         /// The cap, in bytes.
         limit: u64,
@@ -206,6 +216,17 @@ pub(crate) enum McpError {
     },
     /// Writing a response to the child failed.
     ResponseWriteFailed(String),
+}
+
+impl From<StreamCapExceeded> for McpError {
+    /// The session's stream-cap refusal: the budget's typed payload,
+    /// rendered with the framing it guards and the remedy (ADR-0598) —
+    /// the one conversion the session's charge converts through.
+    fn from(refused: StreamCapExceeded) -> Self {
+        Self::StreamTooLarge {
+            limit: refused.limit,
+        }
+    }
 }
 
 impl std::fmt::Display for McpError {
@@ -236,7 +257,8 @@ impl std::fmt::Display for McpError {
             ),
             Self::StreamTooLarge { limit } => write!(
                 f,
-                "the extension MCP request stream exceeds the {limit}-byte stream cap"
+                "the extension MCP request stream exceeds the {limit}-byte whole-import \
+                 stream cap; {STREAM_CAP_REMEDY}"
             ),
             Self::ReadFailed(detail) => {
                 write!(
@@ -288,21 +310,6 @@ impl From<McpError> for ToolFailure {
     }
 }
 
-/// How the session's request loop ended — the one fact the end-of-session
-/// hook needs to decide between classifying an exit and killing a refused
-/// child.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionEnd {
-    /// The child closed its request stream; its exit is still to classify.
-    Complete,
-    /// The loop was refused; the child is to be killed and reaped.
-    Refused,
-}
-
-/// The end-of-session hook the real mount installs: close the pipes and
-/// classify the child's exit, inside the framed import.
-type EndHook = Box<dyn FnOnce(SessionEnd) -> Result<(), HostError>>;
-
 // ---------------------------------------------------------------------
 // The session (generic over its pipes so the tests drive it directly)
 // ---------------------------------------------------------------------
@@ -336,7 +343,12 @@ pub(crate) struct Session<O: Write> {
     /// Whether the first request line has arrived: once it has, the session
     /// is established and the read deadline no longer applies.
     established: bool,
-    stream_bytes: u64,
+    /// The whole-run request-stream budget the session charges each read
+    /// line against — framed once at the session's build, from the
+    /// manifest's commit policy and the mount's caps ([`StreamBudget`],
+    /// ADR-0598): capped exactly under `whole-import` framing, cap-free
+    /// under `per-batch`.
+    budget: StreamBudget,
     initialized: bool,
     summary: Option<RunSummary>,
     end: Option<EndHook>,
@@ -360,7 +372,7 @@ impl<O: Write> Session<O> {
             read_bytes: caps.mcp_request_bytes(),
             read_deadline: protocol::READ_DEADLINE,
             established: false,
-            stream_bytes: 0,
+            budget: StreamBudget::under(command.commit, caps.stream_bytes),
             initialized: false,
             summary: None,
             end: None,
@@ -479,17 +491,25 @@ impl<O: Write> Session<O> {
                     // The first request line establishes the session: from
                     // here on the read deadline no longer applies.
                     self.established = true;
-                    self.stream_bytes += line.len() as u64;
-                    if self.stream_bytes > self.caps.stream_bytes {
-                        return Err(McpError::StreamTooLarge {
-                            limit: self.caps.stream_bytes,
-                        }
-                        .into());
-                    }
+                    self.charge_stream(&line)?;
                     self.handle_line(store, conn, &line)?;
                 }
             }
         }
+    }
+
+    /// Charge one read request line against the session's whole-run stream
+    /// budget (ADR-0598). The budget is framed once at the session's
+    /// build — [`StreamBudget::under`], the one derivation both sides of
+    /// the mount share — and owns the one line-cost rule this delegates
+    /// to, so the loop consults no policy and re-derives no arithmetic:
+    /// a whole-import session's request stream refuses past the cap (the
+    /// pre-commit bound its one transaction has), and a per-batch
+    /// session's budget is cap-free, its bounds being the per-call caps
+    /// and the store's live-graph limit.
+    fn charge_stream(&mut self, line: &[u8]) -> Result<(), HostError> {
+        self.budget.charge_read_line(line).map_err(McpError::from)?;
+        Ok(())
     }
 
     /// Answer one request line: the method dispatch, of which the
@@ -745,99 +765,6 @@ pub(crate) fn require_protocol_version(params: Option<&Value>) -> Result<&str, M
 fn store_capacity(store: &Database) -> Result<Capacity, HostError> {
     let (used, limit) = store.memory_usage().map_err(HostError::from)?;
     Ok(Capacity::new(used, limit))
-}
-
-// ---------------------------------------------------------------------
-// The spawned mount
-// ---------------------------------------------------------------------
-
-/// A spawned MCP child with its session and reaping state: the process,
-/// the stderr drain, and the session over its pipes. `drive` hands the
-/// child and the drain to the session's end hook; until then this struct
-/// owns them, and its `Drop` is the safety net for a mount that never
-/// drives.
-pub(crate) struct McpProcess {
-    child: Option<Child>,
-    stderr_drain: Option<protocol::Drain>,
-    session: Session<ChildStdin>,
-}
-
-impl McpProcess {
-    /// Drive the session to its end: the manifest's framing around the
-    /// whole exchange, the summary returned, and the child's exit
-    /// classified *inside* that framing — at the request stream's end for a
-    /// clean loop, after the frame for a refused one. A refused session
-    /// kills and reaps the child first.
-    pub(crate) fn drive(
-        mut self,
-        store: &Database,
-        conn: &mut Connection,
-    ) -> Result<Option<RunSummary>, HostError> {
-        let mut child = self.child.take().expect("the child is driven once");
-        let drain = self
-            .stderr_drain
-            .take()
-            .expect("the drain rides with the child, and is joined once");
-        self.session.set_end(Box::new(move |end| match end {
-            SessionEnd::Complete => {
-                // The child closed its request stream; closing its stdin
-                // and reaping it classifies the exit (a non-zero exit
-                // after a clean stream is a failed run, never a silent
-                // success).
-                protocol::wait_and_reap(&mut child, drain)?;
-                Ok(())
-            }
-            SessionEnd::Refused => {
-                protocol::kill_and_reap(&mut child);
-                // The drain reaches EOF once the child is dead; joining
-                // keeps the thread from outliving the refusal, and its
-                // retained bytes stay unrendered — the refusal's own text
-                // is the pinned contract, not the child's commentary (the
-                // refusal path's stated reason).
-                let _ = drain.join();
-                Ok(())
-            }
-        }));
-        self.session.drive(store, conn)
-    }
-}
-
-impl Drop for McpProcess {
-    /// The child never outlives its mount: a process dropped without
-    /// `drive` (the caller stopped early) kills and reaps it — the mount's
-    /// Drop safety net. The stderr drain ends on its own once the child is
-    /// dead, so dropping its handle here cannot block; its retained bytes
-    /// stay unrendered for the same reason the refusal path discards them —
-    /// the caller's own failure text is the contract, not the child's
-    /// commentary.
-    fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            protocol::kill_and_reap(child);
-        }
-    }
-}
-
-/// Spawn the MCP child: the shared pipe setup, the request envelope as one
-/// line with stdin KEPT OPEN (the child's responses arrive there), and the
-/// session over the pipes. The first request the session reads must be
-/// `initialize`.
-pub(crate) fn spawn(
-    exe: &Path,
-    envelope: &Map<String, Value>,
-    caps: Caps,
-    command: &CommandManifest,
-    current_dir: Option<&Path>,
-) -> Result<McpProcess, protocol::ProtocolError> {
-    let mut piped = protocol::spawn_piped(exe, current_dir)?;
-    if let Err(error) = protocol::write_envelope_line(&mut piped.stdin, envelope) {
-        protocol::kill_and_reap(&mut piped.child);
-        return Err(error);
-    }
-    Ok(McpProcess {
-        child: Some(piped.child),
-        stderr_drain: Some(piped.stderr_drain),
-        session: Session::new(piped.stdout, piped.stdin, caps, command),
-    })
 }
 
 #[cfg(test)]

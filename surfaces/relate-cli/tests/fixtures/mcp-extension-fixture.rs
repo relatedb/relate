@@ -38,10 +38,12 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let mut child = McpChild::stdio();
-    let (facts, envelope) = child
-        .start::<Envelope>(NAME, VERSION)
-        .map_err(|e| e.to_string())?;
+    let (mut child, facts, envelope) = McpChild::start::<Envelope>(
+        std::io::BufReader::new(std::io::stdin()),
+        std::io::stdout(),
+        NAME,
+        VERSION,
+    )?;
     let count = envelope.count;
     // The handshake publishes the store's budget as one consistent triple;
     // the writing results below count it down.
@@ -52,27 +54,23 @@ fn run() -> Result<(), String> {
         ));
     }
 
-    child
-        .call(
-            mcp::UPDATE_SCHEMA,
-            json!({
-                "statement": "CREATE CONSTRAINT greet_id_unique FOR (n:Greet) REQUIRE n.id IS UNIQUE",
-            }),
-        )
-        .map_err(|e| e.to_string())?;
+    child.call(
+        mcp::UPDATE_SCHEMA,
+        json!({
+            "statement": "CREATE CONSTRAINT greet_id_unique FOR (n:Greet) REQUIRE n.id IS UNIQUE",
+        }),
+    )?;
 
     let rows: Vec<Value> = (1..=count)
         .map(|id| json!({"id": id, "name": format!("greet-{id}")}))
         .collect();
-    let written = child
-        .call(
-            mcp::WRITE_CYPHER,
-            json!({
-                "statement": "UNWIND $rows AS row CREATE (n:Greet {id: row.id, name: row.name})",
-                "parameters": {"rows": rows},
-            }),
-        )
-        .map_err(|e| e.to_string())?;
+    let written = child.call(
+        mcp::WRITE_CYPHER,
+        json!({
+            "statement": "UNWIND $rows AS row CREATE (n:Greet {id: row.id, name: row.name})",
+            "parameters": {"rows": rows},
+        }),
+    )?;
     let created = written["counts"]["nodes_created"]
         .as_i64()
         .ok_or_else(|| format!("the write result carries no node count: {written}"))?;
@@ -89,12 +87,10 @@ fn run() -> Result<(), String> {
     // the columns the query named and every row's id and name, in order —
     // so a green run proves the write landed as sent, not merely that some
     // count matched.
-    let read = child
-        .call(
-            mcp::READ_CYPHER,
-            json!({"statement": "MATCH (n:Greet) RETURN n.id AS id, n.name AS name ORDER BY n.id"}),
-        )
-        .map_err(|e| e.to_string())?;
+    let read = child.call(
+        mcp::READ_CYPHER,
+        json!({"statement": "MATCH (n:Greet) RETURN n.id AS id, n.name AS name ORDER BY n.id"}),
+    )?;
     let columns = read["columns"]
         .as_array()
         .ok_or_else(|| format!("the read result carries no columns: {read}"))?;
@@ -121,15 +117,13 @@ fn run() -> Result<(), String> {
 
     // The multi-statement tool through the real binary: two statements in
     // the call's one transaction, their counters returned in order.
-    let batched = child
-        .call(
-            mcp::BATCH_CYPHER,
-            json!({"statements": [
-                {"statement": "CREATE (n:Batch {slot: 1})"},
-                {"statement": "CREATE (n:Batch {slot: 2})"},
-            ]}),
-        )
-        .map_err(|e| e.to_string())?;
+    let batched = child.call(
+        mcp::BATCH_CYPHER,
+        json!({"statements": [
+            {"statement": "CREATE (n:Batch {slot: 1})"},
+            {"statement": "CREATE (n:Batch {slot: 2})"},
+        ]}),
+    )?;
     let results = batched["results"]
         .as_array()
         .ok_or_else(|| format!("the batch result carries no results: {batched}"))?;
@@ -162,11 +156,9 @@ fn run() -> Result<(), String> {
         ));
     }
 
-    child
-        .report_output(
-            &format!("imported {count} nodes"),
-            &["MATCH (n:Greet) RETURN n.name AS name ORDER BY name".to_string()],
-        )
-        .map_err(|e| e.to_string())?;
+    child.report_output(
+        &format!("imported {count} nodes"),
+        &["MATCH (n:Greet) RETURN n.name AS name ORDER BY name".to_string()],
+    )?;
     Ok(())
 }

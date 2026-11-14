@@ -77,8 +77,10 @@ pub(crate) struct Caps {
     /// The statements-per-call cap: the most statements one `batch_cypher`
     /// call admits.
     pub(crate) statements: usize,
-    /// The total stream cap: the most JSON-RPC bytes one child's whole
-    /// session may write, counted line by line before decode.
+    /// The whole-run stream cap: the most JSON-RPC bytes a `whole-import`
+    /// session's request stream may carry, counted line by line before
+    /// decode (ADR-0598). A `per-batch` session runs uncapped across the
+    /// session — this number does not apply to it.
     pub(crate) stream_bytes: u64,
 }
 

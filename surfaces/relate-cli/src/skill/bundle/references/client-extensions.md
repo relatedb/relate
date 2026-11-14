@@ -164,9 +164,11 @@ the same shape.
   the run with `the extension wrote no MCP request within 10s` rather
   than hanging it.
 - **The host caps the child** — 8 MiB per JSON-RPC line, 1000 rows per
-  writing call, 4096 statements per `batch_cypher` call, 128 MiB total
-  stream; the first violation kills the child and fails the run, never
-  truncates.
+  writing call, 4096 statements per `batch_cypher` call, and 128 MiB
+  across the session under `whole-import` framing only (a `per-batch`
+  session has no whole-run cap — the per-call caps and the store's
+  live-graph limit are its bounds); the first violation kills the child
+  and fails the run, never truncates.
 - **`protocol` must be `"2025-06-18"`** — the MCP revision this host
   serves; any other value fails closed naming both, before the child
   runs. The protocol is the only host↔package coupling — not the CLI
