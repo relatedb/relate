@@ -11,10 +11,10 @@ use relate_ir::{MatchMode, NodePattern, PathPattern};
 use crate::ctx::ExecCtx;
 use crate::exec::candidates::node_ok;
 use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
-use crate::exec::pushdown::{expr_ready, Residual};
+use crate::exec::pushdown::expr_ready;
 use crate::pattern_walk::{
     bind_path_names, bind_rel_stub_list, bound_node, memoized_path_rung, node_candidates,
-    node_candidates_capped, scan_answers_exactly, Capped,
+    node_candidates_capped, point_seek_served, scan_answers_exactly, Capped,
 };
 use crate::row::{Row, RowRung};
 use crate::shortest::layered::Layer;
@@ -140,7 +140,7 @@ impl Side {
 
 /// One endpoint's bounded resolution (see [`Route::probe`]).
 enum Probe {
-    /// No property map to seek: scan territory the fan answers itself.
+    /// No property map or served `WHERE` point seek: scan territory the fan answers itself.
     Scan,
     /// A bound node, or a seeked list of at most [`SEEK_PAIR_LIMIT`].
     Listed(Side),
@@ -432,7 +432,7 @@ impl<'a> Route<'a> {
     }
 
     /// One endpoint's bounded resolution, once: a row-bound node is
-    /// listed; a row-resolvable property map is seeked through the capped
+    /// listed; a row-resolvable property map (or a served `WHERE` point seek) is seeked through the capped
     /// funnel — the scan stops at the first match past
     /// [`SEEK_PAIR_LIMIT`], so a non-selective map never materializes
     /// every match to learn the pair product is over the bound.
@@ -457,23 +457,40 @@ impl<'a> Route<'a> {
         }
     }
 
-    /// Whether `np` is property-seekable: the map is present and
-    /// row-resolvable, and the funnel's scan answers its label shape with
-    /// exact matches ([`scan_answers_exactly`]; a negated label's
+    /// Whether `np` is seekable: the funnel's scan answers its label shape
+    /// with exact matches ([`scan_answers_exactly`]; a negated label's
     /// all-nodes superset would read as a match count and could trip the
-    /// listing refusal on a handful of real matches). A bare label or unbound variable is scan
-    /// territory, answered by the fan's own seek.
+    /// listing refusal on a handful of real matches), and either a
+    /// row-resolvable property map is present or an endpoint-only `WHERE`
+    /// conjunct is a point seek (`=` / `IN` / id) an index serves
+    /// ([`point_seek_served`]; the conjunct form never seeks a side no
+    /// index serves, so that side keeps the fan's own handling). A bare
+    /// label or unbound variable is scan territory, answered by the fan's
+    /// own seek.
     fn seekable(&self, np: &NodePattern) -> bool {
         // The map must resolve from the input row: a variable the walk
         // binds later (the start's own `a` in `(a)-[*]->(b {id: a.id})`)
         // is fan territory — the fan resolves the start first, and the
         // partition's admission then reads the map with it bound. The
-        // canonical readiness kernel (pushdown) answers it.
-        scan_answers_exactly(np)
-            && np
-                .properties
-                .as_ref()
-                .is_some_and(|props| expr_ready(props, self.row))
+        // canonical readiness kernel (pushdown) answers it. An unready map
+        // keeps the side unseeked even beside a seekable conjunct: the
+        // funnel would read the map against the same unresolvable row.
+        if !scan_answers_exactly(np) {
+            return false;
+        }
+        match np.properties.as_ref() {
+            Some(props) => expr_ready(props, self.row),
+            None => {
+                let ExecCtx { graph, params, .. } = self.ctx;
+                point_seek_served(
+                    graph,
+                    np,
+                    self.row,
+                    params,
+                    self.filters.endpoint_conjuncts(),
+                )
+            }
+        }
     }
 
     /// A probed-`Over` side's full list, through the capped funnel: a side
@@ -502,12 +519,18 @@ impl<'a> Route<'a> {
 
     /// The route's one candidate-resolution call: the funnel's scan or
     /// seek for `np` (the counted funnel — the seek phase is stamped
-    /// inside it), from the route's empty residual. The fan's start scan
-    /// and the property seek share it.
+    /// inside it), from the route's endpoint-only residual. The fan's
+    /// start scan and the endpoint seek share it; a `WHERE`-borne `=` /
+    /// `IN` on the side seeks it.
     fn candidates(&self, np: &NodePattern) -> Result<Vec<NodeId>> {
         let ExecCtx { graph, params, .. } = self.ctx;
-        let residual = Residual::empty();
-        node_candidates(graph, np, self.row, params, residual.conjuncts)
+        node_candidates(
+            graph,
+            np,
+            self.row,
+            params,
+            self.filters.endpoint_conjuncts(),
+        )
     }
 
     /// [`Route::candidates`] stopped at the first match past `cap`: the
@@ -515,8 +538,14 @@ impl<'a> Route<'a> {
     /// bound ([`SEEK_LIST_LIMIT`]).
     fn capped_candidates(&self, np: &NodePattern, cap: usize) -> Result<Capped> {
         let ExecCtx { graph, params, .. } = self.ctx;
-        let residual = Residual::empty();
-        node_candidates_capped(graph, np, self.row, params, residual.conjuncts, cap)
+        node_candidates_capped(
+            graph,
+            np,
+            self.row,
+            params,
+            self.filters.endpoint_conjuncts(),
+            cap,
+        )
     }
 
     /// The unbound start pattern's full candidate list (the fan anchor's

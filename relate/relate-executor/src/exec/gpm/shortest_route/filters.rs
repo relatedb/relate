@@ -136,6 +136,9 @@ impl PairFilter<'_> {
 /// One routed `MATCH`'s residual conjuncts, partitioned once by whether
 /// they read the path.
 pub(super) struct RouteFilters<'a> {
+    /// The endpoint-only conjuncts, whatever the spelling (see
+    /// [`RouteFilters::endpoint_conjuncts`]).
+    endpoint: Vec<Expr>,
     /// `Some` when a predicate filters the *search* itself.
     pub path: Option<PathFilter<'a>>,
     /// `Some` when an endpoint-only conjunct exists to drop a same-node pair.
@@ -143,6 +146,15 @@ pub(super) struct RouteFilters<'a> {
 }
 
 impl<'p> RouteFilters<'p> {
+    /// The endpoint-only conjuncts — the slice the route hands the
+    /// candidate funnel so a `WHERE`-borne `=` / `IN` on an endpoint seeks
+    /// it like an inline property map does (ADR-0556). They stay in the
+    /// residual, so the seek only narrows; every emitted row is still
+    /// checked against them.
+    pub(super) fn endpoint_conjuncts(&self) -> &[Expr] {
+        &self.endpoint
+    }
+
     /// Split the residual by what each conjunct reads. `shape` carries the
     /// end node and the spelling: a keyword selector selects first, so its
     /// clause-level conjuncts all stay the residual's post-filter and only
@@ -156,8 +168,14 @@ impl<'p> RouteFilters<'p> {
         residual: &'p Residual<'_>,
     ) -> Self {
         let scope = residual.scope;
-        let (path_reading, endpoint_only) = if shape.spelling.filters_search_by_clause_where() {
-            Self::classify(path, residual)
+        let (path_reading, endpoint_only) = Self::classify(path, residual);
+        // The endpoint-only conjuncts seek whatever the spelling: they
+        // select whole partitions, so narrowing the candidates is exact
+        // even where the clause conjuncts are a post-filter.
+        let endpoint: Vec<Expr> = endpoint_only.iter().map(|&c| c.clone()).collect();
+        let filters_search = shape.spelling.filters_search_by_clause_where();
+        let (path_reading, endpoint_only) = if filters_search {
+            (path_reading, endpoint_only)
         } else {
             (Vec::new(), Vec::new())
         };
@@ -167,6 +185,7 @@ impl<'p> RouteFilters<'p> {
         predicates.extend(path.where_clause.as_deref());
         predicates.extend(shape.end.where_clause.as_ref());
         Self {
+            endpoint,
             path: (!predicates.is_empty()).then_some(PathFilter { predicates, scope }),
             pair: (!endpoint_only.is_empty()).then_some(PairFilter {
                 conjuncts: endpoint_only.into_iter().cloned().collect(),
