@@ -17,10 +17,9 @@ mod agent_vars;
 mod atomic_file;
 mod clone_cmd;
 // The config directory (ADR-0079 §3's resolution): shared by telemetry's
-// state walk and the extension registry's discovery (ADR-0429 §6) —
-// the eggs' first-run banner marker (ADR-0543) — compiled exactly when
-// one of them is.
-#[cfg(any(feature = "telemetry", feature = "extensions", feature = "eggs"))]
+// state walk, the feedback consent record (ADR-0588), the extension
+// registry's discovery (ADR-0429 §6) and the eggs' first-run banner marker
+// (ADR-0543). The feedback verbs compile in every bundle, so it does too.
 mod config_dir;
 mod dot_info;
 mod eggs;
@@ -28,15 +27,8 @@ mod errors;
 mod examples;
 mod exec_query;
 // The per-user base reads (`$HOME`, `%USERPROFILE%`, the absolute rule):
-// shared by the config directory and the agent catalog's `~` expansion,
-// compiled exactly when one of them is.
-#[cfg(any(
-    feature = "telemetry",
-    feature = "extensions",
-    feature = "eggs",
-    feature = "skill",
-    feature = "upgrade"
-))]
+// shared by the config directory (itself in every build) and the agent
+// catalog's `~` expansion.
 mod home_dir;
 // The usage(2)/runtime(1) exit split, stated once for every typed error
 // carrier (round 4, F-2-12): `--load`'s errors and the extension install
@@ -60,6 +52,16 @@ mod extension_init;
 // the install flow). `full` + `agent` bundles (ADR-0429 §8).
 #[cfg(feature = "extensions")]
 mod extensions;
+// The two feedback channels (ADR-0588 §3): `feedback` is the person's —
+// a prefilled GitHub issue plus the agent grant's action words; the new
+// `agent_feedback_cmd` is the agent's — one consented report under that
+// grant. The crate owns the report model, the submit pipeline and the
+// consent record; these modules own the grammar, the sender-owned context
+// and the exit codes. A first-party command group of the product binary, so
+// they carry no feature and compile in every bundle; `main` gates each to
+// its mode.
+mod agent_feedback_cmd;
+mod feedback_cmd;
 #[cfg(feature = "fetch-params")]
 mod fetch_params;
 mod flags;
@@ -200,10 +202,23 @@ fn main() {
     // no telemetry; every exit path below flushes before exiting.
     let mut telemetry = telemetry::Telemetry::new();
 
+    // stdout's terminal-ness is read once per run, before the decisions
+    // that need it (the feedback surface's mode resolution, then the
+    // agent-mode ladder's gate, the output mode and the pretty default) —
+    // one fact, one moment (the stdin classification below reads its own
+    // once, for the same reason).
+    let stdout_is_tty = io::stdout().is_terminal();
+
+    // The feedback surface this run has (ADR-0588 §3): the person's while
+    // agent mode is off, the agent's while it is on. One resolution feeds
+    // the top-level help, the per-command help gate and the dispatch gate,
+    // so they cannot disagree.
+    let feedback_surface = agent_mode::FeedbackSurface::from_env(agent, stdout_is_tty);
+
     // Help wins over --version when both are set: `-h` breaks out of the
     // parse loop the moment it is seen, exactly like the old mid-parse exit.
     if show_help {
-        exit_help(&mut telemetry, &help::top_level());
+        exit_help(&mut telemetry, &help::top_level(feedback_surface));
     }
 
     if show_version {
@@ -218,7 +233,7 @@ fn main() {
     // already exited inside flags::parse — see `conflict_error`'s doc for
     // the ADR-0306 §6 policy.
     if let Some(cmd) = lifecycle {
-        run_lifecycle_command(cmd, &mut telemetry);
+        run_lifecycle_command(cmd, &mut telemetry, feedback_surface);
     }
 
     // Stdin terminal-ness is read once per run so the classification below
@@ -233,14 +248,8 @@ fn main() {
     // dispatch and the label can never disagree.
     let session = match classify_session(query.as_deref(), explicit_query, stdin_is_tty) {
         Some(session) => session,
-        None => exit_help(&mut telemetry, &help::top_level()),
+        None => exit_help(&mut telemetry, &help::top_level(feedback_surface)),
     };
-
-    // stdout's terminal-ness is read once per run, before the
-    // resolutions that need it (the agent-mode ladder's gate, the output
-    // mode, the pretty default) — one fact, one moment (the stdin
-    // classification above reads its own once, for the same reason).
-    let stdout_is_tty = io::stdout().is_terminal();
 
     // The env var is the default for `--logical-graph-size-limit`, resolved
     // only once help, version, and lifecycle commands have exited. A bad
@@ -601,7 +610,11 @@ pub(crate) fn write_report(sink: &mut dyn std::io::Write, line: impl std::fmt::D
 /// success, 2 for usage errors (unknown agent) and commands not included in
 /// this build, 1 for runtime errors. Emits `RELATE-CLI_COMMAND`
 /// (ADR-0079 §4) and flushes before exiting.
-fn run_lifecycle_command(cmd: LifecycleCommand, telemetry: &mut telemetry::Telemetry) -> ! {
+fn run_lifecycle_command(
+    cmd: LifecycleCommand,
+    telemetry: &mut telemetry::Telemetry,
+    surface: agent_mode::FeedbackSurface,
+) -> ! {
     // The command word for the RELATE-CLI_COMMAND event, captured before
     // the match consumes cmd.
     let name = cmd.name();
@@ -609,8 +622,16 @@ fn run_lifecycle_command(cmd: LifecycleCommand, telemetry: &mut telemetry::Telem
         // A per-command `--help` (after a compiled-in command word) prints
         // the command's help page and exits 0 through the shared flush path:
         // the same two events as the top-level help, no COMMAND event, and
-        // nothing after the word parsed or executed.
-        LifecycleCommand::Help { topic } => exit_help(telemetry, &help::command_help(topic)),
+        // nothing after the word parsed or executed. A mode-gated topic the
+        // run does not own is the absent surface's unknown command instead
+        // (ADR-0588 §3).
+        LifecycleCommand::Help { topic } => match topic.surface() {
+            Some(own) if own != surface => {
+                let exit_code = feedback_cmd::refuse_absent_surface(topic.word(), surface);
+                finish_command(telemetry, name, None, exit_code);
+            }
+            _ => exit_help(telemetry, &help::command_help(topic)),
+        },
         // The resolved action's pre-scanned page (`run <name> --help`):
         // the same help-exit sequence as every command's page — the two
         // help events, no COMMAND event, nothing runs (LABS-552).
@@ -633,6 +654,33 @@ fn run_lifecycle_command(cmd: LifecycleCommand, telemetry: &mut telemetry::Telem
             let action = if opts.check { Some("check") } else { None };
             let exit_code = upgrade_cmd::run(opts);
             finish_command(telemetry, name, action, exit_code);
+        }
+        LifecycleCommand::Feedback { args } => {
+            // The mode gate runs before the grammar: the absent surface is
+            // an unknown command, never this grammar's usage error.
+            if surface != agent_mode::FeedbackSurface::Human {
+                let exit_code = feedback_cmd::refuse_absent_surface("feedback", surface);
+                finish_command(telemetry, name, None, exit_code);
+            }
+            let action = match feedback_cmd::parse_action(&args) {
+                Ok(action) => action,
+                Err(err) => flags::command_usage_error(help::HelpTopic::Feedback, &err),
+            };
+            let action_word = action.as_str();
+            let exit_code = feedback_cmd::run(action);
+            finish_command(telemetry, name, Some(action_word), exit_code);
+        }
+        LifecycleCommand::AgentFeedback { args } => {
+            if surface != agent_mode::FeedbackSurface::Agent {
+                let exit_code = feedback_cmd::refuse_absent_surface("agent-feedback", surface);
+                finish_command(telemetry, name, None, exit_code);
+            }
+            let input = match agent_feedback_cmd::parse(&args) {
+                Ok(input) => input,
+                Err(err) => flags::command_usage_error(help::HelpTopic::AgentFeedback, &err),
+            };
+            let exit_code = agent_feedback_cmd::run(&input);
+            finish_command(telemetry, name, None, exit_code);
         }
         #[cfg(feature = "telemetry")]
         LifecycleCommand::Telemetry { action } => {

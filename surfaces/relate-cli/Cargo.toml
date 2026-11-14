@@ -35,6 +35,13 @@ relate = { workspace = true }
 # the MCP wire facts (the handshake revision, the JSON-RPC vocabulary,
 # the caps) the host's extension mount states from.
 relate-wire = { workspace = true, optional = true }
+# The Mixpanel `/track` client and the telemetry consent model (ADR-0588):
+# telemetry's POST path, opt-out resolution, and state files live there, and
+# the `feedback` verbs — in every build — ride the same crate.
+relate-feedback = { workspace = true }
+# The feedback verbs stamp one absolute `now` into the consent record and the
+# submit pipeline (ADR-0588 §3); the workspace's one clock.
+chrono = { workspace = true }
 relate-load = { workspace = true, optional = true }
 relate-auth = { workspace = true, optional = true }
 # relate-serve for the one shutdown-signal wait (ADR-0238); the same
@@ -53,7 +60,6 @@ ssh-key = { workspace = true, optional = true }
 # pure-Rust miniz_oxide backend, already a workspace dependency (ADR-0385).
 flate2 = { workspace = true, optional = true }
 rustyline = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
 # Hidden REPL dot commands and Archie (ADR-0543), linked only by `eggs`.
 relate-eggs = { workspace = true, optional = true }
 
@@ -75,7 +81,7 @@ skill = []
 # stated once here, so the two features cannot drift apart.
 release-verify = ["dep:ureq", "dep:sha2", "dep:ssh-key"]
 upgrade = ["release-verify", "staging"]
-telemetry = ["dep:ureq", "dep:rand", "staging"]
+telemetry = ["staging"]
 # The staged-file marker (LABS-872): the `atomic_file` kit — the shared
 # non-predictable staging-name recipe, the exclusive create step, and the
 # atomic writers — compiled exactly when a feature that stages a file is on

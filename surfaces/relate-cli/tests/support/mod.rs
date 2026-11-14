@@ -6,10 +6,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
-#[cfg(feature = "telemetry")]
 mod mock_mixpanel;
 
-#[cfg(feature = "telemetry")]
 #[allow(unused_imports)] // Each test binary uses a subset of the mock harness.
 pub use mock_mixpanel::{FollowupRun, MockMixpanel, DELIVERY_WAIT, QUIET_GRACE};
 
@@ -108,13 +106,15 @@ use ambient_scrub::scrub_ambient;
 /// [`run_cli`] removes them through [`CliRunOptions::default`];
 /// [`pty_command`] removes them from the driver process whose environment the
 /// PTY child inherits. One list, so the two spawn paths cannot disagree.
-const TELEMETRY_AXES: [&str; 6] = [
+const TELEMETRY_AXES: [&str; 8] = [
     "XDG_CONFIG_HOME",
     "APPDATA",
     "USERPROFILE",
     "DO_NOT_TRACK",
     "RELATE_TELEMETRY",
     "RELATE_MIXPANEL_ENDPOINT",
+    "RELATE_FEEDBACK_ENDPOINT",
+    "RELATE_FEEDBACK_TOKEN",
 ];
 
 /// A `Command` for the relate binary with every agent-harness variable,
@@ -163,7 +163,7 @@ pub fn cli_command() -> Command {
 /// copies the driver process's `os.environ` into the child. The ambient scrub
 /// therefore has to run on this command, before that copy: [`scrub_ambient`]
 /// removes the agent markers, the row cap and the preview opt-in, and
-/// [`TELEMETRY_AXES`] the six config-dir and telemetry axes. [`assert_pty_driver_ok`]
+/// [`TELEMETRY_AXES`] the config-dir, telemetry and feedback axes. [`assert_pty_driver_ok`]
 /// documents the PTY-only setup (scratch `HOME`, forced terminal, sinkholed
 /// endpoint) the driver applies to the child, which no `cli_command` child
 /// needs.
@@ -326,6 +326,15 @@ impl<'a> CliRunOptions<'a> {
     pub fn with_endpoint(mut self, endpoint: &'a str) -> Self {
         self.env.retain(|(k, _)| *k != "RELATE_MIXPANEL_ENDPOINT");
         self.env.push(("RELATE_MIXPANEL_ENDPOINT", endpoint));
+        self.with_default_telemetry()
+    }
+
+    /// Point the feedback endpoint at a loopback sink (ADR-0588) and leave
+    /// `RELATE_TELEMETRY` unset: a report is only sent when telemetry is
+    /// enabled, and the feedback suite's mock sink is the destination.
+    pub fn with_feedback_endpoint(mut self, endpoint: &'a str) -> Self {
+        self.env.retain(|(k, _)| *k != "RELATE_FEEDBACK_ENDPOINT");
+        self.env.push(("RELATE_FEEDBACK_ENDPOINT", endpoint));
         self.with_default_telemetry()
     }
 
@@ -742,7 +751,7 @@ fn parse_manifest_codec(bytes: &[u8]) -> String {
 /// the feature ↔ command mapping as data, the one table suites share.
 // Only the help and bundle E2E suites list them; allow until more do.
 #[allow(dead_code)]
-pub fn command_gates() -> [(bool, &'static str); 12] {
+pub fn command_gates() -> [(bool, &'static str); 13] {
     [
         (true, "query"),
         (true, "clone"),
@@ -752,6 +761,7 @@ pub fn command_gates() -> [(bool, &'static str); 12] {
         (cfg!(feature = "skill"), "skill"),
         (cfg!(feature = "upgrade"), "upgrade"),
         (cfg!(feature = "telemetry"), "telemetry"),
+        (true, "feedback"),
         (cfg!(feature = "extensions"), "run"),
         (cfg!(feature = "serve"), "serve"),
         (cfg!(feature = "agent-context"), "agent-context"),

@@ -347,7 +347,7 @@ jobs:
   draft-smoke:
     name: Draft smoke (light unit lane)
     # Draft fast gate's one compiled signal (draft PRs skip the sharded
-    # test lanes): the 8 light crates — warm dev-v2 shared cache, nextest
+    # test lanes): the 9 light crates — warm dev-v2 shared cache, nextest
     # parallel execution. The heavy compiles (executor, storage, planner,
     # cli, relate) wait for ready-for-review; local suites cover a
     # draft's behavior on those.
@@ -375,17 +375,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      # 20 `test result: ok` suites locally in <1 min serial; nextest
+      # 21 `test result: ok` suites locally in <1 min serial; nextest
       # runs them in parallel (~15 s). Doctests wait for the full lanes.
-      - name: Light unit suites (core, catalog, model, parser, error, splitter, front, formatter)
+      - name: Light unit suites (core, catalog, model, parser, error, splitter, front, formatter, feedback)
         run: |
-          cargo nextest run -p relate-core -p relate-catalog             -p relate-model -p relate-parser -p relate-error             -p relate-splitter -p relate-front -p relate-formatter
+          cargo nextest run -p relate-core -p relate-catalog             -p relate-model -p relate-parser -p relate-error             -p relate-splitter -p relate-front -p relate-formatter             -p relate-feedback
 
       # The draft's clippy signal for the same crate set; the full
       # workspace clippy (lint job) waits for ready-for-review.
       - name: Clippy (light crates)
         run: |
-          cargo clippy -p relate-core -p relate-catalog             -p relate-model -p relate-parser -p relate-error             -p relate-splitter -p relate-front -p relate-formatter             --all-targets -- -D warnings
+          cargo clippy -p relate-core -p relate-catalog             -p relate-model -p relate-parser -p relate-error             -p relate-splitter -p relate-front -p relate-formatter             -p relate-feedback             --all-targets -- -D warnings
 
   # The merge bar is the merged tree, not the head (AGENTS.md): PR CI builds
   # the head, the squash merge lands the head applied to main as it is at

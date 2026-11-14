@@ -25,28 +25,25 @@
 //! with one sanctioned exception: the ADR-0263 rejection warning
 //! described below is a single stderr line.
 //!
-//! Endpoint resolution: when `RELATE_MIXPANEL_ENDPOINT` is set it is
-//! used as the full POST URL, but ADR-0263 rejects a non-loopback `http://`
-//! value — a cleartext endpoint would leak events — and a rejected override
-//! disables telemetry for the run with one stderr warning. Otherwise the
-//! compiled-in [`DEFAULT_ENDPOINT`] is used. Likewise
-//! `RELATE_MIXPANEL_TOKEN` overrides the compiled-in
+//! Endpoint resolution lives in `relate_feedback::client` (ADR-0588): when
+//! `RELATE_MIXPANEL_ENDPOINT` is set it is used as the full POST URL, but
+//! ADR-0263 rejects a non-loopback `http://` value — a cleartext endpoint
+//! would leak events — and a rejected override disables telemetry for the
+//! run with one stderr warning. Otherwise the compiled-in default endpoint
+//! is used. Likewise `RELATE_MIXPANEL_TOKEN` overrides the compiled-in
 //! [`MIXPANEL_TOKEN`] (ADR-0079 §7).
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use serde_json::Value;
 
+use relate_feedback::client::{self, Client, Reply};
+use relate_feedback::consent::EffectiveState;
+use relate_feedback::{consent, state};
+
 use super::envelope::{self, BaseContext};
 use super::spool;
-use super::{config, optout, EffectiveState, Event};
-use crate::plaintext::{authority_host, is_loopback_name};
-
-/// Default Mixpanel `/track` endpoint (ADR-0079 §2). Used when
-/// `RELATE_MIXPANEL_ENDPOINT` is unset; an override is accepted only if
-/// it is `https://` for any host or `http://` for a loopback host (ADR-0263).
-pub const DEFAULT_ENDPOINT: &str = "https://api.mixpanel.com/track";
+use super::Event;
 
 /// Mixpanel project token (ADR-0079 §7): the shared Neo4j Labs CLI project —
 /// the same one neo4j-cli reports into; events are namespaced by the
@@ -58,9 +55,6 @@ pub const MIXPANEL_TOKEN: &str = "4bfb2414ab973c741b6f067bf06d5575";
 /// Events one run holds in memory before the exit append; beyond this the
 /// event is dropped (ADR-0079 §5 best-effort).
 const BACKLOG_CAP: usize = 64;
-
-/// Per-request HTTP timeout for the drain thread's POSTs (ADR-0079 §5).
-const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Events per drain POST (ADR-0545 §2): keeps each request body small, so
 /// one claimed file drains in a few bounded requests.
@@ -97,7 +91,7 @@ struct Live {
     /// suppresses repeats, and the install ID has already fed the base
     /// context. Inside `Live` because a run that cannot record also
     /// cannot claim a notice, and `dir` above is the save target.
-    notice: config::State,
+    notice: state::State,
 }
 
 /// Telemetry handle. Cheap to keep around when disabled: no thread, no
@@ -125,13 +119,16 @@ impl Telemetry {
     /// spool. Never fails; the only output is the single ADR-0263 stderr
     /// warning when a cleartext non-loopback endpoint override is rejected.
     pub fn new() -> Self {
-        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let env = crate::config_dir::env_var;
         let dir = crate::config_dir::config_dir();
-        let config_telemetry = dir.as_deref().and_then(config::load_config_telemetry);
-        let state = optout::resolve(&env, config_telemetry);
+        let config_telemetry = match dir.as_deref() {
+            Some(dir) => state::load_config_telemetry(dir),
+            None => state::ConfigTelemetry::Missing,
+        };
+        let state = consent::resolve(&env, config_telemetry);
         // When disabled, touch nothing: no state file, no thread, no
         // network, no spool.
-        if !state.enabled {
+        if !state.enabled() {
             return Self::disabled(state);
         }
         Self::enable(state, &env, dir)
@@ -139,7 +136,7 @@ impl Telemetry {
 
     /// The enabled path of [`new`](Self::new), split out so tests can drive
     /// endpoint-override rejection with an explicit env and config dir.
-    /// Endpoint resolution runs before `load_notice_state` so a rejected
+    /// Endpoint resolution runs before the state file is loaded so a rejected
     /// override leaves no `state.json` behind — exactly like the opt-out
     /// early return in [`new`](Self::new).
     fn enable(
@@ -150,7 +147,7 @@ impl Telemetry {
         // A rejected cleartext non-loopback override disables telemetry for
         // the run rather than silently redirecting or leaking events
         // (ADR-0263); the opt-out state is reported unchanged.
-        let endpoint = match resolve_endpoint(env("RELATE_MIXPANEL_ENDPOINT")) {
+        let endpoint = match client::resolve_endpoint(env("RELATE_MIXPANEL_ENDPOINT")) {
             Ok(url) => url,
             Err(url) => {
                 eprintln!("{}", rejection_warning(&url));
@@ -166,19 +163,25 @@ impl Telemetry {
             return Self::disabled(state);
         };
         // The state file is loaded exactly once, here: the install ID feeds
-        // the base context and the notice state rides the pipeline.
-        let loaded = load_notice_state(&dir);
+        // the base context and the notice state rides the pipeline. A state
+        // that cannot be recorded is not worth reporting under: an install ID
+        // that changes every run can correlate nothing, so the run takes the
+        // same disabled shape as one without a config directory.
+        let (notice, persistence) = state::load_or_create_state(&dir);
+        if persistence == state::Persistence::Ephemeral {
+            return Self::disabled(state);
+        }
         let token = env("RELATE_MIXPANEL_TOKEN").unwrap_or_else(|| MIXPANEL_TOKEN.to_string());
         Self {
             state,
             live: Some(Live {
-                base: BaseContext::detect(token, loaded.install_id),
+                base: BaseContext::detect(token, notice.install_id.clone()),
                 backlog: Vec::new(),
                 spool_file: spool::spool_file(&dir),
                 endpoint,
                 dir,
                 drain_started: false,
-                notice: loaded.notice,
+                notice,
             }),
         }
     }
@@ -210,12 +213,9 @@ impl Telemetry {
         let Some(live) = &mut self.live else {
             return false;
         };
-        if live.notice.notice_shown {
-            return false;
-        }
-        live.notice.notice_shown = true;
-        let _ = config::save_state(&live.dir, &live.notice);
-        true
+        // A claim whose record could not be written is not reported: the
+        // notice shows again next run instead of being lost.
+        live.notice.claim_notice(&live.dir).unwrap_or_default()
     }
 
     /// Queue an event for delivery. Non-blocking: a full backlog drops the
@@ -266,28 +266,6 @@ impl Drop for Telemetry {
     }
 }
 
-/// The state file's loaded contents, split into its two consumers
-/// (ADR-0079 §3): the install ID feeds the base context, the notice
-/// state rides the pipeline. Named records, not an anonymous tuple —
-/// the two halves have different owners. The notice state is not an
-/// Option: the caller has already established the dir resolved, so a
-/// missing notice state is unrepresentable here — the handle's `live`
-/// is the one place absence is modeled.
-struct LoadedState {
-    install_id: String,
-    notice: config::State,
-}
-
-/// Load `state.json` under `dir` exactly once. The caller has already
-/// established that `dir` resolved (no dir, no pipeline).
-fn load_notice_state(dir: &Path) -> LoadedState {
-    let notice = config::load_or_create_state(dir);
-    LoadedState {
-        install_id: notice.install_id.clone(),
-        notice,
-    }
-}
-
 /// The detached drain thread (ADR-0545 §2): claim what earlier runs left
 /// in the spool, POST it in bounded batches while this run's own work
 /// proceeds, and delete each claim only after every batch is confirmed.
@@ -299,71 +277,17 @@ fn spawn_drain(endpoint: String, dir: PathBuf) {
     // drains it — never a panic (ADR-0079 §5: no telemetry failure may
     // fail a run; `std::thread::spawn` would panic here).
     let _ = std::thread::Builder::new().spawn(move || {
-        let agent = http_agent();
+        let client = Client::new(endpoint);
         for claim in spool::claim_all(&dir) {
             let delivered = claim
                 .events
                 .chunks(DRAIN_BATCH)
-                .all(|batch| post_batch(&agent, &endpoint, batch));
+                .all(|batch| client.post(batch) == Reply::Accepted);
             if delivered {
                 spool::remove(&claim.path);
             }
         }
     });
-}
-
-fn http_agent() -> ureq::Agent {
-    ureq::Agent::new_with_config(
-        ureq::Agent::config_builder()
-            .timeout_global(Some(HTTP_TIMEOUT))
-            .build(),
-    )
-}
-
-/// POST one batch of envelopes as a JSON array (the Mixpanel `/track` API
-/// accepts arrays), returning whether the request was confirmed. All
-/// errors are swallowed (ADR-0079 §5) — serialization included: the
-/// same swallowed handling the envelope module pins for the spool
-/// write, spelled at its single call site.
-fn post_batch(agent: &ureq::Agent, endpoint: &str, batch: &[Value]) -> bool {
-    let Ok(body) = serde_json::to_vec(batch) else {
-        return false;
-    };
-    agent
-        .post(endpoint)
-        .header("Content-Type", "application/json")
-        .send(body.as_slice())
-        .is_ok()
-}
-
-/// Resolve the endpoint to POST to (ADR-0263): the override when it passes
-/// [`endpoint_allowed`], the default when unset, or `Err(url)` for a rejected
-/// override that the caller must refuse (disable telemetry + warn).
-fn resolve_endpoint(raw: Option<String>) -> Result<String, String> {
-    match raw {
-        None => Ok(DEFAULT_ENDPOINT.to_string()),
-        Some(url) if endpoint_allowed(&url) => Ok(url),
-        Some(url) => Err(url),
-    }
-}
-
-/// Whether an override is a safe endpoint (ADR-0263): `https://` for any
-/// host, `http://` only for a loopback host. Scheme and host compare
-/// case-insensitively and an IPv6 literal's brackets are trimmed, so
-/// `HTTPS://sink.example` and `http://[::1]:8080` are allowed while a
-/// schemeless, unrecognized-scheme, or non-loopback cleartext value is not.
-fn endpoint_allowed(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return false;
-    };
-    if scheme.eq_ignore_ascii_case("https") {
-        return true;
-    }
-    if !scheme.eq_ignore_ascii_case("http") {
-        return false;
-    }
-    let host = authority_host(rest);
-    is_loopback_name(host) || host == "127.0.0.1"
 }
 
 /// The single stderr warning emitted when an override is rejected (ADR-0263
@@ -377,21 +301,15 @@ fn rejection_warning(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::{Layer, StartupKind};
-    use std::time::Instant;
+    use crate::telemetry::StartupKind;
+    use std::time::{Duration, Instant};
 
     fn enabled() -> EffectiveState {
-        EffectiveState {
-            enabled: true,
-            layer: Layer::Default,
-        }
+        EffectiveState::Default
     }
 
     fn disabled_state() -> EffectiveState {
-        EffectiveState {
-            enabled: false,
-            layer: Layer::Env,
-        }
+        EffectiveState::Env(false)
     }
 
     /// An enabled handle against `endpoint` with no config dir — the drain
@@ -490,10 +408,37 @@ mod tests {
     #[test]
     fn disabled_telemetry_swallows_everything() {
         let mut t = Telemetry::disabled(disabled_state());
-        assert!(!t.effective_state().enabled);
-        assert_eq!(t.effective_state().layer, Layer::Env);
+        assert!(!t.effective_state().enabled());
+        assert_eq!(t.effective_state(), EffectiveState::Env(false));
         t.emit(Event::Help); // no-op
         t.flush(); // returns immediately: no pipeline at all
+    }
+
+    /// A config directory whose state file cannot be written gives the
+    /// disabled shape: the run records nothing rather than reporting under an
+    /// install ID that changes every run.
+    #[test]
+    fn an_unrecordable_state_file_takes_the_disabled_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        // A directory where state.json should be makes the write fail.
+        std::fs::create_dir_all(state::state_path(&dir)).unwrap();
+        let pairs = [("RELATE_MIXPANEL_ENDPOINT", "http://127.0.0.1:1")];
+        let env = crate::telemetry::env_of(&pairs);
+        let mut t = Telemetry::enable(enabled(), &env, Some(dir.clone()));
+        assert!(
+            !t.claim_first_run_notice(),
+            "no notice state rides a pipeline that cannot record"
+        );
+        t.emit(Event::Startup {
+            kind: StartupKind::Oneshot,
+        });
+        t.flush();
+        assert_eq!(
+            spool::spool_paths(&dir).count(),
+            0,
+            "no spool file is written"
+        );
     }
 
     #[test]
@@ -518,44 +463,6 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_allowed_accepts_https_for_any_host() {
-        assert!(endpoint_allowed("https://api.mixpanel.com/track"));
-        assert!(endpoint_allowed("https://sink.example:8443/track?x=1"));
-        assert!(endpoint_allowed("HTTPS://api.mixpanel.com/track"));
-    }
-
-    #[test]
-    fn endpoint_allowed_accepts_loopback_http_only() {
-        assert!(endpoint_allowed("http://127.0.0.1:8080"));
-        assert!(endpoint_allowed("http://localhost:8080/track"));
-        assert!(endpoint_allowed("http://[::1]:8080"));
-        assert!(endpoint_allowed("HTTP://LOCALHOST/track"));
-        assert!(!endpoint_allowed("http://api.mixpanel.com/track"));
-        assert!(!endpoint_allowed("http://10.0.0.1:8080"));
-        assert!(!endpoint_allowed("HTTP://example.com"));
-    }
-
-    #[test]
-    fn endpoint_allowed_rejects_schemeless_and_garbage() {
-        assert!(!endpoint_allowed("api.mixpanel.com/track"));
-        assert!(!endpoint_allowed("not a url"));
-        assert!(!endpoint_allowed(""));
-        assert!(!endpoint_allowed("ftp://127.0.0.1/track"));
-    }
-
-    #[test]
-    fn resolve_endpoint_defaults_and_rejects() {
-        assert_eq!(resolve_endpoint(None).unwrap(), DEFAULT_ENDPOINT);
-        let allowed = "https://sink.example/track".to_string();
-        assert_eq!(resolve_endpoint(Some(allowed.clone())).unwrap(), allowed);
-        let rejected = "http://evil.example/track".to_string();
-        assert_eq!(
-            resolve_endpoint(Some(rejected.clone())).unwrap_err(),
-            rejected
-        );
-    }
-
-    #[test]
     fn rejection_warning_pins_the_adr_text() {
         assert_eq!(
             rejection_warning("http://evil.example/track"),
@@ -575,7 +482,7 @@ mod tests {
         let t = Telemetry::enable(enabled(), &env, Some(dir.to_path_buf()));
         // The opt-out state is reported unchanged, but nothing runs.
         assert!(t.live.is_none());
-        assert!(!config::state_path(dir).exists());
+        assert!(!state::state_path(dir).exists());
     }
 
     #[test]
@@ -600,7 +507,7 @@ mod tests {
             !t.claim_first_run_notice(),
             "second check is suppressed by the notice_shown flag"
         );
-        assert!(config::load_or_create_state(dir).notice_shown);
+        assert!(state::load_or_create_state(dir).0.notice_shown);
         // A later process (fresh handle, same dir) sees the persisted flag.
         let mut t2 = spooling_in(dir);
         assert!(!t2.claim_first_run_notice());

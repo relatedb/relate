@@ -205,6 +205,7 @@ stages:
             relate-ideas
             relate-ontology
             relate-markdown
+            relate-feedback
             relate-test-support
           ) ;;
           *) echo "unknown shard: $shard" >&2; exit 1 ;;

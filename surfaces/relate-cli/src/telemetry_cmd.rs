@@ -9,9 +9,9 @@
 
 use std::path::Path;
 
+use relate_feedback::state;
+
 use crate::parse_error::ParseError;
-use crate::telemetry::config;
-use crate::telemetry::{EffectiveState, Layer};
 
 /// What `relate telemetry` should do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +75,7 @@ fn run_inner(
 ) -> i32 {
     match action {
         TelemetryAction::Status => {
-            println!("{}", status_line(telemetry.effective_state()));
+            println!("{}", telemetry.effective_state().status_line());
             0
         }
         TelemetryAction::On => persist(dir, true),
@@ -101,49 +101,28 @@ fn run_inner(
 /// Persist the `telemetry` key and print a short confirmation.
 fn persist(dir: Option<&Path>, enabled: bool) -> i32 {
     let Some(dir) = dir else {
-        eprintln!(
-            "Error: telemetry: cannot resolve a config directory ({})",
-            crate::config_dir::NO_BASE_HINT
-        );
-        return 1;
+        return crate::config_dir::no_base("telemetry");
     };
-    if let Err(e) = config::save_config_telemetry(dir, enabled) {
+    if let Err(e) = state::save_config_telemetry(dir, enabled) {
         crate::print_error(format!(
             "Error: telemetry: writing {}: {e}",
-            config::config_path(dir).display()
+            state::config_path(dir).display()
         ));
         return 1;
     }
     println!(
         "telemetry {} ({})",
         if enabled { "enabled" } else { "disabled" },
-        config::config_path(dir).display()
+        state::config_path(dir).display()
     );
     0
-}
-
-/// The `status` output line: effective state plus the deciding layer, e.g.
-/// `enabled (default)` or `disabled (DO_NOT_TRACK)`.
-fn status_line(state: EffectiveState) -> String {
-    let layer = match state.layer {
-        Layer::DoNotTrack => "DO_NOT_TRACK",
-        Layer::Env => "RELATE_TELEMETRY",
-        Layer::ConfigFile => "config file",
-        Layer::Default => "default",
-    };
-    format!(
-        "{} ({layer})",
-        if state.enabled { "enabled" } else { "disabled" }
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn state(enabled: bool, layer: Layer) -> EffectiveState {
-        EffectiveState { enabled, layer }
-    }
+    use relate_feedback::consent::EffectiveState;
+    use relate_feedback::state::ConfigTelemetry;
 
     /// A handle carrying exactly the effective state its test asserts —
     /// the state is the reportable answer, so a disabled pipeline with an
@@ -151,8 +130,8 @@ mod tests {
     /// disarm is a no-op against it, exactly as against a run that never
     /// armed a pipeline; the live-path ordering (disarm before persist
     /// and clear) is pinned end-to-end by e2e_telemetry's off test.
-    fn handle_as(enabled: bool, layer: Layer) -> crate::telemetry::Telemetry {
-        crate::telemetry::Telemetry::disabled(state(enabled, layer))
+    fn handle_as(state: EffectiveState) -> crate::telemetry::Telemetry {
+        crate::telemetry::Telemetry::disabled(state)
     }
 
     // --- parse_action grammar ---
@@ -193,36 +172,6 @@ mod tests {
         );
     }
 
-    // --- status line ---
-
-    #[test]
-    fn status_line_names_state_and_layer() {
-        assert_eq!(
-            status_line(state(true, Layer::Default)),
-            "enabled (default)"
-        );
-        assert_eq!(
-            status_line(state(false, Layer::ConfigFile)),
-            "disabled (config file)"
-        );
-        assert_eq!(
-            status_line(state(false, Layer::DoNotTrack)),
-            "disabled (DO_NOT_TRACK)"
-        );
-        assert_eq!(
-            status_line(state(false, Layer::Env)),
-            "disabled (RELATE_TELEMETRY)"
-        );
-        assert_eq!(
-            status_line(state(true, Layer::Env)),
-            "enabled (RELATE_TELEMETRY)"
-        );
-        assert_eq!(
-            status_line(state(true, Layer::ConfigFile)),
-            "enabled (config file)"
-        );
-    }
-
     // --- on/off against a temp config dir ---
 
     #[test]
@@ -232,21 +181,27 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::Off,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 Some(dir)
             ),
             0
         );
-        assert_eq!(config::load_config_telemetry(dir), Some(false));
+        assert_eq!(
+            state::load_config_telemetry(dir),
+            ConfigTelemetry::Value(false)
+        );
         assert_eq!(
             run_inner(
                 TelemetryAction::On,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 Some(dir)
             ),
             0
         );
-        assert_eq!(config::load_config_telemetry(dir), Some(true));
+        assert_eq!(
+            state::load_config_telemetry(dir),
+            ConfigTelemetry::Value(true)
+        );
     }
 
     #[test]
@@ -263,7 +218,7 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::On,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 Some(dir)
             ),
             0
@@ -272,7 +227,7 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::Off,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 Some(dir)
             ),
             0
@@ -287,13 +242,13 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::Status,
-                &mut handle_as(false, Layer::Env),
+                &mut handle_as(EffectiveState::Env(false)),
                 Some(dir)
             ),
             0
         );
-        assert_eq!(config::load_config_telemetry(dir), None);
-        assert!(!config::config_path(dir).exists());
+        assert_eq!(state::load_config_telemetry(dir), ConfigTelemetry::Missing);
+        assert!(!state::config_path(dir).exists());
     }
 
     #[test]
@@ -301,7 +256,7 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::On,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 None
             ),
             1
@@ -309,7 +264,7 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::Off,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 None
             ),
             1
@@ -318,7 +273,7 @@ mod tests {
         assert_eq!(
             run_inner(
                 TelemetryAction::Status,
-                &mut handle_as(true, Layer::Default),
+                &mut handle_as(EffectiveState::Default),
                 None
             ),
             0

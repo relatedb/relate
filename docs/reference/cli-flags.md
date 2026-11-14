@@ -119,13 +119,14 @@ the timer; checkpoints still occur explicitly, on clean close, and at the
 ## Lifecycle commands
 
 Exit-after lifecycle verbs are positional commands, recognized only as the
-first argument. Each needs its Cargo feature compiled in; the default `full`
+first argument. Most need their Cargo feature compiled in; the default `full`
 build (every release binary) has all of them, while the `agent` bundle has
 `skill`, `pull`, `push`, `info`, `agent-context`, and the extension program
 (the `run` mount plus the `extension` lifecycle verbs; `fetch-params`, the
 bundle's remaining feature, gates the `--fetch-params` flag, not a command)
-and the `minimal` bundle has none of those. `clone` is built into every
-bundle, including `minimal`:
+and the `minimal` bundle has none of those. `feedback`, `agent-feedback` and
+`clone` are built into every bundle, including `minimal` (the two feedback
+commands are mode-gated, not feature-gated):
 
 | Command | Feature | Bundles | Description |
 |---------|---------|---------|-------------|
@@ -138,6 +139,8 @@ bundle, including `minimal`:
 | `relate upgrade [--yes] [--check]` | `upgrade` | full | Self-update to the latest release listed by the website's `releases.json` (ADR-0250); the download probes the direct release route first and, on a 404 with `GITHUB_TOKEN` set, falls back to the authenticated GitHub API asset route (ADR-0358). `--check` is a read-only current-vs-latest report; `--yes` installs the skill bundle after the upgrade when none is installed yet (no prompt) |
 | `relate update [--yes] [--check]` | `upgrade` | full | Alias of `upgrade` |
 | `relate telemetry on\|off\|status` | `telemetry` | full | Manage anonymous usage metrics (below) |
+| `relate feedback [TEXT \| enable \| disable] [--category NAME] [--expected TEXT] [--observed TEXT]` | — | all | The person's feedback channel (ADR-0588 §3): print and open a prefilled public GitHub issue for `TEXT` (no network request from the CLI), or grant/revoke the agent channel for 30 days. Bare, it prints the standing state plus the synopsis. Present only in a person's run |
+| `relate agent-feedback [--category NAME] --expected TEXT --observed TEXT [--command PATH] [--error-code CODE] [--model MODEL] [--request-id UUID]` | — | all | The agent's feedback channel (ADR-0588 §3): send one consented report under the person's standing grant; prints one JSON outcome document. Present only in agent mode; without a grant it refuses `not_enabled`. Whitelisted `command`/`error-code`/`model` values only; free text is validated and redacted before any send |
 | `relate pull [--from FILE] --query Q [--param N=V] --database PATH` | `pull` | full, agent | Pull a Neo4j/Aura subgraph over HTTP Query API v2 into `--database` (union/upsert on source `elementId`; ADR-0200) |
 | `relate agent-context [COMMAND]` | `agent-context` | full, agent | Print the compact agent briefing — command index, query-run flags, exit codes; per-command detail with a word (ADR-0242) |
 | `relate run fs-to-graph [DIR] [--database PATH] [--max-content-bytes N] [--include-hidden] [--ignore-patterns PAT]` | `extensions` | full, agent | Import a directory tree into a graph as a first-party extension package (ADR-0431 §11; the graph contract ADR-0279/ADR-0157 set). `DIR` defaults to cwd, `--database` to `:memory:`, `--max-content-bytes` to 65536 (larger files keep metadata only). `--ignore-patterns` (repeatable) skips entries by exact name; a trailing `/` matches directories only and prunes the directory entirely. An explicit `--database` exits after the import and does not open the interactive shell; omitting `--database` opens the shell on a TTY with `repl`. The package mounts through `relate run` and needs installing first (`relate extension install fs-to-graph`, ADR-0431) |

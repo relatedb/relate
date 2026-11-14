@@ -1,39 +1,12 @@
 //! `relate agent-context [COMMAND]` (ADR-0242, LABS-236): the compact
 //! discovery readout for agent harnesses. Everything prints from the
 //! `help::COMMANDS` descriptor table that also feeds `--help`, plus the one
-//! [`EXIT_CODES`] table, so the readout cannot drift from the parser.
+//! [`EXIT_CODES`] table (in `errors`, beside the classes that produce the
+//! codes), so the readout cannot drift from the parser.
 
+use crate::errors::EXIT_CODES;
 use crate::help::{self, CommandSpec};
 use crate::parse_error::ParseError;
-
-/// The query-run exit-code map (ADR-0194, ADR-0241), as
-/// `(exit, code, meaning)` rows. The same facts live in
-/// `docs/api/cli/spec.md`; a test pins the two together by spot-checking
-/// this table against the spec.
-const EXIT_CODES: &[(i32, &str, &str)] = &[
-    (0, "success", "success, including an empty result"),
-    (
-        1,
-        "fatal_error",
-        "runtime failure: store open or I/O error, capacity limit, query execution failure, internal error",
-    ),
-    (
-        2,
-        "usage_error",
-        "unknown flag, bad or missing value, extra positional",
-    ),
-    (
-        5,
-        "conflict",
-        "write-write conflict, or the store is locked by another opener",
-    ),
-    (
-        6,
-        "validation_error",
-        "the statement is rejected: syntax, semantic or type error",
-    ),
-    (7, "timeout", "a statement exceeded --timeout"),
-];
 
 /// Parse the argument tail after the `agent-context` verb: nothing (the
 /// index), or one command word. The word resolves through
@@ -76,8 +49,10 @@ fn print_index() {
     println!("relate v{} — agent context", crate::VERSION);
     println!();
     println!("Commands (detail: relate agent-context <COMMAND>):");
+    let listed: Vec<&CommandSpec> = help::commands().iter().collect();
+    let width = help::command_column_width(&listed);
     for spec in help::commands() {
-        println!("{}", help::command_row(spec));
+        println!("{}", help::command_row(spec, width));
     }
     println!();
     println!("Query-run flags (relate [OPTIONS] [QUERY]):");

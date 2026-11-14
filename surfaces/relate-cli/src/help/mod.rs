@@ -22,9 +22,11 @@ pub(crate) use options::session_flags;
 
 #[cfg(feature = "agent-context")]
 mod agent_context;
+mod agent_feedback;
 mod clone;
 #[cfg(feature = "extensions")]
 mod extension;
+mod feedback;
 #[cfg(feature = "info")]
 mod info;
 mod options;
@@ -64,6 +66,12 @@ pub(crate) enum HelpTopic {
     Upgrade,
     #[cfg(feature = "telemetry")]
     Telemetry,
+    /// `relate feedback`: the person's surface — a prefilled GitHub issue
+    /// and the agent grant's action words (ADR-0588 §3).
+    Feedback,
+    /// `relate agent-feedback`: the agent's surface — one consented report
+    /// under the person's standing grant (ADR-0588 §3).
+    AgentFeedback,
     /// `relate run <name> [flags]` (ADR-0429 §1, LABS-552): dispatch
     /// an installed extension action. The one command whose page is
     /// machine-state-dependent (the installed-actions listing).
@@ -289,6 +297,44 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         )],
         help: telemetry::telemetry_help,
     },
+    CommandSpec {
+        topic: HelpTopic::Feedback,
+        word: "feedback",
+        aliases: &[],
+        usage: feedback::FEEDBACK_USAGE.into(),
+        blurb: "File a GitHub issue about CLI friction, or manage the agent grant (enable, disable)",
+        rejects_query: false,
+        post_verb_access: false,
+        flags: Cow::Borrowed(&["--category", "--expected", "--observed"]),
+        examples: &[(
+            "File a GitHub issue about CLI friction",
+            "relate feedback \"the info command printed help instead of the version\"",
+        )],
+        help: feedback::feedback_help,
+    },
+    CommandSpec {
+        topic: HelpTopic::AgentFeedback,
+        word: "agent-feedback",
+        aliases: &[],
+        usage: agent_feedback::AGENT_FEEDBACK_USAGE.into(),
+        blurb: "Send one consented feedback report (agent surface)",
+        rejects_query: false,
+        post_verb_access: false,
+        flags: Cow::Borrowed(&[
+            "--category",
+            "--expected",
+            "--observed",
+            "--command",
+            "--error-code",
+            "--model",
+            "--request-id",
+        ]),
+        examples: &[(
+            "Report one failure under the person's grant",
+            "relate agent-feedback --expected \"the version\" --observed \"it printed help\" --command info",
+        )],
+        help: agent_feedback::agent_feedback_help,
+    },
     #[cfg(feature = "extensions")]
     CommandSpec {
         topic: HelpTopic::Run,
@@ -358,6 +404,19 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
 }
 
 impl HelpTopic {
+    /// The feedback surface a mode-gated command belongs to (ADR-0588 §3):
+    /// `Some` for the two feedback commands, `None` for every command that
+    /// exists in every mode. The top-level listing and the dispatch gate
+    /// read this one association.
+    pub(crate) fn surface(self) -> Option<crate::agent_mode::FeedbackSurface> {
+        use crate::agent_mode::FeedbackSurface;
+        match self {
+            Self::Feedback => Some(FeedbackSurface::Human),
+            Self::AgentFeedback => Some(FeedbackSurface::Agent),
+            _ => None,
+        }
+    }
+
     /// This topic's descriptor in [`COMMANDS`]: every compiled-in topic has
     /// exactly one.
     pub(crate) fn spec(self) -> &'static CommandSpec {
@@ -485,49 +544,52 @@ pub(crate) fn find_command(word: &str) -> Option<&'static CommandSpec> {
     commands().iter().find(|spec| spec.word == word)
 }
 
-/// The top-level `--help`: usage, the compiled-in commands, and the
+/// The top-level `--help`: usage, the commands this run's mode has, and the
 /// query-run options. Command-specific flags live on the command's own page
 /// (`relate <COMMAND> --help`); the last line points there.
-pub(crate) fn top_level() -> String {
-    top_level_with(crate::examples::enabled())
+pub(crate) fn top_level(surface: crate::agent_mode::FeedbackSurface) -> String {
+    top_level_with(surface, crate::examples::enabled())
 }
 
-/// The `Commands:`-section column width: the widest compiled-in command
-/// word ("agent-context" today) plus the two-space gap, derived so a wider
-/// word can never render misaligned while a test still passes.
-fn command_column_width() -> usize {
-    commands()
+/// The `Commands:`-section column width over the listed specs: the widest
+/// word plus the two-space gap, derived so a wider word can never render
+/// misaligned while a test still passes. The width is taken over the listed
+/// rows only, so a mode-gated word the run does not list never pads them.
+pub(crate) fn command_column_width(specs: &[&'static CommandSpec]) -> usize {
+    specs
         .iter()
         .map(|spec| spec.word.len())
         .max()
-        .expect("COMMANDS is non-empty (query and clone are unconditional)")
+        .expect("one of query and clone is listed in every run")
         + 2
 }
 
 /// One `Commands:`-section row for `spec` (no trailing newline): the word
-/// padded to [`COMMAND_ROW_WIDTH`], then the blurb. The one builder
-/// shared by the top-level `--help` and the `agent-context` index, so the
-/// two listings cannot drift.
-pub(crate) fn command_row(spec: &CommandSpec) -> String {
-    format!(
-        "  {:<width$}{}",
-        spec.word,
-        spec.blurb,
-        width = command_column_width()
-    )
+/// padded to the list's `width`, then the blurb. The one builder shared by
+/// the top-level `--help` and the `agent-context` index, so the two listings
+/// cannot drift.
+pub(crate) fn command_row(spec: &CommandSpec, width: usize) -> String {
+    format!("  {:<width$}{}", spec.word, spec.blurb)
 }
 
-/// [`top_level`] with the examples decision made by the caller.
-fn top_level_with(examples: bool) -> String {
+/// [`top_level`] with the surface and the examples decision made by the
+/// caller.
+fn top_level_with(surface: crate::agent_mode::FeedbackSurface, examples: bool) -> String {
     let mut s = String::new();
     s.push_str(TOP_LEVEL_USAGE);
     s.push('\n');
     s.push_str("       relate <COMMAND> [ARGS]\n");
     s.push('\n');
     s.push_str("Commands:\n");
-    // One line per compiled-in command.
-    for spec in commands() {
-        s.push_str(&command_row(spec));
+    // One line per compiled-in command this run's mode has: each mode sees
+    // only its own feedback surface (ADR-0588 §3).
+    let listed: Vec<&CommandSpec> = commands()
+        .iter()
+        .filter(|spec| !spec.topic.surface().is_some_and(|own| own != surface))
+        .collect();
+    let width = command_column_width(&listed);
+    for spec in listed {
+        s.push_str(&command_row(spec, width));
         s.push('\n');
     }
     s.push('\n');

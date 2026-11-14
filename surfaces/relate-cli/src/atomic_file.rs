@@ -1,33 +1,38 @@
 //! Shared atomic file writes for CLI-owned files, and the staging-name
 //! recipe every staged file the CLI creates shares.
 //!
-//! Both the telemetry `state.json` / `config.json` files and the self-upgrade
-//! binary replacement need the same hardening: stage the bytes at a
-//! non-predictable temp name in the *same* directory (guaranteeing the same
-//! filesystem, so the rename is atomic), never truncate an existing path, and
-//! create the staging file with restrictive permissions from birth rather than
-//! chmod-ing a world-readable file afterwards. The remote `--database`
-//! bundle (LABS-872) stages into the system temp dir instead of beside a
-//! target, so it shares only the name recipe ([`staging_name`]) — the
-//! writers below are the write-atomicity half, compiled when one of their
-//! two writers is. The telemetry spool's per-run files (ADR-0545 §1) are
-//! written directly rather than staged, so they share the creation step
-//! ([`create_exclusive`]) with the staging loop below.
+//! The self-upgrade binary replacement needs the hardening: stage the bytes
+//! at a non-predictable temp name in the *same* directory (guaranteeing the
+//! same filesystem, so the rename is atomic), never truncate an existing
+//! path, and create the staging file with restrictive permissions from
+//! birth rather than chmod-ing a world-readable file afterwards. The remote
+//! `--database` bundle (LABS-872) stages into the system temp dir instead
+//! of beside a target, so it shares only the name recipe ([`staging_name`])
+//! — the writer below is the write-atomicity half, compiled when its one
+//! `upgrade` writer is. The telemetry spool's per-run files (ADR-0545 §1)
+//! are written directly rather than staged, so they share the creation step
+//! ([`create_exclusive`]) with the staging loop below; telemetry's state
+//! files moved with the consent model to `relate-feedback` (ADR-0588).
 //!
 //! The module compiles with the `staging` marker feature (the three
 //! staging features list it), so the shared name/create step carries no
-//! gate; the narrower `telemetry`/`upgrade` gates below mark what only the
-//! write-atomicity half needs.
+//! gate; the narrower `upgrade`/`remote-database` gates below mark what only
+//! the staged-target writer and its collision loop need.
 
 use std::fs;
-#[cfg(any(feature = "telemetry", feature = "upgrade"))]
+use std::io;
+#[cfg(any(feature = "upgrade", feature = "remote-database"))]
+use std::io::ErrorKind;
+#[cfg(feature = "upgrade")]
 use std::io::Write;
-use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(feature = "upgrade", feature = "remote-database"))]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Bounded retries for staging-name collisions (essentially impossible given
 /// the name space, but never touch an existing file to recover).
+#[cfg(any(feature = "upgrade", feature = "remote-database"))]
 const STAGING_ATTEMPTS: usize = 16;
 
 /// Process-local sequence that makes each staging name unique even within one
@@ -83,6 +88,7 @@ pub(crate) fn create_exclusive(path: &Path, mode: u32) -> io::Result<fs::File> {
 /// error. The caller owns what follows: a write and a rename
 /// ([`write_atomic`]) or a write and an open (the remote `--database`
 /// bundle).
+#[cfg(any(feature = "upgrade", feature = "remote-database"))]
 pub(crate) fn create_staging_file(
     dir: &Path,
     prefix: &str,
@@ -108,10 +114,10 @@ pub(crate) fn create_staging_file(
 /// left untouched; a failure of the post-rename directory sync is returned as
 /// `Err` even though the rename already replaced the target.
 ///
-/// `mode` is the unix permission bits for the final file (`0o600` for private
-/// telemetry state, `0o755` for the replacement binary); it is ignored on
-/// non-unix platforms, where permission bits do not apply.
-#[cfg(any(feature = "telemetry", feature = "upgrade"))]
+/// `mode` is the unix permission bits for the final file (`0o755` for the
+/// replacement binary); it is ignored on non-unix platforms, where
+/// permission bits do not apply.
+#[cfg(feature = "upgrade")]
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -152,13 +158,13 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<(
 /// fsync the parent directory so the rename itself is durable, not just the
 /// file contents. Non-unix platforms cannot portably open a directory for
 /// syncing, so this is a no-op there.
-#[cfg(any(feature = "telemetry", feature = "upgrade"))]
+#[cfg(feature = "upgrade")]
 #[cfg(unix)]
 fn sync_parent_dir(dir: &Path) -> io::Result<()> {
     fs::File::open(dir)?.sync_all()
 }
 
-#[cfg(any(feature = "telemetry", feature = "upgrade"))]
+#[cfg(feature = "upgrade")]
 #[cfg(not(unix))]
 fn sync_parent_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
@@ -202,6 +208,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "upgrade")]
     #[test]
     fn write_atomic_accepts_bare_relative_target() {
         // A bare relative filename has an empty parent path; the directory
@@ -221,6 +228,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "upgrade")]
     #[test]
     fn write_atomic_replaces_target_and_leaves_no_temp_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -232,6 +240,7 @@ mod tests {
         assert_eq!(entries.len(), 1, "only the target should remain");
     }
 
+    #[cfg(feature = "upgrade")]
     #[cfg(unix)]
     #[test]
     fn write_atomic_sets_mode_at_creation() {
