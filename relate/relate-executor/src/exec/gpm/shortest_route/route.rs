@@ -567,7 +567,7 @@ impl<'a> Route<'a> {
     }
 
     /// Both endpoints fixed: the pair search for single-path selectors, the
-    /// layered search stopped at `e` for all-path ones.
+    /// bidirectional layered search for all-path ones.
     fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut MatchedSink<'_, '_>) -> Result<()> {
         let Some(srow) = self.bind_start(s)? else {
             return Ok(());
@@ -578,9 +578,7 @@ impl<'a> Route<'a> {
                 return Ok(Vec::new());
             }
             if self.shape.all {
-                self.search
-                    .dag(s, self.shape.all, None, |n, _| Ok(n == e))?
-                    .trails(self.ctx.graph, e)
+                self.search.all_shortest_trails(s, e)
             } else {
                 Ok(pair(&self.search, s, e)?.into_iter().collect())
             }

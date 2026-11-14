@@ -82,6 +82,8 @@ pub(crate) fn reject_static_common_end_nodes(path: &PathPattern) -> Result<()> {
 pub(crate) use pair::pair;
 
 #[cfg(test)]
+mod all_pair_tests;
+#[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
