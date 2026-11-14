@@ -2,7 +2,7 @@ mod common;
 
 use relate::Value;
 
-use common::{connection, run};
+use common::{connection, err_text, rows, run};
 
 #[test]
 fn count_collect_and_exists_subqueries_are_scalar_expressions() {
@@ -708,4 +708,32 @@ fn a_page_statement_opens_a_subquery_body_without_importing() {
         .query("MATCH (a:A) CALL { WITH * ORDER BY 1 RETURN 1 AS x } RETURN x")
         .expect_err("an importing WITH with a page subclause stays refused");
     assert!(format!("{err}").contains("InvalidImportingWith"), "{err}");
+}
+
+/// LABS-1586: a `WITH p AS z WHERE z < 2` inside a `CALL` body must see
+/// its own alias in the WHERE, exactly as at top level.
+#[test]
+fn aliased_with_where_inside_call_body_sees_the_alias() {
+    let mut connection = connection();
+    for q in [
+        "CALL () { UNWIND [1, 2] AS p WITH p AS z WHERE z < 2 RETURN count(z) AS k } RETURN k",
+        "UNWIND [1, 2] AS p WITH p AS z WHERE z < 2 RETURN count(z) AS k",
+        "CALL { UNWIND [1, 2] AS p WITH p AS z WHERE z < 2 RETURN count(z) AS k } RETURN k",
+    ] {
+        assert_eq!(rows(&mut connection, q), vec![vec![Value::Int(1)]], "{q}");
+    }
+    // Unit form: the body writes, nothing returned.
+    run(
+        &mut connection,
+        "CALL () { UNWIND [1, 2] AS p WITH p AS z WHERE z < 2 CREATE (:Z {v: z}) }",
+    );
+    assert_eq!(
+        rows(&mut connection, "MATCH (n:Z) RETURN n.v"),
+        vec![vec![Value::Int(1)]]
+    );
+    // A name neither incoming nor projected stays undefined.
+    let err = err_text(
+        connection.query("CALL () { UNWIND [1] AS p WITH p AS z WHERE q < 2 RETURN z } RETURN z"),
+    );
+    assert!(err.contains("not defined"), "{err}");
 }
