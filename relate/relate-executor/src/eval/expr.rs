@@ -12,6 +12,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::arithmetic::{add, concat, div, mod_op, mul, pow, sub};
+use super::regex_cache::regex_is_match;
 use super::string::char_range;
 use super::{bool_operand, eval, predicate_value_holds};
 
@@ -190,13 +191,6 @@ fn binary_inner(charge: Option<&ExecGraph<'_>>, op: BinaryOp, l: Value, r: Value
     })
 }
 
-pub(crate) fn regex_is_match(text: &str, pattern: &str) -> std::result::Result<bool, regex::Error> {
-    // `=~` is a whole-string match (Neo4j's `Pattern.matches`), not a
-    // substring search: `'21_val' =~ '1_.*'` is false. The non-capturing
-    // group keeps an alternation (`a|b`) inside the anchors.
-    regex::Regex::new(&format!("^(?:{pattern})$")).map(|re| re.is_match(text))
-}
-
 /// One ordering operator: whether an incomparable-but-equal pair satisfies it
 /// (the `<=`/`>=` disjunct `a = b`), and the predicate over `Value::compare`.
 pub(crate) type OrderingOperator = (bool, fn(Ordering) -> bool);
@@ -266,7 +260,17 @@ pub(crate) fn in_rhs(value: &Value) -> Result<Option<&[Value]>> {
 
 pub(crate) fn in_op(l: Value, r: Value) -> Result<Value> {
     Ok(match in_rhs(&r)? {
-        Some(members) => super::membership(&l, members),
+        Some(members) => {
+            // A long list bound once per statement answers an exact
+            // same-typed probe from its once-built index; everything the
+            // index cannot decide exactly takes the scan.
+            if let Value::List(list) = &r {
+                if let Some(answer) = super::membership_index::indexed_membership(&l, list) {
+                    return Ok(answer);
+                }
+            }
+            super::membership(&l, members)
+        }
         None => Value::Null,
     })
 }

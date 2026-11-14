@@ -96,6 +96,7 @@ use super::frontier_tables::{
     arms, epsilon_index, within_table_budget, Arm, Arrival, Endpoint, FrontierTables, Parent,
     Parents, Step, TableCeiling,
 };
+use super::guard_memo::StateMemos;
 use super::nfa::{FrontierNfa, Pool, STATE_CEILING};
 use super::rearival::{RearivalRule, RuleBuffers, Verdict};
 
@@ -373,7 +374,11 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> Result<boo
     // own guard tables read against the run's evaluation context — one
     // bundle the BFS's three check points share, never a second copy of
     // either table. An unguarded NFA pays the empty-table checks only.
-    let guards = RunGuards { ctx, nfa };
+    let guards = RunGuards {
+        ctx,
+        nfa,
+        memos: StateMemos::new(view, states),
+    };
 
     // Level 0: the seed pair, its epsilon closure, and — at
     // `min_hops == 0` — the zero-length endpoint. The seed's mark rides
@@ -703,6 +708,9 @@ fn close_epsilons(
 struct RunGuards<'c, 'n> {
     ctx: ExecCtx<'c>,
     nfa: &'n FrontierNfa,
+    /// The per-state verdict memos (LABS-1478): a guard reads only the
+    /// node, the stage's parameters and the run's fixed view.
+    memos: StateMemos,
 }
 
 impl RunGuards<'_, '_> {
@@ -715,13 +723,15 @@ impl RunGuards<'_, '_> {
         if guards.is_empty() {
             return Ok(true);
         }
-        let row = Row::new();
-        for guard in guards {
-            if !node_ok(self.ctx.graph, node, guard, &row, self.ctx.params)? {
-                return Ok(false);
+        self.memos.answer(self.ctx.graph, state, node, || {
+            let row = Row::new();
+            for guard in guards {
+                if !node_ok(self.ctx.graph, node, guard, &row, self.ctx.params)? {
+                    return Ok(false);
+                }
             }
-        }
-        Ok(true)
+            Ok(true)
+        })
     }
 
     /// The transition's group predicate at one arrival: each referenced

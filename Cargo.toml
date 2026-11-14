@@ -186,6 +186,9 @@ rand = "0.9"
 crc32fast = "1"
 dashmap = "6"
 rustc-hash = "2"
+# XXH3-128 for the expression memo's wide-value keys (LABS-1478): one pure-Rust
+# module, no dependencies, BSL-1.0; only the `xxh3` feature is enabled.
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
 # R*-tree POINT index backend (ADR-0549): pure Rust, three new transitive
 # packages (heapless, hash32, stable_deref_trait), MSRV 1.63.
 rstar = "0.12"

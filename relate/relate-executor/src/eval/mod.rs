@@ -31,9 +31,11 @@ mod fold;
 mod function;
 mod items;
 mod labels;
+mod membership_index;
 mod numeric;
 mod predicates;
 mod quantifier;
+mod regex_cache;
 mod string;
 mod temporal;
 #[cfg(test)]

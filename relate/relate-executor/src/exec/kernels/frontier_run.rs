@@ -53,6 +53,7 @@ use super::frontier_match::{
     FrontierContract,
 };
 use super::frontier_tables::{Endpoint, FrontierTables};
+use super::memo::Memoized;
 use super::nfa;
 use super::program::{Admission, NodePred};
 use super::rearival::RuleBuffers;
@@ -218,6 +219,11 @@ pub(crate) fn try_frontier_rows(
             // a retaining container so the per-value cap refuses them. The
             // total is scoped to this arm, so it is released with `parked`.
             let mut parked_bytes = ctx.graph.retain_bytes(0)?;
+            // The target's admission is stage-fixed, so its memo lives
+            // across the seeds: a node reached from many seeds is checked
+            // once (LABS-1478).
+            let pred = Memoized(Admission::of(&contract.target));
+            let mut admitted = None;
             for seed in seeds {
                 ctx.graph.cancel_tick()?;
                 let outcome = frontier::run(
@@ -244,10 +250,10 @@ pub(crate) fn try_frontier_rows(
                     // A fold takes rows irrevocably, and a later seed's run
                     // can still decline (the walker then re-offers every
                     // row): park the admitted pairs, offer once all served.
-                    let pred = Admission::of(&contract.target);
                     for_each_admitted(
                         ctx,
                         pred,
+                        &mut admitted,
                         contract.consumer.pair(),
                         seed,
                         &walked.endpoints,
@@ -261,13 +267,7 @@ pub(crate) fn try_frontier_rows(
                         },
                     )?;
                 } else {
-                    endpoint_rows(
-                        ctx,
-                        Admission::of(&contract.target),
-                        &pass,
-                        &mut out,
-                        &mut out_retained,
-                    )?;
+                    endpoint_rows(ctx, pred, &mut admitted, &pass, &mut out, &mut out_retained)?;
                 }
                 tables = walked.reclaim();
             }
@@ -348,6 +348,8 @@ pub(crate) fn try_frontier_exists(
         seeds,
     } = *engaged;
     let pool = contract.pool;
+    let pred = Memoized(Admission::of(&contract.target));
+    let mut admitted = None;
     for seed in seeds {
         ctx.graph.cancel_tick()?;
         let outcome = frontier::run(
@@ -364,14 +366,7 @@ pub(crate) fn try_frontier_exists(
         let Ok(walked) = recorded_run(outcome) else {
             return Ok(None);
         };
-        let hit = exists_hit(
-            ctx,
-            Admission::of(&contract.target),
-            &contract,
-            seed,
-            &walked,
-            counted,
-        )?;
+        let hit = exists_hit(ctx, pred, &mut admitted, &contract, seed, &walked, counted)?;
         if hit {
             return Ok(Some(true));
         }
@@ -554,18 +549,18 @@ struct SeedPass<'a> {
 /// distinct-endpoint row pass, its parking arm and the EXISTS hit pass
 /// differ only in what they do with an admitted endpoint, and none
 /// spells the pair check beside this loop.
-fn for_each_admitted(
+fn for_each_admitted<P: NodePred>(
     ctx: ExecCtx<'_>,
-    pred: Admission<'_>,
+    pred: P,
+    prepared: &mut Option<P::Prepared>,
     pair: BoundaryPair,
     seed: NodeId,
     endpoints: &[Endpoint],
     mut f: impl FnMut(ExecCtx<'_>, NodeId) -> Result<bool>,
 ) -> Result<bool> {
-    let mut prepared: Option<<Admission<'_> as NodePred>::Prepared> = None;
     for endpoint in endpoints {
         ctx.graph.cancel_tick()?;
-        if !pred.admits(&mut prepared, ctx, endpoint.node)? || !pair.admits(seed, endpoint.node) {
+        if !pred.admits(prepared, ctx, endpoint.node)? || !pair.admits(seed, endpoint.node) {
             continue;
         }
         if f(ctx, endpoint.node)? {
@@ -612,9 +607,10 @@ fn emit_reduced_row(
 /// the clause's retained running total ahead of the landing — the
 /// rung's second emission point (LABS-1077), threaded in from the
 /// rung's one container total so a refusal never leaves the row landed.
-fn endpoint_rows(
+fn endpoint_rows<P: NodePred>(
     ctx: ExecCtx<'_>,
-    pred: Admission<'_>,
+    pred: P,
+    prepared: &mut Option<P::Prepared>,
     pass: &SeedPass<'_>,
     out: &mut Vec<Row>,
     out_retained: &mut RetainedTotal,
@@ -623,6 +619,7 @@ fn endpoint_rows(
     for_each_admitted(
         ctx,
         pred,
+        prepared,
         pair,
         seed,
         &pass.walked.endpoints,
@@ -639,9 +636,10 @@ fn endpoint_rows(
 /// The EXISTS arm's endpoint pass: whether any admitted endpoint
 /// witnesses existence — the counted expression (when the fold carried
 /// one) non-null on the boundary pair's row, else any admitted endpoint.
-fn exists_hit(
+fn exists_hit<P: NodePred>(
     ctx: ExecCtx<'_>,
-    pred: Admission<'_>,
+    pred: P,
+    prepared: &mut Option<P::Prepared>,
     contract: &FrontierContract<'_>,
     seed: NodeId,
     walked: &FrontierRun,
@@ -650,6 +648,7 @@ fn exists_hit(
     for_each_admitted(
         ctx,
         pred,
+        prepared,
         contract.consumer.pair(),
         seed,
         &walked.endpoints,

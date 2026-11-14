@@ -48,6 +48,16 @@ fn resolve_call(n: &str, args: &[Expr]) -> Result<Option<&'static BuiltinRow>> {
     Ok(Some(builtin))
 }
 
+/// The lower-cased call name, borrowed when it already is lower case (the
+/// common spelling), so a call allocates no `String` per evaluation.
+fn lowercase_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(name.to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    }
+}
+
 /// The `range(...)` call an `UNWIND` can walk without building its list:
 /// resolves the call exactly as [`function`] does — through the one
 /// [`resolve_call`] both spellings read, then the arguments in order —
@@ -60,8 +70,9 @@ pub(crate) fn lazy_range(
     name: &str,
     args: &[Expr],
 ) -> Result<Option<RangePlan>> {
-    let n = name.to_ascii_lowercase();
-    let Some(builtin) = resolve_call(&n, args)? else {
+    let n = lowercase_name(name);
+    let n: &str = &n;
+    let Some(builtin) = resolve_call(n, args)? else {
         return Ok(None);
     };
     // The resolved row's registered name is the registry's own canonical
@@ -82,7 +93,8 @@ pub(crate) fn function(
     _distinct: bool,
     args: &[Expr],
 ) -> Result<Value> {
-    let n = name.to_ascii_lowercase();
+    let n = lowercase_name(name);
+    let n: &str = &n;
     if n == "length" {
         if let Some(Expr::ShortestPath {
             all: false, path, ..
@@ -97,8 +109,8 @@ pub(crate) fn function(
     // argument's own error, and the evaluator does no work for it. The row
     // owns the contract, so registering a builtin is the one decision
     // point.
-    let Some(builtin) = resolve_call(&n, args)? else {
-        if relate_front::agg::is_aggregate_name(&n) {
+    let Some(builtin) = resolve_call(n, args)? else {
+        if relate_front::agg::is_aggregate_name(n) {
             // 42I24: an aggregate call outside an aggregation context is a
             // compile-time `SyntaxError` in Neo4j, not a semantic error — the
             // front end rejects the contexts it owns, and this scalar-eval
@@ -110,7 +122,7 @@ pub(crate) fn function(
         }
         // 42N48 "no such function" is a SyntaxError-class error in Neo4j,
         // not a semantic one; the kind token carries the class.
-        return Err(Error::unknown_function(&n));
+        return Err(Error::unknown_function(n));
     };
     match builtin.implementation {
         // The form rows receive the *unevaluated* arguments: their
@@ -124,7 +136,7 @@ pub(crate) fn function(
         BuiltinImplementation::Applied(applied) => {
             let vals = eval_args(graph, row, params, args)?;
             match applied {
-                Applied::Plain(implementation) => implementation(graph, n.as_str(), vals),
+                Applied::Plain(implementation) => implementation(graph, n, vals),
                 // The clock-access spelling's kind and mode come from the
                 // row, so the implementation never re-parses the call
                 // name; its argument is a timezone (never a value), and
@@ -139,7 +151,7 @@ pub(crate) fn function(
                 Applied::Between(unit) => {
                     let [a, b] = <[Value; 2]>::try_from(vals)
                         .expect("the between row's arity is exactly two");
-                    temporal::between_call(unit, n.as_str(), [a, b])
+                    temporal::between_call(unit, n, [a, b])
                 }
             }
         }
