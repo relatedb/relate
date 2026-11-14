@@ -4,26 +4,209 @@
 //! Not to be confused with [`crate::adjacency`], the store tier these
 //! accessors read and write: the typed hop chunks, the sealed stream, and
 //! the fold between them.
-use super::accounting::hop_counts;
 use super::id_vec::IdVec;
 use super::shard;
 use super::*;
 use crate::adjacency::AdjHop;
 
-fn flatten_adj(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> Vec<RelId> {
-    map.get(&node)
-        .map(|adj| adj.flatten(sealed.get(&node).as_deref()))
-        .unwrap_or_default()
+/// One adjacency chunk's type and delta + sealed hop count — named, because
+/// the two integers swap silently as a tuple.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ChunkHops {
+    pub(super) type_id: u32,
+    pub(super) hops: usize,
 }
 
-pub(super) fn adj_insert(
-    map: &IdVec<TypedAdj>,
-    node: NodeId,
-    type_id: u32,
-    id: RelId,
-    ts: Option<i64>,
-) {
-    map.entry(node).or_default().insert(type_id, id, ts);
+/// One direction's adjacency pair: the live delta map and the sealed side
+/// table beside it (ADR-0551), borrowed together. The pairing
+/// (`out_adj`/`sealed_out`, `in_adj`/`sealed_in`) is stated once, in
+/// [`Graph::out_side`] and [`Graph::in_side`]; every reader, writer and
+/// estimator takes the side, so an out/in mix-up between the two halves
+/// cannot be written.
+#[derive(Clone, Copy)]
+pub(super) struct AdjSide<'a> {
+    pub(super) delta: &'a IdVec<TypedAdj>,
+    pub(super) sealed: &'a IdVec<SealedAdj>,
+}
+
+impl AdjSide<'_> {
+    /// `node`'s delta chunks and its sealed region, both read guards taken
+    /// delta first (the order every adjacency accessor takes them in).
+    /// `None` when the node has no delta entry.
+    pub(super) fn with_adj<R>(
+        &self,
+        node: NodeId,
+        f: impl FnOnce(&TypedAdj, Option<&SealedAdj>) -> R,
+    ) -> Option<R> {
+        let adj = self.delta.get(&node)?;
+        let region = self.sealed.get(&node);
+        Some(f(&adj, region.as_deref()))
+    }
+
+    /// Every physical hop id of `node` in merged order, no visibility filter.
+    fn flatten(&self, node: NodeId) -> Vec<RelId> {
+        self.with_adj(node, |adj, region| adj.flatten(region))
+            .unwrap_or_default()
+    }
+
+    /// One node's adjacency floor: the delta hop bytes plus its sealed
+    /// side-table entry's compressed chunks and tombstones.
+    pub(super) fn floor(&self, node: NodeId) -> u64 {
+        self.delta.get(&node).map_or(0, |adj| adj.floor_bytes())
+            + self
+                .sealed
+                .get(&node)
+                .map_or(0, |region| region.floor_bytes())
+    }
+
+    /// Slot-array bytes of both tables — the term the census reads as
+    /// `slot_bytes`.
+    pub(super) fn array_bytes(&self) -> u64 {
+        self.delta.array_bytes() + self.sealed.array_bytes()
+    }
+
+    /// One [`ChunkHops`] per chunk of `node`, in first-seen type order.
+    pub(super) fn hop_counts(&self, node: NodeId) -> Vec<ChunkHops> {
+        self.with_adj(node, |adj, region| {
+            adj.chunk_lens(region)
+                .map(|(type_id, delta, sealed)| ChunkHops {
+                    type_id,
+                    hops: delta + sealed,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    pub(super) fn insert(&self, node: NodeId, type_id: u32, id: RelId, ts: Option<i64>) {
+        self.delta.entry(node).or_default().insert(type_id, id, ts);
+    }
+
+    pub(super) fn reposition(
+        &self,
+        node: NodeId,
+        type_id: u32,
+        id: RelId,
+        ts: Option<i64>,
+        xmax: u64,
+    ) {
+        let mut adj_entry = self.delta.entry(node);
+        // Only a sealed chunk can hold a position to supersede; a delta-only
+        // hop is removed outright, so recording its tombstone would leave an
+        // empty region — and its slot array — behind for nothing.
+        if self
+            .sealed
+            .get(&node)
+            .is_some_and(|region| region.chunk(type_id).is_some())
+        {
+            let mut sealed_entry = self.sealed.entry(node);
+            adj_entry
+                .or_default()
+                .reposition(sealed_entry.or_default(), type_id, id, ts, xmax);
+        } else {
+            let adj = adj_entry.or_default();
+            adj.remove(None, type_id, id);
+            adj.insert(type_id, id, ts);
+        }
+    }
+
+    /// Remove one hop from `node`'s `type_id` chunk (LABS-1116: the GC prunes
+    /// the hops of chains it removed, so adjacency never references a rel the
+    /// version map no longer holds). A node left with no chunks leaves no
+    /// adjacency entry behind — `remove_if` re-checks emptiness under the
+    /// store's write lock, so a racing insert that recreated a chunk wins and
+    /// the entry stays. A sealed region the removal emptied drops its
+    /// side-table entry too.
+    pub(super) fn remove(&self, node: NodeId, type_id: u32, id: RelId) {
+        if let Some(mut adj) = self.delta.get_mut(&node) {
+            let mut region = self.sealed.get_mut(&node);
+            adj.remove(region.as_deref_mut(), type_id, id);
+        }
+        self.delta.remove_if(&node, |adj| adj.chunks.is_empty());
+        self.sealed
+            .remove_if(&node, |region| region.chunks.is_empty());
+    }
+
+    /// Record the versioned tombstone a delete places on `node`'s hop
+    /// (ADR-0551). A hop that only lives in the delta records one too — the
+    /// write path never decodes the sealed stream to find out, and the fold
+    /// resolves it (a tombstone whose id names no position is dropped; a
+    /// deleted delta hop folds in under its delete stamp). The delta entry is
+    /// not a precondition: [`Self::remove`] drops it one `IdVec` lock ahead
+    /// of the sealed region's, and the tombstone must land in that window
+    /// too.
+    pub(super) fn tombstone_deleted(&self, node: NodeId, type_id: u32, id: RelId, xmax: u64) {
+        self.sealed.entry(node).or_default().tombstone_deleted(
+            type_id,
+            id,
+            xmax,
+            crate::adjacency::Supersede::Deleted,
+        );
+    }
+
+    /// Fold every due chunk of this side at `horizon` (ADR-0551).
+    fn compact(&self, horizon: u64) {
+        // Two passes: the map's one write guard must not span other nodes' folds.
+        let mut due_nodes = Vec::new();
+        self.delta.for_each(|node, adj| {
+            if !adj
+                .due_chunks(self.sealed.get(&node).as_deref(), horizon)
+                .is_empty()
+            {
+                due_nodes.push(node);
+            }
+        });
+        for node in due_nodes {
+            let Some(mut adj) = self.delta.get_mut(&node) else {
+                continue;
+            };
+            let due = adj.due_chunks(self.sealed.get(&node).as_deref(), horizon);
+            if due.is_empty() {
+                continue;
+            }
+            let mut sealed_entry = self.sealed.entry(node);
+            adj.fold_due(sealed_entry.or_default(), &due, horizon);
+        }
+        self.sealed.retain(|_, region| !region.chunks.is_empty());
+    }
+
+    /// Adjacency length without allocation or type/overlay filtering.
+    fn len(&self, node: NodeId) -> usize {
+        self.with_adj(node, |adj, region| {
+            adj.chunk_lens(region)
+                .map(|(_, delta, sealed)| delta + sealed)
+                .sum()
+        })
+        .unwrap_or(0)
+    }
+
+    /// Length over the resolved `type_ids`.
+    fn typed_len(&self, node: NodeId, type_ids: impl Iterator<Item = u32>) -> usize {
+        self.with_adj(node, |adj, region| {
+            type_ids.map(|type_id| adj.total_len(region, type_id)).sum()
+        })
+        .unwrap_or(0)
+    }
+}
+
+impl Graph {
+    /// The outgoing adjacency pair — the one place `out_adj` meets
+    /// `sealed_out`.
+    pub(super) fn out_side(&self) -> AdjSide<'_> {
+        AdjSide {
+            delta: &self.out_adj,
+            sealed: &self.sealed_out,
+        }
+    }
+
+    /// The incoming adjacency pair — the one place `in_adj` meets
+    /// `sealed_in`.
+    pub(super) fn in_side(&self) -> AdjSide<'_> {
+        AdjSide {
+            delta: &self.in_adj,
+            sealed: &self.sealed_in,
+        }
+    }
 }
 
 /// Which endpoint of a [`RelRow`] one direction's grouping pass keys on.
@@ -127,78 +310,6 @@ pub(super) fn adj_build(
     build_side(in_map, rows, Side::End, &end_shards);
 }
 
-pub(super) fn adj_reposition(
-    map: &IdVec<TypedAdj>,
-    sealed: &IdVec<SealedAdj>,
-    node: NodeId,
-    type_id: u32,
-    id: RelId,
-    ts: Option<i64>,
-    xmax: u64,
-) {
-    let mut adj_entry = map.entry(node);
-    // Only a sealed chunk can hold a position to supersede; a delta-only
-    // hop is removed outright, so recording its tombstone would leave an
-    // empty region — and its slot array — behind for nothing.
-    if sealed
-        .get(&node)
-        .is_some_and(|region| region.chunk(type_id).is_some())
-    {
-        let mut sealed_entry = sealed.entry(node);
-        adj_entry
-            .or_default()
-            .reposition(sealed_entry.or_default(), type_id, id, ts, xmax);
-    } else {
-        let adj = adj_entry.or_default();
-        adj.remove(None, type_id, id);
-        adj.insert(type_id, id, ts);
-    }
-}
-
-/// Remove one hop from `node`'s `type_id` chunk (LABS-1116: the GC prunes
-/// the hops of chains it removed, so adjacency never references a rel the
-/// version map no longer holds). A node left with no chunks leaves no
-/// adjacency entry behind — `remove_if` re-checks emptiness under the
-/// store's write lock, so a racing insert that recreated a chunk wins and
-/// the entry stays. A sealed region the removal emptied drops its side-table
-/// entry too.
-pub(super) fn adj_remove(
-    map: &IdVec<TypedAdj>,
-    sealed: &IdVec<SealedAdj>,
-    node: NodeId,
-    type_id: u32,
-    id: RelId,
-) {
-    if let Some(mut adj) = map.get_mut(&node) {
-        let mut region = sealed.get_mut(&node);
-        adj.remove(region.as_deref_mut(), type_id, id);
-    }
-    map.remove_if(&node, |adj| adj.chunks.is_empty());
-    sealed.remove_if(&node, |region| region.chunks.is_empty());
-}
-
-/// Record the versioned tombstone a delete places on `node`'s hop (ADR-0551).
-/// A hop that only lives in the delta records one too — the write path
-/// never decodes the sealed stream to find out, and the fold resolves it (a
-/// tombstone whose id names no position is dropped; a deleted delta hop
-/// folds in under its delete stamp). The delta entry is not a precondition:
-/// `adj_remove` drops it one `IdVec` lock ahead of the sealed region's, and
-/// the tombstone must land in that window too.
-pub(super) fn adj_tombstone_deleted(
-    sealed: &IdVec<SealedAdj>,
-    node: NodeId,
-    type_id: u32,
-    id: RelId,
-    xmax: u64,
-) {
-    sealed.entry(node).or_default().tombstone_deleted(
-        type_id,
-        id,
-        xmax,
-        crate::adjacency::Supersede::Deleted,
-    );
-}
-
 impl Graph {
     /// Fold every due adjacency chunk's delta and reclaimed tombstones into
     /// its sealed stream (ADR-0551). Runs at the checkpoint (through
@@ -206,39 +317,12 @@ impl Graph {
     /// node's sealed side-table entry is taken only when a chunk is due, and
     /// dropped when its last chunk recedes.
     pub(super) fn compact_adjacency_at_watermark(&self, horizon: u64) {
-        self.compact_side(&self.out_adj, &self.sealed_out, horizon);
-        self.compact_side(&self.in_adj, &self.sealed_in, horizon);
-        self.sealed_out
-            .retain(|_, region| !region.chunks.is_empty());
-        self.sealed_in.retain(|_, region| !region.chunks.is_empty());
-    }
-
-    fn compact_side(&self, delta: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, horizon: u64) {
-        // Two passes: the map's one write guard must not span other nodes' folds.
-        let mut due_nodes = Vec::new();
-        delta.for_each(|node, adj| {
-            if !adj
-                .due_chunks(sealed.get(&node).as_deref(), horizon)
-                .is_empty()
-            {
-                due_nodes.push(node);
-            }
-        });
-        for node in due_nodes {
-            let Some(mut adj) = delta.get_mut(&node) else {
-                continue;
-            };
-            let due = adj.due_chunks(sealed.get(&node).as_deref(), horizon);
-            if due.is_empty() {
-                continue;
-            }
-            let mut sealed_entry = sealed.entry(node);
-            adj.fold_due(sealed_entry.or_default(), &due, horizon);
-        }
+        self.out_side().compact(horizon);
+        self.in_side().compact(horizon);
     }
 
     pub fn degree_out(&self, id: NodeId) -> Vec<RelId> {
-        flatten_adj(&self.out_adj, &self.sealed_out, id)
+        self.out_side().flatten(id)
     }
 
     /// Typed adjacency length without snapshot filtering. An approximate
@@ -255,21 +339,11 @@ impl Graph {
         let Some(ids) = types.ids() else {
             return self.adj_len(id, dir);
         };
-        let len = |m: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>| {
-            let Some(adj) = m.get(&id) else {
-                return 0;
-            };
-            let region = sealed.get(&id);
-            ids.clone()
-                .map(|type_id| adj.total_len(region.as_deref(), type_id))
-                .sum()
-        };
+        let len = |side: AdjSide<'_>| side.typed_len(id, ids.clone());
         match dir {
-            relate_ir::Direction::Outgoing => len(&self.out_adj, &self.sealed_out),
-            relate_ir::Direction::Incoming => len(&self.in_adj, &self.sealed_in),
-            relate_ir::Direction::Both => {
-                len(&self.out_adj, &self.sealed_out) + len(&self.in_adj, &self.sealed_in)
-            }
+            relate_ir::Direction::Outgoing => len(self.out_side()),
+            relate_ir::Direction::Incoming => len(self.in_side()),
+            relate_ir::Direction::Both => len(self.out_side()) + len(self.in_side()),
         }
     }
 
@@ -278,12 +352,7 @@ impl Graph {
     /// LABS-351 histogram maintenance both consume. No string re-interning:
     /// the caller holds the interned type id.
     pub(crate) fn out_chunk_len(&self, node: NodeId, type_id: u32) -> u64 {
-        // Delta guard first, sealed inside it — the order every other
-        // adjacency accessor takes them in.
-        self.out_adj
-            .get(&node)
-            .map(|adj| adj.total_len(self.sealed_out.get(&node).as_deref(), type_id) as u64)
-            .unwrap_or(0)
+        self.out_side().typed_len(node, std::iter::once(type_id)) as u64
     }
 
     /// A node's out-adjacency chunks, one `(rel type, out-degree)` pair
@@ -297,9 +366,10 @@ impl Graph {
     /// the same chunk map at hop granularity — the other sanctioned walk,
     /// which this accessor deliberately does not replace.
     pub(super) fn out_chunks(&self, node: NodeId) -> Vec<(u32, u64)> {
-        hop_counts(&self.out_adj, &self.sealed_out, node)
+        self.out_side()
+            .hop_counts(node)
             .into_iter()
-            .map(|(type_id, len)| (type_id, len as u64))
+            .map(|c| (c.type_id, c.hops as u64))
             .collect()
     }
 
@@ -307,26 +377,15 @@ impl Graph {
     /// an approximate degree for choosing which side of an existence
     /// probe to walk (LABS-193).
     pub fn adj_len(&self, id: NodeId, dir: relate_ir::Direction) -> usize {
-        let len = |m: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>| {
-            m.get(&id)
-                .map(|a| {
-                    a.chunk_lens(sealed.get(&id).as_deref())
-                        .map(|(_, delta, sealed)| delta + sealed)
-                        .sum()
-                })
-                .unwrap_or(0)
-        };
         match dir {
-            relate_ir::Direction::Outgoing => len(&self.out_adj, &self.sealed_out),
-            relate_ir::Direction::Incoming => len(&self.in_adj, &self.sealed_in),
-            relate_ir::Direction::Both => {
-                len(&self.out_adj, &self.sealed_out) + len(&self.in_adj, &self.sealed_in)
-            }
+            relate_ir::Direction::Outgoing => self.out_side().len(id),
+            relate_ir::Direction::Incoming => self.in_side().len(id),
+            relate_ir::Direction::Both => self.out_side().len(id) + self.in_side().len(id),
         }
     }
 
     pub fn degree_in(&self, id: NodeId) -> Vec<RelId> {
-        flatten_adj(&self.in_adj, &self.sealed_in, id)
+        self.in_side().flatten(id)
     }
 
     pub fn neighbors(&self, id: NodeId, dir: relate_ir::Direction) -> Vec<RelId> {
@@ -399,17 +458,10 @@ impl Graph {
         };
         match dir {
             Direction::Outgoing => {
-                self.for_each_typed_ends(
-                    &self.out_adj,
-                    &self.sealed_out,
-                    id,
-                    ts,
-                    types,
-                    &mut emit,
-                )?;
+                self.for_each_typed_ends(self.out_side(), id, ts, types, &mut emit)?;
             }
             Direction::Incoming => {
-                self.for_each_typed_ends(&self.in_adj, &self.sealed_in, id, ts, types, &mut emit)?;
+                self.for_each_typed_ends(self.in_side(), id, ts, types, &mut emit)?;
             }
             Direction::Both => {
                 // Dedup by rel id, not endpoints: a self-loop sits in
@@ -425,15 +477,8 @@ impl Graph {
                     }
                     Ok(())
                 };
-                self.for_each_typed_ends(
-                    &self.out_adj,
-                    &self.sealed_out,
-                    id,
-                    ts,
-                    types,
-                    &mut dedup,
-                )?;
-                self.for_each_typed_ends(&self.in_adj, &self.sealed_in, id, ts, types, &mut dedup)?;
+                self.for_each_typed_ends(self.out_side(), id, ts, types, &mut dedup)?;
+                self.for_each_typed_ends(self.in_side(), id, ts, types, &mut dedup)?;
             }
         }
         Ok(())
@@ -445,8 +490,7 @@ impl Graph {
     /// `rel_visible_at` makes).
     fn for_each_typed_ends<E>(
         &self,
-        map: &IdVec<TypedAdj>,
-        sealed: &IdVec<SealedAdj>,
+        side: AdjSide<'_>,
         id: NodeId,
         ts: u64,
         types: &RelTypes,
@@ -458,23 +502,20 @@ impl Graph {
         // (`gpm_rel_dfs`) call back into this same map from `f`; holding
         // the guard across that call deadlocks on the second hop. The walk
         // is the delta+sealed merge at `ts` (ADR-0551), delta first.
-        let hops = {
-            let Some(by_type) = map.get(&id) else {
-                return Ok(());
-            };
-            let region = sealed.get(&id);
-            let mut hops = Vec::new();
-            match types.ids() {
-                None => by_type.for_each_hop(region.as_deref(), ts, |hop| hops.push(hop.id)),
-                Some(ids) => {
-                    for tid in ids {
-                        by_type
-                            .for_each_hop_of(region.as_deref(), tid, ts, |hop| hops.push(hop.id));
+        let hops = side
+            .with_adj(id, |by_type, region| {
+                let mut hops = Vec::new();
+                match types.ids() {
+                    None => by_type.for_each_hop(region, ts, |hop| hops.push(hop.id)),
+                    Some(ids) => {
+                        for tid in ids {
+                            by_type.for_each_hop_of(region, tid, ts, |hop| hops.push(hop.id));
+                        }
                     }
                 }
-            }
-            hops
-        };
+                hops
+            })
+            .unwrap_or_default();
         for rid in hops {
             if let Some((start, end)) = self.rel_ends_at(rid, ts) {
                 f(rid, start, end)?;

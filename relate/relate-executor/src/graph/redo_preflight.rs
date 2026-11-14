@@ -153,19 +153,14 @@ impl RedoPreflight<'_> {
                 *state = None;
             }
         }
-        for (map, sealed) in [
-            (&self.graph.out_adj, &self.graph.sealed_out),
-            (&self.graph.in_adj, &self.graph.sealed_in),
-        ] {
+        for side in [self.graph.out_side(), self.graph.in_side()] {
             // The merged delta+sealed stream (ADR-0551): copy the hop ids
             // out under the store guard, then probe `rel_ends`, which takes
             // the rels store's lock (never re-enter the adjacency store).
             let mut hops = Vec::new();
-            if let Some(by_type) = map.get(&id) {
-                by_type.for_each_hop(sealed.get(&id).as_deref(), self.base_ts, |hop| {
-                    hops.push(hop.id)
-                });
-            }
+            side.with_adj(id, |by_type, region| {
+                by_type.for_each_hop(region, self.base_ts, |hop| hops.push(hop.id));
+            });
             for rid in hops {
                 if self.rel_ends(rid).is_some() {
                     self.rels.insert(rid, None);

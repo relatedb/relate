@@ -6,8 +6,6 @@
 //! (ids, pins, charging, catalog reads); the seams that install a version,
 //! maintain the indexes/adjacency/counts, and push redo live here.
 
-use super::accounting::adj_floor;
-use super::adjacency::adj_tombstone_deleted;
 use super::id_vec::IdVec;
 use super::*;
 
@@ -134,18 +132,18 @@ impl Graph {
         let live = LiveRel::from_parts(&self.interner, start, end, &rel_type, properties);
         let charge = crate::memory::live_rel_account_live(&live);
         let ts = live.payload.ts(&self.interner);
-        let out_before = adj_floor(&self.out_adj, &self.sealed_out, start);
-        let in_before = adj_floor(&self.in_adj, &self.sealed_in, end);
-        let adj_arrays = self.out_adj.array_bytes() + self.in_adj.array_bytes();
+        let (out_side, in_side) = (self.out_side(), self.in_side());
+        let out_before = out_side.floor(start);
+        let in_before = in_side.floor(end);
+        let adj_arrays = out_side.delta.array_bytes() + in_side.delta.array_bytes();
         let degree_before = self.out_chunk_len(start, live.type_id);
-        adj_insert(&self.out_adj, start, live.type_id, id, ts);
-        adj_insert(&self.in_adj, end, live.type_id, id, ts);
+        out_side.insert(start, live.type_id, id, ts);
+        in_side.insert(end, live.type_id, id, ts);
         self.bump_degree_histograms(start, live.type_id, degree_before);
         self.bump_rel_stats(start, live.type_id, end, CountDelta::Add);
-        let adj = adj_floor(&self.out_adj, &self.sealed_out, start) as i64 - out_before as i64
-            + adj_floor(&self.in_adj, &self.sealed_in, end) as i64
+        let adj = out_side.floor(start) as i64 - out_before as i64 + in_side.floor(end) as i64
             - in_before as i64
-            + (self.out_adj.array_bytes() + self.in_adj.array_bytes()) as i64
+            + (out_side.delta.array_bytes() + in_side.delta.array_bytes()) as i64
             - adj_arrays as i64;
         // ADR-0439: a created relationship introduces its constrained
         // tuple(s); relationship constraints have no backing-index postings.
@@ -271,31 +269,11 @@ impl Graph {
         if old_ts != new_ts {
             // A sealed position is superseded at `xmax` (ADR-0551); the
             // new hop lands in the delta.
-            let adj_before = adj_floor(&self.out_adj, &self.sealed_out, start)
-                + adj_floor(&self.in_adj, &self.sealed_in, end);
-            adj_reposition(
-                &self.out_adj,
-                &self.sealed_out,
-                start,
-                type_id,
-                id,
-                new_ts,
-                xmax,
-            );
-            adj_reposition(
-                &self.in_adj,
-                &self.sealed_in,
-                end,
-                type_id,
-                id,
-                new_ts,
-                xmax,
-            );
-            self.charge(
-                (adj_floor(&self.out_adj, &self.sealed_out, start)
-                    + adj_floor(&self.in_adj, &self.sealed_in, end)) as i64
-                    - adj_before as i64,
-            );
+            let (out_side, in_side) = (self.out_side(), self.in_side());
+            let adj_before = out_side.floor(start) + in_side.floor(end);
+            out_side.reposition(start, type_id, id, new_ts, xmax);
+            in_side.reposition(end, type_id, id, new_ts, xmax);
+            self.charge((out_side.floor(start) + in_side.floor(end)) as i64 - adj_before as i64);
         }
         // Dirty-mark only after the new version is installed — the
         // ADR-0185 invariant: `rel_index_add` reads the installed version's
@@ -385,24 +363,23 @@ impl Graph {
             (start, end, type_id)
         };
         let (start, end, type_id) = deleted;
-        let adj_before = adj_floor(&self.out_adj, &self.sealed_out, start)
-            + adj_floor(&self.in_adj, &self.sealed_in, end);
-        let sealed_arrays_before = self.sealed_out.array_bytes() + self.sealed_in.array_bytes();
+        let (out_side, in_side) = (self.out_side(), self.in_side());
+        let adj_before = out_side.floor(start) + in_side.floor(end);
+        let sealed_arrays_before = out_side.sealed.array_bytes() + in_side.sealed.array_bytes();
         // ADR-0551: the hop keeps its slot with a versioned tombstone so an
         // older snapshot still sees it — in the delta (visibility filters it)
         // or in the sealed stream. Recording it unconditionally keeps the
         // write path decode-free; the fold resolves a tombstone whose hop
         // only ever lived in the delta.
-        adj_tombstone_deleted(&self.sealed_out, start, type_id, id, ts);
-        adj_tombstone_deleted(&self.sealed_in, end, type_id, id, ts);
-        let adj_after = adj_floor(&self.out_adj, &self.sealed_out, start)
-            + adj_floor(&self.in_adj, &self.sealed_in, end);
+        out_side.tombstone_deleted(start, type_id, id, ts);
+        in_side.tombstone_deleted(end, type_id, id, ts);
+        let adj_after = out_side.floor(start) + in_side.floor(end);
         self.charge(
             crate::memory::rel_chain_bytes(before_shape.after_delete()) as i64
                 - crate::memory::rel_chain_bytes(before_shape) as i64
                 + adj_after as i64
                 - adj_before as i64
-                + (self.sealed_out.array_bytes() + self.sealed_in.array_bytes()) as i64
+                + (out_side.sealed.array_bytes() + in_side.sealed.array_bytes()) as i64
                 - sealed_arrays_before as i64,
         );
         self.bump_stats(|s| s.relationships_deleted += 1);

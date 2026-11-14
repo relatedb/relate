@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use relate_core::{Node, NodeId, RelId};
 
+use super::adjacency::{AdjSide, ChunkHops};
 use super::*;
 
 impl Graph {
@@ -44,20 +45,17 @@ impl Graph {
                 n = n.saturating_add(crate::memory::live_rel_account_live(v.live));
             }
         });
-        n = n.saturating_add(self.out_adj.array_bytes());
-        n = n.saturating_add(self.in_adj.array_bytes());
-        self.out_adj
-            .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
-        self.in_adj
-            .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
-        // The sealed side tables (ADR-0551) are retained structure: each
-        // entry's compressed chunks and tombstones, the floor ADR-0551
-        // prices, plus the slot arrays that hold them — the term the heap
-        // census reads as `slot_bytes`.
-        n = n.saturating_add(self.sealed_out.array_bytes());
-        n = n.saturating_add(self.sealed_in.array_bytes());
-        for sealed in [&self.sealed_out, &self.sealed_in] {
-            sealed.for_each(|_id, region| n = n.saturating_add(region.floor_bytes()));
+        // Each side's slot arrays and retained entries: the delta hops,
+        // and the sealed side table (ADR-0551) — each entry's compressed
+        // chunks and tombstones, the floor ADR-0551 prices, plus the slot
+        // arrays that hold them, the term the heap census reads as
+        // `slot_bytes`.
+        for side in [self.out_side(), self.in_side()] {
+            n = n.saturating_add(side.array_bytes());
+            side.delta
+                .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
+            side.sealed
+                .for_each(|_id, region| n = n.saturating_add(region.floor_bytes()));
         }
         // LABS-351 / LABS-370: the degree histograms and the count
         // bundle's charged maps are retained structure — the recount
@@ -117,9 +115,9 @@ impl Graph {
             self.rels.span(),
             &after,
         );
-        let (adj_refusable, adj_spill) = self.estimate_adj_delta(ops);
-        delta += adj_refusable + adj_spill;
-        spill += adj_spill;
+        let adj = self.estimate_adj_delta(ops);
+        delta += adj.refusable + adj.spill;
+        spill += adj.spill;
         delta += self.estimate_intern_delta(ops);
         // LABS-370 (security follow-up): the count family's entry growth
         // is committed structure too — an oversized-label write must be
@@ -155,17 +153,11 @@ impl Graph {
     /// the checkpoint fold reclaims: a delete's region, chunk, and tombstone
     /// terms, and the side-map entry a founding delete at a wide id takes
     /// (ADR-0529).
-    pub(super) fn estimate_adj_delta(&self, ops: &[RedoOp]) -> (i64, i64) {
-        let mut out: HashMap<NodeId, Vec<(u32, usize)>> = HashMap::new();
-        let mut inn: HashMap<NodeId, Vec<(u32, usize)>> = HashMap::new();
+    pub(super) fn estimate_adj_delta(&self, ops: &[RedoOp]) -> AdjDelta {
+        let mut out = SideAdmission::new(self.out_side());
+        let mut inn = SideAdmission::new(self.in_side());
         let mut fresh_ids = FreshIds::new();
-        let mut delta = 0i64;
-        let slot = adj_slot();
-        let overflow = crate::memory::overflow_entry_bytes(adj_value());
-        let mut out_span = self.out_adj.span();
-        let mut in_span = self.in_adj.span();
-        let mut out_side = HashSet::new();
-        let mut in_side = HashSet::new();
+        let mut delta = AdjDelta::default();
         // One traversal carries both halves: the create terms, and the
         // batch's own rel identities and pending delete tombstones the
         // delete half prices. A rel created earlier in this batch is
@@ -174,8 +166,8 @@ impl Graph {
         // that precedes its create tombstones nothing, as in the apply path;
         // a rel the store holds comes from its live version.
         let mut created: HashMap<RelId, (NodeId, NodeId, u32)> = HashMap::new();
-        let mut pending_out: HashMap<NodeId, HashMap<u32, HashSet<RelId>>> = HashMap::new();
-        let mut pending_in: HashMap<NodeId, HashMap<u32, HashSet<RelId>>> = HashMap::new();
+        let mut pending_out: PendingTombstones = HashMap::new();
+        let mut pending_in: PendingTombstones = HashMap::new();
         for op in ops {
             match op {
                 RedoOp::CreateRel {
@@ -187,67 +179,7 @@ impl Graph {
                 } => {
                     let type_id = fresh_ids.resolve(self, rel_type);
                     created.insert(*id, (*start, *end, type_id));
-                    // One op touches both sides by the same rule, so each
-                    // side's store, sealed region, span, side-map set and
-                    // pending map travel together as one named value and
-                    // the loop runs once per endpoint — the pair the
-                    // incident and detach walks already iterate as a
-                    // slice. The fields name the side's slots because the
-                    // two store refs and the three mutable slots have
-                    // pairwise-identical types: a tuple position could
-                    // swap an out/in pair silently, a field name cannot.
-                    struct SideAdmission<'a, 'm> {
-                        adj: &'a IdVec<TypedAdj>,
-                        sealed: &'a IdVec<SealedAdj>,
-                        node: NodeId,
-                        span: &'m mut usize,
-                        side: &'m mut HashSet<NodeId>,
-                        pending: &'m mut HashMap<NodeId, Vec<(u32, usize)>>,
-                    }
-                    let mut sides = [
-                        SideAdmission {
-                            adj: &self.out_adj,
-                            sealed: &self.sealed_out,
-                            node: *start,
-                            span: &mut out_span,
-                            side: &mut out_side,
-                            pending: &mut out,
-                        },
-                        SideAdmission {
-                            adj: &self.in_adj,
-                            sealed: &self.sealed_in,
-                            node: *end,
-                            span: &mut in_span,
-                            side: &mut in_side,
-                            pending: &mut inn,
-                        },
-                    ];
-                    for side in &mut sides {
-                        if !side.adj.contains_key(&side.node) {
-                            // The one placement policy, priced here: a dense
-                            // growth is committed structure (refusable); a
-                            // side-map entry is priced once per node per
-                            // batch — this loop can revisit a node across
-                            // its ops, so the dedupe is this caller's.
-                            match crate::memory::place_in_span(side.span, side.node, slot) {
-                                // An id the array cannot index is refused by
-                                // the commit's own validation before anything
-                                // applies, so it prices nothing.
-                                None | Some(crate::memory::SpanPlacement::Inside) => {}
-                                Some(crate::memory::SpanPlacement::Grew(bytes)) => {
-                                    delta += bytes as i64;
-                                }
-                                Some(crate::memory::SpanPlacement::SideEntry) => {
-                                    if side.side.insert(side.node) {
-                                        delta += overflow as i64;
-                                    }
-                                }
-                            }
-                        }
-                        delta += bump_adj(side.pending, side.node, type_id, || {
-                            hop_counts(side.adj, side.sealed, side.node)
-                        });
-                    }
+                    delta.refusable += out.create(*start, type_id) + inn.create(*end, type_id);
                 }
                 RedoOp::DeleteRel { id } => {
                     let Some((start, end, type_id)) = created
@@ -260,18 +192,14 @@ impl Graph {
                     else {
                         continue;
                     };
-                    pending_out
-                        .entry(start)
-                        .or_default()
-                        .entry(type_id)
-                        .or_default()
-                        .insert(*id);
-                    pending_in
-                        .entry(end)
-                        .or_default()
-                        .entry(type_id)
-                        .or_default()
-                        .insert(*id);
+                    for (pending, node) in [(&mut pending_out, start), (&mut pending_in, end)] {
+                        pending
+                            .entry(node)
+                            .or_default()
+                            .entry(type_id)
+                            .or_default()
+                            .insert(*id);
+                    }
                 }
                 _ => {}
             }
@@ -282,11 +210,10 @@ impl Graph {
         // refuse a batch (ADR-0529: a delete at the cap commits). The
         // founding side-table slot is the exception — the dense span only
         // grows (ADR-0086) — so it stays refusable.
-        let (slot_growth, delete_spill) = self.estimate_delete_spill(&pending_out, &pending_in);
-        (delta + slot_growth, delete_spill)
+        delta + self.estimate_delete_spill(&pending_out, &pending_in)
     }
 
-    /// The batch's delete terms, as `(refusable, spill)`: every delete
+    /// The batch's delete terms: every delete
     /// records one tombstone per endpoint that does not hold one yet
     /// (ADR-0551) — a sealed chunk grows its tombstone vec, a never-sealed
     /// type adds its on-demand chunk to the endpoint's region, all reclaimed
@@ -296,16 +223,22 @@ impl Graph {
     /// reclaimed with the region, is spill like the rest.
     fn estimate_delete_spill(
         &self,
-        pending_out: &HashMap<NodeId, HashMap<u32, HashSet<RelId>>>,
-        pending_in: &HashMap<NodeId, HashMap<u32, HashSet<RelId>>>,
-    ) -> (i64, i64) {
+        pending_out: &PendingTombstones,
+        pending_in: &PendingTombstones,
+    ) -> AdjDelta {
         let sealed_slot = sealed_slot();
         let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_value());
-        let (out_refusable, out_spill) =
-            price_side(&self.sealed_out, pending_out, sealed_slot, sealed_overflow);
-        let (in_refusable, in_spill) =
-            price_side(&self.sealed_in, pending_in, sealed_slot, sealed_overflow);
-        (out_refusable + in_refusable, out_spill + in_spill)
+        price_side(
+            self.out_side().sealed,
+            pending_out,
+            sealed_slot,
+            sealed_overflow,
+        ) + price_side(
+            self.in_side().sealed,
+            pending_in,
+            sealed_slot,
+            sealed_overflow,
+        )
     }
 
     fn estimate_intern_delta(&self, ops: &[RedoOp]) -> i64 {
@@ -457,20 +390,6 @@ impl Graph {
     }
 }
 
-pub(super) fn hop_counts(
-    map: &IdVec<TypedAdj>,
-    sealed: &IdVec<SealedAdj>,
-    node: NodeId,
-) -> Vec<(u32, usize)> {
-    map.get(&node)
-        .map(|adj| {
-            adj.chunk_lens(sealed.get(&node).as_deref())
-                .map(|(type_id, delta, sealed)| (type_id, delta + sealed))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The admission estimates' fresh-name resolver (LABS-425, stellar round
 /// 1): a name the interner does not know — a label or rel type the
 /// not-yet-applied batch mints — resolves to a descending id below the
@@ -509,16 +428,108 @@ impl FreshIds {
     }
 }
 
-/// One node's adjacency floor in one direction: the delta hop bytes plus its
-/// sealed side-table entry's compressed chunks and tombstones.
-pub(super) fn adj_floor(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: NodeId) -> u64 {
-    map.get(&node).map(|adj| adj.floor_bytes()).unwrap_or(0)
-        + sealed.get(&node).map_or(0, |region| region.floor_bytes())
+/// A batch's pending delete tombstones on one side: per node, per rel
+/// type, the rel ids that will record one.
+type PendingTombstones = HashMap<NodeId, HashMap<u32, HashSet<RelId>>>;
+
+/// An adjacency estimate's two shares (ADR-0529): `refusable` growth is
+/// committed structure an over-cap batch is refused for; `spill` is what the
+/// checkpoint fold reclaims, so it never refuses a batch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct AdjDelta {
+    pub(super) refusable: i64,
+    pub(super) spill: i64,
+}
+
+impl std::ops::Add for AdjDelta {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            refusable: self.refusable + other.refusable,
+            spill: self.spill + other.spill,
+        }
+    }
+}
+
+/// What one [`place_in_span`](crate::memory::place_in_span) answer charges
+/// — the one mapping from the placement policy's result to bytes, shared by
+/// the create loop and the delete phase: `dense` growth is permanent
+/// structure, `side_entry` the reclaimable entry a wide id takes. An id the
+/// array cannot index is refused by the commit's own validation before
+/// anything applies, so it prices nothing.
+struct PlacementCharge {
+    dense: i64,
+    side_entry: bool,
+}
+
+fn place(span: &mut usize, node: NodeId, slot: u64) -> PlacementCharge {
+    match crate::memory::place_in_span(span, node, slot) {
+        None | Some(crate::memory::SpanPlacement::Inside) => PlacementCharge {
+            dense: 0,
+            side_entry: false,
+        },
+        Some(crate::memory::SpanPlacement::Grew(bytes)) => PlacementCharge {
+            dense: bytes as i64,
+            side_entry: false,
+        },
+        Some(crate::memory::SpanPlacement::SideEntry) => PlacementCharge {
+            dense: 0,
+            side_entry: true,
+        },
+    }
+}
+
+/// One side's create-admission state: the committed pair, the dense span the
+/// batch has grown so far, the wide ids already priced, and the simulated
+/// chunk lists the batch's creates have built. One op touches both sides by
+/// the same rule, so the loop calls [`SideAdmission::create`] once per
+/// endpoint.
+struct SideAdmission<'a> {
+    side: AdjSide<'a>,
+    span: usize,
+    wide: HashSet<NodeId>,
+    pending: HashMap<NodeId, Vec<ChunkHops>>,
+    slot: u64,
+    overflow: u64,
+}
+
+impl<'a> SideAdmission<'a> {
+    fn new(side: AdjSide<'a>) -> Self {
+        Self {
+            span: side.delta.span(),
+            side,
+            wide: HashSet::new(),
+            pending: HashMap::new(),
+            slot: adj_slot(),
+            overflow: crate::memory::overflow_entry_bytes(adj_value()),
+        }
+    }
+
+    /// The refusable bytes one created rel adds at `node` on this side: the
+    /// node's slot when it has no adjacency entry yet, and the hop growth.
+    fn create(&mut self, node: NodeId, type_id: u32) -> i64 {
+        let mut bytes = 0;
+        if !self.side.delta.contains_key(&node) {
+            // A dense growth is committed structure (refusable); a
+            // side-map entry is priced once per node per batch — the loop
+            // can revisit a node across its ops, so the dedupe is here.
+            let placed = place(&mut self.span, node, self.slot);
+            bytes += placed.dense;
+            if placed.side_entry && self.wide.insert(node) {
+                bytes += self.overflow as i64;
+            }
+        }
+        bytes
+            + bump_adj(&mut self.pending, node, type_id, || {
+                self.side.hop_counts(node)
+            })
+    }
 }
 
 /// One side's share of the delete terms
 /// ([`Graph::estimate_delete_spill`](Graph::estimate_delete_spill)'s phase
-/// 2), as the `(refusable, spill)` pair: per node, the region-level terms —
+/// 2): per node, the region-level terms —
 /// the node's dense slot span (permanent, refusable) or its reclaimed
 /// side-map entry (spill), and the chunks-vec entry growth across every
 /// joining type, one
@@ -528,13 +539,12 @@ pub(super) fn adj_floor(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>, node: 
 /// growth, or a joining chunk's empty stream and tombstones.
 fn price_side(
     sealed: &IdVec<SealedAdj>,
-    pending: &HashMap<NodeId, HashMap<u32, HashSet<RelId>>>,
+    pending: &PendingTombstones,
     sealed_slot: u64,
     sealed_overflow: u64,
-) -> (i64, i64) {
+) -> AdjDelta {
     let mut span = sealed.span();
-    let mut refusable = 0i64;
-    let mut spill = 0i64;
+    let mut priced = AdjDelta::default();
     for (node, keys) in pending {
         // One key loop prices every key's own term: a chunk the region
         // already holds grows its tombstone vec (a delete after a
@@ -548,11 +558,12 @@ fn price_side(
             match region.as_ref().and_then(|region| region.chunk(*type_id)) {
                 Some(chunk) => {
                     let fresh = chunk.fresh_tombstone_count(ids);
-                    spill += chunk.tombstone_growth_bytes(fresh) as i64;
+                    priced.spill += chunk.tombstone_growth_bytes(fresh) as i64;
                 }
                 None => {
                     joining += 1;
-                    spill += crate::adjacency::fresh_sealed_chunk_floor_bytes(ids.len()) as i64;
+                    priced.spill +=
+                        crate::adjacency::fresh_sealed_chunk_floor_bytes(ids.len()) as i64;
                 }
             }
         }
@@ -560,49 +571,44 @@ fn price_side(
         // node's slot in the side table — the dense span permanently
         // (refusable), a wide id's side-map entry only until the region
         // empties (spill) — and its chunks-vec entry growth is one
-        // before-and-after term over every joining type, never one per
-        // type, or the reserved model's pow2 steps misprice a batch that
-        // joins several. An existing region prices the same entry growth
-        // (zero when nothing joined).
+        // before-and-after term over every joining type. An existing region
+        // prices the same entry growth (zero when nothing joined).
         match region {
             None => {
-                // The one placement policy, priced here: a dense slot-span
-                // growth is permanent (refusable), a wide id's side-map
-                // entry is reclaimed with the region it founds (spill). Each
-                // node reaches this arm once (`pending` is keyed by node), so
-                // the entry prices unconditionally — the per-batch dedupe is
-                // the create loop's, where a node can recur.
-                match crate::memory::place_in_span(&mut span, *node, sealed_slot) {
-                    None | Some(crate::memory::SpanPlacement::Inside) => {}
-                    Some(crate::memory::SpanPlacement::Grew(bytes)) => refusable += bytes as i64,
-                    Some(crate::memory::SpanPlacement::SideEntry) => {
-                        spill += sealed_overflow as i64;
-                    }
+                // Each node reaches this arm once (`pending` is keyed by
+                // node), so the entry prices unconditionally — the
+                // per-batch dedupe is the create loop's, where a node can
+                // recur.
+                let placed = place(&mut span, *node, sealed_slot);
+                priced.refusable += placed.dense;
+                if placed.side_entry {
+                    priced.spill += sealed_overflow as i64;
                 }
-                spill += crate::adjacency::fresh_sealed_chunk_entry_bytes(joining) as i64;
+                priced.spill += crate::adjacency::fresh_sealed_chunk_entry_bytes(joining) as i64;
             }
             Some(region) => {
-                spill += region.chunk_entry_growth_bytes(joining) as i64;
+                priced.spill += region.chunk_entry_growth_bytes(joining) as i64;
             }
         }
     }
-    (refusable, spill)
+    priced
 }
 
 fn bump_adj(
-    sim: &mut HashMap<NodeId, Vec<(u32, usize)>>,
+    sim: &mut HashMap<NodeId, Vec<ChunkHops>>,
     node: NodeId,
     type_id: u32,
-    init: impl FnOnce() -> Vec<(u32, usize)>,
+    init: impl FnOnce() -> Vec<ChunkHops>,
 ) -> i64 {
     let chunks = sim.entry(node).or_insert_with(init);
-    let before =
-        crate::memory::adjacency_bytes(&chunks.iter().map(|(_, n)| *n).collect::<Vec<_>>());
-    if let Some(slot) = chunks.iter_mut().find(|c| c.0 == type_id) {
-        slot.1 += 1;
+    let bytes = |chunks: &[ChunkHops]| {
+        crate::memory::adjacency_bytes(&chunks.iter().map(|c| c.hops).collect::<Vec<_>>())
+    };
+    let before = bytes(chunks);
+    if let Some(slot) = chunks.iter_mut().find(|c| c.type_id == type_id) {
+        slot.hops += 1;
     } else {
-        chunks.push((type_id, 1));
+        chunks.push(ChunkHops { type_id, hops: 1 });
     }
-    let after = crate::memory::adjacency_bytes(&chunks.iter().map(|(_, n)| *n).collect::<Vec<_>>());
-    after as i64 - before as i64
+    bytes(chunks) as i64 - before as i64
 }

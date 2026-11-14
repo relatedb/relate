@@ -4,7 +4,7 @@
 //! Every case drives one random sequence of adjacency operations —
 //! relationship **create** (`Graph::create_rel`, with or without an integer
 //! `ts` property), **ts-update** (`Graph::set_property_rel(id, "ts", …)`,
-//! which routes through `adj_reposition`), and **delete**
+//! which routes through `AdjSide::reposition`), and **delete**
 //! (`Graph::delete_rel`) — applied to the real `Graph` and, in parallel, to
 //! a plain [`BTreeMap`] reference model. After **every** op the full
 //! adjacency of every node, in both directions, is compared chunk-by-chunk
@@ -251,15 +251,11 @@ fn adj_op_strategy() -> impl Strategy<Value = AdjOp> {
 /// dropped — the same shape the model maintains, whether or not the chunk
 /// sealed.
 fn observable(g: &Graph, node: NodeId, out: bool) -> ModelChunks {
-    let (map, sealed) = if out {
-        (&g.out_adj, &g.sealed_out)
-    } else {
-        (&g.in_adj, &g.sealed_in)
-    };
-    let Some(adj) = map.get(&node) else {
+    let side = if out { g.out_side() } else { g.in_side() };
+    let Some(adj) = side.delta.get(&node) else {
         return Vec::new();
     };
-    let region = sealed.get(&node);
+    let region = side.sealed.get(&node);
     let ts = g.commit_ts();
     adj.chunks
         .iter()

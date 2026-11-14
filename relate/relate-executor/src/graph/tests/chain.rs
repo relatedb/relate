@@ -1,9 +1,8 @@
 //! The inline slot and its spill (ADR-0529): a never-updated row carries no
 //! version list; the first update spills it, abort and GC fold it back.
 
-use std::sync::Arc;
-
 use super::*;
+use crate::graph::accounting::AdjDelta;
 
 fn props(n: i64) -> BTreeMap<String, Value> {
     BTreeMap::from([("n".into(), Value::Int(n))])
@@ -236,7 +235,7 @@ fn step_matches_charge(g: &Graph, ops: Vec<RedoOp>, spill: bool) {
 fn estimate_matches_the_charge_across_shapes() {
     let g = Graph::default();
     let step = |ops: Vec<RedoOp>, spill: bool| step_matches_charge(&g, ops, spill);
-    let create = |id: NodeId| RedoOp::create_node(id, Arc::new(vec!["A".into()]), props(1));
+    let create = |id: NodeId| RedoOp::create_node(id, vec!["A".to_string()], props(1));
     let set = |id: NodeId, n: i64| RedoOp::set_node_prop(id, "n".into(), Value::Int(n));
     step(vec![create(0), create(1), create(2), create(3)], false);
     // The self-loop keeps the (A, R, A) count entry alive, so deleting rel
@@ -371,7 +370,7 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     let step = |ops: Vec<RedoOp>, spill: bool| step_matches_charge(&g, ops, spill);
     // Label-less endpoints: a delete must not also drop a count entry, which
     // the estimate reports as growth only.
-    let create = |id: NodeId| RedoOp::create_node(id, Arc::new(Vec::new()), props(1));
+    let create = |id: NodeId| RedoOp::create_node(id, Vec::new(), props(1));
     step(vec![create(0), create(1)], false);
     step(
         vec![RedoOp::create_rel(2, 0, 1, "U".into(), props(1))],
@@ -396,7 +395,7 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     // one per endpoint — and that growth is all spill.
     let (a, b, ids, _) = crate::graph::test_support::folded_floor_chunk(&g);
     let sealed = vec![RedoOp::delete_rel(ids[0])];
-    let (refusable, spill) = g.estimate_adj_delta(&sealed);
+    let AdjDelta { refusable, spill } = g.estimate_adj_delta(&sealed);
     let stride = crate::adjacency::tombstone_stride() as i64;
     assert_eq!(refusable, 0);
     assert_eq!(spill, 2 * stride, "one tombstone slot per endpoint");
@@ -428,7 +427,10 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     // it) and its chunk and tombstone terms as spill.
     let (edge, other) = crate::graph::test_support::endpoints(&g);
     let founder = crate::graph::test_support::doomed_rel(&g, edge, other, "Y");
-    let (found_refusable, found_spill) = g.estimate_adj_delta(&[RedoOp::delete_rel(founder)]);
+    let AdjDelta {
+        refusable: found_refusable,
+        spill: found_spill,
+    } = g.estimate_adj_delta(&[RedoOp::delete_rel(founder)]);
     assert!(
         found_refusable > 0,
         "a founding delete's slot growth is refusable"
@@ -443,7 +445,10 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     g.apply_redo(vec![create(sparse)], g.commit_ts() + 1)
         .unwrap();
     let doomed = crate::graph::test_support::doomed_rel(&g, sparse, 0, "Z");
-    let (sparse_refusable, sparse_spill) = g.estimate_adj_delta(&[RedoOp::delete_rel(doomed)]);
+    let AdjDelta {
+        refusable: sparse_refusable,
+        spill: sparse_spill,
+    } = g.estimate_adj_delta(&[RedoOp::delete_rel(doomed)]);
     assert_eq!(
         sparse_refusable, 0,
         "a founding delete at a side-map id refuses nothing"

@@ -217,10 +217,9 @@ fn logical_graph_size_limit_zero_is_unlimited() {
 /// rejected with `Capacity` at admission instead of landing past the cap.
 #[test]
 fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
-    let open = |limit: u64| open_limited(limit);
     // Measure the fill phase under a generous cap: two 8-label nodes.
     let fill = "CREATE (a:X1:X2:X3:X4:X5:X6:X7:X8), (b:Y1:Y2:Y3:Y4:Y5:Y6:Y7:Y8)";
-    let probe = open(u64::MAX / 4);
+    let probe = open_limited(u64::MAX / 4);
     let mut c = probe.connect().unwrap();
     c.query(fill).unwrap();
     let (used, limit) = probe.memory_usage().unwrap();
@@ -229,7 +228,7 @@ fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
     // Reopen with the cap set between the fill and the rel: the rel's own
     // bytes fit the headroom, its 8×8 pair-entry (plus 8 histogram-entry)
     // growth does not — pre-commit admission rejects it.
-    let db = open(used + 4_000);
+    let db = open_limited(used + 4_000);
     let mut c = db.connect().unwrap();
     c.query(fill).unwrap();
     let rel = "MATCH (a:X1) MATCH (b:Y1) CREATE (a)-[:R]->(b)";
@@ -241,7 +240,7 @@ fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
     // The cap is not merely exhausted: a small write still fits.
     c.query("CREATE (z:Z1)").unwrap();
     // And under a headroom that covers the growth, the same rel lands.
-    let db = open(used + 40_000);
+    let db = open_limited(used + 40_000);
     let mut c = db.connect().unwrap();
     c.query(fill).unwrap();
     c.query(rel).unwrap();

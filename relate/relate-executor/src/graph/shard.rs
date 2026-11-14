@@ -52,7 +52,18 @@ pub(super) fn shard_rows(rows: &[RelRow], endpoint: impl Fn(&RelRow) -> NodeId) 
 /// Run `f` over each shard of the one partition shape every sharded
 /// phase reads — row-index lists — in parallel when there is more than
 /// one, and return the results in shard order. One shard runs on the
-/// calling thread. Shards are borrowed, not consumed: the start-keyed
+/// calling thread.
+///
+/// **Panic contract.** A panicking shard is the rebuild's own bug, never a
+/// recoverable condition: the scope joins every worker, then re-raises the
+/// first shard's original payload on the calling thread, and no result
+/// vector is returned — so a caller that installs only from the returned
+/// parts (every sharded phase does) installs nothing from a failed run.
+/// The contract is fail-stop, not rollback: nothing in the engine catches
+/// the unwind, and a rebuild that dies has already cleared the maps it was
+/// refilling (`rebuild_adj` clears, then builds), so the graph that ran it
+/// is dropped with the failed open or aborting write, never reused. Shards
+/// are borrowed, not consumed: the start-keyed
 /// partition is one allocation shared by every start-keyed consumer of
 /// the rebuild, so no consumer may take it by value.
 pub(super) fn run_shards<R: Send>(
@@ -127,4 +138,39 @@ pub(super) fn with_workers<R>(workers: usize, f: impl FnOnce() -> R) -> R {
 #[cfg(test)]
 pub(super) fn take_shards_run() -> usize {
     SHARDS_RUN.with(|ran| ran.replace(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panicking shard re-raises its original payload on the calling
+    /// thread (not a wrapper), and no partial result escapes.
+    #[test]
+    fn a_panicking_shard_resurfaces_its_own_payload() {
+        let shards = vec![vec![0usize], vec![1], vec![2]];
+        let caught = std::panic::catch_unwind(|| {
+            run_shards(&shards, |shard| {
+                if shard[0] == 1 {
+                    panic!("shard one failed");
+                }
+                shard[0]
+            })
+        });
+        let payload = caught.expect_err("the failed shard must propagate");
+        assert_eq!(
+            payload.downcast_ref::<&str>().copied(),
+            Some("shard one failed")
+        );
+    }
+
+    /// The serial path (one shard) is the same code path: its panic
+    /// propagates untouched too.
+    #[test]
+    fn a_single_shard_panic_propagates_on_the_calling_thread() {
+        let shards = vec![vec![0usize]];
+        let caught =
+            std::panic::catch_unwind(|| run_shards(&shards, |_| -> usize { panic!("only") }));
+        assert!(caught.is_err());
+    }
 }

@@ -1,6 +1,5 @@
 use relate_ir::BinaryOp;
 
-use super::adjacency::adj_remove;
 use super::*;
 
 /// Lazily materialized equality postings for one `(class, key)` pair
@@ -455,8 +454,8 @@ impl Graph {
             // every later scan pays a `rels` map miss per ghost hop (the
             // per-hop visibility probe stays the authority; this only
             // stops offering it a rel it cannot resolve).
-            adj_remove(&self.out_adj, &self.sealed_out, start, type_id, id);
-            adj_remove(&self.in_adj, &self.sealed_in, end, type_id, id);
+            self.out_side().remove(start, type_id, id);
+            self.in_side().remove(end, type_id, id);
         }
         // Prune after the `rels` guard is released — the pair guard is never
         // taken while a `rels` guard is held. When `prune` is false both

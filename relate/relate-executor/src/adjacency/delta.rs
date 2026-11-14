@@ -8,6 +8,7 @@ use crate::UsedSet;
 
 use super::{
     merge_chunk, reclaim, SealedAdj, SealedChunk, Supersede, Tombstone, COMPACTION_DELTA_FLOOR,
+    PHYSICAL_READ_TS,
 };
 
 /// One hop in a typed chunk. Ordered for `ORDER BY ts DESC` (ADR-0035).
@@ -105,11 +106,7 @@ impl TypedAdj {
         // the removal emptied is recreated by the insert below, so the
         // hop lands in a freshly ordered chunk either way.
         self.remove(Some(sealed), type_id, rid);
-        if let Some(v) = self.chunk_mut(type_id) {
-            insert_hop(v, AdjHop { ts, id: rid });
-        } else {
-            self.insert(type_id, rid, ts);
-        }
+        self.insert(type_id, rid, ts);
     }
 
     /// Remove `rid`'s hop from `type_id`'s delta chunk, keeping the chunk's
@@ -142,10 +139,8 @@ impl TypedAdj {
     }
 
     pub(crate) fn flatten(&self, sealed: Option<&SealedAdj>) -> Vec<RelId> {
-        // ts 0 hides nothing: a tombstone's xmax is always ≥ 1, so this is
-        // the raw physical adjacency in merged order.
         let mut ids = Vec::new();
-        self.for_each_hop(sealed, 0, |hop| ids.push(hop.id));
+        self.for_each_hop(sealed, PHYSICAL_READ_TS, |hop| ids.push(hop.id));
         ids
     }
 

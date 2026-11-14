@@ -18,6 +18,7 @@ mod bitpack;
 mod codec;
 mod delta;
 
+pub(crate) use self::codec::encode_chunk;
 pub(crate) use self::delta::{cmp_ts_desc, AdjHop, TypedAdj};
 
 use std::cmp::Ordering;
@@ -31,6 +32,11 @@ use crate::memory::{vec_growth, vec_heap};
 /// A never-sealed chunk seals only when its delta reaches this hop count
 /// (ADR-0551: the measured knee of the cutoff sweep).
 pub(crate) const COMPACTION_DELTA_FLOOR: usize = 32;
+
+/// The read timestamp that hides nothing: a tombstone's `xmax` is always
+/// at least 1 (the write path stamps from the commit clock, which starts
+/// there), so a read at 0 walks the raw physical adjacency in merged order.
+pub(crate) const PHYSICAL_READ_TS: u64 = 0;
 
 /// What superseded a sealed position. The fold needs it: a deleted row has
 /// no successor hop, a repositioned one is still live at its delta hop.
@@ -226,13 +232,6 @@ impl SealedAdj {
             .map(|(_, c)| c)
     }
 
-    pub(crate) fn chunk_mut(&mut self, type_id: u32) -> Option<&mut SealedChunk> {
-        self.chunks
-            .iter_mut()
-            .find(|(t, _)| *t == type_id)
-            .map(|(_, c)| c)
-    }
-
     /// Physical hop count of `type_id`'s chunk — no decode.
     pub(crate) fn chunk_len(&self, type_id: u32) -> usize {
         self.chunk(type_id).map_or(0, SealedChunk::len)
@@ -299,13 +298,7 @@ impl SealedAdj {
             tombstones,
         };
         chunk.fit_reserved();
-        match self.chunk_mut(type_id) {
-            Some(slot) => *slot = chunk,
-            None => {
-                self.chunks.push((type_id, chunk));
-                crate::memory::fit_reserved(&mut self.chunks);
-            }
-        }
+        *self.chunk_or_insert(type_id) = chunk;
     }
 
     pub(crate) fn floor_bytes(&self) -> u64 {
@@ -316,12 +309,6 @@ impl SealedAdj {
                 .map(|(_, c)| c.floor_bytes())
                 .sum::<u64>()
     }
-}
-
-/// Encode one sealed chunk's hop stream. `hops` must be in `cmp_ts_desc`
-/// order.
-pub(crate) fn encode_chunk(hops: &[AdjHop]) -> Vec<u8> {
-    codec::encode_chunk(hops)
 }
 
 /// Bytes the chunks vec of a region being founded gains from `added` new

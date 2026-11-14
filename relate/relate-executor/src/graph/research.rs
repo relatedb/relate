@@ -58,21 +58,19 @@ pub(super) fn live_neighbors(
     let ts = graph.read_ts();
     // the pairing bound once: each adjacency map with its scan
     // direction in the same row; Both walks both rows
-    for (map, sealed, scan_dir) in [
-        (&graph.out_adj, &graph.sealed_out, Direction::Outgoing),
-        (&graph.in_adj, &graph.sealed_in, Direction::Incoming),
+    for (side, scan_dir) in [
+        (graph.out_side(), Direction::Outgoing),
+        (graph.in_side(), Direction::Incoming),
     ] {
         if dir != Direction::Both && dir != scan_dir {
             continue;
         }
-        let Some(adj) = map.get(&node) else {
-            continue;
-        };
-        let region = sealed.get(&node);
-        adj.for_each_hop_of(region.as_deref(), tid, ts, |hop| {
-            if let Some(other) = live_other(graph, &hop, node, scan_dir) {
-                buf.push(other);
-            }
+        side.with_adj(node, |adj, region| {
+            adj.for_each_hop_of(region, tid, ts, |hop| {
+                if let Some(other) = live_other(graph, &hop, node, scan_dir) {
+                    buf.push(other);
+                }
+            });
         });
     }
 }
@@ -89,7 +87,10 @@ mod tests {
         let g = Graph::default();
         let (a, b, _, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
         let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
-        assert_eq!(g.sealed_out.get(&a).unwrap().chunk_len(type_id), floor);
+        assert_eq!(
+            g.out_side().sealed.get(&a).unwrap().chunk_len(type_id),
+            floor
+        );
 
         let mut buf = Vec::new();
         live_neighbors(&g, a, type_id, Direction::Outgoing, &mut buf);

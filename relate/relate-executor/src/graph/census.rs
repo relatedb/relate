@@ -12,10 +12,9 @@ use std::mem::size_of;
 
 use relate_core::Value;
 
-use crate::adjacency::{SealedAdj, TypedAdj};
 use crate::memory::{self, hashset_i64_bytes, ChainCensus, OVERHEAD_MAP_ENTRY};
 
-use super::id_vec::IdVec;
+use super::adjacency::AdjSide;
 
 use super::Graph;
 
@@ -88,13 +87,13 @@ pub struct AdjacencyCensus {
 }
 
 impl AdjacencyCensus {
-    fn of(map: &IdVec<TypedAdj>, sealed: &IdVec<SealedAdj>) -> Self {
+    fn of(side: AdjSide<'_>) -> Self {
         let mut c = Self {
-            slot_bytes: map.array_bytes() + sealed.array_bytes(),
+            slot_bytes: side.array_bytes(),
             ..Self::default()
         };
-        map.for_each(|id, adj| {
-            let region = sealed.get(&id);
+        side.delta.for_each(|id, adj| {
+            let region = side.sealed.get(&id);
             c.nodes += 1;
             c.chunks += adj.chunks.len() as u64;
             c.sealed_chunks += region.as_ref().map_or(0, |s| s.chunks.len()) as u64;
@@ -197,8 +196,8 @@ impl Graph {
         });
 
         // Adjacency: both directions, every relationship twice.
-        c.out = AdjacencyCensus::of(&self.out_adj, &self.sealed_out);
-        c.r#in = AdjacencyCensus::of(&self.in_adj, &self.sealed_in);
+        c.out = AdjacencyCensus::of(self.out_side());
+        c.r#in = AdjacencyCensus::of(self.in_side());
 
         // Label index: DashMap slots plus each bucket's HashSet allocation.
         for bucket in self.indexes.label_index.iter() {

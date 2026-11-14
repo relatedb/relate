@@ -372,7 +372,10 @@ fn compaction_restore_roundtrip_rebuilds_a_fresh_delta() {
     // dumped carry none of it.
     writer.gc_versions();
     let type_id = writer.interner.get_id("T").unwrap();
-    assert_eq!(writer.sealed_out.get(&0).unwrap().chunk_len(type_id), floor);
+    assert_eq!(
+        writer.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
+        floor
+    );
     assert_eq!(
         serialized(&writer),
         dumped,
@@ -450,7 +453,7 @@ fn compaction_restore_roundtrip_rebuilds_a_fresh_delta() {
     opened.gc_versions();
     let type_id = opened.interner.get_id("T").unwrap();
     assert_eq!(
-        opened.sealed_out.get(&0).unwrap().chunk_len(type_id),
+        opened.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
         floor - 1,
         "the restored delta re-seals, without the deleted hop"
     );

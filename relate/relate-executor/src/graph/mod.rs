@@ -12,7 +12,6 @@ use crate::pull_identity::PullIdentityIndex;
 use crate::redo::{self, PullKind, RedoOp};
 use crate::store::{Interner, LiveNode, LiveRel, RelTypes};
 
-use adjacency::{adj_insert, adj_reposition};
 use constraint_keys::ConstraintKeyIndex;
 use count_state::{CountDelta, CountStats};
 

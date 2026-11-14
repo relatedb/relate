@@ -94,7 +94,7 @@ impl Graph {
             (type_id, kid),
             |g: &Graph| g.rels.keys(),
             |g: &Graph, id: i64, f: &mut dyn FnMut(&Value)| {
-                g.for_each_rel_pair_value(id, type_id, key, f)
+                g.for_each_rel_pair_value(id, type_id, key, kid, f)
             },
             read,
         )
@@ -116,7 +116,8 @@ impl Graph {
         })
     }
 
-    /// The value of `key` on every version of `id` of `type_id`. Every pair
+    /// The value of `key` (interned as `kid`) on every version of `id` of
+    /// `type_id`, read by id — no per-version interner round trip. Every pair
     /// build and drain walks versions here, so all relationship postings
     /// share one superset contract (ADR-0063): the probe re-checks the
     /// snapshot and the scratch.
@@ -125,6 +126,7 @@ impl Graph {
         id: RelId,
         type_id: u32,
         key: &str,
+        kid: u32,
         mut f: impl FnMut(&Value),
     ) {
         let Some(vers) = self.rels.get(&id) else {
@@ -134,7 +136,7 @@ impl Graph {
             if v.live.type_id != type_id {
                 continue;
             }
-            if let Some(val) = v.live.payload.get(&self.interner, key) {
+            if let Some(val) = v.live.payload.get_by_id(key, kid) {
                 f(&val);
             }
         }

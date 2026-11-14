@@ -138,37 +138,32 @@ impl Graph {
         // folded chunk's hops live only in the sealed tier, and the read
         // ts drops the sealed positions a tombstone hides.
         let ts = self.read_ts();
-        for (map, sealed, side) in [
-            (&self.out_adj, &self.sealed_out, Side::Out),
-            (&self.in_adj, &self.sealed_in, Side::In),
-        ] {
-            let Some(adj) = map.get(&node) else {
-                continue;
-            };
-            let region = sealed.get(&node);
-            // The type slots name the chunks; each chunk's hops are
-            // walked through the merged reader, never `chunks` directly.
-            for (type_id, _) in &adj.chunks {
-                adj.for_each_hop_of(region.as_deref(), *type_id, ts, |hop| {
-                    let Some((start, end, live_type)) = self.rel_live_identity(hop.id) else {
-                        return;
-                    };
-                    // One dispatch on the walked side: the near end
-                    // feeds the live-identity guard, the record carries
-                    // the side — the out adjacency means the node
-                    // starts the rel (far its end), the in adjacency
-                    // means the node ends it (far its start).
-                    let (near, record) = match side {
-                        Side::Out => (start, IncidentRel::outgoing(*type_id, end)),
-                        Side::In => (end, IncidentRel::incoming(*type_id, start)),
-                    };
-                    // The live-identity match the doc above states.
-                    if near != node || live_type != *type_id {
-                        return;
-                    }
-                    incidents.push(record);
-                });
-            }
+        for (adj_side, side) in [(self.out_side(), Side::Out), (self.in_side(), Side::In)] {
+            adj_side.with_adj(node, |adj, region| {
+                // The type slots name the chunks; each chunk's hops are
+                // walked through the merged reader, never `chunks` directly.
+                for (type_id, _) in &adj.chunks {
+                    adj.for_each_hop_of(region, *type_id, ts, |hop| {
+                        let Some((start, end, live_type)) = self.rel_live_identity(hop.id) else {
+                            return;
+                        };
+                        // One dispatch on the walked side: the near end
+                        // feeds the live-identity guard, the record carries
+                        // the side — the out adjacency means the node
+                        // starts the rel (far its end), the in adjacency
+                        // means the node ends it (far its start).
+                        let (near, record) = match side {
+                            Side::Out => (start, IncidentRel::outgoing(*type_id, end)),
+                            Side::In => (end, IncidentRel::incoming(*type_id, start)),
+                        };
+                        // The live-identity match the doc above states.
+                        if near != node || live_type != *type_id {
+                            return;
+                        }
+                        incidents.push(record);
+                    });
+                }
+            });
         }
         incidents
     }
