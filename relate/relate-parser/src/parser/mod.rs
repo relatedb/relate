@@ -846,6 +846,7 @@ mod clauses;
 mod definitions;
 mod expressions;
 mod interp;
+mod is_predicate;
 mod labels;
 mod literals;
 mod names;

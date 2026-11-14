@@ -185,65 +185,21 @@ impl<'a> Parser<'a> {
                     false
                 };
                 let operand = operand.clone();
-                if let Some(op) = self.peek_chronological_op() {
-                    // WHEN IS [NOT] BEFORE | AFTER | SAME INSTANT | SAME
-                    // REPRESENTATION ...  (Cypher 25): the postfix
-                    // predicate form, evaluated against the CASE operand.
-                    self.consume_chronological_op(op);
-                    let right = self.parse_add_sub()?;
-                    Expr::ChronologicalCompare(Box::new(ChronologicalCompareExpr {
-                        left: operand,
-                        op,
-                        right,
-                        negated,
-                    }))
-                } else if self.peek_type() == TokenType::DoubleColon {
-                    // WHEN IS [NOT] :: <value type>  (CIP-87/CIP-143 type predicate)
-                    self.next_token();
-                    let type_expr = self.parse_value_type()?;
-                    Expr::IsType(Box::new(IsTypeExpr {
-                        expr: operand,
-                        type_expr,
-                        negated,
-                    }))
-                } else if self.peek_is_typed_keyword() {
-                    // WHEN IS [NOT] TYPED <value type>
-                    self.next_token();
-                    let type_expr = self.parse_value_type()?;
-                    Expr::IsType(Box::new(IsTypeExpr {
-                        expr: operand,
-                        type_expr,
-                        negated,
-                    }))
-                } else if self.peek_is_normal_form_or_normalized() {
-                    // WHEN IS [NOT] [<normal form>] NORMALIZED (CIP-133),
-                    // matching the general grammar's `IS ... NORMALIZED`.
-                    let form = self.try_consume_normal_form_keyword();
-                    self.expect_keyword_ident("NORMALIZED")?;
-                    Expr::IsNormalized(Box::new(IsNormalizedExpr {
-                        expr: operand,
-                        form,
-                        negated,
-                    }))
-                } else if self.peek_type() == TokenType::NULL {
-                    // WHEN IS [NOT] NULL
-                    self.next_token();
-                    Expr::IsNull(Box::new(IsNullExpr {
-                        expr: operand,
-                        negated,
-                    }))
-                } else {
-                    // WHEN IS [NOT] [LABELED] <label-expr>  (CIP-249)
-                    if self.peek_is_labeled_keyword() {
-                        self.next_token();
+                match self.parse_is_predicate_common(operand, negated)? {
+                    Ok(predicate) => predicate,
+                    Err(operand) => {
+                        // WHEN IS [NOT] [LABELED] <label-expr>
+                        if self.peek_is_labeled_keyword() {
+                            self.next_token();
+                        }
+                        let label_expr = self.parse_label_expr_body(true, false)?.expr;
+                        Expr::HasLabel(Box::new(HasLabelExpr {
+                            expr: operand,
+                            label_expr,
+                            negated,
+                            strict: true,
+                        }))
                     }
-                    let label_expr = self.parse_label_expr_body(true, false)?.expr;
-                    Expr::HasLabel(Box::new(HasLabelExpr {
-                        expr: operand,
-                        label_expr,
-                        negated,
-                        strict: true,
-                    }))
                 }
             }
             TokenType::Colon => {

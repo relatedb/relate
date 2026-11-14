@@ -199,81 +199,10 @@ impl<'a> Parser<'a> {
                     false
                 };
 
-                if let Some(op) = self.peek_chronological_op() {
-                    // a IS [NOT] BEFORE | AFTER | SAME INSTANT | SAME
-                    // REPRESENTATION b  (Cypher 25 chronological
-                    // comparison; the four words are contextual
-                    // identifiers, not reserved).
-                    self.consume_chronological_op(op);
-                    let right = self.parse_add_sub()?;
-                    left = Expr::ChronologicalCompare(Box::new(ChronologicalCompareExpr {
-                        left,
-                        op,
-                        right,
-                        negated,
-                    }));
-                } else if self.peek_type() == TokenType::DoubleColon {
-                    // x IS [NOT] :: <value type>  (CIP-87 type predicate)
-                    self.next_token();
-                    let type_expr = self.parse_value_type()?;
-                    left = Expr::IsType(Box::new(IsTypeExpr {
-                        expr: left,
-                        type_expr,
-                        negated,
-                    }));
-                } else if self.peek_is_typed_keyword() {
-                    // x IS [NOT] TYPED <value type>  (CIP-87 type predicate)
-                    self.next_token();
-                    let type_expr = self.parse_value_type()?;
-                    left = Expr::IsType(Box::new(IsTypeExpr {
-                        expr: left,
-                        type_expr,
-                        negated,
-                    }));
-                } else if self.peek_is_normal_form_or_normalized() {
-                    // x IS [NOT] [<normal form>] NORMALIZED  (CIP-133)
-                    let form = self.try_consume_normal_form_keyword();
-                    self.expect_keyword_ident("NORMALIZED")?;
-                    left = Expr::IsNormalized(Box::new(IsNormalizedExpr {
-                        expr: left,
-                        form,
-                        negated,
-                    }));
-                } else if self.peek_is_labeled_keyword() {
-                    // x IS [NOT] LABELED <label-expr>  (CIP-249)
-                    self.next_token();
-                    let label_expr = self.parse_label_expr_body(true, false)?.expr;
-                    left = Expr::HasLabel(Box::new(HasLabelExpr {
-                        expr: left,
-                        label_expr,
-                        negated,
-                        strict: true,
-                    }));
-                } else if self.peek_type() == TokenType::NULL {
-                    // x IS [NOT] NULL
-                    self.next_token();
-                    left = Expr::IsNull(Box::new(IsNullExpr {
-                        expr: left,
-                        negated,
-                    }));
-                } else if self.peek_can_start_label_expr() {
-                    // x IS <label-expr>  (CIP-14, non-negated, interchangeable
-                    // with `:`) or x IS NOT <label-expr>  (CIP-249 shorthand
-                    // for IS NOT LABELED <label-expr>).
-                    let label_expr = self.parse_label_expr_body(true, false)?.expr;
-                    left = Expr::HasLabel(Box::new(HasLabelExpr {
-                        expr: left,
-                        label_expr,
-                        negated,
-                        strict: negated,
-                    }));
-                } else {
-                    self.expect(TokenType::NULL)?;
-                    left = Expr::IsNull(Box::new(IsNullExpr {
-                        expr: left,
-                        negated,
-                    }));
-                }
+                left = match self.parse_is_predicate_common(left, negated)? {
+                    Ok(predicate) => predicate,
+                    Err(operand) => self.parse_is_label_tail(operand, negated)?,
+                };
             }
             TokenType::DoubleColon => {
                 // x :: <value type>  (CIP-87 bare shorthand for IS ::)
@@ -318,8 +247,7 @@ impl<'a> Parser<'a> {
     /// True if the current token is the contextual `TYPED` keyword (like
     /// `NORMALIZED`, not a reserved word in the lexer).
     pub(super) fn peek_is_typed_keyword(&self) -> bool {
-        let tok = self.peek();
-        tok.ty == TokenType::Identifier && tok.literal.eq_ignore_ascii_case("TYPED")
+        self.peek_is_ident("TYPED")
     }
 
     /// The chronological comparison operator starting at the current token
@@ -377,8 +305,7 @@ impl<'a> Parser<'a> {
         if self.peek_normal_form_keyword().is_some() {
             return true;
         }
-        let tok = self.peek();
-        tok.ty == TokenType::Identifier && tok.literal.eq_ignore_ascii_case("NORMALIZED")
+        self.peek_is_ident("NORMALIZED")
     }
 
     /// Consumes and returns a normal-form keyword if present; otherwise leaves

@@ -225,6 +225,22 @@ fn test_interp_escaped_backslash_before_embed() {
 }
 
 #[test]
+fn test_interp_lone_surrogate_escape_is_an_error() {
+    // A lone UTF-16 surrogate is not a scalar value: the escape fails like
+    // its malformed siblings instead of being silently dropped.
+    for q in [r"RETURN s'a\uD800b' AS r", r"RETURN s'\uDC00' AS r"] {
+        let err = parse(q).expect_err(q);
+        assert!(
+            err.to_string().contains("invalid unicode escape"),
+            "{q:?}: {err}"
+        );
+    }
+    // A valid pair and a BMP escape still decode.
+    let parts = interp_parts(r"RETURN s'\uD83D\uDE00\u0041' AS r");
+    assert!(matches!(&parts[0], InterpPart::Text(t) if t == "\u{1F600}A"));
+}
+
+#[test]
 fn test_interp_backtick_name_in_embed() {
     // A backtick-quoted identifier inside an embed is inert: the `}` in
     // `` `a}b` `` does not close the embed.

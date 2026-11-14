@@ -100,9 +100,9 @@ value the AST keeps.
 
 `tokenize`/`tokenize_with_options` return `Vec<Token<'a>>` tied to the
 input; `Parser` becomes `Parser<'a>` holding `source: &'a str` (no source
-copy) and `tokens: Vec<Token<'a>>`; `next_token` stops cloning — it hands
-out a reference or moves the token out by index (the borrowed case clones
-for free either way). Every read site keeps reading `&str`
+copy) and `tokens: Vec<Token<'a>>`; `next_token` keeps a `clone()` that is
+a pointer copy for the borrowed token (backup/restore re-reads consumed
+tokens, so they stay in the vector). Every read site keeps reading `&str`
 (`tok.literal.as_ref()` / deref), so the comment rule re-read and error
 construction see exactly today's text; `ParseError` keeps owning its
 message (one `to_string` on the error path only). The `detail` field is

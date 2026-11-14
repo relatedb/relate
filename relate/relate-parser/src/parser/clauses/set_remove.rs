@@ -185,10 +185,7 @@ impl<'a> Parser<'a> {
         // `Identifier LeftParen` -- backtracks to that branch if the tail
         // after `labels(<expr>)` isn't actually `=`/`+=`/`-=` (e.g.
         // `labels(n)[0] = ...`, an ordinary dynamic-property-key target).
-        if self.peek_type() == TokenType::Identifier
-            && self.peek().literal.eq_ignore_ascii_case("labels")
-            && self.peek_at(1).ty == TokenType::LeftParen
-        {
+        if self.peek_is_ident("labels") && self.peek_at(1).ty == TokenType::LeftParen {
             let saved = self.save_pos();
             self.next_token(); // consume 'labels'
             self.next_token(); // consume (

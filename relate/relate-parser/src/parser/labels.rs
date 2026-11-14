@@ -509,8 +509,7 @@ impl<'a> Parser<'a> {
     /// True if the current token is the contextual `LABELED` keyword (like
     /// `TYPED`, not a reserved word in the lexer).
     pub(super) fn peek_is_labeled_keyword(&self) -> bool {
-        let tok = self.peek();
-        tok.ty == TokenType::Identifier && tok.literal.eq_ignore_ascii_case("LABELED")
+        self.peek_is_ident("LABELED")
     }
 
     /// True if the current token could begin a label-expression primary
