@@ -318,6 +318,15 @@ impl RelPattern {
             _ => false,
         }
     }
+
+    /// Whether the `types` list is the complete relationship-type filter:
+    /// `type_expr` is absent (an untyped hop carries an empty list, which
+    /// means "every type"), or it spells exactly the non-empty static
+    /// list. An empty `Or` is a filter that matches nothing, not the
+    /// any-type set, so it answers `false`.
+    pub fn types_are_complete_filter(&self) -> bool {
+        self.type_expr.is_none() || (self.type_expr_is_static_types() && !self.types.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -628,7 +637,7 @@ mod tests {
     //! other shape declines — the same decline vocabulary
     //! `is_static_conjunction` keeps for its shapes.
 
-    use super::{DisjunctionArms, LabelExpr, SmallName};
+    use super::{Direction, DisjunctionArms, LabelExpr, RelPattern, SmallName, Token};
 
     fn label(name: &str) -> LabelExpr {
         LabelExpr::Label(SmallName::from_name(name))
@@ -720,5 +729,46 @@ mod tests {
         assert!(arms.base().is_empty());
         assert_eq!(arms.disjuncts(), vec![&name]);
         assert!(!arms.is_empty());
+    }
+
+    fn rel(types: &[&str], type_expr: Option<LabelExpr>) -> RelPattern {
+        RelPattern {
+            variable: None,
+            types: types
+                .iter()
+                .map(|name| (SmallName::from_name(name), Token::Unresolved))
+                .collect(),
+            type_expr,
+            direction: Direction::Outgoing,
+            properties: None,
+            prop_keys: Vec::new(),
+            var_length: false,
+            min_hops: 1,
+            max_hops: Some(1),
+            where_clause: None,
+            quantified: false,
+        }
+    }
+
+    /// The `types` list is the complete filter for an absent expression
+    /// (the untyped hop included) and for an expression spelling exactly
+    /// the non-empty list; an empty `Or` (matches nothing), a negation, or
+    /// a list the expression does not spell is not.
+    #[test]
+    fn types_are_the_complete_filter_only_when_the_list_says_all_of_it() {
+        assert!(rel(&[], None).types_are_complete_filter());
+        assert!(rel(&["A"], None).types_are_complete_filter());
+        assert!(rel(&["A"], Some(label("A"))).types_are_complete_filter());
+        assert!(rel(
+            &["A", "B"],
+            Some(LabelExpr::Or(vec![label("A"), label("B")]))
+        )
+        .types_are_complete_filter());
+        assert!(!rel(&[], Some(LabelExpr::Or(Vec::new()))).types_are_complete_filter());
+        assert!(
+            !rel(&["A"], Some(LabelExpr::Not(Box::new(label("A"))))).types_are_complete_filter()
+        );
+        assert!(!rel(&["A"], Some(label("B"))).types_are_complete_filter());
+        assert!(!rel(&[], Some(LabelExpr::Wildcard)).types_are_complete_filter());
     }
 }

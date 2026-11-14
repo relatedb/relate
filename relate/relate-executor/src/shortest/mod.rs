@@ -175,9 +175,7 @@ pub(crate) fn followable(start: &NodePattern, rel: &RelPattern, end: &NodePatter
             .as_ref()
             .is_none_or(|e| e.is_static_conjunction())
     };
-    rel.type_expr
-        .as_ref()
-        .is_none_or(|_| rel.type_expr_is_static_types() && !rel.types.is_empty())
+    rel.types_are_complete_filter()
         && rel.properties.is_none()
         && static_labels(start)
         && static_labels(end)

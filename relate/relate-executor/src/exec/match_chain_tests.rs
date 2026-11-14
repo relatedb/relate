@@ -17,7 +17,9 @@ use relate_front::parse_and_lower;
 use relate_ir::Clause;
 
 use super::match_chain::CHAIN_BATCH;
-use super::match_clause::{charge_finished_container, run_match_operator_ladder};
+use super::match_clause::{
+    charge_finished_container, run_match_operator_ladder, MatchClauseInputs,
+};
 use super::pattern_policies::RowFold;
 use super::test_support::{
     build, error_of, exec_cypher, run_metered, same_rows, try_exec_cypher, walk_only, Built,
@@ -462,11 +464,13 @@ fn a_finished_container_is_charged_only_when_the_fold_asks() {
         run_match_operator_ladder(
             ExecCtx::new(&view, &params),
             vec![Row::new()],
-            false,
-            *match_mode,
-            patterns,
-            where_clause.as_ref(),
-            &mut None,
+            MatchClauseInputs {
+                optional: false,
+                match_mode: *match_mode,
+                patterns,
+                where_clause: where_clause.as_ref(),
+            },
+            None,
             None,
             &clauses[1..],
             Some(fold),

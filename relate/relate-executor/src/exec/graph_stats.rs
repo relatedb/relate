@@ -87,6 +87,34 @@ impl GraphStats<'_> {
             .filter_map(|(name, token)| self.id_of(name, *token))
             .collect()
     }
+
+    /// The one per-label scaffold the degree figures share: resolve the
+    /// type names, price the type selection (`None` when no type is named:
+    /// every type) over each named label — a label the store never
+    /// interned selects nothing, so it prices as `T::default()` — or over
+    /// every label (`None` label id) when no label is named, and keep the
+    /// smallest per-label figure, the tighter bound on a node carrying all
+    /// the labels (the `degree_tail` min discipline).
+    fn min_over_labels<T: Default>(
+        &self,
+        labels: &[NamedToken],
+        rel_types: &[NamedToken],
+        price: impl Fn(Option<u32>, Option<&[u32]>) -> T,
+        size: impl Fn(&T) -> u128,
+    ) -> Option<T> {
+        let type_ids = self.type_ids(rel_types);
+        let types = (!rel_types.is_empty()).then_some(type_ids.as_slice());
+        if labels.is_empty() {
+            return Some(price(None, types));
+        }
+        labels
+            .iter()
+            .map(|(name, token)| {
+                self.id_of(name, *token)
+                    .map_or_else(T::default, |id| price(Some(id), types))
+            })
+            .min_by_key(size)
+    }
 }
 
 impl relate_planner::PatternStats for GraphStats<'_> {
@@ -194,45 +222,29 @@ impl relate_planner::PatternStats for GraphStats<'_> {
         }
     }
 
-    /// The live histograms' out-degree moments. Several labels name the
-    /// nodes carrying all of them, bounded by each label's own moments:
-    /// the smaller sum is the tighter bound (the `degree_tail` min
-    /// discipline). A name the store never interned selects nothing.
+    /// The live histograms' out-degree moments, bounded per label by
+    /// [`GraphStats::min_over_labels`].
     fn degree_moments(
         &self,
         labels: &[NamedToken],
         rel_types: &[NamedToken],
     ) -> Option<DegreeMoments> {
-        let type_ids = self.type_ids(rel_types);
-        let types = (!rel_types.is_empty()).then_some(type_ids.as_slice());
-        if labels.is_empty() {
-            return Some(self.graph.pattern_degree_moments(None, types));
-        }
-        labels
-            .iter()
-            .map(|(name, token)| {
-                self.id_of(name, *token)
-                    .map_or(DegreeMoments::default(), |id| {
-                        self.graph.pattern_degree_moments(Some(id), types)
-                    })
-            })
-            .min_by_key(|moments| moments.sum)
+        self.min_over_labels(
+            labels,
+            rel_types,
+            |label_id, types| self.graph.pattern_degree_moments(label_id, types),
+            |moments| moments.sum,
+        )
     }
 
     /// The live pair counts' in-degree sum, bounded the same way as
     /// [`PatternStats::degree_moments`]: the smallest per-label sum.
     fn in_degree_sum(&self, labels: &[NamedToken], rel_types: &[NamedToken]) -> Option<u128> {
-        let type_ids = self.type_ids(rel_types);
-        let types = (!rel_types.is_empty()).then_some(type_ids.as_slice());
-        if labels.is_empty() {
-            return Some(self.graph.pattern_in_degree_sum(None, types));
-        }
-        labels
-            .iter()
-            .map(|(name, token)| {
-                self.id_of(name, *token)
-                    .map_or(0, |id| self.graph.pattern_in_degree_sum(Some(id), types))
-            })
-            .min()
+        self.min_over_labels(
+            labels,
+            rel_types,
+            |label_id, types| self.graph.pattern_in_degree_sum(label_id, types),
+            |sum| *sum,
+        )
     }
 }

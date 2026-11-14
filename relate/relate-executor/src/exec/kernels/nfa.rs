@@ -290,7 +290,9 @@ pub(crate) fn compile(
                 // is out of vocabulary: the front end quantifies every
                 // top-level var-length spelling, so one here is not
                 // lowered IR — decline defensively).
-                plain_rel(rel)?;
+                if !plain_rel(rel) {
+                    return None;
+                }
                 let to = builder.alloc()?;
                 let types = builder.interned(rel)?;
                 builder.push_transition(current, to, types, rel.direction);
@@ -379,8 +381,8 @@ pub(crate) fn compile(
 /// matches", which is what an untyped hop means. Nothing has to
 /// enumerate the interned vocabulary, so the decline this used to carry
 /// (LABS-1434) is gone.
-fn plain_rel(rel: &RelPattern) -> Option<()> {
-    if rel.var_length
+fn plain_rel(rel: &RelPattern) -> bool {
+    !(rel.var_length
         || rel.min_hops != 1
         || rel.max_hops != Some(1)
         || rel.properties.is_some()
@@ -389,11 +391,7 @@ fn plain_rel(rel: &RelPattern) -> Option<()> {
         // disjunctions are exactly what the `types` list already carries
         // (single label or `Or`-chain of labels); anything dynamic,
         // negated, or conjunctive keeps the walker's type evaluation.
-        || (rel.type_expr.is_some() && !rel.type_expr_is_static_types())
-    {
-        return None;
-    }
-    Some(())
+        || !rel.types_are_complete_filter())
 }
 
 /// A node the auto rung cannot check must carry no admission facts: a
@@ -839,7 +837,9 @@ impl<'a> Builder<'a> {
                         current = hop_exit;
                         len = len.plus(hop_len)?;
                     } else {
-                        plain_rel(rel)?;
+                        if !plain_rel(rel) {
+                            return None;
+                        }
                         let to = if last_hop {
                             last_target.or_else(|| self.alloc())
                         } else {

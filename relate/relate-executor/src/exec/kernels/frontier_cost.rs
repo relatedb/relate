@@ -90,7 +90,8 @@ pub(super) fn frontier_engages(
 
 /// The cost estimate of `hops` (every quantifier expanded to its maximum
 /// count) from `seeds` start rows, `None` when the statistics keep no
-/// degree histogram to price them with.
+/// degree histogram, or (for an incoming or undirected first hop) no pair
+/// counts, to price them with.
 pub(super) fn estimate(
     stats: &dyn PatternStats,
     population: u128,
@@ -192,6 +193,10 @@ pub(super) fn excess_degree(moments: DegreeMoments) -> f64 {
 /// `None` when the expansion cannot be priced — it passes
 /// [`MAX_ESTIMATE_HOPS`] (the multiplicity is saturated) or a quantifier
 /// is unbounded — and the caller engages rather than underestimates it.
+///
+/// Every repetition pushes the *same* `&RelPattern` the body holds, not a
+/// copy: [`estimate`] keys its per-rel price cache on that reference
+/// identity, so a change that clones a rel here must change the cache key.
 fn expand_max_hops(elements: &[PatternElement]) -> Option<Vec<&RelPattern>> {
     let mut hops = Vec::new();
     for element in elements {

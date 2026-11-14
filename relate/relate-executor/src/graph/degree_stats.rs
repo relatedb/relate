@@ -307,29 +307,40 @@ impl Graph {
         label_id: Option<u32>,
         type_ids: Option<&[u32]>,
     ) -> DegreeMoments {
-        // Per label: the per-type degree sums and the squares' sum.
+        self.combine_label_moments(self.label_type_sums(label_id, type_ids))
+    }
+
+    /// The histogram scan under the one lock: per label, the per-type
+    /// degree sums and the squares' sum of the selected histograms.
+    fn label_type_sums(
+        &self,
+        label_id: Option<u32>,
+        type_ids: Option<&[u32]>,
+    ) -> HashMap<u32, (Vec<u128>, u128)> {
         let mut per_label: HashMap<u32, (Vec<u128>, u128)> = HashMap::new();
-        {
-            let histograms = self.degree_histograms.lock().unwrap();
-            for (&(label, type_id), buckets) in histograms.iter() {
-                if label_id.is_some_and(|wanted| wanted != label)
-                    || type_ids.is_some_and(|wanted| !wanted.contains(&type_id))
-                {
-                    continue;
-                }
-                let (sums, sum_sq) = per_label.entry(label).or_default();
-                let mut type_sum = 0u128;
-                for (bucket, &nodes) in buckets.iter().enumerate() {
-                    let low = 1u128 << bucket;
-                    let high = (low << 1) - 1;
-                    let nodes = u128::from(nodes);
-                    type_sum = type_sum.saturating_add(nodes * ((low + high) / 2));
-                    *sum_sq =
-                        sum_sq.saturating_add(nodes * ((low * low + low * high + high * high) / 3));
-                }
-                sums.push(type_sum);
+        let histograms = self.degree_histograms.lock().unwrap();
+        for (&(label, type_id), buckets) in histograms.iter() {
+            if !Self::selects(label_id, label) || !Self::selects_type(type_ids, type_id) {
+                continue;
             }
+            let (sums, sum_sq) = per_label.entry(label).or_default();
+            let mut type_sum = 0u128;
+            for (bucket, &nodes) in buckets.iter().enumerate() {
+                let low = 1u128 << bucket;
+                let high = (low << 1) - 1;
+                let nodes = u128::from(nodes);
+                type_sum = type_sum.saturating_add(nodes * ((low + high) / 2));
+                *sum_sq =
+                    sum_sq.saturating_add(nodes * ((low * low + low * high + high * high) / 3));
+            }
+            sums.push(type_sum);
         }
+        per_label
+    }
+
+    /// The lock-free derivation: fold the per-label sums into the moments,
+    /// adding each label's cross term over its node count.
+    fn combine_label_moments(&self, per_label: HashMap<u32, (Vec<u128>, u128)>) -> DegreeMoments {
         let mut moments = DegreeMoments::default();
         for (label, (sums, sum_sq)) in per_label {
             let sum = sums.iter().fold(0u128, |acc, &s| acc.saturating_add(s));
@@ -344,7 +355,7 @@ impl Graph {
             moments.sum_sq = moments
                 .sum_sq
                 .saturating_add(sum_sq)
-                .saturating_add(cross_pairs.checked_div(nodes).unwrap_or(0));
+                .saturating_add(if nodes == 0 { 0 } else { cross_pairs / nodes });
             // (A label with no live node left only has high-water
             // buckets: nothing is there to cross, so its term is zero.)
         }

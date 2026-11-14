@@ -78,6 +78,17 @@ pub(crate) struct LadderRun {
     pub(crate) facts: LadderFacts,
 }
 
+/// The clause inputs the operator ladder reads, bundled so the ladder's
+/// signature carries one value for the `MATCH` clause itself beside the
+/// statement context (the cap, projection, suffix and fold).
+#[derive(Clone, Copy)]
+pub(crate) struct MatchClauseInputs<'a> {
+    pub(crate) optional: bool,
+    pub(crate) match_mode: MatchMode,
+    pub(crate) patterns: &'a [PathPattern],
+    pub(crate) where_clause: Option<&'a Expr>,
+}
+
 impl MatchOperator {
     /// Whether the operator hands the dispatch layer a finished,
     /// **uncharged** container (ADR-0463, LABS-1077): the batch chain and
@@ -124,19 +135,21 @@ impl MatchOperator {
 /// it as its rows-mode halt (LABS-990, ADR-0524) — the want rides, the
 /// kernel's final collection stops at it, and a shape the kernel
 /// declines keeps the cap at the walker, whose sink applies it.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_match_operator_ladder(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
-    optional: bool,
-    match_mode: MatchMode,
-    patterns: &[PathPattern],
-    where_clause: Option<&Expr>,
-    cap: &mut Option<MatchCap<'_>>,
+    clause: MatchClauseInputs<'_>,
+    mut cap: Option<MatchCap<'_>>,
     projection: Option<&SinkProjection<'_>>,
     suffix: &[Clause],
     fold: Option<&dyn RowFold>,
 ) -> Result<LadderRun> {
+    let MatchClauseInputs {
+        optional,
+        match_mode,
+        patterns,
+        where_clause,
+    } = clause;
     // The frontier family's rung (ADR-0478): the quantified-path shapes
     // with a pair-shaped answer contract — the capped emission, the
     // distinct-endpoint answer — over the BFS that collapses the trail
@@ -171,8 +184,15 @@ pub(crate) fn run_match_operator_ladder(
     // answer `None` and keep the walker with their semantics intact).
     let plain_want = cap.as_ref().and_then(MatchCap::plain_want);
     let chain_eligible = (cap.is_none() || plain_want.is_some()) && projection.is_none();
-    let batched = if chain_eligible {
-        try_scan_filter_batch(
+    // The two finished-container rungs share the gate, and the kernel is
+    // tried only once the chain declined — one decision, so the second
+    // rung cannot drift from the first. A plain cap's want rides as the
+    // chain's halt (LABS-1452) and the kernel's rows-mode halt (LABS-990,
+    // ADR-0524). A rung that returns a finished container hands its rows
+    // to the fold (when one rides) right here, so the clause still
+    // collects nothing.
+    let finished = if chain_eligible {
+        match try_scan_filter_batch(
             ctx,
             &rows,
             optional,
@@ -180,32 +200,22 @@ pub(crate) fn run_match_operator_ladder(
             patterns,
             where_clause,
             plain_want,
-        )?
+        )? {
+            Some(rows) => Some((rows, MatchOperator::BatchChain)),
+            None => kernels::try_match_kernel(
+                ctx,
+                &rows,
+                optional,
+                match_mode,
+                patterns,
+                where_clause,
+                plain_want,
+            )?
+            .map(|(rows, rung)| (rows, MatchOperator::Rung(rung))),
+        }
     } else {
         None
     };
-    // The kernel tries the same gate one rung lower — only once the
-    // chain above it declined. A plain cap's want rides as the kernel's
-    // rows-mode halt (LABS-990, ADR-0524).
-    let kernel_eligible = chain_eligible && batched.is_none();
-    let kernaled = if kernel_eligible {
-        kernels::try_match_kernel(
-            ctx,
-            &rows,
-            optional,
-            match_mode,
-            patterns,
-            where_clause,
-            plain_want,
-        )?
-    } else {
-        None
-    };
-    // A rung that returns a finished container hands its rows to the fold
-    // (when one rides) right here, so the clause still collects nothing.
-    let finished = batched
-        .map(|rows| (rows, MatchOperator::BatchChain))
-        .or(kernaled.map(|(rows, rung)| (rows, MatchOperator::Rung(rung))));
     if let Some((rows, operator)) = finished {
         let Some(fold) = fold else {
             return Ok(LadderRun {

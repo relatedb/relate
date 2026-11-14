@@ -60,7 +60,9 @@ use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
 use super::aggregate::Aggregation;
-use super::match_clause::{charge_finished_container, run_match_operator_ladder, LadderRun};
+use super::match_clause::{
+    charge_finished_container, run_match_operator_ladder, LadderRun, MatchClauseInputs,
+};
 use super::match_folds::fold_would_take;
 use super::pattern_policies::{MatchFold, RowFold};
 use super::project::{
@@ -366,11 +368,13 @@ impl<'a> Stage<'a> {
                 let LadderRun { rows, .. } = run_match_operator_ladder(
                     self.ctx,
                     batch,
-                    false,
-                    MatchMode::DifferentRelationships,
-                    patterns,
-                    *where_clause,
-                    &mut None,
+                    MatchClauseInputs {
+                        optional: false,
+                        match_mode: MatchMode::DifferentRelationships,
+                        patterns,
+                        where_clause: *where_clause,
+                    },
+                    None,
                     projection.as_ref(),
                     tail,
                     fold,

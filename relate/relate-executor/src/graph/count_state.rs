@@ -297,8 +297,7 @@ impl Graph {
             .pair_counts
             .iter()
             .filter(|(&(_, type_id, end), _)| {
-                label_id.is_none_or(|wanted| wanted == end)
-                    && type_ids.is_none_or(|wanted| wanted.contains(&type_id))
+                Self::selects(label_id, end) && Self::selects_type(type_ids, type_id)
             })
             .fold(0u128, |sum, (_, &count)| {
                 sum.saturating_add(u128::from(count))

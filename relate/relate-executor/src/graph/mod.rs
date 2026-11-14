@@ -878,6 +878,18 @@ pub(crate) fn spec_has_property_defaults(spec: &crate::graph_type::GraphTypeSpec
 }
 
 impl Graph {
+    /// The one label-selection policy of the degree and count statistics families:
+    /// `None` selects every label, `Some(wanted)` exactly that one.
+    pub(crate) fn selects(wanted: Option<u32>, label: u32) -> bool {
+        wanted.is_none_or(|wanted| wanted == label)
+    }
+
+    /// The one type-selection policy of the degree and count statistics families:
+    /// `None` selects every type, `Some(wanted)` the listed ids.
+    pub(crate) fn selects_type(wanted: Option<&[u32]>, type_id: u32) -> bool {
+        wanted.is_none_or(|wanted| wanted.contains(&type_id))
+    }
+
     pub fn all_rel_ids(&self) -> Vec<RelId> {
         self.all_rel_ids_at(self.read_ts())
     }

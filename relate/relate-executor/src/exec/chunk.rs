@@ -144,6 +144,19 @@ pub(crate) enum ColumnData {
     Value(Vec<Value>),
 }
 
+impl ColumnData {
+    /// The buffer's slot count, whichever typed buffer holds them.
+    fn len(&self) -> usize {
+        match self {
+            ColumnData::Int(ints) => ints.len(),
+            ColumnData::Float(floats) => floats.len(),
+            ColumnData::Utf8(strings) => strings.len(),
+            ColumnData::Bool(bools) => bools.len(),
+            ColumnData::Value(values) => values.len(),
+        }
+    }
+}
+
 /// One column of a chunk: its buffer, its null bitmap, and its derived
 /// zone (LABS-645). Invariant: buffer length == bitmap length == the
 /// chunk's row count, and a set null bit means the buffer slot is a
@@ -167,13 +180,7 @@ impl Column {
     pub(super) fn from_parts(nulls: NullBitmap, data: ColumnData) -> Column {
         assert_eq!(
             nulls.len(),
-            match &data {
-                ColumnData::Int(ints) => ints.len(),
-                ColumnData::Float(floats) => floats.len(),
-                ColumnData::Utf8(strings) => strings.len(),
-                ColumnData::Bool(bools) => bools.len(),
-                ColumnData::Value(values) => values.len(),
-            },
+            data.len(),
             "a column's bitmap and buffer agree in length"
         );
         let zone = zone_of(&nulls, &data);
@@ -645,8 +652,8 @@ impl Chunk {
     /// The chunk restricted to the named-by-position columns, consumed —
     /// the projection at the pipeline breaker: the scratch columns a
     /// filter read stay behind, and no buffer is copied to drop them.
-    /// Panics if a slot is out of range: a chunk has exactly one column
-    /// per name.
+    /// Panics if a slot is out of range or repeated: a chunk has exactly
+    /// one column per name, and a consumed column cannot be selected twice.
     pub(crate) fn select_columns(self, slots: &[usize]) -> Self {
         let names: Vec<String> = slots
             .iter()
@@ -658,7 +665,7 @@ impl Chunk {
             .map(|&slot| {
                 by_slot[slot]
                     .take()
-                    .expect("select_columns slots are in range")
+                    .expect("select_columns slots are in range and distinct")
             })
             .collect();
         Self {
