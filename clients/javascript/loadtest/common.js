@@ -275,20 +275,17 @@ function runMixedLoadtest(cfg, spec) {
     const uc = pickByWriteFraction(work.rng, writeFraction, spec.catalog);
     const planned = uc.plan(work);
     const t0 = process.hrtime.bigint();
+    // One record literal for both outcomes; only the outcome-specific fields differ.
+    const record = (outcome) => ({
+      seq, phase, usecase: uc.id, kind: uc.kind, related: uc.related,
+      latency_ns: Number(process.hrtime.bigint() - t0), worker, ...outcome,
+    });
     try {
       const out = planned.exec(conn);
       spec.applyResult(work, out);
-      return {
-        seq, phase, usecase: uc.id, kind: uc.kind, related: uc.related,
-        statements: out.statements, ok: true, latency_ns: Number(process.hrtime.bigint() - t0),
-        rows: out.rows, worker,
-      };
+      return record({ statements: out.statements, ok: true, rows: out.rows });
     } catch (e) {
-      return {
-        seq, phase, usecase: uc.id, kind: uc.kind, related: uc.related,
-        statements: 0, ok: false, error: String(e.message || e),
-        latency_ns: Number(process.hrtime.bigint() - t0), rows: 0, worker,
-      };
+      return record({ statements: 0, ok: false, error: String(e.message || e), rows: 0 });
     }
   });
   const workerMs = Date.now() - worker0;

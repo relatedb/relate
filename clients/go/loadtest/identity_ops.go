@@ -4,12 +4,12 @@ import (
 	"github.com/relatedb/relate/clients/go"
 )
 
-// One type per identity operation, carrying its own plan data (its fields)
-// and its own exec step (its exec method): the operation vocabulary is
-// stated once per operation — a type plus a planner plus a catalog row in
-// identityOpSpecs — mirroring the Rust catalog's per-row plan fn followed by
-// the typed Planned variant (LABS-429). A new operation threads through one
-// row, not through a plan switch and an exec switch.
+// The identity operation vocabulary is stated once per operation — a
+// statement constant plus a planner plus a catalog row in identityOpSpecs —
+// mirroring the Rust catalog's per-row plan fn (LABS-429). A single-statement
+// op is the shared readOp / writeOp value (ops.go) the planner returns
+// directly; provisionUserOp is the one op with its own type, because it alone
+// grows the workload's pools.
 //
 // identityOp is the identity instantiation of the shared op contract
 // (execOp in mixed.go): exec reports per the shared op-exec policy (ops.go),
@@ -36,211 +36,35 @@ func (op provisionUserOp) grow() {
 	op.w.ordinaryUsers = append(op.w.ordinaryUsers, op.uid)
 }
 
-type addToGroupOp struct {
-	baseOp
-	uid, gid string
-}
-
-func (op addToGroupOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid}) MATCH (g:Group {id: $gid}) MERGE (u)-[:MEMBER_OF]->(g)", map[string]any{"uid": op.uid, "gid": op.gid})
-}
-
-type grantRoleOp struct {
-	baseOp
-	uid, rid string
-}
-
-func (op grantRoleOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid}) MATCH (r:Role {id: $rid}) CREATE (u)-[:HAS_ROLE]->(r)", map[string]any{"uid": op.uid, "rid": op.rid})
-}
-
-type attachDeviceOp struct {
-	baseOp
-	uid, did string
-}
-
-func (op attachDeviceOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid}) CREATE (d:Device {id: $did}) CREATE (u)-[:OWNS]->(d)", map[string]any{"uid": op.uid, "did": op.did})
-}
-
-type nestedGrantOp struct {
-	baseOp
-	uid, gid string
-}
-
-func (op nestedGrantOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid}) MATCH (g:Group {id: $gid}) CREATE (u)-[:MEMBER_OF]->(g)", map[string]any{"uid": op.uid, "gid": op.gid})
-}
-
-type effectiveAccessOp struct {
-	baseOp
-	id string
-}
-
-func (op effectiveAccessOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (u:User {id: $id})-[:HAS_ROLE]->(r:Role)-[:GRANTS]->(perm:Permission)-[:ON]->(a:App) "+
-			"RETURN DISTINCT a.name AS app, perm.name AS perm "+
-			"UNION "+
-			"MATCH (u:User {id: $id})-[:MEMBER_OF*1..8]->(g:Group)-[:HAS_ROLE]->(r:Role)-[:GRANTS]->(perm:Permission)-[:ON]->(a:App) "+
-			"RETURN DISTINCT a.name AS app, perm.name AS perm",
-		map[string]any{"id": op.id},
-	)
-}
-
-type orgWalkOp struct {
-	baseOp
-	id string
-}
-
-func (op orgWalkOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn, "MATCH (u:User {id: $id})-[:REPORTS_TO*1..8]->(m:User) RETURN m.id AS id LIMIT 20", map[string]any{"id": op.id})
-}
-
-type optionalManagerOp struct {
-	baseOp
-	id string
-}
-
-func (op optionalManagerOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (u:User {id: $id}) OPTIONAL MATCH (u)-[:REPORTS_TO]->(m:User) OPTIONAL MATCH (u)-[:OWNS]->(d:Device) "+
-			"RETURN u.id AS id, m.id AS manager, d.id AS device",
-		map[string]any{"id": op.id},
-	)
-}
-
-type detectNestedAdminOp struct {
-	baseOp
-	id string
-}
-
-func (op detectNestedAdminOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (u:User {id: $id})-[:MEMBER_OF*1..8]->(g:Group)-[:HAS_ROLE]->(r:Role {name: 'admin'}) RETURN DISTINCT u.id AS id",
-		map[string]any{"id": op.id},
-	)
-}
-
-type detectSodOp struct {
-	baseOp
-	id string
-}
-
-func (op detectSodOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (u:User {id: $id}) WHERE EXISTS { (u)-[:HAS_ROLE]->(:Role {name: 'requester'}) } "+
-			"AND EXISTS { (u)-[:HAS_ROLE]->(:Role {name: 'approver'}) } RETURN u.id AS id",
-		map[string]any{"id": op.id},
-	)
-}
-
-// stale_grants scans every stale grant (the pre-existing client dialect; the
-// Rust canonical form pins the planted stale-grant user instead — preserved
-// bit-for-bit here so the fused form replays the identical statements).
-type staleGrantsOp struct{ baseOp }
-
-func (staleGrantsOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn, "MATCH (u:User)-[g:HAS_ROLE]->(r:Role) WHERE g.until < date('2024-01-01') RETURN u.id AS id, g.until AS until LIMIT 20", nil)
-}
-
-// search_directory scans the whole directory for the fixed needle
-// "example.com" (the pre-existing client dialect; the Rust canonical form
-// draws a digit-suffix needle from a picked user instead — preserved
-// bit-for-bit here so the fused form replays the identical statements).
-type searchDirectoryOp struct {
-	baseOp
-	q string
-}
-
-func (op searchDirectoryOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (u:User) WHERE u.email CONTAINS $q OR any(e IN u.emails WHERE e CONTAINS $q) RETURN u.id AS id ORDER BY u.id LIMIT 15",
-		map[string]any{"q": op.q},
-	)
-}
-
-type groupRosterOp struct {
-	baseOp
-	gid  string
-	skip int64
-}
-
-func (op groupRosterOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (g:Group {id: $gid})<-[:MEMBER_OF]-(u:User) RETURN u.id AS id, u.name AS name ORDER BY u.name SKIP $skip LIMIT 10",
-		map[string]any{"gid": op.gid, "skip": op.skip},
-	)
-}
-
-type accessReviewOp struct {
-	baseOp
-	id string
-}
-
-func (op accessReviewOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (u:User {id: $id}) RETURN u.id AS id, CASE u.status WHEN 'active' THEN 'ok' WHEN 'inactive' THEN 'blocked' ELSE 'unknown' END AS review",
-		map[string]any{"id": op.id},
-	)
-}
-
-type reportingPathOp struct {
-	baseOp
-	from, to string
-}
-
-func (op reportingPathOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return readExec(conn,
-		"MATCH (a:User {id: $from}), (b:User {id: $to}) RETURN length(shortestPath((a)-[:REPORTS_TO*..8]-(b))) AS hops",
-		map[string]any{"from": op.from, "to": op.to},
-	)
-}
-
-type disableUserOp struct {
-	baseOp
-	uid string
-}
-
-func (op disableUserOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid}) SET u.status = CASE WHEN u.status = 'active' THEN 'inactive' ELSE 'active' END", map[string]any{"uid": op.uid})
-}
-
-type addAliasOp struct {
-	baseOp
-	uid, alias string
-}
-
-func (op addAliasOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid}) SET u.emails = u.emails + [$alias]", map[string]any{"uid": op.uid, "alias": op.alias})
-}
-
-type revokeMembershipOp struct {
-	baseOp
-	uid, gid string
-}
-
-func (op revokeMembershipOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid})-[m:MEMBER_OF]->(g:Group {id: $gid}) DELETE m", map[string]any{"uid": op.uid, "gid": op.gid})
-}
-
-type detachDeviceOp struct {
-	baseOp
-	uid string
-}
-
-func (op detachDeviceOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid})-[o:OWNS]->(d:Device) WITH o, d LIMIT 1 DELETE o, d", map[string]any{"uid": op.uid})
-}
-
-type clearExpiryOp struct {
-	baseOp
-	uid string
-}
-
-func (op clearExpiryOp) exec(conn *relate.Connection) (uint32, int, error) {
-	return writeExec(conn, "MATCH (u:User {id: $uid})-[g:HAS_ROLE]->() WHERE g.until IS NOT NULL REMOVE g.until", map[string]any{"uid": op.uid})
-}
+// The identity statements, one named constant per op: the planners above
+// pair each with its params in a readOp / writeOp (ops.go).
+const (
+	addToGroupCypher      = "MATCH (u:User {id: $uid}) MATCH (g:Group {id: $gid}) MERGE (u)-[:MEMBER_OF]->(g)"
+	grantRoleCypher       = "MATCH (u:User {id: $uid}) MATCH (r:Role {id: $rid}) CREATE (u)-[:HAS_ROLE]->(r)"
+	attachDeviceCypher    = "MATCH (u:User {id: $uid}) CREATE (d:Device {id: $did}) CREATE (u)-[:OWNS]->(d)"
+	nestedGrantCypher     = "MATCH (u:User {id: $uid}) MATCH (g:Group {id: $gid}) CREATE (u)-[:MEMBER_OF]->(g)"
+	effectiveAccessCypher = "MATCH (u:User {id: $id})-[:HAS_ROLE]->(r:Role)-[:GRANTS]->(perm:Permission)-[:ON]->(a:App) " +
+		"RETURN DISTINCT a.name AS app, perm.name AS perm " +
+		"UNION " +
+		"MATCH (u:User {id: $id})-[:MEMBER_OF*1..8]->(g:Group)-[:HAS_ROLE]->(r:Role)-[:GRANTS]->(perm:Permission)-[:ON]->(a:App) " +
+		"RETURN DISTINCT a.name AS app, perm.name AS perm"
+	orgWalkCypher         = "MATCH (u:User {id: $id})-[:REPORTS_TO*1..8]->(m:User) RETURN m.id AS id LIMIT 20"
+	optionalManagerCypher = "MATCH (u:User {id: $id}) OPTIONAL MATCH (u)-[:REPORTS_TO]->(m:User) OPTIONAL MATCH (u)-[:OWNS]->(d:Device) " +
+		"RETURN u.id AS id, m.id AS manager, d.id AS device"
+	detectNestedAdminCypher = "MATCH (u:User {id: $id})-[:MEMBER_OF*1..8]->(g:Group)-[:HAS_ROLE]->(r:Role {name: 'admin'}) RETURN DISTINCT u.id AS id"
+	detectSodCypher         = "MATCH (u:User {id: $id}) WHERE EXISTS { (u)-[:HAS_ROLE]->(:Role {name: 'requester'}) } " +
+		"AND EXISTS { (u)-[:HAS_ROLE]->(:Role {name: 'approver'}) } RETURN u.id AS id"
+	staleGrantsCypher      = "MATCH (u:User)-[g:HAS_ROLE]->(r:Role) WHERE g.until < date('2024-01-01') RETURN u.id AS id, g.until AS until LIMIT 20"
+	searchDirectoryCypher  = "MATCH (u:User) WHERE u.email CONTAINS $q OR any(e IN u.emails WHERE e CONTAINS $q) RETURN u.id AS id ORDER BY u.id LIMIT 15"
+	groupRosterCypher      = "MATCH (g:Group {id: $gid})<-[:MEMBER_OF]-(u:User) RETURN u.id AS id, u.name AS name ORDER BY u.name SKIP $skip LIMIT 10"
+	accessReviewCypher     = "MATCH (u:User {id: $id}) RETURN u.id AS id, CASE u.status WHEN 'active' THEN 'ok' WHEN 'inactive' THEN 'blocked' ELSE 'unknown' END AS review"
+	reportingPathCypher    = "MATCH (a:User {id: $from}), (b:User {id: $to}) RETURN length(shortestPath((a)-[:REPORTS_TO*..8]-(b))) AS hops"
+	disableUserCypher      = "MATCH (u:User {id: $uid}) SET u.status = CASE WHEN u.status = 'active' THEN 'inactive' ELSE 'active' END"
+	addAliasCypher         = "MATCH (u:User {id: $uid}) SET u.emails = u.emails + [$alias]"
+	revokeMembershipCypher = "MATCH (u:User {id: $uid})-[m:MEMBER_OF]->(g:Group {id: $gid}) DELETE m"
+	detachDeviceCypher     = "MATCH (u:User {id: $uid})-[o:OWNS]->(d:Device) WITH o, d LIMIT 1 DELETE o, d"
+	clearExpiryCypher      = "MATCH (u:User {id: $uid})-[g:HAS_ROLE]->() WHERE g.until IS NOT NULL REMOVE g.until"
+)
 
 // One planner per op, mirroring Rust's plan_* functions: each draws its
 // picks from the workload (under the caller's mutex) and builds its op.
@@ -251,85 +75,89 @@ func planProvisionUser(w *identityWork) identityOp {
 }
 
 func planAddToGroup(w *identityWork) identityOp {
-	return addToGroupOp{uid: w.pickUser(), gid: w.pickGroup()}
+	return writeOp(addToGroupCypher, map[string]any{"uid": w.pickUser(), "gid": w.pickGroup()})
 }
 
 func planGrantRole(w *identityWork) identityOp {
-	return grantRoleOp{uid: w.pickUser(), rid: w.pickRole()}
+	return writeOp(grantRoleCypher, map[string]any{"uid": w.pickUser(), "rid": w.pickRole()})
 }
 
 func planAttachDevice(w *identityWork) identityOp {
-	return attachDeviceOp{uid: w.pickUser(), did: w.alloc("lt-dev")}
+	return writeOp(attachDeviceCypher, map[string]any{"uid": w.pickUser(), "did": w.alloc("lt-dev")})
 }
 
 func planNestedGrant(w *identityWork) identityOp {
-	return nestedGrantOp{uid: w.pickUser(), gid: w.fanGroup}
+	return writeOp(nestedGrantCypher, map[string]any{"uid": w.pickUser(), "gid": w.fanGroup})
 }
 
 func planEffectiveAccess(w *identityWork) identityOp {
-	return effectiveAccessOp{id: w.pickUser()}
+	return readOp(effectiveAccessCypher, map[string]any{"id": w.pickUser()})
 }
 
 func planOrgWalk(w *identityWork) identityOp {
-	return orgWalkOp{id: w.pickUser()}
+	return readOp(orgWalkCypher, map[string]any{"id": w.pickUser()})
 }
 
 func planOptionalManager(w *identityWork) identityOp {
-	return optionalManagerOp{id: w.pickUser()}
+	return readOp(optionalManagerCypher, map[string]any{"id": w.pickUser()})
 }
 
 func planDetectNestedAdmin(w *identityWork) identityOp {
-	return detectNestedAdminOp{id: w.nestedAdmin}
+	return readOp(detectNestedAdminCypher, map[string]any{"id": w.nestedAdmin})
 }
 
 func planDetectSod(w *identityWork) identityOp {
-	return detectSodOp{id: w.sodUser}
+	return readOp(detectSodCypher, map[string]any{"id": w.sodUser})
 }
 
+// stale_grants scans every stale grant (the pre-existing client dialect; the
+// Rust canonical form pins the planted stale-grant user instead — preserved
+// bit-for-bit here so the fused form replays the identical statements).
 func planStaleGrants(*identityWork) identityOp {
-	return staleGrantsOp{}
+	return readOp(staleGrantsCypher, nil)
 }
 
-// The needle is a fixed literal, not a workload draw: the client's
-// pre-existing dialect (see searchDirectoryOp) — documented rather than
+// search_directory scans the whole directory for the fixed needle
+// "example.com". The needle is a fixed literal, not a workload draw: the client's
+// pre-existing dialect (see planSearchDirectory) — documented rather than
 // unified with Rust's picked-needle form, which would change the executed
 // statements.
 func planSearchDirectory(*identityWork) identityOp {
-	return searchDirectoryOp{q: "example.com"}
+	return readOp(searchDirectoryCypher, map[string]any{"q": "example.com"})
 }
 
 func planGroupRoster(w *identityWork) identityOp {
-	return groupRosterOp{gid: w.pickGroup(), skip: int64(w.rng.Intn(2) * 5)}
+	return readOp(groupRosterCypher, map[string]any{"gid": w.pickGroup(), "skip": int64(w.rng.Intn(2) * 5)})
 }
 
 func planAccessReview(w *identityWork) identityOp {
-	return accessReviewOp{id: w.pickUser()}
+	return readOp(accessReviewCypher, map[string]any{"id": w.pickUser()})
 }
 
 func planReportingPath(w *identityWork) identityOp {
-	return reportingPathOp{from: w.pickUser(), to: rootUserID}
+	return readOp(reportingPathCypher, map[string]any{"from": w.pickUser(), "to": rootUserID})
 }
 
 func planDisableUser(w *identityWork) identityOp {
-	return disableUserOp{uid: w.pickUser()}
+	return writeOp(disableUserCypher, map[string]any{"uid": w.pickUser()})
 }
 
 func planAddAlias(w *identityWork) identityOp {
 	uid := w.pickUser()
 	alias := w.alloc("alias")
-	return addAliasOp{uid: uid, alias: alias + "@example.com"}
+	return writeOp(addAliasCypher, map[string]any{"uid": uid, "alias": alias + "@example.com"})
 }
 
 func planRevokeMembership(w *identityWork) identityOp {
-	return revokeMembershipOp{uid: w.pickUser(), gid: w.pickGroup()}
+	return writeOp(revokeMembershipCypher, map[string]any{"uid": w.pickUser(), "gid": w.pickGroup()})
 }
 
 func planDetachDevice(w *identityWork) identityOp {
-	return detachDeviceOp{uid: w.pickUser()}
+	return writeOp(detachDeviceCypher, map[string]any{"uid": w.pickUser()})
 }
 
 func planClearExpiry(w *identityWork) identityOp {
-	return clearExpiryOp{uid: w.staleGrant}
+	return writeOp(clearExpiryCypher, map[string]any{"uid": w.staleGrant})
 }
 
 // identityOpSpec: one catalog row per operation, stating its metadata and
