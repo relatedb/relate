@@ -145,6 +145,17 @@ pub(super) struct RouteFilters<'a> {
 }
 
 impl<'p> RouteFilters<'p> {
+    /// The endpoint-only conjuncts — the slice the route hands the
+    /// candidate funnel so a `WHERE`-borne `=` / `IN` on an endpoint seeks
+    /// it like an inline property map does (ADR-0556). They stay in the
+    /// residual, so the seek only narrows; every emitted row is still
+    /// checked against them.
+    pub(super) fn endpoint_conjuncts(&self) -> &[Expr] {
+        self.pair
+            .as_ref()
+            .map_or(&[], |pair| pair.conjuncts.as_slice())
+    }
+
     pub(super) fn split(
         path: &'p PathPattern,
         end: &'p NodePattern,
