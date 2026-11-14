@@ -1,0 +1,61 @@
+name: LABS-1655 q27/q28 before-after v2 (scratch)
+on:
+  pull_request:
+    paths: ['.github/workflows/rca2-1655.yml']
+env:
+  DO_NOT_TRACK: "1"
+  RELATE_TELEMETRY: "off"
+permissions:
+  contents: read
+jobs:
+  rca:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: before, rev: 39a9b627c63fd3b2cfdec0c1e0428f98e01fbc17, qids: "27 28 30 31 21 22" }
+          - { label: after, rev: b06df4e9f341ac6accfd3ae456cc0b292fa17755, qids: "27 28" }
+    runs-on: linux-4-core-x86
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: relate, fetch-depth: 0, persist-credentials: false }
+      - uses: actions/checkout@v7
+        with:
+          repository: relatedb/relate-benchmarks-private
+          token: ${{ secrets.BENCHMARKS_READ_TOKEN }}
+          path: relate-benchmarks-private
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: astral-sh/setup-uv@v6
+      - name: Build ONE engine rev and load store
+        working-directory: relate-benchmarks-private/benchmarks/pokec
+        env:
+          RELATE_SRC: ${{ github.workspace }}/relate
+        run: |
+          ./run.sh fetch || true
+          ./run.sh env --relate-src "$RELATE_SRC" --relate-rev ${{ matrix.rev }} 2>&1 | tail -2 || true
+          ./run.sh load --relate-src "$RELATE_SRC" --relate-rev ${{ matrix.rev }} 2>&1 | grep -v -i token | tail -3
+          ls ../../.cache/engines/
+      - name: Measure
+        run: |
+          B=relate-benchmarks-private
+          test "$(ls -d $B/.cache/engines/*/relate | wc -l)" = 1
+          CLI=$(realpath $B/.cache/engines/*/relate)
+          echo "label=${{ matrix.label }} rev=${{ matrix.rev }} cli=$CLI"
+          echo "BINARY_SHA256 ${{ matrix.label }} $(sha256sum $CLI | cut -d' ' -f1)"
+          "$CLI" --version | head -2
+          STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
+          run1 () { # name script
+            rm -rf "$STORE.t.rl"; cp "$STORE" "$STORE.t.rl"
+            echo "=== $1"; cat $2 | head -12
+            RELATE_MAX_ROWS=0 /usr/bin/time -v timeout -s KILL 400 "$CLI" query -d "$STORE.t.rl" < $2 > out.txt 2> err.txt || echo "rc=$?"
+            grep -E "Elapsed|User time|Maximum resident|Exit status" err.txt
+            tail -n 25 out.txt | grep -E "hops|users|elapsed_ms|execute_ms|rows|\$|^  " | head -14
+            rm -rf "$STORE.t.rl"
+          }
+          printf '.timer on\nRETURN 1 AS x;\n' > q.cypher; run1 baseline q.cypher
+          for n in ${{ matrix.qids }}; do
+            { echo ".timer on"; grep -v '^//' $B/benchmarks/pokec/queries/q$n.cypher; } > q$n.cypher
+            run1 q$n q$n.cypher
+          done
