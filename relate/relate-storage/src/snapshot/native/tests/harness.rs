@@ -247,9 +247,7 @@ pub(super) fn checkpoint_at(
         None,
     )
 }
-/// Take the open write off the graph. The WAL append in
-/// [`commit_open_write`] has to see the ops before `apply_redo` consumes them,
-/// so the two commit helpers share this prefix rather than calling each other.
+/// Take the open write off the graph without a WAL record.
 pub(super) fn finish_write(graph: &Graph) -> (Vec<RedoOp>, u64) {
     let ops = graph.take_redo();
     let ts = graph.pending_commit_ts();
@@ -264,13 +262,9 @@ pub(super) fn apply_commit(graph: &Graph) -> u64 {
     ts
 }
 
-/// Finish an open write: the redo leaves the scratch, lands in the WAL, and
-/// is applied onto `graph`. Callers open the write and stage their ops.
-pub(super) fn commit_open_write(graph: &Graph, wal: &mut Wal) {
-    let (ops, ts) = finish_write(graph);
-    wal.append_commit(ts, &ops).unwrap();
-    graph.apply_redo(ops, ts).unwrap();
-}
+/// Finish an open write into the WAL and onto `graph` — the crate's one
+/// commit helper, re-exported for the glob-importing native tests.
+pub(super) use crate::tests::commit_open_write;
 
 pub(super) fn committed_nodes(graph: &Graph, wal: &mut Wal, labels: [&str; 2]) {
     graph.begin_write().unwrap();

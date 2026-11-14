@@ -31,9 +31,8 @@ use crate::StoreTarget;
 /// The schema mirror's directory (ADR-0481 §5):
 /// `<store>/.cypherlite/schema/` — under the `.cypherlite` engine
 /// directory whose name the markdown codec's sidecar family owns
-/// (`codec::markdown::ENGINE_DIR`); the unit tests pin the two
-/// spellings together.
-pub(crate) const SCHEMA_DIR: &str = ".cypherlite/schema";
+/// (`codec::markdown::ENGINE_DIR`), which this path derives from.
+pub(crate) const SCHEMA_DIR: &str = concat!(crate::codec::markdown::engine_dir!(), "/schema");
 
 /// The store's graph type as its canonical DDL body (ADR-0481 §1):
 /// exactly the `SnapshotContents.graph_type` text, absent when the store

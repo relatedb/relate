@@ -53,9 +53,11 @@ use crate::StoreTarget;
 
 pub(crate) use checkpoint::checkpoint_at;
 pub(crate) use load::load_with_checkpoint_lsn;
+pub(crate) use manifest::{
+    engine_dir, read_manifest, VaultManifest, ENGINE_DIR, MANIFEST, WAL_DIR,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use manifest::{probe_path, refuse_reset};
-pub(crate) use manifest::{read_manifest, VaultManifest, ENGINE_DIR, MANIFEST, WAL_DIR};
 use vault::*;
 
 /// The markdown vault's body-property configuration (ADR-0460): an
