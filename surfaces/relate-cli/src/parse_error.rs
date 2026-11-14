@@ -280,39 +280,53 @@ pub(crate) fn resolve_access(slot: Option<relate::OpenMode>) -> relate::OpenMode
     slot.unwrap_or(relate::OpenMode::Writable)
 }
 
-/// The once-only policy for a repeated value flag, stated once (the
-/// LABS-465 finding: the guard was hand-rolled per flag and per command).
-/// Value flags park their value in the slot; the valueless spelling is
-/// [`flag_once`]. `command` prefixes the usage error (`push --to may be
-/// given only once`). Ungated: the access flag's slot parks through it
-/// (`set_access_once`) in every build, which keeps it live in singleton
-/// bundles; the command grammars that call it directly are `push`, `info`,
-/// `extensions`, and `serve` (every serve value flag parks through it
-/// since LABS-638) — the `extension` grammars (`install`'s
-/// `--url`/`--from`/`--version`, `init`'s `--lang`) parse in every build
-/// that carries the command (ADR-0137), not only in the one that carries
-/// the capability, and `extension-install` reaches them through its own
-/// `extensions` dependency (the arms list only the entry features).
+/// The once-only policy's single guard, consulted by both helpers below
+/// (the LABS-465 finding: the guard was hand-rolled per flag and per
+/// command). A flag sighted when it was already taken is a usage error
+/// naming the `command` and the `flag` (`push --to may be given only
+/// once`) — the policy's one spelling of its prose, so [`set_once`] and
+/// [`flag_once`] cannot drift apart.
+fn once(command: &str, flag: &str, taken: bool) -> Result<(), ParseError> {
+    if taken {
+        return Err(format!("{command} {flag} may be given only once").into());
+    }
+    Ok(())
+}
+
+/// The once-only policy for a repeated **value** flag: park `value` in
+/// `slot`, or refuse through [`once`] when the slot already holds one.
+/// `command` and `flag` name the offender in the usage error. The `T` is
+/// the flag's value type — one generic helper serves every value flag
+/// (`String`, an enum, a parsed size), inferred at each call site.
+///
+/// Ungated: the access flag's slot parks through it (`set_access_once`) in
+/// every build, which keeps it live in singleton bundles. The command
+/// grammars that call it directly are `push`, `info`, `extensions`, and
+/// `serve` (every serve value flag parks through it since LABS-638) — the
+/// `extension` grammars (`install`'s `--url`/`--from`/`--version`,
+/// `init`'s `--lang`) parse in every build that carries the command
+/// (ADR-0137), not only in the one that carries the capability, and
+/// `extension-install` reaches them through its own `extensions`
+/// dependency (the arms list only the entry features).
 pub(crate) fn set_once<T>(
     command: &str,
     slot: &mut Option<T>,
     flag: &str,
     value: T,
 ) -> Result<(), ParseError> {
-    if slot.is_some() {
-        return Err(format!("{command} {flag} may be given only once").into());
-    }
+    once(command, flag, slot.is_some())?;
     *slot = Some(value);
     Ok(())
 }
 
-/// The valueless spelling of [`set_once`]'s policy: a repeated boolean
-/// flag is a once-only usage error naming it.
+/// The once-only policy for a repeated **valueless** flag (a boolean
+/// rider): refuse through [`once`] when `seen` is already set, else set
+/// it. Gated with the grammars that call it — `push`, `info`,
+/// `extensions`; a bundle that carries none of them never parses a
+/// valueless flag.
 #[cfg(any(feature = "push", feature = "info", feature = "extensions"))]
 pub(crate) fn flag_once(command: &str, flag: &str, seen: &mut bool) -> Result<(), ParseError> {
-    if *seen {
-        return Err(format!("{command} {flag} may be given only once").into());
-    }
+    once(command, flag, *seen)?;
     *seen = true;
     Ok(())
 }

@@ -25,11 +25,10 @@ pub fn parse_info_args(rest: &[String]) -> Result<InfoCmd, ParseError> {
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--json" => {
-                crate::parse_error::flag_once("info", "--json", &mut json)?;
-            }
+            "--json" => crate::parse_error::flag_once("info", "--json", &mut json)?,
             "-d" | "--database" => {
-                database = Some(crate::parse_error::database_flag(&mut args)?.clone());
+                let value = crate::parse_error::database_flag(&mut args)?;
+                crate::parse_error::set_once("info", &mut database, "--database", value.clone())?;
             }
             other => {
                 return Err(ParseError::unexpected("info", other));
@@ -110,6 +109,17 @@ mod tests {
                 .to_string()
                 .contains("only once")
         );
+    }
+
+    /// `--database` parks through the shared once-only policy (LABS-510):
+    /// a repeat is a usage error, not a silent last-wins — the same rule
+    /// `push` and `serve` apply to the same flag.
+    #[test]
+    fn parse_rejects_duplicated_database_flag() {
+        assert!(parse_info_args(&args(&["--database", "./a", "-d", "./b"]))
+            .unwrap_err()
+            .to_string()
+            .contains("info --database may be given only once"));
     }
 
     #[test]
