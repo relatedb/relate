@@ -1,9 +1,9 @@
-# TEMPORARY (LABS-1478): times the memoised last-hop admission against its
-# base on pokec medium, then samples it. Delete with the PR; never merge.
+# TEMPORARY (LABS-1478): times the expression memo against its
+# base on pokec medium, every group, then samples it. Delete with the PR; never merge.
 name: tmp-labs-1478-perf
 on:
   push:
-    branches: [perf/labs-1478-label-memo]
+    branches: [perf/labs-1478-memo-v2]
     paths:
       - .github/workflows/tmp-labs-1478-perf.yml
       - relate/relate-executor/**
@@ -13,7 +13,7 @@ on:
         description: interleaved timing rounds
         default: "5"
 env:
-  BASE_SHA: b650fc63
+  BASE_SHA: 38482a98
 jobs:
   perf:
     runs-on: linux-4-core-x86
@@ -37,7 +37,7 @@ jobs:
           rounds="${{ github.event.inputs.rounds || '5' }}"
           for r in $(seq "$rounds"); do
             for b in pokec_base pokec_head; do
-              echo -n "$b: "; ./$b medium --group expansion_3 | grep 'expansion_3:'
+              echo "== $b"; ./$b medium | grep -E ': [0-9]+ ms'
             done
           done | tee ab.txt
       - name: sampled runs
