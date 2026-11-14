@@ -282,10 +282,7 @@ impl Expr {
                     .iter()
                     .map(|(when, then)| Ok((f(when)?, f(then)?)))
                     .collect::<std::result::Result<_, E>>()?,
-                else_expr: match else_expr {
-                    Some(expr) => Some(Box::new(f(expr)?)),
-                    None => None,
-                },
+                else_expr: map_opt_child(else_expr.as_deref(), f)?,
             },
             Expr::Subscript { expr, index } => Expr::Subscript {
                 expr: Box::new(f(expr)?),
@@ -293,14 +290,8 @@ impl Expr {
             },
             Expr::Slice { expr, start, end } => Expr::Slice {
                 expr: Box::new(f(expr)?),
-                start: match start {
-                    Some(start) => Some(Box::new(f(start)?)),
-                    None => None,
-                },
-                end: match end {
-                    Some(end) => Some(Box::new(f(end)?)),
-                    None => None,
-                },
+                start: map_opt_child(start.as_deref(), f)?,
+                end: map_opt_child(end.as_deref(), f)?,
             },
             Expr::ListComp {
                 ident,
@@ -310,10 +301,7 @@ impl Expr {
             } => Expr::ListComp {
                 ident: ident.clone(),
                 list: Box::new(f(list)?),
-                predicate: match predicate {
-                    Some(predicate) => Some(Box::new(f(predicate)?)),
-                    None => None,
-                },
+                predicate: map_opt_child(predicate.as_deref(), f)?,
                 projection: Box::new(f(projection)?),
             },
             Expr::MapComp {
@@ -327,10 +315,7 @@ impl Expr {
                 key_ident: key_ident.clone(),
                 value_ident: value_ident.clone(),
                 source: Box::new(f(source)?),
-                predicate: match predicate {
-                    Some(predicate) => Some(Box::new(f(predicate)?)),
-                    None => None,
-                },
+                predicate: map_opt_child(predicate.as_deref(), f)?,
                 key_expr: Box::new(f(key_expr)?),
                 value_expr: Box::new(f(value_expr)?),
             },
@@ -492,6 +477,15 @@ impl Expr {
 }
 
 /// Rebuild a child-expression list with `f`.
+/// Remap one optional child, boxing the result (the `Option` counterpart
+/// of the `Box::new(f(child)?)` arms in [`Expr::map_children`]).
+fn map_opt_child<E>(
+    child: Option<&Expr>,
+    f: &mut impl FnMut(&Expr) -> std::result::Result<Expr, E>,
+) -> std::result::Result<Option<Box<Expr>>, E> {
+    child.map(|c| f(c).map(Box::new)).transpose()
+}
+
 fn map_expr_children<E>(
     items: &[Expr],
     f: &mut impl FnMut(&Expr) -> std::result::Result<Expr, E>,

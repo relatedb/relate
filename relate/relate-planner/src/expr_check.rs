@@ -252,47 +252,7 @@ fn check_expr_ctx(
         }
         Expr::Star => {}
         Expr::Function { name, args, .. } => {
-            let n = name.with_str(str::to_ascii_lowercase);
-            // 42I13 offends before 42N72: a `graph.*` selector with the wrong
-            // argument count is an arity failure, not the composite-database
-            // refusal. The call text (`graph_call_text`) renders only for a
-            // selector — the two CE errors below are its only readers, and
-            // every ordinary function call used to pay the full
-            // name-and-args render per check.
-            if relate_core::is_graph_selector_function_name(&n) {
-                let call_text = graph_call_text(name, args);
-                relate_core::ce_messages::check_graph_selector_arity(&call_text, &n, args.len())?;
-                // ADR-0116 §3: every composite-database `graph.*` selector
-                // (`relate_core::GRAPH_SELECTOR_FUNCTIONS`,
-                // `graph.byElementId` included) fails with CE's 42N72 text
-                // in every expression position (the `USE` clause itself is
-                // resolved by `use_target`). They stay listed by
-                // `SHOW FUNCTIONS` through the executor's catalog-only
-                // entries.
-                return Err(relate_core::ce_messages::composite_only_graph_function(
-                    &call_text,
-                ));
-            }
-            if !is_known_function(&n) {
-                return Err(name.with_str(Error::unknown_function));
-            }
-            // The one per-name rule table: arity (42I13), the argument
-            // shape rule, the ADR-0175 integer-argument sites, the
-            // binding-kind / scope rules, and the temporal constructor
-            // family's static construction check — one dispatch point.
-            apply_function_meta(env, &n, args)?;
-            let child_pred = n == "exists";
-            if is_agg_fn(&n) && args.iter().any(expr_contains_rand) {
-                return Err(Error::syntax(
-                    "NonConstantExpression: aggregations cannot contain rand()",
-                ));
-            }
-            for (index, a) in args.iter().enumerate() {
-                if n == "property_exists" && index == 1 {
-                    continue;
-                }
-                check_expr_ctx(env, is_write_procedure, a, child_pred)?;
-            }
+            check_call(env, is_write_procedure, name, args)?;
         }
         Expr::Property { expr: inner, .. } => {
             if let Expr::Variable(v) = inner.as_ref() {
@@ -308,41 +268,7 @@ fn check_expr_ctx(
             expr.try_each_child(&mut |c| check_expr_ctx(env, &mut *is_write_procedure, c, child))?;
         }
         Expr::Binary { op, left, right } => {
-            // A binary node carrying its operator's absorbing boolean
-            // constant (`x OR true`, `x AND false`) folds to that constant
-            // before variable resolution — the same rewrite
-            // `BinaryOp::absorbing_constant` documents — so every operand
-            // is discarded and there is nothing here to check
-            // (`MiscAcceptance` "IN predicate with undefined variable is
-            // accepted when it can be rewritten away").
-            if op.absorbing_constant(left, right).is_some() {
-                return Ok(());
-            }
-            let child = op.is_boolean();
-            for c in [left.as_ref(), right.as_ref()] {
-                check_expr_ctx(env, is_write_procedure, c, child)?;
-            }
-            // The boolean operators require boolean operands; a statically
-            // non-boolean operand is the compile-time SyntaxError class (live
-            // Neo4j: `RETURN 1 AND true` is a SyntaxException). A value of
-            // runtime-decided type keeps the runtime TypeError.
-            if child
-                && [left.as_ref(), right.as_ref()]
-                    .into_iter()
-                    .any(is_static_non_bool)
-            {
-                return Err(Error::static_requires_boolean(op.as_str()));
-            }
-            if *op == BinaryOp::In {
-                if let Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::String(_) =
-                    right.as_ref()
-                {
-                    return Err(Error::syntax(format!(
-                        "InvalidArgumentType: {} requires a list",
-                        BinaryOp::In.as_str()
-                    )));
-                }
-            }
+            check_binary(env, is_write_procedure, *op, left, right)?;
         }
         Expr::Case {
             when_then,
@@ -537,6 +463,99 @@ fn check_expr_ctx(
         // bespoke validation: just check each child.
         other => {
             other.try_each_child(&mut |child| check_expr(env, &mut *is_write_procedure, child))?;
+        }
+    }
+    Ok(())
+}
+
+/// A function call's checks: the graph-selector refusals, the unknown-name
+/// rule, the per-name `FUNCTION_META` rules, and the argument walk.
+fn check_call(
+    env: &Env,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+    name: &SmallName,
+    args: &[Expr],
+) -> Result<()> {
+    let n = name.with_str(str::to_ascii_lowercase);
+    // 42I13 offends before 42N72: a `graph.*` selector with the wrong
+    // argument count is an arity failure, not the composite-database
+    // refusal. The call text (`graph_call_text`) renders only for a
+    // selector — the two CE errors below are its only readers, and
+    // every ordinary function call used to pay the full
+    // name-and-args render per check.
+    if relate_core::is_graph_selector_function_name(&n) {
+        let call_text = graph_call_text(name, args);
+        relate_core::ce_messages::check_graph_selector_arity(&call_text, &n, args.len())?;
+        // ADR-0116 §3: every composite-database `graph.*` selector
+        // (`relate_core::GRAPH_SELECTOR_FUNCTIONS`,
+        // `graph.byElementId` included) fails with CE's 42N72 text
+        // in every expression position (the `USE` clause itself is
+        // resolved by `use_target`). They stay listed by
+        // `SHOW FUNCTIONS` through the executor's catalog-only
+        // entries.
+        return Err(relate_core::ce_messages::composite_only_graph_function(
+            &call_text,
+        ));
+    }
+    if !is_known_function(&n) {
+        return Err(name.with_str(Error::unknown_function));
+    }
+    // The one per-name rule table: arity (42I13), the argument
+    // shape rule, the ADR-0175 integer-argument sites, the
+    // binding-kind / scope rules, and the temporal constructor
+    // family's static construction check — one dispatch point.
+    apply_function_meta(env, &n, args)?;
+    let child_pred = n == "exists";
+    if is_agg_fn(&n) && args.iter().any(expr_contains_rand) {
+        return Err(Error::syntax(
+            "NonConstantExpression: aggregations cannot contain rand()",
+        ));
+    }
+    for (index, a) in args.iter().enumerate() {
+        if n == "property_exists" && index == 1 {
+            continue;
+        }
+        check_expr_ctx(env, is_write_procedure, a, child_pred)?;
+    }
+    Ok(())
+}
+
+/// A binary node's checks: the absorbing-constant fold, operand walks, the
+/// boolean-operand requirement, and the `IN` list rule.
+fn check_binary(
+    env: &Env,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+    op: BinaryOp,
+    left: &Expr,
+    right: &Expr,
+) -> Result<()> {
+    // A binary node carrying its operator's absorbing boolean
+    // constant (`x OR true`, `x AND false`) folds to that constant
+    // before variable resolution — the same rewrite
+    // `BinaryOp::absorbing_constant` documents — so every operand
+    // is discarded and there is nothing here to check
+    // (`MiscAcceptance` "IN predicate with undefined variable is
+    // accepted when it can be rewritten away").
+    if op.absorbing_constant(left, right).is_some() {
+        return Ok(());
+    }
+    let child = op.is_boolean();
+    for c in [left, right] {
+        check_expr_ctx(env, is_write_procedure, c, child)?;
+    }
+    // The boolean operators require boolean operands; a statically
+    // non-boolean operand is the compile-time SyntaxError class (live
+    // Neo4j: `RETURN 1 AND true` is a SyntaxException). A value of
+    // runtime-decided type keeps the runtime TypeError.
+    if child && [left, right].into_iter().any(is_static_non_bool) {
+        return Err(Error::static_requires_boolean(op.as_str()));
+    }
+    if op == BinaryOp::In {
+        if let Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::String(_) = right {
+            return Err(Error::syntax(format!(
+                "InvalidArgumentType: {} requires a list",
+                BinaryOp::In.as_str()
+            )));
         }
     }
     Ok(())

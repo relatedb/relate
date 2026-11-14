@@ -118,6 +118,18 @@ pub fn first_column_strings(result: &relate::QueryResult) -> Vec<String> {
         .collect()
 }
 
+/// The first column of every result row as a `bool`.
+pub fn first_column_bools(result: &relate::QueryResult) -> Vec<bool> {
+    result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            relate::Value::Bool(value) => *value,
+            other => panic!("expected a boolean column, got {other:?}"),
+        })
+        .collect()
+}
+
 /// The first column of every result row as a `Value` — the Value twin of
 /// [`first_column_strings`], the shape the LABS-1584 gap-4 visibility
 /// assertions spelled inline four times over.

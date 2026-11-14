@@ -12,18 +12,7 @@ mod common;
 
 use relate::Value;
 
-use common::{connection, set_preview_once};
-
-fn bools(result: &relate::QueryResult) -> Vec<bool> {
-    result
-        .rows
-        .iter()
-        .map(|row| match &row[0] {
-            Value::Bool(value) => *value,
-            other => panic!("expected a boolean, got {other:?}"),
-        })
-        .collect()
-}
+use common::{connection, first_column_bools, set_preview_once};
 
 #[test]
 fn the_four_operators_evaluate_under_the_opt_in() {
@@ -86,5 +75,5 @@ fn an_ordinary_comparison_needs_no_opt_in() {
     set_preview_once("chronological-comparisons");
     let mut c = connection();
     let result = c.query("RETURN 1 < 2 AS r").unwrap();
-    assert_eq!(bools(&result), vec![true]);
+    assert_eq!(first_column_bools(&result), vec![true]);
 }
