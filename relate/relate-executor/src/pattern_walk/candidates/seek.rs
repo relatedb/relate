@@ -66,6 +66,18 @@ impl Seek {
         (!self.indexed() || label_seekable) && !self.crossover_declines(graph, labels)
     }
 
+    /// Whether this seek is a point lookup — `id(n) = …`, `n IN [nodes…]`,
+    /// or a property `=` / `IN` — as opposed to a comparison window, a text
+    /// scan or a spatial region. A point lookup's answer is bounded by the
+    /// matches it names, so a caller that sizes a candidate list from it
+    /// (the shortest route's endpoint seek) never materializes a window.
+    pub(super) fn is_point(&self) -> bool {
+        matches!(
+            self,
+            Seek::Ids(_) | Seek::Range(_, RangeSeek::Eq(_) | RangeSeek::In(_))
+        )
+    }
+
     /// Served by a declared index over the pattern labels. `Ids` is
     /// answered by storage and is valid under any label expression —
     /// the same classification tags the served answer

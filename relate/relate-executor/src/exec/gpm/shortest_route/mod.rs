@@ -73,6 +73,8 @@ mod reach_tests;
 mod reject_tests;
 #[cfg(test)]
 mod route_tests;
+#[cfg(test)]
+mod where_seek_tests;
 
 #[cfg(test)]
 thread_local! {

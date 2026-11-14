@@ -231,6 +231,48 @@ fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
         .map_or(IndexArm::Unserved, IndexArm::Served)
 }
 
+/// Whether the funnel would answer `np` from a point seek (`=` / `IN` /
+/// id) one of `conjuncts` places on its variable: the seek recognizes,
+/// is eligible (label shape, crossover) and an index (or storage, for ids)
+/// actually serves it. The shortest route asks it before listing an
+/// endpoint from the residual, so an endpoint no index serves keeps its
+/// scan-territory handling instead of being sized from a label scan the
+/// residual never narrowed. A label-disjunction fold declines: its union
+/// serve may yield to the scan tail, which this probe does not mirror.
+pub(crate) fn point_seek_served(
+    graph: &ExecGraph<'_>,
+    np: &NodePattern,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    conjuncts: &[Expr],
+) -> bool {
+    let Some(v) = np.variable.as_ref() else {
+        return false;
+    };
+    if np.force_scan {
+        return false;
+    }
+    let label_seekable = label_index_seekable(np);
+    let disjunction = np.static_disjunction_arms().is_some();
+    let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
+    // The funnel serves the first seek, cheapest rank first, that an index
+    // answers — so the probe mirrors that order and asks whether THAT seek
+    // is a point lookup: a comparison window ranked ahead of the point
+    // conjunct would be the one materialized.
+    let mut seeks: Vec<Seek> = conjuncts
+        .iter()
+        .filter_map(|c| leaf_seek(v, c, graph, row, params))
+        .collect();
+    seeks.sort_by_key(Seek::rank);
+    seeks
+        .iter()
+        .filter(|seek| !(disjunction && seek.indexed()))
+        .find(|seek| {
+            seek.servable(graph, &labels, label_seekable) && seek.serve(graph, &labels).is_some()
+        })
+        .is_some_and(Seek::is_point)
+}
+
 pub(crate) fn node_candidates(
     graph: &ExecGraph<'_>,
     np: &NodePattern,
