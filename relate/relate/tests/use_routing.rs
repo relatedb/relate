@@ -116,10 +116,6 @@ fn composite_only_graph_functions_are_42n72_as_use_target_and_as_calls() {
 
 #[test]
 fn graph_by_element_id_is_42n72_in_expression_position() {
-    // The `rl-onto` USE-target leg needs the `ontology` opt-in (ADR-0593):
-    // without it the route fails as an unknown database before the
-    // not-queryable gate this test pins.
-    preview_ontology();
     let mut conn = connection();
 
     // In an arbitrary expression position `graph.byElementId` fails with
@@ -131,12 +127,6 @@ fn graph_by_element_id_is_42n72_in_expression_position() {
         err.ends_with(&format!("{COMPOSITE_ONLY_PREFIX}{function}")),
         "{err}"
     );
-
-    // Its `USE`-target path keeps the element-id resolution: the id
-    // resolves to `system_ontologies`, and the statement then fails that
-    // namespace's gate (ADR-0229 §5).
-    let err = err_text(conn.query("USE graph.byElementId('4:rl-onto:n1') RETURN 1 AS one"));
-    assert!(err.ends_with(NOT_QUERYABLE_SUFFIX), "{err}");
 }
 
 #[test]
@@ -149,6 +139,11 @@ fn use_graph_by_element_id_resolves_the_id_namespace() {
     let err = err_text(
         conn.query("USE graph.byElementId('4:rl-onto:n1') MATCH (n) RETURN count(n) AS c"),
     );
+    assert!(err.ends_with(NOT_QUERYABLE_SUFFIX), "{err}");
+
+    // The same id as a bare `USE` target (no MATCH) fails that namespace's
+    // gate the same way (ADR-0229 §5).
+    let err = err_text(conn.query("USE graph.byElementId('4:rl-onto:n1') RETURN 1 AS one"));
     assert!(err.ends_with(NOT_QUERYABLE_SUFFIX), "{err}");
 
     // The `rl-id` segment is `neo4j` (ADR-0116 §7, ADR-0554).

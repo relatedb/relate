@@ -67,6 +67,12 @@ impl Version {
     fn wire(self) -> [u8; 4] {
         [0, 0, self.minor, self.major]
     }
+
+    /// Whether the version has the 5.x session shape (HELLO without
+    /// auth, then LOGON) — the one spelling of the fact in this module.
+    fn speaks_5x(self) -> bool {
+        self.major >= 5
+    }
 }
 
 /// What a line's role marker says it is.
@@ -281,7 +287,7 @@ fn encode(tag: u8, fields: Vec<Pack>) -> Result<Vec<u8>, String> {
 /// credential, which Bolt 5.1 moved to LOGON (ADR-0484 decision 3).
 fn auto_hello_map(version: Version) -> Pack {
     let user_agent = Pack::String(AUTO_HELLO_USER_AGENT.into());
-    if version.major >= 5 {
+    if version.speaks_5x() {
         Pack::Map(vec![
             (Pack::String("user_agent".into()), user_agent),
             (
@@ -409,6 +415,17 @@ fn assemble(
             Some(at.line),
             "`!: AUTO LOGON` needs `!: AUTO HELLO` — LOGON answers the AUTHENTICATION \
              state the 5.x HELLO leaves"
+                .into(),
+        ));
+    }
+    // At 4.4 the AUTO HELLO is the auth form (the credential rides the
+    // HELLO), so there is no AUTHENTICATION state for a LOGON to answer.
+    if let (Some((at, ())), true) = (&auto_logon, !spoken.speaks_5x()) {
+        return Err(ScriptError::new(
+            path,
+            Some(at.line),
+            "`!: AUTO LOGON` needs Bolt 5.1 or later (`!: BOLT 5.4`) — at 4.4 the AUTO HELLO \
+             authenticates"
                 .into(),
         ));
     }

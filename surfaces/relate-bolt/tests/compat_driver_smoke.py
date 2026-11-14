@@ -409,9 +409,8 @@ def bolt_5_4_smoke(driver):
                                     auth=AUTH, telemetry_disabled=True)
     try:
         opted_out.verify_connectivity()
-        assert (
-            opted_out.get_server_info().protocol_version == (5, 4)
-        ), opted_out.get_server_info().protocol_version
+        opted_out_version = opted_out.get_server_info().protocol_version
+        assert opted_out_version == (5, 4), opted_out_version
         records, _, _ = opted_out.execute_query("RETURN 2 AS n")
         assert records[0]["n"] == 2, records
     finally:

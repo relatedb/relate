@@ -48,10 +48,7 @@ impl Dialect {
     /// Whether the graph structures carry element-id fields (ADR-0484
     /// decision 6): the 5.x structures do, the 4.4 ones do not.
     pub(crate) fn element_ids(self) -> bool {
-        match self.version {
-            BoltVersion::V4_4 => false,
-            BoltVersion::V5_4 => true,
-        }
+        self.version.speaks_5x()
     }
 
     /// The plain Bolt 4.4 dialect — no patch, the 4.4 structures — the

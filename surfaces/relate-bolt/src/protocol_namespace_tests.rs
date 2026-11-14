@@ -9,7 +9,7 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     assert_closes, failure_map, field, read_msg, read_records, send_begin, send_commit, send_pull,
-    send_rollback, send_run_at, send_struct, spawn_handler, success_map,
+    send_reset, send_rollback, send_run_at, send_struct, success_map,
 };
 use crate::version::BoltVersion;
 use std::net::TcpStream;
@@ -152,7 +152,7 @@ fn unknown_db_on_run_or_begin_fails_with_the_ce_text() {
     );
 
     // RESET clears the failed state; an unknown db on BEGIN fails the same.
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     send_begin(&mut client, db_extra(Pack::String("nosuch".into())));
     let fields = failure_map(read_msg(&mut client));
@@ -167,7 +167,7 @@ fn unknown_db_on_run_or_begin_fails_with_the_ce_text() {
     );
 
     // RESET, then the session is usable again in `neo4j`.
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", None);
     assert_eq!(success_db(&pull), "neo4j");
@@ -248,9 +248,7 @@ fn discard_success_carries_db_and_hello_is_unchanged() {
     // The fixture's own store (its opt-in is the fixture's precondition,
     // ADR-0593) — a bespoke open would miss it under nextest's
     // one-process-per-test model.
-    let addr = spawn_handler(crate::testutil::memory_db(), ConnConfig::default());
-    let mut client = crate::testutil::connect(addr);
-    crate::testutil::handshake(&mut client);
+    let mut client = crate::testutil::handshaken(ConnConfig::default());
 
     // HELLO is unchanged (ADR-0117 §7): `server`, no `db`.
     let hello = hello(&mut client);

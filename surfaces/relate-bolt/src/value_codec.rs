@@ -149,8 +149,7 @@ impl ValueCodec {
             // `enc` charges it.
             Value::Temporal(t) => {
                 child_depth_mdb(depth)?;
-                temporal_pack(t, self.dialect.utc_datetime_structures())
-                    .map_err(MdbPackError::NotRepresentable)
+                temporal_pack(t, self.dialect).map_err(MdbPackError::NotRepresentable)
             }
             Value::Point(p) => {
                 child_depth_mdb(depth)?;

@@ -281,12 +281,11 @@ impl NotificationConfig {
     /// The config a statement runs under: every key the statement's extra
     /// set overrides `base`'s, every key it left unset or null falls back
     /// to it (ADR-0484 decision 8).
-    pub(crate) fn overlay(statement: &Self, base: &Self) -> Self {
+    pub(crate) fn overlay(statement: Self, base: &Self) -> Self {
         Self {
             minimum_severity: statement.minimum_severity.or(base.minimum_severity),
             disabled_categories: statement
                 .disabled_categories
-                .clone()
                 .or_else(|| base.disabled_categories.clone()),
         }
     }

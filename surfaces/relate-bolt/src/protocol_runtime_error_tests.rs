@@ -6,7 +6,7 @@ use crate::requests::Message;
 use crate::results::fails_run;
 use crate::testutil::{
     assert_ignored, connected_client, engine_error, failure_map, field, read_msg, read_records,
-    send_begin, send_pull, send_run, send_struct, success_map,
+    send_begin, send_pull, send_reset, send_run, success_map,
 };
 
 const DIVIDE_BY_ZERO: &str = "UNWIND [1, 0] AS x RETURN 10 / x AS v";
@@ -35,7 +35,7 @@ fn a_runtime_error_is_reported_at_pull() {
     assert_eq!(field(&failure, "message"), engine_error(DIVIDE_BY_ZERO));
     send_run(&mut client, "RETURN 1 AS x");
     assert_ignored(&mut client, "a RUN after a failed result");
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 
@@ -90,7 +90,7 @@ fn a_deferred_failure_fails_the_transaction() {
         field(&failure, "message").contains("transaction failed; rollback required"),
         "{failure:?}"
     );
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 

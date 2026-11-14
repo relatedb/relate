@@ -6,7 +6,7 @@
 //! gates and handlers over this vocabulary; the request-field decoders
 //! live in `fields.rs`.
 
-use crate::packstream::{DecodeLimit, Pack};
+use crate::packstream::{DecodeClass, DecodeLimit, Pack};
 use crate::version::BoltVersion;
 
 /// The Bolt request messages (ADR-0315; the 5.x additions per
@@ -81,7 +81,16 @@ impl Message {
     fn spoken_at(self, version: BoltVersion) -> bool {
         match self {
             Message::Logon | Message::Logoff | Message::Telemetry => version.speaks_5x(),
-            _ => true,
+            Message::Hello
+            | Message::Goodbye
+            | Message::Reset
+            | Message::Run
+            | Message::Pull
+            | Message::Discard
+            | Message::Begin
+            | Message::Commit
+            | Message::Rollback
+            | Message::Route => true,
         }
     }
 
@@ -229,16 +238,16 @@ pub(crate) enum Refused {
 }
 
 impl Refused {
-    /// Classify a decode failure through [`DecodeError::is_fatal`], the
-    /// one home of the split: the recoverable budget becomes a refusal
-    /// of `payload` at `version`; a fatal error is handed back.
+    /// Classify a decode failure through [`DecodeError::class`], the one
+    /// home of the split: the recoverable budget becomes a refusal of
+    /// `payload` at `version`; a fatal error is handed back.
     pub(crate) fn from_decode(
         error: crate::packstream::DecodeError,
         payload: &[u8],
         version: BoltVersion,
     ) -> Result<Self, crate::packstream::DecodeError> {
-        match error {
-            crate::packstream::DecodeError::BudgetExceeded {
+        match error.class() {
+            DecodeClass::OverBudget {
                 at_least_bytes,
                 limit,
             } => Ok(Refused::OverBudget(OverBudget::of_payload(
@@ -247,9 +256,7 @@ impl Refused {
                 payload,
                 version,
             ))),
-            // Exhaustive on purpose: a new `DecodeError` variant must
-            // choose its class here, beside `is_fatal`.
-            fatal @ crate::packstream::DecodeError::Malformed(_) => Err(fatal),
+            DecodeClass::Fatal => Err(error),
         }
     }
 }

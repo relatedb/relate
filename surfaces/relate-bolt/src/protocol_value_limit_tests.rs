@@ -1,6 +1,8 @@
-//! A well-formed message over the decoded-size budget fails
-//! its request with an actionable FAILURE and leaves the connection open,
-//! instead of closing it (which a driver retries as a transient failure).
+//! A well-formed message over the decoded-size budget fails its request
+//! with an actionable FAILURE (ADR-0577) and, in an open session, leaves
+//! the connection open instead of closing it (which a driver retries as a
+//! transient failure). Before the session is open (ADR-0579) the same
+//! refusal is the gate's breach: the FAILURE, then the close.
 
 use crate::failures::{decode_budget_message, REQUEST_INVALID_CODE};
 use crate::packstream::{decode_message, encode, DecodeError, DecodeLimit, Pack, NODE_BYTES};
@@ -8,10 +10,26 @@ use crate::protocol::ConnConfig;
 use crate::requests::Message;
 use crate::testutil::{
     assert_closes, assert_ignored, awaiting_logon_client, connected_client, failure_map, field,
-    handshaken_at, read_msg, read_records, send_pull, send_run, send_struct, success_map,
+    handshaken_at, read_msg, read_records, send_pull, send_reset, send_run, send_struct,
+    success_map,
 };
 use crate::version::BoltVersion;
 use std::io::Write;
+
+/// Rows of 3 fields that decode to just past the open session's 64 MiB
+/// budget (about 230 bytes a row); [`the_over_budget_rows_are_over_the_open_budget`]
+/// pins the fact, so a budget move fails there once instead of silently
+/// turning every refusal test into a success test.
+const OVER_BUDGET_ROWS: usize = 320_000;
+
+/// The notebook batch of LABS-1412: about 930k values, which the former
+/// 262,144-value count refused and the byte budget admits.
+const NOTEBOOK_ROWS: usize = 133_000;
+
+/// Send one RUN carrying `rows` 3-field rows.
+fn send_run_with_rows<S: Write>(client: &mut S, rows: usize) {
+    send_struct(client, Message::Run.signature(), run_with_rows(rows));
+}
 
 /// A RUN whose `rows` parameter is a list of 3-field maps (about 230 decoded
 /// bytes per row), the shape the LABS-1412 notebook sends.
@@ -35,11 +53,7 @@ fn run_with_rows(rows: usize) -> Vec<Pack> {
 #[test]
 fn an_over_budget_run_fails_with_an_actionable_message_and_the_session_continues() {
     let mut client = connected_client();
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(320_000),
-    );
+    send_run_with_rows(&mut client, OVER_BUDGET_ROWS);
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     let message = field(&failure, "message");
@@ -59,7 +73,7 @@ fn an_over_budget_run_fails_with_an_actionable_message_and_the_session_continues
     // one), then RESET recovers and the same connection serves a query.
     send_pull(&mut client, Message::Pull, vec![]);
     assert_ignored(&mut client, "PULL after the oversize RUN is IGNORED");
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     send_run(&mut client, "RETURN 1 AS x");
     success_map(read_msg(&mut client));
@@ -69,15 +83,26 @@ fn an_over_budget_run_fails_with_an_actionable_message_and_the_session_continues
 
 #[test]
 fn the_notebook_batch_shape_runs() {
-    // 133k rows of 3 fields in one RUN — about 930k values, the batch the
-    // former 262,144-value count refused — now fits the byte budget.
     let mut client = connected_client();
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(133_000),
-    );
+    send_run_with_rows(&mut client, NOTEBOOK_ROWS);
     success_map(read_msg(&mut client));
+}
+
+#[test]
+fn the_over_budget_rows_are_over_the_open_budget_and_the_notebook_rows_fit() {
+    let decode = |rows| {
+        let payload = encode(&Pack::Struct {
+            tag: Message::Run.signature(),
+            fields: run_with_rows(rows),
+        })
+        .unwrap();
+        decode_message(&payload, DecodeLimit::Open)
+    };
+    assert!(matches!(
+        decode(OVER_BUDGET_ROWS),
+        Err(DecodeError::BudgetExceeded { .. })
+    ));
+    assert!(decode(NOTEBOOK_ROWS).is_ok());
 }
 
 #[test]
@@ -120,17 +145,17 @@ fn the_pre_auth_message_names_its_limit_and_says_to_authenticate() {
 
 #[test]
 fn before_hello_an_over_budget_message_is_the_unauthorized_close() {
-    // ADR-0126: the pre-HELLO gate (at 5.4 it is always armed, ADR-0484) answers every message but HELLO with the
-    // unauthorized FAILURE, an over-budget one included.
-    let mut client = handshaken_at(ConnConfig::default(), BoltVersion::V5_4);
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(320_000),
-    );
-    let failure = failure_map(read_msg(&mut client));
-    assert_eq!(field(&failure, "code"), crate::failures::UNAUTHORIZED_CODE);
-    assert_closes(&mut client, "closes after the pre-HELLO refusal");
+    // ADR-0126: the pre-HELLO gate (at 5.4 it is always armed, ADR-0484)
+    // answers every message but HELLO with the unauthorized FAILURE, an
+    // over-budget one included — over the open budget and over only the
+    // small pre-auth one alike (ADR-0579).
+    for rows in [OVER_BUDGET_ROWS, MID_SIZED_ROWS] {
+        let mut client = handshaken_at(ConnConfig::default(), BoltVersion::V5_4);
+        send_run_with_rows(&mut client, rows);
+        let failure = failure_map(read_msg(&mut client));
+        assert_eq!(field(&failure, "code"), crate::failures::UNAUTHORIZED_CODE);
+        assert_closes(&mut client, "closes after the pre-HELLO refusal");
+    }
 }
 
 #[test]
@@ -138,11 +163,7 @@ fn in_the_authentication_state_an_over_budget_message_fails_and_closes() {
     // ADR-0484 decision 4: only LOGON is accepted, anything else is this
     // gate's breach; the over-budget text names the limit.
     let mut client = awaiting_logon_client(ConnConfig::default());
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(320_000),
-    );
+    send_run_with_rows(&mut client, OVER_BUDGET_ROWS);
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     assert!(field(&failure, "message").contains("per-message limit"));
@@ -159,11 +180,7 @@ fn before_authentication_a_mid_sized_message_is_over_the_small_pre_auth_limit() 
     // a message the open session admits is refused in the AUTHENTICATION
     // state, naming the pre-auth limit.
     let mut client = awaiting_logon_client(ConnConfig::default());
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(MID_SIZED_ROWS),
-    );
+    send_run_with_rows(&mut client, MID_SIZED_ROWS);
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     let message = field(&failure, "message");
@@ -175,25 +192,8 @@ fn before_authentication_a_mid_sized_message_is_over_the_small_pre_auth_limit() 
 #[test]
 fn the_same_mid_sized_message_runs_once_the_session_is_open() {
     let mut client = connected_client();
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(MID_SIZED_ROWS),
-    );
+    send_run_with_rows(&mut client, MID_SIZED_ROWS);
     success_map(read_msg(&mut client));
-}
-
-#[test]
-fn before_hello_a_mid_sized_message_is_the_unauthorized_close() {
-    let mut client = handshaken_at(ConnConfig::default(), BoltVersion::V5_4);
-    send_struct(
-        &mut client,
-        Message::Run.signature(),
-        run_with_rows(MID_SIZED_ROWS),
-    );
-    let failure = failure_map(read_msg(&mut client));
-    assert_eq!(field(&failure, "code"), crate::failures::UNAUTHORIZED_CODE);
-    assert_closes(&mut client, "closes after the pre-HELLO refusal");
 }
 
 #[test]
@@ -201,9 +201,11 @@ fn an_over_budget_message_queued_ahead_of_a_reset_is_ignored() {
     // ADR-0317: one batch, the oversize RUN ahead of the RESET — IGNORED,
     // then the RESET's SUCCESS, and the session is not failed.
     let mut client = connected_client();
-    let mut batch =
-        crate::packstream::try_struct_msg(Message::Run.signature(), run_with_rows(320_000))
-            .unwrap();
+    let mut batch = crate::packstream::try_struct_msg(
+        Message::Run.signature(),
+        run_with_rows(OVER_BUDGET_ROWS),
+    )
+    .unwrap();
     batch.extend(crate::packstream::try_struct_msg(Message::Reset.signature(), vec![]).unwrap());
     client.write_all(&batch).unwrap();
     assert_ignored(&mut client, "the oversize RUN queued ahead of RESET");

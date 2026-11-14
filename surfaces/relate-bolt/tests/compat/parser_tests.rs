@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{parse, Action, Script};
+use super::{messages, parse, Action, Script};
 use crate::common::packstream::{decode, Pack};
 
 const PATH: &str = "unit/script.bolt";
@@ -114,6 +114,11 @@ fn malformed_directives_are_rejected() {
         "conflicts with the leading `C: <RAW>` on line 2",
     );
     rejects("!: AUTO LOGON\nC: RESET", 1, "needs `!: AUTO HELLO`");
+    rejects(
+        "!: AUTO HELLO\n!: AUTO LOGON\nC: RESET",
+        2,
+        "needs Bolt 5.1 or later",
+    );
 }
 
 #[test]
@@ -159,7 +164,11 @@ fn auto_directives_wrap_the_body_in_hello_and_goodbye() {
     // handshake (2), HELLO + SUCCESS, RESET + SUCCESS, GOODBYE + close.
     assert_eq!(actions.len(), 8);
     let hello = decoded_message(sent(actions[2]));
-    let Pack::Struct { tag: 0x01, fields } = hello else {
+    let Pack::Struct {
+        tag: messages::HELLO,
+        fields,
+    } = hello
+    else {
         panic!("AUTO HELLO sends a HELLO");
     };
     assert_eq!(fields[0].get("scheme"), Some(&Pack::String("none".into())));
@@ -177,7 +186,11 @@ fn auto_directives_wrap_the_body_in_hello_and_goodbye() {
 fn auto_hello_at_5_4_sends_the_no_auth_form() {
     let script = parsed("!: BOLT 5.4\n!: AUTO HELLO\nC: RESET\nS: SUCCESS {}");
     let hello = decoded_message(sent(&script.steps[2].action));
-    let Pack::Struct { tag: 0x01, fields } = hello else {
+    let Pack::Struct {
+        tag: messages::HELLO,
+        fields,
+    } = hello
+    else {
         panic!("AUTO HELLO sends a HELLO");
     };
     let agent = Pack::String(super::AUTO_HELLO_USER_AGENT.into());
@@ -197,7 +210,11 @@ fn auto_logon_sends_the_none_scheme_after_the_auto_hello() {
     // handshake (2), HELLO + SUCCESS, LOGON + SUCCESS, RESET + SUCCESS.
     assert_eq!(script.steps.len(), 8);
     let logon = decoded_message(sent(&script.steps[4].action));
-    let Pack::Struct { tag: 0x6A, fields } = logon else {
+    let Pack::Struct {
+        tag: messages::LOGON,
+        fields,
+    } = logon
+    else {
         panic!("AUTO LOGON sends a LOGON");
     };
     assert_eq!(

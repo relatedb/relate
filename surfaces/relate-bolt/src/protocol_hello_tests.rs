@@ -11,7 +11,7 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     assert_closes, assert_ignored, failure_map, field, handshaken, map, read_msg, send_pull,
-    send_run, send_struct, success_map,
+    send_reset, send_run, send_struct, success_map,
 };
 
 /// F-07: HELLO SUCCESS is server, connection_id and the default
@@ -126,7 +126,7 @@ fn hello_without_user_agent_is_rejected() {
             field(&failure, "message"),
             "Illegal value for field \"user_agent\": Expected value to be non-null"
         );
-        send_struct(&mut client, Message::Reset.signature(), vec![]);
+        send_reset(&mut client);
         assert_ignored(&mut client, "RESET after a rejected HELLO");
         send_run(&mut client, "RETURN 1 AS x");
         assert_ignored(&mut client, "RUN after a rejected HELLO");

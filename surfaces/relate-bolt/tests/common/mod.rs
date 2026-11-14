@@ -57,7 +57,12 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+// Sanctioned per-root dead code (module convention): the handshake
+// literals only the roots that hand-roll an offer (`concurrency`,
+// `e2e_websocket`, the compat replayer) consume.
+#[allow(dead_code)]
 pub const MAGIC: [u8; 4] = [0x60, 0x60, 0xB0, 0x17];
+#[allow(dead_code)]
 pub const VERSION_4_4: [u8; 16] = [0, 0, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 /// A running in-process server: its serve thread plus its bound address.
@@ -238,11 +243,7 @@ pub fn send<W: Write>(client: &mut W, tag: u8, fields: Vec<Pack>) {
 // through `connect_and_hello`.
 #[allow(dead_code)]
 pub fn handshake(client: &mut TcpStream) {
-    client.write_all(&MAGIC).unwrap();
-    client.write_all(&VERSION_4_4).unwrap();
-    let mut selected = [0u8; 4];
-    client.read_exact(&mut selected).unwrap();
-    assert_eq!(selected, [0, 0, 4, 4], "server must offer Bolt 4.4");
+    relate_test_support::bolt::handshake(client);
 }
 
 /// Connect to `addr`, set a read timeout, negotiate Bolt 4.4, and complete
@@ -263,16 +264,7 @@ pub fn connect_and_hello(addr: &str) -> TcpStream {
 pub fn try_connect_and_hello(addr: &str) -> std::io::Result<TcpStream> {
     let mut client = TcpStream::connect(addr)?;
     client.set_read_timeout(Some(Duration::from_secs(10)))?;
-    client.write_all(&MAGIC)?;
-    client.write_all(&VERSION_4_4)?;
-    let mut selected = [0u8; 4];
-    client.read_exact(&mut selected)?;
-    if selected != [0, 0, 4, 4] {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("server selected {selected:?}"),
-        ));
-    }
+    relate_test_support::bolt::try_handshake(&mut client)?;
     // Bolt 4.4 requires a `user_agent` in the HELLO map (ADR-0313).
     let user_agent = (
         Pack::String("user_agent".into()),

@@ -9,7 +9,7 @@ use crate::failures::REQUEST_INVALID_CODE;
 use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
-    assert_ignored, failure_map, field, read_msg, send_pull, send_struct, success_map,
+    assert_ignored, failure_map, field, read_msg, send_pull, send_reset, send_struct, success_map,
 };
 use crate::value_structs::{
     DATE, DATE_TIME, DATE_TIME_UTC, DATE_TIME_ZONE_ID, DURATION, LOCAL_DATE_TIME, LOCAL_TIME,
@@ -69,7 +69,7 @@ fn run_and_drain(client: &mut TcpStream, cypher: &str, params: Vec<(Pack, Pack)>
 fn assert_failed_state_then_recovers(client: &mut TcpStream) {
     send_pull(client, Message::Pull, vec![]);
     assert_ignored(client, "a PULL after a rejected RUN");
-    send_struct(client, Message::Reset.signature(), vec![]);
+    send_reset(client);
     success_map(read_msg(client));
     assert_eq!(
         run_and_pull(
@@ -223,7 +223,7 @@ fn a_bytes_property_fails_and_writes_nothing() {
         "type error: TypeError: byte array values cannot be stored as node or relationship \
          properties; they live only inside a statement (parameter to result)"
     );
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     assert_eq!(
         run_and_pull(

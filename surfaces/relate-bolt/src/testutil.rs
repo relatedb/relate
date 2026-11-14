@@ -539,6 +539,11 @@ pub(crate) fn send_logon<S: Write>(client: &mut S, entries: Vec<(&str, Pack)>) {
     );
 }
 
+/// Send RESET — the field-less message every failed-state recovery sends.
+pub(crate) fn send_reset<S: Write>(client: &mut S) {
+    send_struct(client, crate::requests::Message::Reset.signature(), vec![]);
+}
+
 /// Send LOGOFF — the 5.x session message with no fields.
 pub(crate) fn send_logoff<S: Write>(client: &mut S) {
     send_struct(client, crate::requests::Message::Logoff.signature(), vec![]);
@@ -674,7 +679,7 @@ pub(crate) fn assert_ignored_in_failed_state_then_recovers<S: Read + Write>(
         client,
         &format!("{} in the failed state", message.class_name()),
     );
-    send_struct(client, crate::requests::Message::Reset.signature(), vec![]);
+    send_reset(client);
     success_map(read_msg(client));
     send_struct(client, message.signature(), fields);
     assert_eq!(success_map(read_msg(client)), vec![]);

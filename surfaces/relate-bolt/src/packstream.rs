@@ -190,16 +190,37 @@ pub(crate) enum DecodeError {
     Malformed(String),
 }
 
+/// The session's answer class for a [`DecodeError`] (ADR-0315, ADR-0577):
+/// the one classification both the RESET pre-scan and the dispatch consume,
+/// so a new variant declares its class once, here.
+pub(crate) enum DecodeClass {
+    /// The error ends the connection: every malformed input.
+    Fatal,
+    /// A recoverable request failure: the decode budget alone.
+    OverBudget {
+        at_least_bytes: usize,
+        limit: DecodeLimit,
+    },
+}
+
 impl DecodeError {
-    /// Whether the error ends the connection (ADR-0315): every malformed
-    /// input does; the decode budget alone is a recoverable request
-    /// failure (ADR-0577). The one classification, beside the enum, so a
-    /// new variant declares its class once.
-    pub(crate) fn is_fatal(&self) -> bool {
+    /// The one classification, beside the enum; exhaustive on purpose.
+    pub(crate) fn class(&self) -> DecodeClass {
         match self {
-            DecodeError::BudgetExceeded { .. } => false,
-            DecodeError::Malformed(_) => true,
+            DecodeError::BudgetExceeded {
+                at_least_bytes,
+                limit,
+            } => DecodeClass::OverBudget {
+                at_least_bytes: *at_least_bytes,
+                limit: *limit,
+            },
+            DecodeError::Malformed(_) => DecodeClass::Fatal,
         }
+    }
+
+    /// Whether the error ends the connection, derived from [`Self::class`].
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(self.class(), DecodeClass::Fatal)
     }
 }
 

@@ -15,8 +15,8 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     connected_client, connected_client_at_with, failure_map, field, handshaken, hello_extra,
-    hello_extra_at, keys, read_msg, send_begin, send_commit, send_rollback, send_run_at,
-    send_struct, success_map, two_label_db, TWO_LABEL_CARTESIAN,
+    hello_extra_at, keys, read_msg, send_begin, send_commit, send_reset, send_rollback,
+    send_run_at, send_struct, success_map, two_label_db, TWO_LABEL_CARTESIAN,
 };
 use crate::version::BoltVersion;
 
@@ -111,7 +111,7 @@ fn an_invalid_severity_in_run_extra_answers_the_probed_failure() {
     );
     crate::testutil::send_run(&mut client, "RETURN 1 AS n");
     crate::testutil::assert_ignored(&mut client, "the failed state follows the failure");
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 
@@ -129,7 +129,7 @@ fn an_invalid_severity_in_begin_extra_answers_the_probed_failure() {
         "Illegal value for field \"metadata\": Illegal value for field \"Could not parse a \
          NotificationConfig's minimum severity.\""
     );
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     // Nothing began: a COMMIT is the no-transaction breach.
     send_commit(&mut client);
@@ -178,7 +178,7 @@ fn a_wrong_typed_value_fails_the_request() {
     );
     // A list entry that is not a string fails the same way — after RESET
     // clears the failed state the first failure left.
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     send_run_at(
         &mut client,

@@ -2,8 +2,8 @@ use super::*;
 use crate::packstream::{decode, try_struct_msg, Pack};
 use crate::requests::Message;
 use crate::testutil::{
-    assert_closes, connected_client_with, failure_map, field, read_msg, send_pull, send_run_at,
-    send_struct, spawn_handler, success_map,
+    assert_closes, connected_client_with, failure_map, field, read_msg, send_pull, send_reset,
+    send_run_at, spawn_handler, success_map,
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -276,7 +276,7 @@ fn query_timeout_cancels_the_run_and_the_session_stays_usable() {
 
     // RESET clears the failed state, then the same connection answers a
     // normal query: the `Connection` survived the cancelled RUN.
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 
     send_run_at(&mut client, BoltVersion::V4_4, "RETURN 1 AS n", None);

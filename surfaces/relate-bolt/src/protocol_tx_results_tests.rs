@@ -9,8 +9,8 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     assert_ignored, bookmark_sequence, connected_client, connected_client_with, drain_all,
-    failure_map, field, map, pull_ending, read_msg, send_begin, send_commit, send_pull, send_run,
-    send_struct, success_map,
+    failure_map, field, map, pull_ending, read_msg, send_begin, send_commit, send_pull, send_reset,
+    send_run, success_map,
 };
 
 fn begin(client: &mut TcpStream) {
@@ -137,7 +137,7 @@ fn an_unknown_qid_is_a_request_invalid_failure() {
     assert_eq!(field(&failure, "message"), "no open result with qid 7");
     send_run(&mut client, "RETURN 2 AS b");
     assert_ignored(&mut client, "a RUN in the failed state");
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 
@@ -162,7 +162,7 @@ fn a_malformed_qid_is_a_request_invalid_failure() {
     );
     send_run(&mut client, "RETURN 2 AS b");
     assert_ignored(&mut client, "a RUN in the failed state");
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 
@@ -181,7 +181,7 @@ fn a_malformed_n_is_a_request_invalid_failure() {
         "unsupported extra value for n: Float (must be an Int)"
     );
     // The malformed PULL emitted no RECORD; RESET recovers the session.
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 
@@ -202,7 +202,7 @@ fn an_out_of_range_n_is_a_request_invalid_failure() {
             format!("unsupported extra value for n: {n} (must be -1 or a non-negative Int)"),
             "n = {n}"
         );
-        send_struct(&mut client, Message::Reset.signature(), vec![]);
+        send_reset(&mut client);
         success_map(read_msg(&mut client));
     }
 }
@@ -306,7 +306,7 @@ fn an_over_cap_auto_commit_run_sends_no_bookmark_and_bolt_tracks_the_engine() {
     );
     // RESET clears the failed state; a read commits nothing and carries no
     // bookmark.
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
     send_run(&mut client, "RETURN 1 AS x");
     success_map(read_msg(&mut client));

@@ -9,6 +9,7 @@ use relate::Temporal;
 use relate_core::temporal::{civil_epoch_days, zone_region};
 use relate_core::PointValue;
 
+use crate::dialect::Dialect;
 use crate::packstream::Pack;
 
 /// Date `[days]`.
@@ -44,11 +45,11 @@ const SECONDS_PER_DAY: i128 = 86_400;
 
 /// A temporal result as its Bolt structure (ADR-0325). Under the `utc`
 /// patch or on a 5.x connection a DateTime uses `0x49`/`0x69`
-/// (ADR-0329, ADR-0484 decision 7) — the caller passes the fact
-/// through `Dialect::utc_datetime_structures`, the one derivation, so
-/// the two wire directions can never disagree. A component that does
+/// (ADR-0329, ADR-0484 decision 7) — read from `dialect` through
+/// `Dialect::utc_datetime_structures`, the one derivation, so the two
+/// wire directions can never disagree. A component that does
 /// not fit a PackStream Int fails the encode, naming the structure.
-pub(crate) fn temporal_pack(t: &Temporal, utc_structures: bool) -> Result<Pack, String> {
+pub(crate) fn temporal_pack(t: &Temporal, dialect: Dialect) -> Result<Pack, String> {
     Ok(match t {
         Temporal::Date(d) => date_pack(d.year().into(), d.month(), d.day())?,
         Temporal::CivilDate { year, month, day } => date_pack(*year, *month, *day)?,
@@ -83,9 +84,7 @@ pub(crate) fn temporal_pack(t: &Temporal, utc_structures: bool) -> Result<Pack, 
                 ],
             }
         }
-        Temporal::DateTime { utc, offset, zone } => {
-            datetime_pack(*utc, *offset, zone, utc_structures)?
-        }
+        Temporal::DateTime { utc, offset, zone } => datetime_pack(*utc, *offset, zone, dialect)?,
         Temporal::Duration {
             months,
             days,
@@ -136,8 +135,9 @@ fn datetime_pack(
     utc: NaiveDateTime,
     offset: i32,
     zone: &Option<String>,
-    utc_structures: bool,
+    dialect: Dialect,
 ) -> Result<Pack, String> {
+    let utc_structures = dialect.utc_datetime_structures();
     let region = zone_region(zone.as_deref());
     let (utc_seconds, nanos) = epoch_parts(utc);
     let tag = match (region, utc_structures) {

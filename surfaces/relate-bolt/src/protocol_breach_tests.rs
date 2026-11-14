@@ -11,7 +11,7 @@ use crate::requests::Message;
 use crate::testutil::{
     assert_breach, assert_breach_failure, assert_closes, assert_ignored, connected_client,
     failure_map, field, handshaken, map, read_msg, read_records, send_begin, send_commit,
-    send_pull, send_run, send_struct, success_map,
+    send_pull, send_reset, send_run, send_struct, success_map,
 };
 
 /// F-32, F-43 / F-33, F-44: COMMIT or ROLLBACK with no transaction.
@@ -90,7 +90,7 @@ fn the_failed_state_ignores_instead_of_breaching() {
             &format!("{message:?} is IGNORED in the failed state"),
         );
     }
-    send_struct(&mut client, Message::Reset.signature(), vec![]);
+    send_reset(&mut client);
     success_map(read_msg(&mut client));
 }
 

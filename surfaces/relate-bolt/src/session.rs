@@ -174,7 +174,8 @@ impl Session {
         batch: Vec<Vec<u8>>,
         config: &ConnConfig,
     ) -> Result<Flow, Box<dyn std::error::Error + Send + Sync>> {
-        let last_reset = crate::session_batch::last_reset(&batch, self.decode_limit());
+        let last_reset =
+            crate::session_batch::last_reset(&batch, self.decode_limit(), self.dialect.version);
         for (index, payload) in batch.iter().enumerate() {
             let queued_ahead_of_reset = last_reset.is_some_and(|reset| index < reset);
             let decoded = match decode_message(payload, self.decode_limit()) {
@@ -493,10 +494,8 @@ impl Session {
         if !self.dialect.version.speaks_5x() {
             return Ok(base.clone());
         }
-        match NotificationConfig::parse(fields, index) {
-            Ok(statement) => Ok(NotificationConfig::overlay(&statement, base)),
-            Err(parse_failure) => Err(parse_failure),
-        }
+        NotificationConfig::parse(fields, index)
+            .map(|statement| NotificationConfig::overlay(statement, base))
     }
 
     /// BEGIN (0x11). ADR-0117 §7: BEGIN selects the transaction's namespace
