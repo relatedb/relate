@@ -9,7 +9,7 @@ import ai.relatedb.Database;
  * to the per-version cache on first use and loaded from there.
  *
  * <pre>
- * java -cp relate-0.1.0.jar:jna-5.14.0.jar:jackson-databind-2.17.2.jar:... \
+ * java -cp relate-<version>.jar:jna-5.14.0.jar:jackson-databind-2.17.2.jar:... \
  *      ai.relatedb.examples.BundledNative
  * </pre>
  */
