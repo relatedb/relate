@@ -584,7 +584,8 @@ jobs:
         run: scripts/report-disk.sh
 
   # ADR-0433: the Swift surface's day-one gate (ADR-0065's reinstatement
-  # clause). One entry point, `make test-swift`: the three-slice static
+  # clause). One entry point, `make test-swift`, run as its two halves
+  # (`build-xcframework`, then `test-swift-prebuilt`): the three-slice static
   # XCFramework (scripts/build-xcframework.sh), the package's `swift test`,
   # every docs/api/swift example, the iOS example's core tests, and the iOS
   # example app built for the simulator. Drafts skip it like the other
@@ -603,28 +604,37 @@ jobs:
 
       # sccache's GitHub Actions backend needs the cache service address
       # and the job's runtime token. The runner hands both to JavaScript
-      # actions only, and the preamble does not export them, so this step
-      # copies them into the job environment. It runs before the
-      # preamble because the preamble's probe starts the sccache server,
-      # and the server reads them once, at startup. Without them the
-      # probe fails and the lane compiles uncached. From this step on,
-      # every step of the job can read the runtime token.
-      - name: Expose the Actions cache service to sccache
+      # actions only, and the preamble does not read them, so this step
+      # reads them. They are step outputs, not job environment: only the
+      # preamble step below receives them (OPLANE_REQ-00362889).
+      - name: Read the Actions cache service for sccache
+        id: cache-service
         uses: actions/github-script@v9
         with:
           script: |
             const token = process.env.ACTIONS_RUNTIME_TOKEN || ''
             if (token) core.setSecret(token)
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', token)
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '')
-            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on')
+            core.setOutput('runtime-token', token)
+            core.setOutput('results-url', process.env.ACTIONS_RESULTS_URL || '')
 
       # sccache on (ADR-0331), like the release workflow's XCFramework
       # legs: the gate builds the same five release libraries, and the
       # build runs in a copy of the checkout, so its output never
       # reaches the target directory rust-cache saves
       # (docs/testing/build-caches.md, "The Swift lane").
+      #
+      # The preamble's probe starts the sccache server, and the server
+      # reads the cache service variables once, at startup; a step's env
+      # reaches the steps of a composite action. Without them the probe
+      # fails and the lane compiles uncached. The server must outlive
+      # the pause before the first compile and never restart on its own,
+      # because a restart would find no credentials: no idle timeout.
       - uses: ./.github/actions/setup-rust-ci
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.cache-service.outputs.runtime-token }}
+          ACTIONS_RESULTS_URL: ${{ steps.cache-service.outputs.results-url }}
+          ACTIONS_CACHE_SERVICE_V2: "on"
+          SCCACHE_IDLE_TIMEOUT: "0"
         with:
           sccache: "true"
           free-disk: "false"
@@ -643,22 +653,39 @@ jobs:
       # action working while giving SwiftPM the identity it needs. Drop
       # the copy at the relatedb cutover, when the repository itself is
       # named 'relate'.
-      - name: Swift gate
+      #
+      # The gate is `make test-swift` in its two halves, with the cache
+      # server stopped between them. The Rust build is the only part
+      # that uses the cache; the Swift tests, the examples and the app
+      # build then run with no cache server and with no runtime token in
+      # any step's environment. During the build the server still holds
+      # the token in its own environment, where a process of the same
+      # user (a Rust build script, say) could read it: that much comes
+      # with caching a compile.
+      - name: Build the XCFramework
         run: |
           cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/relate"
-          cd "$RUNNER_TEMP/relate" && make test-swift
+          cd "$RUNNER_TEMP/relate" && make build-xcframework
 
-      # What the compile cache served this run, also when the gate
-      # failed. The guard covers the probe's fallback, where no wrapper
-      # is active and there is nothing to report.
-      - name: sccache stats
+      # What the compile cache served this run, also when the build
+      # failed, and then the end of the server. The guard covers the
+      # probe's fallback, where no wrapper is active and no server runs.
+      - name: sccache stats, then stop the server
         if: always()
         run: |
           if [ "${RUSTC_WRAPPER:-}" = "sccache" ]; then
             sccache --show-stats
+            sccache --stop-server
           else
             echo "sccache not active this run (see the preamble's probe warning)"
           fi
+
+      # No wrapper from here on: the server is gone, and a compile that
+      # asked for it would try to start one without credentials.
+      - name: Swift gate
+        env:
+          RUSTC_WRAPPER: ""
+        run: cd "$RUNNER_TEMP/relate" && make test-swift-prebuilt
 
   # Windows filesystem and surface run as separate jobs so each pays only
   # for the tools it uses, and the two runners overlap. ADR-0251 §6: these
