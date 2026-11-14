@@ -621,7 +621,7 @@ cargo run -p relate-datasets --bin benchmark-harness -- --help
 | ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
 | `--db <NAME=PATH>`            | none (repeatable) | Existing store to benchmark under `NAME`; opened read-only                               |
 | `--graph-examples-dir <DIR>`  | none (repeatable) | Benchmark every subdirectory of `DIR` that holds a `manifest.json`, named by directory   |
-| `--shape <NAME>`              | `ring`, `fanout` when absent | Synthetic memory shape: `ring`, `fanout`, `flat`, or `dense-ring` (repeatable)  |
+| `--shape <NAME>`              | `ring`, `fanout` when absent | Synthetic memory shape: `ring`, `fanout`, `flat`, `dense-ring`, or `mid-degree` (repeatable)  |
 | `--shape-logical-mb <N>`      | `8`              | Logical graph memory per synthetic shape, in MB (1024×1024 bytes)                        |
 | `--attributes <N>`            | `1`              | Integer properties on every synthetic node; the first is `id`                            |
 | `--rounds <N>`                | `3`              | Timed rounds per traversal after one warm-up; the best round is reported                 |
@@ -680,7 +680,7 @@ cargo run -p relate-datasets --bin codec-prototype -- --help
 | ----------------------------- | ----------------- | ---------------------------------------------------------------------------------------- |
 | `--db <NAME=PATH>`            | none (repeatable) | Existing store to measure under `NAME`; opened read-only                                 |
 | `--graph-examples-dir <DIR>`  | none (repeatable) | Measure every subdirectory of `DIR` that holds a `manifest.json`, named by directory     |
-| `--shape <NAME>`              | `ring`, `fanout`, `dense-ring` when absent | Synthetic memory shape: `ring`, `fanout`, `flat`, or `dense-ring` (repeatable) |
+| `--shape <NAME>`              | `ring`, `fanout`, `dense-ring` when absent | Synthetic memory shape: `ring`, `fanout`, `flat`, `dense-ring`, or `mid-degree` (repeatable) |
 | `--shape-logical-mb <N>`      | `8`               | Logical graph memory per synthetic shape, in MB (1024×1024 bytes)                        |
 | `--attributes <N>`            | `1`               | Integer properties on every synthetic node; the first is `id`                            |
 | `--rounds <N>`                | `5`               | Timed decode rounds per scheme after one warm-up; the best round is reported             |

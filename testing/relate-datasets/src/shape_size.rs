@@ -7,7 +7,10 @@
 //! node count, so a given `(shape, scale, indexes, attributes)` always
 //! charges the same logical bytes as the statements build.
 
-use crate::shapes::{validate, GraphShape, IndexCounts, ShapeCensus, ShapeScale};
+use crate::shapes::{
+    mid_degree_hops, validate, GraphShape, IndexCounts, ShapeCensus, ShapeScale, MID_DEGREE_AVG,
+    MID_DEGREE_GROUP,
+};
 
 /// Nodes in every filled `Small` pin. `Base` stays empty.
 pub(crate) const SMALL_NODES: u32 = 1_000;
@@ -88,6 +91,13 @@ pub fn census(
             ShapeCensus {
                 nodes: u64::from(nodes),
                 relationships: u64::from(nodes) * u64::from(degree),
+            }
+        }
+        GraphShape::MidDegree => {
+            let nodes = mid_degree_counts(scale, attributes, indexes)?;
+            ShapeCensus {
+                nodes: u64::from(nodes),
+                relationships: mid_degree_hops(nodes),
             }
         }
     })
@@ -173,12 +183,19 @@ fn rel_record_bytes() -> u64 {
     44 + version_chain(REL_STRIDE)
 }
 
+/// One typed adjacency entry's fixed frame — the map slot, the version-list
+/// header, and the chunk — stated once so every hop-charge spelling shares
+/// it.
+fn endpoint_adj_frame() -> u64 {
+    MAP_ENTRY + VEC_HEADER + vec_heap(1, CHUNK_STRIDE)
+}
+
 /// One typed adjacency entry of `degree` hops.
 fn endpoint_adj(degree: u64) -> u64 {
     if degree == 0 {
         0
     } else {
-        MAP_ENTRY + VEC_HEADER + vec_heap(1, CHUNK_STRIDE) + vec_heap(degree, HOP_STRIDE)
+        endpoint_adj_frame() + vec_heap(degree, HOP_STRIDE)
     }
 }
 
@@ -274,6 +291,47 @@ pub(crate) fn dense_counts(
                 fit_u32(nodes, "dense ring nodes")?,
                 fit_u32(DEGREE, "dense ring degree")?,
             ))
+        }
+    }
+}
+
+/// One mid-degree *out* endpoint's adjacency charge. Every ladder rung is a
+/// power of two, so `reserved(rung) == rung` and the average hop charge is
+/// exactly [`MID_DEGREE_AVG`] hops — no capacity padding term.
+fn mid_degree_out_adj() -> u64 {
+    endpoint_adj_frame() + MID_DEGREE_AVG * HOP_STRIDE
+}
+
+/// One mid-degree *in* endpoint's adjacency charge. The in-degree is uniform
+/// and exact — each rung divides the group, so every node receives exactly
+/// [`MID_DEGREE_AVG`] hops — but 96 is not a power of two, so that chunk
+/// reserves the next one and pays the ordinary [`endpoint_adj`] padding. The
+/// out side is the one that escapes `reserved()`.
+fn mid_degree_in_adj() -> u64 {
+    endpoint_adj(MID_DEGREE_AVG)
+}
+
+pub(crate) fn mid_degree_counts(
+    scale: ShapeScale,
+    attributes: u32,
+    indexes: IndexCounts,
+) -> Result<u32, String> {
+    match scale {
+        // 1,000 nodes like every filled pin; the trailing partial group
+        // carries the ladder's head, so the pin's relationship count is
+        // whatever `mid_degree_hops` sums from the ladder — never a
+        // hand-typed constant.
+        ShapeScale::Small => Ok(SMALL_NODES),
+        // `:MidDegree` is 9 bytes. Whole groups only: the group unit keeps
+        // the average-degree charge exact at any size.
+        ShapeScale::Large { logical_bytes } => {
+            let group = u64::from(MID_DEGREE_GROUP);
+            let per = node_bytes(9, attributes, indexes)
+                + MID_DEGREE_AVG * rel_record_bytes()
+                + mid_degree_out_adj()
+                + mid_degree_in_adj();
+            let groups = nearest(target_bytes(logical_bytes)?, group * per).max(1);
+            fit_u32(group * groups, "mid degree nodes")
         }
     }
 }
