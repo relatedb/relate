@@ -8,7 +8,7 @@ use relate_ir::{Clause, LabelExpr};
 use relate_names::{SmallName, Token};
 use relate_planner::{clause_mutates_store, clause_projects_rows, plan_any_clause, LogicalPlan};
 
-use crate::ctx::{PlanMetricsSink, PlanMetricsSite};
+use crate::metrics::{PlanMetricsSink, PlanMetricsSite};
 
 use crate::row::Row;
 
@@ -294,7 +294,7 @@ pub struct ExecRequest<'a> {
     /// ADR-0344 phase 2: the PROFILE metrics sink for the statement's own
     /// clauses; `None` on every non-PROFILE run. The dispatch loop
     /// records one entry per clause operator; nested execution strips it.
-    pub plan_metrics: Option<&'a dyn crate::ctx::PlanMetricsSink>,
+    pub plan_metrics: Option<&'a dyn crate::metrics::PlanMetricsSink>,
 }
 
 impl<'a> ExecRequest<'a> {

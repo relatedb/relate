@@ -22,12 +22,12 @@ use std::time::Instant;
 
 use relate_core::Value;
 
-use crate::ctx::ClauseMetricsRecord;
 use crate::exec::test_support::{
     column, exec_cypher, frontier_decline_of, int_cell, patterns, profiled, same_rows, string_cell,
     try_exec_cypher_on, Builder,
 };
 use crate::graph::Graph;
+use crate::metrics::ClauseMetricsRecord;
 use crate::overlay::ExecGraph;
 use crate::QueryResult;
 

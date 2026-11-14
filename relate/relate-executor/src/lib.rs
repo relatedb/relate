@@ -4,6 +4,7 @@ mod adjacency;
 mod catalog_meta;
 mod csv;
 mod ctx;
+mod metrics;
 // The one tiered distinct set under every DISTINCT site (LABS-852).
 mod distinct_set;
 #[cfg(test)]
@@ -89,10 +90,7 @@ mod vector_similarity;
 
 pub use catalog_meta::{DeprecatedBy, DeprecationForm};
 pub use csv::CsvPolicy;
-pub use ctx::{
-    BatchCommit, ClauseMetricsRecord, FrontierCounters, KernelRung, PhaseTimes, PlanMetricsSink,
-    StartReason, StoreReads, WalkStart,
-};
+pub use ctx::BatchCommit;
 pub use effect::StatementEffect;
 pub use exec::bulk::{
     analyze_bulk_write, BulkCursor, BulkTargets, BulkWrite, DEFAULT_BATCH_BUDGET,
@@ -110,6 +108,10 @@ pub use graph::constraint_keys::admission::{ConstraintAdmission, SlotPosition};
 pub use graph::{
     CheckpointTheater, ContainsCount, DatabaseEntry, Graph, Procedure, QueryStats, SchemaSnapshot,
     SnapshotPin,
+};
+pub use metrics::{
+    ClauseMetricsRecord, FrontierCounters, KernelRung, PhaseTimes, PlanMetricsSink, StartReason,
+    StoreReads, WalkStart,
 };
 // One public path (the graph module stays private): the whole-graph
 // index-rebuild count the facade's reopen tests read to pin the
@@ -151,7 +153,7 @@ pub use overlay::NESTED_EVAL_BUDGET;
 // fraction against it), deliberately not advertised API — a fixed
 // contract, not a knob.
 #[doc(hidden)]
-pub use ctx::REARRIVAL_WORK_BUDGET;
+pub use metrics::REARRIVAL_WORK_BUDGET;
 // The ADR-0463 default per-allocation expression cap: workspace-internal
 // (tests and the engine-default resolver read it), deliberately not
 // advertised API. The operator knob lives on the open options, not here.

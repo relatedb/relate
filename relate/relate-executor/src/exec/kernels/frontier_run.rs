@@ -34,10 +34,11 @@ use std::collections::HashSet;
 use relate_core::{NodeId, Result, Value};
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
-use crate::ctx::{ExecCtx, FrontierCounters, WalkStart};
+use crate::ctx::ExecCtx;
 use crate::eval::{eval, expr_vars};
 use crate::frontier_decline::{FrontierDecline, FrontierDeclineReason, FrontierRunDecline};
 use crate::graph::Graph;
+use crate::metrics::{FrontierCounters, WalkStart};
 use crate::overlay::RetainedTotal;
 use crate::row::Row;
 

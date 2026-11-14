@@ -5,12 +5,12 @@ use relate_names::NamedToken;
 use relate_planner::{ContainsCount, DegreeMoments, PatternStats};
 
 use super::frontier_cost::{estimate, excess_degree, mean_degree, CostEstimate};
-use crate::ctx::KernelRung;
 use crate::exec::test_support::{
     build, exec_cypher, frontier_decline_of, named_node, one_hop_rel, profiled, served,
 };
 use crate::frontier_decline::{FrontierDecline, FrontierDeclineReason};
 use crate::graph::Graph;
+use crate::metrics::KernelRung;
 use crate::pattern_engine::PatternEngine;
 
 /// One uniform label: `nodes` nodes whose out-degree moments are fixed.

@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use relate_core::{NodeId, Result, Value};
 use relate_ir::{BinaryOp, Expr, LabelExpr, NodePattern};
 use relate_names::SmallName;
+use relate_test_support::fold_shapes::{comparison, or_node};
 
 use crate::graph::{test_support, Graph};
 use crate::overlay::{intersect_ids, union_ids, ExecGraph};
@@ -264,26 +265,6 @@ fn a_capped_funnel_stops_scanning_past_the_cap() {
     assert_eq!(crate::ctx::take_node_reads(), 200);
 }
 
-/// The fold's plain-Or label shape: `Or([Model, Source])` over no
-/// conjunction labels, `np.labels` empty — the shape
-/// `MATCH (p) WHERE p:Model OR p:Source` carries after the rewrite.
-fn or_pattern(variable: &str, disjuncts: &[&str]) -> NodePattern {
-    NodePattern {
-        variable: Some(SmallName::from_name(variable)),
-        labels: Vec::new(),
-        label_expr: Some(LabelExpr::Or(
-            disjuncts
-                .iter()
-                .map(|l| LabelExpr::Label((*l).into()))
-                .collect(),
-        )),
-        properties: None,
-        prop_keys: Vec::new(),
-        where_clause: None,
-        force_scan: false,
-    }
-}
-
 /// The fold's nested shape: the pattern's own conjunction `base` carried
 /// beside the folded `Or` — `And([C, Or([A, B])])` with `np.labels` the
 /// base, the shape `MATCH (p:C) WHERE p:A OR p:B` carries after the
@@ -307,21 +288,6 @@ fn and_nested_pattern(variable: &str, base: &[&str], disjuncts: &[&str]) -> Node
         prop_keys: Vec::new(),
         where_clause: None,
         force_scan: false,
-    }
-}
-
-/// The equality conjunct `var.key = value` — the residual predicate the
-/// funnel's seek loop keys on (the rewrite leaves a row-bound predicate
-/// here; a literal one lands in the pattern's property map instead).
-fn eq_conjunct(var: &str, key: &str, value: i64) -> Expr {
-    Expr::Binary {
-        op: BinaryOp::Eq,
-        left: Box::new(Expr::Property {
-            key_id: Default::default(),
-            expr: Box::new(Expr::Variable(SmallName::from_name(var))),
-            key: SmallName::from_name(key),
-        }),
-        right: Box::new(Expr::Int(value)),
     }
 }
 
@@ -358,8 +324,8 @@ fn label_disjunction_seeks_as_the_deduplicated_union_of_per_label_postings() {
 
     let ids = candidates_with(
         &g,
-        &or_pattern("p", &["Model", "Source"]),
-        &[eq_conjunct("p", "age", 7)],
+        &or_node(Some("p"), &["Model", "Source"]),
+        &[comparison("p", "age", BinaryOp::Eq, Expr::Int(7))],
     );
     let mut expected = vec![model, source, both];
     expected.sort_unstable();
@@ -390,7 +356,7 @@ fn nested_disjunction_seeks_per_arm_conjunctions() {
     let ids = candidates_with(
         &g,
         &and_nested_pattern("p", &["C"], &["A", "B"]),
-        &[eq_conjunct("p", "age", 7)],
+        &[comparison("p", "age", BinaryOp::Eq, Expr::Int(7))],
     );
     let mut expected = vec![ca, cb];
     expected.sort_unstable();
@@ -415,8 +381,8 @@ fn an_unindexed_disjunct_arm_declines_to_the_scan_tail() {
 
     let ids = candidates_with(
         &g,
-        &or_pattern("p", &["Model", "Source"]),
-        &[eq_conjunct("p", "age", 7)],
+        &or_node(Some("p"), &["Model", "Source"]),
+        &[comparison("p", "age", BinaryOp::Eq, Expr::Int(7))],
     );
     // The scan tail's answer: every node id, the per-candidate check
     // filters from here.
@@ -448,7 +414,7 @@ fn the_folded_map_equality_serves_per_arm() {
     test_support::range_index(&g, "Model", "age");
     test_support::range_index(&g, "Source", "age");
 
-    let mut folded = or_pattern("p", &["Model", "Source"]);
+    let mut folded = or_node(Some("p"), &["Model", "Source"]);
     folded.properties = Some(Expr::Map(vec![(
         "age".to_string(),
         Expr::RuntimeValue(Value::Int(7)),
@@ -516,7 +482,7 @@ fn a_bare_disjunction_without_equalities_keeps_the_all_nodes_scan() {
     let _other = labeled_node(&g, &["Other"], "o", 7);
     g.commit_write();
 
-    let ids = candidates(&g, &or_pattern("p", &["Model", "Source"]));
+    let ids = candidates(&g, &or_node(Some("p"), &["Model", "Source"]));
     let mut expected = ExecGraph::read(&g).all_node_ids();
     expected.sort_unstable();
     assert_eq!(ids, expected);

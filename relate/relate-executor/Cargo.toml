@@ -50,7 +50,7 @@ rustc-hash = { workspace = true }
 rstar = { workspace = true }
 
 [dev-dependencies]
-relate-test-support = { workspace = true, features = ["nested_eval"] }
+relate-test-support = { workspace = true, features = ["fold_shapes", "nested_eval"] }
 tempfile = { workspace = true }
 # Property-testing harness for the commit-uniqueness admission semantics
 # (ADR-0268 pin, extended to this crate by ADR-0439). Dev-only: never compiled

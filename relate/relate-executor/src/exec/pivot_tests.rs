@@ -280,14 +280,14 @@ fn cheapest_start_displaces_onto_the_range_filtered_element() {
     let start = take_walk_start().expect("the walk recorded its start");
     assert_eq!(
         (start.element, start.reason),
-        (1, crate::ctx::StartReason::Cheapest),
+        (1, crate::metrics::StartReason::Cheapest),
         "the LABS-369 walk start names the index-selected start: the range-filtered element, cheapest class"
     );
     // Four window candidates, one hop each.
     assert_eq!(displaced.rows.len(), 4);
     assert_eq!(
-        (displaced.rows[0][0].clone(), displaced.rows[0][1].clone()),
-        (Value::Int(0), Value::Int(20)),
+        (&displaced.rows[0][0], &displaced.rows[0][1]),
+        (&Value::Int(0), &Value::Int(20)),
         "the first row pairs the first P with its window Q"
     );
     // The displacement is correctness-neutral: the un-pivoted expansion

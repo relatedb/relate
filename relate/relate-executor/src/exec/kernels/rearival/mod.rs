@@ -150,7 +150,7 @@ mod search;
 
 use relate_core::{NodeId, Result};
 
-use crate::ctx::{FrontierCounters, REARRIVAL_WORK_BUDGET};
+use crate::metrics::{FrontierCounters, REARRIVAL_WORK_BUDGET};
 use crate::overlay::ExecGraph;
 
 use self::search::{

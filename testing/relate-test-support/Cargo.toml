@@ -25,6 +25,8 @@ relate-error = { workspace = true, optional = true }
 # canonical budget constant, so the asserted contract cannot drift from
 # the enforced one.
 relate-executor = { workspace = true, optional = true }
+relate-ir = { workspace = true, optional = true }
+relate-names = { workspace = true, optional = true }
 relate-core = { workspace = true }
 relate-engine-api = { workspace = true }
 relate-write-local = { workspace = true }
@@ -92,6 +94,10 @@ fetch = ["dep:fs4", "dep:sha2", "dep:ureq"]
 # builder. Pulls the executor's Graph (the in-memory model the signature
 # walks).
 graph = ["dep:relate-executor"]
+# The disjunction-fold shape builders (`fold_shapes`): the plain-`Or` node
+# and the `var.prop <op> bound` conjunct the plan-node and candidate-funnel
+# suites share. Pulls the planner IR and the name types it builds on.
+fold_shapes = ["dep:relate-ir", "dep:relate-names"]
 # The deterministic synthetic pokec-shaped store (`pokec`): the
 # in-memory fixture the integration, small-perf and validation suites
 # open. Pulls the facade (the population path is the public API, under
