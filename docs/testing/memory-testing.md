@@ -15,7 +15,8 @@ counter exactly and records Bolt RSS beside it.
 
 Both suites call one generator,
 `testing/relate-datasets/src/shapes.rs`. The shapes are `base`,
-`ring`, `fanout`, `flat`, and `dense ring`. The pin scale emits a fixed
+`ring`, `fanout`, `flat`, `dense ring`, and `mid degree`. The pin scale
+emits a fixed
 statement list for a given `(shape, scale, indexes, attributes)`. The
 loadtest uses the same batch shapes and keeps issuing them until the
 database reports the memory limit. Statements are independent autocommit
@@ -25,6 +26,21 @@ first on every filled shape. `base` emits nothing, so its RSS stays the
 empty-server floor. Its logical floor is the two namespace graphs'
 interned `*` and `""`, 258 bytes (ADR-0229 dropped the empty
 `system_ontologies` graph every store used to allocate).
+
+`mid degree` is the degree-32–512 ladder (LABS-277): every node's
+out-degree sits at or above the adjacency seal floor (32 hops,
+[ADR-0551](../adr/0551-sealed-delta-adjacency-store.md)), so it is the
+shape whose adjacency chunks actually seal at a checkpoint — the other
+shapes' degrees (0–20) never reach the floor, which is why a sealed-tier
+win is invisible to them. The ladder repeats per 16 nodes (one 512,
+one 256, two 128, four 64, eight 32 — average degree exactly 96, every
+rung a power of two so the out-adjacency charge carries no capacity
+padding),
+so every degree band is represented at any fill depth. A mid-degree
+statement in the pin file creates one 2,000-node window and then links
+one 16-node group per statement (1,536 relationship rows at most); the
+loadtest creates and links a group in one statement, linking against the
+nodes committed so far.
 
 Every node carries `ATTRIBUTES` integer properties (default 1). The
 first is `id`. The rest are `a1`, `a2`, and so on, set to the same value
@@ -142,8 +158,14 @@ bands.
 | fanout | none | 1,000 | 996 | 640,059 |
 | ring | none | 1,000 | 1,000 | 720,460 |
 | dense ring | none | 1,000 | 8,000 | 2,713,465 |
+| mid degree | none | 1,000 | 96,512 | 28,850,522 |
 | flat | range 1 | 1,000 | 0 | 338,392 |
 | flat | text 1, point 1, range 1 | 1,000 | 0 | 742,526 |
+
+The `mid degree` row carries the current test pin
+(`tests/memory_shapes.rs`); the rows above it predate the ADR-0529 /
+ADR-0532 / ADR-0589 pin revisions and have not been re-measured for this
+table.
 
 ### How indexes are tested
 
@@ -174,7 +196,8 @@ so the RSS floor stays an empty server. `RANGE_INDEXES` above
 
 Point charges use the label length and the key length, so the same
 `loc0` costs a different number of bytes on `:Hub` (3 bytes), `:Flat`
-or `:Ring` or `:Leaf` (4), and `:DenseRing` (9). A text index charges
+or `:Ring` or `:Leaf` (4), and `:DenseRing` (9), and `:MidDegree` (9,
+the same length as `DenseRing`). A text index charges
 8 bytes per width-3 window and does not repeat the label or the key on
 each window (ADR-0207). The large
 census checks that `TEXT_INDEXES=1` shrinks the node count of flat,
@@ -221,8 +244,8 @@ For each large shape the binary:
    RSS is the minimum `VmRSS`. Peak RSS is the maximum `VmHWM` in those
    samples. The test process is not the sample.
 
-The matrix, in report order, is `base`, `flat`, `fanout`, `ring`, and
-`dense ring`. The loadtest stops at:
+The matrix, in report order, is `base`, `flat`, `fanout`, `ring`,
+`dense ring`, and `mid degree`. The loadtest stops at:
 
 | Shape | Nodes | Relationships |
 |---|---:|---:|
@@ -230,6 +253,11 @@ The matrix, in report order, is `base`, `flat`, `fanout`, `ring`, and
 | fanout | 52,016 | 52,000 |
 | ring | 46,000 | 46,000 |
 | dense ring | 5,000 | 100,000 |
+| mid degree | 1,184 | 113,664 |
+
+`mid degree`'s 1,184 nodes are 74 whole ladder groups (the census
+solver's own answer at the 32 MiB default), so its average degree of 96
+is exact: 96 × 1,184 = 113,664 relationships.
 
 `base` stays empty. Its RSS is the empty server and is subtracted from
 the others. The ratio is attributed RSS divided by logical bytes. The
@@ -360,6 +388,39 @@ The small pin uses degree 8: 1,000 nodes and 8,000 relationships,
 2,713,465 logical bytes. The loadtest keeps degree 20 and sizes the ring
 to the logical target. At 32 MiB that is 5,010 nodes and 100,200
 relationships, 6,697 bytes per node.
+
+## Mid degree
+
+![Ladder of one 16-node group: degrees 512, 256, 128, 128, 64, 64, 64, 64, then 32 for the remaining eight nodes.](diagrams/mid-degree.svg)
+
+The degree ladder every other shape lacks. Node `i` is
+`(:MidDegree {id: i})` and has outgoing `:LINK` relationships to the
+next `MID_DEGREE_LADDER[i % 16]` ids, wrapping with modulo — the same
+link shape as dense ring, at per-node degrees from the ladder: one 512,
+one 256, two 128, four 64, eight 32 per 16-node group, an average of
+exactly 96. Every rung is at or above the 32-hop adjacency seal floor
+(ADR-0551), so a mid-degree out-chunk always seals at a checkpoint —
+no other shape's degree (0–20) ever reaches the floor, which is why the
+sealed-delta tier's memory win is invisible to them.
+
+The loader creates the nodes in batches of 2,000, then links one
+16-node group per statement (at most 1,536 relationship rows, under the
+2,000-row cap), the link count drawn from the ladder through a `CASE`
+on `i % 16`. The small pin is 1,000 nodes and 96,512 relationships
+(62 whole groups plus the 8-node half-group carrying the ladder head),
+28,850,522 logical bytes. The loadtest sizes to the logical target in
+whole groups: at 32 MiB, 1,184 nodes and 113,664 relationships,
+28,473 bytes per node.
+
+The two endpoint charges differ, and the sizing model charges each on
+its own terms. The out side is the ladder's average, and because every
+rung is a power of two its chunk reserves exactly the rung — no
+capacity padding. The in side is uniform and exact (each rung divides
+the group, so every node receives exactly 96 hops), but 96 is not a
+power of two: that chunk reserves 128, and the census charges the
+padded 128. Charging both sides the ladder average under-charges every
+node by the 32-hop difference — 768 bytes at a 24-byte hop — a 2.7%
+overshoot of the logical target.
 
 ## Memory controls and workspace memory calibration
 

@@ -25,7 +25,7 @@ use relate_test_support::relate_bin_or_default;
 
 mod progress;
 use crate::shapes::{
-    census, rss_matrix, FillCursor, GraphShape, IndexCounts, ShapeScale,
+    census, mid_degree_hops, rss_matrix, FillCursor, GraphShape, IndexCounts, ShapeScale,
     DEFAULT_LOGICAL_TARGET_BYTES, DEFAULT_NODE_ATTRIBUTES,
 };
 use progress::{abbreviate, clear_active, format_elapsed, mark, progress, Heartbeat, Live};
@@ -446,6 +446,13 @@ fn shape_target(shape: GraphShape) -> ShapeTarget {
             nodes: 5_000,
             rels: 100_000,
         },
+        // 74 whole ladder groups: 1,184 nodes and exactly 96 × 1,184 hops —
+        // the census solver's own answer at the 32 MiB default, rounded to
+        // groups so the average-degree charge stays exact.
+        GraphShape::MidDegree => ShapeTarget {
+            nodes: 1_184,
+            rels: mid_degree_hops(1_184),
+        },
     }
 }
 
@@ -824,129 +831,4 @@ fn sample_child_rss(pid: u32) -> Result<(u64, u64), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Disk tier (ADR-0251): `probe_store` checkpoints and measures the
-    // on-disk store directory (`store_directory_bytes` →
-    // `relate_storage::store_info`, which rejects `:memory:` — an
-    // in-memory store has no on-disk layout), so these tests keep a real
-    // filesystem directory.
-    #[test]
-    fn flat_fill_stops_when_the_limit_is_hit() {
-        let limit = 1024 * 1024;
-        let live = Mutex::new(Live::default());
-        let dir = tempfile::tempdir().unwrap();
-        let store = dir.path().join("flat");
-        let (used, disk, nodes, rels) = probe_store(
-            GraphShape::Flat,
-            1,
-            IndexCounts::NONE,
-            limit,
-            &store,
-            &live,
-            false,
-        )
-        .unwrap();
-        assert!(
-            used <= limit,
-            "committed {used} bytes above the {limit} limit"
-        );
-        assert!(
-            used > limit / 2,
-            "stopped at {used} bytes, far under the {limit} limit"
-        );
-        assert!(nodes >= 2_000 && nodes.is_multiple_of(2_000));
-        assert_eq!(rels, 0);
-        assert!(disk > 0, "checkpointed store directory is empty");
-        assert_eq!(disk, store_directory_bytes(&store).unwrap());
-        assert!(
-            store.join("wal").is_dir(),
-            "WAL is part of the directory size"
-        );
-    }
-
-    #[test]
-    fn ring_fill_closes_when_the_next_batch_does_not_fit() {
-        // One closed ring of 2,000 nodes. The next node batch has to miss,
-        // and the ring has to be closed when it does. A relationship batch
-        // can miss while another node batch still fits, which leaves the
-        // ring open; 1.25 MB sits under that second node batch and over
-        // the closed ring.
-        let limit = 1_250_000;
-        let live = Mutex::new(Live::default());
-        let dir = tempfile::tempdir().unwrap();
-        let (used, _, nodes, rels) = probe_store(
-            GraphShape::Ring,
-            1,
-            IndexCounts::NONE,
-            limit,
-            &dir.path().join("ring"),
-            &live,
-            false,
-        )
-        .unwrap();
-        assert!(
-            used <= limit,
-            "committed {used} bytes above the {limit} limit"
-        );
-        assert_eq!(
-            nodes, rels,
-            "ring did not close ({nodes} nodes, {rels} rels, {used} bytes)"
-        );
-        assert!(nodes >= 2_000, "used {used} bytes");
-    }
-
-    #[test]
-    fn fixed_counts_stop_on_a_batch_boundary() {
-        let live = Mutex::new(Live::default());
-        for shape in [
-            GraphShape::Base,
-            GraphShape::Flat,
-            GraphShape::Fanout,
-            GraphShape::Ring,
-            GraphShape::DenseRing,
-        ] {
-            let target = shape_target(shape);
-            let filled = fill_to_target(
-                shape,
-                1,
-                IndexCounts::NONE,
-                u64::MAX,
-                &live,
-                "cursor",
-                |_| Ok(()),
-            )
-            .unwrap_or_else(|err| panic!("{shape} {err}"));
-            assert_eq!(filled.nodes, target.nodes, "{shape}");
-            assert_eq!(filled.rels, target.rels, "{shape}");
-        }
-    }
-
-    #[test]
-    fn dense_ring_fill_links_each_window_before_the_next() {
-        let limit = 4 * 1024 * 1024;
-        let live = Mutex::new(Live::default());
-        let dir = tempfile::tempdir().unwrap();
-        let (used, _, nodes, rels) = probe_store(
-            GraphShape::DenseRing,
-            1,
-            IndexCounts::NONE,
-            limit,
-            &dir.path().join("dense-ring"),
-            &live,
-            false,
-        )
-        .unwrap();
-        assert!(
-            used <= limit,
-            "committed {used} bytes above the {limit} limit"
-        );
-        assert!(nodes >= 100, "used {used} bytes");
-        assert_eq!(
-            rels,
-            nodes * 20,
-            "last window was not linked ({nodes} nodes, {rels} rels, {used} bytes)"
-        );
-    }
-}
+mod tests;
