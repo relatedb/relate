@@ -159,9 +159,9 @@ fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_afte
     let error = try_wal_commit(&shared, 0, 2, vec![big], 0, 0).unwrap_err();
     // ADR-0494: the refusal is the capacity family's WalPayload kind, its
     // communicative line naming the WAL record and the cap (both figures
-    // through the one byte-size renderer).
+    // in MiB).
     assert!(error.to_string().contains("single WAL record"), "{error}");
-    assert!(error.to_string().contains("64 MB"), "{error}");
+    assert!(error.to_string().contains("64 MiB"), "{error}");
     assert_eq!(shared.wal.lock().unwrap().lsn, 1);
     assert_eq!(std::fs::read(&wal_file).unwrap(), before);
     assert_eq!(shared.graph.all_node_ids().len(), 1);

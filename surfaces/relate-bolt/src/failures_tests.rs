@@ -114,9 +114,10 @@ fn every_engine_variant_maps_to_its_neo4j_status_code() {
             E::capacity_wal_payload(67_108_864, E::WAL_PAYLOAD_CAP_BYTES),
             "Neo.ClientError.General.TransactionOutOfMemoryError",
             "This statement tried to commit a single WAL record of at least \
-             64 MB. This is a safety limit protecting against memory \
-             exhaustion — the per-record WAL payload cap is 64 MB; commit \
-             the data in smaller transactions.",
+             64 MiB. This is a safety limit protecting against memory \
+             exhaustion — the per-commit WAL payload cap is 64 MiB (ADR-0086); \
+             commit the data in smaller transactions (CALL { … } IN \
+             TRANSACTIONS OF n ROWS, or client-side batches).",
         ),
         (
             E::semantic("variable `n` not defined"),
