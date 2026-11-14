@@ -140,6 +140,15 @@ pub(crate) fn bookmark_string(commit_ts: u64) -> String {
     format!("relate:{commit_ts}")
 }
 
+/// The commit sequence `n` of an ADR-0310 bookmark string — the decoder
+/// beside [`bookmark_string`]'s one encoder; `None` for anything that is not
+/// exactly `relate:<n>`. Tests compare the parsed sequences, never the
+/// strings (`relate:10` sorts before `relate:9`).
+#[cfg(test)]
+pub(crate) fn bookmark_sequence(bookmark: &str) -> Option<u64> {
+    bookmark.strip_prefix("relate:")?.parse().ok()
+}
+
 /// Auto-commit write entry point. ADR-0209: eligible global bulk writes
 /// whose estimated touched-entity count reaches the threshold run in
 /// bounded batches, one WAL commit per batch; everything else takes the
@@ -309,33 +318,28 @@ fn commit_optimistic(
     // WAL record is accepted, this request must report its committed write,
     // never turn into a retryable token-limit error.
     let result_reservation = WorkspaceCharge::retain_with(|| result_rows_bytes(&result.rows))?;
-    if ops.is_empty() {
-        shared.check_healthy()?;
-        drop(write_workspace);
-        result_reservation.transfer_to_ledger();
-        // ADR-0502 §7: nothing followed the statement's batches — a
-        // batched statement whose redo drained through the sink, or a
-        // write-shaped statement that produced no redo. The bookmark is
-        // the sink's last commit timestamp, or `None` when no batch
-        // committed either.
-        let sequence = sink
-            .as_ref()
-            .map(GroupBatchCommit::committed_sequence)
-            .transpose()?
-            .flatten();
-        return Ok((result, sequence));
-    }
     // The statement's own final commit supersedes any batch's: its
     // timestamp is greater (the sequence is monotonic) and covers the
-    // remaining redo.
-    let sequence = Some(try_wal_commit(
-        shared,
-        commit_base_ts,
-        txn_id,
-        ops,
-        parse_plan_ns,
-        execute_ns,
-    )?);
+    // remaining redo. With no final redo (ADR-0502 §7: a batched statement
+    // whose redo drained through the sink, or a write-shaped statement that
+    // produced none) the bookmark is the last batch's commit timestamp —
+    // the scratch's rebased base — or `None` when no batch committed.
+    let sequence = if ops.is_empty() {
+        sink.as_ref()
+            .is_some_and(GroupBatchCommit::committed)
+            .then_some(commit_base_ts)
+    } else {
+        Some(try_wal_commit(
+            shared,
+            commit_base_ts,
+            txn_id,
+            ops,
+            parse_plan_ns,
+            execute_ns,
+        )?)
+    };
+    // The one tail: release the write workspace, hand the result
+    // reservation to the ledger, then the health check.
     drop(write_workspace);
     result_reservation.transfer_to_ledger();
     shared.check_healthy()?;

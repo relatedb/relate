@@ -14,12 +14,8 @@ fn sequence(bookmark: Option<&str>, label: &str) -> u64 {
     let Some(bookmark) = bookmark else {
         panic!("{label}: expected a bookmark, found none");
     };
-    let Some(number) = bookmark.strip_prefix("relate:") else {
-        panic!("{label}: not the ADR-0310 form `relate:<n>`: {bookmark}");
-    };
-    number
-        .parse()
-        .unwrap_or_else(|_| panic!("{label}: not a sequence number: {bookmark}"))
+    crate::commit::bookmark_sequence(bookmark)
+        .unwrap_or_else(|| panic!("{label}: not the ADR-0310 form `relate:<n>`: {bookmark}"))
 }
 
 /// Two sequential auto-commit writes carry strictly increasing bookmarks,
