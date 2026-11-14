@@ -465,7 +465,7 @@ engine's own text, verbatim. An engine error maps by its typed
 | `UniquenessViolation` | `Neo.ClientError.Schema.ConstraintValidationFailed` |
 | `Cancelled` (`--query-timeout-secs` expired) | `Neo.ClientError.Transaction.TransactionTimedOut` |
 | `Conflict` (`write-write conflict`) | `Neo.TransientError.Transaction.Outdated` (retryable) |
-| `Capacity` — the `--logical-graph-size-limit` cap (`capacity exceeded: used=… limit=…`), the per-allocation 256 MiB expression cap (ADR-0463, plain-language detail line), or the per-record 64 MiB WAL payload cap (ADR-0494, plain-language detail line naming the record and the cap) | `Neo.ClientError.General.TransactionOutOfMemoryError` |
+| `Capacity` — the `--logical-graph-size-limit` cap (`capacity exceeded: used=… limit=…`), the per-allocation 256 MiB expression cap (ADR-0463, plain-language detail line), or the per-commit 64 MiB WAL payload cap (ADR-0494, plain-language detail line naming the record and the cap; inside an explicit transaction the refusal arrives with the statement that takes the transaction's redo over it, ADR-0604) | `Neo.ClientError.General.TransactionOutOfMemoryError` |
 | every other `Semantic` and `Execution` | `Neo.ClientError.Statement.SemanticError` |
 | `Internal`, `Storage`, `Io`, `Locked` | `Neo.DatabaseError.General.UnknownError`, message `internal error` |
 

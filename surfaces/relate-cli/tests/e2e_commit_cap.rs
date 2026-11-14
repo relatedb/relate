@@ -1,10 +1,13 @@
-//! End-to-end: a commit record over the per-commit WAL payload cap
-//! (ADR-0086, typed by ADR-0494) is refused with the capacity family's
-//! caller-facing error on every surface — never the generic
-//! `UnknownError: internal error` — and the message names the cap and the
-//! remedy. The same refusal is driven through the Bolt explicit
-//! transaction's COMMIT, the HTTP managed transaction's commit endpoint, and
-//! the CLI's `query` path.
+//! End-to-end: a transaction whose commit record crosses the per-commit
+//! WAL payload cap (ADR-0086, typed by ADR-0494) is refused with the
+//! capacity family's caller-facing error on every surface — never the
+//! generic `UnknownError: internal error` — and the message names the cap
+//! and the remedy. The same refusal is driven through a Bolt explicit
+//! transaction's statement, the HTTP managed transaction's statement
+//! endpoint, and the CLI's `query` path. Inside an explicit transaction
+//! the refusal arrives at the statement that takes the redo over the cap
+//! (ADR-0604), so the transaction is never streamed on to a COMMIT that
+//! could only fail.
 
 #![cfg(all(feature = "http", feature = "mcp", feature = "bolt"))]
 
@@ -12,7 +15,7 @@ mod support;
 
 use relate_bolt::packstream::Pack;
 use relate_test_support::loopback::{exchange, post};
-use support::bolt::{connect_and_hello, failure_map, field, read_msg, send_struct, success_map};
+use support::bolt::{connect_and_hello, failure_map, read_msg, send_struct, success_map};
 use support::serve::{auth_header, free_port, spawn_serve_with, wait_for_ports, AUTH};
 use support::{run_cli, tempdir, CliRunOptions};
 
@@ -32,7 +35,7 @@ fn assert_names_the_cap_and_the_remedy(message: &str) {
 }
 
 #[test]
-fn test_bolt_explicit_commit_over_the_cap_is_a_capacity_failure() {
+fn test_bolt_explicit_run_over_the_cap_is_a_capacity_failure() {
     let dir = tempdir();
     let db = dir.path().join("graph").to_str().unwrap().to_string();
     let (http_port, mcp_port, bolt_port) = (free_port(), free_port(), free_port());
@@ -55,18 +58,24 @@ fn test_bolt_explicit_commit_over_the_cap_is_a_capacity_failure() {
     );
     success_map(read_msg(&mut client));
     send_struct(&mut client, 0x3F, vec![Pack::Map(vec![])]); // PULL
-    success_map(read_msg(&mut client));
-    // The refusal arrives at COMMIT, after the whole transaction streamed.
-    send_struct(&mut client, 0x12, vec![]); // COMMIT
+                                                             // The refusal arrives with the statement that crossed the cap, so the
+                                                             // client learns the limit where it was crossed instead of streaming on
+                                                             // to a COMMIT that could only fail.
     let failure = failure_map(read_msg(&mut client));
-    assert_eq!(field(&failure, "code"), CAPACITY_CODE);
-    assert_names_the_cap_and_the_remedy(field(&failure, "message"));
+    let code = failure.get("code").and_then(Pack::as_str).unwrap();
+    assert_eq!(code, CAPACITY_CODE);
+    assert_ne!(code, "Neo.DatabaseError.General.UnknownError");
+    assert_names_the_cap_and_the_remedy(failure.get("message").and_then(Pack::as_str).unwrap());
+    // The failure leaves the connection in FAILED state: the transaction is
+    // failed, not committed, and the session is cleared with RESET.
+    send_struct(&mut client, 0x0F, vec![]); // RESET
+    success_map(read_msg(&mut client));
 
     child.stop();
 }
 
 #[test]
-fn test_http_transaction_commit_over_the_cap_is_a_capacity_error() {
+fn test_http_transaction_run_over_the_cap_is_a_capacity_error() {
     let dir = tempdir();
     let db = dir.path().join("graph").to_str().unwrap().to_string();
     let (http_port, mcp_port) = (free_port(), free_port());
@@ -88,14 +97,9 @@ fn test_http_transaction_commit_over_the_cap_is_a_capacity_error() {
         http_port,
         post(&path, &run, Some(&auth_header())).as_bytes(),
     );
-    assert_eq!(status, 200, "{body}");
-    let (status, body) = exchange(
-        http_port,
-        post(&format!("{path}/commit"), "", Some(&auth_header())).as_bytes(),
-    );
     // The HTTP surface carries the capacity class as status 507 with the
     // class-less general code `42000` (docs/api/http/spec.md), not the
-    // genericized 500.
+    // genericized 500 — raised on the statement that crossed the cap.
     assert_eq!(status, 507, "{body}");
     let error: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(error["errors"][0]["code"], "42000", "{body}");

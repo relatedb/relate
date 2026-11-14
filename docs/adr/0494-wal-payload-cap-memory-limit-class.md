@@ -134,3 +134,11 @@ not a refused commit (ADR-0492, unchanged).
   storage classification) are superseded by this ADR; its
   single-sourced `WAL_PAYLOAD_CAP_BYTES` constant and its scanner
   diagnostic distinction stand unchanged.
+
+## Later references
+
+ADR-0604 refuses a statement run inside an explicit transaction as soon
+as its redo takes the transaction's commit record over the cap, so the
+refusal this ADR classifies arrives at that statement rather than only at
+COMMIT. The variant, the class and the rendering decided here stand
+unchanged.

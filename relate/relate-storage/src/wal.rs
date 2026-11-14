@@ -885,7 +885,7 @@ mod scan;
 pub(crate) use scan::parse_seg_name;
 use scan::*;
 
-pub use encoded::EncodedOps;
+pub use encoded::{EncodedOps, PayloadTally};
 
 /// Segment count under `prefix` (ADR-0165). Checkpoint recycles every
 /// segment it covers, so each remaining segment may hold commits past the

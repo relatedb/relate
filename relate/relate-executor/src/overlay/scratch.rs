@@ -350,6 +350,16 @@ impl WriteScratch {
         self.redo.materialize()
     }
 
+    /// The redo ops at or after `from`: what the statements run since that
+    /// position appended. `None` when `from` is past the end — the log
+    /// shrank under the caller's cursor, which the caller refuses rather
+    /// than reading as nothing. Reads without draining, so a caller
+    /// bounding the transaction's prospective commit measures the same ops
+    /// that commit will.
+    pub fn redo_since(&self, from: usize) -> Option<Vec<RedoOp>> {
+        self.redo.ops_since(from)
+    }
+
     /// The one funnel every write goes through: post the op to the lazy
     /// equality indexes, account the ADR-0309 update counters, then append
     /// it to the redo log.

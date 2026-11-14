@@ -193,6 +193,14 @@ impl RedoLog {
         })
     }
 
+    /// The ops at or after `from`, materialized. `None` when `from` is past
+    /// the end — a broken cursor, never an empty read: the one caller (the
+    /// commit-cap tally) refuses it, because reading it as nothing would
+    /// silently undercount. `from == len` is an ordinary empty delta.
+    pub(super) fn ops_since(&self, from: usize) -> Option<Vec<RedoOp>> {
+        (from <= self.ops.len()).then(|| self.ops[from..].iter().map(LiveRedo::to_op).collect())
+    }
+
     /// The ops appended since the last [`Self::mark_validated`], and the log
     /// position just past them: the `end` to mark once they validate.
     pub(super) fn unvalidated(&self) -> (Vec<RedoOp>, usize) {

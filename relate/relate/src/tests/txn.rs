@@ -1,4 +1,4 @@
-use crate::{Database, Error, Value};
+use crate::{CapacityKind, Database, Error, Value};
 
 #[test]
 fn explicit_txn_read_your_writes_and_isolation() {
@@ -180,4 +180,83 @@ fn named_index_in_explicit_txn() {
             .as_string(),
         Some("person_name")
     );
+}
+
+/// A statement whose own redo crosses the ADR-0086 per-commit WAL payload
+/// cap is refused at that statement, with the capacity refusal the commit
+/// would have produced (ADR-0494) — not left to run on to a COMMIT that
+/// fails with every later statement's work already done (LABS-858).
+#[test]
+fn explicit_txn_refuses_the_statement_that_crosses_the_commit_cap() {
+    let db = Database::open(":memory:").unwrap();
+    let mut c = db.connect().unwrap();
+    c.begin().unwrap();
+    c.query("CREATE (:Small {p: 'x'})").unwrap();
+    // One 64 MiB string (26 doublings of one byte): over the cap, under the
+    // 256 MiB expression cap.
+    let err = c
+        .query("CREATE (:Big {p: reduce(s = 'x', i IN range(1, 26) | s + s)})")
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Capacity {
+                kind: CapacityKind::WalPayload,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    assert!(err.to_string().contains("64 MiB"), "{err}");
+    // Refused at that statement, so the transaction is failed there: the
+    // next statement is turned away rather than run.
+    let after = c.query("CREATE (:Later)").unwrap_err();
+    assert!(after.to_string().contains("rollback required"), "{after}");
+    assert!(c.in_transaction());
+    c.rollback().unwrap();
+}
+
+/// The cap is the transaction's, not one statement's: statements that each
+/// stay under it still cross it together, and the statement that takes the
+/// accumulated redo over is the one refused.
+#[test]
+fn explicit_txn_refuses_the_statement_that_crosses_the_accumulated_cap() {
+    let db = Database::open(":memory:").unwrap();
+    let mut c = db.connect().unwrap();
+    c.begin().unwrap();
+    // 16 MiB per statement (24 doublings of one byte): three fit under the
+    // cap, the fourth crosses it.
+    let chunk = "CREATE (:Chunk {p: reduce(s = 'x', i IN range(1, 24) | s + s)})";
+    for _ in 0..3 {
+        c.query(chunk).unwrap();
+    }
+    let err = c.query(chunk).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Capacity {
+                kind: CapacityKind::WalPayload,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    c.rollback().unwrap();
+}
+
+/// The refusal is the cap's, not a blanket size limit: a transaction whose
+/// redo stays under it commits.
+#[test]
+fn explicit_txn_under_the_cap_commits() {
+    let db = Database::open(":memory:").unwrap();
+    let mut c = db.connect().unwrap();
+    c.begin().unwrap();
+    // 16 MiB (24 doublings of 'x'), and a second statement's redo on top of
+    // it, all under the cap.
+    c.query("CREATE (:Big {p: reduce(s = 'x', i IN range(1, 24) | s + s)})")
+        .unwrap();
+    c.query("CREATE (:Small {p: 'y'})").unwrap();
+    c.commit().unwrap();
+    let n = c.query("MATCH (n) RETURN count(n) AS n").unwrap();
+    assert_eq!(n.rows[0][0], Value::Int(2));
 }

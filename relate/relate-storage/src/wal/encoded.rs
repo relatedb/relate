@@ -163,3 +163,133 @@ impl EncodedOps {
         &self.buf[self.start..]
     }
 }
+
+/// Counts the bytes a serializer writes, so a length can be taken without
+/// keeping the bytes.
+struct ByteCounter(u64);
+
+impl Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The encoded length of one op as an element of a record's `ops` array —
+/// the unit [`PayloadTally`] accumulates.
+fn op_element_len(op: &RedoOp) -> Result<u64> {
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, op)
+        .map_err(|e| Error::storage(format!("WAL serialization failed: {e}")))?;
+    Ok(counter.0)
+}
+
+/// A running tally of a commit record's prospective frame payload
+/// (ADR-0086) over the ops a transaction has accumulated, one op encoded
+/// once as it is added instead of the whole array once at commit: the
+/// maximum-width header slack, the array's brackets, one separator between
+/// elements, the closing brace, and each op's encoded length — the exact
+/// figure [`EncodedOps::encode`] bounds against
+/// [`Error::WAL_PAYLOAD_CAP_BYTES`], so a caller can refuse a transaction
+/// the moment its redo crosses the cap rather than at the commit that would
+/// have failed anyway.
+#[derive(Debug, Default)]
+pub struct PayloadTally {
+    /// The summed encoded length of the elements added so far.
+    elements: u64,
+    /// How many elements those are — the separator count derives from it,
+    /// and the resume position the caller feeds the next `add` derives from
+    /// it too: the tally owns the one count of what it has measured.
+    ops: u64,
+}
+
+impl PayloadTally {
+    /// Add `ops`, the batch appended since the last call. All-or-nothing
+    /// per batch: a serialization failure part-way through leaves the
+    /// tally exactly as it was, so the element figure and the op count
+    /// cannot drift apart on the error path.
+    pub fn add(&mut self, ops: &[RedoOp]) -> Result<()> {
+        let mut elements = 0u64;
+        for op in ops {
+            elements += op_element_len(op)?;
+        }
+        self.elements += elements;
+        self.ops += ops.len() as u64;
+        Ok(())
+    }
+
+    /// The number of ops measured so far — the redo-log position the next
+    /// [`Self::add`] resumes from, derived from the count the tally already
+    /// keeps instead of a second cursor field beside it.
+    pub fn ops_count(&self) -> usize {
+        usize::try_from(self.ops).expect("op count exceeds usize")
+    }
+
+    /// The prospective frame payload of everything added so far, in the
+    /// shape [`EncodedOps::encode`] measures it: header slack, `[`, the
+    /// elements with a `,` between them, `]`, and the record's `}`.
+    pub fn bytes(&self) -> u64 {
+        HEADER_MAX as u64 + 2 + self.elements + self.ops.saturating_sub(1) + 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use relate_core::{PropertyMap, Value};
+
+    use super::*;
+
+    /// The early-refusal tally must measure exactly what the encoder
+    /// bounds: a tally that undercounts lets a transaction run on to the
+    /// commit refusal it was meant to pre-empt, one that overcounts refuses
+    /// a transaction that would have committed.
+    #[test]
+    fn payload_tally_matches_the_encoder() {
+        let node = |id: i64| RedoOp::CreateNode {
+            id,
+            labels: Arc::new(vec!["User".to_string()]),
+            properties: Arc::new(PropertyMap::new()),
+        };
+        let sets: Vec<Vec<RedoOp>> = vec![
+            vec![],
+            vec![node(1)],
+            vec![
+                node(1),
+                RedoOp::SetNodeProp {
+                    id: 1,
+                    key: "name".to_string(),
+                    value: Value::String("u1".into()),
+                },
+                RedoOp::DeleteRel { id: 9 },
+                RedoOp::AddLabels {
+                    id: 1,
+                    labels: vec!["Admin".to_string()],
+                },
+                RedoOp::CreateIndex {
+                    name: "ix".to_string(),
+                    label: "User".to_string(),
+                    property: "name".to_string(),
+                },
+            ],
+            (0..64i64).map(node).collect(),
+        ];
+        for ops in sets {
+            let encoded = EncodedOps::encode_unmetered(&ops).unwrap();
+            // `payload()` is the body; the cap bounds the frame, header
+            // slack included.
+            let frame = HEADER_MAX as u64 + encoded.payload().len() as u64;
+            let mut tally = PayloadTally::default();
+            // Fed in batches, the way a transaction feeds its statements.
+            let mid = ops.len() / 2;
+            tally.add(&ops[..mid]).unwrap();
+            tally.add(&ops[mid..]).unwrap();
+            assert_eq!(tally.bytes(), frame, "{} ops", ops.len());
+        }
+    }
+}

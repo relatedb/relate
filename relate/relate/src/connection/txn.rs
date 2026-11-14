@@ -12,6 +12,7 @@ use relate_executor::{
     ExecRequest, QueryResult as ExecResult, RedoOp, SchemaSnapshot, WriteScratch,
 };
 use relate_planner::LogicalPlan;
+use relate_storage::PayloadTally;
 
 use crate::commit::try_wal_commit;
 use crate::{CancelToken, Connection, Value};
@@ -32,6 +33,50 @@ pub(crate) struct OpenTxn {
     /// and `db.ontology.apply` in this transaction see exactly this. A
     /// shared handle (pointer clone), never a document-sized copy.
     ontology_document: Option<Arc<str>>,
+    /// The running tally of the transaction's prospective commit record
+    /// (LABS-858). An explicit transaction commits as one WAL record, so
+    /// its size is bounded by the ADR-0086 cap from its first statement on
+    /// — the tally is what lets a statement that crosses the cap be
+    /// refused there, instead of leaving every later statement to run and
+    /// the commit to fail. It also owns the redo-log position it has
+    /// counted to (its op count), so no second cursor field exists to
+    /// drift out of step with it.
+    cap_tally: RefCell<PayloadTally>,
+}
+
+impl OpenTxn {
+    /// Refuse the statement that takes the transaction's prospective commit
+    /// record over the ADR-0086 payload cap, with the same refusal the
+    /// commit would have produced (ADR-0494). Each op is encoded once, as
+    /// the statement that appended it returns, so a statement that stays
+    /// under the cap never re-encodes what it already counted. The tally
+    /// owns the resume position (its own op count), so there is no second
+    /// cursor beside it to keep in step.
+    fn check_commit_cap(&self) -> Result<()> {
+        let scratch = self.scratch.borrow();
+        let cursor = self.cap_tally.borrow().ops_count();
+        // The log only grows while a transaction is open: the one path that
+        // rolls a batch back, `CALL { … } IN TRANSACTIONS`, is refused
+        // inside an explicit transaction. A position past the end is an
+        // invariant breach — refused loudly, never read as an empty delta
+        // (which would silently undercount the record the commit will
+        // encode).
+        let delta = scratch.redo_since(cursor).ok_or_else(|| {
+            Error::storage(format!(
+                "redo log shrank under the commit-cap cursor (position {cursor})"
+            ))
+        })?;
+        let mut tally = self.cap_tally.borrow_mut();
+        tally.add(&delta)?;
+        let bytes = tally.bytes();
+        if bytes > Error::WAL_PAYLOAD_CAP_BYTES {
+            return Err(Error::capacity_wal_payload(
+                bytes,
+                Error::WAL_PAYLOAD_CAP_BYTES,
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The drained redo of a prepared commit — the `Some` payload of
@@ -85,6 +130,7 @@ impl Connection {
             failed: Cell::new(false),
             pin_slot,
             ontology_document: self.inner.ontology.get(),
+            cap_tally: RefCell::new(PayloadTally::default()),
         });
         Ok(())
     }
@@ -233,12 +279,16 @@ impl Connection {
                 },
             )
         };
-        match result {
-            Ok(r) => Ok(r),
-            Err(e) => {
-                txn.failed.set(true);
-                Err(e)
-            }
+        // The statement's redo is the transaction's, and the transaction
+        // commits as one WAL record: a transaction already over the cap can
+        // only fail at COMMIT, after every statement still to come has run.
+        // Refuse it here, at the statement that crossed (LABS-858) — the
+        // check folded into the statement's own result, so the failure
+        // epilogue (fail the transaction, return the error) is spelled once.
+        let checked = result.and_then(|r| txn.check_commit_cap().map(|()| r));
+        if checked.is_err() {
+            txn.failed.set(true);
         }
+        checked
     }
 }
