@@ -84,9 +84,9 @@ private final class FixedAnswerZone: NSTimeZone, @unchecked Sendable {
 
     @Test func aNonFiniteDateIsRefused() throws {
         for interval in [Double.nan, .infinity, -.infinity] {
-            _ = try invalidParameterMessage {
+            #expect(try invalidParameterMessage {
                 _ = try CypherValue(Date(timeIntervalSinceReferenceDate: interval))
-            }
+            }.contains("not finite"))
         }
     }
 
@@ -210,17 +210,23 @@ private final class FixedAnswerZone: NSTimeZone, @unchecked Sendable {
         #expect(instant().zoned == noon && instant().local == noon.addingTimeInterval(7 * 3_600))
         // The structs hold any Int64. Values that would overflow the
         // arithmetic, and ones that are simply not a wall clock, read as nil.
-        let none: [(zoned: Date?, local: Date?)] = [
-            instant(year: .max), instant(year: .min), instant(year: 1_000_000_000),
-            instant(month: 0), instant(month: 13), instant(month: .min),
-            instant(day: 0), instant(day: 32), instant(month: 4, day: 31), instant(day: .max),
-            instant(year: 2025, month: 2, day: 29), instant(year: 1900, month: 2, day: 29),
-            instant(hour: 24), instant(hour: -1), instant(minute: 60), instant(second: 60),
-            instant(second: .max), instant(nanosecond: -1), instant(nanosecond: 2_000_000_000),
-            instant(nanosecond: .max), instant(nanosecond: .min),
+        let none: [String: (zoned: Date?, local: Date?)] = [
+            "year .max": instant(year: .max), "year .min": instant(year: .min),
+            "year 1,000,000,000": instant(year: 1_000_000_000),
+            "month 0": instant(month: 0), "month 13": instant(month: 13), "month .min": instant(month: .min),
+            "day 0": instant(day: 0), "day 32": instant(day: 32), "31 April": instant(month: 4, day: 31),
+            "day .max": instant(day: .max),
+            "29 February 2025": instant(year: 2025, month: 2, day: 29),
+            "29 February 1900": instant(year: 1900, month: 2, day: 29),
+            "hour 24": instant(hour: 24), "hour -1": instant(hour: -1), "minute 60": instant(minute: 60),
+            "second 60": instant(second: 60), "second .max": instant(second: .max),
+            "nanosecond -1": instant(nanosecond: -1),
+            "nanosecond 2,000,000,000": instant(nanosecond: 2_000_000_000),
+            "nanosecond .max": instant(nanosecond: .max), "nanosecond .min": instant(nanosecond: .min),
         ]
-        for (index, pair) in none.enumerated() {
-            #expect(pair.zoned == nil && pair.local == nil, "case \(index)")
+        for (name, pair) in none {
+            #expect(pair.zoned == nil, "DateTime.foundationDate, \(name)")
+            #expect(pair.local == nil, "LocalDateTime.foundationDate(in:), \(name)")
         }
         #expect(instant(year: 2024, month: 2, day: 29).zoned != nil)
         #expect(instant(year: 2000, month: 2, day: 29).zoned != nil)

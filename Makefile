@@ -79,10 +79,7 @@ swift-examples:
 		echo "== $$e"; $(SWIFT_ENV) swift run -q $$e || exit 1; done
 
 ## test-swift: The CI swift gate: XCFramework, swift test, examples, release stamp, the iOS example's tests and simulator build
-test-swift: build-xcframework test-swift-prebuilt
-
-## test-swift-prebuilt: The swift gate after its XCFramework build, for a caller that ran build-xcframework itself (the CI swift lane builds in a step of its own)
-test-swift-prebuilt: test-stamp-swift-package
+test-swift: build-xcframework test-stamp-swift-package
 	$(SWIFT_ENV) swift test
 	$(MAKE) swift-examples
 	cd examples/ios-snotel && $(SWIFT_ENV) swift test

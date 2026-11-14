@@ -27,6 +27,19 @@ private let storedNanoseconds: Range<Int64> = 0..<2_000_000_000
 private let convertibleIntervals =
     Double(convertibleEpochSeconds.lowerBound)..<Double(convertibleEpochSeconds.upperBound)
 
+/// Seconds since 1970 of a stored wall clock, as if it were UTC; `nil` when
+/// the stored components do not name one. The one rule both stored-value
+/// bridges read by: the six components must name a second of a supported
+/// year, and the nanoseconds must be ones a stored second carries.
+private func storedWallSeconds(
+    year: Int64, month: Int64, day: Int64, hour: Int64, minute: Int64, second: Int64,
+    nanosecond: Int64
+) -> Int64? {
+    guard storedNanoseconds.contains(nanosecond) else { return nil }
+    return epochSeconds(
+        year: year, month: month, day: day, hour: hour, minute: minute, second: second)
+}
+
 /// A `Foundation.Date` as whole seconds since 1970 plus microseconds in
 /// `0..<1_000_000`. A non-finite date, or one too far from the supported
 /// years for any offset to bring its wall clock into them, has no datetime.
@@ -34,9 +47,12 @@ private func epochMicroseconds(of date: Foundation.Date) throws(RelateError)
     -> (seconds: Int64, microseconds: Int64)
 {
     let interval = date.timeIntervalSinceReferenceDate
+    guard interval.isFinite else {
+        throw RelateError.invalidParameter("a Date that is not finite (\(interval)) has no datetime value")
+    }
     let whole = interval.rounded(.down)
-    // Compared as `Double`s, before any conversion to an integer: a NaN is
-    // in no range, and a huge interval fails here instead of trapping.
+    // Compared as `Double`s, before any conversion to an integer: a huge
+    // interval fails here instead of trapping.
     guard convertibleIntervals.contains(whole + Double(referenceDateEpochSeconds)) else {
         throw RelateError.invalidParameter(
             "a Date \(interval) seconds from the reference date has no datetime value: "
@@ -114,9 +130,9 @@ extension CypherValue.DateTime {
     /// datetime the engine returned always names one.
     public var foundationDate: Foundation.Date? {
         guard supportedOffsetSeconds.contains(offsetSeconds),
-            storedNanoseconds.contains(nanosecond),
-            let wall = epochSeconds(
-                year: year, month: month, day: day, hour: hour, minute: minute, second: second)
+            let wall = storedWallSeconds(
+                year: year, month: month, day: day, hour: hour, minute: minute, second: second,
+                nanosecond: nanosecond)
         else { return nil }
         return Foundation.Date(epochSeconds: wall - offsetSeconds, nanoseconds: nanosecond)
     }
@@ -141,23 +157,29 @@ extension CypherValue.LocalDateTime {
     /// as for ``CypherValue/DateTime/foundationDate``, and when `timeZone`
     /// reports an offset beyond 18 hours.
     public func foundationDate(in timeZone: TimeZone) -> Foundation.Date? {
-        guard storedNanoseconds.contains(nanosecond),
-            let wall = epochSeconds(
-                year: year, month: month, day: day, hour: hour, minute: minute, second: second)
+        guard
+            let wall = storedWallSeconds(
+                year: year, month: month, day: day, hour: hour, minute: minute, second: second,
+                nanosecond: nanosecond)
         else { return nil }
         // A zone's offset is its own word (a `TimeZone` can wrap a custom
-        // `NSTimeZone`), so it is checked before it is subtracted.
-        func offset(at instant: Int64) -> Int64? {
+        // `NSTimeZone`), so it is checked before it is used.
+        func zoneOffset(at instant: Int64) -> Int64? {
             let seconds = Int64(timeZone.secondsFromGMT(for: Foundation.Date(epochSeconds: instant)))
             return supportedOffsetSeconds.contains(seconds) ? seconds : nil
         }
+        // The instant the wall clock names at the offset the zone shows at
+        // `probe`. It is real only when the zone shows that same offset at
+        // the instant itself.
+        func candidate(probing probe: Int64) -> Int64? {
+            guard let offset = zoneOffset(at: probe) else { return nil }
+            let instant = wall - offset
+            return zoneOffset(at: instant) == offset ? instant : nil
+        }
         // The zone's offsets a day either side bracket any transition near
-        // the wall clock; a candidate instant is real when the zone shows
-        // the offset it was computed with.
+        // the wall clock.
         let earliest = [wall - secondsPerDay, wall + secondsPerDay]
-            .compactMap { offset(at: $0) }
-            .map { wall - $0 }
-            .filter { offset(at: $0) == wall - $0 }
+            .compactMap(candidate(probing:))
             .min()
         return earliest.map { Foundation.Date(epochSeconds: $0, nanoseconds: nanosecond) }
     }
