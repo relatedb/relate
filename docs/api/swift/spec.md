@@ -327,8 +327,9 @@ QueryResult.decode<T: Decodable>(_: T.Type = T.self, column: String, using: Cyph
   `["shelf", "books", "[1]", "n"]` is column `shelf`, key `books`, second
   element, key `n`. A `DecodingError` thrown by a type's own `init(from:)`
   is reported the same way at its coding path, and any other error it throws
-  with an empty path. The error's own text, which can quote the value it
-  refused, is the mismatch's `reason`; `found` is a fixed phrase.
+  at the path of the value that type was decoding from. The error's own
+  text, which can quote the value it refused, is the mismatch's `reason`;
+  `found` is a fixed phrase.
 
 ## Bridges
 

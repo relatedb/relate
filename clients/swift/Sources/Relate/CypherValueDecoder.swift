@@ -35,54 +35,14 @@ public struct CypherValueDecoder: Sendable {
     func decode<T: Decodable>(
         _ type: T.Type, from value: CypherValue, at codingPath: [any CodingKey]
     ) throws(RelateError) -> T {
-        try typed {
-            try decodeValue(T.self, from: .value(value), codingPath: codingPath, keyStrategy: keyStrategy)
-        }
+        try decodeValue(T.self, from: .value(value), codingPath: codingPath, keyStrategy: keyStrategy)
     }
 
     /// Decodes one record by column name. A type that decodes from a single
     /// value (a `String`, an `[Int]`) reads the one column of a one-column
     /// record.
     public func decode<T: Decodable>(_ type: T.Type, from record: Record) throws(RelateError) -> T {
-        try typed { try decodeValue(T.self, from: .record(record), codingPath: [], keyStrategy: keyStrategy) }
-    }
-
-    /// Runs a decode, turning whatever it throws into the package's error:
-    /// its own passes through, anything else (thrown by a type's
-    /// hand-written `init(from:)`) becomes a mismatch.
-    private func typed<T>(_ body: () throws -> T) throws(RelateError) -> T {
-        do {
-            return try body()
-        } catch let error as RelateError {
-            throw error
-        } catch {
-            throw mismatch(for: error)
-        }
-    }
-
-    /// The mismatch for an error a type's own `init(from:)` threw: at its
-    /// coding path when it is a `DecodingError`. The error's own text can
-    /// quote the value it refused, so it travels as the reason, which the
-    /// message sanitizes; `found` stays a fixed phrase.
-    private func mismatch(for error: any Error) -> RelateError {
-        switch error as? DecodingError {
-        case .keyNotFound(let key, let context):
-            missingKey(at: context.codingPath + [key])
-        case .typeMismatch(let type, let context):
-            shapeMismatch(
-                path: mismatchPath(context.codingPath), expected: "\(type)",
-                found: "a value of another type", reason: context.debugDescription)
-        case .valueNotFound(let type, let context):
-            shapeMismatch(path: mismatchPath(context.codingPath), expected: "\(type)", found: "null")
-        case .dataCorrupted(let context):
-            shapeMismatch(
-                path: mismatchPath(context.codingPath), expected: "a valid value",
-                found: "a value the type refuses", reason: context.debugDescription)
-        default:
-            shapeMismatch(
-                expected: "a decodable value", found: "an error from the type's decoding",
-                reason: "\(error)")
-        }
+        try decodeValue(T.self, from: .record(record), codingPath: [], keyStrategy: keyStrategy)
     }
 }
 
@@ -143,11 +103,42 @@ private func missingKey(at codingPath: [any CodingKey]) -> RelateError {
     shapeMismatch(path: mismatchPath(codingPath), expected: "a value", found: "no such key")
 }
 
+/// The mismatch for an error a type's own `init(from:)` threw while it was
+/// decoded at `codingPath`. A `DecodingError` names its own coding path;
+/// any other error is reported where the type was being decoded. The
+/// error's text can quote the value it refused, so it travels as the
+/// reason, which the message sanitizes; `found` stays a fixed phrase.
+private func mismatch(for error: any Error, at codingPath: [any CodingKey]) -> RelateError {
+    switch error as? DecodingError {
+    case .keyNotFound(let key, let context):
+        missingKey(at: context.codingPath + [key])
+    case .typeMismatch(let type, let context):
+        shapeMismatch(
+            path: mismatchPath(context.codingPath), expected: "\(type)",
+            found: "a value of another type", reason: context.debugDescription)
+    case .valueNotFound(let type, let context):
+        shapeMismatch(path: mismatchPath(context.codingPath), expected: "\(type)", found: "null")
+    case .dataCorrupted(let context):
+        shapeMismatch(
+            path: mismatchPath(context.codingPath), expected: "a valid value",
+            found: "a value the type refuses", reason: context.debugDescription)
+    default:
+        shapeMismatch(
+            path: mismatchPath(codingPath), expected: "a decodable value",
+            found: "an error from the type's decoding", reason: "\(error)")
+    }
+}
+
 /// Decodes one `T` from a source: through `CypherValueConvertible` when the
 /// type has that conversion, else through its own `init(from:)`.
+///
+/// Every decode, at every depth, goes through here, so this is where
+/// whatever a type's `init(from:)` throws becomes the package's error: a
+/// `RelateError` (from a decode nested below) passes through, anything else
+/// becomes a mismatch.
 private func decodeValue<T: Decodable>(
     _ type: T.Type, from source: Source, codingPath: [any CodingKey], keyStrategy: CypherKeyStrategy
-) throws -> T {
+) throws(RelateError) -> T {
     if let convertible = type as? any CypherValueConvertible.Type {
         let value = try singleValue(of: source, codingPath: codingPath, expected: "\(type)")
         do throws(RelateError) {
@@ -160,7 +151,13 @@ private func decodeValue<T: Decodable>(
             throw error.nested(under: mismatchPath(codingPath))
         }
     }
-    return try T(from: SourceDecoder(source: source, codingPath: codingPath, keyStrategy: keyStrategy))
+    do {
+        return try T(from: SourceDecoder(source: source, codingPath: codingPath, keyStrategy: keyStrategy))
+    } catch let error as RelateError {
+        throw error
+    } catch {
+        throw mismatch(for: error, at: codingPath)
+    }
 }
 
 /// The one value a source holds: itself, or the only column of a

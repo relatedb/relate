@@ -150,9 +150,10 @@ private struct Embedded: Decodable, Equatable {
         var failure = try resultMismatch { _ = try decoder.decode([Picky].self, from: [["n": 1], ["n": 0]]) }
         #expect(failure.path == ["[1]", "n"] && failure.expected == "UInt")
         #expect(failure.found == "a value of another type" && failure.reason == "0 is not positive")
-        // An error that is not a `DecodingError` names no path of its own.
-        failure = try resultMismatch { _ = try decoder.decode(Picky.self, from: ["n": 10]) }
-        #expect(failure.path.isEmpty && failure.found == "an error from the type's decoding")
+        // An error that is not a `DecodingError` names no path of its own:
+        // it is reported where the type was being decoded.
+        failure = try resultMismatch { _ = try decoder.decode([Picky].self, from: [["n": 1], ["n": 10]]) }
+        #expect(failure.path == ["[1]"] && failure.found == "an error from the type's decoding")
         #expect(failure.reason?.contains("Unhappy") == true)
     }
 

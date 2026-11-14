@@ -22,8 +22,7 @@ public protocol CypherValueConvertible {
 
 /// The one mismatch a conversion reports: `value` is not a `type`.
 func mismatch<T>(_ type: T.Type, _ value: CypherValue, reason: String? = nil) -> RelateError {
-    .unexpectedResult(
-        ResultMismatch(path: [], expected: "\(type)", found: value.kind.name, reason: reason))
+    shapeMismatch(expected: "\(type)", found: value.kind.name, reason: reason)
 }
 
 /// The payload `accessor` reads out of `value`, or the mismatch for `type`
