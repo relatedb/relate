@@ -127,7 +127,11 @@ bundle). Dev-dependencies and `testing/*` crates never ship and are out of
 scope. `THIRDPARTY-NOTICES.md` at the repository root carries the license
 text and the crate list for that closure, meeting the attribution
 requirements of the libraries we ship; the release attaches it next to the
-binaries (ADR-0605).
+binaries (ADR-0605). Each license appears once, grouped by SPDX id, with the
+SPDX list's standard text (`scripts/license-texts/<id>.txt`) and every crate
+using it, with each crate's own copyright lines listed under it. When the
+allow-list gains a license, add its text:
+`curl -fsS https://raw.githubusercontent.com/spdx/license-list-data/main/text/<id>.txt -o scripts/license-texts/<id>.txt`.
 
 **Maintain it on every dependency change** (a `Cargo.lock` change to a
 shipped crate's closure) — and re-check it at release time:
