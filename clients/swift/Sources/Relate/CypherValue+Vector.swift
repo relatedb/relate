@@ -5,14 +5,48 @@
 // exact, and narrowing back is exact for the dtypes that fit in one.
 
 extension CypherValue.Vector {
+    /// The most coordinates a vector built by the conveniences here may
+    /// carry: 4,096, the engine's upper bound on a `vector()` dimension and
+    /// on a vector index. A longer array is refused, not truncated. An
+    /// empty one is accepted, as it is when bound as a parameter.
+    public static let maximumCount = 4_096
+
+    /// Refuses a coordinate count above ``maximumCount``. Callers check the
+    /// count before they copy or convert the coordinates, so an oversized
+    /// array costs nothing.
+    private static func check(count: Int) throws(RelateError) {
+        guard count <= maximumCount else {
+            throw RelateError.invalidParameter(
+                "a vector of \(count) coordinates is over the maximum of \(maximumCount)")
+        }
+    }
+
+    /// `values` when its count is allowed and every coordinate is finite: a
+    /// NaN or an infinity is not a vector coordinate to the engine.
+    private static func checked<Coordinate: BinaryFloatingPoint>(
+        _ values: [Coordinate]
+    ) throws(RelateError) -> [Coordinate] {
+        try check(count: values.count)
+        if let index = values.firstIndex(where: { !$0.isFinite }) {
+            throw RelateError.invalidParameter(
+                "vector coordinate \(index) is \(values[index]), not a finite number")
+        }
+        return values
+    }
+
     /// A `FLOAT32` vector — the dtype embedding models produce.
-    public static func float32(_ values: [Float]) -> CypherValue.Vector {
-        .floats(dtype: .float32, values: values.map(Double.init))
+    ///
+    /// Throws ``RelateError/invalidParameter(_:)`` for more than
+    /// ``maximumCount`` coordinates and for a NaN or infinite one.
+    public static func float32(_ values: [Float]) throws(RelateError) -> CypherValue.Vector {
+        .floats(dtype: .float32, values: try checked(values).map(Double.init))
     }
 
     /// A `FLOAT` (64-bit) vector.
-    public static func float64(_ values: [Double]) -> CypherValue.Vector {
-        .floats(dtype: .float, values: values)
+    ///
+    /// Throws as ``float32(_:)`` does.
+    public static func float64(_ values: [Double]) throws(RelateError) -> CypherValue.Vector {
+        .floats(dtype: .float, values: try checked(values))
     }
 
     /// The coordinate type.
@@ -53,13 +87,17 @@ extension CypherValue.Vector {
 
 extension CypherValue {
     /// A `FLOAT32` vector value.
-    public init(vector values: [Float]) {
-        self = .vector(.float32(values))
+    ///
+    /// Throws as ``Vector/float32(_:)`` does.
+    public init(vector values: [Float]) throws(RelateError) {
+        self = .vector(try .float32(values))
     }
 
     /// A `FLOAT` (64-bit) vector value.
-    public init(vector values: [Double]) {
-        self = .vector(.float64(values))
+    ///
+    /// Throws as ``Vector/float64(_:)`` does.
+    public init(vector values: [Double]) throws(RelateError) {
+        self = .vector(try .float64(values))
     }
 }
 
@@ -69,21 +107,26 @@ import CoreML
 extension CypherValue.Vector {
     /// The scalars of a Core ML array, in its row-major order, whatever its
     /// shape: a `[1, 384]` embedding output becomes a 384-coordinate vector.
-    public init(_ array: MLShapedArray<Float>) {
-        self = .float32(array.scalars)
+    ///
+    /// Throws as ``float32(_:)`` does.
+    public init(_ array: MLShapedArray<Float>) throws(RelateError) {
+        try Self.check(count: array.scalarCount)
+        self = try .float32(array.scalars)
     }
 
     /// The scalars of a Core ML multi-array, in its row-major order,
     /// whatever its shape. `float16` and `float32` arrays become `FLOAT32`
     /// vectors, `double` arrays `FLOAT`, and `int32` arrays `INTEGER32`; any
     /// other element type is refused with
-    /// ``RelateError/invalidParameter(_:)``.
+    /// ``RelateError/invalidParameter(_:)``, as are more than
+    /// ``maximumCount`` scalars and a NaN or infinite one.
     public init(_ array: MLMultiArray) throws(RelateError) {
+        try Self.check(count: array.count)
         switch array.dataType {
         case .float32, .float16:
-            self = .float32(MLShapedArray<Float>(converting: array).scalars)
+            self = try .float32(MLShapedArray<Float>(converting: array).scalars)
         case .double:
-            self = .float64(MLShapedArray<Double>(converting: array).scalars)
+            self = try .float64(MLShapedArray<Double>(converting: array).scalars)
         case .int32:
             self = .ints(
                 dtype: .integer32,

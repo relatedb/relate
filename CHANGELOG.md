@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Foundation.Date` to and from `DATETIME`, `LOCAL DATETIME` and `DATE`;
   `Swift.Duration`; `[Float]` and Core ML arrays to `FLOAT32` vectors;
   points from a latitude and longitude or a `CLLocationCoordinate2D`.
+  The bridges check their input and refuse, with `invalidParameter`, a date
+  outside the years -999,999,999 through 999,999,999, a UTC offset beyond
+  18 hours, date components that are not a calendar day, a duration beyond
+  `Int64` seconds, a latitude or longitude off the globe, and a vector with
+  a non-finite coordinate or more than 4,096 coordinates.
 
 ### Changed
 

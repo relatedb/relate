@@ -193,44 +193,69 @@ types. Inside an `extension CypherValue`, the bare names `Date` and
 CypherValue.init(_ date: Foundation.Date) throws(RelateError)                    // a UTC .dateTime
 CypherValue.DateTime.init(_ date: Foundation.Date, offsetSeconds: Int64 = 0) throws(RelateError)
 CypherValue.DateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the zone's offset at that instant; no zone id
-CypherValue.DateTime.foundationDate: Foundation.Date                             // wall clock less offset
+CypherValue.DateTime.foundationDate: Foundation.Date?                            // wall clock less offset; nil when the stored components name no instant
 CypherValue.LocalDateTime.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError)
 CypherValue.LocalDateTime.foundationDate(in: TimeZone) -> Foundation.Date?       // nil in a daylight-saving gap; the earlier instant in an overlap
 CypherValue.Date.init(_ date: Foundation.Date, in: TimeZone) throws(RelateError) // the calendar day there
-CypherValue.Date.init?(_ components: DateComponents)                             // needs year, month and day; nil for a non-Gregorian calendar's components; era 0 is BCE (1 BCE = year 0)
+CypherValue.Date.init(_ components: DateComponents) throws(RelateError)          // needs year, month and day; refuses a non-Gregorian calendar's components; era 0 is BCE (1 BCE = year 0)
+CypherValue.Date.supportedYears: ClosedRange<Int64>                              // -999,999,999 ... 999,999,999
 CypherValue.Date.dateComponents: DateComponents                                  // carries the Gregorian calendar
 CypherValue.Date.startOfDay(in: TimeZone) -> Foundation.Date?
 
 // Swift.Duration
-CypherValue.Duration.init(_ duration: Swift.Duration)                            // months and days zero; sub-nanosecond truncated
+CypherValue.Duration.init(_ duration: Swift.Duration) throws(RelateError)        // months and days zero; sub-nanosecond truncated
 CypherValue.Duration.swiftDuration: Swift.Duration?                              // nil when months or days are non-zero
 CypherValue.Duration.dateComponents: DateComponents                              // month, day, second, nanosecond
 
 // Vectors
-CypherValue.init(vector: [Float])                                                // FLOAT32
-CypherValue.init(vector: [Double])                                               // FLOAT
-CypherValue.Vector.float32(_: [Float]), .float64(_: [Double])
+CypherValue.init(vector: [Float]) throws(RelateError)                            // FLOAT32
+CypherValue.init(vector: [Double]) throws(RelateError)                           // FLOAT
+CypherValue.Vector.float32(_: [Float]), .float64(_: [Double]) throws(RelateError)
+CypherValue.Vector.maximumCount: Int                                             // 4,096
 CypherValue.Vector.dtype: DType, .count: Int
 CypherValue.Vector.float32Values: [Float]?                                       // nil for an integer dtype; a FLOAT vector is narrowed (nil if a coordinate exceeds Float's range)
 CypherValue.Vector.doubleValues: [Double]?                                       // nil for an integer dtype
-CypherValue.Vector.init(_: MLShapedArray<Float>)                                 // Core ML: scalars in row-major order, any shape
+CypherValue.Vector.init(_: MLShapedArray<Float>) throws(RelateError)             // Core ML: scalars in row-major order, any shape
 CypherValue.Vector.init(_: MLMultiArray) throws(RelateError)                     // float16/float32 → FLOAT32, double → FLOAT, int32 → INTEGER32
 
 // Points
-CypherValue.Point.init(latitude: Double, longitude: Double, height: Double? = nil) // srid 4326, or 4979 with a height
+CypherValue.Point.init(latitude: Double, longitude: Double, height: Double? = nil) throws(RelateError) // srid 4326, or 4979 with a height
 CypherValue.Point.init(x: Double, y: Double, z: Double? = nil)                     // srid 7203, or 9157 with z
 CypherValue.Point.crs: CRS?                                                        // .cartesian | .cartesian3D | .wgs84 | .wgs84_3D; nil for another srid
 CypherValue.Point.latitude, .longitude: Double?                                    // nil unless geographic
 CypherValue.Point.height: Double?                                                  // nil unless 3D geographic
-CypherValue.Point.init(_: CLLocationCoordinate2D), .coordinate: CLLocationCoordinate2D? // Core Location
-CypherValue.init(_: CLLocationCoordinate2D)
+CypherValue.Point.init(_: CLLocationCoordinate2D) throws(RelateError)              // Core Location
+CypherValue.Point.coordinate: CLLocationCoordinate2D?                              // nil unless geographic
+CypherValue.init(_: CLLocationCoordinate2D) throws(RelateError)
 ```
 
 - **Precision.** `Foundation.Date` is a `Double` of seconds, resolving about
   a quarter of a microsecond near the present, so the date bridges carry
   microseconds. A value at millisecond or microsecond precision round-trips
-  unchanged for instants within about two centuries of 2001. A non-finite
-  `Date` is refused with `.invalidParameter`.
+  unchanged for instants within about two centuries of 2001.
+- **Checked input.** A bridge that builds a value refuses input it cannot
+  represent, with `.invalidParameter`, and no input makes its arithmetic
+  overflow:
+  - a non-finite `Foundation.Date`, or one whose wall clock (at the offset
+    asked for) falls in a year outside `CypherValue.Date.supportedYears`;
+  - a UTC offset beyond 18 hours either side, given directly or reported
+    by a `TimeZone`;
+  - a `Swift.Duration` beyond what `Int64` seconds hold;
+  - date components that are not a day of the Gregorian calendar (month
+    outside 1...12, a day the month does not have, a year outside the
+    supported years, a missing field);
+  - a latitude outside -90...90, a longitude outside -180...180, or a
+    non-finite height. The engine's `point()` function wraps a longitude
+    instead; the initializer does not;
+  - a vector with a NaN or infinite coordinate, or with more than
+    `CypherValue.Vector.maximumCount` coordinates (4,096, the engine's bound
+    on a `vector()` dimension and on a vector index). Nothing is truncated.
+
+  The memberwise initializers and the enum cases (`Point(srid:x:y:z:)`,
+  `Date(year:month:day:)`, `.floats(dtype:values:)`) store what they are
+  given. The bridges that read such a value back (`foundationDate`,
+  `foundationDate(in:)`, `startOfDay(in:)`) are `nil` when its components
+  name no instant, and never trap on them. An empty vector is accepted.
 - **Calendar.** The bridges use proleptic-Gregorian arithmetic at every
   year, as Cypher's temporal values do. Foundation's Gregorian `Calendar`
   is Julian before October 1582 and is not used.

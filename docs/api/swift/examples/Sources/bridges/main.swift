@@ -18,38 +18,47 @@ try conn.query(
     ])
 
 let row = try conn.query("MATCH (b:Book) RETURN b.finished_at AS at, b.finished_on AS day").records[0]
-let readBack = row["at"]!.dateTimeValue!.foundationDate
+let readBack = row["at"]!.dateTimeValue!.foundationDate!
 print("finished:", readBack.formatted(.iso8601), "local day:", row["day"]!)
 precondition(readBack == finished)
 let day = row["day"]!.dateValue!.dateComponents
 precondition(day.year == 2026 && day.month == 11 && day.day == 9)
 
 // A fixed-length Swift.Duration; a duration with months or days has none.
-let listened = CypherValue.Duration(.seconds(5_400))
+let listened = try CypherValue.Duration(.seconds(5_400))
 let fixed = try conn.query("RETURN $d", ["d": .duration(listened)]).scalar().durationValue!
 precondition(fixed.swiftDuration == .seconds(5_400))
 let calendar = try conn.query("RETURN duration('P1M')").scalar().durationValue!
 precondition(calendar.swiftDuration == nil)
 
-// Float embeddings bind as a FLOAT32 vector and read back exactly.
+// Float embeddings bind as a FLOAT32 vector and read back exactly. A NaN,
+// an infinity or more than Vector.maximumCount coordinates is refused.
 let embedding: [Float] = [0.12, -0.5, 0.33, 0.9]
-try conn.query("MATCH (b:Book) SET b.embedding = $v", ["v": CypherValue(vector: embedding)])
+try conn.query("MATCH (b:Book) SET b.embedding = $v", ["v": try CypherValue(vector: embedding)])
 let stored = try conn.query("MATCH (b:Book) RETURN b.embedding").scalar().vectorValue!
 print("embedding:", stored.dtype, stored.count, "coordinates")
 precondition(stored.dtype == .float32 && stored.float32Values == embedding)
 
-// A point by latitude and longitude: the labels carry the order.
-let missoula = CypherValue.Point(latitude: 46.87, longitude: -113.99)
+// A point by latitude and longitude: the labels carry the order, and a
+// coordinate off the globe is refused.
+let missoula = try CypherValue.Point(latitude: 46.87, longitude: -113.99)
+do {
+    _ = try CypherValue.Point(latitude: -113.99, longitude: 46.87)  // swapped
+    preconditionFailure("a latitude of -113.99 was accepted")
+} catch RelateError.invalidParameter(let message) {
+    print("refused:", message)
+}
 try conn.query("CREATE (:Place {name: 'Missoula', location: $p})", ["p": .point(missoula)])
 let place = try conn.query("MATCH (p:Place) RETURN p.location").scalar().pointValue!
 precondition(place.crs == .wgs84 && place.latitude == 46.87 && place.longitude == -113.99)
 
 // Core Location both ways.
 let coordinate: CLLocationCoordinate2D = place.coordinate!
-precondition(CypherValue(coordinate) == .point(missoula))
+let bridged = try CypherValue(coordinate)
+precondition(bridged == .point(missoula))
 let metres = try conn.query(
     "MATCH (p:Place) RETURN point.distance(p.location, $here)",
-    ["here": CypherValue(CLLocationCoordinate2D(latitude: 46.87, longitude: -113.99))]
+    ["here": try CypherValue(CLLocationCoordinate2D(latitude: 46.87, longitude: -113.99))]
 ).scalar().doubleValue!
 print("distance:", metres, "m")
 precondition(metres < 1)

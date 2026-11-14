@@ -46,11 +46,11 @@ day: 2))`) or from platform types:
 
 ```swift
 try CypherValue(Date())                               // UTC DATETIME, microsecond precision
-value.dateTimeValue?.foundationDate                   // back to a Foundation.Date
-CypherValue(vector: floats)                           // [Float] → FLOAT32 vector
+value.dateTimeValue?.foundationDate                   // back to a Foundation.Date (optional)
+try CypherValue(vector: floats)                       // [Float] → FLOAT32 vector; finite, at most 4,096 coordinates
 value.vectorValue?.float32Values                      // back to [Float], exact
-CypherValue.Point(latitude: 40.0, longitude: -105.0)  // srid 4326; .latitude / .longitude read back
-CypherValue(CLLocationCoordinate2D(...)); point.coordinate
+try CypherValue.Point(latitude: 40.0, longitude: -105.0)  // srid 4326; refuses a coordinate off the globe
+try CypherValue(CLLocationCoordinate2D(...)); point.coordinate
 try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any shape
 ```
 

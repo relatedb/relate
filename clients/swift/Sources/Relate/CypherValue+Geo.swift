@@ -28,7 +28,21 @@ extension CypherValue.Point {
     /// A WGS 84 point from a latitude and longitude in degrees (and an
     /// optional height in metres). The labels carry the order, so the
     /// longitude cannot land in `y` by accident.
-    public init(latitude: Double, longitude: Double, height: Double? = nil) {
+    ///
+    /// Throws ``RelateError/invalidParameter(_:)`` for a latitude outside
+    /// -90...90, a longitude outside -180...180 (the engine's `point()`
+    /// wraps such a longitude; this refuses it), and a height that is not
+    /// finite. A NaN is in neither range.
+    public init(latitude: Double, longitude: Double, height: Double? = nil) throws(RelateError) {
+        guard (-90.0...90.0).contains(latitude) else {
+            throw RelateError.invalidParameter("latitude \(latitude) is outside -90...90")
+        }
+        guard (-180.0...180.0).contains(longitude) else {
+            throw RelateError.invalidParameter("longitude \(longitude) is outside -180...180")
+        }
+        if let height, !height.isFinite {
+            throw RelateError.invalidParameter("height \(height) is not a finite number")
+        }
         self.init(
             srid: (height == nil ? CRS.wgs84 : CRS.wgs84_3D).rawValue,
             x: longitude, y: latitude, z: height)
@@ -54,8 +68,11 @@ import CoreLocation
 
 extension CypherValue.Point {
     /// A 2D WGS 84 point at a Core Location coordinate.
-    public init(_ coordinate: CLLocationCoordinate2D) {
-        self.init(latitude: coordinate.latitude, longitude: coordinate.longitude)
+    ///
+    /// Throws as ``init(latitude:longitude:height:)`` does: an invalid
+    /// coordinate, `kCLLocationCoordinate2DInvalid` among them, is refused.
+    public init(_ coordinate: CLLocationCoordinate2D) throws(RelateError) {
+        try self.init(latitude: coordinate.latitude, longitude: coordinate.longitude)
     }
 
     /// The point as a Core Location coordinate; `nil` unless the point is
@@ -68,8 +85,10 @@ extension CypherValue.Point {
 
 extension CypherValue {
     /// A 2D WGS 84 `.point` at a Core Location coordinate.
-    public init(_ coordinate: CLLocationCoordinate2D) {
-        self = .point(Point(coordinate))
+    ///
+    /// Throws as ``Point/init(latitude:longitude:height:)`` does.
+    public init(_ coordinate: CLLocationCoordinate2D) throws(RelateError) {
+        self = .point(try Point(coordinate))
     }
 }
 #endif
