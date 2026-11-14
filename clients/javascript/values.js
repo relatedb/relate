@@ -15,7 +15,7 @@
 // the codec; library loading (path resolution) stays in index.js.
 
 const koffi = require("koffi");
-const { decodedEntity } = require("./graph");
+const { decodedEntity } = require("./entity");
 const { abiViolation } = require("./errors");
 
 // int64 range and the Number safe-integer window, as BigInts for exact
@@ -400,7 +400,7 @@ module.exports = function createValueCodec(lib) {
       case V.STRING:
         return readString(v);
       case V.NODE:
-        // decodedEntity (graph.js) stamps the structural entity marker —
+        // decodedEntity (entity.js) stamps the structural entity marker —
         // the kind argument is the walker's enumerator, never a key read
         // back from the object.
         return decodedEntity("node", {

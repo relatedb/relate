@@ -48,6 +48,12 @@ use crate::plan::{plan_any_clause, plan_any_expr, LogicalPlan};
 /// engines (`CALL {}`, `WHEN`/`ELSE`, `FOREACH`), or procedure calls
 /// escalates to the query worker, whose wait keeps ADR-0312's NOOP
 /// keep-alive ticking for the statements that can actually outlive it.
+///
+/// Conjunct order is load-bearing: the clause walk runs first and owns the
+/// write refusal, so the cartesian walk ([`part_products`]) never sees a
+/// mutating clause as anything but a no-op. The `writes_never_run_inline`
+/// test pins that a write-bearing plan is refused whatever its pattern
+/// shape.
 pub fn plan_is_bounded_work(plan: &LogicalPlan) -> bool {
     !plan_any_clause(plan, &mut clause_escalates)
         && !plan_any_expr(plan, &mut Expr::is_scope_bearing)
@@ -288,6 +294,20 @@ mod tests {
     /// `query_type` tests' `type_of`.
     fn bounded_work(cypher: &str) -> bool {
         plan_is_bounded_work(&crate::plan_of(cypher))
+    }
+
+    #[test]
+    fn writes_never_run_inline() {
+        // Disjoint-free single patterns (no product) beside a write: the
+        // refusal comes from the clause walk, not the cartesian walk.
+        for cypher in [
+            "MATCH (a:User {id: $i}) CREATE (a)-[:T]->(:N)",
+            "MATCH (a:User {id: $i}) SET a.x = 1",
+            "MATCH (a:User {id: $i}) DELETE a",
+            "MERGE (a:User {id: $i})",
+        ] {
+            assert!(!bounded_work(cypher), "{cypher}");
+        }
     }
 
     #[test]

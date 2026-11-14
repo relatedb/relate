@@ -93,6 +93,14 @@ def test_cursor_execute_with_params(db):
     assert cur.fetchone()["n"] == 7
 
 
+def test_closed_connection_autocommit_assignment_raises(db):
+    # Enabling autocommit commits first, and commit() refuses a closed
+    # connection: the closed-connection edge of the autocommit setter.
+    db.close()
+    with pytest.raises(relate.ProgrammingError):
+        db.autocommit = True
+
+
 def test_unbound_cursor_execute_raises():
     cur = relate.Cursor()
     with pytest.raises(relate.ProgrammingError):
