@@ -43,35 +43,25 @@ jobs:
           ./run.sh env --relate-src "$RELATE_SRC" --relate-rev 657aac43 || true
           ./run.sh load --relate-src "$RELATE_SRC" --relate-rev 657aac43 2>&1 | grep -v -i "token" | tail -3
           ls ../../.cache/engines ../../.cache/pkc/stores
-      - name: Wall vs CPU per process
+      - name: Env bisect
         run: |
           B=relate-benchmarks-private
           ls $B/.cache/engines
           STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
           Q=$(realpath $B/benchmarks/pokec/queries)
-          mkdir -p rca-out
-          echo "RETURN 1 AS x;" > base.cypher
-          (echo ".timer on"; cat $Q/q19.cypher) > raw19.cypher
-          (echo ".timer on"; grep -v '^//' $Q/q19.cypher) > strip19.cypher
-          (echo ".timer on"; cat $Q/q33.cypher) > raw33.cypher
+          (echo ".timer on"; grep -v '^//' $Q/q19.cypher) > q19.cypher
+          run() { # label, engine-dir, prefix...
+            lab=$1; e=$2; shift 2
+            CLI=$(realpath $e/relate)
+            rm -rf "$STORE.w.rl"; cp -r "$STORE" "$STORE.w.rl"
+            echo "=== $(basename $e) $lab"
+            ( "$@" /usr/bin/time -f "WALL %e s" "$CLI" query --mode jsonl -d "$STORE.w.rl" < q19.cypher | grep -E "^Time" ) 2>&1 | tail -3
+            rm -rf "$STORE.w.rl"
+          }
           for e in $B/.cache/engines/*/; do
-            CLI=$(realpath $e/relate); tag=$(basename $e)
-            for c in base raw19 strip19 raw33; do
-              rm -rf "$STORE.w.rl"; cp -r "$STORE" "$STORE.w.rl"
-              echo "=== engine=$tag case=$c"
-              ( RELATE_MAX_ROWS=0 /usr/bin/time -f "WALL %e s USER %U s SYS %S s MAXRSS %M KB" "$CLI" query --mode jsonl -d "$STORE.w.rl" < $c.cypher > rca-out/w-$tag-$c.out ) 2>&1 | tail -3
-              grep -E "^Time" rca-out/w-$tag-$c.out || true
-              rm -rf "$STORE.w.rl"
-            done
-          done
-      - name: measure.py exact driver
-        env:
-          RCA_QIDS: '19,33'
-          RCA_TIMEOUT: '300'
-        run: |
-          B=relate-benchmarks-private
-          STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
-          for e in $B/.cache/engines/*/; do
-            CLI=$(realpath $e/relate); tag=$(basename $e); echo "=== driver engine=$tag"
-            python3 -I relate/.rca/measure.py "$CLI" "$STORE" "$(realpath $B/benchmarks/pokec/queries)" "$(realpath rca-out)/m-$tag" 2>&1 | cut -c1-200 | tail -5
+            case $(basename $e) in *g39a9b62*|*g657aac4*) ;; *) continue;; esac
+            run unset-maxrows $e env -u RELATE_MAX_ROWS
+            run maxrows0 $e env RELATE_MAX_ROWS=0
+            run sudo-plain $e sudo
+            run sudo-timeout $e sudo timeout -s KILL 300
           done
