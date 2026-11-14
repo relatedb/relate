@@ -18,6 +18,8 @@ const COMMAND_WORDS: &[&str] = &[
     "upgrade",
     "update",
     "telemetry",
+    "feedback",
+    "agent-feedback",
     "pull",
     "push",
     "run",
@@ -103,6 +105,7 @@ fn test_command_help_pages_follow_the_build() {
             "skill" => "otherwise refuse it",
             "upgrade" => "--yes",
             "telemetry" => "on|off|status",
+            "feedback" => "GitHub issue",
             // The dynamic installed-actions section: present in the
             // zero-installed state too (ADR-0429 §1).
             "run" => "Installed actions",
@@ -365,6 +368,33 @@ fn test_upgrade_is_not_included_without_upgrade_feature() {
 #[test]
 fn test_telemetry_is_not_included_without_telemetry_feature() {
     assert_not_included(&["telemetry", "status"], "telemetry");
+}
+
+/// Both feedback surfaces carry no feature and ship in every bundle
+/// (ADR-0588 §5): a first-party command group of the product binary, so even
+/// the smallest build answers them instead of the ADR-0104 not-included
+/// error. The person's command is the piped run's surface; the agent's is
+/// reached by naming agent mode.
+#[test]
+fn test_feedback_surfaces_are_in_every_bundle() {
+    let home = tempdir();
+    let (status, stdout, stderr) = run_cli(Opts::new(&["feedback"]).in_home(home.path()));
+    assert!(status.success(), "feedback failed: {stderr}");
+    assert!(
+        !stderr.contains("is not included in this build"),
+        "feedback is not a not-included command: {stderr}"
+    );
+    assert!(!stdout.is_empty(), "feedback prints its state");
+
+    let (_, _, stderr) = run_cli(
+        Opts::new(&["agent-feedback", "--expected", "x", "--observed", "y"])
+            .in_home(home.path())
+            .with_envs(&[("RELATE_AGENT_MODE", "1")]),
+    );
+    assert!(
+        !stderr.contains("is not included in this build"),
+        "agent-feedback is not a not-included command: {stderr}"
+    );
 }
 
 /// `run` rides `extensions` at `full` + `agent` (ADR-0429 §8), never

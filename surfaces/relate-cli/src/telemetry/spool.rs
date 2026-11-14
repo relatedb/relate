@@ -41,7 +41,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::envelope::{spool_line, uuid_v4};
+use relate_feedback::ids::uuid_v4;
+
+use super::envelope::spool_line;
 
 /// The spool file prefix: `telemetry-spool-<uuid>.jsonl`, one file per
 /// run, written only by that run's exit. `pub(crate)` so the src-side

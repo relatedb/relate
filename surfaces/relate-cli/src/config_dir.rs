@@ -43,20 +43,40 @@ pub(crate) const CONFIG_DIR_NAME: &str = "relate";
 /// it.
 ///
 /// The real-env twin of [`config_dir_with`], called by the telemetry
-/// surfaces (`telemetry_cmd`'s runs, the handle's event walks) and by
-/// the registry's real-env entry (`ActionRegistry::load` in
-/// `extensions::registry`, ADR-0429 §6).
-#[cfg(any(feature = "telemetry", feature = "extensions"))]
+/// surfaces (`telemetry_cmd`'s runs, the handle's event walks), the
+/// feedback verbs (ADR-0588) and the registry's real-env entry
+/// (`ActionRegistry::load` in `extensions::registry`, ADR-0429 §6).
 pub(crate) fn config_dir() -> Option<PathBuf> {
-    config_dir_with(&|k| std::env::var(k).ok())
+    config_dir_with(&real_env)
 }
 
 /// The user-facing hint for the unresolved-base error, stated once
 /// beside the resolution it names so the advertised bases cannot drift
 /// from the chain. Consumed by the `telemetry` command and the
-/// extension surfaces' no-base refusals, hence the gate.
-#[cfg(any(feature = "telemetry", feature = "extensions"))]
+/// extension surfaces' no-base refusals.
 pub(crate) const NO_BASE_HINT: &str = "set $XDG_CONFIG_HOME, $HOME, $APPDATA, or $USERPROFILE";
+
+/// The unresolved-base refusal, printed and answered with exit 1: one
+/// message and one exit code for every config writer, `command` naming the
+/// verb whose write could not start (e.g. `telemetry`, `feedback enable`).
+pub(crate) fn no_base(command: &str) -> i32 {
+    crate::print_error(format!(
+        "Error: {command}: cannot resolve a config directory ({NO_BASE_HINT})"
+    ));
+    1
+}
+
+/// The process environment, unfiltered — [`env_var`] and [`config_dir_with`]
+/// apply the set-and-non-empty rule to it.
+fn real_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
+/// [`home_dir::non_empty`] over the process environment: the telemetry
+/// handle's and the feedback verbs' one real-env read.
+pub(crate) fn env_var(key: &str) -> Option<String> {
+    crate::home_dir::non_empty(&real_env, key)
+}
 
 /// Injectable-env variant of [`config_dir`]: the same resolution with
 /// the base read through `env`, so tests and the registry's injectable

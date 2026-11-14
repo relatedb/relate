@@ -2223,15 +2223,16 @@ name = "relate-cli"
 version = "1.0.2"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "flate2",
  "indexmap",
  "libc",
- "rand",
  "relate",
  "relate-auth",
  "relate-bolt",
  "relate-catalog",
  "relate-eggs",
+ "relate-feedback",
  "relate-formatter",
  "relate-fs-to-graph",
  "relate-git-to-graph",
@@ -2369,6 +2370,22 @@ dependencies = [
  "tempfile",
  "unicode-normalization",
  "web-time",
+]
+
+[[package]]
+name = "relate-feedback"
+version = "1.0.2"
+dependencies = [
+ "chrono",
+ "fs4",
+ "rand",
+ "regex",
+ "relate-test-support",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-normalization",
+ "ureq",
 ]
 
 [[package]]

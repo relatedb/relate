@@ -5,11 +5,13 @@
 //! `arch`, `version`, `uptime` (seconds since [`BaseContext`] creation),
 //! `invoker`. The events themselves are defined in `event.rs`.
 
-use std::fmt::Write as _;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
 use serde_json::{Map, Value};
+
+use relate_feedback::ids::uuid_v4;
+
+use crate::agent_mode::{launched_by, Launched};
 
 use super::Event;
 
@@ -20,27 +22,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// one serializer seam, always the swallowed form (ADR-0079 §5: no
 /// telemetry failure may panic or print; an envelope that cannot
 /// serialize is dropped, like an overflowed one). The batch form of the
-/// same policy lives at its single call site (`post_batch`), not behind
-/// a second pass-through wrapper.
+/// same policy lives at its single call site (the drain loop's
+/// `Client::post`), not behind a second pass-through wrapper.
 pub(crate) fn spool_line(event: &Value) -> Option<String> {
     serde_json::to_string(event).ok()
-}
-
-/// A random UUID v4 (8-4-4-4-12 lowercase hex) built from the workspace
-/// `rand` crate (ADR-0079 §2 — deliberately no `uuid` dependency).
-pub(crate) fn uuid_v4() -> String {
-    let mut b = [0u8; 16];
-    rand::rng().fill_bytes(&mut b);
-    b[6] = (b[6] & 0x0f) | 0x40; // version 4
-    b[8] = (b[8] & 0x3f) | 0x80; // variant 1 (RFC 4122)
-    let mut s = String::with_capacity(36);
-    for (i, byte) in b.iter().enumerate() {
-        if matches!(i, 4 | 6 | 8 | 10) {
-            s.push('-');
-        }
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
 }
 
 /// `invoker` base dimension (ADR-0079 §4): who launched the CLI.
@@ -61,36 +46,20 @@ impl Invoker {
     }
 }
 
-/// Known agent marker environment variables. Deliberately short; each entry
-/// is a variable the agent sets in shells it spawns:
-///
-/// - `CLAUDECODE`   — Claude Code
-/// - `CURSOR_AGENT` — Cursor background agent
-/// - `GEMINI_CLI`   — Gemini CLI
-/// - `OPENCODE`     — OpenCode
-const AGENT_ENV_VARS: &[&str] = &["CLAUDECODE", "CURSOR_AGENT", "GEMINI_CLI", "OPENCODE"];
-
-/// Classify the invoker from TTY detection, `CI`, and known agent env vars
-/// (ADR-0079 §4). First match wins:
-///
-/// 1. a known agent marker env var is set -> `agent` (most specific signal)
-/// 2. `CI` is set to a truthy value (not empty/`0`/`false`) -> `ci`
-/// 3. otherwise -> `human`
+/// The invoker classification (ADR-0079 §4) in this surface's vocabulary:
+/// the shared [`launched_by`] ladder — agent marker, truthy `CI`, person —
+/// mapped to `agent`/`ci`/`human`, now over the CLI's one marker table
+/// (`agent_vars::PRESENCE_VARS`).
 ///
 /// A non-TTY stdin alone does not demote a run to `agent`/`ci`: piped input
 /// is overwhelmingly human shell pipelines, so only positive automation
 /// markers move a run off `human`.
 pub(crate) fn detect_invoker(env: &dyn Fn(&str) -> Option<String>) -> Invoker {
-    if AGENT_ENV_VARS.iter().any(|k| env(k).is_some()) {
-        return Invoker::Agent;
+    match launched_by(env) {
+        Launched::Agent => Invoker::Agent,
+        Launched::Ci => Invoker::Ci,
+        Launched::Human => Invoker::Human,
     }
-    if let Some(ci) = env("CI") {
-        let ci = ci.trim();
-        if !ci.is_empty() && ci != "0" && !ci.eq_ignore_ascii_case("false") {
-            return Invoker::Ci;
-        }
-    }
-    Invoker::Human
 }
 
 /// Per-process base dimensions attached to every event (ADR-0079 §4).
@@ -324,9 +293,35 @@ mod tests {
 
     #[test]
     fn detect_invoker_agent_markers_win() {
-        for var in AGENT_ENV_VARS {
+        for var in crate::agent_vars::PRESENCE_VARS {
             let inv = detect_invoker(&env_of(&[(var, "1"), ("CI", "true")]));
             assert_eq!(inv, Invoker::Agent, "{var} should classify as agent");
+        }
+    }
+
+    /// One process, one invoker: the telemetry event and the feedback report
+    /// read the same classification, so the generic markers and a
+    /// set-but-empty `CLAUDECODE` cannot tell the two pipelines different
+    /// stories about the same run.
+    #[test]
+    fn invoker_classification_agrees_with_the_feedback_report() {
+        for (pairs, agent) in [
+            (&[("AI_AGENT", "claude-code")][..], true),
+            (&[("COPILOT_AGENT", "1")][..], true),
+            (&[("REPL_ID", "abc")][..], true),
+            (&[("CLAUDECODE", "")][..], false),
+        ] {
+            let env = env_of(pairs);
+            assert_eq!(
+                detect_invoker(&env) == Invoker::Agent,
+                agent,
+                "telemetry event: {pairs:?}"
+            );
+            assert_eq!(
+                crate::agent_feedback_cmd::invoker(&env) == relate_feedback::report::Invoker::Agent,
+                agent,
+                "feedback report: {pairs:?}"
+            );
         }
     }
 

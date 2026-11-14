@@ -30,6 +30,8 @@ pub(crate) const COMMAND_WORDS: &[&str] = &[
     "upgrade",
     "update",
     "telemetry",
+    "feedback",
+    "agent-feedback",
     "pull",
     "push",
     "run",
@@ -67,6 +69,16 @@ pub(crate) enum LifecycleCommand {
     Telemetry {
         action: crate::telemetry_cmd::TelemetryAction,
     },
+    /// `relate feedback [TEXT | enable | disable]` (ADR-0588 §3): the
+    /// person's channel — a prefilled GitHub issue and the agent grant. The
+    /// grammar runs at dispatch, after the mode gate: the surface's absence
+    /// in agent mode must answer as an unknown command, never as this
+    /// grammar's usage error.
+    Feedback { args: Vec<String> },
+    /// `relate agent-feedback [flags]` (ADR-0588 §3): the agent's channel —
+    /// one consented report under the person's standing grant. Present only
+    /// in agent mode; `main` gates it, then parses the flags.
+    AgentFeedback { args: Vec<String> },
     /// `relate pull [--from FILE] --query Q [--param N=V] --database PATH` (ADR-0080,
     /// ADR-0158: `Q` may be a statement list, file, or `-`)
     #[cfg(feature = "pull")]
@@ -119,6 +131,15 @@ pub(crate) enum LifecycleCommand {
 }
 
 impl LifecycleCommand {
+    /// Whether this command is help-shaped — the `command_topic` `None`
+    /// set (`Help`, `NotIncluded`, `RunHelp`): a page to print, never a
+    /// command with a query of its own. The end-of-parse conflict stage
+    /// exempts these exactly as it exempts `--help`/`--version` (round 4):
+    /// a help page is a no-side-effect exit, so no conflict can precede it.
+    pub(crate) fn is_help_shaped(&self) -> bool {
+        self.command_topic().is_none()
+    }
+
     /// The topic of the parsed command itself, or `None` for the
     /// help-shaped commands — `Help` (whose topic names the page to
     /// print, not a command to run), `NotIncluded` (whose page is
@@ -129,15 +150,6 @@ impl LifecycleCommand {
     /// descriptor. The help-shaped arms are ungated — their variants
     /// exist in every build — so only the arms of feature-gated
     /// variants carry a gate.
-    /// Whether this command is help-shaped — the `command_topic` `None`
-    /// set (`Help`, `NotIncluded`, `RunHelp`): a page to print, never a
-    /// command to run. The end-of-parse conflict stage exempts these
-    /// exactly as it exempts `--help`/`--version` (round 4): a help page
-    /// is a no-side-effect exit, so no conflict can precede it.
-    pub(crate) fn is_help_shaped(&self) -> bool {
-        self.command_topic().is_none()
-    }
-
     fn command_topic(&self) -> Option<HelpTopic> {
         match self {
             Self::Help { .. } | Self::NotIncluded { .. } => None,
@@ -147,6 +159,8 @@ impl LifecycleCommand {
             Self::Upgrade { .. } => Some(HelpTopic::Upgrade),
             #[cfg(feature = "telemetry")]
             Self::Telemetry { .. } => Some(HelpTopic::Telemetry),
+            Self::Feedback { .. } => Some(HelpTopic::Feedback),
+            Self::AgentFeedback { .. } => Some(HelpTopic::AgentFeedback),
             #[cfg(feature = "pull")]
             Self::Pull { .. } => Some(HelpTopic::Pull),
             #[cfg(feature = "push")]
@@ -267,6 +281,14 @@ pub(super) fn parse_lifecycle_command(
         "upgrade" => help_or(HelpTopic::Upgrade, rest, || parse_upgrade_command(rest)),
         #[cfg(feature = "telemetry")]
         "telemetry" => help_or(HelpTopic::Telemetry, rest, || parse_telemetry_command(rest)),
+        "feedback" => help_or(HelpTopic::Feedback, rest, || LifecycleCommand::Feedback {
+            args: rest.to_vec(),
+        }),
+        "agent-feedback" => help_or(HelpTopic::AgentFeedback, rest, || {
+            LifecycleCommand::AgentFeedback {
+                args: rest.to_vec(),
+            }
+        }),
         #[cfg(feature = "pull")]
         "pull" => help_or(HelpTopic::Pull, rest, || {
             parse_pull_command(rest, namespace)

@@ -21,6 +21,7 @@ default-members = [
     "relate/relate-names",
     "surfaces/relate-arrow",
     "surfaces/relate-eggs",
+    "surfaces/relate-feedback",
     "surfaces/relate-cli",
     "surfaces/relate-load",
     "surfaces/relate-ffi",
@@ -70,6 +71,7 @@ relate-formatter = { path = "surfaces/relate-formatter", version = "1.0.2" }
 relate-splitter = { path = "relate/relate-splitter", version = "1.0.2" }
 relate-arrow = { path = "surfaces/relate-arrow", version = "1.0.2" }
 relate-eggs = { path = "surfaces/relate-eggs", version = "1.0.2" }
+relate-feedback = { path = "surfaces/relate-feedback", version = "1.0.2" }
 
 # Runtime crates
 relate-core = { path = "relate/relate-core", version = "1.0.2" }

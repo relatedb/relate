@@ -9,7 +9,7 @@ fn each_options_entry_renders_whole_and_in_table_order() {
     // appear contiguously, in table order — a mid-block insertion cannot
     // separate a continuation from its flag (the --width/--max-rows drift
     // this pins), and no entry can vanish.
-    let help = top_level_with(true);
+    let help = top_level_with(crate::agent_mode::FeedbackSurface::Human, true);
     let mut cursor = 0;
     for entry in options::OPTION_ENTRIES {
         let block = options::entry_text(entry, "QUERY");
@@ -67,7 +67,7 @@ fn the_query_page_documents_the_session_vocabulary() {
 fn every_help_page() -> Vec<(&'static str, String, &'static [crate::examples::Example])> {
     let mut pages = vec![(
         "top level",
-        top_level_with(true),
+        top_level_with(crate::agent_mode::FeedbackSurface::Human, true),
         crate::examples::TOP_LEVEL,
     )];
     for spec in commands() {
@@ -106,7 +106,8 @@ fn dropping_the_examples_leaves_the_rest_of_every_page_unchanged() {
     // The top level keeps its pointer line last either way; the page
     // without examples is the page as it was before them.
     let pointer = "Run 'relate <COMMAND> --help' for details on a command.\n";
-    let (with, without) = (top_level_with(true), top_level_with(false));
+    let human = crate::agent_mode::FeedbackSurface::Human;
+    let (with, without) = (top_level_with(human, true), top_level_with(human, false));
     assert!(with.contains("\nExamples:\n") && !without.contains("Examples:"));
     let head = without.strip_suffix(pointer).expect("pointer line");
     assert!(with.starts_with(head), "the head of the page is unchanged");
@@ -194,7 +195,7 @@ fn command_flags_are_all_on_their_help_page() {
 
 #[test]
 fn top_level_starts_with_both_usage_lines_and_ends_with_the_footer() {
-    let help = top_level();
+    let help = top_level(crate::agent_mode::FeedbackSurface::Human);
     assert!(help.starts_with(
         "Usage: relate [OPTIONS] [--database PATH] [QUERY]\n       relate <COMMAND> [ARGS]\n"
     ));
@@ -206,8 +207,12 @@ fn top_level_starts_with_both_usage_lines_and_ends_with_the_footer() {
 
 #[test]
 fn top_level_commands_follow_the_build() {
-    let help = top_level();
-    let width = command_column_width();
+    let help = top_level(crate::agent_mode::FeedbackSurface::Human);
+    let listed: Vec<&CommandSpec> = commands()
+        .iter()
+        .filter(|spec| spec.topic.surface() != Some(crate::agent_mode::FeedbackSurface::Agent))
+        .collect();
+    let width = command_column_width(&listed);
     // The gate half is the per-command coverage: only the compiled-in
     // decision per word is asserted against the page (the byte-exact
     // rendering, blurbs included, is derived from COMMANDS and pinned by
@@ -222,6 +227,8 @@ fn top_level_commands_follow_the_build() {
         (cfg!(feature = "skill"), "skill"),
         (cfg!(feature = "upgrade"), "upgrade"),
         (cfg!(feature = "telemetry"), "telemetry"),
+        (true, "feedback"),
+        (false, "agent-feedback"),
         (cfg!(feature = "extensions"), "run"),
         // `extension` is reserved in COMMAND_WORDS in every build but
         // listed only where compiled in (ADR-0431 §3) — the row must
@@ -239,6 +246,32 @@ fn top_level_commands_follow_the_build() {
     }
 }
 
+/// Each mode's top level lists only its own feedback surface (ADR-0588 §3).
+#[test]
+fn the_commands_section_lists_only_the_runs_feedback_surface() {
+    use crate::agent_mode::FeedbackSurface;
+    let words = |surface| -> Vec<String> {
+        top_level(surface)
+            .lines()
+            .skip_while(|line| *line != "Commands:")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .map(|line| {
+                line.split_whitespace()
+                    .next()
+                    .expect("a command row has a word")
+                    .to_string()
+            })
+            .collect()
+    };
+    let human = words(FeedbackSurface::Human);
+    assert!(human.iter().any(|word| word == "feedback"));
+    assert!(!human.iter().any(|word| word == "agent-feedback"));
+    let agent = words(FeedbackSurface::Agent);
+    assert!(agent.iter().any(|word| word == "agent-feedback"));
+    assert!(!agent.iter().any(|word| word == "feedback"));
+}
+
 #[test]
 fn commands_table_is_the_single_source_of_truth() {
     // Each compiled-in topic exactly once, words unique, and every help
@@ -250,21 +283,29 @@ fn commands_table_is_the_single_source_of_truth() {
         assert_single_usage(&help, &spec.usage);
     }
     // The Commands: section renders the table in order through the one
-    // shared row builder.
-    let help = top_level();
+    // shared row builder, less the other mode's feedback surface.
+    let help = top_level(crate::agent_mode::FeedbackSurface::Human);
     let section: Vec<&str> = help
         .lines()
         .skip_while(|line| *line != "Commands:")
         .skip(1)
         .take_while(|line| !line.is_empty())
         .collect();
-    let expected: Vec<String> = commands().iter().map(command_row).collect();
+    let listed: Vec<&CommandSpec> = commands()
+        .iter()
+        .filter(|spec| spec.topic.surface() != Some(crate::agent_mode::FeedbackSurface::Agent))
+        .collect();
+    let width = command_column_width(&listed);
+    let expected: Vec<String> = listed
+        .into_iter()
+        .map(|spec| command_row(spec, width))
+        .collect();
     assert_eq!(section, expected);
 }
 
 #[test]
 fn top_level_omits_lifecycle_flags() {
-    let help = top_level();
+    let help = top_level(crate::agent_mode::FeedbackSurface::Human);
     for absent in [
         // The skill verb's value-taking harness selector (`--agent NAME`) —
         // not the substring `--agent`, which the run-level `--agent-mode`
@@ -291,7 +332,7 @@ fn top_level_omits_lifecycle_flags() {
 
 #[test]
 fn top_level_keeps_the_query_run_options() {
-    let help = top_level();
+    let help = top_level(crate::agent_mode::FeedbackSurface::Human);
     for present in [
         "-h, --help",
         "--version",

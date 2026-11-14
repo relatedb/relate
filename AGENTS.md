@@ -231,6 +231,9 @@ surfaces/                        adapters of `relate::Database` to users, hosts,
   relate-load                    Neo4j/Aura Query API v2 → CREATE into Database (ADR-0080)
   relate-arrow                   CypherValue ↔ Arrow RecordBatch conversion
   relate-eggs                    hidden REPL dot-command seam + sprite kit for the CLI's `eggs` feature (ADR-0543)
+  relate-feedback                the Mixpanel `/track` client, layered telemetry opt-out and
+                                 consent record shared by the CLI's usage metrics and
+                                 person-consented agent feedback (ADR-0588)
 
 testing/                         conformance, evaluation, datasets, tooling
   relate-datasets                synthetic graphs + loadtest binaries

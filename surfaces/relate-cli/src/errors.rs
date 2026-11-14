@@ -60,6 +60,47 @@ impl ErrorClass {
     }
 }
 
+/// The CLI's exit-code map (ADR-0194, ADR-0241), as `(exit, code, meaning)`
+/// rows: the one table the `agent-context` readout prints and the
+/// `--error-code` allow-list of a feedback report reads. The same facts
+/// live in `docs/api/cli/spec.md`; a test pins the two together by
+/// spot-checking this table against the spec.
+pub(crate) const EXIT_CODES: &[(i32, &str, &str)] = &[
+    (0, "success", "success, including an empty result"),
+    (
+        1,
+        "fatal_error",
+        "runtime failure: store open or I/O error, capacity limit, query execution failure, internal error",
+    ),
+    (
+        2,
+        "usage_error",
+        "unknown flag, bad or missing value, extra positional",
+    ),
+    (
+        5,
+        "conflict",
+        "write-write conflict, or the store is locked by another opener",
+    ),
+    (
+        6,
+        "validation_error",
+        "the statement is rejected: syntax, semantic or type error",
+    ),
+    (7, "timeout", "a statement exceeded --timeout"),
+];
+
+/// The nonzero table rows' `code` names: the vocabulary a feedback report's
+/// `--error-code` is allow-listed against, read from the one table so the
+/// two cannot spell different sets.
+pub(crate) fn error_code_names() -> Vec<String> {
+    EXIT_CODES
+        .iter()
+        .filter(|(exit, ..)| *exit != 0)
+        .map(|(_, code, _)| code.to_string())
+        .collect()
+}
+
 /// The envelope's `kind`: the engine-error family, one variant per
 /// [`classify`] row. A type rather than a string so the open-site override
 /// can name the semantic family as the classification's own result instead

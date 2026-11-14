@@ -427,7 +427,8 @@ fn line_diff<'a>(old: &[&'a str], new: &[&'a str]) -> (Vec<&'a str>, Vec<&'a str
 
 /// LABS-552's `--help` acceptance as a golden comparison: the final
 /// build's top-level help differs from the pre-feature main's captured
-/// help exactly by gaining the `run` and `extension` rows, losing the
+/// help exactly by gaining the `feedback` (ADR-0588), `run` and `extension`
+/// rows, losing the
 /// `lab` row (the retirement's clean break, ADR-0431 §12), gaining the
 /// markdown codec in the `--snapshot-format` row (ADR-0406), gaining
 /// the `--markdown-body-properties` rows (ADR-0460), re-rendering
@@ -472,6 +473,7 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
     assert_eq!(
         added,
         vec![
+            "  feedback       File a GitHub issue about CLI friction, or manage the agent grant (enable, disable)",
             "  run            Run an installed extension action into a store the host owns",
             "  extension      Scaffold, install, check, list, or remove command extensions",
             "                       The store to open — never a URL: a remote store is a --load",
@@ -505,9 +507,9 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "                       queryable (only the administration commands run",
             "                       from there)",
         ],
-        "the final build's help must gain exactly the run, extension, --database \
-         target-axis (LABS-903, ADR-0500), --timings (ADR-0581), \
-         markdown-codec snapshot-format, \
+        "the final build's help must gain exactly the feedback (ADR-0588), run, \
+         extension, --database target-axis (LABS-903, ADR-0500), --timings \
+         (ADR-0581), markdown-codec snapshot-format, \
          markdown body-properties, durability-mode variable (ADR-0470), \
          --load (LABS-903, ADR-0500; LABS-872's remote fetch folded into it), \
          and --namespace system_ontologies visibility (ADR-0593) rows"

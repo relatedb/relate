@@ -37,9 +37,11 @@ use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-/// One base read's shared half: set and non-empty. An empty value never
-/// names a base — it is how shells and CI runners spell "cleared".
-fn non_empty(env: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+/// One environment read's shared half: set and non-empty. An empty value
+/// never names a base — it is how shells and CI runners spell "cleared".
+/// The CLI's every real-env read goes through it (`config_dir::env_var`),
+/// not just the base resolution.
+pub(crate) fn non_empty(env: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<String> {
     env(key).filter(|v| !v.is_empty())
 }
 

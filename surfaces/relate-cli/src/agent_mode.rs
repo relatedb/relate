@@ -1,9 +1,10 @@
-//! The agent-mode resolution (ADR-0407's override ladder): the decided
-//! [`AgentMode`] and its one resolution, consumed by the row cap's gate
-//! and the announcement. Never mounted into the e2e harness — the
-//! detection vocabulary it reads lives in the mounted `agent_vars` (see
-//! that module's header for the split's reason) — so its tests import
-//! the canonical helpers.
+//! The resolutions over the detection vocabulary: the agent-mode ladder
+//! (ADR-0407) — the decided [`AgentMode`] and its one resolution, consumed
+//! by the row cap's gate and the announcement — and the one invoker
+//! classification. Never mounted into the e2e harness — the detection
+//! vocabulary they read lives in the mounted `agent_vars` (see that
+//! module's header for the split's reason) — so its tests import the
+//! canonical helpers.
 
 use crate::agent_vars::detected_var;
 
@@ -99,6 +100,65 @@ pub(crate) fn effective_agent_mode_from_env(
     effective_agent_mode(force, &|k| std::env::var(k).ok(), stdout_is_tty)
 }
 
+/// Who launched the process, before a surface's own vocabulary: a detected
+/// agent harness, automation (`CI`), or a person. One classification — the
+/// telemetry envelope's `invoker` dimension and the feedback report's
+/// `invoker` both map it, so a process reports the same answer to each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Launched {
+    Agent,
+    Ci,
+    Human,
+}
+
+/// Classify who launched the process: a known agent marker first (the most
+/// specific signal), then a truthy `CI`, else a person. Callers spell the
+/// answer in their own vocabulary — the telemetry envelope says `ci` where
+/// the feedback report says `script`.
+pub(crate) fn launched_by(env: &dyn Fn(&str) -> Option<String>) -> Launched {
+    if detected_var(env).is_some() {
+        return Launched::Agent;
+    }
+    let ci = env("CI").unwrap_or_default();
+    let ci = ci.trim();
+    if !ci.is_empty() && ci != "0" && !ci.eq_ignore_ascii_case("false") {
+        Launched::Ci
+    } else {
+        Launched::Human
+    }
+}
+
+/// Which feedback surface a run may use (ADR-0588 §3): the person's
+/// prefilled-GitHub-issue form while agent mode is off, the agent's
+/// consented send while it is on. Each surface's command is an unknown
+/// command in the other mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FeedbackSurface {
+    Human,
+    Agent,
+}
+
+impl FeedbackSurface {
+    /// Resolve from the one agent-mode ladder. A bad `RELATE_AGENT_MODE`
+    /// reads as the human surface here — a statement run's own resolution
+    /// is the one that fails loud (exit 2).
+    pub(crate) fn resolve(
+        force: Option<bool>,
+        env: &dyn Fn(&str) -> Option<String>,
+        stdout_is_tty: bool,
+    ) -> Self {
+        match effective_agent_mode(force, env, stdout_is_tty) {
+            Ok(mode) if mode.is_on() => Self::Agent,
+            _ => Self::Human,
+        }
+    }
+
+    /// [`FeedbackSurface::resolve`] against the real environment.
+    pub(crate) fn from_env(force: Option<bool>, stdout_is_tty: bool) -> Self {
+        Self::resolve(force, &|k| std::env::var(k).ok(), stdout_is_tty)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +251,34 @@ mod tests {
         );
         assert_eq!(AgentMode::Detected.announcement(), None);
         assert_eq!(AgentMode::Off.announcement(), None);
+    }
+
+    /// The feedback surfaces split on the same ladder: the person's while
+    /// agent mode is off, the agent's while it is on.
+    #[test]
+    fn the_feedback_surface_follows_the_agent_mode() {
+        assert_eq!(
+            FeedbackSurface::resolve(None, &env_of(&[]), false),
+            FeedbackSurface::Human
+        );
+        assert_eq!(
+            FeedbackSurface::resolve(Some(false), &env_of(&[("CLAUDECODE", "1")]), false),
+            FeedbackSurface::Human,
+            "an explicit --no-agent-mode keeps the person's surface"
+        );
+        assert_eq!(
+            FeedbackSurface::resolve(None, &env_of(&[("CLAUDECODE", "1")]), false),
+            FeedbackSurface::Agent
+        );
+        assert_eq!(
+            FeedbackSurface::resolve(None, &env_of(&[("RELATE_AGENT_MODE", "1")]), true),
+            FeedbackSurface::Agent
+        );
+        // A bad value reads as the person's surface here; the statement
+        // run's own resolution is the one that fails loud.
+        assert_eq!(
+            FeedbackSurface::resolve(None, &env_of(&[("RELATE_AGENT_MODE", "yes")]), false),
+            FeedbackSurface::Human
+        );
     }
 }

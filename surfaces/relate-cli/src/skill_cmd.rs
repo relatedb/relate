@@ -74,6 +74,10 @@ const BUNDLE_FILES: &[(&str, &str)] = &[
         "references/client-extensions.md",
         include_str!("skill/bundle/references/client-extensions.md"),
     ),
+    (
+        "references/client-cli.md",
+        include_str!("skill/bundle/references/client-cli.md"),
+    ),
 ];
 
 /// The exact binary version injected into the installed SKILL.md frontmatter,

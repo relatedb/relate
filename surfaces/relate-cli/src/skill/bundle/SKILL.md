@@ -28,6 +28,7 @@ it:
 | Push a local database (or a scoped subgraph) into Neo4j / Aura | [push](references/push.md) |
 | Git history: coupling, ownership, churn, reviewers from a checkout | [run-git-to-graph](references/run-git-to-graph.md) |
 | Command-kind extensions: author, install, or run `relate run <name>` packages | [client-extensions](references/client-extensions.md) |
+| Agent-proposed feedback: draft the friction, get the person's approval, then `relate agent-feedback` | [client-cli](references/client-cli.md) |
 | Node.js client: `@relate/relate` install, native-lib resolution | [client-javascript](references/client-javascript.md) |
 | Java client: `ai.relatedb:relate` dependency, bundled natives, classifier jars | [client-java](references/client-java.md) |
 | Go client: cgo link, typed values, numeric + element ids, typed errors | [client-go](references/client-go.md) |

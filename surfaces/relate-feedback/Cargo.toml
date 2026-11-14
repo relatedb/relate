@@ -1,0 +1,36 @@
+[package]
+name = "relate-feedback"
+description = "The Mixpanel /track client and the telemetry consent model shared by the CLI's anonymous usage metrics and agent feedback (ADR-0588)"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The workspace's one HTTP client (ADR-0079 §2): `/track` is a single JSON
+# POST, the same client `upgrade` uses.
+ureq = { workspace = true }
+# The install ID and the CLI envelope's `$insert_id` are random UUID v4s
+# (ADR-0079 §3): one generator in `state`.
+rand = { workspace = true }
+# The feedback consent record stores absolute deadlines; the receipt stamps
+# one RFC3339 UTC time per line. chrono is already the workspace's clock.
+chrono = { workspace = true }
+# The redaction detectors run a handful of small regexes over report text
+# (ADR-0588 §1); unicode-normalization supplies the NFKC pass before them.
+regex = { workspace = true }
+unicode-normalization = { workspace = true }
+# The workspace's one file-locking crate: `config.json` is read-modified-
+# written by the CLI's telemetry and feedback verbs, so the update is
+# serialized across processes (and released by the OS on process death).
+fs4 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# The loopback capture server the sender's 4xx/transport classification
+# tests drive (`spawn_capture_server`, `wire` fixtures only).
+relate-test-support = { workspace = true, features = ["wire"] }

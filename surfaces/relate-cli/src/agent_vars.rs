@@ -1,10 +1,12 @@
 //! The agent-harness detection vocabulary (ADR-0196; the generic markers
 //! and the ladder per ADR-0407). A normal module of the binary; the e2e
 //! harness mounts this same file with `#[path]`
-//! (`tests/support/ambient_scrub.rs`), so there is exactly one copy — and exactly
-//! why it carries only the tables: every e2e target compiles the whole
-//! mounted file, so the resolution (the `AgentMode` ladder) lives in the
-//! unmounted `agent_mode` module beside it, not here.
+//! (`tests/support/ambient_scrub.rs`), so there is exactly one copy — and
+//! exactly why it carries only the tables and what reads them without crate
+//! paths: every e2e target compiles the whole mounted file, so the
+//! resolutions over it (the `AgentMode` ladder and the invoker
+//! classification) live in the unmounted `agent_mode` module beside it, not
+//! here.
 
 /// Environment variables whose mere presence (non-empty) marks a known agent
 /// harness (ADR-0196; the generic markers per the cross-harness
