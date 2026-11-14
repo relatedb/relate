@@ -244,17 +244,14 @@ pub fn parse_log(stdout: &[u8]) -> Result<Vec<GitCommit>, String> {
     if stdout.is_empty() {
         return Ok(Vec::new());
     }
-    if stdout[0] != RECORD_SEP {
+    let Some(body) = stdout.strip_prefix(&[RECORD_SEP]) else {
         return Err("malformed git log output: missing record separator".to_string());
-    }
-    let mut records: Vec<&[u8]> = stdout.split(|byte| *byte == RECORD_SEP).collect();
-    // The leading separator yields one empty slice; a record boundary also
-    // leaves the next record directly after the previous record's final NUL,
-    // so the only other empty slice is the artifact after a trailing
-    // separator.
-    if records.first().is_some_and(|record| record.is_empty()) {
-        records.remove(0);
-    }
+    };
+    let mut records: Vec<&[u8]> = body.split(|byte| *byte == RECORD_SEP).collect();
+    // Stripping the leading separator up front leaves no leading empty
+    // slice; a record boundary also leaves the next record directly after
+    // the previous record's final NUL, so the only empty slice left is the
+    // artifact after a trailing separator.
     if records.last().is_some_and(|record| record.is_empty()) {
         records.pop();
     }

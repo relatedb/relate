@@ -196,6 +196,25 @@ fn ignore_pattern_parse_rejects_empty_values() {
     }
 }
 
+/// A value that names anything other than one path component — a path with
+/// a `/` in it, or the `.`/`..` directory entries — can never match an
+/// entry, so it is refused with the importer's own wording instead of
+/// riding along as a silent no-op.
+#[test]
+fn ignore_pattern_parse_rejects_a_name_that_is_not_one_component() {
+    for value in ["src/target", "node_modules//", ".", "..", "./"] {
+        let err = IgnorePattern::parse(value).unwrap_err();
+        assert!(
+            err.starts_with("invalid --ignore-patterns value:"),
+            "{value}: {err}"
+        );
+        assert!(
+            err.contains("is not a single path component"),
+            "{value}: {err}"
+        );
+    }
+}
+
 #[test]
 fn ignore_pattern_matches_by_exact_name_only() {
     let bare = IgnorePattern::parse("debug.log").unwrap();
@@ -362,30 +381,20 @@ fn the_committed_manifest_declares_the_contract_this_child_speaks() {
     assert_eq!(manifest["commit"], relate_wire::PER_BATCH);
     assert_eq!(manifest["positional"]["name"], "DIR");
     assert!(!manifest["requires-fresh-store"].as_bool().unwrap());
-    let flags: Vec<(String, &str)> = manifest["flags"]
-        .as_array()
-        .expect("the flag table is an array")
-        .iter()
-        .map(|flag| {
-            (
-                flag["name"].as_str().unwrap().to_string(),
-                flag["kind"].as_str().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        flags,
-        [
-            ("max-content-bytes".to_string(), "integer"),
-            ("include-hidden".to_string(), "boolean"),
-            ("ignore-patterns".to_string(), "repeatable"),
-        ]
-    );
-    // The defaults the child validates against: the same numbers this
+    // The flag table itself, name/kind/default in one spelling: the
+    // defaults the child validates against are the same numbers this
     // lib's `Opts::default` resolves.
     assert_eq!(
-        manifest["flags"][0]["default"],
-        serde_json::json!(DEFAULT_MAX_CONTENT_BYTES)
+        manifest["flags"],
+        serde_json::json!([
+            {
+                "kind": "integer",
+                "name": "max-content-bytes",
+                "default": DEFAULT_MAX_CONTENT_BYTES,
+            },
+            {"kind": "boolean", "name": "include-hidden", "default": false},
+            {"kind": "repeatable", "name": "ignore-patterns", "default": []},
+        ])
     );
 }
 

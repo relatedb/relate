@@ -16,7 +16,9 @@
 //!   [`MAX_ROWS_PER_STATEMENT`], [`MAX_STATEMENTS`], [`MAX_STREAM_BYTES`]),
 //!   the vocabulary the `initialize` result and the write layer share
 //!   ([`WHOLE_IMPORT`], [`PER_BATCH`]), and the one path rendering both
-//!   importer children store through ([`display`], [`file_name`]). The
+//!   importer children store through ([`display`], [`file_name`]) with the
+//!   one-component predicate both guard a name with
+//!   ([`is_single_path_component`]). The
 //!   host's `extensions::protocol` builds its `Caps` from the numbers; the
 //!   child kit chunks and refuses against them, and both importer children
 //!   render their stored paths through the one rendering.
@@ -40,6 +42,8 @@
 //! language-agnosticism: the wire is printable JSON-RPC, and the CLI e2e's
 //! `sh` fixture child links nothing); the kit exists so the first-party
 //! importers never fork the emission logic.
+
+use std::ffi::OsStr;
 
 pub mod envelope;
 pub mod mcp;
@@ -111,4 +115,39 @@ pub fn file_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| display(path))
+}
+
+/// Whether `name` is exactly one platform `Normal` path component — the
+/// predicate both importer children need before they push a name onto a
+/// path (the fs importer's `--ignore-patterns` guard, the git importer's
+/// ADR-0377 §5 path guard). The whole input must be that component, so an
+/// empty input, a separator (interior or trailing — the path model
+/// normalizes a trailing one away), `.`/`..`, a root or a prefix all fail,
+/// and `\` counts as a separator exactly where the platform says it does.
+/// One home, so the two guards cannot drift on what a component is.
+pub fn is_single_path_component(name: &str) -> bool {
+    let mut components = std::path::Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(component))
+        if component == OsStr::new(name))
+        && components.next().is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole input is one `Normal` component and nothing else — every
+    /// spelling both importer guards refuse. The `\` and drive-prefix
+    /// spellings are deliberately absent: whether they are separators is
+    /// the platform's answer, and the git guard's own extra checks cover
+    /// the Windows-only cases on every host.
+    #[test]
+    fn one_component_means_the_whole_input_is_one_normal_component() {
+        for name in ["target", "debug.log", "with space", "å.txt"] {
+            assert!(is_single_path_component(name), "{name}");
+        }
+        for name in ["", ".", "..", "a/b", "a/", "a//", "/a", "./a"] {
+            assert!(!is_single_path_component(name), "{name}");
+        }
+    }
 }

@@ -25,7 +25,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use relate_wire::read_cap::{read_capped, CappedRead};
-use relate_wire::{display, file_name};
+use relate_wire::{display, file_name, is_single_path_component};
 
 /// Byte prefix inspected to decide whether a file is text (ADR-0157).
 const PROBE_BYTES: usize = 8 * 1024;
@@ -69,7 +69,12 @@ pub struct IgnorePattern {
 impl IgnorePattern {
     /// Classify a `--ignore-patterns` value: a trailing `/` marks the pattern
     /// directory-only. An empty value, or one that is empty after trimming a
-    /// trailing slash (`/`), is a refusal.
+    /// trailing slash (`/`), is a refusal — and so is a name that is not one
+    /// path component: [`Self::matches`] compares a single component exactly,
+    /// so a separator, the `.`/`..` directory entries, or a root/prefix could
+    /// never match and is refused rather than kept as a silent no-op. The
+    /// path model decides, so `\` counts as a separator exactly where the
+    /// platform says it does.
     pub fn parse(value: &str) -> Result<Self, String> {
         let (name, dir_only) = match value.strip_suffix('/') {
             Some(stripped) => (stripped, true),
@@ -78,6 +83,13 @@ impl IgnorePattern {
         if name.is_empty() {
             return Err(format!(
                 "invalid --ignore-patterns value: '{value}' is empty"
+            ));
+        }
+        // The shared predicate owns the whole rule, trailing separators
+        // included, so there is no second spelling of "one component" here.
+        if !is_single_path_component(name) {
+            return Err(format!(
+                "invalid --ignore-patterns value: '{value}' is not a single path component"
             ));
         }
         Ok(Self {

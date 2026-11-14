@@ -303,10 +303,9 @@ pub fn drain_stderr(mut reader: impl Read, whose: &str) -> std::io::Result<Vec<u
             break;
         }
         let room = STDERR_DRAIN_CAP.saturating_sub(retained.len());
-        if read <= room {
-            retained.extend_from_slice(&buffer[..read]);
-        } else {
-            retained.extend_from_slice(&buffer[..room]);
+        let keep = read.min(room);
+        retained.extend_from_slice(&buffer[..keep]);
+        if keep < read {
             truncated = true;
         }
     }

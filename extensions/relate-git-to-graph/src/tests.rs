@@ -50,37 +50,25 @@ fn the_committed_manifest_declares_the_contract_this_child_speaks() {
         manifest.get("wire").is_none(),
         "the manifest carries no wire field: the mount speaks MCP stdio only"
     );
-    assert_eq!(manifest["commit"], "per-batch");
+    assert_eq!(manifest["commit"], relate_wire::PER_BATCH);
     assert_eq!(manifest["positional"]["name"], "DIR");
     assert!(!manifest["requires-fresh-store"].as_bool().unwrap());
-    let flags: Vec<(String, &str, Value)> = manifest["flags"]
-        .as_array()
-        .expect("the flag table is an array")
-        .iter()
-        .map(|flag| {
-            (
-                flag["name"].as_str().unwrap().to_string(),
-                flag["kind"].as_str().unwrap(),
-                flag["default"].clone(),
-            )
-        })
-        .collect();
-    // One row per flag — name, kind and default in one spelling: the
+    // The flag table itself, name/kind/default in one spelling: the
     // defaults the child lowers are `0` max-commits is all history, an
     // empty `since` or `until` is no bound (the envelope contract), and
     // the changeset default is the lib's own constant.
     assert_eq!(
-        flags,
-        [
-            ("max-commits".to_string(), "integer", serde_json::json!(0)),
-            (
-                "max-changeset".to_string(),
-                "integer",
-                serde_json::json!(DEFAULT_MAX_CHANGESET)
-            ),
-            ("since".to_string(), "string", serde_json::json!("")),
-            ("until".to_string(), "string", serde_json::json!("")),
-        ]
+        manifest["flags"],
+        serde_json::json!([
+            {"kind": "integer", "name": "max-commits", "default": 0},
+            {
+                "kind": "integer",
+                "name": "max-changeset",
+                "default": DEFAULT_MAX_CHANGESET,
+            },
+            {"kind": "string", "name": "since", "default": ""},
+            {"kind": "string", "name": "until", "default": ""},
+        ])
     );
 }
 

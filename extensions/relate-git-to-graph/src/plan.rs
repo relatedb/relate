@@ -12,12 +12,12 @@
 //! plan, a pair cap fails while counting.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use relate_wire::{display, file_name};
+use relate_wire::{display, file_name, is_single_path_component};
 
 use crate::git_log::GitCommit;
 use crate::{ImportError, PathRefusal, Stats};
@@ -332,17 +332,14 @@ fn mapped_path(dir: &Path, sha: &str, git_path: &str) -> Result<PathBuf, ImportE
 }
 
 /// Whether one `/`-separated git path component may be pushed onto DIR
-/// (ADR-0377 §5): non-empty, neither `.` nor `..`, free of the Windows
-/// separator and drive prefix, and exactly one platform `Normal` component.
+/// (ADR-0377 §5): free of the Windows separator and drive prefix, and
+/// exactly one platform `Normal` component — [`is_single_path_component`]
+/// owns the rest of the rule (non-empty, neither `.` nor `..`).
 fn allowed_component(component: &str) -> bool {
-    if component.is_empty() || component == "." || component == ".." {
-        return false;
-    }
     if component.contains('\\') || has_windows_drive_prefix(component) {
         return false;
     }
-    let mut components = Path::new(component).components();
-    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+    is_single_path_component(component)
 }
 
 /// Whether `component` starts with `X:`, a Windows drive prefix on every
