@@ -584,8 +584,7 @@ jobs:
         run: scripts/report-disk.sh
 
   # ADR-0433: the Swift surface's day-one gate (ADR-0065's reinstatement
-  # clause). One entry point, `make test-swift`, run as its two halves
-  # (`build-xcframework`, then `test-swift-prebuilt`): the three-slice static
+  # clause). One entry point, `make test-swift`: the three-slice static
   # XCFramework (scripts/build-xcframework.sh), the package's `swift test`,
   # every docs/api/swift example, the iOS example's core tests, and the iOS
   # example app built for the simulator. Drafts skip it like the other
@@ -654,14 +653,14 @@ jobs:
       # the copy at the relatedb cutover, when the repository itself is
       # named 'relate'.
       #
-      # The gate is `make test-swift` in its two halves, with the cache
-      # server stopped between them. The Rust build is the only part
-      # that uses the cache; the Swift tests, the examples and the app
-      # build then run with no cache server and with no runtime token in
-      # any step's environment. During the build the server still holds
-      # the token in its own environment, where a process of the same
-      # user (a Rust build script, say) could read it: that much comes
-      # with caching a compile.
+      # The Rust build, the only part of the gate that uses the cache,
+      # runs first as a step of its own, and the cache server is stopped
+      # after it. The Swift tests, the examples and the app build then
+      # run with no cache server and with no runtime token in any step's
+      # environment. During the build the server still holds the token
+      # in its own environment, where a process of the same user (a Rust
+      # build script, say) could read it: that much comes with caching a
+      # compile.
       - name: Build the XCFramework
         run: |
           cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/relate"
@@ -680,12 +679,15 @@ jobs:
             echo "sccache not active this run (see the preamble's probe warning)"
           fi
 
-      # No wrapper from here on: the server is gone, and a compile that
-      # asked for it would try to start one without credentials.
+      # The whole gate, as before. Its build-xcframework prerequisite
+      # finds the libraries the step above built and compiles nothing:
+      # cargo's fingerprints do not include the wrapper. No wrapper from
+      # here on, because the server is gone and a compile that asked for
+      # it would try to start one without credentials.
       - name: Swift gate
         env:
           RUSTC_WRAPPER: ""
-        run: cd "$RUNNER_TEMP/relate" && make test-swift-prebuilt
+        run: cd "$RUNNER_TEMP/relate" && make test-swift
 
   # Windows filesystem and surface run as separate jobs so each pays only
   # for the tools it uses, and the two runners overlap. ADR-0251 §6: these

@@ -315,12 +315,14 @@ The token stays out of the job environment (OPLANE_REQ-00362889):
   preamble's probe starts the sccache server, which reads them once.
 - The server runs with no idle timeout, because a server that restarted
   later would find no credentials.
-- The gate runs as the two halves of `make test-swift`. `make
-  build-xcframework` is the only half that compiles Rust. The next step
-  prints `sccache --show-stats` and stops the server. `make
-  test-swift-prebuilt` (the Swift tests, the examples, the iOS example's
-  tests and app build) then runs with no cache server, no compiler
-  wrapper and no token in its environment.
+- `make build-xcframework`, the only part of the gate that compiles
+  Rust, runs first as a step of its own. The next step prints `sccache
+  --show-stats` and stops the server. `make test-swift` then runs whole,
+  with no cache server, no compiler wrapper and no token in its
+  environment: its build prerequisite finds the libraries already built
+  and compiles nothing (cargo's fingerprints do not include the
+  wrapper), and the Swift tests, the examples, the iOS example's tests
+  and the app build follow.
 
 What this does not cover: during the build the server holds the token in
 its own process environment, and a process of the same user, such as a
@@ -334,6 +336,9 @@ Measured on #360 (2026-11-14), the five builds:
 | Before, #335 | 31 min 16 s | off |
 | First run with the cache | 28 min 32 s | 596 misses, all written |
 | Second run | 2 min 3 s | 596 hits, 0 misses |
+| Third run, token scoped as above | 56 s | 596 hits, 0 misses |
+
+The third run's whole job took 2 min 58 s.
 
 Not served from the cache: the `relate-ffi` crate itself (it also builds
 a `cdylib`, which sccache does not cache); it is rebuilt in each of

@@ -27,7 +27,7 @@ same until that pair exists.
 | `corpus` | linux-4-core-x86 | Corpus-profile build once, then TCK + CIP-eval + cookbook-native + the LDBC SF0.1 answer gate as steps of the same job (ADR-0252; profile split per ADR-0212; LDBC slice per ADR-0251 §6, [cadences.md](cadences.md)) |
 | `python` | linux-4-core-x86 | Rust-side binding tests, wheel build, full pytest |
 | `os-smoke` | macos | Storage filesystem depth + full surface smoke set (incl. Python wheel link, npm, Maven) |
-| `swift` | macos | `make test-swift`, as `build-xcframework` then `test-swift-prebuilt` ([build-caches.md](build-caches.md), "The Swift lane"): three-slice static XCFramework, `swift test`, the `docs/api/swift` examples, the release-stamp harness, the iOS example's core tests and simulator build (ADR-0433) |
+| `swift` | macos | `make test-swift`, after `make build-xcframework` in a step of its own ([build-caches.md](build-caches.md), "The Swift lane"): three-slice static XCFramework, `swift test`, the `docs/api/swift` examples, the release-stamp harness, the iOS example's core tests and simulator build (ADR-0433) |
 | `os-filesystem` | windows | Storage filesystem depth, both feature sets, on an ImDisk ramdisk |
 | `os-surface` | windows | Trimmed surface lane (below), on an ImDisk ramdisk |
 | `relate-bolt` | ubuntu | Bolt suite sharded by test binary (`concurrency`/`e2e`/`smoke` legs) with the 151-test lib suite further partitioned at test level across 4 runners (`nextest --partition count:N/4`) — the concurrency battery stays a single isolated leg (timing-sensitive), plus the official-driver smoke + documented examples (the docker image smoke is the nightly `docker-smoke` lane, [cadences.md](cadences.md)) |
