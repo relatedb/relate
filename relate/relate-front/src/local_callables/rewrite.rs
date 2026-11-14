@@ -413,6 +413,15 @@ impl Resolver {
         let LocalDefinitionBody::Query(query) = body else {
             unreachable!("the parser guarantees a procedure body is a query body")
         };
+        // A conditional body whose arms return columns has one export set per arm; per-arm export
+        // semantics are undecided, so the call fails closed rather than
+        // dropping arm rows (bare call) or misreporting the shape (YIELD).
+        if super::validate::conditional_arms_return(query) {
+            return Err(Error::syntax(format!(
+                "Local procedure {name} has a conditional (WHEN/ELSE) body, which cannot be \
+                 called yet: its per-arm result columns are not supported."
+            )));
+        }
         let body_stmt = query.clone();
         let exports = super::validate::body_export_names(&body_stmt);
 

@@ -3,7 +3,7 @@
 //! The canonical aggregate function set (`AGGREGATES`) is owned by
 //! `relate-ir` — the lowest layer that needs aggregation detection —
 //! and re-exported here so every consumer shares one definition. This
-//! module adds the one function-alias table (`FUNCTION_ALIASES`) on top.
+//! module re-exports the one function-alias table's lookups (`alias`) on top.
 //! Consumers: the front validators (`validate`), the lowering rename in
 //! `lower.rs` (which emits the display spelling), the planner, and the
 //! executor's aggregation machinery / `SHOW FUNCTIONS` catalog.
@@ -13,82 +13,10 @@ pub use relate_ir::{AGGREGATES, SINGLE_INPUT_AGGREGATES};
 use crate::ast::tree::expr_contains;
 use relate_parser::{Expr, GroupBySpec, ReturnItem};
 
-/// One accepted alternate lowercase spelling, the canonical lowercase name
-/// it resolves to, and the spelling the lowering emits into IR: for an
-/// aggregate the display spelling (so an unaliased `RETURN
-/// percentile_cont(x)` keeps the Cypher-canonical column name
-/// `percentileCont(x)`), for a scalar the canonical name itself.
-#[derive(Clone, Copy, Debug)]
-pub struct FunctionAlias {
-    pub spelling: &'static str,
-    pub canonical: &'static str,
-    pub display: &'static str,
-}
+mod alias;
 
-const fn aggregate(
-    spelling: &'static str,
-    canonical: &'static str,
-    display: &'static str,
-) -> FunctionAlias {
-    FunctionAlias {
-        spelling,
-        canonical,
-        display,
-    }
-}
-
-const fn scalar(spelling: &'static str, canonical: &'static str) -> FunctionAlias {
-    FunctionAlias {
-        spelling,
-        canonical,
-        display: canonical,
-    }
-}
-
-/// The one function-alias table: CIP-128's snake_case aggregate spellings
-/// and CIP-245's snake_case GQL/SQL scalar spellings, scalar rows target names outside `AGGREGATES`.
-/// (`toString` rendering is not a spelling policy: the executor's value
-/// layer renders temporals at full precision by runtime type, ADR-0448.)
-const FUNCTION_ALIASES: &[FunctionAlias] = &[
-    aggregate("collect_list", "collect", "collect"),
-    aggregate("stdev_samp", "stdev", "stDev"),
-    aggregate("stddev_samp", "stdev", "stDev"),
-    aggregate("stdev_pop", "stdevp", "stDevP"),
-    aggregate("stddev_pop", "stdevp", "stDevP"),
-    aggregate("percentile_cont", "percentilecont", "percentileCont"),
-    aggregate("percentile_disc", "percentiledisc", "percentileDisc"),
-    scalar("path_length", "length"),
-    scalar("duration_between", "duration.between"),
-    scalar("local_time", "localtime"),
-    scalar("local_datetime", "localdatetime"),
-    scalar("zoned_time", "time"),
-    scalar("zoned_datetime", "datetime"),
-];
-
-/// The aggregate rows of the alias table: those whose canonical name is a
-/// member of the canonical `AGGREGATES` set (the one source of truth).
-pub fn aggregate_aliases() -> impl Iterator<Item = &'static FunctionAlias> {
-    FUNCTION_ALIASES
-        .iter()
-        .filter(|a| AGGREGATES.contains(&a.canonical))
-}
-
-/// The canonical lowercase aggregate name for an accepted lowercase
-/// spelling, or the input unchanged when it is not an aggregate alias.
-pub fn canonical_agg_name(name: &str) -> &str {
-    aggregate_aliases()
-        .find(|a| a.spelling == name)
-        .map_or(name, |a| a.canonical)
-}
-
-/// The IR name a lowercase alias spelling lowers to, `None` when `name` is
-/// not an alias.
-pub(crate) fn lowered_alias_name(name: &str) -> Option<&'static str> {
-    FUNCTION_ALIASES
-        .iter()
-        .find(|a| a.spelling == name)
-        .map(|a| a.display)
-}
+pub(crate) use alias::lowered_alias_name;
+pub use alias::{aggregate_aliases, canonical_agg_name, FunctionAlias};
 
 /// True when `name` (any casing, any accepted spelling) is an aggregate
 /// function.
@@ -230,6 +158,7 @@ fn historical_enter_child(parent: &Expr, child: &Expr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::alias::FUNCTION_ALIASES;
     use super::*;
 
     #[test]
