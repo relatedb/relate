@@ -294,6 +294,14 @@ impl Workload {
             .filter(|g| g.planted.is_none())
             .map(|g| g.id.clone())
             .collect();
+        // LABS-1664: reporting_path draws its source from the ordinary pool
+        // minus the org root, and the root is itself ordinary — refuse a
+        // graph whose ordinary pool is only the root, or the source pick
+        // would spin.
+        assert!(
+            ordinary_users.iter().any(|uid| uid != ROOT_USER_ID),
+            "no ordinary user besides the org root to plan reporting_path from"
+        );
         Self {
             rng: StdRng::seed_from_u64(seed),
             ordinary_users,
@@ -314,6 +322,20 @@ impl Workload {
 
     fn pick_user(&mut self) -> String {
         pick_one(&mut self.rng, &self.ordinary_users)
+    }
+
+    /// The reporting path's source user: any ordinary user but the org
+    /// root — the destination is always the root, and a source that equals
+    /// it plans a same-node shortestPath, which raises 51N23 (LABS-1664).
+    /// Resampling keeps the pick uniform over the pool minus the root;
+    /// [`Workload::from_graph`] asserts the pool holds someone else.
+    fn pick_reporting_source(&mut self) -> String {
+        loop {
+            let uid = self.pick_user();
+            if uid != ROOT_USER_ID {
+                return uid;
+            }
+        }
     }
 
     fn pick_group(&mut self) -> String {
@@ -438,7 +460,7 @@ fn plan_access_review(work: &mut Workload) -> Planned {
 
 fn plan_reporting_path(work: &mut Workload) -> Planned {
     Planned::ReportingPath {
-        from: work.pick_user(),
+        from: work.pick_reporting_source(),
         to: ROOT_USER_ID.into(),
     }
 }
@@ -753,6 +775,24 @@ mod tests {
                 "{} planned zero statements",
                 c.id
             );
+        }
+    }
+
+    /// LABS-1664: `to` is always the root, and the root is a member of the
+    /// ordinary-user pool — a `from` that equals it plans a same-node
+    /// shortestPath, which the engine correctly rejects with 51N23. Pin
+    /// that no planned op ever does.
+    #[test]
+    fn reporting_path_never_plans_the_root_as_its_source() {
+        let graph = generate(&IdentityConfig::ci());
+        let mut work = Workload::from_graph(&graph, 7, 0.5);
+        // `user-0` must be in the pool for the pin to mean anything.
+        assert!(work.ordinary_users.iter().any(|uid| uid == ROOT_USER_ID));
+        for _ in 0..2_000 {
+            let Planned::ReportingPath { from, to } = plan_reporting_path(&mut work) else {
+                unreachable!("plan_reporting_path plans ReportingPath");
+            };
+            assert_ne!(from, to, "reporting_path planned a self-path");
         }
     }
 

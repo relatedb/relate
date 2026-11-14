@@ -135,7 +135,7 @@ func planAccessReview(w *identityWork) identityOp {
 }
 
 func planReportingPath(w *identityWork) identityOp {
-	return readOp(reportingPathCypher, map[string]any{"from": w.pickUser(), "to": rootUserID})
+	return readOp(reportingPathCypher, map[string]any{"from": w.pickReportingSource(), "to": rootUserID})
 }
 
 func planDisableUser(w *identityWork) identityOp {

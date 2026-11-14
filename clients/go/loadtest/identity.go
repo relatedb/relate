@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"slices"
 
 	"github.com/relatedb/relate/clients/go"
 )
@@ -393,6 +394,20 @@ func (w *identityWork) pickUser() string {
 	return w.ordinaryUsers[w.rng.Intn(len(w.ordinaryUsers))]
 }
 
+// pickReportingSource is the reporting path's source user: any ordinary
+// user but the org root — the destination is always the root, and a source
+// that equals it plans a same-node shortestPath, which raises 51N23
+// (LABS-1664). Resampling keeps the pick uniform over the pool minus the
+// root; newIdentityWork panics if the pool holds no one else.
+func (w *identityWork) pickReportingSource() string {
+	for {
+		uid := w.pickUser()
+		if uid != rootUserID {
+			return uid
+		}
+	}
+}
+
 func (w *identityWork) pickGroup() string {
 	return w.ordinaryGroups[w.rng.Intn(len(w.ordinaryGroups))]
 }
@@ -423,6 +438,13 @@ func newIdentityWork(graph *IdentityGraph, cfg Config) *identityWork {
 		if g.Planted == nil {
 			work.ordinaryGroups = append(work.ordinaryGroups, g.ID)
 		}
+	}
+	// LABS-1664: reporting_path draws its source from this pool minus the
+	// org root, and the root is itself ordinary — refuse a graph whose
+	// ordinary pool is only the root, or the source pick would spin.
+	someoneBesidesRoot := slices.ContainsFunc(work.ordinaryUsers, func(uid string) bool { return uid != rootUserID })
+	if !someoneBesidesRoot {
+		panic("no ordinary user besides the org root to plan reporting_path from")
 	}
 	return work
 }

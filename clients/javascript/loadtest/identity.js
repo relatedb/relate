@@ -176,7 +176,7 @@ const CATALOG = [
   {
     id: "reporting_path", kind: "read", related: false, description: "shortestPath between two users over REPORTS_TO", weight: 6,
     plan(work) {
-      const from = work.pickUser();
+      const from = work.pickReportingSource();
       return readOp(
         "MATCH (a:User {id: $from}), (b:User {id: $to}) RETURN length(shortestPath((a)-[:REPORTS_TO*..8]-(b))) AS hops",
         { from, to: ROOT_USER_ID }
@@ -468,7 +468,7 @@ function snapshot(conn) {
 }
 
 function makeWork(graph, seed) {
-  return {
+  const work = {
     rng: mulberry32(seed >>> 0),
     ordinaryUsers: graph.users.filter((u) => !u.planted).map((u) => u.id),
     ordinaryGroups: graph.groups.filter((g) => !g.planted).map((g) => g.id),
@@ -479,6 +479,18 @@ function makeWork(graph, seed) {
     next: 1,
     pickUser() {
       return this.ordinaryUsers[intRange(this.rng, this.ordinaryUsers.length)];
+    },
+    // The reporting path's source: any ordinary user but the org root —
+    // the destination is always the root, and a source that equals it
+    // plans a same-node shortestPath, which raises 51N23 (LABS-1664).
+    // Resampling keeps the pick uniform over the pool minus the root;
+    // the construction check below guarantees someone else to draw.
+    pickReportingSource() {
+      let uid = this.pickUser();
+      while (uid === ROOT_USER_ID) {
+        uid = this.pickUser();
+      }
+      return uid;
     },
     pickGroup() {
       return this.ordinaryGroups[intRange(this.rng, this.ordinaryGroups.length)];
@@ -492,6 +504,14 @@ function makeWork(graph, seed) {
       return id;
     },
   };
+  // LABS-1664: reporting_path draws its source from this pool minus the
+  // org root, and the root is itself ordinary — refuse a graph whose
+  // ordinary pool is only the root, or the source pick would spin.
+  const someoneBesidesRoot = work.ordinaryUsers.some((uid) => uid !== ROOT_USER_ID);
+  if (!someoneBesidesRoot) {
+    throw new Error("no ordinary user besides the org root to plan reporting_path from");
+  }
+  return work;
 }
 
 function runIdentity(cfg) {
@@ -529,4 +549,4 @@ const DEFAULTS = {
   logicalGraphSizeLimit: "",
 };
 
-module.exports = { CATALOG, generateIdentity, loadIdentity, runIdentity, DEFAULTS };
+module.exports = { CATALOG, generateIdentity, loadIdentity, runIdentity, makeWork, DEFAULTS };

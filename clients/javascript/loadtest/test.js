@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 const { percentiles } = require("./common");
 const { runFraud, customerSearchQ } = require("./fraud");
-const { runIdentity } = require("./identity");
+const { runIdentity, makeWork, generateIdentity } = require("./identity");
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -117,5 +117,17 @@ assert(customerSearchQ("lt-cust-3") == null, "onboard not numeric");
 
 const lat = percentiles([10, 20, 30, 40, 50]);
 assert(lat.min === 10 && lat.max === 50 && lat.p50 === 30, "percentiles");
+
+// LABS-1664: reporting_path's destination is always the org root, and the
+// root is itself an ordinary user — a source that equals it plans a
+// same-node shortestPath, which the engine rejects with 51N23. Pin that
+// the source pick never draws it (the Go and Rust suites carry the same
+// pin against their planners).
+const work = makeWork(generateIdentity({ graphSeed: 42, scale: 0.05, nestDepth: 4, groupK: 12 }), 7);
+assert(work.ordinaryUsers.includes("user-0"), "user-0 must be in the ordinary pool for this pin to mean anything");
+for (let i = 0; i < 2000; i++) {
+  const from = work.pickReportingSource();
+  assert(from !== "user-0", `reporting_path planned a self-path: ${from}`);
+}
 
 console.log("loadtest ok");

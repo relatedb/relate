@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -558,5 +559,32 @@ func TestPrintReportWritesToInjectedStream(t *testing.T) {
 	PrintFraud(r, "report.json", &out)
 	if got := out.String(); !strings.Contains(got, "wrote report.json (3 measured ops, 1 workers") {
 		t.Fatalf("renderer output: %s", got)
+	}
+}
+
+// LABS-1664: reporting_path's destination is always the org root, and the
+// root is itself an ordinary user — a source that equals it plans a
+// same-node shortestPath, which the engine correctly rejects with 51N23.
+// Pin that no planned op ever does.
+func TestReportingPathNeverPlansTheRootAsItsSource(t *testing.T) {
+	// The knobs come from the one default config, not a second copy of it.
+	cfg := DefaultIdentity()
+	work := newIdentityWork(generateIdentity(cfg.GraphSeed, cfg.Scale, cfg.NestDepth, cfg.GroupK), cfg)
+	if !slices.Contains(work.ordinaryUsers, rootUserID) {
+		t.Fatal("user-0 must be in the ordinary pool for this pin to mean anything")
+	}
+	for range 2000 {
+		planned := planReportingPath(work)
+		op, ok := planned.(stmtOp)
+		if !ok {
+			t.Fatalf("reporting_path planned a %T, not a statement op", planned)
+		}
+		from, ok := op.params["from"].(string)
+		if !ok {
+			t.Fatalf("reporting_path bound a %T source, not a user id", op.params["from"])
+		}
+		if from == rootUserID {
+			t.Fatalf("reporting_path planned the org root as its own source: %v", op.params)
+		}
 	}
 }
