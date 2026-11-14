@@ -56,6 +56,14 @@ impl Spelling {
         self == Spelling::Expression
     }
 
+    /// Whether a clause-level `WHERE` conjunct that reads the path filters
+    /// the *search* (the function and expression forms, as live
+    /// `shortestPath()` plans it) or only the selected paths afterwards (a
+    /// keyword selector).
+    pub(super) fn filters_search_by_clause_where(self) -> bool {
+        self != Spelling::KeywordSelector
+    }
+
     /// The hop ceiling an unbounded relationship takes: only the expression
     /// form carries one (the walk's flat default); the clause spellings keep
     /// the pattern's own bound.
@@ -88,10 +96,10 @@ pub(super) struct Shape<'p> {
 /// ADR-0186's Decision, an empty incoming used-relationship set, and row
 /// bindings the search can honor. `None` keeps the pattern on GPM.
 ///
-/// A path-level `WHERE` no longer sends the pattern to GPM: the route
-/// applies it *during* the search (see [`super::filters::PathFilter`]), so a
-/// shortest path that violates the predicate no longer hides the longer
-/// shortest path that satisfies it.
+/// A path-level `WHERE` does not send the pattern to GPM: an inline one, and
+/// a clause-level one of the function spellings, rides the search (see
+/// [`super::filters::PathFilter`]); a keyword selector's clause-level one
+/// is a post-filter of the selected paths.
 pub(super) fn route_shape<'p>(
     path: &'p PathPattern,
     filters: &'p GpmFilters,

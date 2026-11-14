@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A `MATCH`-clause `WHERE` that reads the path (`length(p)`, `relationships(p)`,
+  a relationship variable) now filters the selected paths afterwards for the
+  keyword shortest selectors (`SHORTEST 1`, `ANY SHORTEST`, `ALL SHORTEST`,
+  `SHORTEST 1 GROUPS`), as Neo4j does; it no longer promotes a longer path
+  that satisfies it. `shortestPath()`, `allShortestPaths()` and inline
+  `WHERE`s are unchanged (ADR-0600).
 - The `system_ontologies` namespace is now visible only under
   `RELATE_PREVIEW=ontology` (ADR-0593), the same preview row that gates the
   `db.ontology.*` procedures (ADR-0378). Without the opt-in the namespace
