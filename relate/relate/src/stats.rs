@@ -181,6 +181,11 @@ impl PatternStats for GraphPatternStats<'_> {
     ) -> Option<relate_planner::DegreeMoments> {
         relate_executor::GraphStats::new(self.graph, self.params).degree_moments(labels, rel_types)
     }
+
+    /// The in-degree sum rides the same delegation.
+    fn in_degree_sum(&self, labels: &[NamedToken], rel_types: &[NamedToken]) -> Option<u128> {
+        relate_executor::GraphStats::new(self.graph, self.params).in_degree_sum(labels, rel_types)
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +210,34 @@ mod tests {
             Some(Value::String(Arc::from("Toronto")))
         );
         assert_eq!(Expr::Parameter("missing".into()).seek_value(&params), None);
+    }
+
+    /// The plan-time adapter forwards the in-degree sum to the executor's
+    /// live pair counts (LABS-1661): a sink label's arriving rels.
+    #[test]
+    fn in_degree_sum_delegates_to_the_live_pair_counts() {
+        use relate_names::{SmallName, Token};
+        use relate_planner::PatternStats;
+
+        let graph = relate_executor::Graph::default();
+        graph.begin_write().unwrap();
+        let from = graph
+            .create_node(vec!["Src".into()], BTreeMap::new())
+            .unwrap();
+        let to = graph
+            .create_node(vec!["Sink".into()], BTreeMap::new())
+            .unwrap();
+        graph
+            .create_rel(from, to, "R".into(), BTreeMap::new())
+            .unwrap();
+        graph.commit_write();
+        let params = BTreeMap::new();
+        let stats = super::GraphPatternStats::new(&graph, &params);
+        let named = |name: &str| (SmallName::from_name(name), Token::Unresolved);
+        assert_eq!(
+            stats.in_degree_sum(&[named("Sink")], &[named("R")]),
+            Some(1)
+        );
+        assert_eq!(stats.in_degree_sum(&[named("Src")], &[]), Some(0));
     }
 }

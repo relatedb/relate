@@ -821,14 +821,54 @@ fn degree_moments_sum_the_selected_histograms() {
         g.pattern_degree_moments(None, Some(&[id("R")])),
         moments(24, 572)
     );
-    // Untyped: Big's S bucket joins (one node in [2, 3]: 2, (4 + 6 + 9) / 3).
+    // Untyped: Big's S bucket joins (one node in [2, 3]: 2, (4 + 6 + 9) / 3)
+    // and the one node's two types cross: (23 + 2)^2 - 23^2 - 2^2 = 92.
     assert_eq!(
         g.pattern_degree_moments(Some(id("Big")), None),
-        moments(25, 577)
+        moments(25, 577 + 92)
     );
     // No histogram entry: zero moments.
     assert_eq!(
         Graph::default().pattern_degree_moments(None, None),
         DegreeMoments::default()
     );
+}
+
+/// The in-degree sum reads the pair counts' end side: the rels arriving at
+/// a label's nodes, over the selected rel types — a sink label with no
+/// out-degree histogram still has one.
+#[test]
+fn in_degree_sum_reads_the_pair_counts_end_side() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let leaves: Vec<_> = (0..4)
+        .map(|_| g.create_node(vec!["Leaf".into()], BTreeMap::new()).unwrap())
+        .collect();
+    let hub = g.create_node(vec!["Hub".into()], BTreeMap::new()).unwrap();
+    let bare = g.create_node(vec![], BTreeMap::new()).unwrap();
+    for leaf in &leaves {
+        g.create_rel(hub, *leaf, "R".into(), BTreeMap::new())
+            .unwrap();
+    }
+    g.create_rel(hub, leaves[0], "S".into(), BTreeMap::new())
+        .unwrap();
+    // An unlabeled endpoint sits in no triple.
+    g.create_rel(hub, bare, "R".into(), BTreeMap::new())
+        .unwrap();
+    g.commit_write();
+    let id = |name: &str| g.interner.get_id(name).unwrap();
+
+    assert_eq!(
+        g.pattern_in_degree_sum(Some(id("Leaf")), Some(&[id("R")])),
+        4
+    );
+    assert_eq!(
+        g.pattern_in_degree_sum(Some(id("Leaf")), Some(&[id("S")])),
+        1
+    );
+    assert_eq!(g.pattern_in_degree_sum(Some(id("Leaf")), None), 5);
+    assert_eq!(g.pattern_in_degree_sum(None, Some(&[id("R")])), 4);
+    // The source side has none: the pair counts' end is the hub's never.
+    assert_eq!(g.pattern_in_degree_sum(Some(id("Hub")), None), 0);
+    assert_eq!(Graph::default().pattern_in_degree_sum(None, None), 0);
 }

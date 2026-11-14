@@ -51,7 +51,9 @@ impl ContainsCount {
 /// the size-biased (excess) degree a trail meets after its first hop is
 /// `sum_sq / sum - 1`. Estimates on the histogram's log2-bucket scale
 /// (each bucket read at the uniform mean of its degree range), summed
-/// over the selected labels and rel types.
+/// over the selected labels and rel types; a node's degrees on several
+/// selected types are crossed (independently) in `sum_sq`, so it stands
+/// for the node's total degree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DegreeMoments {
     /// Estimated sum of out-degrees (the relationship count the selected
@@ -153,6 +155,18 @@ pub trait PatternStats {
         labels: &[NamedToken],
         rel_types: &[NamedToken],
     ) -> Option<DegreeMoments> {
+        let _ = (labels, rel_types);
+        None
+    }
+
+    /// The estimated sum of in-degrees — the relationships arriving at
+    /// nodes carrying the labels in `labels` (empty: every labeled node;
+    /// several: a bound, the smallest per-label sum) over the rel types
+    /// `rel_types` (empty: every type). The incoming side of
+    /// [`PatternStats::degree_moments`]' `sum`, which an undirected or
+    /// incoming first hop needs: a label whose rels all point at it has
+    /// no out-degree. `None` when the stats keep no pair counts.
+    fn in_degree_sum(&self, labels: &[NamedToken], rel_types: &[NamedToken]) -> Option<u128> {
         let _ = (labels, rel_types);
         None
     }
