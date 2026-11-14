@@ -65,10 +65,30 @@ pub(crate) fn read_scope(db: &Database, scope: &PushScope) -> Result<ScopeGraph,
     let mut conn = db.connect().map_err(|e| LoadError::Engine(e.to_string()))?;
     match scope {
         PushScope::Query(arg) => read_query_scope(&mut conn, arg),
-        PushScope::Labels(labels) => read_labels_scope(&mut conn, labels),
-        PushScope::Types(types) => read_types_scope(&mut conn, types),
-        PushScope::All => read_all_scope(&mut conn),
+        PushScope::Labels(labels) => {
+            require_non_empty(labels, "--labels")?;
+            read_labels_scope(&mut conn, labels)
+        }
+        PushScope::Types(types) => {
+            require_non_empty(types, "--types")?;
+            read_types_scope(&mut conn, types)
+        }
+        // The whole-store scope, an explicit arm — never a
+        // `Labels(vec![])` sentinel: every node, then every relationship.
+        PushScope::All => read_node_scope(&mut conn, "MATCH (n) RETURN n"),
     }
+}
+
+/// The `--labels` / `--types` scopes carry a non-empty selector list
+/// (ADR-0401 §8): `PushScope` is public, so the invariant is enforced at
+/// this boundary, not only in the CLI parser that builds the variants.
+fn require_non_empty(names: &[String], flag: &str) -> Result<(), LoadError> {
+    if names.is_empty() {
+        return Err(LoadError::Push(format!(
+            "{flag} requires at least one name"
+        )));
+    }
+    Ok(())
 }
 
 /// The `--query` scope: resolve the argument (inline, file, or stdin) and
@@ -94,12 +114,6 @@ fn read_query_scope(conn: &mut Connection, arg: &str) -> Result<ScopeGraph, Load
         }
     }
     Ok(finish_graph(nodes, rels))
-}
-
-/// The whole-store scope (`PushScope::All`, an explicit arm — never a
-/// `Labels(vec![])` sentinel): every node, then every relationship.
-fn read_all_scope(conn: &mut Connection) -> Result<ScopeGraph, LoadError> {
-    read_node_scope(conn, "MATCH (n) RETURN n")
 }
 
 /// The `--labels` scope: one node read for the whole list (an OR'd label
@@ -347,6 +361,17 @@ mod tests {
         // Every rel has a Person endpoint: out of scope, counted dangling.
         assert_eq!(graph.rels.len(), 0);
         assert_eq!(graph.dangling_rels, 2);
+    }
+
+    /// An empty `--labels` / `--types` selector is refused at the boundary
+    /// (`PushScope` is public), never read as a whole-store scan.
+    #[test]
+    fn empty_label_or_type_scope_is_refused() {
+        let db = movies_db();
+        for scope in [PushScope::Labels(vec![]), PushScope::Types(vec![])] {
+            let err = read_scope(&db, &scope).unwrap_err();
+            assert!(matches!(err, LoadError::Push(_)), "{err}");
+        }
     }
 
     #[test]
