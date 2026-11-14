@@ -2,10 +2,37 @@
 //! [`take_shortest_expands`] and the ternary-tree builder helpers the
 //! counterexample graphs share.
 
-use relate_core::{Error, NodeId};
+use relate_core::{Error, NodeId, RelId};
+use relate_ir::Direction;
 
-use super::take_shortest_expands;
+use super::{take_shortest_expands, Search};
 use crate::exec::test_support::Builder;
+use crate::overlay::ExecGraph;
+use crate::store::RelTypes;
+
+/// A test search over any relationship type, one hop minimum.
+pub(crate) fn search<'a, 'g>(graph: &'a ExecGraph<'g>, dir: Direction, max: u32) -> Search<'a, 'g> {
+    Search {
+        graph,
+        types: RelTypes::Any,
+        dir,
+        min: 1,
+        max,
+        all: false,
+        skip: None,
+    }
+}
+
+/// `s` keeping every shortest predecessor (`all`) or the first only.
+pub(crate) fn keeping<'a, 'g>(s: &Search<'a, 'g>, all: bool) -> Search<'a, 'g> {
+    Search { all, ..s.clone() }
+}
+
+/// `trails` in a canonical order, for comparing result sets.
+pub(crate) fn sorted(mut trails: Vec<Vec<RelId>>) -> Vec<Vec<RelId>> {
+    trails.sort();
+    trails
+}
 
 /// The 51N23 text every common-end-node rejection carries.
 pub(crate) const COMMON_END_NODES: &str =

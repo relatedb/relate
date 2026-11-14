@@ -18,7 +18,7 @@ use crate::pattern_walk::{
 };
 use crate::row::{Row, RowRung};
 use crate::shortest::layered::Layer;
-use crate::shortest::{pair, path_from_trail, Search};
+use crate::shortest::{path_from_trail, Search};
 
 use super::super::sink::MatchedSink;
 use super::filters::{PathFilter, RouteFilters};
@@ -249,6 +249,8 @@ impl<'a> Route<'a> {
             dir: rel.direction,
             min: shape.min,
             max: shape.max.unwrap_or(u32::MAX),
+            all: shape.all,
+            skip: None,
         };
         let route = Self {
             ctx,
@@ -563,7 +565,7 @@ impl<'a> Route<'a> {
     }
 
     /// Both endpoints fixed: the pair search for single-path selectors, the
-    /// layered search stopped at `e` for all-path ones.
+    /// bidirectional layered search for all-path ones.
     fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut MatchedSink<'_, '_>) -> Result<()> {
         let Some(srow) = self.bind_start(s)? else {
             return Ok(());
@@ -573,13 +575,7 @@ impl<'a> Route<'a> {
             if self.reach.unreachable(&self.search, s, e)? {
                 return Ok(Vec::new());
             }
-            if self.shape.all {
-                self.search
-                    .dag(s, self.shape.all, None, |n, _| Ok(n == e))?
-                    .trails(self.ctx.graph, e)
-            } else {
-                Ok(pair(&self.search, s, e)?.into_iter().collect())
-            }
+            self.search.pair_trails(s, e)
         })
     }
 
@@ -598,10 +594,9 @@ impl<'a> Route<'a> {
             },
             Way::Backward => None,
         };
-        way.search(&self.search)
-            .dag_layers(origin, self.shape.all, None, |layer| {
-                self.fan_layer(&layer, origin, way, origin_row.as_ref(), out)
-            })?;
+        way.search(&self.search).dag_layers(origin, |layer| {
+            self.fan_layer(&layer, origin, way, origin_row.as_ref(), out)
+        })?;
         Ok(())
     }
 
@@ -686,7 +681,7 @@ impl<'a> Route<'a> {
         } else if self.search.min == 0 {
             vec![Vec::new()]
         } else {
-            self.search.closed(s, self.shape.all)?
+            self.search.closed(s)?
         };
         for trail in &trails {
             if self.halted() {

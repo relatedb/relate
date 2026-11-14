@@ -7,26 +7,11 @@ use relate_ir::{Clause, Direction, PatternElement};
 
 use crate::exec::test_support::{build, Built};
 use crate::overlay::ExecGraph;
-use crate::store::RelTypes;
 
 use super::layered::Dag;
-use super::test_support::counting_expands;
-use super::{followable, pair, path_from_trail, Search};
-
-fn search<'a, 'g>(graph: &'a ExecGraph<'g>, dir: Direction, max: u32) -> Search<'a, 'g> {
-    Search {
-        graph,
-        types: RelTypes::Any,
-        dir,
-        min: 1,
-        max,
-    }
-}
-
-fn sorted(mut trails: Vec<Vec<RelId>>) -> Vec<Vec<RelId>> {
-    trails.sort();
-    trails
-}
+use super::pair::pair;
+use super::test_support::{counting_expands, keeping, search, sorted};
+use super::{followable, path_from_trail, Search};
 
 #[test]
 fn closed_finds_both_triangle_trails_and_self_loops() {
@@ -38,12 +23,12 @@ fn closed_finds_both_triangle_trails_and_self_loops() {
     let view = ExecGraph::read(&g);
     let s = search(&view, Direction::Both, 8);
     assert_eq!(
-        sorted(s.closed(n[0], true).unwrap()),
+        sorted(keeping(&s, true).closed(n[0]).unwrap()),
         sorted(vec![vec![r[0], r[1], r[2]], vec![r[2], r[1], r[0]]])
     );
-    assert_eq!(s.closed(n[0], false).unwrap().len(), 1);
-    assert!(search(&view, Direction::Both, 2)
-        .closed(n[0], true)
+    assert_eq!(s.closed(n[0]).unwrap().len(), 1);
+    assert!(keeping(&search(&view, Direction::Both, 2), true)
+        .closed(n[0])
         .unwrap()
         .is_empty());
 
@@ -53,9 +38,9 @@ fn closed_finds_both_triangle_trails_and_self_loops() {
         rels: r,
     } = build(&[&[][..]; 2], &[(0, 1, "R"), (0, 0, "R"), (1, 0, "R")]);
     let view = ExecGraph::read(&g);
-    let s = search(&view, Direction::Outgoing, 8);
-    assert_eq!(s.closed(n[0], true).unwrap(), vec![vec![r[1]]]);
-    assert_eq!(s.closed(n[1], true).unwrap(), vec![vec![r[2], r[0]]]);
+    let s = keeping(&search(&view, Direction::Outgoing, 8), true);
+    assert_eq!(s.closed(n[0]).unwrap(), vec![vec![r[1]]]);
+    assert_eq!(s.closed(n[1]).unwrap(), vec![vec![r[2], r[0]]]);
 }
 
 #[test]
@@ -90,9 +75,9 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
         vec![vec![r[0], r[1], r[4]], vec![r[2], r[3], r[4]]]
     );
     assert_eq!(all.trails(&view, n[0]).unwrap(), vec![Vec::<RelId>::new()]);
-    let one = s.dag(n[0], false, None, |_, _| Ok(false)).unwrap();
+    let one = s.dag(n[0], |_, _| Ok(false)).unwrap();
     assert_eq!(one.trails(&view, n[4]).unwrap().len(), 1);
-    let stopped = s.dag(n[0], true, None, |id, _| Ok(id == n[3])).unwrap();
+    let stopped = keeping(&s, true).dag(n[0], |id, _| Ok(id == n[3])).unwrap();
     assert_eq!(stopped.trails(&view, n[3]).unwrap().len(), 2);
     assert!(stopped.trails(&view, n[4]).unwrap().is_empty());
     let (_, shallow) = layers_of(&search(&view, Direction::Outgoing, 1), n[0], true);
@@ -102,11 +87,12 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
     // only the origin's two relationships were followed, nothing deeper.
     let mut seen = 0;
     let ((), expands) = counting_expands(|| {
-        s.dag_layers(n[0], true, None, |_| {
-            seen += 1;
-            Ok(seen == 2)
-        })
-        .unwrap();
+        keeping(&s, true)
+            .dag_layers(n[0], |_| {
+                seen += 1;
+                Ok(seen == 2)
+            })
+            .unwrap();
     });
     assert_eq!(seen, 2, "the origin layer, then the first depth");
     assert_eq!(expands, 2);
@@ -116,8 +102,8 @@ fn dag_keeps_every_shortest_predecessor_only_for_all_paths() {
 /// was handed, in order: the origin alone, then each depth's new nodes.
 fn layers_of(s: &Search<'_, '_>, origin: NodeId, all: bool) -> (Dag, Vec<Vec<NodeId>>) {
     let mut layers = Vec::new();
-    let dag = s
-        .dag_layers(origin, all, None, |layer| {
+    let dag = keeping(s, all)
+        .dag_layers(origin, |layer| {
             layers.push(layer.nodes().to_vec());
             Ok(false)
         })
@@ -203,7 +189,7 @@ fn every_search_counts_its_expansions() {
     let s = search(&view, Direction::Outgoing, 8);
     let (_, expands) = counting_expands(|| pair(&s, n[0], n[2]).unwrap());
     assert!(expands > 0);
-    let (_, expands) = counting_expands(|| s.dag(n[0], false, None, |_, _| Ok(false)).unwrap());
+    let (_, expands) = counting_expands(|| s.dag(n[0], |_, _| Ok(false)).unwrap());
     assert_eq!(expands, 2);
 }
 

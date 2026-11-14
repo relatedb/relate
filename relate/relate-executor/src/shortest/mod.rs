@@ -7,6 +7,9 @@
 //! - [`Search::dag`]: a layered single-source BFS that keeps shortest-path
 //!   predecessors, with [`layered::Dag::trails`] enumerating them, and
 //!   [`Search::closed`] for the shortest closed trails through one node.
+//! - [`Search::pair_trails`]: the pair answer as trails; an all-path
+//!   search grows a layered DAG from each end and joins them where they
+//!   meet (ADR-0601), sharing the layer step with [`Search::dag`].
 //!
 //! Searches take the graph and the pattern's direction, types and hop
 //! bounds, and return relationship-id trails; callers build paths with
@@ -79,8 +82,8 @@ pub(crate) fn reject_static_common_end_nodes(path: &PathPattern) -> Result<()> {
     }
 }
 
-pub(crate) use pair::pair;
-
+#[cfg(test)]
+mod all_pair_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
@@ -120,6 +123,12 @@ pub(crate) struct Search<'a, 'g> {
     pub min: u32,
     /// Longest trail in relationships; `u32::MAX` for no cap.
     pub max: u32,
+    /// Keep every shortest predecessor of a node (all-path selectors)
+    /// instead of the first one only.
+    pub all: bool,
+    /// A relationship the layered search never follows: the first hop of a
+    /// closed trail, which the way back must not reuse.
+    pub skip: Option<RelId>,
 }
 
 impl Search<'_, '_> {
