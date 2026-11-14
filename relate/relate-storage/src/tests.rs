@@ -98,6 +98,19 @@ pub(crate) fn bare_manifest(
     }
 }
 
+/// Finish the open write on `graph`: the redo leaves the scratch, lands
+/// in `wal`, then is applied onto the graph (ops moved once, never cloned).
+/// Returns the commit timestamp. The one spelling of the finish → pin →
+/// append → apply commit policy for tests that need the WAL record.
+pub(crate) fn commit_open_write(graph: &Graph, wal: &mut Wal) -> u64 {
+    let ops = graph.take_redo();
+    let ts = graph.pending_commit_ts();
+    graph.abort_write();
+    wal.append_commit(ts, &ops).unwrap();
+    graph.apply_redo(ops, ts).unwrap();
+    ts
+}
+
 pub(crate) fn person_ada() -> (Graph, Wal) {
     let mut wal = Wal::memory();
     let g = Graph::default();
@@ -110,11 +123,7 @@ pub(crate) fn person_ada() -> (Graph, Wal) {
         )]),
     )
     .unwrap();
-    let ops = g.take_redo();
-    let ts = g.pending_commit_ts();
-    g.abort_write();
-    wal.append_commit(ts, &ops).unwrap();
-    g.apply_redo(ops.clone(), ts).unwrap();
+    commit_open_write(&g, &mut wal);
     (g, wal)
 }
 
@@ -136,12 +145,7 @@ pub(crate) fn commit_nodes(
     for (labels, props) in nodes {
         graph.create_node(labels, props).unwrap();
     }
-    let ops = graph.take_redo();
-    let ts = graph.pending_commit_ts();
-    graph.abort_write();
-    wal.append_commit(ts, &ops).unwrap();
-    graph.apply_redo(ops, ts).unwrap();
-    ts
+    commit_open_write(graph, wal)
 }
 
 /// The manifest of an on-disk store, as the crate's one manifest reader
@@ -689,12 +693,8 @@ fn json_codec_mixed_types_match_relate_graphdata() {
         ]),
     )
     .unwrap();
-    let ops = g.take_redo();
-    let ts = g.pending_commit_ts();
-    g.abort_write();
     let mut wal = Wal::memory();
-    wal.append_commit(ts, &ops).unwrap();
-    g.apply_redo(ops.clone(), ts).unwrap();
+    commit_open_write(&g, &mut wal);
     checkpoint_with_lsn(&store, &g, wal.lsn, None).unwrap();
     let raw = String::from_utf8(snapshot::get_object(&store, "graph.json").unwrap()).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();

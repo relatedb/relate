@@ -28,12 +28,8 @@ fn dirty_window_skips_unchanged_shard() {
     g.create_node(vec!["A".into()], Default::default()).unwrap();
     g.set_next_node_id(300_000);
     g.create_node(vec!["B".into()], Default::default()).unwrap();
-    let ops = g.take_redo();
-    let ts = g.pending_commit_ts();
-    g.abort_write();
     let mut wal = Wal::memory();
-    wal.append_commit(ts, &ops).unwrap();
-    g.apply_redo(ops.clone(), ts).unwrap();
+    let ts = commit_open_write(&g, &mut wal);
     // At target 1 no two rows fit one rewrite unit (ADR-0183), so the rows
     // stay in separate parts and node 0's rewrite cannot absorb the other.
     snapshot::native::checkpoint_at_with_bytes(&store, &g, wal.lsn, ts, 1, None).unwrap();
@@ -51,11 +47,7 @@ fn dirty_window_skips_unchanged_shard() {
 
     g.begin_write().unwrap();
     g.set_property_node(0, "x", relate_core::Value::Int(1));
-    let ops = g.take_redo();
-    let ts = g.pending_commit_ts();
-    g.abort_write();
-    wal.append_commit(ts, &ops).unwrap();
-    g.apply_redo(ops.clone(), ts).unwrap();
+    let ts = commit_open_write(&g, &mut wal);
     snapshot::native::checkpoint_at_with_bytes(&store, &g, wal.lsn, ts, 1, None).unwrap();
     let high_bytes2 = snapshot::get_object(&store, &high.path).unwrap();
     assert_eq!(high_bytes, high_bytes2);
@@ -90,12 +82,8 @@ fn fat_rows_split_a_window() {
         )
         .unwrap();
     }
-    let ops = g.take_redo();
-    let ts = g.pending_commit_ts();
-    g.abort_write();
     let mut wal = Wal::memory();
-    wal.append_commit(ts, &ops).unwrap();
-    g.apply_redo(ops.clone(), ts).unwrap();
+    let ts = commit_open_write(&g, &mut wal);
     snapshot::native::checkpoint_at_with_bytes(&store, &g, wal.lsn, ts, 1500, None).unwrap();
     let m = snapshot::native::read_manifest_for_test(&store)
         .unwrap()

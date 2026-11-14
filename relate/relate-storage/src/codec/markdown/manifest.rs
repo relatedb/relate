@@ -21,9 +21,18 @@ use crate::snapshot::MAX_JSON_OBJECT;
 use crate::vfs::{atomic_write, read_to_vec, Vfs};
 use crate::StoreTarget;
 
+/// The engine directory's one spelling as a literal, so `concat!` can build
+/// the paths under it (the schema mirror's directory derives from it).
+macro_rules! engine_dir {
+    () => {
+        ".cypherlite"
+    };
+}
+pub(crate) use engine_dir;
+
 /// The hidden engine directory inside the vault (the `.obsidian/`
 /// convention): WAL, journal, and the sidecar manifest.
-pub(crate) const ENGINE_DIR: &str = ".cypherlite";
+pub(crate) const ENGINE_DIR: &str = engine_dir!();
 /// The sidecar manifest, published last (the manifest-last rule).
 pub(crate) const MANIFEST: &str = ".cypherlite/manifest.json";
 /// The default WAL directory for a markdown store (ADR-0406 §3).

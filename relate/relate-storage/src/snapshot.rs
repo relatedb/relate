@@ -297,7 +297,9 @@ pub(crate) fn bounded_read_for(name: &str) -> Option<&'static BoundedRead> {
         Some(ObjectName::Manifest) => Some(&JSON_META),
         Some(ObjectName::Ontology) => Some(&ONTOLOGY_DOC),
         Some(ObjectName::SchemaMirror) => Some(&SCHEMA_MIRROR),
-        _ => None,
+        Some(ObjectName::LegacyShard) | None => None,
+        #[cfg(parquet_codec)]
+        Some(ObjectName::Shard(_)) => None,
     }
 }
 
