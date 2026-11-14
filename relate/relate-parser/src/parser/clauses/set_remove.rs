@@ -166,15 +166,7 @@ impl<'a> Parser<'a> {
             let prop_access = Self::build_property_access(inner_expr, accessors);
             self.expect(TokenType::Equals)?;
             let val = self.parse_expression()?;
-            return Ok(SetItem {
-                property: Some(prop_access),
-                variable: None,
-                labels: Vec::new(),
-                value: Some(val),
-                merge: false,
-                is_keyword: false,
-                labels_function: None,
-            });
+            return Ok(SetItem::property_assignment(prop_access, val));
         }
 
         // CIP-162 Alternatives: `SET labels(<expr>) = / += / -= <expr>`
@@ -214,15 +206,7 @@ impl<'a> Parser<'a> {
             match op {
                 Some(op) => {
                     let val = self.parse_expression()?;
-                    return Ok(SetItem {
-                        property: None,
-                        variable: None,
-                        labels: Vec::new(),
-                        value: Some(val),
-                        merge: false,
-                        is_keyword: false,
-                        labels_function: Some((target, op)),
-                    });
+                    return Ok(SetItem::labels_function(target, op, val));
                 }
                 None => self.restore_pos(saved),
             }
@@ -242,15 +226,7 @@ impl<'a> Parser<'a> {
             let prop_access = self.parse_general_property_target()?;
             self.expect(TokenType::Equals)?;
             let val = self.parse_expression()?;
-            return Ok(SetItem {
-                property: Some(prop_access),
-                variable: None,
-                labels: Vec::new(),
-                value: Some(val),
-                merge: false,
-                is_keyword: false,
-                labels_function: None,
-            });
+            return Ok(SetItem::property_assignment(prop_access, val));
         }
 
         // ADR-0191 (Decision point 7's follow-up probe): Neo4j 2026.09
@@ -268,57 +244,25 @@ impl<'a> Parser<'a> {
             let prop_access = Self::build_property_access(Expr::Variable(name), accessors);
             self.expect(TokenType::Equals)?;
             let val = self.parse_expression()?;
-            return Ok(SetItem {
-                property: Some(prop_access),
-                variable: None,
-                labels: Vec::new(),
-                value: Some(val),
-                merge: false,
-                is_keyword: false,
-                labels_function: None,
-            });
+            return Ok(SetItem::property_assignment(prop_access, val));
         }
 
         let next = self.peek().clone();
         match next.ty {
             TokenType::Colon | TokenType::IS => {
                 let (labels, is_keyword) = self.parse_label_set_list()?;
-                Ok(SetItem {
-                    property: None,
-                    variable: Some(name),
-                    labels,
-                    value: None,
-                    merge: false,
-                    is_keyword,
-                    labels_function: None,
-                })
+                Ok(SetItem::label_set(name, labels, is_keyword))
             }
             TokenType::Equals => {
                 self.next_token();
                 let val = self.parse_expression()?;
-                Ok(SetItem {
-                    property: None,
-                    variable: Some(name),
-                    labels: Vec::new(),
-                    value: Some(val),
-                    merge: false,
-                    is_keyword: false,
-                    labels_function: None,
-                })
+                Ok(SetItem::variable_assignment(name, val, false))
             }
             TokenType::Plus => {
                 self.next_token(); // consume +
                 self.expect(TokenType::Equals)?;
                 let val = self.parse_expression()?;
-                Ok(SetItem {
-                    property: None,
-                    variable: Some(name),
-                    labels: Vec::new(),
-                    value: Some(val),
-                    merge: true,
-                    is_keyword: false,
-                    labels_function: None,
-                })
+                Ok(SetItem::variable_assignment(name, val, true))
             }
             _ => Err(self.error_at_token(
                 &next,

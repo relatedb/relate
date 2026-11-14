@@ -502,3 +502,38 @@ fn test_mixed_label_syntax_pure_forms_unaffected() {
         assert!(parse_with_options(q, on).is_ok(), "{q}");
     }
 }
+
+// A bare label after `IS` is non-strict in the general grammar (`x IS A`)
+// but strict as a simple-CASE `WHEN IS A` operand; `IS NOT A` and the
+// `LABELED` spelling are strict in both. The divergence is deliberate (see
+// `IsLabelPolicy`); this pins it.
+#[test]
+fn test_is_label_strictness_by_grammar_position() {
+    fn strict_flag(query: &str) -> bool {
+        let stmt = parse(query).unwrap();
+        let Clause::Return(ret) = &stmt.clauses[0] else {
+            panic!("expected RETURN in {query:?}");
+        };
+        match &ret.items[0].expr {
+            Expr::HasLabel(hl) => hl.strict,
+            Expr::Case(case) => match &case.whens[0].condition {
+                Expr::HasLabel(hl) => hl.strict,
+                other => panic!("expected HasLabel WHEN in {query:?}, got {other:?}"),
+            },
+            other => panic!("expected HasLabel in {query:?}, got {other:?}"),
+        }
+    }
+    assert!(!strict_flag("RETURN n IS A"));
+    assert!(strict_flag("RETURN n IS NOT A"));
+    assert!(strict_flag("RETURN n IS LABELED A"));
+    assert!(strict_flag("RETURN CASE n WHEN IS A THEN 1 END"));
+    assert!(strict_flag("RETURN CASE n WHEN IS NOT A THEN 1 END"));
+    assert!(strict_flag("RETURN CASE n WHEN IS LABELED A THEN 1 END"));
+}
+
+// `x IS` followed by nothing label-shaped reports the missing `NULL`.
+#[test]
+fn test_is_without_predicate_reports_missing_null() {
+    let err = parse("RETURN n IS )").unwrap_err();
+    assert!(err.message.contains("expected NULL"), "{}", err.message);
+}

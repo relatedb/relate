@@ -622,3 +622,26 @@ fn test_parse_lookup_index_rejects_foreign_variable() {
     parse("CREATE LOOKUP INDEX FOR (n) ON EACH labels(n)").unwrap();
     parse("CREATE LOOKUP INDEX FOR ()-[r]-() ON EACH type(r)").unwrap();
 }
+
+// A FOR target must name exactly one label or relationship type: a
+// label-less target is rejected rather than defaulted to an empty name.
+#[test]
+fn test_create_constraint_requires_one_label() {
+    for q in [
+        "CREATE CONSTRAINT c FOR (n) REQUIRE n.x IS UNIQUE",
+        "CREATE CONSTRAINT c FOR ()-[r]-() REQUIRE r.x IS UNIQUE",
+    ] {
+        let err = parse(q).unwrap_err();
+        assert!(
+            err.message.contains("require a label or relationship type"),
+            "{q:?}: {}",
+            err.message
+        );
+    }
+    let err = parse("CREATE CONSTRAINT c FOR (n:A|B) REQUIRE n.x IS UNIQUE").unwrap_err();
+    assert!(
+        err.message.contains("only a single label"),
+        "{}",
+        err.message
+    );
+}

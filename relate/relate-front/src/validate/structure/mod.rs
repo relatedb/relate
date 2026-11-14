@@ -12,7 +12,7 @@ use relate_error::{EngineError, ErrorKind, COUNT_UNION_MIX_MESSAGE, COUNT_UNION_
 use relate_model::name_list::same_name_multiset;
 use relate_parser::{Clause, Expr, PatternElement, ReturnItem, Statement};
 
-use crate::ast::collect::{effective_name, tail_stage, union_arms};
+use crate::ast::collect::{effective_name, union_arms};
 
 mod traversal;
 
@@ -247,7 +247,7 @@ fn union_branch_shape(clauses: &[Clause]) -> UnionBranchShape {
         // only known once the scope fold runs: a wildcard. A unit subquery
         // call with no RETURN leaves the arm columnless.
         if let Some(Clause::CallSubquery(csq)) = clauses.last() {
-            if call_subquery_projects(csq) {
+            if csq.statement.projects_columns() {
                 return UnionBranchShape::Wildcard;
             }
         }
@@ -257,35 +257,6 @@ fn union_branch_shape(clauses: &[Clause]) -> UnionBranchShape {
         Some(cols) => UnionBranchShape::Cols(cols),
         None => UnionBranchShape::Wildcard,
     }
-}
-
-/// Whether a CALL subquery body projects columns: its final stage is a
-/// RETURN (or a conditional / nested CALL that projects). A unit subquery
-/// call with no RETURN makes the enclosing arm a no-column arm.
-fn call_subquery_projects(csq: &relate_parser::ast::CallSubqueryClause) -> bool {
-    fn stmt_projects(s: &relate_parser::ast::Statement) -> bool {
-        // CIP-213: an arm's projection is its true *final* stage — the end of
-        // its own NEXT chain. A UNION head owns the whole composite, so it
-        // stays itself.
-        let body = if s.union.is_some() { s } else { tail_stage(s) };
-        match body.clauses.last() {
-            Some(Clause::Return(_)) => true,
-            Some(Clause::Conditional(cc)) => {
-                // The grammar guarantees at least one WHEN branch
-                // (`parse_when_query` pushes one before its loop can
-                // break), so an empty branch list is a broken invariant to
-                // surface — never a fabricated "does not project" verdict.
-                let branch = cc
-                    .branches
-                    .first()
-                    .expect("a WHEN clause has at least one branch");
-                stmt_projects(&branch.body)
-            }
-            Some(Clause::CallSubquery(inner)) => stmt_projects(&inner.statement),
-            _ => false,
-        }
-    }
-    stmt_projects(&csq.statement)
 }
 
 /// Validate UNION column consistency: all branches must have the same column

@@ -458,18 +458,6 @@ pub(crate) fn union_chain(stmt: &Statement) -> impl Iterator<Item = &Statement> 
     std::iter::once(stmt).chain(union_arms(stmt.union.as_deref()).map(|(arm, _)| arm))
 }
 
-/// The end of a statement's `NEXT` chain — its true terminal stage (CIP-213),
-/// not its own first stage. This is the front's spelling of the cursor; the
-/// parser has a private twin beside its `call_projects` screening (the two
-/// should converge onto one `Statement`-level method — tracked with the
-/// parser-side consolidation ticket).
-pub(crate) fn tail_stage(mut stmt: &Statement) -> &Statement {
-    while let Some(next) = &stmt.next {
-        stmt = next.as_ref();
-    }
-    stmt
-}
-
 /// The column names a WITH/RETURN item list projects: a `*` item passes
 /// the incoming scope through, every other item contributes its
 /// [`effective_name`]. The one project-items-to-names skeleton: both

@@ -6,6 +6,7 @@ use relate_names::SmallName;
 // `pub(crate)` beyond the parser module for the statement normalizer
 // (ADR-0503), which extracts the same values the parser would bind.
 use interp::parse_interp_body;
+use is_predicate::{IsLabelPolicy, Suffix};
 pub(crate) use literals::parse_int_literal;
 use literals::{IntLiteralError, IntLiteralSite};
 
@@ -690,12 +691,18 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, ty: TokenType) -> ParseResult<Token<'a>> {
         let tok = self.next_token();
         if tok.ty != ty {
-            return Err(self.error_at_token(
-                &tok,
-                format!("expected {:?}, got {:?} ({:?})", ty, tok.literal, tok.ty),
-            ));
+            return Err(self.expected_token_error(ty, &tok));
         }
         Ok(tok)
+    }
+
+    /// The `expected <ty>, got <tok>` error at `tok`, shared by every
+    /// single-token expectation.
+    fn expected_token_error(&self, ty: TokenType, tok: &Token) -> ParseError {
+        self.error_at_token(
+            tok,
+            format!("expected {:?}, got {:?} ({:?})", ty, tok.literal, tok.ty),
+        )
     }
 
     /// Like [`Parser::expect`] but tags the raised error with a specific
@@ -706,12 +713,7 @@ impl<'a> Parser<'a> {
     fn expect_detail(&mut self, ty: TokenType, detail: &'static str) -> ParseResult<Token<'a>> {
         let tok = self.next_token();
         if tok.ty != ty {
-            return Err(self
-                .error_at_token(
-                    &tok,
-                    format!("expected {:?}, got {:?} ({:?})", ty, tok.literal, tok.ty),
-                )
-                .with_detail(detail));
+            return Err(self.expected_token_error(ty, &tok).with_detail(detail));
         }
         Ok(tok)
     }

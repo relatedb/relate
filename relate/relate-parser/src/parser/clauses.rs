@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::token::token_start_byte;
+use admin::{CLAUSE_START_SHAPES, DROP_SHAPES};
 
 /// The three hint kinds `parse_using_hints` keeps: the `USING SCAN`
 /// variables (the executor honours them), the `USING INDEX` hints (the
@@ -140,7 +141,7 @@ impl<'a> Parser<'a> {
             // `SHOW`/`USE`/`LET`/`FILTER` above) so it stays usable as an
             // ordinary variable name everywhere except directly before
             // DELETE at clause start.
-            TokenType::Identifier if tok.literal.eq_ignore_ascii_case("nodetach") => {
+            TokenType::Identifier if Self::token_is_ident(&tok, "nodetach") => {
                 self.next_token(); // consume NODETACH
                 self.expect(TokenType::DELETE)?;
                 self.backup();
@@ -159,6 +160,16 @@ impl<'a> Parser<'a> {
             TokenType::CALL => self.parse_call(false),
             TokenType::LOAD => self.parse_load_csv(),
             TokenType::DROP => self.parse_drop(),
+            // ADR-0116 §2 / LABS-873: the administration commands CE does
+            // not support (`START`/`STOP DATABASE`, `GRANT`/`DENY`/`REVOKE`,
+            // `RENAME USER|ROLE`, `ALTER ALIAS|USER|ROLE`) are recognized by
+            // the one admin table, then rejected with
+            // `UnsupportedAdministrationCommand` -- never a syntax error.
+            // Ahead of the contextual arm so `ALTER` reaches its table row.
+            TokenType::Identifier if self.at_admin_command(CLAUSE_START_SHAPES, 0) => {
+                let start = self.pos;
+                self.unsupported_admin_clause(start)
+            }
             // The contextual (identifier-spelled) clause keywords --
             // single-sourced as `CONTEXTUAL_CLAUSE_WORDS` in token.rs so
             // `peek_starts_show_filter_expr` excludes exactly this set.
@@ -170,55 +181,13 @@ impl<'a> Parser<'a> {
             TokenType::Identifier if is_contextual_clause_keyword(&tok.literal) => {
                 self.parse_contextual_clause(&tok)
             }
-            // ADR-0116 §2: `START DATABASE <name>` / `STOP DATABASE
-            // <name>` -- recognized, then rejected with CE's
-            // `UnsupportedAdministrationCommand`. `START`/`STOP` stay
-            // ordinary identifiers everywhere else (`MATCH (start)
-            // WHERE start.alias = 'stop' ...` keeps parsing).
-            TokenType::Identifier
-                if (tok.literal.eq_ignore_ascii_case("start")
-                    || tok.literal.eq_ignore_ascii_case("stop"))
-                    && self.peek_at_is_ident(1, "database") =>
-            {
-                let start = self.pos;
-                self.unsupported_admin_clause(start)
-            }
-            // LABS-873: `GRANT`/`DENY`/`REVOKE <privilege> … TO/FROM
-            // <role>` and `RENAME USER|ROLE <name> TO <name>` are
-            // administration commands CE does not support. They are plain
-            // identifiers in this grammar, so each needs its own guard here
-            // -- without it they fell through to `unexpected token` and
-            // surfaced as a syntax error instead of the 51N27 rejection.
-            //
-            // No lookahead on `GRANT`/`DENY`/`REVOKE`: their argument is a
-            // privilege, whose spellings are a vocabulary this parser has no
-            // other use for, and no clause of this grammar starts with a
-            // bare identifier, so reaching the guard at all already means
-            // the statement opens with the command. `RENAME` does look
-            // ahead, because `rename` is a plausible variable name and only
-            // `USER`/`ROLE` after it is the command.
-            TokenType::Identifier
-                if tok.literal.eq_ignore_ascii_case("grant")
-                    || tok.literal.eq_ignore_ascii_case("deny")
-                    || tok.literal.eq_ignore_ascii_case("revoke") =>
-            {
-                let start = self.pos;
-                self.unsupported_admin_clause(start)
-            }
-            TokenType::Identifier
-                if tok.literal.eq_ignore_ascii_case("rename")
-                    && (self.peek_at_is_ident(1, "user") || self.peek_at_is_ident(1, "role")) =>
-            {
-                let start = self.pos;
-                self.unsupported_admin_clause(start)
-            }
             // CIP-168: standalone `<order by and page statement>` -- a new
             // clause starting directly with ORDER BY / SKIP / OFFSET /
             // LIMIT rather than attached to WITH/RETURN/YIELD.
             TokenType::ORDER | TokenType::SKIP | TokenType::LIMIT => {
                 self.parse_standalone_order_by_page()
             }
-            TokenType::Identifier if tok.literal.eq_ignore_ascii_case("offset") => {
+            TokenType::Identifier if Self::token_is_ident(&tok, "offset") => {
                 self.parse_standalone_order_by_page()
             }
             _ => Err(self.error_at_token(&tok, format!("unexpected token {:?}", tok.literal))),
@@ -252,16 +221,6 @@ impl<'a> Parser<'a> {
                 // directly after `ALTER` (`DATABASE` vs `CURRENT`).
                 if self.peek_at_is_ident(1, "database") {
                     self.parse_alter_database()
-                } else if self.peek_at_is_ident(1, "alias")
-                    || self.peek_at_is_ident(1, "user")
-                    || self.peek_at_is_ident(1, "role")
-                {
-                    // ADR-0116 §2 / LABS-873: `ALTER ALIAS <name> SET
-                    // DATABASE <target>`, `ALTER USER <name> …` and
-                    // `ALTER ROLE <name> …` -- recognized, then rejected
-                    // with CE's `UnsupportedAdministrationCommand`.
-                    let start = self.pos;
-                    self.unsupported_admin_clause(start)
                 } else {
                     // `ALTER CURRENT GRAPH TYPE SET { ... }`.
                     self.parse_alter_current_graph_type()
@@ -275,57 +234,12 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         self.next_token(); // consume CREATE
 
-        // `CREATE [OR REPLACE] DATABASE ...` / `CREATE [OR
-        // REPLACE] COMPOSITE DATABASE ...`. Checked before the general
-        // dispatch below -- a plain `CREATE (...)` node pattern can never
-        // start with `OR`. `database`/`composite` aren't reserved words
-        // though, so they *can* legitimately be a named-path variable
-        // (`CREATE database = (a)-[:X]->(b)`, the `<named path>`
-        // form) -- disambiguated by checking the token immediately after
-        // isn't `=`, which a `<create database>`'s `<name>` position can
-        // never be followed by.
-        //
-        // ADR-0116 §2: with fixed namespaces, every `CREATE [OR REPLACE]
-        // [COMPOSITE] DATABASE` form is recognized and then rejected with
-        // CE's `UnsupportedAdministrationCommand` rather than executed.
-        {
-            let or_replace =
-                self.peek_type() == TokenType::OR && self.peek_at_is_ident(1, "replace");
-            let after = if or_replace { 2 } else { 0 };
-            if self.peek_at_is_ident(after, "database")
-                && self.peek_at(after + 1).ty != TokenType::Equals
-            {
-                return self.unsupported_admin_clause(start);
-            }
-            if self.peek_at_is_ident(after, "composite")
-                && self.peek_at_is_ident(after + 1, "database")
-                && self.peek_at(after + 2).ty != TokenType::Equals
-            {
-                return self.unsupported_admin_clause(start);
-            }
-            // ADR-0116 §2: `CREATE [OR REPLACE] ALIAS <name> FOR
-            // DATABASE <target>`. Same named-path disambiguation as
-            // above: an `ALIAS` variable is never followed by `<name>
-            // FOR`.
-            if self.peek_at_is_ident(after, "alias")
-                && self.peek_at(after + 1).ty.is_ident_like()
-                && self.peek_at(after + 2).ty == TokenType::FOR
-            {
-                return self.unsupported_admin_clause(start);
-            }
-            // LABS-873: `CREATE [OR REPLACE] USER <name> SET PASSWORD …`
-            // and `CREATE ROLE <name> …` are administration commands CE
-            // does not support, so they are recognized and rejected with
-            // the same 51N27 the database forms get -- not left to fail
-            // as an unparseable node pattern. Same named-path
-            // disambiguation as `DATABASE`: a variable spelled
-            // `user`/`role` is followed by `=`.
-            if (self.peek_at_is_ident(after, "user") || self.peek_at_is_ident(after, "role"))
-                && self.peek_at(after + 1).ty != TokenType::Equals
-            {
-                return self.unsupported_admin_clause(start);
-            }
-        }
+        // `CREATE [OR REPLACE] [COMPOSITE] DATABASE ...`, `... ALIAS`,
+        // `... USER|ROLE` -- ADR-0116 §2 / LABS-873: every form is
+        // recognized (the table keeps a same-named path variable, `CREATE
+        // database = (a)-[:X]->(b)`, a pattern) and rejected with CE's
+        // `UnsupportedAdministrationCommand` rather than executed.
+        self.reject_unsupported_admin_create(start)?;
 
         match self.peek_type() {
             TokenType::INDEX => {
@@ -359,9 +273,7 @@ impl<'a> Parser<'a> {
             // never has an identifier named `graph` immediately followed by
             // one named `type`.
             TokenType::Identifier
-                if self.peek().literal.eq_ignore_ascii_case("graph")
-                    && self.peek_at(1).ty == TokenType::Identifier
-                    && self.peek_at(1).literal.eq_ignore_ascii_case("type") =>
+                if self.peek_at_is_ident(0, "graph") && self.peek_at_is_ident(1, "type") =>
             {
                 return self.parse_create_graph_type();
             }
@@ -446,6 +358,13 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         self.next_token(); // consume DROP
 
+        // ADR-0116 §2 / LABS-873: `DROP DATABASE|COMPOSITE DATABASE|ALIAS|
+        // USER|ROLE` are recognized (so they fail with CE's
+        // `UnsupportedAdministrationCommand`, not a syntax error) but never
+        // executed -- the namespaces are fixed.
+        if self.at_admin_command(DROP_SHAPES, 0) {
+            return self.unsupported_admin_clause(start);
+        }
         let tok = self.peek().clone();
         match tok.ty {
             TokenType::INDEX => {
@@ -480,42 +399,11 @@ impl<'a> Parser<'a> {
                     if_exists,
                 }))
             }
-            // ADR-0116 §2: `DROP DATABASE <name> [IF EXISTS] [<wait
-            // clause>]`, `DROP COMPOSITE DATABASE ...` and `DROP ALIAS
-            // <name> FOR DATABASE` are recognized (so they fail with CE's
-            // `UnsupportedAdministrationCommand`, not a syntax error) but
-            // never executed -- the namespaces are fixed. `DATABASE`/
-            // `COMPOSITE`/`ALIAS` aren't reserved tokens, recognized by
-            // spelling like `SHOW`/`USE` elsewhere in this parser.
-            TokenType::Identifier if tok.literal.eq_ignore_ascii_case("database") => {
-                self.unsupported_admin_clause(start)
-            }
-            TokenType::Identifier
-                if tok.literal.eq_ignore_ascii_case("composite")
-                    && self.peek_at_is_ident(1, "database") =>
-            {
-                self.unsupported_admin_clause(start)
-            }
-            TokenType::Identifier
-                if tok.literal.eq_ignore_ascii_case("alias")
-                    && self.peek_at(1).ty.is_ident_like()
-                    && self.peek_at(2).ty == TokenType::FOR =>
-            {
-                self.unsupported_admin_clause(start)
-            }
-            // LABS-873: `DROP USER <name>` / `DROP ROLE <name>` are CE's
-            // unsupported administration commands, same as the database
-            // forms above.
-            TokenType::Identifier
-                if tok.literal.eq_ignore_ascii_case("user")
-                    || tok.literal.eq_ignore_ascii_case("role") =>
-            {
-                self.unsupported_admin_clause(start)
-            }
             _ => Err(self.error_at_token(
                 &tok,
                 format!(
-                    "expected INDEX, CONSTRAINT, DATABASE, USER, or ROLE after DROP, got {:?}",
+                    "expected INDEX, CONSTRAINT, or one of {} after DROP, got {:?}",
+                    Self::drop_admin_target_words().join(", "),
                     tok.literal
                 ),
             )),
@@ -925,6 +813,7 @@ impl<'a> Parser<'a> {
     }
 }
 
+mod admin;
 mod call;
 mod match_clause;
 mod set_remove;

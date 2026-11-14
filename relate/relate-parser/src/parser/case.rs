@@ -186,19 +186,10 @@ impl<'a> Parser<'a> {
                 };
                 let operand = operand.clone();
                 match self.parse_is_predicate_common(operand, negated)? {
-                    Ok(predicate) => predicate,
-                    Err(operand) => {
-                        // WHEN IS [NOT] [LABELED] <label-expr>
-                        if self.peek_is_labeled_keyword() {
-                            self.next_token();
-                        }
-                        let label_expr = self.parse_label_expr_body(true, false)?.expr;
-                        Expr::HasLabel(Box::new(HasLabelExpr {
-                            expr: operand,
-                            label_expr,
-                            negated,
-                            strict: true,
-                        }))
+                    Suffix::Parsed(predicate) => predicate,
+                    // WHEN IS [NOT] [LABELED] <label-expr>
+                    Suffix::Unmatched(operand) => {
+                        self.parse_is_label_tail(operand, negated, IsLabelPolicy::WhenOperand)?
                     }
                 }
             }
@@ -225,46 +216,15 @@ impl<'a> Parser<'a> {
                     negated: false,
                 }))
             }
-            TokenType::IN => {
-                // `<when operand>` completion: `WHEN IN
-                // <list>` is `<operand> IN <list>` with the CASE operand as
-                // the implicit LHS.
-                self.next_token();
-                let list = self.parse_add_sub()?;
-                Expr::In(Box::new(InExpr {
-                    expr: operand.clone(),
-                    list,
-                }))
-            }
-            TokenType::CONTAINS => {
-                self.next_token();
-                let right = self.parse_string_match_rhs()?;
-                Expr::StringMatch(Box::new(StringMatchExpr {
-                    left: operand.clone(),
-                    op: CONTAINS,
-                    right,
-                }))
-            }
-            TokenType::STARTS => {
-                self.next_token();
-                self.expect(TokenType::WITH)?;
-                let right = self.parse_string_match_rhs()?;
-                Expr::StringMatch(Box::new(StringMatchExpr {
-                    left: operand.clone(),
-                    op: STARTS_WITH,
-                    right,
-                }))
-            }
-            TokenType::ENDS => {
-                self.next_token();
-                self.expect(TokenType::WITH)?;
-                let right = self.parse_string_match_rhs()?;
-                Expr::StringMatch(Box::new(StringMatchExpr {
-                    left: operand.clone(),
-                    op: ENDS_WITH,
-                    right,
-                }))
-            }
+            // `<when operand>` completion: `WHEN IN <list>` is `<operand> IN
+            // <list>`, and `WHEN CONTAINS|STARTS WITH|ENDS WITH <expr>` the
+            // string match, with the CASE operand as the implicit LHS.
+            TokenType::IN | TokenType::CONTAINS | TokenType::STARTS | TokenType::ENDS => match self
+                .parse_in_or_string_match_suffix(operand.clone(), Self::parse_string_match_rhs)?
+            {
+                Suffix::Parsed(predicate) => predicate,
+                Suffix::Unmatched(_) => return Ok(None),
+            },
             _ => return Ok(None),
         };
         Ok(Some(predicate))

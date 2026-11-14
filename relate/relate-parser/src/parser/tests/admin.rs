@@ -56,3 +56,38 @@ fn test_start_stop_alias_stay_identifiers() {
     // A named path may still be called `database`/`alias`.
     parse("CREATE database = (a)-[:X]->(b)").unwrap();
 }
+
+// A path variable spelled like an administration target stays a pattern;
+// the same spelling without the `=` is the unsupported command.
+#[test]
+fn test_create_admin_target_words_as_path_variables_stay_patterns() {
+    for word in ["database", "user", "role"] {
+        let q = format!("CREATE {word} = (a)-[:X]->(b)");
+        let stmt = parse(&q).unwrap_or_else(|e| panic!("{q:?} must parse: {e}"));
+        assert!(matches!(stmt.clauses[0], Clause::Create(_)), "{q:?}");
+    }
+    let err = parse("CREATE USER bob SET PASSWORD 'x'").unwrap_err();
+    assert_eq!(err.detail, Some(UNSUPPORTED_ADMINISTRATION_DETAIL));
+}
+
+// The expected-target diagnostic names every unsupported DROP target,
+// derived from the one recognizer table.
+#[test]
+fn test_drop_diagnostic_lists_the_admin_targets() {
+    let err = parse("DROP FOO").unwrap_err();
+    for word in [
+        "INDEX",
+        "CONSTRAINT",
+        "DATABASE",
+        "COMPOSITE",
+        "ALIAS",
+        "USER",
+        "ROLE",
+    ] {
+        assert!(
+            err.message.contains(word),
+            "{word} missing: {}",
+            err.message
+        );
+    }
+}

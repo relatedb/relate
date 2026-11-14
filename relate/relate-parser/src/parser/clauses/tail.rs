@@ -194,38 +194,6 @@ impl<'a> Parser<'a> {
         Ok(items)
     }
 
-    /// ADR-0116 §2: the parser recognizes every database administration
-    /// command Neo4j CE rejects, so the engine answers with CE's
-    /// `UnsupportedAdministrationCommand` (51N27) rather than a syntax
-    /// error. Consumes the rest of the statement and fails the parse with a
-    /// [`ParseError`] tagged [`UNSUPPORTED_ADMINISTRATION_DETAIL`] whose
-    /// message is the verbatim statement text (sliced from `start_pos`, the
-    /// command's first token, so any leading `CYPHER n` preamble is
-    /// excluded) -- fail-closed: an unsupported administration command
-    /// never produces an executable clause. `relate-front` maps this
-    /// parse error to CE's semantic error text.
-    pub(in crate::parser) fn unsupported_admin_clause(
-        &mut self,
-        start_pos: usize,
-    ) -> ParseResult<Clause> {
-        while !matches!(self.peek_type(), TokenType::EOF | TokenType::Semicolon) {
-            self.next_token();
-        }
-        // Internal invariant, not user input: `start_pos` is the command's
-        // first token, saved by the caller before any of the command was
-        // consumed, so it always indexes a real token and the source slice
-        // from it to the current position always exists. A violation is a
-        // parser bug -- assert loudly instead of masking it with a fallback.
-        let text = self.extract_source_text(start_pos, self.pos).expect(
-            "invariant: unsupported_admin_clause start_pos indexes the command's first token, \
-             so its source slice always exists",
-        );
-        let tok = &self.tokens[start_pos];
-        Err(ParseError::new(text, tok.line, tok.col)
-            .with_source(self.source)
-            .with_detail(UNSUPPORTED_ADMINISTRATION_DETAIL))
-    }
-
     pub(in crate::parser) fn extract_source_text(
         &self,
         start_pos: usize,
