@@ -299,26 +299,21 @@ fn collect_system_offenders(clauses: &[Clause], out: &mut Vec<&'static str>) {
     }
 }
 
-/// SHOW commands and database-administration commands (ADR-0116 §2) are the
-/// only `Catalog` clauses allowed on `system`.
+/// ADR-0116 §4's whitelist for a `system` query part: every catalog command —
+/// the SHOW family and `TERMINATE TRANSACTIONS`, whose statement result is
+/// their projected catalog rows — plus `ALTER DATABASE`, the one §2 command
+/// that is not a catalog clause. (The §2 set proper is `ShowDatabases |
+/// AlterDatabase`; `TERMINATE TRANSACTIONS` is admitted here, not there.)
+///
+/// Derived from the one [`is_catalog_clause`] classification rather than
+/// re-listed: the hand-written enumeration this replaces had drifted from
+/// it, which is why `TERMINATE TRANSACTIONS` was missing and the command was
+/// rejected on `system` while its `SHOW` sibling ran.
+///
+/// [`is_catalog_clause`]: relate_front::show_columns::is_catalog_clause
 fn catalog_allowed_on_system(command: &relate_parser::Clause) -> bool {
-    use relate_parser::Clause as C;
-    matches!(
-        command,
-        C::ShowFunctions(_)
-            | C::ShowConstraints(_)
-            | C::ShowIndexes(_)
-            | C::ShowDatabases(_)
-            | C::ShowRoles(_)
-            | C::ShowServers(_)
-            | C::ShowUsers(_)
-            | C::ShowProcedures(_)
-            | C::ShowSettings(_)
-            | C::ShowTransactions(_)
-            | C::ShowGraphType(_)
-            | C::ShowCurrentGraphType(_)
-            | C::AlterDatabase(_)
-    )
+    relate_front::show_columns::is_catalog_clause(command)
+        || matches!(command, relate_parser::Clause::AlterDatabase(_))
 }
 
 /// The clauses a `system` query part treats as its SHOW head: every catalog

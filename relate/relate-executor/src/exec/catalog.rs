@@ -473,6 +473,18 @@ pub(crate) fn schema_name_value(
     }
 }
 
+/// What one arm of [`execute_catalog`]'s dispatch hands back. The two are
+/// genuinely different results and the arm is what says which: a `CrossJoin`
+/// arm produced *catalog* rows for the input to be composed against, while a
+/// `Finished` arm ran the clause's own projection and its rows are the
+/// statement's. Spelling the contract per arm is what keeps a producer from
+/// being read as the wrong one — the shape whose absence let `TERMINATE
+/// TRANSACTIONS` project over the whole input set.
+enum CatalogArm {
+    CrossJoin(Vec<Row>),
+    Finished(Vec<Row>),
+}
+
 pub(crate) fn execute_catalog(
     graph: &ExecGraph<'_>,
     clause: &relate_parser::Clause,
@@ -481,55 +493,110 @@ pub(crate) fn execute_catalog(
     qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     use relate_parser::{Clause as C, FunctionScope};
-    let catalog = match clause {
-        C::ShowFunctions(c) => visible_catalog(
+    // `rows` is taken by whichever arm finishes the clause itself; the
+    // `CrossJoin` path is the only one that reads it afterwards.
+    let mut rows = rows;
+    let arm = match clause {
+        C::ShowFunctions(c) => CatalogArm::CrossJoin(visible_catalog(
             !matches!(c.scope, FunctionScope::UserDefined)
                 && executable_by_user(c.executable.as_ref()),
             || crate::show_catalog::function_catalog_rows(graph.preview()),
-        ),
-        C::ShowProcedures(c) => visible_catalog(executable_by_user(c.executable.as_ref()), || {
-            crate::show_catalog::procedure_catalog_rows(graph.preview())
-        }),
-        C::ShowRoles(c) => catalog_show::show_roles_rows(c),
-        C::ShowServers(_) => vec![catalog_row([(
+        )),
+        C::ShowProcedures(c) => CatalogArm::CrossJoin(visible_catalog(
+            executable_by_user(c.executable.as_ref()),
+            || crate::show_catalog::procedure_catalog_rows(graph.preview()),
+        )),
+        C::ShowRoles(c) => CatalogArm::CrossJoin(catalog_show::show_roles_rows(c)),
+        C::ShowServers(_) => CatalogArm::CrossJoin(vec![catalog_row([(
             "name",
             Value::String("relate-server-1".into()),
-        )])],
-        C::ShowUsers(_) => vec![catalog_row([("user", Value::String(CURRENT_USER.into()))])],
-        C::ShowSettings(c) => {
-            return catalog_show::show_settings_rows(graph, c, rows, clause, params);
-        }
-        C::ShowTransactions(c) => {
-            catalog_show::show_transactions_rows(graph, c, &rows, params, qctx)?
-        }
+        )])]),
+        C::ShowUsers(_) => CatalogArm::CrossJoin(vec![catalog_row([(
+            "user",
+            Value::String(CURRENT_USER.into()),
+        )])]),
+        C::ShowSettings(c) => CatalogArm::Finished(catalog_show::show_settings_rows(
+            graph,
+            c,
+            std::mem::take(&mut rows),
+            clause,
+            params,
+        )?),
+        C::ShowTransactions(c) => CatalogArm::CrossJoin(catalog_show::show_transactions_rows(
+            graph, c, &rows, params, qctx,
+        )?),
         C::TerminateTransactions(c) => {
-            catalog_show::terminate_transactions_rows(graph, c, &rows, params)?
+            CatalogArm::Finished(catalog_show::terminate_transactions_rows(
+                graph,
+                c,
+                std::mem::take(&mut rows),
+                clause,
+                params,
+            )?)
         }
-        C::ShowDatabases(c) => catalog_show::show_databases_rows(graph, c, params)?,
-        C::ShowIndexes(c) => catalog_show::show_indexes_rows(graph, c)?,
-        C::ShowConstraints(c) => catalog_show::show_constraints_rows(graph, c)?,
-        C::ShowGraphType(c) => catalog_show::show_graph_type_rows(graph, c)?,
-        C::ShowCurrentGraphType(c) => catalog_show::show_current_graph_type_rows(graph, c)?,
-        C::CreateIndex(c) => return catalog_schema::catalog_create_index(graph, c, rows, params),
-        C::DropIndex(c) => return catalog_schema::catalog_drop_index(graph, c, rows, params),
-        C::CreateConstraint(c) => {
-            return catalog_schema::catalog_create_constraint(graph, c, rows, params)
+        C::ShowDatabases(c) => {
+            CatalogArm::CrossJoin(catalog_show::show_databases_rows(graph, c, params)?)
         }
-        C::DropConstraint(c) => {
-            return catalog_schema::catalog_drop_constraint(graph, c, rows, params)
+        C::ShowIndexes(c) => CatalogArm::CrossJoin(catalog_show::show_indexes_rows(graph, c)?),
+        C::ShowConstraints(c) => {
+            CatalogArm::CrossJoin(catalog_show::show_constraints_rows(graph, c)?)
         }
-        C::AlterDatabase(c) => {
-            return catalog_schema::catalog_alter_database(graph, c, rows, params)
+        C::ShowGraphType(c) => CatalogArm::CrossJoin(catalog_show::show_graph_type_rows(graph, c)?),
+        C::ShowCurrentGraphType(c) => {
+            CatalogArm::CrossJoin(catalog_show::show_current_graph_type_rows(graph, c)?)
         }
+        C::CreateIndex(c) => CatalogArm::Finished(catalog_schema::catalog_create_index(
+            graph,
+            c,
+            std::mem::take(&mut rows),
+            params,
+        )?),
+        C::DropIndex(c) => CatalogArm::Finished(catalog_schema::catalog_drop_index(
+            graph,
+            c,
+            std::mem::take(&mut rows),
+            params,
+        )?),
+        C::CreateConstraint(c) => CatalogArm::Finished(catalog_schema::catalog_create_constraint(
+            graph,
+            c,
+            std::mem::take(&mut rows),
+            params,
+        )?),
+        C::DropConstraint(c) => CatalogArm::Finished(catalog_schema::catalog_drop_constraint(
+            graph,
+            c,
+            std::mem::take(&mut rows),
+            params,
+        )?),
+        C::AlterDatabase(c) => CatalogArm::Finished(catalog_schema::catalog_alter_database(
+            graph,
+            c,
+            std::mem::take(&mut rows),
+            params,
+        )?),
         C::CreateGraphType(c) => {
-            return graph_type_schema::catalog_create_graph_type(graph, c, rows, params)
+            CatalogArm::Finished(graph_type_schema::catalog_create_graph_type(
+                graph,
+                c,
+                std::mem::take(&mut rows),
+                params,
+            )?)
         }
         C::AlterCurrentGraphType(c) => {
-            return graph_type_schema::alter_current_graph_type(graph, c, rows, params)
+            CatalogArm::Finished(graph_type_schema::alter_current_graph_type(
+                graph,
+                c,
+                std::mem::take(&mut rows),
+                params,
+            )?)
         }
         _ => return Err(Error::semantic("unsupported catalog command")),
     };
-    project_catalog(graph, rows, catalog, clause, params)
+    match arm {
+        CatalogArm::Finished(rows) => Ok(rows),
+        CatalogArm::CrossJoin(catalog) => project_catalog(graph, rows, catalog, clause, params),
+    }
 }
 
 #[cfg(test)]

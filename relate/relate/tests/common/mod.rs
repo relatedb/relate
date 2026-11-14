@@ -335,7 +335,14 @@ pub fn error_class(
     let error = result
         .err()
         .unwrap_or_else(|| panic!("`{statement}` unexpectedly succeeded"));
-    relate::binding_error_metadata(&error).1
+    binding_class_of(&error)
+}
+
+/// The openCypher binding class of a raised error — the one
+/// `binding_error_metadata(...).1` read in this module, which [`error_class`]
+/// returns and [`assert_error_class`] asserts.
+fn binding_class_of(error: &relate::Error) -> &'static str {
+    relate::binding_error_metadata(error).1
 }
 
 /// The class of `statement` run without parameters (the literal
@@ -357,38 +364,37 @@ pub fn assert_ce_rejection(
     expected_class: &str,
 ) {
     // One execution, both facets: the error the statement produced, not a
-    // second run of the same statement for its class.
+    // second run of the same statement for its class. The class facet is
+    // [`assert_error_class`]'s, so this module reads the class slot in one
+    // place.
     let error = conn.query(statement).expect_err("expected an error");
     let text = error.to_string();
     assert!(
         text.ends_with(expected_suffix),
         "wrong outcome for {statement:?}: {text:?} does not end with {expected_suffix:?}"
     );
-    assert_eq!(
-        relate::binding_error_metadata(&error).1,
-        expected_class,
-        "{statement}"
-    );
+    assert_error_class(&error, expected_class, statement);
+}
+
+/// Assert `error` carries `expected` as its openCypher binding class — the
+/// assertion every class check in this module delegates to, so the named
+/// wrappers below spell a class name and the expectation label they report.
+/// `context` is the statement (or other label) the failure message names, so
+/// a failing class check reports what ran, not only what came back.
+pub fn assert_error_class(error: &relate::Error, expected: &str, context: &str) {
+    assert_eq!(binding_class_of(error), expected, "{context}: {error}");
 }
 
 /// Assert `error` carries the `ArgumentError` class (Neo4j's
 /// `Neo.ClientError.General.InvalidArguments`).
 pub fn assert_argument_error(error: &relate::Error) {
-    assert_eq!(
-        relate::binding_error_metadata(error).1,
-        "ArgumentError",
-        "{error}"
-    );
+    assert_error_class(error, "ArgumentError", "expected an ArgumentError");
 }
 
 /// Assert `error` carries the `SyntaxError` class (Neo4j's
 /// `Neo.ClientError.Statement.SyntaxError`).
 pub fn assert_syntax_error(error: &relate::Error) {
-    assert_eq!(
-        relate::binding_error_metadata(error).1,
-        "SyntaxError",
-        "{error}"
-    );
+    assert_error_class(error, "SyntaxError", "expected a SyntaxError");
 }
 
 /// Builds a string value for row assertions.

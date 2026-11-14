@@ -20,8 +20,8 @@ use relate::{Database, Namespace, Value};
 mod common;
 
 use common::{
-    assert_ce_rejection, connection, err_text, preview_ontology, NEEDS_SYSTEM_DATABASE_SUFFIX,
-    USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
+    assert_ce_rejection, connection, err_text, preview_ontology, scalar_one,
+    NEEDS_SYSTEM_DATABASE_SUFFIX, USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
 };
 
 /// The statement is echoed verbatim; a leading `CYPHER n` preamble is
@@ -482,5 +482,113 @@ fn bare_administration_commands_still_run_on_the_user_namespace() {
             .query(src)
             .unwrap_or_else(|e| panic!("{src} should still run: {e}"));
         assert_eq!(result.rows.len(), expected_rows, "{src}");
+    }
+}
+
+/// ADR-0116 §4's whitelist admits `TERMINATE TRANSACTIONS` on `system`
+/// alongside the SHOW family and `ALTER DATABASE`, so it runs there exactly
+/// as it does from `neo4j`. (It is not a §2 member — that set is
+/// `SHOW DATABASES` and `ALTER DATABASE`.) Live CE 2026.10.1 accepts both
+/// spellings on `system` with the `YIELD … FINISH` tail.
+#[test]
+fn terminate_transactions_runs_on_the_system_namespace() {
+    let mut conn = connection();
+    for src in [
+        "USE system TERMINATE TRANSACTION 'foo-transaction-123' YIELD message AS message FINISH",
+        "USE system TERMINATE TRANSACTIONS ['foo-transaction-123'] YIELD transactionId AS id FINISH",
+    ] {
+        let result = conn
+            .query(src)
+            .unwrap_or_else(|e| panic!("{src} should run on `system`: {e}"));
+        assert!(result.rows.is_empty(), "{src}: FINISH yields no rows");
+    }
+}
+
+/// The transaction commands' id argument is a STRING or NULL — a NULL is an
+/// absent id and gets a row, anything else is the argument's own type error.
+/// Live CE 2026.10.1 raises it for `SHOW TRANSACTIONS 123` and `TERMINATE
+/// TRANSACTIONS 123` alike, so neither command may quietly drop such a value
+/// (which is what made a numeric id vanish instead of failing).
+#[test]
+fn a_non_string_transaction_id_is_an_argument_type_error() {
+    let mut conn = connection();
+    let expected_suffix = "InvalidArgumentType: transaction id must be STRING";
+    for src in [
+        "SHOW TRANSACTIONS 123 YIELD transactionId AS id RETURN id",
+        "TERMINATE TRANSACTIONS 123 YIELD transactionId AS id RETURN id",
+        "TERMINATE TRANSACTIONS ['none-transaction-1', 5] YIELD transactionId AS id RETURN id",
+        "TERMINATE TRANSACTIONS true YIELD transactionId AS id RETURN id",
+    ] {
+        // Live reports `Neo.ClientError.Statement.TypeError` under 22G03
+        // for both spellings.
+        assert_ce_rejection(&mut conn, src, expected_suffix, "TypeError");
+    }
+    // A NULL id is not a type error: it is an absent id, and yields the
+    // NULL id as its own row.
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "TERMINATE TRANSACTIONS null YIELD transactionId AS id RETURN id"
+        ),
+        Value::Null,
+        "a NULL id is an absent id, not a type error"
+    );
+}
+
+/// `TERMINATE TRANSACTIONS` projects over each input row independently: a
+/// scalar argument yields that row's own value (duplicates and nulls
+/// included), while a *list* argument deduplicates within itself. Live CE
+/// 2026.10.1 is the authority for both halves — the per-row half is why
+/// the projection may not scan the whole input set, and the list half is
+/// why it may not deduplicate across rows.
+#[test]
+fn terminate_transactions_projects_per_input_row() {
+    let mut conn = connection();
+    let inputs = "['none-transaction-42', null, 'none-transaction-43', null, \
+                  'none-transaction-43']";
+    for (src, expected) in [
+        // A scalar per row: one row per input value, nothing collapsed.
+        (
+            format!(
+                "WITH {inputs} AS inputs UNWIND inputs AS input \
+                 TERMINATE TRANSACTIONS input YIELD transactionId AS output RETURN output"
+            ),
+            vec![
+                Some("none-transaction-42"),
+                None,
+                Some("none-transaction-43"),
+                None,
+                Some("none-transaction-43"),
+            ],
+        ),
+        // The whole list at once: deduplicated within itself.
+        (
+            format!(
+                "WITH {inputs} AS inputs \
+                 TERMINATE TRANSACTIONS inputs YIELD transactionId AS output RETURN output"
+            ),
+            vec![
+                Some("none-transaction-42"),
+                None,
+                Some("none-transaction-43"),
+            ],
+        ),
+    ] {
+        let result = conn
+            .query(&src)
+            .unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        let got: Vec<Option<&str>> = result
+            .rows
+            .iter()
+            .map(|row| match &row[0] {
+                Value::Null => None,
+                other => Some(
+                    other
+                        .as_string()
+                        .expect("a transaction id is STRING or NULL"),
+                ),
+            })
+            .collect();
+        assert_eq!(got, expected, "{src}");
     }
 }
