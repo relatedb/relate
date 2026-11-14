@@ -447,14 +447,10 @@ pub(crate) fn exec_drop_index(
     target: &DropIndexTarget,
 ) -> Result<()> {
     // One existence decision, and a resolved name when it holds.
-    let (resolved, missing) = match target {
-        DropIndexTarget::Name(name) => (
-            drop_target_exists(graph, SchemaTarget::IndexName(name)),
-            format!("NoSuchIndex: `{name}`"),
-        ),
-        DropIndexTarget::Schema { label, property } => (
-            // Text render: the catalog target and the error text both
-            // speak String.
+    let resolved = match target {
+        DropIndexTarget::Name(name) => drop_target_exists(graph, SchemaTarget::IndexName(name)),
+        DropIndexTarget::Schema { label, property } => {
+            // Text render: the catalog target speaks String.
             label.with_str(|label_text| {
                 property.with_str(|property_text| {
                     drop_target_exists(
@@ -465,15 +461,20 @@ pub(crate) fn exec_drop_index(
                         },
                     )
                 })
-            }),
-            format!("NoSuchIndex: (:{label} {{{property}}})"),
-        ),
+            })
+        }
     };
     let Some(name) = resolved else {
         return if if_exists {
             Ok(())
         } else {
-            Err(Error::semantic(missing))
+            // The error text is built only on this miss path.
+            Err(Error::semantic(match target {
+                DropIndexTarget::Name(name) => format!("NoSuchIndex: `{name}`"),
+                DropIndexTarget::Schema { label, property } => {
+                    format!("NoSuchIndex: (:{label} {{{property}}})")
+                }
+            }))
         };
     };
     // A constraint's backing index is part of the constraint: it cannot be

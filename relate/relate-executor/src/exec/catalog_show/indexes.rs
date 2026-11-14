@@ -9,7 +9,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::super::QueryResult;
-use super::entity_variable;
+use super::{entity_pattern, entity_variable};
 use crate::exec::catalog::{backtick, catalog_row, optional_string_cell, string_list};
 use crate::redo::{backing_constraint_by_name, IndexDetailSpec, IndexFacts, IndexKindSpec};
 
@@ -19,21 +19,6 @@ use crate::redo::{backing_constraint_by_name, IndexDetailSpec, IndexFacts, Index
 // `relationship: bool` at each use site; the pattern variable itself is
 // the shared `super::entity_variable` decision. The `entityType` column
 // uses `EntityKind::display_name` directly.
-
-/// The `FOR` pattern for a label/type-token index, quoting and
-/// `|`-joining the labels itself: `(n:`A`|`B`)` / `()-[r:`T`]-()`.
-fn entity_pattern(entity: EntityKind, labels: &[String]) -> String {
-    let variable = entity_variable(entity);
-    let tokens = labels
-        .iter()
-        .map(|label| backtick(label))
-        .collect::<Vec<_>>()
-        .join("|");
-    match entity {
-        EntityKind::Node => format!("({variable}:{tokens})"),
-        EntityKind::Relationship => format!("()-[{variable}:{tokens}]-()"),
-    }
-}
 
 /// The LOOKUP pattern and EACH expression:
 /// `FOR (n) ON EACH labels(n)` / `FOR ()-[r]-() ON EACH type(r)`.
@@ -173,10 +158,10 @@ fn index_statement_binding(
     facts: &IndexFacts,
     detail: Option<&IndexDetailSpec>,
     name: &str,
-    stored_options: &BTreeMap<String, Value>,
+    options: &BTreeMap<String, Value>,
 ) -> (EntityKind, Option<String>) {
     let entity = EntityKind::from_relationship_flag(facts.relationship);
-    let statement = detail.and_then(|d| index_create_statement(d, name, entity, stored_options));
+    let statement = detail.and_then(|d| index_create_statement(d, name, entity, options));
     (entity, statement)
 }
 

@@ -304,8 +304,8 @@ enum CallDivert {
     /// kind its name selects.
     Vector(VectorEntity),
     /// One of the two `db.index.fulltext.query*` procedures;
-    /// `relationship` distinguishes `queryRelationships` from `queryNodes`.
-    FulltextQuery { relationship: bool },
+    /// `kind` distinguishes `queryRelationships` from `queryNodes`.
+    FulltextQuery { kind: EntityKind },
 }
 
 /// The diverted-call classification as a predicate, for the producer-table
@@ -331,11 +331,11 @@ fn divert_call(name: &str) -> Option<CallDivert> {
             Some(CallDivert::Vector(VectorEntity::Relationships))
         }
         "db.index.fulltext.queryNodes" => Some(CallDivert::FulltextQuery {
-            relationship: false,
+            kind: EntityKind::Node,
         }),
-        "db.index.fulltext.queryRelationships" => {
-            Some(CallDivert::FulltextQuery { relationship: true })
-        }
+        "db.index.fulltext.queryRelationships" => Some(CallDivert::FulltextQuery {
+            kind: EntityKind::Relationship,
+        }),
         _ => None,
     }
 }
@@ -417,8 +417,8 @@ pub(crate) fn exec_call(
         Some(CallDivert::Vector(entity)) => {
             exec_vector_query_call(ctx, rows, entity, call).map(|rows| (rows, yields_unit))
         }
-        Some(CallDivert::FulltextQuery { relationship }) => {
-            exec_fulltext_query_call(ctx, rows, relationship, call).map(|rows| (rows, yields_unit))
+        Some(CallDivert::FulltextQuery { kind }) => {
+            exec_fulltext_query_call(ctx, rows, kind, call).map(|rows| (rows, yields_unit))
         }
         None => exec_registry_call(ctx, rows, call),
     }
@@ -671,12 +671,12 @@ pub(crate) fn call_arg_value(
 }
 
 /// The one fulltext scan for both `db.index.fulltext.query*` procedures:
-/// `relationship` selects the entity kind (relationship indexes match on
+/// `kind` selects the entity kind (relationship indexes match on
 /// relationship types, node indexes on labels) and the yielded column name.
 pub(crate) fn exec_fulltext_query_call(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
-    relationship: bool,
+    kind: EntityKind,
     call: CallSpec<'_>,
 ) -> Result<Vec<Row>> {
     let CallSpec {
@@ -695,7 +695,10 @@ pub(crate) fn exec_fulltext_query_call(
     // The entity column is the divert's classification; the score column
     // is shared by both entity variants, so the table is one choice plus
     // one literal.
-    let entity_column = if relationship { "relationship" } else { "node" };
+    let entity_column = match kind {
+        EntityKind::Node => "node",
+        EntityKind::Relationship => "relationship",
+    };
     let score_key = "score";
     let columns = [entity_column, score_key];
     compose_rows(
@@ -721,7 +724,7 @@ pub(crate) fn exec_fulltext_query_call(
             // (or the reverse) has no scan to run.
             let (detail, options) =
                 resolve_search_index(graph, &index_name, crate::redo::IndexKindSpec::Fulltext)?;
-            if detail.relationship != relationship {
+            if EntityKind::from_relationship_flag(detail.relationship) != kind {
                 return Err(Error::execution(
                     "WrongIndexType: fulltext index entity type mismatch",
                 ));
@@ -729,7 +732,6 @@ pub(crate) fn exec_fulltext_query_call(
             // The one CIP-225 scan: the Lucene-style query parser (terms
             // OR'd, `AND`/`OR`/`NOT`, `property:term` field filters) and the
             // live-fitted BM25 score, ranked best-first, no window.
-            let kind = EntityKind::from_relationship_flag(detail.relationship);
             let analyzers = fulltext::Analyzers::new(
                 crate::exec::ddl_options::index_analyzer(&options, &index_name)?,
                 None,

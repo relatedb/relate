@@ -8,7 +8,7 @@ use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::catalog::{catalog_row, constraint_binding};
+use super::catalog::{backtick, catalog_row, constraint_binding};
 
 pub(crate) mod constraints;
 mod databases;
@@ -30,6 +30,21 @@ fn entity_variable(entity: EntityKind) -> &'static str {
     match entity {
         EntityKind::Node => "n",
         EntityKind::Relationship => "r",
+    }
+}
+
+/// The `FOR` pattern for a label/type-token index, quoting and
+/// `|`-joining the labels itself: `(n:`A`|`B`)` / `()-[r:`T`]-()`.
+pub(super) fn entity_pattern(entity: EntityKind, labels: &[String]) -> String {
+    let variable = entity_variable(entity);
+    let tokens = labels
+        .iter()
+        .map(|label| backtick(label))
+        .collect::<Vec<_>>()
+        .join("|");
+    match entity {
+        EntityKind::Node => format!("({variable}:{tokens})"),
+        EntityKind::Relationship => format!("()-[{variable}:{tokens}]-()"),
     }
 }
 
