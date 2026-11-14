@@ -37,6 +37,7 @@ use relate_core::Error;
 use super::super::chunk::{Chunk, Column};
 use super::super::WalkTallies;
 use super::matcher::{Chain, Hop, MAX_CHAIN_HOPS};
+use super::memo::Memoized;
 use super::program::{Admission, NodePred};
 use super::{KernelMode, KernelOutput};
 
@@ -176,7 +177,7 @@ pub(super) fn count(
         ctx,
         &stage,
         tallied,
-        Admission::of(&tallied.target),
+        Memoized(Admission::of(&tallied.target)),
         &mut tally,
     )?;
     Ok(tally.0)
@@ -237,7 +238,13 @@ fn hop_stage<'s>(
     cap: Option<usize>,
 ) -> Result<Stage<'s>> {
     let mut next = prev.successor(cap);
-    expand_hop(ctx, prev, hop, Admission::of(&hop.target), &mut next)?;
+    expand_hop(
+        ctx,
+        prev,
+        hop,
+        Memoized(Admission::of(&hop.target)),
+        &mut next,
+    )?;
     Ok(next)
 }
 

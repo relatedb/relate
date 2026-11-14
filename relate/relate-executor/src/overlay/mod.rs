@@ -63,6 +63,10 @@ pub struct ExecGraph<'a> {
     /// inherited from the store's configured limit. `None` is the explicit
     /// opt-out; otherwise one built value over this many bytes is refused.
     expression_limit: Option<u64>,
+    /// Live bytes of every stage memo in this statement (LABS-1478): one
+    /// shared counter the memos reserve from and return on drop, so the
+    /// query's memo footprint is bounded as a whole.
+    memo_live: crate::exec::kernels::memo::MemoLive,
     /// The store's ontology document as the calling transaction sees it
     /// (ADR-0121 §3, ADR-0227): per-admission state attached like the
     /// cancel token ([`Self::with_ontology_document`]), read by the
@@ -193,6 +197,7 @@ impl<'a> ExecGraph<'a> {
             nested_evals: NestedEvalCounter::default(),
             expression_budget: ExpressionBudgetCounter::default(),
             expression_limit: base.expression_memory_limit(),
+            memo_live: Default::default(),
             ontology_document: None,
             csv: CsvReader::new(base.csv_policy()),
         }

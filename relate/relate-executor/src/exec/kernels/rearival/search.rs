@@ -28,6 +28,7 @@ use crate::row::Row;
 
 use super::super::frontier_tables::Arm;
 use super::super::frontier_tables::Chain;
+use super::super::guard_memo::StateMemos;
 use super::super::nfa::FrontierNfa;
 
 /// The immutable tables every bounded search reads: the overlay view,
@@ -46,6 +47,8 @@ pub(super) struct SeekTables<'a, 'g> {
     pub(super) eps_closure: Vec<Vec<u32>>,
     pub(super) min_hops: u32,
     pub(super) depth_cap: u32,
+    /// The per-state guard verdict memos (LABS-1478), per run.
+    pub(super) memos: StateMemos,
 }
 
 impl SeekTables<'_, '_> {
@@ -59,13 +62,18 @@ impl SeekTables<'_, '_> {
     /// evaluation, so a pruned branch would change the answer.
     pub(super) fn state_admits(&self, state: u32, node: NodeId) -> Result<bool> {
         let guards = &self.nfa.state_guards[state as usize];
-        let row = Row::new();
-        for guard in guards {
-            if !node_ok(self.view, node, guard, &row, &EMPTY_PARAMS)? {
-                return Ok(false);
-            }
+        if guards.is_empty() {
+            return Ok(true);
         }
-        Ok(true)
+        self.memos.answer(self.view, state, node, || {
+            let row = Row::new();
+            for guard in guards {
+                if !node_ok(self.view, node, guard, &row, &EMPTY_PARAMS)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })
     }
 }
 

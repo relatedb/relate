@@ -133,6 +133,11 @@ impl<'a> ExecGraph<'a> {
         self.check_expression_allocation(*total)
     }
 
+    /// The statement's shared live-memo-bytes counter (LABS-1478).
+    pub(crate) fn memo_live(&self) -> crate::exec::kernels::memo::MemoLive {
+        self.memo_live.clone()
+    }
+
     /// The configured per-allocation cap (`None` = no cap).
     #[cfg(test)]
     pub(crate) fn expression_limit(&self) -> Option<u64> {

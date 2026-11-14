@@ -1,0 +1,54 @@
+# TEMPORARY (LABS-1478): times the memoised last-hop admission against its
+# base on pokec medium, then samples it. Delete with the PR; never merge.
+name: tmp-labs-1478-perf
+on:
+  push:
+    branches: [perf/labs-1478-label-memo]
+    paths:
+      - .github/workflows/tmp-labs-1478-perf.yml
+      - relate/relate-executor/**
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: interleaved timing rounds
+        default: "5"
+env:
+  BASE_SHA: b650fc63
+jobs:
+  perf:
+    runs-on: linux-4-core-x86
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: head, fetch-depth: 0 }
+      - name: base tree
+        run: git -C head worktree add ../base "$BASE_SHA"
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: unit and differential tests
+        run: |
+          cd head
+          cargo test -p relate-executor --lib kernels
+      - name: build both
+        run: |
+          (cd base && cargo build --release -p relate-query-latency --bin pokec_profile && cp target/release/pokec_profile ../pokec_base)
+          (cd head && cargo build --release -p relate-query-latency --bin pokec_profile && cp target/release/pokec_profile ../pokec_head)
+      - name: timed A/B (interleaved)
+        run: |
+          rounds="${{ github.event.inputs.rounds || '5' }}"
+          for r in $(seq "$rounds"); do
+            for b in pokec_base pokec_head; do
+              echo -n "$b: "; ./$b medium --group expansion_3 | grep 'expansion_3:'
+            done
+          done | tee ab.txt
+      - name: sampled runs
+        run: |
+          ./pokec_base medium --group expansion_3 --sample sample_base
+          ./pokec_head medium --group expansion_3 --sample sample_head
+          head -20 sample_base/expansion_3/top.txt sample_head/expansion_3/top.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: labs-1478-perf
+          path: |
+            ab.txt
+            sample_base
+            sample_head
