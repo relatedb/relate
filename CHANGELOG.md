@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `fs-to-graph` commits each rows record as its own transaction instead of
+  one transaction around the whole import (ADR-0602): an import whose
+  total payload exceeded the 64 MB WAL record cap (a large checkout at
+  default flags) no longer fails at commit with nothing landed — every
+  bounded batch commits as it lands. A failed import now keeps the
+  batches that already committed, and re-running the same command
+  completes it; a session's bounds are the per-call caps (1000 rows /
+  8 MB per rows record) and the store's live-graph limit — the whole-run
+  stream cap applies to whole-import framing only (ADR-0598).
 - A `MATCH`-clause `WHERE` that reads the path (`length(p)`, `relationships(p)`,
   a relationship variable) now filters the selected paths afterwards for the
   keyword shortest selectors (`SHORTEST 1`, `ANY SHORTEST`, `ALL SHORTEST`,

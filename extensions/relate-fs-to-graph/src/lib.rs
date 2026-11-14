@@ -11,13 +11,14 @@
 //! overflow the call stack — that never follows symlinks. The three write
 //! phases ([`WRITE_FOLDERS`], [`WRITE_FILES`], [`WRITE_EDGES`]) are the
 //! statements the child sends as `write_cypher` calls, each framed by the
-//! manifest's `whole-import` commit policy (ADR-0157): one explicit
-//! transaction around the whole import, so a mid-import failure rolls the
-//! entire graph back. Nodes are `MERGE`d on `path`, so re-importing the
-//! same tree leaves the node and edge counts unchanged. The
-//! `file_content` full-text index ([`INDEX_FILE_CONTENT`]) is the session's
-//! one `update_schema` call, executed at the import's index-creation point
-//! after the write phases.
+//! manifest's `per-batch` commit policy (ADR-0602, ADR-0392's framing):
+//! every writing call commits as its own transaction, so a mid-import
+//! failure leaves the batches that already committed and a re-run of the
+//! import completes the graph. Nodes are `MERGE`d on `path`, so
+//! re-importing the same tree leaves the node and edge counts unchanged.
+//! The `file_content` full-text index ([`INDEX_FILE_CONTENT`]) is the
+//! session's one `update_schema` call, executed at the import's
+//! index-creation point after the write phases.
 
 use std::path::Path;
 
@@ -46,10 +47,12 @@ pub const WRITE_EDGES: &str = "UNWIND $rows AS row \
      MATCH (c) WHERE c.path = row.child \
      MERGE (p)-[:CONTAINS]->(c)";
 
-/// The post-commit index call (ADR-0157): the `file_content` full-text
-/// index over `:File(name, content)`, created after the write phases. `IF
-/// NOT EXISTS` keeps a re-import idempotent; the host executes it at the
-/// point in the session this child places it — after the last write call.
+/// The import's index-creation call (ADR-0157): the `file_content`
+/// full-text index over `:File(name, content)`, created after the write
+/// phases — every batch already committed under the per-batch policy
+/// (ADR-0602). `IF NOT EXISTS` keeps a re-import idempotent; the host
+/// executes it at the point in the session this child places it — after
+/// the last write call.
 pub const INDEX_FILE_CONTENT: &str = "CREATE FULLTEXT INDEX file_content IF NOT EXISTS \
      FOR (f:File) ON EACH [f.name, f.content]";
 

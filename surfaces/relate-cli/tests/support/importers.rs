@@ -14,8 +14,8 @@
 //! `run <name>` invocations against that root.
 //!
 //! The subject suites' fixture trees and join assertions live here too
-//! (`fixture`, `graph_counts`, the joined-import kit, `wide_fixture`,
-//! `mktree`), so the per-subject suites (`e2e_fs_to_graph.rs`,
+//! (`fixture`, `fs_counts`, `graph_counts`, the joined-import kit,
+//! `wide_fixture`, `mktree`), so the per-subject suites (`e2e_fs_to_graph.rs`,
 //! `e2e_git_to_graph.rs`) carry their tests and nothing else: one kit,
 //! every fixture fact spelled once.
 
@@ -289,6 +289,21 @@ pub fn fixture() -> tempfile::TempDir {
     write_file(&root.path().join("binary.dat"), &[0u8, 1, 2, 3, 0, 255]);
     write_file(&root.path().join(".hidden.txt"), b"secret wombat");
     root
+}
+
+/// The three graph totals the fs subject pins: folders, files, `CONTAINS`
+/// edges.
+pub fn fs_counts(home: &Path, db: &Path) -> [u64; 3] {
+    [
+        query_count(home, db, &[], "MATCH (f:Folder) RETURN count(f) AS n"),
+        query_count(home, db, &[], "MATCH (f:File) RETURN count(f) AS n"),
+        query_count(
+            home,
+            db,
+            &[],
+            "MATCH ()-[r:CONTAINS]->() RETURN count(r) AS n",
+        ),
+    ]
 }
 
 /// The five graph totals the git subject pins: commits, people, files,

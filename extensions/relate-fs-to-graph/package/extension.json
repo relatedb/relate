@@ -1,7 +1,7 @@
 {
   "kind": "command",
   "name": "fs-to-graph",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "protocol": "2025-06-18",
   "flags": [
     {"kind": "integer", "name": "max-content-bytes", "default": 65536},
@@ -10,7 +10,7 @@
   ],
   "positional": {"name": "DIR"},
   "requires-fresh-store": false,
-  "commit": "whole-import",
+  "commit": "per-batch",
   "executable": "fs-to-graph",
   "hidden": false
 }

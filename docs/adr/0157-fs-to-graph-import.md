@@ -7,7 +7,13 @@
   rule below. An explicit `--db` never opens the interactive shell; the
   shell still opens only when `--db` is omitted, on a TTY with `repl`.
   ADR-0383 renames the importer's `--db` flag to `-d` / `--database`; the
-  supersession is the flag spelling only.
+  supersession is the flag spelling only. ADR-0602 supersedes the
+  whole-import rollback later ADRs (ADR-0392, ADR-0430) attribute to
+  this contract: the extension-mounted importer commits each writing
+  call as its own transaction, so a failed import keeps the batches
+  that committed and a re-run completes the graph. The schema, walk
+  semantics, content capture, index and MERGE-by-path idempotence
+  below stand.
 
 ## Context
 
@@ -187,3 +193,8 @@ ADR-0383: `-d` / `--database` replaces `--db` on both `lab` importers. The
 supersession is the flag spelling only — the schema, walk, content, index and
 default above stand, and ADR-0286's explicit-flag rule now applies to `-d` /
 `--database`.
+
+ADR-0602: the extension-mounted importer commits each writing call as its own
+transaction (`per-batch`, ADR-0392's framing). A failed import keeps the
+batches that committed, and a re-run completes the graph; the schema, walk
+semantics, content capture, index and MERGE-by-path idempotence above stand.
