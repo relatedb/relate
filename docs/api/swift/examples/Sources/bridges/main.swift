@@ -45,8 +45,8 @@ let missoula = try CypherValue.Point(latitude: 46.87, longitude: -113.99)
 do {
     _ = try CypherValue.Point(latitude: -113.99, longitude: 46.87)  // swapped
     preconditionFailure("a latitude of -113.99 was accepted")
-} catch RelateError.invalidParameter(let message) {
-    print("refused:", message)
+} catch {
+    print("refused:", error.message)
 }
 try conn.query("CREATE (:Place {name: 'Missoula', location: $p})", ["p": .point(missoula)])
 let place = try conn.query("MATCH (p:Place) RETURN p.location").scalar().pointValue!
