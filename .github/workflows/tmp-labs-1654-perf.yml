@@ -45,8 +45,9 @@ jobs:
         run: |
           B=relate-benchmarks-private
           STORE=$(realpath $(ls -d $B/.cache/pkc/stores/relate-*-pokec/graph.rl | head -1))
+          ls $B/.cache/engines
           for rev in 39a9b627 657aac43; do
-            CLI=$(realpath $(ls $B/.cache/engines/*$rev*/relate | head -1))
+            CLI=$(realpath $(ls $B/.cache/engines/*${rev:0:7}*/relate | head -1))
             echo "rev=$rev cli=$CLI"
             python3 -I relate/.rca/measure.py "$CLI" "$STORE" "$(realpath $B/benchmarks/pokec/queries)" "$(realpath rca-out)/$rev" 2>&1 | tail -12
           done
