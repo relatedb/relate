@@ -29,8 +29,9 @@ jobs:
             relate-benchmarks-private/.cache/engines
             relate-benchmarks-private/.cache/bench-env
             relate-benchmarks-private/.cache/pkc/stores
-          key: rca1655-v4-${{ github.event.pull_request.head.sha }}
+          key: rca1655-v5-${{ github.event.pull_request.head.sha }}
           restore-keys: |
+            rca1655-v5-
             rca1655-v4-
             rca1655-v3-
             rca1655-v1-
@@ -40,11 +41,15 @@ jobs:
           RELATE_SRC: ${{ github.workspace }}/relate
         run: |
           ls -d ../../.cache/engines/*/ ../../.cache/pkc/stores/*/ || true
-          if ! ls ../../.cache/engines/1.0.2-g39a9b62/relate >/dev/null 2>&1 || ! ls -d ../../.cache/pkc/stores/relate-*-pokec/graph.rl >/dev/null 2>&1; then
+          REV=39a9b627c63fd3b2cfdec0c1e0428f98e01fbc17
+          if ! ls -d ../../.cache/pkc/stores/relate-*-pokec/graph.rl >/dev/null 2>&1; then
             ./run.sh fetch || true
-            ./run.sh env --relate-src "$RELATE_SRC" --relate-rev f6589cbd75208a92a4755ccf91c083c27369badf || true
-            ./run.sh load --relate-src "$RELATE_SRC" --relate-rev f6589cbd75208a92a4755ccf91c083c27369badf 2>&1 | grep -v -i token | tail -3
+            ./run.sh load --relate-src "$RELATE_SRC" --relate-rev $REV 2>&1 | grep -v -i token | tail -3
           fi
+          if ! ls ../../.cache/engines/1.0.2-g39a9b62/relate >/dev/null 2>&1; then
+            ./run.sh env --relate-src "$RELATE_SRC" --relate-rev $REV 2>&1 | tail -2 || true
+          fi
+          ls ../../.cache/engines/*/relate
       - name: Time q28 and q27 in-process (no perf, no sudo)
         run: |
           B=relate-benchmarks-private
