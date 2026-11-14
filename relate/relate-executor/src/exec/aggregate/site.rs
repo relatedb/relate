@@ -15,7 +15,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::workspace::buffer_growth;
 
-use super::pool::SortedPool;
+use super::pool::{SampleEnding, SortedPool};
 use super::table::GroupBill;
 
 /// Groups whose lenient site failed to fold: the error is parked here and
@@ -93,10 +93,6 @@ impl<'e> Call<'e> {
     }
 }
 
-/// The operand `call` yields for `row` in `group`, when it is to be folded:
-/// `None` for a group whose site already failed (nothing is evaluated any
-/// more) and for a DISTINCT call's operand already seen there. The one
-/// preamble every streaming and retaining offer shares.
 /// One aggregate site's state across every group.
 pub(super) enum SiteState<'e> {
     CountStar(Vec<i64>),
@@ -120,9 +116,10 @@ pub(super) enum SiteState<'e> {
         charged: Vec<usize>,
     },
     /// A plain percentile call: its operands live in the shared pool
-    /// column at this index, not here. `pool_percentiles` routes only
-    /// percentile calls into this state, so the call rides whole — the
-    /// plain-call shape has no spelling here.
+    /// column at this index, not here. The routing in
+    /// [`super::columns::AccTable::new`] admits only percentile calls into
+    /// this state, so the call rides whole — the plain-call shape has no
+    /// spelling here.
     Pooled {
         pool: usize,
         call: PercentileCall<'e>,
@@ -150,6 +147,10 @@ pub(super) struct SiteColumn<'e> {
     pub(super) state: SiteState<'e>,
 }
 
+/// The operand `call` yields for `row` in `group`, when it is to be folded:
+/// `None` for a group whose site already failed (nothing is evaluated any
+/// more) and for a DISTINCT call's operand already seen there. The one
+/// preamble every streaming and retaining offer shares.
 pub(super) fn admitted_operand(
     failed: &Failed,
     seen: &mut Option<Vec<DistinctSet>>,
@@ -278,10 +279,13 @@ impl<'e> SiteColumn<'e> {
     /// The call's percentile argument, which the finish reads from the
     /// group's seed.
     pub(super) fn percentile(&self) -> Option<&'e Expr> {
+        // Every shape named: a streaming call also carries a `Call`, and
+        // answering from it (not from the storage shape) keeps a new shape
+        // deciding instead of silently reading as "no".
         match &self.state {
-            SiteState::Retain { call, .. } => call.percentile(),
+            SiteState::Retain { call, .. } | SiteState::Stream { call, .. } => call.percentile(),
             SiteState::Pooled { call, .. } => Some(call.percentile),
-            _ => None,
+            SiteState::CountStar(_) | SiteState::Rejected(_) => None,
         }
     }
 
@@ -375,15 +379,10 @@ impl<'e> SiteColumn<'e> {
                 held,
                 ..
             } => {
-                folds[group] = template.clone();
-                // The per-group charge for the held payload drops with the
-                // value it described — the same joint reset the Retain arm
-                // performs on `charged`.
-                held[group] = 0;
+                let _ = take_stream_slot(template, folds, held, group);
             }
             SiteState::Retain { vals, charged, .. } => {
-                vals[group] = Vec::new();
-                charged[group] = 0;
+                let _ = take_retain_slot(vals, charged, group);
             }
             SiteState::CountStar(_) | SiteState::Pooled { .. } | SiteState::Rejected(_) => {}
         }
@@ -456,27 +455,56 @@ impl<'e> SiteColumn<'e> {
         if let Some(error) = self.failed.get(&group) {
             return Err(error.clone());
         }
+        // Each retaining shape resolves through the one slot reset its
+        // taker performs — the same reset a release performs — so the slot
+        // a resolved group leaves behind holds neither its values nor a
+        // cursor claiming bytes for them.
         match &mut self.state {
             SiteState::CountStar(counts) => Ok(Value::Int(counts[group])),
             SiteState::Stream {
-                template, folds, ..
-            } => {
-                // The slot a finished group leaves behind is the site's
-                // template — the same fold reset `release` performs (the
-                // charge cursors stay: a finished group never settles
-                // again), so a stream slot never holds a fold of another
-                // shape.
-                std::mem::replace(&mut folds[group], template.clone()).finish()
-            }
-            SiteState::Retain { call, vals, .. } => {
-                finish_retained(graph, std::mem::take(&mut vals[group]), *call, seed, params)
-            }
+                template,
+                folds,
+                held,
+                ..
+            } => take_stream_slot(template, folds, held, group).finish(),
+            SiteState::Retain {
+                call,
+                vals,
+                charged,
+            } => finish_retained(
+                graph,
+                take_retain_slot(vals, charged, group),
+                *call,
+                seed,
+                params,
+            ),
             SiteState::Pooled { pool, call } => {
                 finish_pooled(graph, &pools[*pool], *call, seed, params)
             }
             SiteState::Rejected(error) => Err(error.clone()),
         }
     }
+}
+
+/// The one stream-slot reset: group `group`'s fold taken out, the site's
+/// template back in its place, and the held-payload cursor zeroed with the
+/// value it described. One policy for the release a parked failure
+/// performs and the resolve a finish takes, so the two cannot disagree.
+fn take_stream_slot(
+    template: &StreamFold,
+    folds: &mut [StreamFold],
+    held: &mut [u64],
+    group: usize,
+) -> StreamFold {
+    held[group] = 0;
+    std::mem::replace(&mut folds[group], template.clone())
+}
+
+/// The one retain-slot reset: group `group`'s operands taken out and the
+/// charge cursor zeroed with them.
+fn take_retain_slot(vals: &mut [Vec<Value>], charged: &mut [usize], group: usize) -> Vec<Value> {
+    charged[group] = 0;
+    std::mem::take(&mut vals[group])
 }
 
 /// The validated percentile argument of a percentile call. The percentile
@@ -544,8 +572,12 @@ pub(super) fn finish_pooled(
     let Some(percentile) = percentile_input(graph, call, seed, params)? else {
         return Ok(Value::Null);
     };
-    if pool.non_numeric {
-        return Err(call.name.with_str(needs_numbers));
+    // The sample's own ending, matched where it leaves the pool: only a
+    // non-numeric operand is this rejection. A parked pool has no ending
+    // here — its sites answer with the parked error before this.
+    match pool.ending {
+        SampleEnding::NonNumeric => return Err(call.name.with_str(needs_numbers)),
+        SampleEnding::Open => {}
     }
     Ok(percentile.rank_in_sorted(&pool.vals))
 }

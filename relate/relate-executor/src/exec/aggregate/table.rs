@@ -57,9 +57,11 @@ pub(super) struct GroupBill {
     /// what its retaining accumulators keep grow it together.
     pub(super) retained: RetainedTotal,
     /// The workspace-ledger twin of the table bytes billed so far (its own
-    /// [`WorkspaceCharge::bytes`] is the running total); `None` when
-    /// workspace accounting is off.
-    workspace: Option<WorkspaceCharge>,
+    /// [`WorkspaceCharge::bytes`] is the running total). Held
+    /// unconditionally, as every other owned structure here holds its
+    /// charge: an empty charge is a no-op while no ledger is installed, so
+    /// there is no second "accounting is off" spelling to keep in step.
+    workspace: WorkspaceCharge,
 }
 
 /// The one bill for the input vector the fold holds: its measured bytes
@@ -87,10 +89,10 @@ impl InputBill {
 }
 
 impl GroupBill {
-    pub(super) fn open(graph: &ExecGraph<'_>, account: bool) -> Result<Self> {
+    pub(super) fn open(graph: &ExecGraph<'_>) -> Result<Self> {
         Ok(Self {
             retained: graph.retain_bytes(0)?,
-            workspace: account.then(WorkspaceCharge::empty),
+            workspace: WorkspaceCharge::empty(),
         })
     }
 
@@ -101,10 +103,9 @@ impl GroupBill {
     /// counts.
     pub(super) fn add(&mut self, graph: &ExecGraph<'_>, bytes: u64) -> Result<()> {
         self.retained.add_bytes(graph, bytes)?;
-        if let Some(charge) = &mut self.workspace {
-            charge.resize(charge.bytes().saturating_add(bytes))?;
-            peak_hold("aggregation");
-        }
+        let total = self.workspace.bytes().saturating_add(bytes);
+        self.workspace.resize_with(|| total)?;
+        peak_hold("aggregation");
         Ok(())
     }
 
@@ -115,7 +116,7 @@ impl GroupBill {
     pub(super) fn take_retained(total: &mut RetainedTotal, graph: &ExecGraph<'_>) -> Result<Self> {
         Ok(Self {
             retained: std::mem::replace(total, graph.retain_bytes(0)?),
-            workspace: None,
+            workspace: WorkspaceCharge::empty(),
         })
     }
 

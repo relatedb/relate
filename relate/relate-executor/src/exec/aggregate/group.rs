@@ -202,7 +202,7 @@ impl<'a> Aggregation<'a> {
             key_exprs,
             roles,
             groups: GroupTable::new(seeds, accs),
-            bill: GroupBill::open(graph, account)?,
+            bill: GroupBill::open(graph)?,
             input,
         };
         // A keyless aggregation has exactly one group whose key is the
