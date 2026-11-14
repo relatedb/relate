@@ -26,8 +26,8 @@ use crate::workspace::buffer_growth;
 use relate_ir::Expr;
 
 use super::eval::FoldedGroup;
-use super::pool::{Collecting, PoolSite, PoolState, SortedPool};
-use super::site::SiteColumn;
+use super::pool::{shareable, Collecting, PoolSite, PoolState, SortedPool};
+use super::site::{Call, SiteColumn, SiteState};
 use super::table::GroupBill;
 
 /// The one strict-raises/lenient-parks rule of an offer: a failure on a
@@ -54,7 +54,43 @@ pub(crate) struct AccTable<'e> {
 }
 
 impl<'e> AccTable<'e> {
-    pub(super) fn new(sites: Vec<SiteColumn<'e>>, pools: Vec<PoolSite<'e>>) -> Self {
+    /// Build the table over the discovered sites: one column per site, and
+    /// the percentile pools with the sites that read them. The routing is
+    /// the table's own construction — every plain percentile call over a
+    /// shareable operand goes to one pool per distinct operand expression,
+    /// and the pool carries its readers — so a site's `Pooled` state and
+    /// the pool backing it are made in one place, where both columns live.
+    /// A DISTINCT call keeps its own seen-set and values, and `collect`
+    /// keeps `Value`s: neither is pooled.
+    pub(super) fn new(mut sites: Vec<SiteColumn<'e>>) -> Self {
+        let mut pools: Vec<PoolSite<'e>> = Vec::new();
+        for (site_index, site) in sites.iter_mut().enumerate() {
+            let SiteState::Retain {
+                call: Call::Percentile(percentile_call),
+                ..
+            } = &site.state
+            else {
+                continue;
+            };
+            let operand = percentile_call.operand;
+            if site.seen.is_some() || !shareable(operand) {
+                continue;
+            }
+            let index = match pools.iter().position(|pool| pool.reads(operand)) {
+                Some(index) => {
+                    pools[index].readers.push(site_index);
+                    index
+                }
+                None => {
+                    pools.push(PoolSite::new(operand, site_index));
+                    pools.len() - 1
+                }
+            };
+            site.state = SiteState::Pooled {
+                pool: index,
+                call: *percentile_call,
+            };
+        }
         Self {
             groups: 0,
             pools: pools
@@ -88,8 +124,10 @@ impl<'e> AccTable<'e> {
             .fold(0, u64::saturating_add)
     }
 
-    /// Append a fresh group's slot to every column; returns its index.
-    pub(super) fn open_group(&mut self) -> usize {
+    /// Append a fresh group's slot to every column. The group's index is
+    /// its slot in every column — the caller reads it where the group is
+    /// created (`GroupTable::land` takes it from the index entry).
+    pub(super) fn open_group(&mut self) {
         for pool in &mut self.pools {
             pool.states.push(PoolState::default());
         }
@@ -97,7 +135,6 @@ impl<'e> AccTable<'e> {
             site.open_group();
         }
         self.groups += 1;
-        self.groups - 1
     }
 
     /// Offer one input row to every site of group `group`. A streaming site
@@ -114,13 +151,21 @@ impl<'e> AccTable<'e> {
         bill: &mut GroupBill,
     ) -> Result<()> {
         for pool in &mut self.pools {
+            // A pool parks only while every site reading it is lenient —
+            // the readers' own flags, asked once per row rather than kept
+            // as a second spelling of the same fact on the pool.
+            let lenient = pool
+                .site
+                .readers
+                .iter()
+                .all(|&reader| self.sites[reader].lenient);
             let state = &mut pool.states[group];
             let offered = state.offer(&pool.site, graph, row, params);
-            if let Some(error) = parked(pool.site.lenient, offered)? {
+            if let Some(error) = parked(lenient, offered)? {
                 // The pool's sites are all lenient: park the failure on
-                // each through the readers `pool_percentiles` recorded —
-                // the reverse edge of the sites' pool reference, no scan —
-                // and end collecting the one way both endings share.
+                // each through the readers the routing recorded — the
+                // reverse edge of the sites' pool reference, no scan — and
+                // end collecting the one way both endings share.
                 state.stop_collecting(Collecting::Parked);
                 for reader in &pool.site.readers {
                     self.sites[*reader].park_failure(group, error.clone(), graph, bill)?;
@@ -209,6 +254,67 @@ mod tests {
             expr: Box::new(Expr::Variable(OPERAND_COLUMN.into())),
             key: SmallName::from_name(key),
         }
+    }
+
+    /// A resolved group's slot keeps neither what it held nor a charge
+    /// cursor pointing past it, whichever shape the site has: the cursor
+    /// leaves with the values (a retaining site) or the fold (a streaming
+    /// site's held payload), so a slot read after a resolve never claims
+    /// bytes it no longer holds.
+    #[test]
+    fn a_resolved_group_leaves_no_charge_cursor_behind() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        let params = BTreeMap::new();
+        let calls = [
+            agg_fn_over("collect", prop_of_x("p")),
+            agg_fn_over("min", prop_of_x("s")),
+        ];
+        let mut table = discover(&graph, [], calls.iter(), &params).expect("discovered");
+        table.open_group();
+        let mut total = graph.retain_bytes(0).expect("a fresh total");
+        // The production order the settle charge relies on: the offered row
+        // is dropped before the settle, so the payloads the slots hold are
+        // solely the group's.
+        {
+            let row = group_with_vals(&[Value::Map(
+                BTreeMap::from([
+                    ("p".to_string(), Value::Int(1)),
+                    ("s".to_string(), Value::String("a held payload".into())),
+                ])
+                .into(),
+            )])
+            .remove(0);
+            let mut bill = GroupBill::take_retained(&mut total, &graph).expect("a bill");
+            table
+                .offer(0, &graph, &row, &params, &mut bill)
+                .expect("offered");
+            drop(row);
+            table.settle(0, &graph, &mut bill).expect("settled");
+            bill.return_retained(&mut total);
+        }
+        let SiteState::Retain { vals, charged, .. } = &table.sites[0].state else {
+            panic!("collect retains")
+        };
+        assert_eq!(
+            (vals[0].len(), charged[0]),
+            (1, 1),
+            "the operand is kept and charged"
+        );
+        let SiteState::Stream { held, .. } = &table.sites[1].state else {
+            panic!("min streams")
+        };
+        assert!(held[0] > 0, "the min site charged the payload it holds");
+        table.finish_group(0, &graph, None, &params);
+        let SiteState::Retain { vals, charged, .. } = &table.sites[0].state else {
+            panic!("collect retains")
+        };
+        assert!(vals[0].is_empty(), "the resolve takes the operands out");
+        assert_eq!(charged[0], 0, "and the cursor leaves with them");
+        let SiteState::Stream { held, .. } = &table.sites[1].state else {
+            panic!("min streams")
+        };
+        assert_eq!(held[0], 0, "the held-payload cursor leaves with the fold");
     }
 
     /// A lenient site that parks a failure releases what its group slot

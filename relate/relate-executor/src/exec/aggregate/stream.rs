@@ -1,20 +1,22 @@
-//! The grouped aggregate's streaming state: what a group keeps instead of
-//! its input rows.
+//! Discovery of an aggregating projection's sites, and the single-group
+//! test harness over their table.
 //!
 //! [`discover`] finds every aggregate call an aggregating
 //! projection can evaluate (items, `ORDER BY` keys, HAVING) by running the
 //! one recursive evaluator in its discovery mode, so the sites are exactly
-//! the calls the evaluator reaches. Each site gets one column of per-group
-//! state ([`AccTable`], `columns`): a non-retaining aggregate (`count`,
-//! `sum`, `avg`, `min`, `max`, `stDev`, `stDevP`, DISTINCT or not) keeps
-//! constant-size state (plus a DISTINCT call's seen-set) and never an
-//! operand value; only `collect` and the percentiles retain their operands,
-//! charged to the expression budget and, when admission is on, to the
-//! workspace ledger as one retaining container. The plain
-//! percentile calls of one group over the same operand share one `f64`
-//! buffer (`pool`) rather than each keeping its own `Value`s.
-//! [`AccTable::finish_group`] resolves every site of a group once, and the
-//! evaluator reads the results back from the `FoldedGroup` it resolves.
+//! the calls the evaluator reaches; [`AccTable::new`] builds the table
+//! over them, routing the shared percentile pools. Each site gets one
+//! column of per-group state ([`AccTable`], `columns`): a non-retaining
+//! aggregate (`count`, `sum`, `avg`, `min`, `max`, `stDev`, `stDevP`,
+//! DISTINCT or not) keeps constant-size state (plus a DISTINCT call's
+//! seen-set) and never an operand value; only `collect` and the
+//! percentiles retain their operands, charged to the expression budget
+//! and, when admission is on, to the workspace ledger as one retaining
+//! container. The plain percentile calls of one group over the same
+//! operand share one `f64` buffer (`pool`) rather than each keeping its
+//! own `Value`s. [`AccTable::finish_group`] resolves every site of a group
+//! once, and the evaluator reads the results back from the `FoldedGroup`
+//! it resolves.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -32,9 +34,7 @@ use super::columns::AccTable;
 #[cfg(test)]
 use super::eval::FoldedGroup;
 use super::eval::{agg_eval, AggScope};
-use super::pool::{shareable, PoolSite};
-use super::site::Call;
-use super::site::{SiteColumn, SiteState};
+use super::site::SiteColumn;
 
 /// Discover the sites of an aggregating projection and return their
 /// accumulator table with no groups: `items` are the projection items'
@@ -61,8 +61,7 @@ pub(crate) fn discover<'e>(
             }
         }
     }
-    let pools = pool_percentiles(&mut sites);
-    Ok(AccTable::new(sites, pools))
+    Ok(AccTable::new(sites))
 }
 
 /// One group's accumulators on their own: a table holding group 0.
@@ -111,42 +110,4 @@ impl<'e> GroupAccs<'e> {
     ) -> FoldedGroup<'e> {
         self.0.finish_group(0, graph, seed, params)
     }
-}
-
-/// Route every plain percentile call over a shareable operand to one pool
-/// per distinct operand expression. A DISTINCT call keeps its own seen-set
-/// and values, and `collect` keeps `Value`s: neither is pooled. A pool is
-/// lenient only while every site reading it is, and carries the indices of
-/// its reading sites — the reverse edge of the sites' pool reference, so a
-/// pool's failure parks its readers without scanning every site.
-fn pool_percentiles<'e>(sites: &mut [SiteColumn<'e>]) -> Vec<PoolSite<'e>> {
-    let mut pools: Vec<PoolSite<'e>> = Vec::new();
-    for (site_index, site) in sites.iter_mut().enumerate() {
-        let SiteState::Retain { call, .. } = &site.state else {
-            continue;
-        };
-        let Call::Percentile(percentile_call) = *call else {
-            continue;
-        };
-        let operand = percentile_call.operand;
-        if site.seen.is_some() || !shareable(operand) {
-            continue;
-        }
-        let index = match pools.iter().position(|pool| pool.reads(operand)) {
-            Some(index) => {
-                pools[index].lenient &= site.lenient;
-                index
-            }
-            None => {
-                pools.push(PoolSite::new(operand, site.lenient));
-                pools.len() - 1
-            }
-        };
-        pools[index].readers.push(site_index);
-        site.state = SiteState::Pooled {
-            pool: index,
-            call: percentile_call,
-        };
-    }
-    pools
 }

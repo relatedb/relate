@@ -22,23 +22,23 @@ use super::table::GroupBill;
 /// One shared operand: what every group's buffer over it has in common.
 pub(super) struct PoolSite<'e> {
     operand: &'e Expr,
-    /// Whether every site reading the pool is lenient: only then does an
-    /// evaluation failure park instead of failing the statement (the one
-    /// rule, [`super::columns::AccTable::offer`]).
-    pub(super) lenient: bool,
     /// The indices of the sites that read this pool, assigned as
-    /// `super::stream::pool_percentiles` routes them — the reverse edge of
+    /// [`super::columns::AccTable::new`] routes them — the reverse edge of
     /// the sites' pool reference, so a pool's failure parks its readers
-    /// without scanning every site.
+    /// without scanning every site. Whether the pool may park at all is
+    /// the readers' own lenience, read from them where it is needed.
     pub(super) readers: Vec<usize>,
 }
 
 impl<'e> PoolSite<'e> {
-    pub(super) fn new(operand: &'e Expr, lenient: bool) -> Self {
+    /// A pool is born with the one site that first routed to it, so the
+    /// reverse edge of the sites' pool reference has no reader-less
+    /// spelling: a pool with no reader could never answer for its own
+    /// lenience.
+    pub(super) fn new(operand: &'e Expr, reader: usize) -> Self {
         Self {
             operand,
-            lenient,
-            readers: Vec::new(),
+            readers: vec![reader],
         }
     }
 
@@ -121,20 +121,37 @@ impl PoolState {
         Ok(())
     }
 
-    /// The group's resolved sample: sorted once, read by every call.
+    /// The group's resolved sample: sorted once, read by every call. A
+    /// parked failure is not a sample ending — its sites hold the error
+    /// and answer with it, and this sample was released — so it maps to
+    /// the open ending here and never reaches a reader.
     pub(super) fn finish(self) -> SortedPool {
         SortedPool {
             vals: self.sample.into_sorted(),
-            non_numeric: matches!(self.ending, Collecting::NonNumeric),
+            ending: match self.ending {
+                Collecting::NonNumeric => SampleEnding::NonNumeric,
+                Collecting::Open | Collecting::Parked => SampleEnding::Open,
+            },
         }
     }
 }
 
-/// A pool at resolve time: the ascending sample, and whether a non-numeric
-/// operand ended collecting.
+/// A resolved pool's ending: collecting never ended, or it ended on a
+/// non-numeric operand. Only the endings a reader can answer for — a
+/// parked pool resolves through its sites' failure map, not its sample.
+#[derive(Default)]
+pub(super) enum SampleEnding {
+    #[default]
+    Open,
+    NonNumeric,
+}
+
+/// A pool at resolve time: the ascending sample, and how collecting ended —
+/// the endings a reader can answer for, so no reader reads one of the
+/// endings back out of a bool.
 pub(super) struct SortedPool {
     pub(super) vals: Vec<f64>,
-    pub(super) non_numeric: bool,
+    pub(super) ending: SampleEnding,
 }
 
 /// Whether evaluating `operand` twice in one row gives one answer, so that
