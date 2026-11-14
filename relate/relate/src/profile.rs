@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 
 use relate_executor::{ClauseMetricsRecord, PlanMetricsSink};
 
-/// The collected per-clause metric and its map type, re-exported from
-/// the plan tree (its node type owns the metric shape).
-use crate::plan_node::{ClauseMetrics, ClauseMetricsMap};
+/// The collected per-clause metric map type, owned by the plan tree (its
+/// node type owns the metric shape and the record conversion).
+use crate::plan_node::ClauseMetricsMap;
 
 /// The PROFILE sink: one collected entry per statement-level clause.
 /// Interior mutability (a `RefCell`) because the sink crosses the
@@ -39,23 +39,7 @@ impl ProfileMetrics {
 
 impl PlanMetricsSink for ProfileMetrics {
     fn record_clause(&self, record: ClauseMetricsRecord) {
-        self.collected.borrow_mut().insert(
-            (record.stage, record.part, record.clause),
-            ClauseMetrics {
-                rows: record.rows,
-                db_hits: record.reads.total(),
-                memory_bytes: record.memory_bytes,
-                expression_built_bytes: record.expression_built_bytes,
-                time_ns: record.time_ns,
-                reads: record.reads,
-                start: record.start,
-                kernel: record.kernel,
-                phases: record.phases,
-                batched: record.batched,
-                zone_skips: record.zone_skips,
-                frontier: record.frontier,
-                frontier_decline: record.frontier_decline,
-            },
-        );
+        let key = (record.stage, record.part, record.clause);
+        self.collected.borrow_mut().insert(key, record.into());
     }
 }

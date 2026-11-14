@@ -68,8 +68,9 @@ use relate_core::{NodeId, Result, Value};
 use relate_ir::{var_prop_named, BinaryOp, Expr, MatchMode, NodePattern, PathPattern, UnaryOp};
 use relate_names::{NamedToken, SmallName};
 
-use crate::ctx::{ExecCtx, WalkStart};
+use crate::ctx::ExecCtx;
 use crate::eval::{binary_pure, eval};
+use crate::metrics::WalkStart;
 use crate::overlay::ExecGraph;
 use crate::pattern_walk::{label_index_seekable, node_candidates};
 use crate::row::Row;

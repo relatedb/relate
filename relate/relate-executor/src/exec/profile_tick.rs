@@ -8,8 +8,8 @@ use std::rc::Rc;
 // same shim).
 use web_time::Instant;
 
-use crate::ctx::{ClauseMetricsRecord, PlanMetricsSite};
 use crate::eval::rows_logical_bytes;
+use crate::metrics::{ClauseMetricsRecord, PlanMetricsSite};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -39,7 +39,7 @@ impl ExpressionBytes {
 /// derive from the ladder's one returned value — the dispatcher's only
 /// projection, so the two cannot disagree, and the `None` operator (no
 /// ladder ran) is stated once.
-fn match_facts(operator: Option<MatchOperator>) -> (bool, Option<crate::ctx::KernelRung>) {
+fn match_facts(operator: Option<MatchOperator>) -> (bool, Option<crate::metrics::KernelRung>) {
     match operator {
         None => (false, None),
         Some(MatchOperator::BatchChain) => (true, None),
@@ -69,12 +69,12 @@ pub(super) struct ProfileTick<'a> {
     /// `reads` is the delta against it, three thread-local reads per
     /// clause, never a per-row cost — and the one snapshot, since the
     /// store-access total is the kinds' sum.
-    reads: crate::ctx::StoreReads,
+    reads: crate::metrics::StoreReads,
     /// The phase-time snapshot at the arm's start (LABS-448): the tick's
     /// `phases` is the delta against it — and arming the phase stamps is
     /// this tick's first act, disarming its last, so the stamps never run
     /// outside a profiled statement's arm.
-    phases: crate::ctx::PhaseTimes,
+    phases: crate::metrics::PhaseTimes,
     /// The zone-skip counter snapshot at the arm's start (LABS-645): the
     /// tick's `zone_skips` is the delta against it — one thread-local
     /// read per clause, the store-access snapshot's pattern.
@@ -82,7 +82,7 @@ pub(super) struct ProfileTick<'a> {
     /// The frontier family's counter snapshot at the arm's start
     /// (ADR-0478): the tick's `frontier` is the delta against it — one
     /// thread-local read per clause, the zone-skip snapshot's pattern.
-    frontier: crate::ctx::FrontierCounters,
+    frontier: crate::metrics::FrontierCounters,
     /// The view whose expression-built meter the tick samples at the arm's
     /// start and reads again in `record` (ADR-0463) — the third counter
     /// family it owns, beside `reads` and `phases`.

@@ -13,6 +13,8 @@ pub mod durability;
 pub mod envelope;
 #[cfg(feature = "fetch")]
 pub mod fetch;
+#[cfg(feature = "fold_shapes")]
+pub mod fold_shapes;
 pub mod git;
 #[cfg(feature = "graph")]
 pub mod graph;

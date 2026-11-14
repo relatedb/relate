@@ -48,4 +48,4 @@ web-time = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 crc32fast = { workspace = true }
-relate-test-support = { workspace = true, features = ["durability", "nested_eval", "pokec", "vfs_walk"] }
+relate-test-support = { workspace = true, features = ["durability", "fold_shapes", "nested_eval", "pokec", "vfs_walk"] }

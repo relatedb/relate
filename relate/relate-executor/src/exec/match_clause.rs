@@ -13,9 +13,10 @@
 use relate_core::Result;
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
-use crate::ctx::{ExecCtx, KernelRung};
+use crate::ctx::ExecCtx;
 use crate::eval::candidate_passes;
 use crate::frontier_decline::FrontierDeclineReason;
+use crate::metrics::KernelRung;
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowRung};
 use crate::UsedSet;

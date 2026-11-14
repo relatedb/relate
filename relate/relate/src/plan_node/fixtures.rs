@@ -5,11 +5,15 @@
 
 use std::collections::BTreeMap;
 
-use relate_ir::{BinaryOp, Direction, Expr, LabelExpr, NodePattern, PathPattern, RelPattern};
+use relate_ir::{BinaryOp, Direction, Expr, NodePattern, PathPattern, RelPattern};
 use relate_names::{NamedToken, SmallName};
 use relate_planner::PatternStats;
 
 use crate::stats::PlanStats;
+
+/// The fold-shape builders shared with the executor's candidate-funnel
+/// suite — one spelling, re-exported for the plan-node submodules.
+pub(super) use relate_test_support::fold_shapes::{comparison, or_node};
 
 /// A bare node pattern with the given variable and labels.
 pub(super) fn node(variable: Option<&str>, labels: &[&str]) -> NodePattern {
@@ -20,26 +24,6 @@ pub(super) fn node(variable: Option<&str>, labels: &[&str]) -> NodePattern {
             .map(|s| (SmallName::from_name(s), Default::default()))
             .collect(),
         label_expr: None,
-        properties: None,
-        prop_keys: Vec::new(),
-        where_clause: None,
-        force_scan: false,
-    }
-}
-
-/// The disjunction fold's plain-`Or` node shape (LABS-1083): no
-/// conjunction labels, the `Or` in the label expression — what
-/// `MATCH (p) WHERE p:Model OR p:Source` carries after the rewrite.
-pub(super) fn or_node(variable: Option<&str>, disjuncts: &[&str]) -> NodePattern {
-    NodePattern {
-        variable: variable.map(SmallName::from_name),
-        labels: Vec::new(),
-        label_expr: Some(LabelExpr::Or(
-            disjuncts
-                .iter()
-                .map(|l| LabelExpr::Label((*l).into()))
-                .collect(),
-        )),
         properties: None,
         prop_keys: Vec::new(),
         where_clause: None,
@@ -92,19 +76,6 @@ pub(super) fn compact(nodes: Vec<NodePattern>, rels: Vec<RelPattern>) -> PathPat
         mode: None,
         selector: None,
         is_shortest_path_function: false,
-    }
-}
-
-/// `var.prop <op> bound` as a WHERE conjunct `Expr`.
-pub(super) fn comparison(var: &str, prop: &str, op: BinaryOp, bound: Expr) -> Expr {
-    Expr::Binary {
-        op,
-        left: Box::new(Expr::Property {
-            key_id: Default::default(),
-            expr: Box::new(Expr::Variable(SmallName::from_name(var))),
-            key: SmallName::from_name(prop),
-        }),
-        right: Box::new(bound),
     }
 }
 

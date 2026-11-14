@@ -607,6 +607,16 @@ fn explain_merge_and_create_subjects_carry_the_pattern_text() {
     );
 }
 
+/// The tail every seek-narration test shares: the seek node carries no
+/// warnings and the fused label-scan narration is gone from the tree.
+fn assert_seek_replaces_fused_scan(tree: &relate::PlanNode, seek: &relate::PlanNode) {
+    assert!(seek.warnings.is_empty(), "{tree:?}");
+    assert!(
+        find_node(tree, "NodeByLabelScan").is_none(),
+        "the seek replaces the fused scan narration: {tree:?}"
+    );
+}
+
 /// ADR-0486: an indexed anchored-equality start narrates the point read
 /// as `NodeIndexSeek` — the operator name from the design, the details
 /// naming the serving index and the predicate with the bound as spelled
@@ -631,11 +641,7 @@ fn explain_indexed_point_read_narrates_node_index_seek() {
         "{tree:?}"
     );
     assert_eq!(seek.estimated_rows, Some(1), "{tree:?}");
-    assert!(seek.warnings.is_empty(), "{tree:?}");
-    assert!(
-        find_node(tree, "NodeByLabelScan").is_none(),
-        "the seek replaces the fused scan narration: {tree:?}"
-    );
+    assert_seek_replaces_fused_scan(tree, seek);
 }
 
 /// ADR-0486: a range-indexed comparison start narrates the window as
@@ -662,11 +668,7 @@ fn explain_range_start_narrates_node_index_seek_by_range() {
         "{tree:?}"
     );
     assert_eq!(seek.estimated_rows, Some(5), "the posting window: {tree:?}");
-    assert!(seek.warnings.is_empty(), "{tree:?}");
-    assert!(
-        find_node(tree, "NodeByLabelScan").is_none(),
-        "the seek replaces the fused scan narration: {tree:?}"
-    );
+    assert_seek_replaces_fused_scan(tree, seek);
 
     // A multi-element pattern keeps its pattern text after the seek
     // line — the hops the fused `Expand` still walks.

@@ -61,25 +61,25 @@ pub(super) fn with_pivot_disabled<R>(f: impl FnOnce() -> R) -> R {
 pub(super) fn walk_start(
     selection: Option<&Selection>,
     seek_anchored: bool,
-) -> crate::ctx::WalkStart {
+) -> crate::metrics::WalkStart {
     match selection {
-        Some(Selection::Pivot((k, _))) => crate::ctx::WalkStart {
+        Some(Selection::Pivot((k, _))) => crate::metrics::WalkStart {
             element: *k,
             backward: true,
-            reason: crate::ctx::StartReason::BoundPivot,
+            reason: crate::metrics::StartReason::BoundPivot,
         },
-        Some(Selection::Cheapest(k)) => crate::ctx::WalkStart {
+        Some(Selection::Cheapest(k)) => crate::metrics::WalkStart {
             element: *k,
             backward: false,
-            reason: crate::ctx::StartReason::Cheapest,
+            reason: crate::metrics::StartReason::Cheapest,
         },
-        None => crate::ctx::WalkStart {
+        None => crate::metrics::WalkStart {
             element: 0,
             backward: false,
             reason: if seek_anchored {
-                crate::ctx::StartReason::SeekAnchored
+                crate::metrics::StartReason::SeekAnchored
             } else {
-                crate::ctx::StartReason::IndexZero
+                crate::metrics::StartReason::IndexZero
             },
         },
     }

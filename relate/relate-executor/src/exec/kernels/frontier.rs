@@ -86,10 +86,11 @@
 
 use relate_core::{Error, NodeId, Result, Value};
 
-use crate::ctx::{ExecCtx, FrontierCounters};
+use crate::ctx::ExecCtx;
 use crate::eval::{eval, predicate_value_holds};
 use crate::exec::candidates::node_ok;
 use crate::frontier_decline::FrontierRunDecline;
+use crate::metrics::FrontierCounters;
 use crate::row::Row;
 
 use super::frontier_tables::{

@@ -9,7 +9,7 @@
 
 use relate_core::Value;
 
-use crate::ctx::KernelRung;
+use crate::metrics::KernelRung;
 
 use super::super::test_support::{line_graph, profiled, served, Builder};
 use super::frontier_rider_tests::ring_graph;

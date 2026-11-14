@@ -6,7 +6,8 @@
 use relate_core::Result;
 use relate_ir::{Clause, Direction, MatchMode};
 
-use crate::ctx::{ExecCtx, WalkStart};
+use crate::ctx::ExecCtx;
+use crate::metrics::WalkStart;
 
 use super::super::agg_fold::FoldedReturn;
 use super::super::graph_stats::GraphStats;

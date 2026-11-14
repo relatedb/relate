@@ -82,8 +82,9 @@ use std::collections::BTreeMap;
 use relate_core::{Node, NodeId, Path, RelId, Relationship, Result, Value};
 use relate_ir::{PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
 
-use crate::ctx::{ExecCtx, FrontierCounters};
+use crate::ctx::ExecCtx;
 use crate::frontier_decline::FrontierRunDecline;
+use crate::metrics::FrontierCounters;
 use crate::pattern_walk::{bind_path_names, memoized_path_rung};
 use crate::row::{Row, RowRung};
 
@@ -372,10 +373,10 @@ impl<'a> Emission<'a> {
         // one name resolution per run, never rebuilt here.
         let view = self.ctx.graph;
         #[cfg(test)]
-        let budget =
-            super::rearival_deferred_budget_override().unwrap_or(crate::ctx::REARRIVAL_WORK_BUDGET);
+        let budget = super::rearival_deferred_budget_override()
+            .unwrap_or(crate::metrics::REARRIVAL_WORK_BUDGET);
         #[cfg(not(test))]
-        let budget = crate::ctx::REARRIVAL_WORK_BUDGET;
+        let budget = crate::metrics::REARRIVAL_WORK_BUDGET;
         let mut rule = RearivalRule::with_budget(
             view,
             self.nfa,

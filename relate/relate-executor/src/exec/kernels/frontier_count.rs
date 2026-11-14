@@ -35,7 +35,8 @@ use relate_core::{Error, NodeId, Result};
 use crate::hash_seed::IdMap;
 use relate_ir::{Clause, MatchMode};
 
-use crate::ctx::{ExecCtx, FrontierCounters};
+use crate::ctx::ExecCtx;
+use crate::metrics::FrontierCounters;
 use crate::overlay::ExecGraph;
 
 use super::super::agg_fold::FoldedReturn;

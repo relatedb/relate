@@ -143,8 +143,8 @@ impl Drop for WalkTallies {
 /// The store-read mix right now (LABS-369): the three counters the one
 /// `Db Hits` total blends, read at clause boundaries so a per-clause delta
 /// costs three thread-local reads, never a per-row one.
-pub(crate) fn store_reads() -> crate::ctx::StoreReads {
-    crate::ctx::StoreReads {
+pub(crate) fn store_reads() -> crate::metrics::StoreReads {
+    crate::metrics::StoreReads {
         hops: HOP_EXPANDS.with(Cell::get),
         neighbor_walks: NEIGHBOR_WALKS.with(Cell::get),
         node_reads: crate::ctx::node_reads(),
@@ -180,8 +180,8 @@ thread_local! {
     /// (`exec/kernels/frontier_run.rs`), PROFILEd or not — and read per
     /// clause like the store-read mix: the delta across the arm is the
     /// clause the frontier served.
-    static FRONTIER: Cell<crate::ctx::FrontierCounters> = const {
-        Cell::new(crate::ctx::FrontierCounters {
+    static FRONTIER: Cell<crate::metrics::FrontierCounters> = const {
+        Cell::new(crate::metrics::FrontierCounters {
             edge_visits: 0,
             levels: 0,
             endpoints: 0,
@@ -200,7 +200,7 @@ thread_local! {
 /// Add one completed frontier run's counters (ADR-0478) — the one
 /// counting point, the zone-skip idiom's: the rider wiring calls it once
 /// per run, never an inline field-by-field spelling beside it.
-pub(crate) fn count_frontier(run: crate::ctx::FrontierCounters) {
+pub(crate) fn count_frontier(run: crate::metrics::FrontierCounters) {
     FRONTIER.with(|c| {
         let mut counters = c.get();
         counters += run;
@@ -211,7 +211,7 @@ pub(crate) fn count_frontier(run: crate::ctx::FrontierCounters) {
 /// The frontier counters right now, snapshotted at the clause tick the
 /// way [`zone_skips`] is: the delta across the arm is the clause the
 /// frontier served.
-pub(crate) fn frontier_counters() -> crate::ctx::FrontierCounters {
+pub(crate) fn frontier_counters() -> crate::metrics::FrontierCounters {
     FRONTIER.with(Cell::get)
 }
 
@@ -219,14 +219,14 @@ thread_local! {
     /// The start the current clause's walk chose (LABS-369), recorded once
     /// per walk by the selection site and taken at the clause's metric
     /// tick. `None` until a walk records one.
-    static WALK_START: Cell<Option<crate::ctx::WalkStart>> = const { Cell::new(None) };
+    static WALK_START: Cell<Option<crate::metrics::WalkStart>> = const { Cell::new(None) };
 }
 
 /// Record how the walk starting now chose its element (LABS-369). The
 /// clause's FIRST walk wins: a clause whose start varies per outer row
 /// (the bound pivot depends on the row's binding) reports its
 /// representative first start rather than the last row's.
-pub(crate) fn record_walk_start(start: crate::ctx::WalkStart) {
+pub(crate) fn record_walk_start(start: crate::metrics::WalkStart) {
     WALK_START.with(|slot| {
         if slot.get().is_none() {
             slot.set(Some(start));
@@ -236,7 +236,7 @@ pub(crate) fn record_walk_start(start: crate::ctx::WalkStart) {
 
 /// Take the recorded walk start, clearing it: the metric tick reads it
 /// once per clause, so a stale start never leaks into the next clause.
-pub(crate) fn take_walk_start() -> Option<crate::ctx::WalkStart> {
+pub(crate) fn take_walk_start() -> Option<crate::metrics::WalkStart> {
     WALK_START.with(|slot| slot.take())
 }
 
@@ -262,6 +262,6 @@ pub(crate) fn take_zone_skips() -> u64 {
 }
 
 #[cfg(test)]
-pub(crate) fn take_frontier_counters() -> crate::ctx::FrontierCounters {
-    FRONTIER.with(|c| c.replace(crate::ctx::FrontierCounters::default()))
+pub(crate) fn take_frontier_counters() -> crate::metrics::FrontierCounters {
+    FRONTIER.with(|c| c.replace(crate::metrics::FrontierCounters::default()))
 }

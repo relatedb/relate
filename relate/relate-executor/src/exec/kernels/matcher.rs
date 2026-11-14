@@ -67,12 +67,12 @@ impl Contract<'_> {
     /// The rung this contract runs (LABS-1117): the chain with its hop
     /// count, or the hub-star. The one derivation both the runtime
     /// engagement record and the PROFILE fact read.
-    pub(crate) fn rung(&self) -> crate::ctx::KernelRung {
+    pub(crate) fn rung(&self) -> crate::metrics::KernelRung {
         match self {
-            Contract::Chain(chain) => crate::ctx::KernelRung::Chain {
+            Contract::Chain(chain) => crate::metrics::KernelRung::Chain {
                 hops: chain.hops.len(),
             },
-            Contract::HubStar(_) => crate::ctx::KernelRung::HubStar,
+            Contract::HubStar(_) => crate::metrics::KernelRung::HubStar,
         }
     }
 }

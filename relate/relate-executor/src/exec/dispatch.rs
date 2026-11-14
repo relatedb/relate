@@ -8,8 +8,9 @@ use std::rc::Rc;
 use relate_core::{Error, Result, Value};
 use relate_ir::Clause;
 
-use crate::ctx::{ExecCtx, PlanMetricsSite, QueryCtx};
+use crate::ctx::{ExecCtx, QueryCtx};
 use crate::graph::QueryStats;
+use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 

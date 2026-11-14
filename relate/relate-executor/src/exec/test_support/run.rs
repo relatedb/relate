@@ -10,8 +10,8 @@ use relate_front::parse_and_lower;
 use relate_ir::Query;
 use relate_planner::{plan, plan_with_tokens, NoPatternStats};
 
-use crate::ctx::{ClauseMetricsRecord, PlanMetricsSink};
 use crate::graph::Graph;
+use crate::metrics::{ClauseMetricsRecord, PlanMetricsSink};
 use crate::overlay::ExecGraph;
 use crate::test_support::PeakPoolDouble;
 

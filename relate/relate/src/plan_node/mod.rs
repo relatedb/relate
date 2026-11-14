@@ -244,6 +244,47 @@ pub struct ClauseMetrics {
     pub frontier_decline: Option<relate_executor::FrontierDeclineReason>,
 }
 
+/// The one record→metric conversion: destructured, so a new
+/// [`relate_executor::ClauseMetricsRecord`] field is a compile error
+/// here rather than a silently dropped metric. The position key stays with
+/// the caller; `db_hits` is derived from the read mix, never carried twice.
+impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
+    fn from(record: relate_executor::ClauseMetricsRecord) -> Self {
+        let relate_executor::ClauseMetricsRecord {
+            stage: _,
+            part: _,
+            clause: _,
+            rows,
+            memory_bytes,
+            expression_built_bytes,
+            time_ns,
+            reads,
+            phases,
+            start,
+            kernel,
+            batched,
+            zone_skips,
+            frontier,
+            frontier_decline,
+        } = record;
+        ClauseMetrics {
+            rows,
+            db_hits: reads.total(),
+            memory_bytes,
+            expression_built_bytes,
+            time_ns,
+            reads,
+            start,
+            kernel,
+            phases,
+            batched,
+            zone_skips,
+            frontier,
+            frontier_decline,
+        }
+    }
+}
+
 impl PlanNode {
     /// The one constructor: every field but the content fields starts at
     /// its phase-1 value (`estimated_rows: None` until the estimate phase
