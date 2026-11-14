@@ -8,10 +8,12 @@
 //! *probe* it issues. The inputs are estimates from the planner's stats:
 //!
 //! - **trails** — the first hop fans out over the start label's mean
-//!   out-degree, every later hop over the size-biased excess degree
+//!   degree on the side the hop leaves it by (out, in, or both for an
+//!   undirected hop), every later hop over the size-biased excess degree
 //!   `sum(d^2) / sum(d) - 1` of the rel types it crosses (a trail arrives
-//!   at a node in proportion to its degree); an undirected hop sees each
-//!   rel from both ends, so it counts twice. Summed over every hop count
+//!   at a node in proportion to its degree); a later undirected hop sees
+//!   each rel from both ends, so it counts twice (the histograms keep no
+//!   in-degree moments, so a later hop is priced on out-degree alone). Summed over every hop count
 //!   up to the bound, since the DFS enumerates the shorter trails too.
 //!   The excess-degree model overestimates actual trails; it does not
 //!   underestimate them, so a short bound that the model prices cheap is
@@ -104,9 +106,9 @@ pub(super) fn estimate(
         .filter_map(|label| stats.label_rows(label))
         .min()
         .map_or(population, u128::from);
-    let first_moments = stats.degree_moments(&start.labels, &first.types)?;
+    let first_degrees = first_hop_degree_sum(stats, start, first)?;
     let seeds = seeds as f64;
-    let mut level = seeds * mean_degree(first_moments, start_population) * sides(first);
+    let mut level = seeds * mean_degree(first_degrees, start_population);
     let mut trails = level;
     // A quantifier repeats the same rels up to 1024 times, and each
     // degree-moments consult scans the histograms: price each distinct
@@ -134,6 +136,31 @@ pub(super) fn estimate(
     })
 }
 
+/// The sum of the degrees the first hop leaves the start label by: the
+/// out-degree sum for an outgoing hop, the in-degree sum for an incoming
+/// one, both for an undirected hop (it reads every rel from either end).
+/// The histograms are out-degree only, so a label whose rels all point
+/// at it (a co-change `File`) has a zero out sum: the in side comes from
+/// the pair counts ([`PatternStats::in_degree_sum`]). `None` when either
+/// needed side is unpriceable.
+fn first_hop_degree_sum(
+    stats: &dyn PatternStats,
+    start: &NodePattern,
+    first: &RelPattern,
+) -> Option<u128> {
+    let out = || {
+        stats
+            .degree_moments(&start.labels, &first.types)
+            .map(|moments| moments.sum)
+    };
+    let inbound = || stats.in_degree_sum(&start.labels, &first.types);
+    match first.direction {
+        Direction::Outgoing => out(),
+        Direction::Incoming => inbound(),
+        Direction::Both => Some(out()?.saturating_add(inbound()?)),
+    }
+}
+
 /// How many times a hop sees each rel: an undirected hop reads it from
 /// both endpoints.
 fn sides(rel: &RelPattern) -> f64 {
@@ -143,12 +170,12 @@ fn sides(rel: &RelPattern) -> f64 {
     }
 }
 
-/// The mean out-degree over `nodes` nodes (zero for none).
-pub(super) fn mean_degree(moments: DegreeMoments, nodes: u128) -> f64 {
+/// The mean degree — `degree_sum` over `nodes` nodes (zero for none).
+pub(super) fn mean_degree(degree_sum: u128, nodes: u128) -> f64 {
     if nodes == 0 {
         return 0.0;
     }
-    moments.sum as f64 / nodes as f64
+    degree_sum as f64 / nodes as f64
 }
 
 /// The size-biased excess degree `sum(d^2) / sum(d) - 1` a trail finds at

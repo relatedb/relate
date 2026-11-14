@@ -295,28 +295,59 @@ impl Graph {
     /// type). Each bucket is read at the uniform mean of its degree range
     /// `[2^k, 2^(k+1) - 1]`, so the figures are estimates on the
     /// histogram's own scale, high-water across deletes like the tails.
+    ///
+    /// The histograms are per (label, type): a node's degree on two
+    /// selected types sits in two buckets, so the plain sum of their
+    /// squares drops the cross term of the node's total degree
+    /// `(a + b)^2 = a^2 + b^2 + 2ab` and under-prices every untyped or
+    /// multi-type hop. The cross term is added per label under the
+    /// independence of a node's degrees across types, from the label's
+    /// per-type sums over its node count; a single selected type has none.
     pub(crate) fn pattern_degree_moments(
         &self,
         label_id: Option<u32>,
         type_ids: Option<&[u32]>,
     ) -> DegreeMoments {
-        let histograms = self.degree_histograms.lock().unwrap();
+        // Per label: the per-type degree sums and the squares' sum.
+        let mut per_label: HashMap<u32, (Vec<u128>, u128)> = HashMap::new();
+        {
+            let histograms = self.degree_histograms.lock().unwrap();
+            for (&(label, type_id), buckets) in histograms.iter() {
+                if label_id.is_some_and(|wanted| wanted != label)
+                    || type_ids.is_some_and(|wanted| !wanted.contains(&type_id))
+                {
+                    continue;
+                }
+                let (sums, sum_sq) = per_label.entry(label).or_default();
+                let mut type_sum = 0u128;
+                for (bucket, &nodes) in buckets.iter().enumerate() {
+                    let low = 1u128 << bucket;
+                    let high = (low << 1) - 1;
+                    let nodes = u128::from(nodes);
+                    type_sum = type_sum.saturating_add(nodes * ((low + high) / 2));
+                    *sum_sq =
+                        sum_sq.saturating_add(nodes * ((low * low + low * high + high * high) / 3));
+                }
+                sums.push(type_sum);
+            }
+        }
         let mut moments = DegreeMoments::default();
-        for (&(label, type_id), buckets) in histograms.iter() {
-            if label_id.is_some_and(|wanted| wanted != label)
-                || type_ids.is_some_and(|wanted| !wanted.contains(&type_id))
-            {
-                continue;
-            }
-            for (bucket, &nodes) in buckets.iter().enumerate() {
-                let low = 1u128 << bucket;
-                let high = (low << 1) - 1;
-                let nodes = u128::from(nodes);
-                moments.sum = moments.sum.saturating_add(nodes * ((low + high) / 2));
-                moments.sum_sq = moments
-                    .sum_sq
-                    .saturating_add(nodes * ((low * low + low * high + high * high) / 3));
-            }
+        for (label, (sums, sum_sq)) in per_label {
+            let sum = sums.iter().fold(0u128, |acc, &s| acc.saturating_add(s));
+            let nodes = u128::from(self.label_count_by_id(label));
+            // `sum^2 - sum(type sums^2)` is the ordered cross pairs of two
+            // different types' degrees; never negative by construction.
+            let cross_pairs = sum.saturating_mul(sum).saturating_sub(
+                sums.iter()
+                    .fold(0u128, |acc, &s| acc.saturating_add(s.saturating_mul(s))),
+            );
+            moments.sum = moments.sum.saturating_add(sum);
+            moments.sum_sq = moments
+                .sum_sq
+                .saturating_add(sum_sq)
+                .saturating_add(cross_pairs.checked_div(nodes).unwrap_or(0));
+            // (A label with no live node left only has high-water
+            // buckets: nothing is there to cross, so its term is zero.)
         }
         moments
     }
