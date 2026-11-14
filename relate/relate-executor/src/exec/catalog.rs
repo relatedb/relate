@@ -503,7 +503,10 @@ pub(crate) fn execute_catalog(
             catalog_show::show_transactions_rows(graph, c, &rows, params, qctx)?
         }
         C::TerminateTransactions(c) => {
-            catalog_show::terminate_transactions_rows(graph, c, &rows, params)?
+            // Its projection is per input row, so it finishes the clause
+            // itself rather than returning catalog rows for the cross join
+            // below to repeat once per input row.
+            return catalog_show::terminate_transactions_rows(graph, c, rows, clause, params);
         }
         C::ShowDatabases(c) => catalog_show::show_databases_rows(graph, c, params)?,
         C::ShowIndexes(c) => catalog_show::show_indexes_rows(graph, c)?,

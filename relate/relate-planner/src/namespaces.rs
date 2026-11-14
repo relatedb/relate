@@ -300,7 +300,10 @@ fn collect_system_offenders(clauses: &[Clause], out: &mut Vec<&'static str>) {
 }
 
 /// SHOW commands and database-administration commands (ADR-0116 §2) are the
-/// only `Catalog` clauses allowed on `system`.
+/// only `Catalog` clauses allowed on `system`. `TERMINATE TRANSACTIONS` is
+/// the one §2 command that is not a `SHOW`: live runs it from `system`
+/// exactly as it does from a user database, so it anchors a `system` part
+/// like its `SHOW TRANSACTIONS` sibling.
 fn catalog_allowed_on_system(command: &relate_parser::Clause) -> bool {
     use relate_parser::Clause as C;
     matches!(
@@ -315,6 +318,7 @@ fn catalog_allowed_on_system(command: &relate_parser::Clause) -> bool {
             | C::ShowProcedures(_)
             | C::ShowSettings(_)
             | C::ShowTransactions(_)
+            | C::TerminateTransactions(_)
             | C::ShowGraphType(_)
             | C::ShowCurrentGraphType(_)
             | C::AlterDatabase(_)

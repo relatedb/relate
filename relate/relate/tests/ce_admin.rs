@@ -484,3 +484,79 @@ fn bare_administration_commands_still_run_on_the_user_namespace() {
         assert_eq!(result.rows.len(), expected_rows, "{src}");
     }
 }
+
+/// ADR-0116 §4: `TERMINATE TRANSACTIONS` is a §2 administration command, so
+/// it runs from `system` exactly as it does from `neo4j` — it is the one
+/// command in that set that is not a `SHOW`, and live CE 2026.10.1 accepts
+/// both spellings on `system` with the `YIELD … FINISH` tail.
+#[test]
+fn terminate_transactions_runs_on_the_system_namespace() {
+    let mut conn = connection();
+    for src in [
+        "USE system TERMINATE TRANSACTION 'foo-transaction-123' YIELD message AS message FINISH",
+        "USE system TERMINATE TRANSACTIONS ['foo-transaction-123'] YIELD transactionId AS id FINISH",
+    ] {
+        let result = conn
+            .query(src)
+            .unwrap_or_else(|e| panic!("{src} should run on `system`: {e}"));
+        assert!(result.rows.is_empty(), "{src}: FINISH yields no rows");
+    }
+}
+
+/// `TERMINATE TRANSACTIONS` projects over each input row independently: a
+/// scalar argument yields that row's own value (duplicates and nulls
+/// included), while a *list* argument deduplicates within itself. Live CE
+/// 2026.10.1 is the authority for both halves — the per-row half is why
+/// the projection may not scan the whole input set, and the list half is
+/// why it may not deduplicate across rows.
+#[test]
+fn terminate_transactions_projects_per_input_row() {
+    let mut conn = connection();
+    let inputs = "['none-transaction-42', null, 'none-transaction-43', null, \
+                  'none-transaction-43']";
+    for (src, expected) in [
+        // A scalar per row: one row per input value, nothing collapsed.
+        (
+            format!(
+                "WITH {inputs} AS inputs UNWIND inputs AS input \
+                 TERMINATE TRANSACTIONS input YIELD transactionId AS output RETURN output"
+            ),
+            vec![
+                Some("none-transaction-42"),
+                None,
+                Some("none-transaction-43"),
+                None,
+                Some("none-transaction-43"),
+            ],
+        ),
+        // The whole list at once: deduplicated within itself.
+        (
+            format!(
+                "WITH {inputs} AS inputs \
+                 TERMINATE TRANSACTIONS inputs YIELD transactionId AS output RETURN output"
+            ),
+            vec![
+                Some("none-transaction-42"),
+                None,
+                Some("none-transaction-43"),
+            ],
+        ),
+    ] {
+        let result = conn
+            .query(&src)
+            .unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        let got: Vec<Option<&str>> = result
+            .rows
+            .iter()
+            .map(|row| match &row[0] {
+                Value::Null => None,
+                other => Some(
+                    other
+                        .as_string()
+                        .expect("a transaction id is STRING or NULL"),
+                ),
+            })
+            .collect();
+        assert_eq!(got, expected, "{src}");
+    }
+}
