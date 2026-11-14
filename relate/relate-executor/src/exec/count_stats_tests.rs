@@ -2,7 +2,7 @@
 //! answers from the maintained counts, byte-identical to the scan's
 //! answer, and the shapes it declines (the scan stays).
 
-use super::count_stats::count_only_stats_result;
+use super::count_stats::{count_only_stats_result, stats_view_serves};
 use super::test_support::{
     clauses_of, commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write,
     write_scratch,
@@ -22,7 +22,7 @@ fn declines_the_shortcircuit(g: &Graph, cypher: &str) {
     let clauses = clauses_of(cypher);
     let view = ExecGraph::read(g);
     assert!(
-        count_only_stats_result(&view, &clauses, &[Row::new()]).is_none(),
+        count_only_stats_result(&view, &clauses).is_none(),
         "must decline to the scan: {cypher}"
     );
 }
@@ -286,17 +286,18 @@ fn count_only_declines_seeded_rows_beyond_one_unbound_seed() {
     let view = ExecGraph::read(&g);
     // The statement's opening stage: exactly one row, no bindings — the
     // one shape the short-circuit answers.
-    assert!(count_only_stats_result(&view, &clauses, &[Row::new()]).is_some());
+    assert!(stats_view_serves(&view, &[Row::new()]));
+    assert!(count_only_stats_result(&view, &clauses).is_some());
     // N = 0: a seeded stage with no rows must answer 0, not the
     // population — decline.
-    assert!(count_only_stats_result(&view, &clauses, &[]).is_none());
+    assert!(!stats_view_serves(&view, &[]));
     // N = 2: the answer would be 2 × population — decline.
     let two = vec![Row::new(), Row::new()];
-    assert!(count_only_stats_result(&view, &clauses, &two).is_none());
+    assert!(!stats_view_serves(&view, &two));
     // One row that already carries bindings: the count is not
     // whole-population over an unbound scan — decline.
     let bound = vec![Row::from([("x".to_string(), Value::Int(1))])];
-    assert!(count_only_stats_result(&view, &clauses, &bound).is_none());
+    assert!(!stats_view_serves(&view, &bound));
 }
 
 /// LABS-370 round 3 (F-1-3): inline pattern predicates the counts never

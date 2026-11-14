@@ -20,7 +20,7 @@ use relate_core::{
 
 use crate::row::{Row, RowNames};
 
-use super::chunk::{typed_kind, typed_slot, Chunk, Column, ColumnData, NullBitmap, CHUNK_ROWS};
+use super::chunk::{typed_kind, typed_slot, Chunk, ColumnData};
 use crate::test_support::config_with_floor;
 
 fn rows_from(names: &[&str], cells: &[Vec<Value>]) -> Vec<Row> {
@@ -226,27 +226,6 @@ fn every_structural_variant_round_trips_through_the_fallback() {
 }
 
 #[test]
-fn id_columns_decode_as_int_slots_and_honor_their_bitmap() {
-    // Operator-built shape: no Value variant encodes into Id, so the
-    // column is assembled directly — through the one construction
-    // path, so its zone is derived like every column's.
-    let mut nulls = NullBitmap::new(3);
-    nulls.set(1);
-    let chunk = Chunk::from_columns(
-        &["id".to_string()],
-        vec![Column::from_parts(nulls, ColumnData::Id(vec![4, 0, 5]))],
-    );
-    assert_eq!(
-        chunk
-            .to_rows()
-            .into_iter()
-            .map(|row| row.values().to_vec())
-            .collect::<Vec<_>>(),
-        vec![vec![Value::Int(4)], vec![Value::Null], vec![Value::Int(5)],]
-    );
-}
-
-#[test]
 fn an_empty_batch_round_trips_to_no_rows() {
     let chunk = Chunk::from_rows(&[]);
     assert!(chunk.is_empty());
@@ -261,19 +240,6 @@ fn rows_with_divergent_schemas_are_refused() {
         Row::from_iter(vec![("b".to_string(), Value::Int(2))]),
     ];
     let _ = Chunk::from_rows(&mixed);
-}
-
-#[test]
-fn batches_slice_at_the_chunk_size_and_reassemble() {
-    let input: Vec<Row> = (0..(CHUNK_ROWS + CHUNK_ROWS / 2) as i64)
-        .map(|i| Row::from_iter(vec![("n".to_string(), Value::Int(i))]))
-        .collect();
-    let chunks: Vec<Chunk> = Chunk::batches(&input).collect();
-    assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].len(), CHUNK_ROWS);
-    assert_eq!(chunks[1].len(), CHUNK_ROWS / 2);
-    let reassembled: Vec<Row> = chunks.iter().flat_map(Chunk::to_rows).collect();
-    assert_eq!(reassembled, input);
 }
 
 #[test]

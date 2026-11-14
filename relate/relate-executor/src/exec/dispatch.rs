@@ -20,7 +20,6 @@ use super::catalog_show::show_indexes_result;
 use super::clause_arms::{
     exec_create, exec_delete, exec_merge, exec_remove, exec_set, exec_unwind,
 };
-use super::count_stats::stats_short_circuit;
 use super::ddl::{exec_create_index, exec_drop_index};
 use super::foreach::exec_foreach;
 use super::load_csv::exec_load_csv;
@@ -34,6 +33,7 @@ use super::project::{
     project_rows, return_result, streams_into_projection, ProjectSpec, ProjectionClass, RowSource,
 };
 use super::scope::carry_scope_bindings;
+use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::{UnwindFeed, UnwindStats};
 use super::QueryResult;
 

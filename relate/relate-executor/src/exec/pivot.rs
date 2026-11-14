@@ -175,17 +175,11 @@ fn element_estimate<'g, 'a>(
     // nodes[0], hop rels[0]); k > 0 is the backward walker's pivot
     // candidate — the walk from nodes[k] back through rels[k-1], the
     // reversed evaluation of the planned spelling (LABS-426).
-    let (np, first_hop, reversed) = if k == 0 {
-        (
-            path.nodes
-                .first()
-                .expect("a parsed path pattern always has a start node"),
-            path.rels.first(),
-            false,
-        )
-    } else {
-        (&path.nodes[k], path.rels.get(k - 1), true)
-    };
+    // `nodes[k]` exists for every k the callers pass (the parsed-pattern
+    // invariant: one more node than rels, index 0 the start node).
+    let np = &path.nodes[k];
+    let first_hop = path.rels.get(k.saturating_sub(1));
+    let reversed = k > 0;
     stats.estimate(np, bound, conjuncts, first_hop, reversed)
 }
 
@@ -253,90 +247,55 @@ pub(super) fn choose_start(
     let stats = crate::exec::graph_stats::GraphStats::new(graph.base(), params);
     let bound = row_bound(row);
     let est0 = element_estimate(&stats, path, &bound, conjuncts.iter(), 0);
-    if let Some((k, id)) = bound_pivot(path, row) {
-        // The bound pivot only wins the start when it is genuinely
-        // cheaper after its first hop's degree scaling (LABS-351,
-        // q30's regression): a row-bound element estimates 1, but a
-        // bound creator fanning ~95 posts per row is dearer than a
-        // 1-hop forward start from the other end — the same compound
-        // comparison the cheapest start runs.
-        if element_estimate(&stats, path, &bound, conjuncts.iter(), k) < est0 {
-            return Some(Selection::Pivot((k, id)));
-        }
-    }
-    // ADR-0351: nothing is row-bound (or the bound pivot lost its
-    // gate) — start at the pattern's cheapest element instead of
-    // index 0.
-    cheapest_start(path, &stats, &bound, conjuncts, est0).map(Selection::Cheapest)
+    select_start(path, row, &stats, &bound, conjuncts, est0)
 }
 
-/// ADR-0351/LABS-351: the pattern's cheapest element when no element is
-/// row-bound (or the bound pivot lost its gate) — scored by the
-/// planner's one canonical endpoint ladder
-/// ([`relate_planner::endpoint_estimate`] over [`GraphStats`]): a
+/// The one start-selection ranker (ADR-0351/LABS-351, ADR-0350): every
+/// eligible element — a variable present, the prefix `rels[..k]` plain
+/// ([`prefix_plain`]) — is scored by the planner's one canonical endpoint
+/// ladder ([`relate_planner::endpoint_estimate`] over [`GraphStats`]): a
 /// bound variable is 1, then the best measured index signal (RANGE
-/// equality hits, the RANGE comparison window of ADR-0486, TEXT
-/// CONTAINS candidates, label rows), then the unmeasured rank
-/// sentinels, all on one scale. Only elements carrying
-/// a variable are eligible: the start element's row binding is what
-/// short-circuits the suffix walk's re-enumeration (`match_node`'s
-/// bound arm), and an anonymous element cannot provide it. The
-/// compound inputs — stats, the bound view, element 0's estimate, the
-/// residual conjuncts — arrive derived once per row from
-/// [`choose_start`], shared with the bound pivot's gate; only the
-/// per-element estimates run here. `None` keeps today's index-0
-/// start: index 0 is already (or ties as) cheapest, or every
+/// equality hits, the RANGE comparison window of ADR-0486, TEXT CONTAINS
+/// candidates, label rows), then the unmeasured rank sentinels, all on one
+/// scale. The minimum by `(estimate, k)` wins when it strictly beats
+/// element 0's `est0`; a row-bound winner is the bound pivot (its
+/// estimate is exactly one candidate under the bound view, ADR-0350's
+/// rewind-free start, after its first hop's degree scaling — LABS-351,
+/// q30), any other winner is the cheapest start. Only elements carrying a
+/// variable are eligible: the start element's row binding is what
+/// short-circuits the suffix walk's re-enumeration (`match_node`'s bound
+/// arm), and an anonymous element cannot provide it. The compound inputs
+/// — stats, the bound view, `est0`, the residual conjuncts — arrive
+/// derived once per row from [`choose_start`]. `None` keeps today's
+/// index-0 start: index 0 is already (or ties as) cheapest, or every
 /// alternative element's prefix is variable-length or quantified (the
 /// backward walker is single-hop only).
-fn cheapest_start(
+fn select_start(
     path: &PathPattern,
+    row: &Row,
     stats: &crate::exec::graph_stats::GraphStats<'_>,
     bound: relate_planner::Bound<'_>,
     conjuncts: &[Expr],
     est0: u64,
-) -> Option<usize> {
-    // The estimates run through the one shared `element_estimate`
-    // (the bound-pivot gate ranks with the same numbers — stellar
-    // F-1-1/F-1-2/F-1-4).
-    (1..path.nodes.len())
+) -> Option<Selection> {
+    let (k, _) = (1..path.nodes.len())
         .filter(|&k| path.nodes[k].variable.is_some() && prefix_plain(path, k))
         .map(|k| (k, element_estimate(stats, path, bound, conjuncts.iter(), k)))
         .filter(|&(_, est)| est < est0)
-        .min_by_key(|&(k, est)| (est, k))
-        .map(|(k, _)| k)
+        .min_by_key(|&(k, est)| (est, k))?;
+    Some(match bound_node(&path.nodes[k], row) {
+        Some(id) => Selection::Pivot((k, id)),
+        None => Selection::Cheapest(k),
+    })
 }
 
-/// The one eligibility fact both start selections consult: the prefix
-/// `rels[..k]` is plain — every hop single, no variable-length and no
-/// quantified path — so the backward walker can walk it (LABS-351,
-/// stellar F-1-4).
+/// The prefix `rels[..k]` is plain — every hop single, no variable-length
+/// and no quantified path — so the backward walker can walk it (LABS-351,
+/// stellar F-1-4): the one eligibility fact [`select_start`] consults.
 fn prefix_plain(path: &PathPattern, k: usize) -> bool {
     !path.rels[..k]
         .iter()
         .any(|rp| rp.var_length || rp.quantified)
-}
-
-/// ADR-0350: the smallest pattern index `k > 0` whose variable is row-bound
-/// to a node — the pivot the expansion starts at instead of rescanning
-/// index 0 — when the prefix `rels[..k]` is plain; the first row-bound
-/// element is the candidate, and a variable-length or quantified prefix
-/// rel declines the pivot (the backward walker is single-hop only in
-/// this first cut — a documented gap, not a silent fallback). The other
-/// eligibility facts — the rel-seek stand-down, a shortest-path
-/// function, the order-safety gate — are [`choose_start`]'s, spelled
-/// once for both start selections before this runs: the gate's term
-/// that used to ride here was redundant (choose_start had already
-/// returned on a non-self-contained pattern), and it is gone.
-fn bound_pivot(path: &PathPattern, row: &Row) -> Option<(usize, NodeId)> {
-    for k in 1..path.nodes.len() {
-        // The canonical row-bound-node classification (the same one the
-        // walk's candidate checks read), never a second `Value::Node`
-        // shape-match here.
-        if let Some(id) = bound_node(&path.nodes[k], row) {
-            return prefix_plain(path, k).then_some((k, id));
-        }
-    }
-    None
 }
 
 /// The backward walk's evaluation-order gate (the stellar High finding on
@@ -356,7 +315,7 @@ fn bound_pivot(path: &PathPattern, row: &Row) -> Option<(usize, NodeId)> {
 pub(super) fn pattern_self_contained(path: &PathPattern, row: &Row) -> bool {
     // The pattern's own names render once here (per-pattern setup); the
     // cross-reference probe below stays in the String domain of the
-    // expr_vars sink.
+    // expr_vars sink and borrows these.
     let node_vars: Vec<Option<String>> = path
         .nodes
         .iter()
@@ -367,55 +326,51 @@ pub(super) fn pattern_self_contained(path: &PathPattern, row: &Row) -> bool {
         .iter()
         .map(|rp| rp.variable.as_ref().map(|v| v.to_string()))
         .collect();
+    let own_names: HashSet<&str> = node_vars
+        .iter()
+        .chain(&rel_vars)
+        .filter_map(|v| v.as_deref())
+        .collect();
     let entry_bound = row_bound(row);
-    // The one cross-reference predicate, shared by the node and the rel
-    // loop — a correctness gate never spelled twice.
-    let cross_reference = |refs: &HashSet<String>, own: Option<&str>| -> bool {
-        refs.iter().any(|v| {
-            Some(v.as_str()) != own
-                && (node_vars
-                    .iter()
-                    .any(|nv| nv.as_deref().is_some_and(|n| n == v))
-                    || rel_vars
-                        .iter()
-                        .any(|rv| rv.as_deref().is_some_and(|r| r == v)))
-                && !entry_bound(v)
-        })
-    };
-    let mut refs = HashSet::new();
-    for (i, np) in path.nodes.iter().enumerate() {
+    // One scratch set reused (cleared) across every element.
+    let mut refs: HashSet<String> = HashSet::new();
+    // The one element-level gate, shared by every node and rel: does any
+    // predicate of the element (`properties`, `WHERE`, the label/type
+    // expression) reference a peer element's variable the entry row does
+    // not already bind? `own` is the element's own variable, which may
+    // reference itself freely.
+    let mut cross_references = |properties: Option<&Expr>,
+                                where_clause: Option<&Expr>,
+                                names: Option<&relate_ir::LabelExpr>,
+                                own: Option<&str>|
+     -> bool {
         refs.clear();
-        if let Some(e) = &np.properties {
+        for e in [properties, where_clause].into_iter().flatten() {
             crate::eval::expr_vars(e, &mut refs);
         }
-        if let Some(e) = &np.where_clause {
-            crate::eval::expr_vars(e, &mut refs);
-        }
-        if let Some(le) = &np.label_expr {
+        if let Some(le) = names {
             crate::eval::label_expr_vars(le, &mut refs);
         }
-        let own: Option<&str> = node_vars.get(i).and_then(|v| v.as_deref());
-        if cross_reference(&refs, own) {
-            return false;
-        }
-    }
-    for (i, rp) in path.rels.iter().enumerate() {
-        refs.clear();
-        if let Some(e) = &rp.properties {
-            crate::eval::expr_vars(e, &mut refs);
-        }
-        if let Some(e) = &rp.where_clause {
-            crate::eval::expr_vars(e, &mut refs);
-        }
-        if let Some(te) = &rp.type_expr {
-            crate::eval::label_expr_vars(te, &mut refs);
-        }
-        let own: Option<&str> = rel_vars.get(i).and_then(|v| v.as_deref());
-        if cross_reference(&refs, own) {
-            return false;
-        }
-    }
-    true
+        refs.iter()
+            .any(|v| Some(v.as_str()) != own && own_names.contains(v.as_str()) && !entry_bound(v))
+    };
+    let nodes_ok = path.nodes.iter().zip(&node_vars).all(|(np, own)| {
+        !cross_references(
+            np.properties.as_ref(),
+            np.where_clause.as_ref(),
+            np.label_expr.as_ref(),
+            own.as_deref(),
+        )
+    });
+    nodes_ok
+        && path.rels.iter().zip(&rel_vars).all(|(rp, own)| {
+            !cross_references(
+                rp.properties.as_ref(),
+                rp.where_clause.as_ref(),
+                rp.type_expr.as_ref(),
+                own.as_deref(),
+            )
+        })
 }
 
 /// ADR-0350: the backward walker for a pivot's prefix. From the bound node

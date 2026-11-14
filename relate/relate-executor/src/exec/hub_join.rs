@@ -16,7 +16,7 @@
 use crate::UsedSet;
 use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{NodeId, Result, Value};
+use relate_core::{NodeId, Result};
 use relate_ir::{path_pattern_vars, MatchMode, PathPattern};
 use relate_names::SmallName;
 
@@ -313,8 +313,7 @@ fn plain_side_rows(
 }
 
 fn row_node_id(row: &Row, var: &SmallName) -> NodeId {
-    match row.get_name(var) {
-        Some(Value::Node(n)) => n.id,
-        _ => unreachable!("a bound hub variable always holds a node"),
-    }
+    crate::pattern_walk::classify(Some(var), row, crate::pattern_walk::node_id)
+        .bound_id()
+        .expect("a bound hub variable always holds a node")
 }

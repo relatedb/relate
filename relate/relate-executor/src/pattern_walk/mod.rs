@@ -228,7 +228,7 @@ pub(crate) fn classify<'a, Id>(
     }
 }
 
-fn node_id(value: &Value) -> Option<NodeId> {
+pub(crate) fn node_id(value: &Value) -> Option<NodeId> {
     match value {
         Value::Node(node) => Some(node.id),
         _ => None,
