@@ -13,30 +13,40 @@ fn label(name: &str) -> LabelExpr {
 /// negation stay satisfiable; a dynamic part declines the check.
 #[test]
 fn relationship_type_expression_satisfiability_follows_the_one_type_rule() {
-    assert!(type_expression_unsatisfiable(&LabelExpr::And(vec![
-        label("A"),
-        label("B"),
-    ])));
-    assert!(type_expression_unsatisfiable(&LabelExpr::And(vec![
-        LabelExpr::Not(Box::new(label("A"))),
-        label("B"),
-        LabelExpr::Or(vec![label("C"), label("D")]),
-    ])));
-    assert!(!type_expression_unsatisfiable(&LabelExpr::Or(vec![
-        label("A"),
-        label("B"),
-    ])));
-    assert!(!type_expression_unsatisfiable(&label("A")));
-    assert!(!type_expression_unsatisfiable(&LabelExpr::Not(Box::new(
-        label("A")
-    ))));
-    assert!(!type_expression_unsatisfiable(&LabelExpr::And(vec![
-        label("A"),
-        LabelExpr::Dynamic {
-            expr: Box::new(Expr::Parameter("p".into())),
-            quantifier: relate_ir::DynamicLabelQuantifier::Default,
-        },
-    ])));
+    assert!(type_expression_unsatisfiable(
+        &LabelExpr::And(vec![label("A"), label("B"),]),
+        &mut WorkMeter::default()
+    ));
+    assert!(type_expression_unsatisfiable(
+        &LabelExpr::And(vec![
+            LabelExpr::Not(Box::new(label("A"))),
+            label("B"),
+            LabelExpr::Or(vec![label("C"), label("D")]),
+        ]),
+        &mut WorkMeter::default()
+    ));
+    assert!(!type_expression_unsatisfiable(
+        &LabelExpr::Or(vec![label("A"), label("B"),]),
+        &mut WorkMeter::default()
+    ));
+    assert!(!type_expression_unsatisfiable(
+        &label("A"),
+        &mut WorkMeter::default()
+    ));
+    assert!(!type_expression_unsatisfiable(
+        &LabelExpr::Not(Box::new(label("A"))),
+        &mut WorkMeter::default()
+    ));
+    assert!(!type_expression_unsatisfiable(
+        &LabelExpr::And(vec![
+            label("A"),
+            LabelExpr::Dynamic {
+                expr: Box::new(Expr::Parameter("p".into())),
+                quantifier: relate_ir::DynamicLabelQuantifier::Default,
+            },
+        ]),
+        &mut WorkMeter::default()
+    ));
 }
 
 /// A dynamic member anywhere is the callee's typed `None`, wherever it
@@ -50,7 +60,10 @@ fn dynamic_label_members_are_undecidable_not_false() {
     assert_eq!(label_expression_satisfied(&dynamic(), None), None);
     let decided_first = LabelExpr::And(vec![LabelExpr::Not(Box::new(label("A"))), dynamic()]);
     assert_eq!(label_expression_satisfied(&decided_first, Some("A")), None);
-    assert!(!type_expression_unsatisfiable(&decided_first));
+    assert!(!type_expression_unsatisfiable(
+        &decided_first,
+        &mut WorkMeter::default()
+    ));
     assert_eq!(
         label_expression_satisfied(&label("A"), Some("A")),
         Some(true)
@@ -72,11 +85,14 @@ fn wide_type_expression_declines_past_the_work_budget() {
             .collect(),
     );
     assert!(
-        !type_expression_unsatisfiable(&wide),
+        !type_expression_unsatisfiable(&wide, &mut WorkMeter::default()),
         "a wide conjunction declines instead of scanning every candidate"
     );
     assert!(
-        type_expression_unsatisfiable(&LabelExpr::And(vec![label("A"), label("B")])),
+        type_expression_unsatisfiable(
+            &LabelExpr::And(vec![label("A"), label("B")]),
+            &mut WorkMeter::default()
+        ),
         "a small conjunction is still checked"
     );
 }
@@ -108,7 +124,7 @@ fn wide_create_self_reference_scan_declines_past_the_work_budget() {
         panic!("expected a CREATE clause");
     };
     let mut notifications = Vec::new();
-    observe_create(&mut notifications, patterns);
+    observe_create(&mut notifications, &mut WorkMeter::default(), patterns);
     assert!(
         notifications.is_empty(),
         "a wide CREATE declines instead of testing every (value, name) pair"
@@ -124,7 +140,7 @@ fn wide_create_self_reference_scan_declines_past_the_work_budget() {
         panic!("expected a CREATE clause");
     };
     let mut notifications = Vec::new();
-    observe_create(&mut notifications, patterns);
+    observe_create(&mut notifications, &mut WorkMeter::default(), patterns);
     assert_eq!(notifications.len(), 1, "a small CREATE is still checked");
 }
 
@@ -162,7 +178,7 @@ fn subquery_shadowing_count(query: &relate_ir::Query) -> usize {
     let mut parts = Vec::new();
     relate_planner::walk_query_parts(query, &mut |part| parts.push(part));
     let mut notifications = Vec::new();
-    observe_subquery_scopes(&mut notifications, &parts);
+    observe_subquery_scopes(&mut notifications, &mut WorkMeter::default(), &parts);
     notifications
         .iter()
         .filter(|notification| notification.kind() == NotificationKind::SubqueryVariableShadowing)
@@ -273,11 +289,11 @@ fn complex_references_find_nested_occurrences_but_not_the_root() {
     let exact = projection(outer.clone());
     let elsewhere = projection(Expr::Variable("b".into()));
     let candidates = [(0, &nested), (1, &exact), (2, &elsewhere)];
-    let found = complex_references(&outer, &candidates);
+    let found = complex_references(&mut WorkMeter::default(), &outer, &candidates);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].0, 0, "the nested occurrence is a reference");
     assert!(
-        complex_references(&inner, &candidates).is_empty(),
+        complex_references(&mut WorkMeter::default(), &inner, &candidates).is_empty(),
         "an equal root is the projection item itself, not a reference"
     );
 }
@@ -304,7 +320,14 @@ fn complex_reference_detection_is_one_walk_per_subclause_expression() {
         ascending: true,
     };
     let mut notifications = Vec::new();
-    observe_projection(&mut notifications, &items, &[order], None, true);
+    observe_projection(
+        &mut notifications,
+        &mut WorkMeter::default(),
+        &items,
+        &[order],
+        None,
+        true,
+    );
     assert_eq!(
         notifications
             .iter()
@@ -337,7 +360,7 @@ fn complex_reference_check_declines_past_the_work_budget() {
     let wide = Expr::List(items.iter().map(|item| item.expr.clone()).collect());
     // 2 × WIDTH visited nodes × WIDTH items is past the budget.
     assert!(
-        complex_references(&wide, &candidates).is_empty(),
+        complex_references(&mut WorkMeter::default(), &wide, &candidates).is_empty(),
         "a wide nodes × items pair declines instead of comparing every pair"
     );
 }
@@ -367,6 +390,7 @@ fn complex_reference_requires_grouping_or_distinct() {
     let mut plain = Vec::new();
     observe_projection(
         &mut plain,
+        &mut WorkMeter::default(),
         std::slice::from_ref(&item),
         &[order.clone()],
         None,
@@ -374,7 +398,14 @@ fn complex_reference_requires_grouping_or_distinct() {
     );
     assert!(plain.is_empty(), "a non-grouping projection does not warn");
     let mut grouped = Vec::new();
-    observe_projection(&mut grouped, &[item], &[order], None, true);
+    observe_projection(
+        &mut grouped,
+        &mut WorkMeter::default(),
+        &[item],
+        &[order],
+        None,
+        true,
+    );
     assert_eq!(grouped.len(), 1, "DISTINCT makes the reference deprecated");
 }
 
@@ -414,7 +445,13 @@ fn named_subpath_length_forces_exhaustive_shortest_path() {
         panic!("expected a MATCH clause");
     };
     let mut notifications = Vec::new();
-    observe_match(&mut notifications, patterns, where_clause.as_ref(), false);
+    observe_match(
+        &mut notifications,
+        &mut WorkMeter::default(),
+        patterns,
+        where_clause.as_ref(),
+        false,
+    );
     assert_eq!(
         notifications
             .iter()
@@ -445,7 +482,13 @@ fn relationship_quantifier_forces_exhaustive_shortest_path() {
         panic!("expected a MATCH clause");
     };
     let mut notifications = Vec::new();
-    observe_match(&mut notifications, patterns, where_clause.as_ref(), false);
+    observe_match(
+        &mut notifications,
+        &mut WorkMeter::default(),
+        patterns,
+        where_clause.as_ref(),
+        false,
+    );
     assert_eq!(
         notifications
             .iter()
@@ -562,4 +605,77 @@ fn subquery_shadowing_in_an_expression_body_starts_from_an_empty_frame() {
         0,
         "an imported body name is not shadowed"
     );
+}
+
+/// The meter is one budget per statement: a spent meter makes every
+/// detector family decline, and a fresh one lets each run. The ambiguous
+/// subclause-reference scan declines without silencing nothing else here
+/// because the shadowing scan is the only family that fires on this shape.
+#[test]
+fn a_spent_meter_declines_the_ambiguous_reference_scan() {
+    let property = |key: &str| Expr::Property {
+        key_id: Default::default(),
+        expr: Box::new(Expr::Variable("n".into())),
+        key: SmallName::from_name(key),
+    };
+    let item = Projection {
+        expr: property("a"),
+        alias: Some("n".into()),
+        source_text: None,
+    };
+    let order = OrderItem {
+        expr: property("b"),
+        ascending: true,
+    };
+    let run = |meter: &mut WorkMeter| {
+        let mut notifications = Vec::new();
+        observe_projection(
+            &mut notifications,
+            meter,
+            std::slice::from_ref(&item),
+            std::slice::from_ref(&order),
+            None,
+            false,
+        );
+        notifications.len()
+    };
+    assert_eq!(run(&mut WorkMeter::default()), 1, "a fresh meter checks");
+    assert_eq!(
+        run(&mut WorkMeter { remaining: 0 }),
+        0,
+        "a spent meter declines"
+    );
+}
+
+/// The subquery-shadowing family declines through the same meter.
+#[test]
+fn a_spent_meter_declines_the_subquery_shadowing_scan() {
+    let query = relate_front::parse_and_lower(
+        "MATCH (x:Person) CALL { MATCH (x:Other) RETURN x AS y } RETURN x, y",
+    )
+    .unwrap();
+    let mut parts = Vec::new();
+    relate_planner::walk_query_parts(&query, &mut |part| parts.push(part));
+    let count = |meter: &mut WorkMeter| {
+        let mut notifications = Vec::new();
+        observe_subquery_scopes(&mut notifications, meter, &parts);
+        notifications.len()
+    };
+    assert_eq!(count(&mut WorkMeter::default()), 1, "a fresh meter checks");
+    assert_eq!(
+        count(&mut WorkMeter { remaining: 0 }),
+        0,
+        "a spent meter declines"
+    );
+}
+
+/// One charge that fits spends from the shared budget: two scans that each
+/// fit alone decline once together.
+#[test]
+fn the_meter_budget_is_shared_across_charges() {
+    let mut meter = WorkMeter::default();
+    assert!(meter.charge(SHAPE_CHECK_WORK_BUDGET - 1));
+    assert!(!meter.charge(2), "a refused charge spends nothing");
+    assert!(meter.charge(1));
+    assert!(!meter.charge(1), "the budget is spent");
 }
