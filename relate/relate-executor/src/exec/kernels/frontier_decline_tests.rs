@@ -4,10 +4,10 @@
 //! frontier counters left at zero because the rung never ran. The
 //! run-time half of the same field lives in `frontier_rider_tests`.
 
-use crate::ctx::KernelRung;
 use crate::exec::test_support::{complete_graph, file_triangle, line_graph, profiled, served};
 use crate::frontier_decline::{FrontierDecline, FrontierDeclineReason};
 use crate::graph::Graph;
+use crate::metrics::KernelRung;
 use crate::pattern_engine::PatternEngine;
 
 /// The plan-time gates' typed reason rides the record, one distinct

@@ -156,8 +156,9 @@ use relate_ir::{
 use relate_planner::seed_on_rel_start;
 use relate_planner::{endpoint_estimate, seed_rows};
 
-use crate::ctx::{ExecCtx, StartReason, WalkStart};
+use crate::ctx::ExecCtx;
 use crate::graph::Graph;
+use crate::metrics::{StartReason, WalkStart};
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
 use crate::pattern_walk::node_candidates;
@@ -629,7 +630,7 @@ fn engages(
 #[cfg(test)]
 use std::cell::Cell;
 
-use crate::ctx::KernelRung;
+use crate::metrics::KernelRung;
 
 #[cfg(test)]
 thread_local! {
