@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use relate::Value;
 
-use common::{connection, err_text, first_column, params, scalar};
+use common::{connection, err_text, first_column, params, scalar, string};
 
 /// The standard importing-WITH form of a batched write: previously
 /// rejected with `VariableAlreadyBound` (LABS-264 probe).
@@ -527,5 +527,65 @@ fn parameter_concurrency_is_type_checked_only() {
     assert!(
         error.contains("concurrency must be an integer"),
         "unexpected error: {error}"
+    );
+}
+
+/// LABS-1588: a unit conditional subquery in transactions keeps one status
+/// row per outer row, committed iterations included. `ON ERROR` decides
+/// what the failing batch and the rest report.
+#[test]
+fn unit_conditional_in_transactions_reports_every_iteration() {
+    let query = |mode: &str| {
+        format!(
+            "UNWIND [1, 2, 3] AS i \
+             CALL (i) {{ \
+               WHEN i = 3 THEN {{ CREATE (:X {{e: 1/0}}) }} \
+               ELSE {{ MERGE (z:Z) SET z.i = i }} \
+             }} IN TRANSACTIONS OF 1 ROW ON ERROR {mode} REPORT STATUS AS s \
+             RETURN i, s.committed AS committed, s.errorMessage AS err"
+        )
+    };
+    let committed = |i: i64| vec![Value::Int(i), Value::Bool(true), Value::Null];
+    let failed = vec![Value::Int(3), Value::Bool(false), string("/ by zero")];
+    for mode in ["BREAK", "CONTINUE"] {
+        let result = connection().query(&query(mode)).unwrap();
+        assert_eq!(
+            result.rows,
+            vec![committed(1), committed(2), failed.clone()],
+            "ON ERROR {mode}"
+        );
+    }
+}
+
+/// A failure in the middle: BREAK reports the never-started rest, CONTINUE
+/// keeps going.
+#[test]
+fn unit_conditional_in_transactions_break_vs_continue() {
+    let query = |mode: &str| {
+        format!(
+            "UNWIND [1, 2, 3] AS i \
+             CALL (i) {{ \
+               WHEN i = 2 THEN {{ CREATE (:X {{e: 1/0}}) }} \
+               ELSE {{ CREATE (:Y) }} \
+             }} IN TRANSACTIONS OF 1 ROW ON ERROR {mode} REPORT STATUS AS s \
+             RETURN i, s.committed AS committed, s.started AS started"
+        )
+    };
+    let row = |i: i64, committed: bool, started: bool| {
+        vec![Value::Int(i), Value::Bool(committed), Value::Bool(started)]
+    };
+    let cont = connection().query(&query("CONTINUE")).unwrap();
+    assert_eq!(
+        cont.rows,
+        vec![row(1, true, true), row(2, false, true), row(3, true, true)]
+    );
+    let brk = connection().query(&query("BREAK")).unwrap();
+    assert_eq!(
+        brk.rows,
+        vec![
+            row(1, true, true),
+            row(2, false, true),
+            row(3, false, false)
+        ]
     );
 }
