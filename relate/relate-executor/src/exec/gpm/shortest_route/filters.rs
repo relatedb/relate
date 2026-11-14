@@ -98,10 +98,12 @@ impl<'a> PathFilter<'a> {
     }
 }
 
-/// The endpoint-only conjuncts of one routed `MATCH`, and its bound-name
-/// scope (the readiness rule's input).
+/// The same-node-pair gate of one routed `MATCH`: present when the
+/// spelling needs it (see [`RouteFilters::split`]), it evaluates the
+/// route's endpoint-only conjuncts ([`RouteFilters::endpoint_conjuncts`],
+/// the one owned list) under the bound-name scope (the readiness rule's
+/// input).
 pub(super) struct PairFilter<'a> {
-    conjuncts: Vec<Expr>,
     scope: &'a HashSet<String>,
 }
 
@@ -119,6 +121,7 @@ impl PairFilter<'_> {
         end: &NodePattern,
         e: NodeId,
         srow: &Row,
+        conjuncts: &[Expr],
     ) -> Result<bool> {
         let mut row = srow.clone();
         if !gpm_bind_node(ctx.graph, end, e, &mut row) {
@@ -126,7 +129,7 @@ impl PairFilter<'_> {
         }
         // The canonical residual pass: ready conjuncts evaluated on the row.
         let residual = Residual {
-            conjuncts: &self.conjuncts,
+            conjuncts,
             scope: self.scope,
         };
         Ok(!residual_ok(ctx.graph, &row, ctx.params, &residual)?)
@@ -136,6 +139,10 @@ impl PairFilter<'_> {
 /// One routed `MATCH`'s residual conjuncts, partitioned once by whether
 /// they read the path.
 pub(super) struct RouteFilters<'a> {
+    /// The endpoint-only partition of the residual, whatever the spelling
+    /// (see [`RouteFilters::endpoint_conjuncts`]); `path` and `pair` are the
+    /// spelling-gated filters.
+    endpoint: Vec<Expr>,
     /// `Some` when a predicate filters the *search* itself.
     pub path: Option<PathFilter<'a>>,
     /// `Some` when an endpoint-only conjunct exists to drop a same-node pair.
@@ -143,6 +150,15 @@ pub(super) struct RouteFilters<'a> {
 }
 
 impl<'p> RouteFilters<'p> {
+    /// The endpoint-only conjuncts — the slice the route hands the
+    /// candidate funnel so a `WHERE`-borne `=` / `IN` on an endpoint seeks
+    /// it like an inline property map does (ADR-0556). They stay in the
+    /// residual, so the seek only narrows; every emitted row is still
+    /// checked against them.
+    pub(super) fn endpoint_conjuncts(&self) -> &[Expr] {
+        &self.endpoint
+    }
+
     /// Split the residual by what each conjunct reads. `shape` carries the
     /// end node and the spelling: a keyword selector selects first, so its
     /// clause-level conjuncts all stay the residual's post-filter and only
@@ -156,22 +172,26 @@ impl<'p> RouteFilters<'p> {
         residual: &'p Residual<'_>,
     ) -> Self {
         let scope = residual.scope;
-        let (path_reading, endpoint_only) = if shape.spelling.filters_search_by_clause_where() {
-            Self::classify(path, residual)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (path_reading, endpoint_only) = Self::classify(path, residual);
+        // The endpoint-only conjuncts seek whatever the spelling: they
+        // select whole partitions, so narrowing the candidates is exact
+        // even where the clause conjuncts are a post-filter. The spelling
+        // gates only the search predicates and the pair filter.
+        let filters_search = shape.spelling.filters_search_by_clause_where();
+        let endpoint: Vec<Expr> = endpoint_only.into_iter().cloned().collect();
         // The two inline predicates — the pattern's own `WHERE` and the
         // end node's — are one role in the filter, so one list.
-        let mut predicates = path_reading;
+        let mut predicates = if filters_search {
+            path_reading
+        } else {
+            Vec::new()
+        };
         predicates.extend(path.where_clause.as_deref());
         predicates.extend(shape.end.where_clause.as_ref());
         Self {
+            pair: (filters_search && !endpoint.is_empty()).then_some(PairFilter { scope }),
+            endpoint,
             path: (!predicates.is_empty()).then_some(PathFilter { predicates, scope }),
-            pair: (!endpoint_only.is_empty()).then_some(PairFilter {
-                conjuncts: endpoint_only.into_iter().cloned().collect(),
-                scope,
-            }),
         }
     }
 
