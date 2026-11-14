@@ -7,12 +7,19 @@
 # `$sandbox`, tap.sh (for the `tap_skip` the roundtrip skips use) and
 # scripts/lib/common.sh (for `sha256_of`) are sourced. The caller also
 # owns `$ROOT`, `$INSTALLER`, `$fixtures`, `$stubbin` and `$itmp` (its
-# sandbox layout). The factories — `install_sh_fixtures`,
+# sandbox layout), plus `$INSTALLER_SIGNER` (the identity the roundtrip
+# keypair and signatures carry). The factories — `install_sh_fixtures`,
 # `install_sh_stubs` and `build_real_roundtrip_fixtures` — expect the
 # caller's section-0 guards to have set `$LEGACY_MANIFEST_TAG` and
 # `$PUBLISHER_FIXTURE_TAG` by the time they are called (the guards run
-# after this file is sourced and before the factories). Never executed
-# directly.
+# after this file is sourced and before the factories). Each factory
+# publishes outputs the cases consume beside those caller-owned names:
+# `install_sh_stubs` sets `$nosshbin`; `build_real_roundtrip_fixtures`
+# sets `$patched_installer`, `$real_fixtures`, `$wrong_fixtures` and
+# `$keygen_dir`, plus `$real_skip_reason` (the failure reason), and returns
+# non-zero when the real-keygen probe failed — the caller branches once on
+# that status and reads those outputs only in the success arm. Never
+# executed directly.
 #
 # The two factories build the release-asset fixtures and the PATH stubs the
 # installer is exercised against; their shared table is below.
@@ -32,9 +39,28 @@ SUMS_WRONG_TAG=v9.9.8
 # the harness holds this and install.sh's copy to manifest.rs's constant.
 SUMS_VERSION_PREFIX='# relate-release-version: '
 
+# Emit the release-entry object for tag $1, every line prefixed with the
+# line indent $2 — the one spelling of the entry's fields. write_releases_fixture
+# derives both its slots from it (at their own indents), so a field change
+# cannot leave the latest object and the releases window disagreeing.
+release_entry() { # $1 = tag, $2 = line indent
+	printf '%s{\n' "$2"
+	printf '%s  "tag": "%s",\n' "$2" "$1"
+	printf '%s  "published_at": "2026-09-01T00:00:00Z",\n' "$2"
+	printf '%s  "notes": "",\n' "$2"
+	printf '%s  "prerelease": false,\n' "$2"
+	printf '%s  "assets": [\n' "$2"
+	printf '%s    "relate-darwin-arm64",\n' "$2"
+	printf '%s    "relate-linux-amd64",\n' "$2"
+	printf '%s    "SHA256SUMS",\n' "$2"
+	printf '%s    "SHA256SUMS.sig"\n' "$2"
+	printf '%s  ]\n' "$2"
+	printf '%s}\n' "$2"
+}
+
 # Write the releases.json document whose latest names tag $1 to path $2, in
 # the publisher's jq serialization (one key per line, two-space indents) —
-# the shape install.sh's parse reads. A null/empty tag emits the null-latest
+# the shape install.sh's parse reads. A null tag emits the null-latest
 # shape (ADR-0250 §2's nullable slot: no stable release published) over the
 # same template: `"latest": null` and the empty releases window.
 # latest_prerelease is non-null with a different tag on purpose: a parse
@@ -44,41 +70,20 @@ write_releases_fixture() { # $1 = tag, $2 = output path
 	_tag="$1"
 	_out="$2"
 	# The latest slot and the releases window are the only tag-driven
-	# parts of the one template below: a real tag fills both with the
-	# release entry, the null/empty arm with the null keyword and the
-	# empty array.
+	# parts of the one template below: a real tag fills both from the one
+	# release_entry, each at its slot's indent (the parser reads latest's
+	# four-space-indented keys, so the window's deeper indent never
+	# matches); the null arm fills the null keyword and the empty array.
 	case "$_tag" in
-	'' | null)
+	null)
 		_latest=null
 		_window='[]'
 		;;
 	*)
-		_latest=$(printf '{
-    "tag": "%s",
-    "published_at": "2026-09-01T00:00:00Z",
-    "notes": "",
-    "prerelease": false,
-    "assets": [
-      "relate-darwin-arm64",
-      "relate-linux-amd64",
-      "SHA256SUMS",
-      "SHA256SUMS.sig"
-    ]
-  }' "$_tag")
-		_window=$(printf '[
-    {
-      "tag": "%s",
-      "published_at": "2026-09-01T00:00:00Z",
-      "notes": "",
-      "prerelease": false,
-      "assets": [
-        "relate-darwin-arm64",
-        "relate-linux-amd64",
-        "SHA256SUMS",
-        "SHA256SUMS.sig"
-      ]
-    }
-  ]' "$_tag")
+		# The latest object's opening brace sits on the "latest": line
+		# (jq's shape), so its first line drops the entry indent.
+		_latest=$(release_entry "$_tag" '  ' | sed '1s/^  //')
+		_window=$(printf '[\n%s\n  ]' "$(release_entry "$_tag" '    ')")
 		;;
 	esac
 	cat <<EOF >"$_out"
@@ -333,11 +338,18 @@ EOF
 
 	cat >"$stubbin/uname" <<'EOF'
 #!/bin/sh
-# Stub uname: reports the OS/arch under test.
+# Stub uname: reports the OS/arch under test. The installer asks only -s
+# and -m; a bare `uname` (no argument) prints the OS like the real one,
+# and any other argument fails loudly rather than answering with a
+# fabricated default.
 case "${1:-}" in
 -s) printf '%s\n' "$STUB_UNAME_S" ;;
 -m) printf '%s\n' "$STUB_UNAME_M" ;;
-*) printf '%s\n' "$STUB_UNAME_S" ;;
+'') printf '%s\n' "$STUB_UNAME_S" ;;
+*)
+	echo "stub uname: unexpected argument: $1" >&2
+	exit 22
+	;;
 esac
 EOF
 
@@ -365,15 +377,15 @@ EOF
 	# Same stubs minus ssh-keygen, for the "openssh-client absent" case. The
 	# sandbox cannot rely on deleting it from $stubbin (other cases need it),
 	# and /usr/bin cannot be left on PATH because the host may ship a real
-	# ssh-keygen.
-	# The set is derived, every stub but ssh-keygen, so a stub added above is
-	# never left out of it.
+	# ssh-keygen. The set is derived, every stub but ssh-keygen, so a stub
+	# added above is never left out of it; cp carries the execute bits the
+	# stubs already hold, so no chmod is needed here.
 	nosshbin="$sandbox/stub-bin-no-ssh"
 	mkdir -p "$nosshbin"
 	for stub in "$stubbin"/*; do
 		case "${stub##*/}" in
 		ssh-keygen) ;;
-		*) cp "$stub" "$nosshbin/" && chmod +x "$nosshbin/${stub##*/}" ;;
+		*) cp "$stub" "$nosshbin/" ;;
 		esac
 	done
 }
@@ -391,17 +403,15 @@ EOF
 }
 
 # Reset the per-case knobs to their defaults. The case sets STUB_MODE,
-# STUB_UNAME_S/_M, GITHUB_TOKEN (set in the environment: the installer
-# must ignore it, ADR-0585), RELATE_RELEASES_JSON_URL,
+# STUB_UNAME_S/_M, GITHUB_TOKEN (unset by default: the installer must
+# ignore it, ADR-0585), RELATE_RELEASES_JSON_URL,
 # RELATE_RELEASE_DOWNLOAD_URL, RUN_PATH or RUN_INSTALLER after calling
 # it.
 reset_case() {
 	STUB_MODE=ok
 	STUB_UNAME_S=Darwin
 	STUB_UNAME_M=arm64
-	GITHUB_TOKEN=
-	RELATE_RELEASES_JSON_URL=
-	RELATE_RELEASE_DOWNLOAD_URL=
+	unset GITHUB_TOKEN RELATE_RELEASES_JSON_URL RELATE_RELEASE_DOWNLOAD_URL
 	STUB_FIXTURES_DIR=$fixtures
 	RUN_PATH="$stubbin:/usr/bin:/bin"
 	RUN_INSTALLER=$INSTALLER
@@ -410,12 +420,17 @@ reset_case() {
 }
 
 # Run the installer fully sandboxed. Populates RUN_STATUS, RUN_HOME, RUN_LOG
-# (stub curl argv log) and RUN_ERR (installer stderr). RUN_INSTALLER selects
+# (stub curl argv log), RUN_KEYGEN_LOG (stub ssh-keygen argv log) and RUN_ERR
+# (installer stderr). RUN_INSTALLER selects
 # the script under test: the shipped install.sh everywhere except the
 # real-roundtrip cases, which run a sed-patched copy (see section 3c).
 # RUN_VIA_PIPE=1 feeds the script on stdin, as `curl ... | sh` does, instead
 # of naming it as a file. RUN_HOME_ENV, when set (even empty), is the HOME the
 # installer sees instead of the case's sandbox home.
+# The three override seams (GITHUB_TOKEN, RELATE_RELEASES_JSON_URL,
+# RELATE_RELEASE_DOWNLOAD_URL) share one forwarding model, set-vs-unset
+# (`${VAR+}`): reset_case leaves them unset, so a case opts in by setting
+# one — even to the empty string — and an unset seam is never passed.
 install_run() { # $1 = case name
 	case_name=$1
 	if [ -n "${RUN_VIA_PIPE:-}" ]; then
@@ -442,7 +457,7 @@ install_run() { # $1 = case name
 		STUB_MODE="$STUB_MODE" \
 		STUB_UNAME_S="$STUB_UNAME_S" \
 		STUB_UNAME_M="$STUB_UNAME_M" \
-		${GITHUB_TOKEN:+GITHUB_TOKEN="$GITHUB_TOKEN"} \
+		${GITHUB_TOKEN+GITHUB_TOKEN="$GITHUB_TOKEN"} \
 		${RELATE_RELEASES_JSON_URL+RELATE_RELEASES_JSON_URL="$RELATE_RELEASES_JSON_URL"} \
 		${RELATE_RELEASE_DOWNLOAD_URL+RELATE_RELEASE_DOWNLOAD_URL="$RELATE_RELEASE_DOWNLOAD_URL"} \
 		"$@" <"$run_stdin" >"$sandbox/out-$case_name.log" 2>"$RUN_ERR"
@@ -468,13 +483,6 @@ direct_call_count() {
 	grep -c '/releases/download/' "$RUN_LOG"
 }
 
-# How many GitHub API requests the case made. The installer consults no
-# GitHub API endpoint (ADR-0585), so this is zero in every case — the
-# assertion shape that pins it.
-api_call_count() {
-	grep -c 'api\.github\.com' "$RUN_LOG"
-}
-
 # --- real ssh-keygen roundtrip machinery -------------------------------------
 # These cases exercise the real verify path end to end: the stub curl still
 # serves fixtures offline, but the stub ssh-keygen is removed from PATH so
@@ -484,7 +492,6 @@ api_call_count() {
 # install.sh (built inside the sandbox, never touching the repo file) whose
 # pinned-key line is replaced with the throwaway public key; every other
 # case runs the shipped script byte-for-byte.
-real_roundtrip=""
 real_skip_reason=""
 
 # Generates a throwaway signing keypair at $1.
@@ -503,9 +510,9 @@ sign_manifest() {
 }
 
 # The real-roundtrip install protocol: run the patched installer copy
-# against fixture tree $2 under the stub-curl case name $1. Call only
-# under real_roundtrip=1 — patched_installer and keygen_dir exist only
-# after build_real_roundtrip_fixtures.
+# against fixture tree $2 under the stub-curl case name $1. Call only in the
+# success arm of build_real_roundtrip_fixtures — patched_installer and
+# keygen_dir exist only then.
 real_install_run() { # $1 = case name, $2 = fixture tree
 	reset_case
 	STUB_FIXTURES_DIR=$2
@@ -527,8 +534,9 @@ skip_real_case() {
 # signed tree (cases 1-2), and the second key's own tree (case 3) — as
 # flat early-return guards, each failure reason beside its own command:
 # an absent binary and a present-but-failing keygen are different skips.
-# Sets real_roundtrip=1 only when the cases can consume ready fixtures
-# untouched.
+# Returns non-zero only when the probe failed (real_skip_reason names why),
+# so the caller branches once on the status and consumes the fixtures only
+# when they are ready.
 build_real_roundtrip_fixtures() {
 	real_keygen=$(command -v ssh-keygen 2>/dev/null)
 	real_fixtures="$sandbox/fixtures-real"
@@ -576,5 +584,5 @@ build_real_roundtrip_fixtures() {
 		real_skip_reason="ssh-keygen present but the wrong-key signature failed"
 		return 1
 	}
-	real_roundtrip=1
+	return 0
 }
