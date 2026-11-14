@@ -165,14 +165,13 @@ impl ExecGraph<'_> {
         let mut s = self.scratch_mut();
         let (labels_added, labels_removed) = self.label_deltas(&s, &fresh, LabelChange::Gain);
         let created = s.batch.created_nodes.contains(&id);
-        let label_bytes = node_label_bytes(id);
-        let before_labels = created_snapshot(&s, created, &label_bytes);
+        let shift = CreatedShift::begin(&s, created, node_label_bytes(id));
         let mut added = Vec::new();
         if let Some(n) = Self::cow_node(&mut s, self.base, id) {
             std::sync::Arc::make_mut(&mut n.labels).extend(fresh.iter().cloned());
             added = fresh;
         }
-        shift_created(&mut s, before_labels, &label_bytes);
+        shift.finish(&mut s);
         s.net_label_stats(labels_added, labels_removed);
         if !added.is_empty() {
             s.bump_live_labels(&added, 1);
@@ -192,15 +191,14 @@ impl ExecGraph<'_> {
         let requested: HashSet<&str> = labels.iter().map(String::as_str).collect();
         let mut s = self.scratch_mut();
         let created = s.batch.created_nodes.contains(&id);
-        let label_bytes = node_label_bytes(id);
-        let before_labels = created_snapshot(&s, created, &label_bytes);
+        let shift = CreatedShift::begin(&s, created, node_label_bytes(id));
         let mut actually: Vec<String> = Vec::new();
         if let Some(n) = Self::cow_node(&mut s, self.base, id) {
             actually = std::sync::Arc::make_mut(&mut n.labels)
                 .extract_if(.., |l| requested.contains(l.as_str()))
                 .collect();
         }
-        shift_created(&mut s, before_labels, &label_bytes);
+        shift.finish(&mut s);
         let (labels_added, labels_removed) = self.label_deltas(&s, &actually, LabelChange::Loss);
         s.net_label_stats(labels_added, labels_removed);
         if !actually.is_empty() {
@@ -235,8 +233,7 @@ impl ExecGraph<'_> {
     pub fn set_property_node(&self, id: NodeId, key: &str, value: Value) {
         let mut s = self.scratch_mut();
         let created = s.batch.created_nodes.contains(&id);
-        let prop_bytes = node_property_bytes(id);
-        let before_props = created_snapshot(&s, created, &prop_bytes);
+        let shift = CreatedShift::begin(&s, created, node_property_bytes(id));
         let outcome = Self::cow_node(&mut s, self.base, id).map(|n| {
             set_prop_core(
                 std::sync::Arc::make_mut(&mut n.properties),
@@ -245,23 +242,17 @@ impl ExecGraph<'_> {
                 &value,
             )
         });
-        shift_created(&mut s, before_props, &prop_bytes);
-        let PropWrite { set, removed, op } = outcome.unwrap_or_default();
-        s.statement.stats.properties_set += set;
-        s.statement.stats.properties_removed += removed;
-        if let Some(op) = op {
-            s.push_redo(match op {
-                PropOpKind::Set(k, v) => RedoOp::set_node_prop(id, k, v),
-                PropOpKind::Remove(k) => RedoOp::remove_node_prop(id, k),
-            });
-        }
+        shift.finish(&mut s);
+        finish_set_property(&mut s, outcome, |op| match op {
+            PropOpKind::Set(k, v) => RedoOp::set_node_prop(id, k, v),
+            PropOpKind::Remove(k) => RedoOp::remove_node_prop(id, k),
+        });
     }
 
     pub fn set_property_rel(&self, id: RelId, key: &str, value: Value) {
         let mut s = self.scratch_mut();
         let created = s.batch.created_rels.contains(&id);
-        let prop_bytes = rel_property_bytes(id);
-        let before_props = created_snapshot(&s, created, &prop_bytes);
+        let shift = CreatedShift::begin(&s, created, rel_property_bytes(id));
         let outcome = Self::cow_rel(&mut s, self.base, id).map(|r| {
             set_prop_core(
                 std::sync::Arc::make_mut(&mut r.properties),
@@ -270,16 +261,11 @@ impl ExecGraph<'_> {
                 &value,
             )
         });
-        shift_created(&mut s, before_props, &prop_bytes);
-        let PropWrite { set, removed, op } = outcome.unwrap_or_default();
-        s.statement.stats.properties_set += set;
-        s.statement.stats.properties_removed += removed;
-        if let Some(op) = op {
-            s.push_redo(match op {
-                PropOpKind::Set(k, v) => RedoOp::set_rel_prop(id, k, v),
-                PropOpKind::Remove(k) => RedoOp::remove_rel_prop(id, k),
-            });
-        }
+        shift.finish(&mut s);
+        finish_set_property(&mut s, outcome, |op| match op {
+            PropOpKind::Set(k, v) => RedoOp::set_rel_prop(id, k, v),
+            PropOpKind::Remove(k) => RedoOp::remove_rel_prop(id, k),
+        });
     }
 
     /// `SET n += map`: per-key merge through the set verb (an existing
@@ -407,33 +393,53 @@ fn rel_property_bytes(id: RelId) -> impl Fn(&WriteScratch) -> Option<u64> {
     }
 }
 
-/// The "before" half of the created-entity workspace shift: the bytes
-/// `bytes` reads off the scratch copy, only when workspace accounting is on
-/// and the entity was created in this batch (`created`).
-fn created_snapshot(
-    s: &WriteScratch,
-    created: bool,
-    bytes: &impl Fn(&WriteScratch) -> Option<u64>,
-) -> Option<u64> {
-    if !created || !relate_core::tokens::workspace_accounting() {
-        return None;
-    }
-    bytes(s)
+/// The created-entity workspace shift as one guard: [`Self::begin`] snapshots
+/// the bytes `bytes` reads off the scratch copy (only when workspace
+/// accounting is on and the entity was created in this batch), and
+/// [`Self::finish`] re-reads them after the write and shifts the workspace
+/// by the difference. A snapshot exists only for an entity the scratch
+/// already held, and the cow never removes it.
+struct CreatedShift<F: Fn(&WriteScratch) -> Option<u64>> {
+    before: Option<u64>,
+    bytes: F,
 }
 
-/// The "after" half: re-read the bytes after the write and shift the
-/// workspace by the difference. A `before` snapshot exists only for an
-/// entity the scratch already held, and the cow never removes it.
-fn shift_created(
+impl<F: Fn(&WriteScratch) -> Option<u64>> CreatedShift<F> {
+    fn begin(s: &WriteScratch, created: bool, bytes: F) -> Self {
+        let before = if created && relate_core::tokens::workspace_accounting() {
+            bytes(s)
+        } else {
+            None
+        };
+        Self { before, bytes }
+    }
+
+    fn finish(self, s: &mut WriteScratch) {
+        let Some(before) = self.before else {
+            return;
+        };
+        let after = (self.bytes)(s).expect("the cow inserted the scratch copy");
+        s.shift_workspace(before, after);
+    }
+}
+
+/// The stats + redo tail `set_property_node`/`set_property_rel` share: fold
+/// the write's deltas into the statement stats and push the redo op the
+/// caller's constructor builds from the payload.
+fn finish_set_property(
     s: &mut WriteScratch,
-    before: Option<u64>,
-    bytes: &impl Fn(&WriteScratch) -> Option<u64>,
+    outcome: Option<PropWrite>,
+    redo: impl FnOnce(PropOpKind) -> RedoOp,
 ) {
-    let Some(before) = before else {
+    // A missing or scratch-deleted entity (no cow copy) is a no-op write.
+    let Some(PropWrite { set, removed, op }) = outcome else {
         return;
     };
-    let after = bytes(s).expect("the cow inserted the scratch copy");
-    s.shift_workspace(before, after);
+    s.statement.stats.properties_set += set;
+    s.statement.stats.properties_removed += removed;
+    if let Some(op) = op {
+        s.push_redo(redo(op));
+    }
 }
 
 fn created_rel_removal(s: &WriteScratch, id: RelId) -> Option<u64> {
