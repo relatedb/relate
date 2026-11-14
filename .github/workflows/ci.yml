@@ -601,9 +601,32 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
+      # sccache's GitHub Actions backend needs the cache service address
+      # and the job's runtime token. The runner hands both to JavaScript
+      # actions only, and the preamble does not export them, so this step
+      # copies them into the job environment. It runs before the
+      # preamble because the preamble's probe starts the sccache server,
+      # and the server reads them once, at startup. Without them the
+      # probe fails and the lane compiles uncached. From this step on,
+      # every step of the job can read the runtime token.
+      - name: Expose the Actions cache service to sccache
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN || ''
+            if (token) core.setSecret(token)
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', token)
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '')
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on')
+
+      # sccache on (ADR-0331), like the release workflow's XCFramework
+      # legs: the gate builds the same five release libraries, and the
+      # build runs in a copy of the checkout, so its output never
+      # reaches the target directory rust-cache saves
+      # (docs/testing/build-caches.md, "The Swift lane").
       - uses: ./.github/actions/setup-rust-ci
         with:
-          sccache: "false"
+          sccache: "true"
           free-disk: "false"
           mold: "false"
           toolchain-targets: "aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios"
@@ -624,6 +647,18 @@ jobs:
         run: |
           cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/relate"
           cd "$RUNNER_TEMP/relate" && make test-swift
+
+      # What the compile cache served this run, also when the gate
+      # failed. The guard covers the probe's fallback, where no wrapper
+      # is active and there is nothing to report.
+      - name: sccache stats
+        if: always()
+        run: |
+          if [ "${RUSTC_WRAPPER:-}" = "sccache" ]; then
+            sccache --show-stats
+          else
+            echo "sccache not active this run (see the preamble's probe warning)"
+          fi
 
   # Windows filesystem and surface run as separate jobs so each pays only
   # for the tools it uses, and the two runners overlap. ADR-0251 §6: these

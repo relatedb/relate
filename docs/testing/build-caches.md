@@ -292,6 +292,30 @@ cold-compiled the full dependency tree per release.
   rotates the rust-cache lock-hash — the stale-generation restore plus
   sccache is the expected warm shape, same as the shared-key families).
 
+### The Swift lane
+
+The `swift` lane (`make test-swift`) builds the same five release
+libraries as the `xcframework` legs, one after another. On the
+2026-11-13 run for #335 those builds took 31 min 25 s of the lane's
+35 minutes, each from scratch: the gate runs in a copy of the checkout
+(SwiftPM needs the directory to be named `relate`), so the build output
+never reaches the target directory rust-cache saves.
+
+The lane runs the preamble with sccache on, like those legs. It has one
+step of its own before the preamble: sccache's GHA backend reads the
+cache service address and the job's runtime token from the environment,
+the runner gives them to JavaScript actions only, and the preamble does
+not export them. The step copies them into the job environment. Without
+it the preamble's probe fails and the lane compiles uncached, with the
+probe's warning in the log. Every later step of the job can read the
+runtime token.
+
+Not served from the cache: the `relate-ffi` crate itself (it also builds
+a `cdylib`, which sccache does not cache). A pull request reads the
+entries saved on `main` and by its own earlier runs, so the first build
+of changed Rust is cold. The lane's `sccache stats` step records what
+the cache served.
+
 Pool note: each `xcframework` leg's plain-key rust-cache entry carries
 one triple's dependency artifacts (small entries); the `swift-stamp`
 entry carries five triples only when its retry path actually rebuilt.
