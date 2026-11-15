@@ -32,7 +32,7 @@ mod pins;
 
 pub use download::{download_verified, sha256_file};
 pub use ensure::{ensure, Dataset, MissingArchive, Target};
-pub use pins::{is_sha256_hex, parse_pins, pin_sha256, Pin};
+pub use pins::{parse_pins, pin_sha256, Pin};
 
 use std::path::PathBuf;
 

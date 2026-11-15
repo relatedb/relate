@@ -16,20 +16,38 @@ use crate::hex;
 /// global timeout, from the first connect to the last body byte.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// sha256 of a file, streamed.
-pub fn sha256_file(path: &Path) -> Result<String, FetchError> {
-    let mut f = File::open(path).map_err(|e| io_error(format!("opening {}", path.display()), e))?;
-    let mut hasher = Sha256::new();
+/// Read `source` to its end in 1 MiB chunks, handing each chunk to
+/// `on_chunk`; `label` names the source in a read failure. The one read loop
+/// the streamed file hash and the verified download share.
+fn read_chunks(
+    mut source: impl Read,
+    label: impl Fn() -> String,
+    mut on_chunk: impl FnMut(&[u8]) -> Result<(), FetchError>,
+) -> Result<(), FetchError> {
     let mut buf = vec![0u8; 1 << 20];
     loop {
-        let n = f
+        let n = source
             .read(&mut buf)
-            .map_err(|e| io_error(format!("reading {}", path.display()), e))?;
+            .map_err(|e| io_error(format!("reading {}", label()), e))?;
         if n == 0 {
-            break;
+            return Ok(());
         }
-        hasher.update(&buf[..n]);
+        on_chunk(&buf[..n])?;
     }
+}
+
+/// sha256 of a file, streamed.
+pub fn sha256_file(path: &Path) -> Result<String, FetchError> {
+    let f = File::open(path).map_err(|e| io_error(format!("opening {}", path.display()), e))?;
+    let mut hasher = Sha256::new();
+    read_chunks(
+        f,
+        || path.display().to_string(),
+        |chunk| {
+            hasher.update(chunk);
+            Ok(())
+        },
+    )?;
     Ok(hex(&hasher.finalize()))
 }
 
@@ -89,24 +107,26 @@ struct PartFile {
 }
 
 impl PartFile {
-    /// The part file one download of `dest` writes: the name carries a process
-    /// id AND a per-download sequence number — callers in one process share a
-    /// process id, and two of them fetching the same archive concurrently must
-    /// not write the same `.part` (one thread's rename removes the file out
-    /// from under the other).
-    fn beside(dest: &Path) -> Self {
+    /// Create the part file one download of `dest` writes, and the guard over
+    /// it: the name carries a process id AND a per-download sequence number —
+    /// callers in one process share a process id, and two of them fetching the
+    /// same archive concurrently must not write the same `.part` (one thread's
+    /// rename removes the file out from under the other). The guard exists
+    /// only once the file does, so a failed create never reaches the drop-time
+    /// removal of a file that was never made.
+    fn create_beside(dest: &Path) -> Result<(Self, File), FetchError> {
         static PART_SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = PART_SEQ.fetch_add(1, Ordering::Relaxed);
-        Self {
-            path: dest.with_extension(format!("part.{}.{}", std::process::id(), seq)),
-            committed: false,
-        }
-    }
-
-    /// Create the file the body streams into.
-    fn create(&self) -> Result<File, FetchError> {
-        File::create(&self.path)
-            .map_err(|e| io_error(format!("creating {}", self.path.display()), e))
+        let path = dest.with_extension(format!("part.{}.{}", std::process::id(), seq));
+        let file =
+            File::create(&path).map_err(|e| io_error(format!("creating {}", path.display()), e))?;
+        Ok((
+            Self {
+                path,
+                committed: false,
+            },
+            file,
+        ))
     }
 
     /// Rename the finished, verified part onto `dest`.
@@ -137,29 +157,25 @@ fn stream_verified(
     max_bytes: u64,
     url: &str,
 ) -> Result<(), FetchError> {
-    let part = PartFile::beside(dest);
-    let mut out = part.create()?;
+    let (part, mut out) = PartFile::create_beside(dest)?;
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
     let mut total = 0u64;
-    loop {
-        let n = source
-            .read(&mut buf)
-            .map_err(|e| io_error(format!("reading {url}"), e))?;
-        if n == 0 {
-            break;
-        }
-        total += n as u64;
-        if total > max_bytes {
-            return Err(FetchError::TooLarge {
-                url: url.to_string(),
-                limit: max_bytes,
-            });
-        }
-        hasher.update(&buf[..n]);
-        out.write_all(&buf[..n])
-            .map_err(|e| io_error(format!("writing {}", part.path.display()), e))?;
-    }
+    read_chunks(
+        &mut source,
+        || url.to_string(),
+        |chunk| {
+            total += chunk.len() as u64;
+            if total > max_bytes {
+                return Err(FetchError::TooLarge {
+                    url: url.to_string(),
+                    limit: max_bytes,
+                });
+            }
+            hasher.update(chunk);
+            out.write_all(chunk)
+                .map_err(|e| io_error(format!("writing {}", part.path.display()), e))
+        },
+    )?;
     out.sync_all()
         .map_err(|e| io_error(format!("syncing {}", part.path.display()), e))?;
     let got = hex(&hasher.finalize());

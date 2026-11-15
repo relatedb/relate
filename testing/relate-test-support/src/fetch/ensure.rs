@@ -164,7 +164,9 @@ impl Drop for DatasetLock {
     }
 }
 
-/// Remove `path` if it exists, as `target`'s kind. Fail closed: a missing
+/// Remove `path` if it exists, as `target`'s kind. This is the ensure path's
+/// propagating policy; a download's drop-time part-file cleanup cannot return
+/// an error and reports through `remove_or_report` instead. Fail closed: a missing
 /// path is the expected case, every other error (a permissions failure, a
 /// directory where a file was expected) propagates — swallowing one would
 /// let a stale extraction or stamp certify what it no longer describes.
@@ -184,8 +186,7 @@ mod tests {
     /// `Dataset` over it is cached and verified without a download.
     fn cache_archive(root: &Path, archive: &str, body: &[u8]) -> String {
         let path = root.join("archives").join(archive);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, body).unwrap();
+        crate::write_file(&path, body);
         sha256_file(&path).unwrap()
     }
 

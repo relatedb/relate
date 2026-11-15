@@ -3,9 +3,8 @@
 
 use relate_core::Value;
 
-use super::super::kernels::{take_kernel_engagements, with_kernels_disabled};
 use super::super::test_support::{exec_autocommit, exec_write, write_scratch, Builder};
-use super::{differential, families};
+use super::{differential, differential_with, families};
 
 /// The engagement gate's declines: every shape the kernels cannot prove,
 /// or that routes elsewhere before the `MATCH` arm, keeps the per-row
@@ -70,23 +69,12 @@ fn the_cost_gate_refuses_a_dear_hub_plan() {
     exec_autocommit(&g, &create).unwrap();
     // Every hub fans out over A into the whole tag population and over B
     // into the needle; the terminals' indexed equality pins both sides.
-    let mut spokes = String::from("CREATE ");
-    let mut first = true;
+    let mut spokes = Vec::new();
     for h in 0..20 {
-        for t in 1..50 {
-            if !first {
-                spokes.push_str(", ");
-            }
-            first = false;
-            spokes.push_str(&format!("(h{h})-[:A]->(t{t})"));
-        }
-        if !first {
-            spokes.push_str(", ");
-        }
-        first = false;
-        spokes.push_str(&format!("(h{h})-[:B]->(needle)"));
+        spokes.extend((1..50).map(|t| format!("(h{h})-[:A]->(t{t})")));
+        spokes.push(format!("(h{h})-[:B]->(needle)"));
     }
-    exec_autocommit(&g, &spokes).unwrap();
+    exec_autocommit(&g, &format!("CREATE {}", spokes.join(", "))).unwrap();
     differential(
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) \
@@ -108,18 +96,43 @@ fn scratch_labels_admit_through_the_kernel() {
     let read = "MATCH (a:Zed)-[:R]->(b:Yed)-[:S]->(c:Xed) RETURN a.name AS an LIMIT 9";
     // Statement 2 of the same open transaction: the MATCH is its
     // statement's first clause, so the kernel path engages over the
-    // scratch-mounted view.
-    let scratch = write_scratch(&g);
-    exec_write(&g, &scratch, create).unwrap();
-    let kernaled = exec_write(&g, &scratch, read).unwrap();
-    assert_eq!(take_kernel_engagements(), 1);
-    // The per-row path over the same two-statement transaction, on its
-    // own scratch (nothing was committed).
-    let per_row = with_kernels_disabled(|| {
+    // scratch-mounted view. Each side runs the two-statement transaction on
+    // its own scratch (nothing is committed between them).
+    let kernaled = differential_with(read, true, || {
         let scratch = write_scratch(&g);
-        exec_write(&g, &scratch, create).unwrap();
-        exec_write(&g, &scratch, read).unwrap()
+        exec_write(&g, &scratch, create)?;
+        exec_write(&g, &scratch, read)
     });
-    assert_eq!(kernaled.rows, per_row.rows);
     assert_eq!(kernaled.rows, vec![vec![Value::String("z".into())]]);
+}
+
+/// The matcher's declines (stellar blockers 10 and 11, pair): a one-node
+/// pattern is not a side — declined before engagement (the cost gate's
+/// terminal estimate once read an empty side, a reachable expect-panic) —
+/// and a fully anonymous pair shares no hub variable, which the hub-star is
+/// defined by. The walker's rows are identical.
+#[test]
+fn the_matcher_declines_one_node_sides_and_anonymous_pairs() {
+    let g = families();
+    // Both orderings, and the both-sides-one-node shape.
+    differential(
+        &g,
+        "MATCH (h:Hub), (h)-[:A]->(t:Tag) RETURN h.k AS hk, t.name AS tn LIMIT 99",
+        false,
+    );
+    differential(
+        &g,
+        "MATCH (h:Hub)-[:A]->(t:Tag), (h) RETURN h.k AS hk, t.name AS tn LIMIT 99",
+        false,
+    );
+    differential(
+        &g,
+        "MATCH (h:Hub {k: 5}), (h) RETURN h.k AS hk LIMIT 99",
+        false,
+    );
+    differential(
+        &g,
+        "MATCH ()-[:A]->(), ()-[:B]->() RETURN 1 AS one LIMIT 99",
+        false,
+    );
 }

@@ -24,12 +24,11 @@ const FILL_DEGREE: u32 = 20;
 /// was rejected. `base` yields nothing.
 #[derive(Clone)]
 pub(crate) struct FillCursor {
-    shape: GraphShape,
     attributes: u32,
     indexes: IndexCounts,
     index_stmts: Vec<String>,
     index_at: usize,
-    pos: Pos,
+    fill: Fill,
     pending: Option<Pending>,
     pub(crate) nodes: u64,
     pub(crate) rels: u64,
@@ -37,7 +36,7 @@ pub(crate) struct FillCursor {
 
 #[derive(Clone)]
 struct Pending {
-    pos: Pos,
+    fill: Fill,
     index_at: usize,
     kind: TickKind,
 }
@@ -50,25 +49,24 @@ enum TickKind {
     NodesAndRels { nodes: u32, rels: u32 },
 }
 
+/// The growth state of one shape: the state is the discriminant, so a
+/// shape carries exactly the position fields it advances and `base` carries
+/// none.
 #[derive(Clone)]
-struct Pos {
-    next: u32,
-    ring: RingStep,
+enum Fill {
+    Base,
+    Flat { next: u32 },
+    Ring { next: u32, step: RingStep },
+    Fanout(FanoutPos),
+    Dense { next: u32 },
+    MidDegree { next: u32 },
+}
+
+#[derive(Clone)]
+struct FanoutPos {
     hubs_done: bool,
     hub: u32,
     leaf_at: [u32; FILL_HUBS as usize],
-}
-
-impl Default for Pos {
-    fn default() -> Self {
-        Self {
-            next: 0,
-            ring: RingStep::Create,
-            hubs_done: false,
-            hub: 0,
-            leaf_at: [0; FILL_HUBS as usize],
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -78,15 +76,34 @@ enum RingStep {
     Bridge { start: u32, last: u32 },
 }
 
+impl Fill {
+    fn start(shape: GraphShape) -> Self {
+        match shape {
+            GraphShape::Base => Self::Base,
+            GraphShape::Flat => Self::Flat { next: 0 },
+            GraphShape::Ring => Self::Ring {
+                next: 0,
+                step: RingStep::Create,
+            },
+            GraphShape::Fanout => Self::Fanout(FanoutPos {
+                hubs_done: false,
+                hub: 0,
+                leaf_at: [0; FILL_HUBS as usize],
+            }),
+            GraphShape::DenseRing => Self::Dense { next: 0 },
+            GraphShape::MidDegree => Self::MidDegree { next: 0 },
+        }
+    }
+}
+
 impl FillCursor {
     pub(crate) fn new(shape: GraphShape, attributes: u32, indexes: IndexCounts) -> Self {
         Self {
-            shape,
             attributes,
             indexes,
             index_stmts: index_statements(shape, indexes),
             index_at: 0,
-            pos: Pos::default(),
+            fill: Fill::start(shape),
             pending: None,
             nodes: 0,
             rels: 0,
@@ -101,20 +118,19 @@ impl FillCursor {
         if self.index_at < self.index_stmts.len() {
             let statement = self.index_stmts[self.index_at].clone();
             self.pending = Some(Pending {
-                pos: self.pos.clone(),
+                fill: self.fill.clone(),
                 index_at: self.index_at,
                 kind: TickKind::Index,
             });
             self.index_at += 1;
             return Ok(Some(statement));
         }
-        if self.shape == GraphShape::Base {
+        let saved = self.fill.clone();
+        let Some((statement, kind)) = self.emit_data()? else {
             return Ok(None);
-        }
-        let saved = self.pos.clone();
-        let (statement, kind) = self.emit_data()?;
+        };
         self.pending = Some(Pending {
-            pos: saved,
+            fill: saved,
             index_at: self.index_at,
             kind,
         });
@@ -143,46 +159,56 @@ impl FillCursor {
             .pending
             .take()
             .ok_or("fill cursor has nothing to roll back")?;
-        self.pos = pending.pos;
+        self.fill = pending.fill;
         self.index_at = pending.index_at;
         Ok(())
     }
 
-    /// Close a ring whose committed batches are each fully linked.
+    /// The statement that closes a ring whose committed batches are each
+    /// fully linked, held as the pending one-relationship tick so
+    /// [`ack`][FillCursor::ack] counts it and [`nack`][FillCursor::nack]
+    /// drops it like every other statement.
     ///
-    /// Absent when the rejected statement was a link or a bridge: that batch
-    /// of nodes is already committed and is not part of the cycle.
-    pub(crate) fn ring_wrap_statement(&self) -> Option<String> {
-        if self.shape != GraphShape::Ring || self.pending.is_some() {
+    /// Absent when the rejected statement was a link or a bridge (that batch
+    /// of nodes is already committed and is not part of the cycle), when the
+    /// ring is too small to close, for any other shape, or while another
+    /// statement is pending.
+    pub(crate) fn close_ring(&mut self) -> Option<String> {
+        if self.pending.is_some() || self.nodes < 2 {
             return None;
         }
-        if !matches!(self.pos.ring, RingStep::Create) || self.nodes < 2 {
+        let Fill::Ring {
+            step: RingStep::Create,
+            ..
+        } = self.fill
+        else {
             return None;
-        }
+        };
         let last = self.nodes - 1;
+        self.pending = Some(Pending {
+            fill: self.fill.clone(),
+            index_at: self.index_at,
+            kind: TickKind::Rels(1),
+        });
         Some(format!(
             "MATCH (a:Ring {{id: {last}}}), (b:Ring {{id: 0}}) CREATE (a)-[:NEXT]->(b)"
         ))
     }
 
-    pub(crate) fn note_wrap(&mut self) {
-        self.rels += 1;
-    }
-
-    fn emit_data(&mut self) -> Result<(String, TickKind), String> {
+    fn emit_data(&mut self) -> Result<Option<(String, TickKind)>, String> {
         let attributes = self.attributes;
         let indexes = self.indexes;
-        let mut pos = self.pos.clone();
-        let out = match self.shape {
-            GraphShape::Flat => emit_flat(&mut pos, attributes, indexes)?,
-            GraphShape::Ring => emit_ring(&mut pos, attributes, indexes)?,
-            GraphShape::Fanout => emit_fanout(&mut pos, attributes, indexes)?,
-            GraphShape::DenseRing => emit_dense(&mut pos, attributes, indexes)?,
-            GraphShape::MidDegree => emit_middegree(&mut pos, attributes, indexes)?,
-            GraphShape::Base => unreachable!("base has no data statements"),
+        let mut fill = self.fill.clone();
+        let out = match &mut fill {
+            Fill::Base => return Ok(None),
+            Fill::Flat { next } => emit_flat(next, attributes, indexes)?,
+            Fill::Ring { next, step } => emit_ring(next, step, attributes, indexes)?,
+            Fill::Fanout(pos) => emit_fanout(pos, attributes, indexes)?,
+            Fill::Dense { next } => emit_dense(next, attributes, indexes)?,
+            Fill::MidDegree { next } => emit_middegree(next, attributes, indexes)?,
         };
-        self.pos = pos;
-        Ok(out)
+        self.fill = fill;
+        Ok(Some(out))
     }
 }
 
@@ -199,29 +225,30 @@ fn advance(last: u32) -> Result<u32, String> {
 }
 
 fn emit_flat(
-    pos: &mut Pos,
+    next: &mut u32,
     attributes: u32,
     indexes: IndexCounts,
 ) -> Result<(String, TickKind), String> {
-    let (start, last) = id_window(pos.next, BATCH)?;
+    let (start, last) = id_window(*next, BATCH)?;
     let props = node_props("i", attributes, indexes);
     let statement = format!("UNWIND range({start}, {last}) AS i CREATE (:Flat {{{props}}})");
-    pos.next = advance(last)?;
+    *next = advance(last)?;
     Ok((statement, TickKind::Nodes(BATCH)))
 }
 
 fn emit_ring(
-    pos: &mut Pos,
+    next: &mut u32,
+    step: &mut RingStep,
     attributes: u32,
     indexes: IndexCounts,
 ) -> Result<(String, TickKind), String> {
-    match pos.ring {
+    match *step {
         RingStep::Create => {
-            let (start, last) = id_window(pos.next, BATCH)?;
+            let (start, last) = id_window(*next, BATCH)?;
             let props = node_props("i", attributes, indexes);
             let statement =
                 format!("UNWIND range({start}, {last}) AS i CREATE (:Ring {{{props}}})");
-            pos.ring = RingStep::Link { start, last };
+            *step = RingStep::Link { start, last };
             Ok((statement, TickKind::Nodes(last - start + 1)))
         }
         RingStep::Link { start, last } => {
@@ -235,10 +262,10 @@ fn emit_ring(
             );
             let links = last - start;
             if start > 0 {
-                pos.ring = RingStep::Bridge { start, last };
+                *step = RingStep::Bridge { start, last };
             } else {
-                pos.next = advance(last)?;
-                pos.ring = RingStep::Create;
+                *next = advance(last)?;
+                *step = RingStep::Create;
             }
             Ok((statement, TickKind::Rels(links)))
         }
@@ -248,15 +275,15 @@ fn emit_ring(
                 "MATCH (a:Ring {{id: {prev}}}), (b:Ring {{id: {start}}}) \
                  CREATE (a)-[:NEXT]->(b)"
             );
-            pos.next = advance(last)?;
-            pos.ring = RingStep::Create;
+            *next = advance(last)?;
+            *step = RingStep::Create;
             Ok((statement, TickKind::Rels(1)))
         }
     }
 }
 
 fn emit_fanout(
-    pos: &mut Pos,
+    pos: &mut FanoutPos,
     attributes: u32,
     indexes: IndexCounts,
 ) -> Result<(String, TickKind), String> {
@@ -288,14 +315,14 @@ fn emit_fanout(
 }
 
 fn emit_dense(
-    pos: &mut Pos,
+    next: &mut u32,
     attributes: u32,
     indexes: IndexCounts,
 ) -> Result<(String, TickKind), String> {
     // One statement creates the window and links it. A capacity failure rolls
     // both back, so every committed node has its `FILL_DEGREE` edges.
     let width = (BATCH / FILL_DEGREE).max(1);
-    let (start, last) = id_window(pos.next, width)?;
+    let (start, last) = id_window(*next, width)?;
     let total = advance(last)?;
     let nodes = u64::from(total);
     let props = node_props("i", attributes, indexes);
@@ -309,7 +336,7 @@ fn emit_dense(
          MATCH (a:DenseRing {{id: i}}), (b:DenseRing {{id: j}}) \
          CREATE (a)-[:LINK]->(b)"
     );
-    pos.next = total;
+    *next = total;
     Ok((
         statement,
         TickKind::NodesAndRels {
@@ -320,7 +347,7 @@ fn emit_dense(
 }
 
 fn emit_middegree(
-    pos: &mut Pos,
+    next: &mut u32,
     attributes: u32,
     indexes: IndexCounts,
 ) -> Result<(String, TickKind), String> {
@@ -328,7 +355,7 @@ fn emit_middegree(
     // dense fill's shape: a rejected batch leaves no committed nodes
     // without their edges). The modulus total is the nodes committed so
     // far, so a group's forward references stay inside what exists.
-    let (start, last) = id_window(pos.next, MID_DEGREE_GROUP)?;
+    let (start, last) = id_window(*next, MID_DEGREE_GROUP)?;
     let total = advance(last)?;
     let props = node_props("i", attributes, indexes);
     let statement = format!(
@@ -340,7 +367,7 @@ fn emit_middegree(
     // so the group's hop count is the ladder's own sum.
     debug_assert_eq!(total - start, MID_DEGREE_GROUP);
     let rels = MID_DEGREE_GROUP_HOPS;
-    pos.next = total;
+    *next = total;
     Ok((
         statement,
         TickKind::NodesAndRels {

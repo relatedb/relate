@@ -114,3 +114,24 @@ fn exists_counted_reads_every_pairing_of_a_b_row() {
     );
     assert_eq!(has.rows, vec![vec![Value::Bool(true)]]);
 }
+
+/// The hub-star's anonymous-terminal shapes (stellar blocker 11, pair): the
+/// hub's own variable keeps the projection non-empty by construction, and
+/// the zero-binding rows mode emits nothing off the binding counter rather
+/// than a column's emptiness.
+#[test]
+fn hub_star_anonymous_terminals_match_the_row_path() {
+    let g = families();
+    differential(
+        &g,
+        "MATCH (h:Hub)-[:A]->(), (h)-[:B]->(t:Tag) RETURN h.k AS hk, t.name AS tn LIMIT 99",
+        true,
+    );
+    let none = differential(
+        &g,
+        "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) WHERE t.name = 'zz' \
+         RETURN h.k AS hk LIMIT 99",
+        true,
+    );
+    assert_eq!(none.rows, Vec::<Vec<Value>>::new());
+}

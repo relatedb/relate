@@ -63,7 +63,8 @@
     lane's probe with the pinned identity — restart liveness, the
     flock-release invariant (ADR-0077): a restarted serve must retake
     the store and open cleanly, within restart-timeout-secs."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [nemesis :as nemesis]
                     [util :as util]]
@@ -105,6 +106,19 @@
   the observable difference between a clean shutdown and a crash."
   "serve: shutting down")
 
+(defn- require-impl-fn
+  "The surface-impl function `k` (:probe or :wait-up) from `impl`. The
+  :impl contract is mandatory: a nil or incomplete map must fail loudly
+  here, never as an NPE that the fault ops record as fault evidence (the
+  same guard db.clj's docker-db applies to :wait-up)."
+  [impl k]
+  (let [f (get impl k)]
+    (when-not (fn? f)
+      (throw (ex-info (str "the nemesis opts carry no " k
+                           " — pass surface-impl's map as :impl")
+                      {:impl impl :missing k})))
+    f))
+
 (defn- wire-down?
   "Client-side proof the DB is unreachable on the lane's wire: the
   surface's probe (opts :impl — Bolt for the bolt lane, HTTP Query API
@@ -119,12 +133,13 @@
   mismatch, a harness bug — propagates and fails the op loudly; it is
   never evidence that the wire is down."
   [{:keys [uri auth-user auth-password impl]}]
-  (try ((:probe impl) uri auth-user auth-password)
-       false
-       (catch Throwable t
-         (if (c/connection-error? t)
-           true
-           (throw t)))))
+  (let [probe (require-impl-fn impl :probe)]
+    (try (probe uri auth-user auth-password)
+         false
+         (catch Throwable t
+           (if (c/connection-error? t)
+             true
+             (throw t))))))
 
 (def ^:const checkpoint-probe-timeout-secs
   "Budget for the throwaway busybox manifest read — a docker run that
@@ -151,18 +166,15 @@
   [{:keys [data-volume]}]
   ;; Only an ABSENT manifest is nil: the `[ ! -e ] ||` guard exits 0
   ;; with no output. Every other outcome that is not a sample — the
-  ;; docker run failing, a manifest with no checkpoint_lsn (grep's
-  ;; exit 1), an unreadable one — throws: the callers record the throw
-  ;; as failed fault evidence, never as 'no checkpoint yet'.
-  ;; -oE, not -o: POSIX BRE makes `+` a literal, so the digit run would
-  ;; never match; [[:space:]] covers the JSON's `": "` separator.
+  ;; docker run failing, a manifest that does not parse or carries no
+  ;; checkpoint_lsn — throws: the callers record the throw as failed
+  ;; fault evidence, never as 'no checkpoint yet'.
   (let [{:keys [exit out err]}
         (docker/run-result checkpoint-probe-timeout-secs
                            "run" "--rm" "-v" (str data-volume ":/data")
                            "busybox" "sh" "-c"
                            (str "[ ! -e " manifest-path " ] || "
-                                "grep -oE '\"checkpoint_lsn\":[[:space:]]*[0-9]+' "
-                                manifest-path))]
+                                "cat " manifest-path))]
     (cond
       (not (zero? exit))
       (throw (ex-info (str "checkpoint manifest read failed (exit " exit "): "
@@ -172,7 +184,12 @@
       (str/blank? out) nil
 
       :else
-      (parse-long (re-find #"[0-9]+$" out)))))
+      (let [lsn (get (json/read-str out) "checkpoint_lsn")]
+        (if (integer? lsn)
+          lsn
+          (throw (ex-info (str "checkpoint manifest has no integer checkpoint_lsn: "
+                               out)
+                          {:out out})))))))
 
 (def ^:const clear-cache-timeout-secs
   "Budget for the FIFO write. The write blocks until lazyfs reads the
@@ -305,9 +322,9 @@
     (try
       (docker/run verb (:db-container opts))
       (let [t0      (System/nanoTime)
-            impl    (:impl opts)
-            agent   ((:wait-up impl) (:uri opts) (:auth-user opts)
-                     (:auth-password opts) restart-timeout-secs)
+            wait-up (require-impl-fn (:impl opts) :wait-up)
+            agent   (wait-up (:uri opts) (:auth-user opts)
+                             (:auth-password opts) restart-timeout-secs)
             took-ms (quot (- (System/nanoTime) t0) (long 1e6))]
         (info "db" done "in" took-ms "ms, identity" agent)
         (assoc op
@@ -348,7 +365,15 @@
             exit-code (docker/exit-code container)
             down?     (wire-down? opts)
             after     (docker/logs container)
-            suffix    (subs after (min (count before) (count after)))
+            _         (when-not (str/starts-with? after before)
+                        ;; docker logs is capped (--tail), so a window that
+                        ;; slid past the baseline breaks the suffix diff —
+                        ;; a loud harness fault, never a silent mis-diff.
+                        (throw (ex-info (str "the container's log window slid: the"
+                                             " pre-signal baseline is no prefix of"
+                                             " the post-signal logs")
+                                        {:container container})))
+            suffix    (subs after (count before))
             clean?    (str/includes? suffix clean-shutdown-text)]
         (assoc op
                :type :info
@@ -389,15 +414,15 @@
             logs      (docker/logs probe-name)
             locked?   (boolean (and exited? exit-code (pos? exit-code)
                                     (str/includes? logs storage-locked-text)))]
-        (docker/try-run "rm" "-f" probe-name)
         {:storage-locked?  locked?
          :exit-code        exit-code
          :still-running?   (not exited?)
          :error-sample     (when-not (str/blank? logs)
                              (last (str/split-lines (str/trim logs))))})
       (catch Throwable t
-        (docker/try-run "rm" "-f" probe-name)
-        {:storage-locked? false :error (.getMessage ^Throwable t)}))))
+        {:storage-locked? false :error (.getMessage ^Throwable t)})
+      (finally
+        (docker/try-run "rm" "-f" probe-name)))))
 
 (defn- pause!
   "docker pause = the cgroup freezer: every process in the DB container

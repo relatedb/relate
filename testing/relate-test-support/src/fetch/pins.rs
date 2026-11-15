@@ -17,7 +17,7 @@ pub struct Pin {
 /// spelling the pin table and the verify path share, validated at parse
 /// time so a truncated or non-hex pin is a malformed table, never a
 /// permanent download mismatch surfacing after the fetch.
-pub fn is_sha256_hex(s: &str) -> bool {
+fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 

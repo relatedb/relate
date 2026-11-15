@@ -464,7 +464,7 @@
                       :fault-cycle (:fault-cycle (fault-plan opts)))
         pieces (workload base)]
     (assoc pieces
-           :client ((:client (:impl base)) (:bolt-uri opts)
+           :client ((:client (:impl base)) (:uri base)
                     (:auth-user opts) (:auth-password opts)
                     (:client-handlers pieces))
            :db (cdb/docker-db (assoc base :workload-setup (:setup pieces)))

@@ -4,9 +4,7 @@
 
 use relate_core::Value;
 
-use super::super::kernels::{take_kernel_engagements, with_kernels_disabled};
-use super::super::test_support::{error_of, try_exec_cypher};
-use super::{differential, families};
+use super::{differential, error_differential, families};
 
 /// Existence: the boolean-count fold's `count(DISTINCT var.key) > 0` —
 /// the early-exit road to both kernels.
@@ -82,18 +80,7 @@ fn error_parity_on_a_bad_bound_operand() {
     let g = families();
     let cypher = "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE g.name =~ '[' \
                   RETURN a.k AS ak LIMIT 99";
-    let kernaled = error_of(try_exec_cypher(&g, cypher));
-    // The engagement take is also the drain: the errored run's count must
-    // not outlive this test — and it pins that the kernel path ran at
-    // all (a gate that stopped engaging this shape would silently turn
-    // both sides into the per-row path and the parity assert vacuous).
-    assert_eq!(
-        take_kernel_engagements(),
-        1,
-        "the kernel path takes {cypher}"
-    );
-    let per_row = with_kernels_disabled(|| error_of(try_exec_cypher(&g, cypher)));
-    assert_eq!(kernaled, per_row);
+    error_differential(&g, cypher);
     // A label the store never populated: no candidate reaches the
     // predicate, so neither path errors.
     differential(

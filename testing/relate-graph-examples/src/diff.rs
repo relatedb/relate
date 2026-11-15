@@ -397,13 +397,7 @@ pub fn compare_rows_schema_viz(neo4j: &[Json], cypher: &[CypherValue]) -> Relati
     for row in left.iter_mut().chain(right.iter_mut()) {
         viz_normalize(row);
     }
-    match compare_normalized(&left, &right, false, false) {
-        Ok(()) => Relation::Exact,
-        Err(strict_why) => match compare_normalized(&left, &right, false, true) {
-            Ok(()) => Relation::UpToListOrder(strict_why),
-            Err(_) => Relation::Different(strict_why),
-        },
-    }
+    relate_through(&left, &right, &BAG_LADDER)
 }
 
 /// The recursive viz-mode normalization (only reached from
@@ -429,42 +423,94 @@ fn viz_normalize(v: &mut Json) {
     }
 }
 
-/// Compare one Neo4j Query API v2 result set against one relate result
-/// set. `ordered` = the statement has an `ORDER BY`, so rows compare
-/// positionally; otherwise a multiset (bag) comparison decides, so
-/// engine-internal iteration order never fails a semantically equal result.
-pub fn compare_rows(neo4j: &[Json], cypher: &[CypherValue], ordered: bool) -> Relation {
-    match compare(neo4j, cypher, ordered, false) {
+/// How the rows of a result set line up: position by position, or as a bag.
+#[derive(Clone, Copy)]
+enum RowOrder {
+    Positional,
+    Bag,
+}
+
+/// How a list cell's elements line up: element by element, or as a multiset
+/// (recursively).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListOrder {
+    Exact,
+    Unordered,
+}
+
+/// One rung of a comparison ladder: the order policy a comparison applies.
+#[derive(Clone, Copy)]
+struct Policy {
+    rows: RowOrder,
+    lists: ListOrder,
+}
+
+const fn policy(rows: RowOrder, lists: ListOrder) -> Policy {
+    Policy { rows, lists }
+}
+
+/// A comparison ladder: the strict policy, whose failure text every
+/// non-exact [`Relation`] carries, and the relaxations that turn a strict
+/// failure into [`Relation::UpToListOrder`] when one of them holds.
+struct Ladder {
+    strict: Policy,
+    relaxed: &'static [Policy],
+}
+
+/// An unordered statement: exact bag, then bag with list cells as multisets.
+const BAG_LADDER: Ladder = Ladder {
+    strict: policy(RowOrder::Bag, ListOrder::Exact),
+    relaxed: &[policy(RowOrder::Bag, ListOrder::Unordered)],
+};
+
+/// An `ORDER BY` statement: exact positions, then positions with list cells
+/// as multisets, then — `ORDER BY` ties leave row order unspecified — a bag
+/// with list cells as multisets.
+const ORDERED_LADDER: Ladder = Ladder {
+    strict: policy(RowOrder::Positional, ListOrder::Exact),
+    relaxed: &[
+        policy(RowOrder::Positional, ListOrder::Unordered),
+        policy(RowOrder::Bag, ListOrder::Unordered),
+    ],
+};
+
+/// The one relaxation ladder walk, on already-normalized rows: both sides are
+/// normalized once by the caller, and a relaxed rung that holds turns the
+/// strict failure into `UpToListOrder`.
+fn relate_through(left: &[Json], right: &[Json], ladder: &Ladder) -> Relation {
+    match compare_normalized(left, right, ladder.strict) {
         Ok(()) => Relation::Exact,
         Err(strict_why) => {
-            // `collect()` list order is unspecified anywhere, and `ORDER BY`
-            // with equal sort keys leaves the row order unspecified (ties) —
-            // a pure reordering is `UpToListOrder`, not `Different`.
-            if compare(neo4j, cypher, ordered, true).is_ok()
-                || (ordered && compare(neo4j, cypher, false, true).is_ok())
+            if ladder
+                .relaxed
+                .iter()
+                .any(|rung| compare_normalized(left, right, *rung).is_ok())
             {
-                return Relation::UpToListOrder(strict_why);
+                Relation::UpToListOrder(strict_why)
+            } else {
+                Relation::Different(strict_why)
             }
-            Relation::Different(strict_why)
         }
     }
 }
 
-/// The comparison behind [`compare_rows`]: normalize both sides, then
-/// compare positionally (`ordered`) or as a bag; with `lists_unordered`,
-/// list cells compare as multisets (recursively). The failure texts are
-/// the strict comparison's — they are what [`Relation`] carries.
-fn compare(
-    neo4j: &[Json],
-    cypher: &[CypherValue],
-    ordered: bool,
-    lists_unordered: bool,
-) -> Result<(), String> {
-    compare_normalized(
+/// Compare one Neo4j Query API v2 result set against one relate result
+/// set. `ordered` = the statement has an `ORDER BY`, so rows compare
+/// positionally; otherwise a multiset (bag) comparison decides, so
+/// engine-internal iteration order never fails a semantically equal result.
+/// `collect()` list order is unspecified anywhere, and `ORDER BY` with equal
+/// sort keys leaves the row order unspecified (ties) — a pure reordering is
+/// `UpToListOrder`, not `Different`.
+pub fn compare_rows(neo4j: &[Json], cypher: &[CypherValue], ordered: bool) -> Relation {
+    let ladder = if ordered {
+        &ORDERED_LADDER
+    } else {
+        &BAG_LADDER
+    };
+    relate_through(
         &normalize_reference_rows(neo4j),
         &normalize_engine_rows(cypher),
-        ordered,
-        lists_unordered,
+        ladder,
     )
 }
 
@@ -483,14 +529,14 @@ fn take_match<T>(remaining: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> bool {
     }
 }
 
-/// The comparison on already-normalized rows (shared by [`compare`] and
-/// the viz entry point, F-1-3: one comparison implementation).
-fn compare_normalized(
-    left: &[Json],
-    right: &[Json],
-    ordered: bool,
-    lists_unordered: bool,
-) -> Result<(), String> {
+/// The comparison on already-normalized rows under one [`Policy`] (shared by
+/// the plain and viz entry points, F-1-3: one comparison implementation).
+/// The failure text is the policy's own.
+fn compare_normalized(left: &[Json], right: &[Json], policy: Policy) -> Result<(), String> {
+    let Policy {
+        rows: row_order,
+        lists,
+    } = policy;
     if left.len() != right.len() {
         return Err(format!(
             "row count differs: neo4j {} vs relate {}",
@@ -498,9 +544,9 @@ fn compare_normalized(
             right.len()
         ));
     }
-    if ordered {
+    if matches!(row_order, RowOrder::Positional) {
         for (i, (l, r)) in left.iter().zip(right.iter()).enumerate() {
-            if !values_equal(l, r, lists_unordered) {
+            if !values_equal(l, r, lists) {
                 return Err(format!(
                     "row {i} differs: neo4j {} vs relate {}",
                     elide(&l.to_string()),
@@ -522,7 +568,7 @@ fn compare_normalized(
     let mut remaining: Vec<(usize, &Json)> = right.iter().enumerate().collect();
     let mut unmatched: Vec<(usize, &Json)> = Vec::new();
     for (i, l) in left.iter().enumerate() {
-        if !take_match(&mut remaining, |(_, r)| values_equal(l, r, lists_unordered)) {
+        if !take_match(&mut remaining, |(_, r)| values_equal(l, r, lists)) {
             unmatched.push((i, l));
         }
     }
@@ -574,7 +620,7 @@ pub fn rows_subset(full: &[Json], subset: &[CypherValue]) -> Result<(), String> 
     let subset = normalize_engine_rows(subset);
     let mut remaining: Vec<&Json> = full.iter().collect();
     for (i, s) in subset.iter().enumerate() {
-        if !take_match(&mut remaining, |f| values_equal(f, s, false)) {
+        if !take_match(&mut remaining, |f| values_equal(f, s, ListOrder::Exact)) {
             return Err(format!(
                 "relate {} is not in the reference's full result set",
                 row_frame(i, s)
@@ -603,9 +649,9 @@ fn as_integer(n: &serde_json::Number) -> Option<i128> {
 }
 
 /// Equality of two normalized values: integers compare exactly, floats
-/// with epsilon, other values structurally. With `lists_unordered`, list
+/// with epsilon, other values structurally. With [`ListOrder::Unordered`], list
 /// values compare as multisets (recursively).
-fn values_equal(l: &Json, r: &Json, lists_unordered: bool) -> bool {
+fn values_equal(l: &Json, r: &Json, lists: ListOrder) -> bool {
     match (l, r) {
         (Json::Number(a), Json::Number(b)) => match (as_integer(a), as_integer(b)) {
             // Both integer-representable: exact comparison — no f64
@@ -622,26 +668,21 @@ fn values_equal(l: &Json, r: &Json, lists_unordered: bool) -> bool {
                 (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1e-9)
             }
         },
-        (Json::Array(a), Json::Array(b)) if lists_unordered => {
+        (Json::Array(a), Json::Array(b)) if lists == ListOrder::Unordered => {
             if a.len() != b.len() {
                 return false;
             }
             let mut remaining: Vec<&Json> = b.iter().collect();
             a.iter()
-                .all(|x| take_match(&mut remaining, |y| values_equal(x, y, lists_unordered)))
+                .all(|x| take_match(&mut remaining, |y| values_equal(x, y, lists)))
         }
         (Json::Array(a), Json::Array(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|(x, y)| values_equal(x, y, lists_unordered))
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| values_equal(x, y, lists))
         }
         (Json::Object(a), Json::Object(b)) => {
             a.len() == b.len()
-                && a.iter().all(|(k, v)| {
-                    b.get(k)
-                        .is_some_and(|w| values_equal(v, w, lists_unordered))
-                })
+                && a.iter()
+                    .all(|(k, v)| b.get(k).is_some_and(|w| values_equal(v, w, lists)))
         }
         _ => l == r,
     }

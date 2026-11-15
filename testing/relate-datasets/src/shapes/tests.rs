@@ -369,13 +369,20 @@ fn fill_cursor_keeps_emitting_the_large_batch_shape() {
     let mut ring = FillCursor::new(GraphShape::Ring, 1, IndexCounts::NONE);
     ring.next_statement().unwrap().unwrap();
     ring.ack().unwrap();
-    assert!(ring.ring_wrap_statement().is_none());
+    assert!(ring.close_ring().is_none());
     let link = ring.next_statement().unwrap().unwrap();
     assert!(link.contains("[:NEXT]"));
     ring.ack().unwrap();
     assert_eq!((ring.nodes, ring.rels), (2_000, 1_999));
-    let wrap = ring.ring_wrap_statement().unwrap();
+    let wrap = ring.close_ring().unwrap();
     assert!(wrap.contains("id: 1999") && wrap.contains("id: 0"));
+    // The wrap is a pending tick like any other: a rollback leaves the
+    // count alone, an ack counts the closing edge.
+    ring.nack().unwrap();
+    assert_eq!((ring.nodes, ring.rels), (2_000, 1_999));
+    assert_eq!(ring.close_ring().unwrap(), wrap);
+    ring.ack().unwrap();
+    assert_eq!((ring.nodes, ring.rels), (2_000, 2_000));
 
     let mut dense = FillCursor::new(GraphShape::DenseRing, 1, IndexCounts::NONE);
     let window = dense.next_statement().unwrap().unwrap();

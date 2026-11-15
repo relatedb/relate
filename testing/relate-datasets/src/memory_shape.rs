@@ -501,10 +501,8 @@ fn fill_to_target(
                 target.rels
             ));
         }
-        let (statement, wrapping) = if cursor.nodes == target.nodes
-            && cursor.rels + 1 == target.rels
-        {
-            let statement = cursor.ring_wrap_statement().ok_or_else(|| {
+        let statement = if cursor.nodes == target.nodes && cursor.rels + 1 == target.rels {
+            cursor.close_ring().ok_or_else(|| {
                 format!(
                     "{} has {} nodes and {} relationships and no closing edge before {} relationships",
                     shape.as_str(),
@@ -512,8 +510,7 @@ fn fill_to_target(
                     cursor.rels,
                     target.rels
                 )
-            })?;
-            (statement, true)
+            })?
         } else {
             let Some(statement) = cursor.next_statement()? else {
                 return Err(format!(
@@ -525,7 +522,7 @@ fn fill_to_target(
                     target.rels
                 ));
             };
-            (statement, false)
+            statement
         };
         n += 1;
         let label = abbreviate(&statement);
@@ -542,11 +539,7 @@ fn fill_to_target(
         }
         match run_one(&statement) {
             Ok(()) => {
-                if wrapping {
-                    cursor.note_wrap();
-                } else {
-                    cursor.ack()?;
-                }
+                cursor.ack()?;
                 let Ok(mut guard) = live.lock() else {
                     return Err("progress lock poisoned".into());
                 };
@@ -569,9 +562,7 @@ fn fill_to_target(
                 }
             }
             Err(err) if is_capacity(&err) => {
-                if !wrapping {
-                    cursor.nack()?;
-                }
+                cursor.nack()?;
                 clear_active(live);
                 return Err(format!(
                     "{} reached the {limit} byte memory limit at {} nodes and {} relationships, before {} nodes and {} relationships",
@@ -678,10 +669,10 @@ fn fill_until_capacity(
                 progress(&format!(
                     "      {phase:<5} stopped at the memory limit after {n} statements"
                 ));
-                if let Some(wrap) = cursor.ring_wrap_statement() {
+                if let Some(wrap) = cursor.close_ring() {
                     match run_one(&wrap) {
-                        Ok(()) => cursor.note_wrap(),
-                        Err(err) if is_capacity(&err) => {}
+                        Ok(()) => cursor.ack()?,
+                        Err(err) if is_capacity(&err) => cursor.nack()?,
                         Err(err) => return Err(err),
                     }
                 }

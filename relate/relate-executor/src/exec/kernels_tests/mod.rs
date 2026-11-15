@@ -29,10 +29,12 @@ mod halt;
 mod hub_star;
 mod semantics;
 
+use relate_core::Result;
+
 use crate::graph::Graph;
 
 use super::kernels::{take_kernel_engagements, with_kernels_disabled};
-use super::test_support::{exec_autocommit, same_rows, try_exec_cypher, Builder};
+use super::test_support::{error_of, exec_autocommit, same_rows, try_exec_cypher, Builder};
 
 /// The populations the families run over: a chain corridor (Alpha → Beta
 /// → Gamma over R and S), hubs with typed spokes (A, B) into tags, and a
@@ -65,34 +67,64 @@ pub(super) fn families() -> Graph {
     g
 }
 
-/// The differential core: `cypher` must answer identically with the
-/// kernels on and forced off, and (when `engages`) a kernel must have
-/// taken it exactly once. Returns the kernel-path result; a run that
-/// errors panics naming the query (the helper's contract is to assert —
-/// a `Result` return advertised a failure mode no caller acted on; a
-/// fallible form gets its own helper only when a test needs it).
+/// The differential: `cypher` must answer identically with the kernels on
+/// and forced off, and (when `engages`) a kernel must have taken it exactly
+/// once. Returns the kernel-path result.
 pub(super) fn differential(g: &Graph, cypher: &str, engages: bool) -> super::QueryResult {
+    differential_with(cypher, engages, || try_exec_cypher(g, cypher))
+}
+
+/// The differential core, over any run: `run` is the whole statement
+/// execution (a parameterized run, a run on an open transaction's scratch),
+/// done once with the kernels on and once forced off; `label` names the
+/// query in a failure. A run that errors panics naming the query (the
+/// helper's contract is to assert — a `Result` return advertised a failure
+/// mode no caller acted on; the error comparison has its own helper,
+/// [`error_differential`]).
+pub(super) fn differential_with(
+    label: &str,
+    engages: bool,
+    run: impl Fn() -> Result<super::QueryResult>,
+) -> super::QueryResult {
     // The run first, the counter taken on both outcomes: an errored
     // kernel run must not leave its engagement count for a later assert
     // to read.
-    let ran = try_exec_cypher(g, cypher);
+    let ran = run();
     let engagements = take_kernel_engagements();
-    let kernaled = ran.unwrap_or_else(|error| panic!("the differential runs {cypher}: {error}"));
+    let kernaled = ran.unwrap_or_else(|error| panic!("the differential runs {label}: {error}"));
     assert_eq!(
         engagements,
         u32::from(engages),
-        "engagement for {cypher}: expected {}, took {}",
+        "engagement for {label}: expected {}, took {}",
         u32::from(engages),
         engagements
     );
-    let per_row = with_kernels_disabled(|| try_exec_cypher(g, cypher))
-        .unwrap_or_else(|error| panic!("the differential runs {cypher}: {error}"));
+    let per_row = with_kernels_disabled(run)
+        .unwrap_or_else(|error| panic!("the differential runs {label}: {error}"));
     assert_eq!(
         kernaled.columns, per_row.columns,
-        "columns diverge for {cypher}"
+        "columns diverge for {label}"
     );
     // The multiset comparison through the one spelling —
     // `test_support::same_rows`, never a local sort (F-3-4).
-    assert!(same_rows(&kernaled, &per_row), "rows diverge for {cypher}");
+    assert!(same_rows(&kernaled, &per_row), "rows diverge for {label}");
+    kernaled
+}
+
+/// The error differential: `cypher` errors on the kernel path and on the
+/// per-row path with the same message, and a kernel took it (a gate that
+/// stopped engaging the shape would silently turn both sides into the
+/// per-row path and the parity assert vacuous). The engagement take is also
+/// the drain: the errored run's count must not outlive the test. Returns
+/// the message.
+pub(super) fn error_differential(g: &Graph, cypher: &str) -> String {
+    let kernaled = error_of(try_exec_cypher(g, cypher));
+    assert_eq!(
+        take_kernel_engagements(),
+        1,
+        "the kernel path takes {cypher}"
+    );
+    let per_row = with_kernels_disabled(|| error_of(try_exec_cypher(g, cypher)));
+    assert_eq!(kernaled, per_row, "errors diverge for {cypher}");
     kernaled
 }

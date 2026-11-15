@@ -23,6 +23,15 @@ fn rows_cypher(names: &[&str]) -> Vec<CypherValue> {
         .collect()
 }
 
+/// The strict failure text of a comparison that must come back `Different`;
+/// any other relation fails the test.
+fn expect_different(left: &[Json], right: &[CypherValue], ordered: bool) -> String {
+    match compare_rows(left, right, ordered) {
+        Relation::Different(why) => why,
+        other => panic!("expected Different, got {other:?}"),
+    }
+}
+
 #[test]
 fn unordered_rows_compare_as_a_bag() {
     let left = vec![serde_json::json!({"n": 1}), serde_json::json!({"n": 2})];
@@ -255,12 +264,8 @@ fn ordered_row_ties_are_up_to_list_order() {
 fn row_count_mismatch_keeps_the_strict_text() {
     let left = vec![serde_json::json!({"n": 1}), serde_json::json!({"n": 2})];
     let right = row_cypher(CypherValue::Int(1));
-    match compare_rows(&left, &right, false) {
-        Relation::Different(strict) => {
-            assert_eq!(strict, "row count differs: neo4j 2 vs relate 1");
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let strict = expect_different(&left, &right, false);
+    assert_eq!(strict, "row count differs: neo4j 2 vs relate 1");
 }
 
 /// A row mismatch renders both sides as compact serde_json — never
@@ -273,15 +278,11 @@ fn mismatch_messages_render_compact_json_not_rust_debug() {
         CypherValue::Str("x".into()),
         CypherValue::Str("y".into()),
     ]));
-    match compare_rows(&left, &right, false) {
-        Relation::Different(msg) => {
-            assert!(!msg.contains("Array ["), "{msg}");
-            assert!(!msg.contains("String("), "{msg}");
-            assert!(msg.contains(r#"["a","b"]"#), "{msg}");
-            assert!(msg.contains(r#"["x","y"]"#), "{msg}");
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let msg = expect_different(&left, &right, false);
+    assert!(!msg.contains("Array ["), "{msg}");
+    assert!(!msg.contains("String("), "{msg}");
+    assert!(msg.contains(r#"["a","b"]"#), "{msg}");
+    assert!(msg.contains(r#"["x","y"]"#), "{msg}");
 }
 
 /// A wide row cannot flood the report: each side of a mismatch is
@@ -291,13 +292,9 @@ fn mismatch_messages_elide_long_rows() {
     let long = "x".repeat(ELIDE_AT * 2);
     let left = row_json(serde_json::json!([long]));
     let right = row_cypher(CypherValue::List(vec![CypherValue::Str("y".into())]));
-    match compare_rows(&left, &right, false) {
-        Relation::Different(msg) => {
-            assert!(msg.contains('…'), "{msg}");
-            assert!(msg.len() < ELIDE_AT * 3, "{}", msg.len());
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let msg = expect_different(&left, &right, false);
+    assert!(msg.contains('…'), "{msg}");
+    assert!(msg.len() < ELIDE_AT * 3, "{}", msg.len());
 }
 
 /// Both sides of a no-match message render row by row, each in a `row N:`
@@ -308,18 +305,14 @@ fn mismatch_messages_elide_long_rows() {
 fn no_match_message_frames_rows_one_by_one() {
     let left = row_json(serde_json::json!(["a", "b"]));
     let right = row_cypher(CypherValue::List(vec![CypherValue::Str("x".into())]));
-    match compare_rows(&left, &right, false) {
-        Relation::Different(msg) => {
-            assert!(msg.contains("with no relate match"), "{msg}");
-            assert!(
-                msg.contains("neo4j rows with no relate match (1): row 0:"),
-                "{msg}"
-            );
-            assert!(msg.contains("relate rows left over (1): row 0:"), "{msg}");
-            assert!(!msg.contains("relate rows: ["), "{msg}");
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let msg = expect_different(&left, &right, false);
+    assert!(msg.contains("with no relate match"), "{msg}");
+    assert!(
+        msg.contains("neo4j rows with no relate match (1): row 0:"),
+        "{msg}"
+    );
+    assert!(msg.contains("relate rows left over (1): row 0:"), "{msg}");
+    assert!(!msg.contains("relate rows: ["), "{msg}");
 }
 
 /// The difference the message reports is the completed bag match's, not a
@@ -338,16 +331,12 @@ fn no_match_message_reports_the_completed_difference() {
         serde_json::json!("w"),
     ]);
     let right = rows_cypher(&["x", "y", "z", "w", "v"]);
-    match compare_rows(&left, &right, false) {
-        Relation::Different(msg) => {
-            assert!(
-                msg.contains("neo4j rows with no relate match (1): row 0:"),
-                "{msg}"
-            );
-            assert!(msg.contains("relate rows left over (1): row 4:"), "{msg}");
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let msg = expect_different(&left, &right, false);
+    assert!(
+        msg.contains("neo4j rows with no relate match (1): row 0:"),
+        "{msg}"
+    );
+    assert!(msg.contains("relate rows left over (1): row 4:"), "{msg}");
 }
 
 /// With more rows on a side than [`ROWS_SHOWN`], the message names the
@@ -364,16 +353,12 @@ fn no_match_message_names_the_unrendered_rows_by_count() {
         serde_json::json!(["i", "j"]),
     ]);
     let right = rows_cypher(&["x", "y", "z", "w", "v"]);
-    match compare_rows(&left, &right, false) {
-        Relation::Different(msg) => {
-            assert!(msg.contains("neo4j rows with no relate match (5)"), "{msg}");
-            assert!(msg.contains("relate rows left over (5)"), "{msg}");
-            assert!(msg.contains("row 2:"), "{msg}");
-            assert!(!msg.contains("row 3:"), "{msg}");
-            assert!(msg.contains("(+2 more)"), "{msg}");
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let msg = expect_different(&left, &right, false);
+    assert!(msg.contains("neo4j rows with no relate match (5)"), "{msg}");
+    assert!(msg.contains("relate rows left over (5)"), "{msg}");
+    assert!(msg.contains("row 2:"), "{msg}");
+    assert!(!msg.contains("row 3:"), "{msg}");
+    assert!(msg.contains("(+2 more)"), "{msg}");
 }
 
 /// A frame's `row N` is the row's index in its result set, not its
@@ -384,14 +369,10 @@ fn no_match_message_names_the_unrendered_rows_by_count() {
 fn no_match_message_names_true_result_indices() {
     let left = rows_json(&[serde_json::json!("a"), serde_json::json!("c")]);
     let right = rows_cypher(&["a", "b"]);
-    match compare_rows(&left, &right, false) {
-        Relation::Different(msg) => {
-            // Relate row 0 matched the first reference row; the row left
-            // over is result-set row 1, whatever the pool order is.
-            assert!(msg.contains("relate rows left over (1): row 1:"), "{msg}");
-        }
-        other => panic!("expected Different, got {other:?}"),
-    }
+    let msg = expect_different(&left, &right, false);
+    // Relate row 0 matched the first reference row; the row left
+    // over is result-set row 1, whatever the pool order is.
+    assert!(msg.contains("relate rows left over (1): row 1:"), "{msg}");
 }
 
 #[test]

@@ -7,9 +7,8 @@ use std::collections::BTreeMap;
 
 use relate_core::Value;
 
-use super::super::kernels::{take_kernel_engagements, with_kernels_disabled};
 use super::super::test_support::{exec_autocommit, try_exec_cypher_params, Builder};
-use super::{differential, families};
+use super::{differential, differential_with, families};
 
 /// The chain family: the corridor walk with predicates at both ends, a
 /// mid predicate, undirected hops, a named rel, and a parameter bound.
@@ -41,24 +40,9 @@ fn chain_matches_the_row_path() {
 
     // A parameter bound evaluates once per clause, not per row.
     let params = BTreeMap::from([("min".to_string(), Value::Int(2))]);
-    let kernaled = try_exec_cypher_params(
-        &g,
-        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k >= $min \
-         RETURN a.k AS ak LIMIT 99",
-        &params,
-    )
-    .unwrap();
-    assert_eq!(take_kernel_engagements(), 1);
-    let per_row = with_kernels_disabled(|| {
-        try_exec_cypher_params(
-            &g,
-            "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k >= $min \
-             RETURN a.k AS ak LIMIT 99",
-            &params,
-        )
-    })
-    .unwrap();
-    assert_eq!(kernaled.rows, per_row.rows);
+    let cypher = "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k >= $min \
+                  RETURN a.k AS ak LIMIT 99";
+    differential_with(cypher, true, || try_exec_cypher_params(&g, cypher, &params));
 }
 
 /// The chain's rel-uniqueness rule: two hops over the same type cannot
@@ -131,9 +115,11 @@ fn the_chain_kernel_batches_past_one_chunk() {
     assert_eq!(trails.rows.len(), 100);
 }
 
-/// The stellar pre-push suspects (blockers 9–11): the anonymous-binding
-/// shapes and the one-node side. Every verdict is a differential — the
-/// kernel path's rows exactly the per-row path's, engagement counted.
+/// The stellar pre-push suspects (blockers 9–11), the chain's share: the
+/// anonymous-binding shapes. Every verdict is a differential — the kernel
+/// path's rows exactly the per-row path's, engagement counted. The
+/// hub-star's anonymous-terminal shapes live in `hub_star.rs` and the
+/// matcher's declines in `gate.rs`.
 ///
 /// - **B11, rows (real bug, fixed):** a pattern that names no element
 ///   binds nothing, so the clause's output is one empty row per complete
@@ -144,16 +130,8 @@ fn the_chain_kernel_batches_past_one_chunk() {
 ///   named remainder. A fully anonymous chain with no labels at all keeps
 ///   the walker: its start is unmeasurable, so the cost gate's rank
 ///   sentinel declines it.
-/// - **B10, sides (real bug, declined):** a one-node pattern (zero hops)
-///   reached the cost gate, whose terminal estimate read an empty side —
-///   a reachable expect-panic. The matcher now declines the shape before
-///   engagement.
-/// - **B11, pair:** a fully anonymous pair shares no hub variable — the
-///   hub-star is defined by one — so it declines; the hub's own variable
-///   keeps the hub-star's projection non-empty by construction, and its
-///   zero-binding rows mode emits nothing off the binding counter.
 #[test]
-fn anonymous_and_degenerate_shapes_match_the_row_path() {
+fn anonymous_chain_shapes_match_the_row_path() {
     let g = families();
     // The fully anonymous chain with labels: the corridor's five trails,
     // each an empty binding — the shape that answered zero rows before
@@ -191,11 +169,6 @@ fn anonymous_and_degenerate_shapes_match_the_row_path() {
         "MATCH (a:Alpha)-[:R]->(b)-[:S]->(g:Gamma) RETURN a.k AS ak LIMIT 99",
         true,
     );
-    differential(
-        &g,
-        "MATCH (h:Hub)-[:A]->(), (h)-[:B]->(t:Tag) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        true,
-    );
     // Existence over the fully anonymous chain: every complete binding
     // counts, none of them projects.
     let exists = differential(
@@ -204,38 +177,4 @@ fn anonymous_and_degenerate_shapes_match_the_row_path() {
         true,
     );
     assert_eq!(exists.rows, vec![vec![Value::Bool(true)]]);
-
-    // A one-node pattern is not a side: declined at the matcher (0
-    // engagements), the walker's rows identical — both orderings, and the
-    // both-sides-one-node shape.
-    differential(
-        &g,
-        "MATCH (h:Hub), (h)-[:A]->(t:Tag) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        false,
-    );
-    differential(
-        &g,
-        "MATCH (h:Hub)-[:A]->(t:Tag), (h) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        false,
-    );
-    differential(
-        &g,
-        "MATCH (h:Hub {k: 5}), (h) RETURN h.k AS hk LIMIT 99",
-        false,
-    );
-    // A fully anonymous pair shares no hub variable: no hub-star.
-    differential(
-        &g,
-        "MATCH ()-[:A]->(), ()-[:B]->() RETURN 1 AS one LIMIT 99",
-        false,
-    );
-    // The hub-star's zero-binding rows mode: nothing emitted, off the
-    // binding counter rather than a column's emptiness.
-    let none = differential(
-        &g,
-        "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) WHERE t.name = 'zz' \
-         RETURN h.k AS hk LIMIT 99",
-        true,
-    );
-    assert_eq!(none.rows, Vec::<Vec<Value>>::new());
 }
