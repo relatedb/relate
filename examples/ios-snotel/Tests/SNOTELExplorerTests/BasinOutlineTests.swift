@@ -28,6 +28,7 @@ struct BasinOutlineTests {
         [],
         [[]],
         [ring((0, 0), (1, 1), (0, 0))],
+        [ring((0, 0), (1, 0), (1, 1), (2, 2))],
         [ring((0, 0), (10, 0), (10, 10), (0, 0)), ring((4, 4))],
     ] as [[[BasinOutline.Position]]])
     func notAPolygon(rings: [[BasinOutline.Position]]) {

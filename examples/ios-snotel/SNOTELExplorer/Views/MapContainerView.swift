@@ -65,7 +65,9 @@ struct MapContainerView: UIViewRepresentable {
         var basins: [Basin] = []
         private var stationAnnotations: [StationAnnotation] = []
         private var appliedStations: [Station] = []
-        private var overlaidBasins: [Basin] = []
+        /// The overlays this coordinator put on the map, one per basin:
+        /// the ones it removes, restyles and rebuilds.
+        private var basinOverlays: [BasinOverlay] = []
         private var styledSelection: Basin.ID?
         private var wasFiltered = false
 
@@ -92,11 +94,11 @@ struct MapContainerView: UIViewRepresentable {
         /// Builds one overlay per basin, once per basin list. Each overlay
         /// carries its `Basin`, so styling reads it from the overlay.
         func updateBasinOverlays(on mapView: MKMapView) {
-            guard basins != overlaidBasins else { return }
-            overlaidBasins = basins
+            guard basins != basinOverlays.map(\.basin) else { return }
 
-            mapView.removeOverlays(mapView.overlays)
-            mapView.addOverlays(basins.map(BasinOverlay.init), level: .aboveRoads)
+            mapView.removeOverlays(basinOverlays)
+            basinOverlays = basins.map(BasinOverlay.init)
+            mapView.addOverlays(basinOverlays, level: .aboveRoads)
         }
 
         /// Restyles the live renderers when the basin selection changes; a
@@ -106,7 +108,7 @@ struct MapContainerView: UIViewRepresentable {
             guard viewModel.selectedBasin != styledSelection else { return }
             styledSelection = viewModel.selectedBasin
 
-            for case let overlay as BasinOverlay in mapView.overlays {
+            for overlay in basinOverlays {
                 guard let renderer = mapView.renderer(for: overlay) as? MKOverlayPathRenderer else {
                     continue
                 }
@@ -141,7 +143,8 @@ struct MapContainerView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            // The map's only overlays are the basin overlays built above.
+            // An overlay this coordinator did not add gets the default
+            // renderer.
             guard let overlay = overlay as? BasinOverlay else {
                 return MKOverlayRenderer(overlay: overlay)
             }

@@ -45,16 +45,23 @@ struct BasinOutline: Equatable, Sendable, Codable {
     /// again to close it.
     private static let shortestRing = 4
 
+    /// Whether `ring` is a GeoJSON linear ring: at least `shortestRing`
+    /// positions, the last of them the first again.
+    private static func isLinearRing(_ ring: [Position]) -> Bool {
+        ring.count >= shortestRing && ring.first == ring.last
+    }
+
     /// The outline with these linear rings: the outer one, then any holes.
     /// This is the only way to make an outline, so every outline has an
-    /// outer ring and no ring too short to enclose anything.
+    /// outer ring and every ring of one is closed and encloses something.
     init(rings: [[Position]]) throws(NotAPolygon) {
         guard let outer = rings.first else {
             throw NotAPolygon(description: "a \(Self.geometryType) needs an outer ring")
         }
-        guard rings.allSatisfy({ $0.count >= Self.shortestRing }) else {
+        guard rings.allSatisfy(Self.isLinearRing) else {
             throw NotAPolygon(
-                description: "every ring of a \(Self.geometryType) needs at least \(Self.shortestRing) positions")
+                description: "every ring of a \(Self.geometryType) needs at least \(Self.shortestRing) positions, "
+                    + "the last equal to the first")
         }
         self.outer = outer
         holes = Array(rings.dropFirst())
