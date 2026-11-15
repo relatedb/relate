@@ -113,12 +113,7 @@ fn applicability_preflight_completes_all_waiters_in_batch() {
     let waiters: Vec<Arc<CommitWaiter>> = (0..3).map(|_| CommitWaiter::new()).collect();
     let mut batch = Vec::new();
     for (i, op) in [good.clone(), bad, good].into_iter().enumerate() {
-        batch.push(CommitSlot::for_test(
-            0,
-            (i + 1) as u64,
-            vec![op],
-            Arc::clone(&waiters[i]),
-        ));
+        batch.push(slot_with_ops(vec![op], (i + 1) as u64, 0, &waiters[i]));
     }
 
     let res = flush_group(&shared, batch);
@@ -189,18 +184,7 @@ fn two_valid_candidates_share_exactly_one_barrier_and_keep_order() {
     let shared = db.shared();
     let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
     let batch: Vec<_> = (0..2)
-        .map(|i| {
-            CommitSlot::for_test(
-                0,
-                i + 1,
-                vec![RedoOp::CreateNode {
-                    id: i as i64,
-                    labels: Arc::new(vec!["N".into()]),
-                    properties: relate_core::PropertyMap::share(BTreeMap::new()),
-                }],
-                Arc::clone(&waiters[i as usize]),
-            )
-        })
+        .map(|i| slot(i as i64, i + 1, 0, &waiters[i as usize]))
         .collect();
     flush_group(&shared, batch).unwrap();
     // Each waiter learns the commit timestamp its own slot was assigned.
@@ -256,7 +240,7 @@ fn group_and_replica_share_safe_horizon_allocators_and_checkpoint_pin() {
             );
         } else {
             let waiter = CommitWaiter::new();
-            let candidate = CommitSlot::for_test(0, 7, ops, Arc::clone(&waiter));
+            let candidate = slot_with_ops(ops, 7, 0, &waiter);
             flush_group(&shared, vec![candidate]).unwrap();
             waiter.wait().unwrap();
         }
@@ -342,9 +326,7 @@ fn group_overlay_hold_from_an_earlier_slot_rejects_a_later_duplicate() {
     let batch: Vec<_> = (0..SIDES)
         .map(|i| {
             // The slot encodes the ops it carries, as admission does.
-            CommitSlot::for_test(
-                snapshot_ts,
-                i as u64 + 1,
+            slot_with_ops(
                 vec![RedoOp::CreateNode {
                     id: i as i64,
                     labels: Arc::new(vec!["Person".into()]),
@@ -353,7 +335,9 @@ fn group_overlay_hold_from_an_earlier_slot_rejects_a_later_duplicate() {
                         Value::String("dup".into()),
                     )])),
                 }],
-                Arc::clone(&waiters[i]),
+                i as u64 + 1,
+                snapshot_ts,
+                &waiters[i],
             )
         })
         .collect();

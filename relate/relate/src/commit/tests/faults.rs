@@ -3,7 +3,6 @@
 use super::super::*;
 use super::harness::*;
 use crate::{checkpoint::try_begin_checkpoint, Database, ReadPause, Value, WalRecord};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -144,20 +143,7 @@ fn physical_uncertainty_fences_waiters_reads_checkpoint_and_drop() {
             shared.fail_after_append.store(true, Ordering::SeqCst);
         }
         let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
-        let batch: Vec<_> = (0..2)
-            .map(|i| {
-                CommitSlot::for_test(
-                    1,
-                    i + 2,
-                    vec![RedoOp::CreateNode {
-                        id: i as i64 + 1,
-                        labels: Arc::new(vec!["Uncertain".into()]),
-                        properties: relate_core::PropertyMap::share(BTreeMap::new()),
-                    }],
-                    Arc::clone(&waiters[i as usize]),
-                )
-            })
-            .collect();
+        let batch = uncertain_batch(&waiters);
         let error = flush_group(&shared, batch).unwrap_err();
         assert!(
             error.to_string().contains("uncertain WAL outcome"),
@@ -230,20 +216,7 @@ fn actual_vfs_write_and_barrier_faults_fence_shared_publication() {
             fault.failed_barrier.store(true, Ordering::SeqCst);
         }
         let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
-        let batch: Vec<_> = (0..2)
-            .map(|i| {
-                CommitSlot::for_test(
-                    1,
-                    i + 2,
-                    vec![RedoOp::CreateNode {
-                        id: i as i64 + 1,
-                        labels: Arc::new(vec!["Uncertain".into()]),
-                        properties: relate_core::PropertyMap::share(BTreeMap::new()),
-                    }],
-                    Arc::clone(&waiters[i as usize]),
-                )
-            })
-            .collect();
+        let batch = uncertain_batch(&waiters);
         let error = flush_group(&shared, batch).unwrap_err();
         assert!(
             error.to_string().contains("uncertain WAL outcome"),

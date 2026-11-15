@@ -182,6 +182,16 @@ fn dumps(shared: &Shared, trigger: Trigger) -> bool {
     trigger == Trigger::Explicit || shared.store.vfs().durable()
 }
 
+/// Dump (if [`dumps`]) and recycle at a pinned `lsn`/`pin_ts`.
+///
+/// This is the one graph-reading path that derefs `shared.graph` without the
+/// publication read guard or a snapshot pin (ADR-0137), and it must stay
+/// that way: `admit_publication` holds the publication WRITE lock while it
+/// waits for `checkpoint_busy.busy` to clear, so a checkpoint that took the
+/// read guard would deadlock against the very writer waiting for it. The
+/// exclusion is the busy flag instead — a caller owns it through
+/// `try_begin_checkpoint`, and every publication holder (commit group,
+/// follow reload swap) waits it out before it can `replace` the cell.
 fn checkpoint_pinned(shared: &Shared, trigger: Trigger, lsn: u64, pin_ts: u64) -> Result<()> {
     // Clamp the dump horizon to the graph's commit ts — the one seam, so
     // every pin producer inherits the floor. The WAL pin is 0 when no

@@ -25,7 +25,7 @@ use relate_planner::{is_show_databases_with_next, LogicalPlan};
 
 use super::admission::Admission;
 use super::cache::CacheUse;
-use super::txn::TxnRun;
+use super::txn::{OpenTxn, TxnRun};
 use super::Connection;
 use crate::commit::commit_write;
 use crate::gate::ResultStamp;
@@ -70,14 +70,16 @@ impl QueryOutcome {
 /// with the commit sequence its WAL commit was assigned (ADR-0502 §7, `None`
 /// for every arm that commits nothing) — with whether the run admitted its
 /// read first. One type across the transaction, write and read arms, so
-/// "not admitted" and "ran and failed" are variants, not a nested `Result`
-/// beside a bare flag.
+/// "refused", "ran admitted" and "ran not admitted" are variants, not a
+/// nested `Result` beside a bare flag.
 enum ArmRun {
+    /// The admission was refused (read guard, target, pin): the statement
+    /// never ran. The one refusal path of every arm.
     Refused(Error),
-    Ran {
-        result: Result<(ExecResult, Option<u64>)>,
-        admitted: bool,
-    },
+    /// The arm admitted its read, then ran; the result may be a failure.
+    Admitted(Result<(ExecResult, Option<u64>)>),
+    /// The arm ran without a read admission (the auto-commit write).
+    NotAdmitted(Result<(ExecResult, Option<u64>)>),
 }
 
 /// The statement's token-budget reservation as one owner: the reserved
@@ -561,9 +563,8 @@ impl Connection {
                         // cannot follow a `Refused` (same budget); a refused
                         // grow leaves the plan uncharged by design — the
                         // statement already holds its own reservation.
-                        match budget.try_hold_grow(bytes) {
-                            HoldAttempt::Held(hold) => park(reservation, hold),
-                            HoldAttempt::Off | HoldAttempt::Refused => {}
+                        if let HoldAttempt::Held(hold) = budget.try_hold_grow(bytes) {
+                            park(reservation, hold);
                         }
                     }
                 }
@@ -600,50 +601,11 @@ impl Connection {
         // selection, pinning, the run itself), stamped at the single tail
         // every arm funnels through, beside the ADR-0221 total.
         let execute_started = Instant::now();
-        let namespace = ctx.stamp.namespace;
-        // ADR-0116 §2: the carried admission fact — administration commands
-        // run from any namespace against the store's catalog (the `neo4j`
-        // graph), so they are exempt from the `system` /
-        // `system_ontologies` clause rules (enforced in
-        // `plan_gate_classify`, above the EXPLAIN/dispatch split).
-        let admin = ctx.admin;
         // The write arm carries its commit sequence (ADR-0502 §7) beside
         // the executor result; every other arm pairs its result with
         // `None` — nothing it runs commits at the statement boundary.
         let arm = if let Some(txn) = self.txn.as_ref() {
-            // `begin` pinned the transaction's view, and that pin keeps the
-            // GraphCell from being replaced for the transaction's lifetime,
-            // so deriving the target here is safe without a fresh guard.
-            let target = match self.dispatch_target(admin, namespace) {
-                Ok(target) => target,
-                Err(e) => return QueryOutcome::not_admitted(Err(e)),
-            };
-            let shared = &self.inner;
-            // `begin` already pinned the transaction's view. Only admission
-            // must be serialized with poison publication, not its execution.
-            let schema = match shared.read_guard() {
-                Ok(_read) => target.schema_snapshot(),
-                Err(e) => return QueryOutcome::not_admitted(Err(e)),
-            };
-            #[cfg(test)]
-            shared.pause_admitted_read();
-            ArmRun::Ran {
-                result: self
-                    .query_in_txn(
-                        TxnRun {
-                            txn,
-                            target,
-                            schema: &schema,
-                            profile_metrics: ctx.profile_metrics,
-                        },
-                        logical,
-                        params,
-                        cypher,
-                        token,
-                    )
-                    .map(|r| (r, None)),
-                admitted: true,
-            }
+            self.txn_arm(txn, &ctx, logical, params, cypher, token)
         } else if ctx.stamp.write_route {
             // Only reachable when the statement targets the `neo4j` graph:
             // the other namespaces reject writes above, and administration
@@ -653,24 +615,21 @@ impl Connection {
             // same group-commit pipeline (ADR-0120 §3).
             // ADR-0209 batched-vs-single commit strategy selection lives in
             // commit.rs (`commit_write`).
-            ArmRun::Ran {
-                result: commit_write(
-                    &self.inner,
-                    // The statement's execution facts, the same bundle
-                    // `commit_optimistic` executes.
-                    &ExecRequest {
-                        plan: logical,
-                        params,
-                        query_text: cypher,
-                        principal: self.principal.as_deref(),
-                        batch_commit: None,
-                        plan_metrics: ctx.profile_metrics,
-                    },
-                    parse_plan_ns,
-                    token,
-                ),
-                admitted: false,
-            }
+            ArmRun::NotAdmitted(commit_write(
+                &self.inner,
+                // The statement's execution facts, the same bundle
+                // `commit_optimistic` executes.
+                &ExecRequest {
+                    plan: logical,
+                    params,
+                    query_text: cypher,
+                    principal: self.principal.as_deref(),
+                    batch_commit: None,
+                    plan_metrics: ctx.profile_metrics,
+                },
+                parse_plan_ns,
+                token,
+            ))
         } else {
             // A refused admission (read guard, target, pin) is not-admitted;
             // the run's own result pairs with `admitted: true`.
@@ -678,7 +637,8 @@ impl Connection {
         };
         let (result, admitted) = match arm {
             ArmRun::Refused(e) => return QueryOutcome::not_admitted(Err(e)),
-            ArmRun::Ran { result, admitted } => (result, admitted),
+            ArmRun::Admitted(result) => (result, true),
+            ArmRun::NotAdmitted(result) => (result, false),
         };
         // ADR-0319: a failure here is execution-phase — the statement was
         // planned and dispatched — so it is staged as `Executed::Failed`
@@ -738,7 +698,7 @@ impl Connection {
     /// dispatch, ontology capture, pin), then the snapshot read — the
     /// read-side twin of the explicit-transaction arm's `query_in_txn`.
     /// [`ArmRun::Refused`] is a refused admission (the statement never
-    /// ran); [`ArmRun::Ran`] carries the run's own result.
+    /// ran); [`ArmRun::Admitted`] carries the run's own result.
     fn query_read(
         &self,
         ctx: &DispatchCtx<'_>,
@@ -773,8 +733,8 @@ impl Connection {
         };
         #[cfg(test)]
         self.inner.pause_admitted_read();
-        ArmRun::Ran {
-            result: execute_read_at(&ReadAdmission {
+        ArmRun::Admitted(
+            execute_read_at(&ReadAdmission {
                 graph: target,
                 snapshot_ts: pin.ts(),
                 schema: &schema,
@@ -790,8 +750,53 @@ impl Connection {
                 ontology_document: ontology_document.as_deref(),
             })
             .map(|r| (r, None)),
-            admitted: true,
-        }
+        )
+    }
+
+    /// The explicit-transaction arm: derive the target and admit the read
+    /// under the read guard, then run in the transaction's overlay. A
+    /// refused admission is [`ArmRun::Refused`], the read arm's one refusal
+    /// path.
+    fn txn_arm(
+        &self,
+        txn: &OpenTxn,
+        ctx: &DispatchCtx<'_>,
+        logical: &LogicalPlan,
+        params: &BTreeMap<String, Value>,
+        cypher: &str,
+        token: &CancelToken,
+    ) -> ArmRun {
+        // `begin` pinned the transaction's view, and that pin keeps the
+        // GraphCell from being replaced for the transaction's lifetime,
+        // so deriving the target here is safe without a fresh guard.
+        let target = match self.dispatch_target(ctx.admin, ctx.stamp.namespace) {
+            Ok(target) => target,
+            Err(e) => return ArmRun::Refused(e),
+        };
+        let shared = &self.inner;
+        // `begin` already pinned the transaction's view. Only admission
+        // must be serialized with poison publication, not its execution.
+        let schema = match shared.read_guard() {
+            Ok(_read) => target.schema_snapshot(),
+            Err(e) => return ArmRun::Refused(e),
+        };
+        #[cfg(test)]
+        shared.pause_admitted_read();
+        ArmRun::Admitted(
+            self.query_in_txn(
+                TxnRun {
+                    txn,
+                    target,
+                    schema: &schema,
+                    profile_metrics: ctx.profile_metrics,
+                },
+                logical,
+                params,
+                cypher,
+                token,
+            )
+            .map(|r| (r, None)),
+        )
     }
 
     /// The view a statement executes — and its notification derivation

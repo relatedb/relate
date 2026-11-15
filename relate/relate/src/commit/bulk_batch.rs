@@ -26,12 +26,12 @@ use crate::{CancelToken, Error, Result, Shared, Value};
 /// previous batch's commit (or the statement's start for the first).
 pub(super) struct GroupBatchCommit {
     pub(super) shared: Arc<Shared>,
-    /// Whether any batch has committed (ADR-0502 §7). The scratch already
-    /// carries the last batch's timestamp (`commit_batch` hands it back and
-    /// the scratch rebases onto it), so the sink records only the fact:
-    /// `commit_optimistic` reads the sequence off the scratch's base when
-    /// this is set. The sink is single-threaded inside one statement.
-    committed: Cell<bool>,
+    /// The last committed batch's own commit timestamp (ADR-0502 §7), or
+    /// `None` while no batch has committed — the statement's commit
+    /// sequence when its final redo is empty, recorded here rather than
+    /// re-derived from the scratch's rebase. The sink is single-threaded
+    /// inside one statement.
+    last_commit_ts: Cell<Option<u64>>,
 }
 
 impl relate_executor::BatchCommit for GroupBatchCommit {
@@ -44,7 +44,7 @@ impl relate_executor::BatchCommit for GroupBatchCommit {
         // commit, letting later batches observe another transaction's
         // mid-statement writes.
         let commit_ts = try_wal_commit(&self.shared, snapshot_ts, txn_id, ops, 0, 0)?;
-        self.committed.set(true);
+        self.last_commit_ts.set(Some(commit_ts));
         Ok(commit_ts)
     }
 }
@@ -55,15 +55,14 @@ impl GroupBatchCommit {
     pub(super) fn new(shared: Arc<Shared>) -> Self {
         Self {
             shared,
-            committed: Cell::new(false),
+            last_commit_ts: Cell::new(None),
         }
     }
 
-    /// Whether any batch committed through this sink (ADR-0502 §7): when
-    /// the statement's final redo is empty, the commit sequence is the
-    /// scratch's rebased base exactly when this holds.
-    pub(super) fn committed(&self) -> bool {
-        self.committed.get()
+    /// The last batch's commit timestamp, `None` when no batch committed
+    /// through this sink (ADR-0502 §7).
+    pub(super) fn last_commit_ts(&self) -> Option<u64> {
+        self.last_commit_ts.get()
     }
 }
 

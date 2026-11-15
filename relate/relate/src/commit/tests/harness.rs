@@ -204,7 +204,35 @@ pub(super) fn slot(
     snapshot_ts: u64,
     waiter: &Arc<CommitWaiter>,
 ) -> CommitSlot {
-    CommitSlot::for_test(snapshot_ts, txn_id, vec![node_op(id)], Arc::clone(waiter))
+    slot_with_ops(vec![node_op(id)], txn_id, snapshot_ts, waiter)
+}
+
+/// A slot carrying exactly `ops` — the one spelling of the slot's
+/// construction policy (`slot` is its single-node-op case).
+pub(super) fn slot_with_ops(
+    ops: Vec<RedoOp>,
+    txn_id: u64,
+    snapshot_ts: u64,
+    waiter: &Arc<CommitWaiter>,
+) -> CommitSlot {
+    CommitSlot::for_test(snapshot_ts, txn_id, ops, Arc::clone(waiter))
+}
+
+/// The two-slot batch of `Uncertain`-labelled creates the uncertain-WAL
+/// fault tests flush, one waiter per slot.
+pub(super) fn uncertain_batch(waiters: &[Arc<CommitWaiter>]) -> Vec<CommitSlot> {
+    waiters
+        .iter()
+        .enumerate()
+        .map(|(i, waiter)| {
+            let op = RedoOp::CreateNode {
+                id: i as i64 + 1,
+                labels: Arc::new(vec!["Uncertain".into()]),
+                properties: relate_core::PropertyMap::share(BTreeMap::new()),
+            };
+            slot_with_ops(vec![op], i as u64 + 2, 1, waiter)
+        })
+        .collect()
 }
 
 pub(super) fn untimed_file_db(path: &str) -> Database {

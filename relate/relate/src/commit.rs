@@ -137,8 +137,11 @@ pub(crate) struct GroupTiming {
 /// consulted by both stamping sites: the auto-commit result's
 /// ([`crate::QueryResult`]'s `bookmark`) and `Connection::commit`'s return.
 pub(crate) fn bookmark_string(commit_ts: u64) -> String {
-    format!("relate:{commit_ts}")
+    format!("{BOOKMARK_PREFIX}{commit_ts}")
 }
+
+/// The bookmark string's one prefix, shared by the encoder and decoder.
+const BOOKMARK_PREFIX: &str = "relate:";
 
 /// The commit sequence `n` of an ADR-0310 bookmark string — the decoder
 /// beside [`bookmark_string`]'s one encoder; `None` for anything that is not
@@ -146,7 +149,7 @@ pub(crate) fn bookmark_string(commit_ts: u64) -> String {
 /// strings (`relate:10` sorts before `relate:9`).
 #[cfg(test)]
 pub(crate) fn bookmark_sequence(bookmark: &str) -> Option<u64> {
-    bookmark.strip_prefix("relate:")?.parse().ok()
+    bookmark.strip_prefix(BOOKMARK_PREFIX)?.parse().ok()
 }
 
 /// Auto-commit write entry point. ADR-0209: eligible global bulk writes
@@ -322,12 +325,10 @@ fn commit_optimistic(
     // timestamp is greater (the sequence is monotonic) and covers the
     // remaining redo. With no final redo (ADR-0502 §7: a batched statement
     // whose redo drained through the sink, or a write-shaped statement that
-    // produced none) the bookmark is the last batch's commit timestamp —
-    // the scratch's rebased base — or `None` when no batch committed.
+    // produced none) the bookmark is the last batch's commit timestamp
+    // the sink recorded, or `None` when no batch committed.
     let sequence = if ops.is_empty() {
-        sink.as_ref()
-            .is_some_and(GroupBatchCommit::committed)
-            .then_some(commit_base_ts)
+        sink.as_ref().and_then(GroupBatchCommit::last_commit_ts)
     } else {
         Some(try_wal_commit(
             shared,
