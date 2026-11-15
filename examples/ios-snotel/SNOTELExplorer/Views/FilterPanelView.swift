@@ -62,15 +62,15 @@ struct FilterPanelView: View {
                             .font(.subheadline)
                         Spacer()
                         Picker("Basin", selection: Binding(
-                            get: { viewModel.selectedBasinName },
+                            get: { viewModel.selectedBasin },
                             set: { selection in
                                 viewModel.filterByBasin(selection)
                                 withAnimation(.snappy) { isExpanded = false }
                             }
                         )) {
-                            Text("All Basins").tag(String?.none)
+                            Text("All Basins").tag(Basin.ID?.none)
                             ForEach(basins) { basin in
-                                Text(basin.name).tag(Optional(basin.name))
+                                Text(basin.name).tag(Optional(basin.id))
                             }
                         }
                         .pickerStyle(.menu)
@@ -105,24 +105,23 @@ struct FilterPanelView: View {
                         .font(.subheadline)
                     }
 
-                    if !basins.bySWE.isEmpty {
+                    let ranking = basins.bySWE
+                    if !ranking.isEmpty {
                         Divider()
                         Text("Average SWE by Basin")
                             .font(.caption.bold())
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        ForEach(basins.bySWE) { basin in
+                        ForEach(ranking) { ranked in
                             HStack {
                                 Circle()
-                                    .fill(SWELevel.from(swe: basin.avgSWE).color)
+                                    .fill(SWELevel.from(swe: ranked.swe).color)
                                     .frame(width: 8, height: 8)
-                                Text(basin.name)
+                                Text(ranked.basin.name)
                                     .font(.caption)
                                 Spacer()
-                                if let avg = basin.avgSWE {
-                                    Text(String(format: "%.1f\"", avg))
-                                        .font(.caption.monospacedDigit())
-                                }
-                                Text("(\(basin.stationCount))")
+                                Text(String(format: "%.1f\"", ranked.swe))
+                                    .font(.caption.monospacedDigit())
+                                Text("(\(ranked.basin.stationCount))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -143,8 +142,11 @@ struct FilterPanelView: View {
 
     private var filterSummary: String {
         switch viewModel.filter {
-        case .basin(let basin):
-            return "Showing \(basin) basin • tap to change"
+        case .basin(let selected):
+            // The filter holds the basin's identity; its name is the live
+            // basin list's to give, and is absent until that list arrives.
+            let name = basins.first { $0.id == selected }?.name
+            return "Showing \(name.map { "\($0) basin" } ?? "one basin") • tap to change"
         case .nearby(_, let radiusKm):
             return "Nearby search within \(Int(radiusKm)) km • tap to change"
         case .search(let text):

@@ -13,9 +13,9 @@ job.
 ## What it shows
 
 - **Live queries** — the views declare what they show and never ask for a
-  refresh. The map's stations and basins and the insights counts are
-  `@LiveQuery` properties (`MapScreen`, `InsightsView`) over the statements
-  in `SNOTELQueries`; Relate reads them when the view appears and again
+  refresh. The map's stations and basins, and the insights screen's counts
+  and ranking, are `@LiveQuery` properties (`MapScreen`, `InsightsView`)
+  over the reads in `SNOTELQueries`; Relate reads them when the view appears and again
   after a write commits. Add a station in the Cypher workbench and it is on
   the map when the sheet closes. Changing the filter gives the view a
   different statement, and the live query starts again on it. A read that
@@ -94,7 +94,8 @@ local XCFramework is used either way. The project depends on the repository-root
 ```
 SNOTELExplorer/
   Data/          bundled stations + readings CSV, basins GeoJSON
-  Models/        Station, Basin, DatabaseStats, SWELevel, DemoQuery, QueryLogEntry
+  Models/        Station, Basin, DatabaseStats, Insights, SWELevel, DemoQuery,
+                 QueryLogEntry
   Services/      DataLoader (CSV/GeoJSON, point-in-polygon), DatabaseService
                  (open, load, checkpoint, workbench), SNOTELQueries (the reads)
   ViewModels/    MapViewModel (@MainActor, @Observable): UI state only

@@ -63,7 +63,7 @@ struct StationDetailSheet: View {
     }
 }
 
-struct SWEGaugeView: View {
+private struct SWEGaugeView: View {
     let swe: Double
     private let maxSWE: Double = 50
 

@@ -1,6 +1,6 @@
 import Foundation
 
-struct DatabaseStats: Equatable {
+struct DatabaseStats: Equatable, Sendable {
     let stations: Int
     let readings: Int
     let basins: Int
@@ -9,6 +9,6 @@ struct DatabaseStats: Equatable {
 
     var nodes: Int { stations + readings + basins }
 
-    /// What the insights screen shows until its first read returns.
+    /// The counts of a graph with nothing in it.
     static let empty = DatabaseStats(stations: 0, readings: 0, basins: 0, relationships: 0, basinMemberships: 0)
 }

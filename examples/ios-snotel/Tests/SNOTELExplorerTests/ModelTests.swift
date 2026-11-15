@@ -96,9 +96,18 @@ struct ModelTests {
         #expect(basin.stationCount == 0)
     }
 
+    @Test("The snowpack ranking is the basins with readings, highest mean first")
+    func ranking() {
+        func basin(_ huc2: String, _ avgSWE: Double?) -> Basin {
+            Basin(name: "Basin \(huc2)", huc2: huc2, geoJSON: "{}", avgSWE: avgSWE, stationCount: 1)
+        }
+        let ranked = [basin("15", 4.5), basin("16", nil), basin("17", 22.5)].bySWE
+        #expect(ranked.map(\.id) == ["17", "15"] && ranked.map(\.swe) == [22.5, 4.5])
+    }
+
     @Test("QueryLogEntry exposes a failure's message")
     func logEntryFailure() {
-        let entry = QueryLogEntry(cypher: "X", parameters: nil, durationMilliseconds: 0,
+        let entry = QueryLogEntry(cypher: "X", parameters: [], durationMilliseconds: 0,
                                   queryType: nil, rowCount: 0, outcome: .failure("boom"))
         #expect(entry.failureMessage == "boom")
         #expect(!entry.succeeded)

@@ -56,7 +56,7 @@ struct MapViewModelTests {
             Issue.record("Expected the search's own radius, got \(viewModel.filter)")
             return
         }
-        #expect(viewModel.nearbyCenter?.latitude == center.latitude && viewModel.selectedBasinName == nil)
+        #expect(viewModel.nearbyCenter?.latitude == center.latitude && viewModel.selectedBasin == nil)
     }
 
     @Test("A basin filter replaces a search")
@@ -64,14 +64,14 @@ struct MapViewModelTests {
         let viewModel = MapViewModel()
         viewModel.searchText = "WA"
         viewModel.searchStations()
-        viewModel.filterByBasin("Pacific Northwest")
-        #expect(viewModel.selectedBasinName == "Pacific Northwest" && viewModel.searchText.isEmpty)
+        viewModel.filterByBasin("17")
+        #expect(viewModel.selectedBasin == "17" && viewModel.searchText.isEmpty)
     }
 
     @Test("Choosing no basin shows every station")
     func noBasinShowsAll() {
         let viewModel = MapViewModel()
-        viewModel.filterByBasin("Pacific Northwest")
+        viewModel.filterByBasin("17")
         viewModel.filterByBasin(nil)
         #expect(!viewModel.isFiltered)
     }

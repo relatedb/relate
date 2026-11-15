@@ -2,13 +2,12 @@ import Charts
 import Relate
 import SwiftUI
 
-/// The graph at a glance. Both of its values are live queries, so the
-/// counts and the chart follow a write made while the sheet is open. The
-/// counts are placeholders until their first read returns, and a read that
-/// failed is shown, not left as zeros.
+/// The graph at a glance. Its counts and its chart are one live query, so
+/// both follow a write made while the sheet is open and the screen has one
+/// state to show: the counts are placeholders until the first read
+/// returns, and a read that failed is shown, not left as zeros.
 struct InsightsView: View {
-    @LiveQuery(initial: .empty, SNOTELQueries.stats) private var stats: DatabaseStats
-    @LiveQuery(SNOTELQueries.basins) private var basins: [Basin]
+    @LiveQuery(initial: .empty, SNOTELQueries.insights) private var insights: Insights
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [
@@ -22,17 +21,17 @@ struct InsightsView: View {
                 VStack(spacing: 20) {
                     hero
 
-                    if let error = $stats.error ?? $basins.error {
+                    if let error = $insights.error {
                         QueryErrorBanner(error: error)
                     }
 
                     LazyVGrid(columns: columns, spacing: 12) {
-                        MetricCard(value: stats.nodes, label: "Graph nodes", icon: "circle.hexagongrid.fill")
-                        MetricCard(value: stats.relationships, label: "Relationships", icon: "arrow.triangle.branch")
-                        MetricCard(value: stats.stations, label: "Stations", icon: "mappin.and.ellipse")
-                        MetricCard(value: stats.basinMemberships, label: "Spatial links", icon: "point.3.connected.trianglepath.dotted")
+                        MetricCard(value: insights.stats.nodes, label: "Graph nodes", icon: "circle.hexagongrid.fill")
+                        MetricCard(value: insights.stats.relationships, label: "Relationships", icon: "arrow.triangle.branch")
+                        MetricCard(value: insights.stats.stations, label: "Stations", icon: "mappin.and.ellipse")
+                        MetricCard(value: insights.stats.basinMemberships, label: "Spatial links", icon: "point.3.connected.trianglepath.dotted")
                     }
-                    .redacted(reason: $stats.isLoading ? .placeholder : [])
+                    .redacted(reason: $insights.isLoading ? .placeholder : [])
 
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Graph model", systemImage: "point.3.filled.connected.trianglepath.dotted")
@@ -45,14 +44,14 @@ struct InsightsView: View {
                         Label("Average SWE by basin", systemImage: "chart.bar.xaxis")
                             .font(.headline)
 
-                        Chart(basins.bySWE) { basin in
+                        Chart(insights.basins.bySWE) { ranked in
                             BarMark(
-                                x: .value("SWE", basin.avgSWE ?? 0),
-                                y: .value("Basin", basin.name)
+                                x: .value("SWE", ranked.swe),
+                                y: .value("Basin", ranked.basin.name)
                             )
-                            .foregroundStyle(SWELevel.from(swe: basin.avgSWE).color.gradient)
+                            .foregroundStyle(SWELevel.from(swe: ranked.swe).color.gradient)
                             .annotation(position: .trailing) {
-                                Text(String(format: "%.1f\"", basin.avgSWE ?? 0))
+                                Text(String(format: "%.1f\"", ranked.swe))
                                     .font(.caption2.monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
@@ -87,8 +86,8 @@ struct InsightsView: View {
                 Image(systemName: "cylinder.split.1x2.fill")
                     .font(.title)
                 Spacer()
-                // Shown while both queries are following the store.
-                if $stats.isLive && $basins.isLive {
+                // Shown while the query is following the store.
+                if $insights.isLive {
                     Text("LIVE")
                         .font(.caption2.bold())
                         .padding(.horizontal, 9)

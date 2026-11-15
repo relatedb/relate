@@ -78,8 +78,15 @@ final class DatabaseService: Sendable {
     /// marker commits in the same transaction as the data, so a load that
     /// failed part-way never reads as loaded.
     func isLoaded() async throws -> Bool {
-        try await database.read("MATCH (d:Dataset {name: 'snotel'}) RETURN count(d)").scalar(as: Int.self) > 0
+        try await database.read(
+            Statement("MATCH (d:Dataset {name: $name}) RETURN count(d)", Self.datasetMarker)
+        ).scalar(as: Int.self) > 0
     }
+
+    /// The completion marker, as the parameters of the two statements that
+    /// spell it: the load creates a `Dataset` of this name and `isLoaded()`
+    /// looks for one.
+    private static let datasetMarker: [String: CypherValue] = ["name": "snotel"]
 
     // MARK: - Data Loading
 
@@ -143,11 +150,11 @@ final class DatabaseService: Sendable {
             Statement(
                 """
                 UNWIND $memberships AS m
-                MATCH (s:Station {id: m.station}), (b:Basin {name: m.basin})
+                MATCH (s:Station {id: m.station}), (b:Basin {huc2: m.basin})
                 CREATE (s)-[:IN_BASIN]->(b)
                 """,
                 ["memberships": try CypherValue(encoding: memberships(of: stations, in: basins))]),
-            Statement("CREATE (:Dataset {name: 'snotel'})"),
+            Statement("CREATE (:Dataset {name: $name})", datasetMarker),
         ]
     }
 
@@ -164,7 +171,7 @@ final class DatabaseService: Sendable {
         stations.flatMap { station in
             basins
                 .filter { $0.contains(latitude: station.latitude, longitude: station.longitude) }
-                .map { Membership(station: station.id, basin: $0.name) }
+                .map { Membership(station: station.id, basin: $0.huc2) }
         }
     }
 
@@ -181,7 +188,8 @@ final class DatabaseService: Sendable {
         }
     }
 
-    /// One station-in-basin pair of the membership load.
+    /// One station-in-basin pair of the membership load, by the two keys:
+    /// a station's id and a basin's HUC2 code.
     private struct Membership: Encodable {
         let station: Int
         let basin: String

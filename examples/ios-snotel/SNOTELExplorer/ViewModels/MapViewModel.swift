@@ -3,10 +3,12 @@ import CoreLocation
 import Relate
 import Observation
 
-/// Where first-launch setup stands; the app shows the map only when `ready`.
-enum SetupPhase: Equatable {
+/// Where first-launch setup stands. The app shows the map only when
+/// `ready`, and `ready` is the only state with a store: the open service
+/// travels with it.
+enum SetupPhase {
     case loading
-    case ready
+    case ready(DatabaseService)
     case failed(String)
 }
 
@@ -29,12 +31,16 @@ final class MapViewModel {
     var searchText = ""
     private(set) var phase: SetupPhase = .loading
 
-    private var dbService: DatabaseService?
     private var logConsumer: Task<Void, Never>?
+
+    /// The open store's service; `nil` until setup has finished.
+    private var service: DatabaseService? {
+        if case .ready(let service) = phase { service } else { nil }
+    }
 
     /// The open database, for the view tree's environment; `nil` until
     /// setup has finished.
-    var database: Database? { dbService?.database }
+    var database: Database? { service?.database }
 
     /// Opens the durable store and has the `DatabaseService` load the
     /// bundled data on first launch (later launches reopen the checkpointed
@@ -42,22 +48,21 @@ final class MapViewModel {
     /// `ProgressView` keeps animating. There is no first query to run here:
     /// the views' live queries read as soon as they appear.
     func setup(bundle: Bundle? = nil) async {
-        guard dbService == nil else { return }
+        guard service == nil else { return }
         phase = .loading
         do {
             let svc = try await DatabaseService(path: DatabaseService.persistentStoreURL().path)
             consumeQueryLog(of: svc)
             try await svc.loadBundledDataIfNeeded(bundle: bundle)
-            dbService = svc
-            phase = .ready
+            phase = .ready(svc)
         } catch {
             phase = .failed(error.localizedDescription)
         }
     }
 
-    /// The basin of an active `.basin` filter.
-    var selectedBasinName: String? {
-        if case .basin(let name) = filter { name } else { nil }
+    /// The basin of an active `.basin` filter, by its identity.
+    var selectedBasin: Basin.ID? {
+        if case .basin(let huc2) = filter { huc2 } else { nil }
     }
 
     /// The center of an active `.nearby` filter.
@@ -69,8 +74,8 @@ final class MapViewModel {
         if case .all = filter { false } else { true }
     }
 
-    func filterByBasin(_ name: String?) {
-        apply(name.map(StationFilter.basin) ?? .all)
+    func filterByBasin(_ basin: Basin.ID?) {
+        apply(basin.map(StationFilter.basin) ?? .all)
     }
 
     func searchNearby(center: CLLocationCoordinate2D) {
@@ -87,10 +92,10 @@ final class MapViewModel {
     }
 
     func runDemoQuery(_ cypher: String) async throws -> QueryResult {
-        guard let dbService else {
+        guard let service else {
             throw DemoAppError.databaseNotReady
         }
-        return try await dbService.run(cypher)
+        return try await service.run(cypher)
     }
 
     func clearQueryHistory() {

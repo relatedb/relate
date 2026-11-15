@@ -10,10 +10,10 @@ struct QueryLogEntry: Identifiable, Equatable, Sendable {
     let id: UUID = UUID()
     let timestamp: Date = Date()
     let cypher: String
-    /// The names of the parameters the statement bound (`$center,
-    /// $radiusMeters`), `nil` when it bound none. A trace carries names,
+    /// The names of the parameters the statement bound (`center`,
+    /// `radiusMeters`), empty when it bound none. A trace carries names,
     /// not values.
-    let parameters: String?
+    let parameters: [String]
     let durationMilliseconds: Double
     /// The engine's plan-time classification; `nil` when the statement failed.
     let queryType: QueryType?
@@ -41,6 +41,12 @@ struct QueryLogEntry: Identifiable, Equatable, Sendable {
 
     var succeeded: Bool { failureMessage == nil }
 
+    /// The text a search of the log looks in: the statement, its
+    /// operation, the names it bound and, for a failure, the message.
+    var searchableText: [String] {
+        [cypher, operation] + parameters + (failureMessage.map { [$0] } ?? [])
+    }
+
     var failureMessage: String? {
         if case .failure(let message) = outcome { message } else { nil }
     }
@@ -53,8 +59,7 @@ extension QueryLogEntry {
     init(_ trace: QueryTrace) {
         self.init(
             cypher: trace.statement,
-            parameters: trace.parameterNames.isEmpty
-                ? nil : trace.parameterNames.map { "$\($0)" }.joined(separator: ", "),
+            parameters: trace.parameterNames,
             durationMilliseconds: trace.error == nil ? trace.elapsedMs : trace.wallMs,
             queryType: trace.queryType,
             rowCount: trace.rowCount,

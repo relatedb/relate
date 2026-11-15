@@ -17,12 +17,21 @@ struct Basin: Identifiable, Equatable, Decodable, Sendable {
     var id: String { huc2 }
 }
 
+/// One place of the snowpack ranking: a basin that has readings, with their
+/// mean SWE.
+struct RankedBasin: Identifiable, Equatable {
+    let basin: Basin
+    let swe: Double
+
+    var id: Basin.ID { basin.id }
+}
+
 extension [Basin] {
     /// The basins with readings, highest mean SWE first: the ranking the
-    /// filter panel and the insights chart show.
-    var bySWE: [Basin] {
-        compactMap { basin in basin.avgSWE.map { (basin, $0) } }
-            .sorted { $0.1 > $1.1 }
-            .map(\.0)
+    /// filter panel and the insights chart show. A basin without readings
+    /// has no place in it.
+    var bySWE: [RankedBasin] {
+        compactMap { basin in basin.avgSWE.map { RankedBasin(basin: basin, swe: $0) } }
+            .sorted { $0.swe > $1.swe }
     }
 }

@@ -12,8 +12,8 @@ struct Station: Identifiable, Equatable, Decodable, Sendable {
     let latitude: Double
     let longitude: Double
     let elevation: Int
-    var sweInches: Double?
-    var distanceMeters: Double?
+    let sweInches: Double?
+    let distanceMeters: Double?
 
     var sweLevel: SWELevel { SWELevel.from(swe: sweInches) }
 }
