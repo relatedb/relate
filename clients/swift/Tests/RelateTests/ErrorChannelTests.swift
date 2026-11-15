@@ -108,15 +108,15 @@ import Testing
         #expect(try conn.query("MATCH (n:Probe) RETURN count(n)").scalar() == 1)
     }
 
-    @Test func theProbeReadsPoisonOffTheBoundaryStage() throws {
+    @Test func aBoundaryFailureIsAnEngineErrorAtTheInternalStage() throws {
         func engine(_ stage: EngineError.Stage) -> RelateError {
             .engine(EngineError(
                 code: "Neo.DatabaseError.General.UnknownError", gqlStatus: "50N42", stage: stage,
                 retryable: false, message: "handle poisoned by a previous panic; free it and open a new one"))
         }
-        #expect(Connection.probeIndicatesPoison(engine(.internal)))
-        #expect(!Connection.probeIndicatesPoison(engine(.runtime)))
-        #expect(!Connection.probeIndicatesPoison(engine(.compile)))
-        #expect(!Connection.probeIndicatesPoison(.decoding("x")))
+        #expect(engine(.internal).isBoundaryFailure)
+        #expect(!engine(.runtime).isBoundaryFailure)
+        #expect(!engine(.compile).isBoundaryFailure)
+        #expect(!RelateError.decoding("x").isBoundaryFailure)
     }
 }

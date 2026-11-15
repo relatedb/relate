@@ -246,9 +246,10 @@ try await db.write { tx in
   connection's queue, so no cooperative-pool thread is held and the
   `MainActor` can `await` these directly. The body cannot `await`, so a
   transaction is never held across a suspension.
-- **Cancellation.** A task cancelled before its body starts throws
-  `CancellationError` and runs nothing. A statement already running is not
-  interrupted; the C ABI has no cancel call.
+- **Cancellation.** A task cancelled before its body starts — before the
+  call, or while the call waits its turn on a connection — throws
+  `CancellationError` when that turn comes, and runs nothing. A statement
+  already running is not interrupted; the C ABI has no cancel call.
 - **Sendability.** The body is `@Sendable` and its result is `Sendable`; the
   `Transaction` it receives is not, and never leaves the body.
 - **Poison.** After a body fails at stage `internal`, the connection is

@@ -120,9 +120,20 @@ public final class Database: Sendable {
         try connect(namespaceNamed: namespace ?? DatabaseNamespace.neo4j.rawValue)
     }
 
-    /// A caller-made connection on the namespace named `name`.
+    /// A caller-made connection on the namespace named `name`: it keeps this
+    /// database alive.
     func connect(namespaceNamed name: String) throws(RelateError) -> Connection {
-        try core.connect(namespaceNamed: name, database: self, retained: true)
+        Connection(handle: try core.openSession(namespaceNamed: name), core: core, database: self, keeping: self)
+    }
+
+    /// A connection for the managed pool, on the default namespace. It
+    /// refers back to this database without keeping it alive: the database
+    /// owns the pool, so a pool connection that owned the database would
+    /// keep both alive for ever.
+    func connectManaged() throws(RelateError) -> Connection {
+        Connection(
+            handle: try core.openSession(namespaceNamed: DatabaseNamespace.neo4j.rawValue), core: core,
+            database: self, keeping: nil)
     }
 
     /// Writes a checkpoint and truncates the WAL.
@@ -149,23 +160,17 @@ final class DatabaseCore: @unchecked Sendable {
         _ = relate_database_close(handle)
     }
 
-    /// The one crossing that opens a session. The engine matches `name`
-    /// against its fixed namespaces and refuses any other. A connection
-    /// made for a caller is `retained`: it keeps `database` alive. One the
-    /// managed pool opens is not, which is what keeps the pool from owning
-    /// the object that owns it.
-    func connect(
-        namespaceNamed name: String, database: Database, retained: Bool
-    ) throws(RelateError) -> Connection {
+    /// The one crossing that opens a session, returning its handle. The
+    /// engine matches `name` against its fixed namespaces and refuses any
+    /// other.
+    func openSession(namespaceNamed name: String) throws(RelateError) -> OpaquePointer {
         var out: OpaquePointer?
         var err: UnsafeMutablePointer<CChar>? = nil
         let status = try withCString(name, what: "namespace") {
             relate_connect_namespace(handle, $0, &out, &err)
         }
         try check(status, err, "connecting to namespace '\(name)'")
-        return Connection(
-            handle: try requireHandle(out, "relate_connect_namespace"), core: self,
-            database: database, retained: retained)
+        return try requireHandle(out, "relate_connect_namespace")
     }
 
     func checkpoint(describing path: String) throws(RelateError) {
@@ -184,16 +189,17 @@ public final class Connection {
     /// The database this connection was made from. Holding a connection
     /// from ``Database/connect()`` keeps it open.
     public unowned let database: Database
-    /// What keeps `database` alive for a caller-made connection. A
-    /// connection the managed pool opened holds none: its database owns it
-    /// (through the pool) and outlives it, so it only refers back.
-    private let retainedDatabase: Database?
+    /// What keeps `database` alive: the database itself for a caller-made
+    /// connection. A connection the managed pool opened holds none: its
+    /// database owns it (through the pool) and outlives it, so it only
+    /// refers back.
+    private let owner: Database?
 
-    fileprivate init(handle: OpaquePointer, core: DatabaseCore, database: Database, retained: Bool) {
+    fileprivate init(handle: OpaquePointer, core: DatabaseCore, database: Database, keeping owner: Database?) {
         self.handle = handle
         self.core = core
         self.database = database
-        self.retainedDatabase = retained ? database : nil
+        self.owner = owner
     }
 
     deinit {

@@ -15,14 +15,17 @@ extension Connection {
             _ = try query("RETURN 1")
             return false
         } catch {
-            return Connection.probeIndicatesPoison(error)
+            // A statement that trivial cannot fail at the boundary stage
+            // on a healthy handle, so on the probe the signal is the verdict.
+            return error.isBoundaryFailure
         }
     }
+}
 
-    /// The verdict on a failed probe: poisoned exactly when the trivial
-    /// statement failed at the boundary stage. A statement that trivial
-    /// cannot fail any other way on a healthy handle.
-    static func probeIndicatesPoison(_ failure: RelateError) -> Bool {
-        failure.engineError?.stage == .internal
-    }
+extension RelateError {
+    /// Whether the engine refused at the boundary stage (`internal`): the
+    /// stage every call on a poisoned handle fails at. A healthy handle can
+    /// fail there too (the params builder refusing an impossible date), so
+    /// on a caller's statement this is the signal to probe, not the verdict.
+    var isBoundaryFailure: Bool { engineError?.stage == .internal }
 }

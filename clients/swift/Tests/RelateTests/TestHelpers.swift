@@ -38,6 +38,16 @@ func withTemporaryStoreFile<T>(_ body: (URL) async throws -> T) async throws -> 
     try await withTemporaryItem(suffix: ".rl", body)
 }
 
+/// Waits for a semaphore without parking a cooperative-pool thread; `false`
+/// on timeout, so a broken test fails instead of hanging.
+func signalled(_ semaphore: DispatchSemaphore, within seconds: Double = 10) async -> Bool {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + seconds) == .success)
+        }
+    }
+}
+
 /// Stages the engine's write-write conflict and returns what the losing
 /// commit throws: two connections each create the same unique key inside a
 /// transaction, the first commits, and the second commit loses (ADR-0439).

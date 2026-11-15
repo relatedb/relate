@@ -17,13 +17,14 @@ extension Database {
     /// ```
     ///
     /// The awaiting task suspends; the engine call blocks the connection's
-    /// own queue, not a cooperative-pool thread. Cancelling the task before
-    /// the body starts throws `CancellationError`; a statement already
-    /// running cannot be interrupted.
+    /// own queue, not a cooperative-pool thread. A task cancelled before
+    /// the body starts — before the call, or while it waits its turn on a
+    /// connection — throws `CancellationError` and runs nothing; a
+    /// statement already running cannot be interrupted.
     public func read<T: Sendable>(
         _ body: @escaping @Sendable (Transaction) throws -> T
     ) async throws -> T {
-        try await onReader { connection in try connection.read(body) }
+        try await pool.withReader(for: self) { connection in try connection.read(body) }
     }
 
     /// Runs `body` as one write transaction on the database's single
@@ -63,23 +64,13 @@ extension Database {
     }
 
     /// Writes a checkpoint off the caller's thread, on the writer's queue,
-    /// so it runs between writes rather than beside one. Cancelling the task
+    /// so it runs between writes rather than beside one. A task cancelled
     /// before the checkpoint starts throws `CancellationError`.
     public func checkpointInBackground() async throws {
-        let core = core
-        let path = path
-        try await onWriter("checkpoint") { _ in try core.checkpoint(describing: path) }
+        try await onWriter("checkpoint") { connection in try connection.database.checkpoint() }
     }
 
-    // MARK: The two hops onto a managed connection
-
-    /// Runs `work` on a reader connection. Every managed read enters here.
-    func onReader<T: Sendable>(
-        _ work: @escaping @Sendable (Connection) throws -> T
-    ) async throws -> T {
-        try Task.checkCancellation()
-        return try await pool.withReader(for: self, work)
-    }
+    // MARK: The hop onto the writer
 
     /// Runs `work` on the single writer connection. Every managed operation
     /// that writes enters here, so the read-only refusal — which names the
@@ -87,7 +78,6 @@ extension Database {
     func onWriter<T: Sendable>(
         _ operation: String, _ work: @escaping @Sendable (Connection) throws -> T
     ) async throws -> T {
-        try Task.checkCancellation()
         guard !isReadOnly else {
             throw RelateError.misuse("\(operation) on a database opened read-only")
         }
