@@ -67,40 +67,47 @@ import Testing
         #expect(try count(conn, "Kept") == 1)
     }
 
-    @Test func aRetryableConflictRunsTheBodyAgain() throws {
+    private static let increment: Statement = "MATCH (c:Counter) SET c.v = c.v + 1 RETURN c.v"
+
+    /// Two connections on one database that holds a counter at zero.
+    private func racers() throws -> (winner: Connection, loser: Connection) {
         let db = try Database.inMemory()
         let winner = try db.connect()
-        let loser = try db.connect()
         try winner.query("CREATE (:Counter {v: 0})")
-        let increment: Statement = "MATCH (c:Counter) SET c.v = c.v + 1 RETURN c.v"
+        return (winner, try db.connect())
+    }
+
+    @Test func aRetryableConflictRunsTheBodyAgain() throws {
+        let (winner, loser) = try racers()
         var attempts = 0
         let seen = try loser.transaction(retries: 1) { tx in
             attempts += 1
             if attempts == 1 {
                 // The other connection updates the same node and commits
                 // first: this attempt's commit loses.
-                try winner.run(increment)
+                try winner.run(Self.increment)
             }
-            return try tx.run(increment).scalar(as: Int.self)
+            return try tx.run(Self.increment).scalar(as: Int.self)
         }
         #expect(attempts == 2 && seen == 2)
         #expect(try winner.query("MATCH (c:Counter) RETURN c.v").scalar() == 2)
+    }
 
-        // Without retries the same conflict surfaces, marked retryable, and
-        // leaves no transaction open. A count below one is no retry either.
-        for (round, retries) in [0, -1].enumerated() {
-            attempts = 0
-            let error = try #require(throws: RelateError.self) {
-                try loser.transaction(retries: retries) { tx in
-                    attempts += 1
-                    try winner.run(increment)
-                    try tx.run(increment)
-                }
+    /// A count below one is no retry: the conflict surfaces after one
+    /// attempt, marked retryable, and leaves no transaction open.
+    @Test(arguments: [0, -1]) func withoutRetriesAConflictSurfaces(retries: Int) throws {
+        let (winner, loser) = try racers()
+        var attempts = 0
+        let error = try #require(throws: RelateError.self) {
+            try loser.transaction(retries: retries) { tx in
+                attempts += 1
+                try winner.run(Self.increment)
+                try tx.run(Self.increment)
             }
-            #expect(attempts == 1 && error.isRetryable && error.engineError?.isWriteConflict == true)
-            try loser.transaction { tx in try tx.run(increment) }
-            #expect(try winner.query("MATCH (c:Counter) RETURN c.v").scalar(as: Int.self) == 4 + 2 * round)
         }
+        #expect(attempts == 1 && error.isRetryable && error.engineError?.isWriteConflict == true)
+        try loser.transaction { tx in try tx.run(Self.increment) }
+        #expect(try winner.query("MATCH (c:Counter) RETURN c.v").scalar() == 2)
     }
 
     @Test func aNonRetryableFailureIsNotRetried() throws {
