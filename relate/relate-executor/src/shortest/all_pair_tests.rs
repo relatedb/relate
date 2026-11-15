@@ -51,18 +51,49 @@ fn assert_equivalent(edges: &[(usize, usize, &str)], n: usize) {
     }
 }
 
-/// The equivalence sweep over `edges`, then the shortest-trail count of the
-/// one pair `from`->`to` (node indices) searched outgoing.
-fn assert_pair(edges: &[(usize, usize, &str)], n: usize, from: usize, to: usize, expected: usize) {
-    assert_equivalent(edges, n);
+/// The bidirectional trail count of one pair (node indices) over `edges`,
+/// searched in `dir` up to `max` relationships.
+fn trail_count(
+    edges: &[(usize, usize, &str)],
+    n: usize,
+    (dir, max): (Direction, u32),
+    (from, to): (usize, usize),
+) -> usize {
     let Built {
         graph: g,
         nodes: ids,
         ..
     } = build(&vec![&[][..]; n], edges);
     let view = ExecGraph::read(&g);
+    let s = search(&view, dir, max);
+    bidirectional(&s, ids[from], ids[to]).len()
+}
+
+/// The equivalence sweep over `edges`, then the shortest-trail count of the
+/// one pair `from`->`to` (node indices) searched outgoing.
+fn assert_pair(edges: &[(usize, usize, &str)], n: usize, from: usize, to: usize, expected: usize) {
+    assert_equivalent(edges, n);
+    assert_eq!(
+        trail_count(edges, n, (Direction::Outgoing, 8), (from, to)),
+        expected
+    );
+}
+
+#[test]
+fn violated_preconditions_fail_loudly() {
+    let Built {
+        graph: g,
+        nodes: ids,
+        ..
+    } = build(&[&[][..]; 2], &[(0, 1, "R")]);
+    let view = ExecGraph::read(&g);
     let s = search(&view, Direction::Outgoing, 8);
-    assert_eq!(bidirectional(&s, ids[from], ids[to]).len(), expected);
+    assert!(keeping(&s, true)
+        .all_shortest_trails(ids[0], ids[0])
+        .is_err());
+    assert!(keeping(&s, false)
+        .all_shortest_trails(ids[0], ids[1])
+        .is_err());
 }
 
 #[test]

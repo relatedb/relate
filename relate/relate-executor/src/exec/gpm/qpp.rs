@@ -234,23 +234,27 @@ pub(super) fn gpm_expand_quantified(
 /// The predicate-referenced names of `qpp` that `row` does not bind and the
 /// quantification's own group `names` will not bind — the later-declared
 /// non-local singletons [`gpm_expand_quantified`] binds to null.
+/// Every predicate a quantified pattern carries: each inner element's own
+/// `WHERE` in pattern order, then the pattern-level `WHERE` — the one
+/// policy both the iteration check and the unbound-name scan walk.
+fn qpp_predicates(qpp: &QuantifiedPathPattern) -> impl Iterator<Item = &Expr> {
+    qpp.elements
+        .iter()
+        .filter_map(|element| match element {
+            PatternElement::Node(node) => node.where_clause.as_ref(),
+            PatternElement::Relationship(rel) => rel.where_clause.as_ref(),
+            PatternElement::Quantified(_) => None,
+        })
+        .chain(qpp.where_clause.as_ref())
+}
+
 fn qpp_unbound_predicate_names(
     qpp: &QuantifiedPathPattern,
     row: &Row,
     names: &[String],
 ) -> Vec<String> {
     let mut vars = HashSet::new();
-    for element in &qpp.elements {
-        let predicate = match element {
-            PatternElement::Node(node) => node.where_clause.as_ref(),
-            PatternElement::Relationship(rel) => rel.where_clause.as_ref(),
-            PatternElement::Quantified(_) => None,
-        };
-        if let Some(predicate) = predicate {
-            relate_ir::expr_vars(predicate, &mut vars);
-        }
-    }
-    if let Some(predicate) = &qpp.where_clause {
+    for predicate in qpp_predicates(qpp) {
         relate_ir::expr_vars(predicate, &mut vars);
     }
     vars.into_iter()
@@ -264,19 +268,7 @@ fn gpm_qpp_iteration_predicates_ok(
     row: &Row,
     params: &BTreeMap<String, Value>,
 ) -> Result<bool> {
-    for element in &qpp.elements {
-        let predicate = match element {
-            PatternElement::Node(node) => node.where_clause.as_ref(),
-            PatternElement::Relationship(rel) => rel.where_clause.as_ref(),
-            PatternElement::Quantified(_) => None,
-        };
-        if let Some(predicate) = predicate {
-            if !crate::eval::predicate_value_holds(&eval(graph, row, predicate, params)?)? {
-                return Ok(false);
-            }
-        }
-    }
-    if let Some(predicate) = &qpp.where_clause {
+    for predicate in qpp_predicates(qpp) {
         if !crate::eval::predicate_value_holds(&eval(graph, row, predicate, params)?)? {
             return Ok(false);
         }

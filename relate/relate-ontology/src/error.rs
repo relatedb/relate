@@ -24,6 +24,27 @@ pub const PINNED_SCHEMA_URI: &str = concat!(
 /// The highest Ontology Graph Spec version this crate supports.
 pub const MAX_SUPPORTED_SPEC_VERSION: &str = spec_version!();
 
+/// A construct outside the JSON-equivalent value model of ADR-0227 §4,
+/// the typed handle behind [`OntologyError::UnsupportedConstruct`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Construct {
+    /// A YAML anchor or alias; the value model has no alias concept.
+    #[error("anchors and aliases are not supported")]
+    AnchorsAndAliases,
+    /// A non-finite float (`.inf` / `.nan`).
+    #[error("non-finite floats (.inf/.nan) are not supported")]
+    NonFiniteFloat,
+    /// A mapping key that is not a string.
+    #[error("non-string mapping keys are not supported")]
+    NonStringKey,
+    /// A custom YAML tag; carries the tag as written.
+    #[error("custom tags are not supported (found tag '{0}')")]
+    CustomTag(String),
+    /// More than one YAML document in the input; carries the count.
+    #[error("expected a single YAML document, found {0} (multi-document input is not supported)")]
+    MultipleDocuments(usize),
+}
+
 /// Errors produced while parsing, validating or serializing an ontology
 /// document.
 ///
@@ -52,7 +73,7 @@ pub enum OntologyError {
     /// value model of ADR-0227 §4 (non-string mapping keys, custom tags,
     /// anchors and aliases, non-finite floats, multiple documents, …).
     #[error("unsupported construct in ontology document: {0}")]
-    UnsupportedConstruct(String),
+    UnsupportedConstruct(Construct),
 
     /// The document's `schema` URI is not the pinned Ontology Graph
     /// Spec 1.1.0 URI (ADR-0487 §1, succeeding ADR-0364 §1; the

@@ -22,6 +22,16 @@ impl DocumentFormat {
             DocumentFormat::Yaml => "yaml",
         }
     }
+
+    /// The inverse of [`DocumentFormat::as_str`]: the format a
+    /// `db.ontology.get` format argument names, `None` for any other
+    /// spelling.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        [DocumentFormat::Json, DocumentFormat::Yaml]
+            .into_iter()
+            .find(|format| format.as_str() == name)
+    }
 }
 
 /// The uppercase syntax name (`JSON` or `YAML`) error messages carry.

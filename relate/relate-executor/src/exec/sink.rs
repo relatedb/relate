@@ -138,22 +138,19 @@ pub(crate) fn finish_match_row(
     // each item's value written over its output name. Without a key there
     // is no scope row to build — the parked values follow the items, and
     // the output schema already carries their columns.
-    let parked = if projection.order.is_empty() {
-        Vec::new()
-    } else {
+    if !projection.order.is_empty() {
         // shortcut: the scope schema depends on the incoming row's, so this
         // path still appends (and interns) per row; cache a per-sink scope
         // schema if ORDER BY lands on a hot expansion.
         let mut scope = row.clone();
-        for (index, name) in projection.item_names().iter().enumerate() {
-            scope.insert(name.clone(), values[index].clone());
+        for (name, value) in projection.item_names().iter().zip(&values) {
+            scope.insert(name.clone(), value.clone());
         }
-        parked_values(&projection.order, &scope, |expr, scope| {
+        let parked = parked_values(&projection.order, &scope, |expr, scope| {
             eval(graph, scope, expr, params)
-        })?
-    };
-    values.extend(parked);
-    debug_assert_eq!(values.len(), values.capacity());
+        })?;
+        values.extend(parked);
+    }
     Ok(Row::from_names(&projection.names, values))
 }
 

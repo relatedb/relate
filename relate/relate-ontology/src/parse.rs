@@ -8,7 +8,7 @@
 use saphyr::{LoadableYamlNode, Scalar, Yaml};
 use saphyr_parser::{Event, Parser};
 
-use crate::error::OntologyError;
+use crate::error::{Construct, OntologyError};
 use crate::format::DocumentFormat;
 use crate::value::Value;
 
@@ -175,7 +175,7 @@ fn screen_yaml_events(text: &str) -> Result<(), OntologyError> {
 /// expands alias chains by value-copy, so they are refused in the
 /// pre-parse event screen — before the loader can expand them.
 fn anchors_and_aliases_not_supported() -> OntologyError {
-    OntologyError::UnsupportedConstruct("anchors and aliases are not supported".to_owned())
+    OntologyError::UnsupportedConstruct(Construct::AnchorsAndAliases)
 }
 
 /// Parse YAML 1.2 text into the ordered value model.
@@ -197,9 +197,9 @@ fn parse_yaml(text: &str) -> Result<Value, OntologyError> {
             message: "the document is empty".to_owned(),
         }),
         1 => yaml_to_value(&docs[0]),
-        n => Err(OntologyError::UnsupportedConstruct(format!(
-            "expected a single YAML document, found {n} (multi-document input is not supported)"
-        ))),
+        n => Err(OntologyError::UnsupportedConstruct(
+            Construct::MultipleDocuments(n),
+        )),
     }
 }
 
@@ -217,7 +217,7 @@ fn yaml_to_value(node: &Yaml<'_>) -> Result<Value, OntologyError> {
                     Value::Float(f)
                 } else {
                     return Err(OntologyError::UnsupportedConstruct(
-                        "non-finite floats (.inf/.nan) are not supported".to_owned(),
+                        Construct::NonFiniteFloat,
                     ));
                 }
             }
@@ -236,26 +236,16 @@ fn yaml_to_value(node: &Yaml<'_>) -> Result<Value, OntologyError> {
                 let key = match key {
                     Yaml::Value(Scalar::String(s)) => s.to_string(),
                     _ => {
-                        return Err(OntologyError::UnsupportedConstruct(
-                            "non-string mapping keys are not supported".to_owned(),
-                        ));
+                        return Err(OntologyError::UnsupportedConstruct(Construct::NonStringKey));
                     }
                 };
-                // Check-then-move, converting first so a bad value keeps
-                // reporting before a duplicate key: the key is cloned
-                // nowhere on the success path.
                 let converted = yaml_to_value(value)?;
-                if map.contains_key(&key) {
-                    return Err(OntologyError::UnsupportedConstruct(format!(
-                        "duplicate mapping key '{key}'"
-                    )));
-                }
                 map.insert(key, converted);
             }
             Ok(Value::Object(map))
         }
-        Yaml::Tagged(tag, _) => Err(OntologyError::UnsupportedConstruct(format!(
-            "custom tags are not supported (found tag '{tag}')"
+        Yaml::Tagged(tag, _) => Err(OntologyError::UnsupportedConstruct(Construct::CustomTag(
+            tag.to_string(),
         ))),
         // Invariant: `load_from_str` resolves aliases eagerly, the pre-parse
         // screen rejects every anchor and alias, and scalars are resolved

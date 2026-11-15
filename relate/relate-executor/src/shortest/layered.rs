@@ -244,16 +244,21 @@ impl Search<'_, '_> {
     /// and end-side chains — disjoint across nodes, and each a shortest
     /// path, hence a trail.
     ///
-    /// Precondition: `start` ≠ `end`, `min` ≤ 1, `all` set, no `skip`.
+    /// Precondition: `start` ≠ `end`, `min` ≤ 1, `all` set, no `skip`; a
+    /// violating caller gets an internal error.
     pub(crate) fn all_shortest_trails(
         &self,
         start: NodeId,
         end: NodeId,
     ) -> Result<Vec<Vec<RelId>>> {
-        debug_assert!(
-            start != end && self.min <= 1 && self.all && self.skip.is_none(),
-            "all_shortest_trails needs distinct ends, min_hops <= 1 and an all-path search"
-        );
+        if start == end || self.min > 1 || !self.all || self.skip.is_some() {
+            // A caller bug, not a data condition: past these the trails
+            // would be silently wrong, so the precondition fails loudly in
+            // release too.
+            return Err(relate_core::Error::internal(
+                "all_shortest_trails needs distinct ends, min_hops <= 1 and an all-path search",
+            ));
+        }
         let back = self.reversed();
         let mut from_start = Grown::new(start);
         let mut from_end = Grown::new(end);

@@ -88,16 +88,12 @@ impl Guarded for relate_connection {
 }
 
 /// The one null/poison gate over both handle types: reject a null or
-/// poisoned handle, then run `op` on it under the shared containment
-/// ([`contain`]), which poisons the handle on unwind.
+/// poisoned handle and hand back the live reference.
 ///
 /// # Safety
 /// `ptr` must be null or a valid pointer previously returned by the
-/// handle's constructor.
-unsafe fn guard<H: Guarded>(
-    ptr: *mut H,
-    op: impl FnOnce(&H) -> Result<(), RenderedError>,
-) -> Result<(), RenderedError> {
+/// handle's constructor; the returned reference must not outlive it.
+unsafe fn admit<'a, H: Guarded>(ptr: *mut H) -> Result<&'a H, RenderedError> {
     if ptr.is_null() {
         return Err(boundary_error_json(H::NULL_MESSAGE));
     }
@@ -106,6 +102,21 @@ unsafe fn guard<H: Guarded>(
     if handle.poisoned().load(Ordering::SeqCst) {
         return Err(boundary_error_json(POISONED_MESSAGE));
     }
+    Ok(handle)
+}
+
+/// Admit a handle ([`admit`]), then run `op` on it under the shared
+/// containment ([`contain`]), which poisons the handle on unwind.
+///
+/// # Safety
+/// `ptr` must be null or a valid pointer previously returned by the
+/// handle's constructor.
+unsafe fn guard<H: Guarded>(
+    ptr: *mut H,
+    op: impl FnOnce(&H) -> Result<(), RenderedError>,
+) -> Result<(), RenderedError> {
+    // SAFETY: forwarded contract.
+    let handle = unsafe { admit(ptr)? };
     contain(handle.poisoned(), || op(handle))
 }
 
@@ -138,15 +149,19 @@ where
     F: FnOnce(&mut Connection) -> Result<(), RenderedError>,
 {
     // SAFETY: forwarded contract.
-    unsafe {
-        guard(conn, |handle| {
-            let mut c = handle
-                .conn
-                .lock()
-                .map_err(|e| boundary_error_json(&format!("connection mutex poisoned: {e}")))?;
-            op(&mut c)
-        })
+    let handle = unsafe { admit(conn)? };
+    // The lock sits outside the containment, so an unwinding `op` never
+    // poisons the mutex: the handle's poison flag is the single record of
+    // a caught panic. A thread that queued on the lock while another
+    // panicked re-checks the flag once it holds the lock.
+    let mut c = handle
+        .conn
+        .lock()
+        .map_err(|_| boundary_error_json(POISONED_MESSAGE))?;
+    if handle.poisoned.load(Ordering::SeqCst) {
+        return Err(boundary_error_json(POISONED_MESSAGE));
     }
+    contain(&handle.poisoned, || op(&mut c))
 }
 
 /// The containment skeleton every handle guard shares (ADR-0502 §2):

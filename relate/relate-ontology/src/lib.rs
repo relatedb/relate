@@ -69,7 +69,7 @@ mod tests;
 mod validate;
 mod value;
 
-pub use error::{OntologyError, MAX_SUPPORTED_SPEC_VERSION, PINNED_SCHEMA_URI};
+pub use error::{Construct, OntologyError, MAX_SUPPORTED_SPEC_VERSION, PINNED_SCHEMA_URI};
 pub use format::DocumentFormat;
 pub use graph_type::to_graph_type_body;
 pub use model::{

@@ -21,7 +21,7 @@
 //! document is lost.
 
 use relate_ontology::{
-    parse_document_value, parse_ontology_document, DocumentFormat, OntologyError, Value,
+    parse_document_value, parse_ontology_document, Construct, DocumentFormat, OntologyError, Value,
     PINNED_SCHEMA_URI,
 };
 
@@ -215,7 +215,7 @@ fn expect_no_anchor(result: Result<impl std::fmt::Debug, OntologyError>) -> Onto
     assert!(
         matches!(
             err,
-            OntologyError::UnsupportedConstruct(ref msg) if msg.contains("anchors and aliases")
+            OntologyError::UnsupportedConstruct(Construct::AnchorsAndAliases)
         ),
         "expected the anchor/alias UnsupportedConstruct, got: {err}"
     );

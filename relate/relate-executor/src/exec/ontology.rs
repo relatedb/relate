@@ -264,12 +264,12 @@ fn optional_format_arg(ctx: &ExecCtx<'_>, row: &Row, source: &CallArgs) -> Resul
     };
     match value {
         Value::Null => Ok(DocumentFormat::Yaml),
-        Value::String(format) if format.as_ref() == "yaml" => Ok(DocumentFormat::Yaml),
-        Value::String(format) if format.as_ref() == "json" => Ok(DocumentFormat::Json),
-        Value::String(format) => Err(Error::ty(format!(
-            "InvalidArgumentValue: unknown db.ontology.get format '{format}'; \
-             expected 'yaml' or 'json'"
-        ))),
+        Value::String(format) => DocumentFormat::from_name(format.as_ref()).ok_or_else(|| {
+            Error::ty(format!(
+                "InvalidArgumentValue: unknown db.ontology.get format '{format}'; \
+                 expected 'yaml' or 'json'"
+            ))
+        }),
         _ => Err(Error::invalid_argument_type(
             "db.ontology.get argument `format` expects STRING",
         )),
