@@ -117,7 +117,7 @@ func losingCommitError() throws -> RelateError {
     try winner.query("CREATE (:P {id: 77})")
     try loser.query("CREATE (:P {id: 77})")
     _ = try winner.commit()
-    return try #require(throws: RelateError.self) { try loser.commit() }
+    return try thrownError { try loser.commit() }
 }
 
 /// What `read` finds in `error`. A case `read` does not read (it is named
@@ -133,8 +133,8 @@ private func payload<Payload>(
 }
 
 /// The `RelateError` that `body` must throw: `body` not throwing one fails
-/// the test. Every "the body must throw this case" helper below reads its
-/// payload out of this error through the helper's `(of:)` form.
+/// the test. Every helper in this file that needs the error a body throws
+/// gets it here.
 private func thrownError(_ body: () throws -> Void) throws -> RelateError {
     try #require(throws: RelateError.self) { try body() }
 }
