@@ -32,7 +32,8 @@ fn legacy_v3_shard_store(uri: &std::path::Path) {
     let ts = commit_nodes(&graph, &mut wal, nodes);
     let ids = graph.all_node_ids_at(ts);
     let bytes = crate::codec::parquet::nodes_parquet_ids(&graph, ts, &ids).unwrap();
-    let path = "nodes/0-6-0123456789abcdef0123456789abcdef.parquet".to_owned();
+    let part = node_part(0, 6, ids.len() as u64, bytes.len() as u64);
+    let path = part.path.clone();
     let mut manifest = bare_manifest(
         crate::version::manifest::CURRENT_VERSION,
         graph.next_node_id(),
@@ -40,13 +41,7 @@ fn legacy_v3_shard_store(uri: &std::path::Path) {
         wal.lsn,
         ts,
     );
-    manifest.node_parts = vec![crate::snapshot::ShardPart {
-        path: path.clone(),
-        id_lo: 0,
-        id_hi: 6,
-        rows: ids.len() as u64,
-        bytes: bytes.len() as u64,
-    }];
+    manifest.node_parts = vec![part];
     snapshot::put_object(
         &target,
         crate::snapshot::MANIFEST_JSON,

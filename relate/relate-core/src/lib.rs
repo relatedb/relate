@@ -22,6 +22,7 @@ pub mod file_identity;
 pub mod integer_args;
 mod memory_limit;
 mod namespace;
+mod output_safety;
 mod preview;
 pub mod temporal;
 pub mod tokens;
@@ -57,6 +58,7 @@ pub use namespace::{
     rel_element_id, ElementIdRef, Namespace, GRAPH_SELECTOR_FUNCTIONS,
     GRAPH_SELECTOR_FUNCTION_NAMES,
 };
+pub use output_safety::is_unsafe_output_char;
 pub use preview::{
     preview_feature_disabled_text, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES,
 };

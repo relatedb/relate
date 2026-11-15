@@ -325,7 +325,9 @@ fn verify_mirror_holds_only_contract_files(target: &StoreTarget) -> Result<()> {
 /// One directory-entry name as it may sit inside an error message: the
 /// VFS is untrusted, so a crafted mirror entry carrying newlines or ANSI
 /// escapes must not reach CLI stderr, serve logs, or client bodies
-/// verbatim (line and terminal spoofing). Control characters render
+/// verbatim (line and terminal spoofing). Characters the shared output-safety
+/// policy ([`relate_core::is_unsafe_output_char`]: controls and invisible
+/// bidi/zero-width format marks) render
 /// through `char::escape_default` (`\n`, `\u{1b}`, …); every other
 /// character passes through unchanged, so the operator still reads the
 /// name they would see in a directory listing. (Deliberately narrower
@@ -334,7 +336,7 @@ fn verify_mirror_holds_only_contract_files(target: &StoreTarget) -> Result<()> {
 fn escape_entry_name(name: &str) -> String {
     let mut escaped = String::with_capacity(name.len());
     for c in name.chars() {
-        if c.is_control() {
+        if relate_core::is_unsafe_output_char(c) {
             escaped.extend(c.escape_default());
         } else {
             escaped.push(c);

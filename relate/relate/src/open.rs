@@ -10,7 +10,7 @@ use std::sync::Arc;
 use relate_core::{Error, PreviewFeatures, Result};
 use relate_executor::{CsvPolicy, Graph, PatternEngine};
 use relate_storage::{
-    open_store_readonly_with_ontology, open_store_with_report, parse_uri_opening_with_config,
+    open_store_notifying, open_store_readonly_with_ontology, parse_uri_opening_with_config,
     CodecOpenConfig, SnapshotCodecKind, StoreTarget, Vfs, Wal,
 };
 
@@ -25,7 +25,7 @@ use super::open_config::{
 use super::shared::{OpenResolved, SharedOpenState};
 use super::token_budget;
 use super::{
-    check_loaded_graph, report_trimmed_tails, Database, DurabilityMode, OpenMode, OpenOptions,
+    check_loaded_graph, report_trimmed_tail, Database, DurabilityMode, OpenMode, OpenOptions,
     Shared,
 };
 
@@ -62,15 +62,13 @@ fn open_store_screened(
 }
 
 /// The writable twin of [`open_store_readonly_screened`]: the whole
-/// writable post-load policy in one place — load through the
-/// report-returning open, emit the trimmed-tail notice **before** the
-/// fallible screen (the tails were already trimmed when the loader
-/// returned, so a later failure must not swallow the durability event —
-/// the same order the promote path reports in), then screen the ontology
-/// document where it is produced.
+/// writable post-load policy in one place — load through the notifying
+/// open, which reports each trimmed torn tail the moment it is trimmed
+/// (a trim is durable, so a failure anywhere later in the open must not
+/// swallow the durability event — the same reporting the promote path
+/// uses), then screen the ontology document where it is produced.
 fn open_store_writable_screened(target: &StoreTarget) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology, report) = open_store_with_report(target)?;
-    report_trimmed_tails(&report.trimmed_tails);
+    let (graph, wal, ontology, _) = open_store_notifying(target, &mut report_trimmed_tail)?;
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }

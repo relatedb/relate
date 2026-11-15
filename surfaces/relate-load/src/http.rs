@@ -816,7 +816,7 @@ mod tests {
         match err {
             LoadError::Http { status: 401, reply } => {
                 assert!(!reply.contains('\u{1b}'), "raw ESC leaked: {reply:?}");
-                assert!(!reply.chars().any(relate_formatter::is_unsafe_output_char));
+                assert!(!reply.chars().any(relate_core::is_unsafe_output_char));
             }
             other => panic!("expected LoadError::Http, got {other:?}"),
         }

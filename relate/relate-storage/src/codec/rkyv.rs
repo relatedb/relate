@@ -39,7 +39,7 @@ use crate::{storage_context, StoreTarget};
 /// by construction (the decoder still caps nesting depth, since a
 /// validated archive can be logically deep).
 #[derive(Archive, Serialize, Deserialize, Debug)]
-pub enum JVal {
+pub(crate) enum JVal {
     Null,
     Bool(bool),
     Int(i64),
@@ -195,7 +195,7 @@ fn value_to_json(
 /// hold `(key id, value id)` pairs; the values themselves live once in
 /// [`Snapshot::values`].
 #[derive(Archive, Serialize, Deserialize, Debug)]
-pub struct Snapshot {
+pub(crate) struct Snapshot {
     value_encoding: u64,
     /// The checkpoint LSN this archive holds. The load refuses an archive
     /// whose LSN disagrees with the manifest's: the archive and the
@@ -291,7 +291,7 @@ fn decode_props(
     Ok(PropertyMap::share(props))
 }
 
-pub fn dump(
+pub(crate) fn dump(
     target: &StoreTarget,
     graph: &dyn relate_engine_api::GraphImport,
     checkpoint_lsn: u64,
@@ -638,8 +638,8 @@ fn decode_contents(snapshot: &ArchivedSnapshot, value_encoding: u64) -> Result<S
     })
 }
 
-pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
+pub(crate) fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
     // The one size-accounting policy over this codec's objects (see
     // `snapshot::sum_object_bytes`).
-    crate::snapshot::sum_object_bytes(target, &[crate::snapshot::MANIFEST_JSON, super::GRAPH_RKYV])
+    crate::snapshot::sum_object_bytes(target, SnapshotCodecKind::Rkyv.checkpoint_objects())
 }

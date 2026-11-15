@@ -5,10 +5,11 @@
 use std::io::Write;
 
 use indexmap::IndexMap;
+use relate_core::is_unsafe_output_char;
 use relate_model::CypherValue;
 use relate_parser::token::{identifier_needs_quotes, quote_identifier};
 
-use crate::escape::{control_escape, is_unsafe_output_char, ControlEscape};
+use crate::escape::{control_escape, ControlEscape};
 use crate::{cell, Formatter};
 
 impl Formatter {

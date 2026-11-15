@@ -102,18 +102,36 @@ fn open_shared_readonly(path: &Path) -> Result<File> {
     NativeVfs::open_checked_existing(path, &opts)
 }
 
+/// A zero-length host file carries no superblock yet: opening it
+/// initializes a fresh bundle.
+fn host_len_is_uninitialized(len: u64) -> bool {
+    len == 0
+}
+
 impl BundleVfs {
     pub fn open_or_create(path: impl Into<PathBuf>) -> Result<Self> {
         // Lock the very handle used for initialization, before reading or
         // writing even the first superblock; no host-side .rl sidecar.
         let (path, mut file) = Self::lock_host(&path.into(), HostAdmit::Create)?;
         let meta = file.metadata()?;
-        let bundle = if meta.len() == 0 {
+        let bundle = if host_len_is_uninitialized(meta.len()) {
             init_empty(&mut file)?
         } else {
             load_existing(&mut file)?
         };
         Ok(Self::from_host_parts(path, file, bundle))
+    }
+
+    /// Whether [`open_or_create`](Self::open_or_create) on `path` would
+    /// initialize a fresh bundle: the host file is missing or empty. The
+    /// pre-open decision and the open consult the one emptiness fact
+    /// ([`host_len_is_uninitialized`]).
+    pub(crate) fn open_would_initialize(path: &Path) -> Result<bool> {
+        match std::fs::metadata(path) {
+            Ok(meta) => Ok(host_len_is_uninitialized(meta.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// [`open_or_create`](Self::open_or_create) restricted to a destination

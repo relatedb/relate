@@ -72,30 +72,6 @@ fn test_markdown_escapes_control_chars() {
 }
 
 #[test]
-fn test_is_unsafe_output_char_covers_cc_and_cf() {
-    // Cc: ESC, DEL, a C1 CSI byte.
-    for c in ['\u{1b}', '\u{7f}', '\u{85}'] {
-        assert!(is_unsafe_output_char(c), "Cc {c:?} not classified unsafe");
-    }
-    // Cf: bidi controls, zero-width/BOM marks, soft hyphen, and an astral
-    // format character (LANGUAGE TAG) that `is_control` never sees.
-    for c in [
-        '\u{202e}',
-        '\u{200e}',
-        '\u{200b}',
-        '\u{feff}',
-        '\u{00ad}',
-        '\u{e0001}',
-    ] {
-        assert!(is_unsafe_output_char(c), "Cf {c:?} not classified unsafe");
-    }
-    // Ordinary printable text (including non-ASCII) stays untouched.
-    for c in ['A', '0', ' ', 'é', '你'] {
-        assert!(!is_unsafe_output_char(c), "{c:?} wrongly unsafe");
-    }
-}
-
-#[test]
 fn test_strip_unsafe_output_chars_removes_cc_and_cf() {
     // Cc (ESC) and Cf (U+202E) are removed, leaving the printable remainder.
     assert_eq!(strip_unsafe_output_chars("a\u{1b}\u{202e}b"), "ab");

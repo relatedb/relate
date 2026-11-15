@@ -23,110 +23,27 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use relate::Database;
-use relate_core::Value;
-use relate_datasets::{generate_fraud, FraudConfig, FraudGraph};
+use relate_datasets::{generate_fraud, load_fraud, FraudConfig};
 use relate_executor::Graph;
 use relate_storage::{
     checkpoint, load, parse_uri_with_options, snapshot_data_bytes, store_info, SnapshotCodecKind,
     StoreSnapshot,
 };
-use relate_test_support::graph::{props, signature};
+use relate_test_support::graph::signature;
 
-/// One generated-row id lookup — the invariant (every generated row names
-/// generated endpoints) in one spelling: a miss is a generator bug and
-/// fails the run, never a silently dropped row.
-fn row_id(map: &std::collections::BTreeMap<String, i64>, key: &str, what: &str) -> i64 {
-    *map.get(key)
-        .unwrap_or_else(|| panic!("fraud generator: unknown {what} {key}"))
-}
-
-/// The fraud graph as checkpoint rows: Customer/Account nodes, OWNS and
-/// TRANSFER relationships with their scalar properties.
-fn build_fraud(scale: f64) -> Graph {
-    let FraudGraph {
-        customers,
-        accounts,
-        ownership,
-        transfers,
-        ..
-    } = generate_fraud(&FraudConfig {
+/// The fraud benchmark's store: the generator's graph loaded through the
+/// datasets crate's own loader (`load_fraud`), so the lab measures the
+/// graph the fraud benchmark runs on — schema, planted-account encoding
+/// and relationship directions included.
+fn build_fraud(scale: f64) -> Database {
+    let graph = generate_fraud(&FraudConfig {
         scale,
         ..FraudConfig::default()
     });
-    let graph = Graph::default();
-    let mut next_id = 1i64;
-    let mut customer_ids = std::collections::BTreeMap::new();
-    for c in &customers {
-        graph
-            .load_checkpoint_node(relate_core::Node {
-                id: next_id,
-                labels: std::sync::Arc::new(vec!["Customer".into()]),
-                properties: props(vec![
-                    ("id", Value::String(c.id.as_str().into())),
-                    ("name", Value::String(c.name.as_str().into())),
-                ]),
-            })
-            .expect("checkpoint node");
-        customer_ids.insert(c.id.clone(), next_id);
-        next_id += 1;
-    }
-    let mut account_ids = std::collections::BTreeMap::new();
-    for a in &accounts {
-        let labels = match &a.planted {
-            Some(kind) if !kind.is_empty() => vec!["Account".to_owned(), kind.clone()],
-            _ => vec!["Account".to_owned()],
-        };
-        graph
-            .load_checkpoint_node(relate_core::Node {
-                id: next_id,
-                labels: std::sync::Arc::new(labels),
-                properties: props(vec![("id", Value::String(a.id.as_str().into()))]),
-            })
-            .expect("checkpoint node");
-        account_ids.insert(a.id.clone(), next_id);
-        next_id += 1;
-    }
-    let mut rel_id = 1i64;
-    // The generator's ownership rows are `(account id, customer id)` — the
-    // order its own `ownership.push((aid, cid))` writes. A dangling
-    // endpoint is a generator bug, not a row to drop silently (the
-    // checksum gate cannot see a truncated graph).
-    for (account, customer) in &ownership {
-        let start = row_id(&customer_ids, customer, "customer");
-        let end = row_id(&account_ids, account, "account");
-        graph
-            .load_checkpoint_rel(relate_core::Relationship {
-                id: rel_id,
-                start,
-                end,
-                rel_type: "OWNS".into(),
-                properties: props(Vec::new()),
-            })
-            .expect("checkpoint rel");
-        rel_id += 1;
-    }
-    for t in &transfers {
-        let start = row_id(&account_ids, &t.from, "account");
-        let end = row_id(&account_ids, &t.to, "account");
-        graph
-            .load_checkpoint_rel(relate_core::Relationship {
-                id: rel_id,
-                start,
-                end,
-                rel_type: "TRANSFER".into(),
-                properties: props(vec![
-                    ("id", Value::String(t.id.as_str().into())),
-                    ("amount", Value::Float(t.amount)),
-                    ("ts", Value::Int(t.ts)),
-                ]),
-            })
-            .expect("checkpoint rel");
-        rel_id += 1;
-    }
-    graph.set_next_node_id(next_id);
-    graph.set_next_rel_id(rel_id);
-    graph.set_commit_ts(1);
-    graph
+    let db = Database::open(":memory:").expect("memory store");
+    let mut conn = db.connect().expect("connection");
+    load_fraud(&mut conn, &graph).expect("fraud load");
+    db
 }
 
 /// The pokec fixture's store, as the lab's one graph: the fixture
@@ -162,23 +79,6 @@ fn build_ldbc(dataset_dir: &Path) -> Database {
         report.seconds, report.nodes, report.relationships
     );
     db
-}
-
-/// The one graph every codec measures, whichever side holds it: the
-/// fraud rows directly, the fixture/loaded stores through the facade's
-/// research-only live-graph handle.
-enum Source {
-    Rows(Box<Graph>),
-    Store(Database),
-}
-
-impl Source {
-    fn graph(&self) -> &Graph {
-        match self {
-            Source::Rows(graph) => graph,
-            Source::Store(db) => db.sol_graph(),
-        }
-    }
 }
 
 struct Measurement {
@@ -249,17 +149,14 @@ fn measure(codec: SnapshotCodecKind, graph: &Graph, repeats: u32, root: &Path) -
 
 /// The one source parser: `fraud:<scale>` (a bare number is the same
 /// thing), `pokec:<shape>`, `ldbc:<dataset-dir>`.
-fn parse_source(arg: &str) -> (String, Source) {
+fn parse_source(arg: &str) -> (String, Database) {
     // `fraud:<scale>` and a bare number are the same source: strip the
     // prefix once, then one parse arm builds it.
     let bare = arg.strip_prefix("fraud:").unwrap_or(arg);
     if let Ok(scale) = bare.parse::<f64>() {
-        (
-            format!("fraud scale {scale}"),
-            Source::Rows(Box::new(build_fraud(scale))),
-        )
+        (format!("fraud scale {scale}"), build_fraud(scale))
     } else if let Some(shape) = arg.strip_prefix("pokec:") {
-        (format!("pokec {shape}"), Source::Store(build_pokec(shape)))
+        (format!("pokec {shape}"), build_pokec(shape))
     } else if let Some(dir) = arg.strip_prefix("ldbc:") {
         (
             format!(
@@ -269,7 +166,7 @@ fn parse_source(arg: &str) -> (String, Source) {
                     .unwrap_or_default()
                     .to_string_lossy()
             ),
-            Source::Store(build_ldbc(Path::new(dir))),
+            build_ldbc(Path::new(dir)),
         )
     } else {
         panic!("unknown source '{arg}' (fraud:<scale>, pokec:<shape>, ldbc:<dir>)");
@@ -294,8 +191,8 @@ fn main() {
         "unexpected extra argument (usage: <source> [repeats])"
     );
 
-    let (label, source) = parse_source(&source);
-    let graph = source.graph();
+    let (label, db) = parse_source(&source);
+    let graph = db.sol_graph();
     let ts = graph.commit_ts();
     let nodes = graph.all_node_ids_at(ts).len();
     let rels = graph.all_rel_ids_at(ts).len();

@@ -11,7 +11,9 @@ use std::collections::HashSet;
 
 use super::decode::{entries, Node, Rel, Wire};
 use super::literal::{arrow, props};
-use crate::{is_bare_identifier, is_unsafe_output_char};
+use relate_core::is_unsafe_output_char;
+
+use crate::is_bare_identifier;
 
 fn is_gram_integer(s: &str) -> bool {
     let d = s.strip_prefix('-').unwrap_or(s);

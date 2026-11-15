@@ -30,7 +30,7 @@ pub(crate) mod rkyv {
     use crate::snapshot::LoadedSnapshot;
     use crate::{Result, StoreTarget};
 
-    pub fn dump(
+    pub(crate) fn dump(
         _: &StoreTarget,
         _: &dyn relate_engine_api::GraphImport,
         _: u64,
@@ -46,7 +46,7 @@ pub(crate) mod rkyv {
         Err(codec_unavailable(SnapshotCodecKind::Rkyv))
     }
 
-    pub fn snapshot_data_bytes(_: &StoreTarget) -> Result<u64> {
+    pub(crate) fn snapshot_data_bytes(_: &StoreTarget) -> Result<u64> {
         Err(codec_unavailable(SnapshotCodecKind::Rkyv))
     }
 

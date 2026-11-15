@@ -107,7 +107,7 @@ fn toon_value(val: &CypherValue) -> io::Result<String> {
 /// A bare TOON token when `s` needs no quoting, else the JSON-quoted form.
 /// Quoting is required for the empty string, a token containing a structural
 /// character (`,` `"` `\` or any unsafe output character — the shared
-/// [`crate::escape::is_unsafe_output_char`] policy, so a raw bidi override
+/// [`relate_core::is_unsafe_output_char`] policy, so a raw bidi override
 /// never reaches machine-readable output bare), leading/trailing whitespace,
 /// or a token that would re-read as a number, boolean, or null.
 fn toon_token(s: &str) -> io::Result<String> {
@@ -117,7 +117,7 @@ fn toon_token(s: &str) -> io::Result<String> {
         && s.trim() == s
         && !s
             .chars()
-            .any(|c| matches!(c, ',' | '"' | '\\') || crate::escape::is_unsafe_output_char(c));
+            .any(|c| matches!(c, ',' | '"' | '\\') || relate_core::is_unsafe_output_char(c));
     if safe {
         Ok(s.to_string())
     } else {

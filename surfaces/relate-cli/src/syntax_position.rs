@@ -8,7 +8,7 @@
 //! (or `line`/`column`) as data. Text that matches neither shape yields no
 //! position, and the caller reports the error exactly as before.
 
-use relate_formatter::is_unsafe_output_char;
+use relate_core::is_unsafe_output_char;
 
 /// Where in the statement a syntax error points.
 #[derive(Debug, Clone, PartialEq, Eq)]

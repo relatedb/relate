@@ -24,6 +24,7 @@ required-features = ["extensions"]
 [dependencies]
 relate-formatter = { workspace = true }
 relate-splitter = { workspace = true }
+relate-core = { workspace = true }
 relate-storage = { workspace = true }
 relate-model = { workspace = true }
 indexmap = { workspace = true }

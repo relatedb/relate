@@ -560,7 +560,7 @@ mod tests {
     fn truncate_for_error_strips_unsafe_chars() {
         let out = truncate_for_error("bad\u{1b}\u{202e}body");
         assert_eq!(out, "badbody");
-        assert!(!out.chars().any(relate_formatter::is_unsafe_output_char));
+        assert!(!out.chars().any(relate_core::is_unsafe_output_char));
     }
 
     #[test]
@@ -568,7 +568,7 @@ mod tests {
         let long = format!("\u{1b}{}", "x".repeat(MAX_ERROR_BODY + 10));
         let out = truncate_for_error(&long);
         assert!(out.contains("truncated"));
-        assert!(!out.chars().any(relate_formatter::is_unsafe_output_char));
+        assert!(!out.chars().any(relate_core::is_unsafe_output_char));
     }
 
     #[test]
@@ -594,7 +594,7 @@ mod tests {
                     "{msg:?}"
                 );
                 assert!(!msg.contains('\u{202e}'), "raw RLO leaked: {msg:?}");
-                assert!(!msg.chars().any(relate_formatter::is_unsafe_output_char));
+                assert!(!msg.chars().any(relate_core::is_unsafe_output_char));
             }
             other => panic!("expected LoadError::Body, got {other:?}"),
         }

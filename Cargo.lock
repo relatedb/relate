@@ -2231,6 +2231,7 @@ dependencies = [
  "relate-auth",
  "relate-bolt",
  "relate-catalog",
+ "relate-core",
  "relate-eggs",
  "relate-feedback",
  "relate-formatter",
@@ -2259,7 +2260,6 @@ name = "relate-codec-lab"
 version = "1.0.2"
 dependencies = [
  "relate",
- "relate-core",
  "relate-datasets",
  "relate-executor",
  "relate-query-latency",
@@ -2408,6 +2408,7 @@ dependencies = [
  "chrono",
  "indexmap",
  "relate",
+ "relate-core",
  "relate-model",
  "relate-parser",
  "relate-test-support",

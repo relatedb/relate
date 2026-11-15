@@ -98,6 +98,22 @@ pub(crate) fn bare_manifest(
     }
 }
 
+/// A node part over `[lo, hi)` under a generated shard name, whose file
+/// holds `rows` rows in `bytes` — the one builder every shard-store test
+/// builds its part descriptors with.
+#[cfg(parquet_codec)]
+pub(crate) fn node_part(lo: i64, hi: i64, rows: u64, bytes: u64) -> crate::snapshot::ShardPart {
+    use crate::snapshot::native::ShardName;
+    use crate::snapshot::Kind;
+    crate::snapshot::ShardPart {
+        path: ShardName::random(Kind::Node, lo, hi).unwrap().path(),
+        id_lo: lo,
+        id_hi: hi,
+        rows,
+        bytes,
+    }
+}
+
 /// Finish the open write on `graph`: the redo leaves the scratch, lands
 /// in `wal`, then is applied onto the graph (ops moved once, never cloned).
 /// Returns the commit timestamp. The one spelling of the finish → pin →
@@ -157,18 +173,6 @@ pub(crate) fn on_disk_manifest(target: &StoreTarget) -> Manifest {
         .unwrap()
 }
 
-/// The codecs whose checkpoint image is a root-level store object —
-/// the set layout-asserting tests iterate: the markdown codec keeps its
-/// manifest under the `.cypherlite/` sidecar with journal-based crash
-/// safety of its own (ADR-0406 §5), so a test that asserts on the
-/// JSON/Parquet root-object layout directly covers these two only.
-fn root_layout_codecs() -> impl Iterator<Item = SnapshotCodecKind> {
-    // The typed layout facts decide (engine_dir, needs_native_root) —
-    // never a variant-name comparison a future sidecar codec would
-    // silently drift past.
-    SnapshotCodecKind::compiled_with_root_layout()
-}
-
 #[test]
 fn snapshot_is_wal_applied_state() {
     let store = memory_store();
@@ -224,29 +228,13 @@ fn legacy_wal_label_constraint_replays_with_typed_marker_after_recycle() {
 
 #[test]
 fn direct_graph_incomplete_label_constraint_fails_before_checkpoint_writes() {
-    for codec in root_layout_codecs() {
+    for codec in SnapshotCodecKind::compiled_with_root_layout() {
         let store = memory_store_with_codec(codec).unwrap();
         let graph = Graph::default();
         checkpoint_with_lsn(&store, &graph, 0, None).unwrap();
-        // The root objects this codec's checkpoint rewrites, stated from
-        // the typed codec the loop holds — its checkpoint image plus,
-        // for the JSON codec, the root envelope that checkpoint also
-        // republishes — never a filesystem probe deciding the layout.
-        let covered: Vec<&str> = match codec {
-            SnapshotCodecKind::Parquet => vec![codec.checkpoint_image()],
-            SnapshotCodecKind::Json => {
-                vec![crate::snapshot::MANIFEST_JSON, codec.checkpoint_image()]
-            }
-            SnapshotCodecKind::Markdown => {
-                unreachable!("root_layout_codecs yields only codecs without an engine sidecar")
-            }
-            // Unconditional arms like Parquet's: the loop yields only
-            // compiled codecs, so an uncompiled codec's arm is never
-            // taken.
-            SnapshotCodecKind::Rkyv => {
-                vec![crate::snapshot::MANIFEST_JSON, crate::codec::GRAPH_RKYV]
-            }
-        };
+        // The root objects this codec's checkpoint rewrites, read from
+        // its typed layout fact.
+        let covered = codec.checkpoint_objects();
         let old: Vec<(&str, Vec<u8>)> = covered
             .iter()
             .map(|&path| (path, crate::snapshot::get_object(&store, path).unwrap()))

@@ -617,16 +617,35 @@ fn control_character_mirror_entry_name_is_escaped_in_the_drift_error() {
     assert_planted_entry_name_escaped(&text);
 }
 
+/// An invisible bidi-override format character (`Cf`, not `Cc`) in a
+/// mirror entry name is escaped too — the shared output-safety policy,
+/// not `char::is_control` alone, decides what reaches the error text.
+#[test]
+fn bidi_override_in_mirror_entry_name_is_escaped_in_the_drift_error() {
+    let store = memory_store_with_codec(SnapshotCodecKind::Json).unwrap();
+    checkpointed_store(&store);
+    let planted = format!("{SCHEMA_DIR}/gnp\u{202e}txt.exe");
+    snapshot::put_object(&store, &planted, b"stray").unwrap();
+
+    let Err(error) = open_store::<relate_executor::Graph>(&store) else {
+        panic!("a bidi-override mirror entry opened the store")
+    };
+    assert_entry_name_escaped(&error.to_string(), '\u{202e}', r"gnp\u{202e}txt.exe");
+}
+
 /// The escape contract's one verdict over a drift error that names the
 /// planted `esc\u{1b}[31mfake\nerror.txt` entry: no raw control
 /// character survives, and the name reads in its escaped spelling.
 fn assert_planted_entry_name_escaped(text: &str) {
-    assert!(!text.contains('\u{1b}'), "raw ESC reached: {text:?}");
     assert!(!text.contains('\n'), "raw newline reached: {text:?}");
-    assert!(
-        text.contains(r"esc\u{1b}[31mfake\nerror.txt"),
-        "escaped name in: {text}"
-    );
+    assert_entry_name_escaped(text, '\u{1b}', r"esc\u{1b}[31mfake\nerror.txt");
+}
+
+/// The shared half of that verdict: `raw` never reaches the error text,
+/// and the entry name reads in its `escaped` spelling.
+fn assert_entry_name_escaped(text: &str, raw: char, escaped: &str) {
+    assert!(!text.contains(raw), "raw {raw:?} reached: {text:?}");
+    assert!(text.contains(escaped), "escaped name in: {text}");
 }
 
 /// The real-filesystem leg of the escape contract: a control-character

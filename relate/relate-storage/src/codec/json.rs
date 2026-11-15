@@ -305,7 +305,7 @@ fn graph_from_data<G: relate_engine_api::SnapshotGraph>(
 pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
     // The one size-accounting policy over this codec's objects (see
     // `snapshot::sum_object_bytes`).
-    crate::snapshot::sum_object_bytes(target, &[crate::snapshot::MANIFEST_JSON, GRAPH_JSON])
+    crate::snapshot::sum_object_bytes(target, SnapshotCodecKind::Json.checkpoint_objects())
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ impl ShardName {
         }
     }
 
-    pub(super) fn random(kind: Kind, lo: i64, hi: i64) -> Result<Self> {
+    pub(crate) fn random(kind: Kind, lo: i64, hi: i64) -> Result<Self> {
         Ok(Self {
             generation: Some(random_bytes_16()?),
             ..Self::fixed(kind, lo, hi)
@@ -70,7 +70,7 @@ impl ShardName {
         })
     }
 
-    pub(super) fn path(self) -> String {
+    pub(crate) fn path(self) -> String {
         let mut path = format!("{}/{}-{}", self.kind.dir(), self.lo, self.hi);
         if let Some(generation) = self.generation {
             path.push('-');

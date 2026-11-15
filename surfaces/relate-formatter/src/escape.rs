@@ -9,6 +9,8 @@
 //! `\uXXXX`. CSV fields escape controls with the braced form too, but keep LF
 //! and CR raw so RFC-4180 quoting leaves multi-line values intact.
 
+use relate_core::is_unsafe_output_char;
+
 /// The `\u` escape spelling for a control character, which differs by surface.
 #[derive(Clone, Copy)]
 pub(crate) enum ControlEscape {
@@ -23,57 +25,12 @@ pub(crate) enum ControlEscape {
 
 /// The one canonical control-character → escape mapping. The caller picks the
 /// surface's spelling via [`ControlEscape`]; `c` is expected to be unsafe
-/// (see [`is_unsafe_output_char`]).
+/// (see [`relate_core::is_unsafe_output_char`]).
 pub(crate) fn control_escape(c: char, style: ControlEscape) -> String {
     match style {
         ControlEscape::Braced => format!("\\u{{{:X}}}", c as u32),
         ControlEscape::Cypher => format!("\\u{:04X}", c as u32),
     }
-}
-
-/// The single classification of characters that must never reach a human-facing
-/// output surface raw: Unicode general-category **`Cc`** controls (C0, DEL, C1,
-/// via [`char::is_control`]) **and** **`Cf`** format characters (bidi overrides
-/// such as U+202E RIGHT-TO-LEFT OVERRIDE, zero-width marks such as U+200B/U+200E,
-/// and U+FEFF), which `is_control` does not cover but which reorder or hide
-/// printable text and can spoof a terminal.
-///
-/// This is shared by the terminal/markdown escaper ([`escape_control`]), the
-/// the Cypher string
-/// literal ([`cypher_string_literal`]), and the CLI's remote-string sanitizer
-/// — there is deliberately no per-surface table to drift out of sync.
-pub fn is_unsafe_output_char(c: char) -> bool {
-    c.is_control() || is_format_char(c)
-}
-
-/// `true` for Unicode general category `Cf` (format) characters. Rust's
-/// `char::is_control` covers only `Cc`, so the bidi controls, zero-width marks,
-/// and other invisible formatters need their own check.
-fn is_format_char(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00AD}'
-            | '\u{0600}'..='\u{0605}'
-            | '\u{061C}'
-            | '\u{06DD}'
-            | '\u{070F}'
-            | '\u{0890}'..='\u{0891}'
-            | '\u{08E2}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
-            | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{110BD}'
-            | '\u{110CD}'
-            | '\u{13430}'..='\u{1343F}'
-            | '\u{1BCA0}'..='\u{1BCA3}'
-            | '\u{1D173}'..='\u{1D17A}'
-            | '\u{E0001}'
-            | '\u{E0020}'..='\u{E007F}'
-    )
 }
 
 /// Escape characters that a terminal would interpret or that would corrupt the

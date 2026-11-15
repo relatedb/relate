@@ -355,17 +355,9 @@ pub(super) fn put_manifest(store: &StoreTarget, manifest: &impl Serialize) -> Ve
     bytes
 }
 
-/// A node part over `[lo, hi)` under a generated name, whose file holds
-/// `rows` rows in `bytes`.
-pub(super) fn node_part(lo: i64, hi: i64, rows: u64, bytes: u64) -> ShardPart {
-    ShardPart {
-        path: ShardName::random(Kind::Node, lo, hi).unwrap().path(),
-        id_lo: lo,
-        id_hi: hi,
-        rows,
-        bytes,
-    }
-}
+/// A node part over `[lo, hi)` under a generated name — the crate's one
+/// builder, re-exported for the glob-importing native tests.
+pub(super) use crate::tests::node_part;
 
 /// Give `kind`'s part `index` in `manifest` a new file over the part's
 /// range holding `bytes`, which hold `rows` rows, and publish `manifest`.

@@ -6,6 +6,7 @@ publish = false
 license.workspace = true
 
 [dependencies]
+relate-core = { workspace = true }
 relate-model = { workspace = true }
 # ADR-0359: the plan presentation composes the engine's Neo4j-facing value
 # with the boundary-rendered text, so the formatter reads `PlanNode`.

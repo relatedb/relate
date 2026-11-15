@@ -148,6 +148,19 @@ impl SnapshotCodecKind {
         }
     }
 
+    /// The store-relative objects a checkpoint of this codec republishes
+    /// at the root, [`checkpoint_image`](Self::checkpoint_image) among
+    /// them: the JSON and rkyv codecs keep the Parquet-compatible
+    /// `manifest.json` envelope beside their payload object.
+    pub const fn checkpoint_objects(self) -> &'static [&'static str] {
+        match self {
+            Self::Parquet => &[crate::snapshot::MANIFEST_JSON],
+            Self::Json => &[crate::snapshot::MANIFEST_JSON, super::json::GRAPH_JSON],
+            Self::Rkyv => &[crate::snapshot::MANIFEST_JSON, super::GRAPH_RKYV],
+            Self::Markdown => &[super::markdown::MANIFEST],
+        }
+    }
+
     /// The store-relative directory holding this codec's engine state:
     /// the markdown codec's hidden `.cypherlite/`, or
     /// `None` — never a sentinel string — for the snapshot-file codecs,

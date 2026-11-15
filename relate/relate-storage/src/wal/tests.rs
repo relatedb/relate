@@ -266,6 +266,32 @@ fn pull_identity_remote_id_and_property_values_are_not_local_ids() {
 }
 
 #[test]
+fn wal_open_notifying_hands_each_trim_to_the_callback() {
+    let vfs = Arc::new(MemoryVfs::new());
+    write_magic(&*vfs, "00000001.log", MAGIC, true).unwrap();
+    vfs.open("00000001.log", VfsOpen::append_create())
+        .unwrap()
+        .write_all(&[1, 2])
+        .unwrap();
+    write_magic(&*vfs, "00000002.log", MAGIC, true).unwrap();
+
+    let mut seen = Vec::new();
+    let (_wal, trimmed_tails) =
+        Wal::open_notifying(Arc::clone(&vfs) as Arc<dyn Vfs>, "", 0, &mut |tail| {
+            seen.push(tail.clone())
+        })
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![TrimmedTail {
+            path: "00000001.log".to_string(),
+            discarded_bytes: 2,
+        }]
+    );
+    assert_eq!(seen, trimmed_tails, "the callback saw the returned trims");
+}
+
+#[test]
 fn wal_torn_closed_tail_is_trimmed_but_existing_magic_must_be_complete() {
     // A relaxed (snapshot) rotate skips the barrier, so a torn suffix can land
     // on a just-rotated *closed* segment. Recovery keeps the intact prefix and

@@ -235,19 +235,21 @@ pub fn open_follower_wal(target: &StoreTarget) -> Result<Wal> {
 /// follower that has applied through the tip swaps this handle in and
 /// keeps the loaded graph (ADR-0440).
 pub fn open_writer_wal(target: &StoreTarget) -> Result<Wal> {
-    Ok(open_writer_wal_with_report(target)?.0)
+    open_writer_wal_notifying(target, &mut |_| {})
 }
 
-/// [`open_writer_wal`] plus the torn-tail report (ADR-0114): the tails
-/// this open trimmed, for the promoting caller to report — empty when
-/// recovery found none. The doc-hidden reporting twin, mirroring the
-/// [`Wal::open`] / [`Wal::open_with_report`] split so the published
-/// signature keeps its shape.
+/// [`open_writer_wal`] that hands each torn tail it trims (ADR-0114) to
+/// `on_trim` the moment the trim is durable, for the promoting caller to
+/// report even when a later step fails. The doc-hidden notifying twin,
+/// mirroring [`Wal::open`] / [`Wal::open_notifying`].
 #[doc(hidden)]
-pub fn open_writer_wal_with_report(target: &StoreTarget) -> Result<(Wal, Vec<crate::TrimmedTail>)> {
+pub fn open_writer_wal_notifying(
+    target: &StoreTarget,
+    on_trim: &mut dyn FnMut(&crate::TrimmedTail),
+) -> Result<Wal> {
     let checkpoint_lsn = crate::published_checkpoint_lsn(target)?;
     let (vfs, prefix) = target.wal_vfs();
-    Wal::open_with_report(vfs, prefix, checkpoint_lsn)
+    Ok(Wal::open_notifying(vfs, prefix, checkpoint_lsn, on_trim)?.0)
 }
 
 fn manifest_stamp(target: &StoreTarget) -> Result<Option<Vec<u8>>> {
@@ -318,6 +320,21 @@ pub struct OpenReport {
 pub fn open_store_with_report<G: SnapshotGraph>(
     target: &StoreTarget,
 ) -> Result<(G, Wal, Option<String>, OpenReport)> {
+    open_store_notifying(target, &mut |_| {})
+}
+
+/// [`open_store_with_report`] that also hands each torn tail to `on_trim`
+/// the moment [`Wal::open_notifying`] has trimmed it — before the
+/// dirty-WAL guard, the replay or the migration checkpoint can fail. The
+/// trim is already durable when the loader returns, so a failed open
+/// must still surface it (a retry finds nothing left to report);
+/// `report.trimmed_tails` lists the same tails for a caller that only
+/// needs them after a successful open.
+#[doc(hidden)]
+pub fn open_store_notifying<G: SnapshotGraph>(
+    target: &StoreTarget,
+    on_trim: &mut dyn FnMut(&crate::TrimmedTail),
+) -> Result<(G, Wal, Option<String>, OpenReport)> {
     let LoadedSnapshot::<G> {
         graph,
         checkpoint_lsn,
@@ -326,7 +343,8 @@ pub fn open_store_with_report<G: SnapshotGraph>(
         deferred,
     } = load_snapshot_with_schema_guard::<G>(target)?;
     let (wal_vfs, wal_prefix) = target.wal_vfs();
-    let (mut wal, trimmed_tails) = Wal::open_with_report(wal_vfs, wal_prefix, checkpoint_lsn)?;
+    let (mut wal, trimmed_tails) =
+        Wal::open_notifying(wal_vfs, wal_prefix, checkpoint_lsn, on_trim)?;
     // The writable-open tail (ADR-0406 §5), codec-owned through the ops
     // table: the dirty-WAL guard first, then — no WAL deltas pending
     // over the loaded base — the load's deferred action runs.

@@ -1,7 +1,9 @@
 //! Graph-content comparison and construction helpers shared by the
-//! engine's codec test suites and the measurement harnesses: the exact
-//! text signature every cross-codec fidelity gate asserts on, and the
-//! property-map builder the fixtures build rows with.
+//! codec-lab measurement harness and the test suites that depend on this
+//! crate: the exact text signature a cross-codec fidelity gate asserts
+//! on, and a property-map builder for fixtures that build rows by hand.
+//! Crates whose tests cannot depend on this crate keep their own local
+//! builders.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,8 +11,7 @@ use std::sync::Arc;
 use relate_core::{PropertyMap, Value};
 use relate_executor::Graph;
 
-/// A property map from `(key, value)` pairs — the one builder the codec
-/// fixtures and measurement harnesses build rows with.
+/// A property map from `(key, value)` pairs.
 pub fn props(entries: Vec<(&str, Value)>) -> Arc<PropertyMap> {
     let map: BTreeMap<String, Value> = entries
         .into_iter()

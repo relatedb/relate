@@ -232,6 +232,22 @@ impl Wal {
         prefix: &str,
         checkpoint_lsn: u64,
     ) -> Result<(Self, Vec<TrimmedTail>)> {
+        Self::open_notifying(vfs, prefix, checkpoint_lsn, &mut |_| {})
+    }
+
+    /// [`open_with_report`](Self::open_with_report) that also hands each
+    /// trim to `on_trim` the moment it is durable — before any later step of
+    /// this open can fail. A trim rewrites the torn segment for good, so an
+    /// open that fails afterwards (here, or in the caller's replay and
+    /// migration steps) would otherwise lose the durability event: a retry
+    /// finds no torn tail left to report. The returned list is the same
+    /// trims the callback saw.
+    pub fn open_notifying(
+        vfs: Arc<dyn Vfs>,
+        prefix: &str,
+        checkpoint_lsn: u64,
+        on_trim: &mut dyn FnMut(&TrimmedTail),
+    ) -> Result<(Self, Vec<TrimmedTail>)> {
         vfs.create_dir_all(prefix)?;
         let mut ids = list_segment_ids(&*vfs, prefix)?;
         if ids.is_empty() {
@@ -249,10 +265,12 @@ impl Wal {
         let mut trimmed_tails = Vec::new();
         for (path, end) in &scan.trims {
             let discarded_bytes = replace_torn_tail(&*vfs, path, *end)?;
-            trimmed_tails.push(TrimmedTail {
+            let tail = TrimmedTail {
                 path: path.clone(),
                 discarded_bytes,
-            });
+            };
+            on_trim(&tail);
+            trimmed_tails.push(tail);
         }
         let active_path = segment_path(prefix, current_id);
         let file = open_append(&*vfs, &active_path)?;
