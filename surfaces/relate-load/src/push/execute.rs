@@ -115,6 +115,13 @@ fn classify_keyed<'a>(
     remote: &BTreeMap<String, Option<Value>>,
     report: &mut EntityReport,
 ) -> Result<Vec<&'a EntityRow>, LoadError> {
+    // Every keyed kind is a writing kind, so it always carries a policy
+    // (see `PlannedEntity::policy`); the caller's `is_keyed` check is the
+    // invariant. (The writing kinds are a superset — `NodeCreate` writes
+    // and is not keyed — but it never reaches this function.)
+    let policy = entity
+        .policy
+        .expect("a keyed entity carries an update policy");
     let mut apply: Vec<&EntityRow> = Vec::new();
     for row in &entity.rows {
         let identity = row_identity(entity, row)?;
@@ -128,7 +135,7 @@ fn classify_keyed<'a>(
             }
             Some(value) => value.as_ref(),
         };
-        if entity.policy == UpdatePolicy::Skip {
+        if policy == UpdatePolicy::Skip {
             report.skipped_policy += 1;
             continue;
         }

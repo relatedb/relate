@@ -221,7 +221,12 @@ fn lon_envelopes(lo: f64, hi: f64, miny: f64, maxy: f64) -> Vec<AABB<[f64; 2]>> 
 /// sound, and the seek falls back to the full posting set). A Cartesian
 /// seek uses the flat metre box, the Pythagorean metric's exact bound. A
 /// box wrapping the antimeridian splits across ±180 ([`LON_MIN`],
-/// [`LON_MAX`] — the domain `point()` validates). `EPS` pads the radius
+/// [`LON_MAX`] — the domain `point()` enforces and the Query API typed
+/// decoders wrap into). The clip is sound for those producers; a point a
+/// verbatim-storing path accepted without that rule (a Bolt point
+/// parameter, ADR-0177 §2, or the C ABI) can sit outside the band, and
+/// this clip can then miss a value the residual accepts — the residual
+/// stays the ground truth (LABS-1236). `EPS` pads the radius
 /// for float rounding in the over-size direction; the residual keeps the
 /// bound exact. Empty means no usable envelope, and the caller falls back
 /// to the full posting set.

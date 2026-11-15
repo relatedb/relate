@@ -409,9 +409,53 @@ fn per_entity_policies_reach_their_groups() {
     let mut o = opts();
     o.nodes_update = PolicySpec::parse("Event=replace").unwrap();
     let plan = build_plan(&g, &keys(), &o).unwrap();
-    assert_eq!(plan.entities[0].policy, UpdatePolicy::Replace); // Event
-    assert_eq!(plan.entities[1].policy, UpdatePolicy::Add); // Person
+    assert_eq!(plan.entities[0].policy, Some(UpdatePolicy::Replace)); // Event
+    assert_eq!(plan.entities[1].policy, Some(UpdatePolicy::Add)); // Person
     assert!(plan.entities[0].statement.contains("SET n = row.props"));
+}
+
+/// A counted bucket writes nothing, so it carries no policy — never a
+/// fabricated one (LABS-932). The three counted kinds (unkeyed-skip node,
+/// unkeyed-endpoint rel, dangling) all report `None`, while every writing
+/// kind reports `Some`.
+#[test]
+fn counted_buckets_carry_no_policy() {
+    let mut unkeyed = person(2, "no-key");
+    unkeyed.labels = vec!["Untyped".into()];
+    let mut g = graph(
+        vec![person(1, "Ada"), unkeyed, event(3, "gql")],
+        vec![spoke_at(1, 3), spoke_at(2, 3)],
+    );
+    g.dangling_rels = 4;
+    let plan = build_plan(&g, &keys(), &opts()).unwrap();
+
+    let policy_of = |pred: fn(&EntityKind) -> bool| {
+        plan.entities
+            .iter()
+            .find(|e| pred(&e.kind))
+            .unwrap_or_else(|| panic!("no entity matched: {plan:?}"))
+            .policy
+    };
+    assert_eq!(
+        policy_of(|k| matches!(k, EntityKind::NodeLabel { .. })),
+        Some(UpdatePolicy::Add),
+        "a keyed node group carries its policy"
+    );
+    assert_eq!(
+        policy_of(|k| matches!(k, EntityKind::NodeSkipped { .. })),
+        None,
+        "the unkeyed-skip bucket writes nothing and carries no policy"
+    );
+    assert_eq!(
+        policy_of(|k| matches!(k, EntityKind::RelSkipped { .. })),
+        None,
+        "the unkeyed-endpoint rel bucket writes nothing and carries no policy"
+    );
+    assert_eq!(
+        policy_of(|k| matches!(k, EntityKind::Dangling)),
+        None,
+        "the dangling bucket writes nothing and carries no policy"
+    );
 }
 
 #[test]

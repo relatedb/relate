@@ -1072,12 +1072,15 @@ exactly which batches landed (exit 1; the partial report still prints).
 | `--rel-key TYPE:PROP[,PROP]` | constraint-derived | Merge key for one relationship type, overriding its constraint-derived key or supplying one where no relationship constraint exists (repeatable, one type each; composite keys included) |
 | `--unkeyed-labels ACTION` | `skip` | What happens to a label with no merge key: `skip` (reported and counted) or `create` (`CREATE` rows; non-idempotent. Relationship endpoints on such nodes are not key-addressable, so their rels are counted `unkeyed` and skipped) |
 | `--dry-run` | off | Print the plan — per-label/type counts, merge keys, statement shapes, batch counts, policies — without touching the remote |
-| `--json` | off | Print the run report as one JSON object (`entities` with `created`/`updated`/`skipped` by reason, `mergeKey`, `policy`, `statement`, `batches`, plus `statementsSent`/`rowsSent`/`bytesSent`/`elapsedMs`) instead of the table |
+| `--json` | off | Print the run report as one JSON object (`entities` with `created`/`updated`/`skipped` by reason, `mergeKey`, `policy`, `statement`, `batches`, plus `statementsSent`/`rowsSent`/`bytesSent`/`elapsedMs`) instead of the table. `policy` is `null` for a counted bucket (an unkeyed-skip label, an unkeyed-endpoint rel, the dangling bucket), which writes nothing and so has no policy |
 | `--allow-plaintext` | off | The same plaintext Basic-auth opt-in as `pull` (ADR-0122): permit `http://` to a non-loopback host, with a warning |
 
 The report (table by default, `--json` for agents) counts per entity:
 created, updated, skipped (`unkeyed` / `policy` / `remote-newer` /
 `dangling`) and `--updated-at` warning counts, plus the batch/byte totals.
+The policy column names the entity's scoped update policy; a counted bucket
+that writes nothing (unkeyed-skip, unkeyed-endpoint rel, dangling) shows
+`-` (table) / `null` (`--json`) instead of a policy it never applies.
 Idempotent re-push is the contract: running the same push twice lands the
 same remote state (under `add`/`skip`, `structural` rels, and `--updated-at`
 where applicable). Known limitation, stated by ADR-0401: the report does

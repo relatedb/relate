@@ -83,7 +83,10 @@ pub struct EntityReport {
     pub incomparable: usize,
     /// The merge key's properties (empty for unkeyed `CREATE` groups).
     pub merge_key: Vec<String>,
-    pub policy: UpdatePolicy,
+    /// The scoped update policy — `None` for the counted buckets
+    /// (unkeyed-skip, unkeyed-rel, dangling), which write nothing and so
+    /// have no policy to report (LABS-932).
+    pub policy: Option<UpdatePolicy>,
     /// The statement shape (empty when nothing is written).
     pub statement: String,
     /// Write batches: the number of `--batch-size` slices the entity's
@@ -209,7 +212,8 @@ impl EntityReport {
             },
             "incomparableWarnings": self.incomparable,
             "mergeKey": self.merge_key,
-            "policy": self.policy.as_str(),
+            // Null for the counted buckets, which carry no policy.
+            "policy": self.policy.map(UpdatePolicy::as_str),
             "statement": self.statement,
             "batches": self.batches,
         })
@@ -232,7 +236,7 @@ mod tests {
     fn planned_entity(kind: EntityKind, rows: usize) -> PlannedEntity {
         PlannedEntity {
             kind,
-            policy: UpdatePolicy::Add,
+            policy: Some(UpdatePolicy::Add),
             merge_key: vec!["name".to_string()],
             statement: "UNWIND $rows AS row MERGE (n) SET n += row.props".to_string(),
             rows: (0..rows).map(|_| placeholder_row()).collect(),
@@ -272,6 +276,27 @@ mod tests {
         assert_eq!(report.created, 0);
         assert_eq!(report.batches, 0);
         assert_eq!(report.statement, entity.statement);
+    }
+
+    /// A counted bucket writes nothing, so its report carries no policy:
+    /// the field is `None` and the JSON column renders `null` rather than
+    /// a fabricated policy (LABS-932).
+    #[test]
+    fn counted_bucket_report_has_no_policy() {
+        let entity = PlannedEntity {
+            kind: EntityKind::Dangling,
+            policy: None,
+            merge_key: Vec::new(),
+            statement: String::new(),
+            rows: Vec::new(),
+            skipped_unkeyed: 0,
+            skipped_dangling: 3,
+        };
+        let report = EntityReport::planned(&entity);
+        assert_eq!(report.policy, None);
+        let json =
+            PushReport::build(false, vec![report], &Totals::default(), Duration::ZERO).to_json();
+        assert_eq!(json["entities"][0]["policy"], Json::Null);
     }
 
     /// The JSON form carries every counter (ADR-0401 §6), camel-cased for

@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 
 use relate_core::{Error, ErrorKind, Result, Value};
+use relate_model::point::wrap_longitude;
 
 /// `point()` argument handling (ADR-0167, LABS-169). Nodes and relationships
 /// are resolved to their property maps by the caller (`bi_point`), so what
@@ -372,29 +373,6 @@ fn coordinate_type_error(key: &str) -> Error {
 /// value that is not a number is the one reachable error.
 fn required_coordinate(map: &BTreeMap<String, Value>, key: &str) -> Result<f64> {
     coordinate(map, key)?.ok_or_else(|| coordinate_type_error(key))
-}
-
-/// Neo4j longitude wrap into [-180, 180], keeping both endpoints
-/// (180.0 → 180.0, -180.0 → -180.0, 180.5 → -179.5, -200.0 → 160.0,
-/// -540.0 → -180.0). Mirrors Neo4j's `PointValue` constructor: a
-/// truncating remainder lands in (-360, 360) and one subtraction folds it
-/// in, so exact negative multiples of 360 keep the negative endpoint.
-fn wrap_longitude(longitude: f64) -> f64 {
-    let mut x = longitude;
-    if !(-180.0..=180.0).contains(&x) {
-        x %= 360.0;
-        if x > 180.0 {
-            x -= 360.0;
-        } else if x < -180.0 {
-            x += 360.0;
-        }
-    }
-    // Normalize -0.0 (from -360 % 360) to +0.0.
-    if x == 0.0 {
-        0.0
-    } else {
-        x
-    }
 }
 
 /// A point's two horizontal coordinates, `[x, y]` (longitude, latitude).

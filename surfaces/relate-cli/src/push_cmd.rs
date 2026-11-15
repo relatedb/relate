@@ -309,7 +309,11 @@ fn print_table(report: &PushReport) {
                 skipped.to_string(),
                 entity.incomparable.to_string(),
                 clean(&entity.merge_key.join(",")),
-                entity.policy.as_str().to_string(),
+                // A counted bucket (unkeyed-skip, unkeyed-rel, dangling)
+                // writes nothing and carries no policy — shown as "-".
+                entity
+                    .policy
+                    .map_or_else(|| "-".to_string(), |p| p.as_str().to_string()),
                 entity.batches.to_string(),
             ]
         })
@@ -641,7 +645,7 @@ mod tests {
                 skipped_dangling: 0,
                 incomparable: 0,
                 merge_key: vec!["name".into()],
-                policy: relate_load::UpdatePolicy::Add,
+                policy: Some(relate_load::UpdatePolicy::Add),
                 statement: "UNWIND $rows AS row MERGE (n:`Person` {`name`: row.key.`name`}) SET n += row.props".into(),
                 batches: 1,
             }],

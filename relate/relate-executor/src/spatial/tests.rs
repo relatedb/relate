@@ -8,7 +8,7 @@ use relate_core::{Error, PointValue, Result, Value};
 
 use crate::test_support::map;
 
-use super::{point_construct, point_distance, point_within_bbox, pythagoras, wrap_longitude, Srid};
+use super::{point_construct, point_distance, point_within_bbox, pythagoras, Srid};
 
 fn point(pairs: &[(&str, Value)]) -> Result<Value> {
     point_construct(&[Value::Map(map(pairs).into())])
@@ -355,25 +355,6 @@ fn srid_must_match_dimension_and_family() {
         .unwrap(),
     );
     assert_eq!(srid, 4326);
-}
-
-#[test]
-fn negative_multiple_of_360_wraps_to_the_negative_endpoint() {
-    // Spatial [3] @1.12: Neo4j keeps -540 at -180, not +180.
-    assert_eq!(wrap_longitude(-540.0), -180.0);
-    assert_eq!(wrap_longitude(540.0), 180.0);
-    assert_eq!(wrap_longitude(-180.0), -180.0);
-    assert_eq!(wrap_longitude(180.0), 180.0);
-    // -360 % 360 is -0.0 in Rust; Neo4j normalizes it to +0.0.
-    assert!(wrap_longitude(-360.0).is_sign_positive());
-    // Extreme longitudes stay finite and in range.
-    for lon in [1e30, -1e30, 1e300, -1e300, f64::MAX, -f64::MAX] {
-        let x = wrap_longitude(lon);
-        assert!(
-            x.is_finite() && (-180.0..=180.0).contains(&x),
-            "longitude {lon} wrapped to {x}"
-        );
-    }
 }
 
 #[test]

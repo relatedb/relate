@@ -24,8 +24,12 @@ pub(crate) struct PushPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct PlannedEntity {
     pub kind: EntityKind,
-    /// The scoped update policy for this entity.
-    pub policy: UpdatePolicy,
+    /// The scoped update policy — `Some` exactly for the kinds that write
+    /// (`NodeLabel`, `NodeCreate`, `Rel`). `None` for the counted buckets
+    /// (`NodeSkipped`, `RelSkipped`, `Dangling`), which never write and so
+    /// have no policy to state: a fabricated `skip` there would name a
+    /// real user-selectable policy the bucket never applies (LABS-932).
+    pub policy: Option<UpdatePolicy>,
     /// The merge key's properties (empty for an unkeyed `CREATE` group).
     pub merge_key: Vec<String>,
     /// The statement shape: one text for every batch of this entity. Empty
@@ -295,12 +299,10 @@ fn plan_nodes<'a>(
                 },
             });
         // The endpoint identity, built once — the rel phase clones it
-        // into group keys, never re-derives it per edge.
-        let id = match &keyed {
-            Some((label, merge_key)) => EndpointId::Keyed {
-                label: label.clone(),
-                merge_key: merge_key.clone(),
-            },
+        // into group keys, never re-derives it per edge. The keyed
+        // derivation is moved in, not cloned again (LABS-932).
+        let id = match keyed {
+            Some((label, merge_key)) => EndpointId::Keyed { label, merge_key },
             None => EndpointId::Unkeyed(labels),
         };
         node_groups.insert(node.id, EndpointSlot { node, id });
@@ -343,7 +345,7 @@ fn plan_nodes<'a>(
                         labels,
                         keyed_label: label,
                     },
-                    policy,
+                    policy: Some(policy),
                     merge_key,
                     rows,
                     skipped_unkeyed: 0,
@@ -355,7 +357,7 @@ fn plan_nodes<'a>(
                 entities.push(PlannedEntity {
                     statement: node_create_statement(&labels, policy)?,
                     kind: EntityKind::NodeCreate { labels },
-                    policy,
+                    policy: Some(policy),
                     merge_key: Vec::new(),
                     rows,
                     skipped_unkeyed: 0,
@@ -363,11 +365,10 @@ fn plan_nodes<'a>(
                 });
             }
             NodeDraft::Skipped { count } => {
-                let policy = opts.nodes_update.resolve(&policy_label(&labels));
                 entities.push(PlannedEntity {
                     statement: String::new(),
                     kind: EntityKind::NodeSkipped { labels },
-                    policy,
+                    policy: None,
                     merge_key: Vec::new(),
                     rows: Vec::new(),
                     skipped_unkeyed: count,
@@ -405,11 +406,13 @@ fn plan_rels(
         let end = node_groups
             .get(&rel.end)
             .expect("finish_graph kept only endpointed rels");
-        let (start_id, end_id) = (start.id.clone(), end.id.clone());
+        // The group key is built from the slots' stored ids directly;
+        // the row loop below then borrows those same ids, so neither is
+        // cloned a second time (LABS-932).
         let group = rel_groups
-            .entry((rel.rel_type.clone(), start_id.clone(), end_id.clone()))
+            .entry((rel.rel_type.clone(), start.id.clone(), end.id.clone()))
             .or_default();
-        match (&start_id, &end_id) {
+        match (&start.id, &end.id) {
             (
                 EndpointId::Keyed {
                     label: start_label,
@@ -457,7 +460,6 @@ fn plan_rels(
         }
     }
     for ((rel_type, start_id, end_id), group) in rel_groups {
-        let policy = opts.rels_update.resolve(&rel_type);
         // The same single derivation the row loop used (see
         // resolved_rel_key): structural forces the pair, create writes
         // without identity, and the keyed mode's key feeds both the
@@ -479,6 +481,10 @@ fn plan_rels(
                     merge_key: end_key,
                 },
             ) => {
+                // The scoped policy is resolved here, where a writing
+                // kind is built — a counted group never resolves one
+                // (LABS-932).
+                let policy = opts.rels_update.resolve(&rel_type);
                 entities.push(PlannedEntity {
                     statement: rel_statement(
                         &rel_type,
@@ -495,7 +501,7 @@ fn plan_rels(
                         end_label: end_label.clone(),
                         end_key: end_key.clone(),
                     },
-                    policy,
+                    policy: Some(policy),
                     merge_key: rel_merge_key,
                     rows: group.rows,
                     skipped_unkeyed: 0,
@@ -515,7 +521,7 @@ fn plan_rels(
                         start: start_id.display(),
                         end: end_id.display(),
                     },
-                    policy,
+                    policy: None,
                     merge_key: Vec::new(),
                     rows: Vec::new(),
                     skipped_unkeyed: group.skipped,
@@ -529,7 +535,7 @@ fn plan_rels(
         // one reserved bucket so the report never loses them.
         entities.push(PlannedEntity {
             kind: EntityKind::Dangling,
-            policy: UpdatePolicy::Skip,
+            policy: None,
             merge_key: Vec::new(),
             statement: String::new(),
             rows: Vec::new(),

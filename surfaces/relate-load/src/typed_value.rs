@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use relate::Value;
 use relate_core::temporal::parse_iso;
 use relate_core::{uuid_parse, PointValue, VectorCoordKind};
+use relate_model::point::{is_geographic, wrap_longitude};
 use serde_json::Value as Json;
 
 /// Why one `$type`-tagged value could not be decoded.
@@ -180,18 +181,40 @@ fn point(payload: &Json, tag: &str) -> Result<Value, DecodeError> {
             ))
         }
     };
+    let x = coordinate(x, tag)?;
     Ok(Value::Point(PointValue {
         srid,
-        x: coordinate(x, tag)?,
+        // A geographic longitude is wrapped into the stored domain by the
+        // one shared rule (`relate_model::point::wrap_longitude`, the rule
+        // `point()` applies), so a decoded point is always in the
+        // [-180, 180] band the POINT index's envelope clip assumes
+        // (non-finite coordinates are refused in `coordinate`).
+        x: if is_geographic(srid) {
+            wrap_longitude(x)
+        } else {
+            x
+        },
         y: coordinate(y, tag)?,
         z: z.map(|z| coordinate(z, tag)).transpose()?,
     }))
 }
 
+/// One point coordinate. The `Float` tag's non-finite spellings (`NaN`,
+/// `Infinity`) parse as `f64`, but a point coordinate must be finite — the
+/// rule `point()` enforces, and the one that keeps a decoded point inside
+/// the domain the POINT index's envelope clip assumes (`wrap_longitude` of
+/// an infinity is a `NaN`, which no envelope contains).
 fn coordinate(token: &str, tag: &str) -> Result<f64, DecodeError> {
-    token
+    let value: f64 = token
         .parse()
-        .map_err(|_| malformed(tag, format!("{token:?} is not a decimal coordinate")))
+        .map_err(|_| malformed(tag, format!("{token:?} is not a decimal coordinate")))?;
+    if !value.is_finite() {
+        return Err(malformed(
+            tag,
+            format!("{token:?} is not a finite coordinate"),
+        ));
+    }
+    Ok(value)
 }
 
 /// `UUID._value` is the canonical hyphenated string; `None` from
@@ -491,6 +514,37 @@ mod tests {
         );
     }
 
+    /// A geographic longitude is wrapped into the stored domain, so a
+    /// decoded point cannot sit outside the [-180, 180] band the POINT
+    /// index's envelope clip assumes (LABS-1236); a Cartesian `x` is a raw
+    /// coordinate and is never wrapped.
+    #[test]
+    fn geographic_longitudes_wrap_into_the_stored_domain() {
+        for (spelling, x) in [
+            ("SRID=4326;POINT (370.0 60.0)", 10.0),
+            ("SRID=4326;POINT (-200.0 60.0)", 160.0),
+            ("SRID=4979;POINT Z (180.5 60.0 3.0)", -179.5),
+            // Endpoints are kept, and -0.0 normalizes to +0.0.
+            ("SRID=4326;POINT (180.0 60.0)", 180.0),
+            ("SRID=4326;POINT (-360.0 60.0)", 0.0),
+        ] {
+            match decode("Point", json!(spelling)).unwrap() {
+                Value::Point(p) => assert_eq!(p.x, x, "{spelling}"),
+                other => panic!("{spelling}: expected a point, got {other:?}"),
+            }
+        }
+        // A Cartesian point's x is its own coordinate — no domain wrap.
+        assert_eq!(
+            decode("Point", json!("SRID=7203;POINT (370.0 60.0)")).unwrap(),
+            Value::Point(PointValue {
+                srid: 7203,
+                x: 370.0,
+                y: 60.0,
+                z: None,
+            })
+        );
+    }
+
     /// Each temporal tag decodes to the same `Value::Temporal` the matching
     /// Cypher constructor returns for the same `_value` through a
     /// `relate::Database` (ADR-0181 item 3).
@@ -627,6 +681,30 @@ mod tests {
                 "{payload}: {err:?}"
             );
             assert!(err.to_string().contains("Point"), "{payload}: {err}");
+        }
+    }
+
+    /// A point coordinate must be finite (the rule `point()` enforces):
+    /// the `Float` tag's `NaN`/`Infinity` spellings parse as `f64` but are
+    /// refused here, so no decoded point can sit outside the domain the
+    /// POINT index's envelope clip assumes (LABS-1236).
+    #[test]
+    fn non_finite_point_coordinates_error() {
+        for payload in [
+            "SRID=4326;POINT (NaN 60)",
+            "SRID=4326;POINT (inf 60)",
+            "SRID=4326;POINT (60 -Infinity)",
+            "SRID=4326;POINT Z (1 2 inf)",
+        ] {
+            let err = decode("Point", json!(payload)).unwrap_err();
+            assert!(
+                matches!(&err, DecodeError::Malformed { tag, .. } if tag == "Point"),
+                "{payload}: {err:?}"
+            );
+            assert!(
+                err.to_string().contains("finite coordinate"),
+                "{payload}: {err}"
+            );
         }
     }
 
