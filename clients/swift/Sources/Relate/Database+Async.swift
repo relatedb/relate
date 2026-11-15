@@ -35,7 +35,7 @@ extension Database {
     /// each other. `retries` covers a conflict with a writer outside the
     /// pool (a connection from ``connect()``, another process): a failure
     /// the engine marks retryable runs `body` again, up to that many more
-    /// times. `tags` travel with the commit to ``commits()``.
+    /// times. `tags` travel with the commit to ``commits(bufferingPolicy:)``.
     @discardableResult
     public func write<T: Sendable>(
         retries: Int = 0, tags: Set<String> = [],

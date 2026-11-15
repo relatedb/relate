@@ -43,7 +43,7 @@ public final class Database: Sendable {
 
     // Observation — see "Observation" below.
     public func setTraceHandler(_ handler: (@Sendable (QueryTrace) -> Void)?)
-    public func commits() -> AsyncStream<Commit>
+    public func commits(bufferingPolicy: AsyncStream<Commit>.Continuation.BufferingPolicy = .unbounded) -> AsyncStream<Commit>
 }
 
 public final class Connection {                  // NOT Sendable
@@ -299,12 +299,21 @@ public struct Commit: Sendable, Hashable {
   `Query`), with no configuration. The package's tests do not assert on
   signposts.
 - **Commits.** `commits()` returns a new `AsyncStream` per call. A stream
-  receives, in commit order, each auto-commit statement that returned a
-  bookmark and each explicit transaction whose `commit()` returned one,
-  made after the stream was created. A read, a rolled-back transaction and a
-  write that changed nothing report nothing; a retried transaction reports
-  once. Events are buffered without bound until consumed. The stream ends
-  when the store closes, and releasing a stream unsubscribes it.
+  receives each auto-commit statement that returned a bookmark and each
+  explicit transaction whose `commit()` returned one, made after the stream
+  was created. A read, a rolled-back transaction and a write that changed
+  nothing report nothing; a retried transaction reports once. The stream
+  ends when the store closes, and releasing a stream unsubscribes it.
+- **Order.** A commit is published as soon as the engine has made it,
+  before the trace handler is called for the statement. Commits from one
+  connection (every `Database.write` shares the writer) arrive in commit
+  order. Two connections committing at the same moment may arrive in either
+  order; their bookmarks tell which came first.
+- **Buffering.** Events wait in the stream until consumed: without bound by
+  default, so an observer that stops consuming while writes continue grows
+  the backlog. `commits(bufferingPolicy: .bufferingNewest(n))` keeps only
+  the latest `n`, which is enough for an observer that reloads on any
+  commit.
 - **Tags** are the caller's routing labels: `db.write(tags: ["notes"]) { … }`
   or `conn.transaction(tags:)`. The engine does not report which labels a
   commit touched, so an observer that wants to react selectively relies on

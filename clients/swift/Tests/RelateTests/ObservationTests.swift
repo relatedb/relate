@@ -169,6 +169,52 @@ private func collectingTraces(of db: Database) -> OSAllocatedUnfairLock<[QueryTr
         #expect(retried.tags == ["retry"] && retried.stats.propertiesSet == 1 && attempts == 2)
     }
 
+    @Test func aStatementAfterAFailedCommitIsItsOwnCommit() async throws {
+        let (winner, loser) = try counterRacers()
+        var commits = winner.database.commits().makeAsyncIterator()
+        try loser.begin()
+        try winner.run(incrementCounter)
+        try loser.run(incrementCounter)
+        #expect(throws: RelateError.self) { try loser.commit() }
+        // The lost transaction's counters do not join the next commit.
+        try loser.query("CREATE (:After)")
+        #expect(try #require(await commits.next()).stats.propertiesSet == 1)  // the winner's
+        let after = try #require(await commits.next())
+        #expect(after.stats.nodesCreated == 1 && after.stats.propertiesSet == 0)
+    }
+
+    @Test func aCommitIsPublishedBeforeItsStatementIsTraced() async throws {
+        let db = try Database.inMemory()
+        let commits = db.commits()
+        let received = DispatchSemaphore(value: 0)
+        let consumer = Task {
+            for await _ in commits {
+                received.signal()
+                return
+            }
+        }
+        // The handler runs on the writer's queue, where it may block: it
+        // waits for the consumer to have been handed the commit.
+        let publishedFirst = OSAllocatedUnfairLock(initialState: false)
+        db.setTraceHandler { _ in
+            let arrived = received.wait(timeout: .now() + 10) == .success
+            publishedFirst.withLock { $0 = arrived }
+        }
+        _ = try await db.pool.withWriter(for: db) { try $0.query("CREATE (:A)") }
+        await consumer.value
+        #expect(publishedFirst.withLock { $0 })
+    }
+
+    @Test func aBoundedStreamKeepsTheNewestCommits() async throws {
+        let db = try Database.inMemory()
+        var commits = db.commits(bufferingPolicy: .bufferingNewest(1)).makeAsyncIterator()
+        let conn = try db.connect()
+        try conn.query("CREATE (:A)")
+        try conn.query("CREATE (:B), (:B)")
+        let latest = try conn.query("CREATE (:C), (:C), (:C)")
+        #expect(try #require(await commits.next()).bookmark == latest.bookmark)
+    }
+
     @Test func aReleasedStreamUnsubscribes() throws {
         let db = try Database.inMemory()
         withExtendedLifetime(db.commits()) {

@@ -87,11 +87,10 @@ private struct Book: Decodable, Sendable, Equatable {
     }
 
     @Test func writesThroughThePoolNeverConflict() async throws {
-        let db = try Database.inMemory()
-        try await db.write("CREATE (:Counter {v: 0})")
+        let db = try counterDatabase()
         try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0..<50 {
-                group.addTask { try await db.write("MATCH (c:Counter) SET c.v = c.v + 1") }
+                group.addTask { try await db.write(incrementCounter) }
             }
             try await group.waitForAll()
         }
@@ -99,10 +98,8 @@ private struct Book: Decodable, Sendable, Equatable {
     }
 
     @Test func aConflictWithAnOutsideWriterIsRetried() async throws {
-        let db = try Database.inMemory()
-        try await db.write("CREATE (:Counter {v: 0})")
+        let db = try counterDatabase()
         let attempts = OSAllocatedUnfairLock(initialState: 0)
-        let increment: Statement = "MATCH (c:Counter) SET c.v = c.v + 1 RETURN c.v"
         let seen = try await db.write(retries: 1) { tx in
             let attempt = attempts.withLock { state -> Int in
                 state += 1
@@ -110,9 +107,9 @@ private struct Book: Decodable, Sendable, Equatable {
             }
             if attempt == 1 {
                 // A connection outside the pool commits the same update first.
-                try db.connect().run(increment)
+                try db.connect().run(incrementCounter)
             }
-            return try tx.run(increment).scalar(as: Int.self)
+            return try tx.run(incrementCounter).scalar(as: Int.self)
         }
         #expect(seen == 2 && attempts.withLock { $0 } == 2)
     }

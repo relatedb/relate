@@ -9,24 +9,21 @@
 public final class Transaction {
     /// What kind of scope this is. The mode owns how the scope ends and
     /// which statements it keeps.
-    enum Mode: Equatable {
+    enum Mode {
         /// Commits when the body returns; `tags` travel with the commit.
         case write(tags: Set<String>)
         /// Always rolls back; a statement that is not a read is refused.
         case read
 
-        /// Opens a transaction of this mode.
-        func begin(on connection: Connection) throws(RelateError) {
-            switch self {
-            case .write(let tags): try connection.begin(tags: tags)
-            case .read: try connection.begin()
-            }
+        /// Whether this is the mode that keeps nothing.
+        var isReadOnly: Bool {
+            if case .read = self { true } else { false }
         }
 
         /// Ends a transaction whose body ran to completion.
         func finish(on connection: Connection) throws(RelateError) {
             switch self {
-            case .write: try connection.commit()
+            case .write(let tags): try connection.commit(tags: tags)
             case .read: try connection.rollback()
             }
         }
@@ -36,7 +33,7 @@ public final class Transaction {
             // The statement ran, but only in this transaction's overlay,
             // which a read always rolls back. Refusing here is what tells
             // the caller the write was never going to land.
-            if self == .read, result.queryType != .read {
+            if isReadOnly, result.queryType != .read {
                 throw RelateError.misuse(
                     "a \(result.queryType) statement ran in a read; nothing it changed is kept — use a write")
             }
@@ -49,7 +46,7 @@ public final class Transaction {
 
     /// Whether this scope is a read: its transaction is rolled back, and a
     /// statement that is not a read is refused.
-    public var isReadOnly: Bool { mode == .read }
+    public var isReadOnly: Bool { mode.isReadOnly }
 
     init(connection: Connection, mode: Mode) {
         self.connection = connection
@@ -113,7 +110,7 @@ extension Connection {
     /// `body` must therefore be safe to run more than once; anything it did
     /// outside the transaction is not undone.
     ///
-    /// `tags` travel with the commit to ``Database/commits()``, so an
+    /// `tags` travel with the commit to ``Database/commits(bufferingPolicy:)``, so an
     /// observer can tell which commits concern it.
     @discardableResult
     public func transaction<T>(
@@ -173,7 +170,7 @@ extension Connection {
         _ mode: Transaction.Mode, lift: (RelateError) -> Failure,
         _ body: (Transaction) throws(Failure) -> T
     ) throws(Failure) -> T {
-        do throws(RelateError) { try mode.begin(on: self) } catch { throw lift(error) }
+        do throws(RelateError) { try begin() } catch { throw lift(error) }
         let scope = Transaction(connection: self, mode: mode)
         defer { scope.end() }
         do throws(Failure) {

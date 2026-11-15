@@ -197,10 +197,11 @@ public final class Connection {
     /// database owns it (through the pool) and outlives it, so it only
     /// refers back.
     private let owner: Database?
-    /// What the open explicit transaction's commit will report to the
-    /// database's commit stream: its counters, summed as its statements
-    /// run, and its tags. `nil` in auto-commit.
-    private var pendingCommit: (stats: QueryStats, tags: Set<String>)?
+    /// The counters of the statements run since the last `begin` that did
+    /// not commit by themselves: what an explicit transaction's commit
+    /// reports to the database's commit stream. In auto-commit such a
+    /// statement changed nothing and adds nothing.
+    private var uncommittedStats = QueryStats.zero
 
     fileprivate init(handle: OpaquePointer, core: DatabaseCore, database: Database, keeping owner: Database?) {
         self.handle = handle
@@ -244,21 +245,24 @@ public final class Connection {
     public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:])
         throws(RelateError) -> QueryResult
     {
-        let result = try core.hub.observing(cypher, parameters) { () throws(RelateError) in
-            try execute(cypher, parameters)
+        try core.hub.observing(cypher, parameters) { () throws(RelateError) in
+            let result = try execute(cypher, parameters)
+            // Part of the observed step, so a commit is published before
+            // the trace handler hears of the statement that made it.
+            noteCommitted(result)
+            return result
         }
-        noteCommitted(result)
-        return result
     }
 
-    /// Commit bookkeeping for one successful statement: inside an explicit
-    /// transaction its counters join the transaction's; in auto-commit a
-    /// bookmark means it committed, and that commit is published.
+    /// Commit bookkeeping for one successful statement. A bookmark is the
+    /// engine saying the statement committed by itself (auto-commit), and
+    /// that commit is published; without one, its counters wait for the
+    /// commit of the transaction it ran in.
     private func noteCommitted(_ result: QueryResult) {
-        if let pending = pendingCommit {
-            pendingCommit = (pending.stats + result.stats, pending.tags)
-        } else if let bookmark = result.bookmark {
+        if let bookmark = result.bookmark {
             core.hub.publish(Commit(bookmark: bookmark, stats: result.stats, tags: []))
+        } else {
+            uncommittedStats = uncommittedStats + result.stats
         }
     }
 
@@ -304,15 +308,9 @@ public final class Connection {
     }
 
     public func begin() throws(RelateError) {
-        try begin(tags: [])
-    }
-
-    /// Begins an explicit transaction whose commit carries `tags` to the
-    /// database's commit stream.
-    func begin(tags: Set<String>) throws(RelateError) {
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(relate_conn_begin(handle, &err), err, "beginning the transaction")
-        pendingCommit = (.zero, tags)
+        uncommittedStats = .zero
     }
 
     /// Commits the explicit transaction and returns its bookmark
@@ -322,10 +320,13 @@ public final class Connection {
     /// typed engine error — e.g. a retryable write conflict (ADR-0439).
     @discardableResult
     public func commit() throws(RelateError) -> String? {
-        // Success or failure, the connection is back in auto-commit
-        // afterwards, so the transaction's bookkeeping ends here either way.
-        let pending = pendingCommit
-        pendingCommit = nil
+        try commit(tags: [])
+    }
+
+    /// `commit()`, with the `tags` its commit carries to the database's
+    /// commit stream.
+    @discardableResult
+    func commit(tags: Set<String>) throws(RelateError) -> String? {
         var bookmark: UnsafeMutablePointer<CChar>? = nil
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(
@@ -335,16 +336,11 @@ public final class Connection {
         guard let bookmark else { return nil }
         defer { relate_free_string(bookmark) }
         let text = try required(bookmark, "the commit's bookmark")
-        // The engine commits only a transaction `begin` opened, so a
-        // bookmark always comes with that transaction's bookkeeping.
-        if let pending {
-            core.hub.publish(Commit(bookmark: text, stats: pending.stats, tags: pending.tags))
-        }
+        core.hub.publish(Commit(bookmark: text, stats: uncommittedStats, tags: tags))
         return text
     }
 
     public func rollback() throws(RelateError) {
-        pendingCommit = nil
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(relate_conn_rollback(handle, &err), err, "rolling back the transaction")
     }

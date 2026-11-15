@@ -58,7 +58,7 @@ extension QueryTrace {
 
 // MARK: - Commits
 
-/// One committed write, as ``Database/commits()`` reports it.
+/// One committed write, as ``Database/commits(bufferingPolicy:)`` reports it.
 public struct Commit: Sendable, Hashable {
     /// The commit's bookmark (`"relate:<n>"`); later commits sort after
     /// earlier ones by `n`.
@@ -95,9 +95,9 @@ final class ObserverHub: Sendable {
         state.withLock { $0.trace = handler }
     }
 
-    func commits() -> AsyncStream<Commit> {
+    func commits(bufferingPolicy: AsyncStream<Commit>.Continuation.BufferingPolicy) -> AsyncStream<Commit> {
         let id = UUID()
-        let (stream, continuation) = AsyncStream<Commit>.makeStream()
+        let (stream, continuation) = AsyncStream<Commit>.makeStream(bufferingPolicy: bufferingPolicy)
         state.withLock { $0.subscribers[id] = continuation }
         continuation.onTermination = { [weak self] _ in
             self?.state.withLock { _ = $0.subscribers.removeValue(forKey: id) }
@@ -163,18 +163,29 @@ extension Database {
         core.hub.setTraceHandler(handler)
     }
 
-    /// A stream of the writes committed through this `Database` object, in
-    /// commit order: each auto-commit statement that changed the store and
-    /// each explicit transaction that did.
+    /// A stream of the writes committed through this `Database` object:
+    /// each auto-commit statement that changed the store and each explicit
+    /// transaction that did.
     ///
     /// Each call returns a new stream; a stream receives the commits made
-    /// after it was created, and ends when the store closes. Events are
-    /// buffered without bound until consumed.
+    /// after it was created, and ends when the store closes. A commit is
+    /// published as soon as the engine has made it, before the trace
+    /// handler hears of the statement. Commits from one connection — every
+    /// `write` shares the writer — arrive in commit order; two connections
+    /// committing at the same moment may arrive in either order, and their
+    /// bookmarks tell which came first.
+    ///
+    /// Events wait in the stream until consumed. By default they wait
+    /// without bound, so an observer that stops consuming while writes
+    /// continue grows the backlog; pass `.bufferingNewest(n)` to keep only
+    /// the latest `n` (enough for an observer that reloads on any commit).
     ///
     /// The stream is in-process and per object: a write made by another
     /// process, or through a second `Database` opened on the same store, is
     /// not reported.
-    public func commits() -> AsyncStream<Commit> {
-        core.hub.commits()
+    public func commits(
+        bufferingPolicy: AsyncStream<Commit>.Continuation.BufferingPolicy = .unbounded
+    ) -> AsyncStream<Commit> {
+        core.hub.commits(bufferingPolicy: bufferingPolicy)
     }
 }

@@ -48,16 +48,21 @@ func signalled(_ semaphore: DispatchSemaphore, within seconds: Double = 10) asyn
     }
 }
 
-/// Two connections on one database that holds a counter at zero: the
-/// fixture for a write-write conflict on one node.
-func counterRacers() throws -> (winner: Connection, loser: Connection) {
+/// A database that holds a counter at zero.
+func counterDatabase() throws -> Database {
     let db = try Database.inMemory()
-    let winner = try db.connect()
-    try winner.query("CREATE (:Counter {v: 0})")
-    return (winner, try db.connect())
+    try db.connect().query("CREATE (:Counter {v: 0})")
+    return db
 }
 
-/// Increments the counter `counterRacers()` creates and returns its value.
+/// Two connections on one counter database: the fixture for a write-write
+/// conflict on one node.
+func counterRacers() throws -> (winner: Connection, loser: Connection) {
+    let db = try counterDatabase()
+    return (try db.connect(), try db.connect())
+}
+
+/// Increments the counter of a counter database and returns its value.
 let incrementCounter: Statement = "MATCH (c:Counter) SET c.v = c.v + 1 RETURN c.v"
 
 /// Stages the engine's write-write conflict and returns what the losing
