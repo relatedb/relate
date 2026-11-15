@@ -53,7 +53,9 @@ struct BasinOutline: Equatable, Sendable, Codable {
 
     /// The outline with these linear rings: the outer one, then any holes.
     /// This is the only way to make an outline, so every outline has an
-    /// outer ring and every ring of one is closed and encloses something.
+    /// outer ring, and every ring of one is closed and at least
+    /// `shortestRing` positions long. Nothing here checks that a ring
+    /// bounds an area.
     init(rings: [[Position]]) throws(NotAPolygon) {
         guard let outer = rings.first else {
             throw NotAPolygon(description: "a \(Self.geometryType) needs an outer ring")
