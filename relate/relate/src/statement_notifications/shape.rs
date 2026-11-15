@@ -75,17 +75,35 @@ impl WorkMeter {
     }
 }
 
+/// The one context of a statement's shape pass: the notification sink the
+/// detectors append to and the [`WorkMeter`] that bounds their scans. Every
+/// entry detector takes both together, so a new detector cannot be handed
+/// the sink without the budget.
+pub(super) struct ShapeCtx<'a> {
+    notifications: &'a mut Vec<Notification>,
+    meter: &'a mut WorkMeter,
+}
+
+impl<'a> ShapeCtx<'a> {
+    pub(super) fn new(notifications: &'a mut Vec<Notification>, meter: &'a mut WorkMeter) -> Self {
+        Self {
+            notifications,
+            meter,
+        }
+    }
+}
+
 /// The `MATCH`-shape notifications: a nested multi-pattern cartesian (the
 /// top-level form is the operator-scoped warning), repeated relationship
 /// variables, unsatisfiable relationship type expressions, and the
 /// exhaustive-shortest-path predicate.
 pub(super) fn observe_match(
-    notifications: &mut Vec<Notification>,
-    meter: &mut WorkMeter,
+    ctx: &mut ShapeCtx<'_>,
     patterns: &[PathPattern],
     where_clause: Option<&Expr>,
     nested: bool,
 ) {
+    let (notifications, meter) = (&mut *ctx.notifications, &mut *ctx.meter);
     if nested && patterns.len() > 1 && !patterns_share_an_anchor(patterns) {
         notifications.push(Notification::new(
             NotificationKind::CartesianProduct,
@@ -198,11 +216,8 @@ impl ExhaustivePredicateVars {
 /// any entity created in this clause reading another (or the same) entity
 /// created in the same clause. One notification per (referencing property
 /// expression, referenced entity) pair.
-pub(super) fn observe_create(
-    notifications: &mut Vec<Notification>,
-    meter: &mut WorkMeter,
-    patterns: &[PathPattern],
-) {
+pub(super) fn observe_create(ctx: &mut ShapeCtx<'_>, patterns: &[PathPattern]) {
+    let (notifications, meter) = (&mut *ctx.notifications, &mut *ctx.meter);
     // One post-rewrite walk collects both facts the scan needs: the created
     // names and the property maps that may read them.
     let mut created: BTreeSet<String> = BTreeSet::new();
@@ -268,13 +283,13 @@ pub(super) fn observe_create(
 /// under implicit grouping or `DISTINCT`, where the subclause cannot see
 /// the pre-projection scope.
 pub(super) fn observe_projection(
-    notifications: &mut Vec<Notification>,
-    meter: &mut WorkMeter,
+    ctx: &mut ShapeCtx<'_>,
     items: &[Projection],
     order: &[OrderItem],
     where_clause: Option<&Expr>,
     distinct: bool,
 ) {
+    let (notifications, meter) = (&mut *ctx.notifications, &mut *ctx.meter);
     if items.is_empty() {
         return;
     }
@@ -302,28 +317,23 @@ pub(super) fn observe_projection(
                 .then_some(alias_text)
         })
         .collect();
-    // The complex projection items, selected once. The per-pair loop below
-    // used to re-run the shape test for every (subclause expression, item)
-    // pair, so a large projection paid for the same answer once per pair.
-    let complex: Vec<(usize, &Projection)> = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| grouped && is_complex_projection_item(&item.expr))
-        .collect();
     // The (subclause expression, shadowing name) pairs the ambiguous-reference
-    // scan tests: declined past the shared budget, while the complex-reference
-    // pass below keeps its own guard. One wide dimension therefore never
-    // silences the other family.
+    // scan tests: the family is declined past the shared budget, decided once
+    // here, while the complex-reference pass below keeps its own guard. One
+    // wide dimension therefore never silences the other family.
     let shadowing_scan = meter.charge_pairs(
         order.len() as u64 + u64::from(where_clause.is_some()),
         shadowing.len(),
     );
-    for expr in order.iter().map(|item| &item.expr).chain(where_clause) {
-        let bare_alias = matches!(expr, Expr::Variable(variable)
-                if variable.with_str(|text| aliases.contains(text)));
-        let mut vars = HashSet::new();
-        expr_vars(expr, &mut vars);
-        if !bare_alias && shadowing_scan {
+    if shadowing_scan {
+        for expr in order.iter().map(|item| &item.expr).chain(where_clause) {
+            let bare_alias = matches!(expr, Expr::Variable(variable)
+                    if variable.with_str(|text| aliases.contains(text)));
+            if bare_alias {
+                continue;
+            }
+            let mut vars = HashSet::new();
+            expr_vars(expr, &mut vars);
             for name in &shadowing {
                 if vars.contains(name.as_str()) {
                     notifications.push(Notification::new(
@@ -338,6 +348,19 @@ pub(super) fn observe_projection(
             }
         }
     }
+    // The complex-reference deprecation only applies under implicit
+    // grouping or `DISTINCT`.
+    if !grouped {
+        return;
+    }
+    // The complex projection items, selected once. The per-pair loop below
+    // used to re-run the shape test for every (subclause expression, item)
+    // pair, so a large projection paid for the same answer once per pair.
+    let complex: Vec<(usize, &Projection)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| is_complex_projection_item(&item.expr))
+        .collect();
     if complex.is_empty() {
         return;
     }
@@ -379,11 +402,8 @@ pub(super) fn observe_projection(
 /// same `CALL` shape shadowing an enclosing-statement name raises nothing).
 /// Every such body is therefore analysed with a fresh frame, wherever it
 /// sits, including inside another expression subquery's body.
-pub(super) fn observe_subquery_scopes(
-    notifications: &mut Vec<Notification>,
-    meter: &mut WorkMeter,
-    parts: &[&[Clause]],
-) {
+pub(super) fn observe_subquery_scopes(ctx: &mut ShapeCtx<'_>, parts: &[&[Clause]]) {
+    let (notifications, meter) = (&mut *ctx.notifications, &mut *ctx.meter);
     // The per-subquery work scales with the statement-wide name set (a
     // wildcard import clones it): declined past the shared budget, like the
     // sibling detectors. The SEARCH family stays checked — its cost is per

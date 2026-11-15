@@ -80,81 +80,6 @@ impl std::fmt::Display for NotificationCategory {
     }
 }
 
-/// The notification kinds (ADR-0363 decision 1) — the row identities of the
-/// one vocabulary below. `NotificationKind::row` binds each kind to its row
-/// through an exhaustive `match`, so a new kind fails the build until it
-/// names its metadata; no row is reachable by position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NotificationKind {
-    /// A multi-pattern `MATCH` whose patterns share no join anchor.
-    CartesianProduct,
-    /// A variable-length relationship pattern with no upper bound.
-    UnboundedVariableLengthPattern,
-    /// A label-less node scan while a property index exists.
-    AllNodesScan,
-    /// A static label disjunction no seek serves: the scan answers per
-    /// disjunct label (LABS-1083).
-    LabelDisjunctionScan,
-    /// A label/property equality with no range index on the pair.
-    MissingIndex,
-    /// An aggregation whose input estimate reaches the eager threshold.
-    EagerAggregation,
-    /// `PROFILE` only: an estimate at least 10x the actual rows.
-    EstimationMiss,
-    /// A node pattern naming a label absent from the catalog.
-    UnknownLabelWarning,
-    /// A relationship pattern naming a type absent from the catalog.
-    UnknownRelationshipTypeWarning,
-    /// A predicate or property access naming an absent property key.
-    UnknownPropertyKeyWarning,
-    /// A function call resolving to a deprecated catalog entry.
-    DeprecatedFunction,
-    /// A `CALL` resolving to a deprecated procedure.
-    DeprecatedProcedure,
-    /// A `CALL { … }` subquery with no variable scope clause.
-    CallSubqueryWithoutScope,
-    /// A `MERGE` whose property map references the entity it merges.
-    MergeSelfReference,
-    /// A projection subclause expression (`ORDER BY`/`WHERE`) referencing a
-    /// variable that the projection's own alias re-binds.
-    AmbiguousSubclauseReference,
-    /// A projection subclause expression containing a complex projection
-    /// item expression as a proper sub-expression.
-    ComplexSubclauseReference,
-    /// A `CREATE` whose property definition references an entity created in
-    /// the same clause.
-    CreateSelfReference,
-    /// A variable declared in a subquery that shadows an outer variable.
-    SubqueryVariableShadowing,
-    /// A dynamic property-key predicate on a variable whose label (or
-    /// relationship type) carries an index no static predicate can serve.
-    DynamicProperty,
-    /// A relationship type expression no single type can satisfy.
-    UnsatisfiableRelationshipTypeExpression,
-    /// A relationship variable repeated across pattern elements.
-    RepeatedRelationshipVariable,
-    /// A `SEARCH` index identifier sharing a name with a variable in scope.
-    SearchIdentifierShadowingVariable,
-    /// A `shortestPath` whose predicates force exhaustive evaluation.
-    ExhaustiveShortestPath,
-    /// A schema DDL command that had no effect because an identical or
-    /// schema-equivalent index/constraint already exists (`00NA0`).
-    SchemaIndexOrConstraintAlreadyExists,
-    /// A `DROP INDEX/CONSTRAINT … IF EXISTS` that had no effect because no
-    /// such index/constraint exists (`00NA1`).
-    SchemaIndexOrConstraintDoesNotExist,
-    /// A `CREATE VECTOR INDEX` that omitted `vector.dimensions` (`00NA2`).
-    SchemaVectorIndexDimensionsNotSpecified,
-    /// A `USING INDEX` hint no catalog index can serve (`01N31`).
-    HintedIndexNotFound,
-    /// A `USING JOIN ON` hint the planner could not fulfil (`01N30`).
-    JoinHintUnfulfillable,
-    /// An `OPTIONAL CALL` over a procedure that produces no rows (`03N61`).
-    RedundantOptionalProcedure,
-    /// An `OPTIONAL CALL { … }` whose body projects no columns (`03N62`).
-    RedundantOptionalSubquery,
-}
-
 /// One row of the notification vocabulary (ADR-0363 decision 1). The
 /// trigger column of the ADR's table is documentation for the detector
 /// nodes; the runtime needs the metadata below.
@@ -179,414 +104,423 @@ struct NotificationRow {
 }
 
 // The one notification vocabulary (ADR-0363 decision 1): every kind's code,
-// GQLSTATUS, severity, category, title and canonical remedy, one named row
-// per `NotificationKind`. Engine-own kinds use the
-// `Relate.Notification.*` namespace and a `C` in GQLSTATUS position 3; a
-// kind whose diagnostic matches Neo4j's keeps Neo4j's code and status.
-const CARTESIAN_PRODUCT_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.CartesianProduct",
-    gql_status: "03N90",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Cartesian product",
-    remedy: "Give the patterns a join anchor: reuse a node variable across them, or add a \
-             pattern that relates their endpoints; otherwise run them as separate queries.",
-    plan_warning: true,
-    occurrence_scoped: true,
-};
+// GQLSTATUS, severity, category, title and canonical remedy, one entry per
+// kind. Engine-own kinds use the `Relate.Notification.*` namespace and a `C`
+// in GQLSTATUS position 3; a kind whose diagnostic matches Neo4j's keeps
+// Neo4j's code and status.
+//
+// The one macro generates the `NotificationKind` enum, its `ALL` listing and
+// the exhaustive variant-to-row binding from this single table, so a new
+// kind is one entry and cannot be omitted from any of the three.
+macro_rules! notification_vocabulary {
+    ($(
+        $(#[$doc:meta])*
+        $kind:ident {
+            code: $code:expr,
+            gql_status: $gql_status:expr,
+            severity: $severity:expr,
+            category: $category:expr,
+            title: $title:expr,
+            remedy: $remedy:expr,
+            plan_warning: $plan_warning:expr,
+            occurrence_scoped: $occurrence_scoped:expr $(,)?
+        }
+    )*) => {
+        /// The notification kinds (ADR-0363 decision 1) — the row identities
+        /// of the one vocabulary below, generated from its single table.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum NotificationKind {
+            $($(#[$doc])* $kind,)*
+        }
 
-const UNBOUNDED_VARIABLE_LENGTH_PATTERN_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.UnboundedVariableLengthPattern",
-    gql_status: "03N91",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Unbounded variable-length pattern",
-    remedy: "Bound the expansion (`[:R*1..5]`) where arbitrary length is not required, or add \
-             a selective endpoint/label predicate and a `LIMIT`.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
+        impl NotificationKind {
+            /// Every kind, in vocabulary order.
+            #[cfg(test)]
+            pub(crate) const ALL: &'static [NotificationKind] =
+                &[$(NotificationKind::$kind),*];
 
-const ALL_NODES_SCAN_ROW: NotificationRow = NotificationRow {
-    code: "Relate.Notification.Statement.AllNodesScan",
-    gql_status: "03C90",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "All nodes scan",
-    remedy: "Name the label the scan intends (`MATCH (n:<Label>)`); on the index's label the \
-             scan becomes an index-backed lookup.",
-    plan_warning: true,
-    occurrence_scoped: false,
-};
+            /// The vocabulary row for this kind — the one lookup every
+            /// metadata accessor reads, so no accessor re-spells a code or
+            /// status.
+            fn row(self) -> &'static NotificationRow {
+                match self {
+                    $(NotificationKind::$kind => &NotificationRow {
+                        code: $code,
+                        gql_status: $gql_status,
+                        severity: $severity,
+                        category: $category,
+                        title: $title,
+                        remedy: $remedy,
+                        plan_warning: $plan_warning,
+                        occurrence_scoped: $occurrence_scoped,
+                    },)*
+                }
+            }
+        }
+    };
+}
 
-const LABEL_DISJUNCTION_SCAN_ROW: NotificationRow = NotificationRow {
-    code: "Relate.Notification.Statement.LabelDisjunctionScan",
-    gql_status: "03C94",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Label disjunction scan",
-    remedy: "Create a range index on each disjunct label's filtered property: the disjunction \
-             then serves as per-label keyed lookups instead of per-label scans.",
-    plan_warning: true,
-    occurrence_scoped: false,
-};
-
-const MISSING_INDEX_ROW: NotificationRow = NotificationRow {
-    code: "Relate.Notification.Statement.MissingIndex",
-    gql_status: "03C91",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Missing index",
-    remedy: "`CREATE INDEX relate_Person__email FOR (n:Person) ON (n.email)` — the exact \
-             runnable statement, with the name derived deterministically from label and \
-             property.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const EAGER_AGGREGATION_ROW: NotificationRow = NotificationRow {
-    code: "Relate.Notification.Statement.EagerAggregation",
-    gql_status: "03C92",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Eager aggregation",
-    remedy: "Reduce the rows reaching the aggregation with a selective label/property \
-             predicate or a `LIMIT` before it; profile again to confirm the buffered input \
-             shrank.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const ESTIMATION_MISS_ROW: NotificationRow = NotificationRow {
-    code: "Relate.Notification.Statement.EstimationMiss",
-    gql_status: "03C93",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Estimation miss",
-    remedy: "Rework the operator's input so the estimate can see the filter (add the \
-             selective predicate at the scan, or reorder the join); the estimate is a planner \
-             assumption, not a runtime fact.",
-    plan_warning: true,
-    occurrence_scoped: false,
-};
-
-const UNKNOWN_LABEL_WARNING_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.UnknownLabelWarning",
-    gql_status: "01N50",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Unrecognized,
-    title: "Unknown label",
-    remedy: "Check the spelling; the label exists after the first write that creates it, and \
-             no index or constraint uses the unknown name.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const UNKNOWN_RELATIONSHIP_TYPE_WARNING_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.UnknownRelationshipTypeWarning",
-    gql_status: "01N51",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Unrecognized,
-    title: "Unknown relationship type",
-    remedy: "Check the spelling; the type exists after the first write that creates it.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const UNKNOWN_PROPERTY_KEY_WARNING_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.UnknownPropertyKeyWarning",
-    gql_status: "01N52",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Unrecognized,
-    title: "Unknown property key",
-    remedy: "Check the spelling; the key exists after the first write that sets it.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const DEPRECATED_FUNCTION_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N01",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "Deprecated function",
-    remedy: "Replace the call with the catalog's `deprecated_by` (`id(n)` → `elementId(n)`).",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const DEPRECATED_PROCEDURE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N01",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "Deprecated procedure",
-    remedy: "Use the registry's `deprecated_by` replacement instead; the replacement is the \
-             remedy.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const CALL_SUBQUERY_WITHOUT_SCOPE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N00",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "CALL subquery without scope",
-    remedy: "Add the scope clause the body imports: `CALL (n) { … }`, or `CALL () { … }` when \
-             it imports nothing.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const MERGE_SELF_REFERENCE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N00",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "Merge self-reference",
-    remedy: "Compute the property into a separate variable before the MERGE, or set it \
-             with ON CREATE SET after the merge.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const AMBIGUOUS_SUBCLAUSE_REFERENCE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N01",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "Deprecated ambiguous subclause reference",
-    remedy: "Reference the projection item by an alias, or use the `GROUP BY` clause.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const COMPLEX_SUBCLAUSE_REFERENCE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N01",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "Deprecated complex subclause reference",
-    remedy: "Reference the projection item expression by an alias.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const CREATE_SELF_REFERENCE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
-    gql_status: "01N00",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Deprecation,
-    title: "Create self-reference",
-    remedy: "Create the entity in a separate `CREATE` clause before referencing it, or set \
-             the property afterwards.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const SUBQUERY_VARIABLE_SHADOWING_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.SubqueryVariableShadowing",
-    gql_status: "03N60",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Unrecognized,
-    title: "Subquery variable shadowing",
-    remedy: "Import the outer variable with `CALL (name) { … }`, or rename the inner one.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const DYNAMIC_PROPERTY_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.DynamicProperty",
-    gql_status: "03N95",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Queries using dynamic properties will use neither index seeks nor \
-            index scans for those properties",
-    remedy: "Use a static property so index lookups stay possible.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const HINTED_INDEX_NOT_FOUND_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Schema.HintedIndexNotFound",
-    gql_status: "01N31",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Hint,
-    title: "The request (directly or indirectly) referred to an index that \
-            does not exist.",
-    remedy: "Create the index, or drop the hint.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const JOIN_HINT_UNFULFILLABLE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.JoinHintUnfulfillableWarning",
-    gql_status: "01N30",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Hint,
-    title: "The database was unable to plan a hinted join.",
-    remedy: "Try a different join key or restructure the query.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const UNSATISFIABLE_RELATIONSHIP_TYPE_EXPRESSION_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.UnsatisfiableRelationshipTypeExpression",
-    gql_status: "01N61",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Unrecognized,
-    title: "Unsatisfiable relationship type expression",
-    remedy: "Request one type or a disjunction of types; a relationship has exactly one type.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const REPEATED_RELATIONSHIP_VARIABLE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.RepeatedRelationshipVariable",
-    gql_status: "01N63",
-    severity: NotificationSeverity::Warning,
-    category: NotificationCategory::Unrecognized,
-    title: "Repeated relationship pattern variable",
-    remedy: "Use a distinct variable per relationship position; a relationship cannot be \
-             traversed twice in one pattern.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const SEARCH_IDENTIFIER_SHADOWING_VARIABLE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.IdentifierShadowingVariable",
-    gql_status: "03N63",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Unrecognized,
-    title: "Identifier shadowing variable",
-    remedy: "Rename the index or the variable; the index name is taken literally.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const EXHAUSTIVE_SHORTEST_PATH_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.ExhaustiveShortestPath",
-    gql_status: "03N92",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Exhaustive shortest path",
-    remedy: "Separate the existential predicate from the `MATCH` with `WITH` where possible.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const INDEX_OR_CONSTRAINT_ALREADY_EXISTS_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists",
-    gql_status: "00NA0",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Schema,
-    title: "Index or constraint already exists",
-    remedy: "Drop the existing index or constraint first, or use a different name or schema.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const INDEX_OR_CONSTRAINT_DOES_NOT_EXIST_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Schema.IndexOrConstraintDoesNotExist",
-    gql_status: "00NA1",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Schema,
-    title: "Index or constraint does not exist",
-    remedy: "Check the name; `IF EXISTS` makes a missing index or constraint a no-op.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const VECTOR_INDEX_DIMENSIONS_NOT_SPECIFIED_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Schema.VectorIndexDimensionsNotSpecified",
-    gql_status: "00NA2",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Schema,
-    title: "Vector index dimensions not specified",
-    remedy: "Set `vector.dimensions` in `OPTIONS { indexConfig: { … } }` when creating the index.",
-    plan_warning: false,
-    occurrence_scoped: false,
-};
-
-const REDUNDANT_OPTIONAL_PROCEDURE_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.RedundantOptionalProcedure",
-    gql_status: "03N61",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Redundant optional procedure",
-    remedy: "Drop `OPTIONAL`: the procedure declares no return columns, so the call yields \
-             the same single row either way.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
-
-const REDUNDANT_OPTIONAL_SUBQUERY_ROW: NotificationRow = NotificationRow {
-    code: "Neo.ClientNotification.Statement.RedundantOptionalSubquery",
-    gql_status: "03N62",
-    severity: NotificationSeverity::Information,
-    category: NotificationCategory::Performance,
-    title: "Redundant optional subquery",
-    remedy: "Drop `OPTIONAL`: the subquery projects no columns, so the call yields the same \
-             single row either way.",
-    plan_warning: false,
-    occurrence_scoped: true,
-};
+notification_vocabulary! {
+    /// A multi-pattern `MATCH` whose patterns share no join anchor.
+    CartesianProduct {
+        code: "Neo.ClientNotification.Statement.CartesianProduct",
+        gql_status: "03N90",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Cartesian product",
+        remedy: "Give the patterns a join anchor: reuse a node variable across them, or add a \
+                 pattern that relates their endpoints; otherwise run them as separate queries.",
+        plan_warning: true,
+        occurrence_scoped: true,
+    }
+    /// A variable-length relationship pattern with no upper bound.
+    UnboundedVariableLengthPattern {
+        code: "Neo.ClientNotification.Statement.UnboundedVariableLengthPattern",
+        gql_status: "03N91",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Unbounded variable-length pattern",
+        remedy: "Bound the expansion (`[:R*1..5]`) where arbitrary length is not required, or add \
+                 a selective endpoint/label predicate and a `LIMIT`.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A label-less node scan while a property index exists.
+    AllNodesScan {
+        code: "Relate.Notification.Statement.AllNodesScan",
+        gql_status: "03C90",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "All nodes scan",
+        remedy: "Name the label the scan intends (`MATCH (n:<Label>)`); on the index's label the \
+                 scan becomes an index-backed lookup.",
+        plan_warning: true,
+        occurrence_scoped: false,
+    }
+    /// A static label disjunction no seek serves: the scan answers per
+    /// disjunct label (LABS-1083).
+    LabelDisjunctionScan {
+        code: "Relate.Notification.Statement.LabelDisjunctionScan",
+        gql_status: "03C94",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Label disjunction scan",
+        remedy: "Create a range index on each disjunct label's filtered property: the disjunction \
+                 then serves as per-label keyed lookups instead of per-label scans.",
+        plan_warning: true,
+        occurrence_scoped: false,
+    }
+    /// A label/property equality with no range index on the pair.
+    MissingIndex {
+        code: "Relate.Notification.Statement.MissingIndex",
+        gql_status: "03C91",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Missing index",
+        remedy: "`CREATE INDEX relate_Person__email FOR (n:Person) ON (n.email)` — the exact \
+                 runnable statement, with the name derived deterministically from label and \
+                 property.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// An aggregation whose input estimate reaches the eager threshold.
+    EagerAggregation {
+        code: "Relate.Notification.Statement.EagerAggregation",
+        gql_status: "03C92",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Eager aggregation",
+        remedy: "Reduce the rows reaching the aggregation with a selective label/property \
+                 predicate or a `LIMIT` before it; profile again to confirm the buffered input \
+                 shrank.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// `PROFILE` only: an estimate at least 10x the actual rows.
+    EstimationMiss {
+        code: "Relate.Notification.Statement.EstimationMiss",
+        gql_status: "03C93",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Estimation miss",
+        remedy: "Rework the operator's input so the estimate can see the filter (add the \
+                 selective predicate at the scan, or reorder the join); the estimate is a planner \
+                 assumption, not a runtime fact.",
+        plan_warning: true,
+        occurrence_scoped: false,
+    }
+    /// A node pattern naming a label absent from the catalog.
+    UnknownLabelWarning {
+        code: "Neo.ClientNotification.Statement.UnknownLabelWarning",
+        gql_status: "01N50",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Unrecognized,
+        title: "Unknown label",
+        remedy: "Check the spelling; the label exists after the first write that creates it, and \
+                 no index or constraint uses the unknown name.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A relationship pattern naming a type absent from the catalog.
+    UnknownRelationshipTypeWarning {
+        code: "Neo.ClientNotification.Statement.UnknownRelationshipTypeWarning",
+        gql_status: "01N51",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Unrecognized,
+        title: "Unknown relationship type",
+        remedy: "Check the spelling; the type exists after the first write that creates it.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A predicate or property access naming an absent property key.
+    UnknownPropertyKeyWarning {
+        code: "Neo.ClientNotification.Statement.UnknownPropertyKeyWarning",
+        gql_status: "01N52",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Unrecognized,
+        title: "Unknown property key",
+        remedy: "Check the spelling; the key exists after the first write that sets it.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A function call resolving to a deprecated catalog entry.
+    DeprecatedFunction {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N01",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "Deprecated function",
+        remedy: "Replace the call with the catalog's `deprecated_by` (`id(n)` → `elementId(n)`).",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `CALL` resolving to a deprecated procedure.
+    DeprecatedProcedure {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N01",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "Deprecated procedure",
+        remedy: "Use the registry's `deprecated_by` replacement instead; the replacement is the \
+                 remedy.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `CALL { … }` subquery with no variable scope clause.
+    CallSubqueryWithoutScope {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N00",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "CALL subquery without scope",
+        remedy: "Add the scope clause the body imports: `CALL (n) { … }`, or `CALL () { … }` when \
+                 it imports nothing.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `MERGE` whose property map references the entity it merges.
+    MergeSelfReference {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N00",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "Merge self-reference",
+        remedy: "Compute the property into a separate variable before the MERGE, or set it \
+                 with ON CREATE SET after the merge.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A projection subclause expression (`ORDER BY`/`WHERE`) referencing a
+    /// variable that the projection's own alias re-binds.
+    AmbiguousSubclauseReference {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N01",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "Deprecated ambiguous subclause reference",
+        remedy: "Reference the projection item by an alias, or use the `GROUP BY` clause.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A projection subclause expression containing a complex projection
+    /// item expression as a proper sub-expression.
+    ComplexSubclauseReference {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N01",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "Deprecated complex subclause reference",
+        remedy: "Reference the projection item expression by an alias.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `CREATE` whose property definition references an entity created in
+    /// the same clause.
+    CreateSelfReference {
+        code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",
+        gql_status: "01N00",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Deprecation,
+        title: "Create self-reference",
+        remedy: "Create the entity in a separate `CREATE` clause before referencing it, or set \
+                 the property afterwards.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A variable declared in a subquery that shadows an outer variable.
+    SubqueryVariableShadowing {
+        code: "Neo.ClientNotification.Statement.SubqueryVariableShadowing",
+        gql_status: "03N60",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Unrecognized,
+        title: "Subquery variable shadowing",
+        remedy: "Import the outer variable with `CALL (name) { … }`, or rename the inner one.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A dynamic property-key predicate on a variable whose label (or
+    /// relationship type) carries an index no static predicate can serve.
+    DynamicProperty {
+        code: "Neo.ClientNotification.Statement.DynamicProperty",
+        gql_status: "03N95",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Queries using dynamic properties will use neither index seeks nor \
+                index scans for those properties",
+        remedy: "Use a static property so index lookups stay possible.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A relationship type expression no single type can satisfy.
+    UnsatisfiableRelationshipTypeExpression {
+        code: "Neo.ClientNotification.Statement.UnsatisfiableRelationshipTypeExpression",
+        gql_status: "01N61",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Unrecognized,
+        title: "Unsatisfiable relationship type expression",
+        remedy: "Request one type or a disjunction of types; a relationship has exactly one type.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A relationship variable repeated across pattern elements.
+    RepeatedRelationshipVariable {
+        code: "Neo.ClientNotification.Statement.RepeatedRelationshipVariable",
+        gql_status: "01N63",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Unrecognized,
+        title: "Repeated relationship pattern variable",
+        remedy: "Use a distinct variable per relationship position; a relationship cannot be \
+                 traversed twice in one pattern.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `SEARCH` index identifier sharing a name with a variable in scope.
+    SearchIdentifierShadowingVariable {
+        code: "Neo.ClientNotification.Statement.IdentifierShadowingVariable",
+        gql_status: "03N63",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Unrecognized,
+        title: "Identifier shadowing variable",
+        remedy: "Rename the index or the variable; the index name is taken literally.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `shortestPath` whose predicates force exhaustive evaluation.
+    ExhaustiveShortestPath {
+        code: "Neo.ClientNotification.Statement.ExhaustiveShortestPath",
+        gql_status: "03N92",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Exhaustive shortest path",
+        remedy: "Separate the existential predicate from the `MATCH` with `WITH` where possible.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A schema DDL command that had no effect because an identical or
+    /// schema-equivalent index/constraint already exists (`00NA0`).
+    SchemaIndexOrConstraintAlreadyExists {
+        code: "Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists",
+        gql_status: "00NA0",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Schema,
+        title: "Index or constraint already exists",
+        remedy: "Drop the existing index or constraint first, or use a different name or schema.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A `DROP INDEX/CONSTRAINT … IF EXISTS` that had no effect because no
+    /// such index/constraint exists (`00NA1`).
+    SchemaIndexOrConstraintDoesNotExist {
+        code: "Neo.ClientNotification.Schema.IndexOrConstraintDoesNotExist",
+        gql_status: "00NA1",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Schema,
+        title: "Index or constraint does not exist",
+        remedy: "Check the name; `IF EXISTS` makes a missing index or constraint a no-op.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A `CREATE VECTOR INDEX` that omitted `vector.dimensions` (`00NA2`).
+    SchemaVectorIndexDimensionsNotSpecified {
+        code: "Neo.ClientNotification.Schema.VectorIndexDimensionsNotSpecified",
+        gql_status: "00NA2",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Schema,
+        title: "Vector index dimensions not specified",
+        remedy: "Set `vector.dimensions` in `OPTIONS { indexConfig: { … } }` when creating the index.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
+    /// A `USING INDEX` hint no catalog index can serve (`01N31`).
+    HintedIndexNotFound {
+        code: "Neo.ClientNotification.Schema.HintedIndexNotFound",
+        gql_status: "01N31",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Hint,
+        title: "The request (directly or indirectly) referred to an index that \
+                does not exist.",
+        remedy: "Create the index, or drop the hint.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// A `USING JOIN ON` hint the planner could not fulfil (`01N30`).
+    JoinHintUnfulfillable {
+        code: "Neo.ClientNotification.Statement.JoinHintUnfulfillableWarning",
+        gql_status: "01N30",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Hint,
+        title: "The database was unable to plan a hinted join.",
+        remedy: "Try a different join key or restructure the query.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// An `OPTIONAL CALL` over a procedure that produces no rows (`03N61`).
+    RedundantOptionalProcedure {
+        code: "Neo.ClientNotification.Statement.RedundantOptionalProcedure",
+        gql_status: "03N61",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Redundant optional procedure",
+        remedy: "Drop `OPTIONAL`: the procedure declares no return columns, so the call yields \
+                 the same single row either way.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+    /// An `OPTIONAL CALL { … }` whose body projects no columns (`03N62`).
+    RedundantOptionalSubquery {
+        code: "Neo.ClientNotification.Statement.RedundantOptionalSubquery",
+        gql_status: "03N62",
+        severity: NotificationSeverity::Information,
+        category: NotificationCategory::Performance,
+        title: "Redundant optional subquery",
+        remedy: "Drop `OPTIONAL`: the subquery projects no columns, so the call yields the same \
+                 single row either way.",
+        plan_warning: false,
+        occurrence_scoped: true,
+    }
+}
 
 impl NotificationKind {
-    /// The vocabulary row for this kind — the one lookup every metadata
-    /// accessor reads, so no accessor re-spells a code or status. The
-    /// `match` is exhaustive, so a new kind is a compile error until it
-    /// names its row.
-    fn row(self) -> &'static NotificationRow {
-        match self {
-            NotificationKind::CartesianProduct => &CARTESIAN_PRODUCT_ROW,
-            NotificationKind::UnboundedVariableLengthPattern => {
-                &UNBOUNDED_VARIABLE_LENGTH_PATTERN_ROW
-            }
-            NotificationKind::AllNodesScan => &ALL_NODES_SCAN_ROW,
-            NotificationKind::LabelDisjunctionScan => &LABEL_DISJUNCTION_SCAN_ROW,
-            NotificationKind::MissingIndex => &MISSING_INDEX_ROW,
-            NotificationKind::EagerAggregation => &EAGER_AGGREGATION_ROW,
-            NotificationKind::EstimationMiss => &ESTIMATION_MISS_ROW,
-            NotificationKind::UnknownLabelWarning => &UNKNOWN_LABEL_WARNING_ROW,
-            NotificationKind::UnknownRelationshipTypeWarning => {
-                &UNKNOWN_RELATIONSHIP_TYPE_WARNING_ROW
-            }
-            NotificationKind::UnknownPropertyKeyWarning => &UNKNOWN_PROPERTY_KEY_WARNING_ROW,
-            NotificationKind::DeprecatedFunction => &DEPRECATED_FUNCTION_ROW,
-            NotificationKind::DeprecatedProcedure => &DEPRECATED_PROCEDURE_ROW,
-            NotificationKind::CallSubqueryWithoutScope => &CALL_SUBQUERY_WITHOUT_SCOPE_ROW,
-            NotificationKind::MergeSelfReference => &MERGE_SELF_REFERENCE_ROW,
-            NotificationKind::AmbiguousSubclauseReference => &AMBIGUOUS_SUBCLAUSE_REFERENCE_ROW,
-            NotificationKind::ComplexSubclauseReference => &COMPLEX_SUBCLAUSE_REFERENCE_ROW,
-            NotificationKind::CreateSelfReference => &CREATE_SELF_REFERENCE_ROW,
-            NotificationKind::SubqueryVariableShadowing => &SUBQUERY_VARIABLE_SHADOWING_ROW,
-            NotificationKind::DynamicProperty => &DYNAMIC_PROPERTY_ROW,
-            NotificationKind::UnsatisfiableRelationshipTypeExpression => {
-                &UNSATISFIABLE_RELATIONSHIP_TYPE_EXPRESSION_ROW
-            }
-            NotificationKind::RepeatedRelationshipVariable => &REPEATED_RELATIONSHIP_VARIABLE_ROW,
-            NotificationKind::SearchIdentifierShadowingVariable => {
-                &SEARCH_IDENTIFIER_SHADOWING_VARIABLE_ROW
-            }
-            NotificationKind::ExhaustiveShortestPath => &EXHAUSTIVE_SHORTEST_PATH_ROW,
-            NotificationKind::RedundantOptionalProcedure => &REDUNDANT_OPTIONAL_PROCEDURE_ROW,
-            NotificationKind::RedundantOptionalSubquery => &REDUNDANT_OPTIONAL_SUBQUERY_ROW,
-            NotificationKind::SchemaIndexOrConstraintAlreadyExists => {
-                &INDEX_OR_CONSTRAINT_ALREADY_EXISTS_ROW
-            }
-            NotificationKind::SchemaIndexOrConstraintDoesNotExist => {
-                &INDEX_OR_CONSTRAINT_DOES_NOT_EXIST_ROW
-            }
-            NotificationKind::SchemaVectorIndexDimensionsNotSpecified => {
-                &VECTOR_INDEX_DIMENSIONS_NOT_SPECIFIED_ROW
-            }
-            NotificationKind::HintedIndexNotFound => &HINTED_INDEX_NOT_FOUND_ROW,
-            NotificationKind::JoinHintUnfulfillable => &JOIN_HINT_UNFULFILLABLE_ROW,
-        }
-    }
-
     /// Whether two notifications of this kind with the same description are
     /// the same finding (`true`) or two occurrences that must both be
     /// reported (`false`). Name-based diagnostics collapse; every
@@ -598,10 +532,9 @@ impl NotificationKind {
     }
 
     /// Whether the plan table already renders this kind (ADR-0363
-    /// decision 8): `CartesianProduct`, `AllNodesScan` and `EstimationMiss`
-    /// are the three `PlanWarning` variants, and their one text rendering is
-    /// the plan table's `Warnings` column plus footer (ADR-0344/0345). The
-    /// other operator-scoped kinds (`UnboundedVariableLengthPattern`,
+    /// decision 8): the kinds that project to a `PlanWarning` variant, whose
+    /// one text rendering is the plan table's `Warnings` column plus footer
+    /// (ADR-0344/0345). The other operator-scoped kinds (`UnboundedVariableLengthPattern`,
     /// `MissingIndex`, `EagerAggregation`) do not join that column, so a
     /// text block carries them. The membership is the row's `plan_warning`
     /// column, so a new kind states its side where it names its metadata.

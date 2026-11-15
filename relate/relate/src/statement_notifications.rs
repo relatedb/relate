@@ -77,13 +77,14 @@
 
 mod dynamic_property;
 mod hints;
+mod redundant_optional;
 mod shape;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use relate_executor::{
-    builtin_function_deprecation, builtin_procedure_deprecation, is_void_procedure, DeprecatedBy,
-    DeprecationForm, ExecGraph, IndexFacts, Procedure,
+    builtin_function_deprecation, builtin_procedure_deprecation, DeprecatedBy, DeprecationForm,
+    ExecGraph, IndexFacts, Procedure,
 };
 use relate_ir::{
     expr_vars, walk_pattern_payloads, Clause, Expr, ExprRole, LabelExpr, MapProjectionItem,
@@ -156,7 +157,10 @@ pub(crate) fn statement_notifications(
         part_clauses.push(group);
     });
     let mut facts = Facts::default();
-    shape::observe_subquery_scopes(&mut facts.notifications, &mut facts.meter, &parts);
+    shape::observe_subquery_scopes(
+        &mut shape::ShapeCtx::new(&mut facts.notifications, &mut facts.meter),
+        &parts,
+    );
     // One typed-index snapshot per statement (catalog state is
     // statement-scoped, not part- or clause-scoped): every part's fire
     // reads the same slice.
@@ -167,7 +171,7 @@ pub(crate) fn statement_notifications(
             // A scope boundary: entering or leaving a nested body, or
             // moving between two nested clauses (which the walk cannot
             // tell apart as same or different bodies).
-            if nested != previous_nested || nested {
+            if nested || previous_nested {
                 facts.flush_dynamic(&indexes);
             }
             previous_nested = nested;
@@ -256,8 +260,7 @@ impl Facts {
                     self.observe_pattern(pattern);
                 }
                 shape::observe_match(
-                    &mut self.notifications,
-                    &mut self.meter,
+                    &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
                     patterns,
                     where_clause.as_ref(),
                     nested,
@@ -275,8 +278,7 @@ impl Facts {
                 where_clause,
                 ..
             } => shape::observe_projection(
-                &mut self.notifications,
-                &mut self.meter,
+                &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
                 items,
                 order,
                 where_clause.as_ref(),
@@ -288,16 +290,16 @@ impl Facts {
                 order,
                 ..
             } => shape::observe_projection(
-                &mut self.notifications,
-                &mut self.meter,
+                &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
                 items,
                 order,
                 None,
                 *distinct,
             ),
-            Clause::Create { patterns } => {
-                shape::observe_create(&mut self.notifications, &mut self.meter, patterns)
-            }
+            Clause::Create { patterns } => shape::observe_create(
+                &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
+                patterns,
+            ),
             Clause::Call { name, optional, .. } => {
                 // One lookup serves both readers: the deprecation detector's
                 // shadow check and the redundant-`OPTIONAL` void check. Each
@@ -306,7 +308,11 @@ impl Facts {
                 let registered = name.with_str(|text| view.procedure(text));
                 self.observe_call(registered.as_ref(), name);
                 if *optional {
-                    self.observe_redundant_optional_procedure(registered.as_ref(), name);
+                    redundant_optional::observe_call(
+                        &mut self.notifications,
+                        registered.as_ref(),
+                        name,
+                    );
                 }
             }
             // A MERGE property map reading the entity it merges
@@ -338,11 +344,8 @@ impl Facts {
                         "The `CALL { … }` subquery has no variable scope clause.",
                     ));
                 }
-                if *optional && !query.projects_columns() {
-                    self.notifications.push(Notification::new(
-                        NotificationKind::RedundantOptionalSubquery,
-                        "The use of `OPTIONAL` is redundant as `CALL` is a unit subquery.",
-                    ));
+                if *optional {
+                    redundant_optional::observe_subquery(&mut self.notifications, query);
                 }
             }
             _ => {}
@@ -448,26 +451,6 @@ impl Facts {
             )
             .with_remedy(deprecation_remedy(replacement)),
         );
-    }
-
-    /// `OPTIONAL CALL <void procedure>` — the `OPTIONAL` adds nothing
-    /// because the procedure declares no return columns (03N62's procedure
-    /// sibling, 03N61). Voidness is the shared
-    /// [`is_void_procedure`] predicate the `CALL` contract already reads,
-    /// not a second spelling of it.
-    fn observe_redundant_optional_procedure(
-        &mut self,
-        registered: Option<&Procedure>,
-        name: &SmallName,
-    ) {
-        if name.with_str(|text| is_void_procedure(registered, text)) {
-            self.notifications.push(Notification::new(
-                NotificationKind::RedundantOptionalProcedure,
-                format!(
-                    "The use of `OPTIONAL` is redundant as `CALL {name}()` is a void procedure."
-                ),
-            ));
-        }
     }
 
     /// One read path pattern's node and relationship payloads, through the

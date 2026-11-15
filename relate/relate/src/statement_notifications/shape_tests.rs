@@ -124,7 +124,10 @@ fn wide_create_self_reference_scan_declines_past_the_work_budget() {
         panic!("expected a CREATE clause");
     };
     let mut notifications = Vec::new();
-    observe_create(&mut notifications, &mut WorkMeter::default(), patterns);
+    observe_create(
+        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
+        patterns,
+    );
     assert!(
         notifications.is_empty(),
         "a wide CREATE declines instead of testing every (value, name) pair"
@@ -140,7 +143,10 @@ fn wide_create_self_reference_scan_declines_past_the_work_budget() {
         panic!("expected a CREATE clause");
     };
     let mut notifications = Vec::new();
-    observe_create(&mut notifications, &mut WorkMeter::default(), patterns);
+    observe_create(
+        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
+        patterns,
+    );
     assert_eq!(notifications.len(), 1, "a small CREATE is still checked");
 }
 
@@ -168,23 +174,26 @@ fn complex_projection_items_exclude_variables_literals_and_aggregates() {
     }));
 }
 
-/// A `USE`-headed importing WITH still imports: the leading clause is
-/// the first non-`USE` one (`SingleQuery::leading_importing_with`), so
-/// the body rebinding `x` through it is an import, not a shadow (the
-/// previous first-clause-only derivation reported 03N60 here).
 /// The one observe-and-count scaffold the subquery-shadowing tests
 /// share: walk the statement, run the detector, count its 03N60 rows.
 fn subquery_shadowing_count(query: &relate_ir::Query) -> usize {
     let mut parts = Vec::new();
     relate_planner::walk_query_parts(query, &mut |part| parts.push(part));
     let mut notifications = Vec::new();
-    observe_subquery_scopes(&mut notifications, &mut WorkMeter::default(), &parts);
+    observe_subquery_scopes(
+        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
+        &parts,
+    );
     notifications
         .iter()
         .filter(|notification| notification.kind() == NotificationKind::SubqueryVariableShadowing)
         .count()
 }
 
+/// A `USE`-headed importing WITH still imports: the leading clause is
+/// the first non-`USE` one (`SingleQuery::leading_importing_with`), so
+/// the body rebinding `x` through it is an import, not a shadow (the
+/// previous first-clause-only derivation reported 03N60 here).
 #[test]
 fn subquery_shadowing_sees_a_use_headed_importing_with() {
     let query = relate_front::parse_and_lower(
@@ -321,8 +330,7 @@ fn complex_reference_detection_is_one_walk_per_subclause_expression() {
     };
     let mut notifications = Vec::new();
     observe_projection(
-        &mut notifications,
-        &mut WorkMeter::default(),
+        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
         &items,
         &[order],
         None,
@@ -389,8 +397,7 @@ fn complex_reference_requires_grouping_or_distinct() {
     };
     let mut plain = Vec::new();
     observe_projection(
-        &mut plain,
-        &mut WorkMeter::default(),
+        &mut ShapeCtx::new(&mut plain, &mut WorkMeter::default()),
         std::slice::from_ref(&item),
         &[order.clone()],
         None,
@@ -399,8 +406,7 @@ fn complex_reference_requires_grouping_or_distinct() {
     assert!(plain.is_empty(), "a non-grouping projection does not warn");
     let mut grouped = Vec::new();
     observe_projection(
-        &mut grouped,
-        &mut WorkMeter::default(),
+        &mut ShapeCtx::new(&mut grouped, &mut WorkMeter::default()),
         &[item],
         &[order],
         None,
@@ -427,15 +433,11 @@ fn call_imports_read_each_arms_leading_with() {
     assert!(imports[0].contains("b"), "star imports the outer scope");
 }
 
-/// A named subpath binds the same path value under its own name, so a
-/// `length(…)` over the subpath name forces the exhaustive evaluation
-/// just as one over the outer path variable does.
-#[test]
-fn named_subpath_length_forces_exhaustive_shortest_path() {
-    let query = relate_front::parse_and_lower(
-        "MATCH p = shortestPath((q = (a)-[r*]-(b))) WHERE length(q) > 1 RETURN p",
-    )
-    .unwrap();
+/// The one scaffold the exhaustive-shortest-path tests share: lower the
+/// statement, run the `MATCH` detector over its first clause, and count its
+/// `ExhaustiveShortestPath` rows.
+fn exhaustive_shortest_path_count(statement: &str) -> usize {
+    let query = relate_front::parse_and_lower(statement).unwrap();
     let Clause::Match {
         patterns,
         where_clause,
@@ -446,19 +448,26 @@ fn named_subpath_length_forces_exhaustive_shortest_path() {
     };
     let mut notifications = Vec::new();
     observe_match(
-        &mut notifications,
-        &mut WorkMeter::default(),
+        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
         patterns,
         where_clause.as_ref(),
         false,
     );
+    notifications
+        .iter()
+        .filter(|notification| notification.kind() == NotificationKind::ExhaustiveShortestPath)
+        .count()
+}
+
+/// A named subpath binds the same path value under its own name, so a
+/// `length(…)` over the subpath name forces the exhaustive evaluation
+/// just as one over the outer path variable does.
+#[test]
+fn named_subpath_length_forces_exhaustive_shortest_path() {
     assert_eq!(
-        notifications
-            .iter()
-            .filter(|notification| {
-                notification.kind() == NotificationKind::ExhaustiveShortestPath
-            })
-            .count(),
+        exhaustive_shortest_path_count(
+            "MATCH p = shortestPath((q = (a)-[r*]-(b))) WHERE length(q) > 1 RETURN p",
+        ),
         1,
         "a length over the named subpath forces the exhaustive evaluation"
     );
@@ -469,33 +478,10 @@ fn named_subpath_length_forces_exhaustive_shortest_path() {
 /// a `shortestPath()` pattern admits).
 #[test]
 fn relationship_quantifier_forces_exhaustive_shortest_path() {
-    let query = relate_front::parse_and_lower(
-        "MATCH p = shortestPath((a)-[r*]-(b)) WHERE any(x IN r WHERE x IS NOT NULL) RETURN p",
-    )
-    .unwrap();
-    let Clause::Match {
-        patterns,
-        where_clause,
-        ..
-    } = &query.parts[0].clauses[0]
-    else {
-        panic!("expected a MATCH clause");
-    };
-    let mut notifications = Vec::new();
-    observe_match(
-        &mut notifications,
-        &mut WorkMeter::default(),
-        patterns,
-        where_clause.as_ref(),
-        false,
-    );
     assert_eq!(
-        notifications
-            .iter()
-            .filter(|notification| {
-                notification.kind() == NotificationKind::ExhaustiveShortestPath
-            })
-            .count(),
+        exhaustive_shortest_path_count(
+            "MATCH p = shortestPath((a)-[r*]-(b)) WHERE any(x IN r WHERE x IS NOT NULL) RETURN p",
+        ),
         1,
         "a quantifier over a later relationship variable forces the exhaustive evaluation"
     );
@@ -609,8 +595,8 @@ fn subquery_shadowing_in_an_expression_body_starts_from_an_empty_frame() {
 
 /// The meter is one budget per statement: a spent meter makes every
 /// detector family decline, and a fresh one lets each run. The ambiguous
-/// subclause-reference scan declines without silencing nothing else here
-/// because the shadowing scan is the only family that fires on this shape.
+/// subclause-reference scan is the only family that fires on this shape, so
+/// its decline is the whole difference.
 #[test]
 fn a_spent_meter_declines_the_ambiguous_reference_scan() {
     let property = |key: &str| Expr::Property {
@@ -630,8 +616,7 @@ fn a_spent_meter_declines_the_ambiguous_reference_scan() {
     let run = |meter: &mut WorkMeter| {
         let mut notifications = Vec::new();
         observe_projection(
-            &mut notifications,
-            meter,
+            &mut ShapeCtx::new(&mut notifications, meter),
             std::slice::from_ref(&item),
             std::slice::from_ref(&order),
             None,
@@ -658,7 +643,7 @@ fn a_spent_meter_declines_the_subquery_shadowing_scan() {
     relate_planner::walk_query_parts(&query, &mut |part| parts.push(part));
     let count = |meter: &mut WorkMeter| {
         let mut notifications = Vec::new();
-        observe_subquery_scopes(&mut notifications, meter, &parts);
+        observe_subquery_scopes(&mut ShapeCtx::new(&mut notifications, meter), &parts);
         notifications.len()
     };
     assert_eq!(count(&mut WorkMeter::default()), 1, "a fresh meter checks");
