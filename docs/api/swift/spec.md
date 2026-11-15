@@ -491,14 +491,14 @@ handle and open a new one.
   receives a `Transaction`: it can run statements, and cannot begin, commit,
   roll back or change the namespace. A `Transaction` used after its body
   returned throws `.misuse`.
-- `retries` is a count of additional attempts. A failure the engine marks
-  `retryable` — on a statement or on the commit — rolls back and runs the
-  body again; any other failure, and any error the body itself throws, is
-  rethrown at once. The body must be safe to run more than once: only what it
-  did inside the transaction is undone. Without `retries`, a retry loop
-  written by hand must check both the statement errors and `commit()`.
-  `commit()` returns the transaction's bookmark, or `nil` when the
-  transaction committed nothing.
+- `retries` is a count of additional attempts; below one, the body runs
+  once. A failure the engine marks `retryable` — on a statement or on the
+  commit — rolls back and runs the body again; any other failure, and any
+  error the body itself throws, is rethrown at once. The body must be safe
+  to run more than once: only what it did inside the transaction is undone.
+  Without `retries`, a retry loop written by hand must check both the
+  statement errors and `commit()`. `commit()` returns the transaction's
+  bookmark, or `nil` when the transaction committed nothing.
 - `read(_:)` runs the body in a transaction that is always rolled back.
   Every statement in it sees one snapshot, whatever other connections commit
   meanwhile, and nothing the body does is kept — schema statements included.

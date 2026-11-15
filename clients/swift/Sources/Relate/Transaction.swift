@@ -25,12 +25,13 @@ public final class Transaction {
 
         /// Refuses a statement this mode does not keep.
         func check(_ result: QueryResult) throws(RelateError) {
-            guard case .read = self, result.queryType != .read else { return }
             // The statement ran, but only in this transaction's overlay,
             // which a read always rolls back. Refusing here is what tells
             // the caller the write was never going to land.
-            throw RelateError.misuse(
-                "a \(result.queryType) statement ran in a read; nothing it changed is kept — use a write")
+            if self == .read, result.queryType != .read {
+                throw RelateError.misuse(
+                    "a \(result.queryType) statement ran in a read; nothing it changed is kept — use a write")
+            }
         }
     }
 
@@ -40,9 +41,7 @@ public final class Transaction {
 
     /// Whether this scope is a read: its transaction is rolled back, and a
     /// statement that is not a read is refused.
-    public var isReadOnly: Bool {
-        if case .read = mode { true } else { false }
-    }
+    public var isReadOnly: Bool { mode == .read }
 
     init(connection: Connection, mode: Mode) {
         self.connection = connection
@@ -102,9 +101,9 @@ extension Connection {
     ///
     /// With `retries`, a failure the engine marks retryable (a write-write
     /// conflict, on a statement or on the commit) rolls back and runs `body`
-    /// again, up to that many more times. `body` must therefore be safe to
-    /// run more than once; anything it did outside the transaction is not
-    /// undone.
+    /// again, up to that many more times (a count below one: never).
+    /// `body` must therefore be safe to run more than once; anything it did
+    /// outside the transaction is not undone.
     @discardableResult
     public func transaction<T>(retries: Int = 0, _ body: (Transaction) throws -> T) throws -> T {
         try retrying(retries, lift: { $0 }, body)
@@ -112,7 +111,8 @@ extension Connection {
 
     /// Runs `body` in a transaction that is always rolled back: every
     /// statement sees one snapshot, and nothing commits. A statement that is
-    /// not a read is refused with ``RelateError/misuse(_:)``.
+    /// not a read is refused with ``RelateError/misuse(_:)``. The result is
+    /// not discardable: a read has no effect but its value.
     public func read<T>(_ body: (Transaction) throws -> T) throws -> T {
         try attempt(.read, lift: { $0 }, body)
     }
@@ -138,7 +138,6 @@ extension Connection {
     private func retrying<T, Failure: Error>(
         _ retries: Int, lift: (RelateError) -> Failure, _ body: (Transaction) throws(Failure) -> T
     ) throws(Failure) -> T {
-        precondition(retries >= 0, "retries is a count of additional attempts")
         var attempts = 0
         while true {
             do throws(Failure) {
