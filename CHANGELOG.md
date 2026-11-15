@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AsyncStream` of
   committed writes with their bookmark, summed counters and the tags the
   writer attached (`db.write(tags:)`, `transaction(tags:)`).
+- Swift: live values. `Database.values(tags:_:)` is a stream of what a
+  read returns, now and again after each commit that may have changed it;
+  `@LiveQuery` is the same observation as a SwiftUI property, reading the
+  database set with `.relateDatabase(_:)`.
 - Swift: `Database.defaultStoreURL(named:)` and
   `Database.provision(at:from:)` for seeding an app's store from its bundle,
   and `Migrator` for idempotent schema statements plus versioned steps.

@@ -58,6 +58,11 @@ reports each committed write with the tags its writer attached, so a view
 model can refresh when the data it shows changes, without every write having
 to go through one controller.
 
+Most views do not need the stream itself. `db.values { … }` is a read that
+runs again after a commit, as an asynchronous sequence, and `@LiveQuery` is
+that sequence as a SwiftUI property: a view declares the statement it shows
+and is redrawn when a write changes the answer.
+
 For iOS apps, `Database.defaultStoreURL(named:)` is the store's place in
 Application Support (not Documents), and `Database.provision(at:from:)`
 copies a store shipped in the app bundle there on first launch — atomically,

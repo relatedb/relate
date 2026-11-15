@@ -78,6 +78,11 @@ func counterRacers() throws -> (database: Database, winner: Connection, loser: C
 /// Increments the counter of a counter database and returns its value.
 let incrementCounter: Statement = "MATCH (c:Counter) SET c.v = c.v + 1 RETURN c.v"
 
+/// Reads the counter of a counter database.
+let counterValue: @Sendable (Transaction) throws -> Int = { tx in
+    try tx.query("MATCH (c:Counter) RETURN c.v").scalar(as: Int.self)
+}
+
 /// Stages the engine's write-write conflict and returns what the losing
 /// commit throws: two connections each create the same unique key inside a
 /// transaction, the first commits, and the second commit loses (ADR-0439).

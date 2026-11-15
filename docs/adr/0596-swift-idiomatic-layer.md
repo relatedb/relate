@@ -62,7 +62,9 @@ engine; nothing here adds a protocol or needs an ABI change.
    the live engine in the package's tests.
 9. **Observation, provisioning, migration.** Per `Database` instance and
    in-process: a stream of commits with caller-supplied tags, and a trace
-   callback that never carries parameter values. A helper seeds a store from
+   callback that never carries parameter values. On the commit stream sit a
+   live value (a read run again after a commit, as an asynchronous sequence)
+   and its SwiftUI property wrapper. A helper seeds a store from
    a bundled copy, and a migrator runs idempotent schema statements plus
    versioned steps.
 

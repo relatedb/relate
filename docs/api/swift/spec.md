@@ -44,6 +44,10 @@ public final class Database: Sendable {
     // Observation — see "Observation" below.
     public func setTraceHandler(_ handler: (@Sendable (QueryTrace) -> Void)?)
     public func commits(bufferingPolicy: AsyncStream<Commit>.Continuation.BufferingPolicy = .unbounded) -> AsyncStream<Commit>
+
+    // Live values — see "Live values" below.
+    public func values<T: Sendable>(tags: Set<String>? = nil, _ body: @escaping @Sendable (Transaction) throws -> T) -> AsyncThrowingStream<T, any Error>
+    public func values<T: Sendable & Equatable>(tags: Set<String>? = nil, _ body: @escaping @Sendable (Transaction) throws -> T) -> AsyncThrowingStream<T, any Error>  // skips a value equal to the last
 }
 
 public final class Connection {                  // NOT Sendable
@@ -325,6 +329,101 @@ public struct Commit: Sendable, Hashable {
 - **Scope.** Both are in-process and per `Database` object. A write by
   another process, or through a second `Database` opened on the same store,
   is not seen.
+
+## Live values
+
+A live value is a read that is run again when a commit may have changed its
+answer. `Database.values` is the stream form; `@LiveQuery` is the same
+observation as a SwiftUI property.
+
+```swift
+for try await books in db.values(tags: ["books"]) { tx in
+    try tx.run("MATCH (b:Book) RETURN b.title AS title ORDER BY title").decode(Book.self)
+} {
+    show(books)
+}
+```
+
+- **Order.** The stream yields the current value first. It subscribes to
+  the commit stream before that first read, so a write made at any point
+  after the call is followed by a read that sees it.
+- **Which commits.** With `tags: nil` (the default) every commit made
+  through the `Database` object is followed by a read. With a set, only a
+  commit carrying at least one of its tags is. An auto-commit statement
+  carries no tag, and a writer that forgets its tag leaves the value stale:
+  narrow with tags only where every writer sets them. The engine does not
+  report which labels a commit touched, so there is no automatic tracking.
+- **Reads.** `body` runs as `Database.read`: one snapshot, nothing kept.
+  Commits that arrive while a read runs are followed by one read, not one
+  each, and a consumer that falls behind receives the latest value only.
+- **Repeats.** For an `Equatable` value, a read equal to the last value
+  yielded yields nothing, so a commit that left the answer alone is not a
+  new value. A consumer that fell behind while the answer changed and
+  changed back can still receive the same value twice. A value that is not
+  `Equatable` is yielded after every read.
+- **End.** A read that throws ends the stream with its error. The stream
+  also ends when its consumer stops (a cancelled task, a released stream)
+  and when the store closes; an observation does not keep the store open.
+- **Scope.** As for the commit stream: in-process and per `Database`
+  object.
+
+### `@LiveQuery` (SwiftUI)
+
+```swift
+@MainActor @propertyWrapper
+public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
+    public init(initial: Value, tags: Set<String>? = nil, id: AnyHashable = AnyHashable(0),
+                _ read: @escaping @Sendable (Transaction) throws -> Value)
+    public init<Element: Decodable>(_ statement: @autoclosure () throws -> Statement, tags: Set<String>? = nil,
+                                    using decoder: CypherValueDecoder = CypherValueDecoder()) where Value == [Element]
+    public var wrappedValue: Value { get }            // the latest value; `initial` (or []) before the first read
+    public var projectedValue: LiveQueryState { get }
+}
+
+public enum LiveQueryState: Sendable {
+    case loading                      // no value or failure yet since the query last started
+    case live                         // the property holds the latest value and follows commits
+    case failed(any Error)            // the observation ended: a read threw, or there is no database
+    public var isLoading: Bool { get }
+    public var error: (any Error)? { get }
+}
+
+extension EnvironmentValues { public var relateDatabase: Database? { get set } }
+extension View { public func relateDatabase(_ database: Database?) -> some View }
+```
+
+```swift
+struct Library: View {
+    @LiveQuery("MATCH (b:Book) RETURN b.title AS title ORDER BY title", tags: ["books"])
+    private var books: [Book]
+
+    var body: some View {
+        List(books, id: \.title) { Text($0.title) }
+            .overlay { if $books.isLoading { ProgressView() } }
+    }
+}
+
+// once, near the root
+ContentView().relateDatabase(db)
+```
+
+- The property reads the database in the environment. With none there, the
+  query reports `.misuse` through `$books.error`; it does not trap.
+- The observation lasts as long as the view. It starts again when the query
+  becomes a different one: when the statement or one of its bound values
+  changes (for the closure form, when `id` changes), when `tags` changes,
+  or when the database in the environment does. The decoder is not part of
+  a query's identity. A query that depends on the view's inputs is built in
+  the view's initializer: `_books = LiveQuery(try "… \(search) …")`.
+- A changed query is `.loading` from the view update that changed it. The
+  previous value stays on screen while it runs its first read, and after a
+  read fails.
+- A read equal to the value the property holds redraws nothing.
+- A statement whose interpolation throws is reported through `error` too,
+  so a view's initializer does not have to throw.
+- Available where SwiftUI is (`#if canImport(SwiftUI)`), from the package's
+  minimum platforms: the property wrapper uses `StateObject`, not the
+  Observation framework.
 
 ## Provisioning and migration
 

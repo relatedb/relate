@@ -47,6 +47,10 @@ try await db.write(try "CREATE (:A {name: \(name)})")                    // sing
 
 db.setTraceHandler { t in log(t.statement, t.wallMs) }                    // every statement; parameter names, not values. t.statement holds any literal spliced into it and t.error may quote a value: log those two only when they carry no user data
 for await commit in db.commits() where commit.tags.contains("notes") { reload() }  // writes via db.write(tags: ["notes"])
+for try await n in db.values({ tx in try tx.run("MATCH (n) RETURN count(n)").scalar(as: Int.self) }) { show(n) }  // now, then after each commit that changes it
+
+// SwiftUI: the view is redrawn when a commit changes the answer. Root: ContentView().relateDatabase(db)
+@LiveQuery("MATCH (b:Book) RETURN b.title AS title ORDER BY title") private var books: [Book]   // $books.isLoading, $books.error
 ```
 
 `CypherValue` is an enum — `null bool int float string list map node
@@ -81,10 +85,17 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
   throws `misuse`); writes run one at a time. The body and its result must be
   `Sendable`; the `Transaction` does not leave the body. A running statement
   cannot be cancelled.
-- **Observation is in-process** — `commits()` and the trace handler see
-  only this `Database` object's writes and statements, not another
-  process's. The engine does not say which labels a commit touched: tag
-  writes (`tags:`) to route them.
+- **Observation is in-process** — `commits()`, `values` and `@LiveQuery`
+  and the trace handler see only this `Database` object's writes and
+  statements, not another process's. The engine does not say which labels a
+  commit touched: tag writes (`tags:`) to route them.
+- **Live values re-read on every commit by default** — `values` and
+  `@LiveQuery` run their read again after any commit, and (for an
+  `Equatable` value) skip a result equal to the last. Pass `tags:` only
+  when every writer of that data tags its writes; an untagged write then
+  leaves the value stale. A `@LiveQuery` that depends on view input is
+  built in the view's `init`
+  (`_books = LiveQuery(try "… \(search) …")`).
 - **`Connection` is not `Sendable`** — the compiler stops you sharing one
   across actors. If you use `connect()` directly, own the connection inside
   one actor; `Database` is shareable.
