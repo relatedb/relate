@@ -117,10 +117,7 @@ pub(crate) fn run_action(
     let db_path = run.db.as_deref().unwrap_or(":memory:");
     let db = match Database::open(db_path) {
         Ok(db) => db,
-        Err(e) => {
-            crate::print_error(format!("Failed to open Relate: {e}"));
-            return 1;
-        }
+        Err(e) => return fail(format!("Failed to open Relate: {e}")),
     };
     let mut conn = match db.connect_typed(Namespace::Neo4j) {
         Ok(conn) => conn,

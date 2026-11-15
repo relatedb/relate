@@ -345,12 +345,11 @@ impl Drain {
 }
 
 /// Wait for the child, join its stderr, and classify the exit: `Ok` for a
-/// clean zero exit (carrying the trimmed stderr, unused by the caller),
-/// the typed [`ProtocolError::ExitFailed`] or
+/// clean zero exit (the stderr is dropped: only a failure reports it), the typed [`ProtocolError::ExitFailed`] or
 /// [`ProtocolError::KilledBySignal`] otherwise. The one exit classification
 /// the mount runs, consulted at the request stream's end inside the
 /// session's framed import.
-pub(crate) fn wait_and_reap(child: &mut Child, drain: Drain) -> Result<String, ProtocolError> {
+pub(crate) fn wait_and_reap(child: &mut Child, drain: Drain) -> Result<(), ProtocolError> {
     let status = child
         .wait()
         .map_err(|e| ProtocolError::WaitFailed(e.to_string()))?;
@@ -358,7 +357,7 @@ pub(crate) fn wait_and_reap(child: &mut Child, drain: Drain) -> Result<String, P
     if !status.success() {
         return Err(classify_bad_exit(status, stderr));
     }
-    Ok(stderr)
+    Ok(())
 }
 
 /// Classify a failed child exit (ADR-0430 §5): a non-zero code carries the

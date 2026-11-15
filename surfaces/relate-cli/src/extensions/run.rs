@@ -9,8 +9,10 @@
 //! executable — fails the verb closed (exit 2, the refusal, the run
 //! synopsis and hint, ADR-0430 §5's manifest class): the grammar `run`
 //! accepts is a property of the user's machine, so a broken install
-//! breaks the verb — help pages included — never a partial grammar or a
-//! partial listing.
+//! breaks the verb — the name-shaped help pages included — never a partial
+//! grammar or a partial listing. (A help token with no name to resolve —
+//! a bare `run --help`, a flag-shaped tail — prints the verb's own page
+//! without loading the registry: there is no extension to resolve.)
 //!
 //! Only an installed extension mounts under `run` (ADR-0429 §1): the
 //! built-in `lab` actions are gone with the `lab` surface (ADR-0431

@@ -139,7 +139,7 @@ mod child {
     /// child reads one envelope line and sees end-of-input, which ends its
     /// session before it sends a request. Returns the outcome of the read
     /// side plus the reaped exit classification.
-    fn run_in(exe: &Path, cwd: &Path) -> Result<String, ProtocolError> {
+    fn run_in(exe: &Path, cwd: &Path) -> Result<(), ProtocolError> {
         let mut piped = spawn_piped(exe, Some(cwd))?;
         write_envelope_line(&mut piped.stdin, &envelope())?;
         drop(piped.stdin);
@@ -151,7 +151,7 @@ mod child {
     }
 
     /// Write `body` to a fixture script and run it.
-    fn run(body: &str) -> Result<String, ProtocolError> {
+    fn run(body: &str) -> Result<(), ProtocolError> {
         let dir = tempfile::tempdir().unwrap();
         let exe = sh_fixture(dir.path(), "child.sh", body);
         run_in(&exe, dir.path())
@@ -180,14 +180,12 @@ mod child {
     fn no_argv_reaches_the_child() {
         // The child exits 7 on any argument at all: a clean exit proves the
         // spawn handed it no argv (ADR-0430 §6).
-        let stderr = run("if [ \"$#\" -gt 0 ]; then exit 7; fi").expect("no argv arrives");
-        assert_eq!(stderr, "");
+        run("if [ \"$#\" -gt 0 ]; then exit 7; fi").expect("no argv arrives");
     }
 
     #[test]
     fn a_clean_exit_classifies_as_success() {
-        let stderr = run("exit 0").expect("a clean exit is a clean run");
-        assert_eq!(stderr, "");
+        run("exit 0").expect("a clean exit is a clean run");
     }
 
     #[test]

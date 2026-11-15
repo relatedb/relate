@@ -42,19 +42,19 @@ pub(crate) struct RemoteDb {
 }
 
 /// The `http(s)` scheme split of a remote value — the one scheme
-/// vocabulary this module classifies by. `Some((scheme, rest))` only for
+/// vocabulary this module classifies by. `Some((scheme, is_https, rest))` only for
 /// an `http`/`https` URL (the scheme compares case-insensitively, a URL's
 /// scheme is case-insensitive per RFC 3986, so `HTTPS://…` is the same
 /// remote value as `https://…`); `None` for every other `scheme://` form
 /// and every non-URL, which are local paths the engine answers for itself
 /// (ADR-0044). [`is_remote_uri`] and [`plan`] both consume this one split,
 /// so the predicate and the classifier can never disagree about a value.
-fn remote_uri_parts(uri: &str) -> Option<(&str, &str)> {
+fn remote_uri_parts(uri: &str) -> Option<(&str, bool, &str)> {
     let (scheme, rest) = uri.split_once("://")?;
-    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
-        Some((scheme, rest))
-    } else {
-        None
+    match scheme.to_ascii_lowercase().as_str() {
+        "https" => Some((scheme, true, rest)),
+        "http" => Some((scheme, false, rest)),
+        _ => None,
     }
 }
 
@@ -81,10 +81,9 @@ pub(crate) fn is_remote_uri(uri: &str) -> bool {
 /// happens here, before any fetch, naming the `.rl`-shaped URL that works in
 /// its place.
 pub(crate) fn plan(uri: &str, safe_mode: bool) -> Result<Option<RemoteDb>, String> {
-    let Some((scheme, rest)) = remote_uri_parts(uri) else {
+    let Some((scheme, https, rest)) = remote_uri_parts(uri) else {
         return Ok(None);
     };
-    let https = scheme.eq_ignore_ascii_case("https");
     let fetch_url =
         validate_url(scheme, https, rest).map_err(|e| format!("invalid --load: {e}"))?;
     if safe_mode {

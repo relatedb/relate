@@ -112,46 +112,28 @@ impl FlagSpec {
     }
 }
 
-/// A string flag's entry: its name and default.
+/// One flag's entry: its name and the typed default the host resolves when
+/// the flag is absent. The four kinds differ only in the default's type
+/// (see the aliases below); the kind spelling rides [`FlagSpec`]'s tag.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct StringFlag {
+pub(crate) struct Flag<T> {
     /// The flag's name; the host renders `--{name}`.
     pub(crate) name: String,
-    /// The value the host resolves when the flag is absent.
-    pub(crate) default: String,
+    /// The value the host resolves when the flag is absent (a repeatable
+    /// flag's default is its list of values; each occurrence appends one
+    /// more).
+    pub(crate) default: T,
 }
 
-/// An integer flag's entry: its name and default.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct IntegerFlag {
-    /// The flag's name; the host renders `--{name}`.
-    pub(crate) name: String,
-    /// The value the host resolves when the flag is absent.
-    pub(crate) default: i64,
-}
-
-/// A boolean flag's entry: its name and default.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BooleanFlag {
-    /// The flag's name; the host renders `--{name}`.
-    pub(crate) name: String,
-    /// The value the host resolves when the flag is absent.
-    pub(crate) default: bool,
-}
-
-/// A repeatable string flag's entry: its name and default values.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RepeatableFlag {
-    /// The flag's name; the host renders `--{name}`.
-    pub(crate) name: String,
-    /// The values the host resolves when the flag is absent; each
-    /// occurrence appends one more.
-    pub(crate) default: Vec<String>,
-}
+/// A string flag's entry.
+pub(crate) type StringFlag = Flag<String>;
+/// An integer flag's entry.
+pub(crate) type IntegerFlag = Flag<i64>;
+/// A boolean flag's entry.
+pub(crate) type BooleanFlag = Flag<bool>;
+/// A repeatable string flag's entry.
+pub(crate) type RepeatableFlag = Flag<Vec<String>>;
 
 /// The optional positional (ADR-0429 §2): the one positional argument
 /// the action takes, like the importers' DIR.

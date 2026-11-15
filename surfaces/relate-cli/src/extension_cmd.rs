@@ -45,7 +45,7 @@ const ACTION_CHECK: &str = "check";
 
 /// What `relate extension` should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExtensionAction {
+pub(crate) enum ExtensionAction {
     /// `extension init <name> [--lang sh|py|ts|rust]` (ADR-0431 §3):
     /// scaffold a package directory from a language template. Parsed and
     /// run in every build that carries `extensions` — it needs no network
@@ -108,7 +108,7 @@ impl ExtensionAction {
 /// the action names are closed). Pure — returns the usage-error message
 /// instead of exiting, so the grammar is unit-testable; the lifecycle
 /// wrapper turns `Err` into the exit-2 convention.
-pub fn parse_extension_args(rest: &[String]) -> Result<ExtensionAction, ParseError> {
+pub(crate) fn parse_extension_args(rest: &[String]) -> Result<ExtensionAction, ParseError> {
     let Some((action_arg, rest)) = rest.split_first() else {
         return Err("extension requires an action (init, install, list, remove or check)".into());
     };
@@ -356,7 +356,7 @@ fn parse_check(rest: &[String]) -> Result<ExtensionAction, ParseError> {
 /// the install's exit-2 class
 /// ([`crate::extensions::install::error::InstallError`])
 /// carries its own code.
-pub fn run(action: ExtensionAction) -> i32 {
+pub(crate) fn run(action: ExtensionAction) -> i32 {
     match action {
         ExtensionAction::Init(spec) => crate::extension_init::run(spec),
         ExtensionAction::Install(spec) => run_install_action(spec),

@@ -55,11 +55,11 @@ pub(crate) fn action_usage(entry: &ExtensionEntry) -> String {
 pub(crate) fn action_help(entry: &ExtensionEntry) -> String {
     let command = entry.command();
     let mut page = format!("{}\n\n", action_usage(entry));
-    page.push_str(&sanitize_error_text(&format!(
+    page.push_str(&format!(
         "Run the installed extension '{}' (v{}) as a batched import into a store the host owns.",
-        entry.mount_name(),
+        sanitize_error_text(entry.mount_name()),
         sanitize_error_text(&command.version)
-    )));
+    ));
     page.push('\n');
     page.push_str("The child walks its source and drives the import as an MCP client; the\n");
     page.push_str("host alone owns the store, the caps and the exit codes.\n\n");

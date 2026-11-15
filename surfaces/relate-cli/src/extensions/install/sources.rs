@@ -158,6 +158,23 @@ pub(super) fn install_from_url(
     ))
 }
 
+/// One staged-from source file's checks: a regular file (no symlink, the
+/// package contract), not writable by group or other; returns its mode so
+/// the executable's can ride to the staged copy.
+fn check_source_file(path: &Path) -> Result<u32, InstallError> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| InstallError::Runtime(format!("reading {} failed: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(InstallError::Runtime(format!(
+            "{} is not a regular file (the package contract is regular files only)",
+            path.display()
+        )));
+    }
+    let mode = source_mode(&meta);
+    check_source_writable(path, mode)?;
+    Ok(mode)
+}
+
 /// The local directory trust act (§5): `--from DIR` points at an unpacked
 /// package directory — the posture `pull --from FILE` pinned (ADR-0080
 /// §3): whoever provisions the directory owns what is in it. The
@@ -203,26 +220,8 @@ pub(super) fn install_from_dir(
     // identity source in this tree to compare against. The write bits
     // below are the property that actually widens who may rewrite the
     // installed executable, so they are the one checked.
-    let mut executable_mode = 0;
-    for (path, is_executable) in [
-        (manifest_path.as_path(), false),
-        (executable.as_path(), true),
-    ] {
-        let meta = std::fs::symlink_metadata(path).map_err(|e| {
-            InstallError::Runtime(format!("reading {} failed: {e}", path.display()))
-        })?;
-        if !meta.is_file() {
-            return Err(InstallError::Runtime(format!(
-                "{} is not a regular file (the package contract is regular files only)",
-                path.display()
-            )));
-        }
-        let mode = source_mode(&meta);
-        check_source_writable(path, mode)?;
-        if is_executable {
-            executable_mode = mode;
-        }
-    }
+    check_source_file(&manifest_path)?;
+    let executable_mode = check_source_file(&executable)?;
     // The executable must RESOLVE inside the source directory, not
     // merely be spelled inside it — a `bin` symlink pointing elsewhere
     // would otherwise carry out-of-directory content in through a

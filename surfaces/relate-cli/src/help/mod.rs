@@ -451,6 +451,14 @@ pub(crate) const DATABASE_FLAG_HELP: [&str; 3] = [
     DATABASE_FLAG_CONTINUATION[1],
 ];
 
+/// The `--allow-plaintext` row `pull` and `push` share — one row per policy,
+/// beside [`DATABASE_FLAG_HELP`]. Newline-free: the page's own line break
+/// follows it.
+#[cfg(any(feature = "pull", feature = "push"))]
+pub(crate) const ALLOW_PLAINTEXT_FLAG_HELP: &str = "\
+  --allow-plaintext  Permit Basic auth to a non-loopback http:// Query API
+                     (insecure; prints a warning); default off";
+
 /// The scope of a usage error or a help hint: the top-level query run or one
 /// command. The top-level-vs-command split lives here exactly once, so the
 /// synopsis and the hint a usage error prints can never point at different

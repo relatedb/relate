@@ -1,5 +1,7 @@
 //! The `pull` command help page: the shared synopsis plus its flags.
 
+use super::ALLOW_PLAINTEXT_FLAG_HELP;
+
 /// The `pull` synopsis, shared by its help page and its usage errors.
 pub(super) const PULL_USAGE: &str =
     "Usage: relate pull [--from FILE] --query Q [--param N=V] [--allow-plaintext] --database PATH";
@@ -16,8 +18,7 @@ pull copies a Neo4j/Aura subgraph (HTTP Query API v2) into --database.
                one checkpoint at the end
   -d, --database PATH  Destination directory or .rl bundle (required; not :memory:)
   --param N=V   Bind a source query parameter (repeatable)
-  --allow-plaintext  Permit Basic auth to a non-loopback http:// Query API
-                     (insecure; prints a warning); default off
+{ALLOW_PLAINTEXT_FLAG_HELP}
 "
     )
 }

@@ -1,5 +1,7 @@
 //! The `push` command help page: the shared synopsis plus its flags.
 
+use super::ALLOW_PLAINTEXT_FLAG_HELP;
+
 /// The `push` synopsis, shared by its help page and its usage errors.
 pub(super) const PUSH_USAGE: &str = "\
 Usage: relate push --to CREDS --database PATH \
@@ -48,8 +50,7 @@ HTTP Query API v2 — pull's mirror, over the same client.
   --dry-run    Print the plan (counts, merge keys, statement shapes, batch
                counts, policies) without touching the remote
   --json       Print the run report as one JSON object instead of the table
-  --allow-plaintext  Permit Basic auth to a non-loopback http:// Query API
-                     (insecure; prints a warning); default off
+{ALLOW_PLAINTEXT_FLAG_HELP}
 
 Merge keys come from the store's uniqueness and node/relationship key
 constraints (composite keys included), overridable per label and per type;
