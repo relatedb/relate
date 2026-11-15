@@ -273,7 +273,7 @@ connection made that way is a writer outside the pool.
 
 ```swift
 public struct QueryTrace: Sendable {
-    public let statement: String           // the text the engine received
+    public let statement: String           // the text the engine received, spliced literals included
     public let parameterNames: [String]    // sorted; values are never included
     public let rowCount: Int               // 0 when the statement failed
     public let queryType: QueryType?       // nil when it failed
@@ -293,9 +293,11 @@ public struct Commit: Sendable, Hashable {
   clears it). It is called once for every statement run on any connection
   of that database — a caller's own or a pooled one — synchronously on the
   thread that ran the statement, after it finished, failures included. The
-  statement text and the parameter names carry no parameter value. `error`
-  may: the engine's message can quote a bound value (a refused parameter is
-  named with what it held), so a handler that logs treats it as sensitive.
+  statement text and the parameter names carry no parameter value. Two
+  fields can still carry data, and a handler that logs treats them as
+  sensitive: `statement`, when the caller spliced a value into the text
+  instead of binding it, and `error`, whose message can quote a bound value
+  (a refused parameter is named with what it held).
 - **Signposts.** Every statement is also bracketed by an `os_signpost`
   interval named `statement` (subsystem `ai.relatedb.relate`, category
   `Query`), with no configuration. The package's tests do not assert on

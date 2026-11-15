@@ -7,12 +7,14 @@ import os
 ///
 /// A trace carries the statement text and its parameter *names*; neither
 /// field carries a parameter value, so logging them for statements that
-/// bind their inputs puts no user data in a log. ``error`` is different:
-/// the engine's message may quote a bound value (a refused parameter is
-/// named with what it held), so a handler that logs must treat it as
-/// sensitive.
+/// bind their inputs puts no user data in a log. Two things can still
+/// carry data, and a handler that logs must treat them as sensitive:
+/// ``statement``, when the caller spliced a value into the text instead of
+/// binding it, and ``error``, whose message is the engine's and may quote a
+/// bound value (a refused parameter is named with what it held).
 public struct QueryTrace: Sendable {
-    /// The statement text as the engine received it.
+    /// The statement text as the engine received it, including any literal
+    /// the caller spliced into it.
     public let statement: String
     /// The names of the parameters bound, sorted.
     public let parameterNames: [String]
