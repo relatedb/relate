@@ -116,7 +116,7 @@ func missingKey(subject string, data []byte, keys ...string) error {
 		return fmt.Errorf("ABI contract violated: %s is JSON null, expected an object: %s", subject, safeWire(string(data)))
 	}
 	for _, k := range keys {
-		if value, ok := present[k]; !ok || value == nil {
+		if present[k] == nil {
 			return fmt.Errorf("ABI contract violated: %s is missing %q", subject, k)
 		}
 	}

@@ -61,33 +61,39 @@ type Notification struct {
 	OperatorID  *int64   `json:"operator_id,omitempty"`
 }
 
-// UnmarshalJSON decodes one notification entry strictly: the two closed
-// keys must be present (the one required-key check, missingKey) and are
-// typed through their vocabularies (decodeClosed).
+// UnmarshalJSON decodes one notification entry strictly: every refusal
+// carries the sanitized entry, wrapped here once, so decodeStrict's failure
+// sites name only their cause.
 func (n *Notification) UnmarshalJSON(data []byte) error {
+	if err := n.decodeStrict(data); err != nil {
+		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
+	}
+	return nil
+}
+
+// decodeStrict is the entry decode: the two closed keys must be present (the
+// one required-key check, missingKey) and are typed through their
+// vocabularies (decodeClosed). It leaves n untouched on error.
+func (n *Notification) decodeStrict(data []byte) error {
 	type plain Notification // the method-free shape, so no recursion
 	var shape struct {
 		plain
 		Severity string `json:"severity"`
 		Category string `json:"category"`
 	}
-	// violation is the one typed refusal: the cause plus the sanitized entry.
-	violation := func(err error) error {
-		return fmt.Errorf("%w: %s", err, safeWire(string(data)))
-	}
 	if err := missingKey("notification entry", data, "severity", "category"); err != nil {
-		return violation(err)
+		return err
 	}
 	if err := json.Unmarshal(data, &shape); err != nil {
-		return violation(fmt.Errorf("ABI contract violated: decoding notification entry: %w", err))
+		return fmt.Errorf("ABI contract violated: decoding notification entry: %w", err)
 	}
 	severity, err := decodeClosed(severityVocabulary, shape.Severity)
 	if err != nil {
-		return violation(err)
+		return err
 	}
 	category, err := decodeClosed(categoryVocabulary, shape.Category)
 	if err != nil {
-		return violation(err)
+		return err
 	}
 	*n = Notification(shape.plain)
 	n.Severity, n.Category = severity, category

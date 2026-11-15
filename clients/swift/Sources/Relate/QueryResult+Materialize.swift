@@ -65,13 +65,13 @@ extension QueryResult {
 extension QueryType {
     /// Types the `relate_result_query_type` accessor's string (ADR-0162).
     static func decode(_ raw: String) throws(RelateError) -> QueryType {
-        try closedWire(QueryType.self, raw, what: "query type")
+        try closedWire(raw, what: "query type")
     }
 }
 
 extension DatabaseNamespace {
     /// Types the `relate_result_namespace` accessor's string (ADR-0117).
     static func decode(_ raw: String) throws(RelateError) -> DatabaseNamespace {
-        try closedWire(DatabaseNamespace.self, raw, what: "namespace")
+        try closedWire(raw, what: "namespace")
     }
 }

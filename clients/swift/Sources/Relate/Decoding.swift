@@ -5,7 +5,7 @@
 /// value is `raw`, or an ABI contract violation naming `what` and the
 /// sanitized offending value. Query type, namespace, error stage, severity
 /// and category all refuse through it.
-func closedWire<E: RawRepresentable>(_ type: E.Type, _ raw: String, what: String) throws(RelateError) -> E
+func closedWire<E: RawRepresentable>(_ raw: String, what: String) throws(RelateError) -> E
 where E.RawValue == String {
     guard let value = E(rawValue: raw) else {
         throw RelateError.decoding("ABI contract violated: \(what) \(quotedWire(raw))")
@@ -14,8 +14,9 @@ where E.RawValue == String {
 }
 
 /// The `Decodable` form of `closedWire` for a closed enum nested in a JSON
-/// document: a `DecodingError` naming the key (the decoder's last coding key,
-/// always present under a keyed container) and the sanitized value. A missing
+/// document: a `DecodingError` naming the key (the decoder's last coding key)
+/// and the sanitized value. A decoder with an empty coding path is a misuse
+/// of this helper and is refused as such, never given a placeholder key. A missing
 /// or null key is already a `DecodingError` from the keyed container.
 func decodeWire<E: RawRepresentable>(_ type: E.Type, from decoder: any Decoder) throws -> E
 where E.RawValue == String {
@@ -27,7 +28,7 @@ where E.RawValue == String {
     }
     let raw = try decoder.singleValueContainer().decode(String.self)
     do {
-        return try closedWire(type, raw, what: "unknown \(key)")
+        return try closedWire(raw, what: "unknown \(key)") as E
     } catch {
         throw DecodingError.dataCorrupted(
             .init(codingPath: decoder.codingPath, debugDescription: error.message))

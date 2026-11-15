@@ -30,7 +30,7 @@ func engineError(from json: UnsafePointer<CChar>?, what: String) -> RelateError 
         let text = try required(json, what)
         let wire = try decodeMetadata(
             Wire.self, text, what: "the error channel is not the documented shape: \(safeWire(text))")
-        let stage = try closedWire(EngineError.Stage.self, wire.stage, what: "unknown error stage")
+        let stage: EngineError.Stage = try closedWire(wire.stage, what: "unknown error stage")
         return .engine(EngineError(
             code: wire.code, gqlStatus: wire.gqlStatus, stage: stage,
             retryable: wire.retryable, message: wire.message))

@@ -22,8 +22,8 @@ func safeWire(_ raw: String) -> String {
 
 /// Escapes every non-printable scalar, and when `inQuotes` the quote and
 /// backslash that would break the message's own quoting (a payload keeps its
-/// structural quotes and backslashes legible), as `\uXXXX` (a supplementary scalar as its UTF-16
-/// surrogate pair), bounds the escaped body to `max` UTF-16 units, and appends
+/// structural quotes and backslashes legible), as `\uXXXX` (a supplementary
+/// scalar as its UTF-16 surrogate pair), bounds the escaped body to `max` UTF-16 units, and appends
 /// `...(truncated)` when the input is cut.
 private func escapeWire(_ raw: String, max: Int, inQuotes: Bool) -> String {
     var out = ""
