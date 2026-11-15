@@ -42,6 +42,22 @@ pub(crate) fn predicate_holds(
     super::predicate_value_holds(&eval_match_predicate(graph, row, predicate, params)?)
 }
 
+/// Whether a post-merge WHERE holds on one already-projected `row` — the
+/// row-level half of the projection's plain-WHERE policy, read by
+/// [`filter_rows_where`], so the batch filter and any one-row-at-a-time
+/// reader share one spelling of the policy. The ordered window is the
+/// second reader: a `WHERE` written after the page stays in the clause that
+/// carries `order`/`skip`/`limit`, so the window applies it per row as each
+/// row arrives (see `OutputContainer::Window`).
+pub(crate) fn where_holds(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    row: &Row,
+    predicate: &Expr,
+) -> Result<bool> {
+    super::predicate_value_holds(&eval(graph, row, predicate, params)?)
+}
+
 /// Keep the rows whose bare-evaluated predicate holds — the post-merge
 /// WHERE stage of the projection and of a catalog `YIELD ... WHERE`: a
 /// failing filter expression propagates, a null does not hold, and any
@@ -56,7 +72,7 @@ pub(crate) fn filter_rows_where(
 ) -> Result<Vec<Row>> {
     let mut filtered = Vec::with_capacity(rows.len());
     for row in rows {
-        if super::predicate_value_holds(&eval(graph, &row, predicate, params)?)? {
+        if where_holds(graph, params, &row, predicate)? {
             filtered.push(row);
         }
     }
@@ -91,9 +107,9 @@ pub(crate) fn where_clause_holds(
 /// element, where the row's list variable is the source being iterated,
 /// not a row of an aggregation; and the front end rejects an aggregate
 /// in these positions outright (`validate/aggregation/non_aggregating`),
-/// so there is nothing here to fold. The evaluated predicate reads
-/// through [`super::predicate_value_holds`] like every other runtime
-/// predicate position.
+/// so there is nothing here to fold. The present clause is read through
+/// [`where_holds`], the one spelling of a bare-evaluated predicate's
+/// truthiness; this function only adds the optional gate around it.
 pub(crate) fn comprehension_where_holds(
     graph: &ExecGraph<'_>,
     row: &Row,
@@ -101,7 +117,7 @@ pub(crate) fn comprehension_where_holds(
     params: &BTreeMap<String, Value>,
 ) -> Result<bool> {
     match where_clause {
-        Some(predicate) => super::predicate_value_holds(&eval(graph, row, predicate, params)?),
+        Some(predicate) => where_holds(graph, params, row, predicate),
         None => Ok(true),
     }
 }

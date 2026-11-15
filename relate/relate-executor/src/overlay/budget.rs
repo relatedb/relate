@@ -6,6 +6,8 @@ use std::cell::Cell;
 
 use relate_core::{Error, Result, Value};
 
+use crate::row::Row;
+
 use super::ExecGraph;
 
 /// ADR-0395: the fixed per-top-level-statement budget on nested
@@ -206,11 +208,8 @@ impl RetainedTotal {
     /// containers call it, charged ahead of the landing so a refusal
     /// never leaves the row retained.
     pub(crate) fn add_row(&mut self, graph: &ExecGraph<'_>, values: &[Value]) -> Result<()> {
-        self.add_bytes(graph, crate::workspace::row_retained_heap(values))?;
-        self.add_bytes(
-            graph,
-            crate::workspace::retained_rows_bytes(1, values.len()),
-        )
+        self.add_bytes(graph, crate::workspace::row_landing_bytes(values))?;
+        self.add_bytes(graph, std::mem::size_of::<Row>() as u64)
     }
 
     /// One group-table landing in a streaming fold: the map entry's

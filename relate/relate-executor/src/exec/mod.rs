@@ -44,6 +44,7 @@ pub(crate) mod catalog_show;
 // ADR-0468's SoA chunk type layer: the types, the conversion, and the
 // operator-serving constructions the batch chain (exec/batch.rs) reads.
 pub(crate) mod chunk;
+pub(crate) mod classification;
 mod clause_arms;
 pub(crate) mod constraint_validation;
 pub(crate) mod create;
@@ -82,6 +83,7 @@ pub(crate) mod ontology;
 pub(crate) mod order;
 pub(crate) mod pattern_policies;
 pub(crate) mod pivot;
+pub(crate) mod post_merge;
 pub(crate) mod predicate_spec;
 pub(crate) mod procedure_rows;
 pub(crate) mod procedures;
@@ -96,6 +98,7 @@ pub(crate) mod shortest_eval;
 pub(crate) mod sink;
 mod stats_short_circuit;
 pub(crate) mod subquery_eval;
+pub(crate) mod top_k;
 pub(crate) mod union;
 pub(crate) mod unwind;
 pub(crate) mod vector;
@@ -494,10 +497,8 @@ pub(crate) fn rows_as_result(graph: &ExecGraph<'_>, rows: &[Row]) -> QueryResult
     let data = rows
         .iter()
         .map(|row| {
-            columns
-                .iter()
-                .map(|column| row.get(column).cloned().unwrap_or(Value::Null))
-                .collect()
+            read_declared_columns(row, &columns, Missing::Null)
+                .expect("padding a missing result column with null is infallible")
         })
         .collect();
     QueryResult::intermediate(columns, data, graph.stats())
@@ -506,12 +507,58 @@ pub(crate) fn rows_as_result(graph: &ExecGraph<'_>, rows: &[Row]) -> QueryResult
 /// How the one materialization loop treats a declared column the row does
 /// not bind.
 #[derive(Clone, Copy)]
-enum Missing {
+pub(crate) enum Missing {
     /// Pad the cell with null (the CALL export policy).
     Null,
     /// A miss is the engine contract break it is — every declared column is
     /// bound by the same rule that declared it.
     Error,
+}
+
+/// One cell of a declared column under the one miss policy — the single
+/// spelling both halves of the cell loop read, so the borrowed and the
+/// moving read cannot disagree on what a miss means.
+fn declared_cell(value: Option<Value>, column: &str, missing: Missing) -> Result<Value> {
+    match (value, missing) {
+        (Some(value), _) => Ok(value),
+        (None, Missing::Null) => Ok(Value::Null),
+        (None, Missing::Error) => Err(missing_column_error(column)),
+    }
+}
+
+/// The one miss message — for [`declared_cell`] and for the arms that read a
+/// column without going through the cell loop (the borrowed single-column
+/// DISTINCT key), so a miss reads the same wherever it is reported.
+pub(crate) fn missing_column_error(column: &str) -> Error {
+    Error::internal(format!("row is missing declared result column {column:?}"))
+}
+
+/// One row's declared columns, moved out — for a caller that owns its rows
+/// and does not need them again. A miss under [`Missing::Error`] is the
+/// engine contract break it is.
+pub(crate) fn take_declared_columns(
+    row: &mut Row,
+    columns: &[String],
+    missing: Missing,
+) -> Result<Vec<Value>> {
+    columns
+        .iter()
+        .map(|column| declared_cell(row.take_value(column), column, missing))
+        .collect()
+}
+
+/// One row's declared columns, cloned — the borrowed half of the same
+/// loop, for a caller that still needs the row (a clause-exit PROFILE tick
+/// has read it, a catalog row is read twice).
+pub(crate) fn read_declared_columns(
+    row: &Row,
+    columns: &[String],
+    missing: Missing,
+) -> Result<Vec<Value>> {
+    columns
+        .iter()
+        .map(|column| declared_cell(row.get(column).cloned(), column, missing))
+        .collect()
 }
 
 /// The one materialization loop: move each cell of `rows` onto `columns`.
@@ -523,18 +570,7 @@ fn materialize_rows_with(
     missing: Missing,
 ) -> Result<Vec<Vec<Value>>> {
     rows.iter_mut()
-        .map(|row| {
-            columns
-                .iter()
-                .map(|column| match (row.take_value(column), missing) {
-                    (Some(value), _) => Ok(value),
-                    (None, Missing::Null) => Ok(Value::Null),
-                    (None, Missing::Error) => Err(Error::internal(format!(
-                        "row is missing declared result column {column:?}"
-                    ))),
-                })
-                .collect()
-        })
+        .map(|row| take_declared_columns(row, columns, missing))
         .collect()
 }
 

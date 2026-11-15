@@ -12,12 +12,13 @@ use crate::ctx::ExecCtx;
 use crate::row::Row;
 
 use super::aggregate::Aggregation;
+use super::classification::ProjectionClass;
 use super::match_chain::{open_match_consumer, Landing, MatchConsumer};
 use super::match_clause::{
     charge_finished_container, run_match_operator_ladder, LadderFacts, LadderRun, MatchClauseInputs,
 };
 use super::match_folds::try_match_folds;
-use super::project::{ProjectionClass, RowSource};
+use super::project::RowSource;
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::search::search_match_clause;
 use super::sink::sinkable_projection;

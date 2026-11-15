@@ -16,9 +16,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::scope::is_star_item;
-use super::scope::{
-    projection_names, projects_name, result_column, uncolliding_prefix, ProjectionFields,
-};
+use super::scope::{projection_names, projects_name, result_column, uncolliding_prefix};
 
 /// Whether an `ORDER BY` key must read the projected row even when its
 /// expression is verbatim a projection item.
@@ -308,7 +306,7 @@ pub(crate) fn folded_order_items(
         .collect()
 }
 
-fn cmp_sort_keys(
+pub(crate) fn cmp_sort_keys(
     keys: &OrderKeys<'_>,
     ka: &[Value],
     ia: usize,
@@ -370,11 +368,23 @@ pub(crate) fn apply_yield_page_stages(
             }
             relate_parser::PageStage::Skip(expr) => {
                 let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
-                *output = page(std::mem::take(output), count, None);
+                *output = page(
+                    std::mem::take(output),
+                    PageBounds {
+                        skip: count,
+                        limit: None,
+                    },
+                );
             }
             relate_parser::PageStage::Limit(expr) => {
                 let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
-                *output = page(std::mem::take(output), 0, Some(count));
+                *output = page(
+                    std::mem::take(output),
+                    PageBounds {
+                        skip: 0,
+                        limit: Some(count),
+                    },
+                );
             }
         }
     }
@@ -403,32 +413,56 @@ fn hold_sort_keys<'a>(
 
 /// The parked sort keys of one row, in key order. Every projection path
 /// parks them by contract ([`result_column`] asserts it).
-fn parked_keys(keys: &OrderKeys<'_>, row: &Row) -> Vec<Value> {
-    (0..keys.len())
-        .map(|index| result_column(row, keys.name(index)).clone())
-        .collect()
+pub(crate) fn parked_keys(keys: &OrderKeys<'_>, row: &Row) -> Vec<Value> {
+    let mut out = Vec::with_capacity(keys.len());
+    fill_parked_keys(keys, row, &mut out);
+    out
+}
+
+/// Refill `out` with the row's parked keys — the one spelling of the key
+/// read, for the caller that owns a buffer across rows and the one that
+/// builds a fresh vector. The window refills its comparison scratch here,
+/// so a row it rejects costs no allocation.
+pub(crate) fn fill_parked_keys(keys: &OrderKeys<'_>, row: &Row, out: &mut Vec<Value>) {
+    crate::exec::scope::fill_columns(row, (0..keys.len()).map(|index| keys.name(index)), out);
 }
 
 /// The one `ORDER BY` application. Every projection path parks its keys at
 /// projection time (see [`park_order_keys`]), so this reads them back and
 /// never evaluates an expression. `top_k` asks for the first `top_k` rows
-/// only (the `LIMIT` selection; `0` empties the table).
+/// only — the `LIMIT` selection. A zero page never reaches here: the
+/// caller answers it before any container is opened
+/// ([`PageBounds::answers_nothing`], read by `project_rows`).
 pub(crate) fn sort_rows_by_parked_keys(
     keys: &OrderKeys<'_>,
     rows: &mut Vec<Row>,
-    top_k: Option<usize>,
+    top_k: Option<std::num::NonZeroUsize>,
 ) -> Result<()> {
+    // A clause with no order keys has nothing to *sort*, so the sort's
+    // precondition is its own and every caller can gate on its shape
+    // alone — but the `LIMIT` selection is not the sort's: it applies
+    // whatever the keys are, so a keyless caller asking for `top_k` still
+    // gets its first `top_k` rows.
+    if keys.is_empty() && top_k.is_none() {
+        return Ok(());
+    }
     match top_k {
-        Some(0) => {
-            rows.clear();
-            Ok(())
-        }
-        Some(keep) if keep < rows.len() => {
+        Some(keep) if keep.get() < rows.len() => {
             *rows = take_parked_top_k(keys, std::mem::take(rows), keep)?;
             Ok(())
         }
         _ => sort_all_rows(keys, rows),
     }
+}
+
+/// The ordered window's capacity — `skip + limit` entries — or `None` when
+/// there is no `LIMIT` (a `SKIP`-only window is unbounded) or the sum
+/// overflows (an overflowing window is unlimited). The one derivation of a
+/// window's size: the clause's
+/// [`super::classification::ProjectionClass::window_keep`] masks it for the shapes that take no
+/// window, and every consumer reads the answer.
+pub(crate) fn window_capacity(skip_n: usize, limit_n: Option<usize>) -> Option<usize> {
+    limit_n.and_then(|limit_n| skip_n.checked_add(limit_n))
 }
 
 /// The full sort behind [`sort_rows_by_parked_keys`]'s unsorted case.
@@ -451,7 +485,11 @@ fn sort_all_rows(keys: &OrderKeys<'_>, rows: &mut [Row]) -> Result<()> {
     Ok(())
 }
 
-fn take_parked_top_k(keys: &OrderKeys<'_>, rows: Vec<Row>, keep: usize) -> Result<Vec<Row>> {
+fn take_parked_top_k(
+    keys: &OrderKeys<'_>,
+    rows: Vec<Row>,
+    keep: std::num::NonZeroUsize,
+) -> Result<Vec<Row>> {
     let mut rows_charge = hold_sort_rows(&rows)?;
     let mut keyed: Vec<(Vec<Value>, usize, Row)> = rows
         .into_iter()
@@ -462,8 +500,10 @@ fn take_parked_top_k(keys: &OrderKeys<'_>, rows: Vec<Row>, keep: usize) -> Resul
         })
         .collect();
     let mut keys_charge = hold_sort_keys(keyed.iter().map(|(keys, _, _)| keys.as_slice()))?;
-    keyed.select_nth_unstable_by(keep - 1, |a, b| cmp_sort_keys(keys, &a.0, a.1, &b.0, b.1));
-    keyed.truncate(keep);
+    keyed.select_nth_unstable_by(keep.get() - 1, |a, b| {
+        cmp_sort_keys(keys, &a.0, a.1, &b.0, b.1)
+    });
+    keyed.truncate(keep.get());
     keyed.sort_by(|a, b| cmp_sort_keys(keys, &a.0, a.1, &b.0, b.1));
     rows_charge
         .resize_with(|| crate::workspace::row_refs_bytes(keyed.iter().map(|(_, _, row)| row)))?;
@@ -475,12 +515,34 @@ fn take_parked_top_k(keys: &OrderKeys<'_>, rows: Vec<Row>, keep: usize) -> Resul
     Ok(keyed.into_iter().map(|(_, _, row)| row).collect())
 }
 
-/// The paging stage: drop the first `skip_n` rows, keep at most `limit_n`.
-/// The DISTINCT stage's row-buffer charge is re-measured by the caller
-/// against the shrunken buffer — paging itself owns no workspace state.
-pub(crate) fn page(mut rows: Vec<Row>, skip_n: usize, limit_n: Option<usize>) -> Vec<Row> {
-    drop(rows.drain(..skip_n.min(rows.len())));
-    if let Some(n) = limit_n {
+/// The clause's page bounds: how many leading rows `SKIP` drops and how
+/// many `LIMIT` keeps. One named pair, so the feed, the merge paths, the
+/// window decision and the finish tail all read `bounds.skip` and
+/// `bounds.limit` rather than passing a positional tuple between them.
+#[derive(Clone, Copy)]
+pub(crate) struct PageBounds {
+    pub(crate) skip: usize,
+    pub(crate) limit: Option<usize>,
+}
+
+impl PageBounds {
+    /// Whether this page answers nothing at all — a `LIMIT 0`, whatever the
+    /// `SKIP`. The one spelling of the empty page: the merge decides it from
+    /// here, and the window decision derives its no-window answer from the
+    /// same predicate, so the two cannot disagree about which pages are
+    /// empty.
+    pub(crate) fn answers_nothing(self) -> bool {
+        self.limit == Some(0)
+    }
+}
+
+/// The paging stage: drop the first `bounds.skip` rows, keep at most
+/// `bounds.limit`. The DISTINCT stage's row-buffer charge is re-measured by
+/// the caller against the shrunken buffer — paging itself owns no workspace
+/// state.
+pub(crate) fn page(mut rows: Vec<Row>, bounds: PageBounds) -> Vec<Row> {
+    drop(rows.drain(..bounds.skip.min(rows.len())));
+    if let Some(n) = bounds.limit {
         rows.truncate(n);
     }
     rows
@@ -495,13 +557,16 @@ pub(crate) fn resolve_page_bounds(
     params: &BTreeMap<String, Value>,
     skip: Option<&Expr>,
     limit: Option<&Expr>,
-) -> Result<(usize, Option<usize>)> {
+) -> Result<PageBounds> {
     let bound = |exprs: Option<&Expr>| -> Result<Option<usize>> {
         exprs
             .map(|expr| resolve_page_bound(graph, params, expr))
             .transpose()
     };
-    Ok((bound(skip)?.unwrap_or(0), bound(limit)?))
+    Ok(PageBounds {
+        skip: bound(skip)?.unwrap_or(0),
+        limit: bound(limit)?,
+    })
 }
 
 /// Resolve one `SKIP`/`LIMIT` bound expression against the empty row. The
@@ -513,18 +578,6 @@ pub(crate) fn resolve_page_bound(
     expr: &Expr,
 ) -> Result<usize> {
     skip_limit_count(&eval(graph, &Row::new(), expr, params)?)
-}
-
-/// Whether a projection takes the eager pre-projection page: `SKIP`/`LIMIT`
-/// with no `ORDER BY`, `DISTINCT`, or filter. The ordinary projection and the
-/// match sink consult this one rule — the sink only after it has already
-/// declined the aggregating and grouping shapes (which keep the ordinary
-/// projection anyway).
-pub(crate) fn pages_eagerly(fields: &ProjectionFields<'_>) -> bool {
-    !fields.distinct
-        && fields.order.is_empty()
-        && fields.where_clause.is_none()
-        && (fields.skip.is_some() || fields.limit.is_some())
 }
 
 pub(crate) fn skip_limit_count(v: &Value) -> Result<usize> {

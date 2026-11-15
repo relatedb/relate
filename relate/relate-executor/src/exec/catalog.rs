@@ -385,10 +385,8 @@ pub(crate) fn catalog_result(rows: &[Row], clause: &relate_parser::Clause) -> Op
     let data = rows
         .iter()
         .map(|row| {
-            columns
-                .iter()
-                .map(|column| row.get(column).cloned().unwrap_or(Value::Null))
-                .collect()
+            super::read_declared_columns(row, &columns, super::Missing::Null)
+                .expect("padding a missing result column with null is infallible")
         })
         .collect();
     Some(QueryResult::intermediate(

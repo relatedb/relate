@@ -18,6 +18,7 @@ use super::aggregate::Aggregation;
 use super::call::{concluding_part_result, exec_call_subquery, exec_conditional, SubquerySpec};
 use super::catalog::{catalog_result, execute_catalog};
 use super::catalog_show::show_indexes_result;
+use super::classification::ProjectionClass;
 use super::clause_arms::{
     exec_create, exec_delete, exec_merge, exec_remove, exec_set, exec_unwind,
 };
@@ -31,7 +32,7 @@ use super::profile_tick::{
     finish_parked_unwind, profile_tick, take_feed, ParkedUnwind, ProfileTick, UnwindFacts,
 };
 use super::project::{
-    project_rows, return_result, streams_into_projection, ProjectSpec, ProjectionClass, RowSource,
+    project_rows, return_result, streams_into_projection, ProjectSpec, RowSource,
 };
 use super::scope::carry_scope_bindings;
 use super::stats_short_circuit::stats_short_circuit;

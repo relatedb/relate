@@ -60,14 +60,14 @@ use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
 use super::aggregate::Aggregation;
+use super::classification::ProjectionClass;
 use super::match_clause::{
     charge_finished_container, run_match_operator_ladder, LadderRun, MatchClauseInputs,
 };
 use super::match_folds::fold_would_take;
 use super::pattern_policies::{MatchFold, RowFold};
 use super::project::{
-    maps_each_row, open_match_fold, project_rows, streams_into_projection, ProjectSpec,
-    ProjectionClass, RowSource,
+    maps_each_row, open_match_fold, project_rows, streams_into_projection, ProjectSpec, RowSource,
 };
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::scope::carry_scope_bindings;

@@ -12,6 +12,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::order::resolve_page_bounds;
+use super::order::window_capacity;
 use super::sink::SinkProjection;
 
 /// Stop MATCH once `RETURN/WITH DISTINCT … LIMIT n` has enough distinct keys.
@@ -140,8 +141,8 @@ impl ReturnWithSuffix<'_> {
         if self.limit.is_none() {
             return Ok(None);
         }
-        let (skip_n, limit_n) = resolve_page_bounds(graph, params, self.skip, self.limit)?;
-        Ok(limit_n.and_then(|limit_n| skip_n.checked_add(limit_n)))
+        let bounds = resolve_page_bounds(graph, params, self.skip, self.limit)?;
+        Ok(window_capacity(bounds.skip, bounds.limit))
     }
 }
 

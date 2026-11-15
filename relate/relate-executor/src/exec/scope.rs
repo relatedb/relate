@@ -59,10 +59,11 @@ pub(crate) fn projection_names(items: &[Projection]) -> Vec<String> {
 /// A result column of a rectangular projection row: every projection path
 /// binds each result column name — and, at projection time, every parked
 /// `__ord*` sort key ([`park_order_keys`]) — on every row by contract, so a
-/// missing name is a bug, not a null. The one place that invariant is
-/// asserted: the result materialization ([`return_result`]), the DISTINCT
-/// key extraction in [`project_rows`], the sink's output construction and
-/// the parked-key readback ([`parked_keys`]).
+/// missing name is a bug, not a null. The sites that assert it: the result
+/// materialization ([`return_result`]), the named-column reads
+/// ([`fill_columns`] — the parked-key readback and the DISTINCT key
+/// extraction both go through it), the sink's output construction, and the
+/// declared-column move ([`super::take_declared_columns`]).
 pub(crate) fn result_column<'r>(row: &'r Row, name: &str) -> &'r Value {
     row.get(name)
         .expect("projection rows carry every result column")
@@ -386,6 +387,23 @@ pub(crate) fn call_scope_reads(scope: &CallScope) -> Option<&[SmallName]> {
         CallScope::Vars(vars) => Some(vars),
         CallScope::None | CallScope::Wildcard => None,
     }
+}
+
+/// Refill `out` with the row's named columns, cloned — the one spelling of
+/// the named-column read, beside the [`result_column`] invariant it
+/// asserts. A caller that owns a buffer across rows refills it; one that
+/// needs a fresh vector wraps this.
+pub(crate) fn fill_columns<'n>(
+    row: &Row,
+    names: impl IntoIterator<Item = &'n str>,
+    out: &mut Vec<Value>,
+) {
+    out.clear();
+    out.extend(
+        names
+            .into_iter()
+            .map(|name| result_column(row, name).clone()),
+    );
 }
 
 pub(crate) fn visible_keys(row: &Row) -> Vec<String> {

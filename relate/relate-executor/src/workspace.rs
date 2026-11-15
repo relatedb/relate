@@ -60,6 +60,15 @@ pub(crate) fn value_buffer_bytes(len: usize) -> u64 {
     buffer_bytes_saturating(len, size_of::<Value>() as u64)
 }
 
+/// One materialized row's landing figure: the payload heap the row solely
+/// owns plus its value-buffer slots — what a row costs its container
+/// before the container's own slot for it. The one spelling of that
+/// figure: a retained `Vec`'s per-row charge and the ordered window's
+/// per-entry figure both read it, so the two cannot drift apart.
+pub(crate) fn row_landing_bytes(values: &[Value]) -> u64 {
+    row_retained_heap(values) + value_buffer_bytes(values.len())
+}
+
 /// The retained bytes of `count` materialized rows of `slots_per_row` value
 /// slots. The row's value buffer is charged through the same reservation
 /// model as [`value_buffer_bytes`] (header + power-of-two reserved slots,
