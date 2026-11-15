@@ -125,13 +125,14 @@ public struct Migrator: Sendable {
                 "the store is at schema version \(version), newer than this build's \(latestVersion)")
         }
         for statement in schema { try connection.run(statement) }
-        let pending = steps.filter { $0.version > version }
-        for step in pending {
+        for step in steps where step.version > version {
             try connection.transaction { tx in
                 try step.body(tx)
                 try tx.run("MERGE \(versionNode) SET m.version = \(step.version)")
             }
         }
-        return pending.last?.version ?? version
+        // The store was at or below the latest version, and every step
+        // above it has now run.
+        return latestVersion
     }
 }

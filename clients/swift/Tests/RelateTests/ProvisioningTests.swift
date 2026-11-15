@@ -81,9 +81,7 @@ import Testing
             #expect(try permissions(target) == 0o700)
             for item in try FileManager.default.subpathsOfDirectory(atPath: target.path) {
                 let url = target.appendingPathComponent(item)
-                var isDirectory: ObjCBool = false
-                #expect(FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory))
-                #expect(try permissions(url) == (isDirectory.boolValue ? 0o700 : 0o600), "\(item)")
+                #expect(try permissions(url) == (try Database.isDirectory(url) ? 0o700 : 0o600), "\(item)")
             }
             #expect(try bookCount(at: target) == 2)
             try Database(url: target).connect().query("CREATE (:Book {i: 3})")
@@ -187,8 +185,11 @@ import Testing
             let error = try #require(throws: CocoaError.self) {
                 try Database.isDirectory(scratch.appendingPathComponent("gone"))
             }
-            #expect(error.code == .fileNoSuchFile)
+            #expect(error.code == .fileReadNoSuchFile)
             #expect(try Database.isDirectory(scratch))
+            let file = scratch.appendingPathComponent("file")
+            try Data().write(to: file)
+            #expect(try !Database.isDirectory(file))
         }
     }
 

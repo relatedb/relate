@@ -105,14 +105,12 @@ extension Database {
     }
 
     /// Whether the item at `url` is a directory. An item that cannot be
-    /// found is an error: it is never taken for a file, since the answer
-    /// decides the permissions the item is given.
+    /// examined — missing, unreadable — throws the file system's own error:
+    /// it is never taken for a file, since the answer decides the
+    /// permissions the item is given.
     static func isDirectory(_ url: URL) throws -> Bool {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
-        }
-        return isDirectory.boolValue
+        let type = try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
+        return type == .typeDirectory
     }
 
     /// Owner-only, writable permissions on the copy and everything in it
