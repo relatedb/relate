@@ -5,13 +5,10 @@ import os
 
 /// One statement, as it ran: what ``Database/setTraceHandler(_:)`` reports.
 ///
-/// A trace carries the statement text and its parameter *names*; neither
-/// field carries a parameter value, so logging them for statements that
-/// bind their inputs puts no user data in a log. Two things can still
-/// carry data, and a handler that logs must treat them as sensitive:
-/// ``statement``, when the caller spliced a value into the text instead of
-/// binding it, and ``error``, whose message is the engine's and may quote a
-/// bound value (a refused parameter is named with what it held).
+/// A trace has parameter names, not values. Its ``statement`` holds any
+/// literal spliced into the text instead of bound, and its ``error`` may
+/// quote a value (the engine names a refused parameter with what it held):
+/// log those two only when they carry no user data.
 public struct QueryTrace: Sendable {
     /// The statement text as the engine received it, including any literal
     /// the caller spliced into it.
@@ -32,14 +29,13 @@ public struct QueryTrace: Sendable {
     /// binding, the engine and copying the result out.
     public let wallMs: Double
     /// The error the statement threw, if it did. Its message is the
-    /// engine's own and may quote a value the statement was given: treat
-    /// it as sensitive.
+    /// engine's own and may quote a value the statement was given.
     public let error: RelateError?
 }
 
 extension QueryTrace {
-    /// The trace of one finished statement. Parameter names only: values
-    /// never reach a trace.
+    /// The trace of one finished statement. Of `parameters`, only the names
+    /// reach it.
     init(
         _ cypher: String, _ parameters: [String: CypherValue],
         _ outcome: Result<QueryResult, RelateError>, since started: ContinuousClock.Instant

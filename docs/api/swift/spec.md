@@ -274,12 +274,12 @@ connection made that way is a writer outside the pool.
 ```swift
 public struct QueryTrace: Sendable {
     public let statement: String           // the text the engine received, spliced literals included
-    public let parameterNames: [String]    // sorted; values are never included
+    public let parameterNames: [String]    // sorted; the names, not the values
     public let rowCount: Int               // 0 when the statement failed
     public let queryType: QueryType?       // nil when it failed
     public let elapsedMs, parseMs, planMs, executeMs: Double  // engine-reported; 0 when it failed
     public let wallMs: Double              // the whole call: binding, engine, copying the result out
-    public let error: RelateError?         // its message is the engine's and may quote a value
+    public let error: RelateError?         // the engine's message; may quote a value
 }
 
 public struct Commit: Sendable, Hashable {
@@ -292,12 +292,11 @@ public struct Commit: Sendable, Hashable {
 - **Tracing.** `setTraceHandler` installs one handler per database (`nil`
   clears it). It is called once for every statement run on any connection
   of that database — a caller's own or a pooled one — synchronously on the
-  thread that ran the statement, after it finished, failures included. The
-  statement text and the parameter names carry no parameter value. Two
-  fields can still carry data, and a handler that logs treats them as
-  sensitive: `statement`, when the caller spliced a value into the text
-  instead of binding it, and `error`, whose message can quote a bound value
-  (a refused parameter is named with what it held).
+  thread that ran the statement, after it finished, failures included. A
+  trace has parameter names, not values. Its `statement` holds any literal
+  spliced into the text instead of bound, and its `error` may quote a value
+  (the engine names a refused parameter with what it held): log those two
+  only when they carry no user data.
 - **Signposts.** Every statement is also bracketed by an `os_signpost`
   interval named `statement` (subsystem `ai.relatedb.relate`, category
   `Query`), with no configuration. The package's tests do not assert on

@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Options.maxReaders` readers), with single-statement forms and
   `checkpointInBackground()`. A poisoned pooled connection is replaced.
 - Swift: `Database.setTraceHandler` reports every statement with its
-  timings and parameter names (not values; the statement text carries any
-  literal spliced into it, and a failed statement's error message may
-  quote a value), and every statement is an `os_signpost` interval.
-  `Database.commits()` is an `AsyncStream` of
+  timings and parameter names, not values (its statement text holds any
+  literal spliced into it, and its error may quote a value), and every
+  statement is an `os_signpost` interval. `Database.commits()` is an
+  `AsyncStream` of
   committed writes with their bookmark, summed counters and the tags the
   writer attached (`db.write(tags:)`, `transaction(tags:)`).
 - Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
