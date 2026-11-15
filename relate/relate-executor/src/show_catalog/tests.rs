@@ -6,13 +6,14 @@ use super::*;
 use crate::function_registry::FunctionCategory;
 use crate::procedure_registry::is_ontology_procedure;
 use crate::Graph;
+use relate_core::PreviewFeature;
 
 /// The one required-cell reader: a missing or non-STRING cell panics
 /// naming the row and column.
-fn text<'a>(row: &'a Row, column: &str, name: &str) -> &'a str {
+fn text<'a>(row: &'a Row, column: &str) -> &'a str {
     row[column]
         .as_str()
-        .unwrap_or_else(|| panic!("{name} has no {column} cell"))
+        .unwrap_or_else(|| panic!("{} has no {column} cell", name_of(row)))
 }
 
 fn name_of(row: &Row) -> &str {
@@ -22,7 +23,8 @@ fn name_of(row: &Row) -> &str {
 }
 
 /// A role column's list cell as strings.
-fn roles<'a>(row: &'a Row, column: &str, name: &str) -> Vec<&'a str> {
+fn roles<'a>(row: &'a Row, column: &str) -> Vec<&'a str> {
+    let name = name_of(row);
     let cell = &row[column];
     cell.as_list()
         .unwrap_or_else(|| panic!("{name}.{column} is not a list: {cell:?}"))
@@ -44,7 +46,7 @@ fn is_ontology_row(row: &Row) -> bool {
 /// row carries two names.
 fn assert_signature_names_row(row: &Row) {
     let name = name_of(row);
-    let signature = text(row, "signature", name);
+    let signature = text(row, "signature");
     assert!(
         signature.starts_with(&format!("{name}(")),
         "{name} renders `{signature}`"
@@ -66,9 +68,9 @@ fn flag(row: &Row, column: &str) -> bool {
 /// cell is a catalogue gap, not a display detail.
 fn assert_row_carries_catalog_metadata(row: &Row) {
     let name = name_of(row);
-    let description = text(row, "description", name);
+    let description = text(row, "description");
     assert!(!description.is_empty(), "{name} has an empty description");
-    let signature = text(row, "signature", name);
+    let signature = text(row, "signature");
     assert!(
         !signature.contains("(...) :: ANY"),
         "{name} keeps the placeholder signature `{signature}`"
@@ -144,7 +146,7 @@ fn show_procedures_hides_the_ontology_family_while_the_preview_is_disabled() {
     );
 
     let mut enabled = Graph::default();
-    enabled.configure_preview(PreviewFeatures::parse("ontology").unwrap());
+    enabled.configure_preview(PreviewFeatures::none().with_feature(PreviewFeature::Ontology));
     let listed = procedure_catalog_rows(enabled.preview());
     // Enabling the gate adds exactly the registry's ontology-family rows
     // that the catalog lists — the count applies the catalog's own
@@ -213,12 +215,6 @@ fn every_function_catalog_row_carries_full_metadata() {
     assert!(!rows.is_empty());
     for row in &rows {
         assert_row_carries_catalog_metadata(row);
-        let name = name_of(row);
-        let signature = text(row, "signature", name);
-        assert!(
-            !signature.contains("(...) :: ANY"),
-            "{name} keeps the placeholder signature `{signature}`"
-        );
     }
 }
 
@@ -235,7 +231,7 @@ fn the_aggregating_cell_is_the_rows_own_aggregate_category() {
     let rows = function_catalog_rows(every_gate.preview());
     for row in &rows {
         let name = name_of(row);
-        let category = text(row, "category", name);
+        let category = text(row, "category");
         let aggregating = flag(row, "aggregating");
         assert_eq!(
             aggregating,
@@ -294,26 +290,23 @@ fn function_metadata_matches_the_recorded_corpus_rows() {
     };
 
     let abs = one("abs");
-    assert_eq!(text(abs, "category", name_of(abs)), "Numeric");
+    assert_eq!(text(abs, "category"), "Numeric");
     assert_eq!(
-        text(abs, "description", name_of(abs)),
+        text(abs, "description"),
         "Returns the absolute value of an `INTEGER` or `FLOAT`."
     );
 
     let from_element_id = one("db.nameFromElementId");
+    assert_eq!(text(from_element_id, "category"), "Database");
     assert_eq!(
-        text(from_element_id, "category", name_of(from_element_id)),
-        "Database"
-    );
-    assert_eq!(
-        text(from_element_id, "description", name_of(from_element_id)),
+        text(from_element_id, "description"),
         "Resolves the database name for the given element id"
     );
 
     let tail = one("tail");
-    assert_eq!(text(tail, "category", name_of(tail)), "List");
+    assert_eq!(text(tail, "category"), "List");
     assert_eq!(
-        text(tail, "description", name_of(tail)),
+        text(tail, "description"),
         "Returns all but the first element in a `LIST<ANY>`."
     );
 
@@ -321,10 +314,7 @@ fn function_metadata_matches_the_recorded_corpus_rows() {
     // descriptions, transcribed verbatim from the corpus (the second
     // cell really does end in `....`).
     let flatten = named("coll.flatten");
-    let mut descriptions: Vec<&str> = flatten
-        .iter()
-        .map(|row| text(row, "description", name_of(row)))
-        .collect();
+    let mut descriptions: Vec<&str> = flatten.iter().map(|row| text(row, "description")).collect();
     descriptions.sort_unstable();
     assert_eq!(
         descriptions,
@@ -338,7 +328,7 @@ fn function_metadata_matches_the_recorded_corpus_rows() {
     // family, with `round` repeated per arity row.
     let mut numeric: Vec<&str> = rows
         .iter()
-        .filter(|row| text(row, "category", name_of(row)) == "Numeric")
+        .filter(|row| text(row, "category") == "Numeric")
         .map(name_of)
         .collect();
     numeric.sort_unstable();
@@ -448,7 +438,7 @@ fn function_catalog_renders_the_reference_name_order() {
 
     let numeric: Vec<&str> = rows
         .iter()
-        .filter(|row| text(row, "category", name_of(row)) == "Numeric")
+        .filter(|row| text(row, "category") == "Numeric")
         .map(name_of)
         .collect();
     assert_eq!(
@@ -475,7 +465,7 @@ fn role_cells_match_live_neo4j() {
     for row in &rows {
         let name = name_of(row);
         assert_eq!(
-            roles(row, "rolesExecution", name),
+            roles(row, "rolesExecution"),
             [
                 "PUBLIC",
                 "admin",
@@ -486,10 +476,7 @@ fn role_cells_match_live_neo4j() {
             ],
             "{name}"
         );
-        assert!(
-            roles(row, "rolesBoostedExecution", name).is_empty(),
-            "{name}"
-        );
+        assert!(roles(row, "rolesBoostedExecution").is_empty(), "{name}");
     }
 
     let procedures = procedure_catalog_rows(Graph::default().preview());
@@ -526,11 +513,7 @@ fn role_cells_match_live_neo4j() {
         } else {
             &["PUBLIC", "admin"]
         };
-        assert_eq!(roles(row, "rolesExecution", name), expected, "{name}");
-        assert_eq!(
-            roles(row, "rolesBoostedExecution", name),
-            ["admin"],
-            "{name}"
-        );
+        assert_eq!(roles(row, "rolesExecution"), expected, "{name}");
+        assert_eq!(roles(row, "rolesBoostedExecution"), ["admin"], "{name}");
     }
 }

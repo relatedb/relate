@@ -108,7 +108,7 @@ fn index_create_statement(
     if detail.properties.is_empty() {
         return None;
     }
-    let pattern = entity_pattern(entity, &detail.labels);
+    let pattern = entity_pattern(entity, &detail.labels)?;
     let prop_refs = |props: &[String]| {
         props
             .iter()
@@ -148,21 +148,19 @@ fn stored_options<'a>(
     index_options.get(name).unwrap_or(&EMPTY)
 }
 
-/// The entity kind and `createStatement` for one index — the one binding
-/// the `SHOW INDEXES` row's columns and the ADR-0481 `schema.cypher`
-/// mirror share: both callers resolve the row's [`IndexFacts`] once and
-/// render through the one [`index_create_statement`] renderer (one
-/// renderer, two callers — never a second copy). `None` is the SHOW
-/// column's NULL.
-fn index_statement_binding(
+/// The `createStatement` for one index — the one binding the `SHOW
+/// INDEXES` row's column and the ADR-0481 `schema.cypher` mirror share:
+/// both callers resolve the row's [`IndexFacts`] once and render through
+/// the one [`index_create_statement`] renderer (one renderer, two callers
+/// — never a second copy). `None` is the SHOW column's NULL.
+fn index_statement(
     facts: &IndexFacts,
     detail: Option<&IndexDetailSpec>,
     name: &str,
     options: &BTreeMap<String, Value>,
-) -> (EntityKind, Option<String>) {
+) -> Option<String> {
     let entity = EntityKind::from_relationship_flag(facts.relationship);
-    let statement = detail.and_then(|d| index_create_statement(d, name, entity, options));
-    (entity, statement)
+    detail.and_then(|d| index_create_statement(d, name, entity, options))
 }
 
 /// The index's CREATE statement for the checkpoint's schema mirror
@@ -188,13 +186,12 @@ pub(super) fn index_ddl_statement(
     }
     let detail = details.get(&idx.name);
     let facts = IndexFacts::resolve(idx, detail, None);
-    index_statement_binding(
+    index_statement(
         &facts,
         detail,
         &idx.name,
         stored_options(index_options, &idx.name),
     )
-    .1
 }
 
 /// One `SHOW INDEXES` row: the `labelsOrTypes` and `properties` lists and
@@ -214,7 +211,8 @@ fn index_row(
     ctx: IndexRowContext<'_>,
 ) -> Row {
     let options = stored_options(ctx.index_options, &idx.name);
-    let (entity, index_statement) = index_statement_binding(facts, detail, &idx.name, options);
+    let entity = EntityKind::from_relationship_flag(facts.relationship);
+    let index_statement = index_statement(facts, detail, &idx.name, options);
     // A constraint's backing index shows the owning constraint's CREATE
     // CONSTRAINT (Neo4j parity); every standalone index shows its own.
     let create_statement = match backing {

@@ -45,11 +45,19 @@ pub fn apply_verb(
     }
 }
 
+/// The one class-preserving validation of an altered body: the CIP-178
+/// "shall" rules under the alteration scope, every failure the statement-shape
+/// `SyntaxError` class (ADR-0489) — so the three verbs that validate cannot
+/// drift apart on class.
+fn validate_altered(body: &GraphTypeBody, preview: PreviewFeatures) -> Result<()> {
+    validate_graph_type_body(body, preview, GraphTypeScope::Alteration, false)
+        .map_err(|e| Error::syntax(e.to_string()))
+}
+
 /// `SET`: the new body replaces the current one wholesale (CIP-176), after
 /// passing the CIP-178 "shall" rules.
 pub fn apply_set(body: &GraphTypeBody, preview: PreviewFeatures) -> Result<GraphTypeBody> {
-    validate_graph_type_body(body, preview, GraphTypeScope::Alteration, false)
-        .map_err(|e| Error::syntax(e.to_string()))?;
+    validate_altered(body, preview)?;
     Ok(body.clone())
 }
 
@@ -102,8 +110,7 @@ pub fn apply_add(
     current.edge_types.extend(body.edge_types.iter().cloned());
     current.constraints.extend(body.constraints.iter().cloned());
     dedupe_constraints(&mut current, &declared_nodes, &declared_edges);
-    validate_graph_type_body(&current, preview, GraphTypeScope::Alteration, false)
-        .map_err(|e| Error::syntax(e.to_string()))?;
+    validate_altered(&current, preview)?;
     Ok(current)
 }
 
@@ -229,8 +236,7 @@ pub fn apply_alter(
         "SchemaError: relationship element type does not exist",
     )?;
     rewrite_alias_refs(&mut merged, &replaced);
-    validate_graph_type_body(&merged, preview, GraphTypeScope::Alteration, false)
-        .map_err(|e| Error::syntax(e.to_string()))?;
+    validate_altered(&merged, preview)?;
     Ok(merged)
 }
 

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use relate_catalog::{rule_disposition, ConstraintDef, RuleDisposition};
-use relate_core::{Error, Result};
+use relate_core::{Error, Result, Value};
 use relate_ir::DropIndexTarget;
 use relate_names::SmallName;
 use relate_parser::IndexKind;
@@ -67,13 +67,24 @@ pub(crate) fn create_constraint_backing_index(
     // The catalog detail is what materializes the backing index's seek
     // postings (`RedoOp::CatalogIndexDetail` → `materialize_detail` — the
     // same path `exec_create_index` takes through
-    // [`push_range_index_detail`]). Without it the constraint's backing
+    // [`push_index_detail`]). Without it the constraint's backing
     // index is a catalog ghost: SHOW INDEXES lists it, but every equality
     // lookup on the constrained property label-scans instead of seeking —
     // the LABS-328 quadratic merge/match. The encoded `CreateIndex` redo
     // below keeps the catalog's `IndexDef` (whose property consumers split
     // back via `split_legacy_property_encoding`).
-    push_range_index_detail(graph, name, relationship, label, properties);
+    push_index_detail(
+        graph,
+        name,
+        IndexDetailSpec {
+            kind: IndexKindSpec::Range,
+            relationship,
+            labels: vec![label.to_string()],
+            properties: properties.to_vec(),
+            with_properties: vec![],
+        },
+        &BTreeMap::new(),
+    );
     // The constraint's backing index is part of the constraint, so it is
     // not counted in `QueryStats::indexes_added` (ADR-0309) — the branch's
     // `create_backing_index` call, kept beside main's LABS-328 detail push.
@@ -84,29 +95,21 @@ pub(crate) fn create_constraint_backing_index(
     )
 }
 
-/// The one construction of the single-label range index detail redo —
-/// the push that puts the index's seek postings into the floor
-/// (ADR-0202) and materializes them at commit. Both the `CREATE INDEX`
-/// IR path and the index-backed constraints' backing indexes record the
-/// identical detail through this one place; `properties` is the full
-/// property list (`covered_pairs` materializes one range pair each).
-fn push_range_index_detail(
+/// The one construction of the `CatalogIndexDetail` redo — the push that
+/// puts the index's seek postings into the floor (ADR-0202) and
+/// materializes them at commit. `CREATE INDEX` (both spellings) and the
+/// index-backed constraints' backing indexes all record their detail
+/// through this one place; `options` is the resolved `OPTIONS` map.
+pub(crate) fn push_index_detail(
     graph: &ExecGraph<'_>,
     name: &str,
-    relationship: bool,
-    label: &str,
-    properties: &[String],
+    detail: IndexDetailSpec,
+    options: &BTreeMap<String, Value>,
 ) {
     graph.push_catalog_redo(RedoOp::CatalogIndexDetail {
         name: name.to_string(),
-        detail: IndexDetailSpec {
-            kind: IndexKindSpec::Range,
-            relationship,
-            labels: vec![label.to_string()],
-            properties: properties.to_vec(),
-            with_properties: vec![],
-        },
-        options: crate::redo::props_json(&BTreeMap::new()),
+        detail,
+        options: crate::redo::props_json(options),
     });
 }
 
@@ -326,15 +329,11 @@ pub(crate) fn index_conflict_gate(graph: &ExecGraph<'_>, facts: &IndexFacts) -> 
             );
         }
     }
-    let equivalent = graph.named_indexes().into_iter().find(|index| {
-        details.get(&index.name).is_some_and(|old| {
-            old.kind == crate::redo::IndexKindSpec::from(facts.kind)
-                && old.relationship == facts.relationship
-                && old.labels == facts.labels
-                && old.properties == facts.properties
-                && old.with_properties == facts.with_properties
-        })
-    });
+    let probe = facts.to_detail();
+    let equivalent = graph
+        .named_indexes()
+        .into_iter()
+        .find(|index| details.get(&index.name) == Some(&probe));
     if let Some(index) = equivalent {
         return skip_existing(
             facts.if_not_exists,
@@ -406,13 +405,7 @@ pub(crate) fn exec_create_index(
     // The IR path is the single-label range index. Record the same detail the
     // catalog path records for TEXT and POINT, so the range posting is in
     // the floor (ADR-0202) and drop removes it by name.
-    push_range_index_detail(
-        graph,
-        &facts.name,
-        facts.relationship,
-        &label_text,
-        &facts.properties,
-    );
+    push_index_detail(graph, &facts.name, facts.to_detail(), &BTreeMap::new());
     graph.create_named_index(facts.name.clone(), label_text, property_text)
 }
 

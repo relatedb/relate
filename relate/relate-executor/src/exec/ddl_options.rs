@@ -319,7 +319,7 @@ pub(crate) fn resolve_index_options(
         &ddl_option_key_policy(),
         "InvalidInputValue: OPTIONS parameter must be a MAP",
     )?;
-    validate_index_config(c.kind, &mut options)?;
+    ConfigPolicy::for_kind(c.kind).validate(&mut options)?;
     // Point and fulltext indexes record their kind's default config so
     // SHOW INDEXES' `options` and `createStatement` carry Neo4j's shape; a
     // caller-supplied entry wins. The per-kind table is
@@ -512,13 +512,6 @@ impl ConfigPolicy {
             }
         }
     }
-}
-
-/// Validate (and, for VECTOR, default) the resolved `indexConfig` entry
-/// against its index kind — the one config-policy owner. Every kind's
-/// policy lives in [`ConfigPolicy::for_kind`]; this is the only dispatcher.
-fn validate_index_config(kind: IndexKind, options: &mut BTreeMap<String, Value>) -> Result<()> {
-    ConfigPolicy::for_kind(kind).validate(options)
 }
 
 /// The shared per-key loop of a config family: lowercase, the foreign-family

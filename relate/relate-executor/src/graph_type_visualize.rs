@@ -291,12 +291,18 @@ struct EdgeSide<'a> {
 /// reads (the pre-split code carried this as a 7-tuple).
 struct RelSpec {
     label: String,
-    is_element: bool,
+    kind: RelKind,
     rel_id: i64,
     src_id: i64,
     tgt_id: i64,
-    properties: Vec<String>,
     constraints: Vec<String>,
+}
+
+/// Which relationship form a spec renders as: an element type carries its
+/// declared properties, a plain relationship type has none to carry.
+enum RelKind {
+    Element { properties: Vec<String> },
+    Plain,
 }
 
 /// Stage: classify the node side -- every node element type's entry, the
@@ -556,11 +562,12 @@ fn resolve_rel_specs(
         let tgt_id = resolver.resolve(entry.target, &mut this_rel_any)?;
         rel_specs.push(RelSpec {
             label: label.clone(),
-            is_element: true,
+            kind: RelKind::Element {
+                properties: entry.properties.clone(),
+            },
             rel_id,
             src_id,
             tgt_id,
-            properties: entry.properties.clone(),
             constraints: entry.constraints.clone(),
         });
     }
@@ -571,11 +578,10 @@ fn resolve_rel_specs(
         let tgt_id = resolver.resolve(&GraphTypeElementRef::Any, &mut this_rel_any)?;
         rel_specs.push(RelSpec {
             label: label.clone(),
-            is_element: false,
+            kind: RelKind::Plain,
             rel_id,
             src_id,
             tgt_id,
-            properties: Vec::new(),
             constraints: constraints.clone(),
         });
     }
@@ -657,21 +663,20 @@ fn assemble_relationships(
             "relationshipType".to_string(),
             CypherValue::Str(spec.label.clone()),
         );
-        if spec.is_element {
-            props.insert(
-                "properties".to_string(),
-                string_list(spec.properties.iter().cloned()),
-            );
-        }
+        let rel_type = match &spec.kind {
+            RelKind::Element { properties } => {
+                props.insert(
+                    "properties".to_string(),
+                    string_list(properties.iter().cloned()),
+                );
+                "RELATIONSHIP_ELEMENT_TYPE"
+            }
+            RelKind::Plain => "RELATIONSHIP_TYPE",
+        };
         props.insert(
             "constraints".to_string(),
             string_list(spec.constraints.iter().cloned()),
         );
-        let rel_type = if spec.is_element {
-            "RELATIONSHIP_ELEMENT_TYPE"
-        } else {
-            "RELATIONSHIP_TYPE"
-        };
         relationships.push(CypherValue::Relationship {
             id: spec.rel_id,
             start_id: spec.src_id,

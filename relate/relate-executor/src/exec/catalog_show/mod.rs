@@ -35,17 +35,21 @@ fn entity_variable(entity: EntityKind) -> &'static str {
 
 /// The `FOR` pattern for a label/type-token index, quoting and
 /// `|`-joining the labels itself: `(n:`A`|`B`)` / `()-[r:`T`]-()`.
-pub(super) fn entity_pattern(entity: EntityKind, labels: &[String]) -> String {
+pub(super) fn entity_pattern(entity: EntityKind, labels: &[String]) -> Option<String> {
+    // An empty token list would render `(n:)`: no faithful pattern exists.
+    if labels.is_empty() {
+        return None;
+    }
     let variable = entity_variable(entity);
     let tokens = labels
         .iter()
         .map(|label| backtick(label))
         .collect::<Vec<_>>()
         .join("|");
-    match entity {
+    Some(match entity {
         EntityKind::Node => format!("({variable}:{tokens})"),
         EntityKind::Relationship => format!("()-[{variable}:{tokens}]-()"),
-    }
+    })
 }
 
 /// The store's whole-catalog DDL statements (ADR-0481 §3): one `CREATE

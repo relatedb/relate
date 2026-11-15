@@ -90,7 +90,7 @@ fn constraint_create_statement(
     // standalone CREATE form and for an untyped `propertyType`.
     let verb = crate::graph_type::standalone_verb(kind, def.property_type.as_deref())?;
     let variable = entity_variable(entity);
-    let pattern = entity_pattern(entity, std::slice::from_ref(&def.label));
+    let pattern = entity_pattern(entity, std::slice::from_ref(&def.label))?;
     let properties = def
         .properties
         .iter()

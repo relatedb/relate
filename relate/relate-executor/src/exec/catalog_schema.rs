@@ -15,7 +15,9 @@ use crate::redo::RedoOp;
 use crate::row::Row;
 
 use super::catalog::schema_name_value;
-use super::ddl::{index_conflict_gate, skip_existing, ExistingRule, Gate, IndexFacts};
+use super::ddl::{
+    index_conflict_gate, push_index_detail, skip_existing, ExistingRule, Gate, IndexFacts,
+};
 use super::ddl_options::{resolve_index_options, validate_constraint_options};
 
 pub(crate) fn catalog_create_index(
@@ -54,11 +56,7 @@ pub(crate) fn catalog_create_index(
         .collect::<Vec<_>>()
         .join(",");
     let property = crate::redo::legacy_property_encoding(&joined, c.kind.into(), &name);
-    graph.push_catalog_redo(RedoOp::CatalogIndexDetail {
-        name: name.clone(),
-        detail: facts.to_detail(),
-        options: crate::redo::props_json(&options),
-    });
+    push_index_detail(graph, &name, facts.to_detail(), &options);
     graph.create_named_index(name, label, property)?;
     Ok(rows)
 }

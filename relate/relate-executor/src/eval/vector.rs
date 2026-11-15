@@ -185,7 +185,15 @@ pub(crate) fn vector_dimension_count(vals: &[Value]) -> Result<Value> {
 pub(crate) fn plain_vector(value: &Value) -> Result<Option<Vec<f64>>> {
     match value {
         Value::Null => Ok(None),
-        Value::Vector { .. } => Ok(as_floats(value).ok()),
+        // A stored vector's coordinates are numeric by construction; a
+        // fault is the same classed rejection a similarity call raises,
+        // never a silent NULL.
+        Value::Vector { .. } => as_floats(value).map(Some).map_err(|fault| match fault {
+            CoordFault::NotNumeric => Error::invalid_argument_type("expected a VECTOR"),
+            CoordFault::NullCoordinate | CoordFault::NonFinite => {
+                invalid_vector("not a valid vector")
+            }
+        }),
         _ => Err(Error::invalid_argument_type("expected a VECTOR")),
     }
 }

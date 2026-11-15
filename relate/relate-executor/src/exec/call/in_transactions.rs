@@ -160,10 +160,9 @@ fn resolve_batch_options(
     // only the *literal* forms are rejected — at plan time, by
     // `check_positive_int_arg`. The runtime contract is type-only.
     if let relate_ir::Concurrency::Value(expr) = &tx.concurrency {
-        let value = eval(graph, first, expr, params)?;
-        if value.as_int().is_none() {
-            return Err(Error::ty("concurrency must be an integer"));
-        }
+        eval(graph, first, expr, params)?
+            .as_int()
+            .ok_or_else(|| Error::ty("concurrency must be an integer"))?;
     }
     Ok(batch_size)
 }

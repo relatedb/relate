@@ -535,3 +535,15 @@ fn show_yield_keeps_source_names_in_scope_and_rejects_unknown_ones() {
     let err = err_text(c.query("USE system SHOW CONSTRAINTS YIELD name RETURN name"));
     assert!(err.contains("NotAllowedOnSystemDatabase"), "{err}");
 }
+
+/// LABS-887: a graph type declaring a generic `LIST<...>` property creates
+/// and then applies as the current graph type.
+#[test]
+fn a_list_property_graph_type_round_trips_through_alter() {
+    let mut c = connection();
+    run(
+        &mut c,
+        "CREATE GRAPH TYPE ListT AS { (:Room => {commands :: LIST<STRING NOT NULL>}) }",
+    );
+    run(&mut c, "ALTER CURRENT GRAPH TYPE SET GRAPH TYPE ListT");
+}
