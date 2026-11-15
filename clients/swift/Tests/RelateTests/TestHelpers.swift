@@ -83,6 +83,15 @@ let counterValue: @Sendable (Transaction) throws -> Int = { tx in
     try tx.query("MATCH (c:Counter) RETURN c.v").scalar(as: Int.self)
 }
 
+/// Waits until `condition` holds, letting other tasks run in between: for
+/// state that settles off the test's own task (an observation's read, a
+/// cancelled subscription). It runs on the caller's actor, so a main-actor
+/// test can read main-actor state in `condition`. It does not time out;
+/// give the suite a time limit.
+func waitUntil(isolation: isolated (any Actor)? = #isolation, _ condition: () throws -> Bool) async rethrows {
+    while try !condition() { await Task.yield() }
+}
+
 /// Stages the engine's write-write conflict and returns what the losing
 /// commit throws: two connections each create the same unique key inside a
 /// transaction, the first commits, and the second commit loses (ADR-0439).

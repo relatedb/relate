@@ -62,8 +62,11 @@ extension View {
 public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
     @Environment(\.relateDatabase) private var database
     @StateObject private var observer = LiveQueryObserver<Value>()
-    /// What this property reads. The observer follows it.
-    let request: LiveQueryRequest<Value>
+    /// What the property holds before its first read returns.
+    let initial: Value
+    /// What this property reads, or why that could not be stated (a
+    /// statement whose interpolation threw).
+    let request: Result<LiveQueryRequest<Value>, any Error>
 
     /// A value read by `read`, which runs as ``Database/read(_:)``.
     ///
@@ -73,7 +76,8 @@ public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
         initial: Value, tags: Set<String>? = nil, id: AnyHashable = AnyHashable(0),
         _ read: @escaping @Sendable (Transaction) throws -> Value
     ) {
-        request = LiveQueryRequest(identity: LiveQueryIdentity(id: id, tags: tags), initial: initial, read: read)
+        self.initial = initial
+        request = .success(LiveQueryRequest(identity: LiveQueryIdentity(id: id, tags: tags), read: read))
     }
 
     /// The records of `statement`, each decoded as an `Element` by column
@@ -81,18 +85,17 @@ public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
     /// identity; `decoder` is not, and is taken as fixed for the property.
     ///
     /// A statement whose interpolation throws (a value with no Cypher form)
-    /// is reported as the query's failure.
+    /// makes the query `.failed` with that error; nothing is read.
     public init<Element: Decodable>(
         _ statement: @autoclosure () throws -> Statement, tags: Set<String>? = nil,
         using decoder: CypherValueDecoder = CypherValueDecoder()
     ) where Value == [Element] {
-        let statement = Result { try statement() }
-        let id = switch statement {
-        case .success(let statement): AnyHashable(statement)
-        case .failure(let error): AnyHashable("\(error)")
-        }
-        request = LiveQueryRequest(identity: LiveQueryIdentity(id: id, tags: tags), initial: []) { tx in
-            try tx.run(try statement.get()).decode(Element.self, using: decoder)
+        initial = []
+        request = Result {
+            let statement = try statement()
+            return LiveQueryRequest(identity: LiveQueryIdentity(id: AnyHashable(statement), tags: tags)) { tx in
+                try tx.run(statement).decode(Element.self, using: decoder)
+            }
         }
     }
 
@@ -100,12 +103,15 @@ public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
     /// It stays while a changed query runs its first read, and after a read
     /// fails.
     public var wrappedValue: Value {
-        observer.value ?? request.initial
+        observer.value ?? initial
     }
 
     /// Where the query stands.
     public var projectedValue: LiveQueryState {
-        observer.state(of: request.identity)
+        switch request {
+        case .success(let request): observer.state(of: LiveQueryKey(identity: request.identity, database: database))
+        case .failure(let error): .failed(error)
+        }
     }
 
     /// SwiftUI calls this before each evaluation of the view's body, on
@@ -113,7 +119,10 @@ public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
     /// the assertion.
     public nonisolated func update() {
         MainActor.assumeIsolated {
-            observer.observe(request, in: database)
+            switch request {
+            case .success(let request): observer.observe(request, in: database)
+            case .failure: observer.stop()
+            }
         }
     }
 }
@@ -125,8 +134,8 @@ public enum LiveQueryState: Sendable {
     case loading
     /// The property holds the query's latest value, and follows commits.
     case live
-    /// The observation ended with this error: a read that threw, or no
-    /// database in the environment.
+    /// The query ended with this error: a statement that could not be
+    /// built, a read that threw, or no database in the environment.
     case failed(any Error)
 
     public var isLoading: Bool {
@@ -139,30 +148,40 @@ public enum LiveQueryState: Sendable {
     }
 }
 
-/// What makes a live query the query it is: its `id` and the tags it
-/// follows.
+/// What makes a live query the query it is: a fingerprint of what it reads,
+/// and the tags it follows.
 ///
-/// Two ids are the same query when they are equal or hash alike. Equality
-/// alone is not enough: a statement that binds a NaN is not equal to the
-/// identical statement built on the next view update, so compared plainly
-/// it would look like a new query every time and restart for ever. Its
-/// hash does not change. (Two different queries hash alike once in 2^64,
-/// and then the changed one is simply not restarted.)
+/// The fingerprint is the hash of the query's `id` (a statement with its
+/// bound values, or the closure form's `id`), not the `id` itself. A
+/// statement that binds a NaN is not equal to the identical statement built
+/// on the next view update, so compared by equality it would look like a
+/// new query every time and restart for ever; its hash does not change.
 struct LiveQueryIdentity: Equatable {
-    let id: AnyHashable
+    let fingerprint: Int
     let tags: Set<String>?
 
-    static func == (lhs: LiveQueryIdentity, rhs: LiveQueryIdentity) -> Bool {
-        lhs.tags == rhs.tags && (lhs.id == rhs.id || lhs.id.hashValue == rhs.id.hashValue)
+    init(id: AnyHashable, tags: Set<String>?) {
+        fingerprint = id.hashValue
+        self.tags = tags
     }
 }
 
-/// What a ``LiveQuery`` reads: its identity, the value it holds before its
-/// first read, and the read.
+/// What a ``LiveQuery`` reads: its identity and the read.
 struct LiveQueryRequest<Value: Sendable & Equatable> {
     let identity: LiveQueryIdentity
-    let initial: Value
     let read: @Sendable (Transaction) throws -> Value
+}
+
+/// What one observation follows: a query on a database (or on none, when
+/// the environment has none). Both the rule for starting again and the
+/// state a view is shown are keyed by it.
+struct LiveQueryKey: Equatable {
+    let identity: LiveQueryIdentity
+    let database: Database?
+
+    static func == (lhs: LiveQueryKey, rhs: LiveQueryKey) -> Bool {
+        lhs.identity == rhs.identity && lhs.database === rhs.database
+    }
 }
 
 /// The observation behind one ``LiveQuery`` property, kept for the view's
@@ -171,11 +190,12 @@ struct LiveQueryRequest<Value: Sendable & Equatable> {
 final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
     /// The latest value read, by whichever query read it.
     @Published private(set) var value: Value?
-    /// The last query to produce a value or a failure, and the failure.
-    @Published private var settled: (identity: LiveQueryIdentity, error: (any Error)?)?
+    /// The last observation to produce a value or a failure, and where that
+    /// left it: `.live` or `.failed`.
+    @Published private var settled: (key: LiveQueryKey, state: LiveQueryState)?
 
-    /// What the running observation follows; `nil` before the first.
-    private var following: (identity: LiveQueryIdentity, database: Database?)?
+    /// What the running observation follows; `nil` when none is running.
+    private var following: LiveQueryKey?
     /// The running observation. Kept apart from what it follows because
     /// `deinit`, which cancels it, may only touch `Sendable` state.
     private var observation: Task<Void, Never>?
@@ -184,22 +204,23 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
         observation?.cancel()
     }
 
-    /// Where the query `identity` stands: loading until it is the one that
-    /// last settled. Computed from what was published, so a view sees a
-    /// changed query as loading in the same update that changed it.
-    func state(of identity: LiveQueryIdentity) -> LiveQueryState {
-        guard let settled, settled.identity == identity else { return .loading }
-        return settled.error.map(LiveQueryState.failed) ?? .live
+    /// Where the observation of `key` stands: loading until it is the one
+    /// that last settled. Computed from what was published, so a view sees
+    /// a changed query as loading in the same update that changed it.
+    func state(of key: LiveQueryKey) -> LiveQueryState {
+        guard let settled, settled.key == key else { return .loading }
+        return settled.state
     }
 
     /// Follows `request` on `database`, starting a new observation when
-    /// either differs from what is being followed. Called on every view
-    /// update, so it publishes nothing itself: the observation's task does,
-    /// after the update.
+    /// that is not what is being followed. Called on every view update, so
+    /// it publishes nothing itself: the observation's task does, after the
+    /// update.
     func observe(_ request: LiveQueryRequest<Value>, in database: Database?) {
-        if let following, following.identity == request.identity, following.database === database { return }
-        following = (request.identity, database)
-        observation?.cancel()
+        let key = LiveQueryKey(identity: request.identity, database: database)
+        guard key != following else { return }
+        stop()
+        following = key
         // The task holds this object only while it publishes, so an
         // observation does not keep alive the view state it belongs to.
         observation = Task { [weak self] in
@@ -209,24 +230,40 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
                         "@LiveQuery found no database in the environment: add .relateDatabase(_:) above this view")
                 }
                 for try await value in database.values(tags: request.identity.tags, request.read) {
-                    self?.settle(request.identity, value: value)
+                    self?.settle(key, .success(value))
                 }
             } catch {
-                self?.settle(request.identity, error: error)
+                self?.settle(key, .failure(error))
             }
         }
+    }
+
+    /// Stops following: the property's query can no longer be stated. The
+    /// last value stays.
+    func stop() {
+        observation?.cancel()
+        observation = nil
+        following = nil
     }
 
     /// What an observation reports: a value, or the error that ended it.
     /// Only a change is published, so a read that returns what the property
     /// already holds redraws nothing. An observation that was cancelled
     /// (the query changed, the view went away) reports nothing further.
-    private func settle(_ identity: LiveQueryIdentity, value: Value? = nil, error: (any Error)? = nil) {
+    private func settle(_ key: LiveQueryKey, _ outcome: Result<Value, any Error>) {
         guard !Task.isCancelled else { return }
-        if let value, value != self.value { self.value = value }
-        if settled?.identity != identity || (settled?.error == nil) != (error == nil) {
-            settled = (identity, error)
+        switch outcome {
+        case .success(let value):
+            if value != self.value { self.value = value }
+            if !isLive(key) { settled = (key, .live) }
+        case .failure(let error):
+            settled = (key, .failed(error))
         }
+    }
+
+    /// Whether `key` is the observation that last settled, with a value.
+    private func isLive(_ key: LiveQueryKey) -> Bool {
+        if let settled, settled.key == key, case .live = settled.state { true } else { false }
     }
 }
 #endif

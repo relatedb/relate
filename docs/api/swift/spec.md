@@ -419,8 +419,9 @@ ContentView().relateDatabase(db)
   previous value stays on screen while it runs its first read, and after a
   read fails.
 - A read equal to the value the property holds redraws nothing.
-- A statement whose interpolation throws is reported through `error` too,
-  so a view's initializer does not have to throw.
+- A statement whose interpolation throws makes the query `.failed` with
+  that error from the view's first body; nothing is read, and a view's
+  initializer does not have to throw.
 - Available where SwiftUI is (`#if canImport(SwiftUI)`), from the package's
   minimum platforms: the property wrapper uses `StateObject`, not the
   Observation framework.

@@ -4,16 +4,6 @@ import os
 
 @testable import Relate
 
-extension Database {
-    /// Waits until nothing is subscribed to this database's commits: how a
-    /// test sees that an observation has let go. Cancellation reaches the
-    /// subscription off the test's own task, so this waits rather than
-    /// asserts; the suite's time limit bounds a subscription that stays.
-    func commitSubscribersAreGone() async {
-        while core.hub.subscriberCount != 0 { await Task.yield() }
-    }
-}
-
 /// A failure of these tests is a value that never arrives, so every test
 /// is bounded instead of left to hang.
 @Suite(.timeLimit(.minutes(1))) struct LiveValuesTests {
@@ -74,10 +64,10 @@ extension Database {
                 if value == 1 { return }
             }
         }
-        while received.withLock({ $0 }).isEmpty { await Task.yield() }
+        await waitUntil { !received.withLock { $0 }.isEmpty }
         // This commit leaves the counter alone: its read returns a second 0.
         try await db.write("CREATE (:Unrelated)")
-        while reads.withLock({ $0 }) < 2 { await Task.yield() }
+        await waitUntil { reads.withLock { $0 } >= 2 }
         try await db.write(incrementCounter)
         try await consumer.value
         #expect(received.withLock { $0 } == [0, 1])
@@ -125,7 +115,7 @@ extension Database {
             for try await value in values { Issue.record("a failed read yielded \(value)") }
         }
         #expect(error.engineError?.stage == .runtime)
-        await db.commitSubscribersAreGone()
+        await waitUntil { db.core.hub.subscriberCount == 0 }
     }
 
     @Test func theStreamEndsWhenTheStoreCloses() async throws {
@@ -145,6 +135,6 @@ extension Database {
         }
         // Releasing the stream cancels its reads, which releases the commit
         // subscription; both happen off this task.
-        await db.commitSubscribersAreGone()
+        await waitUntil { db.core.hub.subscriberCount == 0 }
     }
 }
