@@ -182,23 +182,28 @@ impl Way {
 }
 
 impl Route<'_> {
-    pub(super) fn anchor(&self) -> Result<Anchor> {
+    /// `None` declines a count selector (ADR-0607) before the one step that
+    /// would materialize a fan's origins: a count selector answers pair
+    /// partitions only, so a fan it cannot use is never built.
+    pub(super) fn anchor(&self) -> Result<Option<Anchor>> {
+        let counted = self.shape.selection.counted().is_some();
         let (start, end) = (self.shape.start, self.shape.end);
         // The one shape pre-check: one unbound variable at both ends
         // (`(a)-[*]-(a)`) is the (s, s) partition of every start
         // candidate.
         if start.variable.is_some() && start.variable == end.variable && self.bound(start).is_none()
         {
-            return Ok(Anchor::Loop);
+            return Ok(Some(Anchor::Loop));
         }
         // Each endpoint resolves once, bounded: a row-bound node is a
         // one-element side, a property map is a seeked list of at most
         // `SEEK_PAIR_LIMIT`, and a bigger match is the length-only
         // `Side::Over` — its list is built only where both sides are over
         // (below). `None` is scan territory the fan answers itself.
-        Ok(match (self.probe(start)?, self.probe(end)?) {
+        Ok(Some(match (self.probe(start)?, self.probe(end)?) {
             // Both past the bound: the fan runs from the shorter side,
             // which needs both lists in full.
+            (Some(Side::Over), Some(Side::Over)) if counted => return Ok(None),
             (Some(Side::Over), Some(Side::Over)) => {
                 Self::listed(self.listed_side(start)?, self.listed_side(end)?)
             }
@@ -216,11 +221,12 @@ impl Route<'_> {
                 origins: ends,
                 way: Way::Backward,
             },
+            _ if counted => return Ok(None),
             _ => Anchor::Fan {
                 origins: Side::Many(self.start_candidates()?),
                 way: Way::Forward,
             },
-        })
+        }))
     }
 
     /// Both endpoints as sides, an over-bound one length-only: the pair

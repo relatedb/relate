@@ -87,11 +87,23 @@ fn routed_control_is_accepted() {
     }
 }
 
+/// `q` is accepted by the guard, runs on the route, and returns `want`
+/// lengths, the rows the GPM enumeration gives (ADR-0607).
+fn assert_takes_the_route(g: &Graph, q: &str, want: &[i64]) {
+    assert!(guard_accepts(q), "guard rejected {q}");
+    let (rows, counts) = run(g, q);
+    assert!(counts.route_runs > 0, "route declined {q}");
+    let rows = sorted(rows);
+    assert_eq!(rows, gpm(g, q), "{q}");
+    let want: Vec<_> = want.iter().map(|&n| vec![Value::Int(n)]).collect();
+    assert_eq!(rows, want, "{q}");
+}
+
 #[test]
-fn shortest_k_greater_than_one_stays_on_gpm() {
+fn shortest_k_greater_than_one_takes_the_route() {
     let g = shortcut();
     let q = "MATCH p = SHORTEST 2 (a {id: 0})-[*]->(b {id: 3}) RETURN length(p)";
-    assert_stays_on_gpm(&g, q, &[2, 3]);
+    assert_takes_the_route(&g, q, &[2, 3]);
 }
 
 /// One `SHORTEST $k` run: the route's rows and counters, and the rows of
@@ -130,11 +142,14 @@ fn parameter_count_of_one_takes_the_route() {
     assert_eq!(counted.rows, vec![vec![Value::Int(2)]]);
 }
 
-/// A count parameter other than 1 keeps GPM's enumerate-then-select.
+/// A count parameter above 1 takes the length-class walk (ADR-0607).
 #[test]
-fn parameter_count_above_one_stays_on_gpm() {
+fn parameter_count_above_one_takes_the_route() {
     let counted = run_count_param(2);
-    assert_eq!(counted.counts, Counts::default());
+    assert!(
+        counted.counts.route_runs > 0,
+        "expected the route for $k = 2"
+    );
     assert_eq!(counted.rows, counted.gpm_rows);
 }
 
@@ -145,10 +160,10 @@ fn two_trails() -> Graph {
 }
 
 #[test]
-fn any_k_stays_on_gpm() {
+fn any_k_takes_the_route() {
     let g = two_trails();
     let q = "MATCH p = ANY 2 (a {id: 0})-[*]->(b {id: 3}) RETURN length(p)";
-    assert_stays_on_gpm(&g, q, &[2, 3]);
+    assert_takes_the_route(&g, q, &[2, 3]);
 }
 
 #[test]

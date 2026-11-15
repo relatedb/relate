@@ -259,3 +259,6 @@ relationship count rather than by a hop cap.
 ADR-0600: for the keyword selectors, a clause-level `WHERE` that reads the
 path is a post-filter of the selected paths, as this ADR first recorded; the
 function spellings and inline `WHERE`s filter the search.
+
+ADR-0607: `SHORTEST k` (k above 1) and `SHORTEST k GROUPS` on pair anchors
+take the route, by length class, instead of enumeration.

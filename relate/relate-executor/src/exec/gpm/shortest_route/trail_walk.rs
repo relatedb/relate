@@ -80,7 +80,7 @@ impl<'r, 'a> TrailWalk<'r, 'a> {
             }
             let satisfied = self.any_of_length(next, length, out)?;
             self.leave(rid);
-            if satisfied && !self.route.shape.all {
+            if satisfied && !self.route.shape.selection.all() {
                 return Ok(true);
             }
             any_satisfied |= satisfied;

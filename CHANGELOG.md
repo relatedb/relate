@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `SHORTEST k` (k above 1), `SHORTEST k GROUPS` and `ANY k` between two
+  fixed endpoints now walk the trails one length class at a time instead of
+  enumerating every trail up to the hop bound, so a bounded pair query that
+  never finished on a social graph answers in milliseconds. Results are
+  unchanged; a count selector with one open end still enumerates.
+
 ## [1.0.2] — 2026-11-14
 
 ### Added

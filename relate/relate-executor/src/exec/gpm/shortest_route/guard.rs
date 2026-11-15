@@ -72,6 +72,40 @@ impl Spelling {
     }
 }
 
+/// What a pair partition keeps of its trails when the selector counts more
+/// than one (ADR-0607): the `k` shortest trails, or every trail of the `k`
+/// shortest distinct lengths. A selector that fits the single-path or
+/// all-shortest searches carries none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Keep {
+    Paths(usize),
+    Groups(usize),
+}
+
+/// What a routed pattern's selector asks of a partition: the one shortest
+/// trail, every shortest trail, or a count above one (ADR-0607).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Selection {
+    Single,
+    AllShortest,
+    Count(Keep),
+}
+
+impl Selection {
+    /// All-path selector (every shortest trail) rather than single-path.
+    pub(super) fn all(self) -> bool {
+        self == Selection::AllShortest
+    }
+
+    /// The count the length-class walk answers, if this is one.
+    pub(super) fn counted(self) -> Option<Keep> {
+        match self {
+            Selection::Count(keep) => Some(keep),
+            Selection::Single | Selection::AllShortest => None,
+        }
+    }
+}
+
 /// The three elements of a routed pattern and its selector kind.
 pub(super) struct Shape<'p> {
     pub start: &'p NodePattern,
@@ -86,8 +120,8 @@ pub(super) struct Shape<'p> {
     /// spelling lowers to, LABS-661) — the inner rel is a plain one-hop.
     pub min: u32,
     pub max: Option<u32>,
-    /// All-path selector (every shortest trail) rather than single-path.
-    pub all: bool,
+    /// What the selector keeps of a partition.
+    pub selection: Selection,
     /// The shortest-path spelling this pattern was written with.
     pub spelling: Spelling,
 }
@@ -115,21 +149,35 @@ pub(super) fn route_shape<'p>(
     {
         return None;
     }
-    let all = match path.selector.as_ref()? {
-        PathSelector::AnyShortest => false,
-        PathSelector::AllShortest => true,
+    let selection = match path.selector.as_ref()? {
+        PathSelector::AnyShortest => Selection::Single,
+        PathSelector::AllShortest => Selection::AllShortest,
         // The count may arrive as a parameter: the plan cache's
         // auto-parameterization turns a literal `SHORTEST 1` into one, so
         // it resolves through the canonical count helper. A count that
-        // does not resolve to 1 (or does not resolve at all) stays on GPM,
-        // which owns the selector's count errors.
+        // does not resolve (or is zero) stays on GPM, which owns the
+        // selector's count errors.
         PathSelector::Shortest {
             count: Some(count),
             group,
-        } if resolve_gpm_count(Some(count), 1, params).is_ok_and(|n| n == 1) => *group,
+        } => {
+            let n = resolve_gpm_count(Some(count), 1, params).ok()?;
+            counted(n, *group)?
+        }
+        // `ANY k` keeps the `k` shortest, as `SHORTEST k` does (the
+        // selector's own reading); `ANY` alone stays on GPM.
+        PathSelector::Any(Some(count)) => {
+            let n = resolve_gpm_count(Some(count), 1, params).ok()?;
+            counted(n, false)?
+        }
         PathSelector::Shortest { .. } | PathSelector::Any(_) | PathSelector::All => return None,
     };
-    let hop = routed_hop(path, filters, all, spelling)?;
+    // The length-class walk enumerates trails, so an explicit `WALK` (whose
+    // longer answers may reuse a relationship) stays on GPM.
+    if selection.counted().is_some() && !matches!(path.mode, None | Some(PathMode::Trail)) {
+        return None;
+    }
+    let hop = routed_hop(path, filters, selection, spelling)?;
     if hop.min > 1
         || hop.rel.where_clause.is_some()
         || !followable(hop.start, hop.rel, hop.end)
@@ -201,7 +249,7 @@ pub(super) fn route_shape<'p>(
 fn routed_hop<'p>(
     path: &'p PathPattern,
     filters: &'p GpmFilters,
-    all: bool,
+    selection: Selection,
     spelling: Spelling,
 ) -> Option<Shape<'p>> {
     let [PatternElement::Node(start), rel_element, PatternElement::Node(end)] =
@@ -233,7 +281,20 @@ fn routed_hop<'p>(
         end,
         min,
         max: max.or(spelling.unbounded_ceiling()),
-        all,
+        selection,
         spelling,
     })
+}
+
+/// The route's reading of a resolved selector count and `GROUPS` flag. One
+/// answer is the single-path search, one group the all-shortest search, and
+/// a larger count the length-class walk; zero stays on GPM.
+fn counted(n: usize, group: bool) -> Option<Selection> {
+    match (n, group) {
+        (0, _) => None,
+        (1, false) => Some(Selection::Single),
+        (1, true) => Some(Selection::AllShortest),
+        (n, true) => Some(Selection::Count(Keep::Groups(n))),
+        (n, false) => Some(Selection::Count(Keep::Paths(n))),
+    }
 }

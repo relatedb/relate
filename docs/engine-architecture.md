@@ -299,8 +299,11 @@ t.ts`) can walk a sorted view of that type’s chunk. `shortestPath` /
 shortest”, both as expressions and in the `MATCH` clause forms
 (`MATCH p = shortestPath(...)`). The simple GQL shortest selectors
 (`ANY SHORTEST`, `SHORTEST 1`, `SHORTEST 1 GROUP`, `ALL SHORTEST`) over
-one variable-length relationship use the same BFS. Other selector
-shapes still enumerate, then select. Both forms share one search
+one variable-length relationship use the same BFS. `SHORTEST k` and
+`SHORTEST k GROUPS` between two fixed ends walk the trails one length
+class at a time, pruned by a distance ball from the end (ADR-0607). Other
+selector shapes (a count selector with one end open, among them) still
+enumerate, then select. Both forms share one search
 module, `relate-executor/src/shortest/`: a pair search for one
 shortest path between two bound ends (bidirectional, or a shallow
 intersection for a small hop bound), and a layered search for

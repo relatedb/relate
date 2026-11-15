@@ -7,6 +7,9 @@
 //! - [`Search::dag`]: a layered single-source BFS that keeps shortest-path
 //!   predecessors, with [`layered::Dag::trails`] enumerating them, and
 //!   [`Search::closed`] for the shortest closed trails through one node.
+//! - [`class_walk::ClassWalk`]: the trails of one exact length between two
+//!   nodes, the class enumeration of `SHORTEST k` and `SHORTEST k GROUPS`
+//!   (ADR-0607).
 //! - [`Search::pair_trails`]: the pair answer as trails; an all-path
 //!   search grows a layered DAG from each end and joins them where they
 //!   meet (ADR-0601), sharing the layer step with [`Search::dag`].
@@ -24,6 +27,7 @@ use relate_ir::{Direction, NodePattern, PathPattern, RelPattern};
 use crate::overlay::ExecGraph;
 use crate::store::RelTypes;
 
+pub(crate) mod class_walk;
 pub(crate) mod layered;
 mod pair;
 mod reach;
