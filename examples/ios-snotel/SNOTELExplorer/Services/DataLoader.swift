@@ -21,34 +21,12 @@ struct ReadingCSVRow: Encodable {
     let tempAvgF: Int
 }
 
+/// One basin of the bundled document: its name, its HUC2 code and its
+/// outline, which decides which stations it contains.
 struct BasinFeature {
     let name: String
     let huc2: String
-    /// The feature's GeoJSON `geometry` object, serialized, for the map overlay.
-    let geoJSON: String
-    /// Polygon rings as `[longitude, latitude]` pairs; the first is the outer ring.
-    let rings: [[[Double]]]
-
-    /// Even-odd ray-casting containment: inside the outer ring and outside
-    /// every hole. A point exactly on an edge may land on either side, which
-    /// is fine for basin-scale polygons.
-    func contains(latitude: Double, longitude: Double) -> Bool {
-        func inRing(_ ring: [[Double]]) -> Bool {
-            var inside = false
-            var j = ring.count - 1
-            for i in ring.indices {
-                let (xi, yi, xj, yj) = (ring[i][0], ring[i][1], ring[j][0], ring[j][1])
-                if (yi > latitude) != (yj > latitude),
-                   longitude < (xj - xi) * (latitude - yi) / (yj - yi) + xi {
-                    inside.toggle()
-                }
-                j = i
-            }
-            return inside
-        }
-        guard let outer = rings.first, inRing(outer) else { return false }
-        return !rings.dropFirst().contains(where: inRing)
-    }
+    let outline: BasinOutline
 }
 
 /// A failure surfaced while loading a bundled data resource.
@@ -123,13 +101,9 @@ enum DataLoader {
 
     static func parseBasinsGeoJSON(_ data: Data) throws -> [BasinFeature] {
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
             return try JSONDecoder().decode(BasinCollection.self, from: data).features.map { feature in
                 BasinFeature(
-                    name: feature.properties.name, huc2: feature.properties.huc2,
-                    geoJSON: String(decoding: try encoder.encode(feature.geometry), as: UTF8.self),
-                    rings: feature.geometry.coordinates)
+                    name: feature.properties.name, huc2: feature.properties.huc2, outline: feature.geometry)
             }
         } catch {
             // The coder's own error says which feature and key did not parse.
@@ -144,19 +118,12 @@ enum DataLoader {
 
         struct Feature: Decodable {
             let properties: Properties
-            let geometry: Polygon
+            let geometry: BasinOutline
         }
 
         struct Properties: Decodable {
             let name: String
             let huc2: String
-        }
-
-        /// A GeoJSON Polygon geometry object; encoding it again gives the
-        /// text the map overlay decodes.
-        struct Polygon: Codable {
-            let type: String
-            let coordinates: [[[Double]]]
         }
     }
 

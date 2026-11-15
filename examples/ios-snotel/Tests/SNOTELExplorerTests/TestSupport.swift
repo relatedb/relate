@@ -14,6 +14,15 @@ func makeEmptyBundle() throws -> Bundle {
     return bundle
 }
 
+/// A ring of positions from `(longitude, latitude)` pairs.
+func ring(_ positions: (Double, Double)...) -> [Position] {
+    positions.map { Position(longitude: $0.0, latitude: $0.1) }
+}
+
+/// A 10° square outline, for a test that needs a basin's geometry but not
+/// a particular shape.
+let squareOutline = BasinOutline(outer: ring((0, 0), (10, 0), (10, 10), (0, 10), (0, 0)))
+
 /// A throwaway store holding the three sample stations, their readings and
 /// the two sample basins.
 func makeLoadedService() async throws -> DatabaseService {

@@ -90,28 +90,19 @@ struct MapContainerView: UIViewRepresentable {
             wasFiltered = viewModel.isFiltered
         }
 
-        /// Builds the basin overlays from the geometry the graph stores
-        /// (`Basin.geoJSON`, a GeoJSON geometry object), once per basin list;
-        /// each overlay keeps its `Basin`, so styling reads it directly.
+        /// Builds one overlay per basin from its outline, once per basin
+        /// list; each overlay keeps its `Basin`, so styling reads it
+        /// directly.
         func updateBasinOverlays(on mapView: MKMapView) {
             guard basins != overlaidBasins else { return }
             overlaidBasins = basins
 
             mapView.removeOverlays(mapView.overlays)
             basinByOverlay.removeAll()
-            var overlays: [MKOverlay] = []
-            for basin in basins {
-                // The geometry is data: the loader stores a parsed Polygon,
-                // but the workbench can store anything. A basin whose
-                // geometry is not GeoJSON has no outline to draw and is
-                // left off the map; the others keep theirs.
-                guard let objects = try? MKGeoJSONDecoder().decode(Data(basin.geoJSON.utf8)) else {
-                    continue
-                }
-                for case let overlay as MKOverlay in objects {
-                    overlays.append(overlay)
-                    basinByOverlay[ObjectIdentifier(overlay as AnyObject)] = basin
-                }
+            let overlays = basins.map { basin in
+                let overlay = Self.polygon(of: basin.outline)
+                basinByOverlay[ObjectIdentifier(overlay)] = basin
+                return overlay
             }
             mapView.addOverlays(overlays, level: .aboveRoads)
         }
@@ -158,18 +149,29 @@ struct MapContainerView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            let renderer: MKOverlayPathRenderer
-            if let polygon = overlay as? MKPolygon {
-                renderer = MKPolygonRenderer(polygon: polygon)
-            } else if let multiPolygon = overlay as? MKMultiPolygon {
-                renderer = MKMultiPolygonRenderer(multiPolygon: multiPolygon)
-            } else {
+            // The map's only overlays are the basin polygons built above.
+            guard let polygon = overlay as? MKPolygon else {
                 return MKOverlayRenderer(overlay: overlay)
             }
+            let renderer = MKPolygonRenderer(polygon: polygon)
             renderer.lineJoin = .round
             renderer.lineCap = .round
             style(renderer, for: overlay)
             return renderer
+        }
+
+        /// The map polygon of a basin outline: its outer ring, with its
+        /// holes as interior polygons.
+        private static func polygon(of outline: BasinOutline) -> MKPolygon {
+            func coordinates(_ ring: [Position]) -> [CLLocationCoordinate2D] {
+                ring.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            }
+            let outer = coordinates(outline.outer)
+            let holes = outline.holes.map { ring in
+                let hole = coordinates(ring)
+                return MKPolygon(coordinates: hole, count: hole.count)
+            }
+            return MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
         }
 
         private func style(_ renderer: MKOverlayPathRenderer, for overlay: MKOverlay) {

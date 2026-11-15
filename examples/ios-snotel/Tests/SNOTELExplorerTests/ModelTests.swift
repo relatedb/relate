@@ -70,36 +70,48 @@ struct ModelTests {
         #expect(throws: RelateError.self) { try decode(Station.self, row) }
     }
 
-    @Test("A basin decodes from its query's row, identified by its HUC2 code")
-    func basinFromRow() throws {
-        let row: [String: CypherValue] = [
+    /// A basin's row, with `squareOutline` stored as its geometry text.
+    private func basinRow(avgSWE: CypherValue, stationCount: Int) throws -> [String: CypherValue] {
+        [
             "name": .string("Pacific Northwest"),
             "huc2": .string("17"),
-            "geoJSON": .string("{\"type\":\"Polygon\"}"),
-            "avgSWE": .float(22.5),
-            "stationCount": .int(12),
+            "geoJSON": .string(try squareOutline.geoJSON()),
+            "avgSWE": avgSWE,
+            "stationCount": .int(Int64(stationCount)),
         ]
-        let basin = try decode(Basin.self, row)
-        #expect(basin.name == "Pacific Northwest" && basin.id == "17")
-        #expect(basin.avgSWE == 22.5)
-        #expect(basin.stationCount == 12)
-        #expect(basin.geoJSON.contains("Polygon"))
+    }
+
+    @Test("A basin decodes from its query's row, identified by its HUC2 code")
+    func basinFromRow() throws {
+        let basin = try decode(Basin.self, try basinRow(avgSWE: .float(22.5), stationCount: 12))
+        #expect(basin == Basin(
+            name: "Pacific Northwest", huc2: "17", outline: squareOutline, avgSWE: 22.5, stationCount: 12))
+        #expect(basin.id == "17")
     }
 
     @Test("A basin without readings has no average")
     func basinWithoutReadings() throws {
-        let basin = try decode(Basin.self, [
-            "name": .string("Dry"), "huc2": .string("15"), "geoJSON": .string("{}"),
-            "avgSWE": .null, "stationCount": .int(0),
-        ])
+        let basin = try decode(Basin.self, try basinRow(avgSWE: .null, stationCount: 0))
         #expect(basin.avgSWE == nil)
         #expect(basin.stationCount == 0)
+    }
+
+    @Test("A basin row whose stored geometry is not a Polygon is refused", arguments: [
+        "not json",
+        #"{"type":"Point","coordinates":[0,0]}"#,
+        #"{"type":"Polygon","coordinates":[]}"#,
+        #"{"type":"Polygon","coordinates":[[[0]]]}"#,
+    ])
+    func basinGeometryNotAPolygon(stored: String) throws {
+        var row = try basinRow(avgSWE: .null, stationCount: 0)
+        row["geoJSON"] = .string(stored)
+        #expect(throws: RelateError.self) { try decode(Basin.self, row) }
     }
 
     @Test("The snowpack ranking is the basins with readings, highest mean first")
     func ranking() {
         func basin(_ huc2: String, _ avgSWE: Double?) -> Basin {
-            Basin(name: "Basin \(huc2)", huc2: huc2, geoJSON: "{}", avgSWE: avgSWE, stationCount: 1)
+            Basin(name: "Basin \(huc2)", huc2: huc2, outline: squareOutline, avgSWE: avgSWE, stationCount: 1)
         }
         let ranked = [basin("15", 4.5), basin("16", nil), basin("17", 22.5)].bySWE
         #expect(ranked.map(\.id) == ["17", "15"] && ranked.map(\.swe) == [22.5, 4.5])

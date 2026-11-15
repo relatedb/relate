@@ -64,7 +64,7 @@ struct SNOTELQueriesTests {
         let pnw = try #require(basins.first { $0.name == "Pacific Northwest" })
         #expect(pnw.avgSWE != nil)
         #expect(pnw.stationCount == 2)
-        #expect(pnw.geoJSON.contains("Polygon"))
+        #expect(pnw.outline.outer.count == 9)
     }
 
     @Test("The insights read counts the graph and lists its basins in one snapshot")

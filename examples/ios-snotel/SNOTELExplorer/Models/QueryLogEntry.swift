@@ -41,10 +41,16 @@ struct QueryLogEntry: Identifiable, Equatable, Sendable {
 
     var succeeded: Bool { failureMessage == nil }
 
-    /// The text a search of the log looks in: the statement, its
-    /// operation, the names it bound and, for a failure, the message.
+    /// The bound names as the log shows them: `$center, $radiusMeters`.
+    var parametersText: String {
+        parameters.map { "$\($0)" }.joined(separator: ", ")
+    }
+
+    /// The text a search of the log looks in, which is the text a row
+    /// shows: the statement, its operation, its parameters and, for a
+    /// failure, the message.
     var searchableText: [String] {
-        [cypher, operation] + parameters + (failureMessage.map { [$0] } ?? [])
+        [cypher, operation, parametersText] + (failureMessage.map { [$0] } ?? [])
     }
 
     var failureMessage: String? {

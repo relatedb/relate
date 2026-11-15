@@ -146,11 +146,11 @@ final class DatabaseService: Sendable {
                 UNWIND $rows AS row
                 CREATE (:Basin {name: row.name, huc2: row.huc2, geojson: row.geoJSON})
                 """,
-                ["rows": try CypherValue(encoding: basins.map(BasinRow.init))]),
+                ["rows": try CypherValue(encoding: try basins.map(BasinRow.init))]),
             Statement(
                 """
                 UNWIND $memberships AS m
-                MATCH (s:Station {id: m.station}), (b:Basin {huc2: m.basin})
+                MATCH (s:Station {id: m.station}), (b:Basin {huc2: m.huc2})
                 CREATE (s)-[:IN_BASIN]->(b)
                 """,
                 ["memberships": try CypherValue(encoding: memberships(of: stations, in: basins))]),
@@ -162,29 +162,30 @@ final class DatabaseService: Sendable {
     /// relationships so basin queries are plain graph traversals.
     ///
     /// The containment test runs in Swift because the engine's geospatial
-    /// surface is the point — geometry tests happen in Swift over the stored
-    /// basin geometry. The native point functions (`point.distance`,
+    /// surface is the point — geometry tests happen in Swift, over each
+    /// basin's outline. The native point functions (`point.distance`,
     /// `point.withinBBox`) stay in Cypher, in `SNOTELQueries`.
     private static func memberships(
         of stations: [StationCSVRow], in basins: [BasinFeature]
     ) -> [Membership] {
         stations.flatMap { station in
             basins
-                .filter { $0.contains(latitude: station.latitude, longitude: station.longitude) }
-                .map { Membership(station: station.id, basin: $0.huc2) }
+                .filter { $0.outline.contains(latitude: station.latitude, longitude: station.longitude) }
+                .map { Membership(station: station.id, huc2: $0.huc2) }
         }
     }
 
-    /// What the basin load stores of a feature (its rings stay in Swift).
+    /// What the basin load stores of a feature: its outline goes in as
+    /// GeoJSON text, which a basin row parses back (`Basin.outline`).
     private struct BasinRow: Encodable {
         let name: String
         let huc2: String
         let geoJSON: String
 
-        init(_ feature: BasinFeature) {
+        init(_ feature: BasinFeature) throws {
             name = feature.name
             huc2 = feature.huc2
-            geoJSON = feature.geoJSON
+            geoJSON = try feature.outline.geoJSON()
         }
     }
 
@@ -192,7 +193,7 @@ final class DatabaseService: Sendable {
     /// a station's id and a basin's HUC2 code.
     private struct Membership: Encodable {
         let station: Int
-        let basin: String
+        let huc2: String
     }
 
     // MARK: - Workbench

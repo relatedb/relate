@@ -13,7 +13,7 @@ struct FilterPanelView: View {
     var body: some View {
         VStack(spacing: 12) {
             Button {
-                withAnimation(.snappy) { isExpanded.toggle() }
+                isExpanded.toggle()
             } label: {
                 HStack {
                     Label("Explore & Filter", systemImage: "slider.horizontal.3")
@@ -41,7 +41,7 @@ struct FilterPanelView: View {
                             .submitLabel(.search)
                             .onSubmit {
                                 viewModel.searchStations()
-                                withAnimation(.snappy) { isExpanded = false }
+                                isExpanded = false
                             }
                         if !viewModel.searchText.isEmpty {
                             Button {
@@ -65,7 +65,7 @@ struct FilterPanelView: View {
                             get: { viewModel.selectedBasin },
                             set: { selection in
                                 viewModel.filterByBasin(selection)
-                                withAnimation(.snappy) { isExpanded = false }
+                                isExpanded = false
                             }
                         )) {
                             Text("All Basins").tag(Basin.ID?.none)
@@ -100,7 +100,7 @@ struct FilterPanelView: View {
                     if viewModel.isFiltered {
                         Button("Show All Stations") {
                             viewModel.showAll()
-                            withAnimation(.snappy) { isExpanded = false }
+                            isExpanded = false
                         }
                         .font(.subheadline)
                     }
@@ -137,6 +137,8 @@ struct FilterPanelView: View {
             }
         }
         .padding()
+        // The one animation of the panel: every change of `isExpanded`,
+        // whichever control made it, opens or closes the panel with it.
         .animation(.snappy, value: isExpanded)
     }
 
@@ -144,9 +146,10 @@ struct FilterPanelView: View {
         switch viewModel.filter {
         case .basin(let selected):
             // The filter holds the basin's identity; its name is the live
-            // basin list's to give, and is absent until that list arrives.
-            let name = basins.first { $0.id == selected }?.name
-            return "Showing \(name.map { "\($0) basin" } ?? "one basin") • tap to change"
+            // basin list's to give. Until that list has the basin, the
+            // summary shows the identity itself.
+            let basin = basins.first { $0.id == selected }
+            return "Showing basin \(basin?.name ?? selected) • tap to change"
         case .nearby(_, let radiusKm):
             return "Nearby search within \(Int(radiusKm)) km • tap to change"
         case .search(let text):

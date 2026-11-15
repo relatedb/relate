@@ -52,7 +52,9 @@ job.
 > **Note** Basin membership (`IN_BASIN`) is computed in Swift at load time
 > with a point-in-polygon test, because the Cypher surface is points only:
 > `point.distance` and `point.withinBBox` are native, and basin geometry
-> travels as a stored GeoJSON property for the map overlay.
+> travels as a stored GeoJSON property. A basin row parses it into a
+> `BasinOutline`, so the map draws a typed outline and a stored geometry
+> that is not a Polygon fails the basin query instead of the map.
 
 ## Requirements
 
@@ -94,8 +96,8 @@ local XCFramework is used either way. The project depends on the repository-root
 ```
 SNOTELExplorer/
   Data/          bundled stations + readings CSV, basins GeoJSON
-  Models/        Station, Basin, DatabaseStats, Insights, SWELevel, DemoQuery,
-                 QueryLogEntry
+  Models/        Station, Basin, BasinOutline, DatabaseStats, Insights, SWELevel,
+                 DemoQuery, QueryLogEntry
   Services/      DataLoader (CSV/GeoJSON, point-in-polygon), DatabaseService
                  (open, load, checkpoint, workbench), SNOTELQueries (the reads)
   ViewModels/    MapViewModel (@MainActor, @Observable): UI state only

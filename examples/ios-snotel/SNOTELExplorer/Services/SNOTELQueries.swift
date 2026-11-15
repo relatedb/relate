@@ -69,8 +69,8 @@ enum SNOTELQueries {
             ])
     }
 
-    /// Every basin with its stored GeoJSON geometry and its snowpack
-    /// aggregates: the mean SWE of its stations' readings and how many
+    /// Every basin with its stored geometry (GeoJSON text, which `Basin`
+    /// parses into its outline) and its snowpack aggregates: the mean SWE of its stations' readings and how many
     /// stations report one (nil and 0 for a basin without readings).
     static let basins: Statement = """
         MATCH (b:Basin)

@@ -6,8 +6,14 @@ struct QueryLogView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
 
+    /// What the log is searched for: the field's text without its
+    /// surrounding blanks; empty when no search is active.
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var filteredEntries: [QueryLogEntry] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = searchQuery
         let entries = viewModel.queryHistory.reversed()
         guard !query.isEmpty else { return Array(entries) }
         return entries.filter { entry in
@@ -18,7 +24,7 @@ struct QueryLogView: View {
     /// What the list says when it has no rows: nothing was recorded, or
     /// nothing matches the search.
     private var emptyState: (title: String, description: String) {
-        searchText.isEmpty
+        searchQuery.isEmpty
             ? ("No queries recorded", "Queries appear here as the app uses Relate.")
             : ("No matching queries", "Try a different operation or parameter.")
     }
@@ -126,7 +132,7 @@ private struct QueryLogRow: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Parameters")
                             .font(.caption.bold())
-                        Text(entry.parameters.map { "$\($0)" }.joined(separator: ", "))
+                        Text(entry.parametersText)
                             .font(.system(.caption2, design: .monospaced))
                             .textSelection(.enabled)
                     }
