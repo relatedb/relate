@@ -38,8 +38,8 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use relate_feedback::client::{self, Client, Reply};
-use relate_feedback::consent::EffectiveState;
-use relate_feedback::{consent, state};
+use relate_feedback::opt_out::EffectiveState;
+use relate_feedback::{opt_out, state};
 
 use super::envelope::{self, BaseContext};
 use super::spool;
@@ -125,7 +125,7 @@ impl Telemetry {
             Some(dir) => state::load_config_telemetry(dir),
             None => state::ConfigTelemetry::Missing,
         };
-        let state = consent::resolve(&env, config_telemetry);
+        let state = opt_out::resolve(&env, config_telemetry);
         // When disabled, touch nothing: no state file, no thread, no
         // network, no spool.
         if !state.enabled() {

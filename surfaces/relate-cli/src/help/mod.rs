@@ -89,6 +89,25 @@ pub(crate) enum HelpTopic {
 /// top-level parse error prints.
 const TOP_LEVEL_USAGE: &str = "Usage: relate [OPTIONS] [--database PATH] [QUERY]";
 
+/// How a command treats the riders a lifecycle command line can carry
+/// beside its verb — a query and a pre-verb access flag (ADR-0306 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RiderPolicy {
+    /// The riders are input to the command (`query` runs the engine
+    /// itself); no conflict.
+    Accepted,
+    /// The command runs no query engine (`clone`, `info`, `agent-context`):
+    /// a query or any access flag is a usage error.
+    Refused,
+    /// `serve`: the access flag belongs **after** the verb, so a pre-verb
+    /// sighting gets the command's own message naming the post-verb
+    /// spelling; a query is refused like [`RiderPolicy::Refused`]. Only the
+    /// `serve` row constructs it, so it is dead code in a build without
+    /// that command.
+    #[cfg_attr(not(feature = "serve"), allow(dead_code))]
+    PostVerbAccess,
+}
+
 /// One compiled-in lifecycle command (ADR-0069): everything the help pages,
 /// the top-level `Commands:` section, and the `flags.rs` usage errors know
 /// about it, in one place. [`COMMANDS`] is the only enumeration of the
@@ -110,21 +129,11 @@ pub(crate) struct CommandSpec {
     pub usage: Cow<'static, str>,
     /// The one-liner the top-level `Commands:` section prints.
     pub blurb: &'static str,
-    /// Whether a query or a pre-verb access flag (`--read-only[=FRESHNESS]`,
-    /// ADR-0480's one spelling) on the same command line is a usage error: the
-    /// commands that run no query engine (`clone`, `info`, `serve`,
-    /// `agent-context`) reject the combination (ADR-0306 §6; a serve
-    /// command's pre-verb access flags get serve's own message first,
-    /// naming the post-verb spelling, through
-    /// `LifecycleCommand::conflict_error`).
-    pub rejects_query: bool,
-    /// Whether the command takes the access flag **after** its verb
-    /// (ADR-0306 §6, ADR-0480's one spelling): a pre-verb sighting on that
-    /// command line gets the command's own message naming the post-verb
-    /// spelling — structurally first in `conflict_error`. `serve` is the
-    /// one such command; the field tables the fact beside
-    /// `rejects_query`, so one descriptor table owns the whole §6 policy.
-    pub post_verb_access: bool,
+    /// What the command does with a query or a pre-verb access flag
+    /// (`--read-only[=FRESHNESS]`, ADR-0480's one spelling) on the same
+    /// command line (ADR-0306 §6) — the one policy row
+    /// `LifecycleCommand::conflict_error` matches.
+    pub riders: RiderPolicy,
     /// Every flag the command's parser accepts — long and short
     /// spellings alike (`-d` beside `--database`) — for "did you mean"
     /// suggestions on an unknown flag. A test pins each against its
@@ -153,8 +162,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: query::QUERY_USAGE.into(),
         blurb: "Run a statement session (oneshot, stdin, or shell)",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(session_flags()),
         examples: &[(
             "Run one statement against a store",
@@ -168,8 +176,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: clone::CLONE_USAGE.into(),
         blurb: "Copy a database into a new store and exit",
-        rejects_query: true,
-        post_verb_access: false,
+        riders: RiderPolicy::Refused,
         flags: Cow::Borrowed(&["--wal-dir", "--to-snapshot-format", "--markdown-body-properties"]),
         examples: &[(
             "Copy a database into a new store",
@@ -184,8 +191,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: info::INFO_USAGE.into(),
         blurb: "Print store metadata for a database without opening it",
-        rejects_query: true,
-        post_verb_access: false,
+        riders: RiderPolicy::Refused,
         flags: Cow::Borrowed(&["--database", "--json"]),
         examples: &[(
             "Describe a database without opening it, as JSON",
@@ -200,8 +206,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: pull::PULL_USAGE.into(),
         blurb: "Copy a Neo4j/Aura subgraph into a database",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&[
             "--from",
             "--query",
@@ -222,8 +227,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: push::PUSH_USAGE.into(),
         blurb: "Copy a database subgraph into Neo4j/Aura",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&[
             "-d",
             "--database",
@@ -256,8 +260,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: skill::SKILL_USAGE.into(),
         blurb: "Install, inspect, or remove the embedded agent skill bundle",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&["--agent", "--force"]),
         examples: &[(
             "Install the agent skill into every detected agent",
@@ -272,8 +275,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &["update"],
         usage: upgrade::UPGRADE_USAGE.into(),
         blurb: "Update the relate binary (alias: update)",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&["--yes", "--check"]),
         examples: &[(
             "See whether a newer release exists, without installing it",
@@ -288,8 +290,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: telemetry::TELEMETRY_USAGE.into(),
         blurb: "Manage anonymous usage metrics (on, off, status)",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&[]),
         examples: &[(
             "See whether anonymous usage metrics are on",
@@ -303,8 +304,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: feedback::FEEDBACK_USAGE.into(),
         blurb: "File a GitHub issue about CLI friction, or manage the agent grant (enable, disable)",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&["--category", "--expected", "--observed"]),
         examples: &[(
             "File a GitHub issue about CLI friction",
@@ -318,8 +318,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: agent_feedback::AGENT_FEEDBACK_USAGE.into(),
         blurb: "Send one consented feedback report (agent surface)",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         flags: Cow::Borrowed(&[
             "--category",
             "--expected",
@@ -342,8 +341,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: run::RUN_USAGE.into(),
         blurb: "Run an installed extension action into a store the host owns",
-        rejects_query: false,
-        post_verb_access: false,
+        riders: RiderPolicy::Accepted,
         // The verb's own flag vocabulary: the store flag every action's
         // grammar shares. The actions' own flags are manifest data —
         // each action's page and did-you-mean derive them per name.
@@ -361,8 +359,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: serve::serve_usage().into(),
         blurb: "Host the HTTP Query API and MCP surfaces on a database",
-        rejects_query: true,
-        post_verb_access: true,
+        riders: RiderPolicy::PostVerbAccess,
         flags: serve::serve_flags().into(),
         examples: &[(
             "Serve the HTTP Query API and MCP on one store",
@@ -377,8 +374,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: agent_context::AGENT_CONTEXT_USAGE.into(),
         blurb: "Print the compact agent briefing (commands, flags, exit codes)",
-        rejects_query: true,
-        post_verb_access: false,
+        riders: RiderPolicy::Refused,
         flags: Cow::Borrowed(&[]),
         examples: &[(
             "Show one command's flags and examples",
@@ -393,8 +389,7 @@ pub(crate) fn commands() -> &'static [CommandSpec] {
         aliases: &[],
         usage: extension::extension_usage().into(),
         blurb: "Scaffold, install, check, list, or remove command extensions",
-        rejects_query: true,
-        post_verb_access: false,
+        riders: RiderPolicy::Refused,
         flags: extension::extension_flags().into(),
         examples: extension::examples(),
         help: extension::extension_help,

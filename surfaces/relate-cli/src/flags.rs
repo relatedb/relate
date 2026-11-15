@@ -845,7 +845,9 @@ pub(crate) fn parse(args: &[String]) -> Flags {
             .is_some_and(LifecycleCommand::is_help_shaped))
     {
         if let Some(cmd) = &state.lifecycle {
-            if let Some((topic, msg)) = cmd.conflict_error(state.query.as_deref(), state.access) {
+            if let Some((topic, msg)) =
+                cmd.conflict_error(state.query.is_some(), state.access.is_some())
+            {
                 usage_error(HelpScope::Command(topic), &msg, None);
             }
         }

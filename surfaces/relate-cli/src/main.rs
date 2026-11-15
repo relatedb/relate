@@ -74,6 +74,7 @@ mod parse_error;
 // authority→host extraction and the loopback predicates every `http://` gate
 // states its policy in terms of.
 mod plaintext;
+mod platform;
 #[cfg(feature = "pull")]
 mod pull_cmd;
 #[cfg(feature = "push")]

@@ -96,7 +96,8 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// per-platform extension tarball rows (ADR-0431 §1) speak the same
 /// pair, so the Rust→channel mapping is one table here, not one per
 /// consumer (the os/arch picking the upgrade already does, generalized
-/// to the extension assets).
+/// to the extension assets). The words come from `crate::platform`, the
+/// vocabulary the feedback report shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Platform {
     /// The channel's os name (`darwin`, `linux`).
@@ -113,25 +114,15 @@ pub(crate) struct Platform {
 /// platform and the package). Pure over the given pair, so the table is
 /// unit-testable from any host.
 pub(crate) fn platform_for(os: &str, arch: &str) -> Option<Platform> {
-    match (os, arch) {
-        ("macos", "x86_64") => Some(Platform {
-            os: "darwin",
-            arch: "amd64",
-        }),
-        ("macos", "aarch64") => Some(Platform {
-            os: "darwin",
-            arch: "arm64",
-        }),
-        ("linux", "x86_64") => Some(Platform {
-            os: "linux",
-            arch: "amd64",
-        }),
-        ("linux", "aarch64") => Some(Platform {
-            os: "linux",
-            arch: "arm64",
-        }),
-        _ => None,
+    // The channel's restriction (macOS and Linux only) over the shared
+    // vocabulary tables: the words are `platform`'s, the pair is ours.
+    if !matches!(os, "macos" | "linux") {
+        return None;
     }
+    Some(Platform {
+        os: crate::platform::os_word(os)?,
+        arch: crate::platform::arch_word(arch)?,
+    })
 }
 
 /// The host's own platform in the channel vocabulary, or `None` — the

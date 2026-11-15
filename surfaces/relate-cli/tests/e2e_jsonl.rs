@@ -12,44 +12,33 @@ mod support;
 
 use support::{run_cli, CliRunOptions as Opts};
 
-#[test]
-fn test_single_query() {
-    // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
-    let (status, stdout, stderr) = run_cli(Opts::new(&["RETURN 42 AS answer;"]));
-    assert!(status.success(), "single query failed: {stderr}");
-    // The jsonl stream is pure rows (ADR-0581): the row line is the whole
-    // stream — the terminal timing line is the `--timings` opt-in.
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "pure rows, no extra line: {stdout}");
-    assert_eq!(
-        lines[0], r#"{"answer":42}"#,
-        "piped one-shot should default to JSONL: {stdout}"
-    );
-}
-
-#[test]
-fn test_single_query_arithmetic() {
-    // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
-    let (status, stdout, stderr) = run_cli(Opts::new(&["RETURN 1 + 1 AS sum;"]));
-    assert!(status.success(), "arithmetic query failed: {stderr}");
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "pure rows, no extra line: {stdout}");
-    assert_eq!(
-        lines[0], r#"{"sum":2}"#,
-        "piped one-shot should default to JSONL: {stdout}"
-    );
-}
-
+/// One row, one JSONL line: the piped-default contract (ADR-0107) over the
+/// three one-shot spellings — a bare statement, an arithmetic statement, and
+/// `-c` — differing only in the arguments and the expected row.
 #[test]
 fn test_piped_default_is_jsonl() {
-    let (status, stdout, stderr) = run_cli(Opts::new(&["-c", "RETURN 1 AS n"]));
-    assert!(status.success(), "piped query failed: {stderr}");
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "pure rows, no extra line: {stdout}");
-    assert_eq!(
-        lines[0], r#"{"n":1}"#,
-        "piped stdout must default to JSONL: {stdout}"
-    );
+    let cases: [(&[&str], &str); 3] = [
+        (&["RETURN 42 AS answer;"], r#"{"answer":42}"#),
+        (&["RETURN 1 + 1 AS sum;"], r#"{"sum":2}"#),
+        (&["-c", "RETURN 1 AS n"], r#"{"n":1}"#),
+    ];
+    for (args, expected) in cases {
+        // Piped stdout (not a TTY) defaults to JSONL (ADR-0107).
+        let (status, stdout, stderr) = run_cli(Opts::new(args));
+        assert!(status.success(), "{args:?} failed: {stderr}");
+        // The jsonl stream is pure rows (ADR-0581): the row line is the
+        // whole stream — the terminal timing line is the `--timings` opt-in.
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "{args:?}: pure rows, no extra line: {stdout}"
+        );
+        assert_eq!(
+            lines[0], expected,
+            "{args:?}: piped stdout must default to JSONL: {stdout}"
+        );
+    }
 }
 
 #[test]

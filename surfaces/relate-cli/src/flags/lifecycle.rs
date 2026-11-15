@@ -1,7 +1,7 @@
 //! Lifecycle-verb parsing (ADR-0069). `query` stays in the session parser;
 //! every other first-positional command word is parsed here.
 
-use crate::help::HelpTopic;
+use crate::help::{HelpTopic, RiderPolicy};
 // The direct `usage_error` sites in this module are the pull/push
 // `--namespace` refusals; every other exit goes through
 // `command_usage_error`, which needs no `HelpScope` of its own.
@@ -203,54 +203,54 @@ impl LifecycleCommand {
     /// a query or a pre-verb access flag (`--read-only`, ADR-0480's one
     /// spelling) riding a lifecycle command line, where the command,
     /// query, and access slot are all final. The canonical policy
-    /// statement is the `CommandSpec` descriptor row (`post_verb_access`,
-    /// `rejects_query`); this decision only reads it: a `post_verb_access`
-    /// row answers a pre-verb sighting with the command's own message
-    /// naming the post-verb spelling (from parse_error's one `ACCESS_FLAG`
-    /// fact — no message here hand-types it), a `rejects_query` row
+    /// statement is the `CommandSpec` descriptor row's [`RiderPolicy`];
+    /// this decision only matches it: a `PostVerbAccess` row answers a
+    /// pre-verb sighting with the command's own message naming the
+    /// post-verb spelling (from parse_error's one `ACCESS_FLAG` fact — no
+    /// message here hand-types it), a `Refused` or `PostVerbAccess` row
     /// answers a query or any access flag with the shared message, and
     /// both riders are only meaningful to a query run — a command like
     /// `clone`, which writes, must not silently drop the user's read-only
-    /// fence. `access` is the sighting slot itself (`None` = no flag), so
-    /// no caller resolves a default. `None` for a clean combination, a
-    /// command that runs the query engine itself, and `Help`, which wins
-    /// before the check. Pure on its inputs so the decision is
-    /// unit-tested at this level; the end-to-end exit-2 pins are the
-    /// e2e suite's.
+    /// fence. Only the supplied-ness of each rider is a fact the decision
+    /// consumes — the access mode belongs to the open-time resolution
+    /// (`parse_error::resolve_access`), the query text to the run. `None`
+    /// for a clean combination, a command that runs the query engine
+    /// itself, and `Help`, which wins before the check. Pure on its
+    /// inputs so the decision is unit-tested at this level; the
+    /// end-to-end exit-2 pins are the e2e suite's.
     pub(crate) fn conflict_error(
         &self,
-        query: Option<&str>,
-        access: Option<relate::OpenMode>,
+        query_supplied: bool,
+        pre_verb_access: bool,
     ) -> Option<(HelpTopic, String)> {
         let topic = self.command_topic()?;
         let spec = topic.spec();
-        // The one rider predicate: a pre-verb access sighting. The slot's
-        // only writer parks a read-only freshness, so supplied-ness is the
-        // whole fact here — the mode belongs to the open-time resolution
-        // (`parse_error::resolve_access`), not to this decision.
-        let pre_verb_sighting = access.is_some();
         let flag = crate::parse_error::ACCESS_FLAG;
-        // The post-verb half first — a plain early return, so the
-        // precedence is structural, not call order.
-        if spec.post_verb_access && pre_verb_sighting {
-            return Some((
-                topic,
-                format!(
-                    "{} takes {flag} after the verb, not before it (relate {} {flag} …)",
-                    spec.word, spec.word
-                ),
-            ));
-        }
-        if spec.rejects_query && (query.is_some() || pre_verb_sighting) {
-            return Some((
+        let shared_refusal = || {
+            Some((
                 topic,
                 format!(
                     "{} cannot be combined with a query or an access flag ({flag})",
                     spec.word
                 ),
-            ));
+            ))
+        };
+        match spec.riders {
+            RiderPolicy::Accepted => None,
+            RiderPolicy::Refused if query_supplied || pre_verb_access => shared_refusal(),
+            RiderPolicy::Refused => None,
+            // The redirect sits above the shared refusal, so the
+            // precedence is the arm's structure, not call order.
+            RiderPolicy::PostVerbAccess if pre_verb_access => Some((
+                topic,
+                format!(
+                    "{} takes {flag} after the verb, not before it (relate {} {flag} …)",
+                    spec.word, spec.word
+                ),
+            )),
+            RiderPolicy::PostVerbAccess if query_supplied => shared_refusal(),
+            RiderPolicy::PostVerbAccess => None,
         }
-        None
     }
 }
 

@@ -78,50 +78,53 @@ fn run_inner(
             println!("{}", telemetry.effective_state().status_line());
             0
         }
-        TelemetryAction::On => persist(dir, true),
+        TelemetryAction::On => persist(dir, true).err().unwrap_or(0),
         TelemetryAction::Off => {
             // One ordered transition (ADR-0545 §5): disarm the run's
             // pipeline first — the drain starts at the first recorded
             // event and this command records none from here on, so no
             // delivery is ever started and the exit writes no spool
             // file of its own — then persist the off, then clear the
-            // pending spool. `persist` owns the unresolved-dir error,
-            // and its success implies the dir resolved.
+            // pending spool. `persist` owns the unresolved-dir error and
+            // hands back the resolved dir on success.
             telemetry.disarm();
-            let code = persist(dir, false);
-            if code == 0 {
-                let dir = dir.expect("persist returns 0 only with a resolved dir");
-                crate::telemetry::spool::clear(dir);
+            match persist(dir, false) {
+                Ok(dir) => {
+                    crate::telemetry::spool::clear(dir);
+                    0
+                }
+                Err(code) => code,
             }
-            code
         }
     }
 }
 
-/// Persist the `telemetry` key and print a short confirmation.
-fn persist(dir: Option<&Path>, enabled: bool) -> i32 {
+/// Persist the `telemetry` key and print a short confirmation. `Ok` is the
+/// resolved config dir the key was written under; `Err` is the exit code
+/// of the failure already reported.
+fn persist(dir: Option<&Path>, enabled: bool) -> Result<&Path, i32> {
     let Some(dir) = dir else {
-        return crate::config_dir::no_base("telemetry");
+        return Err(crate::config_dir::no_base("telemetry"));
     };
     if let Err(e) = state::save_config_telemetry(dir, enabled) {
         crate::print_error(format!(
             "Error: telemetry: writing {}: {e}",
             state::config_path(dir).display()
         ));
-        return 1;
+        return Err(1);
     }
     println!(
         "telemetry {} ({})",
         if enabled { "enabled" } else { "disabled" },
         state::config_path(dir).display()
     );
-    0
+    Ok(dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relate_feedback::consent::EffectiveState;
+    use relate_feedback::opt_out::EffectiveState;
     use relate_feedback::state::ConfigTelemetry;
 
     /// A handle carrying exactly the effective state its test asserts —

@@ -352,6 +352,46 @@ mod render_failure_tests {
         );
     }
 
+    /// One run against the supplied writers: the statement's result, what it
+    /// wrote to `out`, and what it wrote to the diagnostic writer.
+    fn run_with_out(
+        conn: &mut relate::Connection,
+        statement: &str,
+        opts: RenderOpts,
+        out: &mut dyn Write,
+    ) -> (StatementRun, String) {
+        let formatter = Formatter::new(Mode::Jsonl);
+        let mut diagnostics = Vec::new();
+        let run = exec_relate_query_to(
+            conn,
+            statement,
+            &std::collections::BTreeMap::new(),
+            &formatter,
+            opts,
+            out,
+            &mut diagnostics,
+        );
+        let diagnostics = String::from_utf8(diagnostics).expect("diagnostics are text");
+        (run, diagnostics)
+    }
+
+    /// [`run_with_out`] over a captured output writer: `(run, out, diagnostics)`.
+    fn run_captured(
+        conn: &mut relate::Connection,
+        statement: &str,
+        opts: RenderOpts,
+    ) -> (StatementRun, String, String) {
+        let mut out = Vec::new();
+        let (run, diagnostics) = run_with_out(conn, statement, opts, &mut out);
+        let out = String::from_utf8(out).expect("output is text");
+        (run, out, diagnostics)
+    }
+
+    /// The ADR-0194 envelope a run wrote to its output writer.
+    fn envelope_of(out: &str) -> serde_json::Value {
+        serde_json::from_str(out.trim()).expect("the envelope is JSON")
+    }
+
     /// Every report on the run and render path goes to the writer the caller
     /// supplies, so the test captures them all instead of leaking them to the
     /// process streams: the cap warning and the render error, the timeout line
@@ -361,29 +401,21 @@ mod render_failure_tests {
     fn every_run_report_reaches_the_supplied_writers() {
         let db = relate::Database::open(":memory:").unwrap();
         let mut conn = db.connect_typed(relate::Namespace::Neo4j).unwrap();
-        let params = std::collections::BTreeMap::new();
 
         // A capped statement whose output writer is closed: the cap warning
         // and the render error both land on the diagnostic writer, and the
         // applied effect survives the failure.
-        let formatter = Formatter::new(Mode::Jsonl);
-        let mut out = ClosedStdout;
-        let mut diagnostics = Vec::new();
-        let run = exec_relate_query_to(
+        let (run, diagnostics) = run_with_out(
             &mut conn,
             "UNWIND [1, 2] AS x CREATE (:Capped) RETURN x",
-            &params,
-            &formatter,
             RenderOpts {
                 max_rows: Some(1),
                 ..RenderOpts::default()
             },
-            &mut out,
-            &mut diagnostics,
+            &mut ClosedStdout,
         );
         assert_eq!(run.code, 1, "the render failure is the run's code");
         assert_eq!(run.effect, StatementEffect::Applied);
-        let diagnostics = String::from_utf8(diagnostics).expect("diagnostics are text");
         let lines: Vec<&str> = diagnostics.lines().collect();
         assert_eq!(
             lines.first().copied(),
@@ -398,80 +430,47 @@ mod render_failure_tests {
 
         // A query error: the human line on the diagnostic writer, the ADR-0194
         // envelope on the output writer.
-        let formatter = Formatter::new(Mode::Jsonl);
-        let mut out = Vec::new();
-        let mut diagnostics = Vec::new();
-        let run = exec_relate_query_to(
-            &mut conn,
-            "RETRN 1",
-            &params,
-            &formatter,
-            RenderOpts::default(),
-            &mut out,
-            &mut diagnostics,
-        );
+        let (run, out, diagnostics) = run_captured(&mut conn, "RETRN 1", RenderOpts::default());
         assert_eq!(run.code, 6, "a rejected statement keeps its exit class");
-        let diagnostics = String::from_utf8(diagnostics).expect("diagnostics are text");
         assert!(
             diagnostics.contains("syntax error"),
             "the human line is captured: {diagnostics:?}"
         );
-        let out = String::from_utf8(out).expect("output is text");
-        let envelope: serde_json::Value =
-            serde_json::from_str(out.trim()).expect("the envelope is JSON");
         assert_eq!(
-            envelope["error"]["code"], "validation_error",
+            envelope_of(&out)["error"]["code"],
+            "validation_error",
             "the envelope is captured on the output writer: {out:?}"
         );
 
         // A timeout: the ADR-0241 line on the diagnostic writer and its
         // envelope on the output writer. The cartesian product hits a
         // cooperative cancel point constantly, so a 5ms bound is decisive.
-        let formatter = Formatter::new(Mode::Jsonl);
-        let mut out = Vec::new();
-        let mut diagnostics = Vec::new();
-        let run = exec_relate_query_to(
+        let (run, out, diagnostics) = run_captured(
             &mut conn,
             "UNWIND range(1, 400000) AS a UNWIND range(1, 400000) AS b RETURN count(*)",
-            &params,
-            &formatter,
             RenderOpts {
                 timeout: Some(std::time::Duration::from_millis(5)),
                 ..RenderOpts::default()
             },
-            &mut out,
-            &mut diagnostics,
         );
         assert_eq!(run.code, 7, "a timed-out statement exits 7");
-        let diagnostics = String::from_utf8(diagnostics).expect("diagnostics are text");
         assert!(
             diagnostics.contains("query timed out after"),
             "the timeout line is captured: {diagnostics:?}"
         );
-        let out = String::from_utf8(out).expect("output is text");
-        let envelope: serde_json::Value =
-            serde_json::from_str(out.trim()).expect("the envelope is JSON");
-        assert_eq!(envelope["error"]["code"], "timeout", "{out:?}");
+        assert_eq!(envelope_of(&out)["error"]["code"], "timeout", "{out:?}");
 
         // The timer line: a successful run with `.timer` on writes it to the
         // output writer, and the silent diagnostic writer stays empty.
-        let formatter = Formatter::new(Mode::Jsonl);
-        let mut out = Vec::new();
-        let mut diagnostics = Vec::new();
-        let run = exec_relate_query_to(
+        let (run, out, diagnostics) = run_captured(
             &mut conn,
             "RETURN 1 AS n",
-            &params,
-            &formatter,
             RenderOpts {
                 timer: true,
                 ..RenderOpts::default()
             },
-            &mut out,
-            &mut diagnostics,
         );
         assert_eq!(run.code, 0, "the timed run succeeded");
-        let out = String::from_utf8(out).expect("output is text");
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
             lines.first().copied(),

@@ -168,7 +168,14 @@ fn test_single_statements_and_successful_runs_are_unchanged() {
         .filter(|line| !support::timing_terminal_line(line))
         .collect();
     assert_eq!(data_lines, ["{\"1\":1}", "{\"2\":2}"], "{stdout}");
-    assert_eq!(stdout.matches("\"timings\"").count(), 2, "{stdout}");
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| support::timing_terminal_line(line))
+            .count(),
+        2,
+        "{stdout}"
+    );
     assert!(stderr.is_empty(), "{stderr}");
 }
 

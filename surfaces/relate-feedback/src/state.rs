@@ -517,7 +517,7 @@ mod tests {
     /// which would re-enable telemetry.
     #[test]
     fn config_telemetry_read_distinguishes_missing_value_and_unreadable() {
-        use crate::consent;
+        use crate::opt_out;
         use crate::test_support::env_of;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -533,7 +533,7 @@ mod tests {
             let recorded = load_config_telemetry(&dir);
             assert_eq!(recorded, ConfigTelemetry::Unreadable, "{untrusted}");
             assert!(
-                !consent::resolve(&env_of(&[]), recorded).enabled(),
+                !opt_out::resolve(&env_of(&[]), recorded).enabled(),
                 "an untrusted telemetry value must not read as enabled: {untrusted}"
             );
         }

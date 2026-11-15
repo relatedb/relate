@@ -3,6 +3,7 @@
 
 use super::lifecycle::{help_or, COMMAND_WORDS};
 use super::*;
+use crate::help::RiderPolicy;
 
 fn clone_command() -> LifecycleCommand {
     LifecycleCommand::Clone {
@@ -37,13 +38,13 @@ fn serve_command() -> LifecycleCommand {
 fn clone_rejects_a_query_and_owns_its_verb() {
     let cmd = clone_command();
     // The descriptor row owns the policy (ADR-0306 §6): clone runs no
-    // query engine, so its row flags `rejects_query`.
-    assert!(HelpTopic::Clone.spec().rejects_query);
+    // query engine, so its row is `RiderPolicy::Refused`.
+    assert!(HelpTopic::Clone.spec().riders == RiderPolicy::Refused);
     assert_eq!(cmd.name(), "clone");
 }
 
 #[test]
-fn a_rejects_query_command_conflicts_with_a_query_or_any_access_flag() {
+fn a_refusing_command_conflicts_with_a_query_or_any_access_flag() {
     // The parse-tail conflict decision (ADR-0306 §6's shared check): a
     // command that runs no query engine refuses a query — the
     // pre-existing case — and a pre-verb access flag alike. A pre-verb
@@ -52,7 +53,7 @@ fn a_rejects_query_command_conflicts_with_a_query_or_any_access_flag() {
     let clone = clone_command();
     let conflict = "clone cannot be combined with a query or an access flag (--read-only)";
     assert_eq!(
-        clone.conflict_error(Some("RETURN 1"), None),
+        clone.conflict_error(true, false),
         Some((HelpTopic::Clone, conflict.to_string()))
     );
     for access in [
@@ -60,13 +61,13 @@ fn a_rejects_query_command_conflicts_with_a_query_or_any_access_flag() {
         Some(relate::OpenMode::Follow),
     ] {
         assert_eq!(
-            clone.conflict_error(None, access),
+            clone.conflict_error(false, access.is_some()),
             Some((HelpTopic::Clone, conflict.to_string())),
             "{access:?}"
         );
     }
     // A clean combination conflicts with nothing.
-    assert_eq!(clone.conflict_error(None, None), None);
+    assert_eq!(clone.conflict_error(false, false), None);
 }
 
 #[cfg(feature = "info")]
@@ -81,7 +82,7 @@ fn info_conflicts_with_a_preverb_access_flag() {
         },
     };
     assert_eq!(
-        cmd.conflict_error(None, Some(relate::OpenMode::Follow)),
+        cmd.conflict_error(false, true),
         Some((
             HelpTopic::Info,
             "info cannot be combined with a query or an access flag (--read-only)".to_string()
@@ -112,13 +113,13 @@ fn serve_rejects_a_preverb_access_flag_naming_the_postverb_spelling() {
         (Some("RETURN 1"), Some(relate::OpenMode::ReadOnly)),
     ] {
         assert_eq!(
-            serve.conflict_error(query, access),
+            serve.conflict_error(query.is_some(), access.is_some()),
             Some((HelpTopic::Serve, redirect.clone())),
             "{query:?} {access:?}"
         );
     }
     assert_eq!(
-        serve.conflict_error(Some("RETURN 1"), None),
+        serve.conflict_error(true, false),
         Some((
             HelpTopic::Serve,
             "serve cannot be combined with a query or an access flag (--read-only)".to_string()
@@ -127,7 +128,7 @@ fn serve_rejects_a_preverb_access_flag_naming_the_postverb_spelling() {
     // A clean serve conflicts with nothing; every other command's
     // pre-verb access flags stay the shared conflict's business (pinned
     // above, for clone and info).
-    assert_eq!(serve.conflict_error(None, None), None);
+    assert_eq!(serve.conflict_error(false, false), None);
 }
 
 fn argv(args: &[&str]) -> Vec<String> {
@@ -298,7 +299,7 @@ fn not_included_keeps_its_word_and_allows_a_query_run() {
     // NotIncluded runs no engine and answers no conflict (ADR-0306 §6's
     // decision consults the descriptor row, which a NotIncluded word has
     // none of).
-    assert_eq!(cmd.conflict_error(Some("RETURN 1"), None), None);
+    assert_eq!(cmd.conflict_error(true, false), None);
     assert_eq!(cmd.name(), "pull");
 }
 
@@ -311,7 +312,7 @@ fn info_rejects_a_query_and_owns_its_verb() {
             json: false,
         },
     };
-    assert!(HelpTopic::Info.spec().rejects_query);
+    assert!(HelpTopic::Info.spec().riders == RiderPolicy::Refused);
     assert_eq!(cmd.name(), "info");
 }
 
@@ -321,16 +322,13 @@ fn help_wins_over_the_query_conflict() {
         topic: HelpTopic::Clone,
     };
     assert_eq!(
-        cmd.conflict_error(Some("RETURN 1"), None),
+        cmd.conflict_error(true, false),
         None,
         "help must print before the query/access conflict"
     );
     // The decision agrees: even a query and an access flag together do
     // not conflict with help.
-    assert_eq!(
-        cmd.conflict_error(Some("RETURN 1"), Some(relate::OpenMode::Follow)),
-        None
-    );
+    assert_eq!(cmd.conflict_error(true, true), None);
     assert_eq!(cmd.name(), "clone");
 }
 

@@ -5,7 +5,7 @@
 //! - [`client`] is the one `/track` POST: the endpoint constant and its
 //!   allow-list, a short deadline, no retries, redirects never followed,
 //!   `ip=0`.
-//! - [`consent`] is the layered opt-out resolution (`DO_NOT_TRACK`, the
+//! - [`opt_out`] is the layered opt-out resolution (`DO_NOT_TRACK`, the
 //!   environment, the config key) and the deciding layer,
 //!   `relate telemetry status` reports.
 //! - [`state`] is the config-directory state files: the install ID, the
@@ -22,8 +22,8 @@
 
 pub mod authorization;
 pub mod client;
-pub mod consent;
 pub mod ids;
+pub mod opt_out;
 pub mod outcome;
 pub mod policy;
 pub(crate) mod receipt;

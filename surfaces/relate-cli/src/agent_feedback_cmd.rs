@@ -179,25 +179,18 @@ fn visible_commands() -> Vec<String> {
         .collect()
 }
 
-/// The report's `os` property: `linux`, `darwin` or `windows`; any other
-/// platform is omitted rather than guessed.
+/// The report's `os` property: `linux`, `darwin` or `windows` (the shared
+/// `platform` vocabulary); any other platform is omitted rather than
+/// guessed.
 fn os_label() -> Option<String> {
-    match std::env::consts::OS {
-        "linux" => Some("linux".to_string()),
-        "macos" => Some("darwin".to_string()),
-        "windows" => Some("windows".to_string()),
-        _ => None,
-    }
+    crate::platform::os_word(std::env::consts::OS).map(str::to_string)
 }
 
-/// The report's `os_arch` property: `arm64` or `amd64`; any other
-/// architecture is omitted rather than guessed.
+/// The report's `os_arch` property: `arm64` or `amd64` (the shared
+/// `platform` vocabulary); any other architecture is omitted rather than
+/// guessed.
 fn arch_label() -> Option<String> {
-    match std::env::consts::ARCH {
-        "aarch64" => Some("arm64".to_string()),
-        "x86_64" => Some("amd64".to_string()),
-        _ => None,
-    }
+    crate::platform::arch_word(std::env::consts::ARCH).map(str::to_string)
 }
 
 #[cfg(test)]

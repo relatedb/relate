@@ -72,7 +72,14 @@ const MAX_PENDING_FILES: usize = 64;
 /// This run's spool file path under `dir` (ADR-0545 §1): one per process,
 /// so concurrent runs never share a target.
 pub(crate) fn spool_file(dir: &Path) -> PathBuf {
-    dir.join(format!("{SPOOL_PREFIX}{}{EXTENSION}", uuid_v4()))
+    dir.join(file_name(SPOOL_PREFIX, &uuid_v4()))
+}
+
+/// The name grammar both file kinds share: `<prefix><id><extension>` —
+/// the one producer, so a spool name and a claim name cannot drift apart
+/// from what [`is_telemetry_name`] sweeps.
+fn file_name(prefix: &str, id: &str) -> String {
+    format!("{prefix}{id}{EXTENSION}")
 }
 
 /// Write `events` to the run's fresh `file` as one JSON line each. The
@@ -144,7 +151,7 @@ pub(crate) fn claim_all(dir: &Path) -> Vec<Claim> {
         if taken == MAX_CLAIMS_PER_SWEEP {
             break;
         }
-        let claim_path = dir.join(format!("{CLAIM_PREFIX}{}{EXTENSION}", uuid_v4()));
+        let claim_path = dir.join(file_name(CLAIM_PREFIX, &uuid_v4()));
         if fs::rename(path, &claim_path).is_err() {
             continue;
         }
@@ -326,7 +333,7 @@ mod tests {
         }
         // A leftover claim from a killed drain is swept like a spool file.
         fs::write(
-            dir.path().join(format!("{CLAIM_PREFIX}old{EXTENSION}")),
+            dir.path().join(file_name(CLAIM_PREFIX, "old")),
             "{\"event\":\"e3\"}\n",
         )
         .expect("seed claim");
@@ -446,7 +453,7 @@ mod tests {
         let dir = tmp();
         fs::write(spool_file(dir.path()), "{\"event\":\"e\"}\n").expect("spool");
         fs::write(
-            dir.path().join(format!("{CLAIM_PREFIX}stale{EXTENSION}")),
+            dir.path().join(file_name(CLAIM_PREFIX, "stale")),
             "{\"event\":\"e\"}\n",
         )
         .expect("claim");

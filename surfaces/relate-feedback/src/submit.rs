@@ -14,8 +14,8 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Serializer};
 
 use crate::authorization::{Authorization, FeedbackConsent};
-use crate::consent::{self, EffectiveState};
 use crate::ids;
+use crate::opt_out::{self, EffectiveState};
 use crate::outcome::{Outcome, Reason};
 use crate::policy;
 use crate::receipt::{self, Receipt};
@@ -142,7 +142,7 @@ pub fn submit(request: &Request<'_>, sender: &dyn Sender) -> OutcomeDoc {
     let started = Instant::now();
     // Each disabled layer is its own decided state, so no arm folds two
     // layers into one reason.
-    match consent::resolve(request.env, request.config_telemetry) {
+    match opt_out::resolve(request.env, request.config_telemetry) {
         EffectiveState::DoNotTrack => return skipped(Reason::DoNotTrack, started),
         EffectiveState::Env(false) | EffectiveState::ConfigFile(false) => {
             return skipped(Reason::TelemetryOff, started)

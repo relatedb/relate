@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use relate_feedback::authorization::{Authorization, FeedbackConsent, DEFAULT_AUTHORIZATION_DAYS};
-use relate_feedback::consent;
+use relate_feedback::opt_out;
 use relate_feedback::report::Category;
 use relate_feedback::sender;
 use relate_feedback::state;
@@ -347,7 +347,9 @@ fn enable(dir: &Path, env: &dyn Fn(&str) -> Option<String>, stdin_is_tty: bool) 
             ))
         }
     };
-    let mut record = FeedbackConsent::load(dir);
+    // A grant overwrites every field of the record, so it starts from the
+    // empty one rather than loading a record it would replace.
+    let mut record = FeedbackConsent::default();
     let until = record.authorize(Utc::now(), endpoint.clone());
     // Persist first, then confirm: a confirmation printed before the write
     // would tell the person a grant landed that did not. `disable` reads the
@@ -404,7 +406,7 @@ fn state_with(
             return code;
         }
     }
-    let telemetry = consent::resolve(env, state::load_config_telemetry(dir));
+    let telemetry = opt_out::resolve(env, state::load_config_telemetry(dir));
     println!("{}", state_line(telemetry, &record, Utc::now()));
     println!(
         "{}",
@@ -461,7 +463,7 @@ fn ask_first_run(
 /// The standing state line: the telemetry opt-out layer first (it suppresses
 /// every agent send), then the grant's window and destination.
 fn state_line(
-    telemetry: consent::EffectiveState,
+    telemetry: opt_out::EffectiveState,
     record: &FeedbackConsent,
     now: DateTime<Utc>,
 ) -> String {
@@ -898,7 +900,7 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-11-12T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let enabled = consent::EffectiveState::Default;
+        let enabled = opt_out::EffectiveState::Default;
         assert_eq!(
             state_line(enabled, &authorized("2026-12-12T12:00:00Z"), now),
             "feedback enabled until 2026-12-12T12:00:00Z \
@@ -921,9 +923,9 @@ mod tests {
             "feedback disabled (authorization expired)"
         );
         for disabled in [
-            consent::EffectiveState::DoNotTrack,
-            consent::EffectiveState::Env(false),
-            consent::EffectiveState::ConfigFile(false),
+            opt_out::EffectiveState::DoNotTrack,
+            opt_out::EffectiveState::Env(false),
+            opt_out::EffectiveState::ConfigFile(false),
         ] {
             assert_eq!(
                 state_line(disabled, &authorized("2026-12-12T12:00:00Z"), now),
