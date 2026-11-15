@@ -16,7 +16,7 @@ use crate::exec::test_support::{
 };
 use crate::graph::Graph;
 
-use super::anchor::{with_list_limit, AnchorArm};
+use super::anchor::{with_list_limit, without_far_set, AnchorArm};
 use super::fixtures::{counting, gpm, run, sorted, DirectionExt, Selector, DIRS, SELECTORS};
 
 /// Corpus seed; a failure names it with the graph index.
@@ -83,7 +83,7 @@ impl Shape {
 }
 
 #[rustfmt::skip]
-const SHAPES: [Shape; 11] = [
+const SHAPES: [Shape; 12] = [
     // 1 x 1: the plain pair.
     Shape { arm: AnchorArm::Pair, name: "1x1", cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // 4 x 1: several starts, one end, product within the bound.
@@ -99,6 +99,10 @@ const SHAPES: [Shape; 11] = [
     // 1 x 20: the end list is past the bound and never built — the fan
     // from the one start.
     Shape { arm: AnchorArm::FanForward, name: "fan 1x20", cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    // 14 x 13: both lists listed in full (each within the probe bound), the
+    // product past the pair bound and the end the shorter — the fan from the
+    // end with the start list as its far set.
+    Shape { arm: AnchorArm::FanBackward, name: "backward listed", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 3, rels: 120 },
     // 20 x 20: both lists past the bound — each built in full for the
     // shorter-side choice.
     Shape { arm: AnchorArm::FanForward, name: "fan 20x20", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
@@ -395,4 +399,40 @@ fn a_negated_label_endpoint_is_never_refused_by_the_listing_limit() {
         .expect("a superset list must not trip the listing refusal")
         .rows;
     assert_eq!(sorted(rows), gpm(&g, q));
+}
+
+/// The far-side bitset changes cost, never answers: every fan shape whose
+/// far side is listed returns the same rows with the set on and off, and
+/// never follows more relationships with it.
+#[test]
+fn the_far_set_changes_cost_not_answers() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x1698);
+    let mut saved_any = false;
+    for shape in SHAPES
+        .iter()
+        .filter(|s| matches!(s.name, "6x6" | "backward listed" | "fan 20x20"))
+    {
+        let mut saved = false;
+        for _ in 0..3 {
+            let g = graph(&mut rng, shape.n, shape.groups, shape.rels);
+            for sel in SELECTORS {
+                for dir in DIRS {
+                    let q = query(shape, sel, dir);
+                    let (on, on_counts) = run(&g, &q);
+                    let (off, off_counts) = without_far_set(|| run(&g, &q));
+                    assert_eq!(sorted(on), sorted(off), "far set changed the answer of {q}");
+                    assert!(on_counts.expands <= off_counts.expands, "{q}");
+                    saved |= on_counts.expands < off_counts.expands;
+                }
+            }
+        }
+        // The backward listed fan (far = the start list) must itself save.
+        assert!(
+            saved || shape.arm != AnchorArm::FanBackward,
+            "{}: the early stop never saved an expansion",
+            shape.label()
+        );
+        saved_any |= saved;
+    }
+    assert!(saved_any, "the early stop never saved an expansion");
 }

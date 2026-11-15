@@ -18,6 +18,7 @@ use crate::shortest::{path_from_trail, Search};
 
 use super::super::sink::MatchedSink;
 use super::anchor::{Anchor, Way};
+use super::far_set::FarSet;
 use super::filters::{PathFilter, RouteFilters};
 use super::guard::Shape;
 use super::reach_cache::ReachCache;
@@ -142,8 +143,8 @@ impl<'a> Route<'a> {
                     self.each_side(&ends, |e| self.pair_partition(s, e, out))
                 })?;
             }
-            Anchor::Fan { origins, way } => {
-                self.each_side(&origins, |origin| self.fan(origin, way, out))?;
+            Anchor::Fan { origins, way, far } => {
+                self.each_side(&origins, |origin| self.fan(origin, way, far.as_ref(), out))?;
             }
             Anchor::Loop => {
                 self.each_start(|s| self.pair_partition(s, s, out))?;
@@ -245,7 +246,13 @@ impl<'a> Route<'a> {
     /// origin itself, is one partition — emitted as its layer of the search
     /// completes (ADR-0555), so a halted consumer stops the search before
     /// its deeper layers are expanded.
-    fn fan(&self, origin: NodeId, way: Way, out: &mut MatchedSink<'_, '_>) -> Result<()> {
+    fn fan(
+        &self,
+        origin: NodeId,
+        way: Way,
+        far: Option<&FarSet>,
+        out: &mut MatchedSink<'_, '_>,
+    ) -> Result<()> {
         // Forward, the origin is the start, bound once; backward, each
         // reached node is a start, bound in its own partition.
         let origin_row = match way {
@@ -255,8 +262,16 @@ impl<'a> Route<'a> {
             },
             Way::Backward => None,
         };
+        // The far nodes reached so far, for the fan's early stop.
+        let settled = Cell::new(0);
         way.search(&self.search).dag_layers(origin, |layer| {
-            self.fan_layer(&layer, origin, way, origin_row.as_ref(), out)
+            self.fan_layer(
+                &layer,
+                origin,
+                way,
+                (origin_row.as_ref(), far, &settled),
+                out,
+            )
         })?;
         Ok(())
     }
@@ -270,12 +285,20 @@ impl<'a> Route<'a> {
         layer: &Layer<'_>,
         origin: NodeId,
         way: Way,
-        origin_row: Option<&Row>,
+        (origin_row, far_set, settled): (Option<&Row>, Option<&FarSet>, &Cell<usize>),
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<bool> {
-        // The layer rides the route's one per-candidate loop.
+        // The layer rides the route's one per-candidate loop. A listed far
+        // side is one bit test per reached node: a node outside it fails
+        // the end pattern, so it is no partition.
         let before = out.folded();
         self.each_of(layer.nodes(), |far| {
+            if let Some(set) = far_set {
+                if !set.contains(far) {
+                    return Ok(());
+                }
+                settled.set(settled.get() + 1);
+            }
             self.fan_partition(layer, origin, far, way, origin_row, out)
         })?;
         // The origin's own layer (depth 0) carries its closed trails or
@@ -287,7 +310,10 @@ impl<'a> Route<'a> {
         // routes only.
         let productive =
             self.filters.path.is_none() && layer.nodes() != [origin] && out.folded() > before;
-        Ok(self.halted() || (self.shape.spelling.first_layer_only() && productive))
+        // Every far node reached and emitted: no deeper layer holds a
+        // partition.
+        let far_done = far_set.is_some_and(|set| settled.get() == set.len());
+        Ok(self.halted() || far_done || (self.shape.spelling.first_layer_only() && productive))
     }
 
     /// The partition of `far`, a node a fan search reached from `origin`:

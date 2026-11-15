@@ -22,6 +22,7 @@ use crate::exec::pushdown::Residual;
 use crate::row::Row;
 
 mod anchor;
+mod far_set;
 mod filters;
 mod guard;
 mod reach_cache;

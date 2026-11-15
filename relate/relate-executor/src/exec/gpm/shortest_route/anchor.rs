@@ -18,6 +18,7 @@ use crate::pattern_walk::{
 };
 use crate::shortest::Search;
 
+use super::far_set::FarSet;
 use super::route::Route;
 
 /// The pair product's candidate bound: past it, the product's
@@ -50,6 +51,28 @@ fn list_limit() -> usize {
 #[cfg(test)]
 pub(super) fn with_list_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
     super::with_override(&LIST_LIMIT, limit, f)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAR_SET_OFF: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The far-side set of a listed side, `None` for a length-only side or when
+/// the test override turns the far set off (the per-reached-node end test
+/// is the oracle).
+fn far_set(side: &Side) -> Option<FarSet> {
+    #[cfg(test)]
+    if FAR_SET_OFF.with(Cell::get) {
+        return None;
+    }
+    side.ids().and_then(FarSet::of)
+}
+
+/// Run `f` with the far set disabled on this thread.
+#[cfg(test)]
+pub(super) fn without_far_set<T>(f: impl FnOnce() -> T) -> T {
+    crate::exec::test_support::with_flag_disabled(&FAR_SET_OFF, f)
 }
 
 /// Which arm of [`Route::anchor`] answered one route run — the value the
@@ -91,7 +114,13 @@ pub(super) enum Anchor {
     /// One fan search per origin candidate, along `way` — the origins
     /// (a bound node or a resolved candidate list) come from `anchor`,
     /// never re-materialized.
-    Fan { origins: Side, way: Way },
+    Fan {
+        origins: Side,
+        way: Way,
+        /// The listed side the fan does not drive from; `None` when that
+        /// side is a pattern or length-only, tested per reached node.
+        far: Option<FarSet>,
+    },
     /// One unbound variable at both ends (`(a)-[*]-(a)`): the (s, s)
     /// partition of every start candidate.
     Loop,
@@ -135,6 +164,15 @@ impl Side {
             Side::One(_) => 1,
             Side::Many(ids) => ids.len(),
             Side::Over => SEEK_PAIR_LIMIT + 1,
+        }
+    }
+
+    /// The candidates, in list order; `None` for a length-only side.
+    fn ids(&self) -> Option<&[NodeId]> {
+        match self {
+            Side::One(id) => Some(std::slice::from_ref(id)),
+            Side::Many(ids) => Some(ids),
+            Side::Over => None,
         }
     }
 
@@ -206,6 +244,7 @@ impl Route<'_> {
             (Some(starts), None) if !starts.is_over() => Anchor::Fan {
                 origins: starts,
                 way: Way::Forward,
+                far: None,
             },
             // The end side drives only when its list is bounded: one
             // full-depth fan per property match must not beat the start
@@ -215,10 +254,12 @@ impl Route<'_> {
             (None, Some(ends)) if !ends.is_over() => Anchor::Fan {
                 origins: ends,
                 way: Way::Backward,
+                far: None,
             },
             _ => Anchor::Fan {
                 origins: Side::Many(self.start_candidates()?),
                 way: Way::Forward,
+                far: None,
             },
         })
     }
@@ -240,11 +281,13 @@ impl Route<'_> {
             Anchor::Pair { starts, ends }
         } else if e < s {
             Anchor::Fan {
+                far: far_set(&starts),
                 origins: ends,
                 way: Way::Backward,
             }
         } else {
             Anchor::Fan {
+                far: far_set(&ends),
                 origins: starts,
                 way: Way::Forward,
             }
