@@ -56,13 +56,18 @@ extension Database {
     /// first unlock.
     ///
     /// Works for both store forms: a single `.rl` file and a store
-    /// directory. A seed that is a symbolic link is followed. Throws the
-    /// file system's own error if the seed is missing or the copy fails.
+    /// directory. A seed that is a symbolic link is followed. Both URLs
+    /// follow the rule of ``init(url:readOnly:options:)``: a URL that is
+    /// not a local file URL is ``RelateError/invalidParameter(_:)``. Throws
+    /// the file system's own error if the seed is missing or the copy
+    /// fails.
     @discardableResult
     public static func provision(
         at target: URL, from seed: URL,
         protection: FileProtectionType? = .completeUntilFirstUserAuthentication
     ) throws -> Bool {
+        try requireLocalFile(target)
+        try requireLocalFile(seed)
         let files = FileManager.default
         let copy = ProvisioningCopy(target: target)
         // Before the early return, so a leftover is cleaned up on a later
@@ -89,16 +94,25 @@ extension Database {
     /// The copy and, for a store directory, everything in it, each with
     /// whether it is a directory.
     private static func items(of root: URL) throws -> [(url: URL, isDirectory: Bool)] {
-        func isDirectory(_ url: URL) throws -> Bool {
-            try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
-        }
-        var items = [(url: root, isDirectory: try isDirectory(root))]
-        guard items[0].isDirectory else { return items }
+        let rootIsDirectory = try isDirectory(root)
+        var items = [(url: root, isDirectory: rootIsDirectory)]
+        guard rootIsDirectory else { return items }
         for path in try FileManager.default.subpathsOfDirectory(atPath: root.path) {
             let url = root.appendingPathComponent(path)
             items.append((url, try isDirectory(url)))
         }
         return items
+    }
+
+    /// Whether the item at `url` is a directory. An item that cannot be
+    /// found is an error: it is never taken for a file, since the answer
+    /// decides the permissions the item is given.
+    static func isDirectory(_ url: URL) throws -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
+        }
+        return isDirectory.boolValue
     }
 
     /// Owner-only, writable permissions on the copy and everything in it

@@ -105,27 +105,33 @@ public struct Migrator: Sendable {
     @discardableResult
     public func migrate(_ connection: Connection) throws -> Int {
         try connection.database.requireWritable(for: "migrate")
-        try checkStepOrder()
-        var version = try currentVersion(connection)
-        guard version <= latestVersion else {
-            throw RelateError.misuse(
-                "the store is at schema version \(version), newer than this build's \(latestVersion)")
-        }
-        for statement in schema { try connection.run(statement) }
-        for step in steps where step.version > version {
-            try connection.transaction { tx in
-                try step.body(tx)
-                try tx.run("MERGE \(versionNode) SET m.version = \(step.version)")
-            }
-            version = step.version
-        }
-        return version
+        return try run(on: connection)
     }
 
     /// Migrates through the database's writer connection, off the caller's
     /// thread.
     @discardableResult
     public func migrate(_ database: Database) async throws -> Int {
-        try await database.onWriter("migrate") { connection in try migrate(connection) }
+        // The hop onto the writer refuses a read-only database itself.
+        try await database.onWriter("migrate") { connection in try run(on: connection) }
+    }
+
+    /// The migration itself, on a connection already known to be writable.
+    private func run(on connection: Connection) throws -> Int {
+        try checkStepOrder()
+        let version = try currentVersion(connection)
+        guard version <= latestVersion else {
+            throw RelateError.misuse(
+                "the store is at schema version \(version), newer than this build's \(latestVersion)")
+        }
+        for statement in schema { try connection.run(statement) }
+        let pending = steps.filter { $0.version > version }
+        for step in pending {
+            try connection.transaction { tx in
+                try step.body(tx)
+                try tx.run("MERGE \(versionNode) SET m.version = \(step.version)")
+            }
+        }
+        return pending.last?.version ?? version
     }
 }

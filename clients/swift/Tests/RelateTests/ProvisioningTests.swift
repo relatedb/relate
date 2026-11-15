@@ -48,8 +48,7 @@ import Testing
             try Database(url: target).connect().query("CREATE (:Book {i: 4})")
             // The seed is untouched and no temporary copy remains.
             #expect(try permissions(seed) == 0o444)
-            let contents = try FileManager.default.contentsOfDirectory(atPath: target.deletingLastPathComponent().path)
-            #expect(contents == ["library.rl"])
+            #expect(try names(in: target.deletingLastPathComponent()) == ["library.rl"])
         }
     }
 
@@ -82,8 +81,9 @@ import Testing
             #expect(try permissions(target) == 0o700)
             for item in try FileManager.default.subpathsOfDirectory(atPath: target.path) {
                 let url = target.appendingPathComponent(item)
-                let isDirectory = try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
-                #expect(try permissions(url) == (isDirectory ? 0o700 : 0o600), "\(item)")
+                var isDirectory: ObjCBool = false
+                #expect(FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory))
+                #expect(try permissions(url) == (isDirectory.boolValue ? 0o700 : 0o600), "\(item)")
             }
             #expect(try bookCount(at: target) == 2)
             try Database(url: target).connect().query("CREATE (:Book {i: 3})")
@@ -165,8 +165,30 @@ import Testing
                 try Database.provision(at: target, from: scratch.appendingPathComponent("no-such-seed.rl"))
             }
             #expect(error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile)
-            let left = try FileManager.default.contentsOfDirectory(atPath: scratch.path)
-            #expect(left.isEmpty)
+            #expect(try names(in: scratch) == [])
+        }
+    }
+
+    @Test func aURLThatIsNotALocalFileIsRefusedForEitherEnd() async throws {
+        try await withTemporaryDirectory { scratch in
+            let local = scratch.appendingPathComponent("library.rl")
+            let remote = try #require(URL(string: "https://example.com/books.rl"))
+            let elsewhere = try #require(URL(string: "file://fileserver/share/books.rl"))
+            let seedRefusal = try invalidParameterMessage { _ = try Database.provision(at: local, from: remote) }
+            #expect(seedRefusal.contains("must be a file URL"))
+            let targetRefusal = try invalidParameterMessage { _ = try Database.provision(at: elsewhere, from: local) }
+            #expect(targetRefusal.contains("must name a local file"))
+            #expect(try names(in: scratch) == [])
+        }
+    }
+
+    @Test func anItemThatCannotBeFoundIsNotTakenForAFile() async throws {
+        try await withTemporaryDirectory { scratch in
+            let error = try #require(throws: CocoaError.self) {
+                try Database.isDirectory(scratch.appendingPathComponent("gone"))
+            }
+            #expect(error.code == .fileNoSuchFile)
+            #expect(try Database.isDirectory(scratch))
         }
     }
 
@@ -194,8 +216,7 @@ import Testing
             }
             #expect(message.contains("one path component"))
             // Nothing was created for a refused name.
-            let created = try FileManager.default.contentsOfDirectory(atPath: scratch.path)
-            #expect(created.isEmpty)
+            #expect(try names(in: scratch) == [])
         }
     }
 

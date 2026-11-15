@@ -56,6 +56,11 @@ func signalled(_ semaphore: DispatchSemaphore, within seconds: Double = 10) asyn
     }
 }
 
+/// How many nodes carry `label`.
+func countNodes(_ label: String, in connection: Connection) throws -> Int {
+    try connection.run("MATCH (n:\(identifier: label)) RETURN count(n)").scalar(as: Int.self)
+}
+
 /// A database that holds a counter at zero.
 func counterDatabase() throws -> Database {
     let db = try Database.inMemory()

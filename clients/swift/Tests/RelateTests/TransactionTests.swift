@@ -4,10 +4,6 @@ import Testing
 @testable import Relate
 
 @Suite struct TransactionTests {
-    private func count(_ conn: Connection, _ label: String) throws -> Int {
-        try conn.run("MATCH (n:\(identifier: label)) RETURN count(n)").scalar(as: Int.self)
-    }
-
     @Test func aTransactionScopeRunsStatementsAndCommits() throws {
         let conn = try Database.inMemory().connect()
         let name = "Ada"
@@ -18,7 +14,7 @@ import Testing
             return try tx.run("MATCH (p:P) RETURN count(p)").scalar(as: Int.self)
         }
         #expect(created == 2)
-        #expect(try count(conn, "P") == 2)
+        #expect(try countNodes("P", in: conn) == 2)
     }
 
     @Test func aScopeThatEscapesItsBodyIsRefused() throws {
@@ -28,7 +24,7 @@ import Testing
         let scope = try #require(escaped)
         let message = try misuseMessage { try scope.query("CREATE (:Late)") }
         #expect(message.contains("has ended"))
-        #expect(try count(conn, "Late") == 0)
+        #expect(try countNodes("Late", in: conn) == 0)
     }
 
     @Test func aReadSeesOneSnapshotAndKeepsNothing() throws {
@@ -45,7 +41,7 @@ import Testing
             return (before, after)
         }
         #expect(before == 2 && after == 2)
-        #expect(try count(reader, "N") == 3)
+        #expect(try countNodes("N", in: reader) == 3)
         // Introspection is a read.
         _ = try reader.read { tx in try tx.query("SHOW INDEXES") }
     }
@@ -54,7 +50,7 @@ import Testing
         let conn = try Database.inMemory().connect()
         var message = try misuseMessage { _ = try conn.read { tx in try tx.query("CREATE (:Sneaky)") } }
         #expect(message.contains("write statement ran in a read"))
-        #expect(try count(conn, "Sneaky") == 0)
+        #expect(try countNodes("Sneaky", in: conn) == 0)
         // A schema statement too: the index is not there afterwards.
         let indexes = try conn.query("SHOW INDEXES").count
         message = try misuseMessage {
@@ -64,7 +60,7 @@ import Testing
         #expect(try conn.query("SHOW INDEXES").count == indexes)
         // The connection is back in auto-commit: a new transaction begins.
         try conn.transaction { tx in try tx.query("CREATE (:Kept)") }
-        #expect(try count(conn, "Kept") == 1)
+        #expect(try countNodes("Kept", in: conn) == 1)
     }
 
     @Test func aRetryableConflictRunsTheBodyAgain() throws {
@@ -131,7 +127,7 @@ import Testing
         #expect(throws: RelateError.self) {
             try conn.runInTransaction(["CREATE (:Batch {i: 3})", "RETURN 1/0"])
         }
-        #expect(try count(conn, "Batch") == 2)
+        #expect(try countNodes("Batch", in: conn) == 2)
         // The typed entry point: a catch needs no cast.
         do {
             try conn.runInTransaction(["RETURN nope("])

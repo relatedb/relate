@@ -58,6 +58,14 @@ public final class Database: Sendable {
     public convenience init(
         url: URL, readOnly: Bool = false, options: Options = Options()
     ) throws(RelateError) {
+        try Database.requireLocalFile(url)
+        try self.init(path: url.path, readOnly: readOnly, options: options)
+    }
+
+    /// The package's rule for a URL that names a store: a `file:` URL with
+    /// no host, or `localhost`. Every entry point that takes a store URL
+    /// refuses any other through here.
+    static func requireLocalFile(_ url: URL) throws(RelateError) {
         guard url.isFileURL else {
             throw RelateError.invalidParameter(
                 "a store URL must be a file URL, got scheme \(quotedWire(url.scheme ?? ""))")
@@ -67,7 +75,14 @@ public final class Database: Sendable {
             throw RelateError.invalidParameter(
                 "a store URL must name a local file, got host \(quotedWire(host))")
         }
-        try self.init(path: url.path, readOnly: readOnly, options: options)
+    }
+
+    /// Refuses `operation` on a database opened read-only: the one place
+    /// that refusal is worded.
+    func requireWritable(for operation: String) throws(RelateError) {
+        guard !isReadOnly else {
+            throw RelateError.misuse("\(operation) on a database opened read-only")
+        }
     }
 
     /// A fresh in-memory store.

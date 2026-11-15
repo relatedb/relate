@@ -19,10 +19,6 @@ import Testing
         return migrator
     }
 
-    private func count(_ label: String, in conn: Connection) throws -> Int {
-        try conn.run("MATCH (n:\(identifier: label)) RETURN count(n)").scalar(as: Int.self)
-    }
-
     @Test func aFreshStoreRunsSchemaAndEveryStep() throws {
         let conn = try Database.inMemory().connect()
         try conn.query("CREATE (:Book {title: 'Dune'}), (:Book {title: 'Emma', status: 'read'})")
@@ -42,7 +38,7 @@ import Testing
         // Schema is idempotent, and a second Favorites would violate the
         // constraint the first migration created.
         #expect(try books().migrate(conn) == 2)
-        #expect(try count("Tag", in: conn) == 1)
+        #expect(try countNodes("Tag", in: conn) == 1)
     }
 
     @Test func aNewerBuildRunsOnlyTheNewSteps() throws {
@@ -53,7 +49,7 @@ import Testing
         next.register(version: 5, [])  // a version that only added to schema
         #expect(try next.migrate(conn) == 5)
         #expect(try conn.query("MATCH (t:Tag) RETURN t.color").rows == [["yellow"]])
-        #expect(try count("Tag", in: conn) == 1)
+        #expect(try countNodes("Tag", in: conn) == 1)
     }
 
     @Test func aFailingStepLeavesItsWorkAndItsVersionUndone() throws {
@@ -96,7 +92,7 @@ import Testing
         var older = Migrator()
         older.schema = ["CREATE (:AppliedByAnOlderBuild)"]
         _ = try misuseMessage { _ = try older.migrate(conn) }
-        #expect(try count("AppliedByAnOlderBuild", in: conn) == 0)
+        #expect(try countNodes("AppliedByAnOlderBuild", in: conn) == 0)
     }
 
     @Test(arguments: [[2, 1], [1, 1], [0], [-1, 2]])
@@ -107,7 +103,7 @@ import Testing
         for version in versions { migrator.register(version: version, ["CREATE (:StepRan)"]) }
         let message = try misuseMessage { _ = try migrator.migrate(conn) }
         #expect(message.contains("ascending order"))
-        #expect(try count("SchemaRan", in: conn) == 0 && count("StepRan", in: conn) == 0)
+        #expect(try countNodes("SchemaRan", in: conn) == 0 && countNodes("StepRan", in: conn) == 0)
         #expect(try migrator.currentVersion(conn) == 0)
     }
 
@@ -118,7 +114,7 @@ import Testing
         migrator.register(version: 1, ["CREATE (:WouldRunAgain)"])
         let failure = try resultMismatch { _ = try migrator.migrate(conn) }
         #expect(failure.path == ["version"] && failure.expected == "Int" && failure.found == "null")
-        #expect(try count("WouldRunAgain", in: conn) == 0)
+        #expect(try countNodes("WouldRunAgain", in: conn) == 0)
     }
 
     @Test func severalVersionNodesAreABrokenRecordNotTheFirstOne() throws {
@@ -129,7 +125,7 @@ import Testing
         migrator.register(version: 2, ["CREATE (:WouldRunOnAGuess)"])
         let failure = try resultMismatch { _ = try migrator.migrate(conn) }
         #expect(failure.expected == "one version node" && failure.found == "several version nodes")
-        #expect(try count("WouldRunOnAGuess", in: conn) == 0)
+        #expect(try countNodes("WouldRunOnAGuess", in: conn) == 0)
     }
 
     @Test func anAppsOwnVersionNodeIsHonoured() throws {
@@ -141,10 +137,10 @@ import Testing
         migrator.register(version: 2, ["CREATE (:Ran)"])
         #expect(try migrator.currentVersion(conn) == 1)
         #expect(try migrator.migrate(conn) == 2)
-        #expect(try count("ShouldNotRun", in: conn) == 0 && count("Ran", in: conn) == 1)
+        #expect(try countNodes("ShouldNotRun", in: conn) == 0 && countNodes("Ran", in: conn) == 1)
         #expect(try conn.query("MATCH (m:AppMeta) RETURN m.key, m.version ORDER BY m.key").rows
             == [["other", 7], ["schema_version", 2]])
-        #expect(try count("RelateMigration", in: conn) == 0)
+        #expect(try countNodes("RelateMigration", in: conn) == 0)
     }
 
     @Test func aDatabaseMigratesOnItsWriter() async throws {

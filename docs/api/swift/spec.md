@@ -363,7 +363,8 @@ public struct Migrator: Sendable {
   temporary copy an interrupted launch left behind is removed by a later
   call, once it was started more than ten minutes ago (a younger one may be
   another launch's copy in progress). A seed that is a symbolic link is
-  followed. The copy is made owner-writable (`0600` for files, `0700` for
+  followed. Both URLs follow the rule of `Database(url:)`: one that is not
+  a local file URL is `.invalidParameter`. The copy is made owner-writable (`0600` for files, `0700` for
   directories) and, on iOS, given `protection`. Both store forms work: a
   `.rl` file and a store directory. File-system failures are thrown as
   Foundation reports them.
