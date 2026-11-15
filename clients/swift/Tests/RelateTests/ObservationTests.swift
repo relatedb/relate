@@ -155,8 +155,8 @@ private func collectingTraces(of db: Database) -> OSAllocatedUnfairLock<[QueryTr
     }
 
     @Test func aRetriedTransactionReportsOnce() async throws {
-        let (winner, loser) = try counterRacers()
-        var commits = winner.database.commits().makeAsyncIterator()
+        let (db, winner, loser) = try counterRacers()
+        var commits = db.commits().makeAsyncIterator()
         var attempts = 0
         try loser.transaction(retries: 1, tags: ["retry"]) { tx in
             attempts += 1
@@ -170,8 +170,8 @@ private func collectingTraces(of db: Database) -> OSAllocatedUnfairLock<[QueryTr
     }
 
     @Test func aStatementAfterAFailedCommitIsItsOwnCommit() async throws {
-        let (winner, loser) = try counterRacers()
-        var commits = winner.database.commits().makeAsyncIterator()
+        let (db, winner, loser) = try counterRacers()
+        var commits = db.commits().makeAsyncIterator()
         try loser.begin()
         try winner.run(incrementCounter)
         try loser.run(incrementCounter)

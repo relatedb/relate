@@ -55,11 +55,11 @@ func counterDatabase() throws -> Database {
     return db
 }
 
-/// Two connections on one counter database: the fixture for a write-write
-/// conflict on one node.
-func counterRacers() throws -> (winner: Connection, loser: Connection) {
+/// A counter database and two connections on it: the fixture for a
+/// write-write conflict on one node.
+func counterRacers() throws -> (database: Database, winner: Connection, loser: Connection) {
     let db = try counterDatabase()
-    return (try db.connect(), try db.connect())
+    return (db, try db.connect(), try db.connect())
 }
 
 /// Increments the counter of a counter database and returns its value.

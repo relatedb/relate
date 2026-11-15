@@ -50,7 +50,7 @@ tests and code that wants to own its connection, as the iOS example in
 [`examples/ios-snotel`](../../../examples/ios-snotel/) shows.
 
 Two hooks let an app watch its own store. A trace handler sees every
-statement with its timings (and never its parameter values), which replaces
+statement with its timings and parameter names, not the values, which replaces
 the logging wrapper apps otherwise write around each query; statements also
 appear as signpost intervals in Instruments. A commit stream reports each
 committed write with the tags its writer attached, so a view model can

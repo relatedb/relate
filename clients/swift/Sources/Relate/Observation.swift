@@ -5,9 +5,12 @@ import os
 
 /// One statement, as it ran: what ``Database/setTraceHandler(_:)`` reports.
 ///
-/// A trace carries the statement text and its parameter *names*. It never
-/// carries parameter values, so tracing statements that bind their inputs
-/// does not put user data in a log.
+/// A trace carries the statement text and its parameter *names*; neither
+/// field carries a parameter value, so logging them for statements that
+/// bind their inputs puts no user data in a log. ``error`` is different:
+/// the engine's message may quote a bound value (a refused parameter is
+/// named with what it held), so a handler that logs must treat it as
+/// sensitive.
 public struct QueryTrace: Sendable {
     /// The statement text as the engine received it.
     public let statement: String
@@ -27,7 +30,8 @@ public struct QueryTrace: Sendable {
     /// binding, the engine and copying the result out.
     public let wallMs: Double
     /// The error the statement threw, if it did. Its message is the
-    /// engine's own and may quote a value the statement was given.
+    /// engine's own and may quote a value the statement was given: treat
+    /// it as sensitive.
     public let error: RelateError?
 }
 
@@ -169,11 +173,12 @@ extension Database {
     ///
     /// Each call returns a new stream; a stream receives the commits made
     /// after it was created, and ends when the store closes. A commit is
-    /// published as soon as the engine has made it, before the trace
-    /// handler hears of the statement. Commits from one connection — every
-    /// `write` shares the writer — arrive in commit order; two connections
-    /// committing at the same moment may arrive in either order, and their
-    /// bookmarks tell which came first.
+    /// published as soon as the engine has made it: an auto-commit
+    /// statement's before the trace handler hears of that statement, a
+    /// transaction's after the traces of its statements. Commits from one
+    /// connection — every `write` shares the writer — arrive in commit
+    /// order; two connections committing at the same moment may arrive in
+    /// either order, and their bookmarks tell which came first.
     ///
     /// Events wait in the stream until consumed. By default they wait
     /// without bound, so an observer that stops consuming while writes

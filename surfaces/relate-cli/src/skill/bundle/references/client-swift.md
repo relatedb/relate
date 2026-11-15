@@ -45,7 +45,7 @@ let n = try await db.read { tx in try tx.run("MATCH (n) RETURN count(n)").scalar
 try await db.write { tx in try tx.run("CREATE (:A {name: \(name)})") }   // one transaction
 try await db.write(try "CREATE (:A {name: \(name)})")                    // single statement
 
-db.setTraceHandler { t in log(t.statement, t.wallMs) }                    // every statement; names, never values
+db.setTraceHandler { t in log(t.statement, t.wallMs) }                    // every statement; parameter names, not values (t.error may quote one)
 for await commit in db.commits() where commit.tags.contains("notes") { reload() }  // writes via db.write(tags: ["notes"])
 ```
 

@@ -197,10 +197,9 @@ public final class Connection {
     /// database owns it (through the pool) and outlives it, so it only
     /// refers back.
     private let owner: Database?
-    /// The counters of the statements run since the last `begin` that did
-    /// not commit by themselves: what an explicit transaction's commit
-    /// reports to the database's commit stream. In auto-commit such a
-    /// statement changed nothing and adds nothing.
+    /// The counters of the open explicit transaction's statements: what its
+    /// commit reports to the database's commit stream. `begin` starts the
+    /// total, `commit` and `rollback` end it.
     private var uncommittedStats = QueryStats.zero
 
     fileprivate init(handle: OpaquePointer, core: DatabaseCore, database: Database, keeping owner: Database?) {
@@ -247,8 +246,8 @@ public final class Connection {
     {
         try core.hub.observing(cypher, parameters) { () throws(RelateError) in
             let result = try execute(cypher, parameters)
-            // Part of the observed step, so a commit is published before
-            // the trace handler hears of the statement that made it.
+            // Part of the observed step, so an auto-commit statement's
+            // commit is published before the trace handler hears of it.
             noteCommitted(result)
             return result
         }
@@ -327,6 +326,10 @@ public final class Connection {
     /// commit stream.
     @discardableResult
     func commit(tags: Set<String>) throws(RelateError) -> String? {
+        // The transaction's bookkeeping ends here, whether or not the
+        // commit succeeds.
+        let stats = uncommittedStats
+        uncommittedStats = .zero
         var bookmark: UnsafeMutablePointer<CChar>? = nil
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(
@@ -336,11 +339,12 @@ public final class Connection {
         guard let bookmark else { return nil }
         defer { relate_free_string(bookmark) }
         let text = try required(bookmark, "the commit's bookmark")
-        core.hub.publish(Commit(bookmark: text, stats: uncommittedStats, tags: tags))
+        core.hub.publish(Commit(bookmark: text, stats: stats, tags: tags))
         return text
     }
 
     public func rollback() throws(RelateError) {
+        uncommittedStats = .zero
         var err: UnsafeMutablePointer<CChar>? = nil
         try check(relate_conn_rollback(handle, &err), err, "rolling back the transaction")
     }

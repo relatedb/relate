@@ -5,7 +5,8 @@ import os
 let db = try Database.inMemory()
 
 // A trace handler sees every statement on every connection of the database,
-// with its timings. It gets parameter names, never values.
+// with its timings. It gets parameter names, not values; only the error of a
+// failed statement may quote one.
 let slowest = OSAllocatedUnfairLock(initialState: [String: Double]())
 db.setTraceHandler { trace in
     slowest.withLock { $0[trace.statement] = max($0[trace.statement] ?? 0, trace.wallMs) }

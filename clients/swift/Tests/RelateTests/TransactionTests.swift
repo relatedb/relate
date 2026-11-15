@@ -68,7 +68,7 @@ import Testing
     }
 
     @Test func aRetryableConflictRunsTheBodyAgain() throws {
-        let (winner, loser) = try counterRacers()
+        let (_, winner, loser) = try counterRacers()
         var attempts = 0
         let seen = try loser.transaction(retries: 1) { tx in
             attempts += 1
@@ -86,7 +86,7 @@ import Testing
     /// A count below one is no retry: the conflict surfaces after one
     /// attempt, marked retryable, and leaves no transaction open.
     @Test(arguments: [0, -1]) func withoutRetriesAConflictSurfaces(retries: Int) throws {
-        let (winner, loser) = try counterRacers()
+        let (_, winner, loser) = try counterRacers()
         var attempts = 0
         let error = try #require(throws: RelateError.self) {
             try loser.transaction(retries: retries) { tx in

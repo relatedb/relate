@@ -292,8 +292,10 @@ public struct Commit: Sendable, Hashable {
 - **Tracing.** `setTraceHandler` installs one handler per database (`nil`
   clears it). It is called once for every statement run on any connection
   of that database — a caller's own or a pooled one — synchronously on the
-  thread that ran the statement, after it finished, failures included. A
-  trace carries parameter names and never parameter values.
+  thread that ran the statement, after it finished, failures included. The
+  statement text and the parameter names carry no parameter value. `error`
+  may: the engine's message can quote a bound value (a refused parameter is
+  named with what it held), so a handler that logs treats it as sensitive.
 - **Signposts.** Every statement is also bracketed by an `os_signpost`
   interval named `statement` (subsystem `ai.relatedb.relate`, category
   `Query`), with no configuration. The package's tests do not assert on
@@ -304,11 +306,12 @@ public struct Commit: Sendable, Hashable {
   was created. A read, a rolled-back transaction and a write that changed
   nothing report nothing; a retried transaction reports once. The stream
   ends when the store closes, and releasing a stream unsubscribes it.
-- **Order.** A commit is published as soon as the engine has made it,
-  before the trace handler is called for the statement. Commits from one
-  connection (every `Database.write` shares the writer) arrive in commit
-  order. Two connections committing at the same moment may arrive in either
-  order; their bookmarks tell which came first.
+- **Order.** A commit is published as soon as the engine has made it: an
+  auto-commit statement's before the trace handler is called for that
+  statement, a transaction's after the traces of its statements. Commits
+  from one connection (every `Database.write` shares the writer) arrive in
+  commit order. Two connections committing at the same moment may arrive in
+  either order; their bookmarks tell which came first.
 - **Buffering.** Events wait in the stream until consumed: without bound by
   default, so an observer that stops consuming while writes continue grows
   the backlog. `commits(bufferingPolicy: .bufferingNewest(n))` keeps only
