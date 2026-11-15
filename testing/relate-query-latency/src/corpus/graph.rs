@@ -12,7 +12,7 @@ use std::path::Path;
 
 use relate::{Connection, Database, OpenOptions, QueryResult, Value};
 
-use super::files::{row_of, Oracle, ParamsTable};
+use super::files::{OracleFile, ParamsTable};
 use super::report::{FraudReport, SeedDiff};
 use super::{Classification, CorpusQuery};
 
@@ -137,24 +137,22 @@ impl<'a> Routed<'a> {
     /// The rows-oracle lanes' full disposition, stated ONCE for both
     /// (ukrailway, agg-stress, equi-join): an `ok` entry runs
     /// answer-checked against its oracle entry (resolved through the one
-    /// lookup, [`row_of`]), everything else resolving through the shared
+    /// lookup, [`OracleFile::row`]), everything else resolving through the shared
     /// non-executing table. The constant-inline lanes' queries genuinely
     /// carry no parameters and bind an empty map. An `ok` id with no
     /// oracle entry fails loudly (the fraud lane's rule). Each lane's
     /// route is its own oracle path derivation plus this.
     pub(super) fn rows_checked(
         conn: &'a mut Connection,
-        params: Option<BTreeMap<String, Value>>,
-        oracle: &'a Oracle,
-        path: &Path,
+        oracle: &'a OracleFile,
         q: &'a CorpusQuery,
     ) -> Result<Routed<'a>> {
         Ok(match &q.classification {
             Classification::Ok => {
-                let entry = row_of(oracle, &q.id, path)?;
+                let entry = oracle.row(&q.id)?;
                 Routed::Run(Target {
                     conn,
-                    params: params.unwrap_or_default(),
+                    params: BTreeMap::new(),
                     check: Some(Box::new(move |result| {
                         answers::diff(result, &entry.expected)
                     })),
@@ -243,7 +241,9 @@ pub(super) trait CorpusLane {
 
 #[cfg(test)]
 mod tests {
-    use super::super::files::OracleEntry;
+    use std::path::PathBuf;
+
+    use super::super::files::{Oracle, OracleEntry};
     use super::super::fixtures::{ok_query, query};
     use super::*;
 
@@ -257,20 +257,22 @@ mod tests {
     #[test]
     fn rows_oracle_routes_run_check_plan_and_refuse_a_missing_row() {
         let mut handle = GraphHandle::memory("the rows-oracle route test's graph").unwrap();
-        let oracle = Oracle::from([(
-            "q1".to_string(),
-            OracleEntry {
-                expected: crate::answers::Expected {
-                    rows: vec![],
-                    order_sensitive: false,
+        let path = PathBuf::from("oracle.json");
+        let oracle = OracleFile {
+            table: Oracle::from([(
+                "q1".to_string(),
+                OracleEntry {
+                    expected: crate::answers::Expected {
+                        rows: vec![],
+                        order_sensitive: false,
+                    },
+                    query_sha256: "aa".into(),
                 },
-                query_sha256: "aa".into(),
-            },
-        )]);
-        let path = Path::new("oracle.json");
+            )]),
+            path: path.clone(),
+        };
         let q1 = ok_query("q1", "RETURN 1");
-        let Routed::Run(target) =
-            Routed::rows_checked(&mut handle.conn, None, &oracle, path, &q1).unwrap()
+        let Routed::Run(target) = Routed::rows_checked(&mut handle.conn, &oracle, &q1).unwrap()
         else {
             panic!("an ok entry with an oracle row runs");
         };
@@ -281,9 +283,7 @@ mod tests {
         assert!(matches!(
             Routed::rows_checked(
                 &mut handle.conn,
-                None,
                 &oracle,
-                path,
                 &query("q1", Classification::Kept, "RETURN 1")
             )
             .unwrap(),
@@ -294,9 +294,10 @@ mod tests {
         // `unwrap_err`.
         let err = match Routed::rows_checked(
             &mut handle.conn,
-            Some(BTreeMap::new()),
-            &Oracle::new(),
-            path,
+            &OracleFile {
+                table: Oracle::new(),
+                path,
+            },
             &ok_query("q9-not-in-the-oracle", "RETURN 1"),
         ) {
             Err(err) => err,

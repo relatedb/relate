@@ -136,7 +136,7 @@ pub(crate) fn ensure_ukrailway(root: &Path, pin_table: &Path, download: bool) ->
             }
         } else if !download {
             return Err(format!(
-                "{} is not cached under {} (run `query-latency corpus --workload ukrailway` to \
+                "{} is not cached under {} (run `query-latency corpus ukrailway` to \
                  fetch it)",
                 pin.name,
                 root.display()

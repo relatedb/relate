@@ -148,7 +148,7 @@ local/agent invocation.
 ## How to run
 
 ```bash
-cargo run --release -p relate-query-latency -- corpus --workload agg-stress --sf 0.1
+cargo run --release -p relate-query-latency -- corpus agg-stress --sf 0.1
 # the gated test (loads the graph-benchmark-ldbc SF0.1 graph, ~26 s, then the five entries):
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus agg_stress
 ```

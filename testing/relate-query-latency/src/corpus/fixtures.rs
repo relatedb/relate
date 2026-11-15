@@ -34,7 +34,10 @@ pub(super) fn assert_routes_every_committed_entry(
     lane: &mut dyn graph::CorpusLane,
     queries: &[CorpusQuery],
 ) {
-    for q in ok_entries(queries) {
+    for q in queries
+        .iter()
+        .filter(|q| q.classification == Classification::Ok)
+    {
         let graph::Routed::Run(target) = lane.route(q).unwrap() else {
             panic!("{}: an ok entry runs", q.id);
         };
@@ -51,17 +54,6 @@ pub(super) fn assert_routes_every_committed_entry(
     ));
 }
 
-/// The entries that execute — the one predicate the routing assertion
-/// below uses, so "which entries run" is spelled once (an `ok` entry
-/// runs and is answer-checked; a kept or pinned entry never does). The
-/// coverage check walks the oracle table instead, because the loader's
-/// validation has already proven that bijection.
-pub(super) fn ok_entries(queries: &[CorpusQuery]) -> impl Iterator<Item = &CorpusQuery> {
-    queries
-        .iter()
-        .filter(|q| q.classification == Classification::Ok)
-}
-
 /// The committed-oracle test's shared body — three rows-oracle workloads
 /// carry the same assertions (the oracle's entries match the workload's
 /// executable entries; every entry answers its recorded rows), so the
@@ -70,13 +62,13 @@ pub(super) fn ok_entries(queries: &[CorpusQuery]) -> impl Iterator<Item = &Corpu
 /// [`Workload::oracle_path`], the one derivation of the convention.
 pub(super) fn the_oracle_covers(w: Workload, entries: usize, rows_per_entry: usize) {
     let queries = workload_queries(w).unwrap();
-    let (oracle, _) = super::load_oracle(w, ScaleFactor::Sf0_1, &queries).unwrap();
-    assert_eq!(oracle.len(), entries, "{w}");
+    let oracle = super::load_oracle(w, ScaleFactor::Sf0_1, &queries).unwrap();
+    assert_eq!(oracle.table.len(), entries, "{w}");
     // The loader's validation already proved the bijection — every `ok`
     // entry carries a row and no kept or pinned entry does — so the
     // table itself is the complete inventory: walk it, never re-look-up
     // what the validation just guaranteed.
-    for (id, entry) in &oracle {
+    for (id, entry) in &oracle.table {
         assert_eq!(
             entry.expected.rows.len(),
             rows_per_entry,

@@ -19,7 +19,7 @@
 //! module's execution types ([`GraphHandle`], [`Routed`], and the
 //! rows-oracle route [`Routed::rows_checked`] the rows-oracle lanes
 //! resolve through) and the `files` submodule's rows-oracle machinery
-//! (the [`Oracle`] table type, the one loader and validation) — and the
+//! (the [`OracleFile`] table type, the one loader and validation) — and the
 //! crate's fetch machinery; it never imports the runner or the other
 //! lanes. What the lane owns itself is the import script and its
 //! loader, and the lane's own facts — its oracle file comes from the
@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use relate::Connection;
 
-use super::files::Oracle;
+use super::files::OracleFile;
 use super::graph::{CorpusLane, GraphHandle, Routed};
 use super::load_oracle;
 use super::{CorpusQuery, Workload};
@@ -83,12 +83,10 @@ fn load_graph(dir: &Path) -> Result<GraphHandle> {
 /// oracle each executed entry is answer-checked with.
 pub(super) struct UkrailwayLane {
     graph: Box<GraphHandle>,
-    oracle: Oracle,
-    /// The oracle file's path, derived once at build and stored — the
-    /// route's lookup names the file in its miss text, never re-derives
-    /// the path per entry (the same discipline
-    /// `oracle_store::RowsOracleStoreLane` follows).
-    oracle_path: PathBuf,
+    /// The oracle table with the file it came from, derived once at
+    /// build — the route's lookup names the file in its miss text
+    /// (the same discipline `oracle_store::RowsOracleStoreLane` follows).
+    oracle: OracleFile,
 }
 
 impl UkrailwayLane {
@@ -99,11 +97,10 @@ impl UkrailwayLane {
         // The same shared build sequence `new` runs, so a test lane is
         // `new` minus the fetch and the import, never a lookalike that
         // skips the validation step.
-        let (oracle, oracle_path) = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
+        let oracle = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
         Ok(Self {
             graph: Box::new(graph),
             oracle,
-            oracle_path,
         })
     }
 }
@@ -115,18 +112,14 @@ impl UkrailwayLane {
     /// fetches), ensure the pinned data set is under the cache root, and
     /// import it into the lane's `:memory:` store.
     pub(super) fn new(data_root: &Path, download: bool, queries: &[CorpusQuery]) -> Result<Self> {
-        let (oracle, oracle_path) = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
+        let oracle = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
         let dir = ensure_ukrailway(
             data_root,
             &Workload::Ukrailway.dir().join("data.sha256"),
             download,
         )?;
         let graph = Box::new(load_graph(&dir)?);
-        Ok(Self {
-            graph,
-            oracle,
-            oracle_path,
-        })
+        Ok(Self { graph, oracle })
     }
 }
 
@@ -152,12 +145,8 @@ impl CorpusLane for UkrailwayLane {
     /// resolves through the shared non-executing table, and an `ok` id
     /// with no row is refused.
     fn route<'a>(&'a mut self, q: &'a CorpusQuery) -> Result<Routed<'a>> {
-        let Self {
-            graph,
-            oracle,
-            oracle_path,
-        } = self;
-        Routed::rows_checked(&mut graph.conn, None, oracle, oracle_path, q)
+        let Self { graph, oracle } = self;
+        Routed::rows_checked(&mut graph.conn, oracle, q)
     }
 }
 

@@ -131,13 +131,38 @@ pub(super) struct OracleEntry {
 /// route all speak one type, never a lane-local re-spelling of it.
 pub(super) type Oracle = BTreeMap<String, OracleEntry>;
 
+/// An oracle table together with the file it came from — one concept,
+/// one value: the path is only ever the file the table was read from,
+/// and neither half is usable alone (the miss text names the file).
+/// Generic over the row type so the rows-oracle lanes (`OracleEntry`)
+/// and the fraud lane (its check rows) hold the same shape; every
+/// oracle-owning lane resolves rows through [`OracleFile::row`].
+#[derive(Debug)]
+pub(super) struct OracleFile<V = OracleEntry> {
+    pub(super) table: BTreeMap<String, V>,
+    pub(super) path: PathBuf,
+}
+
+impl<V> OracleFile<V> {
+    /// One row of the table, looked up by query id — the ONE lookup and
+    /// miss text every oracle-owning lane resolves through (the fraud
+    /// lane's check rows, the rows-oracle lanes' verified rows), shared
+    /// by the build-time validation and every route, so the lanes can
+    /// never drift apart: the miss names the id and the oracle file.
+    pub(super) fn row(&self, id: &str) -> Result<&V> {
+        self.table
+            .get(id)
+            .ok_or_else(|| format!("{id}: no oracle row in {}", self.path.display()))
+    }
+}
+
 /// A rows-oracle lane's oracle file at `path`: every top-level key but
 /// the `_`-prefixed provenance blocks is a query id whose entry is one
 /// rows check — the ONE loader every rows-oracle lane reads through, so
 /// the lanes' loads cannot drift from each other or from the format
 /// [`parse_rows_check`] pins. A file that does not exist fails loudly
 /// here, naming the path.
-pub(super) fn load_rows_oracle(path: &Path) -> Result<Oracle> {
+pub(super) fn load_rows_oracle(path: &Path) -> Result<OracleFile> {
     let mut oracle = Oracle::new();
     for (id, v) in read_query_entries(path)? {
         let expected = parse_rows_check(path, &id, &v)?;
@@ -164,25 +189,10 @@ pub(super) fn load_rows_oracle(path: &Path) -> Result<Oracle> {
             },
         );
     }
-    Ok(oracle)
-}
-
-/// One row of a lane's oracle table, looked up by query id — the ONE
-/// lookup and miss text every oracle-owning lane resolves through (the
-/// fraud lane's check rows, the ukrailway lane's verified rows, the
-/// agg-stress lane's verified rows), shared by the build-time
-/// validation and every route, so the lanes can never drift apart.
-/// Unified here from the two lanes' bespoke spellings, whose miss texts
-/// had drifted (`no oracle entry` vs `no oracle row`): the one wording
-/// names the id and the oracle file it is missing from.
-pub(super) fn row_of<'a, V>(
-    table: &'a BTreeMap<String, V>,
-    id: &str,
-    oracle: &Path,
-) -> Result<&'a V> {
-    table
-        .get(id)
-        .ok_or_else(|| format!("{id}: no oracle row in {}", oracle.display()))
+    Ok(OracleFile {
+        table: oracle,
+        path: path.to_path_buf(),
+    })
 }
 
 /// A side-table id naming no query file is stale entry data riding
@@ -209,24 +219,21 @@ pub(super) fn refuse_stale_ids<'a>(
 /// agg-stress): every oracle row names a query file (the shared
 /// stale-id refusal), every executable (`ok`) entry carries a row (its
 /// check is machine-readable, never prose — the row resolves through the
-/// one lookup, [`row_of`]), and no kept or pin entry carries one (neither
+/// one lookup, [`OracleFile::row`]), and no kept or pin entry carries one (neither
 /// ever executes, so a row for it is stale data riding along unvalidated
 /// — the presence probe is the table's own `contains_key`, never the
 /// lookup's miss error constructed and discarded).
-pub(super) fn validate_rows_oracle(
-    oracle: &Oracle,
-    queries: &[CorpusQuery],
-    path: &Path,
-) -> Result<()> {
+pub(super) fn validate_rows_oracle(oracle: &OracleFile, queries: &[CorpusQuery]) -> Result<()> {
+    let path = &oracle.path;
     refuse_stale_ids(
-        oracle.keys().map(String::as_str),
+        oracle.table.keys().map(String::as_str),
         queries,
         "an oracle entry",
     )?;
     for q in queries {
         match &q.classification {
             Classification::Ok => {
-                let entry = row_of(oracle, &q.id, path)?;
+                let entry = oracle.row(&q.id)?;
                 // The text-freshness comparison, where the entry and its
                 // query are already paired: an edited query must not
                 // ride a stale answer (the graph-benchmark-ldbc lane's guard).
@@ -242,7 +249,7 @@ pub(super) fn validate_rows_oracle(
                 }
             }
             Classification::Kept | Classification::ErrorPin { .. } => {
-                if oracle.contains_key(&q.id) {
+                if oracle.table.contains_key(&q.id) {
                     return Err(format!(
                         "{}: a kept or pin entry never executes; its oracle row is stale data",
                         q.id
@@ -349,10 +356,11 @@ mod tests {
         )
         .unwrap();
         let oracle = load_rows_oracle(&oracle_file).unwrap();
-        assert_eq!(oracle.len(), 2, "the _source block is not an entry");
-        assert_eq!(oracle["q1"].expected.rows.len(), 1);
-        assert!(!oracle["q1"].expected.order_sensitive);
-        assert!(oracle["q2"].expected.order_sensitive);
+        assert_eq!(oracle.table.len(), 2, "the _source block is not an entry");
+        assert_eq!(oracle.path, oracle_file, "the file the table came from");
+        assert_eq!(oracle.table["q1"].expected.rows.len(), 1);
+        assert!(!oracle.table["q1"].expected.order_sensitive);
+        assert!(oracle.table["q2"].expected.order_sensitive);
         let malformed = dir.path().join("malformed.json");
         std::fs::write(
             &malformed,
@@ -384,8 +392,10 @@ mod tests {
             },
             query_sha256: String::new(),
         };
-        let oracle = Oracle::from([("q1".to_string(), entry()), ("q2".to_string(), entry())]);
-        let path = Path::new("oracle.json");
+        let oracle = OracleFile {
+            table: Oracle::from([("q1".to_string(), entry()), ("q2".to_string(), entry())]),
+            path: PathBuf::from("oracle.json"),
+        };
         // A workload covering every oracle row, one entry per row, with
         // each case's mutation applied — the base the refusals below
         // mutate, so the stale-id check (which runs first) never masks
@@ -399,15 +409,15 @@ mod tests {
         // An `ok` entry its oracle does not cover.
         let mut uncovered = covering(Classification::Ok);
         uncovered.push(ok_query("q9-not-in-the-oracle", "RETURN 1"));
-        let err = validate_rows_oracle(&oracle, &uncovered, path).unwrap_err();
+        let err = validate_rows_oracle(&oracle, &uncovered).unwrap_err();
         assert!(err.contains("no oracle row"), "{err}");
         // A kept entry carrying a row never executes it; a pin entry
         // carrying one is the same stale data.
-        let err = validate_rows_oracle(&oracle, &covering(Classification::Kept), path).unwrap_err();
+        let err = validate_rows_oracle(&oracle, &covering(Classification::Kept)).unwrap_err();
         assert!(err.contains("stale data"), "{err}");
         // An oracle row with no query file — the shared stale-id refusal
         // over the rows-oracle table's own noun.
-        let err = validate_rows_oracle(&oracle, &[ok_query("q1", "RETURN 1")], path).unwrap_err();
+        let err = validate_rows_oracle(&oracle, &[ok_query("q1", "RETURN 1")]).unwrap_err();
         assert!(
             err.contains("q2: an oracle entry with no query file"),
             "{err}"
@@ -423,7 +433,6 @@ mod tests {
                 query("q3-kept", Classification::Kept, "RETURN 1"),
                 pin_query("q4-pin", "RETURN 1"),
             ],
-            path,
         )
         .is_ok());
     }

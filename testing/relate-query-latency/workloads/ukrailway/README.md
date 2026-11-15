@@ -87,7 +87,7 @@ answer.
 ## How to run
 
 ```bash
-cargo run --release -p relate-query-latency -- corpus --workload ukrailway
+cargo run --release -p relate-query-latency -- corpus ukrailway
 # the gated test (fetches the data set on first use, then imports it):
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus ukrailway
 ```

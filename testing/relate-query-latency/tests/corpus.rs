@@ -50,7 +50,7 @@ use relate::Database;
 use relate_datasets::fraud::FraudConfig;
 use relate_query_latency::corpus::{
     fraud_oracle, pin_met, run_corpus, workload_queries, Classification, CorpusConfig,
-    CorpusReport, FraudCheck, Lane, SeedPolicy, Workload,
+    CorpusReport, FraudCheck, Lane, SeedPolicy, StoreWorkload, Workload,
 };
 use relate_query_latency::fetch::data_root;
 use relate_query_latency::run::Status;
@@ -81,7 +81,10 @@ fn corpus_config(workload: Workload, sf: ScaleFactor) -> CorpusConfig {
             graph: graph(),
             seed_policy: SeedPolicy::Median,
         },
-        Workload::SnbBi => Lane::SnbBi { graph: graph() },
+        Workload::SnbBi => Lane::GraphStore {
+            workload: StoreWorkload::SnbBi,
+            graph: graph(),
+        },
         Workload::FraudQpp => Lane::Fraud {
             // RELATE_FULL_DATA=1 opts the fraud lane up to the
             // generator's full scale (the datasets crate's own gate).
@@ -91,8 +94,14 @@ fn corpus_config(workload: Workload, sf: ScaleFactor) -> CorpusConfig {
             data_root: data_root(),
             download: true,
         },
-        Workload::AggStress => Lane::AggStress { graph: graph() },
-        Workload::EquiJoin => Lane::EquiJoin { graph: graph() },
+        Workload::AggStress => Lane::GraphStore {
+            workload: StoreWorkload::AggStress,
+            graph: graph(),
+        },
+        Workload::EquiJoin => Lane::GraphStore {
+            workload: StoreWorkload::EquiJoin,
+            graph: graph(),
+        },
     };
     CorpusConfig {
         timeout: lane.default_timeout(),

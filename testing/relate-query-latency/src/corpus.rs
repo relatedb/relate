@@ -467,13 +467,13 @@ fn load_oracle(
     workload: Workload,
     sf: ScaleFactor,
     queries: &[CorpusQuery],
-) -> Result<(files::Oracle, PathBuf)> {
+) -> Result<files::OracleFile> {
     let path = workload
         .oracle_path(sf)
         .ok_or_else(|| format!("the {workload} workload carries no rows oracle"))?;
     let oracle = files::load_rows_oracle(&path)?;
-    files::validate_rows_oracle(&oracle, queries, &path)?;
-    Ok((oracle, path))
+    files::validate_rows_oracle(&oracle, queries)?;
+    Ok(oracle)
 }
 
 /// How the run picks its seeds.
@@ -510,6 +510,31 @@ impl SeedPolicy {
     }
 }
 
+/// The workloads that run over the graph-benchmark-ldbc store with one
+/// shared lane payload ([`Lane::GraphStore`]): a subset of
+/// [`Workload`], typed so a lane can never name a workload that has no
+/// store lane. [`StoreWorkload::workload`] is the one mapping back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreWorkload {
+    /// The LDBC SNB BI analytics queries.
+    SnbBi,
+    /// The in-house aggregation-stress queries (LABS-733).
+    AggStress,
+    /// The in-house equi-join queries (LABS-1531).
+    EquiJoin,
+}
+
+impl StoreWorkload {
+    /// The corpus workload this store workload runs.
+    pub(crate) fn workload(self) -> Workload {
+        match self {
+            Self::SnbBi => Workload::SnbBi,
+            Self::AggStress => Workload::AggStress,
+            Self::EquiJoin => Workload::EquiJoin,
+        }
+    }
+}
+
 /// The lane-specific setup of a run: exactly the knobs its workload
 /// uses, so a run matches its workload once and every knob has one
 /// home — each variant's own doc carries its payload's why (which
@@ -532,10 +557,15 @@ pub enum Lane {
         /// The fraud generator's knobs.
         fraud: FraudConfig,
     },
-    /// The LDBC SNB BI analytics queries over the graph-benchmark-ldbc store.
-    SnbBi {
-        /// The graph-benchmark-ldbc graph options — the same store machinery as the
-        /// `run` lane, carrying the run's scale factor.
+    /// The graph-benchmark-ldbc-store workloads that share one lane
+    /// payload: the workload names which of them runs.
+    GraphStore {
+        /// Which store workload runs.
+        workload: StoreWorkload,
+        /// The graph-benchmark-ldbc graph options — the same store
+        /// machinery as the `run` lane, carrying the run's scale factor
+        /// (the one home of that fact; the in-house workloads are
+        /// recorded at SF0.1 only).
         graph: GraphOptions,
     },
     /// The UK railway graph queries over the workload's own imported
@@ -546,22 +576,6 @@ pub enum Lane {
         /// Whether a missing or mismatched CSV may be downloaded.
         download: bool,
     },
-    /// The in-house aggregation-stress queries over the graph-benchmark-ldbc store
-    /// (LABS-733).
-    AggStress {
-        /// The graph-benchmark-ldbc graph options — the same store machinery as the
-        /// `run` lane, carrying the run's scale factor (the one home
-        /// of that fact; the workload is recorded at SF0.1 only).
-        graph: GraphOptions,
-    },
-    /// The in-house equi-join queries over the graph-benchmark-ldbc store
-    /// (LABS-1531).
-    EquiJoin {
-        /// The graph-benchmark-ldbc graph options — the same store machinery as the
-        /// `run` lane, carrying the run's scale factor (the one home
-        /// of that fact; the workload is recorded at SF0.1 only).
-        graph: GraphOptions,
-    },
 }
 
 impl Lane {
@@ -570,10 +584,8 @@ impl Lane {
         match self {
             Self::Pathdb { .. } => Workload::Pathdb,
             Self::Fraud { .. } => Workload::FraudQpp,
-            Self::SnbBi { .. } => Workload::SnbBi,
+            Self::GraphStore { workload, .. } => workload.workload(),
             Self::Ukrailway { .. } => Workload::Ukrailway,
-            Self::AggStress { .. } => Workload::AggStress,
-            Self::EquiJoin { .. } => Workload::EquiJoin,
         }
     }
 
@@ -587,9 +599,7 @@ impl Lane {
     fn report_facts(&self) -> (Option<ScaleFactor>, Option<SeedPolicy>) {
         match self {
             Self::Pathdb { graph, seed_policy } => (Some(graph.sf), Some(*seed_policy)),
-            Self::SnbBi { graph } | Self::AggStress { graph } | Self::EquiJoin { graph } => {
-                (Some(graph.sf), None)
-            }
+            Self::GraphStore { graph, .. } => (Some(graph.sf), None),
             Self::Fraud { .. } | Self::Ukrailway { .. } => (None, None),
         }
     }
@@ -605,14 +615,24 @@ impl Lane {
     /// history, and a failure for an `ok` one — the ratchet.
     pub fn default_timeout(&self) -> Duration {
         match self {
-            Self::Pathdb { graph, .. } | Self::SnbBi { graph, .. } => match graph.sf {
+            Self::Pathdb { graph, .. }
+            | Self::GraphStore {
+                workload: StoreWorkload::SnbBi,
+                graph,
+            } => match graph.sf {
                 ScaleFactor::Sf0_1 => Duration::from_secs(10),
                 ScaleFactor::Sf1 => Duration::from_secs(20),
             },
             Self::Fraud { .. } => FRAUD_TIMEOUT,
             Self::Ukrailway { .. } => UKRAILWAY_TIMEOUT,
-            Self::AggStress { .. } => AGG_STRESS_TIMEOUT,
-            Self::EquiJoin { .. } => EQUI_JOIN_TIMEOUT,
+            Self::GraphStore {
+                workload: StoreWorkload::AggStress,
+                ..
+            } => AGG_STRESS_TIMEOUT,
+            Self::GraphStore {
+                workload: StoreWorkload::EquiJoin,
+                ..
+            } => EQUI_JOIN_TIMEOUT,
         }
     }
 

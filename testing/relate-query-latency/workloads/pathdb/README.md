@@ -115,7 +115,7 @@ entry — the engine-self oracle; the Neo4j-verified oracle answers are
 follow-up work once the faithful spelling is runnable end to end.
 
 Initial ok-set, recorded 2026-11-01 against the engine at the corpus PR
-(`query-latency corpus --workload pathdb --sf 0.1`, graph-benchmark-ldbc SF0.1, release):
+(`query-latency corpus pathdb --sf 0.1`, graph-benchmark-ldbc SF0.1, release):
 134 `ok` of 134 ok, 66 `kept` planned, 7 `error-pin` failed as pinned,
 0 seed diffs, peak RSS 1.28 GB, slowest entry 2.4 s, median 0.3 ms. Ten
 restrictor entries were re-measured the same day and reclassified
@@ -132,8 +132,8 @@ verified unchanged.
 ## How to run
 
 ```bash
-cargo run --release -p relate-query-latency -- corpus --workload pathdb --sf 0.1
-cargo run --release -p relate-query-latency -- corpus --workload pathdb --sf 1 --timeout 20
+cargo run --release -p relate-query-latency -- corpus pathdb --sf 0.1
+cargo run --release -p relate-query-latency -- corpus pathdb --sf 1 --timeout 20
 # the gated test (loads the graph-benchmark-ldbc SF0.1 graph):
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus pathdb
 ```

@@ -23,7 +23,7 @@ use relate::Value;
 use relate_datasets::fraud::{generate, FraudConfig};
 use relate_datasets::load::load_fraud;
 
-use super::files::{parse_rows_check, read_query_entries, refuse_stale_ids, row_of};
+use super::files::{parse_rows_check, read_query_entries, refuse_stale_ids, OracleFile};
 use super::graph::{CorpusLane, GraphHandle, Routed, Target};
 use super::report::FraudReport;
 use super::{Classification, CorpusQuery, Workload};
@@ -193,31 +193,31 @@ struct FraudGraph {
 /// miss its graph — the graph a check asks for opens at the moment the
 /// check first routes to it.
 pub(super) struct FraudGraphs {
-    oracle: BTreeMap<String, FraudCheck>,
+    /// The check table with the file it came from, derived once at
+    /// build — the row lookup names the file in its miss text (the same
+    /// discipline `RowsOracleStoreLane` and `UkrailwayLane` follow).
+    oracle: OracleFile<FraudCheck>,
     config: FraudConfig,
     graphs: BTreeMap<FraudGraphKind, FraudGraph>,
-    /// The oracle file's path, derived once at build and stored — the
-    /// row lookup names the file in its miss text, never re-derives the
-    /// path per entry (the same discipline `RowsOracleStoreLane` and
-    /// `UkrailwayLane` follow).
-    oracle_path: PathBuf,
 }
 
 impl FraudGraphs {
     /// Parse the oracle, validate it against the workload's entries —
     /// the lane owns the oracle's format contract, totally: every
     /// workload entry has an oracle row (resolved through the one
-    /// lookup, [`row_of`]) and no oracle row is without a query file,
+    /// lookup, [`OracleFile::row`]) and no oracle row is without a query file,
     /// and every (classification, check) pair is either valid or
     /// refused — an executable (`ok`) entry carries a real check, a
     /// `kept` entry carries `none`, a pin entry carries `none` (its
     /// authored failure is its check) — and hold the generator knobs;
     /// the graphs open on first use.
     pub(super) fn new(config: FraudConfig, queries: &[CorpusQuery]) -> Result<Self> {
-        let oracle = fraud_oracle()?;
-        let path = oracle_path();
+        let oracle = OracleFile {
+            table: fraud_oracle()?,
+            path: oracle_path(),
+        };
         for q in queries {
-            let check = row_of(&oracle, &q.id, &path)?;
+            let check = oracle.row(&q.id)?;
             match (&q.classification, check) {
                 (Classification::Ok, FraudCheck::None) => {
                     return Err(format!(
@@ -251,7 +251,7 @@ impl FraudGraphs {
         // No oracle row is without a query file — the shared stale-id
         // refusal, over this lane's own table.
         refuse_stale_ids(
-            oracle.keys().map(String::as_str),
+            oracle.table.keys().map(String::as_str),
             queries,
             "an oracle entry",
         )?;
@@ -259,7 +259,6 @@ impl FraudGraphs {
             oracle,
             config,
             graphs: BTreeMap::new(),
-            oracle_path: path,
         })
     }
 }
@@ -279,9 +278,8 @@ impl CorpusLane for FraudGraphs {
             oracle,
             config,
             graphs,
-            oracle_path,
         } = self;
-        let check = row_of(oracle, &q.id, oracle_path)?;
+        let check = oracle.row(&q.id)?;
         // `new`'s validation locked every kept or pin entry to a `none`
         // check, so the check alone decides the graph — `graph_kind`'s
         // table is the one home of check → graph.

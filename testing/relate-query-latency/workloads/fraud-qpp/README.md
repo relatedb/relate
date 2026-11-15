@@ -49,7 +49,7 @@ fixture, compared with the graph-benchmark-ldbc lane's no-coercion rules), `none
 ## How to run
 
 ```bash
-cargo run --release -p relate-query-latency -- corpus --workload fraud-qpp
+cargo run --release -p relate-query-latency -- corpus fraud-qpp
 # the normal-lane test (fast, no data set download):
 cargo test -p relate-query-latency --test corpus
 ```

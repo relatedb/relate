@@ -30,7 +30,7 @@ use super::pathdb;
 use super::report;
 use super::snbbi;
 use super::ukrailway;
-use super::{CorpusConfig, CorpusQuery, Lane};
+use super::{CorpusConfig, CorpusQuery, Lane, StoreWorkload};
 use crate::report::{build_kind, git_state, started_unix};
 use crate::run::{execute_with_params, Stats, Status, Watchdog};
 use crate::Result;
@@ -47,19 +47,21 @@ fn build_lane(cfg: &CorpusConfig, queries: &[CorpusQuery]) -> Result<Box<dyn Cor
             Box::new(pathdb::PathdbLane::new(graph, *seed_policy, queries)?)
         }
         Lane::Fraud { fraud } => Box::new(fraud::FraudGraphs::new(fraud.clone(), queries)?),
-        Lane::SnbBi { graph } => Box::new(snbbi::SnbBiLane::new(graph, queries)?),
+        Lane::GraphStore { workload, graph } => match workload {
+            StoreWorkload::SnbBi => Box::new(snbbi::SnbBiLane::new(graph, queries)?),
+            // The two rows-oracle workloads share the one lane: its own
+            // workload drives the oracle path; the workload modules own
+            // their facts and tests only.
+            StoreWorkload::AggStress | StoreWorkload::EquiJoin => Box::new(
+                oracle_store::RowsOracleStoreLane::new(workload.workload(), graph, queries)?,
+            ),
+        },
         Lane::Ukrailway {
             data_root,
             download,
         } => Box::new(ukrailway::UkrailwayLane::new(
             data_root, *download, queries,
         )?),
-        // The two rows-oracle workloads share the one lane: its own
-        // workload (derived, never re-stated per arm) drives the oracle
-        // path; the workload modules own their facts and tests only.
-        Lane::AggStress { graph } | Lane::EquiJoin { graph } => Box::new(
-            oracle_store::RowsOracleStoreLane::new(cfg.lane.workload(), graph, queries)?,
-        ),
     })
 }
 

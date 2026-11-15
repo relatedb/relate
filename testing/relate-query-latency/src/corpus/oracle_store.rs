@@ -18,13 +18,11 @@
 //! This module imports the corpus tree's shared vocabulary — the `graph`
 //! module's execution types ([`GraphHandle`], [`Routed`], and the
 //! rows-oracle route [`Routed::rows_checked`]) and the `files`
-//! submodule's rows-oracle machinery (the [`Oracle`] table type, the one
+//! submodule's rows-oracle machinery (the [`OracleFile`] table type, the one
 //! loader and validation, the per-scale file-name convention) — and
 //! never imports the runner or the other lanes.
 
-use std::path::PathBuf;
-
-use super::files::Oracle;
+use super::files::OracleFile;
 use super::graph::{CorpusLane, GraphHandle, Routed};
 use super::load_oracle;
 use super::report::graph_benchmark_ldbc_store_line;
@@ -36,8 +34,8 @@ use crate::Result;
 
 /// A rows-oracle store lane: the graph-benchmark-ldbc store (boxed — a
 /// store's database and connection dwarf every other lane's state), the
-/// oracle each executed entry is answer-checked with, and the oracle
-/// file's path. The path is derived ONCE at build —
+/// oracle each executed entry is answer-checked with, held with its
+/// file's path ([`OracleFile`]). The path is derived ONCE at build —
 /// [`Workload::oracle_path`], the one derivation the loader, the
 /// build-time validation and the route's miss text share — and the lane
 /// stores it; it carries no workload beyond that derivation.
@@ -48,8 +46,7 @@ use crate::Result;
 /// fails loudly at load, never reuses another scale's rows.)
 pub(super) struct RowsOracleStoreLane {
     graph: Box<GraphHandle>,
-    oracle: Oracle,
-    oracle_path: PathBuf,
+    oracle: OracleFile,
     line: String,
 }
 
@@ -61,12 +58,11 @@ impl RowsOracleStoreLane {
         opts: &GraphOptions,
         queries: &[CorpusQuery],
     ) -> Result<Self> {
-        let (oracle, path) = load_oracle(workload, opts.sf, queries)?;
+        let oracle = load_oracle(workload, opts.sf, queries)?;
         let (graph, origin) = GraphHandle::open_graph_benchmark_ldbc(opts)?;
         Ok(Self {
             graph: Box::new(graph),
             oracle,
-            oracle_path: path,
             line: graph_benchmark_ldbc_store_line(origin),
         })
     }
@@ -83,11 +79,10 @@ impl RowsOracleStoreLane {
         graph: GraphHandle,
         queries: &[CorpusQuery],
     ) -> Result<Self> {
-        let (oracle, path) = load_oracle(workload, ScaleFactor::Sf0_1, queries)?;
+        let oracle = load_oracle(workload, ScaleFactor::Sf0_1, queries)?;
         Ok(Self {
             graph: Box::new(graph),
             oracle,
-            oracle_path: path,
             line: String::new(),
         })
     }
@@ -106,13 +101,8 @@ impl CorpusLane for RowsOracleStoreLane {
     /// pin entry resolves through the shared non-executing table, and an
     /// `ok` id with no row is refused.
     fn route<'a>(&'a mut self, q: &'a CorpusQuery) -> Result<Routed<'a>> {
-        let Self {
-            graph,
-            oracle,
-            oracle_path,
-            ..
-        } = self;
-        Routed::rows_checked(&mut graph.conn, None, oracle, oracle_path, q)
+        let Self { graph, oracle, .. } = self;
+        Routed::rows_checked(&mut graph.conn, oracle, q)
     }
 }
 

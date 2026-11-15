@@ -116,7 +116,7 @@ on memory — the walk-budget / memory-blow-up acceptance cases
 `ok` only by running and passing, never by reclassification.
 
 Initial ok-set, recorded 2026-11-02 against the engine at this PR
-(`query-latency corpus --workload snb-bi --sf 0.1`, graph-benchmark-ldbc SF0.1, release,
+(`query-latency corpus snb-bi --sf 0.1`, graph-benchmark-ldbc SF0.1, release,
 reused store): 11 `ok` of 11 answered, 5 `kept` planned, peak RSS
 1.90 GB, slowest `ok` entry bi-18 at 2.0 s (bi-16 1.7 s, bi-01 1.0 s;
 the rest under 0.35 s), rows 1-100 per entry — bi-01 12, bi-02 100,
@@ -126,7 +126,7 @@ bi-16 2, bi-18 20.
 ## How to run
 
 ```bash
-cargo run --release -p relate-query-latency -- corpus --workload snb-bi --sf 0.1
+cargo run --release -p relate-query-latency -- corpus snb-bi --sf 0.1
 # the gated test (loads the graph-benchmark-ldbc SF0.1 graph):
 RELATE_QUERY_LATENCY=1 cargo test --profile corpus -p relate-query-latency --test corpus snb_bi
 ```

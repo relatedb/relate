@@ -1,13 +1,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::parser::ValueSource;
-use clap::{
-    ArgMatches, Args as ClapArgs, Command as ClapCommand, CommandFactory, FromArgMatches, Parser,
-    Subcommand,
-};
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use relate_datasets::fraud::FraudConfig;
-use relate_query_latency::corpus::{run_corpus, CorpusConfig, Lane, SeedPolicy, Workload};
+use relate_query_latency::corpus::{run_corpus, CorpusConfig, Lane, SeedPolicy, StoreWorkload};
 use relate_query_latency::fetch::{data_root, ensure_dataset};
 use relate_query_latency::profile::{profile, ProfileOptions, Sampler};
 use relate_query_latency::run::RunConfig;
@@ -29,8 +25,7 @@ struct Args {
 /// The data cache flag, shared by every subcommand that reads the data
 /// set. The `RELATE_QUERY_LATENCY_DATA` fallback lives in
 /// [`data_root`], not the clap arg — a relocated cache via the env var
-/// is not a passed `--data` (the corpus lane check reads passed-ness
-/// from clap's value_source).
+/// is not a passed `--data`.
 #[derive(ClapArgs, Debug)]
 struct DataArgs {
     /// Data cache directory (default: $RELATE_QUERY_LATENCY_DATA,
@@ -53,22 +48,18 @@ impl DataArgs {
 }
 
 /// The graph-benchmark-ldbc-store flags, shared by the workloads that
-/// run over the graph-benchmark-ldbc store: which workloads those are is
-/// [`flag_groups`]'s one home (each group's `served` list is derived
-/// from it); the flag docs below spell their `(<workloads> only)` help
-/// tags, and the lane-tag test keeps those tags in step with that
-/// table.
+/// run over the graph-benchmark-ldbc store: the [`CorpusCommand`]
+/// subcommands that flatten this group are the one home of which
+/// workloads those are.
 #[derive(ClapArgs, Debug)]
 struct GraphBenchmarkLdbcStoreArgs {
-    /// Scale factor (pathdb, snb-bi, agg-stress and equi-join only):
-    /// pathdb's params file and the store it loads — SF1 runs the
+    /// Scale factor: pathdb's params file and the store it loads — SF1 runs the
     /// 26-query subset recorded for it; snb-bi's params file and store,
     /// recorded at SF0.1 only; agg-stress's and equi-join's oracle
     /// files and stores, recorded at SF0.1 only.
     #[arg(long, default_value = "0.1")]
     sf: ScaleFactor,
-    /// Reuse the graph-benchmark-ldbc store at PATH (pathdb, snb-bi,
-    /// agg-stress and equi-join only) — opened
+    /// Reuse the graph-benchmark-ldbc store at PATH — opened
     /// read-only; when PATH does not exist, load into it, checkpoint it
     /// and mark it complete for the next run (same marker rules as
     /// `run`).
@@ -93,23 +84,18 @@ impl GraphBenchmarkLdbcStoreArgs {
 }
 
 /// The data-cache flags, shared by the corpus workloads that fetch a
-/// data set: which workloads those are is [`flag_groups`]'s one home
-/// (each group's `served` list is derived from it); the flag docs below
-/// spell their `(<workloads> only)` help tags, and the lane-tag test
-/// keeps those tags in step with that table. The `RELATE_QUERY_LATENCY_DATA`
-/// fallback lives in [`data_root`], not the clap arg — a relocated cache
-/// via the env var is not a passed `--data` (the corpus lane check reads
-/// passed-ness from clap's value_source).
+/// data set: the [`CorpusCommand`] subcommands that flatten this group
+/// are the one home of which workloads those are. The
+/// `RELATE_QUERY_LATENCY_DATA` fallback lives in [`data_root`], not the
+/// clap arg.
 #[derive(ClapArgs, Debug)]
 struct DataLaneArgs {
-    /// Data cache directory the data sets fetch and load from (pathdb,
-    /// snb-bi, ukrailway, agg-stress and equi-join only). Default:
+    /// Data cache directory the data sets fetch and load from. Default:
     /// $RELATE_QUERY_LATENCY_DATA,
     /// else target/query-latency/data.
     #[arg(long = "data")]
     data: Option<PathBuf>,
-    /// Fail instead of downloading a data set that is not cached
-    /// (pathdb, snb-bi, ukrailway, agg-stress and equi-join only).
+    /// Fail instead of downloading a data set that is not cached.
     #[arg(long)]
     offline: bool,
 }
@@ -127,31 +113,25 @@ impl DataLaneArgs {
     }
 }
 
-/// The pathdb lane's own flags (`--workload pathdb`): the group's own
-/// clap arguments are the one home of which flags belong to this lane —
-/// the wrong-lane check enumerates them from here, never a second
-/// table.
+/// The pathdb lane's own flags (`corpus pathdb`).
 #[derive(ClapArgs, Debug)]
 struct PathdbLaneArgs {
-    /// Seed policy (pathdb only): median re-resolves every seed key
+    /// Seed policy: median re-resolves every seed key
     /// with the degree-median policy and reports the diffs; recorded
     /// runs the pinned params file as-is.
     #[arg(long, default_value = "median")]
     seed_policy: SeedPolicy,
 }
 
-/// The fraud lane's flags (`--workload fraud-qpp`): the group's own
-/// clap arguments are the one home of which flags belong to this lane —
-/// the wrong-lane check enumerates them from here, never a second
-/// table.
+/// The fraud lane's flags (`corpus fraud-qpp`).
 #[derive(ClapArgs, Debug)]
 struct FraudLaneArgs {
-    /// Fraud generator scale (fraud-qpp only): 1.0 = 10,000 accounts.
+    /// Fraud generator scale: 1.0 = 10,000 accounts.
     /// Default: the datasets crate's env-gated scale
     /// (RELATE_FULL_DATA=1 → 1.0, else the CI scale 0.05).
     #[arg(long)]
     fraud_scale: Option<f64>,
-    /// Fraud generator seed (fraud-qpp only): planted ids are stable
+    /// Fraud generator seed: planted ids are stable
     /// per seed. Default: the datasets crate's CI seed.
     #[arg(long)]
     fraud_seed: Option<u64>,
@@ -271,44 +251,173 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Run a QPP/LDBC corpus workload (ADR-0479, LABS-646): the PathDB
-    /// RPQ translations, the LDBC SNB BI analytics queries, the
-    /// in-house aggregation-stress queries and the in-house equi-join
-    /// queries over the graph-benchmark-ldbc store, the in-house fraud QPP suite
-    /// over generated and fixture graphs, or the verified UK railway
-    /// graph queries over the workload's own imported graph. `ok`
-    /// entries must run (and
-    /// answer-match where an oracle exists), `kept` entries must plan,
-    /// `error-pin` entries must fail with their authored error. Exit 1
-    /// when any entry misses its expectation.
+    /// Run a QPP/LDBC corpus workload (ADR-0479, LABS-646), one
+    /// subcommand per workload, each carrying only the flags its lane
+    /// runs. `ok` entries must run (and answer-match where an oracle
+    /// exists), `kept` entries must plan, `error-pin` entries must fail
+    /// with their authored error. Exit 1 when any entry misses its
+    /// expectation.
     Corpus {
-        /// The workload: pathdb, snb-bi, fraud-qpp, ukrailway,
-        /// agg-stress or equi-join.
-        #[arg(long, default_value = "pathdb")]
-        workload: Workload,
-        /// Per-entry timeout in seconds (default: the lane's own
-        /// per-entry bound, which reads its own facts — see
-        /// `Lane::default_timeout`; a timed-out `ok` entry fails the
-        /// run — the ratchet).
-        #[arg(long, value_parser = seconds_parser)]
-        timeout: Option<Duration>,
-        /// Extra timed executions of entries faster than 1.5 s, for the
-        /// min/median columns (0 measures once).
-        #[arg(long, default_value_t = 2)]
-        repeats: usize,
+        #[command(subcommand)]
+        workload: CorpusCommand,
+    },
+}
+
+/// The flags every corpus workload runs under.
+#[derive(ClapArgs, Debug)]
+struct CorpusRunArgs {
+    /// Per-entry timeout in seconds (default: the lane's own
+    /// per-entry bound, which reads its own facts — see
+    /// `Lane::default_timeout`; a timed-out `ok` entry fails the
+    /// run — the ratchet).
+    #[arg(long, value_parser = seconds_parser)]
+    timeout: Option<Duration>,
+    /// Extra timed executions of entries faster than 1.5 s, for the
+    /// min/median columns (0 measures once).
+    #[arg(long, default_value_t = 2)]
+    repeats: usize,
+    /// Report JSON path (default:
+    /// target/query-latency/report-corpus-<workload>[-sf<SF>].json).
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+/// The corpus workloads, one subcommand each: each flattens only the
+/// flag groups its lane serves, so clap itself refuses a flag of
+/// another lane — the subcommand's own argument list is the one home of
+/// which flags belong to which workload. The subcommand names are the
+/// [`Workload::as_str`](relate_query_latency::corpus::Workload::as_str)
+/// names (a test pins the correspondence).
+#[derive(Subcommand, Debug)]
+enum CorpusCommand {
+    /// The PathDB RPQ translations over the graph-benchmark-ldbc store.
+    Pathdb {
+        #[command(flatten)]
+        run: CorpusRunArgs,
         #[command(flatten)]
         graph_benchmark_ldbc: GraphBenchmarkLdbcStoreArgs,
         #[command(flatten)]
         data: DataLaneArgs,
         #[command(flatten)]
         pathdb: PathdbLaneArgs,
+    },
+    /// The LDBC SNB BI analytics queries over the graph-benchmark-ldbc
+    /// store.
+    SnbBi {
+        #[command(flatten)]
+        run: CorpusRunArgs,
+        #[command(flatten)]
+        graph_benchmark_ldbc: GraphBenchmarkLdbcStoreArgs,
+        #[command(flatten)]
+        data: DataLaneArgs,
+    },
+    /// The in-house fraud QPP suite over generated and fixture graphs.
+    FraudQpp {
+        #[command(flatten)]
+        run: CorpusRunArgs,
         #[command(flatten)]
         fraud: FraudLaneArgs,
-        /// Report JSON path (default:
-        /// target/query-latency/report-corpus-<workload>[-sf<SF>].json).
-        #[arg(long)]
-        out: Option<PathBuf>,
     },
+    /// The verified UK railway graph queries over the workload's own
+    /// imported graph.
+    Ukrailway {
+        #[command(flatten)]
+        run: CorpusRunArgs,
+        #[command(flatten)]
+        data: DataLaneArgs,
+    },
+    /// The in-house aggregation-stress queries over the
+    /// graph-benchmark-ldbc store.
+    AggStress {
+        #[command(flatten)]
+        run: CorpusRunArgs,
+        #[command(flatten)]
+        graph_benchmark_ldbc: GraphBenchmarkLdbcStoreArgs,
+        #[command(flatten)]
+        data: DataLaneArgs,
+    },
+    /// The in-house equi-join queries over the graph-benchmark-ldbc
+    /// store.
+    EquiJoin {
+        #[command(flatten)]
+        run: CorpusRunArgs,
+        #[command(flatten)]
+        graph_benchmark_ldbc: GraphBenchmarkLdbcStoreArgs,
+        #[command(flatten)]
+        data: DataLaneArgs,
+    },
+}
+
+impl CorpusCommand {
+    /// The lane the chosen workload runs and the shared run flags: each
+    /// arm reads only the groups its subcommand declares, so no lane
+    /// ever sees a flag it does not own. The lane is built first and its
+    /// policies (default timeout, report name) resolve off the built
+    /// value — each carries its own facts (the store lanes' graph scale
+    /// factor, the fraud lane's generator knobs, the ukrailway lane's
+    /// data-cache knobs).
+    fn into_lane(self) -> (Lane, CorpusRunArgs) {
+        match self {
+            Self::Pathdb {
+                run,
+                graph_benchmark_ldbc,
+                data,
+                pathdb,
+            } => (
+                Lane::Pathdb {
+                    graph: graph_benchmark_ldbc.graph_options(&data),
+                    seed_policy: pathdb.seed_policy,
+                },
+                run,
+            ),
+            Self::SnbBi {
+                run,
+                graph_benchmark_ldbc,
+                data,
+            } => (
+                Lane::GraphStore {
+                    workload: StoreWorkload::SnbBi,
+                    graph: graph_benchmark_ldbc.graph_options(&data),
+                },
+                run,
+            ),
+            Self::FraudQpp { run, fraud } => (
+                Lane::Fraud {
+                    fraud: fraud.into_config(),
+                },
+                run,
+            ),
+            Self::Ukrailway { run, data } => (
+                Lane::Ukrailway {
+                    data_root: data.root(),
+                    download: data.downloads(),
+                },
+                run,
+            ),
+            Self::AggStress {
+                run,
+                graph_benchmark_ldbc,
+                data,
+            } => (
+                Lane::GraphStore {
+                    workload: StoreWorkload::AggStress,
+                    graph: graph_benchmark_ldbc.graph_options(&data),
+                },
+                run,
+            ),
+            Self::EquiJoin {
+                run,
+                graph_benchmark_ldbc,
+                data,
+            } => (
+                Lane::GraphStore {
+                    workload: StoreWorkload::EquiJoin,
+                    graph: graph_benchmark_ldbc.graph_options(&data),
+                },
+                run,
+            ),
+        }
+    }
 }
 
 /// A query id: one of [`QIDS`].
@@ -335,189 +444,8 @@ fn seconds_parser(s: &str) -> Result<Duration, String> {
         .map_err(|_| format!("{s:?} is not a non-negative number of seconds"))
 }
 
-/// One lane group of the corpus subcommand: the group's own clap
-/// declaration (the one home of which flags belong to which lane) and
-/// the workloads it serves — the one fact each row carries. The
-/// refusal's lane name and (tests only) the help tag are renderings of
-/// `served`, derived in [`LaneGroup::new`], never stated per row. The
-/// wrong-lane check and the help-tag test both iterate THIS table,
-/// never a second hand-maintained one.
-struct LaneGroup {
-    cmd: ClapCommand,
-    served: Vec<Workload>,
-    name: String,
-    #[cfg(test)]
-    tag: String,
-}
-
-impl LaneGroup {
-    /// One row from the fact it carries: `name` reads back as `the
-    /// <workloads> lane(s)` in the wrong-lane refusal, the test-only
-    /// `tag` as `(<workloads> only)` in each flag's help — the workloads
-    /// joined `a and b` for two, `a, b and c` for more. A group with no
-    /// served workload is impossible by construction (every row of
-    /// [`lane_groups`] serves at least one) and enforced here, never
-    /// papered over with a fabricated lane name.
-    fn new(cmd: ClapCommand, served: Vec<Workload>) -> Self {
-        let names: Vec<&str> = served.iter().map(|w| w.as_str()).collect();
-        // `split_last` yields the last element and the head before it;
-        // an empty head is the same fact as "serves exactly one
-        // workload", read once and driving both renderings.
-        let (last, head) = names
-            .split_last()
-            .expect("a lane group serves at least one workload");
-        let (joined, lanes) = if head.is_empty() {
-            ((*last).to_string(), "")
-        } else {
-            (format!("{} and {last}", head.join(", ")), "s")
-        };
-        Self {
-            cmd,
-            served,
-            name: format!("the {joined} lane{lanes}"),
-            #[cfg(test)]
-            tag: format!("({joined} only)"),
-        }
-    }
-}
-
-/// The corpus subcommand's flag groups, spelled ONCE: the enum, its
-/// `ALL` list and each group's clap command are all emitted from this
-/// table, so adding a flag group cannot leave a hand-maintained list
-/// behind — a variant only in the enum fails `flag_group_cmd`'s
-/// exhaustive match, and one missing from `ALL` never reaches
-/// [`lane_groups`]. One per group of lane-scoped clap arguments: the
-/// graph-benchmark-ldbc-store group (the scale factor the store-backed
-/// tables run at and the store they reuse), the data-cache group (the
-/// cache directory and the offline refusal), the pathdb group (the seed
-/// policy), the fraud group (the generator knobs).
-macro_rules! spell_flag_groups {
-    ($($variant:ident)*) => {
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum FlagGroup {
-            $($variant,)*
-        }
-
-        impl FlagGroup {
-            /// Every flag group, derived from the same spelling as the
-            /// variants — never a second list to keep in step. The
-            /// length counts the same tokens (`stringify!` keeps each a
-            /// literal), so a variant added to the table appears in ALL
-            /// or the array does not type-check.
-            const ALL: [FlagGroup; [$(stringify!($variant)),*].len()] = [$(Self::$variant),*];
-        }
-    };
-}
-
-spell_flag_groups! {
-    GraphBenchmarkLdbcStore
-    DataCache
-    Pathdb
-    Fraud
-}
-
-/// The one group's own clap arguments — exhaustive over [`FlagGroup`],
-/// so a new variant fails this match until its command is stated.
-fn flag_group_cmd(group: FlagGroup) -> ClapCommand {
-    match group {
-        FlagGroup::GraphBenchmarkLdbcStore => GraphBenchmarkLdbcStoreArgs::augment_args(
-            ClapCommand::new("graph-benchmark-ldbc-store"),
-        ),
-        FlagGroup::DataCache => DataLaneArgs::augment_args(ClapCommand::new("data-cache")),
-        FlagGroup::Pathdb => PathdbLaneArgs::augment_args(ClapCommand::new("pathdb")),
-        FlagGroup::Fraud => FraudLaneArgs::augment_args(ClapCommand::new("fraud")),
-    }
-}
-
-/// Which flag groups a workload carries — the ONE home of the
-/// lane-group membership, exhaustive over the workload vocabulary (a
-/// new [`Workload`] variant fails this match until its groups are
-/// stated, so a graph-carrying workload can never again be silently
-/// absent from a group's served list). [`lane_groups`] derives every
-/// group's served list from this table and [`Workload::ALL`]; no site
-/// re-spells the membership.
-fn flag_groups(w: Workload) -> &'static [FlagGroup] {
-    match w {
-        Workload::Pathdb => &[
-            FlagGroup::GraphBenchmarkLdbcStore,
-            FlagGroup::DataCache,
-            FlagGroup::Pathdb,
-        ],
-        Workload::FraudQpp => &[FlagGroup::Fraud],
-        Workload::SnbBi | Workload::AggStress | Workload::EquiJoin => {
-            &[FlagGroup::GraphBenchmarkLdbcStore, FlagGroup::DataCache]
-        }
-        Workload::Ukrailway => &[FlagGroup::DataCache],
-    }
-}
-
-/// The lane groups, one row per flag group of the corpus subcommand.
-/// Every group's `served` list is derived — [`Workload::ALL`] filtered
-/// through [`flag_groups`] — so the membership lives once, in the
-/// exhaustive table, and a group with no served workload is refused by
-/// [`LaneGroup::new`] rather than silently rendering a fabricated lane
-/// name.
-fn lane_groups() -> Vec<LaneGroup> {
-    FlagGroup::ALL
-        .into_iter()
-        .map(|group| {
-            let served: Vec<Workload> = Workload::ALL
-                .iter()
-                .copied()
-                .filter(|w| flag_groups(*w).contains(&group))
-                .collect();
-            LaneGroup::new(flag_group_cmd(group), served)
-        })
-        .collect()
-}
-
-/// Each lane carries only its own flags: a flag of a lane the workload
-/// does not run is a mistyped run, refused loudly — never a silently
-/// ignored knob. Which flags belong to which lane has one home — the
-/// lane groups' own clap arguments, enumerated with the workloads each
-/// group serves in [`lane_groups`] — and passed-ness is clap's own fact
-/// (`value_source`), read from the corpus subcommand's raw matches:
-/// never a second hand-maintained table.
-fn refuse_wrong_lane(workload: Workload, matches: &ArgMatches) -> Result<(), String> {
-    let passed_of = |cmd: &ClapCommand| -> Vec<String> {
-        cmd.get_arguments()
-            .filter(|arg| {
-                matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine)
-            })
-            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
-            .collect()
-    };
-    for group in lane_groups() {
-        let passed = passed_of(&group.cmd);
-        if !passed.is_empty() && !group.served.contains(&workload) {
-            return Err(format!(
-                "{} configure(s) {} only, not --workload {workload}",
-                passed.join(" "),
-                group.name
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The corpus subcommand's workload, read from its RAW matches — the one
-/// typed value the wrong-lane check needs before the typed extraction
-/// consumes them. The flag's clap default makes the value always present.
-fn workload_of(matches: &ArgMatches) -> Workload {
-    *matches
-        .get_one::<Workload>("workload")
-        .expect("the corpus subcommand carries --workload")
-}
-
 fn run() -> Result<i32, String> {
-    let mut matches = Args::command().get_matches();
-    // The wrong-lane refusal reads passed-ness from the corpus
-    // subcommand's raw matches, before the typed extraction consumes
-    // them — a mistyped command line fails before any lane builds.
-    if let Some(corpus) = matches.subcommand_matches("corpus") {
-        refuse_wrong_lane(workload_of(corpus), corpus)?;
-    }
-    let args = Args::from_arg_matches_mut(&mut matches).unwrap_or_else(|e| e.exit());
+    let args = Args::parse();
     match args.command {
         Command::Fetch { sf, data } => {
             let dir = ensure_dataset(&data.root(), sf, true)?;
@@ -575,56 +503,18 @@ fn run() -> Result<i32, String> {
             println!("{}", summary.out_dir);
             Ok(0)
         }
-        Command::Corpus {
-            workload,
-            timeout,
-            repeats,
-            graph_benchmark_ldbc,
-            data,
-            pathdb,
-            fraud,
-            out,
-        } => {
-            // The lane is built first, then its policies resolve off the
-            // built value: each arm carries its own facts — the
-            // graph-benchmark-ldbc-store lanes' graph scale factor, the fraud lane's
-            // generator knobs, the ukrailway lane's data-cache knobs —
-            // so the default timeout and the report name read the lane,
-            // never a scale factor resolved before it (a passed `--sf`
-            // on a fraud or ukrailway run was already refused before the
-            // typed extraction; only the graph-benchmark-ldbc-store lanes carry one).
-            // The graph-benchmark-ldbc-store lanes' one shared derivation,
-            // built once: each store arm below takes it, and the fraud and
-            // ukrailway arms never see a graph.
-            let graph = graph_benchmark_ldbc.graph_options(&data);
-            let lane = match workload {
-                Workload::Pathdb => Lane::Pathdb {
-                    graph,
-                    // The lane owns the policy; the other arms carry
-                    // none, so their runs never record a policy they
-                    // cannot run (and a passed `--seed-policy` was
-                    // already refused above).
-                    seed_policy: pathdb.seed_policy,
-                },
-                Workload::SnbBi => Lane::SnbBi { graph },
-                Workload::AggStress => Lane::AggStress { graph },
-                Workload::EquiJoin => Lane::EquiJoin { graph },
-                Workload::FraudQpp => Lane::Fraud {
-                    fraud: fraud.into_config(),
-                },
-                Workload::Ukrailway => Lane::Ukrailway {
-                    data_root: data.root(),
-                    download: data.downloads(),
-                },
-            };
-            let timeout = timeout.unwrap_or_else(|| lane.default_timeout());
+        Command::Corpus { workload } => {
+            let (lane, run) = workload.into_lane();
+            let timeout = run.timeout.unwrap_or_else(|| lane.default_timeout());
             let config = CorpusConfig {
                 lane,
                 timeout,
-                repeats,
+                repeats: run.repeats,
             };
             let report = run_corpus(&config)?;
-            let out = out.unwrap_or_else(|| work_root().join(config.lane.report_name()));
+            let out = run
+                .out
+                .unwrap_or_else(|| work_root().join(config.lane.report_name()));
             report.write_json(&out)?;
             print!("{}", report.table());
             eprintln!("query-latency: wrote {}", out.display());
@@ -635,196 +525,99 @@ fn run() -> Result<i32, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use clap::{CommandFactory, Parser};
+    use relate_query_latency::corpus::Workload;
 
     use super::*;
 
-    /// The corpus subcommand's matches, parsed from a raw argv — the
-    /// same matches `run()` hands the wrong-lane check. Accepts owned
-    /// and borrowed argv spellings alike; every item becomes one argv
-    /// word.
-    fn corpus_matches<S: Into<OsString> + Clone>(argv: &[S]) -> ArgMatches {
-        Args::command()
-            .try_get_matches_from(
-                std::iter::once(OsString::from("query-latency"))
-                    .chain(argv.iter().cloned().map(Into::into)),
-            )
-            .unwrap()
-            .subcommand_matches("corpus")
-            .expect("the corpus subcommand")
-            .clone()
+    /// The corpus subcommand's parse of a raw argv.
+    fn parse_corpus(argv: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("query-latency").chain(argv.iter().copied()))
     }
 
-    /// The one parse-then-refuse-then-assert ritual every refusal case
-    /// below runs: parse `argv` as the CLI would, refuse, and require
-    /// exactly `expected`.
-    fn assert_refused<S: Into<OsString> + Clone>(argv: &[S], expected: &str) {
-        let m = corpus_matches(argv);
-        assert_eq!(
-            refuse_wrong_lane(workload_of(&m), &m).unwrap_err(),
-            expected
-        );
-    }
-
-    /// The lane groups' own clap declarations are the one home of which
-    /// flags are lane-scoped — each group IS the flag set of the lanes
-    /// it serves — and the help's lane tags document exactly that:
-    /// every flag a group declares carries its group's tag in the
-    /// corpus help, and every tagged flag is declared by that group. A
-    /// lane-scoped flag added without its tag fails here instead of
-    /// silently escaping the documentation. The table the check walks
-    /// is [`lane_groups`] itself, never a second hand-maintained one.
+    /// The corpus subcommands ARE the workload vocabulary: one
+    /// subcommand per [`Workload`], named by [`Workload::as_str`] —
+    /// a workload added without its subcommand (or a subcommand named
+    /// apart from its workload) fails here.
     #[test]
-    fn lane_scoped_flags_are_tagged_with_their_lane() {
-        let corpus = Args::command()
+    fn corpus_subcommands_are_the_workload_vocabulary() {
+        let cmd = Args::command();
+        let corpus = cmd
             .find_subcommand("corpus")
-            .expect("the corpus subcommand")
-            .clone();
-        let help_of = |long: &str| -> String {
-            corpus
-                .get_arguments()
-                .find(|arg| arg.get_long() == Some(long))
-                .and_then(|arg| arg.get_help())
-                .map(|h| h.to_string())
-                .unwrap_or_default()
-        };
-        for group in lane_groups() {
-            let mut declared: Vec<String> = group
-                .cmd
-                .get_arguments()
-                .filter_map(|arg| arg.get_long().map(str::to_string))
-                .collect();
-            declared.sort();
-            for long in &declared {
-                assert!(
-                    help_of(long).contains(&group.tag),
-                    "--{long}: a flag of {} must carry the {} tag",
-                    group.name,
-                    group.tag
-                );
-            }
-            for arg in corpus.get_arguments() {
-                let long = arg
-                    .get_long()
-                    .expect("every corpus argument is a long flag")
-                    .to_string();
-                let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
-                if help.contains(&group.tag) {
-                    assert!(
-                        declared.contains(&long),
-                        "--{long} is tagged {} but not declared by {}",
-                        group.tag,
-                        group.name
-                    );
-                }
-            }
-        }
+            .expect("the corpus subcommand");
+        let mut names: Vec<&str> = corpus.get_subcommands().map(|c| c.get_name()).collect();
+        let mut want: Vec<&str> = Workload::ALL.iter().map(|w| w.as_str()).collect();
+        names.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(names, want);
     }
 
-    /// The wrong-lane refusal itself, both directions derived from the
-    /// one table: every flag of every lane group is asserted against
-    /// every workload — refused with the group's own name (the same
-    /// rendering [`refuse_wrong_lane`] produces) on each workload the
-    /// group does not serve, passed on each it does — so a new group,
-    /// flag or workload cannot leave a hand-maintained complement list
-    /// behind. The sample invocation a flag passes is derived from the
-    /// flag's own clap facts: a `SetTrue` flag (`--offline`) passes
-    /// itself, a value-taking flag passes its clap default, else its
-    /// first possible value, else `1` — the shape every remaining
-    /// value-taking flag of the corpus subcommand reads. Passed-ness is
-    /// read from real parsed matches — clap's value_source, the same
-    /// fact `run()` consults.
+    /// Each subcommand carries only its own lane's flags: a flag of
+    /// another lane is a clap parse error (a mistyped run, never a
+    /// silently ignored knob), and a flag the lane owns parses.
     #[test]
-    fn wrong_lane_flags_are_refused_naming_the_other_lane() {
-        // A clean command line of every workload passes — the graph-benchmark-ldbc-store
-        // flags (a passed `--sf` and `--store` among them) on either
-        // graph-benchmark-ldbc-store workload, the data-cache flags on every
-        // data-fetching workload, included.
-        for clean in [
-            vec!["corpus", "--workload", "pathdb"],
-            vec!["corpus", "--workload", "snb-bi"],
-            vec!["corpus", "--workload", "fraud-qpp"],
-            vec!["corpus", "--workload", "ukrailway"],
-            vec!["corpus", "--workload", "agg-stress"],
-            vec!["corpus", "--workload", "equi-join"],
+    fn each_workload_accepts_only_its_own_lane_flags() {
+        for ok in [
             vec![
                 "corpus",
-                "--workload",
-                "snb-bi",
+                "pathdb",
                 "--sf",
                 "0.1",
-                "--store",
-                "/tmp/s.rl",
+                "--seed-policy",
+                "recorded",
             ],
-            vec!["corpus", "--workload", "ukrailway", "--data", "/tmp/cache"],
-            vec!["corpus", "--workload", "ukrailway", "--offline"],
+            vec!["corpus", "pathdb", "--store", "/tmp/s.rl", "--offline"],
+            vec!["corpus", "snb-bi", "--sf", "0.1", "--store", "/tmp/s.rl"],
             vec![
                 "corpus",
-                "--workload",
+                "fraud-qpp",
+                "--fraud-scale",
+                "0.05",
+                "--fraud-seed",
+                "7",
+            ],
+            vec!["corpus", "ukrailway", "--data", "/tmp/cache", "--offline"],
+            vec![
+                "corpus",
                 "agg-stress",
                 "--sf",
                 "0.1",
-                "--store",
-                "/tmp/s.rl",
                 "--data",
                 "/tmp/cache",
             ],
+            vec!["corpus", "equi-join", "--timeout", "5", "--repeats", "0"],
         ] {
-            let m = corpus_matches(&clean);
-            assert!(
-                refuse_wrong_lane(workload_of(&m), &m).is_ok(),
-                "{clean:?} is a clean command line"
-            );
+            assert!(parse_corpus(&ok).is_ok(), "{ok:?} is a clean command line");
         }
-        for group in lane_groups() {
-            for arg in group.cmd.get_arguments() {
-                let long = format!(
-                    "--{}",
-                    arg.get_long()
-                        .expect("every lane-group argument is a long flag")
-                );
-                let mut invocation = vec![long.clone()];
-                // A `SetTrue` flag takes no value; every other argument of
-                // the lane groups takes exactly one.
-                if !matches!(arg.get_action(), &clap::ArgAction::SetTrue) {
-                    let value = arg
-                        .get_default_values()
-                        .first()
-                        .map(|v| v.to_string_lossy().into_owned())
-                        .or_else(|| {
-                            arg.get_possible_values()
-                                .first()
-                                .map(|v| v.get_name().to_string())
-                        })
-                        .unwrap_or_else(|| "1".to_string());
-                    invocation.push(value);
-                }
-                for workload in Workload::ALL {
-                    let argv: Vec<String> = [
-                        "corpus".to_string(),
-                        "--workload".to_string(),
-                        workload.as_str().to_string(),
-                    ]
-                    .into_iter()
-                    .chain(invocation.iter().cloned())
-                    .collect();
-                    if group.served.contains(&workload) {
-                        let m = corpus_matches(&argv);
-                        assert!(
-                            refuse_wrong_lane(workload_of(&m), &m).is_ok(),
-                            "{argv:?} is a clean command line"
-                        );
-                    } else {
-                        assert_refused(
-                            &argv,
-                            &format!(
-                                "{long} configure(s) {} only, not --workload {workload}",
-                                group.name
-                            ),
-                        );
-                    }
-                }
-            }
+        for bad in [
+            vec!["corpus", "fraud-qpp", "--sf", "0.1"],
+            vec!["corpus", "fraud-qpp", "--store", "/tmp/s.rl"],
+            vec!["corpus", "fraud-qpp", "--data", "/tmp/cache"],
+            vec!["corpus", "fraud-qpp", "--offline"],
+            vec!["corpus", "ukrailway", "--sf", "0.1"],
+            vec!["corpus", "ukrailway", "--store", "/tmp/s.rl"],
+            vec!["corpus", "snb-bi", "--seed-policy", "recorded"],
+            vec!["corpus", "agg-stress", "--seed-policy", "recorded"],
+            vec!["corpus", "equi-join", "--fraud-scale", "1"],
+            vec!["corpus", "pathdb", "--fraud-seed", "1"],
+        ] {
+            assert!(parse_corpus(&bad).is_err(), "{bad:?} is a wrong-lane flag");
+        }
+        // The workload is required: there is no default lane.
+        assert!(parse_corpus(&["corpus"]).is_err());
+    }
+
+    /// Each subcommand builds the lane of its own workload — the lane's
+    /// derived workload is the subcommand's name.
+    #[test]
+    fn each_subcommand_builds_its_own_lane() {
+        for w in Workload::ALL {
+            let args = parse_corpus(&["corpus", w.as_str()]).unwrap();
+            let Command::Corpus { workload } = args.command else {
+                panic!("the corpus subcommand");
+            };
+            let (lane, _) = workload.into_lane();
+            assert_eq!(lane.workload(), w);
         }
     }
 }

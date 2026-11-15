@@ -169,17 +169,20 @@ fn every_lane(sf: ScaleFactor) -> Vec<Lane> {
             Workload::FraudQpp => Lane::Fraud {
                 fraud: FraudConfig::ci(),
             },
-            Workload::SnbBi => Lane::SnbBi {
+            Workload::SnbBi => Lane::GraphStore {
+                workload: StoreWorkload::SnbBi,
                 graph: graph_opts(sf),
             },
             Workload::Ukrailway => Lane::Ukrailway {
                 data_root: PathBuf::from("/nonexistent"),
                 download: false,
             },
-            Workload::AggStress => Lane::AggStress {
+            Workload::AggStress => Lane::GraphStore {
+                workload: StoreWorkload::AggStress,
                 graph: graph_opts(sf),
             },
-            Workload::EquiJoin => Lane::EquiJoin {
+            Workload::EquiJoin => Lane::GraphStore {
+                workload: StoreWorkload::EquiJoin,
                 graph: graph_opts(sf),
             },
         })
@@ -226,7 +229,8 @@ fn report_names_carry_the_workload_and_scale_factor() {
     // The scale factor really is read from the lane: the same workload
     // at SF1 names its report for SF1.
     assert_eq!(
-        (Lane::SnbBi {
+        (Lane::GraphStore {
+            workload: StoreWorkload::SnbBi,
             graph: graph_opts(ScaleFactor::Sf1),
         })
         .report_name(),

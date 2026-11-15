@@ -303,7 +303,7 @@ and is a prediction, not a measurement.
 6. **Capture the pokec/traverse-bench query list in-repo.** Without it the
    75% target has no denominator for the corpus the ticket measures. Cheap;
    a prerequisite for any honest coverage claim.
-7. **Re-record the PathDB corpus at HEAD** (`corpus --seed-policy median`,
+7. **Re-record the PathDB corpus at HEAD** (`corpus pathdb --seed-policy median`,
    ADR-0479). Decides whether the 42 `kept` markers are stale. Cheap, and it
    is the only way to know what the frontier actually took.
 8. **Engagement observability** (LABS-1117). Coverage cannot be counted from
