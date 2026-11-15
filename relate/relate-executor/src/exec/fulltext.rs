@@ -40,8 +40,11 @@
 //! `term^B` multiplies a clause's score; both are parsed in [`query`], their
 //! scoring choices are calibrated against Neo4j 2026.09-enterprise.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use relate_core::{Error, PropertyMap, Result, Value};
 
@@ -83,8 +86,8 @@ fn tokenize(text: &str) -> Vec<String> {
 /// One indexed property's tokens for one document. The property travels
 /// with its tokens, so a clause's `property:` filter reads fields directly
 /// instead of indexing back into `detail.properties`.
-struct DocField<'a> {
-    property: &'a str,
+struct DocField {
+    property: Arc<str>,
     tokens: Vec<String>,
 }
 
@@ -115,15 +118,11 @@ fn value_tokens(value: &Value, index: Analyzer) -> Vec<String> {
     }
 }
 
-fn doc_fields<'a>(
-    properties: &'a [String],
-    values: &PropertyMap,
-    index: Analyzer,
-) -> Vec<DocField<'a>> {
+fn doc_fields(properties: &[Arc<str>], values: &PropertyMap, index: Analyzer) -> Vec<DocField> {
     properties
         .iter()
         .map(|property| DocField {
-            property,
+            property: Arc::clone(property),
             tokens: values
                 .get(property)
                 .map(|value| value_tokens(value, index))
@@ -137,13 +136,13 @@ fn doc_fields<'a>(
 /// (for `avgdl`), and every carried term's document frequency. Every
 /// indexed property gets an entry — empty fields included — so the score
 /// read is an invariant, not a lookup that can miss.
-fn field_stats<'a>(
-    docs: &[(i64, Vec<DocField<'_>>)],
-    properties: &'a [String],
-) -> HashMap<&'a str, FieldStats> {
-    let mut stats: HashMap<&str, FieldStats> = properties
+fn field_stats(
+    docs: &[(i64, Vec<DocField>)],
+    properties: &[Arc<str>],
+) -> HashMap<Arc<str>, FieldStats> {
+    let mut stats: HashMap<Arc<str>, FieldStats> = properties
         .iter()
-        .map(|property| (property.as_str(), FieldStats::default()))
+        .map(|property| (Arc::clone(property), FieldStats::default()))
         .collect();
     for (_, doc) in docs {
         for field in doc {
@@ -151,7 +150,7 @@ fn field_stats<'a>(
                 continue;
             }
             let stat = stats
-                .get_mut(field.property)
+                .get_mut(&*field.property)
                 .expect("statistics exist for every indexed property");
             stat.docs += 1;
             stat.total_len += field.tokens.len();
@@ -288,14 +287,17 @@ fn expand_fuzzy(term: &str, max_edits: u8, stat: &FieldStats) -> Vec<Alternative
         .collect()
 }
 
-fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> ResolvedClause<'a> {
+fn resolve_clause<'a>(
+    clause: &Clause,
+    stats: &'a HashMap<Arc<str>, FieldStats>,
+) -> ResolvedClause<'a> {
     let by_field = stats
         .iter()
         .filter(|(field, _)| {
             clause
                 .property
                 .as_deref()
-                .is_none_or(|wanted| wanted == **field)
+                .is_none_or(|wanted| wanted == &***field)
         })
         .map(|(field, stat)| {
             let matched = match &clause.target {
@@ -308,7 +310,7 @@ fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> 
                 }
                 Target::Wildcard(pattern) => FieldMatch::Constant(pattern.clone()),
             };
-            (*field, matched)
+            (&**field, matched)
         })
         .collect();
     ResolvedClause {
@@ -326,29 +328,28 @@ fn resolve_clause<'a>(clause: &Clause, stats: &HashMap<&'a str, FieldStats>) -> 
 /// clause matches no field.
 fn clause_score(
     clause: &ResolvedClause<'_>,
-    doc: &[DocField<'_>],
-    stats: &HashMap<&str, FieldStats>,
+    doc: &[DocField],
+    stats: &HashMap<Arc<str>, FieldStats>,
 ) -> Option<f64> {
-    let mut score = 0.0;
-    let mut any_match = false;
-    for field in doc {
-        let Some(field_match) = clause.by_field.get(field.property) else {
-            continue;
-        };
-        if let Some(field_score) = field_score(field_match, field, stats) {
-            any_match = true;
-            score += field_score;
-        }
-    }
-    any_match.then_some(score * clause.boost)
+    let fields = doc.iter().filter_map(|field| {
+        let field_match = clause.by_field.get(&*field.property)?;
+        field_score(field_match, field, stats)
+    });
+    sum_matches(fields).map(|score| score * clause.boost)
+}
+
+/// The sum of the `Some` scores in `scores`, `None` when none matched — the
+/// "matched anywhere, then added up" rule the clause and field scores share.
+fn sum_matches(scores: impl Iterator<Item = f64>) -> Option<f64> {
+    scores.fold(None, |sum, score| Some(sum.unwrap_or(0.0) + score))
 }
 
 /// One clause's score on one document field, `None` when the field holds no
 /// term the clause matches there.
 fn field_score(
     field_match: &FieldMatch,
-    field: &DocField<'_>,
-    stats: &HashMap<&str, FieldStats>,
+    field: &DocField,
+    stats: &HashMap<Arc<str>, FieldStats>,
 ) -> Option<f64> {
     let alternatives = match field_match {
         FieldMatch::Weighted(alternatives) => alternatives,
@@ -360,37 +361,35 @@ fn field_score(
                 .then_some(1.0);
         }
     };
-    let mut score = 0.0;
-    let mut any_match = false;
-    for alternative in alternatives {
+    // An invariant of the one statistics pass: every indexed property has
+    // an entry.
+    let stat = stats
+        .get(&*field.property)
+        .expect("statistics exist for every indexed property");
+    let n = stat.docs as f64;
+    let dl = field.tokens.len() as f64;
+    let avgdl = stat.total_len as f64 / n;
+    let scores = alternatives.iter().filter_map(|alternative| {
         let tf = field
             .tokens
             .iter()
             .filter(|token| **token == alternative.term)
             .count();
         if tf == 0 {
-            continue;
+            return None;
         }
-        any_match = true;
-        // Both lookups are invariants of the one statistics pass: every
-        // indexed property has an entry, and a term this document
-        // carries was counted into that field's document frequency.
-        let stat = stats
-            .get(field.property)
-            .expect("statistics exist for every indexed property");
+        // A term this document carries was counted into that field's
+        // document frequency.
         let df = stat
             .df
             .get(&alternative.term)
             .copied()
             .expect("a carried token is in the field's document frequency table");
-        let n = stat.docs as f64;
         let idf = (1.0 + (n - df as f64 + 0.5) / (df as f64 + 0.5)).ln();
-        let dl = field.tokens.len() as f64;
-        let avgdl = stat.total_len as f64 / n;
         let tf = tf as f64;
-        score += alternative.weight * idf * tf / (tf + K1 * (1.0 - B + B * dl / avgdl));
-    }
-    any_match.then_some(score)
+        Some(alternative.weight * idf * tf / (tf + K1 * (1.0 - B + B * dl / avgdl)))
+    });
+    sum_matches(scores)
 }
 
 /// The one fulltext scan, windowed: rank the index's matching entities by
@@ -399,14 +398,16 @@ fn field_score(
 /// id ascending), through the shared CIP-225 [`TopWindow`] — the SEARCH
 /// clause's `SKIP`/`OFFSET`/`LIMIT` page.
 pub(crate) fn search(
+    memo: &CorpusMemo,
     graph: &ExecGraph<'_>,
     detail: &IndexDetailSpec,
     query: &str,
     analyzers: Analyzers,
-    offset: usize,
-    limit: usize,
+    window: (usize, usize),
 ) -> Result<Vec<(i64, f64)>> {
+    let (offset, limit) = window;
     rank(
+        memo,
         graph,
         detail,
         query,
@@ -418,12 +419,76 @@ pub(crate) fn search(
 /// The same scan over the whole ranking — the `db.index.fulltext.query*`
 /// procedures return every hit, not a page.
 pub(crate) fn search_all(
+    memo: &CorpusMemo,
     graph: &ExecGraph<'_>,
     detail: &IndexDetailSpec,
     query: &str,
     analyzers: Analyzers,
 ) -> Result<Vec<(i64, f64)>> {
-    rank(graph, detail, query, analyzers, TopWindow::ranking_all())
+    rank(
+        memo,
+        graph,
+        detail,
+        query,
+        analyzers,
+        TopWindow::ranking_all(),
+    )
+}
+
+/// One index's tokenized documents and per-field statistics: a pure
+/// function of the graph and the index's detail and analyzer, so it is
+/// built once and read by every scan over the same index.
+struct Corpus {
+    docs: Vec<(i64, Vec<DocField>)>,
+    stats: HashMap<Arc<str>, FieldStats>,
+}
+
+impl Corpus {
+    fn build(graph: &ExecGraph<'_>, detail: &IndexDetailSpec, index: Analyzer) -> Self {
+        let properties: Vec<Arc<str>> = detail.properties.iter().map(|p| Arc::from(&**p)).collect();
+        // The shared index population (exec::candidates); the document
+        // build and the corpus statistics are this scan's own.
+        let docs: Vec<(i64, Vec<DocField>)> = index_population(graph, detail)
+            .iter()
+            .map(|(id, values)| (*id, doc_fields(&properties, values, index)))
+            .collect();
+        let stats = field_stats(&docs, &properties);
+        Self { docs, stats }
+    }
+}
+
+/// The one corpus a SEARCH clause or `db.index.fulltext.query*` call is
+/// currently scanning, keyed by `(index detail, index analyzer)`. Those
+/// scans run once per input row (and per growth round), yet the corpus is
+/// the same every time: the memo builds it on the first scan and hands the
+/// following scans of that index the shared copy. It keeps exactly one
+/// corpus: a scan of a different index (the procedures evaluate `indexName`
+/// per row) replaces it, so retained memory is the largest single corpus,
+/// never the sum over the indexes a call references. It lives as long as the
+/// one clause or call that owns it, over a graph view that cannot change
+/// beneath it, so nothing invalidates it.
+#[derive(Default)]
+pub(crate) struct CorpusMemo {
+    live: RefCell<Option<(IndexDetailSpec, Analyzer, Rc<Corpus>)>>,
+}
+
+impl CorpusMemo {
+    fn corpus(
+        &self,
+        graph: &ExecGraph<'_>,
+        detail: &IndexDetailSpec,
+        index: Analyzer,
+    ) -> Rc<Corpus> {
+        let mut live = self.live.borrow_mut();
+        if let Some((seen, analyzer, corpus)) = live.as_ref() {
+            if seen == detail && *analyzer == index {
+                return Rc::clone(corpus);
+            }
+        }
+        let corpus = Rc::new(Corpus::build(graph, detail, index));
+        *live = Some((detail.clone(), index, Rc::clone(&corpus)));
+        corpus
+    }
 }
 
 /// The fulltext arm's operand read, the twin of the vector arm's
@@ -441,6 +506,7 @@ pub(crate) fn operand(value: &Value) -> Result<Option<&str>> {
 }
 
 fn rank(
+    memo: &CorpusMemo,
     graph: &ExecGraph<'_>,
     detail: &IndexDetailSpec,
     query: &str,
@@ -451,34 +517,23 @@ fn rank(
     if clauses.is_empty() {
         return Ok(Vec::new());
     }
-    // The shared index population (exec::candidates); the document build
-    // and the corpus statistics are this scan's own.
-    let entities = index_population(graph, detail);
-    let docs: Vec<(i64, Vec<DocField<'_>>)> = entities
-        .iter()
-        .map(|(id, properties)| {
-            (
-                *id,
-                doc_fields(&detail.properties, properties, analyzers.index),
-            )
-        })
-        .collect();
-    let stats = field_stats(&docs, &detail.properties);
+    let corpus = memo.corpus(graph, detail, analyzers.index);
+    let (docs, stats) = (&corpus.docs, &corpus.stats);
     // Fuzzy clauses expand against each field's vocabulary once per scan.
     let clauses: Vec<ResolvedClause<'_>> = clauses
         .iter()
-        .map(|clause| resolve_clause(clause, &stats))
+        .map(|clause| resolve_clause(clause, stats))
         .collect();
     // A query with a MUST clause needs no SHOULD to match; a should-only
     // query needs one (Lucene's BooleanQuery contract).
     let needs_should = !clauses.iter().any(|clause| clause.occur == Occur::Must);
-    for (id, doc) in &docs {
+    for (id, doc) in docs {
         let mut musts_hold = true;
         let mut should_holds = false;
         let mut prohibited = false;
         let mut score = 0.0;
         for clause in &clauses {
-            let contribution = clause_score(clause, doc, &stats);
+            let contribution = clause_score(clause, doc, stats);
             if let Some(contribution) = contribution {
                 score += contribution;
             }
@@ -585,20 +640,56 @@ mod tests {
     #[test]
     fn a_wildcard_group_scores_a_constant_per_field() {
         let stat = stat_of(&[("lampa", 1), ("lampb", 1), ("other", 1)]);
-        let stats = HashMap::from([("name", stat)]);
+        let stats = HashMap::from([(Arc::<str>::from("name"), stat)]);
         let clause = ResolvedClause {
             occur: Occur::Should,
             boost: 2.0,
             by_field: HashMap::from([("name", FieldMatch::Constant(Pattern::must_parse("lamp?")))]),
         };
         let field = |tokens: &[&str]| DocField {
-            property: "name",
+            property: Arc::from("name"),
             tokens: tokens.iter().map(|t| t.to_string()).collect(),
         };
         // Two matching terms, repeated, in a long field: still 1.0 * boost.
         let doc = [field(&["lampa", "lampa", "lampb", "x", "y", "z"])];
         assert_eq!(clause_score(&clause, &doc, &stats), Some(2.0));
         assert_eq!(clause_score(&clause, &[field(&["other"])], &stats), None);
+    }
+
+    #[test]
+    fn the_memo_keeps_one_live_corpus() {
+        let g = crate::graph::Graph::default();
+        let graph = ExecGraph::read(&g);
+        let detail = |property: &str| IndexDetailSpec {
+            kind: crate::redo::IndexKindSpec::Fulltext,
+            relationship: false,
+            labels: vec!["Doc".to_string()],
+            properties: vec![property.to_string()],
+            with_properties: Vec::new(),
+        };
+        let memo = CorpusMemo::default();
+        let first = memo.corpus(&graph, &detail("a"), Analyzer::Standard);
+        // The same index and analyzer shares the first build.
+        assert!(Rc::ptr_eq(
+            &first,
+            &memo.corpus(&graph, &detail("a"), Analyzer::Standard)
+        ));
+        // A different analyzer tokenizes differently and a different index
+        // holds different documents: each replaces the live corpus, so the
+        // memo never holds more than one.
+        let folding = memo.corpus(&graph, &detail("a"), Analyzer::StandardFolding);
+        assert!(!Rc::ptr_eq(&first, &folding));
+        assert!(
+            Rc::strong_count(&first) == 1,
+            "the replaced corpus is released"
+        );
+        let other = memo.corpus(&graph, &detail("b"), Analyzer::Standard);
+        assert!(!Rc::ptr_eq(&folding, &other));
+        assert!(Rc::strong_count(&folding) == 1);
+        assert!(Rc::ptr_eq(
+            &other,
+            &memo.corpus(&graph, &detail("b"), Analyzer::Standard)
+        ));
     }
 
     #[test]

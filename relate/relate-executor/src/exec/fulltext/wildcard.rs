@@ -72,6 +72,23 @@ impl Pattern {
         Ok(Some(Self(parts)))
     }
 
+    /// Whether `term` holds an unescaped `*` or `?` — the test
+    /// [`Self::parse`] makes, without building the pattern or applying its
+    /// part cap.
+    pub(super) fn is_wildcard(term: &str) -> bool {
+        let mut chars = term.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' | '?' => return true,
+                '\\' => {
+                    chars.next();
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// The pattern of a test's wildcard term, which must be one and within
     /// the part cap.
     #[cfg(test)]

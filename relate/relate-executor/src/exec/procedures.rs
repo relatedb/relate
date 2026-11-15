@@ -701,6 +701,8 @@ pub(crate) fn exec_fulltext_query_call(
     };
     let score_key = "score";
     let columns = [entity_column, score_key];
+    // One corpus per index for the whole call, not one per input row.
+    let corpora = fulltext::CorpusMemo::default();
     compose_rows(
         ctx,
         rows,
@@ -736,7 +738,7 @@ pub(crate) fn exec_fulltext_query_call(
                 crate::exec::ddl_options::index_analyzer(&options, &index_name)?,
                 None,
             );
-            let produced = fulltext::search_all(graph, &detail, &query, analyzers)?
+            let produced = fulltext::search_all(&corpora, graph, &detail, &query, analyzers)?
                 .into_iter()
                 .map(|(id, score)| {
                     Cow::Owned(BTreeMap::from([

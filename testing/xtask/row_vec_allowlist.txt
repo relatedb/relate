@@ -77,9 +77,9 @@ exec/project.rs::preprojected_rows # projection/filter stage materializes its ro
 exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::retain_distinct # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::star_rows # projection/filter stage materializes its rows; to be replaced by streaming
-exec/search.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
-exec/search.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
+exec/search/deferred.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
+exec/search/direct.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/unwind.rs::materialize # row-chunk or seed conversion at an operator boundary
 show_catalog.rs::function_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result, not graph-sized

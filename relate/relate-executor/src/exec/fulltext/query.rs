@@ -2,6 +2,8 @@
 //! `property:term`, `term~N` fuzzy, `term*`/`te?m` wildcard, `term^B` boost)
 //! folded into typed [`Clause`]s the scanner ranks.
 
+use std::num::IntErrorKind;
+
 use relate_core::{Error, Result};
 
 use super::fold::fold;
@@ -108,6 +110,10 @@ fn is_separator(c: char) -> bool {
     c.is_whitespace() || matches!(c, '(' | ')')
 }
 
+/// The markers that open a `~N` / `^B` suffix — the one spelling the glue
+/// stage ([`attach_suffixes`]) and the splitter ([`split_suffix`]) share.
+const SUFFIX_MARKERS: [char; 2] = ['~', '^'];
+
 /// Characters the later stages read as syntax; a literal one travels as
 /// `\c` (`Pattern::parse` unescapes it, `find_unescaped` skips it).
 fn is_syntax(c: char) -> bool {
@@ -132,7 +138,8 @@ fn find_unescaped(text: &str, targets: &[char]) -> Option<usize> {
 /// else. A quoted character, or one after a backslash, is literal text: a
 /// syntax character stays escaped for the later stages, `\"` is a quote that
 /// never toggles quoting, and a separator after a backslash joins its word.
-/// A trailing backslash is a typed syntax error.
+/// A trailing backslash and a quote left open at the end of the query are
+/// typed syntax errors.
 fn lex(query: &str) -> Result<Vec<String>> {
     let mut words = Vec::new();
     let mut current = String::new();
@@ -164,6 +171,9 @@ fn lex(query: &str) -> Result<Vec<String>> {
             current.push(c);
         }
     }
+    if quoted {
+        return Err(malformed(query, "a `\"` is never closed"));
+    }
     flush(&mut current);
     Ok(words)
 }
@@ -174,7 +184,7 @@ fn lex(query: &str) -> Result<Vec<String>> {
 fn attach_suffixes(words: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(words.len());
     for word in words {
-        if word.starts_with(['~', '^']) {
+        if word.starts_with(SUFFIX_MARKERS) {
             if let Some(last) = out.last_mut().filter(|last| operator(last).is_none()) {
                 last.push_str(&word);
                 continue;
@@ -297,15 +307,17 @@ impl Parser {
 /// either part optional) and any text that must be read as a new word. A
 /// word with neither marker is returned untouched.
 fn split_suffix(text: &str) -> Result<(&str, Suffix, &str)> {
+    // A bare `~` reaches the most edits Lucene allows.
+    let bare_fuzz = Fuzz::Edits(MAX_FUZZY_EDITS);
     let mut suffix = Suffix {
         fuzzy: None,
         boost: 1.0,
     };
-    let Some(at) = find_unescaped(text, &['~', '^']) else {
+    let Some(at) = find_unescaped(text, &SUFFIX_MARKERS) else {
         return Ok((text, suffix, ""));
     };
     let (term, mut rest) = text.split_at(at);
-    if Pattern::parse(term)?.is_none() && tokenize(term).is_empty() {
+    if !Pattern::is_wildcard(term) && tokenize(term).is_empty() {
         return Err(malformed(text, "a `~`/`^` suffix needs a term before it"));
     }
     if let Some(after) = rest.strip_prefix('~') {
@@ -313,11 +325,11 @@ fn split_suffix(text: &str) -> Result<(&str, Suffix, &str)> {
         if !tail.is_empty() && !tail.starts_with('^') {
             // `~` then text that is not a boost: a bare `~`, the text is its
             // own word.
-            suffix.fuzzy = Some(Fuzz::Edits(MAX_FUZZY_EDITS));
+            suffix.fuzzy = Some(bare_fuzz);
             return Ok((term, suffix, after));
         }
         suffix.fuzzy = Some(if number.is_empty() {
-            Fuzz::Edits(MAX_FUZZY_EDITS)
+            bare_fuzz
         } else {
             fuzz_spec(number).map_err(|reason| malformed(text, reason))?
         });
@@ -367,10 +379,13 @@ fn fuzz_spec(raw: &str) -> std::result::Result<Fuzz, &'static str> {
     if !raw.contains('.') {
         // `raw` is all digits, so parsing fails only on overflow, which
         // saturates like any other value past the cap.
-        let n = raw.parse::<u64>().unwrap_or(u64::MAX);
-        return Ok(Fuzz::Edits(
-            u8::try_from(n.min(u64::from(MAX_FUZZY_EDITS))).expect("clamped to the u8 maximum"),
-        ));
+        return match raw.parse::<u8>() {
+            Ok(n) => Ok(Fuzz::Edits(n.min(MAX_FUZZY_EDITS))),
+            Err(err) if *err.kind() == IntErrorKind::PosOverflow => {
+                Ok(Fuzz::Edits(MAX_FUZZY_EDITS))
+            }
+            Err(_) => Err("a fuzzy distance must be a whole number"),
+        };
     }
     let value: f64 = raw.parse().expect("digits.digits is a valid float");
     if value < 1.0 {
@@ -487,6 +502,15 @@ mod tests {
         assert_eq!(lexed(r"a\\*"), [r"a\\*"]);
         // An escaped separator joins its word.
         assert_eq!(lexed(r"a\ b"), ["a b"]);
+    }
+
+    #[test]
+    fn an_unterminated_quote_is_a_typed_syntax_error() {
+        let err = lex(r#"lamp "post"#).expect_err("the quote never closes");
+        assert!(err.to_string().contains("never closed"), "{err}");
+        // A closed quote, and an escaped quote, are fine.
+        assert!(lex(r#"lamp "post""#).is_ok());
+        assert!(lex(r#"lamp \"post"#).is_ok());
     }
 
     #[test]

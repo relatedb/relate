@@ -142,11 +142,7 @@ impl Analyzer {
     /// folded for a folding index, the plain tokenizer otherwise (stop words
     /// and stems stay a query-side shortcut).
     pub(super) fn stored_tokens(self, text: &str) -> Vec<String> {
-        if self.folds() {
-            self.analyze(text)
-        } else {
-            tokenize(text)
-        }
+        self.query_default().analyze(text)
     }
 
     /// The analyzer a query without `WITH ANALYZER` uses against an index
