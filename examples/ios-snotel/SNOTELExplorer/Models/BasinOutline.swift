@@ -1,29 +1,5 @@
 import Foundation
 
-/// A GeoJSON position: `[longitude, latitude]`. A third member (an
-/// altitude) is not kept; a position with fewer than two is refused.
-struct Position: Equatable, Sendable, Codable {
-    let longitude: Double
-    let latitude: Double
-
-    init(longitude: Double, latitude: Double) {
-        self.longitude = longitude
-        self.latitude = latitude
-    }
-
-    init(from decoder: Decoder) throws {
-        var members = try decoder.unkeyedContainer()
-        longitude = try members.decode(Double.self)
-        latitude = try members.decode(Double.self)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var members = encoder.unkeyedContainer()
-        try members.encode(longitude)
-        try members.encode(latitude)
-    }
-}
-
 /// A basin's outline: a GeoJSON Polygon geometry object, as its outer ring
 /// and any holes.
 ///
@@ -36,9 +12,52 @@ struct BasinOutline: Equatable, Sendable, Codable {
     let outer: [Position]
     let holes: [[Position]]
 
-    init(outer: [Position], holes: [[Position]] = []) {
+    /// A GeoJSON position: `[longitude, latitude]`. A third member (an
+    /// altitude) is not kept; a position with fewer than two is refused.
+    struct Position: Equatable, Sendable, Codable {
+        let longitude: Double
+        let latitude: Double
+
+        init(longitude: Double, latitude: Double) {
+            self.longitude = longitude
+            self.latitude = latitude
+        }
+
+        init(from decoder: Decoder) throws {
+            var members = try decoder.unkeyedContainer()
+            longitude = try members.decode(Double.self)
+            latitude = try members.decode(Double.self)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var members = encoder.unkeyedContainer()
+            try members.encode(longitude)
+            try members.encode(latitude)
+        }
+    }
+
+    /// Why a list of rings is not a polygon.
+    struct NotAPolygon: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    /// GeoJSON's shortest linear ring: three positions, and the first
+    /// again to close it.
+    private static let shortestRing = 4
+
+    /// The outline with these linear rings: the outer one, then any holes.
+    /// This is the only way to make an outline, so every outline has an
+    /// outer ring and no ring too short to enclose anything.
+    init(rings: [[Position]]) throws(NotAPolygon) {
+        guard let outer = rings.first else {
+            throw NotAPolygon(description: "a \(Self.geometryType) needs an outer ring")
+        }
+        guard rings.allSatisfy({ $0.count >= Self.shortestRing }) else {
+            throw NotAPolygon(
+                description: "every ring of a \(Self.geometryType) needs at least \(Self.shortestRing) positions")
+        }
         self.outer = outer
-        self.holes = holes
+        holes = Array(rings.dropFirst())
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -56,14 +75,13 @@ struct BasinOutline: Equatable, Sendable, Codable {
                 forKey: .type, in: geometry,
                 debugDescription: "a basin outline is a \(Self.geometryType), not a \(type)")
         }
-        var rings = try geometry.decode([[Position]].self, forKey: .coordinates)
-        guard !rings.isEmpty else {
+        let rings = try geometry.decode([[Position]].self, forKey: .coordinates)
+        do {
+            self = try BasinOutline(rings: rings)
+        } catch {
             throw DecodingError.dataCorruptedError(
-                forKey: .coordinates, in: geometry,
-                debugDescription: "a \(Self.geometryType) needs an outer ring")
+                forKey: .coordinates, in: geometry, debugDescription: error.description)
         }
-        outer = rings.removeFirst()
-        holes = rings
     }
 
     func encode(to encoder: Encoder) throws {

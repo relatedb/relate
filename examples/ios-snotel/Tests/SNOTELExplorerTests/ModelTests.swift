@@ -75,7 +75,7 @@ struct ModelTests {
         [
             "name": .string("Pacific Northwest"),
             "huc2": .string("17"),
-            "geoJSON": .string(try squareOutline.geoJSON()),
+            "geoJSON": .string(try squareOutline().geoJSON()),
             "avgSWE": avgSWE,
             "stationCount": .int(Int64(stationCount)),
         ]
@@ -85,7 +85,7 @@ struct ModelTests {
     func basinFromRow() throws {
         let basin = try decode(Basin.self, try basinRow(avgSWE: .float(22.5), stationCount: 12))
         #expect(basin == Basin(
-            name: "Pacific Northwest", huc2: "17", outline: squareOutline, avgSWE: 22.5, stationCount: 12))
+            name: "Pacific Northwest", huc2: "17", outline: try squareOutline(), avgSWE: 22.5, stationCount: 12))
         #expect(basin.id == "17")
     }
 
@@ -100,7 +100,9 @@ struct ModelTests {
         "not json",
         #"{"type":"Point","coordinates":[0,0]}"#,
         #"{"type":"Polygon","coordinates":[]}"#,
-        #"{"type":"Polygon","coordinates":[[[0]]]}"#,
+        #"{"type":"Polygon","coordinates":[[]]}"#,
+        #"{"type":"Polygon","coordinates":[[[0,0],[1,1],[0,0]]]}"#,
+        #"{"type":"Polygon","coordinates":[[[0],[1],[2],[0]]]}"#,
     ])
     func basinGeometryNotAPolygon(stored: String) throws {
         var row = try basinRow(avgSWE: .null, stationCount: 0)
@@ -109,11 +111,11 @@ struct ModelTests {
     }
 
     @Test("The snowpack ranking is the basins with readings, highest mean first")
-    func ranking() {
-        func basin(_ huc2: String, _ avgSWE: Double?) -> Basin {
-            Basin(name: "Basin \(huc2)", huc2: huc2, outline: squareOutline, avgSWE: avgSWE, stationCount: 1)
+    func ranking() throws {
+        func basin(_ huc2: String, _ avgSWE: Double?) throws -> Basin {
+            Basin(name: "Basin \(huc2)", huc2: huc2, outline: try squareOutline(), avgSWE: avgSWE, stationCount: 1)
         }
-        let ranked = [basin("15", 4.5), basin("16", nil), basin("17", 22.5)].bySWE
+        let ranked = try [basin("15", 4.5), basin("16", nil), basin("17", 22.5)].bySWE
         #expect(ranked.map(\.id) == ["17", "15"] && ranked.map(\.swe) == [22.5, 4.5])
     }
 

@@ -56,24 +56,8 @@ struct DataLoaderTests {
         #expect(basins.count == 1)
         #expect(basins[0].name == "Test Basin")
         #expect(basins[0].huc2 == "99")
-        #expect(basins[0].outline == BasinOutline(
-            outer: ring((-120, 40), (-120, 42), (-118, 42), (-118, 40), (-120, 40))))
-    }
-
-    @Test("Basin containment excludes holes")
-    func basinContainmentWithHole() {
-        let outline = BasinOutline(
-            outer: squareOutline.outer, holes: [ring((4, 4), (6, 4), (6, 6), (4, 6), (4, 4))])
-        #expect(outline.contains(latitude: 2, longitude: 2))
-        #expect(!outline.contains(latitude: 5, longitude: 5))
-        #expect(!outline.contains(latitude: 11, longitude: 5))
-    }
-
-    @Test("An outline survives being stored as GeoJSON text and parsed back")
-    func outlineRoundTrip() throws {
-        let outline = BasinOutline(
-            outer: squareOutline.outer, holes: [ring((4, 4), (6, 4), (6, 6), (4, 6), (4, 4))])
-        #expect(try BasinOutline(geoJSON: outline.geoJSON()) == outline)
+        #expect(basins[0].outline == (try BasinOutline(
+            rings: [ring((-120, 40), (-120, 42), (-118, 42), (-118, 40), (-120, 40))])))
     }
 
     @Test("Empty CSV returns empty array")

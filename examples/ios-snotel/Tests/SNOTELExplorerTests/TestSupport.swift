@@ -15,13 +15,15 @@ func makeEmptyBundle() throws -> Bundle {
 }
 
 /// A ring of positions from `(longitude, latitude)` pairs.
-func ring(_ positions: (Double, Double)...) -> [Position] {
-    positions.map { Position(longitude: $0.0, latitude: $0.1) }
+func ring(_ positions: (Double, Double)...) -> [BasinOutline.Position] {
+    positions.map { BasinOutline.Position(longitude: $0.0, latitude: $0.1) }
 }
 
 /// A 10° square outline, for a test that needs a basin's geometry but not
 /// a particular shape.
-let squareOutline = BasinOutline(outer: ring((0, 0), (10, 0), (10, 10), (0, 10), (0, 0)))
+func squareOutline() throws -> BasinOutline {
+    try BasinOutline(rings: [ring((0, 0), (10, 0), (10, 10), (0, 10), (0, 0))])
+}
 
 /// A throwaway store holding the three sample stations, their readings and
 /// the two sample basins.

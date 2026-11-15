@@ -50,7 +50,7 @@ struct QueryLogEntry: Identifiable, Equatable, Sendable {
     /// shows: the statement, its operation, its parameters and, for a
     /// failure, the message.
     var searchableText: [String] {
-        [cypher, operation, parametersText] + (failureMessage.map { [$0] } ?? [])
+        [cypher, operation, parametersText, failureMessage].compactMap { $0 }
     }
 
     var failureMessage: String? {

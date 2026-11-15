@@ -65,7 +65,6 @@ struct MapContainerView: UIViewRepresentable {
         var basins: [Basin] = []
         private var stationAnnotations: [StationAnnotation] = []
         private var appliedStations: [Station] = []
-        private var basinByOverlay: [ObjectIdentifier: Basin] = [:]
         private var overlaidBasins: [Basin] = []
         private var styledSelection: Basin.ID?
         private var wasFiltered = false
@@ -90,21 +89,14 @@ struct MapContainerView: UIViewRepresentable {
             wasFiltered = viewModel.isFiltered
         }
 
-        /// Builds one overlay per basin from its outline, once per basin
-        /// list; each overlay keeps its `Basin`, so styling reads it
-        /// directly.
+        /// Builds one overlay per basin, once per basin list. Each overlay
+        /// carries its `Basin`, so styling reads it from the overlay.
         func updateBasinOverlays(on mapView: MKMapView) {
             guard basins != overlaidBasins else { return }
             overlaidBasins = basins
 
             mapView.removeOverlays(mapView.overlays)
-            basinByOverlay.removeAll()
-            let overlays = basins.map { basin in
-                let overlay = Self.polygon(of: basin.outline)
-                basinByOverlay[ObjectIdentifier(overlay)] = basin
-                return overlay
-            }
-            mapView.addOverlays(overlays, level: .aboveRoads)
+            mapView.addOverlays(basins.map(BasinOverlay.init), level: .aboveRoads)
         }
 
         /// Restyles the live renderers when the basin selection changes; a
@@ -114,11 +106,11 @@ struct MapContainerView: UIViewRepresentable {
             guard viewModel.selectedBasin != styledSelection else { return }
             styledSelection = viewModel.selectedBasin
 
-            for overlay in mapView.overlays {
+            for case let overlay as BasinOverlay in mapView.overlays {
                 guard let renderer = mapView.renderer(for: overlay) as? MKOverlayPathRenderer else {
                     continue
                 }
-                style(renderer, for: overlay)
+                style(renderer, for: overlay.basin)
                 renderer.setNeedsDisplay()
             }
         }
@@ -149,35 +141,20 @@ struct MapContainerView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            // The map's only overlays are the basin polygons built above.
-            guard let polygon = overlay as? MKPolygon else {
+            // The map's only overlays are the basin overlays built above.
+            guard let overlay = overlay as? BasinOverlay else {
                 return MKOverlayRenderer(overlay: overlay)
             }
-            let renderer = MKPolygonRenderer(polygon: polygon)
+            let renderer = MKPolygonRenderer(polygon: overlay.polygon)
             renderer.lineJoin = .round
             renderer.lineCap = .round
-            style(renderer, for: overlay)
+            style(renderer, for: overlay.basin)
             return renderer
         }
 
-        /// The map polygon of a basin outline: its outer ring, with its
-        /// holes as interior polygons.
-        private static func polygon(of outline: BasinOutline) -> MKPolygon {
-            func coordinates(_ ring: [Position]) -> [CLLocationCoordinate2D] {
-                ring.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-            }
-            let outer = coordinates(outline.outer)
-            let holes = outline.holes.map { ring in
-                let hole = coordinates(ring)
-                return MKPolygon(coordinates: hole, count: hole.count)
-            }
-            return MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
-        }
-
-        private func style(_ renderer: MKOverlayPathRenderer, for overlay: MKOverlay) {
-            let basin = basinByOverlay[ObjectIdentifier(overlay as AnyObject)]
-            let color = UIColor(SWELevel.from(swe: basin?.avgSWE).color)
-            let emphasis = BasinEmphasis(basin: basin?.id, selected: viewModel.selectedBasin)
+        private func style(_ renderer: MKOverlayPathRenderer, for basin: Basin) {
+            let color = UIColor(SWELevel.from(swe: basin.avgSWE).color)
+            let emphasis = BasinEmphasis(basin: basin.id, selected: viewModel.selectedBasin)
 
             renderer.fillColor = color.withAlphaComponent(emphasis.fillAlpha)
             renderer.strokeColor = color.withAlphaComponent(emphasis.strokeAlpha)
@@ -221,7 +198,7 @@ struct MapContainerView: UIViewRepresentable {
 private enum BasinEmphasis {
     case selected, dimmed, plain
 
-    init(basin: Basin.ID?, selected: Basin.ID?) {
+    init(basin: Basin.ID, selected: Basin.ID?) {
         guard let selected else { self = .plain; return }
         self = basin == selected ? .selected : .dimmed
     }
@@ -248,6 +225,31 @@ private enum BasinEmphasis {
         case .dimmed: return 0.75
         case .plain: return 1.15
         }
+    }
+}
+
+/// A basin on the map: its `Basin` and the polygon of its outline, the
+/// outer ring with the holes as interior polygons. The renderer draws the
+/// polygon and is styled from the basin.
+private final class BasinOverlay: NSObject, MKOverlay {
+    let basin: Basin
+    let polygon: MKPolygon
+
+    var coordinate: CLLocationCoordinate2D { polygon.coordinate }
+    var boundingMapRect: MKMapRect { polygon.boundingMapRect }
+
+    init(basin: Basin) {
+        func coordinates(_ ring: [BasinOutline.Position]) -> [CLLocationCoordinate2D] {
+            ring.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        }
+        let outer = coordinates(basin.outline.outer)
+        let holes = basin.outline.holes.map { ring in
+            let hole = coordinates(ring)
+            return MKPolygon(coordinates: hole, count: hole.count)
+        }
+        self.basin = basin
+        polygon = MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
+        super.init()
     }
 }
 
