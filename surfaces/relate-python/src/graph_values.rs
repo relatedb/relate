@@ -255,6 +255,14 @@ pub(super) struct Path {
     relationships: Vec<Py<Relationship>>,
 }
 
+/// The one refusal for a path that breaks the one-more-node invariant, raised
+/// by [`Path::new`] and re-stated by [`Path::data`] (never an `expect`).
+fn malformed_path(nodes: usize, relationships: usize) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "malformed path: {nodes} nodes, {relationships} relationships"
+    ))
+}
+
 impl Path {
     /// Build a path from its nodes and relationships. A path holds exactly one
     /// more node than relationships; the engine's `CypherValue::Path` already
@@ -268,11 +276,7 @@ impl Path {
         relationships: Vec<Py<Relationship>>,
     ) -> PyResult<Self> {
         if nodes.len() != relationships.len() + 1 {
-            return Err(PyRuntimeError::new_err(format!(
-                "malformed path: {} nodes, {} relationships",
-                nodes.len(),
-                relationships.len()
-            )));
+            return Err(malformed_path(nodes.len(), relationships.len()));
         }
         Ok(Path {
             nodes,
@@ -310,7 +314,10 @@ impl Path {
     /// `to_dict()` keeps ids, labels and endpoints.
     fn data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let out = PyList::empty(py);
-        let (first, rest) = self.nodes.split_first().expect("Path::new: one node");
+        let (first, rest) = self
+            .nodes
+            .split_first()
+            .ok_or_else(|| malformed_path(0, self.relationships.len()))?;
         out.append(first.borrow(py).data(py)?)?;
         for (rel, node) in self.relationships.iter().zip(rest) {
             out.append(rel.borrow(py).rel_type.as_str())?;

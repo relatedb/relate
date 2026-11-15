@@ -351,7 +351,7 @@ unsafe fn refused(reason: &str, put: impl FnOnce(*mut *mut c_char) -> relate_sta
 
 /// The empty STRING binds (LABS-1198): a NULL buffer with no bytes is the
 /// canonical C spelling of `""` — a marshalling layer may hand a
-/// a zero-length buffer over as NULL — and it round-trips as a zero-length
+/// zero-length buffer over as NULL — and it round-trips as a zero-length
 /// STRING, distinct from null and from absent. A NULL buffer that claims
 /// bytes stays the "null string value" refusal.
 #[test]
@@ -400,6 +400,88 @@ fn ffi_params_empty_string_binds_as_zero_length_string() {
         assert_eq!(b, 0);
         ok(relate_value_bool(cell(result, 0, 3), &mut b));
         assert_eq!(b, 1);
+
+        relate_destroy_result(result);
+        relate_params_free(params);
+    }
+}
+
+/// The empty VECTOR binds, the twin of the empty STRING rule: dimension 0
+/// binds an empty VECTOR whether the buffer is NULL (the koffi spelling) or
+/// a non-NULL zero-length one, for both putters; NULL values that claim
+/// coordinates stay the "null vector coordinates" refusal.
+#[test]
+fn ffi_params_empty_vector_binds_under_both_buffer_spellings() {
+    // SAFETY: test drives the FFI with handles, strings and out-params it
+    // owns.
+    unsafe {
+        let session = Session::open();
+        let (_, conn) = session.handles();
+        let params = relate_params_new();
+        let float32 = c("FLOAT32");
+        let int8 = c("INTEGER8");
+        let none_f: [f64; 0] = [];
+        let none_i: [i64; 0] = [];
+        ok(relate_params_put_vector_float(
+            params,
+            c("fnull").as_ptr(),
+            float32.as_ptr(),
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+        ));
+        ok(relate_params_put_vector_float(
+            params,
+            c("fempty").as_ptr(),
+            float32.as_ptr(),
+            none_f.as_ptr(),
+            0,
+            ptr::null_mut(),
+        ));
+        ok(relate_params_put_vector_int(
+            params,
+            c("inull").as_ptr(),
+            int8.as_ptr(),
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+        ));
+        ok(relate_params_put_vector_int(
+            params,
+            c("iempty").as_ptr(),
+            int8.as_ptr(),
+            none_i.as_ptr(),
+            0,
+            ptr::null_mut(),
+        ));
+        refused("null vector coordinates", |e| {
+            relate_params_put_vector_float(
+                params,
+                c("bad").as_ptr(),
+                float32.as_ptr(),
+                ptr::null(),
+                2,
+                e,
+            )
+        });
+
+        let result = run_query(
+            conn,
+            "RETURN $fnull AS fnull, $fempty AS fempty, $inull AS inull, $iempty AS iempty",
+            params,
+        );
+        for (col, dtype) in [
+            (0, "FLOAT32"),
+            (1, "FLOAT32"),
+            (2, "INTEGER8"),
+            (3, "INTEGER8"),
+        ] {
+            let cell = cell(result, 0, col);
+            // VECTOR kind, not NULL: the zero-dimension vector is a value.
+            assert_eq!(relate_value_kind(cell), RELATE_V_VECTOR as i32);
+            assert_eq!(text(relate_value_vector_dtype(cell)), dtype);
+            assert_eq!(relate_value_vector_dim(cell), 0);
+        }
 
         relate_destroy_result(result);
         relate_params_free(params);

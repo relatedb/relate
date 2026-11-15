@@ -257,21 +257,20 @@ public class DatabaseTest {
         Exception e = assertThrows(Exception.class,
                 () -> Json.STRICT.readValue(json, Notification.class));
         RelateException refusal = refusalOf(e);
-        assertNotNull(refusal, e.toString());
         assertTrue(refusal.getMessage().contains("unknown severity"), refusal.getMessage());
         assertTrue(refusal.getMessage().contains("\\u000d"), refusal.getMessage());
         WireSanitizeAssertions.assertNoRawUnprintables(refusal.getMessage());
         assertTrue(refusal.getMessage().length() < 1000, refusal.getMessage());
     }
 
-    /** The {@link RelateException} in the throwable chain, or null. */
+    /** The {@link RelateException} in the throwable chain; fails the test when there is none. */
     private static RelateException refusalOf(Throwable t) {
         for (Throwable c = t; c != null; c = c.getCause()) {
             if (c instanceof RelateException re) {
                 return re;
             }
         }
-        return null;
+        throw new AssertionError("no RelateException in the cause chain", t);
     }
 
     private static List<Notification> planWarnings(PlanNode node) {

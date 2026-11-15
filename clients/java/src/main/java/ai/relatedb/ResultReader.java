@@ -88,18 +88,15 @@ final class ResultReader {
         return decodeWire(Namespace.class, "namespace", raw);
     }
 
-    /** The one refusal policy for a closed-vocabulary ABI string. */
+    /**
+     * The one refusal policy for a closed-vocabulary ABI string, owned by
+     * {@link Json#decodeWire}: the untrusted string is echoed through
+     * {@link Json#quoted}, so a hostile native library cannot inject control
+     * characters into the message (CWE-117).
+     */
     private static <E extends Enum<E> & WireEnum> E decodeWire(Class<E> type, String what,
                                                                String raw) {
-        E constant = WireEnum.fromWire(type, raw);
-        if (constant == null) {
-            // The untrusted ABI string is echoed through Json.quoted — a
-            // hostile native library cannot inject control characters into
-            // the message (CWE-117).
-            throw new RelateException("ABI contract violated: " + what + " "
-                    + Json.quoted(raw));
-        }
-        return constant;
+        return Json.decodeWire(type, raw, "ABI contract violated: " + what, "");
     }
 
     /**
@@ -120,7 +117,8 @@ final class ResultReader {
         try {
             return Json.PLAN.readValue(raw, PlanDocument.class);
         } catch (Exception e) {
-            throw new RelateException("decoding result plan: " + e, e);
+            throw new RelateException(
+                    "decoding result plan: " + Json.safe(e.getMessage(), Json.PAYLOAD_MAX), e);
         }
     }
 
@@ -140,7 +138,8 @@ final class ResultReader {
         try {
             return Json.STRICT.readValue(raw, new TypeReference<List<Notification>>() { });
         } catch (Exception e) {
-            throw new RelateException("decoding result notifications: " + e, e);
+            throw new RelateException("decoding result notifications: "
+                    + Json.safe(e.getMessage(), Json.PAYLOAD_MAX), e);
         }
     }
 }

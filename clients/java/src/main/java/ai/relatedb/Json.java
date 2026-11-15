@@ -30,6 +30,12 @@ final class Json {
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
+    /** The escape's fixed prefix, then four hex digits. */
+    private static final String ESCAPE_PREFIX = "\\u";
+
+    /** The width of one {@code \\uXXXX} escape, derived from the format {@link #appendEscaped} writes. */
+    private static final int ESCAPE_WIDTH = ESCAPE_PREFIX.length() + 4;
+
     private Json() {
     }
 
@@ -60,23 +66,6 @@ final class Json {
     }
 
     /**
-     * A required stage wire key: the closed {@link RelateException.Stage}
-     * vocabulary, refused in the one message shape when the wire name is
-     * outside it — never a lenient string.
-     */
-    static RelateException.Stage requireStage(JsonNode node, String key, String what,
-                                                  String payload) {
-        String wire = requireText(node, key, what, payload);
-        RelateException.Stage stage = RelateException.Stage.fromWire(wire);
-        if (stage == null) {
-            throw new RelateException(
-                    what + " carries an unknown stage " + quoted(wire) + ": "
-                            + safe(payload, PAYLOAD_MAX));
-        }
-        return stage;
-    }
-
-    /**
      * A required closed-vocabulary wire key: the {@link WireEnum} constant
      * for the text, refused in the one message shape when the text is
      * outside the vocabulary — never a lenient string.
@@ -85,11 +74,21 @@ final class Json {
                                                          String key, String what,
                                                          String payload) {
         String wire = requireText(node, key, what, payload);
-        E constant = WireEnum.fromWire(type, wire);
+        return decodeWire(type, wire, what + " carries an unknown " + key,
+                ": " + safe(payload, PAYLOAD_MAX));
+    }
+
+    /**
+     * The one decode-or-refuse step for a closed-vocabulary string: the
+     * {@link WireEnum} constant for {@code raw} (possibly null), or a
+     * {@link RelateException} reading {@code refusal}, the quoted value,
+     * then {@code tail} when {@code raw} is outside the vocabulary.
+     */
+    static <E extends Enum<E> & WireEnum> E decodeWire(Class<E> type, String raw,
+                                                        String refusal, String tail) {
+        E constant = WireEnum.fromWire(type, raw);
         if (constant == null) {
-            throw new RelateException(
-                    what + " carries an unknown " + key + " " + quoted(wire)
-                            + ": " + safe(payload, PAYLOAD_MAX));
+            throw new RelateException(refusal + " " + quoted(raw) + tail);
         }
         return constant;
     }
@@ -184,7 +183,7 @@ final class Json {
             int units = Character.charCount(codePoint);
             boolean mustEscape = isUnprintable(codePoint)
                     || (inQuotes && (codePoint == '\\' || codePoint == '"'));
-            int width = mustEscape ? 6 * units : units;
+            int width = mustEscape ? ESCAPE_WIDTH * units : units;
             if (out.length() + width > max) {
                 break;
             }
@@ -205,7 +204,7 @@ final class Json {
 
     /** Append {@code c} as a {@code \\uXXXX} escape. */
     private static void appendEscaped(StringBuilder out, char c) {
-        out.append("\\u");
+        out.append(ESCAPE_PREFIX);
         out.append(HEX[(c >> 12) & 0xF]);
         out.append(HEX[(c >> 8) & 0xF]);
         out.append(HEX[(c >> 4) & 0xF]);

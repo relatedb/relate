@@ -64,7 +64,7 @@ public class RelateException extends RuntimeException {
      * contract violation and throws at decode, the same refusal the Go
      * and Swift clients make.
      */
-    public enum Stage {
+    public enum Stage implements WireEnum {
         /** A parse or plan failure. */
         COMPILE,
         /** An execution failure. */
@@ -78,23 +78,9 @@ public class RelateException extends RuntimeException {
          * case ({@code "compile"} / {@code "runtime"} / {@code
          * "internal"}), derived, never a second literal table.
          */
-        String wire() {
+        @Override
+        public String wire() {
             return name().toLowerCase(Locale.ROOT);
-        }
-
-        /**
-         * The stage for an ABI wire name, or null when the name is outside
-         * the vocabulary — the decode site refuses that loudly with its
-         * own context, the same null contract as
-         * {@link VectorDtype#fromName}.
-         */
-        static Stage fromWire(String wire) {
-            for (Stage stage : values()) {
-                if (stage.wire().equals(wire)) {
-                    return stage;
-                }
-            }
-            return null;
         }
     }
 
@@ -117,7 +103,7 @@ public class RelateException extends RuntimeException {
         node = Json.requireObject(node, "error shape", json);
         return classify(Json.requireText(node, "code", "error shape", json),
                 Json.requireText(node, "gql_status", "error shape", json),
-                Json.requireStage(node, "stage", "error shape", json),
+                Json.requireWire(Stage.class, node, "stage", "error shape", json),
                 Json.requireBool(node, "retryable", "error shape", json),
                 Json.requireText(node, "message", "error shape", json));
     }

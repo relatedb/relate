@@ -115,10 +115,10 @@ public class ErrorsTest {
         // The decode contract: each ABI wire name maps to its stage — a
         // swapped table cannot hide — and an unknown name is the decode
         // site's refusal (null here), never a wrong stage
-        assertEquals(RelateException.Stage.COMPILE, RelateException.Stage.fromWire("compile"));
-        assertEquals(RelateException.Stage.RUNTIME, RelateException.Stage.fromWire("runtime"));
-        assertEquals(RelateException.Stage.INTERNAL, RelateException.Stage.fromWire("internal"));
-        assertNull(RelateException.Stage.fromWire("nope"));
+        assertEquals(RelateException.Stage.COMPILE, WireEnum.fromWire(RelateException.Stage.class, "compile"));
+        assertEquals(RelateException.Stage.RUNTIME, WireEnum.fromWire(RelateException.Stage.class, "runtime"));
+        assertEquals(RelateException.Stage.INTERNAL, WireEnum.fromWire(RelateException.Stage.class, "internal"));
+        assertNull(WireEnum.fromWire(RelateException.Stage.class, "nope"));
     }
 
     @Test
@@ -226,12 +226,12 @@ public class ErrorsTest {
 
     @Test
     void theSharedRefusalSanitizesAndBoundsTheEchoedPayload() throws Exception {
-        // The payload side of requireStage/requireWire goes through the
+        // The payload side of requireWire goes through the
         // same sanitizer: control characters escaped, long payloads cut.
         JsonNode node = Json.STRICT.readTree("{\"stage\":\"nope\"}");
         String hostilePayload = WireSanitizeAssertions.HOSTILE_PAYLOAD;
         RelateException e = assertThrows(RelateException.class,
-                () -> Json.requireStage(node, "stage", "error shape", hostilePayload));
+                () -> Json.requireWire(RelateException.Stage.class, node, "stage", "error shape", hostilePayload));
         assertTrue(e.getMessage().contains("unknown stage"), e.getMessage());
         assertTrue(e.getMessage().contains("...(truncated)"), e.getMessage());
         WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());

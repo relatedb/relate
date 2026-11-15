@@ -24,35 +24,53 @@ import (
 // errors.Is.
 var ErrClosed = errors.New("relate: handle is closed")
 
+// callMode is a handle kind's concurrency contract for calls under its
+// lifecycle guard. It has no usable zero value: a handle kind must pick one
+// explicitly, so a new kind cannot silently inherit another's contract.
+type callMode uint8
+
+const (
+	// callsOverlap admits calls concurrently (they hold the read side).
+	callsOverlap callMode = iota + 1
+	// callsSerialize admits one call at a time (they hold the write side).
+	callsSerialize
+)
+
 // lifecycle is the one open/closed guard both handle types embed. A call
 // holds the guard for its whole C call and Close takes the write side, so a
 // Close never frees a handle under a call in flight, and a call after Close
 // is refused instead of touching freed memory. A Database may be shared
-// across goroutines (calls hold the read side and overlap); a Connection must
-// not be used by two calls at once (C contract, docs/api/c/spec.md
-// Threading), so its calls hold the write side and serialize.
+// across goroutines (callsOverlap); a Connection must not be used by two
+// calls at once (C contract, docs/api/c/spec.md Threading), so its calls
+// are callsSerialize.
 type lifecycle struct {
-	mu        sync.RWMutex
-	closed    bool
-	exclusive bool
+	mu     sync.RWMutex
+	closed bool
+	mode   callMode
+}
+
+// newLifecycle is the guard for a handle with the given call mode.
+func newLifecycle(mode callMode) lifecycle {
+	return lifecycle{mode: mode}
 }
 
 // use admits one call: it returns the release func to defer, or ErrClosed.
 func (l *lifecycle) use() (func(), error) {
-	if l.exclusive {
-		l.mu.Lock()
-		if l.closed {
-			l.mu.Unlock()
-			return nil, ErrClosed
-		}
-		return l.mu.Unlock, nil
+	var acquire, release func()
+	switch l.mode {
+	case callsOverlap:
+		acquire, release = l.mu.RLock, l.mu.RUnlock
+	case callsSerialize:
+		acquire, release = l.mu.Lock, l.mu.Unlock
+	default:
+		panic("relate: lifecycle built without a call mode")
 	}
-	l.mu.RLock()
+	acquire()
 	if l.closed {
-		l.mu.RUnlock()
+		release()
 		return nil, ErrClosed
 	}
-	return l.mu.RUnlock, nil
+	return release, nil
 }
 
 // guarded runs call under l's guard, the one acquire/check/release prologue
@@ -257,7 +275,7 @@ func open(uri string, readOnly bool) (*Database, error) {
 	if err := statusErr(st, errJSON); err != nil {
 		return nil, err
 	}
-	d := &Database{ptr: db}
+	d := &Database{lifecycle: newLifecycle(callsOverlap), ptr: db}
 	runtime.SetFinalizer(d, (*Database).Close)
 	return d, nil
 }
@@ -294,7 +312,7 @@ func (d *Database) connect(cName *C.char) (*Connection, error) {
 		if err := statusErr(st, errJSON); err != nil {
 			return nil, err
 		}
-		c := &Connection{lifecycle: lifecycle{exclusive: true}, ptr: conn}
+		c := &Connection{lifecycle: newLifecycle(callsSerialize), ptr: conn}
 		runtime.SetFinalizer(c, (*Connection).Close)
 		return c, nil
 	})
