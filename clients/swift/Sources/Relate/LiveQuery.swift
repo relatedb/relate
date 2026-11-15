@@ -205,12 +205,14 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
     /// left it: `.live` or `.failed`.
     @Published private var settled: (key: LiveQueryKey, state: LiveQueryState)?
 
-    /// The running observation and the key it follows; `nil` when none is
-    /// running.
-    private var running: (key: LiveQueryKey, task: Task<Void, Never>)?
+    /// The key this observer follows and the task observing it; `nil`
+    /// before the first request and after `stop()`. The key is kept after
+    /// its task has ended, so a query that failed is not started again on
+    /// every view update.
+    private var followed: (key: LiveQueryKey, task: Task<Void, Never>)?
 
     deinit {
-        running?.task.cancel()
+        followed?.task.cancel()
     }
 
     /// Where the observation of `key` stands: loading until it is the one
@@ -227,7 +229,7 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
     /// update.
     func observe(_ request: LiveQueryRequest<Value>, in database: Database?) {
         let key = request.key(in: database)
-        guard key != running?.key else { return }
+        guard key != followed?.key else { return }
         stop()
         // The task holds this object only while it publishes, so an
         // observation does not keep alive the view state it belongs to.
@@ -244,14 +246,14 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
                 self?.settle(key, .failure(error))
             }
         }
-        running = (key, task)
+        followed = (key, task)
     }
 
     /// Stops following: the property's query can no longer be stated. The
     /// last value stays.
     func stop() {
-        running?.task.cancel()
-        running = nil
+        followed?.task.cancel()
+        followed = nil
     }
 
     /// What an observation reports: a value, or the error that ended it.

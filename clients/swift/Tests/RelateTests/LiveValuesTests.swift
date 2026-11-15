@@ -4,16 +4,6 @@ import os
 
 @testable import Relate
 
-extension Database {
-    /// Waits until nothing is subscribed to this database's commits: how a
-    /// test sees that an observation has let go. Cancellation reaches the
-    /// subscription off the test's own task, so this waits rather than
-    /// asserts; the suite's time limit bounds a subscription that stays.
-    func commitSubscribersAreGone() async {
-        await waitUntil { core.hub.subscriberCount == 0 }
-    }
-}
-
 /// A failure of these tests is a value that never arrives, so every test
 /// is bounded instead of left to hang.
 @Suite(.timeLimit(.minutes(1))) struct LiveValuesTests {

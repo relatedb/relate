@@ -1,6 +1,7 @@
 import Foundation
-import Relate
 import Testing
+
+@testable import Relate
 
 /// One policy for a throwaway on-disk item: a UUID-named path under the
 /// system temp, removed when the body returns. `suffix` picks the store
@@ -83,6 +84,17 @@ let counterValue: @Sendable (Transaction) throws -> Int = { tx in
     try tx.query("MATCH (c:Counter) RETURN c.v").scalar(as: Int.self)
 }
 
+extension Database {
+    /// Waits until nothing is subscribed to this database's commits: how a
+    /// test sees that an observation has let go. Cancellation reaches the
+    /// subscription off the test's own task, so this waits rather than
+    /// asserts; give the suite a time limit to bound a subscription that
+    /// stays.
+    func commitSubscribersAreGone() async {
+        await waitUntil { core.hub.subscriberCount == 0 }
+    }
+}
+
 /// Waits until `condition` holds, letting other tasks run in between: for
 /// state that settles off the test's own task (an observation's read, a
 /// cancelled subscription). It runs on the caller's actor, so a main-actor
@@ -120,12 +132,11 @@ private func payload<Payload>(
     return found
 }
 
-/// What `read` finds in the `RelateError` that `body` must throw. `body`
-/// not throwing fails the test too.
-private func thrownPayload<Payload>(
-    expected: String, _ body: () throws -> Void, _ read: (RelateError) -> Payload?
-) throws -> Payload {
-    try payload(of: try #require(throws: RelateError.self) { try body() }, expected: expected, read)
+/// The `RelateError` that `body` must throw: `body` not throwing one fails
+/// the test. Every "the body must throw this case" helper below reads its
+/// payload out of this error through the helper's `(of:)` form.
+private func thrownError(_ body: () throws -> Void) throws -> RelateError {
+    try #require(throws: RelateError.self) { try body() }
 }
 
 /// The message of the `invalidParameter` that `error` must be: any other
@@ -138,14 +149,19 @@ func invalidParameterMessage(of error: RelateError) throws -> String {
 
 /// The message of the `invalidParameter` that `body` must throw.
 func invalidParameterMessage(_ body: () throws -> Void) throws -> String {
-    try invalidParameterMessage(of: try #require(throws: RelateError.self) { try body() })
+    try invalidParameterMessage(of: try thrownError(body))
 }
 
-/// The mismatch `body` must throw: any other outcome fails the test.
-func resultMismatch(_ body: () throws -> Void) throws -> ResultMismatch {
-    try thrownPayload(expected: "unexpectedResult", body) {
+/// The mismatch that `error` must be: any other error fails the test.
+func resultMismatch(of error: RelateError) throws -> ResultMismatch {
+    try payload(of: error, expected: "unexpectedResult") {
         if case .unexpectedResult(let mismatch) = $0 { mismatch } else { nil }
     }
+}
+
+/// The mismatch `body` must throw.
+func resultMismatch(_ body: () throws -> Void) throws -> ResultMismatch {
+    try resultMismatch(of: try thrownError(body))
 }
 
 /// The message of the `misuse` that `error` must be: any other error fails
@@ -158,5 +174,5 @@ func misuseMessage(of error: RelateError) throws -> String {
 
 /// The message of the `misuse` that `body` must throw.
 func misuseMessage(_ body: () throws -> Void) throws -> String {
-    try misuseMessage(of: try #require(throws: RelateError.self) { try body() })
+    try misuseMessage(of: try thrownError(body))
 }
