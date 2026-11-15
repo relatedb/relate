@@ -128,12 +128,17 @@ private func thrownPayload<Payload>(
     try payload(of: try #require(throws: RelateError.self) { try body() }, expected: expected, read)
 }
 
-/// The message of the `invalidParameter` that `body` must throw: any other
-/// outcome fails the test.
-func invalidParameterMessage(_ body: () throws -> Void) throws -> String {
-    try thrownPayload(expected: "invalidParameter", body) {
+/// The message of the `invalidParameter` that `error` must be: any other
+/// error fails the test. The form for an error a test already holds.
+func invalidParameterMessage(of error: RelateError) throws -> String {
+    try payload(of: error, expected: "invalidParameter") {
         if case .invalidParameter(let message) = $0 { message } else { nil }
     }
+}
+
+/// The message of the `invalidParameter` that `body` must throw.
+func invalidParameterMessage(_ body: () throws -> Void) throws -> String {
+    try invalidParameterMessage(of: try #require(throws: RelateError.self) { try body() })
 }
 
 /// The mismatch `body` must throw: any other outcome fails the test.

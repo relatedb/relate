@@ -73,7 +73,7 @@ private struct UnbuildableView: View {
         let host = NSHostingView(rootView: UnbuildableView(shown: shown).relateDatabase(try Database.inMemory()))
         await layOut(host) { !shown.values.isEmpty }
         // Nothing has to be read to know: the failure is there at once.
-        let message = try invalidParameterMessage { throw try #require(shown.errors.first) }
+        let message = try invalidParameterMessage(of: #require(shown.errors.first as? RelateError))
         #expect(message.contains("\(UInt64.max)") && shown.values.first == [])
     }
 }

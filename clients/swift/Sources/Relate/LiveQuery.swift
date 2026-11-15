@@ -109,7 +109,7 @@ public struct LiveQuery<Value: Sendable & Equatable>: DynamicProperty {
     /// Where the query stands.
     public var projectedValue: LiveQueryState {
         switch request {
-        case .success(let request): observer.state(of: LiveQueryKey(identity: request.identity, database: database))
+        case .success(let request): observer.state(of: request.key(in: database))
         case .failure(let error): .failed(error)
         }
     }
@@ -142,6 +142,10 @@ public enum LiveQueryState: Sendable {
         if case .loading = self { true } else { false }
     }
 
+    public var isLive: Bool {
+        if case .live = self { true } else { false }
+    }
+
     /// The error of a query that failed; `nil` otherwise.
     public var error: (any Error)? {
         if case .failed(let error) = self { error } else { nil }
@@ -170,6 +174,13 @@ struct LiveQueryIdentity: Equatable {
 struct LiveQueryRequest<Value: Sendable & Equatable> {
     let identity: LiveQueryIdentity
     let read: @Sendable (Transaction) throws -> Value
+
+    /// The key of this request's observation on `database`: the one place
+    /// the two are paired, for the observer that runs it and for the view
+    /// that asks where it stands.
+    func key(in database: Database?) -> LiveQueryKey {
+        LiveQueryKey(identity: identity, database: database)
+    }
 }
 
 /// What one observation follows: a query on a database (or on none, when
@@ -194,14 +205,12 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
     /// left it: `.live` or `.failed`.
     @Published private var settled: (key: LiveQueryKey, state: LiveQueryState)?
 
-    /// What the running observation follows; `nil` when none is running.
-    private var following: LiveQueryKey?
-    /// The running observation. Kept apart from what it follows because
-    /// `deinit`, which cancels it, may only touch `Sendable` state.
-    private var observation: Task<Void, Never>?
+    /// The running observation and the key it follows; `nil` when none is
+    /// running.
+    private var running: (key: LiveQueryKey, task: Task<Void, Never>)?
 
     deinit {
-        observation?.cancel()
+        running?.task.cancel()
     }
 
     /// Where the observation of `key` stands: loading until it is the one
@@ -217,13 +226,12 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
     /// it publishes nothing itself: the observation's task does, after the
     /// update.
     func observe(_ request: LiveQueryRequest<Value>, in database: Database?) {
-        let key = LiveQueryKey(identity: request.identity, database: database)
-        guard key != following else { return }
+        let key = request.key(in: database)
+        guard key != running?.key else { return }
         stop()
-        following = key
         // The task holds this object only while it publishes, so an
         // observation does not keep alive the view state it belongs to.
-        observation = Task { [weak self] in
+        let task = Task { [weak self] in
             do {
                 guard let database else {
                     throw RelateError.misuse(
@@ -236,14 +244,14 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
                 self?.settle(key, .failure(error))
             }
         }
+        running = (key, task)
     }
 
     /// Stops following: the property's query can no longer be stated. The
     /// last value stays.
     func stop() {
-        observation?.cancel()
-        observation = nil
-        following = nil
+        running?.task.cancel()
+        running = nil
     }
 
     /// What an observation reports: a value, or the error that ended it.
@@ -255,15 +263,10 @@ final class LiveQueryObserver<Value: Sendable & Equatable>: ObservableObject {
         switch outcome {
         case .success(let value):
             if value != self.value { self.value = value }
-            if !isLive(key) { settled = (key, .live) }
+            if !state(of: key).isLive { settled = (key, .live) }
         case .failure(let error):
             settled = (key, .failed(error))
         }
-    }
-
-    /// Whether `key` is the observation that last settled, with a value.
-    private func isLive(_ key: LiveQueryKey) -> Bool {
-        if let settled, settled.key == key, case .live = settled.state { true } else { false }
     }
 }
 #endif

@@ -34,13 +34,6 @@ private let failingRequest = LiveQueryRequest<Int>(identity: LiveQueryIdentity(i
     tx in try tx.query("RETURN 1/0").scalar(as: Int.self)
 }
 
-extension LiveQueryRequest {
-    /// The observation key of this request on `database`.
-    fileprivate func key(on database: Database?) -> LiveQueryKey {
-        LiveQueryKey(identity: identity, database: database)
-    }
-}
-
 @MainActor @Suite(.timeLimit(.minutes(1))) struct LiveQueryTests {
     // MARK: The observer
 
@@ -48,13 +41,10 @@ extension LiveQueryRequest {
         let db = try counterDatabase()
         let request = counterRequest()
         let observer = LiveQueryObserver<Int>()
-        #expect(observer.value == nil && observer.state(of: request.key(on: db)).isLoading)
+        #expect(observer.value == nil && observer.state(of: request.key(in: db)).isLoading)
         observer.observe(request, in: db)
         await waitUntil { observer.value == 0 }
-        guard case .live = observer.state(of: request.key(on: db)) else {
-            Issue.record("expected a live query, got \(observer.state(of: request.key(on: db)))")
-            return
-        }
+        #expect(observer.state(of: request.key(in: db)).isLive)
         try await db.write(incrementCounter)
         await waitUntil { observer.value == 1 }
     }
@@ -84,9 +74,9 @@ extension LiveQueryRequest {
 
         let changed = counterRequest(offset: 100)
         observer.observe(changed, in: db)
-        #expect(observer.state(of: changed.key(on: db)).isLoading && observer.value == 0)
+        #expect(observer.state(of: changed.key(in: db)).isLoading && observer.value == 0)
         await waitUntil { observer.value == 100 }
-        #expect(!observer.state(of: changed.key(on: db)).isLoading)
+        #expect(!observer.state(of: changed.key(in: db)).isLoading)
         // The earlier request is no longer followed.
         try await db.write(incrementCounter)
         await waitUntil { observer.value == 101 }
@@ -100,8 +90,8 @@ extension LiveQueryRequest {
         await waitUntil { observer.value == 0 }
         let tagged = counterRequest(tags: ["counter"])
         observer.observe(tagged, in: db)
-        #expect(observer.state(of: tagged.key(on: db)).isLoading)
-        await waitUntil { !observer.state(of: tagged.key(on: db)).isLoading }
+        #expect(observer.state(of: tagged.key(in: db)).isLoading)
+        await waitUntil { !observer.state(of: tagged.key(in: db)).isLoading }
         // The observation now follows only its tag.
         try await db.write(incrementCounter)
         try await db.write(incrementCounter, tags: ["counter"])
@@ -118,10 +108,10 @@ extension LiveQueryRequest {
         try await other.write(incrementCounter)
         // The same query on another database is another observation: what
         // the first one settled says nothing about it.
-        #expect(observer.state(of: request.key(on: other)).isLoading)
+        #expect(observer.state(of: request.key(in: other)).isLoading)
         observer.observe(request, in: other)
         await waitUntil { observer.value == 1 }
-        #expect(!observer.state(of: request.key(on: other)).isLoading)
+        #expect(!observer.state(of: request.key(in: other)).isLoading)
     }
 
     @Test func anIdThatDoesNotEqualItselfIsStillTheSameQuery() async throws {
@@ -154,7 +144,7 @@ extension LiveQueryRequest {
         // Another query that reads the same value.
         let same = countingRequest(OSAllocatedUnfairLock(initialState: 0))
         observer.observe(same, in: db)
-        await waitUntil { !observer.state(of: same.key(on: db)).isLoading }
+        await waitUntil { !observer.state(of: same.key(in: db)).isLoading }
         #expect(published == [0])
     }
 
@@ -162,8 +152,8 @@ extension LiveQueryRequest {
         let request = counterRequest()
         let observer = LiveQueryObserver<Int>()
         observer.observe(request, in: nil)
-        await waitUntil { !observer.state(of: request.key(on: nil)).isLoading }
-        let error = try #require(observer.state(of: request.key(on: nil)).error as? RelateError)
+        await waitUntil { !observer.state(of: request.key(in: nil)).isLoading }
+        let error = try #require(observer.state(of: request.key(in: nil)).error as? RelateError)
         #expect(try misuseMessage(of: error).contains("relateDatabase"))
         #expect(observer.value == nil)
     }
@@ -174,8 +164,8 @@ extension LiveQueryRequest {
         observer.observe(counterRequest(), in: db)
         await waitUntil { observer.value == 0 }
         observer.observe(failingRequest, in: db)
-        await waitUntil { !observer.state(of: failingRequest.key(on: db)).isLoading }
-        let error = try #require(observer.state(of: failingRequest.key(on: db)).error as? RelateError)
+        await waitUntil { !observer.state(of: failingRequest.key(in: db)).isLoading }
+        let error = try #require(observer.state(of: failingRequest.key(in: db)).error as? RelateError)
         #expect(error.engineError?.stage == .runtime)
         #expect(observer.value == 0)
     }
@@ -184,8 +174,8 @@ extension LiveQueryRequest {
         let db = try counterDatabase()
         let observer = LiveQueryObserver<Int>()
         observer.observe(failingRequest, in: db)
-        await waitUntil { !observer.state(of: failingRequest.key(on: db)).isLoading }
-        await waitUntil { db.core.hub.subscriberCount == 0 }
+        await waitUntil { !observer.state(of: failingRequest.key(in: db)).isLoading }
+        await db.commitSubscribersAreGone()
     }
 
     @Test func aStoppedObserverStopsListeningAndKeepsItsValue() async throws {
@@ -194,7 +184,7 @@ extension LiveQueryRequest {
         observer.observe(counterRequest(), in: db)
         await waitUntil { observer.value == 0 }
         observer.stop()
-        await waitUntil { db.core.hub.subscriberCount == 0 }
+        await db.commitSubscribersAreGone()
         #expect(observer.value == 0)
         // The same request starts again after a stop.
         try await db.write(incrementCounter)
@@ -209,7 +199,7 @@ extension LiveQueryRequest {
         await waitUntil { observer?.value == 0 }
         #expect(db.core.hub.subscriberCount == 1)
         observer = nil  // the view went away: its observation is cancelled
-        await waitUntil { db.core.hub.subscriberCount == 0 }
+        await db.commitSubscribersAreGone()
     }
 
     // MARK: The statement form

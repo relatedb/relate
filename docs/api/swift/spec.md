@@ -385,6 +385,7 @@ public enum LiveQueryState: Sendable {
     case live                         // the property holds the latest value and follows commits
     case failed(any Error)            // the observation ended: a read threw, or there is no database
     public var isLoading: Bool { get }
+    public var isLive: Bool { get }
     public var error: (any Error)? { get }
 }
 
