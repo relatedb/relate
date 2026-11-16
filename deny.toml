@@ -40,6 +40,12 @@ ignore = [
 # there are none today.
 
 [graph]
+# exclude-dev exists for the licenses gate (shipped-license policy: dev
+# crates never ship). It also narrows the weekly advisories scan to
+# non-dev crates — a known, deliberate bound while cargo-deny 0.20.x
+# takes a single --config (no layering to scope the exclusion to the
+# licenses invocation alone); full-graph advisory coverage rides the
+# cargo-deny upgrade that adds config layering (LABS-1689).
 exclude-dev = true
 
 [licenses]
