@@ -615,6 +615,13 @@ test-release-scripts:
 test-front-bench-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_front_bench_corpus.py
 
+## test-opencode-review-post: Unit-test the per-kind review poster
+##   (.github/scripts/opencode-review-post.py): the posting-path verdict
+##   derivation on a fixture findings document, the per-kind no-op gates,
+##   and the findings-document diagnoses
+test-opencode-review-post:
+	$(PYTHON) $(CURDIR)/scripts/tests/test_opencode_review_post.py
+
 ## test-install-sh: Offline stub-curl harness for distribution/install.sh
 test-install-sh:
 	sh $(CURDIR)/scripts/tests/test_install_sh.sh
@@ -666,7 +673,8 @@ test-build-xcframework:
 ##   runs a scripts/tests suite hangs off this list)
 test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
-	test-release-scripts test-front-bench-scripts test-stamp-swift-package \
+	test-release-scripts test-front-bench-scripts test-opencode-review-post \
+	test-stamp-swift-package \
 	test-build-xcframework test-rename-residuals test-makefile-targets test-premerge-check
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)

@@ -11,6 +11,16 @@ This module owns the git side (diffs, blobs, greps). The language side
 (unit extraction, signatures, hashing) lives in units.py; near-duplicate
 detection in similar.py.
 
+Every git diff this module and incremental.py run carries
+--no-ext-diff --no-textconv: facts recomputation runs inside
+token-bearing post steps (the stellar and per-kind lanes recompute the
+facts after the shell-capable model step), where a model-written
+diff.external or diff.<driver>.command in .git/config — planted during
+the model step or re-added by a persistent model-spawned child between
+git calls — would otherwise execute during the diff. The drift guard
+(tools/tests/test_model_env_drift.py) pins the flags at every diff
+invocation site.
+
 Usage:
     facts.py [--base SHA] [--head SHA] [--out PATH] [--repo DIR]
              [--include-units-file PATH]
@@ -90,7 +100,7 @@ def _file_facts(repo: str, base: str, head: str, row: tuple[str, str, str],
     st, old_path = status.get(path, ("m", None))
     base_path = old_path or path
 
-    file_diff = git(repo, "diff", "--unified=0", base, head, "--", base_path, path)
+    file_diff = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", base, head, "--", base_path, path)
     added_lines, ranges = parse_file_diff(file_diff)
 
     record = {
@@ -221,10 +231,10 @@ def range_in_hunks(path: str, start: int, end: int, hbp: dict) -> bool:
 
 
 def build_facts(repo: str, base: str, head: str, include_units: list[str] | None = None) -> dict:
-    numstat = git(repo, "diff", "--numstat", "-z", "--find-renames", base, head)
-    name_status = git(repo, "diff", "--name-status", "-z", "--find-renames", base, head)
+    numstat = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", "--find-renames", base, head)
+    name_status = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", base, head)
     deps = extract_all_deps(repo, head)
-    diff_text = git(repo, "diff", "--find-renames", base, head)
+    diff_text = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, head)
     include_units = include_units or []
     status = parse_name_status_z(name_status)
 

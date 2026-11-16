@@ -80,7 +80,13 @@ if [ -s "$VERDICT_FILE" ]; then
   # untracked file — the normal case, written by the reviewer at run time —
   # keeps working. git ls-files works on any checkout (including the
   # fetch-depth: 1 runner checkout) and fails cleanly outside a repo.
-  if git ls-files --error-unmatch "$VERDICT_FILE" >/dev/null 2>&1; then
+  # The invocation carries the full per-invocation git pin set (the
+  # round-6 finding — the same six pins review-restore.sh, the staging
+  # git show and the prep fetches carry): this step's shell runs after
+  # the model step, and the restore choreography sourced before it has
+  # already replaced .git/config with the minimal trusted configuration —
+  # the pins hold the knobs closed regardless.
+  if git -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null ls-files --error-unmatch "$VERDICT_FILE" >/dev/null 2>&1; then
     echo "Tier 1 (verdict file): '${VERDICT_FILE}' is tracked in git — refusing; falling through to comment tiers"
   else
     verdict="$(tr -d '[:space:]' < "$VERDICT_FILE")"

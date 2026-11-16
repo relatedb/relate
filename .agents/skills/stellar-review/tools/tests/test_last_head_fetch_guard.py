@@ -73,11 +73,13 @@ class TestLastHeadFetchGuard(unittest.TestCase):
 
     def test_all_modes_route_through_the_helper(self):
         # The helper carries both credential paths itself (local: the
-        # repo's own; model/post: the inline CI auth), so every mode —
-        # local, model, post — funnels through the one guarded fetch.
+        # repo's own; model/post: the endpoint library's git_authed —
+        # the env-numbered credential channel, never a token on the
+        # command line), so every mode — local, model, post — funnels
+        # through the one guarded fetch.
         body = helper_body()
         self.assertIn('"$MODE" = "local"', body)
-        self.assertIn("http.https://github.com/.extraheader", body)
+        self.assertRegex(body, r'git_authed "\$AUTH" fetch')
         # And the incremental branch invokes it — spelling-agnostic like
         # ANY_LAST_FETCH above: the name appears exactly twice, the
         # definition and the one call, however the call is written.

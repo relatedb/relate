@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from collections.abc import Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import briefs as briefs_mod  # noqa: E402
@@ -100,12 +101,23 @@ def gh(*args: str, input_path: str | None = None) -> str:
     return out.stdout.decode()
 
 
-def find_summary_comment(repo: str, pr: str) -> dict | None:
+def find_summary_comment(repo: str, pr: str, marker: str = SUMMARY_MARKER) -> dict | None:
+    """The bot's own summary comment carrying `marker` (the stellar
+    marker by default; the per-kind posters pass their kind's — one
+    discovery implementation for every review lane). A comment counts
+    only when one of its lines starts with the marker — the same
+    anchored contract the enforce gate's tier 3 parses — so a marker
+    quoted mid-sentence inside model prose (routine when a stellar
+    review quotes these very scripts) is not a summary claim and can
+    never redirect another lane's upsert."""
     raw = gh(f"repos/{repo}/issues/{pr}/comments", "--paginate")
     comments = json.loads(raw)
+    # leading whitespace is trimmed exactly as the gate's tier 3 trims it
     mine = [
         c for c in comments
-        if c["user"]["login"] == "github-actions[bot]" and SUMMARY_MARKER in c.get("body", "")
+        if c["user"]["login"] == "github-actions[bot]"
+        and any(line.lstrip().startswith(marker)
+                for line in c.get("body", "").splitlines())
     ]
     mine.sort(key=lambda c: c["created_at"])
     return mine[-1] if mine else None
@@ -148,11 +160,18 @@ FINDING_AREAS = frozenset(briefs_mod.PASS_LAYOUT)
 def sanitize(text: str) -> str:
     """Model-written text lands in the summary comment; HTML comment
     markers would let it forge a stellar-ledger block or break the
-    verdict marker parsing downstream. Loops to a fixpoint: a single
-    pass can reassemble a marker across the seam (`<!---->`)."""
+    verdict marker parsing downstream, and a line break would let it
+    open its own line — a lane marker at line start is the summary
+    discovery key (find_summary_comment) and the enforce gate's tier-3
+    parse, so model text must never be able to start one. Every line
+    boundary str.splitlines sees — newline, carriage return, and the
+    Unicode separators, the same boundary set discovery splits on — is
+    flattened to a space, so a marker survives only mid-line, where
+    neither discovery nor the gate matches it. Loops to a fixpoint: a
+    single pass can reassemble a marker across the seam (`<!---->`)."""
     while "<!--" in text or "-->" in text:
         text = text.replace("<!--", "").replace("-->", "")
-    return text
+    return " ".join(text.splitlines())
 
 
 class FindingsError(SystemExit):
@@ -319,6 +338,15 @@ def fmt_summary_line(f: dict) -> str:
             f"`{f['path']}:{f['lines'][0]}-{end}` — {f['summary']}{fix}")
 
 
+def verdict_comment(verdict: str) -> str:
+    """The enforce gate's tier-2 wire format (enforce-opencode-verdict.sh
+    matches exactly this shape), the one derivation: every summary
+    assembler — stellar's and the per-kind lanes' — appends its output
+    instead of re-spelling the HTML comment, so a format change lands
+    once and every lane's tier-2 signal moves with it."""
+    return f"<!-- opencode-verdict: {verdict} -->"
+
+
 def build_summary(facts: dict, scope_stats: dict | None, round_no: int, head: str,
                   verdict: str, led: dict, disposition: dict) -> str:
     """Render the summary comment. `disposition` bundles the round's
@@ -431,7 +459,7 @@ def build_summary(facts: dict, scope_stats: dict | None, round_no: int, head: st
         lines.append(f"{SUMMARY_MARKER} ⚠️ {n_open} issue(s) open "
                      f"({len(fail_new)} + {len(low_new)} anchored new (fail/low) + "
                      f"{len(disposition['anchored_carried'])} carried)")
-    lines.append(f"<!-- opencode-verdict: {verdict} -->")
+    lines.append(verdict_comment(verdict))
     trimmed = ledger_mod.trim_for_comment(led)
     lines.append(f"<!-- stellar-ledger: {encode_ledger(trimmed)} -->")
     return "\n".join(lines) + "\n"
@@ -439,6 +467,15 @@ def build_summary(facts: dict, scope_stats: dict | None, round_no: int, head: st
 
 # ---------------------------------------------------------------------------
 # post command
+
+
+def dry_run_dump(review_doc: dict, verdict: str, summary: str) -> None:
+    """The one dry-run dump for every posting command — stellar's post
+    and the per-kind lanes' (consumed by import): the review payload,
+    the verdict, the summary. Printed, nothing landed."""
+    print(json.dumps(review_doc, indent=2, sort_keys=True))
+    print("--- verdict:", verdict)
+    print(summary)
 
 
 def cmd_post(args: argparse.Namespace) -> None:
@@ -558,9 +595,7 @@ def cmd_post(args: argparse.Namespace) -> None:
                              "timeout_partial": args.timeout_partial})
 
     if args.dry_run:
-        print(json.dumps(review_doc, indent=2, sort_keys=True))
-        print("--- verdict:", verdict)
-        print(summary)
+        dry_run_dump(review_doc, verdict, summary)
         return
 
     # LABS-615: the posting choreography (dead-path dump, forced-fail
@@ -577,15 +612,20 @@ def tempfile_payload(doc: dict) -> str:
     return path
 
 
-def upsert_summary(repo: str, pr: str, body: str) -> None:
+def upsert_summary(repo: str, pr: str, body: str, marker: str = SUMMARY_MARKER,
+                   carry_ledger: bool = True) -> None:
     """The one summary-comment choreography: discover-then-edit, so the PR
-    keeps exactly one stellar summary. When the new body carries no ledger
-    block of its own (noop/fail summaries), the old block is carried
-    forward — dropping it would wipe sealed-unit state and human waivers."""
-    existing = find_summary_comment(repo, pr)
-    if existing and not LEDGER_RE.search(body):
-        # carry the old block forward, re-encoded to canonical z: form
-        # (never verbatim) — dropping it would wipe sealed-unit state
+    keeps exactly one summary per review lane (the stellar marker by
+    default; the per-kind posters pass their kind's). `carry_ledger` is
+    the explicit stellar-lane boundary: stellar's commands keep the
+    default — when the new body carries no ledger block of its own
+    (noop/fail summaries), the old block is carried forward, because
+    dropping it would wipe sealed-unit state and human waivers — while
+    the per-kind lanes decline it: their comments own no ledger state,
+    so no stellar policy runs on their path."""
+    existing = find_summary_comment(repo, pr, marker)
+    if carry_ledger and existing and not LEDGER_RE.search(body):
+        # re-encode to the canonical z: form, never verbatim
         decoded = last_ledger(existing["body"])
         if decoded is not None:
             body += f"<!-- stellar-ledger: {encode_ledger(decoded)} -->\n"
@@ -650,15 +690,19 @@ def write_verdict(path: str, verdict: str) -> None:
 
 
 def land_round(repo: str, pr: str, summary: str, verdict: str,
-               verdict_file: str) -> None:
+               verdict_file: str, marker: str = SUMMARY_MARKER,
+               carry_ledger: bool = True) -> None:
     """The one posting choreography for every summary-carrying command
-    (LABS-615): upsert the summary, then write the verdict. A dead
-    upsert must not cost the round its findings OR green the gate — the
-    built summary goes to the run log, the verdict is forced to fail
-    (tier 1 of the enforce gate would otherwise trust the verdict file
-    alone), and the error re-raises so the step stays red."""
+    (LABS-615), shared by the stellar commands and the per-kind posters:
+    `marker` selects which lane's summary is discovered and
+    `carry_ledger` is that lane's ledger-carry boundary (upsert_summary's
+    docstring). Upsert the summary, then write the verdict. A dead upsert
+    must not cost the round its findings OR green the gate — the built
+    summary goes to the run log, the verdict is forced to fail (tier 1
+    of the enforce gate would otherwise trust the verdict file alone),
+    and the error re-raises so the step stays red."""
     try:
-        upsert_summary(repo, pr, summary)
+        upsert_summary(repo, pr, summary, marker, carry_ledger)
     except subprocess.CalledProcessError:
         print("post: summary upsert failed; round summary follows "
               "(verdict forced to fail)", file=sys.stderr)
@@ -668,38 +712,43 @@ def land_round(repo: str, pr: str, summary: str, verdict: str,
     write_verdict(verdict_file, verdict)
 
 
-def land_fixed_round(args: argparse.Namespace, summary: str, verdict: str) -> None:
-    """The fixed-verdict commands' (noop, fail) full choreography: the
-    dry-run escape — print the summary, land nothing — has exactly one
-    spelling, and the posting path is land_round's."""
+def land_fixed_round(args: argparse.Namespace, summary: str, verdict: str,
+                     marker: str = SUMMARY_MARKER, carry_ledger: bool = True) -> None:
+    """The fixed-verdict commands' (noop, fail) full choreography, shared
+    by the stellar commands and the per-kind posters (`marker` selects
+    the lane, `carry_ledger` its ledger-carry boundary): the dry-run
+    escape — print the summary, land nothing — has exactly one spelling,
+    and the posting path is land_round's."""
     if args.dry_run:
         print(summary)
         return
-    land_round(args.repo, args.pr, summary, verdict, args.verdict_file)
+    land_round(args.repo, args.pr, summary, verdict, args.verdict_file,
+               marker, carry_ledger)
 
 
 def cmd_noop(args: argparse.Namespace) -> None:
     """Docs/CI-only PRs: no model run at all, verdict pass, tidy summary."""
-    summary = ("**Stellar review:** no review-relevant changes (docs/CI-only diff). ✅\n"
-               "<!-- opencode-verdict: pass -->\n")
+    summary = (f"{SUMMARY_MARKER} no review-relevant changes (docs/CI-only diff). ✅\n"
+               f"{verdict_comment('pass')}\n")
     land_fixed_round(args, summary, "pass")
 
 
-def cmd_check(args: argparse.Namespace) -> None:
-    """The one findings-document gate (LABS-615, LABS-582): print
-    'valid' and exit 0 when the file is a version-1 findings document;
-    otherwise print a distinct diagnosis — missing file, empty file,
-    unparseable JSON (with the parser's error and position), or wrong
-    shape (with the offending key) — and exit 1, so a no-findings round
-    names its cause instead of the conflated generic message. The
-    workflow's poster consults this one implementation for both the
-    gate decision and the fail reason."""
+def check_findings_file(path: str, validate: Callable[[object], str | None]) -> None:
+    """The shared read-and-diagnose entry point for every findings gate —
+    stellar's check and the per-kind lanes' (consumed by import): print
+    'valid' and exit 0 when the file parses and passes `validate` (the
+    lane's own document contract — stellar's findings_doc_shape_error,
+    the per-kind lanes' composed kind ruling); otherwise print the
+    distinct diagnosis (missing / empty / unparseable / the validator's
+    ruling) and exit 1, so a no-findings round names its cause instead
+    of a conflated generic message. One spelling of the failure
+    classes: the two lanes can never name them differently."""
     def reject(detail: str) -> None:
-        print(f"{args.findings}: {detail}", file=sys.stderr)
+        print(f"{path}: {detail}", file=sys.stderr)
         raise SystemExit(1)
 
     try:
-        with open(args.findings, "rb") as fh:
+        with open(path, "rb") as fh:
             raw = fh.read()
     except FileNotFoundError:
         reject("missing — the model run wrote no file")
@@ -711,10 +760,19 @@ def cmd_check(args: argparse.Namespace) -> None:
         reject("unparseable — not UTF-8 text (a half-flushed document)")
     except json.JSONDecodeError as e:
         reject(f"unparseable JSON — {e.msg} at line {e.lineno} column {e.colno}")
-    shape = findings_doc_shape_error(doc)
-    if shape is not None:
-        reject(shape)
+    error = validate(doc)
+    if error is not None:
+        reject(error)
     print("valid")
+
+
+def cmd_check(args: argparse.Namespace) -> None:
+    """The one findings-document gate (LABS-615, LABS-582): 'valid' +
+    exit 0, or a distinct diagnosis + exit 1. The read-and-diagnose
+    ladder is check_findings_file's (shared with the per-kind lanes);
+    stellar's own document contract is the shape ruling,
+    findings_doc_shape_error."""
+    check_findings_file(args.findings, findings_doc_shape_error)
 
 
 def cmd_fail(args: argparse.Namespace) -> None:
@@ -725,9 +783,9 @@ def cmd_fail(args: argparse.Namespace) -> None:
     # values) — sanitize() at this one boundary closes the forged
     # stellar-ledger/verdict-marker path (an unsanitized marker would
     # suppress the real ledger's carry-forward in upsert_summary)
-    summary = (f"**Stellar review:** ⚠️ review failed to produce valid findings. "
+    summary = (f"{SUMMARY_MARKER} ⚠️ review failed to produce valid findings. "
                f"Details: {sanitize(args.reason)}\n"
-               "<!-- opencode-verdict: fail -->\n")
+               f"{verdict_comment('fail')}\n")
     land_fixed_round(args, summary, "fail")
 
 
