@@ -130,7 +130,7 @@ jobs:
       # from main. release.yml only ever tags release commits (the Swift
       # stamp commit, ADR-0572) on main, so the tag's commit must be an
       # ancestor of origin/main.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -276,7 +276,7 @@ jobs:
       # by run 43020568298 re-failing on the pre-fix action). The
       # artifacts still come from the tag: the release's assets,
       # attestation-verified below.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
 
@@ -336,7 +336,7 @@ jobs:
 
       # Action from the dispatch ref like npm-platform-wasm above; the
       # artifacts still come from the tag's release assets.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
 
@@ -404,7 +404,7 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.registry-owner.outputs.sha }}
 
@@ -507,7 +507,7 @@ jobs:
       # workflow artifacts; a separate workflow run cannot see those, so
       # the natives come from the release's own assets — the same five
       # FFI archives the release attached.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.registry-owner.outputs.sha }}
 

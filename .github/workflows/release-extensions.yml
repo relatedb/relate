@@ -75,7 +75,7 @@ jobs:
           echo "Official Relate tags and releases are owned by relatedb/relate; refusing ${GITHUB_REPOSITORY}." >&2
           exit 1
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
 
@@ -105,7 +105,7 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       # The release channel publishes from main: the version the table's
       # manifest carries on main is the version this run releases.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
 
@@ -198,7 +198,7 @@ jobs:
       # The gate tests the resolved commit — the version source the build
       # and pack legs already use — never whatever main has moved to
       # while the run is in flight.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
@@ -241,7 +241,7 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       # Build from the resolved commit so artifacts carry the manifest's
       # version (the version source is the tree the dispatch resolved).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
@@ -308,7 +308,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
@@ -376,7 +376,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 

@@ -72,7 +72,7 @@ jobs:
           echo "Official Relate tags and releases are owned by relatedb/relate; refusing ${GITHUB_REPOSITORY}." >&2
           exit 1
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
   # LABS-1690: the license gate for the shipped dependency closure. Early and
   # parallel with the version bump, report-only for now (violations and
@@ -120,7 +120,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # release-next-version.sh needs full tag history
 
@@ -194,7 +194,7 @@ jobs:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.sha }}
 
@@ -274,7 +274,7 @@ jobs:
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.sha }}
 
@@ -412,7 +412,7 @@ jobs:
       # Build from the stamped release commit (ADR-0572) — the one tree
       # every artifact and the tag share — so artifacts carry the release
       # version.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -547,7 +547,7 @@ jobs:
       # Build from the stamped release commit (ADR-0572) — the one tree
       # every artifact and the tag share — so artifacts carry the release
       # version.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -673,7 +673,7 @@ jobs:
       # Build from the stamped release commit (ADR-0572) — the one tree
       # every artifact and the tag share — so artifacts carry the release
       # version.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -722,7 +722,7 @@ jobs:
       # Package from the stamped release commit (ADR-0572) so the jars
       # carry the release version stamped by scripts/release-bump.sh
       # (the pom is a sweep surface).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -812,7 +812,7 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       # Pack from the stamped release commit (ADR-0572) so the manifest
       # carries the release version stamped by scripts/release-bump.sh.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -869,7 +869,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -937,7 +937,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -982,7 +982,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -1034,7 +1034,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -1177,7 +1177,7 @@ jobs:
       # and the guard below reads main's workspace version. Full depth:
       # scripts/release-next-version.sh computes from the git tag list, and
       # by needs-ordering the tag job has already pushed this run's tag.
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -1261,7 +1261,7 @@ jobs:
     steps:
       # Check out the tag the `tag` job just pushed so the release is cut from
       # exactly the tagged commit.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.tag }}
 
@@ -1376,7 +1376,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
@@ -1517,7 +1517,7 @@ jobs:
       # The generator at the stamped release commit (the release publishes
       # with the script it shipped with); distribution carries install.sh
       # and install.ps1.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
           sparse-checkout: |
@@ -1616,7 +1616,7 @@ jobs:
       # unconditionally sources the shared TOML reader for the
       # EXPECTED_VERSION default.
       - name: Checkout the smoke script (sparse)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
           sparse-checkout: |
@@ -1745,7 +1745,7 @@ jobs:
       # self-update-smoke precedent). Sparse checkout:
       # release-notes-slack.sh is self-contained.
       - name: Checkout the Slack policy script (sparse)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
           sparse-checkout: |
