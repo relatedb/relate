@@ -49,9 +49,16 @@ terminal — ask them to run:
 relate feedback enable   # authorize agent reports for 30 days
 ```
 
-The CLI also asks once on the person's first interactive feedback command
-(one line, default no). Never try to grant it yourself: the agent-mode
-command does not exist, and a piped `enable` is refused.
+The CLI also asks the person directly, one line, default **yes** (an empty
+answer or `y`/`yes` grants; any other answer declines): once on their first
+interactive feedback command, and on `skill install` and `relate upgrade`
+runs — once per 30-day window, so a lapsed or declined grant is asked about
+again near its end. An opted-out telemetry ladder suppresses the ask
+entirely. Never try to grant it yourself: the agent-mode command does not
+exist, and a piped `enable` is refused.
+
+Agent-mode error output also points here: an agent run's diagnostics carry a
+one-line hint to this flow, exactly once per run.
 
 ## Gotchas
 
@@ -59,7 +66,10 @@ command does not exist, and a piped `enable` is refused.
   not approval of *this* draft; an unapproved draft is never sent.
 - **Free text is validated and redacted before any send.** Emails, URLs, host
   names, IP addresses, file paths, data filenames, secrets, Cypher snippets
-  and pasted output are rejected whole (never rewritten); the one exception
+  and pasted output are rejected whole (never rewritten); a port-less token
+  in a known procedure namespace (`apoc.…`, `gds.…`, `db.ontology.…`) is an
+  identifier, not a host name — a token with an explicit port is always
+  assessed as a host; the one exception
   is a documentation link to this project's own docs or repository, by path
   (`relatedb.ai/<path>`, `github.com/relatedb/relate/<path>`), or to the
   Neo4j Cypher manual (`neo4j.com/docs/`). A bare host URL with no path

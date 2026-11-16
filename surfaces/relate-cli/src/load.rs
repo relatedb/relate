@@ -167,9 +167,10 @@ pub(crate) struct CreateCodecs {
 /// store to open, so `-d https://…` alone and `-d https://… --load x.rl`
 /// are the same exit-2 refusal, before any fetch. With no `--load`, the
 /// target is the store; with one, the memory turn-into or the
-/// durable-target load applies. Announcements print from here (through
-/// [`crate::print_error`], like the query path's other resolutions), so
-/// both surfaces report the load identically.
+/// durable-target load applies. Announcements print from here through
+/// [`crate::print_notice`] — the load's announcements are success lines,
+/// not diagnostics, so they use the notice sink — so both surfaces report
+/// the load identically.
 pub(crate) fn resolve(
     database: &str,
     load: Option<&str>,
@@ -193,7 +194,7 @@ pub(crate) fn resolve(
         // — the machine shape the e2e announcement parse cuts at.
         return match materialize(source, safe_mode)? {
             Materialized::Staged(path) => {
-                crate::print_error(format!(
+                crate::print_notice(format!(
                     "--load {source}: downloaded to {path}, turning into the in-memory store \
                      (the copy is released after the load)"
                 ));
@@ -220,7 +221,7 @@ pub(crate) fn resolve(
         // announcement names what it loaded into.
         Materialized::Local(source_path) => {
             clone_into(&source_path, database, source, create)?;
-            crate::print_error(format!("--load {source}: loaded into {database}"));
+            crate::print_notice(format!("--load {source}: loaded into {database}"));
         }
         // A fetched source: the scratch is unreferenced the moment the
         // clone returns — remove it now, never at exit — and the
@@ -229,7 +230,7 @@ pub(crate) fn resolve(
         Materialized::Staged(source_path) => {
             clone_into(&source_path, database, source, create)?;
             crate::remote_db::cleanup_staged();
-            crate::print_error(format!(
+            crate::print_notice(format!(
                 "--load {source}: downloaded to {source_path}, loaded into {database} (the copy \
                  is removed after the clone)"
             ));

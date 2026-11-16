@@ -757,18 +757,25 @@ reports would use, prints one line naming that destination and the 30-day
 window, then records the grant in the `feedback` object of
 `<config>/relate/config.json`. A `RELATE_FEEDBACK_ENDPOINT` the endpoint
 policy refuses, or a run that resolves no destination at all, is reported on
-stderr and records nothing (exit 1). The first bare `relate feedback` at a
-terminal that finds no grant and no recorded decline asks once — one line,
-default no, naming the destination family (`Mixpanel`) and the 30-day
-renewal, on the first-run-notice claim pattern — and never asks again; a no
-is recorded as the decline. A run that resolves no destination asks nothing,
-so the question is not spent; an answer that cannot be written is reported on
-stderr (exit 1), leaving the ask for the next run. `disable` clears the record
-and later agent reports refuse.
+stderr and records nothing (exit 1). The grant ask (ADR-0588 §3, revised) is
+one line at a person's terminal, default **yes**, naming the destination
+family (`Mixpanel`) and the 30-day renewal, in two shapes: the first bare
+`relate feedback` that finds no grant and no recorded decline asks once per
+install (the first-run-notice claim pattern); the `skill install` and
+`relate upgrade` surfaces ask once per 30-day window — a decline or a lapsed
+grant is asked about again once the last ask is older than the window — so
+the question resurfaces near a grant's end rather than never. An opted-out
+telemetry ladder suppresses every ask. The answer is fail-closed: an empty
+answer or an explicit `y`/`yes` grants, and any other answer (`n`, `no`,
+anything unrecognized) is recorded as the decline. A run that resolves no
+destination asks nothing, so the question is not spent; an answer that
+cannot be written is reported on stderr (exit 1), leaving the ask for the
+next run. `disable` clears the record and later agent reports refuse.
 
 `relate agent-feedback` is the agent's channel: one structured report under
 the person's standing grant. It never prompts; without a live grant it
-refuses with `not_enabled` (exit 1) naming `relate feedback enable`. With a
+refuses with `not_enabled` (exit 1) naming `relate feedback enable` (30 days
+per grant) and the install/upgrade ask. With a
 grant it sends through the pipeline and prints one compact JSON outcome
 document on stdout: `outcome` (`sent`, `skipped`, `rejected`, `failed`,
 `unknown`), `reason`, `request_id`, `report_id`, `elapsed_ms`, `violations`,
@@ -787,7 +794,10 @@ document on stdout: `outcome` (`sent`, `skipped`, `rejected`, `failed`,
 A report is free text; only the validated, redacted payload leaves the
 machine, and a locally rejected report never records its text. URLs, emails,
 host names, IP addresses, file paths, data filenames, secrets, Cypher and
-pasted output are rejected whole; the one exception is a documentation link
+pasted output are rejected whole — a port-less token in a known procedure
+namespace (`apoc.…`, `gds.…`, `db.ontology.…`) is an identifier, not a host
+name, while a token carrying an explicit port is always assessed as a host
+(`gds.prod.internal:7687` is a host); the one exception is a documentation link
 to this project's own docs or repository, by path (`relatedb.ai/<path>`,
 `github.com/relatedb/relate/<path>`), or to the Neo4j Cypher manual
 (`neo4j.com/docs/`). A bare host URL with no path (`relatedb.ai`,
@@ -1936,7 +1946,12 @@ even on a terminal, and both explicit on-states print one stderr line
 naming the trigger (`relate agent mode on: --agent-mode
 (--no-agent-mode to turn off)`);
 detection never announces — a per-command CLI would repeat a banner on
-every one-shot run. An invalid `RELATE_AGENT_MODE` exits 2 before any
+every one-shot run. Agent-mode error output carries one extra hint line
+exactly once per run, after the mode has resolved: the diagnostic is
+followed by `hint: agents can report Relate friction to its developers —
+draft it, ask the person, then run 'relate agent-feedback'` (ADR-0588 §4)
+— the flag-parse diagnostics that precede the resolution never carry it.
+An invalid `RELATE_AGENT_MODE` exits 2 before any
 statement runs.
 
 ## Hidden REPL commands
@@ -2112,7 +2127,7 @@ See the [executable help example](examples/help.md).
 | `RELATE_MIXPANEL_ENDPOINT` | usage metrics | Override the Mixpanel `/track` POST URL (dev/test); `https://` required for any host, `http://` allowed only for loopback hosts (`localhost`, `127.0.0.1`, `::1`); a rejected value disables telemetry for the run with one stderr warning (ADR-0263) |
 | `RELATE_MIXPANEL_TOKEN` | usage metrics | Override the compiled-in Mixpanel project token (dev/test) |
 | `RELATE_FEEDBACK_ENDPOINT` | agent feedback | Override the feedback `/track` POST URL (dev/test), resolved when `relate feedback enable` records the destination: `https://` for the Mixpanel hosts (`api.mixpanel.com`, `api-eu.mixpanel.com`, `api-in.mixpanel.com`) only, `http://` only for loopback hosts; any other value is refused and records no destination, so a report ends `failed`/`not_configured` instead of being sent elsewhere. A later change to the variable cannot divert a recorded consent (ADR-0588 §3) |
-| `RELATE_FEEDBACK_TOKEN` | agent feedback | Override the compiled-in feedback Mixpanel project token (dev/test); the endpoint is resolved at `relate feedback enable`, while the token itself is read at send time. An empty token means no default destination; reports then go only to a loopback `RELATE_FEEDBACK_ENDPOINT` (ADR-0588 §3) |
+| `RELATE_FEEDBACK_TOKEN` | agent feedback | Override the compiled-in Mixpanel project token (dev/test) — the one shared Labs project usage metrics also reports into (ADR-0588 §3, revised); the endpoint is resolved at `relate feedback enable`, while the token itself is read at send time. An explicitly empty value means no default destination; reports then go only to a loopback `RELATE_FEEDBACK_ENDPOINT` — also the migration path to a dedicated feedback project |
 | `RELATE_BULK_BATCH_THRESHOLD` | query engine | Estimated touched-entity count at which an eligible global bulk write (`MATCH (n) DETACH DELETE n`, cross-product `CREATE`, global `SET`/`REMOVE`) switches to batched commits; default `10000` (ADR-0209). Unset defaults; a set value that does not parse as a positive integer fails `Database::open` with a semantic error (same contract as `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`); read once at open |
 | `RELATE_BULK_BATCH_BUDGET` | query engine | Estimated touched-entity budget per batch commit of an eligible global bulk write; default `25000` (ADR-0209). Unset defaults; a set value that does not parse as a positive integer fails `Database::open` with a semantic error (same contract as `RELATE_LOGICAL_GRAPH_SIZE_LIMIT`); read once at open |
 | `RELATE_PREVIEW` | query engine | Global opt-in for preview Cypher features (ADR-0371): a comma-separated list of kebab-case feature names, whitespace tolerated, read once at open. Unset or empty enables nothing. An unknown name fails `Database::open` (exit 1) with `Error: …: invalid RELATE_PREVIEW value: unknown preview feature '<name>' (known features: …)` naming the known names — fail-closed, never silently ignored. Fourteen features are gated live: `hybrid-search` (CIP-278 hybrid search `COMBINE`, ADR-0379), `local-callables` (`DEFINE PROCEDURE`/`DEFINE FUNCTION`, CIP-231, ADR-0382), `ontology` (the `db.ontology.*` procedure family, ADR-0378), the CIP graph-type trio — `graph-type-opt-props` (CIP-283 optional properties `prop :: ANY`), `graph-type-default-values` (`DEFAULT ON COMMIT <value expression>`, CIP-262) and `graph-type-implied-labels` (CIP-266 implied labels, inheritance) — `obfuscated-literals` (the Neo4j `******` dummy literal, gated at the lexer so the disabled form is the parser's own syntax error — ADR-0454), `mixed-label-syntax` (Neo4j's mixed-label-syntax allowance: colon-conjunction, GQL label symbols and `IS` may mix across one clause's label expressions — ADR-0456), `float16-coordinate-types` (CIP-280 FLOAT16/BFLOAT16 vector coordinate types in `VECTOR<…>` type expressions and the `vector()` constructor — ADR-0464), `chronological-comparisons` (Cypher 25's four chronological operators — `IS [NOT] BEFORE`, `AFTER`, `SAME INSTANT`, `SAME REPRESENTATION` — ADR-0467) and `complex-search-patterns` (widening a SEARCH MATCH statement's pattern shape — ADR-0467), `coll-zip` (CIP-274's `coll.zip`, ADR-0497), `coll-has` (CIP-286's `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf`, ADR-0497), `gql-stddev-aliases` (CIP-245's `stddev_samp`/`stddev_pop` spellings, ADR-0497). The name gates are one of the four gate-location exceptions ADR-0497 records: they gate *name admission*, not syntax, so a gated name invoked while disabled fails with the registry's ordinary unknown-function rejection (`UnknownFunction: <name>`, 42N48) exactly like any unknown name — never the authored `preview feature …` error, which would advertise a name the catalogue must not list. While a name gate is off its names are also absent from `SHOW FUNCTIONS`. With `ontology` off, every `db.ontology.*` call fails with the authored `semantic error: SemanticError: preview feature 'ontology' is not enabled: set RELATE_PREVIEW=ontology`, and `SHOW PROCEDURES` omits the four rows; with it on, the four rows are listed with unchanged signatures and modes and every call runs. Enabling it on a served store — `relate serve` with Bolt, HTTP or MCP — exposes the four procedures, including the store-level writers `db.ontology.set` and `db.ontology.drop`, to every connected client: the gate is the server process's environment, read once at open, not a per-caller check. A gated feature invoked while disabled fails with `Error: …: preview feature '<name>' is not enabled: set RELATE_PREVIEW=<name>` |

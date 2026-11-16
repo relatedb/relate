@@ -354,7 +354,7 @@ fn enable(dir: &Path, env: &dyn Fn(&str) -> Option<String>, stdin_is_tty: bool) 
     // Persist first, then confirm: a confirmation printed before the write
     // would tell the person a grant landed that did not. `disable` reads the
     // same way round.
-    if let Err(code) = save(&record, dir, "enable") {
+    if let Err(code) = crate::feedback_ask::save(&record, dir, "enable") {
         return code;
     }
     println!(
@@ -373,23 +373,11 @@ fn refuse_enable(detail: &str) -> i32 {
 
 /// `feedback disable`: clear the consent record, which revokes the grant.
 fn disable(dir: &Path) -> i32 {
-    if let Err(code) = save(&FeedbackConsent::default(), dir, "disable") {
+    if let Err(code) = crate::feedback_ask::save(&FeedbackConsent::default(), dir, "disable") {
         return code;
     }
     println!("feedback disabled");
     0
-}
-
-/// Persist the consent record, reporting a write failure as
-/// `Error: feedback {verb}: writing {path}` with exit 1.
-fn save(record: &FeedbackConsent, dir: &Path, verb: &str) -> Result<(), i32> {
-    record.save(dir).map_err(|e| {
-        crate::print_error(format!(
-            "Error: feedback {verb}: writing {}: {e}",
-            state::config_path(dir).display()
-        ));
-        1
-    })
 }
 
 /// `feedback` bare: ask the one-time question (a person's terminal only),
@@ -401,10 +389,10 @@ fn state_with(
     stdin: &mut dyn BufRead,
 ) -> i32 {
     let mut record = FeedbackConsent::load(dir);
-    if stdin_is_tty {
-        if let Err(code) = ask_first_run(dir, env, &mut record, stdin) {
-            return code;
-        }
+    if let Err(code) =
+        crate::feedback_ask::ask_first_run(dir, env, stdin_is_tty, &mut record, stdin)
+    {
+        return code;
     }
     let telemetry = opt_out::resolve(env, state::load_config_telemetry(dir));
     println!("{}", state_line(telemetry, &record, Utc::now()));
@@ -413,51 +401,6 @@ fn state_with(
         crate::help::command_usage(crate::help::HelpTopic::Feedback)
     );
     0
-}
-
-/// The first-run ask (ADR-0588 §3), on the first-run-notice claim pattern:
-/// once per install, one line, default no. A yes records the same standing
-/// grant `enable` writes; a no records the decline. Piped runs never reach
-/// here, an answered record (a grant or a decline) is never asked again, and
-/// a run that resolves no destination skips the ask instead of spending it —
-/// a yes could record nothing there.
-fn ask_first_run(
-    dir: &Path,
-    env: &dyn Fn(&str) -> Option<String>,
-    record: &mut FeedbackConsent,
-    stdin: &mut dyn BufRead,
-) -> Result<(), i32> {
-    // Resolved first, so a run with nothing to grant writes no state either.
-    // A refused override is skipped like an absent destination; `enable`
-    // reports it.
-    let Ok(Some(endpoint)) = sender::resolve_feedback_endpoint(env) else {
-        return Ok(());
-    };
-    let (mut state, _) = state::load_or_create_state(dir);
-    if state.feedback_ask_shown
-        || record.declined
-        || !matches!(record.authorization(Utc::now()), Authorization::Missing)
-    {
-        return Ok(());
-    }
-    eprint!(
-        "Agent feedback reports go to the Relate feedback service (Mixpanel) and a grant \
-         lasts {DEFAULT_AUTHORIZATION_DAYS} days. Allow agent reports? [y/N] "
-    );
-    let mut answer = String::new();
-    if stdin.read_line(&mut answer).is_err() {
-        return Ok(());
-    }
-    if matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES") {
-        record.authorize(Utc::now(), endpoint);
-    } else {
-        record.declined = true;
-    }
-    save(record, dir, "state")?;
-    // The recorded answer suppresses the question on its own; the claim only
-    // keeps it from returning once a grant expires or is revoked.
-    let _ = state.claim_feedback_ask(dir);
-    Ok(())
 }
 
 /// The standing state line: the telemetry opt-out layer first (it suppresses
@@ -497,15 +440,6 @@ mod tests {
     fn endpoint_env() -> impl Fn(&str) -> Option<String> {
         env_of(&[("RELATE_FEEDBACK_ENDPOINT", "http://127.0.0.1:9/track")])
     }
-
-    fn authorized(until: &str) -> FeedbackConsent {
-        FeedbackConsent {
-            endpoint: Some("https://api.mixpanel.com/track".to_string()),
-            authorized_until: Some(until.to_string()),
-            ..FeedbackConsent::default()
-        }
-    }
-
     #[test]
     fn bare_feedback_prints_the_state() {
         assert_eq!(parse_action(&[]), Ok(FeedbackAction::State));
@@ -759,10 +693,13 @@ mod tests {
     }
 
     #[test]
-    fn enable_without_a_destination_is_refused() {
+    fn enable_with_no_destination_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        assert_eq!(enable(dir, &env_of(&[]), true), 1);
+        // The compiled-in project token resolves a destination by default;
+        // the no-destination shape needs the explicit empty override.
+        let no_destination = env_of(&[("RELATE_FEEDBACK_TOKEN", "")]);
+        assert_eq!(enable(dir, &no_destination, true), 1);
         assert!(FeedbackConsent::load(dir).authorization(Utc::now()) == Authorization::Missing);
     }
 
@@ -775,132 +712,20 @@ mod tests {
         assert_eq!(FeedbackConsent::load(dir), FeedbackConsent::default());
     }
 
-    /// The ask: a yes writes the standing grant and is never asked again.
-    #[test]
-    fn the_first_run_ask_grants_on_yes_and_asks_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let mut record = FeedbackConsent::load(dir);
-        assert_eq!(
-            ask_first_run(dir, &endpoint_env(), &mut record, &mut &b"y\n"[..]),
-            Ok(())
-        );
-        assert!(matches!(
-            record.authorization(Utc::now()),
-            Authorization::Authorized { .. }
-        ));
-        assert!(state::load_or_create_state(dir).0.feedback_ask_shown);
-        // A later bare run does not ask again, even with the grant revoked.
-        let mut fresh = FeedbackConsent::default();
-        assert_eq!(
-            ask_first_run(dir, &endpoint_env(), &mut fresh, &mut &b"y\n"[..]),
-            Ok(())
-        );
-        assert!(
-            fresh.authorization(Utc::now()) == Authorization::Missing,
-            "the ask is not repeated"
-        );
-    }
-
-    /// A no is remembered: the decline is recorded and the ask never repeats.
-    #[test]
-    fn the_first_run_ask_records_a_decline_and_never_asks_again() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let mut record = FeedbackConsent::load(dir);
-        assert_eq!(
-            ask_first_run(dir, &endpoint_env(), &mut record, &mut &b"\n"[..]),
-            Ok(())
-        );
-        assert!(record.declined, "the default answer is no");
-        assert!(FeedbackConsent::load(dir).declined);
-
-        let mut fresh = FeedbackConsent::load(dir);
-        assert_eq!(
-            ask_first_run(dir, &endpoint_env(), &mut fresh, &mut &b"y\n"[..]),
-            Ok(())
-        );
-        assert!(
-            fresh.authorization(Utc::now()) == Authorization::Missing,
-            "a declined record is never asked again"
-        );
-    }
-
-    #[test]
-    fn an_authorized_record_is_not_asked() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let mut record = FeedbackConsent::default();
-        record.authorize(Utc::now(), "https://api.mixpanel.com/track".to_string());
-        record.save(dir).unwrap();
-        assert_eq!(
-            ask_first_run(dir, &endpoint_env(), &mut record, &mut &b"n\n"[..]),
-            Ok(())
-        );
-        assert!(!FeedbackConsent::load(dir).declined);
-        assert!(!state::load_or_create_state(dir).0.feedback_ask_shown);
-    }
-
-    /// No destination means nothing a yes could grant: the one-time ask is
-    /// skipped, not spent, and nothing is read or recorded.
-    #[test]
-    fn the_first_run_ask_is_skipped_without_a_destination() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let mut input: &[u8] = b"y\n";
-        let mut record = FeedbackConsent::load(dir);
-        assert_eq!(
-            ask_first_run(dir, &env_of(&[]), &mut record, &mut input),
-            Ok(())
-        );
-        assert_eq!(input, b"y\n", "the skipped ask reads nothing");
-        assert!(!state::state_path(dir).exists(), "no ask claim is written");
-        assert!(!record.declined);
-        assert!(!FeedbackConsent::load(dir).declined);
-    }
-
-    /// An answer that cannot be written is reported (exit 1) and the ask is
-    /// not burned: the next run asks again.
-    #[test]
-    fn a_failed_answer_write_is_reported_and_does_not_burn_the_ask() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        std::fs::write(state::config_path(dir), "{ not json").unwrap();
-        let mut record = FeedbackConsent::load(dir);
-        assert_eq!(
-            ask_first_run(dir, &endpoint_env(), &mut record, &mut &b"y\n"[..]),
-            Err(1)
-        );
-        assert_eq!(
-            FeedbackConsent::load(dir).authorization(Utc::now()),
-            Authorization::Missing,
-            "the refused config file keeps no answer"
-        );
-        assert!(
-            !state::load_or_create_state(dir).0.feedback_ask_shown,
-            "the ask returns because the answer was not recorded"
-        );
-    }
-
-    /// A piped run skips the ask silently: nothing is read, no state file is
-    /// created, and no answer is recorded.
-    #[test]
-    fn a_piped_state_never_asks() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let mut input: &[u8] = b"y\n";
-        assert_eq!(state_with(dir, &env_of(&[]), false, &mut input), 0);
-        assert_eq!(input, b"y\n", "the piped stdin is never read");
-        assert!(!state::state_path(dir).exists(), "no ask claim is written");
-        assert!(!FeedbackConsent::load(dir).declined);
-    }
-
+    /// The standing state line names the deciding layer, the grant window
+    /// and the destination (restored after the ask split — it is the
+    /// retained `state_line`'s only test).
     #[test]
     fn state_line_reports_the_layer_the_window_and_the_destination() {
         let now = DateTime::parse_from_rfc3339("2026-11-12T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let enabled = opt_out::EffectiveState::Default;
+        let authorized = |until: &str| FeedbackConsent {
+            endpoint: Some("https://api.mixpanel.com/track".to_string()),
+            authorized_until: Some(until.to_string()),
+            ..FeedbackConsent::default()
+        };
         assert_eq!(
             state_line(enabled, &authorized("2026-12-12T12:00:00Z"), now),
             "feedback enabled until 2026-12-12T12:00:00Z \

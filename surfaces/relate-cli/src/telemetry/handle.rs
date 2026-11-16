@@ -49,8 +49,11 @@ use super::Event;
 /// the same one neo4j-cli reports into; events are namespaced by the
 /// `RELATE-CLI_` prefix so the tools coexist. This is a client-side
 /// ingestion token, public in every shipped binary by design. Overridable
-/// via `RELATE_MIXPANEL_TOKEN`.
-pub const MIXPANEL_TOKEN: &str = "4bfb2414ab973c741b6f067bf06d5575";
+/// via `RELATE_MIXPANEL_TOKEN`. The literal's one home is the feedback
+/// crate (ADR-0588 §3, single-project revision) — the agent-feedback stream
+/// reports into the same project under its own event name — so this is a
+/// re-export, not a second spelling.
+pub const MIXPANEL_TOKEN: &str = relate_feedback::sender::PROJECT_TOKEN;
 
 /// Events one run holds in memory before the exit append; beyond this the
 /// event is dropped (ADR-0079 §5 best-effort).

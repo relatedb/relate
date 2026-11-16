@@ -507,14 +507,20 @@ pub(crate) fn report_query_error(
     mode: &Mode,
     ctx: ReportCtx,
 ) -> i32 {
-    report_query_error_to(
+    let code = report_query_error_to(
         prefix,
         e,
         mode,
         ctx,
         &mut std::io::stdout(),
         &mut std::io::stderr(),
-    )
+    );
+    // LABS-1736: the process-stderr report path carries the agent feedback
+    // pointer exactly as `print_error` does — the injected-writer form
+    // below never does, so a test's captured sinks stay clean. The hint is
+    // the agent channel's own gate (`agent_feedback_cmd::error_hint`).
+    crate::agent_feedback_cmd::write_hint(&mut std::io::stderr());
+    code
 }
 
 /// [`report_query_error`] with its output and diagnostic writers passed in:
@@ -556,7 +562,11 @@ pub(crate) fn report_open_error(prefix: &str, e: &relate::Error, mode: &Mode) ->
     print_human(prefix, e, &mut diagnostics);
     let classified = classify_open(e);
     let error = envelope_map_for(&classified, e, None);
-    report_envelope(&classified, error, mode, None, &mut out, &mut diagnostics)
+    let code = report_envelope(&classified, error, mode, None, &mut out, &mut diagnostics);
+    // LABS-1736: the store-open path's process-stderr binding carries the
+    // same one pointer emission as every other path.
+    crate::agent_feedback_cmd::write_hint(&mut diagnostics);
+    code
 }
 
 /// Report a `--timeout` expiry (ADR-0241, LABS-234) and return its exit

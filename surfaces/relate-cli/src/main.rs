@@ -62,6 +62,10 @@ mod extensions;
 // its mode.
 mod agent_feedback_cmd;
 mod feedback_cmd;
+// The feedback grant ask (ADR-0588 §3 as revised): one module for both ask
+// surfaces — the first-run ask and the windowed install/upgrade resurface —
+// so their preconditions and persistence are one shape.
+mod feedback_ask;
 #[cfg(feature = "fetch-params")]
 mod fetch_params;
 mod flags;
@@ -70,6 +74,10 @@ mod help;
 mod info_cmd;
 mod params;
 mod parse_error;
+// The one terminal-prompt answer kit (fail-closed): skill refresh's ask and
+// the feedback grant ask share it, so an unrecognized answer can never
+// grant anything.
+mod prompt;
 // The CLI's one plaintext-transport vocabulary (LABS-872): the
 // authority→host extraction and the loopback predicates every `http://` gate
 // states its policy in terms of.
@@ -215,6 +223,13 @@ fn main() {
     // the top-level help, the per-command help gate and the dispatch gate,
     // so they cannot disagree.
     let feedback_surface = agent_mode::FeedbackSurface::from_env(agent, stdout_is_tty);
+    // LABS-1736: the once-per-run feedback pointer reads this one fact, set
+    // from the one surface resolution so it can never disagree with the
+    // dispatch gates below.
+    agent_feedback_cmd::set_agent_run(matches!(
+        feedback_surface,
+        agent_mode::FeedbackSurface::Agent
+    ));
 
     // Help wins over --version when both are set: `-h` breaks out of the
     // parse loop the moment it is seen, exactly like the old mid-parse exit.
@@ -314,7 +329,10 @@ fn main() {
     // themselves; detection stays silent (a per-command CLI never repeats
     // a banner). The mode owns the line whole; `main` only prints it.
     if let Some(line) = agent_mode.announcement() {
-        print_error(line);
+        // Not a diagnostic: the announcement is a success line, so it
+        // prints through the notice sink and never spends the
+        // agent-feedback pointer's once-per-run latch.
+        print_notice(line);
     }
     // The row cap (ADR-0196) resolves from the decided mode: a bad
     // RELATE_MAX_ROWS exits 2 only on a run that executes statements.
@@ -583,7 +601,24 @@ fn exit_help(telemetry: &mut telemetry::Telemetry, page: &str) -> ! {
 /// already sanitized (e.g. the multi-line skill error — see its call site).
 /// New code: if the message interpolates anything, call `print_error`, not
 /// `eprintln!`.
+///
+/// `print_error` is a *diagnostic* sink — it also emits the once-per-run
+/// agent-feedback pointer (LABS-1736). A success or notice announcement
+/// (`--load …: loaded into …`, `serve: … listening on …`) is not a
+/// diagnostic and must not spend that pointer's once-per-run latch: print it
+/// through [`print_notice`] instead.
 pub(crate) fn print_error(msg: impl std::fmt::Display) {
+    write_error(&mut io::stderr(), msg);
+    // LABS-1736: the pointer is the agent channel's own concern — the hint
+    // call owns its gate and latch (see `agent_feedback_cmd`).
+    agent_feedback_cmd::write_hint(&mut io::stderr());
+}
+
+/// The sanitized stderr line for a success or notice announcement —
+/// [`print_error`]'s rendering without its pointer: the pointer rides the
+/// run's first diagnostic, so a load or serve announcement on a successful
+/// run must leave the latch unspent for the error that may still come.
+pub(crate) fn print_notice(msg: impl std::fmt::Display) {
     write_error(&mut io::stderr(), msg);
 }
 
@@ -646,15 +681,26 @@ fn run_lifecycle_command(
         }
         #[cfg(feature = "skill")]
         LifecycleCommand::Skill { args } => {
-            let action = args.action.as_str();
+            // The typed action, captured before run() consumes the args: the
+            // ask gate reads the variant, the telemetry word derives from it
+            // (LABS-1737).
+            let action = args.action;
+            let asking_run = matches!(
+                action,
+                skill_cmd::SkillAction::Mutate(skill_cmd::MutateAction::Install)
+            );
             let exit_code = skill_cmd::run(args);
-            finish_command(telemetry, name, Some(action), exit_code);
+            feedback_ask::ask_after_command(exit_code, surface, asking_run);
+            finish_command(telemetry, name, Some(action.as_str()), exit_code);
         }
         #[cfg(feature = "upgrade")]
         LifecycleCommand::Upgrade { opts } => {
-            let action = if opts.check { Some("check") } else { None };
+            // LABS-1737: a real upgrade (never a --check) is the windowed
+            // ask's resurface surface; the gate lives in the ask module.
+            let check = opts.check;
             let exit_code = upgrade_cmd::run(opts);
-            finish_command(telemetry, name, action, exit_code);
+            feedback_ask::ask_after_command(exit_code, surface, !check);
+            finish_command(telemetry, name, check.then_some("check"), exit_code);
         }
         LifecycleCommand::Feedback { args } => {
             // The mode gate runs before the grammar: the absent surface is

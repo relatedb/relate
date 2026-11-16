@@ -19,11 +19,15 @@ use crate::submit::Sender;
 /// The one Mixpanel event a report becomes.
 pub(crate) const EVENT_NAME: &str = "RELATE-CLI_AGENT_FEEDBACK";
 
-/// The feedback project's compiled-in ingestion token (ADR-0588 §3): public
-/// client-side by design, overridable with `RELATE_FEEDBACK_TOKEN`. Empty
-/// until the project is provisioned — an empty token means no default
-/// destination, so only a loopback endpoint can send.
-pub(crate) const TOKEN: &str = "";
+/// The compiled-in Mixpanel project token (ADR-0588 §3, single-project
+/// revision): the one Neo4j Labs CLI project the usage-metrics stream
+/// already reports into — one project, one token, the event name
+/// ([`EVENT_NAME`]) separating the feedback stream in queries and
+/// dashboards. Public client-side by design (ADR-0079 §7), overridable with
+/// `RELATE_FEEDBACK_TOKEN` — the migration path if feedback later moves to
+/// its own project. This is the one home of the literal: the CLI's
+/// usage-metrics token re-exports it, so no second spelling can drift.
+pub const PROJECT_TOKEN: &str = "4bfb2414ab973c741b6f067bf06d5575";
 
 /// The hosts a report may be sent to over `https` (ADR-0588 §3).
 const MIXPANEL_HOSTS: [&str; 3] = [
@@ -40,9 +44,9 @@ pub(crate) fn endpoint_allowed(url: &str) -> bool {
 }
 
 /// The token rule, in one place: `RELATE_FEEDBACK_TOKEN` when set, else the
-/// compiled-in [`TOKEN`] (empty until the project is provisioned).
+/// compiled-in [`PROJECT_TOKEN`].
 fn token(env: &dyn Fn(&str) -> Option<String>) -> String {
-    env("RELATE_FEEDBACK_TOKEN").unwrap_or_else(|| TOKEN.to_string())
+    env("RELATE_FEEDBACK_TOKEN").unwrap_or_else(|| PROJECT_TOKEN.to_string())
 }
 
 /// Resolve the endpoint to send to: `RELATE_FEEDBACK_ENDPOINT` when it
@@ -185,8 +189,17 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_token_has_no_default_destination() {
-        assert_eq!(resolve_feedback_endpoint(&env_of(&[])), Ok(None));
+    fn the_compiled_project_token_is_a_default_destination() {
+        assert_eq!(
+            resolve_feedback_endpoint(&env_of(&[])),
+            Ok(Some(DEFAULT_ENDPOINT.to_string())),
+            "the shared Labs project token resolves by default"
+        );
+        assert_eq!(
+            resolve_feedback_endpoint(&env_of(&[("RELATE_FEEDBACK_TOKEN", "")])),
+            Ok(None),
+            "an explicit empty override is the no-destination escape hatch"
+        );
         assert_eq!(
             resolve_feedback_endpoint(&env_of(&[("RELATE_FEEDBACK_TOKEN", "t")])),
             Ok(Some(DEFAULT_ENDPOINT.to_string()))

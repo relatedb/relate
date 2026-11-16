@@ -105,7 +105,7 @@ pub(super) fn spawn_http(
         listener,
         bolt_direct,
     } = surface;
-    crate::print_error(format_args!(
+    crate::print_notice(format_args!(
         "serve: HTTP Query API v2 listening on http://{}:{} (auth: {})",
         url_host(host),
         port,
@@ -162,7 +162,7 @@ pub(super) fn spawn_mcp(
     admission: &Admission,
 ) {
     let McpSurface { port, listener } = surface;
-    crate::print_error(format_args!(
+    crate::print_notice(format_args!(
         "serve: MCP (streamable HTTP) listening on http://{}:{} (auth: {})",
         url_host(host),
         port,
@@ -201,7 +201,7 @@ pub(super) fn spawn_bolt(
         listener,
         identity,
     } = surface;
-    crate::print_error(format_args!(
+    crate::print_notice(format_args!(
         "serve: Bolt listening on bolt://{}:{} (auth: {})",
         url_host(host),
         port,

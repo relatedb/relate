@@ -89,7 +89,7 @@ pub(crate) fn exec_relate_query(
     formatter: &Formatter,
     opts: RenderOpts,
 ) -> StatementRun {
-    exec_relate_query_to(
+    let run = exec_relate_query_to(
         conn,
         query,
         params,
@@ -97,7 +97,15 @@ pub(crate) fn exec_relate_query(
         opts,
         &mut io::stdout(),
         &mut io::stderr(),
-    )
+    );
+    // LABS-1736: the statement path's process-stderr binding carries the
+    // agent feedback pointer — a failed statement is the diagnostic the
+    // pointer exists for. The injected-writer form stays hint-free, so a
+    // test's captured sinks are clean.
+    if run.code != 0 {
+        crate::agent_feedback_cmd::write_hint(&mut io::stderr());
+    }
+    run
 }
 
 /// [`exec_relate_query`] with its output and diagnostic writers passed

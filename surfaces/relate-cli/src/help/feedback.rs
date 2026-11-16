@@ -1,6 +1,8 @@
 //! The `feedback` command help page: the person's surface — the freed text
 //! that becomes a prefilled GitHub issue, and the grant's action words.
 
+use relate_feedback::authorization::DEFAULT_AUTHORIZATION_DAYS;
+
 /// The `feedback` synopsis, shared by its help page, its usage errors and
 /// the bare command's state output.
 pub(super) const FEEDBACK_USAGE: &str =
@@ -18,7 +20,8 @@ standing agent-feedback grant.
   TEXT       What went wrong. A multi-line TEXT's first line is the title and
              the rest the body; a one-line TEXT is the title, cut at 80
              characters back to a space, while the body keeps the whole text.
-  enable     Let agents send feedback reports for 30 days. Needs a terminal:
+  enable     Let agents send feedback reports for {DEFAULT_AUTHORIZATION_DAYS} days.
+             Needs a terminal:
              the line it prints names the destination before the grant is
              recorded.
   disable    Revoke the agent-feedback grant.

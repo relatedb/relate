@@ -2,6 +2,13 @@
 
 Status: Proposed
 Claim: 47fe8c879275aa42286f25d3d322ab7215b4d08e
+Revision (2026-11-16, still Proposed): the maintainers decided — feedback
+reports into the **one** shared Labs Mixpanel project (the event name, not a
+second project, separates the stream; `RELATE_FEEDBACK_TOKEN` remains the
+migration path to a dedicated project); the grant ask defaults to **yes**
+and resurfaces once per grant window on the install and upgrade surfaces;
+procedure names in known namespaces are identifiers, not host names, for
+the redaction policy.
 
 ## Context
 
@@ -62,21 +69,29 @@ while the CLI depends on it, never the reverse.
    grant keeps the lifecycle-verb grammar: `enable` and `disable` are
    actions, a bare command prints the standing state, and `enable` runs only
    at a person's terminal, naming the destination and the 30-day window
-   as it records; the first-run ask offers the same grant once, default
-   no. The honest scope is cooperative-agent governance: the grant steers an
+   as it records; the ask offers the same grant, default **yes** (the
+   revision above), in two shapes — once per install on the first
+   interactive feedback command, and once per 30-day window on the
+   `skill install` and `relate upgrade` surfaces, so a lapsed or declined
+   grant is asked about again near its end; a telemetry ladder that
+   resolves off suppresses every ask. The honest scope is cooperative-agent governance: the grant steers an
    agent that respects it, and a process attached to a pty looks like a
    person — the ask and the terminal rule are courtesies, not enforcement.
 
-   Telemetry keeps its compiled-in usage-metrics token and `RELATE-CLI_`
+   Telemetry keeps its `RELATE-CLI_`
    event prefix, with the existing `RELATE_MIXPANEL_TOKEN`/
-   `RELATE_MIXPANEL_ENDPOINT` overrides. Feedback ships its own compiled-in
-   project token and reports `RELATE-CLI_AGENT_FEEDBACK`, so free-text
-   reports live in a project separate from anonymous usage counts, with
-   `RELATE_FEEDBACK_TOKEN` and `RELATE_FEEDBACK_ENDPOINT` overrides.
+   `RELATE_MIXPANEL_ENDPOINT` overrides. Feedback reports
+   `RELATE-CLI_AGENT_FEEDBACK` into the **one** shared Labs project (the
+   revision above): the event name separates free-text reports from
+   anonymous usage counts in queries and dashboards, and the token's one
+   home is this crate — telemetry re-exports it — with
+   `RELATE_FEEDBACK_TOKEN` and `RELATE_FEEDBACK_ENDPOINT` overrides as the
+   migration path to a dedicated project later.
    Ingestion tokens are client-side and public in every shipped binary by
-   design (ADR-0079 §7); nothing injects a token at build time, and a build
-   whose token is empty has no default destination and can send only to a
-   loopback endpoint. The endpoint is resolved when the person authorizes
+   design (ADR-0079 §7); nothing injects a token at build time, and an
+   explicitly empty `RELATE_FEEDBACK_TOKEN` override means no default
+   destination, so only a loopback endpoint can send. The endpoint is
+   resolved when the person authorizes
    (`relate feedback enable`); the token itself is read at send time. Each
    surface passes its endpoint policy as data: telemetry accepts any `https`
    host, feedback only the Mixpanel hosts. A later environment change cannot
@@ -145,7 +160,9 @@ while the CLI depends on it, never the reverse.
 - No `feedback` feature exists to switch the verbs off: they compile in
   every bundle, and the report's code vocabulary comes from the exit-code
   table rather than an `agent-context`-only module.
-- Two Mixpanel projects must be provisioned — usage metrics (existing) and
-  agent feedback (new) — each with a schema pinning the event's properties.
+- One Mixpanel project serves both streams (the revision above): the
+  existing shared Labs project, with a schema pinning each event's
+  properties — a dedicated feedback project needs only the token override
+  and a re-grant, never a code change.
 - Reports are free text: only the validated, redacted payload leaves the
   machine, and a locally rejected report records no payload in its receipt.

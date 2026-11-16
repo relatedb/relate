@@ -205,18 +205,10 @@ fn foreign_note(path: &Path) -> String {
 fn prompt_skill_refresh() -> bool {
     print!("{INSTALL_PROMPT}");
     let _ = io::stdout().flush();
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).is_err() {
-        return false;
-    }
-    prompt_answer_is_yes(&line)
-}
-
-/// Pure prompt-answer classification: empty, `y`, and `yes` — trimmed and
-/// case-insensitive — are yes; everything else is no.
-fn prompt_answer_is_yes(answer: &str) -> bool {
-    let answer = answer.trim();
-    answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+    // The one terminal-prompt answer kit (fail-closed): an unread line and
+    // an unrecognized answer both decline.
+    crate::prompt::read_answer(&mut io::stdin().lock())
+        .is_some_and(|line| crate::prompt::answer_is_yes(&line))
 }
 
 /// The argv (after the binary path) for a `skill install` spawn. Pure, so the
@@ -390,16 +382,19 @@ mod tests {
     }
 
     #[test]
-    fn prompt_answer_is_yes_accepts_empty_y_and_yes() {
+    fn the_shared_answer_classifier_accepts_empty_y_and_yes() {
         for yes in ["", "  ", "y", "Y", "yes", "YES", " y ", " Yes ", "yEs\n"] {
-            assert!(prompt_answer_is_yes(yes), "expected yes for {yes:?}");
+            assert!(
+                crate::prompt::answer_is_yes(yes),
+                "expected yes for {yes:?}"
+            );
         }
     }
 
     #[test]
-    fn prompt_answer_is_yes_declines_everything_else() {
+    fn the_shared_answer_classifier_declines_everything_else() {
         for no in ["n", "N", "no", "NO", " no ", "nope", "ye", "yess", "1"] {
-            assert!(!prompt_answer_is_yes(no), "expected no for {no:?}");
+            assert!(!crate::prompt::answer_is_yes(no), "expected no for {no:?}");
         }
     }
 }

@@ -223,18 +223,55 @@ static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").expect("email detector regex")
 });
 
+/// Procedure namespaces a friction report may name without the token reading
+/// as a host: the one table every dotted-identifier exception comes from, so
+/// a new family is one row, not a second rule. Each row is a whole-prefix
+/// match with its trailing dot in the literal (`apoc.export.json.all`,
+/// `gds.pageRank.stream`, `db.ontology.get`) — never a first-label match,
+/// so `db.prod.internal` and `gds.prod.internal` stay host hits. The table
+/// is the only enumeration of the exempted namespaces: prose points here.
+const PROCEDURE_PREFIXES: [&str; 3] = ["apoc.", "gds.", "db.ontology."];
+/// The words a procedure reference ends in — `apoc.export.json.all`,
+/// `gds.pageRank.stream`, `db.ontology.get`. A hostname rarely ends in one
+/// (`gds.prod.internal` does not), so the exemption cannot swallow an
+/// internal host: the shape of the last label is what separates a procedure
+/// from a host, not the first.
+const PROCEDURE_WORDS: [&str; 15] = [
+    "all", "stream", "write", "stats", "mutate", "project", "validate", "get", "set", "list",
+    "create", "drop", "delete", "submit", "apply",
+];
+
+/// Whether `token` names a procedure in one of the exempted namespaces —
+/// checked before the host rules, so `apoc.export.json.all` is an
+/// identifier, not a hostname. Only a port-less token is exempt: an
+/// explicit port is the strongest host signal a token carries
+/// (`gds.prod.internal:7687` is a host even though bare `gds.*` reads as
+/// procedure namespace), and no procedure reference carries one.
+fn is_procedure_name(token: &str) -> bool {
+    if token.contains(':') {
+        return false;
+    }
+    let last_label = token.rsplit_once('.').map_or(token, |(_, last)| last);
+    PROCEDURE_WORDS.contains(&last_label) && PROCEDURE_PREFIXES.iter().any(|p| token.starts_with(p))
+}
+
 /// A host is a hit with or without a port: one token pass, one place that
 /// decides what a host is. A `host:port` is reduced to its host exactly as
 /// [`ip_token`] does, then the host is classified once — a dotted name, or
 /// `localhost`, or a single label that has a letter (`box:1234`). A numeric
 /// host is left to the IP detector, so times such as `10:30` are not
-/// flagged, and a bare host name (`db.prod.internal`) is a hit too.
+/// flagged, and a bare host name (`db.prod.internal`) is a hit too — unless
+/// the port-less token is a procedure name in one of the exempted
+/// namespaces, which never reads as a host.
 fn has_host_port(text: &str) -> bool {
     text.split(is_token_boundary).any(host_port_token)
 }
 
 fn host_port_token(token: &str) -> bool {
     let token = trim_token_punct(authority(token));
+    if is_procedure_name(&token.to_ascii_lowercase()) {
+        return false;
+    }
     let (host, port) = match token.rsplit_once(':') {
         Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
             (host, Some(port))
@@ -578,6 +615,43 @@ mod tests {
         }
         for token in PRODUCT_FILENAMES {
             assert!(DATA_FILENAME.is_match(token), "{token} is exempt");
+        }
+    }
+
+    /// A procedure name a friction report naturally quotes is an identifier,
+    /// not a hostname — the reported case (`apoc.export.json.all`) and
+    /// Relate's own `db.ontology` family — while the host shapes the
+    /// detector exists for still hit.
+    #[test]
+    fn procedure_names_are_not_hosts_and_internal_hosts_still_are() {
+        for identifier in [
+            "apoc.export.json.all",
+            "apoc.util.validate",
+            "gds.pageRank.stream",
+            "db.ontology.get",
+            "db.ontology.apply",
+        ] {
+            assert!(!host_port_token(identifier), "{identifier} is a procedure");
+            assert!(
+                !has_host_port(&format!("failed at {identifier} in the load")),
+                "{identifier} in a sentence"
+            );
+        }
+        for host in [
+            "db.prod.internal",
+            "graph-eu.internal:7687",
+            "localhost",
+            "box:1234",
+            // A port is the strongest host signal: a namespaced label with
+            // one is a host, never a procedure reference.
+            "gds.prod.internal:7687",
+            "apoc.internal:7474",
+            // Port-less but host-shaped: the last label is not a procedure
+            // word, so the exemption cannot swallow it (security review).
+            "gds.prod.internal",
+            "apoc.staging.internal",
+        ] {
+            assert!(host_port_token(host), "{host} is a host");
         }
     }
 }

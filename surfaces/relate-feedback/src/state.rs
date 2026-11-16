@@ -5,7 +5,8 @@
 //!
 //! - `state.json` holds `install_id` (a random UUID v4, generated once and
 //!   reused thereafter), `notice_shown` (the one-time first-run-notice
-//!   flag) and `feedback_ask_shown` (the one-time feedback first-run ask).
+//!   flag) and `feedback_ask_last` (when the feedback grant ask last ran —
+//!   one record both ask policies derive from, ADR-0588 §3 as revised).
 //! - `config.json` holds the persistent opt-out key `telemetry` (bool) and
 //!   the feedback consent record.
 //!
@@ -48,15 +49,27 @@ const STATE_LOCK_FILE: &str = "state.lock";
 /// one process (two writes in the same nanosecond still differ).
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Contents of `state.json` (ADR-0079 §3, §6).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Contents of `state.json` (ADR-0079 §3, §6). The serde derive is the one
+/// schema statement — `save_state` and `read_state` serialize and
+/// deserialize it (plus the `install_id` shape check), never re-spelling
+/// the field list. Unknown keys (a legacy `feedback_ask_shown`) are
+/// ignored; every field but `install_id` defaults for a state file written
+/// before it existed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct State {
     /// Random UUID v4, generated once and reused thereafter.
     pub install_id: String,
     /// Whether the one-time first-run notice has been printed.
+    #[serde(default)]
     pub notice_shown: bool,
-    /// Whether the one-time feedback first-run ask has been shown.
-    pub feedback_ask_shown: bool,
+    /// When the feedback grant ask last ran — the one ask record both ask
+    /// policies derive from (ADR-0588 §3 as revised): the first-run ask
+    /// reads "ever answered" from its presence, the windowed
+    /// install/upgrade ask compares it to the grant window. A stamp is
+    /// written for every answered ask, grant or decline, so a decline
+    /// suppresses re-asks for a window, not forever.
+    #[serde(default)]
+    pub feedback_ask_last: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl State {
@@ -64,37 +77,51 @@ impl State {
     /// per install — on the first run with telemetry enabled, interactive
     /// or not — setting `notice_shown` as it does.
     pub fn claim_notice(&mut self, dir: &Path) -> io::Result<bool> {
-        self.claim(dir, |state| &mut state.notice_shown)
+        self.update_locked(dir, |current| {
+            if current.notice_shown {
+                false
+            } else {
+                current.notice_shown = true;
+                true
+            }
+        })
     }
 
-    /// The one-time feedback first-run ask (ADR-0588 §3), on the same claim
-    /// shape as [`State::claim_notice`], setting `feedback_ask_shown`.
-    pub fn claim_feedback_ask(&mut self, dir: &Path) -> io::Result<bool> {
-        self.claim(dir, |state| &mut state.feedback_ask_shown)
+    /// Stamp the ask record (`feedback_ask_last` = `now`): both ask surfaces
+    /// write the one record, on the same locked read-modify-write as the
+    /// notice claim.
+    pub fn stamp_feedback_ask(
+        &mut self,
+        dir: &Path,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> io::Result<()> {
+        self.update_locked(dir, |current| {
+            current.feedback_ask_last = Some(now);
+            true
+        })
+        .map(|_| ())
     }
 
-    /// The one claim shape both once-per-install flags use.
-    ///
-    /// The claim re-reads `state.json` under the state lock instead of
-    /// writing back the snapshot this value was loaded from: two concurrent
-    /// CLI runs each hold their own snapshot, and the second writer would
-    /// otherwise put its own flag over the first's record and the
-    /// once-per-install claim would fire twice. The lock covers the
-    /// read-edit-write, so the re-read is the record no other writer is
-    /// changing. `self` is left holding what the file now holds.
-    ///
-    /// The flag is set only when the record that makes the claim
-    /// once-per-install was written: a write failure is returned, and the
-    /// caller can tell a claimed-and-recorded notice from one that will
-    /// repeat rather than vanishing unasked.
-    fn claim(&mut self, dir: &Path, flag: fn(&mut State) -> &mut bool) -> io::Result<bool> {
+    /// The one locked read-modify-write every state mutation rides: the
+    /// re-read under the state lock instead of writing back the snapshot
+    /// this value was loaded from — two concurrent CLI runs each hold their
+    /// own snapshot, and the second writer would otherwise put its own flag
+    /// over the first's record and a once-per-install claim would fire
+    /// twice. `edit` returns whether anything changed; `false` writes
+    /// nothing. `self` is left holding what the file now holds, and the
+    /// write failure is returned so a caller can tell a recorded claim from
+    /// one that will repeat rather than vanishing unasked.
+    fn update_locked(
+        &mut self,
+        dir: &Path,
+        edit: impl FnOnce(&mut State) -> bool,
+    ) -> io::Result<bool> {
         let _lock = lock_state(dir)?;
         let mut current = read_state(dir).unwrap_or_else(fresh_state);
-        if *flag(&mut current) {
+        if !edit(&mut current) {
             *self = current;
             return Ok(false);
         }
-        *flag(&mut current) = true;
         save_state(dir, &current)?;
         *self = current;
         Ok(true)
@@ -154,18 +181,16 @@ fn fresh_state() -> State {
     State {
         install_id: uuid_v4(),
         notice_shown: false,
-        feedback_ask_shown: false,
+        feedback_ask_last: None,
     }
 }
 
-/// Persist `state.json` (atomic-ish: staging file + rename).
+/// Persist `state.json` (atomic-ish: staging file + rename). The derive is
+/// the schema: no field list is spelled here.
 pub fn save_state(dir: &Path, state: &State) -> io::Result<()> {
-    let body = serde_json::json!({
-        "install_id": state.install_id,
-        "notice_shown": state.notice_shown,
-        "feedback_ask_shown": state.feedback_ask_shown,
-    });
-    write_atomic(&state_path(dir), body.to_string().as_bytes())
+    let body =
+        serde_json::to_string(state).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_atomic(&state_path(dir), body.as_bytes())
 }
 
 /// The parsed `config.json` object. A missing file is an empty map; an
@@ -276,24 +301,11 @@ pub fn save_config_telemetry(dir: &Path, enabled: bool) -> io::Result<()> {
 
 fn read_state(dir: &Path) -> Option<State> {
     let text = fs::read_to_string(state_path(dir)).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let install_id = value.get("install_id")?.as_str()?;
-    if !is_uuid_shape(install_id) {
+    let state: State = serde_json::from_str(&text).ok()?;
+    if !is_uuid_shape(&state.install_id) {
         return None;
     }
-    let notice_shown = value
-        .get("notice_shown")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let feedback_ask_shown = value
-        .get("feedback_ask_shown")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    Some(State {
-        install_id: install_id.to_string(),
-        notice_shown,
-        feedback_ask_shown,
-    })
+    Some(state)
 }
 
 /// Loose UUID shape check: 8-4-4-4-12 hex groups with dashes. Corrupt or
@@ -378,7 +390,7 @@ mod tests {
         assert_eq!(persistence, Persistence::Durable);
         assert!(is_uuid_shape(&first.install_id));
         assert!(!first.notice_shown);
-        assert!(!first.feedback_ask_shown);
+        assert!(first.feedback_ask_last.is_none());
         assert!(state_path(&dir).is_file());
 
         let (second, _) = load_or_create_state(&dir);
@@ -397,16 +409,20 @@ mod tests {
         let (mut second, _) = load_or_create_state(&dir);
 
         assert!(first.claim_notice(&dir).unwrap());
-        assert!(second.claim_feedback_ask(&dir).unwrap());
+        // The ask record stamps the same locked shape the notice claims.
+        assert!(second.stamp_feedback_ask(&dir, chrono::Utc::now()).is_ok());
 
         let (recorded, _) = load_or_create_state(&dir);
         assert!(recorded.notice_shown, "{recorded:?}");
-        assert!(recorded.feedback_ask_shown, "{recorded:?}");
+        assert!(recorded.feedback_ask_last.is_some(), "{recorded:?}");
         assert_eq!(recorded.install_id, first.install_id);
 
         // A second claim of the same flag is still not a fresh claim.
         assert!(!second.claim_notice(&dir).unwrap());
-        assert!(!first.claim_feedback_ask(&dir).unwrap());
+        assert!(
+            !first.claim_notice(&dir).unwrap(),
+            "a second claim of any flag is not fresh"
+        );
     }
 
     /// A state that cannot be written is returned with the fact that it is
@@ -451,19 +467,18 @@ mod tests {
     }
 
     #[test]
-    fn claim_feedback_ask_is_true_once_and_persists() {
+    fn the_ask_stamp_persists_and_overwrites() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let (mut state, _) = load_or_create_state(dir);
-        assert!(
-            state.claim_feedback_ask(dir).unwrap(),
-            "first check asks the feedback question"
-        );
-        assert!(
-            !state.claim_feedback_ask(dir).unwrap(),
-            "second check is suppressed by the feedback_ask_shown flag"
-        );
-        assert!(load_or_create_state(dir).0.feedback_ask_shown);
+        let first = chrono::Utc::now();
+        state.stamp_feedback_ask(dir, first).unwrap();
+        // A later process (fresh load, same dir) sees the persisted stamp,
+        // and a later ask overwrites it — one record, latest ask.
+        assert_eq!(load_or_create_state(dir).0.feedback_ask_last, Some(first));
+        let second = first + chrono::Duration::hours(1);
+        state.stamp_feedback_ask(dir, second).unwrap();
+        assert_eq!(load_or_create_state(dir).0.feedback_ask_last, Some(second));
     }
 
     /// A claim whose record could not be written is an error, not a claim:
@@ -477,7 +492,7 @@ mod tests {
         let mut state = State {
             install_id: "123e4567-e89b-42d3-a456-426614174000".to_string(),
             notice_shown: false,
-            feedback_ask_shown: false,
+            feedback_ask_last: None,
         };
         assert!(state.claim_notice(&dir).is_err());
         assert!(!state.notice_shown, "an unrecorded claim is not claimed");

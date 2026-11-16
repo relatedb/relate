@@ -7,8 +7,10 @@
 //! absence of this module's command in a person's run is one unknown-command
 //! refusal there, not a second check here.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use chrono::Utc;
-use relate_feedback::authorization::{Authorization, FeedbackConsent};
+use relate_feedback::authorization::{Authorization, FeedbackConsent, DEFAULT_AUTHORIZATION_DAYS};
 use relate_feedback::report::{Category, Context, Input, Invoker};
 use relate_feedback::sender::FeedbackSender;
 use relate_feedback::state;
@@ -108,10 +110,11 @@ pub fn run(input: &Input) -> i32 {
         FeedbackConsent::load(&dir).authorization(now),
         Authorization::Authorized { .. }
     ) {
-        crate::print_error(
+        crate::print_error(format!(
             "Error: agent feedback is not enabled (not_enabled): the grant is a person's, \
-             made at a terminal with 'relate feedback enable' (or answered at the first-run ask)",
-        );
+             made at a terminal with 'relate feedback enable' ({DEFAULT_AUTHORIZATION_DAYS} days \
+             per grant), or answered at the install/upgrade ask"
+        ));
         return 1;
     }
     let sender = FeedbackSender::from_env(&env);
@@ -191,6 +194,51 @@ fn os_label() -> Option<String> {
 /// guessed.
 fn arch_label() -> Option<String> {
     crate::platform::arch_word(std::env::consts::ARCH).map(str::to_string)
+}
+
+/// The agent-run feedback pointer (LABS-1736, ADR-0588 §4): one line, agent
+/// runs only, once per run — the process is the unit, because one
+/// installation serves many different agents and each new process is a new
+/// agent context to reach. This module owns the gate: the command the hint
+/// advertises lives here, and the writers that carry diagnostics
+/// (`print_error`, the query-error stderr path) only ask for the line.
+static AGENT_RUN: AtomicBool = AtomicBool::new(false);
+static HINT_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Record the run's surface for the pointer gate — called once, from `main`,
+/// from the one surface resolution.
+pub(crate) fn set_agent_run(on: bool) {
+    AGENT_RUN.store(on, Ordering::Relaxed);
+}
+
+/// The once-per-run hint line, `None` when this run has had it or is a
+/// person's. The decision is pure over its inputs (testable without
+/// process-global state); the latch is the process's.
+fn error_hint() -> Option<&'static str> {
+    hint_line(
+        AGENT_RUN.load(Ordering::Relaxed),
+        HINT_SHOWN.swap(true, Ordering::Relaxed),
+    )
+}
+
+/// The pointer's one emission: gate, latch, line and write in this one
+/// function. Every process-stderr diagnostic binding calls it (LABS-1736)
+/// — the lifecycle sink (`print_error`), the connect-failure and
+/// store-open reports, and the statement run — so the emission exists once
+/// and a new report path can neither re-spell it nor silently omit it.
+pub(crate) fn write_hint(sink: &mut dyn std::io::Write) {
+    if let Some(hint) = error_hint() {
+        crate::write_error(sink, hint);
+    }
+}
+
+/// [`Self::error_hint`]'s pure decision: an agent run's first diagnostic
+/// carries the pointer, the second does not, a person's never does.
+pub(crate) fn hint_line(agent_run: bool, already_shown: bool) -> Option<&'static str> {
+    (agent_run && !already_shown).then_some(
+        "hint: agents can report Relate friction to its developers — draft it, ask \
+         the person, then run 'relate agent-feedback'",
+    )
 }
 
 #[cfg(test)]
