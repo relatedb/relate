@@ -197,6 +197,12 @@ printf '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false
 # worktree .gitattributes (the reset below restores it) and the
 # pinned-empty core.attributesFile.
 rm -f .git/info/attributes
+# .git/info/grafts is model-writable too and a graft parenting the base
+# onto the head would silently empty the merge-base the facts
+# recomputation resolves (the round-11 finding) — deleted alongside the
+# attributes, before the first git invocation; the step env also pins
+# GIT_GRAFT_FILE=/dev/null so a re-planted file cannot take effect.
+rm -f .git/info/grafts
 # The git invocations below carry the full per-invocation pin set: an
 # empty core.fsmonitor disables a model-written fsmonitor hook on every
 # index-refreshing command here (reset, clean, ls-files), core.pager=cat

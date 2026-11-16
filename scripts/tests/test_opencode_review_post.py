@@ -430,11 +430,20 @@ class GateTests(unittest.TestCase):
                         has_code_changes=False), True),
             (self.facts([".claude/agents/stellar-structure.md"],
                         has_code_changes=False), True),
+            # the root agent-instruction files steer every model run —
+            # docs-classified, always relevant (round-11)
+            (self.facts(["AGENTS.md"], has_code_changes=False), True),
+            (self.facts(["CLAUDE.md"], has_code_changes=False), True),
             # an always-relevant file renamed into a docs-classified
             # path is still always relevant — the old path is judged too
             (self.facts([("docs/ci-notes.md", ".github/workflows/ci.yml")],
                         has_code_changes=False), True),
             (self.facts([("docs/owners.md", ".github/CODEOWNERS")],
+                        has_code_changes=False), True),
+            # a code file renamed into a docs-classified path is a code
+            # change to the file that was there — the code-ness branch
+            # judges both endpoints too (round-11)
+            (self.facts([("docs/lib-notes.md", "relate/relate/src/lib.rs")],
                         has_code_changes=False), True),
             # a docs-only rename stays a no-op: neither endpoint counts
             (self.facts([("docs/b.md", "docs/a.md")], has_code_changes=False), False),

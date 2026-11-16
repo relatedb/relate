@@ -17,9 +17,7 @@ token-bearing post steps (the stellar and per-kind lanes recompute the
 facts after the shell-capable model step), where a model-written
 diff.external or diff.<driver>.command in .git/config — planted during
 the model step or re-added by a persistent model-spawned child between
-git calls — would otherwise execute during the diff. The drift guard
-(tools/tests/test_model_env_drift.py) pins the flags at every diff
-invocation site.
+git calls — would otherwise execute during the diff.
 
 Usage:
     facts.py [--base SHA] [--head SHA] [--out PATH] [--repo DIR]

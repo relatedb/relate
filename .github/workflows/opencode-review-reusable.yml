@@ -502,6 +502,12 @@ jobs:
           # covers every other git call the step runs (the prep
           # fetches, merge-base resolutions, facts recomputation).
           GIT_NO_REPLACE_OBJECTS: '1'
+          # Grafts are pinned off from process start (the round-11
+          # finding): .git/info/grafts is model-writable and a graft
+          # parenting the base onto the head silently empties the
+          # merge-base the facts recomputation resolves. /dev/null is
+          # a fixed non-empty value git accepts as "no grafts".
+          GIT_GRAFT_FILE: /dev/null
         run: |
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
@@ -516,6 +522,18 @@ jobs:
           # repository's own .git/config still parses until the sourced
           # choreography replaces it, and its worktree/filter/transport
           # and fsmonitor/pager knobs are redirection or code execution.
+          # Env-channel hardening (round-11): the model step can write
+          # the runner env file, so git's location/transport variables
+          # and the proxy/CA channels are unset before this step's
+          # first git or gh use — unset (not an empty pin: git treats
+          # an empty GIT_DIR as a fatal error) and the hosted runners
+          # need no proxy. Covers the staging show below and everything
+          # the sourced choreography and the poster run in this shell.
+          unset GIT_WORK_TREE GIT_DIR GIT_INDEX_FILE GIT_EXEC_PATH \
+            GIT_CONFIG_PARAMETERS GIT_OBJECT_DIRECTORY \
+            GIT_ALTERNATE_OBJECT_DIRECTORIES \
+            HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
+            SSL_CERT_FILE CURL_CA_BUNDLE
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -647,6 +665,12 @@ jobs:
           # covers every other git call the step runs (the prep
           # fetches, merge-base resolutions, facts recomputation).
           GIT_NO_REPLACE_OBJECTS: '1'
+          # Grafts are pinned off from process start (the round-11
+          # finding): .git/info/grafts is model-writable and a graft
+          # parenting the base onto the head silently empties the
+          # merge-base the facts recomputation resolves. /dev/null is
+          # a fixed non-empty value git accepts as "no grafts".
+          GIT_GRAFT_FILE: /dev/null
         run: |
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
@@ -661,6 +685,18 @@ jobs:
           # repository's own .git/config still parses until the sourced
           # choreography replaces it, and its worktree/filter/transport
           # and fsmonitor/pager knobs are redirection or code execution.
+          # Env-channel hardening (round-11): the model step can write
+          # the runner env file, so git's location/transport variables
+          # and the proxy/CA channels are unset before this step's
+          # first git or gh use — unset (not an empty pin: git treats
+          # an empty GIT_DIR as a fatal error) and the hosted runners
+          # need no proxy. Covers the staging show below and everything
+          # the sourced choreography and the poster run in this shell.
+          unset GIT_WORK_TREE GIT_DIR GIT_INDEX_FILE GIT_EXEC_PATH \
+            GIT_CONFIG_PARAMETERS GIT_OBJECT_DIRECTORY \
+            GIT_ALTERNATE_OBJECT_DIRECTORIES \
+            HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
+            SSL_CERT_FILE CURL_CA_BUNDLE
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -769,6 +805,12 @@ jobs:
           # covers every other git call the step runs (the prep
           # fetches, merge-base resolutions, facts recomputation).
           GIT_NO_REPLACE_OBJECTS: '1'
+          # Grafts are pinned off from process start (the round-11
+          # finding): .git/info/grafts is model-writable and a graft
+          # parenting the base onto the head silently empties the
+          # merge-base the facts recomputation resolves. /dev/null is
+          # a fixed non-empty value git accepts as "no grafts".
+          GIT_GRAFT_FILE: /dev/null
         run: |
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
@@ -783,6 +825,18 @@ jobs:
           # repository's own .git/config still parses until the sourced
           # choreography replaces it, and its worktree/filter/transport
           # and fsmonitor/pager knobs are redirection or code execution.
+          # Env-channel hardening (round-11): the model step can write
+          # the runner env file, so git's location/transport variables
+          # and the proxy/CA channels are unset before this step's
+          # first git or gh use — unset (not an empty pin: git treats
+          # an empty GIT_DIR as a fatal error) and the hosted runners
+          # need no proxy. Covers the staging show below and everything
+          # the sourced choreography and the poster run in this shell.
+          unset GIT_WORK_TREE GIT_DIR GIT_INDEX_FILE GIT_EXEC_PATH \
+            GIT_CONFIG_PARAMETERS GIT_OBJECT_DIRECTORY \
+            GIT_ALTERNATE_OBJECT_DIRECTORIES \
+            HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
+            SSL_CERT_FILE CURL_CA_BUNDLE
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090

@@ -53,6 +53,7 @@ _STELLAR_TOOLS = os.path.join(
 )
 sys.path.insert(0, _STELLAR_TOOLS)
 import post as stellar_post  # noqa: E402
+import facts as stellar_facts  # noqa: E402
 
 # ADR-0258's severity vocabulary and gate: Critical/High/Medium fail, Low
 # passes. The one spelling for these lanes; the marker line, the verdict
@@ -86,6 +87,8 @@ ALWAYS_RELEVANT_PREFIXES = (
     ".agents/skills/",
     ".opencode/agents/",
     ".claude/agents/",
+    "AGENTS.md",
+    "CLAUDE.md",
 )
 RUST_SUFFIXES = (".rs",)
 RUST_FILENAMES = ("Cargo.toml", "Cargo.lock")
@@ -118,8 +121,11 @@ def _security_relevant(facts: dict) -> bool:
     if any(path.startswith(ALWAYS_RELEVANT_PREFIXES) for path in paths):
         return True
     # facts.py's docs classification (its one spelling) decides "code
-    # change": a docs-only or comment-only diff holds no review surface.
-    return bool(facts["has_code_changes"])
+    # change" — judged over BOTH rename endpoints, like the prefix
+    # match above: a code file renamed into a docs-classified path is
+    # a code change to the file that was there, so a code→docs rename
+    # alone cannot no-op the lane.
+    return any(not stellar_facts.is_docs(path) for path in paths)
 
 
 @dataclasses.dataclass(frozen=True)
