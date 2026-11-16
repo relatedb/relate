@@ -119,7 +119,7 @@ if [ -z "$verdict" ]; then
                                               --arg login "$VERDICT_BOT_LOGIN" '
     [ .[][] | select(.user.login == $login
                      and (.body | split("\n")
-                          | any(.; sub("^[ \t]*"; "") | startswith($marker)))) ]
+                          | any(.[]; sub("^[ \t]*"; "") | startswith($marker)))) ]
     | sort_by(.created_at) | last | .body // ""
   ')"; then
     echo "::error::Failed to parse PR comments with jq"

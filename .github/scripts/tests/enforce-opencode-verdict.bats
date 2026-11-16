@@ -378,10 +378,26 @@ run_verdict() {
   grep -qiF "tracked in git" <<< "$output"
 }
 
-# NEW: tier 2 must capture the token from inside the HTML comment, so
-# pass/fail prose before the marker cannot mis-extract.
-@test "tier 2: pass-prose before a fail marker extracts fail" {
+# NEW: tier 2 anchors the HTML verdict marker at line start — a marker
+# riding mid-line after prose is the forgery shape the anchor exists to
+# reject (a finding quoted in a summary could otherwise carry a forged
+# marker inline), so such a body yields NO tier-2 verdict and the gate
+# fails closed. The line-anchored marker, with pass-prose elsewhere in
+# the body, still extracts fail.
+@test "tier 2: mid-line marker is ignored (forgery shape), anchored marker governs" {
   write_gh_response "**Security review:** previously pass <!-- opencode-verdict: fail -->"
+  GH_STUB_RESPONSE_FILE="${TEST_TMP}/gh_response.json" run run_verdict
+  echo "$output"
+  [ "$status" -eq 1 ]
+  # no tier-2 verdict from the mid-line marker; the gate never extracts
+  # 'pass' from the prose either — it fails closed
+  ! grep -qF "Tier 2 (HTML comment): verdict='pass'" <<< "$output"
+  ! grep -qF "verdict='pass'" <<< "$output"
+}
+
+@test "tier 2: anchored fail marker extracts fail despite pass prose" {
+  write_gh_response "**Security review:** the round passed its smoke checks; a finding carried pass-prose into this summary
+<!-- opencode-verdict: fail -->"
   GH_STUB_RESPONSE_FILE="${TEST_TMP}/gh_response.json" run run_verdict
   echo "$output"
   [ "$status" -eq 1 ]
