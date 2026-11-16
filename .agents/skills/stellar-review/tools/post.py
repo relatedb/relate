@@ -223,8 +223,8 @@ def dedupe(findings: list[dict]) -> list[dict]:
         for k in kept:
             if k["path"] != f["path"] or k["checklist_id"] != f["checklist_id"]:
                 continue
-            a = (k["start_line"], k.get("end_line") or k["start_line"])
-            b = (f["start_line"], f.get("end_line") or f["start_line"])
+            a = finding_span(k)
+            b = finding_span(f)
             if a[0] <= b[1] and b[0] <= a[1]:
                 dupe = True
                 break
@@ -234,6 +234,15 @@ def dedupe(findings: list[dict]) -> list[dict]:
 
 
 ONE_K_CROSSING = "flag-1k-crossing"
+
+# The three states a fail-severity finding's inline attempt can end in
+# (ADR-0354's split, refined by the anchor policy): the comment was posted,
+# the API refused the batch it rode in, or there was no diff anchor to
+# attempt at all. The disposition carries one per finding and the summary
+# buckets by it — minted and compared only through these names.
+INLINED = "inlined"
+INLINE_REJECTED = "inline_rejected"
+NO_ANCHOR = "no_anchor"
 
 
 def cap_nits(findings: list[dict]) -> tuple[list[dict], int]:
@@ -257,15 +266,35 @@ def partition(items: list[dict], pred) -> tuple[list[dict], list[dict]]:
     return yes, no
 
 
+def anchor_line(f: dict, hunks_by_path: dict[str, list[list[int]]]) -> int | None:
+    """The diff line an inline comment anchors to, or `None` when the
+    finding has no anchor in the diff. GitHub rejects the whole review
+    (HTTP 422, `could not be resolved`) when any one comment's `line` is
+    not part of the diff at `commit_id` — and `intersects_hunks` only
+    proves the finding's *range* overlaps a hunk, while the anchor is the
+    range's end line, which can sit past the hunk's last changed line
+    (observed on PR #390 round 30: a 587-593 finding against a 580-592
+    hunk anchored at 593 and lost the whole four-comment batch). The
+    anchor clamps into the intersecting hunks; a finding whose range
+    misses every hunk — the 1k-crossing exemption admits those — has **no**
+    inline anchor, and returning its end line unclamped is exactly the 422
+    above, so it resolves to `None` and the caller threads it through the
+    summary instead."""
+    lo, hi = finding_span(f)
+    ends = facts_mod.intersecting_hunk_ends(f["path"], lo, hi, hunks_by_path)
+    # The hunk containing `end` wins — min(hi, e) is `hi` for it and below
+    # `hi` for every hunk under it, so the maximum is the clamp.
+    return max((min(hi, e) for e in ends), default=None)
+
+
 def intersects_hunks(f: dict, hunks_by_path: dict[str, list[list[int]]]) -> bool:
-    """The one canonical on-diff predicate (ADR-0275, ADR-0346): a finding
-    is on the diff when its whole line *range* intersects a hunk —
-    flag-1k-crossing is exempt because file growth is a whole-file fact
-    whose natural quote (the file span) never intersects a hunk."""
+    """The one on-diff policy (ADR-0275, ADR-0346): a finding is on the
+    diff when its whole line *range* intersects a hunk — flag-1k-crossing
+    is exempt because file growth is a whole-file fact whose natural quote
+    (the file span) never intersects a hunk."""
     if f.get("checklist_id") == ONE_K_CROSSING:
         return True
-    lo = f["start_line"]
-    hi = f.get("end_line") or lo
+    lo, hi = finding_span(f)
     return facts_mod.range_in_hunks(f["path"], lo, hi, hunks_by_path)
 
 
@@ -308,6 +337,13 @@ def filter_incremental(findings: list[dict],
     the whole re-scoped unit around them (ADR-0275). The on-diff test and
     its exemptions are `intersects_hunks`'s own policy."""
     return partition(findings, lambda f: intersects_hunks(f, hunks_by_path))
+
+
+def finding_span(f: dict) -> tuple[int, int]:
+    """A finding's line span — `start_line`, with the optional `end_line`
+    resolved to it. The one statement of what a finding's range is; the
+    anchoring, incremental-filter and dedupe paths all read it."""
+    return f["start_line"], f.get("end_line") or f["start_line"]
 
 
 def finding_doc(entry: dict) -> dict:
@@ -353,23 +389,28 @@ def build_summary(facts: dict, scope_stats: dict | None, round_no: int, head: st
     outcome — every key the body reads is declared here exactly once:
     fail_new, low_new (the severity halves of the round's new findings),
     carried, anchored_carried, unanchored, resolved, waived,
-    dropped_nits, dropped_scope, degraded, timeout_partial. New summary
-    elements grow the bundle, not the parameter list; the degraded
+    dropped_nits, dropped_scope, inline_outcome, timeout_partial. New
+    summary elements grow the bundle, not the parameter list; the inline
     re-bucketing and its heading are decided here, in one place."""
     # ADR-0346: "New findings" shows the diff-anchored round findings only;
     # context-unit findings appear exactly once, in their own section below,
-    # never merged into the degraded bucket — "context" (by design, never
-    # posted inline) and "the review API rejected inline for" (degraded —
-    # counts in the verdict) are different facts with different headings.
+    # never merged into the rejected bucket — "context" (by design, never
+    # posted inline) and "the review API rejected inline for" (counts in
+    # the verdict) are different facts with different headings.
     # ADR-0354: the severity halves shipped in the disposition — computed
     # once in cmd_post. Fail-severity (blocker/medium) findings render in
-    # the New-findings / degraded sections and thread inline; nits render
+    # the New-findings / rejected sections and thread inline; nits render
     # once, in the collapsed appendix, and never thread.
     fail_new = disposition["fail_new"]
     low_new = disposition["low_new"]
     carried = disposition["carried"]
-    degraded_new: list[dict] = fail_new if disposition["degraded"] else []
-    shown_new: list[dict] = [] if degraded_new else fail_new
+    # Each finding's own inline outcome decides its bucket: only the ones
+    # the API actually refused are "rejected inline" — a finding that had
+    # no diff anchor to attempt was never rejected, and claiming so would
+    # misname it.
+    outcome = disposition["inline_outcome"]
+    degraded_new, shown_new = partition(
+        fail_new, lambda f: outcome[f["id"]] == INLINE_REJECTED)
     total = scope_stats["units_total"] if scope_stats else len(facts["units"])
     in_scope = scope_stats["units_in_scope"] if scope_stats else total
     lines = [
@@ -558,13 +599,26 @@ def cmd_post(args: argparse.Namespace) -> None:
 
     # inline comments: the fail-severity half of the ADR-0354 split above;
     # context findings ride in the summary deterministically (once —
-    # ADR-0346), and nits ride the collapsed Low appendix
+    # ADR-0346), and nits ride the collapsed Low appendix. Each finding's
+    # inline outcome is recorded as it is decided — the summary buckets by
+    # that reason, never by re-deriving it from one round-level boolean.
     comments = []
+    inline_outcome: dict[str, str] = {}
     for f in fail_new:
         fdoc = finding_doc(f)
+        line = anchor_line(fdoc, hunks)
+        if line is None:
+            # No hunk to anchor to (the 1k-crossing exemption's whole-file
+            # findings): an off-diff line is the 422 that loses the batch,
+            # so the finding rides the summary's new-findings section only.
+            inline_outcome[f["id"]] = NO_ANCHOR
+            print(f"post: {f['id']} has no diff anchor; summary only",
+                  file=sys.stderr)
+            continue
+        inline_outcome[f["id"]] = INLINED
         comments.append({
             "path": fdoc["path"],
-            "line": fdoc["end_line"],
+            "line": line,
             "side": "RIGHT",
             "body": inline_body(fdoc, f["id"]),
         })
@@ -585,13 +639,19 @@ def cmd_post(args: argparse.Namespace) -> None:
     degraded = False
     if comments and not args.dry_run:
         degraded = post_review(args.repo, args.pr, review_doc)
+    if degraded:
+        # The API refused the whole batch: every comment that was attempted
+        # is now summary-only. A `NO_ANCHOR` finding was never attempted —
+        # it keeps its own reason.
+        inline_outcome = {i: (INLINE_REJECTED if o == INLINED else o)
+                          for i, o in inline_outcome.items()}
     summary = build_summary(facts, scope_stats, round_no, args.head_sha, verdict, led,
                             {**disp, "fail_new": fail_new, "low_new": low_new,
                              "unanchored": unanchored,
                              "anchored_carried": anchored_carried,
                              "dropped_nits": dropped_nits,
                              "dropped_scope": len(dropped_scope),
-                             "degraded": degraded,
+                             "inline_outcome": inline_outcome,
                              "timeout_partial": args.timeout_partial})
 
     if args.dry_run:

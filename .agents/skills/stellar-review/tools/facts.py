@@ -216,18 +216,23 @@ def signature_identifiers(unit: dict) -> set[str]:
 
 
 def hunks_by_path(facts_doc: dict) -> dict[str, list[list[int]]]:
-    """The one canonical per-file hunk table (changed-file record → hunk
-    ranges). Scope computation (ADR-0347) and verdict anchoring (ADR-0346)
-    both read this — one table, never a second spelling."""
+    """The per-file hunk table (changed-file record → hunk ranges) — the
+    one place the facts document's hunks are read as a map."""
     return {f["path"]: f["hunks"] for f in facts_doc["files"]}
 
 
+def intersecting_hunk_ends(path: str, start: int, end: int, hbp: dict) -> list[int]:
+    """The end lines of the hunks the line range [start, end] intersects,
+    in file order — empty when it intersects none. The one spelling of
+    the intersection relation."""
+    return [e for s, e in hbp.get(path, []) if s <= end and start <= e]
+
+
 def range_in_hunks(path: str, start: int, end: int, hbp: dict) -> bool:
-    """The one canonical on-diff predicate: a line range [start, end]
-    intersects one of the file's hunk ranges. Scope computation
-    (ADR-0347) and verdict anchoring (ADR-0346) both delegate here —
-    one predicate, never a second spelling."""
-    return any(s <= end and start <= e for s, e in hbp.get(path, []))
+    """Whether [start, end] intersects a hunk — the boolean face of
+    `intersecting_hunk_ends`. Scope computation (ADR-0347) and verdict
+    anchoring (ADR-0346) both read it."""
+    return bool(intersecting_hunk_ends(path, start, end, hbp))
 
 
 def build_facts(repo: str, base: str, head: str, include_units: list[str] | None = None) -> dict:

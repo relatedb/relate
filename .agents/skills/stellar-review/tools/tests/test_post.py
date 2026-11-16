@@ -770,6 +770,30 @@ class TestCanonicalIntersection(PostHarnessMixin, unittest.TestCase):
         self.assertIn("--- verdict: fail", out)
         self.assertIn("**New findings**", out)
 
+    def test_inline_anchor_clamps_into_the_diff_hunk(self):
+        # The range (11, 14) intersects FACTS' [[3, 12]] hunk, but its end
+        # line sits past the hunk — anchoring there is the 422 that lost
+        # PR #390 round 30's whole inline batch, so the anchor clamps to
+        # the hunk's last line instead.
+        out = self.run_post([mkfinding(1, lines=(11, 14))])
+        payload = json.loads(out.split("--- verdict:")[0])
+        self.assertEqual(len(payload["comments"]), 1)
+        self.assertEqual(payload["comments"][0]["line"], 12)
+
+    def test_finding_with_no_diff_anchor_rides_the_summary(self):
+        # A range that misses every hunk (the 1k-crossing exemption admits
+        # these) has no inline anchor: an off-diff line is the same 422,
+        # so the comment is dropped, the verdict still counts the finding,
+        # and it rides the summary's new-findings section.
+        out = self.run_post([mkfinding(1, severity="blocker", lines=(40, 45),
+                                       checklist_id="flag-1k-crossing")])
+        payload = json.loads(out.split("--- verdict:")[0])
+        self.assertEqual(payload["comments"], [])
+        self.assertIn("--- verdict: fail", out)
+        summary = out.split("--- verdict:")[1]
+        self.assertIn("**New findings**", summary)
+        self.assertIn("F-1-1", summary)
+
 
 class TestDegradedContextSplit(unittest.TestCase):
     """PR #329's mislabel: when the review API rejects inline comments
@@ -781,7 +805,7 @@ class TestDegradedContextSplit(unittest.TestCase):
                 "checklist_id": "std-5", "path": "src/lib.rs", "lines": [5, 9],
                 "summary": "s", "remedy": "r"}
 
-    def summary(self, degraded, context_ids, anchored_ids):
+    def summary(self, inline_outcome, context_ids, anchored_ids):
         led = ledger_mod.empty_ledger()
         entries = [self.entry(i) for i in anchored_ids]
         disp = {"fail_new": entries, "low_new": [],
@@ -789,12 +813,19 @@ class TestDegradedContextSplit(unittest.TestCase):
 
                 "carried": [], "anchored_carried": [],
                 "resolved": [], "waived": [],
-                "dropped_nits": 0, "dropped_scope": 0, "degraded": degraded,
+                "dropped_nits": 0, "dropped_scope": 0,
+                "inline_outcome": inline_outcome,
                 "timeout_partial": False}
         return post.build_summary(FACTS, None, 3, "deadbeef", "fail", led, disp)
 
+    @staticmethod
+    def uniform(status, ids):
+        """Every listed finding in one state — the round-level cases."""
+        return {f"F-3-{i}": status for i in ids}
+
     def test_degraded_keeps_context_section_separate(self):
-        out = self.summary(degraded=True, context_ids=[2, 3], anchored_ids=[1])
+        out = self.summary(self.uniform(post.INLINE_REJECTED, [1]),
+                           context_ids=[2, 3], anchored_ids=[1])
         self.assertIn("**Findings the review API rejected inline for**", out)
         self.assertIn("**Findings on context units**", out)
         # both sections present, each with exactly its own findings
@@ -805,8 +836,22 @@ class TestDegradedContextSplit(unittest.TestCase):
         self.assertEqual(context.count("F-3-2"), 1, context)
         self.assertEqual(context.count("F-3-3"), 1, context)
 
+    def test_degraded_never_mislabels_a_no_anchor_finding(self):
+        # A finding with no diff anchor was never attempted inline, so a
+        # degraded round must not file it under "rejected inline" — only
+        # the attempted-and-refused ones belong there.
+        outcome = {"F-3-1": post.INLINE_REJECTED, "F-3-2": post.NO_ANCHOR}
+        out = self.summary(outcome, context_ids=[], anchored_ids=[1, 2])
+        rejected = out.split("**Findings the review API rejected inline for**")[1]
+        self.assertEqual(rejected.count("F-3-1"), 1, rejected)
+        self.assertEqual(rejected.count("F-3-2"), 0, rejected)
+        new = out.split("**New findings**")[1].split(
+            "**Findings the review API rejected inline for**")[0]
+        self.assertEqual(new.count("F-3-2"), 1, new)
+
     def test_open_count_names_arithmetic(self):
-        out = self.summary(degraded=False, context_ids=[2], anchored_ids=[1])
+        out = self.summary(self.uniform(post.INLINED, [1]),
+                           context_ids=[2], anchored_ids=[1])
         self.assertIn("1 issue(s) open (1 + 0 anchored new (fail/low) + 0 carried)", out)
 
 
