@@ -250,6 +250,16 @@ find . -name .gitattributes -type f -delete
 # payload SHA, and a model-created refs/replace entry must not steer
 # which tree it lands on.
 : "${RESTORE_SHA:?review-restore.sh: RESTORE_SHA required — the trusted reset target from the event payload (local HEAD is model-moveable)}"
+# The index is model-writable state the reset would otherwise honor:
+# git deliberately preserves skip-worktree entries across reset --hard,
+# so a model step that marked the post-step scripts skip-worktree and
+# wrote its own bytes into them would survive the trusted reset and
+# run in this token-bearing step (the round-28 finding) — the same
+# model-writes-git-state family as grafts, commondir, and attributes.
+# Deleting the index outright kills every carried bit (skip-worktree,
+# assume-unchanged, any crafted entry state); the reset below rebuilds
+# it from the trusted tree.
+rm -f .git/index
 git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null reset --hard "$RESTORE_SHA"
 if [ "$NO_CLEAN" -ne 1 ]; then
   git -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null clean -fdx -- . ':(exclude).stellar'
