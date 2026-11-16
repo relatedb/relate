@@ -28,7 +28,8 @@ use crate::store::empty_properties;
 
 use super::count_stats::{plain_match_pattern, whole_population_node_var};
 use super::order::folded_order_items;
-use super::project::{project_rows, return_result, ProjectSpec, RowSource};
+use super::project::{project_rows, return_result, RowSource};
+use super::scope::ProjectionFields;
 use super::{QueryResult, RowFeed};
 
 /// The id every stand-in node carries. No key the recognizer admits reads a
@@ -304,13 +305,13 @@ pub(super) fn label_set_groups_result(
     let mut rows = project_rows(
         ctx,
         RowFeed::Held(grouped),
-        &ProjectSpec {
+        &ProjectionFields {
             items: &identity,
             distinct: false,
             group_by: None,
             order: &shape.order,
-            skip: shape.skip,
-            limit: shape.limit,
+            skip: shape.skip.as_ref(),
+            limit: shape.limit.as_ref(),
             where_clause: None,
         },
         true,

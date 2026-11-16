@@ -54,8 +54,10 @@ fn uncolliding_parked_prefix(columns: &[String]) -> String {
 
 /// One projection's `ORDER BY` keys, each with its resolved scope decision
 /// and the parked column it is written under. Every projection path parks its
-/// keys at projection time through [`park_order_keys`], so the one sort entry
-/// point reads them back instead of re-evaluating anything.
+/// keys at projection time — through [`park_order_keys`] for the ordinary
+/// path, [`parked_values`] for the sink and `park_values` for the fold — so
+/// the one sort entry point reads them back instead of re-evaluating
+/// anything.
 pub(crate) struct OrderKeys<'a> {
     plan: Vec<KeyPlan<'a>>,
 }
@@ -558,9 +560,8 @@ pub(crate) fn resolve_page_bounds(
     skip: Option<&Expr>,
     limit: Option<&Expr>,
 ) -> Result<PageBounds> {
-    let bound = |exprs: Option<&Expr>| -> Result<Option<usize>> {
-        exprs
-            .map(|expr| resolve_page_bound(graph, params, expr))
+    let bound = |expr: Option<&Expr>| -> Result<Option<usize>> {
+        expr.map(|expr| resolve_page_bound(graph, params, expr))
             .transpose()
     };
     Ok(PageBounds {

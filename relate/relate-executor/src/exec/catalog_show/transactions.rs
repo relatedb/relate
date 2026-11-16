@@ -42,27 +42,25 @@ pub(crate) fn show_transactions_rows(
     params: &BTreeMap<String, Value>,
     qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
-    Ok({
-        let txid = "neo4j-transaction-1".to_string();
-        let mut found = c.ids.is_empty();
-        for expr in &c.ids {
-            let expr = relate_front::lower_expr(expr)?;
-            for row in rows {
-                let value = eval(graph, row, &expr, params)?;
-                found |= transaction_ids(&value)?
-                    .iter()
-                    .any(|v| matches!(v, Value::String(s) if **s == *txid));
-            }
+    let txid = "neo4j-transaction-1".to_string();
+    let mut found = c.ids.is_empty();
+    for expr in &c.ids {
+        let expr = relate_front::lower_expr(expr)?;
+        for row in rows {
+            let value = eval(graph, row, &expr, params)?;
+            found |= transaction_ids(&value)?
+                .iter()
+                .any(|v| matches!(v, Value::String(s) if **s == *txid));
         }
-        if found {
-            vec![catalog_row([
-                ("transactionId", Value::String(txid.into())),
-                ("currentQuery", Value::String(qctx.query_text.into())),
-                ("database", Value::String("neo4j".into())),
-            ])]
-        } else {
-            Vec::new()
-        }
+    }
+    Ok(if found {
+        vec![catalog_row([
+            ("transactionId", Value::String(txid.into())),
+            ("currentQuery", Value::String(qctx.query_text.into())),
+            ("database", Value::String("neo4j".into())),
+        ])]
+    } else {
+        Vec::new()
     })
 }
 

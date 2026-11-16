@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Projection};
 
-use crate::eval::{eval, expr_vars, is_agg_expr};
+use crate::eval::{eval, expr_within, is_agg_expr};
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowNames};
 
@@ -95,10 +95,8 @@ pub(crate) fn sinkable_projection(clause: &Clause) -> Option<SinkProjection<'_>>
     // variable the projection does not produce, the ordinary path has to
     // keep that binding (pre-projection scope).
     if let Some(predicate) = where_clause {
-        let mut named = HashSet::new();
-        expr_vars(predicate, &mut named);
         let produced: HashSet<String> = projection_names(items).into_iter().collect();
-        if named.iter().any(|name| !produced.contains(name)) {
+        if !expr_within(predicate, &produced) {
             return None;
         }
     }

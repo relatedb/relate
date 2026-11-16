@@ -18,7 +18,7 @@ use indexmap::IndexMap;
 use relate_core::{NodeId, RelId, Result, Value};
 use relate_ir::{Expr, PathPattern, Projection};
 
-use crate::eval::{eval, expr_vars, is_agg_expr, predicate_holds};
+use crate::eval::{eval, expr_vars, expr_within, is_agg_expr, predicate_holds};
 use crate::group_key::GroupKey;
 use crate::overlay::ExecGraph;
 use crate::pattern_walk::{
@@ -33,8 +33,8 @@ use super::super::pushdown::{flatten_and_owned, match_scope};
 use super::super::scope::is_internal_column;
 use super::super::WalkTallies;
 use super::{
-    expr_within, finish_folded_rows, fold_hop_vars, fold_return, project_ranked_row, CachedKey,
-    FoldOutput, FoldedReturn, Rank, StreamAgg,
+    finish_folded_rows, fold_hop_vars, fold_return, project_ranked_row, CachedKey, FoldOutput,
+    FoldedReturn, Rank, StreamAgg,
 };
 
 /// A residual the one-hop fold cannot decide — a named path, or a conjunct

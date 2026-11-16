@@ -31,10 +31,8 @@ use super::procedures::exec_call_clause;
 use super::profile_tick::{
     finish_parked_unwind, profile_tick, take_feed, ParkedUnwind, ProfileTick, UnwindFacts,
 };
-use super::project::{
-    project_rows, return_result, streams_into_projection, ProjectSpec, RowSource,
-};
-use super::scope::carry_scope_bindings;
+use super::project::{project_rows, return_result, streams_into_projection, RowSource};
+use super::scope::{carry_scope_bindings, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::{UnwindFeed, UnwindStats};
 use super::QueryResult;
@@ -399,25 +397,8 @@ fn run_clauses_mode(
                 rows = call_rows;
                 last_result = call_result.or(last_result);
             }
-            Clause::With {
-                distinct,
-                group_by,
-                items,
-                order,
-                skip,
-                limit,
-                where_clause,
-                ..
-            } => {
-                let spec = ProjectSpec {
-                    items,
-                    distinct: *distinct,
-                    group_by: group_by.as_deref(),
-                    order,
-                    skip,
-                    limit,
-                    where_clause: where_clause.as_ref(),
-                };
+            Clause::With { .. } => {
+                let spec = ProjectionFields::of_projection(clause);
                 let mut feeds = ProjectionFeeds {
                     unwind: &mut pending_unwind,
                     fold: &mut pending_fold,
@@ -439,23 +420,8 @@ fn run_clauses_mode(
                     carry_scope_bindings(&mut rows, scope);
                 }
             }
-            Clause::Return {
-                distinct,
-                group_by,
-                items,
-                order,
-                skip,
-                limit,
-            } => {
-                let spec = ProjectSpec {
-                    items,
-                    distinct: *distinct,
-                    group_by: group_by.as_deref(),
-                    order,
-                    skip,
-                    limit,
-                    where_clause: None,
-                };
+            Clause::Return { items, .. } => {
+                let spec = ProjectionFields::of_projection(clause);
                 let mut feeds = ProjectionFeeds {
                     unwind: &mut pending_unwind,
                     fold: &mut pending_fold,
@@ -507,7 +473,7 @@ struct ProjectionFeeds<'f, 'a> {
 fn project_clause(
     ctx: ExecCtx<'_>,
     feeds: &mut ProjectionFeeds<'_, '_>,
-    spec: &ProjectSpec<'_>,
+    spec: &ProjectionFields<'_>,
     inflate: bool,
     rows_from: RowSource,
     scope: Option<&Row>,

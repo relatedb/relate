@@ -1,7 +1,7 @@
 //! Expression evaluation: the `eval` dispatcher and the `eval/`
 //! submodule wiring.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
@@ -46,7 +46,7 @@ pub(crate) use aggregate::{
     PercentileSample, StreamFold, SumAcc,
 };
 pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, membership, Extreme};
-pub(crate) use items::{into_items, Items};
+pub(crate) use items::{into_items, iterated, Items};
 pub(crate) use labels::{
     dynamic_label_names, dynamic_property_key, label_expr_matches, resolve_write_labels,
 };
@@ -60,6 +60,13 @@ pub(crate) use expr::{
     binary, binary_pure, cmp_bool, eval_case_with, in_op, in_rhs, ordering_operator,
 };
 use expr::{eval_case, prop, reject_deleted_access, slice, subscript, unary};
+/// Whether every variable `expr` reads is in `allowed`.
+pub(crate) fn expr_within(expr: &Expr, allowed: &HashSet<String>) -> bool {
+    let mut used = HashSet::new();
+    expr_vars(expr, &mut used);
+    used.iter().all(|name| allowed.contains(name))
+}
+
 pub(crate) use function::is_nondeterministic;
 use function::{entity_backing_map, function};
 pub(crate) use function::{lazy_range, RangeValues};

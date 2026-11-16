@@ -3,7 +3,6 @@
 //! the DDL arms).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Expr};
@@ -11,7 +10,7 @@ use relate_names::SmallName;
 
 use super::dispatch::run_nested_clauses;
 use crate::ctx::QueryCtx;
-use crate::eval::{eval, into_items};
+use crate::eval::{eval, iterated};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -45,12 +44,7 @@ pub(crate) fn exec_foreach(
         // Neo4j treats a non-list expression as a one-element list (the
         // harness pins `FOREACH(v IN 1 | …)` and `FOREACH(v IN <boolean
         // expression> | …)`); only null iterates zero times.
-        let values = match eval(graph, row, list, params)? {
-            Value::List(values) => values,
-            Value::Null => continue,
-            single => Arc::new(vec![single]),
-        };
-        for value in into_items(values) {
+        for value in iterated(eval(graph, row, list, params)?) {
             let mut inner = row.clone();
             inner.insert(variable.to_string(), value);
             let _ = run_nested_clauses(graph, clauses, params, vec![inner], qctx)?;

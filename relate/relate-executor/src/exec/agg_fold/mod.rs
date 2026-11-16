@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Expr, OrderItem, PathPattern, Projection};
 
-use crate::eval::{expr_vars, is_agg_expr};
+use crate::eval::is_agg_expr;
 use crate::group_key::GroupKey;
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::Row;
@@ -58,12 +58,6 @@ pub(crate) fn fold_hop_vars(path: &PathPattern) -> HashSet<String> {
         }
     }
     v
-}
-
-pub(crate) fn expr_within(expr: &Expr, allowed: &HashSet<String>) -> bool {
-    let mut used = HashSet::new();
-    expr_vars(expr, &mut used);
-    used.iter().all(|x| allowed.contains(x))
 }
 
 #[cfg(test)]

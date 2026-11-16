@@ -143,6 +143,13 @@ impl<'a> ProjectionFields<'a> {
             _ => None,
         }
     }
+
+    /// [`Self::from_clause`] for the arm that has already matched a
+    /// `WITH`/`RETURN`: the one place that states the invariant, so an arm
+    /// never re-asserts it by hand.
+    pub(crate) fn of_projection(clause: &'a Clause) -> Self {
+        Self::from_clause(clause).expect("the caller matched a WITH/RETURN clause")
+    }
 }
 
 pub(crate) fn push_scope_name(names: &mut Vec<String>, name: impl Into<String>) {

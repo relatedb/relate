@@ -16,6 +16,17 @@ pub(crate) fn into_items(xs: Arc<Vec<Value>>) -> Items {
     }
 }
 
+/// The elements a `FOREACH`-style iteration visits for one evaluated
+/// source: a list's elements, no element for `null`, and any other scalar as
+/// its own single element.
+pub(crate) fn iterated(value: Value) -> Items {
+    match value {
+        Value::List(xs) => into_items(xs),
+        Value::Null => Items::Owned(Vec::new().into_iter()),
+        single => Items::Owned(vec![single].into_iter()),
+    }
+}
+
 /// The element walk [`into_items`] returns, named so a consumer can hold it
 /// across calls (the `UNWIND` row stream).
 pub(crate) enum Items {

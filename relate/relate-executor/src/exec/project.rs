@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{Clause, Expr, Projection};
+use relate_ir::{Clause, Projection};
 
 use crate::ctx::ExecCtx;
 use crate::eval::{eval, expr_vars, is_agg_expr};
@@ -64,34 +64,6 @@ pub(crate) fn return_result(
     // resets them on the way out regardless — one policy, not a per-arm mode
     // branch.
     Ok(QueryResult::intermediate(columns, data, graph.stats()))
-}
-
-/// Field references of a `RETURN`/`WITH` projection clause.
-#[derive(Clone, Copy)]
-pub(crate) struct ProjectSpec<'a> {
-    /// CIP-236 explicit grouping keys (None = infer from non-aggregating
-    /// items; empty = `GROUP BY ()` global aggregation).
-    pub(crate) group_by: Option<&'a [Expr]>,
-    pub items: &'a [Projection],
-    pub distinct: bool,
-    pub order: &'a [relate_ir::OrderItem],
-    pub skip: &'a Option<Expr>,
-    pub limit: &'a Option<Expr>,
-    pub where_clause: Option<&'a Expr>,
-}
-
-impl<'a> ProjectSpec<'a> {
-    pub(crate) fn fields(&self) -> ProjectionFields<'a> {
-        ProjectionFields {
-            distinct: self.distinct,
-            items: self.items,
-            group_by: self.group_by,
-            order: self.order,
-            skip: self.skip.as_ref(),
-            limit: self.limit.as_ref(),
-            where_clause: self.where_clause,
-        }
-    }
 }
 
 /// Whether a projection only maps rows: no aggregation, `DISTINCT`,
@@ -237,7 +209,7 @@ pub(crate) enum RowSource {
 pub(crate) fn project_rows(
     ctx: ExecCtx<'_>,
     feed: RowFeed<'_>,
-    spec: &ProjectSpec<'_>,
+    fields: &ProjectionFields<'_>,
     inflate: bool,
     source: RowSource,
     scope: Option<&Row>,
@@ -246,8 +218,7 @@ pub(crate) fn project_rows(
     // The clause's one classification: every decision below reads it, so
     // the paths cannot disagree on the shape — and the shape's decision
     // ([`ProjectionShape::decide`]) owns the DISTINCT-* rejection.
-    let fields = spec.fields();
-    let class = ProjectionClass::new(&fields, ProjectionShape::decide(&fields)?);
+    let class = ProjectionClass::new(fields, ProjectionShape::decide(fields)?);
     // The clause's paging bounds, resolved once, and the bounded window of
     // the ordered `LIMIT` shape (ADR-0555 §3) derived from them — the one
     // pair of facts the feed, the non-aggregating merge paths and the
@@ -505,9 +476,10 @@ fn plain_rows(
             .cloned()
             .collect();
         for name in kept {
-            if let Some(value) = row.take_value(&name) {
-                row2.insert(name, value);
-            }
+            let value = row
+                .take_value(&name)
+                .expect("a key just read from the row is bound in it");
+            row2.insert(name, value);
         }
         for (name, value) in projected {
             row2.insert(name, value);
