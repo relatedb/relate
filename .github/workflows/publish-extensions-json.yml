@@ -42,6 +42,18 @@ on:
         required: false
         type: string
         default: ""
+    # Both named secrets are declared here and passed explicitly by
+    # release-extensions.yml's publish-extensions-json job: a called
+    # workflow sees only the secrets its caller passes, never the
+    # ambient repository secrets. A manual dispatch reads them from the
+    # repository directly.
+    secrets:
+      RELEASE_SIGNING_PRIVATE_KEY:
+        description: "The release signing key (ADR-0115) that signs extensions.json under the relate-release SSHSIG namespace; required — an unsigned index is not publishable"
+        required: true
+      RELATE_WEB_DISPATCH_TOKEN:
+        description: "Token for the repository_dispatch poke to relatedb/relate-web; optional — unset degrades the poke to a logged skip"
+        required: false
   workflow_dispatch:
 
 permissions:
@@ -85,10 +97,11 @@ jobs:
           sparse-checkout: |
             .github/scripts
 
-      # RELEASE_SIGNING_PRIVATE_KEY rides the inherited secrets
-      # (release-extensions.yml calls with `secrets: inherit`) — the
-      # script writes it to a 0600 temp file and removes it, the
-      # create-release SHA256SUMS signing shape.
+      # RELEASE_SIGNING_PRIVATE_KEY arrives as a declared workflow_call
+      # secret, passed explicitly by release-extensions.yml's
+      # publish-extensions-json job — the script writes it to a 0600
+      # temp file and removes it, the create-release SHA256SUMS signing
+      # shape.
       - name: Generate and sign extensions.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

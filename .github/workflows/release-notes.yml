@@ -60,6 +60,18 @@ on:
         required: false
         type: boolean
         default: true
+    # Both named secrets are declared here and passed explicitly by
+    # release.yml's release-notes job: a called workflow sees only the
+    # secrets its caller passes, never the ambient repository secrets —
+    # the least-privilege shape opencode-review-reusable.yml set. A
+    # manual dispatch reads them from the repository directly.
+    secrets:
+      FIREWORKS_API_KEY:
+        description: "Authenticates the `opencode run` generation step; required — the run fails fast before generation if it is unset"
+        required: true
+      SLACK_WEBHOOK_URL:
+        description: "Webhook for the inline Slack post; optional — unset is a logged skip, never a failure (LABS-133)"
+        required: false
   workflow_dispatch:
     inputs:
       version:

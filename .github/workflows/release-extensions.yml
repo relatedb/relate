@@ -414,8 +414,10 @@ jobs:
   # action-gh-release's GITHUB_TOKEN never triggers downstream workflows)
   # — the index is regenerated and re-signed from the complete asset
   # list, attached to the extension release's own assets, and relate-web
-  # is poked to pull it (ADR-0546). `secrets: inherit` carries
-  # RELEASE_SIGNING_PRIVATE_KEY through to the signing step.
+  # is poked to pull it (ADR-0546). Exactly the two secrets the callee
+  # declares are passed explicitly: RELEASE_SIGNING_PRIVATE_KEY for the
+  # signing step, and RELATE_WEB_DISPATCH_TOKEN for the relate-web poke
+  # (unset = a logged skip).
   publish-extensions-json:
     name: Publish extensions.json + notify relate-web
     needs: [resolve, create-release]
@@ -424,4 +426,6 @@ jobs:
     uses: ./.github/workflows/publish-extensions-json.yml
     with:
       tag: ${{ needs.resolve.outputs.tag }}
-    secrets: inherit
+    secrets:
+      RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+      RELATE_WEB_DISPATCH_TOKEN: ${{ secrets.RELATE_WEB_DISPATCH_TOKEN }}
