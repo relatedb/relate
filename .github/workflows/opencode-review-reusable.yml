@@ -606,9 +606,16 @@ jobs:
           # model-written .git/config at this point, where
           # fsck.badObjectSha1=ignore would suppress exactly the
           # content-against-name check this guard exists to run (the
-          # round-19 finding). The pin forces the check to error level
-          # regardless of what the config says.
-          git -c fsck.badObjectSha1=error -c fsck.skipList= fsck --full --no-progress >/dev/null
+          # round-19 finding). The pins force the check to error level
+          # regardless of what the config says, and neutralize
+          # fsck.skipList (the round-20 finding — the config could
+          # exempt chosen objects from the check): the empty string is
+          # NOT a valid unset here (git tries to open an object-name
+          # list at the empty path and dies: "could not open object
+          # name list"), so the list is pinned to /dev/null — an
+          # always-empty list on a root-owned device node the runner
+          # user can neither replace nor write.
+          git -c fsck.badObjectSha1=error -c fsck.skipList=/dev/null fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -811,9 +818,16 @@ jobs:
           # model-written .git/config at this point, where
           # fsck.badObjectSha1=ignore would suppress exactly the
           # content-against-name check this guard exists to run (the
-          # round-19 finding). The pin forces the check to error level
-          # regardless of what the config says.
-          git -c fsck.badObjectSha1=error -c fsck.skipList= fsck --full --no-progress >/dev/null
+          # round-19 finding). The pins force the check to error level
+          # regardless of what the config says, and neutralize
+          # fsck.skipList (the round-20 finding — the config could
+          # exempt chosen objects from the check): the empty string is
+          # NOT a valid unset here (git tries to open an object-name
+          # list at the empty path and dies: "could not open object
+          # name list"), so the list is pinned to /dev/null — an
+          # always-empty list on a root-owned device node the runner
+          # user can neither replace nor write.
+          git -c fsck.badObjectSha1=error -c fsck.skipList=/dev/null fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -993,9 +1007,16 @@ jobs:
           # model-written .git/config at this point, where
           # fsck.badObjectSha1=ignore would suppress exactly the
           # content-against-name check this guard exists to run (the
-          # round-19 finding). The pin forces the check to error level
-          # regardless of what the config says.
-          git -c fsck.badObjectSha1=error -c fsck.skipList= fsck --full --no-progress >/dev/null
+          # round-19 finding). The pins force the check to error level
+          # regardless of what the config says, and neutralize
+          # fsck.skipList (the round-20 finding — the config could
+          # exempt chosen objects from the check): the empty string is
+          # NOT a valid unset here (git tries to open an object-name
+          # list at the empty path and dies: "could not open object
+          # name list"), so the list is pinned to /dev/null — an
+          # always-empty list on a root-owned device node the runner
+          # user can neither replace nor write.
+          git -c fsck.badObjectSha1=error -c fsck.skipList=/dev/null fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
