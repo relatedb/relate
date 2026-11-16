@@ -218,8 +218,16 @@ def cmd_policy(args):
     for manifest_dir in SHIPPED:
         r = run(
             [
+                # --exclude-dev scopes the dev-dependency exclusion to this
+                # licenses invocation alone (shipped-license policy: dev
+                # crates never ship): deny.toml deliberately carries no
+                # [graph] exclude-dev, because a config-file exclusion
+                # would also narrow the weekly advisories scan, which must
+                # cover the full lock — CI toolchain dev-dependencies are
+                # exactly the build-pipeline supply-chain surface it
+                # exists to scan.
                 "cargo", "deny", "--manifest-path", f"{manifest_dir}/Cargo.toml",
-                "--config", "deny.toml", "check", "licenses",
+                "--config", "deny.toml", "--exclude-dev", "check", "licenses",
             ]
         )
         if r.returncode == 0:

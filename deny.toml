@@ -38,15 +38,13 @@ ignore = [
 # check-boundaries` owns them, running in CI next to fmt and clippy.
 # This section exists only for crate-level supply-chain bans, of which
 # there are none today.
-
-[graph]
-# exclude-dev exists for the licenses gate (shipped-license policy: dev
-# crates never ship). It also narrows the weekly advisories scan to
-# non-dev crates — a known, deliberate bound while cargo-deny 0.20.x
-# takes a single --config (no layering to scope the exclusion to the
-# licenses invocation alone); full-graph advisory coverage rides the
-# cargo-deny upgrade that adds config layering (LABS-1689).
-exclude-dev = true
+#
+# No [graph] exclude-dev here: a config-file exclusion applies to every
+# cargo-deny invocation — including the weekly advisories scan, which
+# must see the full lock (CI toolchain dev-dependencies are exactly the
+# build-pipeline supply-chain surface the scan exists to cover). The
+# licenses gate scopes the exclusion to itself with the root-level
+# --exclude-dev flag at its invocation in scripts/third-party-licenses.py.
 
 [licenses]
 allow = [
